@@ -37,8 +37,8 @@ export function ToolInstallForm({ snapshot, onAction, busy = false, error, platf
       {state.bytesDone !== undefined || state.bytesTotal !== undefined ? <p>{(state.bytesDone ?? 0).toLocaleString()} of {(state.bytesTotal ?? 0).toLocaleString()} bytes</p> : null}
     </div> : null}
     {state.status === "installed" ? <p role="status">{snapshot.toolName} is installed.</p> : null}
-    {detail && !snapshot.disclosure.includes(detail) ? <p role="alert">{detail}</p> : null}
-    {error && error !== detail && !snapshot.disclosure.includes(error) ? <p role="alert">{error}</p> : null}
+    {detail && detail !== snapshot.managedUpdateDetail ? <p role="alert">{detail}</p> : null}
+    {error && error !== detail && error !== snapshot.managedUpdateDetail ? <p role="alert">{error}</p> : null}
     <div className="cd-page-size-buttons">
       {snapshot.buttons.includes("install") ? <button type="button" disabled={busy} onClick={() => onAction("install")}>{intent === "update" ? "Update" : "Install"}</button> : null}
       {snapshot.buttons.includes("allow") ? <button type="button" disabled={busy} onClick={() => onAction("allow")}>{intent === "update" ? "Update" : "Allow"}</button> : null}

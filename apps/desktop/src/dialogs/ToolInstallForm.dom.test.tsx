@@ -6,13 +6,31 @@ import { ToolInstallForm } from "./ToolInstallForm";
 import { toolInstallFixture } from "./toolInstallTestFixtures";
 import { toolInstallSnapshot } from "../externalTools/toolInstallSnapshot";
 
+it.each(["macos", "windows"] as const)("hides only the exact host update detail and preserves substring failures on %s", async platform => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const container = document.createElement("div"); document.body.append(container); const root = createRoot(container);
+  try {
+    const status = { tool: "codex" as const, publisher: "OpenAI", state: "broken" as const, source: "managed" as const,
+      detail: "The host changed its update explanation. Helper unavailable.",
+      pinnedVersion: "2", pinnedDownloadBytes: 1000, freeDiskBytes: null, canInstall: true, consented: false, probedAt: "now" };
+    for (const message of [status.detail, "Helper unavailable.", "read web pages", "A distinct failure."]) {
+      for (const state of [{ status: "broken", detail: message }, { status: "failed", message }, { status: "consent" }] as const) {
+        const snapshot = toolInstallSnapshot(status, { id: "plugin", name: "Assistant" }, state);
+        expect(snapshot.disclosure.split(status.detail)).toHaveLength(2);
+        await act(async () => root.render(createElement(ToolInstallForm, { snapshot, onAction: vi.fn(), error: message, platform })));
+        expect([...container.querySelectorAll('[role="alert"]')].map(alert => alert.textContent))
+          .toEqual(message === status.detail ? [] : [message]);
+      }
+    }
+  } finally { act(() => root.unmount()); container.remove(); vi.unstubAllGlobals(); }
+});
+
 it.each(["macos", "windows"] as const)("shows the native managed-update explanation exactly once across dialog states on %s", async platform => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const container = document.createElement("div"); document.body.append(container); const root = createRoot(container);
   try {
     for (const [tool, name] of [["codex", "Codex"], ["claude", "Claude Code"]] as const) {
-      // Match Rust managed_update_detail, which is returned in the probed status.
-      const detail = `ChemDraft's copy of ${name} is from an older ChemDraft version. Update it to add the helper ChemDraft now needs.`;
+      const detail = `Host-provided update explanation for ${name}; wording may change.`;
       const status = { tool, publisher: "", state: "broken" as const, source: "managed" as const, detail,
         pinnedVersion: "2.0.0", pinnedDownloadBytes: 125_000_000, freeDiskBytes: null, canInstall: true, consented: false, probedAt: "now" };
       for (const state of [undefined, { status: "consent" }, { status: "notInstalled" },
@@ -24,8 +42,7 @@ it.each(["macos", "windows"] as const)("shows the native managed-update explanat
         const snapshot = toolInstallSnapshot(status, { id: "plugin", name: "ChemDraft Assistant" }, state);
         await act(async () => root.render(createElement(ToolInstallForm, { snapshot, onAction: vi.fn(), platform })));
         const text = container.textContent!;
-        expect(text.split(`ChemDraft's copy of ${name} is from an older ChemDraft version.`)).toHaveLength(state?.status === "installed" ? 1 : 2);
-        expect(text.split("Update it to add the helper ChemDraft now needs.")).toHaveLength(state?.status === "installed" ? 1 : 2);
+        expect(text.split(status.detail)).toHaveLength(state?.status === "installed" ? 1 : 2);
         if (state?.status === "failed" && state.message === "Download failed.") {
           expect(container.querySelector('[role="alert"]')?.textContent).toBe("Download failed.");
         }
@@ -39,7 +56,7 @@ it.each(["macos", "windows"] as const)("shows and invokes Update for both tools 
   const container = document.createElement("div"); document.body.append(container); const root = createRoot(container);
   try {
     for (const [tool, name, publisher, host] of [["codex", "Codex", "OpenAI", "github.com"], ["claude", "Claude Code", "Anthropic", "downloads.claude.ai"]] as const) {
-      const status = { tool, publisher: "", state: "broken" as const, source: "managed" as const,
+      const status = { tool, publisher: "", state: "broken" as const, source: "managed" as const, detail: `Host says ${name} needs an update.`,
         pinnedVersion: "2.0.0", pinnedDownloadBytes: 125_000_000, freeDiskBytes: null, canInstall: true, consented: false, probedAt: "now" };
       for (const state of [{ status: "consent" }, { status: "broken", detail: "Update required." }, { status: "failed", message: "Download failed." }] as const) {
         const snapshot = toolInstallSnapshot(status, { id: "plugin", name: "ChemDraft Assistant" }, state);
@@ -47,7 +64,7 @@ it.each(["macos", "windows"] as const)("shows and invokes Update for both tools 
         await act(async () => root.render(createElement(ToolInstallForm, { snapshot, onAction, platform })));
         expect(container.querySelector('[role="dialog"]')?.getAttribute("aria-label")).toBe(`Update ${name}`);
         expect(container.querySelector("h2")?.textContent).toBe(`Update ${name}`);
-        expect(container.textContent).toContain(`ChemDraft's copy of ${name} is from an older ChemDraft version.`);
+        expect(container.textContent).toContain(status.detail);
         expect(container.textContent).toContain(`Updating downloads ${name} 2.0.0 from ${host} and replaces ChemDraft's copy; your own installs and your sign-in are not touched.`);
         expect(container.textContent).toContain(`Your prompt and the open page, including any unpublished structures, leave this computer and go to ${publisher} when you send a request.`);
         expect(container.textContent?.match(/leave this computer/g)).toHaveLength(1);

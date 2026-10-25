@@ -36,9 +36,12 @@ and captions; molecules are never rescaled. Explicit anchors permit intentional 
 supply figure-anchor offsets in bond lengths. For a rigid offset move, use
 `move_objects({objectIds: ["mol_1"], to: {by: {dx: 100, dy: 0}}})`. These offsets
 are document points (positive x right, positive y down); each must be finite and within
-±5000, and `(0, 0)` is refused as a no-op. All moved IDs must be in the request write
+±5000, and offsets with both magnitudes below 0.01 pt (including `(0, 0)`) are refused
+as no-ops at document coordinate precision. All moved IDs must be in the request write
 scope. The usual anchored-object refusal and normalized-commit chemistry/charge-mark
-guards apply; the host never shifts an offset move to another free position.
+guards apply; the host never shifts an offset move to another free position. Overflow past
+any page content edge is refused for offset moves, naming the offending object and offset;
+the whole call moves nothing and does not ask to enlarge the page.
 
 Use `{kind: "group", label: "CH3"}` for “draw a methyl group”. A group is one native molecule
 atom with a literal abbreviation or condensed-formula label, drawn and interpreted exactly as a
@@ -54,20 +57,24 @@ cannot be serialized to SMILES. Groups share molecule placement, page enlargemen
 
 For `insert_structures`, `insert_reaction`, and `insert_text`, if an item is too wide/tall or the
 wrapped set runs off the bottom, the host computes one enlarged page size for the entire call.
-It asks once in a native message box owned by the document window on macOS and Windows, naming
+It asks once per assistant request in a native message box owned by the document window on macOS and Windows, naming
 the item (using its label when available) and the proposed size in points. Both platforms show
 exactly two buttons: **Enlarge Page** in the library's ok/default slot and **Cancel** in its cancel
 slot. Esc or Cancel declines; Enlarge Page (Return where the platform makes it the default)
 enlarges, and one Undo reverses it. Closing the box, unknown results and native dialog errors
-also decline; only the explicit Enlarge Page result approves enlargement.
+also decline; only the explicit Enlarge Page result approves enlargement. That answer applies to
+the whole request: later writes needing more room grow silently after approval, or skip their
+overflowing items after a decline, without asking again. A new request asks anew.
 Internal CSS-pixel sizes are converted to physical points for this message.
 Approval adds a host-issued `updatePageLayout` alongside the object patches inside the same
 assistant request transaction. One Undo restores both page and objects; Redo restores both without
 asking again. Plugins and the AI do not acquire a page-layout write capability.
 
 Declining omits the non-fitting cells (including their captions, or an entire reaction scheme),
-retains the fitting items, and leaves the page size unchanged. The tool returns `declined` labels
-or IDs and `reason: "declined: the user chose not to enlarge the page"`, also in its text result.
+retains the fitting items, and leaves the page size unchanged. Each tool result names every omitted
+item in `declined` using its label or ID, including every item in a declined anchored figure and
+later writes skipped after a decline. It returns `reason: "declined: the user chose not to enlarge the page"`,
+also in its text result, so the assistant can say what was never drawn.
 The host pauses its preparation deadlines while awaiting the answer, for at most 300 seconds.
 No answer within that time declines enlargement with
 `reason: "declined: no answer to the enlarge-page question within 5 minutes"`; fitting items are

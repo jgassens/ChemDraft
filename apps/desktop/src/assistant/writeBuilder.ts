@@ -304,7 +304,7 @@ function finishFigureWrite(context: AssistantToolContext, before: ChemDraftDocum
 
 /** Hold both fitting and non-fitting insertions until the single host confirmation settles. */
 function insertionPlan(document: ChemDraftDocument, write: AssistantWrite, plan: PagePlacements,
-  pageId: string, cells: DocumentObject[][], labels: string[], description: string): AssistantWrite {
+  pageId: string, cells: DocumentObject[][], labels: (string | string[])[], description: string): AssistantWrite {
   return { ...write,
     checkPreconditions: plan.requiredSize ? latest => {
       write.checkPreconditions?.(latest);
@@ -313,7 +313,9 @@ function insertionPlan(document: ChemDraftDocument, write: AssistantWrite, plan:
       }
     } : write.checkPreconditions,
     ...(plan.requiredSize ? { pageGrowth: { pageId, ...plan.requiredSize, description, itemCount: plan.nonFitting.length,
-      items: plan.nonFitting.map(index => ({ objectIds: cells[index]!.map(object => object.id), label: labels[index]! })) } } : {}) };
+      items: plan.nonFitting.flatMap(index => [labels[index]!].flat().map(label => ({
+        objectIds: cells[index]!.map(object => object.id), label
+      }))) } } : {}) };
 }
 
 export async function buildInsertStructures(context: AssistantToolContext, raw: unknown): Promise<AssistantWrite> {
@@ -354,7 +356,7 @@ export async function buildInsertStructures(context: AssistantToolContext, raw: 
   return finishFigureWrite(context, document, insertionPlan(document, insertWrite(placed.page.id, placed.objects,
     `Inserted ${sourceMolecules.length} molecules and ${placed.objects.length - sourceMolecules.length} text objects`,
     sourceMolecules.flatMap(molecule => molecule.chemistry?.warnings?.map(warning => warning.message) ?? []), expected),
-  placed.plan, placed.page.id, input.to ? [placed.objects] : cells, input.to ? ["this figure"] : labels, input.to ? "This figure" : description),
+  placed.plan, placed.page.id, input.to ? [placed.objects] : cells, input.to ? [labels] : labels, input.to ? "This figure" : description),
   input, placed.page.id, placed.objects.map(object => object.id));
 }
 function arrangeCells(context: AssistantToolContext, cells: DocumentObject[][], pageId: string, columns: number, exclude: readonly string[] = []) {
@@ -413,7 +415,7 @@ export async function buildInsertReaction(context: AssistantToolContext, raw: un
   const smiles = input.arrowKind === "retrosynthetic" ? [...input.products, ...input.reactants] : [...input.reactants, ...input.products];
   const expected = new Map(placed.objects.filter(object => object.type === "molecule").map((object, index) => [object.id, smiles[index]!]));
   return finishFigureWrite(context, document, insertionPlan(document, insertWrite(placed.page.id, placed.objects, `Inserted a reaction with ${molecules.length} molecules`, [], expected),
-    placed.plan, placed.page.id, [fresh], ["this reaction"], "This reaction"),
+    placed.plan, placed.page.id, [fresh], [fresh.map(object => object.id)], "This reaction"),
     input, placed.page.id, placed.objects.map(object => object.id));
 }
 export function buildInsertText(context: AssistantToolContext, raw: unknown): AssistantWrite {
@@ -503,7 +505,19 @@ export function buildMoveObjects(context: AssistantToolContext, input: ToolInput
   const figureTo = "anchor" in input.to ? input.to : undefined;
   const by = "by" in input.to ? input.to.by : undefined;
   if (by && by.dx === 0 && by.dy === 0) throw new Error("Offset move (0, 0) is a no-op; provide a non-zero dx or dy in document points.");
+  if (by && Math.abs(by.dx) < 0.01 && Math.abs(by.dy) < 0.01) {
+    throw new Error("Offset move is a no-op at document coordinate precision; provide at least 0.01 pt in dx or dy.");
+  }
   const offsetObjects = by ? originals.map(object => translateObject(object, by.dx, by.dy)) : undefined;
+  if (offsetObjects) {
+    const content = pageContentRect(entries[0]!.page);
+    const outside = offsetObjects.find(object => {
+      const rect = objectRect(object);
+      return rect.x < content.x - 1e-6 || rect.y < content.y - 1e-6 ||
+        rect.x + rect.width > content.x + content.width + 1e-6 || rect.y + rect.height > content.y + content.height + 1e-6;
+    });
+    if (outside) throw new Error(`Moving by (${by!.dx}, ${by!.dy}) would put ${outside.id} off the page; nothing moved.`);
+  }
   const placed = offsetObjects
     ? { page: entries[0]!.page, objects: offsetObjects,
       plan: anchoredPagePlacements(entries[0]!.page, [unionRects(offsetObjects.map(objectRect))]) }
@@ -521,7 +535,7 @@ export function buildMoveObjects(context: AssistantToolContext, input: ToolInput
   if (placed.plan.requiredSize && !figureTo) throw new Error("The arrangement does not fit on this page; enlarge it with Page Setup first.");
   return finishFigureWrite(context, document, insertionPlan(document, { patch: { op: "batch", patches },
     summary: `Moved ${patches.length} objects`, warnings: [], checkPreconditions },
-    placed.plan, placed.page.id, [placed.objects], ["this figure"], "This figure"),
+    placed.plan, placed.page.id, [placed.objects], [input.objectIds], "This figure"),
     { ...input, to: figureTo }, placed.page.id, input.objectIds);
 }
 

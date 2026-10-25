@@ -78,6 +78,51 @@ afterEach(() => vi.useRealTimers());
 beforeAll(() => installNodeRdkitModuleLoader());
 
 describe("assistant offset moves", () => {
+  it.each([5e-324, -5e-324, 0.009])("refuses a sub-precision offset %s without an undo entry", async dx => {
+    const s = setup();
+    try {
+      const before = s.context.getDocument()!;
+      await s.controller.beginRequest(s.plugin, { prompt: "tiny move" });
+      const result = await s.controller.callTool(s.plugin, { name: "move_objects",
+        input: { objectIds: [s.molecule.id], to: { by: { dx, dy: 0 } } } });
+      expect(result).toMatchObject({ isError: true, content: [{ text: expect.stringContaining("no-op") }] });
+      expect(s.context.getDocument()).toBe(before);
+      expect(s.history).toHaveLength(0);
+    } finally { await s.finish(); }
+  });
+
+  it("refuses a mixed in-scope/out-of-scope offset as a whole", async () => {
+    const s = setup();
+    try {
+      const before = s.context.getDocument()!;
+      await s.controller.beginRequest(s.plugin, { prompt: "move both" });
+      const result = await s.controller.callTool(s.plugin, { name: "move_objects",
+        input: { objectIds: [s.molecule.id, s.text.id], to: { by: { dx: 20, dy: 10 } } } });
+      expect(result.structuredContent).toMatchObject({ refused: true,
+        reason: `${s.text.id} was not selected when you sent the request` });
+      expect(s.context.getDocument()).toBe(before);
+      expect(s.history).toHaveLength(0);
+    } finally { await s.finish(); }
+  });
+
+  it.each([{ dx: -500, dy: 0 }, { dx: 5000, dy: 0 }, { dx: 0, dy: -500 }, { dx: 0, dy: 5000 }])(
+    "explains offset edge overflow ($dx, $dy) without arrangement/anchor wording", async by => {
+    const s = setup();
+    const prompt = vi.fn(async () => "enlarge");
+    const restore = setNativePromptProvider(prompt);
+    try {
+      const before = s.context.getDocument()!;
+      await s.controller.beginRequest(s.plugin, { prompt: "move off page" });
+      const result = await s.controller.callTool(s.plugin, { name: "move_objects",
+        input: { objectIds: [s.molecule.id], to: { by } } });
+      expect(result).toMatchObject({ isError: true, content: [{ text:
+        `Moving by (${by.dx}, ${by.dy}) would put ${s.molecule.id} off the page; nothing moved.` }] });
+      expect(s.context.getDocument()).toBe(before);
+      expect(s.history).toHaveLength(0);
+      expect(prompt).not.toHaveBeenCalled();
+    } finally { restore(); await s.finish(); }
+  });
+
   it("translates the Send selection exactly, preserving chemistry in one labelled undo entry", async () => {
     const s = setup();
     try {
@@ -295,6 +340,64 @@ function placementSetup() {
 }
 
 describe("assistant host page enlargement", () => {
+  it.each(["enlarge", "decline", "unknown"])("remembers %s for four overflowing writes in one request", async answer => {
+    const s = placementSetup();
+    const prompt = vi.fn(async () => answer);
+    const restore = setNativePromptProvider(prompt);
+    try {
+      const before = s.context.getDocument()!;
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "four overflowing figures" });
+      for (const width of [646, 660, 851, 865]) {
+        s.context.chemistry.structureFromSmiles = async () => ({ available: true, built: true,
+          object: { ...s.molecule, width, atoms: s.molecule.atoms.map((atom, i) => ({ ...atom, x: 250 + i * width })) } });
+        const result = await s.controller.callTool(s.plugin, { name: "insert_structures",
+          input: { items: [{ kind: "molecule", smiles: "CC", label: `Figure ${width}` }] } });
+        expect(result.isError, JSON.stringify(result)).not.toBe(true);
+        expect(prompt).toHaveBeenCalledOnce();
+        if (answer !== "enlarge") {
+          expect(result.structuredContent).toMatchObject({ declined: [`Figure ${width}`] });
+          expect(s.context.getDocument()).toBe(before);
+        }
+      }
+      await s.controller.endRequest(s.plugin, { requestId });
+      const after = s.context.getDocument()!;
+      if (answer === "enlarge") {
+        expect(after.pages[0]!.width).toBeGreaterThanOrEqual(865 + 72);
+        expect(after.pages[0]!.objects).toHaveLength(8);
+        expect(s.history).toHaveLength(1);
+        expect(undo({ past: s.history.map(entry => entry.before), present: after, future: [] }).present).toEqual(before);
+        expect(redo(undo({ past: [before], present: after, future: [] })).present).toEqual(after);
+      } else expect(s.history).toHaveLength(0);
+      // The decision belongs to the request, so a later request asks again.
+      await s.controller.beginRequest(s.plugin, { prompt: "new overflowing caption" });
+      await s.controller.callTool(s.plugin, { name: "insert_text", input: { text: "Overflow\n".repeat(200) } });
+      expect(prompt).toHaveBeenCalledTimes(2);
+    } finally { restore(); await s.finish(); }
+  });
+
+  it("names every declined item in an anchored figure, including later writes after Cancel", async () => {
+    const s = setup();
+    const prompt = vi.fn(async () => "decline");
+    const restore = setNativePromptProvider(prompt);
+    try {
+      const before = s.context.getDocument()!;
+      await s.controller.beginRequest(s.plugin, { prompt: "several figure items" });
+      for (const labels of [["Ring A", "Ring B", "Ring C"], ["Axle D", "Axle E"]]) {
+        const result = await s.controller.callTool(s.plugin, { name: "insert_structures", input: {
+          items: labels.map(label => ({ kind: "molecule", smiles: "CC", label })),
+          to: { relativeTo: s.molecule.id, anchor: "center", offset: { dx: 50, dy: 50 } }
+        } });
+        expect(result.isError, JSON.stringify(result)).not.toBe(true);
+        expect(result.structuredContent).toMatchObject({ declined: labels,
+          reason: "declined: the user chose not to enlarge the page" });
+        for (const label of labels) expect(result.content[0]).toMatchObject({ text: expect.stringContaining(label) });
+        expect(s.context.getDocument()).toBe(before);
+      }
+      expect(prompt).toHaveBeenCalledOnce();
+      expect(s.history).toHaveLength(0);
+    } finally { restore(); await s.finish(); }
+  });
+
   it.each(["insert_structures", "move_objects"].flatMap(name => [false, true].map(accepted => ({ name, accepted }))))(
     "gates anchored $name, including crossings and order, on host consent ($accepted)", async ({ name, accepted }) => {
     const s = setup();

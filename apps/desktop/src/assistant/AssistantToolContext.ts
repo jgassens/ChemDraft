@@ -33,7 +33,8 @@ export interface AssistantToolContext {
   getInsertedObjectIds?(): readonly string[];
   getViewportRect?(tabId: string): AssistantRect | undefined;
   signal?: AbortSignal;
-  /** Host-only confirmation; consent authorizes this call's computed growth, never model-supplied layout. */
+  /** Host-only confirmation; the first answer covers computed growth throughout the request,
+   * never model-supplied layout. Later overflows grow silently or are skipped after a decline. */
   confirmPageGrowth(growth: AssistantPageGrowth, signal?: AbortSignal): Promise<boolean | { reason: string }>;
   commands?: {
     has(id: string): boolean;

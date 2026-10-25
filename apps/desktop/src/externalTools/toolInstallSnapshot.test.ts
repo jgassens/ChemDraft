@@ -5,11 +5,13 @@ import { validToolInstallSnapshot, type ToolInstallState } from "../dialogs/dial
 const base = { state: "missing" as const, pinnedVersion: "1", pinnedDownloadBytes: 274_675_680, freeDiskBytes: 4_000_000_000, canInstall: true, consented: false, probedAt: "now" };
 describe("toolInstallSnapshot", () => {
   it.each([["codex", "Codex"], ["claude", "Claude Code"]] as const)("explains the managed %s update at consent", (tool, name) => {
-    const status = { ...base, tool, publisher: "", state: "broken" as const, source: "managed" as const };
+    const status = { ...base, tool, publisher: "", state: "broken" as const, source: "managed" as const,
+      detail: `Host update detail for ${name}.` };
     const snapshot = toolInstallSnapshot(status, { id: "plugin", name: "Plugin" }, { status: "consent" });
     expect(snapshot.title).toBe(`Update ${name}`);
     expect(snapshot.intent).toBe("update");
-    expect(snapshot.disclosure).toContain(`ChemDraft's copy of ${name} is from an older ChemDraft version.`);
+    expect(snapshot.disclosure).toContain(status.detail);
+    expect(snapshot.managedUpdateDetail).toBe(status.detail);
     expect(snapshot.disclosure).toContain(`Updating downloads ${name} ${base.pinnedVersion} from ${snapshot.downloadHost} and replaces ChemDraft's copy; your own installs and your sign-in are not touched.`);
     expect(snapshot.downloadBytes).toBe(base.pinnedDownloadBytes);
     expect(snapshot.requiredDiskBytes).toBeGreaterThan(0);
@@ -18,7 +20,8 @@ describe("toolInstallSnapshot", () => {
       const unchanged = toolInstallSnapshot({ ...status, ...other }, { id: "plugin", name: "Plugin" }, { status: "consent" });
       expect(unchanged.intent).not.toBe("update");
       expect(unchanged.title).not.toContain("Update");
-      expect(unchanged.disclosure).not.toContain("older ChemDraft version");
+      expect(unchanged.disclosure).not.toContain(status.detail);
+      expect(unchanged.managedUpdateDetail).toBeUndefined();
     }
     const installed = toolInstallSnapshot(status, { id: "plugin", name: "Plugin" }, { status: "installed" });
     expect(installed.intent).toBe("use");

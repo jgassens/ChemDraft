@@ -23,6 +23,8 @@ interface Request {
   ended: boolean;
   cancellations: Map<string, AbortController>;
   opening: number;
+  /** One human decision shared by every placement in this request, including concurrent calls. */
+  pageGrowthDecision?: Promise<boolean | { reason: string }>;
 }
 export interface AssistantToolsControllerOptions {
   host(): PluginHost;
@@ -118,27 +120,34 @@ export class AssistantToolsController implements PluginHostAssistant {
           prompted = true;
           const document = request.context.getDocument()!;
           clearTimeout(deadline); // Pause preparation, but bound the human decision separately.
-          const decision = new AbortController();
-          const cancelDecision = () => decision.abort();
-          signal?.addEventListener("abort", cancelDecision, { once: true });
-          const decisionDeadline = setTimeout(cancelDecision, 300_000);
           try {
-            const choice = await nativePrompt({ title: "ChemDraft Assistant", owner: "document", kind: "info",
-              message: `${growth.description} ${growth.itemCount === 1 ? "needs" : "need"} a page ${Math.round(growth.width * 0.75)} × ${Math.round(growth.height * 0.75)} pt. Enlarge the page to fit?`,
-              // Enlarge Page is the affirmative/default action; Escape and close decline.
-              // The request's single Undo restores both the page and inserted objects.
-              choices: [{ id: "enlarge", label: "Enlarge Page" }, { id: "decline", label: "Cancel", cancel: true }]
-            }, async () => "decline", decision.signal);
+            request.pageGrowthDecision ??= (async () => {
+              const decision = new AbortController();
+              const cancelDecision = () => decision.abort();
+              signal?.addEventListener("abort", cancelDecision, { once: true });
+              const decisionDeadline = setTimeout(cancelDecision, 300_000);
+              try {
+                const choice = await nativePrompt({ title: "ChemDraft Assistant", owner: "document", kind: "info",
+                  message: `${growth.description} ${growth.itemCount === 1 ? "needs" : "need"} a page ${Math.round(growth.width * 0.75)} × ${Math.round(growth.height * 0.75)} pt. Enlarge the page to fit?`,
+                  // The answer covers subsequent growth in this request. Its single Undo
+                  // restores every page enlargement and all inserted objects.
+                  choices: [{ id: "enlarge", label: "Enlarge Page" }, { id: "decline", label: "Cancel", cancel: true }]
+                }, async () => "decline", decision.signal);
+                if (decision.signal.aborted) return { reason: "declined: no answer to the enlarge-page question within 5 minutes" };
+                return choice === "enlarge";
+              } finally {
+                clearTimeout(decisionDeadline);
+                signal?.removeEventListener("abort", cancelDecision);
+              }
+            })();
+            const accepted = await request.pageGrowthDecision;
             this.running(plugin, requestId);
             abort.signal.throwIfAborted();
             signal?.throwIfAborted();
-            if (decision.signal.aborted) return { reason: "declined: no answer to the enlarge-page question within 5 minutes" };
-            if (choice !== "enlarge") return false;
+            if (accepted !== true) return accepted;
             approvedGrowth = { growth, document };
             return true;
           } finally {
-            clearTimeout(decisionDeadline);
-            signal?.removeEventListener("abort", cancelDecision);
             if (!abort.signal.aborted) deadline = startDeadline();
           }
         },
@@ -151,7 +160,7 @@ export class AssistantToolsController implements PluginHostAssistant {
             const page = growth && document.pages.find(page => page.id === growth.pageId);
             return applyPatch(document, growth && page ? { op: "batch", patches: [
               { op: "updatePageLayout", pageId: page.id,
-                layout: createCustomPageLayout(growth.width, growth.height, "css-px", page.margin) },
+                layout: createCustomPageLayout(Math.max(page.width, growth.width), Math.max(page.height, growth.height), "css-px", page.margin) },
               ...writePatchOps(patch)
             ] } : patch);
           };
