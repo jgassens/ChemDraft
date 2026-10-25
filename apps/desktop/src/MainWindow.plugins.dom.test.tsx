@@ -235,11 +235,15 @@ async function canvasPointer(target: Element, type: "pointerdown" | "pointerup",
 /** jsdom dispatches mouse events but has no mouse focus/scroll defaults. Run the
  * WebView2 focus default if mousedown is allowed; this must exercise the focusin
  * recovery, not merely assert that the pointer handler left activeElement alone. */
-async function canvasMouseDefault(canvas: HTMLElement, options: MouseEventInit = {}): Promise<MouseEvent> {
+async function canvasMouseDefault(target: HTMLElement, options: MouseEventInit = {}): Promise<MouseEvent> {
   const event = new MouseEvent("mousedown", { bubbles: true, cancelable: true,
     button: 0, clientX: 500, clientY: 500, ...options });
   await act(async () => {
-    if (canvas.dispatchEvent(event)) canvas.focus({ preventScroll: true });
+    if (target.dispatchEvent(event)) {
+      const focusTarget = target.closest<HTMLElement>("[tabindex], input, textarea, select, button, a[href], [contenteditable='true']");
+      if (focusTarget) focusTarget.focus({ preventScroll: true });
+      else if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    }
   });
   return event;
 }
@@ -342,7 +346,9 @@ describe("MainWindow canvas overlays", () => {
       const canvas = container.querySelector<HTMLElement>(".canvas-region")!;
       await typeAtFocus("Draft");
       const blur = vi.fn();
+      const focusout = vi.fn();
       textarea.addEventListener("blur", blur);
+      textarea.addEventListener("focusout", focusout);
       expect(document.activeElement).toBe(textarea);
       const press = await canvasPointer(canvas, "pointerdown", options);
       expect(press.defaultPrevented).toBe(false);
@@ -354,6 +360,7 @@ describe("MainWindow canvas overlays", () => {
       expect(mouse.defaultPrevented).toBe(false);
       expect(document.activeElement).toBe(textarea);
       expect(blur).toHaveBeenCalledOnce();
+      expect(focusout).toHaveBeenCalledOnce();
       expect(textarea.value).toBe("Draft");
       expect(submit).not.toHaveBeenCalled();
       expect(select).not.toHaveBeenCalled();
@@ -471,14 +478,14 @@ describe("MainWindow canvas overlays", () => {
       expect(submit.mock.calls[0]![0].input?.text).toBe("abc");
     });
 
-    it.each(["compositionstart", "input.isComposing", "keydown.isComposing"])("keeps focus and draft during %s until compositionend", async start => {
+    it.each(["compositionstart", "input.isComposing", "keydown.isComposing"])("prevents blur and focusout for scrollbar and drawing presses during %s until compositionend", async start => {
       const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
       const canvas = container.querySelector<HTMLElement>(".canvas-region")!;
+      const page = container.querySelector<HTMLElement>(".page")!;
       const blur = vi.fn();
-      const mousedown = vi.fn();
-      canvas.addEventListener("mousedown", mousedown);
-      const focus = vi.spyOn(canvas, "focus");
+      const focusout = vi.fn();
       textarea.addEventListener("blur", blur);
+      textarea.addEventListener("focusout", focusout);
       await act(async () => {
         if (start === "compositionstart") textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
         else if (start === "input.isComposing") textarea.dispatchEvent(new InputEvent("input", { bubbles: true, isComposing: true }));
@@ -486,24 +493,30 @@ describe("MainWindow canvas overlays", () => {
         input("あ");
       });
       expect(canvas.hasAttribute("tabindex")).toBe(false);
-      for (const button of [0, 2]) {
-        focus.mockClear();
-        const press = await canvasPointer(container.querySelector(".page")!, "pointerdown", { button });
+      for (const { target, clientX, clientY } of [
+        { target: canvas, clientX: 902, clientY: 500 },
+        { target: canvas, clientX: 500, clientY: 702 },
+        { target: canvas, clientX: 910, clientY: 710 },
+        { target: page, clientX: 500, clientY: 500 }
+      ]) for (const button of [0, 2]) {
+        const options = { button, clientX, clientY };
+        const press = await canvasPointer(target, "pointerdown", options);
         expect(press.defaultPrevented).toBe(true);
-        expect(focus).not.toHaveBeenCalled();
-        // jsdom has no pointer focus default. Attempt the engine's focus move even
-        // with pointerdown cancelled: a section without tabindex must not blur IME.
+        // Model an engine that still sends mousedown after a cancelled pointerdown.
+        // Without cancellation, its focus default must blur even without tabindex.
+        const mouse = await canvasMouseDefault(target, options);
+        expect(mouse.defaultPrevented).toBe(true);
+        // Direct engine focus attempts must also leave the composition intact.
         await act(async () => canvas.focus({ preventScroll: true }));
-        expect(mousedown).not.toHaveBeenCalled();
-        expect(focus).toHaveBeenCalledOnce();
         expect(document.activeElement).toBe(textarea);
         expect(blur).not.toHaveBeenCalled();
+        expect(focusout).not.toHaveBeenCalled();
         expect(container.querySelector<HTMLElement>(".plugin-canvas-overlay")!.dataset.composing).toBe("true");
         expect(textarea.value).toBe("あ");
         expect(submit).not.toHaveBeenCalled();
         expect(select).not.toHaveBeenCalled();
         expect(container.querySelector<HTMLElement>(".plugin-canvas-overlay")!.hidden).toBe(false);
-        await canvasPointer(canvas, "pointerup", { button });
+        await canvasPointer(target, "pointerup", options);
       }
       await act(async () => {
         textarea.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "あ" }));
