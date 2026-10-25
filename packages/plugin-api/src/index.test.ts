@@ -173,6 +173,20 @@ describe("createStructureSourceFingerprint", () => {
 });
 
 describe("validatePluginManifest", () => {
+  it("refuses plugin ids ending in a dot while accepting existing valid ids", () => {
+    const candidate = {
+      id: "org.example.plugin.", name: "Plugin", version: "0", apiVersion: "^0.1.0", entry: "x", permissions: []
+    };
+
+    expect(validatePluginManifest(candidate)).toEqual({
+      ok: false,
+      errors: ['id: Plugin id must not end with "."']
+    });
+    for (const id of ["Org.ChemDraft.Fixture", "a..b_-"]) {
+      expect(validatePluginManifest({ ...candidate, id }).ok).toBe(true);
+    }
+  });
+
   it("refuses assistant.run without native.execute and accepts the permission pair", () => {
     const candidate = {
       id: "org.test.tools", name: "Tools", version: "0", apiVersion: "^0.1.8", entry: "x",
