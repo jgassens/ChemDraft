@@ -52,6 +52,18 @@ current document and selection and place results directly on the page through ty
 
 ---
 
+# Branch slice: Direct double- and triple-bond drawing tools
+
+Add command-backed Double Bond and Triple Bond buttons beside Single Bond on Main.
+Reuse native bond placement, growth, connection, valence checks, history and rendering.
+Scope: drawingTools.ts, icons.tsx, toolsets manifest, documentWorkflow.ts, MainWindow.tsx,
+focused activation/toolbar/document/DOM regressions and manual checklist.
+Implementation and focused verification are complete (946 tests across seven files, with the final
+pointer suite rerun separately). Root TypeScript and diff checks pass. The full suite was stopped
+after repeated RDKit-loader failures; these are not established as pre-existing. Production web
+build is blocked by the local SWC native binding. Rust/Cargo is unavailable here.
+Native Windows and macOS interaction checks and the repository gauntlet are required before merge.
+
 # Parked
 
 These items are not in flight; reopening any item needs a reason recorded here first.

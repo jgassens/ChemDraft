@@ -30,6 +30,14 @@ describe("Phase 7 drawing tool activation", () => {
     expect(commandsForKind("art")).toContain("tool.art.arc90Dashed");
   });
 
+  it.each(["double", "triple"])("activates the manifest-backed %s bond tool", (order) => {
+    const command = getToolsetCommandSpecs().find(candidate => candidate.id === `tool.${order}Bond`)!;
+    expect(command.enabled).toBe(true);
+    expect(activateDrawingToolCommand(createActiveToolState(), command).state).toMatchObject({
+      activeCommandId: command.id, activeKind: "bond", lastOutcome: "activated"
+    });
+  });
+
   it("starts with the selection tool active", () => {
     expect(createActiveToolState()).toEqual({
       activeCommandId: "tool.select",

@@ -759,3 +759,10 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
   again. Repeat an Export that needs a picker. Close the source tab while the picker is open and
   confirm no closed or newly reopened Export receives focus. Switch to another app before the
   picker completes and confirm ChemDraft does not take foreground.
+
+## Direct multiple-bond tools (Windows and macOS)
+
+- On Main, activate Double Bond and Triple Bond; verify distinct icons and active highlight.
+- Click and drag on empty page, extend from an atom, connect atoms and separate molecules, and click an existing bond to set its order. Confirm the requested order, normal snapping/Alt behavior, and one Undo/Redo step per gesture.
+- Refuse growth or order changes that exceed available valence; retain existing atoms, bonds and coordinates. Check save/reopen and SVG/MOL export. Switch back to Single Bond and wedge/hash/dashed/bold tools.
+- Repeat in native Windows/WebView2 and macOS, including customized Main layouts, reset, and narrow palettes; verify browser fallback.
