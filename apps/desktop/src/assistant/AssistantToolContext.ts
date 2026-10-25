@@ -6,6 +6,7 @@ import type {
 } from "@chemdraft/plugin-api";
 
 export interface AssistantRect { x: number; y: number; width: number; height: number }
+export interface AssistantPageGrowth { pageId: string; width: number; height: number; description: string; itemCount: number }
 export type AssistantStructureInspection =
   | { valid: true; canonicalSmiles: string; formula: string; heavyAtoms: number; warnings: string[] }
   | { valid: false; reason: string };
@@ -20,9 +21,15 @@ export interface AssistantToolContext {
   /** Transaction-owned ids, including writes through another session for this run. */
   getInsertedObjectIds?(): readonly string[];
   getViewportRect?(tabId: string): AssistantRect | undefined;
+  signal?: AbortSignal;
+  /** Host-only confirmation; consent authorizes this call's computed growth, never model-supplied layout. */
+  confirmPageGrowth(growth: AssistantPageGrowth, signal?: AbortSignal): Promise<boolean | { reason: string }>;
   /** applyPatchForPlugin inside the run's transaction and fixed write scope.
-   * Recheck the signal and preparation preconditions after waiting for an active canvas gesture. */
-  write(patch: DocumentPatch, signal?: AbortSignal, checkPreconditions?: (document: ChemDraftDocument) => void): Promise<{ objectIds: string[] }>;
+   * Recheck the signal and preparation preconditions after waiting for an active canvas gesture.
+   * expectedSmiles comes only from the typed insert/edit builders; other writes preserve identity.
+   * The host verifies the fully normalized desktop document before committing. */
+  write(patch: DocumentPatch, signal?: AbortSignal, checkPreconditions?: (document: ChemDraftDocument) => void,
+    expectedSmiles?: ReadonlyMap<string, string>): Promise<{ objectIds: string[] }>;
   chemistry: {
     nameToStructure(request: PluginNameToStructureRequest): Promise<PluginNameToStructureResult>;
     /** Host's RDKit -> OCL -> createSmilesMolecule path, bound to the pinned document. */

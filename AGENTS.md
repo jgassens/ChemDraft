@@ -102,7 +102,7 @@ A plugin imports **only `@chemdraft/plugin-api`** (plus ordinary npm packages), 
 menus, panels, toolbar buttons, inspectors, templates, importers, exporters, analyzers, transformers,
 and recognizers.
 
-`PluginApiVersion` is `0.1.7`. For a 0.x version the minor is the compatibility boundary, so additive
+`PluginApiVersion` is `0.1.14`. For a 0.x version the minor is the compatibility boundary, so additive
 methods bump the patch and a plugin declares the caret version it needs. Record each bump in the
 `plugin-api` header comment and `AUTHORING.md`.
 
@@ -338,6 +338,11 @@ the first time and reopen where they were left, and use the shared dialog host
 (`docs/architecture/native-dialog-host.md`). Dialogs are modeless unless an answer is required: the floating
 toolbars stay usable beside them and a dialog can come in front of them. Simple confirmations use native message
 boxes. Existing in-viewport dialogs are being migrated; add no new ones.
+
+**Canvas overlay exception (owner rule, 2026-10-22).** One declared canvas overlay per plugin — an icon
+that expands into a prompt box with a status line, permission `ui.canvas` — is the only permitted
+in-viewport plugin surface. It is draggable, remembers its place, hides during canvas gestures and in
+exports, and takes focus only when clicked. Dialogs, palettes and panels still float as native windows.
 
 ## 13. Security, errors, and performance
 

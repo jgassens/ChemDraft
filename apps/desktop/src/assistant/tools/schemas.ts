@@ -13,6 +13,8 @@ export const textStyleSchema = z.object({
 const side = z.enum(["above", "below", "left", "right"]);
 const relativeTo = z.object({ objectId: id, side }).strict();
 const molecule = z.object({ kind: z.literal("molecule"), smiles: SMILES, label: text.optional() }).strict();
+const group = z.object({ kind: z.literal("group"), label: z.string().trim().min(1).max(80)
+  .describe("Native standalone abbreviation or condensed formula label, e.g. CH3 (methyl), Me, Et, Ph, Bn, Boc, OTs, OMe, NO2, CF3. No placeholders or bare element symbols.") }).strict();
 const textItem = z.object({ kind: z.literal("text"), text, style: textStyleSchema.optional() }).strict();
 export const toolSchemas = {
   get_document: z.object({ includeSmiles: z.boolean().default(true), maxObjects: z.number().int().min(1).max(500).default(200) }).strict(),
@@ -27,7 +29,7 @@ export const toolSchemas = {
   validate_smiles: z.object({ smiles: SMILES }).strict(),
   structure_to_name: z.object({ objectId: id }).strict(),
   insert_structures: z.object({
-    items: z.array(z.discriminatedUnion("kind", [molecule, textItem])).min(1).max(24),
+    items: z.array(z.discriminatedUnion("kind", [molecule, group, textItem])).min(1).max(24),
     arrangement: z.enum(["row", "grid", "auto"]).default("auto")
   }).strict(),
   insert_reaction: z.object({

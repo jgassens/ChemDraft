@@ -5,7 +5,7 @@ import { PluginPanelController } from "./PluginPanelController";
 
 function hostWithPanels() {
   const pluginAPanels = [
-    { id: "panel.a", title: "Panel A", commandId: "cmd.a" },
+    { id: "panel.a", title: "Panel A", commandId: "cmd.a", preferredWindowSize: { width: 480, height: 640 } },
     { id: "panel.a.secondary", title: "Panel A Secondary", commandId: "cmd.a.secondary" }
   ];
   const panels = new Map([
@@ -47,6 +47,20 @@ function hostWithPanels() {
 }
 
 describe("PluginPanelController", () => {
+  it.each(["inApp", "window"] as const)("carries preferred window size through %s reports and updates", surface => {
+    const { host } = hostWithPanels();
+    const controller = new PluginPanelController(host, () => "t", surface);
+    const current = () => surface === "window" ? controller.getDetachedPanels()[0] : controller.getOpenPanel();
+    controller.showReport("plugin.a", "panel.a", { title: "Pending", sections: [] });
+    expect(current()?.preferredWindowSize).toEqual({ width: 480, height: 640 });
+    controller.showReport("plugin.a", "panel.a", { title: "Ready", sections: [] });
+    expect(current()?.preferredWindowSize).toEqual({ width: 480, height: 640 });
+    if (surface === "inApp") {
+      controller.detachPanel("plugin.a", "panel.a");
+      expect(controller.getDetachedPanels()[0]?.preferredWindowSize).toEqual({ width: 480, height: 640 });
+    }
+  });
+
   it("uses a report's rerunCommandId for Run again, falling back to the panel's default command", () => {
     const { host } = hostWithPanels();
     const controller = new PluginPanelController(host, () => "t");

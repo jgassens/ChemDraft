@@ -38,7 +38,7 @@ export const ASSISTANT_TOOLS: readonly AssistantToolDefinition[] = [
   define("name_to_structure", "Parse a chemical name with the local OPSIN engine.", ["chemistry.compute", "native.execute"], true, chemistry.nameToStructure, 60_000),
   define("validate_smiles", "Validate SMILES using RDKit, reporting canonical SMILES, formula, and heavy atom count (maximum 500).", ["chemistry.compute"], true, chemistry.validateSmiles),
   define("structure_to_name", "Name a document molecule using the installed naming engine; never opens an install dialog.", ["chemistry.compute", "native.execute", "selection.read"], true, chemistry.structureToName, 60_000),
-  define("insert_structures", "Insert up to 24 molecule/text items in a host-positioned row or grid; labels go below molecules.", CHEM_WRITE, false, write.insertStructures, 60_000),
+  define("insert_structures", "Insert up to 24 molecule/group/text items in a host-positioned row or grid. Molecule labels are captions; group labels are native abbreviation or condensed-formula atoms (e.g. methyl: {kind:'group',label:'CH3'}, Ph, Boc, OTs).", CHEM_WRITE, false, write.insertStructures, 60_000),
   define("insert_reaction", "Insert a reaction scheme with up to six reactants and six products, plus reagent and condition labels.", CHEM_WRITE, false, write.insertReaction, 60_000),
   define("insert_text", "Insert up to 2000 characters, optionally beside a document object. The host chooses coordinates.", WRITE, false, write.insertText),
   define("edit_structure", "Replace an in-scope molecule with verified SMILES, preserving its centre by default.", CHEM_WRITE, false, write.editStructure, 60_000),
@@ -61,8 +61,13 @@ export async function callAssistantTool(context: AssistantToolContext, name: str
   let timer: ReturnType<typeof setTimeout> | undefined;
   let active = true;
   const abort = new AbortController();
+  const cancel = () => abort.abort(context.signal?.reason);
+  context.signal?.addEventListener("abort", cancel, { once: true });
+  if (context.signal?.aborted) cancel();
   let waitForWrite: (() => void) | undefined;
+  let resumePreparation: (() => void) | undefined;
   try {
+    abort.signal.throwIfAborted();
     const tool = ASSISTANT_TOOLS.find(tool => tool.name === name);
     if (!tool) throw new Error(`Unknown assistant tool "${name}".`);
     requireDocument(context);
@@ -70,7 +75,13 @@ export async function callAssistantTool(context: AssistantToolContext, name: str
       if (!context.plugin.permissions.includes(permission)) throw new Error(`Assistant tool ${name} requires ${permission}.`);
     }
     // Share run scope with the original context, but prevent work finishing after the deadline from writing.
-    const guarded: AssistantToolContext = { ...context, getInsertedObjectIds: () => [...assistantScope(context)],
+    const guarded: AssistantToolContext = { ...context, signal: abort.signal, getInsertedObjectIds: () => [...assistantScope(context)],
+      confirmPageGrowth: async growth => {
+        abort.signal.throwIfAborted();
+        if (timer) clearTimeout(timer);
+        try { return await context.confirmPageGrowth(growth, abort.signal); }
+        finally { resumePreparation?.(); }
+      },
       write: async (patch, _signal, checkPreconditions) => {
         if (!active) throw new Error(`Assistant tool ${name} timed out.`);
         requireDocument(context);
@@ -90,11 +101,15 @@ export async function callAssistantTool(context: AssistantToolContext, name: str
         // Preparation keeps its own deadline. Once ready, allow the desktop's 60s gesture
         // gate to settle (including its polling interval) before the tool itself times out.
         waitForWrite = () => deadline(61_000);
+        resumePreparation = () => { if (active) deadline(tool.timeoutMs); };
         deadline(tool.timeoutMs);
       })
     ]);
     return result(value);
   } catch (error) {
     return { content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }], isError: true };
-  } finally { active = false; abort.abort(); if (timer) clearTimeout(timer); }
+  } finally {
+    active = false; abort.abort(); if (timer) clearTimeout(timer);
+    context.signal?.removeEventListener("abort", cancel);
+  }
 }

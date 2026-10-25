@@ -8,6 +8,11 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { extractPlugin, parseCliArgs, PluginExtractionError, repositoryRoot } from "./extract";
 import { readZipEntryNames } from "./zip";
+import { sdkVersionFrom } from "./gates";
+
+it("extracts the literal 0.1.14 SDK version used by distribution gates", () => {
+  expect(sdkVersionFrom(repositoryRoot, message => new PluginExtractionError(message))).toBe("0.1.14");
+});
 
 // Windows refuses file symlinks without Developer Mode or admin rights. The refusal under test can
 // only be exercised where the fixture can be created; elsewhere the case is skipped, not faked.

@@ -1,6 +1,7 @@
 //! Platform-parameterized discovery and bounded CLI probes. Batch shims are never executable.
 use super::{
     catalog::{AuthStatus, RenderedRun, ToolId, ToolSpec},
+    codex_auth::CodexAuth,
     env::{self, ParentEnv},
     run::{CaptureError, RunStatus, ToolRun},
 };
@@ -235,23 +236,34 @@ impl ProbeCache {
         entries.remove(&tool);
     }
 }
-pub fn probe_tool(
+pub(super) fn probe_tool(
     spec: &ToolSpec,
     path: &Path,
     parent: &ParentEnv,
     run_dir: &Path,
     managed: bool,
+    codex_auth: Option<&CodexAuth>,
 ) -> Result<ProbeResult, String> {
+    #[cfg(test)]
+    super::test_support::check_path(path)?;
     if matches!(
         resolve_candidates(&[path.to_owned()], |p| p.is_file()),
         Candidate::ShimNeedsResolution(_)
     ) {
         return Err("A .cmd/.bat shim needs resolution to a native executable; install the vendor's native CLI.".into());
     }
-    let output = execute(
+    let resolved = std::fs::canonicalize(path)
+        .map_err(|_| "External tool executable could not be resolved.".to_owned())?;
+    #[cfg(test)]
+    super::test_support::check_path(&resolved)?;
+    let path = resolved.as_path();
+    if spec.tool == ToolId::Codex {
+        require_codex_helper(path, ProbePlatform::current())?;
+    }
+    let output = execute_in_home(
         path,
         spec.version_args,
-        parent,
+        (parent, codex_auth),
         run_dir,
         managed,
         Duration::from_secs(10),
@@ -269,10 +281,10 @@ pub fn probe_tool(
             spec.display_name, spec.minimum_version
         ));
     }
-    let auth = execute(
+    let auth = execute_in_home(
         path,
         spec.auth_status_args,
-        parent,
+        (parent, codex_auth),
         run_dir,
         managed,
         Duration::from_secs(15),
@@ -284,6 +296,36 @@ pub fn probe_tool(
         auth: spec.parse_auth(auth.code, &auth.stdout, &auth.stderr),
         probed_at: chrono::Utc::now().to_rfc3339(),
     })
+}
+
+pub(super) fn codex_helper_name(platform: ProbePlatform) -> &'static str {
+    match platform {
+        ProbePlatform::MacOS => "codex-code-mode-host",
+        ProbePlatform::Windows => "codex-code-mode-host.exe",
+    }
+}
+
+pub(super) fn require_codex_helper(binary: &Path, platform: ProbePlatform) -> Result<(), String> {
+    let helper = binary.with_file_name(codex_helper_name(platform));
+    #[cfg(test)]
+    super::test_support::check_path(&helper)?;
+    let metadata = std::fs::metadata(&helper).ok().filter(|m| m.is_file());
+    let Some(metadata) = metadata else {
+        return Err(format!("Codex's code-mode helper (codex-code-mode-host) is missing next to {}; reinstall Codex from its official package or let ChemDraft install it.", binary.display()));
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o111 == 0 {
+            return Err(format!(
+                "Codex's code-mode helper is not executable: {}.",
+                helper.display()
+            ));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = metadata;
+    Ok(())
 }
 pub struct ProbeOutput {
     pub code: Option<i32>,
@@ -299,8 +341,29 @@ pub(super) fn execute(
     timeout: Duration,
     cap: usize,
 ) -> Result<ProbeOutput, String> {
+    execute_in_home(
+        program,
+        args,
+        (parent, None),
+        run_dir,
+        managed,
+        timeout,
+        cap,
+    )
+}
+
+pub(super) fn execute_in_home(
+    program: &Path,
+    args: &[&str],
+    home: (&ParentEnv, Option<&CodexAuth>),
+    run_dir: &Path,
+    managed: bool,
+    timeout: Duration,
+    cap: usize,
+) -> Result<ProbeOutput, String> {
+    let (parent, codex_auth) = home;
     let environment = env::child_env(ProbePlatform::current(), parent, program, run_dir, managed);
-    let run = ToolRun::spawn_with_output_limit(
+    let run = ToolRun::spawn_with_auth(
         RenderedRun {
             program: program.to_owned(),
             args: args.iter().map(|s| (*s).into()).collect(),
@@ -311,6 +374,7 @@ pub(super) fn execute(
         &environment,
         timeout,
         Some(cap),
+        codex_auth.cloned(),
     )?;
     let output = run
         .capture_output(cap, || false)

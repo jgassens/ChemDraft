@@ -54,6 +54,9 @@ export async function documentSummary(context: AssistantToolContext, options: {
       if (object.type === "reaction-arrow") entry.arrowKind = object.arrowKind;
       if (object.type === "molecule") {
         entry.atomCount = object.atoms.length;
+        const labels = object.atoms.filter(atom => atom.labelLiteral);
+        if (labels.length) entry.atomLabels = labels.slice(0, 100).map(atom => ({ atomId: atom.id, label: atom.element, literal: true }));
+        if (labels.length > 100) summary.truncated = true;
         entry.ringKeys = nativeMoleculeRings(object).slice(0, 100).map(ring => ring.ringKey);
         if (options.includeSmiles !== false) {
           try {
