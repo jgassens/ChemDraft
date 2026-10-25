@@ -302,7 +302,8 @@ describe("MainWindow canvas overlays", () => {
       { name: "secondary pen", button: 0, pointerType: "pen", isPrimary: false },
       { name: "secondary touch", button: 0, pointerType: "touch", isPrimary: false }
     ])("keeps the prompt focused for a $name press", async options => {
-      const textarea = document.activeElement;
+      const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
+      expect(document.activeElement).toBe(textarea);
       await canvasPointer(container.querySelector(".page")!, "pointerdown", options);
       await canvasPointer(container.querySelector(".canvas-region")!, "pointerup", options);
       expect(document.activeElement).toBe(textarea);
@@ -315,8 +316,9 @@ describe("MainWindow canvas overlays", () => {
       { name: "left border", clientX: 101, clientY: 500 },
       { name: "top border", clientX: 500, clientY: 101 }
     ])("keeps the prompt focused for a press on the $name", async options => {
-      const textarea = document.activeElement;
+      const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
       const canvas = container.querySelector(".canvas-region")!;
+      expect(document.activeElement).toBe(textarea);
       await canvasPointer(canvas, "pointerdown", options);
       await canvasPointer(canvas, "pointerup", options);
       expect(document.activeElement).toBe(textarea);
@@ -331,24 +333,24 @@ describe("MainWindow canvas overlays", () => {
       { selector: ".canvas-region", clientX: 110, clientY: 500 }
     ])("keeps the prompt focused under ruler $selector at ($clientX, $clientY)", async ({ selector, ...options }) => {
       await act(async () => window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "view.toggleRulers" } })));
-      const textarea = document.activeElement;
+      const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
       const target = container.querySelector(selector)!;
       expect(target).not.toBeNull();
+      expect(document.activeElement).toBe(textarea);
       await canvasPointer(target, "pointerdown", options);
       await canvasPointer(target, "pointerup", options);
       expect(document.activeElement).toBe(textarea);
     });
 
-    it("keeps an active canvas text editor focused after a canvas press", async () => {
+    it("moves focus from the prompt into a canvas text editor after a canvas press", async () => {
       await act(async () => window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "tool.text" } })));
+      const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
+      await act(async () => textarea.focus());
+      expect(document.activeElement).toBe(textarea);
       await canvasPointer(container.querySelector(".page")!, "pointerdown");
       await canvasPointer(container.querySelector(".page")!, "pointerup");
       const editor = container.querySelector<HTMLTextAreaElement>(".text-object-editor")!;
       expect(editor).not.toBeNull();
-      expect(document.activeElement).toBe(editor);
-      const canvas = container.querySelector(".canvas-region")!;
-      await canvasPointer(canvas, "pointerdown");
-      await canvasPointer(canvas, "pointerup");
       expect(document.activeElement).toBe(editor);
     });
 
