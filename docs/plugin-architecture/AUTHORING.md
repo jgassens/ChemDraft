@@ -130,6 +130,11 @@ session. **Updates keep storage**, as does handing an installed plugin's id back
 Uninstall stops the plugin and removes its catalog entry before clearing storage, so pending saves
 cannot recreate it. If deletion fails, uninstall still completes and reports that the stored settings
 could not be deleted; those settings may remain on disk.
+Storage ids cannot end in a dot (Windows strips trailing dots). If another installed or bundled
+plugin has the same id ignoring letter case, uninstall preserves their shared settings and logs why.
+Removing an empty storage folder is best-effort; a folder cleanup failure does not make deletion of
+`storage.json` fail. The plugin list and recognition-engine removal offer still update when deleting
+the settings file fails.
 
 ## One-line text prompts
 

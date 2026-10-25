@@ -170,6 +170,9 @@ describe("usePluginRuntime installed catalog readiness", () => {
     await act(async () => {
       await expect(view!.uninstallInstalledPlugin!(pluginId)).rejects.toBe(error);
     });
+    expect(hookMocks.uninstallPlugin).toHaveBeenCalledWith(
+      expect.objectContaining({ bundledPlugins: view!.bundledPlugins })
+    );
     expect(view?.installedPlugins).toEqual([]);
     expect([...loadDisabledPluginIds()]).toEqual(["org.chemdraft.other"]);
   });

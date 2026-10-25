@@ -1203,6 +1203,45 @@ describe("plugin storage lifecycle", () => {
     await vi.waitFor(() => expect(files.get(PLUGIN_ID)).toBe('{"newSetup":true}'));
   });
 
+  it.each(["installed", "bundled", "registered"] as const)(
+    "keeps shared storage when a case-colliding %s plugin remains, even when disabled",
+    async (kind) => {
+      const { fs, runtime, result, worker } = await installWithStorage();
+      const otherId = PLUGIN_ID.toUpperCase();
+      const other = bundledCopy();
+      other.manifest.id = otherId;
+      if (kind === "installed") {
+        // Disabled or unloadable installs are absent from the runtime, but still own storage.
+        await saveInstalledPluginRecords(fs, [result.record, { ...result.record, id: otherId }]);
+      } else if (kind === "registered") {
+        other.manifest.contributes.commands = [];
+        other.manifest.contributes.menus = [];
+        other.manifest.contributes.panels = [];
+        runtime.registerPlugin(other.manifest, { commandHandlers: {} });
+      }
+      files.set(PLUGIN_ID, '{"setupDone":true}');
+      const storage = runtime.host.getStorage(PLUGIN_ID);
+      expect(await storage.get("setupDone")).toBe(true);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        await uninstallPlugin({
+          runtime, fs, pluginId: PLUGIN_ID, descriptor: result.descriptor,
+          bundledPlugins: kind === "bundled" ? [other] : []
+        });
+        expect(storageInvoke.mock.calls.some(([command]) => command === "plugin_storage_delete")).toBe(false);
+        expect(files.get(PLUGIN_ID)).toBe('{"setupDone":true}');
+        expect(await storage.get("setupDone")).toBe(true);
+        expect(worker.terminated()).toBe(true);
+        expect(runtime.host.getPlugin(PLUGIN_ID)).toBeUndefined();
+        expect((await loadInstalledPluginRecords(fs)).some((record) => record.id === PLUGIN_ID)).toBe(false);
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining("case-insensitive"));
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining(otherId));
+      } finally {
+        warn.mockRestore();
+      }
+    }
+  );
+
   it("keeps stored and cached settings through an update", async () => {
     const { fs, runtime, result } = await installWithStorage();
     files.set(PLUGIN_ID, '{"setupDone":true}');

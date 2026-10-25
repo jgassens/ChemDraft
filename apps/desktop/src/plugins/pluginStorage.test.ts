@@ -226,6 +226,38 @@ describe("createPersistentPluginStorage", () => {
     expect(await storage.listKeys()).toEqual([]);
   });
 
+  it("does not refill caches from a read started while deletion is in flight", async () => {
+    const pluginId = "org.test.stale-read";
+    let finishDelete!: () => void;
+    let finishRead!: (contents: string | null) => void;
+    invoke.mockImplementation((command: string) => {
+      if (command === "plugin_storage_delete") {
+        return new Promise<void>((resolve) => { finishDelete = resolve; });
+      }
+      return new Promise<string | null>((resolve) => { finishRead = resolve; });
+    });
+    const storage = createPersistentPluginStorage(pluginId);
+    const deletion = deletePersistentPluginStorage(pluginId);
+    await vi.waitFor(() => expect(finishDelete).toBeTypeOf("function"));
+    const staleRead = storage.get("setupDone");
+    await vi.waitFor(() => expect(finishRead).toBeTypeOf("function"));
+    // A new instance during deletion must observe the same per-plugin generation.
+    const newStorage = createPersistentPluginStorage(pluginId);
+    const finishFirstRead = finishRead;
+    const secondStaleRead = newStorage.get("setupDone");
+    await vi.waitFor(() => expect(finishRead).not.toBe(finishFirstRead));
+    finishDelete();
+    await deletion;
+    finishFirstRead('{"setupDone":true}');
+    finishRead('{"setupDone":true}');
+    await staleRead;
+    await secondStaleRead;
+    invoke.mockResolvedValue(null);
+
+    expect(await storage.listKeys()).toEqual([]);
+    expect(await newStorage.listKeys()).toEqual([]);
+  });
+
   it("keeps working when the tauri module itself fails to load", async () => {
     // ensureLoaded memoises its promise, and the dynamic import used to sit OUTSIDE the try. A
     // chunk that would not load therefore left `loaded` permanently rejected: `if (!loaded)` is

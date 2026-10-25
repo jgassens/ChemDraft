@@ -790,6 +790,8 @@ export async function uninstallPlugin(options: {
   descriptor?: PackagedPluginDescriptor;
   /** The bundled plugin this install replaced, if any — re-registered once the install is gone. */
   restores?: BundledPluginDescriptor;
+  /** Include disabled bundled plugins: they still own their stored settings. */
+  bundledPlugins?: readonly BundledPluginDescriptor[];
   /** Honored when restoring: a bundled plugin the user disabled must not come back enabled. */
   disabledIds?: ReadonlySet<string>;
 }): Promise<void> {
@@ -831,7 +833,7 @@ export async function uninstallPlugin(options: {
       console.warn(`Uninstalling "${pluginId}": could not remove ${stagedPath}.`, error);
     }
   }
-  await removeInstalledPluginRecord(fs, pluginId);
+  const remainingInstalls = await removeInstalledPluginRecord(fs, pluginId);
 
   // Consent storage is auxiliary uninstall cleanup. It must happen only after the host and catalog
   // no longer expose the plugin, and an unreadable or unwritable consent file must not resurrect a
@@ -854,6 +856,18 @@ export async function uninstallPlugin(options: {
   // Failure reports that uninstall completed but settings remain; the hook still removes its UI
   // entry and disabled preference before surfacing this specific cleanup error.
   if (!restores) {
+    const otherId = [
+      ...remainingInstalls.map((record) => record.id),
+      ...(options.bundledPlugins ?? []).map((plugin) => plugin.manifest.id),
+      ...runtime.host.listPlugins().map((plugin) => plugin.id)
+    ].find((id) => id !== pluginId && id.toLowerCase() === pluginId.toLowerCase());
+    if (otherId) {
+      console.warn(
+        `Uninstalling "${pluginId}": stored settings are left in place because plugin "${otherId}" ` +
+          "has the same case-insensitive storage path."
+      );
+      return;
+    }
     try {
       await deletePersistentPluginStorage(pluginId);
     } catch (error) {

@@ -360,6 +360,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
           descriptor: entry?.descriptor,
           // If this install had taken its id from a bundled plugin, give it back.
           restores: bundledPlugins.find((candidate) => candidate.manifest.id === pluginId),
+          bundledPlugins,
           disabledIds: loadDisabledPluginIds()
         });
       } catch (error) {

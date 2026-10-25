@@ -11,6 +11,8 @@ interface StorageCache {
 // The host retains storage objects across unregister/register. Reset those objects in place so
 // reinstalling in this session cannot reuse their loaded values (including the web-only backend).
 const cachesByPluginId = new Map<string, Set<StorageCache>>();
+const generationsByPluginId = new Map<string, number>();
+const storageGeneration = (pluginId: string): number => generationsByPluginId.get(pluginId) ?? 0;
 
 /** Host-only cleanup, called after teardown on explicit uninstall, never on update or id handover. */
 export async function deletePersistentPluginStorage(pluginId: string): Promise<void> {
@@ -23,6 +25,7 @@ export async function deletePersistentPluginStorage(pluginId: string): Promise<v
     }
   } finally {
     // Also invalidate after a disk failure: a subsequent install must read what is actually on disk.
+    generationsByPluginId.set(pluginId, storageGeneration(pluginId) + 1);
     caches.forEach((cache) => cache.finishDelete());
   }
 }
@@ -47,6 +50,7 @@ export function createPersistentPluginStorage(
 ): PluginStorage {
   const values = new Map<string, unknown>();
   let loaded: Promise<void> | undefined;
+  let loadedGeneration = storageGeneration(pluginId);
   let writeTimer: ReturnType<typeof setTimeout> | undefined;
   let pendingWrite = Promise.resolve();
   let deleting = false;
@@ -68,6 +72,14 @@ export function createPersistentPluginStorage(
    * which is the documented contract.
    */
   const ensureLoaded = (): Promise<void> => {
+    const generation = storageGeneration(pluginId);
+    if (loadedGeneration !== generation) {
+      // Also covers storage instances created after delete collected its cache snapshot.
+      values.clear();
+      loaded = undefined;
+      persistDisabled = false;
+      loadedGeneration = generation;
+    }
     if (!loaded) {
       loaded = (async () => {
         if (!isDesktopRuntime()) {
@@ -78,6 +90,7 @@ export function createPersistentPluginStorage(
           // load), and that is just as much "we cannot see the file" as a read error is.
           const { invoke } = await import("@tauri-apps/api/core");
           const contents = await invoke<string | null>("plugin_storage_read", { pluginId });
+          if (generation !== storageGeneration(pluginId)) return;
           if (!contents) {
             return;
           }
@@ -91,6 +104,7 @@ export function createPersistentPluginStorage(
             report("could not be parsed and will be overwritten by the next save", error);
           }
         } catch (error) {
+          if (generation !== storageGeneration(pluginId)) return;
           // Absent is `null` from the Rust side; anything else means the file may exist and hold
           // data we never saw, so a later write could destroy it. Keep this session in memory.
           persistDisabled = true;
