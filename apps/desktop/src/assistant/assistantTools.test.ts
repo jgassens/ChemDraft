@@ -54,6 +54,18 @@ describe("assistant catalog and schema mirrors", () => {
       expect(toolSchemas.insert_structures.safeParse({ items: [item] }).success).toBe(false);
     }
   });
+  it("advertises offset moves with the same finite bounds as Zod", () => {
+    const schema = toolJsonSchema("move_objects") as { properties: { to: { anyOf: unknown[] } } };
+    expect(schema.properties.to.anyOf).toContainEqual({
+      type: "object", additionalProperties: false, required: ["by"],
+      properties: { by: { type: "object", additionalProperties: false, required: ["dx", "dy"], properties: {
+        dx: { type: "number", minimum: -5000, maximum: 5000 }, dy: { type: "number", minimum: -5000, maximum: 5000 }
+      } } }
+    });
+    for (const by of [{ dx: -5000, dy: 5000 }, { dx: 100, dy: 0 }]) {
+      expect(toolSchemas.move_objects.safeParse({ objectIds: ["mol"], to: { by } }).success).toBe(true);
+    }
+  });
   it.each([
     ["list_commands", { category: "all" }], ["run_command", { id: "" }],
     ["run_command", { id: "layout.rotate90", args: { objectIds: ["outside"] } }],

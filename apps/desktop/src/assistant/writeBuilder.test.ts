@@ -6,6 +6,20 @@ import { testContext } from "./tools/testContext";
 import { objectRect, overlaps } from "./placement";
 
 describe("assistant writes", () => {
+  it.each([
+    { dx: NaN, dy: 0, message: "finite" }, { dx: 0, dy: Infinity, message: "finite" },
+    { dx: -Infinity, dy: 0, message: "finite" },
+    { dx: 5001, dy: 0, message: "±5000" }, { dx: -5001, dy: 0, message: "±5000" },
+    { dx: 0, dy: 5001, message: "±5000" }, { dx: 0, dy: -5001, message: "±5000" },
+    { dx: 0, dy: 0, message: "no-op" }
+  ])("rejects invalid offset ($dx, $dy) before writing", async ({ dx, dy, message }) => {
+    const { context, molecule } = testContext();
+    const before = context.getDocument();
+    const result = await callAssistantTool(context, "move_objects", { objectIds: [molecule.id], to: { by: { dx, dy } } });
+    expect(result).toMatchObject({ isError: true, content: [{ text: expect.stringContaining(message) }] });
+    expect(context.getDocument()).toBe(before);
+    expect(context.write).not.toHaveBeenCalled();
+  });
   const anchorFields = ["mechanism-source", "mechanism-target", "reaction-start", "reaction-end",
     "superatom", "r-group-label", "molecule-superatoms", "molecule-rGroups"] as const;
   const anchorCases = anchorFields.flatMap(field => (["atom", "object", "bond"] as const).map(kind => ({ field, kind })));
@@ -73,7 +87,8 @@ describe("assistant writes", () => {
     ["edit_structure", { objectId: "outside", smiles: "CC" }],
     ["delete_objects", { objectIds: ["outside"] }],
     ["style_objects", { objectIds: ["outside"], style: { color: "#112233" } }],
-    ["move_objects", { objectIds: ["outside"], to: { arrange: "grid" } }]
+    ["move_objects", { objectIds: ["outside"], to: { arrange: "grid" } }],
+    ["move_objects", { objectIds: ["outside"], to: { by: { dx: 100, dy: 0 } } }]
   ])("refuses the entire %s call outside Send scope", async (name, input) => {
     const { context } = testContext();
     const result = await callAssistantTool(context, name as string, input);

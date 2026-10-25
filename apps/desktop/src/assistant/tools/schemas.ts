@@ -11,6 +11,10 @@ export const textStyleSchema = z.object({
   italic: z.boolean().optional(), color: color.optional()
 }).strict();
 const side = z.enum(["above", "below", "left", "right"]);
+const moveOffset = z.object({
+  dx: z.number({ error: "Offset dx must be a finite number." }).min(-5000, "Offset dx must be within ±5000 document points.").max(5000, "Offset dx must be within ±5000 document points."),
+  dy: z.number({ error: "Offset dy must be a finite number." }).min(-5000, "Offset dy must be within ±5000 document points.").max(5000, "Offset dy must be within ±5000 document points.")
+}).strict();
 const relativeTo = z.object({ objectId: id, side }).strict();
 export const figureTargetSchema = z.object({
   relativeTo: id,
@@ -68,7 +72,8 @@ export const toolSchemas = {
     }).strict()).max(100).optional()
   }).strict() }).strict(),
   move_objects: z.object({ objectIds: ids, to: z.union([
-    z.object({ relativeTo: id, side }).strict(), z.object({ arrange: z.enum(["row", "grid"]) }).strict(), figureTargetSchema
+    z.object({ relativeTo: id, side }).strict(), z.object({ arrange: z.enum(["row", "grid"]) }).strict(),
+    z.object({ by: moveOffset }).strict(), figureTargetSchema
   ]), ...figureOptions }).strict()
 };
 export type AssistantToolName = keyof typeof toolSchemas;

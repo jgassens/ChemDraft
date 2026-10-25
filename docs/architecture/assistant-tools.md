@@ -27,13 +27,18 @@ at most 2,000 characters; structure inserts contain at most 24 items; a document
 | `edit_structure` | molecule `objectId`, SMILES, optional keep-position | Replacement object IDs, summary, warnings | Yes |
 | `delete_objects` | 1–100 object IDs | Removed object IDs, summary, warnings | Yes |
 | `style_objects` | 1–100 object IDs and object-style fields | Updated object IDs, summary, warnings | Yes |
-| `move_objects` | 1–100 object IDs plus relation, row/grid arrangement or figure placement | Moved object IDs, summary, warnings | Yes |
+| `move_objects` | 1–100 object IDs plus offset, relation, row/grid arrangement or figure placement | Moved object IDs, summary, warnings | Yes |
 
 `get_document` labels each object `inScope`, so a model can see the fixed write boundary. The host,
 not the model, chooses placement: it uses the pinned tab's visible free area or an unoccupied page
 area. Rows and grids use actual item widths and wrap at the page's content edge, including margins
 and captions; molecules are never rescaled. Explicit anchors permit intentional overlap; models
-supply relative offsets in bond lengths, never absolute page coordinates.
+supply figure-anchor offsets in bond lengths. For a rigid offset move, use
+`move_objects({objectIds: ["mol_1"], to: {by: {dx: 100, dy: 0}}})`. These offsets
+are document points (positive x right, positive y down); each must be finite and within
+±5000, and `(0, 0)` is refused as a no-op. All moved IDs must be in the request write
+scope. The usual anchored-object refusal and normalized-commit chemistry/charge-mark
+guards apply; the host never shifts an offset move to another free position.
 
 Use `{kind: "group", label: "CH3"}` for “draw a methyl group”. A group is one native molecule
 atom with a literal abbreviation or condensed-formula label, drawn and interpreted exactly as a

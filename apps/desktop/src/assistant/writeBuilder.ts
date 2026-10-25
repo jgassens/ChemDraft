@@ -498,7 +498,13 @@ export function buildMoveObjects(context: AssistantToolContext, input: ToolInput
   if (relative && findObject(document, relative.objectId).page.id !== entries[0]!.page.id) throw new Error("The relative object must be on the same page.");
   const cells = arrangementCells(originals);
   const figureTo = "anchor" in input.to ? input.to : undefined;
-  const placed = "arrange" in input.to
+  const by = "by" in input.to ? input.to.by : undefined;
+  if (by && by.dx === 0 && by.dy === 0) throw new Error("Offset move (0, 0) is a no-op; provide a non-zero dx or dy in document points.");
+  const offsetObjects = by ? originals.map(object => translateObject(object, by.dx, by.dy)) : undefined;
+  const placed = offsetObjects
+    ? { page: entries[0]!.page, objects: offsetObjects,
+      plan: anchoredPagePlacements(entries[0]!.page, [unionRects(offsetObjects.map(objectRect))]) }
+    : "arrange" in input.to
     ? arrangeCells(context, cells, entries[0]!.page.id, input.to.arrange === "row" ? cells.length : Math.ceil(Math.sqrt(cells.length)), input.objectIds)
     : placement(context, originals, entries[0]!.page.id, relative, input.objectIds, figureTo);
   const patches: DocumentPatch[] = placed.objects.map(object => {

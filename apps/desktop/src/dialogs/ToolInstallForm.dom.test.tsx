@@ -6,6 +6,34 @@ import { ToolInstallForm } from "./ToolInstallForm";
 import { toolInstallFixture } from "./toolInstallTestFixtures";
 import { toolInstallSnapshot } from "../externalTools/toolInstallSnapshot";
 
+it.each(["macos", "windows"] as const)("shows the native managed-update explanation exactly once across dialog states on %s", async platform => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const container = document.createElement("div"); document.body.append(container); const root = createRoot(container);
+  try {
+    for (const [tool, name] of [["codex", "Codex"], ["claude", "Claude Code"]] as const) {
+      // Match Rust managed_update_detail, which is returned in the probed status.
+      const detail = `ChemDraft's copy of ${name} is from an older ChemDraft version. Update it to add the helper ChemDraft now needs.`;
+      const status = { tool, publisher: "", state: "broken" as const, source: "managed" as const, detail,
+        pinnedVersion: "2.0.0", pinnedDownloadBytes: 125_000_000, freeDiskBytes: null, canInstall: true, consented: false, probedAt: "now" };
+      for (const state of [undefined, { status: "consent" }, { status: "notInstalled" },
+        { status: "broken", detail }, { status: "failed", message: detail },
+        { status: "failed", message: "Download failed." },
+        { status: "installing", phase: "Downloading" }, { status: "installed" }] as const) {
+        // The presenter uses the default broken snapshot first, then explicit states
+        // for consent, progress, failure and success.
+        const snapshot = toolInstallSnapshot(status, { id: "plugin", name: "ChemDraft Assistant" }, state);
+        await act(async () => root.render(createElement(ToolInstallForm, { snapshot, onAction: vi.fn(), platform })));
+        const text = container.textContent!;
+        expect(text.split(`ChemDraft's copy of ${name} is from an older ChemDraft version.`)).toHaveLength(state?.status === "installed" ? 1 : 2);
+        expect(text.split("Update it to add the helper ChemDraft now needs.")).toHaveLength(state?.status === "installed" ? 1 : 2);
+        if (state?.status === "failed" && state.message === "Download failed.") {
+          expect(container.querySelector('[role="alert"]')?.textContent).toBe("Download failed.");
+        }
+      }
+    }
+  } finally { act(() => root.unmount()); container.remove(); vi.unstubAllGlobals(); }
+});
+
 it.each(["macos", "windows"] as const)("shows and invokes Update for both tools on %s", async platform => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const container = document.createElement("div"); document.body.append(container); const root = createRoot(container);

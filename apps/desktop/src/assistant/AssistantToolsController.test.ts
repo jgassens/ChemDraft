@@ -76,6 +76,42 @@ function setup() {
 afterEach(() => vi.useRealTimers());
 beforeAll(() => installNodeRdkitModuleLoader());
 
+describe("assistant offset moves", () => {
+  it("translates the Send selection exactly, preserving chemistry in one labelled undo entry", async () => {
+    const s = setup();
+    try {
+      s.select([s.molecule.id, s.text.id]);
+      const before = s.context.getDocument()!;
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "move selection", label: "Offset selection" });
+      const result = await s.controller.callTool(s.plugin, { name: "move_objects",
+        input: { objectIds: [s.molecule.id, s.text.id], to: { by: { dx: 100, dy: -25 } } } });
+      expect(result.isError, JSON.stringify(result)).not.toBe(true);
+      await s.controller.endRequest(s.plugin, { requestId });
+      const after = s.context.getDocument()!;
+      expect(after.pages[0]!.objects).toEqual(before.pages[0]!.objects.map(object => translateObject(object, 100, -25)));
+      expect(after.selection.objectIds).toEqual([s.molecule.id, s.text.id]);
+      expect(s.history).toHaveLength(1);
+      expect(s.history[0]).toMatchObject({ before, after, label: "ChemDraft Assistant: Offset selection" });
+      expect(undo({ past: [before], present: after, future: [] }).present).toEqual(before);
+    } finally { await s.finish(); }
+  });
+
+  it("refuses an exact offset onto an unselected charge mark without changing the document", async () => {
+    const s = setup();
+    try {
+      const atom = s.molecule.atoms[0]!;
+      s.replace(applyChargeToolAtPoint(s.context.getDocument()!, 1, { x: atom.x + 100 - 30, y: atom.y }));
+      const before = s.context.getDocument()!;
+      await s.controller.beginRequest(s.plugin, { prompt: "move right" });
+      const result = await s.controller.callTool(s.plugin, { name: "move_objects",
+        input: { objectIds: [s.molecule.id], to: { by: { dx: 100, dy: 0 } } } });
+      expect(result).toMatchObject({ isError: true, content: [{ text: expect.stringContaining("unselected charge mark") }] });
+      expect(s.context.getDocument()).toBe(before);
+      expect(s.history).toHaveLength(0);
+    } finally { await s.finish(); }
+  });
+});
+
 describe("live MCP figure recipe through the plugin host and assistant transaction", () => {
   it("builds a [2]catenane with auto crossings, unchanged canonical SMILES, cumulative selection and one undo/redo", async () => {
     const s = setup();
@@ -658,10 +694,10 @@ describe("assistant requests and MCP bridge", () => {
   });
   const queuedWrites = ["edit_structure", "style_objects", "delete_objects", "move_objects"].flatMap(name =>
     [true, false].map(targetChanged => ({ name, targetChanged })));
-  it("refuses a floating charge mark introduced after verification while waiting for a gesture", async () => {
+  it.each(["relative", "offset"])("refuses a floating charge mark introduced after verification while waiting for a gesture (%s)", async form => {
     const s = setup();
     try {
-      const input = { objectIds: [s.molecule.id], to: { relativeTo: s.text.id, side: "right" as const } };
+      const input = { objectIds: [s.molecule.id], to: form === "offset" ? { by: { dx: 100, dy: 0 } } : { relativeTo: s.text.id, side: "right" as const } };
       const planned = applyPatch(s.context.getDocument()!, buildMoveObjects(s.context, input).patch);
       const moved = planned.pages[0]!.objects.find(object => object.id === s.molecule.id)!;
       if (moved.type !== "molecule") throw new Error("Expected molecule");

@@ -22,6 +22,9 @@ export function ToolInstallForm({ snapshot, onAction, busy = false, error, platf
   const { state } = snapshot;
   const needsDownload = snapshot.requiredDiskBytes > 0 && state.status !== "installed";
   const intent = snapshot.intent ?? (needsDownload ? "download" : "use");
+  // The native managed-update detail is also part of the disclosure. Keep distinct
+  // failures visible, without repeating the same explanation in the state/error lines.
+  const detail = state.status === "broken" ? state.detail : state.status === "failed" ? state.message : undefined;
   return <section role="dialog" aria-label={snapshot.title} style={{ padding: 20 }}>
     <h2>{intent === "update" ? `Update ${snapshot.toolName}` : snapshot.toolName}</h2>
     <p>Requested by {snapshot.pluginName} ({snapshot.pluginId})</p>
@@ -34,9 +37,8 @@ export function ToolInstallForm({ snapshot, onAction, busy = false, error, platf
       {state.bytesDone !== undefined || state.bytesTotal !== undefined ? <p>{(state.bytesDone ?? 0).toLocaleString()} of {(state.bytesTotal ?? 0).toLocaleString()} bytes</p> : null}
     </div> : null}
     {state.status === "installed" ? <p role="status">{snapshot.toolName} is installed.</p> : null}
-    {state.status === "failed" ? <p role="alert">{state.message}</p> : null}
-    {state.status === "broken" ? <p role="alert">{state.detail}</p> : null}
-    {error ? <p role="alert">{error}</p> : null}
+    {detail && !snapshot.disclosure.includes(detail) ? <p role="alert">{detail}</p> : null}
+    {error && error !== detail && !snapshot.disclosure.includes(error) ? <p role="alert">{error}</p> : null}
     <div className="cd-page-size-buttons">
       {snapshot.buttons.includes("install") ? <button type="button" disabled={busy} onClick={() => onAction("install")}>{intent === "update" ? "Update" : "Install"}</button> : null}
       {snapshot.buttons.includes("allow") ? <button type="button" disabled={busy} onClick={() => onAction("allow")}>{intent === "update" ? "Update" : "Allow"}</button> : null}
