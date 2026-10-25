@@ -62,10 +62,12 @@ Plugin imports may use only `@chemdraft/plugin-api` among ChemDraft packages,
 plus ordinary npm dependencies and their own modules.
 
 A manifest declares `id`, `name`, `version`, `apiVersion`, `entry`,
-`permissions`, and any `contributes` entries. Current API is `0.1.9`;
+`permissions`, and any `contributes` entries. Current API is `0.1.10`;
 declare the caret version needed. Additive API changes bump patch, breaking
 changes bump minor. Code `license` and dataset `dataLicenses` are separate
 claims; a code licence alone does not cover bundled data.
+
+API 0.1.10 adds panel input sections and canvas overlays for declared plugin UI.
 
 Capabilities are typed, declared and least privilege. The dangerous
 permissions are `filesystem.write`, `network.fetch`, `native.execute`,

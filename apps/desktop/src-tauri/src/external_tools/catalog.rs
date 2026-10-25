@@ -2,11 +2,17 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// Audited default-on features for the pinned Codex CLI. These grant no additional tools or
-/// external reach. The pinned-binary parity test requires every default-on feature to be classified.
+/// Audited allowed features for the pinned Codex CLI. Code mode is required to call MCP tools:
+/// disabling its host leaves even the configured ChemDraft tools unreachable. Shell/process tools
+/// stay disabled and the read-only sandbox still gates apply_patch. The real-model parity check
+/// audits the remaining callable surface (including collaboration tools that survive their flags).
+/// The pinned-binary parity test requires every default-on feature to be classified.
 pub const CODEX_FEATURES_KEEP: &[&str] = &[
     "api_key_model_discovery", // Model catalog discovery; no model-callable capability.
     "auth_elicitation",        // Authentication flow for the explicitly configured MCP server.
+    "code_mode",               // MCP tools are offered inside exec in the pinned CLI.
+    "code_mode_host",          // Required for exec to dispatch those MCP calls.
+    "code_mode_interrupt",     // Control of that required code-mode host.
     "compaction_image_budget", // Context compaction accounting; does not expose image tools.
     "content_item_kinds",      // Message content representation, not a tool registration.
     "enable_request_compression", // Compresses existing API traffic; adds no destination.
@@ -29,9 +35,6 @@ pub const CODEX_FEATURES_DISABLE: &[&str] = &[
     "browser_use_external",          // External browser access.
     "browser_use_full_cdp_access",   // Full browser debugging protocol access.
     "cli_daybreak",                  // Unneeded CLI mode; reach is not audited.
-    "code_mode",                     // Unneeded without its host; avoids unavailable-host noise.
-    "code_mode_host",                // Code execution host.
-    "code_mode_interrupt",           // Code execution control is unnecessary.
     "collaboration_modes",           // Removed compatibility switch; no need to retain it.
     "computer_use",                  // Computer interaction tools.
     "daemon_auto_start",             // Background process startup.
@@ -52,6 +55,7 @@ pub const CODEX_FEATURES_DISABLE: &[&str] = &[
     "memories",                      // Persistent context outside the conversation.
     "mentions_v2",                   // Extra context discovery.
     "multi_agent",                   // Delegated agents.
+    "multi_agent_v2",                // Also disable the newer delegation feature; not a tool gate.
     "plugin_sharing",                // Plugin distribution.
     "plugins",                       // Additional plugin capabilities.
     "realtime_conversation",         // Realtime interaction surface.
@@ -372,9 +376,12 @@ pub fn render_run(spec: &ToolSpec, input: ToolRunInputs<'_>) -> Result<RenderedR
                 }
                 for setting in [
                     "mcp_servers.chemdraft.required=true",
-                    "mcp_servers.chemdraft.default_tools_approval_mode=\"auto\"",
+                    // The host already authorizes these scoped document writes. "auto" refuses
+                    // write tools under approval_policy=never, so they need explicit approval here.
+                    "mcp_servers.chemdraft.default_tools_approval_mode=\"approve\"",
                     "mcp_servers.chemdraft.startup_timeout_sec=30",
-                    "mcp_servers.chemdraft.tool_timeout_sec=120",
+                    // Server deadlines still bound reads; writes may await a 300s human decision.
+                    "mcp_servers.chemdraft.tool_timeout_sec=480",
                 ] {
                     args.extend(strings(&["-c", setting]));
                 }
@@ -419,6 +426,10 @@ pub fn render_run(spec: &ToolSpec, input: ToolRunInputs<'_>) -> Result<RenderedR
     let mut env = super::env::tool_overrides(input.managed_copy);
     if spec.tool == ToolId::Claude {
         env.push(("MCP_TIMEOUT".into(), "10000".into()));
+        // MCP_TIMEOUT is startup only. Tool calls use a separate millisecond budget.
+        env.push(("MCP_TOOL_TIMEOUT".into(), "480000".into()));
+        // HTTP tools also have a silent-call idle timer; the native question emits no progress.
+        env.push(("CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT".into(), "480000".into()));
     }
     Ok(RenderedRun {
         program: spec.program.clone(),

@@ -1,32 +1,62 @@
 import { createHash } from "node:crypto";
-import { gunzipSync } from "node:zlib";
+import { gunzipSync, gzipSync } from "node:zlib";
+import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
-import { unzipSync } from "fflate";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { checkCodexTools } from "./check-codex-tools.mjs";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const pinsPath = join(repoRoot, "apps", "desktop", "src-tauri", "src", "external_tools", "pins.rs");
 const claudeBase = "https://downloads.claude.ai/claude-code-releases";
 
 function tarArchiveEntries(bytes) {
-  const tar = gunzipSync(bytes);
+  const tar = gunzipSync(bytes, { maxOutputLength: 1024 * 1024 * 1024 });
   const entries = [];
+  let count = 0, ended = false;
   for (let offset = 0; offset + 512 <= tar.length;) {
     const header = tar.subarray(offset, offset + 512);
-    if (header.every((byte) => byte === 0)) break;
+    if (header.every((byte) => byte === 0)) {
+      const tail = tar.subarray(offset);
+      if (tail.length > 1024 * 1024 || !tail.every((b) => b === 0)) throw new Error("Invalid tar end padding.");
+      ended = true;
+      break;
+    }
+    if (++count > 10_000) throw new Error("Too many tar entries.");
+    const checksum = Number.parseInt(header.subarray(148, 156).toString("ascii").replace(/\0.*$/, "").trim(), 8);
+    const actual = header.reduce((sum, byte, index) => sum + (index >= 148 && index < 156 ? 32 : byte), 0);
+    if (checksum !== actual) throw new Error("Invalid tar header checksum.");
     const name = header.subarray(0, 100).toString("utf8").replace(/\0.*$/, "");
     // GNU's old header stores timestamps here; only POSIX ustar has a prefix field.
     const prefix = header.subarray(257, 263).equals(Buffer.from("ustar\0"))
       ? header.subarray(345, 500).toString("utf8").replace(/\0.*$/, "") : "";
     const size = Number.parseInt(header.subarray(124, 136).toString("ascii").replace(/\0.*$/, "").trim(), 8);
-    if (!Number.isSafeInteger(size) || size < 0 || offset + 512 + size > tar.length) throw new Error("Invalid tar entry size.");
-    if (header[156] !== 53) entries.push({ name: prefix ? `${prefix}/${name}` : name, type: header[156], content: tar.subarray(offset + 512, offset + 512 + size) });
+    if (!Number.isSafeInteger(size) || size < 0 || size > 512 * 1024 * 1024 || offset + 512 + size > tar.length) throw new Error("Invalid tar entry size.");
+    const path = (prefix ? `${prefix}/${name}` : name).replace(/^(\.\/)+/, "").replace(/\/$/, "");
+    if (!path || /[\\:\x00-\x1f]/.test(path) || path.split("/").some((part) => !part || /[. ]$/.test(part) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part))) throw new Error("Unsafe tar path.");
+    const content = tar.subarray(offset + 512, offset + 512 + size);
+    if (header[156] === 120) validatePaxTimestamps(content);
+    else {
+      if (![0, 48, 53].includes(header[156]) || (header[156] === 53 && size !== 0)) throw new Error("Tar links and special entries are forbidden.");
+      if (header[156] !== 53) entries.push({ name: path, type: header[156], content });
+    }
     offset += 512 + Math.ceil(size / 512) * 512;
   }
+  if (!ended) throw new Error("Missing tar end marker.");
   return entries;
+}
+
+export function validatePaxTimestamps(bytes) {
+  if (bytes.length > 64 * 1024) throw new Error("PAX metadata exceeds size limit.");
+  while (bytes.length) {
+    const space = bytes.indexOf(32);
+    const length = Number(bytes.subarray(0, space).toString("ascii"));
+    if (space < 1 || !Number.isSafeInteger(length) || length <= space + 1 || length > bytes.length || bytes[length - 1] !== 10) throw new Error("Malformed PAX metadata.");
+    if (!/^(mtime|atime|ctime)=[0-9.-]+$/.test(bytes.subarray(space + 1, length - 1).toString("utf8"))) throw new Error("Unsupported PAX metadata override.");
+    bytes = bytes.subarray(length);
+  }
 }
 
 export function singleArchiveEntryName(kind, bytes) {
@@ -72,10 +102,41 @@ export function zipArchiveEntryNames(bytes) {
 }
 
 export function validateArchiveEntry(archive, bytes, entry) {
-  if (archive === "ZipTree") {
+  if (archive === "TarGz" && entry.startsWith("bin/")) {
+    codexPackageEntries(bytes, entry);
+  } else if (archive === "ZipTree") {
     if (!zipArchiveEntryNames(bytes).includes(entry)) throw new Error(`ZIP tree is missing ${entry}.`);
   } else if (singleArchiveEntryName(archive === "TarGz" ? "tar.gz" : "zip", bytes) !== entry) {
     throw new Error("Unexpected archive entry.");
+  }
+}
+
+export function codexPackageEntries(bytes, entry) {
+  if (!["bin/codex", "bin/codex.exe"].includes(entry)) throw new Error("Invalid Codex entrypoint.");
+  const suffix = entry.endsWith(".exe") ? ".exe" : "";
+  const wanted = [entry, `bin/codex-code-mode-host${suffix}`];
+  const all = tarArchiveEntries(bytes);
+  return wanted.map((name) => {
+    const matches = all.filter((candidate) => candidate.name === name);
+    if (matches.length !== 1 || matches[0].content.length === 0) throw new Error(`Codex package requires exactly one nonempty ${name}.`);
+    return matches[0];
+  });
+}
+
+export function parseCodexChecksums(text) {
+  const checksums = new Map();
+  for (const line of text.trim().split(/\r?\n/)) {
+    const match = /^([a-f0-9]{64})  (\S+)$/.exec(line);
+    if (!match || checksums.has(match[2])) throw new Error("Invalid or duplicate codex-package_SHA256SUMS row.");
+    checksums.set(match[2], match[1]);
+  }
+  return checksums;
+}
+
+export function verifyCodexPackage(asset, downloaded, checksums) {
+  const expected = checksums.get(asset.name);
+  if (!expected || downloaded.sha256 !== expected || downloaded.size !== asset.size || (asset.digest && asset.digest !== `sha256:${expected}`)) {
+    throw new Error(`${asset.name}: download does not match published size and codex-package_SHA256SUMS.`);
   }
 }
 
@@ -156,15 +217,21 @@ async function buildPins(temp) {
   const codexVersion = codexTag?.replace(/^rust-v/, "");
   if (typeof codexTag !== "string" || !/^rust-v\d+\.\d+\.\d+$/.test(codexTag) || !codexVersion) throw new Error("Invalid Codex release tag.");
   const assets = [
-    ["codex-aarch64-apple-darwin.tar.gz", "DarwinArm64", "TarGz", "codex-aarch64-apple-darwin", "codex"],
-    ["codex-x86_64-apple-darwin.tar.gz", "DarwinX64", "TarGz", "codex-x86_64-apple-darwin", "codex"],
-    ["codex-x86_64-pc-windows-msvc.exe.zip", "WindowsX64", "ZipTree", "codex-x86_64-pc-windows-msvc.exe", "codex-x86_64-pc-windows-msvc.exe"]
+    ["codex-package-aarch64-apple-darwin.tar.gz", "DarwinArm64", "TarGz", "bin/codex", "codex"],
+    ["codex-package-x86_64-apple-darwin.tar.gz", "DarwinX64", "TarGz", "bin/codex", "codex"],
+    ["codex-package-x86_64-pc-windows-msvc.tar.gz", "WindowsX64", "TarGz", "bin/codex.exe", "codex.exe"]
   ];
+  const sumsAsset = release.assets?.find((asset) => asset.name === "codex-package_SHA256SUMS");
+  if (!sumsAsset?.browser_download_url) throw new Error("Codex release has no codex-package_SHA256SUMS.");
+  const sumsDownload = await download(sumsAsset.browser_download_url, join(temp, sumsAsset.name));
+  if (sumsDownload.size !== sumsAsset.size || (sumsAsset.digest && sumsAsset.digest !== `sha256:${sumsDownload.sha256}`)) throw new Error("Published checksum asset does not match release metadata.");
+  const checksums = parseCodexChecksums(sumsDownload.bytes.toString("utf8"));
   const codex = [];
   for (const [name, platform, archive, entry, binary] of assets) {
     const asset = release.assets?.find((candidate) => candidate.name === name);
     if (!asset?.browser_download_url) throw new Error(`Codex release is missing ${name}.`);
     const downloaded = await download(asset.browser_download_url, join(temp, name));
+    verifyCodexPackage(asset, downloaded, checksums);
     validateArchiveEntry(archive, downloaded.bytes, entry);
     codex.push({ tool: "Codex", platform, version: "CODEX_VERSION", url: asset.browser_download_url, size: downloaded.size, sha256: downloaded.sha256, archive, entry, binary, downloadedPath: join(temp, name) });
   }
@@ -196,7 +263,7 @@ export function parityCommand(binaries, parentEnv = process.env) {
   };
 }
 
-async function prepareHostBinary(pin, temp) {
+export async function prepareHostBinary(pin, temp) {
   const destination = join(temp, `${pin.tool}-${pin.platform}`);
   await mkdir(destination);
   const downloaded = pin.downloadedPath
@@ -211,14 +278,15 @@ async function prepareHostBinary(pin, temp) {
   } else {
     validateArchiveEntry(pin.archive, bytes, pin.entry);
     let files;
-    if (pin.archive === "TarGz") {
+    if (pin.archive === "TarGz" && pin.tool === "Codex") {
+      files = Object.fromEntries(codexPackageEntries(bytes, pin.entry).map((entry) => [entry.name.slice(4), entry.content]));
+    } else if (pin.archive === "TarGz") {
       // Reuse the inspected entry, skipping directory headers and refusing symlinks.
       const [entry] = tarArchiveEntries(bytes);
       if (entry.type !== 0 && entry.type !== 48) throw new Error("Expected a regular executable tar entry.");
       files = { [pin.binary]: entry.content };
     } else {
-      // Windows Codex also needs its sibling resource executables. Preserve the verified tree.
-      files = unzipSync(bytes);
+      throw new Error("Host parity supports raw binaries and tar.gz packages only.");
     }
     for (const [name, content] of Object.entries(files)) {
       if (/^[\\/]/.test(name) || name.includes(":") || name.split(/[\\/]/).some((part) => part === "..")) {
@@ -229,6 +297,7 @@ async function prepareHostBinary(pin, temp) {
       else {
         await mkdir(dirname(path), { recursive: true });
         await writeFile(path, content);
+        await chmod(path, 0o755);
       }
     }
   }
@@ -254,9 +323,13 @@ async function checkParity(pins, temp) {
   const result = spawnSync(command, args, options);
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`Pinned CLI parity failed (${result.signal ?? result.status}).`);
+  // Opt-in release check: invokes the real model with the Rust-rendered argv and home policy.
+  // Keep captures outside `temp` so failures remain reviewable after pin-check cleanup.
+  if (binaries.Codex) await checkCodexTools({ binary: binaries.Codex });
 }
 
 async function main() {
+  if (process.argv.includes("--self-test")) return selfTest();
   const temp = await mkdtemp(join(tmpdir(), "chemdraft-external-tools-"));
   try {
     const built = await buildPins(temp);
@@ -273,4 +346,34 @@ async function main() {
   }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) main().catch((error) => { console.error(error.message); process.exitCode = 1; });
+function selfTest() {
+  validatePaxTimestamps(Buffer.from("22 mtime=1792097863.0\n"));
+  assert.throws(() => validatePaxTimestamps(Buffer.from("18 path=../escape\n")), /override/);
+  assert.throws(() => validatePaxTimestamps(Buffer.from("999 mtime=1\n")));
+  const digest = "a".repeat(64);
+  const sums = parseCodexChecksums(`${digest}  package.tar.gz\n`);
+  const asset = { name: "package.tar.gz", size: 42, digest: `sha256:${digest}` };
+  verifyCodexPackage(asset, { size: 42, sha256: digest }, sums);
+  assert.throws(() => parseCodexChecksums(`${digest}  a\n${digest}  a`));
+  assert.throws(() => parseCodexChecksums("invalid"));
+  for (const downloaded of [{ size: 41, sha256: digest }, { size: 42, sha256: "b".repeat(64) }]) assert.throws(() => verifyCodexPackage(asset, downloaded, sums));
+  assert.throws(() => verifyCodexPackage(asset, { size: 42, sha256: digest }, new Map()));
+  const tar = (names) => gzipSync(Buffer.concat([...names.flatMap((name) => {
+    const header = Buffer.alloc(512);
+    header.write(name); header.write("00000000001\0", 124); header[156] = 48;
+    header.fill(32, 148, 156);
+    header.write(`${header.reduce((sum, b) => sum + b, 0).toString(8).padStart(6, "0")}\0 `, 148);
+    return [header, Buffer.from("x"), Buffer.alloc(511)];
+  }), Buffer.alloc(1024)]));
+  for (const suffix of ["", ".exe"]) {
+    const names = [`bin/codex${suffix}`, `bin/codex-code-mode-host${suffix}`];
+    const bytes = tar([...names, "codex-package.json", "codex-path/rg", "codex-resources/voice/unused"]);
+    assert.deepEqual(codexPackageEntries(bytes, names[0]).map((e) => e.name), names);
+    assert.throws(() => codexPackageEntries(tar(names.slice(0, 1)), names[0]));
+    assert.throws(() => codexPackageEntries(tar([...names, names[1]]), names[0]));
+    for (const unsafe of ["../escape", "/absolute", "C:/drive", "bin/../codex"]) assert.throws(() => codexPackageEntries(tar([...names, unsafe]), names[0]));
+  }
+  console.log("Codex package pin self-tests passed (offline).");
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main().catch((error) => { console.error(error.message); process.exitCode = 1; });

@@ -1,5 +1,9 @@
 //! Owned child lifetime, bounded output and cursor-based polling. Only the supervisor reaps PIDs.
-use super::{catalog::RenderedRun, env::ParentEnv};
+use super::{
+    catalog::RenderedRun,
+    codex_auth::{CodexAuth, CodexAuthCleanup},
+    env::ParentEnv,
+};
 use crate::{assistant_mcp::session::RunBinding, local_engine::platform, WithoutConsoleWindow};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -135,6 +139,29 @@ pub struct ToolRun {
     pub started_at: String,
     shared: Arc<Shared>,
 }
+/// Includes short-lived Codex probes, which are not entries in the plugin run table.
+#[derive(Default)]
+pub(super) struct CodexProcesses(Mutex<CodexProcessList>);
+#[derive(Default)]
+struct CodexProcessList {
+    shutting_down: bool,
+    runs: Vec<Arc<ToolRun>>,
+}
+impl CodexProcesses {
+    pub(super) fn shutdown(&self) {
+        let runs = {
+            let mut list = self.0.lock().unwrap();
+            list.shutting_down = true;
+            std::mem::take(&mut list.runs)
+        };
+        for run in &runs {
+            run.cancel(KillReason::AppExit);
+        }
+        for run in &runs {
+            run.wait_finished(Duration::from_secs(5));
+        }
+    }
+}
 // Keep credential-file lifetime within the bound run, including failed spawns.
 pub(super) struct RunConfigCleanup(pub(super) Option<PathBuf>);
 impl Drop for RunConfigCleanup {
@@ -146,6 +173,10 @@ impl Drop for RunConfigCleanup {
 }
 
 impl ToolRun {
+    pub(super) fn log_notice(&self, message: &str) {
+        self.shared
+            .push(OutputStream::Stderr, message.as_bytes(), false);
+    }
     pub fn spawn(
         rendered: RenderedRun,
         cwd: &Path,
@@ -161,7 +192,25 @@ impl ToolRun {
         timeout: Duration,
         output_limit: Option<usize>,
     ) -> Result<Arc<Self>, String> {
-        Self::spawn_supervised(rendered, cwd, environment, timeout, output_limit, None)
+        Self::spawn_with_auth(rendered, cwd, environment, timeout, output_limit, None)
+    }
+    pub(super) fn spawn_with_auth(
+        rendered: RenderedRun,
+        cwd: &Path,
+        environment: &ParentEnv,
+        timeout: Duration,
+        output_limit: Option<usize>,
+        codex_auth: Option<CodexAuth>,
+    ) -> Result<Arc<Self>, String> {
+        Self::spawn_supervised(
+            rendered,
+            cwd,
+            environment,
+            timeout,
+            output_limit,
+            None,
+            codex_auth,
+        )
     }
     pub(super) fn spawn_bound(
         rendered: RenderedRun,
@@ -169,8 +218,17 @@ impl ToolRun {
         environment: &ParentEnv,
         timeout: Duration,
         binding: Option<RunBinding>,
+        codex_auth: Option<CodexAuth>,
     ) -> Result<Arc<Self>, String> {
-        Self::spawn_supervised(rendered, cwd, environment, timeout, None, binding)
+        Self::spawn_supervised(
+            rendered,
+            cwd,
+            environment,
+            timeout,
+            None,
+            binding,
+            codex_auth,
+        )
     }
     fn spawn_supervised(
         rendered: RenderedRun,
@@ -179,7 +237,27 @@ impl ToolRun {
         timeout: Duration,
         output_limit: Option<usize>,
         binding: Option<RunBinding>,
+        codex_auth: Option<CodexAuth>,
     ) -> Result<Arc<Self>, String> {
+        #[cfg(test)]
+        let environment = {
+            super::test_support::check_path(&rendered.program)?;
+            let mut final_environment = environment.clone();
+            final_environment.extend(rendered.env.clone());
+            &super::test_support::isolated_parent(&final_environment, cwd)?
+        };
+        let processes = codex_auth.as_ref().and_then(|auth| auth.processes.clone());
+        // Hold through registration so shutdown cannot miss a just-spawned probe.
+        let mut registration = processes.as_ref().map(|p| p.0.lock().unwrap());
+        if registration.as_ref().is_some_and(|list| list.shutting_down) {
+            return Err("External tools are shutting down.".into());
+        }
+        let home = codex_auth.as_ref().map(CodexAuth::prepare);
+        let environment = home
+            .as_ref()
+            .map(|home| home.apply(environment))
+            .unwrap_or_else(|| environment.clone());
+        let mut auth_cleanup = CodexAuthCleanup(codex_auth);
         let config_cleanup =
             RunConfigCleanup(binding.as_ref().map(|_| cwd.join("claude-mcp.json")));
         if rendered
@@ -195,7 +273,7 @@ impl ToolRun {
             .args(&rendered.args)
             .current_dir(cwd)
             .env_clear()
-            .envs(environment)
+            .envs(&environment)
             .envs(rendered.env)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -257,6 +335,13 @@ impl ToolRun {
             started_at: chrono::Utc::now().to_rfc3339(),
             shared: shared.clone(),
         });
+        if let Some(list) = registration.as_mut() {
+            list.runs.retain(|run| run.status().is_running());
+            list.runs.push(run.clone());
+        }
+        if let Some(reason) = home.and_then(|home| home.fallback_reason) {
+            run.log_notice(&reason);
+        }
         let stdout = reader(
             child.stdout.take().expect("piped stdout"),
             OutputStream::Stdout,
@@ -360,6 +445,11 @@ impl ToolRun {
             let _ = writer.join();
             let _ = stdout.join();
             let _ = stderr.join();
+            // Includes exit, cancellation, timeout and app shutdown, plus every isolated probe.
+            // Publish completion only after refreshed credentials have been reconciled.
+            if let Some(reason) = auth_cleanup.finish() {
+                shared.push(OutputStream::Stderr, reason.as_bytes(), false);
+            }
             // Release before publishing completion, so the next turn can bind immediately.
             drop(binding);
             let mut b = shared.buffer.lock().unwrap();
@@ -371,6 +461,7 @@ impl ToolRun {
             b.finished_at = Some(Instant::now());
             shared.changed.notify_all();
         });
+        drop(registration);
         Ok(run)
     }
     pub fn poll(&self, cursor: u64, max_lines: usize, wait_ms: u64) -> ExternalToolRunPoll {
