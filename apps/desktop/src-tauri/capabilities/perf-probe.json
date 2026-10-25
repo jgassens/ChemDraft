@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "perf-probe",
+  "description": "Bridge-gated monotonic clock and bounded timing log only; no general filesystem access.",
+  "windows": ["main", "toolset-*", "plugin-panel-*", "dialog-main-*", "preferences", "spin3d-debugger"],
+  "permissions": ["allow-perf-log-clock", "allow-perf-log-append", "allow-perf-log-complete"]
+}

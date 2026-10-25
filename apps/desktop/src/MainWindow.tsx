@@ -1,4 +1,5 @@
 import { useExportPreviewEnabled } from "./dialogs/useExportPreviewEnabled";
+import { perfProbe } from "./perf/runtime";
 import { assistantDocumentContentUnchanged, registerAssistantHistoryPort, type AssistantHistoryPort } from "./assistant/historyPort";
 import { getAssistantTransactions } from "./assistant/assistantTransaction";
 import { acquireNativeUtilitySuspension } from "./nativeUtilitySuspension";
@@ -1615,7 +1616,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.25.10.16-codex";
+const CURRENT_BUILD_STAMP = "10.25.12.40-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -3069,6 +3070,7 @@ export function MainWindow({
     // must not be captured as style targets for a document whose object ids may happen to match.
     if (!switchingTabs) updateToolbarStyleTargetSnapshot(history.present);
     setDocumentHistory(history);
+    if (perfProbe) perfProbe.signal("document-commit");
   }, [clearObjectTransformPreview, releaseGesturePointer, updateToolbarStyleTargetSnapshot]);
   // `nextDocument` is handed over, not lent: both callers pass a schema-parse result nothing else
   // holds (an opened file's parse, or a newly created document), so the engine admits it without the
@@ -3749,6 +3751,7 @@ export function MainWindow({
     // An explicit toggle makes this toolset's visibility authoritative (see resolvedToolsetIdsRef),
     // so a later-appearing plugin toolset the user opens is persisted normally from here on.
     resolvedToolsetIdsRef.current.add(toolsetId);
+    const perfWindow = perfProbe?.expectSignal(visibleToolsetIdsRef.current.has(toolsetId) ? "command-finished" : "window-shown");
 
     if (effectiveNativePalette) {
       // JS owns visibility, so JS decides open vs close (and passes the window geometry on open)
@@ -3757,6 +3760,7 @@ export function MainWindow({
         ? await closeToolsetWindow(toolsetId)
         : await openToolsetWindow(toolsetId, toolsetWindowGeometry(toolsetId));
       setVisibleToolsetIds((current) => updateVisibleToolsets(current, toolsetId, nextState.open));
+      if (perfProbe && perfWindow) perfProbe.complete(perfWindow, nextState.open ? "window-shown" : "command-finished");
       // Deliberately closing the Rings toolbar clears the ring selection. The pruning effect no
       // longer does this off `ringInspectorOpen`, so a spurious async "closed" window event can
       // no longer clobber a live selection — only an explicit toggle does.
@@ -3769,6 +3773,7 @@ export function MainWindow({
 
     const wasOpen = visibleToolsetIdsRef.current.has(toolsetId);
     setVisibleToolsetIds((current) => updateVisibleToolsets(current, toolsetId, !current.has(toolsetId)));
+    if (perfProbe && perfWindow) perfProbe.complete(perfWindow, wasOpen ? "command-finished" : "window-shown");
     if (toolsetId === ringInspectorToolsetId && wasOpen) {
       clearNativeRingParts();
     }
@@ -8458,8 +8463,12 @@ export function MainWindow({
     path?: string,
     options?: OpenDocumentContentsOptions
   ): Promise<void> => {
+    const timing = perfProbe?.documentOpenStarted();
     const run = documentOpenQueueRef.current.then(() =>
       openDocumentContentsNowRef.current(contents, displayName, path, options));
+    if (perfProbe && timing) {
+      void run.then(() => perfProbe?.documentOpenCommitted(timing), () => perfProbe?.documentOpenFailed(timing));
+    }
     documentOpenQueueRef.current = run.catch(() => undefined);
     return run;
   }, []);
@@ -8743,6 +8752,7 @@ export function MainWindow({
     }
     if (!isDesktopRuntime()) {
       documentSessionHydratedRef.current = true;
+      if (perfProbe) perfProbe.readyCanvas();
       return undefined;
     }
 
@@ -8834,6 +8844,7 @@ export function MainWindow({
       .finally(async () => {
         if (active) {
           documentSessionHydratedRef.current = true;
+          if (perfProbe) perfProbe.readyCanvas();
           if (unrestoredSessionTabsRef.current.length) {
             keptDrawingsPromptRef.current = "notice";
             setKeptDrawingsPrompt("notice");
@@ -9646,6 +9657,7 @@ export function MainWindow({
       options: { open?: boolean; focus?: boolean; width?: number; height?: number } = {}
     ): Promise<boolean> => {
       if (!isDesktopRuntime()) return Promise.resolve(false);
+      const perfWindow = options.open ? perfProbe?.expectSignal("window-shown") : undefined;
       const payload: AnalysisWindowSnapshotPayload = {
         pluginId: ANALYSIS_WINDOW_OWNER_ID,
         panelId: windowId,
@@ -9672,6 +9684,7 @@ export function MainWindow({
         (message) => setStatus(`Could not open ${title}: ${message}`)
       ).then((opened) => {
         if (opened) void broadcastAnalysisWindowSnapshot(payload).catch(() => undefined);
+        if (perfProbe && perfWindow && opened) perfProbe.complete(perfWindow, "window-shown");
         return opened;
       });
     },
@@ -10415,6 +10428,7 @@ export function MainWindow({
   // Phase 2 are never wiped when core bindings change. See createCoreCommandRegistrar.
   const { registry, syncCoreCommands } = useMemo(() => {
     const commandRegistry = new CommandRegistry();
+    if (perfProbe) perfProbe.instrumentRegistry(commandRegistry);
     return {
       registry: commandRegistry,
       syncCoreCommands: createCoreCommandRegistrar(commandRegistry, () => coreCommandBindingsRef.current)
@@ -10690,7 +10704,7 @@ export function MainWindow({
           ...panel.preferredWindowSize,
           title: panel.report.title || panel.title,
           focus: false
-        }).catch((error: unknown) => {
+        }).then(() => { if (perfProbe) perfProbe.signal("window-shown", panel.commandId); }).catch((error: unknown) => {
           openedPluginPanelWindowsRef.current.delete(key);
           pluginPanelReportsRef.current.delete(key);
           pluginRuntime.runtime.panels.closeDetachedPanel(panel.pluginId, panel.panelId);
@@ -11018,7 +11032,7 @@ export function MainWindow({
     []
   );
 
-  const invoke = useCallback(async (commandId: string, options?: { input?: PluginCommandInput }) => {
+  const invokeUnmeasured = useCallback(async (commandId: string, options?: { input?: PluginCommandInput }) => {
     if (isCompoundLayoutCommand(commandId) && !compoundLayoutsEnabledRef.current) {
       setStatus("Enable Compound layout tools in Settings"); return;
     }
@@ -11128,6 +11142,9 @@ export function MainWindow({
       const owner = pluginRuntime.plugins.find((manifest) =>
         manifest.contributes.commands.some((command) => command.id === commandId)
       );
+      if (perfProbe && owner?.contributes.panels.some(panel => pluginPanelOpenCommand(owner, panel.id) === commandId)) {
+        perfProbe.expectSignal("window-shown", commandId);
+      }
       const analyzerOwned = owner?.contributes.analyzers.some((analyzer) => analyzer.commandId === commandId) ?? false;
       const queueKey = analyzerOwned && owner ? `analyzer:${owner.id}` : `command:${commandId}`;
       const generation = (pluginCommandGenerationsRef.current.get(queueKey) ?? 0) + 1;
@@ -11197,6 +11214,18 @@ export function MainWindow({
     restoreDocumentHistory,
     showAnalyzerNotice
   ]);
+
+  // Disabled runs retain the original dispatcher function, with no per-dispatch wrapper/timing.
+  const invoke = useMemo(() => {
+    if (!perfProbe) return invokeUnmeasured;
+    const probe = perfProbe;
+    return async (commandId: string, options?: { input?: PluginCommandInput }) => {
+      const span = probe.command(commandId);
+      if (pluginCommandExists(commandId)) probe.registryExpected(span);
+      try { return await invokeUnmeasured(commandId, options); }
+      finally { probe.dispatchReturned(span); }
+    };
+  }, [invokeUnmeasured, pluginCommandExists]);
 
   invokeCommandRef.current = invoke;
 
@@ -30717,10 +30746,12 @@ function downloadExportResult(filename: string, result: ExportResult): void {
 async function writeNativeExportResult(path: string, result: ExportResult): Promise<void> {
   if (result.kind === "text") {
     await writeNativeTextFile(path, result.contents);
+    if (perfProbe) perfProbe.signal("export-written");
     return;
   }
 
   await writeNativeBinaryFile(path, result.bytes);
+  if (perfProbe) perfProbe.signal("export-written");
 }
 
 function sanitizedDialogNumber(value: number, fallback: number, min: number, max: number): number {

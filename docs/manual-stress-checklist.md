@@ -5,6 +5,8 @@ file was consolidated (2026-10-04); `AGENTS.md` §14 still requires it. Run ever
 Windows** unless the item names one platform. `docs/windows-port-stress-test.md` records the Windows
 port's own hands-on pass.
 
+Speed runs on both platforms: follow the [timing probe protocol](architecture/perf-probe.md), including the bridge-off no-log check.
+
 Manual stress must cover tab initialization, user tab persistence, mixed states, multi-molecule
 scaling, sparse override precedence, terminal carbon labels, hidden implicit hydrogens, explicit
 hydrogens, fonts, save/reopen, undo/redo, Spin 3D, atom-label editor placement, SVG export, and ring

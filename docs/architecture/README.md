@@ -6,6 +6,7 @@ The native document model belongs in `packages/chem-core`. Compatibility formats
 
 Key architecture notes:
 
+- [perf-probe.md](perf-probe.md) — Bridge-gated timing logs for comparable macOS and Windows speed runs.
 - `3d-spin-flatten.md` — Spin 3D flattening and placement architecture.
 - `composited-page-editor-model.md`
 - `dependency-inventory.md` — Dependency and vendored-binary inventory.
