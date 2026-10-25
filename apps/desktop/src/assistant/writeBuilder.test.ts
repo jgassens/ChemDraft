@@ -102,6 +102,19 @@ describe("assistant writes", () => {
     expect(result.structuredContent?.refused).toBe(true);
     expect(context.getDocument()!.pages[0]!.objects).toHaveLength(2);
   });
+  it("refuses reordering unselected objects among themselves without changing the document", async () => {
+    const { context, molecule, text, replace } = testContext();
+    const before = structuredClone(context.getDocument()!);
+    const document = structuredClone(before);
+    document.pages[0]!.objects.push({ ...text, id: "second_unselected" });
+    replace(document);
+    const pageId = document.pages[0]!.id;
+    await expect(applyAssistantWrite(context, { summary: "reorder", warnings: [], patch: { op: "batch", patches: [{
+      op: "setObjectOrder", pageId, objectIds: [molecule.id, "second_unselected", text.id]
+    }] } })).rejects.toThrow(`${text.id} was not selected when you sent the request`);
+    expect(context.getDocument()).toEqual(document);
+    expect(context.write).not.toHaveBeenCalled();
+  });
   it("with nothing selected, allows only inserts and later edits of those inserted ids", async () => {
     const { context, molecule } = testContext(false);
     expect((await callAssistantTool(context, "delete_objects", { objectIds: [molecule.id] })).structuredContent?.refused).toBe(true);

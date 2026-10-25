@@ -15,7 +15,8 @@ function fixture() {
     return {applied:true as const,objectIds:["moving"]};
   });
   // The request tab is authoritative, even if another tab is active.
-  const host = new PluginHost({getActiveDocument:() => createEmptyDocument()});
+  const getActiveDocument = vi.fn(() => createEmptyDocument());
+  const host = new PluginHost({ getActiveDocument });
   let release!: () => void;
   host.registerPlugin({id:"org.test.order",name:"Order",version:"0",apiVersion:"^0.1.14",entry:"plugin.js",
     permissions:["document.write"],contributes:{commands:[{id:"plugin.order.run",title:"Order"}]}
@@ -23,7 +24,7 @@ function fixture() {
   const pending = host.invokeCommand("plugin.order.run");
   const write = (patch: DocumentPatch) => host.applyPatchForPlugin("org.test.order",undefined,{patch,reason:"Order"},
     {objectIds:["moving"],assistantTransactionId:"request",getDocument:() => document,apply});
-  return {pageId,before,apply,write,text,document:() => document,finish:async () => {release();await pending;}};
+  return {host,pageId,before,apply,write,text,getActiveDocument,document:() => document,finish:async () => {release();await pending;}};
 }
 
 describe("assistant page ordering scope",() => {
@@ -52,5 +53,17 @@ describe("assistant page ordering scope",() => {
       expect(s.apply).not.toHaveBeenCalled();
       expect(s.document()).toBe(s.before);
     } finally {await s.finish();}
+  });
+  it("refuses assistant ordering without the request document instead of checking the active tab", async () => {
+    const s = fixture();
+    try {
+      await expect(s.host.applyPatchForPlugin("org.test.order", undefined, {
+        patch: { op: "setObjectOrder", pageId: s.pageId, objectIds: ["first", "second", "moving"] }, reason: "Order"
+      }, { objectIds: ["moving"], assistantTransactionId: "request", apply: s.apply }))
+        .rejects.toThrow("without the request document");
+      expect(s.getActiveDocument).not.toHaveBeenCalled();
+      expect(s.apply).not.toHaveBeenCalled();
+      expect(s.document()).toBe(s.before);
+    } finally { await s.finish(); }
   });
 });

@@ -1009,7 +1009,8 @@ export class PluginHost {
        * Never exposed on a plugin context; the embedding host rechecks liveness when applying. */
       assistantTransactionId?: string;
       /** Trusted host read of the request's own document (an assistant run is bound to its tab,
-       * not the active one). Crossing scope is checked against it; absent, the active document. */
+       * not the active one). Assistant order checks require it; crossing scope otherwise falls
+       * back to the active document for compatibility. */
       getDocument?: () => ChemDraftDocument | undefined;
       apply: NonNullable<PluginHostOptions["applyDocumentPatch"]>;
     }
@@ -1069,7 +1070,10 @@ export class PluginHost {
         scope.add(op.op === "addObject" ? op.object.id : op.annotation.id);
       } else {
         if (op.op === "setObjectOrder" && requestScope?.assistantTransactionId?.trim()) {
-          const document = requestScope.getDocument ? requestScope.getDocument() : await this.getActiveDocument?.();
+          if (!requestScope.getDocument) {
+            throw new PluginHostError("Cannot check assistant object order write scope without the request document.");
+          }
+          const document = requestScope.getDocument();
           const page = document?.pages.find(page => page.id === op.pageId);
           if (!page) throw new PluginHostError("Cannot check object order write scope without the request page.");
           // A reorder cannot change object content. Permit scoped objects to move past
