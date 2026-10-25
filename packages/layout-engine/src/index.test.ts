@@ -635,10 +635,11 @@ function referencePageCrossings(page: DocumentPage): ResolvedBondCrossing[] {
       const depth = frontMatches(left) ? 1 : frontMatches(right) ? -1
         : left.objectLayerIndex !== right.objectLayerIndex ? left.objectLayerIndex - right.objectLayerIndex
         : left.ref.objectId === right.ref.objectId && left.bondIndex !== right.bondIndex ? left.bondIndex - right.bondIndex
-        : bondRefKey(left.ref).localeCompare(bondRefKey(right.ref));
+        : left.ref.objectId.localeCompare(right.ref.objectId) || left.ref.bondId.localeCompare(right.ref.bondId);
       const front = depth >= 0 ? left : right;
       const back = depth >= 0 ? right : left;
-      const bonds: ResolvedBondCrossing["bonds"] = bondRefKey(left.ref).localeCompare(bondRefKey(right.ref)) <= 0
+      const bonds: ResolvedBondCrossing["bonds"] = (left.ref.objectId.localeCompare(right.ref.objectId) ||
+        left.ref.bondId.localeCompare(right.ref.bondId)) <= 0
         ? [left.ref, right.ref] : [right.ref, left.ref];
       const gap = front.style.bondSpacingMode === "percent"
         ? Math.max(0.5, front.style.bondLengthPx * front.style.bondSpacingPercent / 100)
@@ -1041,12 +1042,52 @@ describe("layout-engine page SVG planner", () => {
     expect(crossingHit).toMatchObject({
       attrs: {
         "data-hit-target": "crossing",
-        "data-crossing-key": "mol_back::bond_001|mol_front::bond_001",
+        "data-crossing-key": crossingPairKey([{ objectId: "mol_back", bondId: "bond_001" }, { objectId: "mol_front", bondId: "bond_001" }]),
         cx: 180,
         cy: 180
       }
     });
     expect(backHoverDecorators).toHaveLength(2);
+  });
+
+  it("keeps crossings whose ids would collide under a '::' join each drawing their own gap", () => {
+    const horizontal = (id: string, bondId: string, y: number) => moleculeObject({
+      id,
+      atoms: [
+        { id: "atom_001", element: "C", x: 140, y, formalCharge: 0 },
+        { id: "atom_002", element: "C", x: 220, y, formalCharge: 0 }
+      ],
+      bonds: [{ id: bondId, fromAtomId: "atom_001", toAtomId: "atom_002", order: "single" }]
+    });
+    const first = horizontal("a::b", "c", 160);
+    const second = horizontal("a", "b::c", 200);
+    const vertical = moleculeObject({
+      id: "mol_vertical",
+      atoms: [
+        { id: "atom_001", element: "C", x: 180, y: 140, formalCharge: 0 },
+        { id: "atom_002", element: "C", x: 180, y: 220, formalCharge: 0 }
+      ],
+      bonds: [{ id: "bond_001", fromAtomId: "atom_001", toAtomId: "atom_002", order: "single" }]
+    });
+    const firstRef = { objectId: "a::b", bondId: "c" };
+    const secondRef = { objectId: "a", bondId: "b::c" };
+    expect(bondRefKey(firstRef)).not.toBe(bondRefKey(secondRef));
+
+    const plan = planPageSvgRender(pageWithObjects([first, second, vertical]));
+    const linesOf = (objectId: string, bondId: string) => {
+      const owner = plan.fragments.find((fragment) =>
+        fragment.attrs["data-object-id"] === objectId && fragment.attrs["data-bond-layer-id"] === bondId
+      );
+      return owner ? elementFragments(owner).filter((fragment) =>
+        String(fragment.attrs.class).includes("native-bond-line") && fragment.attrs["data-bond-id"] === bondId
+      ) : [];
+    };
+
+    expect(plan.crossings).toHaveLength(2);
+    expect(plan.crossings.map((crossing) => crossing.point.y).sort((l, r) => l - r)).toEqual([160, 200]);
+    expect(new Set(plan.crossings.map((crossing) => crossing.key)).size).toBe(2);
+    expect(linesOf("a::b", "c")).toHaveLength(2);
+    expect(linesOf("a", "b::c")).toHaveLength(2);
   });
 
   it("re-plans a molecule only when it, its layer, or the crossing gaps on its bonds change", () => {
@@ -1194,9 +1235,6 @@ describe("layout-engine page SVG planner", () => {
     { name: "duplicate object ids", refs: [
       { objectId: "A", bondId: "b" }, { objectId: "B", bondId: "b" },
       { objectId: "C", bondId: "b" }, { objectId: "A", bondId: "b" }
-    ] },
-    { name: "colliding composite bond keys", refs: [
-      { objectId: "x::y", bondId: "z" }, { objectId: "x", bondId: "y::z" }
     ] }
   ])("warns about default depth cycles with $name", ({ refs }) => {
     const page = pageWithObjects(refs.map((ref, index) => {
@@ -2966,7 +3004,7 @@ describe("layout-engine page SVG planner", () => {
           { id: "atom_tip", element: "C", x: 275.1499818530336, y: 337.37075656112074, formalCharge: 0 },
           { id: "atom_junction", element: "C", x: 292.3483233769756, y: 359.4537761410923, formalCharge: 0 },
           { id: "atom_next", element: "C", x: 320.3566949143234, y: 359.68028607004834, formalCharge: 0 },
-          { id: "atom_cross_up", element: "C", x: 291, y: 340, formalCharge: 0 },
+          { id: "atom_cross_up", element: "C", x: 291, y: 220, formalCharge: 0 },
           { id: "atom_cross_down", element: "C", x: 291, y: 375, formalCharge: 0 }
         ],
         bonds: [
