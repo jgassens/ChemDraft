@@ -82,8 +82,10 @@ export async function runCommand(context: AssistantToolContext, { id }: ToolInpu
   const assertActive = () => checkPreconditions(requireDocument(context));
   let staged = cloneDocument(before);
   staged.selection = { objectIds: selection, pageId: before.pages.find(page => page.objects.some(object => selection.includes(object.id)))?.id };
+  const warnings: string[] = [];
   await context.commands.invoke(id, {
     tabId: context.tabId, getDocument: () => staged, assertActive,
+    reportWarnings: messages => { warnings.push(...messages); },
     commit: update => {
       assertActive();
       if (command.actsOn === "view") throw new Error("View commands cannot change the document.");
@@ -96,11 +98,11 @@ export async function runCommand(context: AssistantToolContext, { id }: ToolInpu
   assertActive();
   if (command.actsOn === "view") {
     if (!assistantDocumentContentUnchanged(before, staged)) throw new Error("View commands cannot change the document.");
-    return { summary: "opened the 3D view", objectIds: [], warnings: [] };
+    return { summary: "opened the 3D view", objectIds: [], warnings };
   }
   const patch = commandPatch(before, staged);
   if (patch.op !== "batch") throw new Error("Expected command batch.");
-  if (!patch.patches.length) return { summary: `${command.title}: no document change`, objectIds: [], warnings: [] };
+  if (!patch.patches.length) return { summary: `${command.title}: no document change`, objectIds: [], warnings };
   const ids = patch.patches.flatMap(op => op.op === "setObjectOrder" ? op.objectIds : "objectId" in op ? [op.objectId] : []);
   // Groups must not acquire references to objects outside the request either.
   for (const page of staged.pages) for (const object of page.objects) {
@@ -114,5 +116,5 @@ export async function runCommand(context: AssistantToolContext, { id }: ToolInpu
   // Detect implicit normalization effects too; never omit part of a command's output.
   if (!assistantDocumentContentUnchanged(staged, validated)) throw new Error("Command result cannot be represented safely by document patches.");
   await guardIdentity(context, before, validated);
-  return applyAssistantWrite(context, { patch, summary: command.title, warnings: [], checkPreconditions });
+  return applyAssistantWrite(context, { patch, summary: command.title, warnings, checkPreconditions });
 }

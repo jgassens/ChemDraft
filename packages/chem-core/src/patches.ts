@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { sameBondRef, sameCrossingBondPair } from "./crossings";
+import { canonicalBondRefs, sameBondRef, sameCrossingBondPair } from "./crossings";
 import {
   ChemDraftDocumentSchema,
   DocumentObjectSchema,
@@ -582,11 +582,13 @@ function clearCrossingOverride(
 ): void {
   const page = findPage(document, pageId, "clear crossing override");
   const canonical = canonicalBondRefs(bonds);
+  if (sameBondRef(...canonical)) throw new DocumentPatchError("Crossing override must reference two distinct bonds.");
   page.crossings = page.crossings.filter((crossing) => !sameCrossingBondPair(crossing.bonds, canonical));
 }
 
 function canonicalCrossingOverride(crossing: CrossingOverride): CrossingOverride {
   const bonds = canonicalBondRefs(crossing.bonds);
+  if (sameBondRef(...bonds)) throw new DocumentPatchError("Crossing override must reference two distinct bonds.");
   const front = bonds.find((ref) => sameBondRef(ref, crossing.front));
   if (!front) {
     throw new DocumentPatchError("Cannot set crossing override: front bond must be one of the crossing bonds.");
@@ -596,18 +598,6 @@ function canonicalCrossingOverride(crossing: CrossingOverride): CrossingOverride
     bonds,
     front
   };
-}
-
-function canonicalBondRefs(bonds: [BondRef, BondRef]): [BondRef, BondRef] {
-  const [left, right] = bonds.map((ref) => ({ ...ref })).sort((a, b) => {
-    const leftId = a.objectId === b.objectId ? a.bondId : a.objectId;
-    const rightId = a.objectId === b.objectId ? b.bondId : b.objectId;
-    return leftId < rightId ? -1 : leftId > rightId ? 1 : 0;
-  });
-  if (!left || !right || sameBondRef(left, right)) {
-    throw new DocumentPatchError("Crossing override must reference two distinct bonds.");
-  }
-  return [left, right];
 }
 
 function findPage(

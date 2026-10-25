@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-  bondRefFromKey, bondRefKey, crossingPairKey,
+  bondRefFromKey, bondRefKey, canonicalBondRefs, crossingPairKey,
   applyPatch, createEmptyDocument, CrossingOverrideSchema, deserializeDocument, DocumentObjectSchema,
   sameBondRef, sameCrossingBondPair, serializeDocument, type BondRef, type CrossingOverride
 } from "./index";
+import { exportDocumentToCdxml, openChemDraftPayload } from "../../cdx-compat/src/index";
 
 const ref = (objectId: string, bondId: string): BondRef => ({ objectId, bondId });
 const scoped: [BondRef, BondRef] = [ref("a", "x::b"), ref("c", "d")];
@@ -24,6 +25,32 @@ function documentWithBonds(refs: BondRef[]) {
 }
 
 describe("structured crossing identity", () => {
+  it.each([
+    [ref("m", "bond"), ref("M", "bond")],
+    [ref("m", "b"), ref("m", "B")]
+  ] as [BondRef, BondRef][])("preserves canonical case-sensitive bond tuples through patches and CDXML: %j / %j", (left, right) => {
+    const bonds: [BondRef, BondRef] = [left, right];
+    const source = documentWithBonds(bonds);
+    const pageId = source.pages[0]!.id;
+    const patched = applyPatch(source, { op: "setCrossingOverride", pageId,
+      crossing: { bonds, front: right } });
+    expect(patched.pages[0]!.crossings[0]!.bonds).toEqual(canonicalBondRefs(bonds));
+    const reopened = openChemDraftPayload(exportDocumentToCdxml(patched).contents);
+    expect(reopened.document?.pages[0]!.crossings).toEqual(patched.pages[0]!.crossings);
+    const replaced = applyPatch(reopened.document!, { op: "setCrossingOverride", pageId,
+      crossing: { bonds: [right, left], front: right } });
+    expect(replaced.pages[0]!.crossings).toEqual(patched.pages[0]!.crossings);
+  });
+
+  it("continues to reject duplicate bond references in crossing patches", () => {
+    const document = documentWithBonds(scoped);
+    const pageId = document.pages[0]!.id;
+    const bonds: [BondRef, BondRef] = [scoped[0], { ...scoped[0] }];
+    expect(() => applyPatch(document, { op: "setCrossingOverride", pageId, crossing: { bonds, front: bonds[0] } }))
+      .toThrow("two distinct bonds");
+    expect(() => applyPatch(document, { op: "clearCrossingOverride", pageId, bonds })).toThrow("two distinct bonds");
+  });
+
   it.each([
     { name: "object/bond delimiter", first: scoped, second: outside },
     { name: "pair delimiter", first: [ref("a", "b|c::d"), ref("e", "f")] as [BondRef, BondRef],

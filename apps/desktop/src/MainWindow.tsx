@@ -1617,7 +1617,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.24.20.46-opus";
+const CURRENT_BUILD_STAMP = "10.24.21.13-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -4375,6 +4375,7 @@ export function MainWindow({
             });
           }, cleanUpNativeMolecules2d(current, nativeTargetIds))
         );
+        target?.reportWarnings(warnings);
         reportStatus(cleanedStatus(changed) + (warnings.length ? ` — ${[...new Set(warnings)].join(" ")}` : ""));
       } catch (error) {
         if (target) throw error;
@@ -5382,6 +5383,7 @@ export function MainWindow({
             perceiveStereo: perceiveStereoCentersFromMolfile
           })
         );
+        target?.reportWarnings(warnings);
         reportStatus((changed ? "Rebuilt a clean 2D layout" : "Structure already matches the clean layout") + (warnings.length ? ` — ${[...new Set(warnings)].join(" ")}` : ""));
       } catch (error) {
         if (target) throw error;

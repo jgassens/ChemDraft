@@ -8,6 +8,7 @@ import type { ConformerStageHandlers } from "../conformerClient";
 import type { Generate3DConformerResult } from "@chemdraft/chemistry-adapter";
 import { DocumentObjectSchema, toEngineDocument } from "@chemdraft/chem-core";
 import { normalizeCommittedDocument } from "../documentWorkflow";
+import * as documentWorkflow from "../documentWorkflow";
 import { MainWindow } from "../MainWindow";
 import { invokeAssistantRegistryCommand } from "../commands/coreCommandRegistrar";
 import { ASSISTANT_COMMANDS } from "./commandCatalog";
@@ -94,6 +95,30 @@ describe("assistant commands in the mounted menu registry", () => {
         content: [{ text: expect.stringContaining("Activate the assistant's document tab") }] });
     });
     expect(context.write).not.toHaveBeenCalled();
+    expect(captured.options!.getActiveDocument()).toEqual(live);
+  });
+  it.each(["structure.cleanup2d", "structure.cleanup3d"].flatMap(id => [
+    { id, changed: true }, { id, changed: false }
+  ]))("$id returns cleanup warnings (changed: $changed)", async ({ id, changed }) => {
+    const { context, molecule } = testContext();
+    const warning = "Cleanup retained an unsupported bond order.";
+    vi.spyOn(documentWorkflow, "moleculeHasFusedRingSystem").mockReturnValue(true);
+    vi.spyOn(documentWorkflow, "applyNativeMoleculeEngineRelayout").mockImplementation((document, objectId, _relayout, options) => {
+      options!.warnings!.push(warning);
+      return changed ? { ...document, pages: document.pages.map(page => ({ ...page,
+        objects: page.objects.map(object => object.id === objectId ? { ...object, x: object.x + 10 } : object)
+      })) } : document;
+    });
+    context.getSelectionAtSend = () => [molecule.id];
+    context.commands = { has: command => registry.has(command), invoke: (command, target) => invokeAssistantRegistryCommand(registry, command, target) };
+    const live = structuredClone(captured.options!.getActiveDocument());
+    await act(async () => {
+      expect(await callAssistantTool(context, "run_command", { id })).toMatchObject({
+        structuredContent: { warnings: [warning], objectIds: changed ? [molecule.id] : [] }
+      });
+    });
+    expect(documentWorkflow.applyNativeMoleculeEngineRelayout).toHaveBeenCalledOnce();
+    expect(context.write).toHaveBeenCalledTimes(changed ? 1 : 0);
     expect(captured.options!.getActiveDocument()).toEqual(live);
   });
   it("includes implicit charge reconciliation in scope checks before committing", async () => {

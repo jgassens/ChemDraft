@@ -16,6 +16,8 @@ export interface AssistantCommandTarget {
   tabId: string;
   getDocument(): ChemDraftDocument;
   commit(next: ChemDraftDocument | ((current: ChemDraftDocument) => ChemDraftDocument)): boolean;
+  /** Preserve nonfatal command diagnostics in the tool result. */
+  reportWarnings(warnings: readonly string[]): void;
   /** Recheck the request lifetime and source document before any deferred effect. */
   assertActive(): void;
 }

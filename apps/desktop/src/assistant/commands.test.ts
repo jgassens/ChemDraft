@@ -4,6 +4,7 @@ import { ASSISTANT_COMMANDS } from "./commandCatalog";
 import { callAssistantTool } from "./assistantTools";
 import { testContext } from "./tools/testContext";
 import { testCommandRegistry } from "./testCommandRegistry";
+import type { AssistantCommandTarget } from "./AssistantToolContext";
 import { groupSelectedDocumentObjects, rotateSelectedDocumentObjects90 } from "../documentWorkflow";
 
 afterEach(() => vi.useRealTimers());
@@ -16,7 +17,7 @@ describe("assistant registry commands", () => {
     expect(content?.type).toBe("text");
     const catalog = JSON.parse(content && "text" in content ? content.text : "null");
     expect(catalog).toEqual(ASSISTANT_COMMANDS);
-    expect(catalog).toHaveLength(20);
+    expect(catalog).toHaveLength(17);
     for (const command of ASSISTANT_COMMANDS) {
       expect(Object.keys(command).sort()).toEqual(["actsOn", "changesChemistry", "id", "needsSelection", "title", "whenToUse"]);
       expect(command.id).not.toMatch(/^(?:file|document|export|print|preferences|plugin|plugins|network|clipboard|debug|view)\./);
@@ -73,13 +74,21 @@ describe("assistant registry commands", () => {
     expect(group).toBeDefined();
     expect((await callAssistantTool(context, "style_objects", { objectIds: [group.id], style: { color: "#112233" } })).isError).not.toBe(true);
   });
-  it("refuses reorder calls whose whole-page patch would include out-of-scope ids", async () => {
-    const { context, text } = testContext();
-    testCommandRegistry(context, "layout.sendToBack", target => {
+  it.each(["layout.bringToFront", "layout.sendToBack", "layout.sendBackward", "layout.bringForward"])("does not advertise or invoke %s on a mixed-selection page", async id => {
+    const { context, molecule, text } = testContext();
+    const before = structuredClone(context.getDocument());
+    expect(context.getSelectionAtSend()).toEqual([molecule.id]);
+    expect(before!.pages[0]!.objects.map(object => object.id)).toContain(text.id);
+    const handler = vi.fn((target: AssistantCommandTarget) => {
       target.commit(doc => applyPatch(doc, { op: "setObjectOrder", pageId: doc.pages[0]!.id, objectIds: doc.pages[0]!.objects.map(object => object.id).reverse() }));
     });
-    expect(await callAssistantTool(context, "run_command", { id: "layout.sendToBack" })).toMatchObject({ isError: true,
-      content: [{ text: expect.stringContaining(text.id) }] });
+    testCommandRegistry(context, id, handler);
+    const listed = await callAssistantTool(context, "list_commands", {});
+    expect(listed.content[0]).toMatchObject({ type: "text", text: "[]" });
+    expect(await callAssistantTool(context, "run_command", { id })).toMatchObject({ isError: true,
+      content: [{ text: expect.stringContaining("not allowlisted") }] });
+    expect(handler).not.toHaveBeenCalled();
+    expect(context.getDocument()).toEqual(before);
     expect(context.write).not.toHaveBeenCalled();
   });
   it.each(["structure.spin3d", "structure.openInteractive3d"])("%s opens the view without a document write", async id => {

@@ -5395,7 +5395,7 @@ export function planFigureInterlockCrossings(page: DocumentPage, objectIds: read
   const normal = { x: -frame.axis.y, y: frame.axis.x };
   const resolved = planPageSvgRender(page).crossings;
   const overrides: CrossingOverride[] = [];
-  const molecules = page.objects.filter(object => objectIds.includes(object.id) && object.type === "molecule");
+  const molecules = page.objects.filter((object): object is MoleculeObject => objectIds.includes(object.id) && object.type === "molecule");
   if (!molecules.length) throw new Error("Auto crossings require a placed molecule.");
   for (const molecule of molecules) {
     const crossings = resolved.filter(c => c.bonds.some(b => b.objectId === molecule.id) && c.bonds.some(b => b.objectId === targetId));
@@ -5404,19 +5404,17 @@ export function planFigureInterlockCrossings(page: DocumentPage, objectIds: read
     let sideAxis = normal;
     // In a ring-to-ring interlock the two passages lie on either side of the line joining
     // the apertures. Splitting by whole-object depth would put an entire ring in front.
-    if (molecule.type === "molecule") {
-      const partnerRing = nativeMoleculeRings(molecule).filter(r => r.atomIds.length >= 12)
-        .sort((a, b) => b.area - a.area || a.ringKey.localeCompare(b.ringKey))[0];
-      if (partnerRing) {
-        const partner = figurePlacementFrame(molecule, partnerRing).center;
-        const dx = partner.x - frame.center.x, dy = partner.y - frame.center.y;
-        const length = Math.hypot(dx, dy);
-        if (length > 1e-6) {
-          sideAxis = { x: -dy / length, y: dx / length };
-          const orientation = sideAxis.x * normal.x + sideAxis.y * normal.y;
-          const sign = Math.abs(orientation) > 1e-6 ? orientation : sideAxis.x * frame.axis.x + sideAxis.y * frame.axis.y;
-          if (sign < 0) sideAxis = { x: -sideAxis.x, y: -sideAxis.y };
-        }
+    const partnerRing = nativeMoleculeRings(molecule).filter(r => r.atomIds.length >= 12)
+      .sort((a, b) => b.area - a.area || a.ringKey.localeCompare(b.ringKey))[0];
+    if (partnerRing) {
+      const partner = figurePlacementFrame(molecule, partnerRing).center;
+      const dx = partner.x - frame.center.x, dy = partner.y - frame.center.y;
+      const length = Math.hypot(dx, dy);
+      if (length > 1e-6) {
+        sideAxis = { x: -dy / length, y: dx / length };
+        const orientation = sideAxis.x * normal.x + sideAxis.y * normal.y;
+        const sign = Math.abs(orientation) > 1e-6 ? orientation : sideAxis.x * frame.axis.x + sideAxis.y * frame.axis.y;
+        if (sign < 0) sideAxis = { x: -sideAxis.x, y: -sideAxis.y };
       }
     }
     const project = (axis: LayoutPoint) => crossings.map(c => (c.point.x - frame.center.x) * axis.x + (c.point.y - frame.center.y) * axis.y);

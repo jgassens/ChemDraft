@@ -8,6 +8,8 @@ export interface AssistantCommandDescription {
 }
 
 // Deliberately enumerated: a new registry command is never automatically an assistant capability.
+// Z-order commands are excluded: the current host scope gate requires every ID in a page-order
+// patch to be selected, and native reorders may clear crossings with unselected bond owners.
 export const ASSISTANT_COMMANDS = [
   ["layout.alignLeft", "Align Left", "Align the left edges of selected objects."],
   ["layout.alignRight", "Align Right", "Align the right edges of selected objects."],
@@ -20,9 +22,6 @@ export const ASSISTANT_COMMANDS = [
   ["layout.flipHorizontal", "Flip Horizontally", "Flip the selected drawing horizontally."],
   ["layout.flipVertical", "Flip Vertically", "Flip the selected drawing vertically."],
   ["layout.rotate90", "Rotate 90°", "Rotate the selected drawing by 90 degrees."],
-  ["layout.bringToFront", "Bring to Front", "Place selected objects in front of other objects."],
-  ["layout.sendToBack", "Send to Back", "Place selected objects behind other objects."],
-  ["layout.sendBackward", "Send Backward", "Move selected objects one layer backward."],
   ["layout.group", "Group", "Keep selected objects together as a group."],
   ["layout.ungroup", "Ungroup", "Release the selected groups."],
   ["structure.cleanup2d", "Clean Up 2D", "Clean up the selected molecules' drawing geometry."],
