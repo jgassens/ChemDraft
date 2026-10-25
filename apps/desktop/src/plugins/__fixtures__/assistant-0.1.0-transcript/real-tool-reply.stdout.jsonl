@@ -1,8 +1,0 @@
-{"type":"thread.started","thread_id":"01a16de8-83ba-7181-b48f-0f2b7a794ba1"}
-{"type":"turn.started"}
-{"type":"item.started","item":{"id":"item_0","type":"mcp_tool_call","server":"chemdraft","tool":"name_to_structure","arguments":{"name":"benzene"},"result":null,"error":null,"status":"in_progress"}}
-{"type":"item.completed","item":{"id":"item_0","type":"mcp_tool_call","server":"chemdraft","tool":"name_to_structure","arguments":{"name":"benzene"},"result":{"content":[{"type":"text","text":"Canned ChemDraft result for name_to_structure with arguments {\"name\":\"benzene\"}"}],"structured_content":null},"error":null,"status":"completed"}}
-{"type":"item.started","item":{"id":"item_1","type":"mcp_tool_call","server":"chemdraft","tool":"insert_structures","arguments":{"items":[{"kind":"molecule","smiles":"c1ccccc1"}]},"result":null,"error":null,"status":"in_progress"}}
-{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","server":"chemdraft","tool":"insert_structures","arguments":{"items":[{"kind":"molecule","smiles":"c1ccccc1"}]},"result":{"content":[{"type":"text","text":"Canned ChemDraft result for insert_structures with arguments {\"items\":[{\"kind\":\"molecule\",\"smiles\":\"c1ccccc1\"}]}"}],"structured_content":null},"error":null,"status":"completed"}}
-{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"I looked up benzene with `name_to_structure`, then inserted it using `insert_structures` with SMILES `c1ccccc1`."}}
-{"type":"turn.completed","usage":{"input_tokens":36346,"cached_input_tokens":32384,"cache_write_input_tokens":0,"output_tokens":191,"reasoning_output_tokens":0}}

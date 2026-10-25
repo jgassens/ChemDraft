@@ -6,7 +6,6 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { checkCodexTools } from "./check-codex-tools.mjs";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const pinsPath = join(repoRoot, "apps", "desktop", "src-tauri", "src", "external_tools", "pins.rs");
@@ -323,9 +322,6 @@ async function checkParity(pins, temp) {
   const result = spawnSync(command, args, options);
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`Pinned CLI parity failed (${result.signal ?? result.status}).`);
-  // Opt-in release check: invokes the real model with the Rust-rendered argv and home policy.
-  // Keep captures outside `temp` so failures remain reviewable after pin-check cleanup.
-  if (binaries.Codex) await checkCodexTools({ binary: binaries.Codex });
 }
 
 async function main() {

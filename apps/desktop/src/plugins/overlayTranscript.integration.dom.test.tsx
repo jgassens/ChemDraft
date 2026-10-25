@@ -63,9 +63,8 @@ vi.mock("./createPluginRuntime", async importOriginal => {
   } };
 });
 
-// This is the actual installed release, including its bundled SDK and command handlers.
-// Only the Worker transport and native windows are replaced, never the plugin registration.
-const fixture = resolve("apps/desktop/src/plugins/__fixtures__/assistant-0.1.0-transcript");
+// Original minimal plugin exercises the real loader, worker bridge and host.
+const fixture = resolve("apps/desktop/src/plugins/__fixtures__/overlay-transcript");
 const manifest = JSON.parse(readFileSync(resolve(fixture, "manifest.json"), "utf8"));
 const entry = readFileSync(resolve(fixture, "entry.js"), "utf8");
 function createWorker(): PluginWorkerHandle {
@@ -115,9 +114,9 @@ afterEach(async () => {
   vi.restoreAllMocks(); vi.unstubAllGlobals();
 });
 
-it.each(["tauri://localhost", "http://tauri.localhost"])("replays real Codex output into the real overlay and panel (%s)", async origin => {
-  const lines = readFileSync(resolve(fixture, "real-tool-reply.stdout.jsonl"), "utf8").trim().split("\n");
-  const reply = JSON.parse(lines.find(line => line.includes('"agent_message"'))!).item.text as string;
+it.each(["tauri://localhost", "http://tauri.localhost"])("replays synthetic tool output into the overlay and panel (%s)", async origin => {
+  const lines = readFileSync(resolve(fixture, "tool-reply.stdout.jsonl"), "utf8").trim().split("\n");
+  const reply = JSON.parse(lines.find(line => line.includes('"reply"'))!).text as string;
   native.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
     if (command === "external_tool_status") return {
       tool: args!.tool, publisher: "OpenAI", state: "installed", signedIn: true, consented: true,
@@ -136,10 +135,10 @@ it.each(["tauri://localhost", "http://tauri.localhost"])("replays real Codex out
   });
   const container = document.createElement("div"); document.body.append(container);
   root = createRoot(container);
-  await act(async () => root!.render(<MainWindow initialDocument={createPhase4Document("Assistant")}
+  await act(async () => root!.render(<MainWindow initialDocument={createPhase4Document("Test document")}
     initialPaletteMode="hidden" initialRulersVisible={false} nativePalette={false} />));
   const runtime = native.runtime!;
-  const descriptor = loadPackagedPlugin({ baseUrl: `${origin}/installed-plugins/assistant/`, manifest }, { createWorker });
+  const descriptor = loadPackagedPlugin({ baseUrl: `${origin}/installed-plugins/overlay-transcript/`, manifest }, { createWorker });
   await act(async () => { runtime.registerPlugin(descriptor.manifest, descriptor.options); });
   try {
     const storage = runtime.host.createCommandContext(manifest.id).storage!;
@@ -162,7 +161,7 @@ it.each(["tauri://localhost", "http://tauri.localhost"])("replays real Codex out
     const transcript = container.querySelector('[role="log"]')!;
     expect(transcript.textContent).toContain("Draw benzene");
     expect(transcript.textContent).toContain(reply.replaceAll("`", ""));
-    expect([...transcript.querySelectorAll("code")].map(node => node.textContent)).toEqual(["name_to_structure", "insert_structures", "c1ccccc1"]);
+    expect([...transcript.querySelectorAll("code")].map(node => node.textContent)).toEqual(["lookup_item", "sample_item", "C"]);
     const panel = runtime.panels.getDetachedPanels()[0]!;
     const windowId = pluginPanelWindowId(manifest.id, panel.panelId);
     window.history.replaceState(null, "", `/?window=pluginPanel&panelId=${windowId}`);
@@ -172,7 +171,7 @@ it.each(["tauri://localhost", "http://tauri.localhost"])("replays real Codex out
     await act(async () => panelRoot!.render(<PluginPanelWindow panelId={windowId} />));
     expect(detached.textContent).toContain("Draw benzene");
     expect(detached.textContent).toContain(reply.replaceAll("`", ""));
-    expect([...detached.querySelectorAll("code")].map(node => node.textContent)).toEqual(["name_to_structure", "insert_structures", "c1ccccc1"]);
+    expect([...detached.querySelectorAll("code")].map(node => node.textContent)).toEqual(["lookup_item", "sample_item", "C"]);
   } finally { descriptor.deactivate?.(); }
 });
 
