@@ -277,6 +277,7 @@ import {
   objectPaintTypeForCommand,
   objectStyleActions,
   objectMarkerKindForCommand,
+  objectWaveForCommand,
   objectMarkerSizeForCommand,
   objectShaftMarkSizeAutoCommandId,
   objectShaftMarkSizeForCommand,
@@ -467,6 +468,7 @@ import {
   applyGraphicObjectOpacityToSelection,
   applyGraphicObjectPaintTypeToSelection,
   applyGraphicObjectMarkerKindToSelection,
+  applyGraphicWaveSettingToSelection,
   applyGraphicObjectMarkerSizeToSelection,
   applyGraphicShaftMarkSizeToSelection,
   graphicObjectHasShaftMark,
@@ -1615,7 +1617,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.25.08.45-codex";
+const CURRENT_BUILD_STAMP = "10.25.10.30-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -7222,6 +7224,20 @@ export function MainWindow({
         handled: true,
         targeted: markerObjectIds.length > 0,
         message: markerKind.markerId === "markerEnd" ? "Updated selected arrowhead" : "Updated selected arrow tail"
+      };
+    }
+
+    const wave = objectWaveForCommand(commandId);
+    if (wave) {
+      const ids = graphicObjectIds.filter((id) => {
+        const object = findDocumentObject(currentDocument, id);
+        return object?.type === "graphic" && object.graphicKind === "path" && object.data.artPathKind === "wavy";
+      });
+      return {
+        document: applyGraphicWaveSettingToSelection(currentDocument, wave.setting, wave.value, ids),
+        handled: true,
+        targeted: ids.length > 0,
+        message: `Updated wave ${wave.setting}`
       };
     }
 

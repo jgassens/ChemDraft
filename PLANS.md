@@ -8,6 +8,14 @@ in progress rather than a changelog.
 
 # In flight
 
+## Adjustable wavy lines
+
+Restore only adjustable wavy-line sliders on `codex/adjustable-wavy-lines`, based directly on
+`jgassens/ChemDraft` main `20112a1`. Do not include unrelated unmerged feature work.
+Owner requests minimal checks and will perform the visual pass. See
+[the handoff](docs/wavy-lines-handoff.md).
+
+
 # ChemDraft Assistant plugin (active, branches claude/assistant-*)
 
 ## Objective

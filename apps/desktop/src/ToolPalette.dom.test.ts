@@ -184,7 +184,7 @@ describe("ToolPalette art color popover", () => {
         }
       }));
     });
-    return { onCommit, onInvoke, onPreview };
+    return { onCommit, onInvoke, onPreview, onCancel };
   }
 
   function colorTrigger(): HTMLButtonElement {
@@ -229,6 +229,37 @@ describe("ToolPalette art color popover", () => {
       })
     });
   }
+
+  it("previews wave sliders, commits once on release, and supports keyboard bounds", () => {
+    const { onPreview, onCommit, onCancel } = renderPalette({ currentArtStyle: artInspectorModelFor("tool.art.lineWavy") });
+    for (const [setting, max] of [["smoothness", "100"], ["height", "48"], ["width", "120"]]) {
+      const slider = container.querySelector<HTMLInputElement>(`[aria-label="Wave ${setting}"]`)!;
+      expect(slider).not.toBeNull();
+      expect(slider.type).toBe("range");
+      expect(slider.max).toBe(max);
+      act(() => { slider.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true })); });
+      expect(onCommit).toHaveBeenLastCalledWith(`object.wave.${setting}:${max}`);
+    }
+    onCommit.mockClear();
+    const height = container.querySelector<HTMLInputElement>('[aria-label="Wave height"]')!;
+    setSliderRect(height);
+    act(() => {
+      height.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 60, buttons: 1 }));
+      height.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 82, buttons: 1 }));
+    });
+    expect(onPreview).toHaveBeenLastCalledWith("object.wave.height:34.5");
+    expect(onCommit).not.toHaveBeenCalled();
+    act(() => { height.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 82 })); });
+    expect(onCommit).toHaveBeenCalledExactlyOnceWith("object.wave.height:34.5");
+    act(() => {
+      height.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, clientX: 60, buttons: 1 }));
+      height.dispatchEvent(new MouseEvent("pointercancel", { bubbles: true }));
+    });
+    expect(onCancel).toHaveBeenCalled();
+    expect(onCommit).toHaveBeenCalledTimes(1);
+    renderPalette({ currentArtStyle: artInspectorModelFor("tool.art.rect") });
+    expect(container.querySelector('[aria-label="Wave height"]')).toBeNull();
+  });
 
   it("opens reliably and closes on outside pointer, Escape, blur, and selection changes", () => {
     const onCancel = vi.fn();

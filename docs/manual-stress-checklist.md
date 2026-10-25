@@ -759,3 +759,12 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
   again. Repeat an Export that needs a picker. Close the source tab while the picker is open and
   confirm no closed or newly reopened Export receives focus. Switch to another app before the
   picker completes and confirm ChemDraft does not take foreground.
+
+### Adjustable wavy lines (macOS and Windows)
+
+- Draw/select a Wavy Line, then open Object Settings (the Art controls). Check Wave smoothness,
+  height and width sliders: angular → rounded, peak-to-trough height, and wavelength respectively.
+- Drag each slider: preview follows the pointer, release saves one Undo step; Undo/Redo restores it.
+  Escape or cancelling a drag restores the previous shape. Check keyboard arrows and Home/End.
+- Check short/long, diagonal and reversed waves with/without arrowheads, mixed wave selections,
+  save/reopen and SVG/PDF export. Non-wave shapes must not change or show these sliders alone.

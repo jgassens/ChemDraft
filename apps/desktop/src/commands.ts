@@ -14,6 +14,8 @@ import {
   type TextSpan
 } from "@chemdraft/chem-core";
 import {
+  waveSettingRanges,
+  type WaveSetting,
   MARKER_SIZE_MAX_PX,
   MARKER_SIZE_STEP_PX,
   SHAFT_MARK_SIZE_MAX_PX,
@@ -1257,6 +1259,18 @@ export function moleculeStructureChainAngleForCommand(commandId: string): { valu
 
 export function moleculeStructureBondLengthForCommand(commandId: string): { value: number } | undefined {
   return numberCommandValue(commandId, customMoleculeStructureBondLengthCommandPrefix, moleculeStructureNumberRanges.bondLengthPx);
+}
+
+export function objectWaveCommandId(setting: WaveSetting, value: number): string {
+  return `object.wave.${setting}:${canonicalCommandNumber(value)}`;
+}
+
+export function objectWaveForCommand(commandId: string): { setting: WaveSetting; value: number } | undefined {
+  for (const setting of Object.keys(waveSettingRanges) as WaveSetting[]) {
+    const parsed = numberCommandValue(commandId, `object.wave.${setting}:`, waveSettingRanges[setting]);
+    if (parsed) return { setting, value: parsed.value };
+  }
+  return undefined;
 }
 
 export function objectMarkerSizeCommandId(value: number): string {

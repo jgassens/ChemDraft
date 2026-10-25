@@ -66,3 +66,8 @@ keeping at least 12 document pixels between visible compound bounds and preservi
 Adjust spacing opens a movable native window on desktop, previewing distances while retaining molecule sizes. Save is one Undo step;
 Cancel/Escape makes no change. Toolbar/context items are hidden and direct commands refuse
 while the setting is off. Existing drawing/export behavior is unchanged by enabling the setting.
+
+Select a Wavy Line and open Object Settings to adjust **Wave smoothness**, **Wave height** and
+**Wave width** with sliders. Height is peak-to-trough; width is wave spacing in document pixels.
+Dragging previews the shape and release saves one Undo step. Settings survive native save/reopen
+and use the same geometry for canvas and export.

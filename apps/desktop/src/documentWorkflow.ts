@@ -10,6 +10,9 @@ import {
   rotatedGraphicLocalBounds as rotatedGraphicFrameBounds
 } from "./graphicHandleGeometry";
 import {
+  graphicWaveSettings,
+  waveSettingRanges,
+  type WaveSetting,
   editGraphicMarkerSize,
   snapGraphicMarkerSizePx,
   clampGraphicShaftMarkSizePx,
@@ -10089,6 +10092,21 @@ export function applyGraphicObjectMarkerKindToSelection(
 /** Set every non-none head's size on the selection's marker-capable graphics, snapped to the same
  *  4px steps the canvas handle drags between (both ends together, matching the handle's symmetric
  *  default — asymmetric sizing stays a canvas Shift-drag capability). */
+export function applyGraphicWaveSettingToSelection(
+  document: ChemDraftDocument,
+  setting: WaveSetting,
+  value: number,
+  objectIds: readonly string[] = document.selection.objectIds
+): ChemDraftDocument {
+  const range = waveSettingRanges[setting];
+  if (!Number.isFinite(value) || value < range.min || value > range.max) return document;
+  return updateGraphicObjectData(document, objectIds, (object) => {
+    const settings = { ...graphicWaveSettings(object), [setting]: value };
+    if (object.data.waveSmoothness === settings.smoothness && object.data.waveHeight === settings.height && object.data.waveWidth === settings.width) return object.data;
+    return { ...object.data, waveSmoothness: settings.smoothness, waveHeight: settings.height, waveWidth: settings.width };
+  }, (object) => object?.type === "graphic" && object.graphicKind === "path" && object.data.artPathKind === "wavy");
+}
+
 export function applyGraphicObjectMarkerSizeToSelection(
   document: ChemDraftDocument,
   sizePx: number,
