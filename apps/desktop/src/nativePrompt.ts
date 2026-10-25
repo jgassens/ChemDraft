@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
+import { detectDesktopShortcutPlatform } from "./keyboardShortcuts";
 import { message, type MessageDialogCustomButtons } from "@tauri-apps/plugin-dialog";
 import { acquireNativeUtilitySuspension, withNativeUtilitySuspension } from "./nativeUtilitySuspension";
 
@@ -23,6 +26,8 @@ export interface NativePromptOptions {
   message: string;
   kind: "info" | "warning" | "error";
   choices: readonly NativePromptChoice[];
+  /** Tauri parents message boxes to the invoking window on both desktop platforms. */
+  owner?: "document";
 }
 export type NativePromptFallback = (prompt: NativePromptOptions) => Promise<string>;
 export type NativePromptProvider = (prompt: NativePromptOptions, fallback: NativePromptFallback) => Promise<string>;
@@ -35,7 +40,8 @@ export function setNativePromptProvider(next: NativePromptProvider): () => void 
   return () => { provider = previous; };
 }
 
-export function nativePromptButtons(prompt: NativePromptOptions): MessageDialogCustomButtons {
+export function nativePromptButtons(prompt: NativePromptOptions,
+  platform: ShortcutPlatform = detectDesktopShortcutPlatform()): MessageDialogCustomButtons {
   const { choices } = prompt;
   const cancel = choices.find((choice) => choice.cancel);
   if (!cancel || choices.filter((choice) => choice.cancel).length !== 1 ||
@@ -53,13 +59,14 @@ export function nativePromptButtons(prompt: NativePromptOptions): MessageDialogC
   if (cancel.label !== NATIVE_PROMPT_CANCEL_LABEL) {
     throw new Error("A prompt with a choice labels its cancel button Cancel, the only title Escape reaches on macOS.");
   }
-  // The plugin has no default-button option: the first button (ok/yes) is always the default, so it
-  // must be a safe action. For a destructive confirmation, Cancel itself occupies the default.
-  // rfd's Windows custom cancel button has a distinct ID from IDCANCEL: Escape returns the
-  // literal "Cancel", while clicking the second button returns its custom label. AppKit finds
-  // Escape's button by the literal title "Cancel". Both therefore cancel this reversed pair.
+  // The first button (ok/yes) is the Return default. AppKit finds Escape's button by its literal
+  // title "Cancel", so macOS can safely default a destructive-only confirmation to Cancel.
+  // On Windows/Linux the plugin remaps native Cancel to the cancel-slot label: that slot must
+  // stay Cancel so Escape/close cancel, while Return chooses the action on those platforms.
   const safe = actions.find((choice) => !choice.destructive);
-  if (!safe) return { ok: cancel.label, cancel: actions[0]!.label };
+  if (!safe) return platform === "macos"
+    ? { ok: cancel.label, cancel: actions[0]!.label }
+    : { ok: actions[0]!.label, cancel: cancel.label };
   if (actions.length === 1) return { ok: safe.label, cancel: cancel.label };
   const other = actions.find((choice) => choice !== safe)!;
   return { yes: safe.label, no: other.label, cancel: cancel.label };
@@ -69,11 +76,30 @@ export async function nativePrompt(
   prompt: NativePromptOptions,
   fallback: NativePromptFallback = renderPromptFallback,
   signal?: AbortSignal,
-  onShowing?: () => void | Promise<void>
+  onShowing?: () => void | Promise<void>,
+  platform: ShortcutPlatform = detectDesktopShortcutPlatform()
 ): Promise<string> {
-  const buttons = nativePromptButtons(prompt);
+  const buttons = nativePromptButtons(prompt, platform);
   const cancel = prompt.choices.find((choice) => choice.cancel)!;
   if (signal?.aborted) return cancel.id;
+  const response = showNativePrompt(prompt, fallback, signal, onShowing, platform, buttons);
+  if (!signal) return response;
+  // The native API cannot dismiss an open OS box. Release the caller immediately and ignore any
+  // later answer; the suspension remains until the actual box closes.
+  let stop!: () => void;
+  try {
+    return await Promise.race([response, new Promise<string>(resolve => {
+      stop = () => resolve(cancel.id);
+      signal.addEventListener("abort", stop, { once: true });
+      if (signal.aborted) stop();
+    })]);
+  } finally { signal.removeEventListener("abort", stop); }
+}
+
+async function showNativePrompt(prompt: NativePromptOptions, fallback: NativePromptFallback,
+  signal: AbortSignal | undefined, onShowing: (() => void | Promise<void>) | undefined,
+  platform: ShortcutPlatform, buttons: MessageDialogCustomButtons): Promise<string> {
+  const cancel = prompt.choices.find(choice => choice.cancel)!;
   if (provider) {
     let usingFallback = false;
     const response = provider(prompt, onShowing ? (options) => {
@@ -90,6 +116,9 @@ export async function nativePrompt(
     await Promise.resolve();
     // React StrictMode replays mount effects. Its first request must not open a second OS box.
     if (signal?.aborted) return cancel.id;
+    if (prompt.owner === "document" && getCurrentWindow().label !== "main") {
+      throw new Error(`A document-owned prompt must be invoked from the main window on ${platform}.`);
+    }
     result = await withNativeUtilitySuspension(async () => {
       if (signal?.aborted) return cancel.label;
       const response = message(prompt.message, { title: prompt.title, kind: prompt.kind, buttons });
@@ -97,11 +126,12 @@ export async function nativePrompt(
       return response;
     });
   } catch (error) {
+    if (signal?.aborted) return cancel.id;
     console.error("Native prompt failed", error);
     return fallback(prompt);
   }
-  // Custom buttons return their label and an OS dismissal returns Cancel, which is also the cancel
-  // choice's label. Fail closed on any unexpected result; never read labels as positional button IDs.
+  // Tauri returns custom labels, including the configured cancel label for OS dismissal.
+  // Only an exact action label approves; unknown values and raw OS result names decline.
   return prompt.choices.find((choice) => choice.label === result)?.id ?? cancel.id;
 }
 

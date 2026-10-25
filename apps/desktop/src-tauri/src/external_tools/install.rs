@@ -12,7 +12,8 @@ use crate::local_engine::{
     download::{check_cancel, download_verified, DownloadClient},
     file_ops::FileOps,
     install::{
-        extract_single_entry_with_ops, make_executable_with_ops, ArchiveKind as ExtractKind,
+        extract_single_entry_with_ops, extract_tar_entries_with_ops, make_executable_with_ops,
+        ArchiveKind as ExtractKind,
     },
     platform::free_disk_bytes,
     progress::{ProgressThrottle, EMIT_INTERVAL},
@@ -153,7 +154,7 @@ fn validate_pin(pin: &ToolPin) -> Result<(), InstallError> {
             pin.version
         )));
     }
-    for part in [pin.version, pin.binary, pin.entry] {
+    for part in [pin.version, pin.binary] {
         if part.is_empty()
             || matches!(part, "." | "..")
             || !part
@@ -162,6 +163,29 @@ fn validate_pin(pin: &ToolPin) -> Result<(), InstallError> {
         {
             return Err(InstallError::unsupported("Invalid external tool pin path."));
         }
+    }
+    if pin.tool == ToolId::Codex {
+        let expected = if pin.platform == ToolPlatform::WindowsX64 {
+            "codex.exe"
+        } else {
+            "codex"
+        };
+        if pin.archive != ArchiveKind::TarGz
+            || pin.binary != expected
+            || pin.entry != format!("bin/{expected}")
+        {
+            return Err(InstallError::unsupported("Invalid Codex package entry."));
+        }
+    } else if pin.entry.is_empty()
+        || !pin
+            .entry
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+        || matches!(pin.entry, "." | "..")
+    {
+        return Err(InstallError::unsupported(
+            "Invalid external tool pin entry.",
+        ));
     }
     Ok(())
 }
@@ -265,7 +289,7 @@ pub(super) fn install_with_download(
     let ops = FileOps::with_prefix("[chemdraft external-tools]", Some(cancel));
     ops.create_dir_all(base).map_err(|e| ops.failed(e))?;
     let free = free_disk_bytes(base).map_err(InstallError::failed)?;
-    let needed = pin.size.saturating_mul(2).saturating_add(64 * 1024 * 1024);
+    let needed = pin.size.saturating_mul(4).saturating_add(64 * 1024 * 1024);
     if free < needed {
         return Err(InstallError {
             code: InstallErrorCode::InsufficientDisk,
@@ -312,6 +336,38 @@ pub(super) fn install_with_download(
     let binary = partial.join(binary_name(pin));
     match pin.archive {
         ArchiveKind::Raw => ops.rename(&archive, &binary).map_err(|e| ops.failed(e))?,
+        ArchiveKind::TarGz if pin.tool == ToolId::Codex => {
+            let helper_name =
+                super::probe::codex_helper_name(if pin.platform == ToolPlatform::WindowsX64 {
+                    ProbePlatform::Windows
+                } else {
+                    ProbePlatform::MacOS
+                });
+            let helper = partial.join(helper_name);
+            let helper_entry = format!("bin/{helper_name}");
+            extract_tar_entries_with_ops(
+                &archive,
+                &[(pin.entry, &binary), (&helper_entry, &helper)],
+                ops,
+            )?;
+            make_executable_with_ops(&helper, ops)?;
+            super::probe::require_codex_helper(
+                &binary,
+                if pin.platform == ToolPlatform::WindowsX64 {
+                    ProbePlatform::Windows
+                } else {
+                    ProbePlatform::MacOS
+                },
+            )
+            .map_err(InstallError::failed)?;
+            check_cancel(cancel)?;
+            signature.verify(&helper).map_err(|detail| {
+                InstallError::failed(format!(
+                    "Codex code-mode helper signature verification failed: {detail}"
+                ))
+            })?;
+            ops.remove_file(&archive).map_err(|e| ops.failed(e))?;
+        }
         ArchiveKind::TarGz | ArchiveKind::Zip | ArchiveKind::ZipTree => {
             let kind = match pin.archive {
                 ArchiveKind::TarGz => ExtractKind::TarGz,
@@ -538,8 +594,8 @@ impl Drop for Staged {
 
 /// Status checks the receipt and executable metadata; it deliberately does not rehash binaries.
 pub fn managed_status(base: &Path, pin: &ToolPin) -> ExternalToolStatus {
-    let root = base.join(pin.tool.as_str()).join(pin.version);
-    let path = root.join(binary_name(pin));
+    let tool_root = base.join(pin.tool.as_str());
+    let mut root = tool_root.join(pin.version);
     let mut status = ExternalToolStatus {
         tool: pin.tool,
         publisher: pin.tool.spec().publisher.into(),
@@ -562,22 +618,52 @@ pub fn managed_status(base: &Path, pin: &ToolPin) -> ExternalToolStatus {
         consented: false,
         probed_at: chrono::Utc::now().to_rfc3339(),
     };
-    if !root.exists() {
-        return status;
+    // A pin bump can change the version directory as well as the archive. Ignore staging,
+    // retirement leftovers and links; discovery must never follow an external install.
+    if !root.exists() && reject_symlink(&tool_root).is_ok() {
+        let older = fs::read_dir(&tool_root)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .find(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                entry.file_type().is_ok_and(|kind| kind.is_dir())
+                    && !name.ends_with(".partial")
+                    && !name.contains(".discard-")
+                    && (entry.path().join(RECEIPT).exists()
+                        || entry.path().join(binary_name(pin)).exists())
+            });
+        let Some(older) = older else { return status };
+        root = older.path();
     }
+    let path = root.join(binary_name(pin));
     let check = (|| -> Result<(), String> {
+        reject_symlink(&tool_root).map_err(|e| e.message)?;
         reject_symlink(&root).map_err(|e| e.message)?;
-        let bytes = fs::read(root.join(RECEIPT))
-            .map_err(|_| "The managed tool install receipt is missing or unreadable.".to_owned())?;
-        let receipt: InstallReceipt = serde_json::from_slice(&bytes)
-            .map_err(|_| "The managed tool install receipt is invalid.".to_owned())?;
+        if root != tool_root.join(pin.version) {
+            return Err(managed_update_detail(pin.tool));
+        }
+        let bytes = fs::read(root.join(RECEIPT)).map_err(|_| managed_update_detail(pin.tool))?;
+        let receipt: InstallReceipt =
+            serde_json::from_slice(&bytes).map_err(|_| managed_update_detail(pin.tool))?;
         if !receipt.matches(pin) {
-            return Err("The managed tool receipt does not match the pinned release.".into());
+            return Err(managed_update_detail(pin.tool));
         }
         let metadata = fs::symlink_metadata(&path)
             .map_err(|_| "The managed tool executable is missing.".to_owned())?;
         if !metadata.is_file() {
             return Err("The managed tool executable is not a regular file.".into());
+        }
+        if pin.tool == ToolId::Codex {
+            super::probe::require_codex_helper(
+                &path,
+                if pin.platform == ToolPlatform::WindowsX64 {
+                    ProbePlatform::Windows
+                } else {
+                    ProbePlatform::MacOS
+                },
+            )
+            .map_err(|_| managed_update_detail(pin.tool))?;
         }
         #[cfg(unix)]
         {
@@ -587,10 +673,12 @@ pub fn managed_status(base: &Path, pin: &ToolPin) -> ExternalToolStatus {
             }
         }
         #[cfg(not(unix))]
-        if !path
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| e.eq_ignore_ascii_case("exe"))
+        let _ = metadata;
+        if pin.platform == ToolPlatform::WindowsX64
+            && !path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("exe"))
         {
             return Err("The managed tool binary is not an executable (.exe).".into());
         }
@@ -613,6 +701,13 @@ pub fn managed_status(base: &Path, pin: &ToolPin) -> ExternalToolStatus {
         }
     }
     status
+}
+
+pub(super) fn managed_update_detail(tool: ToolId) -> String {
+    format!(
+        "ChemDraft's copy of {} is from an older ChemDraft version. Update it to add the helper ChemDraft now needs.",
+        tool.spec().display_name
+    )
 }
 
 #[cfg(test)]

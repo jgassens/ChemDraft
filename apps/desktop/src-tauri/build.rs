@@ -49,6 +49,8 @@ fn main() {
             "plugin_storage_read",
             "plugin_storage_write",
             "open_plugin_panel_window",
+            "plugin_panel_action_forward",
+            "plugin_panel_event_forward",
             "register_plugin_panel_input_focus",
             "set_plugin_panel_input_focus",
             "open_toolset_popover",

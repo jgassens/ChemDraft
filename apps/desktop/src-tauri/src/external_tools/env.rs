@@ -1,7 +1,55 @@
 //! Construct from an explicit parent map; never inherit a shell environment wholesale.
 use super::probe::ProbePlatform;
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 pub type ParentEnv = BTreeMap<String, String>;
+
+/// Sessions remain in this stable home; refreshed credentials reconcile to the user’s login.
+#[derive(Debug)]
+pub struct CodexHome {
+    pub path: Option<PathBuf>,
+    pub fallback_reason: Option<String>,
+}
+impl CodexHome {
+    pub fn apply(&self, parent: &ParentEnv) -> ParentEnv {
+        let mut parent = parent.clone();
+        parent.retain(|key, _| !key.eq_ignore_ascii_case("CODEX_HOME"));
+        if let Some(path) = &self.path {
+            parent.insert("CODEX_HOME".into(), path.to_string_lossy().into_owned());
+        }
+        parent
+    }
+}
+
+pub fn real_codex_home(platform: ProbePlatform, parent: &ParentEnv) -> Option<PathBuf> {
+    if let Some(path) = get(parent, "CODEX_HOME").filter(|s| !s.is_empty()) {
+        return Some(PathBuf::from(path));
+    }
+    let home = get(
+        parent,
+        if platform == ProbePlatform::Windows {
+            "USERPROFILE"
+        } else {
+            "HOME"
+        },
+    )?;
+    if home.is_empty() {
+        return None;
+    }
+    // Parameterized Windows paths must also be testable on a Unix host.
+    Some(match platform {
+        ProbePlatform::MacOS => Path::new(home).join(".codex"),
+        ProbePlatform::Windows => {
+            PathBuf::from(format!("{}\\.codex", home.trim_end_matches(['\\', '/'])))
+        }
+    })
+}
+
+#[cfg(test)]
+pub(super) use super::codex_auth::prepare_codex_home_with_link;
+pub use super::codex_auth::{prepare_codex_home, reconcile_codex_home_auth};
 
 pub fn get<'a>(parent: &'a ParentEnv, key: &str) -> Option<&'a str> {
     parent

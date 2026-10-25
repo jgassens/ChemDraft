@@ -1,0 +1,133 @@
+{
+  "id": "org.chemdraft.assistant",
+  "name": "ChemDraft Assistant",
+  "version": "0.1.3",
+  "apiVersion": "^0.1.12",
+  "entry": "entry.js",
+  "permissions": [
+    "ui.menu",
+    "ui.canvas",
+    "plugin.storage",
+    "document.read",
+    "document.write",
+    "selection.read",
+    "chemistry.compute",
+    "native.execute",
+    "assistant.run"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "id": "plugin.assistant.setup",
+        "title": "Set up ChemDraft Assistant",
+        "requiredPermissions": [],
+        "enabled": true
+      },
+      {
+        "id": "plugin.assistant.toggleProvider",
+        "title": "Choose assistant AI",
+        "requiredPermissions": [],
+        "enabled": true
+      },
+      {
+        "id": "plugin.assistant.finishSetup",
+        "title": "Finish assistant setup",
+        "requiredPermissions": [],
+        "enabled": true
+      },
+      {
+        "id": "plugin.assistant.open",
+        "title": "Open ChemDraft Assistant",
+        "requiredPermissions": [],
+        "enabled": true
+      },
+      {
+        "id": "plugin.assistant.submit",
+        "title": "Send to ChemDraft Assistant",
+        "requiredPermissions": [],
+        "enabled": true
+      },
+      {
+        "id": "plugin.assistant.stop",
+        "title": "Stop assistant",
+        "requiredPermissions": [],
+        "enabled": true
+      },
+      {
+        "id": "plugin.assistant.setProvider",
+        "title": "Set assistant provider",
+        "requiredPermissions": [],
+        "enabled": true
+      },
+      {
+        "id": "plugin.assistant.install",
+        "title": "Install assistant provider",
+        "requiredPermissions": [],
+        "enabled": true
+      },
+      {
+        "id": "plugin.assistant.signIn",
+        "title": "Sign in to assistant provider",
+        "requiredPermissions": [],
+        "enabled": true
+      },
+      {
+        "id": "plugin.assistant.newConversation",
+        "title": "New assistant conversation",
+        "requiredPermissions": [],
+        "enabled": true
+      }
+    ],
+    "menus": [
+      {
+        "id": "menu.assistant.open",
+        "title": "ChemDraft Assistant…",
+        "commandId": "plugin.assistant.open",
+        "location": "plugins",
+        "requiredPermissions": [
+          "ui.menu"
+        ]
+      }
+    ],
+    "panels": [],
+    "canvasOverlays": [
+      {
+        "id": "overlay.assistant.prompt",
+        "title": "ChemDraft Assistant",
+        "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHBhdGggZmlsbD0iIzE4N2JjYSIgZD0iTTI2IDh2MjBMMTEgNTRhNiA2IDAgMCAwIDUgOGgzMmE2IDYgMCAwIDAgNS04TDM4IDI4Vjh6bTggMjZoNnY0aC02em0tMTAtOGgydjJoLTJ6Ii8+PHBhdGggZmlsbD0iI2ZmZiIgZD0iTTQ4IDh2OGg4djZoLTh2OGgtNnYtOGgtOHYtNmE4IDggMCAwIDAgOC04eiIvPjwvc3ZnPg==",
+        "commandId": "plugin.assistant.submit",
+        "prompt": {
+          "kind": "prompt",
+          "id": "message",
+          "commandId": "plugin.assistant.submit",
+          "placeholder": "Ask the assistant to draw or change something…",
+          "submitLabel": "Send",
+          "maxLength": 4000,
+          "rows": 2,
+          "disabled": false
+        },
+        "defaultCorner": "bottom-right",
+        "requiredPermissions": [
+          "ui.canvas"
+        ]
+      }
+    ],
+    "toolbarButtons": [],
+    "toolsets": [],
+    "inspectors": [],
+    "templates": [],
+    "importers": [],
+    "exporters": [],
+    "analyzers": [],
+    "transformers": [],
+    "recognizers": []
+  },
+  "chemdraftPackage": {
+    "sdk": "@chemdraft/plugin-api",
+    "sdkVersion": "0.1.12",
+    "sourceCommit": "d3b8f3f5c66dc841489f3626840ed224b4d46db2",
+    "sourceTree": "clean",
+    "licenseFile": "LICENSE",
+    "packagedAt": "2026-10-24T13:33:27.574Z"
+  }
+}

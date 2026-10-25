@@ -39,6 +39,20 @@ describe("assistant catalog and schema mirrors", () => {
       expect(properties(name).objectIds).toMatchObject({ minItems: 1, maxItems: 100 });
     }
   });
+  it("advertises the strict group variant with the same label limits as its Zod mirror", () => {
+    const schema = toolJsonSchema("insert_structures") as { properties: { items: { items: { anyOf: unknown[] } } } };
+    expect(schema.properties.items.items.anyOf).toContainEqual(expect.objectContaining({
+      type: "object", additionalProperties: false, required: ["kind", "label"],
+      properties: { kind: { type: "string", const: "group" }, label: expect.objectContaining({ type: "string", minLength: 1, maxLength: 80 }) }
+    }));
+    for (const label of ["CH3", "Ph", "Boc", "OTs"]) {
+      expect(toolSchemas.insert_structures.safeParse({ items: [{ kind: "group", label }] }).success).toBe(true);
+    }
+    for (const item of [{ kind: "group", label: "" }, { kind: "group", label: "x".repeat(81) },
+      { kind: "group", label: "Ph", smiles: "C" }, { kind: "group" }]) {
+      expect(toolSchemas.insert_structures.safeParse({ items: [item] }).success).toBe(false);
+    }
+  });
   it.each([
     ["get_document", { maxObjects: 501 }], ["get_document", { maxObjects: 0 }],
     ["get_structure", { objectId: "x", format: "xyz" }],

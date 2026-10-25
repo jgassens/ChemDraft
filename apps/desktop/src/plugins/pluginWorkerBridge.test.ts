@@ -17,6 +17,7 @@ import {
   runPluginWorker,
   type HostToWorkerMessage,
   type PluginCommandContext,
+  type PluginCommandInput,
   type PluginExternalToolStatus,
   type PluginCommandHandler,
   type PluginManifest,
@@ -146,6 +147,95 @@ function startWorkerRoutedPlugin(registration: PluginWorkerRegistration): Plugin
 }
 
 describe("PluginWorkerBridge — M34 isolation boundary", () => {
+  it("round-trips overlay input and status through the real worker capability boundary", async () => {
+    const commandId = "plugin.chat.submit";
+    const overlayId = "overlay.chat.main";
+    const setStatus = vi.fn();
+    const setTranscript = vi.fn();
+    const setContent = vi.fn();
+    const open = vi.fn();
+    const manifest = parsePluginManifest({
+      id: "org.test.chat", name: "Chat", version: "0", apiVersion: "^0.1.10", entry: "worker.js",
+      permissions: ["ui.canvas"], contributes: {
+        commands: [{ id: commandId, title: "Send" }],
+        canvasOverlays: [{ id: overlayId, title: "Chat", icon: "data:image/png;base64,YQ==",
+          commandId, prompt: { kind: "prompt", id: "composer", commandId } }]
+      }
+    });
+    const bridge = startWorkerRoutedPlugin({ manifest, commandHandlers: {
+      [commandId]: async context => {
+        await context.overlays!.setStatus({ overlayId, text: "Working" });
+        await context.overlays!.setTranscript({ overlayId, entries: [{ role: "assistant", text: "Done" }] });
+        await context.overlays!.setContent({ overlayId, sections: [{ kind: "text", body: "Setup" }], prompt: { disabled: true } });
+        await expect(context.overlays!.setContent({ overlayId, sections: [], prompt: { disabled: true, label: "Busy" } } as never)).rejects.toThrow();
+        await context.overlays!.setContent({ overlayId, sections: [] });
+        await context.overlays!.open({ overlayId, focus: true });
+        await expect(context.overlays!.setContent({ overlayId: "overlay.other.main", sections: [] })).rejects.toThrow(/does not own/);
+        await expect(context.overlays!.open({ overlayId: "overlay.other.main" })).rejects.toThrow(/does not own/);
+        await expect(context.overlays!.setTranscript({ overlayId: "overlay.other.main", entries: [] }))
+          .rejects.toThrow(/does not own/);
+        await expect(context.overlays!.setTranscript({ overlayId, entries: [{ role: "error", text: "x".repeat(4001) }] }))
+          .rejects.toThrow();
+        await expect(context.overlays!.setStatus({ overlayId: "overlay.other.main", text: "Foreign" }))
+          .rejects.toThrow(/does not own/);
+        await expect(context.overlays!.setStatus({ overlayId, text: "x".repeat(121) })).rejects.toThrow();
+        await context.overlays!.setStatus({ overlayId, text: "" });
+        return context.input;
+      }
+    } });
+    const host = new PluginHost({ overlays: { setStatus, setTranscript, setContent, open } });
+    host.registerPlugin(manifest, delegatingOptions(manifest, bridge));
+    const input: PluginCommandInput = { source: "overlay", overlayId, sectionId: "composer", control: "prompt", text: "Draw water" };
+    try {
+      expect(await host.invokeCommand(commandId, { input })).toEqual(input);
+      expect(setStatus.mock.calls).toEqual([[manifest.id, overlayId, "Working"], [manifest.id, overlayId, ""]]);
+      expect(setTranscript.mock.calls).toEqual([[manifest.id, overlayId, [{ role: "assistant", text: "Done" }]]]);
+      expect(setContent.mock.calls).toEqual([
+        [manifest.id, overlayId, [{ kind: "text", body: "Setup" }], { disabled: true }],
+        [manifest.id, overlayId, [], undefined]
+      ]);
+      expect(open.mock.calls).toEqual([[manifest.id, overlayId, true]]);
+    } finally { bridge.terminate(); }
+  });
+
+  it("omits overlay stubs without ui.canvas", async () => {
+    const commandId = "plugin.chat.submit";
+    const manifest = parsePluginManifest({
+      id: "org.test.chat", name: "Chat", version: "0", apiVersion: "^0.1.10", entry: "worker.js",
+      permissions: [], contributes: { commands: [{ id: commandId, title: "Send" }] }
+    });
+    const bridge = startWorkerRoutedPlugin({ manifest, commandHandlers: {
+      [commandId]: context => context.overlays === undefined
+    } });
+    const host = new PluginHost();
+    host.registerPlugin(manifest, delegatingOptions(manifest, bridge));
+    try {
+      expect(await host.invokeCommand(commandId)).toBe(true);
+    } finally { bridge.terminate(); }
+  });
+
+  it("round-trips panel input through the host and worker, scoped to each concurrent invocation", async () => {
+    const commandId = "plugin.chat.submit";
+    const manifest = parsePluginManifest({
+      id: "org.test.chat", name: "Chat", version: "0", apiVersion: "^0.1.10", entry: "worker.js", permissions: ["ui.panel"],
+      contributes: { commands: [{ id: commandId, title: "Send" }], panels: [{ id: "panel.chat.main", title: "Chat", commandId }] }
+    });
+    const bridge = startWorkerRoutedPlugin({ manifest, commandHandlers: {
+      [commandId]: async context => { await flush(); return context.input; }
+    } });
+    const { host } = makeHost();
+    host.registerPlugin(manifest, delegatingOptions(manifest, bridge));
+    const inputs: PluginCommandInput[] = [
+      { source: "panel", panelId: "panel.chat.main", sectionId: "composer", control: "prompt", text: "Draw water", selected: "a" },
+      { source: "panel", panelId: "panel.chat.main", sectionId: "composer", control: "select", controlId: "provider", selected: "b" },
+      { source: "panel", panelId: "panel.chat.main", sectionId: "actions", control: "button", controlId: "stop", payload: { run: 1 } }
+    ];
+    try {
+      expect(await Promise.all(inputs.map(input => host.invokeCommand(commandId, { input })))).toEqual(inputs);
+      expect(await host.invokeCommand(commandId)).toBeUndefined();
+    } finally { bridge.terminate(); }
+  });
+
   it("mass analyzer: the worker path writes the same analysis record and renders the same report as in-process", async () => {
     const inProcess = makeHost();
     inProcess.host.registerPlugin(massFragmentManifest, { commandHandlers: createMassRegistration().commandHandlers });
