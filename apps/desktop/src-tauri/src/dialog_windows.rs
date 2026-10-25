@@ -2038,6 +2038,29 @@ mod tests {
         assert!(capability.contains("dialog-main-toolInstall-*"));
     }
     #[test]
+    fn tool_install_ts_managed_update_snapshots() {
+        // Vitest compares these exact JSON envelopes with toolInstallSnapshot's output.
+        let rows: Vec<Value> = serde_json::from_str(include_str!(
+            "../../src/dialogs/managedUpdateSnapshots.json"
+        ))
+        .unwrap();
+        for row in rows {
+            let message: Message = serde_json::from_value(row["message"].clone()).unwrap();
+            assert!(message.validate().is_ok(), "{}", row["message"]);
+            assert!(
+                message.data["disclosure"]
+                    .as_str()
+                    .unwrap()
+                    .encode_utf16()
+                    .count()
+                    <= 1024
+            );
+            assert!(serde_json::to_vec(&message).unwrap().len() <= 3400);
+            assert_eq!(message.data["intent"], "update");
+            assert!(message.data.get("managedUpdateDetail").is_none());
+        }
+    }
+    #[test]
     fn tool_install_shared_button_contract() {
         let rows: Vec<Value> = serde_json::from_str(include_str!(
             "../../src/dialogs/toolInstallButtonStates.json"

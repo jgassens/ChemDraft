@@ -506,7 +506,8 @@ export function buildMoveObjects(context: AssistantToolContext, input: ToolInput
   const by = "by" in input.to ? input.to.by : undefined;
   if (by && by.dx === 0 && by.dy === 0) throw new Error("Offset move (0, 0) is a no-op; provide a non-zero dx or dy in document points.");
   if (by && Math.abs(by.dx) < 0.01 && Math.abs(by.dy) < 0.01) {
-    throw new Error("Offset move is a no-op at document coordinate precision; provide at least 0.01 pt in dx or dy.");
+    // Intentional minimum move size, independent of stored coordinate precision.
+    throw new Error("Offset move is a no-op below the minimum move size; provide at least 0.01 pt in dx or dy.");
   }
   const offsetObjects = by ? originals.map(object => translateObject(object, by.dx, by.dy)) : undefined;
   if (offsetObjects) {

@@ -33,8 +33,6 @@ export interface ToolInstallSnapshot {
   pluginName: string; pluginId: string; disclosure: string; requiredDiskBytes: number; freeDiskBytes: number | null;
   state: ToolInstallState; buttons: ToolInstallAction[];
   intent?: "download" | "update" | "use";
-  /** Native status.detail already rendered in the managed-update disclosure. */
-  managedUpdateDetail?: string;
 }
 export type DialogPlatform = "macos" | "windows" | "linux";
 export type PageUnit = "inch" | "mm" | "css-px";
@@ -178,11 +176,10 @@ export function validEngineInstallSnapshot(v: unknown): v is EngineInstallSnapsh
 export function validToolInstallSnapshot(v: unknown): v is ToolInstallSnapshot {
   const text = (s: unknown, max: number) => typeof s === "string" && s.length > 0 && s.length <= max && !s.includes("\0");
   const bytes = (n: unknown) => Number.isSafeInteger(n) && Number(n) >= 0;
-  if (!record(v) || !keys(v, ["title", "toolName", "publisher", "version", "downloadHost", "downloadBytes", "pluginName", "pluginId", "disclosure", "requiredDiskBytes", "freeDiskBytes", "state", "buttons"], ["intent", "managedUpdateDetail"]) ||
+  if (!record(v) || !keys(v, ["title", "toolName", "publisher", "version", "downloadHost", "downloadBytes", "pluginName", "pluginId", "disclosure", "requiredDiskBytes", "freeDiskBytes", "state", "buttons"], ["intent"]) ||
       !text(v.title, 256) || !text(v.toolName, 80) || !text(v.publisher, 80) || !text(v.version, 40) || !text(v.downloadHost, 128) || !text(v.pluginName, 128) || !text(v.pluginId, 256) || !text(v.disclosure, 1024) ||
       !bytes(v.downloadBytes) || !bytes(v.requiredDiskBytes) || !(v.freeDiskBytes === null || bytes(v.freeDiskBytes)) || !record(v.state)) return false;
   if (v.intent !== undefined && (typeof v.intent !== "string" || !["download", "update", "use"].includes(v.intent))) return false;
-  if (v.managedUpdateDetail !== undefined && !text(v.managedUpdateDetail, 1024)) return false;
   const state = v.state;
   let valid = false;
   switch (state.status) {

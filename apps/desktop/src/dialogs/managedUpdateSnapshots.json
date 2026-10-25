@@ -1,0 +1,208 @@
+[
+  {
+    "status": {
+      "tool": "codex",
+      "publisher": "",
+      "state": "broken",
+      "source": "managed",
+      "detail": "ChemDraft's copy of Codex is from an older ChemDraft version. Update it to add the helper ChemDraft now needs.",
+      "pinnedVersion": "2.0.0",
+      "pinnedDownloadBytes": 274675680,
+      "freeDiskBytes": null,
+      "canInstall": true,
+      "consented": false,
+      "probedAt": "now"
+    },
+    "plugin": {
+      "id": "org.chemdraft.assistant",
+      "name": "ChemDraft Assistant"
+    },
+    "message": {
+      "protocolVersion": 1,
+      "ownerWindowId": "main",
+      "documentTabId": "tab-1",
+      "dialogKind": "toolInstall",
+      "sessionId": "session-1",
+      "requestId": "request-1",
+      "snapshotRevision": 1,
+      "type": "snapshot",
+      "data": {
+        "intent": "update",
+        "title": "Update Codex",
+        "toolName": "Codex",
+        "publisher": "OpenAI",
+        "version": "2.0.0",
+        "downloadHost": "github.com",
+        "downloadBytes": 274675680,
+        "pluginName": "ChemDraft Assistant",
+        "pluginId": "org.chemdraft.assistant",
+        "disclosure": "ChemDraft's copy of Codex is from an older ChemDraft version. Update it to add the helper ChemDraft now needs. Updating downloads Codex 2.0.0 from github.com and replaces ChemDraft's copy; your own installs and your sign-in are not touched. The AI can search the web and read web pages. Your prompt and the open page, including any unpublished structures, leave this computer and go to OpenAI when you send a request. The vendor program uses your own account; Clear conversation removes ChemDraft's local conversation files.",
+        "requiredDiskBytes": 616460224,
+        "freeDiskBytes": null,
+        "state": {
+          "status": "notInstalled"
+        },
+        "buttons": [
+          "install",
+          "close"
+        ]
+      }
+    }
+  },
+  {
+    "status": {
+      "tool": "codex",
+      "publisher": "",
+      "state": "broken",
+      "source": "managed",
+      "detail": "ChemDraft's copy of Codex is from an older ChemDraft version. Update it to add the helper ChemDraft now needs.",
+      "pinnedVersion": "2.0.0",
+      "pinnedDownloadBytes": 274675680,
+      "freeDiskBytes": null,
+      "canInstall": true,
+      "consented": false,
+      "probedAt": "now"
+    },
+    "plugin": {
+      "id": "org.chemdraft.assistant",
+      "name": "ChemDraft Assistant"
+    },
+    "state": {
+      "status": "consent"
+    },
+    "message": {
+      "protocolVersion": 1,
+      "ownerWindowId": "main",
+      "documentTabId": "tab-1",
+      "dialogKind": "toolInstall",
+      "sessionId": "session-1",
+      "requestId": "request-1",
+      "snapshotRevision": 1,
+      "type": "snapshot",
+      "data": {
+        "intent": "update",
+        "title": "Update Codex",
+        "toolName": "Codex",
+        "publisher": "OpenAI",
+        "version": "2.0.0",
+        "downloadHost": "github.com",
+        "downloadBytes": 274675680,
+        "pluginName": "ChemDraft Assistant",
+        "pluginId": "org.chemdraft.assistant",
+        "disclosure": "ChemDraft's copy of Codex is from an older ChemDraft version. Update it to add the helper ChemDraft now needs. Updating downloads Codex 2.0.0 from github.com and replaces ChemDraft's copy; your own installs and your sign-in are not touched. The AI can search the web and read web pages. Your prompt and the open page, including any unpublished structures, leave this computer and go to OpenAI when you send a request. The vendor program uses your own account; Clear conversation removes ChemDraft's local conversation files.",
+        "requiredDiskBytes": 616460224,
+        "freeDiskBytes": null,
+        "state": {
+          "status": "consent"
+        },
+        "buttons": [
+          "allow",
+          "close"
+        ]
+      }
+    }
+  },
+  {
+    "status": {
+      "tool": "claude",
+      "publisher": "",
+      "state": "broken",
+      "source": "managed",
+      "detail": "ChemDraft's copy of Claude Code is from an older ChemDraft version. Update it to add the helper ChemDraft now needs.",
+      "pinnedVersion": "2.0.0",
+      "pinnedDownloadBytes": 274675680,
+      "freeDiskBytes": null,
+      "canInstall": true,
+      "consented": false,
+      "probedAt": "now"
+    },
+    "plugin": {
+      "id": "org.chemdraft.assistant",
+      "name": "ChemDraft Assistant"
+    },
+    "message": {
+      "protocolVersion": 1,
+      "ownerWindowId": "main",
+      "documentTabId": "tab-1",
+      "dialogKind": "toolInstall",
+      "sessionId": "session-1",
+      "requestId": "request-1",
+      "snapshotRevision": 1,
+      "type": "snapshot",
+      "data": {
+        "intent": "update",
+        "title": "Update Claude Code",
+        "toolName": "Claude Code",
+        "publisher": "Anthropic",
+        "version": "2.0.0",
+        "downloadHost": "downloads.claude.ai",
+        "downloadBytes": 274675680,
+        "pluginName": "ChemDraft Assistant",
+        "pluginId": "org.chemdraft.assistant",
+        "disclosure": "ChemDraft's copy of Claude Code is from an older ChemDraft version. Update it to add the helper ChemDraft now needs. Updating downloads Claude Code 2.0.0 from downloads.claude.ai and replaces ChemDraft's copy; your own installs and your sign-in are not touched. The AI can search the web and read web pages. Your prompt and the open page, including any unpublished structures, leave this computer and go to Anthropic when you send a request. The vendor program uses your own account; Clear conversation removes ChemDraft's local conversation files.",
+        "requiredDiskBytes": 616460224,
+        "freeDiskBytes": null,
+        "state": {
+          "status": "notInstalled"
+        },
+        "buttons": [
+          "install",
+          "close"
+        ]
+      }
+    }
+  },
+  {
+    "status": {
+      "tool": "claude",
+      "publisher": "",
+      "state": "broken",
+      "source": "managed",
+      "detail": "ChemDraft's copy of Claude Code is from an older ChemDraft version. Update it to add the helper ChemDraft now needs.",
+      "pinnedVersion": "2.0.0",
+      "pinnedDownloadBytes": 274675680,
+      "freeDiskBytes": null,
+      "canInstall": true,
+      "consented": false,
+      "probedAt": "now"
+    },
+    "plugin": {
+      "id": "org.chemdraft.assistant",
+      "name": "ChemDraft Assistant"
+    },
+    "state": {
+      "status": "consent"
+    },
+    "message": {
+      "protocolVersion": 1,
+      "ownerWindowId": "main",
+      "documentTabId": "tab-1",
+      "dialogKind": "toolInstall",
+      "sessionId": "session-1",
+      "requestId": "request-1",
+      "snapshotRevision": 1,
+      "type": "snapshot",
+      "data": {
+        "intent": "update",
+        "title": "Update Claude Code",
+        "toolName": "Claude Code",
+        "publisher": "Anthropic",
+        "version": "2.0.0",
+        "downloadHost": "downloads.claude.ai",
+        "downloadBytes": 274675680,
+        "pluginName": "ChemDraft Assistant",
+        "pluginId": "org.chemdraft.assistant",
+        "disclosure": "ChemDraft's copy of Claude Code is from an older ChemDraft version. Update it to add the helper ChemDraft now needs. Updating downloads Claude Code 2.0.0 from downloads.claude.ai and replaces ChemDraft's copy; your own installs and your sign-in are not touched. The AI can search the web and read web pages. Your prompt and the open page, including any unpublished structures, leave this computer and go to Anthropic when you send a request. The vendor program uses your own account; Clear conversation removes ChemDraft's local conversation files.",
+        "requiredDiskBytes": 616460224,
+        "freeDiskBytes": null,
+        "state": {
+          "status": "consent"
+        },
+        "buttons": [
+          "allow",
+          "close"
+        ]
+      }
+    }
+  }
+]

@@ -78,14 +78,14 @@ afterEach(() => vi.useRealTimers());
 beforeAll(() => installNodeRdkitModuleLoader());
 
 describe("assistant offset moves", () => {
-  it.each([5e-324, -5e-324, 0.009])("refuses a sub-precision offset %s without an undo entry", async dx => {
+  it.each([5e-324, -5e-324, 0.009])("refuses an offset below the minimum move size %s without an undo entry", async dx => {
     const s = setup();
     try {
       const before = s.context.getDocument()!;
       await s.controller.beginRequest(s.plugin, { prompt: "tiny move" });
       const result = await s.controller.callTool(s.plugin, { name: "move_objects",
         input: { objectIds: [s.molecule.id], to: { by: { dx, dy: 0 } } } });
-      expect(result).toMatchObject({ isError: true, content: [{ text: expect.stringContaining("no-op") }] });
+      expect(result).toMatchObject({ isError: true, content: [{ text: expect.stringContaining("no-op below the minimum move size") }] });
       expect(s.context.getDocument()).toBe(before);
       expect(s.history).toHaveLength(0);
     } finally { await s.finish(); }
@@ -340,6 +340,54 @@ function placementSetup() {
 }
 
 describe("assistant host page enlargement", () => {
+  it.each(["MCP cancel", "session close"])("keeps the shared question alive after the first call's %s", async cancellation => {
+    vi.useFakeTimers();
+    const s = placementSetup();
+    let answer!: (choice: string) => void;
+    const prompt = vi.fn(() => new Promise<string>(resolve => { answer = resolve; }));
+    const restore = setNativePromptProvider(prompt);
+    let width = 1000;
+    s.context.chemistry.structureFromSmiles = async () => ({ available: true, built: true,
+      object: { ...s.molecule, width, atoms: s.molecule.atoms.map((atom, i) => ({ ...atom, x: 250 + i * width })) } });
+    try {
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "overflowing figures" });
+      const { sessionId } = await s.controller.createToolSession(s.plugin, { requestId });
+      s.listeners.get(sessionId)!({ sessionId, requestId: "first", method: "tools/call", params: {
+        name: "insert_structures", arguments: { items: [{ kind: "molecule", smiles: "CC", label: "Cancelled" }] }
+      } });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(prompt).toHaveBeenCalledOnce();
+      const waiting = s.controller.callTool(s.plugin, { name: "insert_structures", input: {
+        items: [{ kind: "molecule", smiles: "CC", label: "Concurrent" }]
+      } });
+      let settled = false;
+      void waiting.then(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(0);
+      if (cancellation === "MCP cancel") {
+        s.listeners.get(sessionId)!({ sessionId, requestId: "first", method: "cancel", params: {} });
+      } else await s.controller.closeToolSession(s.plugin, { sessionId });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(s.engine.respond).toHaveBeenCalledExactlyOnceWith(sessionId, "first", { error: expect.any(Object) });
+      expect(settled).toBe(false);
+      expect(s.context.getDocument()!.pages[0]!.objects).toHaveLength(0);
+      answer("enlarge");
+      expect((await waiting).isError).not.toBe(true);
+      width = 1600;
+      const later = await s.controller.callTool(s.plugin, { name: "insert_structures", input: {
+        items: [{ kind: "molecule", smiles: "CC", label: "Later" }]
+      } });
+      expect(later.isError).not.toBe(true);
+      const page = s.context.getDocument()!.pages[0]!;
+      expect(page.width).toBeGreaterThanOrEqual(1600 + 72);
+      expect(page.objects).toHaveLength(4);
+      expect(page.objects.filter(object => object.type === "text").map(object => object.text)).toEqual(["Concurrent", "Later"]);
+      expect(prompt).toHaveBeenCalledOnce();
+      await s.controller.endRequest(s.plugin, { requestId });
+      expect(s.history).toHaveLength(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { answer?.("decline"); restore(); await s.finish(); }
+  });
+
   it.each(["enlarge", "decline", "unknown"])("remembers %s for four overflowing writes in one request", async answer => {
     const s = placementSetup();
     const prompt = vi.fn(async () => answer);
@@ -366,7 +414,10 @@ describe("assistant host page enlargement", () => {
         expect(after.pages[0]!.objects).toHaveLength(8);
         expect(s.history).toHaveLength(1);
         expect(undo({ past: s.history.map(entry => entry.before), present: after, future: [] }).present).toEqual(before);
-        expect(redo(undo({ past: [before], present: after, future: [] })).present).toEqual(after);
+        const recordedEnd = structuredClone(s.history[0]!.after.pages[0]!);
+        const restored = redo(undo({ past: s.history.map(entry => entry.before), present: after, future: [] })).present.pages[0]!;
+        expect({ width: restored.width, height: restored.height, objects: restored.objects })
+          .toEqual({ width: recordedEnd.width, height: recordedEnd.height, objects: recordedEnd.objects });
       } else expect(s.history).toHaveLength(0);
       // The decision belongs to the request, so a later request asks again.
       await s.controller.beginRequest(s.plugin, { prompt: "new overflowing caption" });
@@ -545,7 +596,7 @@ describe("assistant host page enlargement", () => {
       expect(page.height).toBe(before.pages[0]!.height);
       expect(page.layout).toMatchObject({ presetId: "custom", widthPx: page.width, heightPx: page.height });
       expect(prompt.mock.calls[0]![0]).toMatchObject({ owner: "document",
-        message: `Olympiadane needs a page ${Math.round(page.width * 0.75)} × ${Math.round(page.height * 0.75)} pt. Enlarge the page to fit?`,
+        message: `Olympiadane needs a page ${Math.round(page.width * 0.75)} × ${Math.round(page.height * 0.75)} pt. Enlarge the page to fit? Your answer applies to the rest of this request.`,
         choices: [{ id: "enlarge", label: "Enlarge Page" }, { id: "decline", label: "Cancel", cancel: true }]
       });
       const molecule = page.objects.find(object => object.type === "molecule")!;

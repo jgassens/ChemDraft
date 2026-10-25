@@ -37,7 +37,7 @@ supply figure-anchor offsets in bond lengths. For a rigid offset move, use
 `move_objects({objectIds: ["mol_1"], to: {by: {dx: 100, dy: 0}}})`. These offsets
 are document points (positive x right, positive y down); each must be finite and within
 ±5000, and offsets with both magnitudes below 0.01 pt (including `(0, 0)`) are refused
-as no-ops at document coordinate precision. All moved IDs must be in the request write
+as no-ops below the intentional minimum move size (not a storage precision limit). All moved IDs must be in the request write
 scope. The usual anchored-object refusal and normalized-commit chemistry/charge-mark
 guards apply; the host never shifts an offset move to another free position. Overflow past
 any page content edge is refused for offset moves, naming the offending object and offset;
@@ -79,7 +79,9 @@ The host pauses its preparation deadlines while awaiting the answer, for at most
 No answer within that time declines enlargement with
 `reason: "declined: no answer to the enlarge-page question within 5 minutes"`; fitting items are
 still retained, and a later answer cannot insert the omitted items or enlarge the page.
-Cancellation by the host ignores a late answer and draws none of that call's pending items. The
+Cancelling one call stops its wait and draws none of its pending items; the shared question stays
+open for other calls, which receive the user's real answer. Only ending the request or the
+300-second cap stops the shared question and ignores a late answer. The
 document-owned box is modal by design, so the overlay's Stop button cannot be pressed while it is
 open. **Cancel** is the stop for that non-fitting item; the overlay's **Stop** works again immediately
 after the answer to cancel the remaining request. Write calls have a

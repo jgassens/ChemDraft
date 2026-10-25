@@ -23,6 +23,7 @@ interface Request {
   ended: boolean;
   cancellations: Map<string, AbortController>;
   opening: number;
+  lifetime: AbortController;
   /** One human decision shared by every placement in this request, including concurrent calls. */
   pageGrowthDecision?: Promise<boolean | { reason: string }>;
 }
@@ -77,7 +78,7 @@ export class AssistantToolsController implements PluginHostAssistant {
     const requestId = transactions.beginAssistantTransaction({ pluginId: plugin.id, runId: crypto.randomUUID(), tabId,
       label: input.label ?? input.prompt, sendSelection: { objectIds: selection } });
     const request: Request = { pluginId: plugin.id, tabId, selection, inserted: new Set(), touched: new Set(), transactions,
-      ended: false, cancellations: new Map(), opening: 0,
+      ended: false, lifetime: new AbortController(), cancellations: new Map(), opening: 0,
       context: { ...services, plugin: manifest, tabId, getDocument, getSelectionAtSend: () => selection,
         getInsertedObjectIds: () => [...request.inserted],
         confirmPageGrowth: async () => { throw new Error("No tool call is running."); },
@@ -124,11 +125,12 @@ export class AssistantToolsController implements PluginHostAssistant {
             request.pageGrowthDecision ??= (async () => {
               const decision = new AbortController();
               const cancelDecision = () => decision.abort();
-              signal?.addEventListener("abort", cancelDecision, { once: true });
+              request.lifetime.signal.addEventListener("abort", cancelDecision, { once: true });
+              if (request.lifetime.signal.aborted) cancelDecision();
               const decisionDeadline = setTimeout(cancelDecision, 300_000);
               try {
                 const choice = await nativePrompt({ title: "ChemDraft Assistant", owner: "document", kind: "info",
-                  message: `${growth.description} ${growth.itemCount === 1 ? "needs" : "need"} a page ${Math.round(growth.width * 0.75)} × ${Math.round(growth.height * 0.75)} pt. Enlarge the page to fit?`,
+                  message: `${growth.description} ${growth.itemCount === 1 ? "needs" : "need"} a page ${Math.round(growth.width * 0.75)} × ${Math.round(growth.height * 0.75)} pt. Enlarge the page to fit? Your answer applies to the rest of this request.`,
                   // The answer covers subsequent growth in this request. Its single Undo
                   // restores every page enlargement and all inserted objects.
                   choices: [{ id: "enlarge", label: "Enlarge Page" }, { id: "decline", label: "Cancel", cancel: true }]
@@ -137,10 +139,10 @@ export class AssistantToolsController implements PluginHostAssistant {
                 return choice === "enlarge";
               } finally {
                 clearTimeout(decisionDeadline);
-                signal?.removeEventListener("abort", cancelDecision);
+                request.lifetime.signal.removeEventListener("abort", cancelDecision);
               }
             })();
-            const accepted = await request.pageGrowthDecision;
+            const accepted = await waitForDecision(request.pageGrowthDecision, [abort.signal, ...(signal ? [signal] : [])]);
             this.running(plugin, requestId);
             abort.signal.throwIfAborted();
             signal?.throwIfAborted();
@@ -239,6 +241,7 @@ export class AssistantToolsController implements PluginHostAssistant {
   async endRequest(plugin: Plugin, { requestId }: { requestId: string }) {
     const request = this.ownedRequest(plugin, requestId);
     request.ended = true;
+    request.lifetime.abort();
     request.cancellations.forEach(stop => stop.abort());
     // Mark ended before awaiting IPC, so a queued bridge call cannot write meanwhile.
     try {
@@ -294,6 +297,7 @@ export class AssistantToolsController implements PluginHostAssistant {
   }
   private abandonRequest(id: string, request: Request): void {
     request.ended = true;
+    request.lifetime.abort();
     request.cancellations.forEach(stop => stop.abort());
     try { request.transactions.endAssistantTransaction(id, { touchedIds: [...request.touched] }); } catch { /* Tab already closed. */ }
     this.requests.delete(id);
@@ -316,5 +320,19 @@ export class AssistantToolsController implements PluginHostAssistant {
       else throw new Error(`Unsupported MCP method ${message.method}.`);
     } catch (error) { response = { error: { code: -32000, message: error instanceof Error ? error.message : String(error) } }; }
     try { await this.options.engine.respond(message.sessionId, message.requestId, response); } catch { /* Rust may already have closed or timed out the call. */ }
+  }
+}
+
+/** Cancelling a call releases only that waiter, leaving the request's shared question alive. */
+async function waitForDecision<T>(decision: Promise<T>, signals: AbortSignal[]): Promise<T> {
+  let stop!: () => void;
+  try {
+    return await Promise.race([decision, new Promise<never>((_, reject) => {
+      stop = () => reject(signals.find(signal => signal.aborted)?.reason ?? new Error("Assistant tool call was cancelled."));
+      for (const signal of signals) signal.addEventListener("abort", stop, { once: true });
+      if (signals.some(signal => signal.aborted)) stop();
+    })]);
+  } finally {
+    for (const signal of signals) signal.removeEventListener("abort", stop);
   }
 }
