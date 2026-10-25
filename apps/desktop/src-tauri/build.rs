@@ -48,6 +48,7 @@ fn main() {
             "set_keybinding_scheme",
             "plugin_storage_read",
             "plugin_storage_write",
+            "plugin_storage_delete",
             "open_plugin_panel_window",
             "plugin_panel_action_forward",
             "plugin_panel_event_forward",

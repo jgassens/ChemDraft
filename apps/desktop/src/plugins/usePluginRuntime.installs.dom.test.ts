@@ -11,6 +11,7 @@ const hookMocks = vi.hoisted(() => ({
   stagingFs: {},
   loadInstalledPlugins: vi.fn(),
   installPluginPackage: vi.fn(),
+  uninstallPlugin: vi.fn(),
   updateInstalledPluginPackage: vi.fn()
 }));
 
@@ -29,11 +30,12 @@ vi.mock("./installPluginPackage", async (importOriginal) => {
     ...actual,
     loadInstalledPlugins: hookMocks.loadInstalledPlugins,
     installPluginPackage: hookMocks.installPluginPackage,
+    uninstallPlugin: hookMocks.uninstallPlugin,
     updateInstalledPluginPackage: hookMocks.updateInstalledPluginPackage
   };
 });
 
-import type { InstalledPluginCatalogEntry } from "./installPluginPackage";
+import { PluginInstallError, PluginInstallErrorCodes, type InstalledPluginCatalogEntry } from "./installPluginPackage";
 import { loadDisabledPluginIds, saveDisabledPluginIds } from "./pluginPreferences";
 import type { PreparedPluginUpdate } from "./pluginUpdates";
 import { usePluginRuntime, type PluginRuntimeView } from "./usePluginRuntime";
@@ -123,6 +125,7 @@ let root: Root | undefined;
 beforeEach(() => {
   hookMocks.loadInstalledPlugins.mockReset();
   hookMocks.installPluginPackage.mockReset();
+  hookMocks.uninstallPlugin.mockReset();
   hookMocks.updateInstalledPluginPackage.mockReset();
   vi.stubGlobal("localStorage", new MemoryStorage());
 });
@@ -138,6 +141,42 @@ afterEach(() => {
 });
 
 describe("usePluginRuntime installed catalog readiness", () => {
+  it("removes the UI entry and disabled flag before surfacing a post-uninstall storage deletion error", async () => {
+    const initial = catalogEntry("1.0.0", "a".repeat(64));
+    hookMocks.loadInstalledPlugins.mockResolvedValue({ installed: [initial], failures: [] });
+    const error = new PluginInstallError(
+      PluginInstallErrorCodes.UninstallStorageDeleteFailed,
+      `Plugin "${pluginId}" was uninstalled, but its stored settings could not be deleted: permission denied`
+    );
+    hookMocks.uninstallPlugin.mockRejectedValue(error);
+    saveDisabledPluginIds(new Set([pluginId, "org.chemdraft.other"]));
+
+    let view: PluginRuntimeView | undefined;
+    function Probe() {
+      view = usePluginRuntime({
+        getActiveDocument: () => undefined,
+        getSelection: () => ({ objectIds: [], molecules: [] })
+      });
+      return null;
+    }
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(createElement(Probe));
+      await Promise.resolve();
+    });
+    expect(view?.installedPlugins).toHaveLength(1);
+    await act(async () => {
+      await expect(view!.uninstallInstalledPlugin!(pluginId)).rejects.toBe(error);
+    });
+    expect(hookMocks.uninstallPlugin).toHaveBeenCalledWith(
+      expect.objectContaining({ bundledPlugins: view!.bundledPlugins })
+    );
+    expect(view?.installedPlugins).toEqual([]);
+    expect([...loadDisabledPluginIds()]).toEqual(["org.chemdraft.other"]);
+  });
+
   it("withholds update actions until loading completes and refreshes the catalog after an update", async () => {
     const initial = catalogEntry("1.0.0", "a".repeat(64));
     let finishLoad!: (result: {

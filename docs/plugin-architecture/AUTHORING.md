@@ -121,6 +121,21 @@ const runWidget: PluginCommandHandler = async (context) => {
 Report section kinds: `text`, `keyValue`, `table`, `svg`, `chemicalName`, and `linkedFigure` (an interactive
 spectrum/structure figure with a generic primary/alternative method model).
 
+## Plugin storage
+
+Declare `plugin.storage` to use `context.storage`, a per-plugin key/value store. Desktop builds
+persist it in `app_data_dir/plugins/<pluginId>/storage.json`; the web build keeps it in memory.
+Explicit **Uninstall clears the plugin's stored settings**, including cached values in the current
+session. **Updates keep storage**, as does handing an installed plugin's id back to its bundled copy.
+Uninstall stops the plugin and removes its catalog entry before clearing storage, so pending saves
+cannot recreate it. If deletion fails, uninstall still completes and reports that the stored settings
+could not be deleted; those settings may remain on disk.
+Plugin ids cannot end in a dot (Windows strips trailing dots). If another installed or bundled
+plugin has the same id ignoring letter case, uninstall preserves their shared settings and logs why.
+Removing an empty storage folder is best-effort; a folder cleanup failure does not make deletion of
+`storage.json` fail. The plugin list and recognition-engine removal offer still update when deleting
+the settings file fails.
+
 ## One-line text prompts
 
 A plugin declaring `ui.panel` may ask for one line of text from inside one of its own command

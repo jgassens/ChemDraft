@@ -76,6 +76,9 @@ export type PluginPermission = (typeof pluginPermissions)[number];
 export type PermissionName = PluginPermission;
 
 const IdSchema = z.string().min(1);
+const PluginManifestIdSchema = IdSchema.refine((id) => !id.endsWith("."), {
+  message: 'Plugin id must not end with "."'
+});
 const NonEmptyStringSchema = z.string().min(1);
 const PermissionListSchema = z.array(PluginPermissionSchema);
 const OptionalPermissionListSchema = z.array(PluginPermissionSchema).default([]);
@@ -331,7 +334,7 @@ export const PluginContributionsSchema = z
 
 export const PluginManifestSchema = z
   .object({
-    id: IdSchema,
+    id: PluginManifestIdSchema,
     name: NonEmptyStringSchema,
     version: NonEmptyStringSchema,
     apiVersion: NonEmptyStringSchema,
