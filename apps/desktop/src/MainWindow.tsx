@@ -1615,7 +1615,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.25.12.58-codex";
+const CURRENT_BUILD_STAMP = "10.25.15.28-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -1875,6 +1875,17 @@ function shouldDefaultToNativePalettes(): boolean {
   }
 }
 
+function isCanvasDrawingPress(canvas: HTMLElement, event: { target: EventTarget | null; clientX: number; clientY: number }): boolean {
+  if (!(event.target instanceof Element) || event.target.closest(".plugin-canvas-overlay, .document-rulers-overlay")) return false;
+  const rect = canvas.getBoundingClientRect();
+  const x = event.clientX - rect.left - canvas.clientLeft;
+  const y = event.clientY - rect.top - canvas.clientTop;
+  // Client dimensions exclude native scrollbars, including a leading-edge scrollbar.
+  // Rulers are pointer-transparent, so their occupied strips also need a point check.
+  const inset = canvas.classList.contains("rulers-visible") ? RULER_THICKNESS : 0;
+  return x >= inset && y >= inset && x < canvas.clientWidth && y < canvas.clientHeight;
+}
+
 export function MainWindow({
   initialPaletteMode = "floating",
   initialRulersVisible = true,
@@ -1896,25 +1907,82 @@ export function MainWindow({
   const [canvasWheelActive, setCanvasWheelActive] = useState(false);
   useEffect(() => {
     const pointers = new Set<number>();
+    let preservedFocus: HTMLElement | null = null;
+    let preservedOverlay: HTMLElement | null = null;
+    let focusExpiry: ReturnType<typeof setTimeout> | undefined;
+    const releaseFocus = () => {
+      if (focusExpiry !== undefined) clearTimeout(focusExpiry);
+      focusExpiry = undefined;
+      if (preservedOverlay) delete preservedOverlay.dataset.preservingFocus;
+      preservedOverlay = null;
+      preservedFocus = null;
+    };
+    const renewFocus = () => {
+      if (focusExpiry !== undefined) clearTimeout(focusExpiry);
+      // Native scrollbar drags can swallow release events; bound stale focus protection.
+      focusExpiry = setTimeout(releaseFocus, 500);
+    };
+    const move = (event: globalThis.PointerEvent) => {
+      if (!preservedFocus) return;
+      if (event.buttons === 0) releaseFocus();
+      else renewFocus();
+    };
+    const preserveOverlayFocus = (event: globalThis.MouseEvent) => {
+      releaseFocus();
+      const canvas = canvasRegionRef.current;
+      const active = globalThis.document.activeElement;
+      const overlay = active?.closest<HTMLElement>(".plugin-canvas-overlay");
+      if (!canvas || !(event.target instanceof Element) || !canvas.contains(event.target) || !overlay) return;
+      if (!isCanvasDrawingPress(canvas, event) || overlay.dataset.composing === "true"
+        || (event.button !== 0 && event.button !== 2) || ("isPrimary" in event && event.isPrimary === false)) {
+        preservedFocus = active instanceof HTMLElement ? active : null;
+        preservedOverlay = overlay;
+        overlay.dataset.preservingFocus = "true";
+        renewFocus();
+        if (overlay.dataset.composing === "true") event.preventDefault();
+      }
+    };
+    const restoreOverlayFocus = (event: FocusEvent) => {
+      // Leave native scrollbar dragging intact, but undo every engine focus move
+      // for this press. Composing prompts prevent blur by removing canvas tabindex.
+      if (event.target === canvasRegionRef.current && preservedFocus?.isConnected) {
+        preservedFocus.focus({ preventScroll: true });
+      }
+    };
     const down = (event: globalThis.PointerEvent) => {
+      preserveOverlayFocus(event);
       if (!canvasOverlaysPresentRef.current || !(event.target instanceof Element) || !canvasRegionRef.current?.contains(event.target)
-        || event.target.closest(".plugin-canvas-overlay")) return;
+        || !isCanvasDrawingPress(canvasRegionRef.current, event) || preservedFocus) return;
       pointers.add(event.pointerId);
       setCanvasPointerActive(true);
     };
     const up = (event: globalThis.PointerEvent) => {
+      releaseFocus();
       pointers.delete(event.pointerId);
       setCanvasPointerActive(pointers.size > 0);
     };
-    const clear = () => { pointers.clear(); setCanvasPointerActive(false); setCanvasZoomActive(false); setCanvasWheelActive(false); };
+    const clear = () => { releaseFocus(); pointers.clear(); setCanvasPointerActive(false); setCanvasZoomActive(false); setCanvasWheelActive(false); };
+    globalThis.document.addEventListener("focusin", restoreOverlayFocus, true);
+    window.addEventListener("mousedown", preserveOverlayFocus, true);
+    window.addEventListener("mouseup", releaseFocus, true);
+    window.addEventListener("keydown", releaseFocus, true);
     window.addEventListener("pointerdown", down, true);
+    window.addEventListener("pointermove", move, true);
     window.addEventListener("pointerup", up, true);
     window.addEventListener("pointercancel", up, true);
+    window.addEventListener("lostpointercapture", up, true);
     window.addEventListener("blur", clear);
     return () => {
+      releaseFocus();
+      globalThis.document.removeEventListener("focusin", restoreOverlayFocus, true);
+      window.removeEventListener("mousedown", preserveOverlayFocus, true);
+      window.removeEventListener("mouseup", releaseFocus, true);
+      window.removeEventListener("keydown", releaseFocus, true);
       window.removeEventListener("pointerdown", down, true);
+      window.removeEventListener("pointermove", move, true);
       window.removeEventListener("pointerup", up, true);
       window.removeEventListener("pointercancel", up, true);
+      window.removeEventListener("lostpointercapture", up, true);
       window.removeEventListener("blur", clear);
     };
   }, []);
@@ -19755,21 +19823,19 @@ export function MainWindow({
           className={["canvas-region", rulersVisible ? "rulers-visible" : ""].filter(Boolean).join(" ")}
           aria-label="Document workspace"
           onPointerDownCapture={(event) => {
-            if (event.button !== 0 || event.isPrimary === false) return;
             const canvas = event.currentTarget;
-            const target = event.target instanceof Element ? event.target : undefined;
-            if (target?.closest(".plugin-canvas-overlay, .document-rulers-overlay")) return;
-            const rect = canvas.getBoundingClientRect();
-            const x = event.clientX - rect.left - canvas.clientLeft;
-            const y = event.clientY - rect.top - canvas.clientTop;
-            // Client dimensions exclude native scrollbars (including a left-side scrollbar).
-            // Rulers are pointer-transparent, so their occupied strips also need a point check.
-            const inset = rulersVisible ? RULER_THICKNESS : 0;
-            if (x < inset || y < inset || x >= canvas.clientWidth || y >= canvas.clientHeight) return;
+            const overlay = globalThis.document.activeElement?.closest<HTMLElement>(".plugin-canvas-overlay");
+            if (overlay?.dataset.composing === "true") {
+              // Do not blur the IME or let page tools replace its editor mid-composition.
+              event.preventDefault();
+              event.stopPropagation();
+              return;
+            }
+            if ((event.button !== 0 && event.button !== 2) || event.isPrimary === false || !isCanvasDrawingPress(canvas, event)) return;
             // Page tools can prevent the browser's default focus move. Hand keyboard and
             // native Edit-menu routing back from the overlay before those handlers run.
             // Its document pointer listener has already cancelled action-focus recovery.
-            if (globalThis.document.activeElement?.closest(".plugin-canvas-overlay")) {
+            if (overlay) {
               canvas.focus({ preventScroll: true });
             }
           }}
