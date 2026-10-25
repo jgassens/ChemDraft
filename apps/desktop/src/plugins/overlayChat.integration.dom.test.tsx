@@ -74,13 +74,12 @@ vi.mock("./createPluginRuntime", async importOriginal => {
   };
 });
 
-// Unmodified release bundle, including its SDK, parsers and command handlers. The real
-// loader, worker bridge, host, MainWindow dispatch and PluginCanvasOverlay all participate.
-const fixture = resolve("apps/desktop/src/plugins/__fixtures__/assistant-0.1.3");
+// Original minimal plugin exercises the real loader, worker bridge and host.
+const fixture = resolve("apps/desktop/src/plugins/__fixtures__/overlay-chat");
 const manifest: unknown = JSON.parse(readFileSync(resolve(fixture, "manifest.json"), "utf8"));
 const entry = readFileSync(resolve(fixture, "entry.js"), "utf8");
-const lines = readFileSync(resolve(fixture, "real-tool-reply.stdout.jsonl"), "utf8").trim().split("\n");
-const reply = "I looked up benzene with `name_to_structure`, then inserted it using `insert_structures` with SMILES `c1ccccc1`.";
+const lines = readFileSync(resolve(fixture, "tool-reply.stdout.jsonl"), "utf8").trim().split("\n");
+const reply = "Test lookup `lookup_item` returned `sample_item`; replay value `C`.";
 const prompt = "Draw benzene";
 
 function createWorker(): PluginWorkerHandle {
@@ -104,7 +103,7 @@ function createWorker(): PluginWorkerHandle {
     }
   });
   // A real Worker clones into the receiving realm. Passing Node's structuredClone
-  // directly to the VM leaves host prototypes on button payloads; the bundled SDK
+  // directly to the VM leaves host prototypes on button payloads; the test worker
   // correctly rejects those as non-plain records. Recreate these JSON-shaped protocol
   // values in the worker realm, preserving undefined (unlike a JSON round trip).
   const cloneForWorker = runInContext(`(function clone(value) {
@@ -166,7 +165,7 @@ afterEach(async () => {
       root?.unmount();
     });
     // Entire-lifetime assertions, including teardown and any failed test. Do not clear
-    // these spies between setup, send, AI choice and the refused submission.
+    // these spies between setup, send, Mode choice and the refused submission.
     expect(native.openPanelWindow).not.toHaveBeenCalled();
     expect(native.invoke.mock.calls.filter(([command]) => command === "open_plugin_panel_window")).toEqual([]);
   } finally {
@@ -203,19 +202,19 @@ async function command(action: () => void): Promise<void> {
   expect(native.workerSettlements.at(-1)).toMatchObject({ ok: true });
 }
 
-async function loadAssistant(origin: string): Promise<void> {
+async function loadTestPlugin(origin: string): Promise<void> {
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
-  await act(async () => root!.render(<MainWindow initialDocument={createPhase4Document("Assistant one box")}
+  await act(async () => root!.render(<MainWindow initialDocument={createPhase4Document("Overlay chat")}
     initialPaletteMode="hidden" initialRulersVisible={false} nativePalette={false} />));
-  descriptor = loadPackagedPlugin({ baseUrl: `${origin}/installed-plugins/assistant/`, manifest }, {
+  descriptor = loadPackagedPlugin({ baseUrl: `${origin}/installed-plugins/overlay-chat/`, manifest }, {
     createWorker: entryUrl => {
-      expect(entryUrl.href).toBe(`${origin}/installed-plugins/assistant/entry.js`);
+      expect(entryUrl.href).toBe(`${origin}/installed-plugins/overlay-chat/entry.js`);
       return createWorker();
     }
   });
-  expect(descriptor.manifest.version).toBe("0.1.3");
+  expect(descriptor.manifest.version).toBe("0.0.1");
   expect(descriptor.manifest.contributes.panels).toEqual([]);
   expect(descriptor.manifest.contributes.canvasOverlays).toHaveLength(1);
   expect(descriptor.manifest.contributes.canvasOverlays![0]!.prompt.select).toBeUndefined();
@@ -223,11 +222,11 @@ async function loadAssistant(origin: string): Promise<void> {
 }
 
 async function openFromPluginsMenu(origin: string): Promise<void> {
-  await loadAssistant(origin);
+  await loadTestPlugin(origin);
   const menus = native.runtime!.host.listMenuContributions("plugins")
     .filter(item => item.pluginId === descriptor!.manifest.id);
   expect(menus).toHaveLength(1);
-  expect(menus[0]!.contribution.commandId).toBe("plugin.assistant.open");
+  expect(menus[0]!.contribution.commandId).toBe("plugin.chat.open");
   // This is the native Plugins menu's real command event, not direct host invocation.
   await command(() => window.dispatchEvent(new CustomEvent("chemdraft:native-command", {
     detail: { commandId: menus[0]!.contribution.commandId }
@@ -237,36 +236,36 @@ async function openFromPluginsMenu(origin: string): Promise<void> {
   expect(overlay().querySelector(".plugin-canvas-overlay-panel")).toBeNull();
   expect(overlay().querySelector("select")).toBeNull();
   expect(overlay().querySelectorAll("textarea")).toHaveLength(1);
-  expect(overlay().querySelector(".plugin-canvas-overlay-content")!.textContent).toContain("Setup — choose your AI");
+  expect(overlay().querySelector(".plugin-canvas-overlay-content")!.textContent).toContain("Setup — choose a mode");
   expect(native.invoke).toHaveBeenCalledWith("external_tool_status", expect.objectContaining({ tool: "codex" }));
 }
 
-async function chooseCodexInSetup(): Promise<void> {
-  const heading = [...overlay().querySelectorAll("h4")].find(element => element.textContent === "Codex — OpenAI");
+async function chooseLocalInSetup(): Promise<void> {
+  const heading = [...overlay().querySelectorAll("h4")].find(element => element.textContent === "Local mode");
   expect(heading).toBeDefined();
   expect(heading!.parentElement!.textContent).toContain("Installed 0.163.0. Signed in");
   const actions = heading!.parentElement!.nextElementSibling!;
-  await command(() => button("Use this AI", actions).click());
+  await command(() => button("Use this mode", actions).click());
 }
 
-async function finishCodexSetup(): Promise<void> {
-  await chooseCodexInSetup();
+async function finishLocalSetup(): Promise<void> {
+  await chooseLocalInSetup();
   await command(() => button("Finish setup").click());
-  expect(overlay().textContent).not.toContain("Setup — choose your AI");
-  expectCodexChoice();
+  expect(overlay().textContent).not.toContain("Setup — choose a mode");
+  expectLocalChoice();
   expectNothingRan();
 }
 
-function expectCodexChoice(): void {
-  // AI choice is live overlay content, not a second state in the static prompt.
+function expectLocalChoice(): void {
+  // Mode choice is live overlay content, not a second state in the static prompt.
   const content = overlay().querySelector(".plugin-canvas-overlay-content")!;
-  expect([...content.querySelectorAll("h4")].map(heading => heading.textContent)).toEqual(["AI: Codex (OpenAI)"]);
+  expect([...content.querySelectorAll("h4")].map(heading => heading.textContent)).toEqual(["Mode: Local"]);
   expect(overlay().querySelector("select")).toBeNull();
   const pinned = overlay().querySelector(".plugin-canvas-overlay-primary-actions")!;
   expect([...pinned.querySelectorAll("button"), ...content.querySelectorAll("button")].map(button => button.textContent)).toEqual([
-    "✓ Codex (OpenAI)", "Setup…", "New conversation"
+    "✓ Local", "Setup…", "New conversation"
   ]);
-  button("✓ Codex (OpenAI)", pinned);
+  button("✓ Local", pinned);
   button("Setup…", pinned);
   button("New conversation", content);
 }
@@ -302,28 +301,27 @@ async function submit(text: string): Promise<void> {
   await command(() => textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
 }
 
-function expectCodexReply(): void {
+function expectToolReply(): void {
   const runs = native.invoke.mock.calls.filter(([command]) => command === "external_tool_run_start");
   expect(runs, overlay().textContent ?? "").toHaveLength(1);
-  expect(runs[0]![1]).toMatchObject({ request: { tool: "codex", prompt, pluginId: "org.chemdraft.assistant" } });
+  expect(runs[0]![1]).toMatchObject({ request: { tool: "codex", prompt, pluginId: "org.chemdraft.test.overlay-chat" } });
   expect(native.invoke).toHaveBeenCalledWith("external_tool_run_poll", expect.objectContaining({ cursor: 0 }));
   expect(native.invoke).toHaveBeenCalledWith("external_tool_run_poll", expect.objectContaining({ cursor: lines.length }));
   const transcript = overlay().querySelector('[role="log"]')!;
   expect(transcript.querySelector('[data-role="user"] span')!.textContent).toBe(prompt);
   expect(transcript.querySelector('[data-role="assistant"] span')!.textContent).toBe(reply.replaceAll("`", ""));
-  expect([...transcript.querySelectorAll("code")].map(node => node.textContent)).toEqual(["name_to_structure", "insert_structures", "c1ccccc1"]);
+  expect([...transcript.querySelectorAll("code")].map(node => node.textContent)).toEqual(["lookup_item", "sample_item", "C"]);
   expect(transcript.compareDocumentPosition(overlay().querySelector("textarea")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  expect(status().textContent).toBe("Codex (OpenAI) replied — no changes to the page");
+  expect(status().textContent).toBe("Local replied — no changes to the page");
   expect(transcript.textContent).not.toMatch(/Done\.|Done —|replied — no changes to the page/i);
-  expectCodexChoice();
+  expectLocalChoice();
 }
 
-describe.each(["tauri://localhost", "http://tauri.localhost"])("Assistant 0.1.3 one box (%s)", origin => {
-  it("honours live prompt state through the host and resumes the loaded bundle after content clears it", async () => {
+describe.each(["tauri://localhost", "http://tauri.localhost"])("Overlay chat (%s)", origin => {
+  it("honours live prompt state through the host and resumes the loaded plugin after content clears it", async () => {
     await openFromPluginsMenu(origin);
-    await finishCodexSetup();
-    // This release fixture predates prompt overrides. Exercise the new capability against its
-    // real registered overlay, MainWindow dispatcher and command bundle without rewriting it.
+    await finishLocalSetup();
+    // Exercise prompt overrides against the registered overlay and MainWindow dispatcher.
     const api = native.runtime!.host.createCommandContext(descriptor!.manifest.id).overlays!;
     const overlayId = descriptor!.manifest.contributes.canvasOverlays![0]!.id;
     await act(async () => api.setContent({ overlayId, sections: [{ kind: "text", body: "Working" }], prompt: { disabled: true } }));
@@ -343,42 +341,42 @@ describe.each(["tauri://localhost", "http://tauri.localhost"])("Assistant 0.1.3 
     expect(textarea.value).toBe(prompt);
     await act(async () => api.setContent({ overlayId, sections: [] }));
     await command(() => textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
-    expectCodexReply();
+    expectToolReply();
   });
 
-  it("loads the saved AI heading on the first expansion after relaunch", async () => {
-    await loadAssistant(origin);
+  it("loads the saved mode heading on the first expansion after relaunch", async () => {
+    await loadTestPlugin(origin);
     const storage = native.runtime!.host.createCommandContext(descriptor!.manifest.id).storage!;
     await storage.set("provider", "codex");
     await storage.set("chosenProviders", ["codex"]);
     await command(() => overlay().querySelector<HTMLButtonElement>(".plugin-canvas-overlay-icon")!.click());
-    expectCodexChoice();
+    expectLocalChoice();
     expectNothingRan();
   });
 
   it("initializes a cold icon expansion once through the declared menu opener, and retries only when empty", async () => {
-    await loadAssistant(origin);
+    await loadTestPlugin(origin);
     expect(overlay().querySelector(".plugin-canvas-overlay-content")).toBeNull();
     await command(() => overlay().querySelector<HTMLButtonElement>(".plugin-canvas-overlay-icon")!.click());
-    expect(overlay().textContent).toContain("Setup — choose your AI");
+    expect(overlay().textContent).toContain("Setup — choose a mode");
     expectNothingRan();
-    await finishCodexSetup();
+    await finishLocalSetup();
     const count = native.workerSettlements.length;
-    await act(async () => overlay().querySelector<HTMLButtonElement>('[aria-label="Collapse ChemDraft Assistant"]')!.click());
+    await act(async () => overlay().querySelector<HTMLButtonElement>('[aria-label="Collapse Overlay Test Plugin"]')!.click());
     await act(async () => overlay().querySelector<HTMLButtonElement>(".plugin-canvas-overlay-icon")!.click());
     expect(native.workerSettlements).toHaveLength(count);
-    expectCodexChoice();
+    expectLocalChoice();
     await act(async () => { await native.runtime!.host.createCommandContext(descriptor!.manifest.id).overlays!.setContent({
       overlayId: descriptor!.manifest.contributes.canvasOverlays![0]!.id, sections: []
     }); });
-    await act(async () => overlay().querySelector<HTMLButtonElement>('[aria-label="Collapse ChemDraft Assistant"]')!.click());
+    await act(async () => overlay().querySelector<HTMLButtonElement>('[aria-label="Collapse Overlay Test Plugin"]')!.click());
     await command(() => overlay().querySelector<HTMLButtonElement>(".plugin-canvas-overlay-icon")!.click());
-    expectCodexChoice();
+    expectLocalChoice();
     expectNothingRan();
   });
 
-  it("refuses a second request while the real command is pending and keeps the next draft", async () => {
-    await openFromPluginsMenu(origin); await finishCodexSetup();
+  it("refuses a second request while the plugin command is pending and keeps the next draft", async () => {
+    await openFromPluginsMenu(origin); await finishLocalSetup();
     const original = native.invoke.getMockImplementation()!;
     let finish!: () => void;
     const running = new Promise<void>(resolve => { finish = resolve; });
@@ -410,47 +408,47 @@ describe.each(["tauri://localhost", "http://tauri.localhost"])("Assistant 0.1.3 
     expect(textarea.value).toBe("Draw ethanol");
   });
 
-  it("uses the AI chosen in Setup when the owner's next action is typing and pressing Enter", async () => {
+  it("uses the mode chosen in Setup when the owner's next action is typing and pressing Enter", async () => {
     await openFromPluginsMenu(origin);
-    await finishCodexSetup();
-    // No storage seeding or extra AI-choice click: finishing Setup must be enough.
-    expect(status().textContent).toBe("Codex (OpenAI) ready");
+    await finishLocalSetup();
+    // No storage seeding or extra mode-choice click: finishing Setup must be enough.
+    expect(status().textContent).toBe("Local ready");
     await submit(prompt);
-    expectCodexReply();
+    expectToolReply();
   });
 
-  it("offers only set-up AIs through overlay buttons and starts a new conversation in the same box", async () => {
+  it("offers only configured modes through overlay buttons and starts a new conversation in the same box", async () => {
     await openFromPluginsMenu(origin);
-    await finishCodexSetup();
-    // Independent AI-button path, not a fallback in the owner's regression above.
-    // Claude Code is not set up, so it must not be offered as a submission choice.
-    await command(() => button("✓ Codex (OpenAI)").click());
-    expectCodexChoice();
+    await finishLocalSetup();
+    // Independent mode-button path, not a fallback in the owner's regression above.
+    // The alternate mode is not configured, so it must not be offered as a submission choice.
+    await command(() => button("✓ Local").click());
+    expectLocalChoice();
     expectNothingRan();
     await submit(prompt);
-    expectCodexReply();
+    expectToolReply();
     await command(() => button("New conversation").click());
     expect(overlay().querySelector('[role="log"]')!.textContent).toBe("");
-    expect(status().textContent).toBe("Codex (OpenAI) ready");
-    expectCodexChoice();
+    expect(status().textContent).toBe("Local ready");
+    expectLocalChoice();
     expect(native.invoke.mock.calls.filter(([command]) => command === "external_tool_run_start")).toHaveLength(1);
     await command(() => button("Setup…").click());
-    expect(overlay().textContent).toContain("Setup — choose your AI");
+    expect(overlay().textContent).toContain("Setup — choose a mode");
   });
 
-  it("refuses Enter before Setup is finished even when Codex is already installed and signed in", async () => {
+  it("refuses Enter before Setup is finished even when the tool is already installed and signed in", async () => {
     await openFromPluginsMenu(origin);
     await submit(prompt);
     expectSetupRefusal();
-    // Choosing an installed, signed-in AI still cannot bypass Finish setup.
-    await chooseCodexInSetup();
+    // Choosing an installed, signed-in tool still cannot bypass Finish setup.
+    await chooseLocalInSetup();
     await submit(prompt);
     expectSetupRefusal();
     await command(() => button("Finish setup").click());
-    expectCodexChoice();
+    expectLocalChoice();
     expectNothingRan();
-    expect(status().textContent).toBe("Codex (OpenAI) ready");
+    expect(status().textContent).toBe("Local ready");
     await submit(prompt);
-    expectCodexReply();
+    expectToolReply();
   });
 });

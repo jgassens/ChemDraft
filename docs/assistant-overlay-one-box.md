@@ -3,9 +3,7 @@
 The observed installed package is stale. The assistant-c app-data copy at
 `~/Library/Application Support/org.chemdraft.desktop.dev.assistant-c/installed-plugins/org.chemdraft.assistant/`
 declares `^0.1.10`, records source commit `247ec7297218d4781032a670ac4b48b58ef5dbb2`, and contains
-**zero** `setTranscript` references. Its entry SHA-256 is
-`e7a59b33a6265a882bcb0f34a9fc164450f2f3f0bc7649231d2d54da91f6964a`, identical to the retained
-`assistant-0.1.0` fixture. It can update the status to Done without ever supplying a transcript.
+**zero** `setTranscript` references. It can update the status to Done without ever supplying a transcript.
 
 The supplied new package, commit `3e06b5b7d7e85bea922be8ac0f2bc2b9ba89b974`, declares `^0.1.11`
 and contains both the worker stub and application calls. Its real-bundle test passes on the
