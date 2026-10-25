@@ -121,7 +121,7 @@ import {
 } from "@chemdraft/viewport-engine";
 import ScenaRuler from "@scena/react-ruler";
 import { CommandRegistry } from "@chemdraft/plugin-host";
-import type { PluginPanelReport } from "@chemdraft/plugin-api";
+import { PluginCommandInputSchema, type PluginCommandInput, type PluginPanelReport } from "@chemdraft/plugin-api";
 import { createCoreCommandRegistrar } from "./commands/coreCommandRegistrar";
 import { createFixturePluginOptions, fixturePluginManifest, FIXTURE_PLUGIN_ID } from "./plugins/fixturePlugin";
 import { createToolbarCatalog } from "./toolbars/toolbarCatalog";
@@ -173,13 +173,16 @@ import {
   broadcastPluginPanelStaleness,
   hidePluginPanelWindow,
   listenForAnalysisWindowActions,
+  listenForPluginPanelActions,
   listenForPluginPanelCloses,
   listenForNativePanelWindowCloses,
   listenForPluginPanelReruns,
   listenForPluginPanelRequests,
   openPluginPanelWindow,
+  parsePluginPanelWindowLabel,
   pluginPanelIdentityKey,
   respondToCopyMolecularInspector,
+  respondToPluginPanelAction,
   respondToProposalDecision,
   respondToSaveTextFile,
   type AnalysisWindowAction,
@@ -189,6 +192,11 @@ import {
   type PluginPanelReportPayload,
   type ProposalDecisionOutcome
 } from "./plugins/panelBridge";
+import { resolvePluginPanelAction } from "./plugins/pluginPanelActions";
+import { PluginCanvasOverlay } from "./plugins/PluginCanvasOverlay";
+import { pluginPanelOpenCommand } from "./plugins/pluginPanelOpenCommand";
+import { canvasOverlayPrompt, OVERLAY_BUSY_MESSAGE, pluginCanvasOverlayOpenCommand } from "./plugins/pluginCanvasOverlayControls";
+import type { PluginPanelActionRequest, PluginPanelActionResult } from "./plugins/pluginPanelActionTypes";
 import { saveTextFileHere } from "./plugins/spectrumExport";
 import type { QueuedProposedPatch } from "@chemdraft/plugin-host";
 import { isBlockedByModalDialog, shouldIgnoreShortcutTarget, subscribeToModalDialogChanges } from "@chemdraft/shortcut-engine";
@@ -1607,7 +1615,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.24.12.00-codex";
+const CURRENT_BUILD_STAMP = "10.25.11.18-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -1878,6 +1886,36 @@ export function MainWindow({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const moleculeTemplateInputRef = useRef<HTMLInputElement>(null);
   const canvasRegionRef = useRef<HTMLElement | null>(null);
+  const canvasOverlayLayerRef = useRef<HTMLDivElement | null>(null);
+  const statusRowRef = useRef<HTMLDivElement | null>(null);
+  const canvasOverlaysPresentRef = useRef(false);
+  const [canvasPointerActive, setCanvasPointerActive] = useState(false);
+  const [canvasZoomActive, setCanvasZoomActive] = useState(false);
+  const [canvasWheelActive, setCanvasWheelActive] = useState(false);
+  useEffect(() => {
+    const pointers = new Set<number>();
+    const down = (event: globalThis.PointerEvent) => {
+      if (!canvasOverlaysPresentRef.current || !(event.target instanceof Element) || !canvasRegionRef.current?.contains(event.target)
+        || event.target.closest(".plugin-canvas-overlay")) return;
+      pointers.add(event.pointerId);
+      setCanvasPointerActive(true);
+    };
+    const up = (event: globalThis.PointerEvent) => {
+      pointers.delete(event.pointerId);
+      setCanvasPointerActive(pointers.size > 0);
+    };
+    const clear = () => { pointers.clear(); setCanvasPointerActive(false); setCanvasZoomActive(false); setCanvasWheelActive(false); };
+    window.addEventListener("pointerdown", down, true);
+    window.addEventListener("pointerup", up, true);
+    window.addEventListener("pointercancel", up, true);
+    window.addEventListener("blur", clear);
+    return () => {
+      window.removeEventListener("pointerdown", down, true);
+      window.removeEventListener("pointerup", up, true);
+      window.removeEventListener("pointercancel", up, true);
+      window.removeEventListener("blur", clear);
+    };
+  }, []);
   const pageRef = useRef<HTMLDivElement | null>(null);
   const [interactionLayer, setInteractionLayer] = useState<HTMLDivElement | null>(null);
   // Capture can belong to an object or a handle (even one later unmounted), not just the page.
@@ -2385,7 +2423,7 @@ export function MainWindow({
   moleculeStyleOverridePromptRef.current = moleculeStyleOverridePrompt;
   const [interactive3dWorkspace, setInteractive3dWorkspace] = useState<Interactive3dWorkspaceState | undefined>();
   const [, setLastAnalysis] = useState<StructureAnalysisResult | null>(null);
-  const invokeCommandRef = useRef<(commandId: string) => void | Promise<void>>(() => undefined);
+  const invokeCommandRef = useRef<(commandId: string, options?: { input?: PluginCommandInput }) => void | Promise<void>>(() => undefined);
   const documentRef = useRef(document);
   // Identifies the working document for a plugin's `documents.applyPatch` (see
   // `DesktopPluginRuntimeOptions.getActiveDocumentKey`). Bumped only in `resetDocumentHistory` — the
@@ -3622,7 +3660,14 @@ export function MainWindow({
       return undefined;
     }
 
+    let wheelEndTimer: ReturnType<typeof setTimeout> | undefined;
     const handleNativeWheel = (event: globalThis.WheelEvent) => {
+      if (event.target instanceof Element && event.target.closest(".plugin-canvas-overlay")) return;
+      if (canvasOverlaysPresentRef.current) {
+        setCanvasWheelActive(true);
+        clearTimeout(wheelEndTimer);
+        wheelEndTimer = setTimeout(() => setCanvasWheelActive(false), 150);
+      }
       if (!zoomCanvasFromWheelEvent(event)) {
         return;
       }
@@ -3631,11 +3676,14 @@ export function MainWindow({
       event.stopPropagation();
     };
     const handleGestureStart = (event: Event) => {
+      if (event.target instanceof Element && event.target.closest(".plugin-canvas-overlay")) return;
+      if (canvasOverlaysPresentRef.current) setCanvasZoomActive(true);
       event.preventDefault();
       event.stopPropagation();
       gestureStartScaleRef.current = viewportRef.current.scale;
     };
     const handleGestureChange = (event: Event) => {
+      if (event.target instanceof Element && event.target.closest(".plugin-canvas-overlay")) return;
       const gesture = event as WebKitGestureEvent;
       event.preventDefault();
       event.stopPropagation();
@@ -3645,6 +3693,8 @@ export function MainWindow({
       );
     };
     const handleGestureEnd = (event: Event) => {
+      if (event.target instanceof Element && event.target.closest(".plugin-canvas-overlay")) return;
+      setCanvasZoomActive(false);
       event.preventDefault();
       event.stopPropagation();
       gestureStartScaleRef.current = viewportRef.current.scale;
@@ -3657,6 +3707,7 @@ export function MainWindow({
     canvas.addEventListener("gestureend", handleGestureEnd, listenerOptions);
 
     return () => {
+      clearTimeout(wheelEndTimer);
       canvas.removeEventListener("wheel", handleNativeWheel, listenerOptions);
       canvas.removeEventListener("gesturestart", handleGestureStart, listenerOptions);
       canvas.removeEventListener("gesturechange", handleGestureChange, listenerOptions);
@@ -9047,7 +9098,7 @@ export function MainWindow({
       }
     };
     // Once per page load: StrictMode runs this effect twice in development.
-    if (desktop && !pendingCrashNoteChecked) {
+    if (desktop && "__TAURI_INTERNALS__" in window && !pendingCrashNoteChecked) {
       pendingCrashNoteChecked = true;
       void (async () => {
         try {
@@ -10384,6 +10435,7 @@ export function MainWindow({
   // suppresses obsolete status updates while the queue guarantees the newest requested run settles
   // last; ordinary commands remain serialized only with repeats of that same command.
   const pluginCommandQueuesRef = useRef(new Map<string, Promise<void>>());
+  const [pendingPluginCommands, setPendingPluginCommands] = useState<ReadonlySet<string>>(() => new Set());
   const pluginCommandGenerationsRef = useRef(new Map<string, number>());
   // A refused analyzer run opens no report window; this notice says why (see AnalyzerNotice).
   const [analyzerNotice, setAnalyzerNotice] = useState<AnalyzerNotice | undefined>(undefined);
@@ -10506,6 +10558,7 @@ export function MainWindow({
     }
   });
   const { isPluginCommand: pluginCommandExists, invokePluginCommand } = pluginRuntime;
+  canvasOverlaysPresentRef.current = pluginRuntime.canvasOverlays.length > 0;
   pluginRuntimeRef.current = pluginRuntime.runtime;
 
   // Mirror the plugin runtime's Analyze menu items into the native macOS menu so they are invokable
@@ -10634,6 +10687,7 @@ export function MainWindow({
         void openPluginPanelWindow({
           pluginId: panel.pluginId,
           panelId: panel.panelId,
+          ...panel.preferredWindowSize,
           title: panel.report.title || panel.title,
           focus: false
         }).catch((error: unknown) => {
@@ -10964,7 +11018,7 @@ export function MainWindow({
     []
   );
 
-  const invoke = useCallback(async (commandId: string) => {
+  const invoke = useCallback(async (commandId: string, options?: { input?: PluginCommandInput }) => {
     if (isCompoundLayoutCommand(commandId) && !compoundLayoutsEnabledRef.current) {
       setStatus("Enable Compound layout tools in Settings"); return;
     }
@@ -11079,12 +11133,13 @@ export function MainWindow({
       const generation = (pluginCommandGenerationsRef.current.get(queueKey) ?? 0) + 1;
       pluginCommandGenerationsRef.current.set(queueKey, generation);
       const previous = pluginCommandQueuesRef.current.get(queueKey) ?? Promise.resolve();
+      setPendingPluginCommands(current => new Set(current).add(queueKey));
       const run = previous
         .catch(() => undefined)
         .then(async () => {
           // Collected per invocation: only this command's own selection reads can add to it.
           const selectionWarnings: string[] = [];
-          const result = await invokePluginCommand(commandId, { selectionWarnings });
+          const result = await invokePluginCommand(commandId, { selectionWarnings, input: options?.input });
           if (pluginCommandGenerationsRef.current.get(queueKey) !== generation) {
             return;
           }
@@ -11113,6 +11168,9 @@ export function MainWindow({
         if (pluginCommandQueuesRef.current.get(queueKey) === tracked) {
           pluginCommandQueuesRef.current.delete(queueKey);
           pluginCommandGenerationsRef.current.delete(queueKey);
+          setPendingPluginCommands(current => {
+            const next = new Set(current); next.delete(queueKey); return next;
+          });
         }
       });
       pluginCommandQueuesRef.current.set(queueKey, tracked);
@@ -11141,6 +11199,104 @@ export function MainWindow({
   ]);
 
   invokeCommandRef.current = invoke;
+
+  // Both surfaces accept control data only, then enqueue through the same per-command dispatcher.
+  const acceptPluginInput = async (commandId: string, input: PluginCommandInput): Promise<PluginPanelActionResult> => {
+    if (!registry.get(commandId)?.enabled) return { ok: false, message: "This command is disabled." };
+    if (keptDrawingsPromptRef.current || quitInteractionRef.current) {
+      return { ok: false, message: "Finish the pending document confirmation before running this command." };
+    }
+    try {
+      await invokeCommandRef.current(commandId, { input });
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : String(error) };
+    }
+  };
+  const dispatchOverlayAction = async (pluginId: string, overlayId: string,
+    request: PluginPanelActionRequest): Promise<PluginPanelActionResult> => {
+    const runtime = pluginRuntime.runtime;
+    const declaration = runtime.listCanvasOverlays().find(entry => entry.pluginId === pluginId && entry.overlay.id === overlayId);
+    if (!declaration) return { ok: false, message: "This overlay is no longer available." };
+    const overlay = declaration.overlay;
+    const content = runtime.getCanvasOverlayContents().get(overlayId) ?? [];
+    const prompt = canvasOverlayPrompt(overlay, content);
+    if (request.control === "prompt" && request.sectionId === prompt.id && prompt.disabled) {
+      return { ok: false, message: OVERLAY_BUSY_MESSAGE };
+    }
+    // Reuse the panel validator for live limits, controls and ownership. The overlay's top-level
+    // command owns Send; its prompt.commandId is never trusted as an alternate submit route.
+    const resolved = resolvePluginPanelAction({ title: overlay.title, sections: [
+      prompt,
+      ...content
+    ] }, { ...request, panelId: "panel.overlay.input" }, commandId => {
+      const command = registry.get(commandId);
+      return command?.source === "plugin" && command.pluginId === pluginId
+        && runtime.host.getPlugin(pluginId)?.manifest.contributes.commands.some(item => item.id === commandId) === true;
+    });
+    if (!resolved.ok) return { ok: false, message: resolved.reason };
+    const { panelId: _panelId, ...input } = resolved.input;
+    const parsed = PluginCommandInputSchema.safeParse({ ...input, source: "overlay", overlayId });
+    if (!parsed.success) return { ok: false, message: "The overlay action is invalid." };
+    const queueKey = `command:${resolved.commandId}`;
+    if (request.control === "prompt" && pluginCommandQueuesRef.current.has(queueKey)) {
+      return { ok: false, message: OVERLAY_BUSY_MESSAGE };
+    }
+    // Send acknowledges acceptance immediately so the next draft stays editable. Action buttons
+    // instead settle with their command: focus recovery must cover its final content replacement,
+    // including Stop. Different commands still run independently, so Stop never waits for Send.
+    const accepted = await acceptPluginInput(resolved.commandId, parsed.data);
+    if (accepted.ok && request.control === "button") await pluginCommandQueuesRef.current.get(queueKey);
+    return accepted;
+  };
+
+  // Keep one subscription; identity comes from native IPC or the inline panel we rendered,
+  // and control metadata comes synchronously from the controller, never a render/broadcast cache.
+  const pluginPanelActionHandlerRef = useRef<Parameters<typeof listenForPluginPanelActions>[0]>(() => undefined);
+  pluginPanelActionHandlerRef.current = (id, request, sourceLabel) => {
+    const refuse = (reason: string) => {
+      void respondToPluginPanelAction(id, { ok: false, reason }).catch(() => undefined);
+    };
+    const runtime = pluginRuntime.runtime;
+    const openPanel = runtime.panels.getOpenPanel();
+    const identity = sourceLabel === undefined
+      ? !isDesktopRuntime() ? pluginRuntime.openPanel : undefined
+      : parsePluginPanelWindowLabel(sourceLabel);
+    if (!identity) {
+      refuse("This panel is no longer open.");
+      return;
+    }
+    if (identity.panelId !== request.panelId) {
+      refuse("The action does not belong to its source panel.");
+      return;
+    }
+    const panel = sourceLabel === undefined
+      ? openPanel?.pluginId === identity.pluginId && openPanel.panelId === identity.panelId ? openPanel : undefined
+      : runtime.panels.getDetachedPanels().find(candidate =>
+        candidate.pluginId === identity.pluginId && candidate.panelId === identity.panelId);
+    if (!panel) {
+      refuse("This panel is no longer open.");
+      return;
+    }
+    const ownsCommand = (commandId: string) => {
+      const command = registry.get(commandId);
+      return command?.source === "plugin" && command.pluginId === panel.pluginId
+        && runtime.host.getPlugin(panel.pluginId)?.manifest.contributes.commands.some((item) => item.id === commandId) === true;
+    };
+    const resolved = resolvePluginPanelAction(panel.report, request, ownsCommand);
+    if (!resolved.ok) {
+      refuse(resolved.reason);
+      return;
+    }
+    // invoke enqueues plugin work and returns immediately. Acknowledge acceptance, never wait
+    // for completion: a long submit must leave the panel free to send its separate stop command.
+    void acceptPluginInput(resolved.commandId, resolved.input)
+      .then(result => respondToPluginPanelAction(id, result.ok ? { ok: true } : { ok: false, reason: result.message }))
+      .catch(() => undefined);
+  };
+  useEffect(() => listenForPluginPanelActions((id, request, sourceLabel) => {
+    pluginPanelActionHandlerRef.current(id, request, sourceLabel);
+  }), []);
 
   // Apply the Customize Toolbars dialog's edited layout: feed it to the catalog (which rebuilds the
   // registry + fires onDidChange -> setToolsetRegistry), re-derive visibility, and persist. Mirrors
@@ -12449,6 +12605,7 @@ export function MainWindow({
   // before the overlay is up, abandons the in-flight conformer generation.
   useEffect(() => {
     const handleSpinEscape = (event: KeyboardEvent) => {
+      if (event.target instanceof Element && event.target.closest(".plugin-canvas-overlay")) return;
       if (isBlockedByModalDialog(event.target)) return;
       if (event.key !== "Escape") return;
     if (spin3dStateRef.current) {
@@ -19589,8 +19746,10 @@ export function MainWindow({
           <button type="button" className="document-tab-new" aria-label="New tab" title="New tab"
             onClick={() => void invoke("document.new")}><span aria-hidden="true">+</span></button>
         </div>
+        <div className="document-viewport">
         <section
           ref={canvasRegionRef}
+          tabIndex={-1}
           className={["canvas-region", rulersVisible ? "rulers-visible" : ""].filter(Boolean).join(" ")}
           aria-label="Document workspace"
           onDragOver={(event) => {
@@ -19968,6 +20127,42 @@ export function MainWindow({
             </div>
           </div>
         </section>
+        <div ref={canvasOverlayLayerRef} className="plugin-canvas-overlay-layer">
+          {pluginRuntime.canvasOverlays.map(({ pluginId, overlay }) => {
+            const manifest = pluginRuntime.plugins.find(plugin => plugin.id === pluginId);
+            const panel = manifest?.contributes.panels[0];
+            const openCommandId = manifest && pluginCanvasOverlayOpenCommand(manifest, overlay.id);
+            return <PluginCanvasOverlay key={`${pluginId}:${overlay.id}`} overlay={overlay}
+              viewportRef={canvasRegionRef}
+              overlayLayerRef={canvasOverlayLayerRef}
+              statusRowRef={statusRowRef}
+              gestureActive={canvasPointerActive || canvasZoomActive || canvasWheelActive || isSnapshotSessionActive()}
+              statusSource={pluginRuntime.runtime}
+              transcriptSource={pluginRuntime.runtime}
+              contentSource={pluginRuntime.runtime}
+              openSource={pluginRuntime.runtime}
+              requestPending={pendingPluginCommands.has(`command:${overlay.commandId}`)}
+              documentState={document}
+              onAction={request => dispatchOverlayAction(pluginId, overlay.id, request)}
+              onInitialize={openCommandId ? async () => {
+                const queueKey = `command:${openCommandId}`;
+                if (!pluginCommandQueuesRef.current.has(queueKey)) await invokeCommandRef.current(openCommandId);
+                await pluginCommandQueuesRef.current.get(queueKey);
+              } : undefined}
+              onFocusDrawing={() => canvasRegionRef.current?.focus({ preventScroll: true })}
+              panelTitle={panel?.title}
+              onOpenPanel={panel && overlay.showPanelLink !== false ? () => {
+                const manifest = pluginRuntime.runtime.host.getPlugin(pluginId)?.manifest;
+                const commandId = manifest && pluginPanelOpenCommand(manifest, panel.id);
+                if (commandId) void Promise.resolve(invokeCommandRef.current(commandId)).catch(() => undefined);
+                else if (pluginRuntime.runtime.panels.getDetachedPanels().some(item => item.pluginId === pluginId && item.panelId === panel.id)) {
+                  if (isDesktopRuntime()) void openPluginPanelWindow({ pluginId, panelId: panel.id,
+                    title: panel.title, ...panel.preferredWindowSize, focus: true }).catch(() => undefined);
+                } else setStatus(`The plugin has not supplied content or an open command for ${panel.title}.`);
+              } : undefined} />;
+          })}
+        </div>
+        </div>
         {activeEditorMolecule ? (
           <KetcherEditorHost
             molecule={activeEditorMolecule}
@@ -20041,7 +20236,7 @@ export function MainWindow({
         {/* One row along the bottom of the workspace: the status (its text truncating), the warnings
             count and the modifier hint on the left, the build stamp on the right, giving way first (App.css).
             Positioned apart, a long status or a branch build's long stamp ran one into the other. */}
-        <div className="status-row" data-status-row>
+        <div ref={statusRowRef} className="status-row" data-status-row>
           <div className="status-row-main">
             <span data-status-message role="status" aria-live="polite" className="status-message">
               {interactive3dWorkspace

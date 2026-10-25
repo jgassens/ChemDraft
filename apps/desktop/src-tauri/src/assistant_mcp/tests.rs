@@ -117,11 +117,13 @@ impl Drop for Fixture {
 }
 
 async fn send(host: String, raw: String) -> Reply {
+    send_with_read_timeout(host, raw, Duration::from_secs(5)).await
+}
+
+async fn send_with_read_timeout(host: String, raw: String, read_timeout: Duration) -> Reply {
     tokio::task::spawn_blocking(move || {
         let mut socket = TcpStream::connect(host).unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
+        socket.set_read_timeout(Some(read_timeout)).unwrap();
         socket
             .set_write_timeout(Some(Duration::from_secs(5)))
             .unwrap();
@@ -530,18 +532,86 @@ async fn deadlines_busy_fifth_call_cancellation_and_close_mid_call() {
     }
     tokio::task::yield_now().await;
     assert!(TcpStream::connect(&f.host).is_err());
+}
+
+#[test]
+fn tool_deadlines_preserve_reads_and_allow_bounded_confirmation() {
     for (method, name, seconds) in [
         ("tools/list", "", 10),
         ("tools/call", "render", 60),
         ("tools/call", "name_to_structure", 45),
         ("tools/call", "structure_to_name", 45),
-        ("tools/call", "insert_text", 120),
+        ("tools/call", "get_document", 120),
+        ("tools/call", "get_selection", 120),
+        ("tools/call", "get_structure", 120),
+        ("tools/call", "validate_smiles", 120),
+        ("tools/call", "insert_structures", 480),
+        ("tools/call", "insert_reaction", 480),
+        ("tools/call", "insert_text", 480),
+        ("tools/call", "edit_structure", 480),
+        ("tools/call", "delete_objects", 480),
+        ("tools/call", "style_objects", 480),
+        ("tools/call", "move_objects", 480),
     ] {
         assert_eq!(
             protocol::deadline(method, &json!({"name":name})),
             Duration::from_secs(seconds)
         );
     }
+}
+
+#[tokio::test]
+async fn write_call_survives_120_seconds_waiting_for_the_bridge() {
+    // Exercise real HTTP, production deadlines and pending-call cancellation, without the
+    // fixture's short timeout override. Tokio test-util is not enabled in the desktop crate.
+    let f = Fixture::new(None).await;
+    f.initialize().await.assert_status(200);
+    let start = |id, name| {
+        let raw = f.raw("POST", &format!("Mcp-Session-Id: {}\r\n", f.session_id),
+            &json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":{}}}).to_string());
+        tokio::spawn(send_with_read_timeout(
+            f.host.clone(),
+            raw,
+            Duration::from_secs(135),
+        ))
+    };
+    let write = start(1, "insert_structures");
+    let request = f.receive().await;
+    assert_eq!(request.params["name"], "insert_structures");
+    let read = start(2, "get_document");
+    let read_request = f.receive().await;
+    tokio::time::sleep(Duration::from_secs(121)).await;
+    assert!(
+        !write.is_finished(),
+        "write timed out before the human decision cap"
+    );
+    assert_eq!(
+        read.await.unwrap().json()["error"]["message"],
+        "ChemDraft did not answer in time"
+    );
+    let cancelled = f.receive().await;
+    assert_eq!(cancelled.method, "cancel");
+    assert_eq!(cancelled.request_id, read_request.request_id);
+    assert!(
+        f.receiver.lock().unwrap().try_recv().is_err(),
+        "write must not be cancelled"
+    );
+    f.manager
+        .respond(
+            &f.session_id,
+            &request.request_id,
+            McpBridgeResponse::Result {
+                result: json!({"content":[{"type":"text","text":"inserted after confirmation"}]}),
+            },
+        )
+        .unwrap();
+    let reply = write.await.unwrap();
+    reply.assert_status(200);
+    assert_eq!(reply.json()["id"], 1);
+    assert_eq!(
+        reply.json()["result"]["content"][0]["text"],
+        "inserted after confirmation"
+    );
 }
 
 #[tokio::test]

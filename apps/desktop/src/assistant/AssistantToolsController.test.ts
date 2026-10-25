@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DocumentObjectSchema, toEngineDocument } from "@chemdraft/chem-core";
+import { applyPatch, createCustomPageLayout, DocumentObjectSchema, toEngineDocument, undo, redo } from "@chemdraft/chem-core";
 import { AssistantCapabilityPermissions, type PluginCommandContext } from "@chemdraft/plugin-api";
 import { PluginHost } from "@chemdraft/plugin-host";
 import { AssistantToolsController } from "./AssistantToolsController";
@@ -8,6 +8,10 @@ import type { AssistantHistoryPort } from "./historyPort";
 import type { McpBridgeRequest, McpBridgeResponse } from "./assistantMcpEngine";
 import { testContext } from "./tools/testContext";
 import { createPluginWriteGate, PLUGIN_WRITE_MAX_WAIT_MS } from "../plugins/applyPluginDocumentPatch";
+import { setNativePromptProvider, type NativePromptOptions } from "../nativePrompt";
+import { objectRect } from "./placement";
+import { buildMoveObjects } from "./writeBuilder";
+import { applyChargeToolAtPoint } from "../documentWorkflow";
 
 function setup() {
   const fixture = testContext();
@@ -64,6 +68,350 @@ function setup() {
 }
 
 afterEach(() => vi.useRealTimers());
+
+describe("assistant write structural sharing", () => {
+  it.each([1, 5000])("inserts a caption without copying or comparing unchanged graphs (%i molecules, 20 atoms each)", async count => {
+    const s = setup();
+    const document = s.context.getDocument()!;
+    const page = document.pages[0]!;
+    const atoms = Array.from({ length: 20 }, (_, index) => ({ ...s.molecule.atoms[0]!,
+      id: `atom_${index}`, x: 100 + index * 10, y: 100 }));
+    const bonds = atoms.slice(1).map((atom, index) => ({ ...s.molecule.bonds[0]!,
+      id: `bond_${index}`, fromAtomId: atoms[index]!.id, toAtomId: atom.id }));
+    s.replace(toEngineDocument({ ...document, pages: [{ ...page, objects: [
+      ...Array.from({ length: count }, (_, index) => ({ ...s.molecule, id: `molecule_${index}`,
+        atoms, bonds, x: 100, y: 100, width: 190, height: 0 })), s.text
+    ] }] }));
+    s.select([]);
+    const before = s.context.getDocument()!;
+    const stringify = JSON.stringify;
+    let serializedCharacters = 0;
+    const serialization = vi.spyOn(JSON, "stringify").mockImplementation((...args) => {
+      const result = stringify(...args);
+      serializedCharacters += result?.length ?? 0;
+      return result;
+    });
+    const clone = vi.spyOn(globalThis, "structuredClone");
+    try {
+      await s.controller.beginRequest(s.plugin, { prompt: "caption" });
+      const result = await s.controller.callTool(s.plugin, { name: "insert_text", input: { text: "Caption" } });
+      // Count work rather than wall time: CI scheduling must not make this guard flaky.
+      // A full-document clone or per-molecule JSON comparison serializes megabytes here.
+      const serialized = serializedCharacters;
+      serialization.mockRestore();
+      expect(result.isError, JSON.stringify(result)).not.toBe(true);
+      expect(serialized).toBeLessThan(20_000);
+      expect(clone.mock.calls.some(([value]) => value === before)).toBe(false);
+      expect(s.context.chemistry.inspectStructure).not.toHaveBeenCalled();
+      const after = s.context.getDocument()!;
+      expect(after.pages[0]!.objects).toHaveLength(count + 2);
+      expect(before.pages[0]!.objects).toHaveLength(count + 1);
+      expect(after.pages[0]!.objects.slice(0, -1).every((object, index) => object === before.pages[0]!.objects[index])).toBe(true);
+      expect(s.history).toHaveLength(1);
+      expect(s.history[0]!.before).toBe(before);
+      expect(s.history[0]!.after).toBe(after);
+      const restored = undo({ past: [before], present: after, future: [] });
+      expect(restored.present).toBe(before);
+      expect(redo(restored).present).toBe(after);
+    } finally { serialization.mockRestore(); clone.mockRestore(); await s.finish(); }
+  });
+});
+
+function placementSetup() {
+  const s = setup();
+  const document = s.context.getDocument()!;
+  const page = document.pages[0]!;
+  s.replace(applyPatch({ ...document, pages: [{ ...page, objects: [] }] }, {
+    op: "updatePageLayout", pageId: page.id,
+    layout: createCustomPageLayout(400, 300, "css-px", { top: 36, right: 36, bottom: 36, left: 36 })
+  }));
+  s.select([]);
+  let index = 0;
+  s.context.chemistry.structureFromSmiles = async () => {
+    // Artificial wide depiction isolates placement from engine/layout behavior. No rescaling is allowed.
+    const width = index++ === 0 ? 1000 : 28;
+    const object = { ...s.molecule, width, atoms: s.molecule.atoms.map((atom, i) => ({ ...atom,
+      x: s.molecule.atoms[0]!.x + i * width })) };
+    return { available: true, built: true, object };
+  };
+  return s;
+}
+
+describe("assistant host page enlargement", () => {
+  it.each([false, true])("applies the same page-growth decision to native group labels (accepted: %s)", async accepted => {
+    const s = placementSetup();
+    const document = s.context.getDocument()!;
+    s.replace(applyPatch(document, { op: "updatePageLayout", pageId: document.pages[0]!.id,
+      layout: createCustomPageLayout(200, 160, "css-px", { top: 36, right: 36, bottom: 36, left: 36 }) }));
+    const prompt = vi.fn(async () => accepted ? "enlarge" : "decline");
+    const restore = setNativePromptProvider(prompt);
+    try {
+      const before = structuredClone(s.context.getDocument()!.pages[0]!);
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "draw groups" });
+      const result = await s.controller.callTool(s.plugin, { name: "insert_structures", input: {
+        items: Array.from({ length: 24 }, (_, index) => ({ kind: "group", label: ["CH3", "Ph", "Boc", "OTs"][index % 4] }))
+      } });
+      expect(result.isError, JSON.stringify(result)).not.toBe(true);
+      expect(prompt).toHaveBeenCalledOnce();
+      const page = s.context.getDocument()!.pages[0]!;
+      if (accepted) {
+        expect(page.objects).toHaveLength(24);
+        expect(page.height).toBeGreaterThan(before.height);
+      } else {
+        expect(page.width).toBe(before.width); expect(page.height).toBe(before.height);
+        expect(page.objects.length).toBeGreaterThan(0);
+        expect(page.objects.length).toBeLessThan(24);
+        expect(result.structuredContent).toMatchObject({ reason: "declined: the user chose not to enlarge the page", declined: expect.any(Array) });
+      }
+      for (const object of page.objects) {
+        expect(object).toMatchObject({ type: "molecule", atoms: [expect.objectContaining({ labelLiteral: true })], bonds: [] });
+        const rect = objectRect(object);
+        expect(rect.x + rect.width).toBeLessThanOrEqual(page.width - page.margin.right + 1e-6);
+        expect(rect.y + rect.height).toBeLessThanOrEqual(page.height - page.margin.bottom + 1e-6);
+      }
+      // The answer has returned control to the request; Stop can immediately cancel it again.
+      await s.controller.endRequest(s.plugin, { requestId });
+      await expect(s.controller.callTool(s.plugin, { name: "insert_text", input: { text: "After Stop" } })).rejects.toThrow();
+    } finally { restore(); await s.finish(); }
+  });
+
+  it("does not prompt for a fitting insertion", async () => {
+    const s = placementSetup();
+    const prompt = vi.fn(async () => "enlarge");
+    const restore = setNativePromptProvider(prompt);
+    try {
+      await s.controller.beginRequest(s.plugin, { prompt: "caption" });
+      const result = await s.controller.callTool(s.plugin, { name: "insert_text", input: { text: "Fits" } });
+      expect(result.isError, JSON.stringify(result)).not.toBe(true);
+      expect(s.context.getDocument()!.pages[0]!.objects).toHaveLength(1);
+      expect(prompt).not.toHaveBeenCalled();
+    } finally { restore(); await s.finish(); }
+  });
+
+  it("grows through the host with empty Send scope; one undo/redo restores page and all request objects", async () => {
+    const s = placementSetup();
+    const prompt = vi.fn(async (_prompt: NativePromptOptions) => "enlarge");
+    const restore = setNativePromptProvider(prompt);
+    const scopedWrite = vi.spyOn(s.host, "applyPatchForPlugin");
+    try {
+      const before = structuredClone(s.context.getDocument()!);
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "Draw Olympiadane and a caption" });
+      const result = await s.controller.callTool(s.plugin, { name: "insert_structures", input: {
+        items: [{ kind: "molecule", smiles: "CC", label: "Olympiadane" }]
+      } });
+      expect(result.isError, JSON.stringify(result)).not.toBe(true);
+      expect(prompt).toHaveBeenCalledOnce();
+      const page = s.context.getDocument()!.pages[0]!;
+      expect(page.width).toBeGreaterThan(before.pages[0]!.width);
+      expect(page.height).toBe(before.pages[0]!.height);
+      expect(page.layout).toMatchObject({ presetId: "custom", widthPx: page.width, heightPx: page.height });
+      expect(prompt.mock.calls[0]![0]).toMatchObject({ owner: "document",
+        message: `Olympiadane needs a page ${Math.round(page.width * 0.75)} × ${Math.round(page.height * 0.75)} pt. Enlarge the page to fit?`,
+        choices: [{ id: "enlarge", label: "Enlarge Page" }, { id: "decline", label: "Cancel", cancel: true }]
+      });
+      const molecule = page.objects.find(object => object.type === "molecule")!;
+      if (molecule.type !== "molecule") throw new Error("Expected molecule");
+      expect(molecule.atoms[1]!.x - molecule.atoms[0]!.x).toBeCloseTo(1000);
+      for (const object of page.objects) {
+        const rect = objectRect(object);
+        expect(rect.x + rect.width).toBeLessThanOrEqual(page.width - page.margin.right + 1e-6);
+        expect(rect.y + rect.height).toBeLessThanOrEqual(page.height - page.margin.bottom + 1e-6);
+      }
+      // The layout op never enters the plugin patch/scope API.
+      expect(JSON.stringify(scopedWrite.mock.calls[0])).not.toContain("updatePageLayout");
+      const caption = await s.controller.callTool(s.plugin, { name: "insert_text", input: { text: "Caption" } });
+      expect(caption.isError).not.toBe(true);
+      await s.controller.endRequest(s.plugin, { requestId });
+      const after = s.context.getDocument()!;
+      expect(s.history).toHaveLength(1);
+      expect(s.history[0]!.label).toBe("ChemDraft Assistant: Draw Olympiadane and a caption");
+      let history = { past: s.history.map(entry => entry.before), present: after, future: [] as typeof before[] };
+      history = undo(history);
+      expect(history.present).toEqual(before);
+      history = redo(history);
+      expect(history.present).toEqual(after);
+      expect(history.present.pages[0]!.objects).toHaveLength(3);
+      expect(prompt).toHaveBeenCalledOnce();
+      expect(scopedWrite).toHaveBeenCalledTimes(2);
+    } finally { restore(); await s.finish(); }
+  });
+
+  it.each([false, true].flatMap(mixed => ["decline", "unknown", "fallback"].map(answer => ({ mixed, answer }))))(
+    "$answer omits the oversized item and its label, retaining fitting items ($mixed)", async ({ mixed, answer }) => {
+    const s = placementSetup();
+    const prompt = vi.fn(async (options: NativePromptOptions, fallback: (options: NativePromptOptions) => Promise<string>) =>
+      answer === "fallback" ? fallback(options) : answer);
+    const restore = setNativePromptProvider(prompt);
+    try {
+      const before = structuredClone(s.context.getDocument()!.pages[0]!);
+      await s.controller.beginRequest(s.plugin, { prompt: "structures" });
+      const result = await s.controller.callTool(s.plugin, { name: "insert_structures", input: {
+        items: [{ kind: "molecule", smiles: "CC", label: "Olympiadane" },
+          ...(mixed ? [{ kind: "molecule", smiles: "CC", label: "Ethane" }] : [])]
+      } });
+      expect(result.isError, JSON.stringify(result)).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({ declined: ["Olympiadane"],
+        reason: "declined: the user chose not to enlarge the page", warnings: [] });
+      expect(result.content).toEqual([expect.objectContaining({ text: expect.stringContaining("declined: the user chose not to enlarge the page") })]);
+      expect(prompt).toHaveBeenCalledOnce();
+      const page = s.context.getDocument()!.pages[0]!;
+      expect({ ...page, objects: [] }).toEqual(before);
+      expect(page.objects).toHaveLength(mixed ? 2 : 0);
+      expect(page.objects.some(object => object.type === "text" && object.text === "Olympiadane")).toBe(false);
+      if (mixed) expect(page.objects.some(object => object.type === "text" && object.text === "Ethane")).toBe(true);
+      expect(s.history).toHaveLength(mixed ? 1 : 0);
+    } finally { restore(); await s.finish(); }
+  });
+
+  it.each(["insert_reaction", "insert_text"].flatMap(name => [false, true].map(accepted => ({ name, accepted }))))(
+    "asks once for non-fitting $name (accepted: $accepted)", async ({ name, accepted }) => {
+    const s = placementSetup();
+    const prompt = vi.fn(async () => accepted ? "enlarge" : "decline");
+    const restore = setNativePromptProvider(prompt);
+    try {
+      await s.controller.beginRequest(s.plugin, { prompt: "insert" });
+      const input = name === "insert_text" ? { text: "A line\n".repeat(100) } : { reactants: ["CC"], products: ["CC"] };
+      const result = await s.controller.callTool(s.plugin, { name, input });
+      expect(result.isError, JSON.stringify(result)).not.toBe(true);
+      expect(result.structuredContent?.reason).toBe(accepted ? undefined : "declined: the user chose not to enlarge the page");
+      expect(prompt).toHaveBeenCalledOnce();
+      const page = s.context.getDocument()!.pages[0]!;
+      if (accepted) {
+        expect(page.objects.length).toBeGreaterThan(0);
+        for (const object of page.objects) {
+          const rect = objectRect(object);
+          expect(rect.x + rect.width).toBeLessThanOrEqual(page.width - page.margin.right + 1e-6);
+          expect(rect.y + rect.height).toBeLessThanOrEqual(page.height - page.margin.bottom + 1e-6);
+        }
+      } else expect(page.objects).toHaveLength(0);
+      expect(s.history).toHaveLength(accepted ? 1 : 0);
+    } finally { restore(); await s.finish(); }
+  });
+
+  it("wraps real widths first, then asks once to grow the height for the whole set", async () => {
+    const s = placementSetup();
+    s.context.chemistry.structureFromSmiles = async () => ({ available: true, built: true, object: s.molecule });
+    const prompt = vi.fn(async () => "enlarge");
+    const restore = setNativePromptProvider(prompt);
+    try {
+      await s.controller.beginRequest(s.plugin, { prompt: "24 structures" });
+      const result = await s.controller.callTool(s.plugin, { name: "insert_structures", input: { arrangement: "row",
+        items: Array.from({ length: 24 }, (_, index) => ({ kind: "molecule", smiles: "CC", label: `Item ${index + 1}` }))
+      } });
+      expect(result.isError, JSON.stringify(result)).not.toBe(true);
+      expect(prompt).toHaveBeenCalledOnce();
+      const page = s.context.getDocument()!.pages[0]!;
+      expect(page.width).toBe(400);
+      expect(page.height).toBeGreaterThan(300);
+      expect(page.objects).toHaveLength(48);
+      for (const object of page.objects) {
+        const rect = objectRect(object);
+        expect(rect.x + rect.width).toBeLessThanOrEqual(page.width - page.margin.right + 1e-6);
+        expect(rect.y + rect.height).toBeLessThanOrEqual(page.height - page.margin.bottom + 1e-6);
+      }
+    } finally { restore(); await s.finish(); }
+  });
+
+  it("waits for a human answer beyond the tool deadlines", async () => {
+    vi.useFakeTimers();
+    const s = placementSetup();
+    let answer!: (choice: string) => void;
+    const prompt = vi.fn(() => new Promise<string>(resolve => { answer = resolve; }));
+    const restore = setNativePromptProvider(prompt);
+    try {
+      await s.controller.beginRequest(s.plugin, { prompt: "insert" });
+      const pending = s.controller.callTool(s.plugin, { name: "insert_structures", input: { items: [{ kind: "molecule", smiles: "CC" }] } });
+      let settled = false;
+      void pending.then(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(prompt).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(180_000);
+      expect(settled).toBe(false);
+      answer("enlarge");
+      expect((await pending).isError).not.toBe(true);
+      expect(s.context.getDocument()!.pages[0]!.objects).toHaveLength(1);
+    } finally { answer?.("decline"); restore(); await s.finish(); }
+  });
+
+  it.each([false, true])("declines through the MCP bridge after five minutes and ignores a late Yes (fitting item: %s)", async includeFitting => {
+    vi.useFakeTimers();
+    const s = placementSetup();
+    let answer!: (choice: string) => void;
+    const prompt = vi.fn(() => new Promise<string>(resolve => { answer = resolve; }));
+    const restore = setNativePromptProvider(prompt);
+    try {
+      const before = s.context.getDocument()!;
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "insert" });
+      const { sessionId } = await s.controller.createToolSession(s.plugin, { requestId });
+      s.listeners.get(sessionId)!({ sessionId, requestId: "growth", method: "tools/call", params: {
+        name: "insert_structures", arguments: { items: [
+          { kind: "molecule", smiles: "CC" }, ...(includeFitting ? [{ kind: "text", text: "Fits" }] : [])
+        ] }
+      } });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(prompt).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(299_999);
+      expect(s.engine.respond).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      const reason = "declined: no answer to the enlarge-page question within 5 minutes";
+      expect(s.engine.respond).toHaveBeenCalledExactlyOnceWith(sessionId, "growth", { result: expect.objectContaining({
+        structuredContent: expect.objectContaining({ reason, declined: expect.any(Array) }),
+        content: [expect.objectContaining({ text: expect.stringContaining(reason) })]
+      }) });
+      const after = s.context.getDocument()!;
+      expect(after.pages[0]!.width).toBe(before.pages[0]!.width);
+      expect(after.pages[0]!.objects).toHaveLength(includeFitting ? 1 : 0);
+      expect(s.history).toHaveLength(includeFitting ? 1 : 0);
+      answer("enlarge");
+      await vi.advanceTimersByTimeAsync(480_000);
+      expect(s.context.getDocument()).toEqual(after);
+      expect(s.history).toHaveLength(includeFitting ? 1 : 0);
+      expect(s.engine.respond).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { answer?.("decline"); restore(); await s.finish(); }
+  });
+
+  it("ignores a late Enlarge answer after host cancellation and draws none of the pending call's items", async () => {
+    const s = placementSetup();
+    let answer!: (choice: string) => void;
+    const prompt = vi.fn(() => new Promise<string>(resolve => { answer = resolve; }));
+    const restore = setNativePromptProvider(prompt);
+    try {
+      const before = s.context.getDocument();
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "insert" });
+      const pending = s.controller.callTool(s.plugin, { name: "insert_structures", input: { items: [
+        { kind: "molecule", smiles: "CC" }, { kind: "text", text: "Also held until the answer" }
+      ] } });
+      const stopped = expect(pending).rejects.toThrow();
+      await vi.waitFor(() => expect(prompt).toHaveBeenCalledOnce());
+      await s.controller.endRequest(s.plugin, { requestId });
+      await stopped;
+      answer("enlarge");
+      await Promise.resolve();
+      expect(s.context.getDocument()).toEqual(before);
+      expect(s.history).toHaveLength(0);
+    } finally { answer?.("decline"); restore(); await s.finish(); }
+  });
+
+  it("rejects a stale plan if the document changes while confirmation is open", async () => {
+    const s = placementSetup();
+    const restore = setNativePromptProvider(async () => {
+      const before = s.context.getDocument()!;
+      s.replace(applyPatch(before, { op: "updatePageLayout", pageId: before.pages[0]!.id,
+        layout: createCustomPageLayout(500, 350, "css-px", before.pages[0]!.margin) }));
+      return "enlarge";
+    });
+    try {
+      await s.controller.beginRequest(s.plugin, { prompt: "insert" });
+      const result = await s.controller.callTool(s.plugin, { name: "insert_structures", input: { items: [{ kind: "molecule", smiles: "CC" }] } });
+      expect(result).toMatchObject({ isError: true, content: [{ text: expect.stringContaining("read it again and retry") }] });
+      expect(s.context.getDocument()!.pages[0]!.width).toBe(500);
+      expect(s.context.getDocument()!.pages[0]!.objects).toHaveLength(0);
+      expect(s.history).toHaveLength(0);
+    } finally { restore(); await s.finish(); }
+  });
+});
+
 describe("assistant requests and MCP bridge", () => {
   it.each(["edited", "moved", "unchanged"])("rechecks the source %s during asynchronous structure building", async change => {
     const s = setup();
@@ -135,6 +483,30 @@ describe("assistant requests and MCP bridge", () => {
   });
   const queuedWrites = ["edit_structure", "style_objects", "delete_objects", "move_objects"].flatMap(name =>
     [true, false].map(targetChanged => ({ name, targetChanged })));
+  it("refuses a floating charge mark introduced after verification while waiting for a gesture", async () => {
+    const s = setup();
+    try {
+      const input = { objectIds: [s.molecule.id], to: { relativeTo: s.text.id, side: "right" as const } };
+      const planned = applyPatch(s.context.getDocument()!, buildMoveObjects(s.context, input).patch);
+      const moved = planned.pages[0]!.objects.find(object => object.id === s.molecule.id)!;
+      if (moved.type !== "molecule") throw new Error("Expected molecule");
+      const atom = moved.atoms[0]!;
+      await s.controller.beginRequest(s.plugin, { prompt: "move" });
+      s.gesture.active = true;
+      const pending = s.controller.callTool(s.plugin, { name: "move_objects", input });
+      await vi.waitFor(() => expect(s.gate.pending()).toBe(1));
+      const before = s.context.getDocument()!;
+      const withMark = applyChargeToolAtPoint(before, 1, { x: atom.x - 30, y: atom.y });
+      s.port.push(s.context.tabId, before, withMark, "Draw charge");
+      s.userEdits.forEach(listener => listener(s.context.tabId));
+      s.gesture.active = false;
+      s.gate.flush();
+      expect(await pending).toMatchObject({ isError: true, content: [{ text: expect.stringContaining("unselected charge mark") }] });
+      expect(s.context.getDocument()).toBe(withMark);
+      expect(s.history).toHaveLength(1);
+      expect(s.history[0]!.label).toBe("Draw charge");
+    } finally { await s.finish(); }
+  });
   it.each(queuedWrites)("rechecks queued $name after a gesture (target changed: $targetChanged)", async ({ name, targetChanged }) => {
     const s = setup();
     try {

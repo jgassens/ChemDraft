@@ -665,6 +665,19 @@ describe("panel input keyboard focus", () => {
     expect(focusout).not.toHaveBeenCalled();
     expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
   });
+
+  it("keeps the textarea lease when replacement output preserves the prompt control", async () => {
+    const { shell, request } = mount('<textarea></textarea><p>Working</p>');
+    const textarea = shell.querySelector<HTMLTextAreaElement>("textarea")!;
+    pointerDown(textarea);
+    textarea.focus();
+    await flush();
+    shell.querySelector("p")!.textContent = "Done";
+    await flush();
+    expect(document.activeElement).toBe(textarea);
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true]);
+  });
+
   it.each([
     '<input type="text">', '<input type="number">', "<textarea></textarea>",
     "<select><option>One</option></select>", '<div contenteditable="true"><span>Text</span></div>',

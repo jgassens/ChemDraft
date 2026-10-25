@@ -35,7 +35,7 @@ current document and selection and place results directly on the page through ty
    `assistant`, run-to-session binding, and the hardened loopback MCP server. Owner decisions are
    applied: writes need no approval window; scope is the Send selection plus request insertions;
    each request is one undo entry; provider web access is open.
-3. **PR C — panel input + canvas overlay:** plugin input sections, panel action routing, and the
+3. **PR C — panel input + canvas overlay (complete):** plugin input sections, panel action routing, and the
    viewport prompt overlay.
 4. **Plugin repository:** `org.chemdraft.assistant`, providers, system prompt, transcript, tests,
    and release.

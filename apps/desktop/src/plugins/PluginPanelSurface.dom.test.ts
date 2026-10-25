@@ -139,6 +139,35 @@ describe("PluginPanelSurface", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it("hides Run again and relays prompt actions through the authoritative panel bridge", async () => {
+    const onAction = vi.fn((event: Event) => {
+      const detail = (event as CustomEvent<{ id: string }>).detail;
+      window.dispatchEvent(new CustomEvent("chemdraft://plugin-panel-action-result", { detail: { id: detail.id, result: { ok: false, reason: "Not ready." } } }));
+    });
+    window.addEventListener("chemdraft://plugin-panel-action", onAction);
+    try {
+      mount(createElement(PluginPanelSurface, surfaceProps({ openPanel: {
+        ...openPanel,
+        report: { title: "Assistant", sections: [{ kind: "prompt", id: "ask", commandId: RECOGNITION_FIXTURE_COMMAND_ID, maxLength: 4000, rows: 3, submitLabel: "Send", disabled: false }] }
+      } })));
+      expect(container!.querySelector(".plugin-panel-run-again")).toBeNull();
+      await act(async () => {
+        const textarea = container!.querySelector("textarea")!;
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, "Draw benzene");
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      const send = container!.querySelector<HTMLButtonElement>(".plugin-report-action-primary")!;
+      await act(async () => {
+        send.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await Promise.resolve();
+      });
+      expect(onAction).toHaveBeenCalledOnce();
+      expect(container!.textContent).toContain("Not ready.");
+    } finally {
+      window.removeEventListener("chemdraft://plugin-panel-action", onAction);
+    }
+  });
+
   it("renders SVG report sections through an inert img data URL", () => {
     mount(
       createElement(
