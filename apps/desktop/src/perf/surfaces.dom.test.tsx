@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, createElement } from "react";
+import { act, createElement, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { PerfProbe, type PerfRecord, type ProbeEnvironment } from "./probe";
@@ -42,7 +42,7 @@ function probe(role: PerfRecord["window"]) {
   const tasks: (() => void)[] = [];
   const env: ProbeEnvironment = {
     target: {
-      addEventListener: (name: string, handler: EventListenerOrEventListenerObject) => { listeners.set(name, handler as EventListener); },
+      addEventListener: (name: string, handler: EventListenerOrEventListenerObject, capture?: boolean | AddEventListenerOptions) => { listeners.set(name + (capture ? "-capture" : ""), handler as EventListener); },
       removeEventListener: (name: string) => { listeners.delete(name); }
     },
     now: () => now, eventTime: () => 1000, frame: callback => { frames.set(++id, callback); return id; },
@@ -56,7 +56,9 @@ function probe(role: PerfRecord["window"]) {
     paint() { const callbacks = [...frames.values()]; frames.clear(); callbacks.forEach(callback => callback()); },
     input(type: string, target: Element) {
       // jsdom cannot manufacture trusted events. Exercise the installed capture listener directly.
-      listeners.get(type)!({ type, target, isTrusted: true, timeStamp: 0 } as unknown as Event);
+      const event = { type, target, isTrusted: true, timeStamp: 0, pointerId: 1 } as unknown as Event;
+      listeners.get(type + "-capture")?.(event);
+      listeners.get(type)?.(event);
       tasks.splice(0).forEach(task => task());
     }
   };
@@ -87,13 +89,28 @@ it("waits for the popover reveal, records its destination frame and settles the 
   expect(palette.timers.size).toBe(0); palette.instance.stop();
 });
 
-it.each(["pointerdown", "click"])("bounds a flyout %s that opens nothing to 1.5 seconds", type => {
+it("frame-measures ordinary flyout clicks with the primary command on both input rows", () => {
   const h = probe("palette"); state.probe = h.instance;
   const button = document.createElement("button"); button.dataset.commandFlyoutButton = "arrows";
-  h.input(type, button); h.paint(); expect(h.rows).toEqual([]);
-  h.setTime(2500);
-  [...h.timers.values()].filter(timer => timer.delay === 1500).forEach(timer => timer.callback());
-  expect(h.rows[0]).toMatchObject({ doneSignal: "no-op", doneMs: 1500, extra: { approximateCompletion: true } });
+  button.dataset.commandId = "tool.bond";
+  h.input("pointerdown", button); h.paint(); expect(h.rows).toEqual([]);
+  h.setTime(1100); h.input("pointerup", button); h.paint();
+  h.input("click", button); h.paint();
+  expect(h.rows).toHaveLength(2);
+  for (const row of h.rows) expect(row).toMatchObject({ commandId: "tool.bond", doneSignal: "frame", firstFrameMs: 100 });
+  expect(h.timers.size).toBe(0);
+});
+
+it.each([false, true])("suppresses the long-press release click (revealed before release: %s)", revealed => {
+  const h = probe("palette"); state.probe = h.instance;
+  const button = document.createElement("button"); button.dataset.commandFlyoutButton = "arrows";
+  h.input("pointerdown", button); h.paint(); h.instance.popoverRequested("arrows");
+  const show = () => h.instance.popoverShown("arrows", 1500, 1520, "toolset-popover-core-main");
+  if (revealed) show();
+  h.input("pointerup", button); h.input("click", button); h.paint();
+  if (!revealed) show();
+  expect(h.rows).toHaveLength(1);
+  expect(h.rows[0]).toMatchObject({ kind: "pointerdown", doneSignal: "popover-shown" });
   expect(h.timers.size).toBe(0);
 });
 
@@ -106,12 +123,26 @@ it.each(["no-op", "failed"] as const)("settles a requested but %s popover withou
   expect(h.timers.size).toBe(0);
 });
 
-it("records the Plugin Manager's committed dialog in the main webview", async () => {
+it.each(["plugins.manage", "plugin.example.openManager", undefined])("records one committed Plugin Manager row with its actual trigger %s under StrictMode", async commandId => {
   const h = probe("main"); state.probe = h.instance;
-  const button = document.createElement("button"); h.input("click", button); h.instance.command("plugins.manage");
+  if (commandId) {
+    const button = document.createElement("button"); h.input("click", button); h.instance.command(commandId);
+  }
+  const shown = h.instance.surfaceStarted("dialog", commandId, "plugin-manager");
+  const onShown = vi.fn(() => h.instance.surfaceShown(shown, "dialog-open"));
   const runtime = createPluginRuntime({ getActiveDocument: () => undefined });
-  await act(async () => root.render(createElement(PluginManagerDialog, { runtime, bundledPlugins: [], onClose: () => {} })));
+  const render = () => createElement(StrictMode, null, createElement(PluginManagerDialog, { runtime, bundledPlugins: [], onClose: () => {}, onShown }));
+  await act(async () => root.render(render()));
   expect(document.querySelector('[role="dialog"]')).not.toBeNull();
   h.paint();
-  expect(h.rows.find(row => row.kind === "dialog-open")).toMatchObject({ window: "dialog", commandId: "plugins.manage", doneSignal: "dialog-open", extra: { frameWindow: "main", surface: "plugin-manager" } });
+  await act(async () => root.render(render())); h.paint();
+  expect(onShown).toHaveBeenCalledTimes(1);
+  // A retained open timing also remains idempotent across a full component remount.
+  await act(async () => root.render(null));
+  h.setTime(1200);
+  await act(async () => root.render(render())); h.paint();
+  const rows = h.rows.filter(row => row.kind === "dialog-open");
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ window: "dialog", doneSignal: "dialog-open", extra: { frameWindow: "main", surface: "plugin-manager" } });
+  expect(rows[0].commandId).toBe(commandId);
 });

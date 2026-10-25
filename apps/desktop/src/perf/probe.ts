@@ -35,7 +35,7 @@ export interface ProbeEnvironment {
   processStart: number;
   clockErrorMs: number;
 }
-interface Span { record: PerfRecord; done?: number; frame?: number; raf?: number; timer?: number; expected?: DoneSignal; requestKey?: string; registryObserved?: boolean; parent?: Span; pointerId?: number; noopTimer?: number; }
+interface Span { record: PerfRecord; done?: number; frame?: number; raf?: number; timer?: number; expected?: DoneSignal; requestKey?: string; registryObserved?: boolean; parent?: Span; pointerId?: number; }
 
 /** Constructed only after the existing bridge gate. No global listeners/timers at module load. */
 export class PerfProbe {
@@ -44,6 +44,7 @@ export class PerfProbe {
   private task?: Span;
   private launch?: Span;
   private shortcuts?: ShortcutRegistry;
+  private flyoutPress?: { span: Span; target: Element; requested: boolean };
   private ready = false;
   private stopped = false;
   /** Every diagnostic entry point is best effort, including callbacks after teardown. */
@@ -60,6 +61,7 @@ export class PerfProbe {
     this.guard(() => {
       for (const kind of ["pointerdown", "click", "keydown"] as const) env.target.addEventListener(kind, this.input, true);
       env.target.addEventListener("chemdraft:native-command", this.native, true);
+      for (const kind of ["pointerup", "pointercancel"]) env.target.addEventListener(kind, this.paletteRelease, true);
       for (const kind of ["pointerup", "pointercancel"]) env.target.addEventListener(kind, this.release);
       if (env.window === "main") this.launch = this.start("cold-launch", env.processStart);
     });
@@ -67,6 +69,13 @@ export class PerfProbe {
   private input = (event: Event) => this.guard(() => {
     if (!event.isTrusted) return;
     if (event.type === "keydown" && ["Meta", "Control", "Shift", "Alt"].includes((event as KeyboardEvent).key)) return;
+    const flyout = this.env.window === "palette" && typeof Element !== "undefined" && event.target instanceof Element
+      ? event.target.closest("[data-command-flyout-button]") : null;
+    if (event.type === "click" && flyout && this.flyoutPress?.target === flyout && this.flyoutPress.requested) {
+      this.flyoutPress = undefined;
+      return;
+    }
+    if (event.type === "pointerdown") this.flyoutPress = undefined;
     const span = this.capture(event.type as PerfRecord["kind"], this.env.eventTime(event.timeStamp));
     if (event.type === "keydown") {
       const key = event as KeyboardEvent;
@@ -77,17 +86,14 @@ export class PerfProbe {
         this.command(commandId);
       }
     }
-    if (this.env.window === "palette" && typeof Element !== "undefined" && event.target instanceof Element) {
-      const flyoutId = event.target.closest("[data-command-flyout-button]")?.getAttribute("data-command-flyout-button");
-      if (flyoutId) {
-        span.expected = "popover-shown";
-        span.record.extra!.flyoutId = flyoutId;
-        const alreadyRequested = [...this.pending].some(p => p !== span && p.expected === "popover-shown"
-          && p.record.extra?.flyoutId === flyoutId && p.noopTimer === undefined && p.done === undefined);
-        if (!alreadyRequested) span.noopTimer = this.env.timeout(() => this.guard(() => {
-          span.record.extra = { ...span.record.extra, approximateCompletion: true, frameSource: "no-op" };
-          this.finish(span, "no-op"); this.flush(span, true);
-        }), 1500);
+    if (flyout) {
+      span.record.extra!.flyoutId = flyout.getAttribute("data-command-flyout-button");
+      if (event.type === "pointerdown") {
+        span.expected = "gesture-ended";
+        this.flyoutPress = { span, target: flyout, requested: false };
+      } else if (event.type === "click") {
+        const commandId = flyout.getAttribute("data-command-id");
+        if (commandId) span.record.commandId = commandId;
       }
     }
     if (event.type === "pointerdown") span.pointerId = (event as PointerEvent).pointerId;
@@ -95,6 +101,27 @@ export class PerfProbe {
     if (event.type === "pointerdown" && this.env.window === "main" && typeof Element !== "undefined"
       && event.target instanceof Element && event.target.closest(".page")
       && !event.target.closest("input,textarea,[contenteditable]")) span.expected = "document-commit";
+  });
+  private paletteRelease = (event: Event) => this.guard(() => {
+    const press = this.flyoutPress;
+    if (!event.isTrusted || !press || press.span.pointerId !== (event as PointerEvent).pointerId || press.requested) return;
+    // Capture precedes React's pointerup handler, which stops propagation.
+    this.task = press.span;
+    if (press.span.raf !== undefined) this.env.cancelFrame(press.span.raf);
+    press.span.raf = undefined; press.span.frame = undefined;
+    if (event.type === "pointerup") {
+      const commandId = press.target.getAttribute("data-command-id");
+      if (commandId) press.span.record.commandId = commandId;
+      press.span.expected = undefined;
+    }
+    this.env.defer(() => this.guard(() => {
+      if (this.task === press.span) this.task = undefined;
+      if (press.span.done === undefined && !press.span.registryObserved) {
+        press.span.expected = "frame";
+        press.span.frame = undefined;
+        this.scheduleFrame(press.span, "input-task");
+      }
+    }));
   });
   private release = (event: Event) => this.guard(() => {
     if (!event.isTrusted) return;
@@ -141,7 +168,6 @@ export class PerfProbe {
       if (!span || commandId.length > 256) return undefined;
       const firstBinding = span.record.commandId !== commandId;
       span.record.commandId = commandId;
-      if (span.noopTimer !== undefined) { this.env.clearTimeout(span.noopTimer); span.noopTimer = undefined; }
       if (firstBinding || span.expected === undefined || span.expected === "popover-shown") {
         span.expected = commandId === "view.togglePreferences" ? "window-shown"
           : commandId === "plugins.manage" ? "dialog-open"
@@ -158,10 +184,13 @@ export class PerfProbe {
   /** A content broadcast proves the hold requested an open; wait for its actual reveal. */
   popoverRequested(flyoutId: string): void {
     this.guard(() => {
+      const press = this.flyoutPress;
+      if (press?.span.record.extra?.flyoutId === flyoutId) press.requested = true;
       for (const span of this.pending) {
-        if (span.expected !== "popover-shown" || span.record.extra?.flyoutId !== flyoutId) continue;
-        if (span.noopTimer !== undefined) this.env.clearTimeout(span.noopTimer);
-        span.noopTimer = undefined;
+        if (span.record.extra?.flyoutId !== flyoutId || span.done !== undefined) continue;
+        span.expected = "popover-shown";
+        if (span.raf !== undefined) this.env.cancelFrame(span.raf);
+        span.raf = undefined; span.frame = undefined;
       }
     });
   }
@@ -196,6 +225,14 @@ export class PerfProbe {
   surfaceShown(span: Span | undefined, signal: DoneSignal): void {
     this.guard(() => {
       if (!span || span.done !== undefined) return;
+      // Closing a toggle settles its input but does not claim a shown surface.
+      if (signal === "command-finished") {
+        span.done = this.env.now();
+        if (span.timer !== undefined) this.env.clearTimeout(span.timer);
+        this.pending.delete(span);
+        if (span.parent) { this.finish(span.parent, signal); this.scheduleFrame(span.parent, "input-task"); }
+        return;
+      }
       span.record.extra = { ...span.record.extra, frameWindow: this.env.window };
       this.finish(span, signal); this.scheduleFrame(span, "window-shown");
       // Hidden/dismissed destinations may suspend rAF. A no-op claims no visible frame.
@@ -374,7 +411,6 @@ export class PerfProbe {
   private flush(span: Span, incomplete = false) {
     if (this.stopped || !this.pending.has(span) || span.done === undefined || (!incomplete && span.frame === undefined)) return;
     if (span.timer !== undefined) this.env.clearTimeout(span.timer);
-    if (span.noopTimer !== undefined) this.env.clearTimeout(span.noopTimer);
     if (span.raf !== undefined) this.env.cancelFrame(span.raf);
     this.pending.delete(span);
     const elapsed = (time: number) => Math.max(0, time - span.record.t0);
@@ -388,10 +424,10 @@ export class PerfProbe {
     const cleanup = (hook: () => void) => { try { hook(); } catch { /* Already disabled. */ } };
     for (const kind of ["pointerdown", "click", "keydown"] as const) cleanup(() => this.env.target.removeEventListener(kind, this.input, true));
     cleanup(() => this.env.target.removeEventListener("chemdraft:native-command", this.native, true));
+    for (const kind of ["pointerup", "pointercancel"]) cleanup(() => this.env.target.removeEventListener(kind, this.paletteRelease, true));
     for (const kind of ["pointerup", "pointercancel"]) cleanup(() => this.env.target.removeEventListener(kind, this.release));
     for (const span of this.pending) {
       if (span.timer !== undefined) cleanup(() => this.env.clearTimeout(span.timer!));
-      if (span.noopTimer !== undefined) cleanup(() => this.env.clearTimeout(span.noopTimer!));
       if (span.raf !== undefined) cleanup(() => this.env.cancelFrame(span.raf!));
     }
     this.pending.clear();

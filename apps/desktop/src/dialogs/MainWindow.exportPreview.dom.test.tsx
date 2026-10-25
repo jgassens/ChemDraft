@@ -78,9 +78,29 @@ it("records Preferences shown and hidden without leaving either command pending"
     frames.clear();
     const rows = (localStorage.getItem("chemdraft.perfLog") ?? "").trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
     expect(rows.at(-1)).toMatchObject({ commandId: "view.togglePreferences", doneSignal: open ? "window-shown" : "command-finished" });
-    expect(rows.some(row => row.kind === "window-shown" && row.window === "preferences" && row.doneSignal === "window-shown")).toBe(true);
+    const surfaces = rows.filter(row => row.window === "preferences");
+    expect(surfaces).toHaveLength(1);
+    expect(surfaces[0]).toMatchObject({ kind: "window-shown", doneSignal: "window-shown" });
   }
   expect(native.preferences).toHaveBeenCalledTimes(2);
+});
+
+it("records Plugin Manager only on real opens through the command handler", async () => {
+  const frames = new Map<number, FrameRequestCallback>(); let id = 0;
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation(callback => { frames.set(++id, callback); return id; });
+  vi.spyOn(window, "cancelAnimationFrame").mockImplementation(key => { frames.delete(key); });
+  await startPerfProbe("plugin-manager-test");
+  const paint = () => { for (const frame of [...frames.values()]) frame(0); frames.clear(); };
+  const surfaces = () => (localStorage.getItem("chemdraft.perfLog") ?? "").trim().split("\n").filter(Boolean)
+    .map(line => JSON.parse(line)).filter(row => row.kind === "dialog-open");
+  await command("plugins.manage"); paint();
+  await command("plugins.manage"); paint();
+  expect(surfaces()).toHaveLength(1);
+  expect(surfaces()[0]).toMatchObject({ commandId: "plugins.manage", extra: { surface: "plugin-manager" } });
+  const close = [...document.querySelectorAll<HTMLButtonElement>(".plugin-manager-button")].find(button => button.textContent?.trim() === "Close")!;
+  await act(async () => close.click());
+  await command("plugins.manage"); paint();
+  expect(surfaces()).toHaveLength(2);
 });
 
 it("does not compute content frames or publish preview traffic with the preference off, including drawing edits", async () => {

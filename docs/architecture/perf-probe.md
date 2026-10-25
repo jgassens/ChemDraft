@@ -117,12 +117,18 @@ command arguments, return values, rejections and invocation count. Completion bo
   readiness. An explicitly declared plugin panel opener waits for the panel window's open result.
   Preferences produces an additional `kind: "window-shown"`, `window: "preferences"` row after
   the native toggle returns and visibility is confirmed. It measures native visibility, not content
-  readiness; its frame is in main. Toggling it closed completes with `command-finished` instead.
+  readiness; its frame is in main. Toggling it closed completes the initiating input with
+  `command-finished` and emits no additional surface row.
 - `dialog-open`: the native ready handshake returned after showing the dialog. The destination then
   sends its first rAF timestamp to the originating sample. Reopening a retained dialog uses the
   completed native open call and a new destination rAF.
   Plugin Manager produces a `kind: "dialog-open"`, `window: "dialog"` row when its existing
   in-viewport dialog commits; `extra.surface` is `plugin-manager` and its frame is in main.
+  Timing starts in the open handler with the actual triggering command, rather than assuming
+  `plugins.manage` in the component. Opens without a command omit `commandId`. The committed
+  notification runs once per open; StrictMode effect re-runs and retained remounts cannot create
+  another row from the same completed open. Invoking the manager while already open creates no
+  additional surface row.
 - `popover-shown`: a palette popover's reveal call returned after content commit and sizing.
   Its additional `kind: "window-shown"`, `window: "palette-popover"` row starts when the destination
   receives content and takes its first frame after reveal. Prewarmed placeholders produce no row.
@@ -131,14 +137,17 @@ command arguments, return values, rejections and invocation count. Completion bo
   Matching pending flyout inputs then use the popover's completion and destination frame, rather
   than a palette frame. Because the existing content protocol has no request token, these matches
   carry `extra.approximateCompletion`; the destination row itself directly observes the reveal.
-- `no-op`: a flyout press/click with no observed nonempty content request settles after **1500 ms**,
-  with `extra.approximateCompletion` and `frameSource: "no-op"`. This prevents a suppressed click or
-  a hold that opens nothing from waiting for the 120-second operation timeout. Observed requests
-  clear this short timer and wait for the actual reveal. Empty or superseded popover content also
-  finishes its destination row as `no-op`. These no-op rows can omit `firstFrameMs`; they do not
-  wait for a frame in a hidden webview and do not claim a visible result.
-  The same owner-only relay forwards a destination `no-op` or `failed` result, so an already
-  requested but dismissed/superseded popover also settles its palette inputs without a timeout.
+- Flyout buttons keep their pointerdown pending until release or a nonempty content request.
+  Ordinary releases and clicks produce normal frame-measured rows with the primary `commandId`;
+  pointerup capture attributes the primary action even when React stops propagation. Only an
+  observed content request switches the press to `popover-shown`. The release click after that
+  long-press is suppressed by the probe, matching the toolbar action. There is no speculative
+  1500 ms popover expectation or no-op timer on an ordinary button press.
+- `no-op`: empty or superseded popover content finishes its destination row as `no-op`. These
+  rows can omit `firstFrameMs`; they do not wait for a frame in a hidden webview and do not claim
+  a visible result. The same owner-only relay forwards a destination `no-op` or `failed` result,
+  so an already requested but dismissed/superseded popover also settles its palette input
+  without a timeout.
 - `export-written`: the document owner's export callback returned an `exported` result after the
   final file write. A request-ID receipt carries this timestamp back to the originating dialog;
   progress/accepted/preview results cannot finish an export sample. Dialog Apply uses the same receipt
@@ -147,7 +156,8 @@ command arguments, return values, rejections and invocation count. Completion bo
   dispatcher returned, without a stronger registered completion. Window-close toggles use this signal.
 - `frame`: input with no command or stronger state signal, observed at the next frame.
 - `gesture-ended`: a canvas pointer gesture ended or was cancelled without a document commit;
-  pointerup/cancel are observed only to settle its existing pointerdown row.
+  pointerup/cancel settle its existing pointerdown row. Palette pointerup is also captured to
+  attribute primary flyout-button commands, without starting another input row.
 - `canvas-ready`: first rAF after the main canvas is mounted and session hydration finishes.
 - `failed` / `timeout`: a rejected command/open or an incomplete operation. Pending operations expire
   after 120 seconds; expired rows carry `extra.incomplete` and may omit `firstFrameMs`.

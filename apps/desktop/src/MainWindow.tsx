@@ -9659,6 +9659,7 @@ export function MainWindow({
   // core bindings memo because "plugins.manage" is a core binding that opens the manager.
   const [pluginDiagnosticsOpen, setPluginDiagnosticsOpen] = useState(false);
   const [pluginManagerOpen, setPluginManagerOpen] = useState(false);
+  const pluginManagerTiming = useRef<ReturnType<NonNullable<typeof perfProbe>["surfaceStarted"]>>(undefined);
   const analysisWindowSnapshotsRef = useRef(new Map<string, AnalysisWindowSnapshotPayload>());
   const analysisWindowRevisionRef = useRef(0);
   const publishAnalysisWindow = useCallback(
@@ -9735,7 +9736,14 @@ export function MainWindow({
         category: "plugins",
         description: "Enable or disable bundled ChemDraft plugins"
       },
-      () => setPluginManagerOpen(true)
+      () => {
+        if (pluginManagerOpen) {
+          perfProbe?.signal("dialog-open", PLUGIN_MANAGER_COMMAND_ID);
+          return;
+        }
+        pluginManagerTiming.current = perfProbe?.surfaceStarted("dialog", PLUGIN_MANAGER_COMMAND_ID, "plugin-manager");
+        setPluginManagerOpen(true);
+      }
     );
 
     register(
@@ -10425,6 +10433,7 @@ export function MainWindow({
     openDocumentFromNativePicker,
     openCustomPageSizeDialog,
     pasteClipboard,
+    pluginManagerOpen,
     publishAnalysisWindow,
     quickActions,
     resetDocumentHistory,
@@ -19548,6 +19557,7 @@ export function MainWindow({
 
       {pluginManagerOpen ? (
         <PluginManagerDialog
+          onShown={() => perfProbe?.surfaceShown(pluginManagerTiming.current, "dialog-open")}
           runtime={pluginRuntime.runtime}
           bundledPlugins={pluginRuntime.bundledPlugins}
           installedPlugins={pluginRuntime.installedPlugins}

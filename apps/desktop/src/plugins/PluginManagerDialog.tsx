@@ -1,4 +1,3 @@
-import { perfProbe } from "../perf/runtime";
 import { NAMING_ENGINE_DISCLOSURE, NAMING_INSTALL_PROFILE } from "./StructureNamingInstallDialog";
 import { useNativePrompt } from "../nativePrompt";
 import { useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
@@ -63,6 +62,7 @@ function requiresRecognitionEngine(pluginId: string | undefined): boolean {
 }
 
 export interface PluginManagerDialogProps {
+  onShown?: () => void;
   runtime: DesktopPluginRuntime;
   bundledPlugins: readonly BundledPluginDescriptor[];
   /** Plugins installed from a package (M36). Empty where installing is unsupported (browser build, tests). */
@@ -161,6 +161,7 @@ export function PluginManagerDialog({
   onUninstallRecognitionEngine,
   onShowRecognitionScreenCaptures,
   onClose,
+  onShown,
   onPluginsChanged
 }: PluginManagerDialogProps) {
   const titleId = useId();
@@ -182,10 +183,12 @@ export function PluginManagerDialog({
   const busy = busyOperation !== undefined;
   const backdropPressStartedRef = useRef(false);
   const dialogRef = useRef<HTMLElement>(null);
+  const shownRef = useRef(false);
   useEffect(() => {
-    const shown = perfProbe?.surfaceStarted("dialog", "plugins.manage", "plugin-manager");
-    perfProbe?.surfaceShown(shown, "dialog-open");
-  }, []);
+    if (shownRef.current) return;
+    shownRef.current = true;
+    onShown?.();
+  }, [onShown]);
 
   const installedCatalogKey = installedPluginCatalogKey(installedPlugins);
   const pendingUpdate =
