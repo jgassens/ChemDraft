@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type PointerEvent, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type MouseEvent, type PointerEvent, type RefObject } from "react";
 import type { PluginCanvasOverlayContribution, PluginOverlayTranscriptEntry, PluginOverlayContentSection } from "@chemdraft/plugin-api";
 import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 
@@ -199,7 +199,20 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
   const anchorNextExpansionRef = useRef(false);
   const suppressClickRef = useRef(false);
   const dragRef = useRef<{ pointerId: number; start: Position; origin: Position; mode: Mode; moved: boolean } | null>(null);
-  const resizeRef = useRef<{ pointerId: number; startY: number; height: number; bottom: number } | null>(null);
+  const resizeRef = useRef<{ pointerId: number; owner: HTMLElement; startY: number; height: number; bottom: number; cleanup: () => void } | null>(null);
+  const endResize = () => {
+    const resize = resizeRef.current;
+    resizeRef.current = null;
+    resize?.cleanup();
+    if (resize?.owner.hasPointerCapture?.(resize.pointerId)) resize.owner.releasePointerCapture(resize.pointerId);
+  };
+  useEffect(() => {
+    window.addEventListener("blur", endResize);
+    return () => { window.removeEventListener("blur", endResize); endResize(); };
+  }, []);
+  useLayoutEffect(() => {
+    if (!expanded || gestureActive) endResize();
+  }, [expanded, gestureActive]);
   useEffect(() => {
     const trackPointer = (event: globalThis.PointerEvent) => {
       // A later click (including on a nonfocusable canvas) is user intent. Native/programmatic
@@ -248,10 +261,12 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
 
     // client dimensions exclude classic scrollbars; on platforms with overlay scrollbars they
     // naturally remain available. clientLeft/clientTop also preserve a scrollbar on the leading edge.
-    let left = viewport.left + viewportElement.clientLeft;
-    let top = viewport.top + viewportElement.clientTop;
-    let right = left + (viewportElement.clientWidth || viewport.width);
-    let bottom = top + (viewportElement.clientHeight || viewport.height);
+    const viewportLeft = viewport.left + viewportElement.clientLeft;
+    const viewportTop = viewport.top + viewportElement.clientTop;
+    let left = Math.max(0, viewportLeft, layer.left);
+    let top = Math.max(0, viewportTop, layer.top);
+    let right = Math.min(window.innerWidth, layer.right, viewportLeft + (viewportElement.clientWidth || viewport.width));
+    let bottom = Math.min(window.innerHeight, layer.bottom, viewportTop + (viewportElement.clientHeight || viewport.height));
     for (const ruler of viewportElement.querySelectorAll<HTMLElement>(".ruler-left, .ruler-top, .ruler-corner")) {
       const rect = ruler.getBoundingClientRect();
       if ((ruler.classList.contains("ruler-left") || ruler.classList.contains("ruler-corner"))
@@ -284,9 +299,8 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
       element.style.maxWidth = `${Math.max(0, bounds.right - bounds.left)}px`;
       const available = Math.max(0, bounds.bottom - bounds.top - PALETTE_CLEARANCE);
       element.style.maxHeight = `${expanded ? available : Math.max(0, bounds.bottom - bounds.top)}px`;
-      // Remember the current cap, so a previously window-tall box cannot reappear after resizing.
+      // Fitting changes only the displayed size; the user's height returns when space permits.
       const rememberedHeight = Math.min(height, available);
-      setHeight(rememberedHeight);
       const contentHeight = contentRef.current?.firstElementChild?.scrollHeight ?? 0;
       const fittedHeight = Math.min(available, autoFitContent && content.length > 0
         ? Math.max(rememberedHeight, Math.min(MIN_CHAT_HEIGHT + contentHeight, Math.floor((bounds.bottom - bounds.top) * 0.7)))
@@ -318,11 +332,23 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
     if (statusRowRef?.current) observer?.observe(statusRowRef.current);
     for (const ruler of viewport.querySelectorAll<HTMLElement>(".ruler-left, .ruler-top, .ruler-corner")) observer?.observe(ruler);
     window.addEventListener("resize", fit);
+    let resolution: MediaQueryList | undefined;
+    const watchResolution = () => {
+      resolution?.removeEventListener("change", onResolutionChange);
+      resolution = window.matchMedia?.(`(resolution: ${window.devicePixelRatio}dppx)`);
+      resolution?.addEventListener("change", onResolutionChange);
+    };
+    const onResolutionChange = () => { fit(); watchResolution(); };
+    watchResolution();
     if (expanded && focusOnExpandRef.current) {
       focusOnExpandRef.current = false;
       element.querySelector("textarea")?.focus({ preventScroll: true });
     }
-    return () => { observer?.disconnect(); window.removeEventListener("resize", fit); };
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", fit);
+      resolution?.removeEventListener("change", onResolutionChange);
+    };
   }, [expanded, gestureActive, height, autoFitContent, content, openRequest, overlay.defaultCorner, overlayLayerRef, statusRowRef, viewportRef]);
 
   useEffect(() => {
@@ -371,14 +397,28 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
     if (event.button !== 0 || event.isPrimary === false || (event.target as Element).closest("button")) return;
     event.preventDefault();
     const currentHeight = expandedSizeRef.current.height;
-    resizeRef.current = { pointerId: event.pointerId, startY: event.clientY, height: currentHeight,
+    endResize();
+    const owner = event.currentTarget;
+    // Capture remains on the grip/header. Also cover a fast move delivered to the document
+    // before native capture takes effect; never process an owner event twice.
+    const outside = (next: globalThis.PointerEvent) => {
+      if (resizeRef.current?.pointerId !== next.pointerId || (next.target instanceof Node && owner.contains(next.target))) return;
+      next.stopPropagation();
+      if (next.type === "pointermove") updateResize(next);
+      else endResize();
+    };
+    const events = ["pointermove", "pointerup", "pointercancel"] as const;
+    const cleanup = () => { for (const type of events) document.removeEventListener(type, outside, true); };
+    resizeRef.current = { pointerId: event.pointerId, owner, cleanup, startY: event.clientY, height: currentHeight,
       bottom: (position?.y ?? drawingArea().top) + currentHeight };
-    event.currentTarget.setPointerCapture?.(event.pointerId);
+    for (const type of events) document.addEventListener(type, outside, true);
+    owner.setPointerCapture?.(event.pointerId);
   };
-  const moveResize = (event: PointerEvent<HTMLElement>) => {
-    event.stopPropagation();
+  const updateResize = (event: Pick<PointerEvent<HTMLElement>, "pointerId" | "buttons" | "clientY">) => {
     const resize = resizeRef.current;
     if (!resize || resize.pointerId !== event.pointerId) return;
+    // A missed release (for example on leaving the native window) must not keep resizing on hover.
+    if (event.buttons === 0) { endResize(); return; }
     const bounds = drawingArea();
     const bottom = Math.min(resize.bottom, bounds.bottom);
     const available = Math.max(0, bottom - bounds.top - PALETTE_CLEARANCE);
@@ -390,11 +430,17 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
       x: current.expanded?.x ?? bounds.left, y: bottom - nextHeight
     }, "expanded") }));
   };
+  const moveResize = (event: PointerEvent<HTMLElement>) => {
+    event.stopPropagation();
+    updateResize(event);
+  };
   const stopResize = (event: PointerEvent<HTMLElement>) => {
     event.stopPropagation();
     if (resizeRef.current?.pointerId !== event.pointerId) return;
-    resizeRef.current = null;
-    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    endResize();
+  };
+  const preventOverlaySelection = (event: MouseEvent<HTMLElement>) => {
+    if (event.detail > 1) event.preventDefault();
   };
   const resetHeight = () => {
     const bounds = drawingArea();
@@ -493,9 +539,11 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
     </button>
     <div className="plugin-canvas-overlay-chat" hidden={!expanded}>
       <div className="plugin-canvas-overlay-resize" aria-label="Resize conversation"
+        onMouseDown={preventOverlaySelection}
         onPointerDown={startResize} onPointerMove={moveResize} onPointerUp={stopResize}
         onPointerCancel={stopResize} onLostPointerCapture={stopResize} />
       <div className="plugin-canvas-overlay-header"
+        onMouseDown={preventOverlaySelection}
         title="Drag to resize; double-click to reset height"
         onPointerDown={startResize} onPointerMove={moveResize} onPointerUp={stopResize}
         onPointerCancel={stopResize} onLostPointerCapture={stopResize}

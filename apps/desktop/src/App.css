@@ -911,12 +911,13 @@ textarea:focus-visible,
   position: absolute; top: 0; left: 0; right: 0; height: 7px;
   cursor: ns-resize; touch-action: none;
 }
+.plugin-canvas-overlay-header, .plugin-canvas-overlay-resize { -webkit-user-select: none; user-select: none; }
 .plugin-canvas-overlay-resize::after {
   content: ""; display: block; width: 28px; height: 2px; margin: 2px auto;
   background: var(--cd-border-control);
 }
 .plugin-canvas-overlay-transcript {
-  flex: 1 1 48px; min-height: 32px; overflow: auto; overflow-wrap: anywhere;
+  flex: 1 1 48px; min-height: 0; overflow: auto; overflow-wrap: anywhere;
   margin-top: var(--cd-space-2); overscroll-behavior: contain;
 }
 .plugin-canvas-overlay-entry { white-space: pre-wrap; line-height: 16px; margin-bottom: 4px; }
@@ -937,7 +938,7 @@ textarea:focus-visible,
 }
 .plugin-canvas-overlay-icon[hidden] { display: none; }
 .plugin-canvas-overlay-icon img { width: 24px; height: 24px; }
-.plugin-canvas-overlay-header { display: flex; align-items: center; justify-content: space-between; cursor: ns-resize; touch-action: none; user-select: none; }
+.plugin-canvas-overlay-header { display: flex; align-items: center; justify-content: space-between; cursor: ns-resize; touch-action: none; }
 .plugin-report-composer-counter { margin: var(--cd-space-2) 0 0; color: var(--cd-text-muted); font-size: 11px; text-align: right; }
 .plugin-canvas-overlay-header button { color: var(--cd-text-secondary); background: transparent; border: 0; cursor: pointer; }
 .plugin-canvas-overlay .plugin-report-composer { position: static; margin: 0; padding: var(--cd-space-3) 0 0; border: 0; }

@@ -84,8 +84,8 @@ const statusRowRef = createRef<HTMLElement>();
 let viewportWidth: number;
 let viewportHeight: number;
 
-function pointer(target: Element, type: string, x: number, y: number): void {
-  const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: x, clientY: y });
+function pointer(target: Element | Document, type: string, x: number, y: number, buttons = type === "pointerdown" || type === "pointermove" ? 1 : 0): void {
+  const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, buttons, clientX: x, clientY: y });
   Object.defineProperty(event, "pointerId", { value: 1 });
   target.dispatchEvent(event);
 }
@@ -122,6 +122,8 @@ describe("PluginCanvasOverlay", () => {
     transcriptSource = new CanvasOverlayTranscriptSource();
     action = vi.fn<PluginPanelActionHandler>().mockResolvedValue({ ok: true }); openPanel = vi.fn();
     viewportWidth = 600; viewportHeight = 400;
+    window.innerHeight = 1200;
+    window.innerWidth = 1600;
     viewport = document.createElement("div"); viewportRef.current = viewport; overlayLayerRef.current = viewport;
     statusRow = document.createElement("div"); statusRowRef.current = statusRow;
     rulerLeft = document.createElement("div"); rulerLeft.className = "ruler-left";
@@ -193,7 +195,7 @@ describe("PluginCanvasOverlay", () => {
     root = createRoot(container); await render(); await expand();
     expect(widget().style.height).toBe("272px");
     expect(widget().style.top).toBe("104px");
-    expect(window.localStorage.getItem(`${storageKey}:height`)).toBe("272");
+    expect(window.localStorage.getItem(`${storageKey}:height`)).toBe("2000");
     const header = container.querySelector(".plugin-canvas-overlay-header")!;
     await act(async () => { pointer(header, "pointerdown", 180, 104); pointer(header, "pointermove", 180, 150); pointer(header, "pointerup", 180, 150); });
     expect(widget().style.height).toBe("226px");
@@ -209,12 +211,12 @@ describe("PluginCanvasOverlay", () => {
     await act(async () => window.dispatchEvent(new Event("resize")));
     expect(widget().style.height).toBe("172px");
     expect(widget().style.top).toBe("104px");
-    expect(window.localStorage.getItem(`${storageKey}:height`)).toBe("172");
+    expect(window.localStorage.getItem(`${storageKey}:height`)).toBe("272");
     viewportHeight = 400;
     await act(async () => window.dispatchEvent(new Event("resize")));
-    expect(widget().style.height).toBe("172px");
+    expect(widget().style.height).toBe("272px");
     await act(async () => root.unmount()); root = createRoot(container); await render(); await expand();
-    expect(widget().style.height).toBe("172px");
+    expect(widget().style.height).toBe("272px");
   });
 
   it.each(["macos", "windows"] as const)("preserves over-limit overlay drafts and explains both refused send paths on %s", async targetPlatform => {
@@ -626,10 +628,10 @@ describe("PluginCanvasOverlay", () => {
     expect(widget().getBoundingClientRect().height).toBe(172);
     viewportHeight = 400;
     await act(async () => window.dispatchEvent(new Event("resize")));
-    expect(widget().getBoundingClientRect().height).toBe(172);
+    expect(widget().getBoundingClientRect().height).toBe(272);
     const restoredHandle = container.querySelector(".plugin-canvas-overlay-resize")!;
     await act(async () => { pointer(restoredHandle, "pointerdown", 300, 32); pointer(restoredHandle, "pointermove", 300, 1000); pointer(restoredHandle, "pointerup", 300, 1000); });
-    expect(widget().style.height).toBe("172px"); expect(widget().style.top).toBe("104px");
+    expect(widget().style.height).toBe("220px"); expect(widget().style.top).toBe("156px");
   });
 
   it("renders roles and errors, follows only a reader at the bottom, and keeps focus and drafts", async () => {
@@ -802,6 +804,135 @@ describe("PluginCanvasOverlay", () => {
     viewportWidth = 500; viewportHeight = 300;
     await act(async () => window.dispatchEvent(new Event("resize")));
     expect(widget().style.left).toBe("448px"); expect(widget().style.top).toBe("240px");
+  });
+
+  it.each(["macos", "windows"] as const)("clips to a 405px window without replacing remembered height on %s", async targetPlatform => {
+    platform = targetPlatform;
+    await act(async () => root.unmount());
+    viewportHeight = 900;
+    window.localStorage.setItem(`${storageKey}:height`, "600");
+    root = createRoot(container); await render(); await expand();
+    expect(widget().style.height).toBe("600px");
+    await act(async () => enterText("Still reachable"));
+    const textarea = container.querySelector("textarea")!;
+    await act(async () => { window.innerHeight = 405; window.dispatchEvent(new Event("resize")); });
+    expect(widget().style.height).toBe("301px");
+    expect(Number.parseFloat(widget().style.top) + Number.parseFloat(widget().style.height)).toBeLessThanOrEqual(405);
+    expect(window.localStorage.getItem(`${storageKey}:height`)).toBe("600");
+    expect(document.activeElement).toBe(textarea);
+    expect(textarea.value).toBe("Still reachable");
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Collapse Assistant"]')!.click());
+    expect(Number.parseFloat(widget().style.top) + 36).toBeLessThanOrEqual(405);
+    await expand();
+    await act(async () => { window.innerHeight = 1200; window.dispatchEvent(new Event("resize")); });
+    expect(widget().style.height).toBe("600px");
+  });
+
+  it("fits on canvas ResizeObserver notifications without a window resize and restores height on grow", async () => {
+    await act(async () => root.unmount());
+    const observers = new Set<{ callback: () => void; targets: Set<Element> }>();
+    vi.stubGlobal("ResizeObserver", class {
+      targets = new Set<Element>();
+      constructor(readonly callback: () => void) { observers.add(this); }
+      observe(target: Element) { this.targets.add(target); }
+      disconnect() { observers.delete(this); }
+    });
+    viewportHeight = 900;
+    window.localStorage.setItem(`${storageKey}:height`, "600");
+    root = createRoot(container); await render(); await expand();
+    const notifyCanvas = () => { for (const observer of [...observers]) if (observer.targets.has(viewport)) observer.callback(); };
+    await act(async () => { viewportHeight = 350; notifyCanvas(); });
+    expect(widget().style.height).toBe("222px");
+    expect(Number.parseFloat(widget().style.top) + 222).toBeLessThanOrEqual(326);
+    expect(window.localStorage.getItem(`${storageKey}:height`)).toBe("600");
+    await act(async () => { viewportHeight = 900; notifyCanvas(); });
+    expect(widget().style.height).toBe("600px");
+  });
+
+  it("fits on DPR changes, re-arms the resolution query, and removes its listener on teardown", async () => {
+    await act(async () => root.unmount());
+    const queries: { query: string; listeners: Set<() => void> }[] = [];
+    vi.stubGlobal("devicePixelRatio", 1);
+    vi.stubGlobal("matchMedia", (query: string) => {
+      const listeners = new Set<() => void>(); queries.push({ query, listeners });
+      return { addEventListener: (_: string, listener: () => void) => listeners.add(listener),
+        removeEventListener: (_: string, listener: () => void) => listeners.delete(listener) };
+    });
+    viewportHeight = 900;
+    window.localStorage.setItem(`${storageKey}:height`, "600");
+    root = createRoot(container); await render(); await expand();
+    const previous = queries.at(-1)!;
+    expect(previous.query).toBe("(resolution: 1dppx)");
+    await act(async () => {
+      vi.stubGlobal("devicePixelRatio", 1.5); viewportHeight = 350;
+      [...previous.listeners].forEach(listener => listener());
+    });
+    expect(widget().style.height).toBe("222px");
+    expect(previous.listeners.size).toBe(0);
+    expect(queries.at(-1)!.query).toBe("(resolution: 1.5dppx)");
+    await act(async () => { viewportHeight = 900; [...queries.at(-1)!.listeners].forEach(listener => listener()); });
+    expect(widget().style.height).toBe("600px");
+    await act(async () => root.unmount());
+    expect(queries.every(query => query.listeners.size === 0)).toBe(true);
+    root = createRoot(container); await render();
+  });
+
+  it.each(["pointerup", "pointercancel", "lostpointercapture", "blur", "hover", "collapse", "hide"])("keeps grip capture across fast moves and ends resizing on %s", async ending => {
+    viewportHeight = 900; await render(); await expand();
+    const grip = container.querySelector<HTMLElement>(".plugin-canvas-overlay-resize")!;
+    let captured = false;
+    const setCapture = vi.fn(() => { captured = true; });
+    const releaseCapture = vi.fn(() => { captured = false; });
+    Object.assign(grip, { setPointerCapture: setCapture, hasPointerCapture: () => captured, releasePointerCapture: releaseCapture });
+    await act(async () => pointer(grip, "pointerdown", 300, 500));
+    expect(setCapture).toHaveBeenCalledWith(1);
+    await act(async () => pointer(document, "pointermove", 1500, 300));
+    expect(widget().style.height).toBe("480px");
+    expect(container.querySelector(".plugin-canvas-overlay-resize")).toBe(grip);
+    expect(captured).toBe(true);
+    await act(async () => pointer(document, "pointermove", -1000, 350));
+    expect(widget().style.height).toBe("430px");
+    await act(async () => {
+      if (ending === "blur") window.dispatchEvent(new Event("blur"));
+      else if (ending === "hover") pointer(document, "pointermove", 1400, 100, 0);
+      else if (ending === "collapse") container.querySelector<HTMLButtonElement>('[aria-label="Collapse Assistant"]')!.click();
+      else if (ending === "hide") { gestureActive = true; await render(); }
+      else if (ending === "lostpointercapture") { captured = false; pointer(grip, ending, 1400, 350); }
+      else pointer(document, ending, 1400, 350);
+    });
+    expect(captured).toBe(false);
+    const height = widget().style.height;
+    await act(async () => pointer(grip, "pointermove", -1000, 150));
+    expect(widget().style.height).toBe(height);
+  });
+
+  it.each(["macos", "windows"] as const)("cancels header/grip multi-click selection while preserving prompt and transcript selection on %s", async targetPlatform => {
+    platform = targetPlatform; await render(); await expand();
+    for (const selector of [".plugin-canvas-overlay-header span", ".plugin-canvas-overlay-resize"]) {
+      const target = container.querySelector(selector)!;
+      for (const detail of [2, 3]) {
+        const down = new MouseEvent("mousedown", { bubbles: true, cancelable: true, detail });
+        await act(async () => target.dispatchEvent(down));
+        expect(down.defaultPrevented).toBe(true);
+      }
+    }
+    await act(async () => enterText("Select this prompt"));
+    const textarea = container.querySelector("textarea")!;
+    const down = new MouseEvent("mousedown", { bubbles: true, cancelable: true, detail: 2 });
+    textarea.dispatchEvent(down);
+    expect(down.defaultPrevented).toBe(false);
+    textarea.focus(); textarea.setSelectionRange(0, 6);
+    expect(document.activeElement).toBe(textarea);
+    expect(textarea.value.slice(textarea.selectionStart, textarea.selectionEnd)).toBe("Select");
+    await act(async () => transcriptSource.set([{ role: "assistant", text: "Selectable reply" }]));
+    const reply = container.querySelector(".plugin-canvas-overlay-entry span")!;
+    const replyDown = new MouseEvent("mousedown", { bubbles: true, cancelable: true, detail: 2 });
+    reply.dispatchEvent(replyDown);
+    expect(replyDown.defaultPrevented).toBe(false);
+    const range = document.createRange(); range.selectNodeContents(reply);
+    window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range);
+    expect(window.getSelection()!.toString()).toBe("Selectable reply");
+    window.getSelection()!.removeAllRanges();
   });
 
   it("migrates old header positions to the box without moving the icon, and scopes them to the window", async () => {

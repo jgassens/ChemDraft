@@ -299,6 +299,8 @@ consent text must say that it does and that page content can leave the computer.
 
 ## Plugin panel input and canvas overlay (macOS and Windows)
 
+On both platforms, shrink the window to 405 px high, resize the canvas region, and move between display scales: Send stays reachable, the collapsed icon stays inside, and growing restores the remembered height; flick-drag the resize grip outside its bounds and cancel/interruption then hover (no stuck resize); double-click the header/grip (no text selection) and select text normally in the prompt and transcript.
+
 With an API 0.1.12 overlay-only plugin, use its Plugins menu command to expand and focus the
 prompt; repeat `open` without `focus: true` while drawing and verify focus stays on the drawing.
 Show setup text, key/value rows, buttons and an image above the transcript. Content should grow
