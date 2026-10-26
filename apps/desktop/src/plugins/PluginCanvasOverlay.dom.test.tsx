@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PluginCanvasOverlayContributionSchema } from "@chemdraft/plugin-api";
 import type { PluginOverlayTranscriptEntry } from "@chemdraft/plugin-api";
 import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
-import { PluginCanvasOverlay } from "./PluginCanvasOverlay";
+import { canvasOverlayDockSlots, PluginCanvasOverlay } from "./PluginCanvasOverlay";
 import type { PluginPanelActionHandler } from "./pluginPanelActionTypes";
 import { MemoryStorage } from "../testSupport/memoryStorage";
 import { createPluginRuntime, type DesktopPluginRuntime } from "./createPluginRuntime";
@@ -84,10 +84,11 @@ const statusRowRef = createRef<HTMLElement>();
 let viewportWidth: number;
 let viewportHeight: number;
 
-function pointer(target: Element, type: string, x: number, y: number): void {
-  const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: x, clientY: y });
+function pointer(target: Element | Document, type: string, x: number, y: number, buttons = type === "pointerdown" || type === "pointermove" ? 1 : 0): MouseEvent {
+  const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, buttons, clientX: x, clientY: y });
   Object.defineProperty(event, "pointerId", { value: 1 });
   target.dispatchEvent(event);
+  return event;
 }
 function enterText(value: string): void {
   const textarea = container.querySelector("textarea")!;
@@ -122,6 +123,8 @@ describe("PluginCanvasOverlay", () => {
     transcriptSource = new CanvasOverlayTranscriptSource();
     action = vi.fn<PluginPanelActionHandler>().mockResolvedValue({ ok: true }); openPanel = vi.fn();
     viewportWidth = 600; viewportHeight = 400;
+    window.innerHeight = 1200;
+    window.innerWidth = 1600;
     viewport = document.createElement("div"); viewportRef.current = viewport; overlayLayerRef.current = viewport;
     statusRow = document.createElement("div"); statusRowRef.current = statusRow;
     rulerLeft = document.createElement("div"); rulerLeft.className = "ruler-left";
@@ -189,11 +192,11 @@ describe("PluginCanvasOverlay", () => {
     platform = targetPlatform;
     await act(async () => root.unmount());
     window.localStorage.setItem(`${storageKey}:height`, "2000");
-    window.localStorage.setItem(expandedKey, JSON.stringify({ x: 150, y: 32 }));
+    window.localStorage.setItem(expandedKey, JSON.stringify({ version: 1, userPlaced: true, x: 150, y: 32, bottom: 0 }));
     root = createRoot(container); await render(); await expand();
     expect(widget().style.height).toBe("272px");
     expect(widget().style.top).toBe("104px");
-    expect(window.localStorage.getItem(`${storageKey}:height`)).toBe("272");
+    expect(window.localStorage.getItem(`${storageKey}:height`)).toBe("2000");
     const header = container.querySelector(".plugin-canvas-overlay-header")!;
     await act(async () => { pointer(header, "pointerdown", 180, 104); pointer(header, "pointermove", 180, 150); pointer(header, "pointerup", 180, 150); });
     expect(widget().style.height).toBe("226px");
@@ -204,17 +207,17 @@ describe("PluginCanvasOverlay", () => {
     await act(async () => header.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
     expect(widget().style.height).toBe("272px");
     expect(widget().style.top).toBe("104px");
-    expect(window.localStorage.getItem(`${storageKey}:height`)).toBe("272");
+    expect(window.localStorage.getItem(`${storageKey}:height`)).toBe("280");
     viewportHeight = 300;
     await act(async () => window.dispatchEvent(new Event("resize")));
     expect(widget().style.height).toBe("172px");
     expect(widget().style.top).toBe("104px");
-    expect(window.localStorage.getItem(`${storageKey}:height`)).toBe("172");
+    expect(window.localStorage.getItem(`${storageKey}:height`)).toBe("280");
     viewportHeight = 400;
     await act(async () => window.dispatchEvent(new Event("resize")));
-    expect(widget().style.height).toBe("172px");
+    expect(widget().style.height).toBe("272px");
     await act(async () => root.unmount()); root = createRoot(container); await render(); await expand();
-    expect(widget().style.height).toBe("172px");
+    expect(widget().style.height).toBe("272px");
   });
 
   it.each(["macos", "windows"] as const)("preserves over-limit overlay drafts and explains both refused send paths on %s", async targetPlatform => {
@@ -626,10 +629,10 @@ describe("PluginCanvasOverlay", () => {
     expect(widget().getBoundingClientRect().height).toBe(172);
     viewportHeight = 400;
     await act(async () => window.dispatchEvent(new Event("resize")));
-    expect(widget().getBoundingClientRect().height).toBe(172);
+    expect(widget().getBoundingClientRect().height).toBe(272);
     const restoredHandle = container.querySelector(".plugin-canvas-overlay-resize")!;
     await act(async () => { pointer(restoredHandle, "pointerdown", 300, 32); pointer(restoredHandle, "pointermove", 300, 1000); pointer(restoredHandle, "pointerup", 300, 1000); });
-    expect(widget().style.height).toBe("172px"); expect(widget().style.top).toBe("104px");
+    expect(widget().style.height).toBe("220px"); expect(widget().style.top).toBe("156px");
   });
 
   it("renders roles and errors, follows only a reader at the bottom, and keeps focus and drafts", async () => {
@@ -781,14 +784,14 @@ describe("PluginCanvasOverlay", () => {
     });
   });
 
-  it("resizes vertically from the header and restores the saved place on remount", async () => {
+  it("resizes vertically from the header without saving position and restores height on remount", async () => {
     await expand(); const header = container.querySelector(".plugin-canvas-overlay-header")!;
     await act(async () => { pointer(header, "pointerdown", 310, 180); pointer(header, "pointermove", -1000, -1000); });
     expect(widget().style.left).toBe("284px"); expect(widget().style.top).toBe("104px");
     await act(async () => pointer(header, "pointermove", 2000, 2000));
     expect(widget().style.left).toBe("284px"); expect(widget().style.top).toBe("156px");
     await act(async () => pointer(header, "pointerup", 2000, 2000));
-    expect(JSON.parse(window.localStorage.getItem(expandedKey)!)).toEqual({ x: 284, y: 156 });
+    expect(window.localStorage.getItem(expandedKey)).toBeNull();
     await act(async () => root.unmount()); root = createRoot(container); await render();
     expect(widget().style.left).toBe("536px"); expect(widget().style.top).toBe("328px");
     await expand();
@@ -796,23 +799,383 @@ describe("PluginCanvasOverlay", () => {
   });
 
   it("re-clamps a remembered position on load and when the visible drawing area resizes", async () => {
-    await act(async () => root.unmount()); window.localStorage.setItem(collapsedKey, JSON.stringify({ x: 900, y: 900 }));
+    await act(async () => root.unmount());
+    const saved = JSON.stringify({ version: 1, userPlaced: true, x: 900, y: 900 });
+    window.localStorage.setItem(collapsedKey, saved);
     root = createRoot(container); await render();
     expect(widget().style.left).toBe("548px"); expect(widget().style.top).toBe("340px");
     viewportWidth = 500; viewportHeight = 300;
     await act(async () => window.dispatchEvent(new Event("resize")));
     expect(widget().style.left).toBe("448px"); expect(widget().style.top).toBe("240px");
+    expect(window.localStorage.getItem(collapsedKey)).toBe(saved);
+    viewportWidth = 1200; viewportHeight = 1100;
+    await act(async () => window.dispatchEvent(new Event("resize")));
+    expect(widget().style.left).toBe("900px"); expect(widget().style.top).toBe("900px");
   });
 
-  it("migrates old header positions to the box without moving the icon, and scopes them to the window", async () => {
+  it.each(["macos", "windows"] as const)("clips to a 405px window without replacing remembered height on %s", async targetPlatform => {
+    platform = targetPlatform;
     await act(async () => root.unmount());
-    window.localStorage.setItem(storageKey, JSON.stringify({ x: 120, y: 80 }));
+    viewportHeight = 900;
+    window.localStorage.setItem(`${storageKey}:height`, "600");
+    root = createRoot(container); await render(); await expand();
+    expect(widget().style.height).toBe("600px");
+    await act(async () => enterText("Still reachable"));
+    const textarea = container.querySelector("textarea")!;
+    await act(async () => { window.innerHeight = 405; window.dispatchEvent(new Event("resize")); });
+    expect(widget().style.height).toBe("301px");
+    expect(Number.parseFloat(widget().style.top) + Number.parseFloat(widget().style.height)).toBeLessThanOrEqual(405);
+    expect(window.localStorage.getItem(`${storageKey}:height`)).toBe("600");
+    expect(document.activeElement).toBe(textarea);
+    expect(textarea.value).toBe("Still reachable");
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Collapse Assistant"]')!.click());
+    expect(Number.parseFloat(widget().style.top) + 36).toBeLessThanOrEqual(405);
+    await expand();
+    await act(async () => { window.innerHeight = 1200; window.dispatchEvent(new Event("resize")); });
+    expect(widget().style.height).toBe("600px");
+  });
+
+  it("fits on canvas ResizeObserver notifications without a window resize and restores height on grow", async () => {
+    await act(async () => root.unmount());
+    const observers = new Set<{ callback: () => void; targets: Set<Element> }>();
+    vi.stubGlobal("ResizeObserver", class {
+      targets = new Set<Element>();
+      constructor(readonly callback: () => void) { observers.add(this); }
+      observe(target: Element) { this.targets.add(target); }
+      disconnect() { observers.delete(this); }
+    });
+    viewportHeight = 900;
+    window.localStorage.setItem(`${storageKey}:height`, "600");
+    root = createRoot(container); await render(); await expand();
+    const notifyCanvas = () => { for (const observer of [...observers]) if (observer.targets.has(viewport)) observer.callback(); };
+    await act(async () => { viewportHeight = 350; notifyCanvas(); });
+    expect(widget().style.height).toBe("222px");
+    expect(Number.parseFloat(widget().style.top) + 222).toBeLessThanOrEqual(326);
+    expect(window.localStorage.getItem(`${storageKey}:height`)).toBe("600");
+    await act(async () => { viewportHeight = 900; notifyCanvas(); });
+    expect(widget().style.height).toBe("600px");
+  });
+
+  it("reuses fit subscriptions through resize moves and reads the latest height", async () => {
+    await act(async () => root.unmount());
+    const callbacks: (() => void)[] = [];
+    const disconnect = vi.fn();
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: () => void) { callbacks.push(callback); }
+      observe() {}
+      unobserve() {}
+      disconnect = disconnect;
+    });
+    const matchMedia = vi.fn(() => ({ addEventListener: vi.fn(), removeEventListener: vi.fn() }));
+    vi.stubGlobal("matchMedia", matchMedia);
+    viewportHeight = 900;
+    root = createRoot(container); await render(); await expand();
+    const count = callbacks.length;
+    const queries = matchMedia.mock.calls.length;
+    const disconnections = disconnect.mock.calls.length;
+    const grip = container.querySelector(".plugin-canvas-overlay-resize")!;
+    await act(async () => pointer(grip, "pointerdown", 300, 500));
+    for (const y of [450, 400, 350]) await act(async () => pointer(grip, "pointermove", 300, y));
+    await act(async () => pointer(grip, "pointerup", 300, 350));
+    expect(callbacks).toHaveLength(count);
+    expect(matchMedia).toHaveBeenCalledTimes(queries);
+    expect(disconnect).toHaveBeenCalledTimes(disconnections);
+    expect(widget().style.height).toBe("430px");
+    await act(async () => { viewportHeight = 350; callbacks.forEach(callback => callback()); });
+    expect(widget().style.height).toBe("222px");
+    await act(async () => { viewportHeight = 900; callbacks.forEach(callback => callback()); });
+    expect(widget().style.height).toBe("430px");
+  });
+
+  it("fits on DPR changes, re-arms the resolution query, and removes its listener on teardown", async () => {
+    await act(async () => root.unmount());
+    const queries: { query: string; listeners: Set<() => void> }[] = [];
+    vi.stubGlobal("devicePixelRatio", 1);
+    vi.stubGlobal("matchMedia", (query: string) => {
+      const listeners = new Set<() => void>(); queries.push({ query, listeners });
+      return { addEventListener: (_: string, listener: () => void) => listeners.add(listener),
+        removeEventListener: (_: string, listener: () => void) => listeners.delete(listener) };
+    });
+    viewportHeight = 900;
+    window.localStorage.setItem(`${storageKey}:height`, "600");
+    root = createRoot(container); await render(); await expand();
+    const previous = queries.at(-1)!;
+    expect(previous.query).toBe("(resolution: 1dppx)");
+    await act(async () => {
+      vi.stubGlobal("devicePixelRatio", 1.5); viewportHeight = 350;
+      [...previous.listeners].forEach(listener => listener());
+    });
+    expect(widget().style.height).toBe("222px");
+    expect(previous.listeners.size).toBe(0);
+    expect(queries.at(-1)!.query).toBe("(resolution: 1.5dppx)");
+    await act(async () => { viewportHeight = 900; [...queries.at(-1)!.listeners].forEach(listener => listener()); });
+    expect(widget().style.height).toBe("600px");
+    await act(async () => root.unmount());
+    expect(queries.every(query => query.listeners.size === 0)).toBe(true);
+    root = createRoot(container); await render();
+  });
+
+  it.each(["window", "viewport", "DPR"])("restores both docked modes after shrink/grow via %s without saving the clamps", async source => {
+    await act(async () => root.unmount());
+    const observers: (() => void)[] = [];
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: () => void) { observers.push(callback); }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    const resolutions = new Set<() => void>();
+    vi.stubGlobal("matchMedia", () => ({
+      addEventListener: (_: string, callback: () => void) => resolutions.add(callback),
+      removeEventListener: (_: string, callback: () => void) => resolutions.delete(callback)
+    }));
+    const notify = () => {
+      if (source === "window") window.dispatchEvent(new Event("resize"));
+      else if (source === "viewport") observers.forEach(callback => callback());
+      else [...resolutions].forEach(callback => callback());
+    };
+    viewportWidth = 1000; viewportHeight = 900;
+    root = createRoot(container); await render();
+    const iconPosition = [widget().style.left, widget().style.top];
+    await expand();
+    const boxPosition = [widget().style.left, widget().style.top];
+    const writes = vi.spyOn(window.localStorage, "setItem");
+    await act(async () => {
+      if (source === "window") { window.innerWidth = 230; window.innerHeight = 305; }
+      else { viewportWidth = 230; viewportHeight = 305; }
+      notify();
+    });
+    expect(Number.parseFloat(widget().style.left)).toBeGreaterThanOrEqual(32);
+    expect(Number.parseFloat(widget().style.top)).toBeGreaterThanOrEqual(104);
+    expect(Number.parseFloat(widget().style.top) + Number.parseFloat(widget().style.height)).toBeLessThanOrEqual(305);
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Collapse Assistant"]')!.click());
+    expect(Number.parseFloat(widget().style.left) + 36).toBeLessThanOrEqual(230);
+    expect(Number.parseFloat(widget().style.top) + 36).toBeLessThanOrEqual(305);
+    await act(async () => {
+      window.innerWidth = 1600; window.innerHeight = 1200; viewportWidth = 1000; viewportHeight = 900; notify();
+    });
+    expect([widget().style.left, widget().style.top]).toEqual(iconPosition);
+    await expand();
+    expect([widget().style.left, widget().style.top]).toEqual(boxPosition);
+    expect(writes.mock.calls.filter(([key]) => key === collapsedKey || key === expandedKey)).toEqual([]);
+    expect(window.localStorage.getItem(collapsedKey)).toBeNull();
+    expect(window.localStorage.getItem(expandedKey)).toBeNull();
+  });
+
+  it("remembers a drag made while small, follows its nearest edges on grow, and re-docks both modes on header reset", async () => {
+    viewportWidth = 1000; viewportHeight = 900;
+    await act(async () => window.dispatchEvent(new Event("resize")));
+    viewportWidth = 500; viewportHeight = 350;
+    await act(async () => window.dispatchEvent(new Event("resize")));
+    const icon = container.querySelector<HTMLButtonElement>(".plugin-canvas-overlay-icon")!;
+    await act(async () => {
+      pointer(icon, "pointerdown", 450, 290); pointer(icon, "pointermove", 410, 270); pointer(icon, "pointerup", 410, 270);
+    });
+    expect(widget().style.left).toBe("396px"); expect(widget().style.top).toBe("258px");
+    const savedIcon = window.localStorage.getItem(collapsedKey);
+    const savedBox = window.localStorage.getItem(expandedKey);
+    expect(JSON.parse(savedIcon!)).toEqual({ version: 1, userPlaced: true, x: 396, y: 258, right: 52, bottom: 32 });
+    viewportWidth = 1000; viewportHeight = 900;
+    await act(async () => window.dispatchEvent(new Event("resize")));
+    expect(widget().style.left).toBe("896px"); expect(widget().style.top).toBe("808px");
+    expect(window.localStorage.getItem(collapsedKey)).toBe(savedIcon);
+    expect(window.localStorage.getItem(expandedKey)).toBe(savedBox);
+    await act(async () => root.unmount()); root = createRoot(container); await render();
+    expect(widget().style.left).toBe("896px"); expect(widget().style.top).toBe("808px");
+    await expand();
+    expect(widget().style.left).toBe("684px"); expect(widget().style.top).toBe("596px");
+    const header = container.querySelector(".plugin-canvas-overlay-header")!;
+    await act(async () => {
+      pointer(header, "pointerdown", 700, 596); pointer(header, "pointermove", 700, 656); pointer(header, "pointerup", 700, 656);
+    });
+    expect(widget().style.height).toBe("220px");
+    expect(JSON.parse(window.localStorage.getItem(expandedKey)!)).toEqual(JSON.parse(savedBox!)); // Resizing changes height alone.
+    await act(async () => header.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
+    expect(widget().style.height).toBe("280px");
+    expect(widget().style.left).toBe("684px"); expect(widget().style.top).toBe("596px");
+    expect(window.localStorage.getItem(expandedKey)).toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Collapse Assistant"]')!.click());
+    expect(widget().style.left).toBe("936px"); expect(widget().style.top).toBe("828px");
+    expect(window.localStorage.getItem(collapsedKey)).toBeNull();
+    await act(async () => root.unmount()); root = createRoot(container); await render();
+    expect(widget().style.left).toBe("936px"); expect(widget().style.top).toBe("828px");
+  });
+
+  it.each(["top-left", "top-right", "bottom-left", "bottom-right"] as const)("stacks two clickable launchers in plugin-id order at %s through shrink/grow and expansion", async defaultCorner => {
+    const plugins = ["org.zebra", "org.alpha"].map(pluginId => ({ pluginId,
+      overlay: { ...overlay, id: `${pluginId}.overlay`, title: pluginId, defaultCorner } }));
+    const renderPlugins = async (items = plugins) => {
+      await act(async () => root.render(<>{canvasOverlayDockSlots(items).map(({ pluginId, overlay, dockIndex, dockCount }) =>
+        <PluginCanvasOverlay key={pluginId} overlay={overlay} dockIndex={dockIndex} dockCount={dockCount} viewportRef={viewportRef}
+          overlayLayerRef={overlayLayerRef} statusRowRef={statusRowRef} gestureActive={false}
+          onAction={action} onFocusDrawing={() => drawing.focus()} />)}</>));
+    };
+    expect(canvasOverlayDockSlots(plugins).map(({ pluginId, dockIndex }) => [pluginId, dockIndex]))
+      .toEqual([["org.alpha", 0], ["org.zebra", 1]]);
+    await renderPlugins();
+    const positions = () => Array.from(container.querySelectorAll<HTMLElement>(".plugin-canvas-overlay"))
+      .map(element => ({ x: Number.parseFloat(element.style.left), y: Number.parseFloat(element.style.top) }));
+    const checkLaunchers = async () => {
+      const [a, b] = positions();
+      expect(Math.abs(a!.x - b!.x) >= 36 || Math.abs(a!.y - b!.y) >= 36).toBe(true);
+      for (const point of [a!, b!]) {
+        expect(point.x).toBeGreaterThanOrEqual(32); expect(point.y).toBeGreaterThanOrEqual(32);
+        expect(point.x + 36).toBeLessThanOrEqual(viewportWidth - 16);
+        expect(point.y + 36).toBeLessThanOrEqual(viewportHeight - 24);
+      }
+      for (const element of container.querySelectorAll<HTMLElement>(".plugin-canvas-overlay")) {
+        await act(async () => element.querySelector<HTMLButtonElement>(".plugin-canvas-overlay-icon")!.click());
+        expect(element.dataset.expanded).toBe("true");
+        await act(async () => element.querySelector<HTMLButtonElement>('[aria-label^="Collapse "]')!.click());
+        expect(element.dataset.expanded).toBe("false");
+      }
+    };
+    const docked = positions();
+    await checkLaunchers();
+    for (const [width, height] of [[260, 190], [120, 190], [120, 128], [90, 128]]) { // Tight gaps, then wrapped slots.
+      viewportWidth = width!; viewportHeight = height!;
+      await act(async () => window.dispatchEvent(new Event("resize")));
+      await checkLaunchers();
+    }
+    viewportWidth = 600; viewportHeight = 400;
+    await act(async () => window.dispatchEvent(new Event("resize")));
+    await renderPlugins([...plugins].reverse());
+    expect(positions()).toEqual(docked);
+    await checkLaunchers();
+    const [first, second] = container.querySelectorAll<HTMLElement>(".plugin-canvas-overlay");
+    await act(async () => {
+      const icon = first!.querySelector(".plugin-canvas-overlay-icon")!;
+      pointer(icon, "pointerdown", 100, 100); pointer(icon, "pointermove", 180, 180); pointer(icon, "pointerup", 180, 180);
+    });
+    expect(window.localStorage.getItem("chemdraft:canvas-overlay:main:org.alpha.overlay:collapsed")).not.toBeNull();
+    expect(window.localStorage.getItem("chemdraft:canvas-overlay:main:org.zebra.overlay:collapsed")).toBeNull();
+    expect([Number.parseFloat(second!.style.left), Number.parseFloat(second!.style.top)]).toEqual([docked[1]!.x, docked[1]!.y]);
+  });
+
+  it.each(["not JSON", "null", "[]", '{"version":1,"userPlaced":false,"x":100,"y":200}',
+    '{"version":1,"userPlaced":true,"x":"bad","y":200}', '{"version":1,"userPlaced":true,"x":100,"y":200,"bottom":"bad"}',
+    '{"version":2,"userPlaced":true,"x":100,"y":200}', '{"version":1,"userPlaced":true,"x":1e400,"y":200}'])
+    ("falls back to docked for malformed position storage: %s", async saved => {
+      await act(async () => root.unmount());
+      window.localStorage.setItem(collapsedKey, saved); window.localStorage.setItem(expandedKey, saved);
+      root = createRoot(container); await render();
+      expect(widget().style.left).toBe("536px"); expect(widget().style.top).toBe("328px");
+      await expand(); expect(widget().style.left).toBe("284px"); expect(widget().style.top).toBe("104px");
+      expect(window.localStorage.getItem(collapsedKey)).toBeNull(); expect(window.localStorage.getItem(expandedKey)).toBeNull();
+    });
+
+  it.each(["pointerup", "pointercancel", "lostpointercapture", "blur", "hover", "collapse", "hide"])("keeps grip capture across fast moves and ends resizing on %s", async ending => {
+    viewportHeight = 900; await render(); await expand();
+    const grip = container.querySelector<HTMLElement>(".plugin-canvas-overlay-resize")!;
+    let captured = false;
+    const setCapture = vi.fn(() => { captured = true; });
+    const releaseCapture = vi.fn(() => { captured = false; });
+    Object.assign(grip, { setPointerCapture: setCapture, hasPointerCapture: () => captured, releasePointerCapture: releaseCapture });
+    await act(async () => pointer(grip, "pointerdown", 300, 500));
+    expect(setCapture).toHaveBeenCalledWith(1);
+    await act(async () => pointer(document, "pointermove", 1500, 300));
+    expect(widget().style.height).toBe("480px");
+    expect(container.querySelector(".plugin-canvas-overlay-resize")).toBe(grip);
+    expect(captured).toBe(true);
+    await act(async () => pointer(document, "pointermove", -1000, 350));
+    expect(widget().style.height).toBe("430px");
+    await act(async () => {
+      if (ending === "blur") window.dispatchEvent(new Event("blur"));
+      else if (ending === "hover") pointer(document, "pointermove", 1400, 100, 0);
+      else if (ending === "collapse") container.querySelector<HTMLButtonElement>('[aria-label="Collapse Assistant"]')!.click();
+      else if (ending === "hide") { gestureActive = true; await render(); }
+      else if (ending === "lostpointercapture") { captured = false; pointer(grip, ending, 1400, 350); }
+      else pointer(document, ending, 1400, 350);
+    });
+    expect(captured).toBe(false);
+    const height = widget().style.height;
+    await act(async () => pointer(grip, "pointermove", -1000, 150));
+    expect(widget().style.height).toBe(height);
+  });
+
+  it.each(["macos", "windows"] as const)("cancels header/grip multi-click selection while preserving prompt and transcript selection on %s", async targetPlatform => {
+    platform = targetPlatform; await render(); await expand();
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    const mouseDown = vi.fn();
+    widget().addEventListener("mousedown", mouseDown);
+    for (const selector of [".plugin-canvas-overlay-header span", ".plugin-canvas-overlay-header button", ".plugin-canvas-overlay-resize"]) {
+      const target = container.querySelector(selector)!;
+      for (const detail of [2, 3]) {
+        await act(async () => {
+          const down = pointer(target, "pointerdown", 300, 150);
+          // Header buttons keep their focus semantics; resize chrome cancels pointerdown.
+          expect(down.defaultPrevented).toBe(!target.matches("button"));
+          // No compatibility mousedown follows the cancelled pointerdown.
+          const start = new Event("selectstart", { bubbles: true, cancelable: true });
+          target.dispatchEvent(start);
+          expect(start.defaultPrevented).toBe(true);
+          // Model the browser default: only an uncancelled selectstart creates a range.
+          if (!start.defaultPrevented) {
+            const range = document.createRange(); range.selectNodeContents(widget()); selection.addRange(range);
+          }
+          pointer(target, "pointerup", 300, 150);
+          target.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, detail }));
+        });
+        expect(selection.toString()).toBe("");
+      }
+      // Backstop for engines that already extended selection across the overlay.
+      const range = document.createRange(); range.selectNodeContents(widget()); selection.addRange(range);
+      expect(selection.toString()).not.toBe("");
+      await act(async () => target.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, detail: 2 })));
+      expect(selection.rangeCount).toBe(0);
+    }
+    expect(mouseDown).not.toHaveBeenCalled();
+    await act(async () => enterText("Select this prompt"));
+    const textarea = container.querySelector("textarea")!;
+    const down = new Event("selectstart", { bubbles: true, cancelable: true });
+    textarea.dispatchEvent(down);
+    expect(down.defaultPrevented).toBe(false);
+    textarea.focus(); textarea.setSelectionRange(0, 6);
+    expect(document.activeElement).toBe(textarea);
+    expect(textarea.value.slice(textarea.selectionStart, textarea.selectionEnd)).toBe("Select");
+    await act(async () => transcriptSource.set([{ role: "assistant", text: "Selectable reply" }]));
+    const reply = container.querySelector(".plugin-canvas-overlay-entry span")!;
+    const replyDown = new Event("selectstart", { bubbles: true, cancelable: true });
+    reply.dispatchEvent(replyDown);
+    expect(replyDown.defaultPrevented).toBe(false);
+    const range = document.createRange(); range.selectNodeContents(reply);
+    window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range);
+    await act(async () => reply.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, detail: 2 })));
+    expect(window.getSelection()!.toString()).toBe("Selectable reply");
+    for (const selector of [".plugin-canvas-overlay-header span", ".plugin-canvas-overlay-resize"]) {
+      await act(async () => container.querySelector(selector)!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, detail: 2 })));
+      expect(window.getSelection()!.toString()).toBe("Selectable reply");
+      expect(textarea.value.slice(textarea.selectionStart, textarea.selectionEnd)).toBe("Select");
+      expect(document.activeElement).toBe(textarea);
+    }
+    window.getSelection()!.removeAllRanges();
+  });
+
+  it.each([storageKey, collapsedKey, expandedKey])("discards an old unmarked off-corner position at %s once and re-docks", async key => {
+    await act(async () => root.unmount());
+    window.localStorage.setItem(key, JSON.stringify({ x: 120, y: 180 }));
     root = createRoot(container); await render();
     expect(widget().style.left).toBe("536px"); expect(widget().style.top).toBe("328px");
+    await expand(); expect(widget().style.left).toBe("284px"); expect(widget().style.top).toBe("104px");
+    expect(window.localStorage.getItem(key)).toBeNull();
+    await act(async () => root.unmount()); root = createRoot(container); await render(); await expand();
+    expect(widget().style.left).toBe("284px"); expect(widget().style.top).toBe("104px");
+  });
+
+  it("keeps marked user placements per mode and scopes them to the window", async () => {
+    await act(async () => root.unmount());
+    const saved = JSON.stringify({ version: 1, userPlaced: true, x: 120, y: 140 });
+    window.localStorage.setItem(collapsedKey, saved);
+    window.localStorage.setItem(expandedKey, saved);
+    root = createRoot(container); await render();
+    expect(widget().style.left).toBe("120px"); expect(widget().style.top).toBe("140px");
     await expand(); expect(widget().style.left).toBe("120px"); expect(widget().style.top).toBe("104px");
+    expect(window.localStorage.getItem(collapsedKey)).toBe(saved);
+    expect(window.localStorage.getItem(expandedKey)).toBe(saved);
     await act(async () => root.unmount()); root = createRoot(container); await render("second-window");
     await expand(); expect(widget().style.left).toBe("284px"); expect(widget().style.top).toBe("104px");
-    expect(JSON.parse(window.localStorage.getItem(expandedKey)!)).toEqual({ x: 120, y: 104 });
+    expect(window.localStorage.getItem(expandedKey)).toBe(saved);
   });
 
   it("drags the collapsed icon beyond a threshold, suppresses the drag click, and anchors expansion nearby", async () => {
@@ -825,7 +1188,7 @@ describe("PluginCanvasOverlay", () => {
     });
     expect(widget().dataset.expanded).toBe("false");
     expect(widget().style.left).toBe("236px"); expect(widget().style.top).toBe("128px");
-    expect(JSON.parse(window.localStorage.getItem(collapsedKey)!)).toEqual({ x: 236, y: 128 });
+    expect(JSON.parse(window.localStorage.getItem(collapsedKey)!)).toEqual({ version: 1, userPlaced: true, x: 236, y: 128 });
     await act(async () => {
       pointer(icon, "pointerdown", 250, 140); pointer(icon, "pointermove", 252, 141);
       pointer(icon, "pointerup", 252, 141); icon.click();
@@ -834,8 +1197,8 @@ describe("PluginCanvasOverlay", () => {
     expect(widget().style.left).toBe("236px"); expect(widget().style.top).toBe("104px");
     const header = container.querySelector(".plugin-canvas-overlay-header")!;
     await act(async () => { pointer(header, "pointerdown", 250, 140); pointer(header, "pointermove", 46, 44); pointer(header, "pointerup", 46, 44); });
-    expect(JSON.parse(window.localStorage.getItem(expandedKey)!)).toEqual({ x: 236, y: 104 });
-    expect(JSON.parse(window.localStorage.getItem(collapsedKey)!)).toEqual({ x: 236, y: 128 });
+    expect(JSON.parse(window.localStorage.getItem(expandedKey)!)).toEqual({ version: 1, userPlaced: true, x: 236, y: 104, right: 48, bottom: 0, height: 272 });
+    expect(JSON.parse(window.localStorage.getItem(collapsedKey)!)).toEqual({ version: 1, userPlaced: true, x: 236, y: 128 });
     await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Collapse Assistant"]')!.click());
     expect(widget().style.left).toBe("236px"); expect(widget().style.top).toBe("128px");
     await act(async () => root.unmount()); root = createRoot(container); await render();
@@ -843,7 +1206,7 @@ describe("PluginCanvasOverlay", () => {
     await expand(); expect(widget().style.left).toBe("236px"); expect(widget().style.top).toBe("104px");
   });
 
-  it("clamps both saved modes on resize, including the hidden icon, and caps the box to the drawing area", async () => {
+  it("fits both docked modes on resize, including the hidden icon, without persisting a position", async () => {
     await expand();
     viewportWidth = 260; viewportHeight = 250;
     await act(async () => window.dispatchEvent(new Event("resize")));
@@ -851,9 +1214,9 @@ describe("PluginCanvasOverlay", () => {
     expect(widget().style.maxHeight).toBe("122px");
     expect(widget().style.left).toBe("32px"); expect(widget().style.top).toBe("104px");
     await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Collapse Assistant"]')!.click());
-    expect(widget().style.left).toBe("208px"); expect(widget().style.top).toBe("190px");
-    expect(JSON.parse(window.localStorage.getItem(collapsedKey)!)).toEqual({ x: 208, y: 190 });
-    expect(JSON.parse(window.localStorage.getItem(expandedKey)!)).toEqual({ x: 32, y: 104 });
+    expect(widget().style.left).toBe("196px"); expect(widget().style.top).toBe("178px");
+    expect(window.localStorage.getItem(collapsedKey)).toBeNull();
+    expect(window.localStorage.getItem(expandedKey)).toBeNull();
   });
 
   it("stops overlay pointer and keyboard events before they reach the canvas", async () => {

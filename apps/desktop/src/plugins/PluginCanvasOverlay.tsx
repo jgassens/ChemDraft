@@ -11,7 +11,9 @@ import { canvasOverlayPrompt, OVERLAY_BUSY_MESSAGE, type CanvasOverlayContentSec
 
 type Position = { x: number; y: number };
 type Mode = "collapsed" | "expanded";
-type Positions = Record<Mode, Position | null>;
+// Keep x/y and the per-mode storage keys; optional edge distances follow the nearest corner.
+type UserPosition = Position & { version: 1; userPlaced: true; right?: number; bottom?: number; height?: number };
+type Positions = Record<Mode, UserPosition | null>;
 const ICON_SIZE = 36;
 const DRAG_THRESHOLD = 4;
 const MIN_CHAT_HEIGHT = 220;
@@ -27,14 +29,37 @@ function readHeight(key: string): number {
   return DEFAULT_CHAT_HEIGHT;
 }
 
-function readPosition(key: string): Position | null {
+function readPosition(key: string): UserPosition | null {
   try {
     const saved: unknown = JSON.parse(window.localStorage.getItem(key) ?? "null");
-    if (saved && typeof saved === "object" && "x" in saved && "y" in saved
+    // Old records also contain refit-clamped coordinates, indistinguishable from a user drag.
+    // Discard them once to heal stuck launchers/boxes; only marked user placements survive.
+    if (saved && typeof saved === "object" && "version" in saved && saved.version === 1
+      && "userPlaced" in saved && saved.userPlaced === true && "x" in saved && "y" in saved
       && typeof saved.x === "number" && typeof saved.y === "number"
-      && Number.isFinite(saved.x) && Number.isFinite(saved.y)) return { x: saved.x, y: saved.y };
+      && Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
+      if (("right" in saved && (typeof saved.right !== "number" || !Number.isFinite(saved.right) || saved.right < 0))
+        || ("bottom" in saved && (typeof saved.bottom !== "number" || !Number.isFinite(saved.bottom) || saved.bottom < 0))
+        || ("height" in saved && (typeof saved.height !== "number" || !Number.isFinite(saved.height) || saved.height < 0))) return null;
+      return { version: 1, userPlaced: true, x: saved.x, y: saved.y,
+        ...("right" in saved ? { right: saved.right as number } : {}),
+        ...("bottom" in saved ? { bottom: saved.bottom as number } : {}),
+        ...("height" in saved ? { height: saved.height as number } : {}) };
+    }
   } catch { /* Storage may be unavailable in a webview. */ }
   return null;
+}
+
+/** Stable plugin-id order, with independent slots for each declared corner. */
+export function canvasOverlayDockSlots<T extends { pluginId: string; overlay: PluginCanvasOverlayContribution }>(overlays: readonly T[]) {
+  const counts = new Map<string, number>();
+  const slots = [...overlays].sort((a, b) => a.pluginId < b.pluginId ? -1 : a.pluginId > b.pluginId ? 1 : 0)
+    .map(item => {
+      const dockIndex = counts.get(item.overlay.defaultCorner) ?? 0;
+      counts.set(item.overlay.defaultCorner, dockIndex + 1);
+      return { ...item, dockIndex };
+    });
+  return slots.map(item => ({ ...item, dockCount: counts.get(item.overlay.defaultCorner)! }));
 }
 type CanvasOverlayStatusSource = {
   getCanvasOverlayStatuses: () => ReadonlyMap<string, string>;
@@ -105,8 +130,10 @@ function OverlayStatus({ overlayId, status, statusSource }: {
 
 /** Host chrome only: actions carry control data; MainWindow resolves the live command declaration. */
 export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, status, onAction,
-  overlayLayerRef, statusRowRef, statusSource, transcriptSource, contentSource, openSource, onInitialize, onOpenPanel, panelTitle, onFocusDrawing, shortcutPlatform, requestPending = false, documentState, windowId = window.name || "main" }: {
+  overlayLayerRef, statusRowRef, statusSource, transcriptSource, contentSource, openSource, onInitialize, onOpenPanel, panelTitle, onFocusDrawing, shortcutPlatform, requestPending = false, documentState, dockIndex = 0, dockCount = 1, windowId = window.name || "main" }: {
   overlay: PluginCanvasOverlayContribution;
+  dockIndex?: number;
+  dockCount?: number;
   viewportRef: RefObject<HTMLElement | null>;
   /** The positioned layer and bottom workspace chrome define the visible drawing area. */
   overlayLayerRef?: RefObject<HTMLElement | null>;
@@ -152,13 +179,24 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
   const [expanded, setExpanded] = useState(false);
   const [positions, setPositions] = useState<Positions>(() => ({
     collapsed: readPosition(`${storageKey}:collapsed`),
-    // The old shared key was written only by header drags, so migrate it to the box, never the icon.
-    expanded: readPosition(`${storageKey}:expanded`) ?? readPosition(storageKey)
+    expanded: readPosition(`${storageKey}:expanded`)
   }));
   const mode: Mode = expanded ? "expanded" : "collapsed";
-  const position = positions[mode];
+  const [displayPosition, setDisplayPosition] = useState<Position | null>(null);
+  const position = displayPosition;
   const elementRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const element = elementRef.current;
+    // A cancelled pointerdown suppresses compatibility mousedown in Chromium/WebKit.
+    // selectstart is native (React has no corresponding event prop).
+    const preventChromeSelection = (event: Event) => {
+      const target = event.target instanceof Element ? event.target : (event.target as Node | null)?.parentElement;
+      if (target?.closest(".plugin-canvas-overlay-header, .plugin-canvas-overlay-resize")) event.preventDefault();
+    };
+    element?.addEventListener("selectstart", preventChromeSelection);
+    return () => element?.removeEventListener("selectstart", preventChromeSelection);
+  }, []);
   const compositionExpiryRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const composingCanvasRef = useRef<{ element: HTMLElement; tabIndex: string | null } | null>(null);
   const clearComposition = () => {
@@ -196,10 +234,22 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
   const clickedActionRef = useRef<Element | null>(null);
   const activatedActionRef = useRef<{ button: Element | null } | null>(null);
   const expandedSizeRef = useRef({ width: 300, height: 220 });
-  const anchorNextExpansionRef = useRef(false);
   const suppressClickRef = useRef(false);
   const dragRef = useRef<{ pointerId: number; start: Position; origin: Position; mode: Mode; moved: boolean } | null>(null);
-  const resizeRef = useRef<{ pointerId: number; startY: number; height: number; bottom: number } | null>(null);
+  const resizeRef = useRef<{ pointerId: number; owner: HTMLElement; startY: number; height: number; bottom: number; cleanup: () => void } | null>(null);
+  const endResize = () => {
+    const resize = resizeRef.current;
+    resizeRef.current = null;
+    resize?.cleanup();
+    if (resize?.owner.hasPointerCapture?.(resize.pointerId)) resize.owner.releasePointerCapture(resize.pointerId);
+  };
+  useEffect(() => {
+    window.addEventListener("blur", endResize);
+    return () => { window.removeEventListener("blur", endResize); endResize(); };
+  }, []);
+  useLayoutEffect(() => {
+    if (!expanded || gestureActive) endResize();
+  }, [expanded, gestureActive]);
   useEffect(() => {
     const trackPointer = (event: globalThis.PointerEvent) => {
       // A later click (including on a nonfocusable canvas) is user intent. Native/programmatic
@@ -248,10 +298,12 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
 
     // client dimensions exclude classic scrollbars; on platforms with overlay scrollbars they
     // naturally remain available. clientLeft/clientTop also preserve a scrollbar on the leading edge.
-    let left = viewport.left + viewportElement.clientLeft;
-    let top = viewport.top + viewportElement.clientTop;
-    let right = left + (viewportElement.clientWidth || viewport.width);
-    let bottom = top + (viewportElement.clientHeight || viewport.height);
+    const viewportLeft = viewport.left + viewportElement.clientLeft;
+    const viewportTop = viewport.top + viewportElement.clientTop;
+    let left = Math.max(0, viewportLeft, layer.left);
+    let top = Math.max(0, viewportTop, layer.top);
+    let right = Math.min(window.innerWidth, layer.right, viewportLeft + (viewportElement.clientWidth || viewport.width));
+    let bottom = Math.min(window.innerHeight, layer.bottom, viewportTop + (viewportElement.clientHeight || viewport.height));
     for (const ruler of viewportElement.querySelectorAll<HTMLElement>(".ruler-left, .ruler-top, .ruler-corner")) {
       const rect = ruler.getBoundingClientRect();
       if ((ruler.classList.contains("ruler-left") || ruler.classList.contains("ruler-corner"))
@@ -272,11 +324,52 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
       y: Math.max(top, Math.min(point.y, Math.max(top, bounds.bottom - height)))
     };
   };
+  const rememberPosition = (point: Position, targetMode: Mode): UserPosition => {
+    const bounds = drawingArea();
+    const size = targetMode === "expanded" ? expandedSizeRef.current : { width: ICON_SIZE, height: ICON_SIZE };
+    const right = Math.max(0, bounds.right - point.x - size.width);
+    const bottom = Math.max(0, bounds.bottom - point.y - size.height);
+    return { ...point, version: 1, userPlaced: true,
+      ...(right < point.x - bounds.left ? { right } : {}),
+      ...(bottom < point.y - bounds.top ? { bottom } : {}),
+      // Header resizing preserves the box's bottom without rewriting its remembered placement.
+      ...(targetMode === "expanded" ? { height: size.height } : {}) };
+  };
+  const fittedPosition = (targetMode: Mode): Position => {
+    const bounds = drawingArea();
+    const size = targetMode === "expanded" ? expandedSizeRef.current : { width: ICON_SIZE, height: ICON_SIZE };
+    const remembered = positions[targetMode];
+    if (remembered) return clampPosition({
+      x: remembered.right === undefined ? remembered.x : bounds.right - size.width - remembered.right,
+      y: remembered.bottom === undefined ? remembered.y + (remembered.height ?? size.height) - size.height
+        : bounds.bottom - size.height - remembered.bottom
+    }, targetMode);
+    // Wrap launcher slots onto another row when a narrow viewport cannot hold them side by side.
+    const width = bounds.right - bounds.left;
+    const height = bounds.bottom - bounds.top;
+    const columns = Math.max(1, Math.min(dockCount, Math.floor(width / ICON_SIZE)));
+    const rows = Math.ceil(dockCount / columns);
+    const gapX = columns > 1 ? Math.max(0, Math.min(8, (width - columns * ICON_SIZE) / (columns - 1))) : 0;
+    const gapY = rows > 1 ? Math.max(0, Math.min(8, (height - rows * ICON_SIZE) / (rows - 1))) : 0;
+    // Reduce margins/gaps before clamping, so distinct slots stay disjoint in tight viewports.
+    const insetX = targetMode === "collapsed" ? Math.max(0, Math.min(12, (width - columns * ICON_SIZE - (columns - 1) * gapX) / 2)) : 0;
+    const insetY = targetMode === "collapsed" ? Math.max(0, Math.min(12, (height - rows * ICON_SIZE - (rows - 1) * gapY) / 2)) : 0;
+    const column = targetMode === "collapsed" ? dockIndex % columns : 0;
+    const row = targetMode === "collapsed" ? Math.floor(dockIndex / columns) : 0;
+    return clampPosition({
+      x: overlay.defaultCorner.endsWith("right") ? bounds.right - size.width - insetX - column * (ICON_SIZE + gapX)
+        : bounds.left + insetX + column * (ICON_SIZE + gapX),
+      y: overlay.defaultCorner.startsWith("bottom") ? bounds.bottom - size.height - insetY - row * (ICON_SIZE + gapY)
+        : bounds.top + insetY + row * (ICON_SIZE + gapY)
+    }, targetMode);
+  };
 
+  const fitRef = useRef<() => void>(() => undefined);
+  const fitObserverRef = useRef<ResizeObserver | undefined>(undefined);
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
     const element = elementRef.current;
-    if (!viewport || !element || gestureActive) return;
+    if (!viewport || !element || gestureActive) { fitRef.current = () => undefined; return; }
     const fit = () => {
       const bounds = drawingArea();
       if (bounds.bottom <= bounds.top) return;
@@ -284,9 +377,8 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
       element.style.maxWidth = `${Math.max(0, bounds.right - bounds.left)}px`;
       const available = Math.max(0, bounds.bottom - bounds.top - PALETTE_CLEARANCE);
       element.style.maxHeight = `${expanded ? available : Math.max(0, bounds.bottom - bounds.top)}px`;
-      // Remember the current cap, so a previously window-tall box cannot reappear after resizing.
+      // Fitting changes only the displayed size; the user's height returns when space permits.
       const rememberedHeight = Math.min(height, available);
-      setHeight(rememberedHeight);
       const contentHeight = contentRef.current?.firstElementChild?.scrollHeight ?? 0;
       const fittedHeight = Math.min(available, autoFitContent && content.length > 0
         ? Math.max(rememberedHeight, Math.min(MIN_CHAT_HEIGHT + contentHeight, Math.floor((bounds.bottom - bounds.top) * 0.7)))
@@ -294,46 +386,71 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
       setDisplayHeight(fittedHeight);
       if (expanded) element.style.height = `${fittedHeight}px`;
       const size = element.getBoundingClientRect();
-      if (expanded) expandedSizeRef.current = {
-        width: Math.min(size.width || 300, Math.max(0, bounds.right - bounds.left)),
+      expandedSizeRef.current = {
+        width: Math.min(expanded ? size.width || 300 : 300, Math.max(0, bounds.right - bounds.left)),
         height: fittedHeight
       };
-      setPositions(current => {
-        const collapsed = clampPosition(current.collapsed ?? {
-          x: overlay.defaultCorner.endsWith("right") ? bounds.right - ICON_SIZE - 12 : bounds.left + 12,
-          y: overlay.defaultCorner.startsWith("bottom") ? bounds.bottom - ICON_SIZE - 12 : bounds.top + 12
-        }, "collapsed");
-        const box = current.expanded ?? (expanded ? collapsed : null);
-        const next = { collapsed, expanded: box && clampPosition(box, "expanded") };
-        return current.collapsed?.x === next.collapsed.x && current.collapsed.y === next.collapsed.y
-          && current.expanded?.x === next.expanded?.x && current.expanded?.y === next.expanded?.y ? current : next;
-      });
+      // Refits never alter remembered placement or storage, including the hidden launcher's slot.
+      const next = fittedPosition(mode);
+      setDisplayPosition(current => current?.x === next.x && current.y === next.y ? current : next);
     };
+    fitRef.current = fit;
     fit();
-    const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(fit);
-    observer?.observe(viewport);
-    observer?.observe(element);
-    if (contentRef.current?.firstElementChild) observer?.observe(contentRef.current.firstElementChild);
-    if (overlayLayerRef?.current) observer?.observe(overlayLayerRef.current);
-    if (statusRowRef?.current) observer?.observe(statusRowRef.current);
-    for (const ruler of viewport.querySelectorAll<HTMLElement>(".ruler-left, .ruler-top, .ruler-corner")) observer?.observe(ruler);
-    window.addEventListener("resize", fit);
     if (expanded && focusOnExpandRef.current) {
       focusOnExpandRef.current = false;
       element.querySelector("textarea")?.focus({ preventScroll: true });
     }
-    return () => { observer?.disconnect(); window.removeEventListener("resize", fit); };
-  }, [expanded, gestureActive, height, autoFitContent, content, openRequest, overlay.defaultCorner, overlayLayerRef, statusRowRef, viewportRef]);
+  }, [expanded, gestureActive, height, autoFitContent, content, openRequest, positions, dockIndex, dockCount, overlay.defaultCorner, overlayLayerRef, statusRowRef, viewportRef]);
+
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current;
+    const element = elementRef.current;
+    if (!viewport || !element) return;
+    const fit = () => fitRef.current();
+    const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(fit);
+    fitObserverRef.current = observer;
+    observer?.observe(viewport);
+    observer?.observe(element);
+    if (overlayLayerRef?.current) observer?.observe(overlayLayerRef.current);
+    if (statusRowRef?.current) observer?.observe(statusRowRef.current);
+    for (const ruler of viewport.querySelectorAll<HTMLElement>(".ruler-left, .ruler-top, .ruler-corner")) observer?.observe(ruler);
+    window.addEventListener("resize", fit);
+    let resolution: MediaQueryList | undefined;
+    const watchResolution = () => {
+      resolution?.removeEventListener("change", onResolutionChange);
+      resolution = window.matchMedia?.(`(resolution: ${window.devicePixelRatio}dppx)`);
+      resolution?.addEventListener("change", onResolutionChange);
+    };
+    const onResolutionChange = () => { fit(); watchResolution(); };
+    watchResolution();
+    return () => {
+      observer?.disconnect();
+      fitObserverRef.current = undefined;
+      window.removeEventListener("resize", fit);
+      resolution?.removeEventListener("change", onResolutionChange);
+    };
+  }, [overlayLayerRef, statusRowRef, viewportRef]);
+
+  useLayoutEffect(() => {
+    const child = contentRef.current?.firstElementChild;
+    const observer = fitObserverRef.current;
+    if (!child || !observer) return;
+    observer.observe(child);
+    return () => observer.unobserve(child);
+  }, [content, overlayLayerRef, statusRowRef, viewportRef]);
 
   useEffect(() => {
     try { window.localStorage.setItem(`${storageKey}:height`, JSON.stringify(height)); } catch { /* Optional persistence. */ }
   }, [height, storageKey]);
 
   useEffect(() => {
+    // Remove unversioned shared storage as well as discarded per-mode records, once on load/reset.
+    try { window.localStorage.removeItem(storageKey); } catch { /* Optional persistence. */ }
     for (const mode of ["collapsed", "expanded"] as const) {
-      if (positions[mode]) {
-        try { window.localStorage.setItem(`${storageKey}:${mode}`, JSON.stringify(positions[mode])); } catch { /* Optional persistence. */ }
-      }
+      try {
+        if (positions[mode]) window.localStorage.setItem(`${storageKey}:${mode}`, JSON.stringify(positions[mode]));
+        else window.localStorage.removeItem(`${storageKey}:${mode}`);
+      } catch { /* Optional persistence. */ }
     }
   }, [positions, storageKey]);
 
@@ -356,9 +473,11 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
     if (!drag.moved && Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
     drag.moved = true;
     suppressClickRef.current = true;
-    if (drag.mode === "collapsed") anchorNextExpansionRef.current = true;
     const next = clampPosition({ x: drag.origin.x + dx, y: drag.origin.y + dy }, drag.mode);
-    setPositions(current => ({ ...current, [drag.mode]: next }));
+    setPositions(current => ({ ...current, [drag.mode]: rememberPosition(next, drag.mode),
+      // A launcher drag also places its next expansion nearby. Do this during the user drag,
+      // so later refits or clicks cannot save a clamped display position as user intent.
+      ...(drag.mode === "collapsed" ? { expanded: rememberPosition(clampPosition(next, "expanded"), "expanded") } : {}) }));
   };
   const stopDrag = (event: PointerEvent<HTMLElement>) => {
     event.stopPropagation();
@@ -371,14 +490,28 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
     if (event.button !== 0 || event.isPrimary === false || (event.target as Element).closest("button")) return;
     event.preventDefault();
     const currentHeight = expandedSizeRef.current.height;
-    resizeRef.current = { pointerId: event.pointerId, startY: event.clientY, height: currentHeight,
+    endResize();
+    const owner = event.currentTarget;
+    // Capture remains on the grip/header. Also cover a fast move delivered to the document
+    // before native capture takes effect; never process an owner event twice.
+    const outside = (next: globalThis.PointerEvent) => {
+      if (resizeRef.current?.pointerId !== next.pointerId || (next.target instanceof Node && owner.contains(next.target))) return;
+      next.stopPropagation();
+      if (next.type === "pointermove") updateResize(next);
+      else endResize();
+    };
+    const events = ["pointermove", "pointerup", "pointercancel"] as const;
+    const cleanup = () => { for (const type of events) document.removeEventListener(type, outside, true); };
+    resizeRef.current = { pointerId: event.pointerId, owner, cleanup, startY: event.clientY, height: currentHeight,
       bottom: (position?.y ?? drawingArea().top) + currentHeight };
-    event.currentTarget.setPointerCapture?.(event.pointerId);
+    for (const type of events) document.addEventListener(type, outside, true);
+    owner.setPointerCapture?.(event.pointerId);
   };
-  const moveResize = (event: PointerEvent<HTMLElement>) => {
-    event.stopPropagation();
+  const updateResize = (event: Pick<PointerEvent<HTMLElement>, "pointerId" | "buttons" | "clientY">) => {
     const resize = resizeRef.current;
     if (!resize || resize.pointerId !== event.pointerId) return;
+    // A missed release (for example on leaving the native window) must not keep resizing on hover.
+    if (event.buttons === 0) { endResize(); return; }
     const bounds = drawingArea();
     const bottom = Math.min(resize.bottom, bounds.bottom);
     const available = Math.max(0, bottom - bounds.top - PALETTE_CLEARANCE);
@@ -386,26 +519,31 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
     expandedSizeRef.current.height = nextHeight;
     setAutoFitContent(false);
     setHeight(nextHeight);
-    setPositions(current => ({ ...current, expanded: clampPosition({
-      x: current.expanded?.x ?? bounds.left, y: bottom - nextHeight
-    }, "expanded") }));
+  };
+  const moveResize = (event: PointerEvent<HTMLElement>) => {
+    event.stopPropagation();
+    updateResize(event);
   };
   const stopResize = (event: PointerEvent<HTMLElement>) => {
     event.stopPropagation();
     if (resizeRef.current?.pointerId !== event.pointerId) return;
-    resizeRef.current = null;
-    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    endResize();
+  };
+  const clearChromeSelection = () => {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed) return;
+    const selectable = elementRef.current?.querySelectorAll("textarea, .plugin-canvas-overlay-transcript");
+    // Preserve deliberate text selections, including reverse/multi-range selections.
+    const insideText = Array.from({ length: selection.rangeCount }, (_, index) => selection.getRangeAt(index))
+      .every(range => Array.from(selectable ?? []).some(element =>
+        element.contains(range.startContainer) && element.contains(range.endContainer)));
+    if (!insideText) selection.removeAllRanges();
   };
   const resetHeight = () => {
-    const bounds = drawingArea();
-    const nextHeight = Math.min(DEFAULT_CHAT_HEIGHT, Math.max(0, bounds.bottom - bounds.top - PALETTE_CLEARANCE));
-    const bottom = Math.min(bounds.bottom, (position?.y ?? bounds.top) + expandedSizeRef.current.height);
-    expandedSizeRef.current.height = nextHeight;
+    endResize();
     setAutoFitContent(false);
-    setHeight(nextHeight);
-    setPositions(current => ({ ...current, expanded: clampPosition({
-      x: current.expanded?.x ?? bounds.left, y: bottom - nextHeight
-    }, "expanded") }));
+    setHeight(DEFAULT_CHAT_HEIGHT);
+    setPositions({ collapsed: null, expanded: null });
   };
   const initialize = async () => {
     if (content.length || !onInitialize || initializing.current) return;
@@ -482,10 +620,6 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
       onClick={event => {
         if (suppressClickRef.current && event.detail !== 0) { suppressClickRef.current = false; return; }
         suppressClickRef.current = false;
-        if (anchorNextExpansionRef.current) {
-          setPositions(current => ({ ...current, expanded: current.collapsed }));
-          anchorNextExpansionRef.current = false;
-        }
         focusOnExpandRef.current = true; setExpanded(true);
         void initialize();
       }}>
@@ -493,13 +627,14 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
     </button>
     <div className="plugin-canvas-overlay-chat" hidden={!expanded}>
       <div className="plugin-canvas-overlay-resize" aria-label="Resize conversation"
+        onDoubleClick={clearChromeSelection}
         onPointerDown={startResize} onPointerMove={moveResize} onPointerUp={stopResize}
         onPointerCancel={stopResize} onLostPointerCapture={stopResize} />
       <div className="plugin-canvas-overlay-header"
-        title="Drag to resize; double-click to reset height"
+        title="Drag to resize; double-click to reset height and position"
         onPointerDown={startResize} onPointerMove={moveResize} onPointerUp={stopResize}
         onPointerCancel={stopResize} onLostPointerCapture={stopResize}
-        onDoubleClick={event => { if (!(event.target as Element).closest("button")) resetHeight(); }}>
+        onDoubleClick={event => { clearChromeSelection(); if (!(event.target as Element).closest("button")) resetHeight(); }}>
         <span>{overlay.title}</span>
         <button type="button" aria-label={`Collapse ${overlay.title}`}
           onPointerDown={event => event.stopPropagation()}
