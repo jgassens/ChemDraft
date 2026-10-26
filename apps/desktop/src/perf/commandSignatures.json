@@ -1,0 +1,858 @@
+[
+  {
+    "file": "assistant_mcp/mod.rs",
+    "name": "assistant_mcp_session_open",
+    "async": true,
+    "generics": "",
+    "parameters": "plugin_id: String, plugin_name: String, on_request: Channel<McpBridgeRequest>,",
+    "returnType": "Result<SessionOpened, String>"
+  },
+  {
+    "file": "assistant_mcp/mod.rs",
+    "name": "assistant_mcp_session_close",
+    "async": false,
+    "generics": "",
+    "parameters": "session_id: String",
+    "returnType": "()"
+  },
+  {
+    "file": "assistant_mcp/mod.rs",
+    "name": "assistant_mcp_respond",
+    "async": false,
+    "generics": "",
+    "parameters": "session_id: String, request_id: String, response: McpBridgeResponse,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "assistant_mcp/mod.rs",
+    "name": "assistant_mcp_status",
+    "async": false,
+    "generics": "",
+    "parameters": "",
+    "returnType": "McpStatus"
+  },
+  {
+    "file": "dialog_windows.rs",
+    "name": "dialog_open",
+    "async": true,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, message: Message, channel: Channel<Value>,",
+    "returnType": "Result<Registration, String>"
+  },
+  {
+    "file": "dialog_windows.rs",
+    "name": "dialog_request",
+    "async": false,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, host_id: String, protocol_version: u32, request_id: String, channel: Channel<Value>,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "dialog_windows.rs",
+    "name": "dialog_send",
+    "async": true,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, host_id: String, message: Message,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "dialog_windows.rs",
+    "name": "dialog_publish",
+    "async": false,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, host_id: String, message: Message,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "dialog_windows.rs",
+    "name": "dialog_close",
+    "async": true,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, host_id: String, reason: String,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "download_diagnosis.rs",
+    "name": "diagnose_download_host",
+    "async": true,
+    "generics": "",
+    "parameters": "host: String",
+    "returnType": "Result<NetworkDiagnosis, String>"
+  },
+  {
+    "file": "export.rs",
+    "name": "rasterize_svg",
+    "async": true,
+    "generics": "",
+    "parameters": "request: RasterExportRequest,",
+    "returnType": "Result<RasterExportResponse, String>"
+  },
+  {
+    "file": "external_tools/mod.rs",
+    "name": "external_tool_status",
+    "async": true,
+    "generics": "<R: Runtime>",
+    "parameters": "app: tauri::AppHandle<R>, tool: ToolId, refresh: Option<bool>, plugin_id: Option<String>,",
+    "returnType": "Result<ExternalToolStatus, String>"
+  },
+  {
+    "file": "external_tools/mod.rs",
+    "name": "external_tool_install",
+    "async": true,
+    "generics": "<R: Runtime>",
+    "parameters": "app: tauri::AppHandle<R>, tool: ToolId, on_progress: Channel<ToolInstallProgress>,",
+    "returnType": "Result<ManagedTool, InstallError>"
+  },
+  {
+    "file": "external_tools/mod.rs",
+    "name": "external_tool_cancel_install",
+    "async": false,
+    "generics": "",
+    "parameters": "state: tauri::State<'_, ExternalToolsState>, tool: ToolId",
+    "returnType": "()"
+  },
+  {
+    "file": "external_tools/mod.rs",
+    "name": "external_tool_uninstall",
+    "async": true,
+    "generics": "<R: Runtime>",
+    "parameters": "app: tauri::AppHandle<R>, tool: ToolId,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "external_tools/mod.rs",
+    "name": "external_tool_sign_in",
+    "async": true,
+    "generics": "<R: Runtime>",
+    "parameters": "app: tauri::AppHandle<R>, tool: ToolId,",
+    "returnType": "Result<terminal::SignInLaunch, String>"
+  },
+  {
+    "file": "external_tools/mod.rs",
+    "name": "external_tool_consent_set",
+    "async": true,
+    "generics": "<R: Runtime>",
+    "parameters": "app: tauri::AppHandle<R>, tool: ToolId, plugin_id: String, granted: bool,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "external_tools/mod.rs",
+    "name": "external_tool_consent_revoke",
+    "async": true,
+    "generics": "<R: Runtime>",
+    "parameters": "app: tauri::AppHandle<R>, tool: ToolId, plugin_id: String,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "external_tools/mod.rs",
+    "name": "external_tool_consent_clear_plugin",
+    "async": true,
+    "generics": "<R: Runtime>",
+    "parameters": "app: tauri::AppHandle<R>, plugin_id: String,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "external_tools/mod.rs",
+    "name": "external_tool_consent_list",
+    "async": true,
+    "generics": "<R: Runtime>",
+    "parameters": "app: tauri::AppHandle<R>,",
+    "returnType": "Result<Vec<consent::Consent>, String>"
+  },
+  {
+    "file": "external_tools/mod.rs",
+    "name": "external_tool_run_start",
+    "async": true,
+    "generics": "<R: Runtime>",
+    "parameters": "app: tauri::AppHandle<R>, request: ExternalToolRunRequest,",
+    "returnType": "Result<ExternalToolRunStarted, ExternalToolRunError>"
+  },
+  {
+    "file": "external_tools/mod.rs",
+    "name": "external_tool_run_poll",
+    "async": true,
+    "generics": "<R: Runtime>",
+    "parameters": "app: tauri::AppHandle<R>, run_id: String, cursor: u64, max_lines: Option<usize>, wait_ms: Option<u64>,",
+    "returnType": "Result<run::ExternalToolRunPoll, ExternalToolRunError>"
+  },
+  {
+    "file": "external_tools/mod.rs",
+    "name": "external_tool_run_cancel",
+    "async": false,
+    "generics": "",
+    "parameters": "state: tauri::State<'_, ExternalToolsState>, run_id: String,",
+    "returnType": "Result<(), ExternalToolRunError>"
+  },
+  {
+    "file": "external_tools/mod.rs",
+    "name": "external_tool_conversation_clear",
+    "async": true,
+    "generics": "<R: Runtime>",
+    "parameters": "app: tauri::AppHandle<R>, tool: ToolId, plugin_id: String, conversation_id: String,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "fonts.rs",
+    "name": "list_system_fonts",
+    "async": true,
+    "generics": "",
+    "parameters": "",
+    "returnType": "Result<Vec<SystemFontFamily>, String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "quit_after_flush",
+    "async": true,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle",
+    "returnType": "()"
+  },
+  {
+    "file": "lib.rs",
+    "name": "set_quit_prompt_enabled",
+    "async": true,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, enabled: bool,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "prepare_quit_prompt",
+    "async": true,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, request_id: u64,",
+    "returnType": "Result<bool, String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "quit_prompt_showing",
+    "async": true,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, request_id: u64,",
+    "returnType": "Result<bool, String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "cancel_quit",
+    "async": true,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, request_id: u64",
+    "returnType": "Result<bool, String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "request_quit_after_close",
+    "async": true,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "resume_quit_after_prompt",
+    "async": true,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, request_id: u64,",
+    "returnType": "Result<bool, String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "confirm_prompted_quit",
+    "async": true,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, request_id: u64,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "suspend_toolset_windows",
+    "async": true,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, suspended: bool, focus_export_session_id: Option<String>,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "open_toolset_window",
+    "async": true,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, toolset_id: String, window: Option<ToolsetWindowGeometry>,",
+    "returnType": "Result<ToolsetWindowState, String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "close_toolset_window",
+    "async": false,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, toolset_id: String,",
+    "returnType": "Result<ToolsetWindowState, String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "list_toolset_window_states",
+    "async": false,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle",
+    "returnType": "Result<Vec<ToolsetWindowState>, String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "load_toolset_customization_state",
+    "async": false,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle,",
+    "returnType": "Result<Option<serde_json::Value>, String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "save_toolset_customization_state",
+    "async": false,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, state: serde_json::Value,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "load_document_session",
+    "async": false,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow,",
+    "returnType": "Result<Option<serde_json::Value>, String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "save_document_session",
+    "async": false,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, state: serde_json::Value,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "set_toolbars_menu",
+    "async": false,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, entries: Vec<ToolbarMenuEntry>, rulers_visible: bool, crosshairs_visible: bool, has_multiple_document_tabs: Option<bool>,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "focus_main_document_window",
+    "async": false,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "focus_main_document_window_if_app_active",
+    "async": false,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle",
+    "returnType": "Result<bool, String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "set_menu_checked",
+    "async": false,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, command_id: String, checked: bool,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "plugin_storage_read",
+    "async": false,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, plugin_id: String",
+    "returnType": "Result<Option<String>, String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "plugin_storage_write",
+    "async": false,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, plugin_id: String, contents: String,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "plugin_storage_delete",
+    "async": false,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, plugin_id: String",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "plugin_panel_action_forward",
+    "async": false,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, request: PluginPanelActionForwardRequest,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "plugin_panel_event_forward",
+    "async": false,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, event: String, payload: serde_json::Value,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "register_plugin_panel_input_focus",
+    "async": false,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow",
+    "returnType": "Result<String, String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "set_plugin_panel_input_focus",
+    "async": true,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, page_token: String, editing: bool, generation: u64,",
+    "returnType": "Result<bool, String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "open_plugin_panel_window",
+    "async": true,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, request: OpenPluginPanelRequest,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "open_toolset_popover",
+    "async": true,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, toolset_id: String, kind: String, x: f64, y: f64,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "prewarm_toolset_popover",
+    "async": true,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, toolset_id: String",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "prewarm_toolset_tooltip",
+    "async": true,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "close_toolset_popover",
+    "async": false,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, toolset_id: String",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "set_toolset_window_focusable",
+    "async": false,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, toolset_id: String, focusable: bool,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "window_logical_position",
+    "async": false,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow",
+    "returnType": "Result<WindowLogicalPosition, String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "start_window_drag",
+    "async": false,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, grab_x: f64, grab_y: f64",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "show_toolset_tooltip_window",
+    "async": false,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, x: Option<f64>, y: Option<f64>,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "show_toolset_popover_window",
+    "async": false,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "hide_toolset_tooltip_window",
+    "async": false,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "set_current_window_global_position",
+    "async": false,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, x: f64, y: f64,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "route_toolset_command",
+    "async": false,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, command_id: String",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "read_clipboard_payload",
+    "async": true,
+    "generics": "",
+    "parameters": "",
+    "returnType": "Result<ClipboardReadPayload, String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "read_clipboard_payload",
+    "async": false,
+    "generics": "",
+    "parameters": "",
+    "returnType": "Result<ClipboardReadPayload, String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "write_clipboard_text_items",
+    "async": true,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, items: Vec<ClipboardWriteTextItem>,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "write_clipboard_text_items",
+    "async": false,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, items: Vec<ClipboardWriteTextItem>,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "write_clipboard_image",
+    "async": true,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, png_bytes: Vec<u8>",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "write_clipboard_image",
+    "async": false,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, png_bytes: Vec<u8>",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "toggle_spin3d_debugger_window",
+    "async": true,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "toggle_preferences_window",
+    "async": true,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "agent_bridge_status",
+    "async": false,
+    "generics": "",
+    "parameters": "",
+    "returnType": "AgentBridgeStatus"
+  },
+  {
+    "file": "lib.rs",
+    "name": "engine3d_sidecar_status",
+    "async": false,
+    "generics": "",
+    "parameters": "",
+    "returnType": "Engine3dSidecarStatus"
+  },
+  {
+    "file": "lib.rs",
+    "name": "engine3d_sidecar_start_session",
+    "async": false,
+    "generics": "",
+    "parameters": "lines: Vec<String>, sessions: tauri::State<'_, Engine3dSidecarSessions>,",
+    "returnType": "Result<Engine3dSidecarSessionOutput, String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "engine3d_sidecar_send_session",
+    "async": false,
+    "generics": "",
+    "parameters": "process_session_id: String, lines: Vec<String>, sessions: tauri::State<'_, Engine3dSidecarSessions>,",
+    "returnType": "Result<Engine3dSidecarSessionOutput, String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "engine3d_sidecar_poll_session",
+    "async": false,
+    "generics": "",
+    "parameters": "process_session_id: String, sessions: tauri::State<'_, Engine3dSidecarSessions>,",
+    "returnType": "Result<Engine3dSidecarSessionOutput, String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "engine3d_sidecar_stop_session",
+    "async": false,
+    "generics": "",
+    "parameters": "process_session_id: String, sessions: tauri::State<'_, Engine3dSidecarSessions>,",
+    "returnType": "Result<Engine3dSidecarSessionOutput, String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "take_pending_open_document",
+    "async": false,
+    "generics": "",
+    "parameters": "state: tauri::State<'_, PendingOpenDocument>,",
+    "returnType": "Result<Option<NativeOpenDocumentPayload>, String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "sync_plugin_menu_items",
+    "async": false,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, items: Vec<PluginMenuItemInput>,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "set_keybinding_scheme",
+    "async": false,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, scheme: String",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "naming_engine/mod.rs",
+    "name": "naming_engine_status",
+    "async": false,
+    "generics": "<R: Runtime>",
+    "parameters": "app: tauri::AppHandle<R>, state: tauri::State<'_, NamingEngineState>,",
+    "returnType": "NamingEngineStatus"
+  },
+  {
+    "file": "naming_engine/mod.rs",
+    "name": "naming_engine_install",
+    "async": true,
+    "generics": "<R: Runtime>",
+    "parameters": "app: tauri::AppHandle<R>, on_progress: Channel<InstallProgress>,",
+    "returnType": "Result<NamingEngineStatus, InstallError>"
+  },
+  {
+    "file": "naming_engine/mod.rs",
+    "name": "naming_engine_cancel_install",
+    "async": false,
+    "generics": "",
+    "parameters": "state: tauri::State<'_, NamingEngineState>",
+    "returnType": "()"
+  },
+  {
+    "file": "naming_engine/mod.rs",
+    "name": "naming_engine_uninstall",
+    "async": true,
+    "generics": "<R: Runtime>",
+    "parameters": "app: tauri::AppHandle<R>,",
+    "returnType": "Result<NamingEngineStatus, InstallError>"
+  },
+  {
+    "file": "naming_engine/mod.rs",
+    "name": "naming_cancel",
+    "async": true,
+    "generics": "",
+    "parameters": "state: tauri::State<'_, NamingEngineState>",
+    "returnType": "Result<(), NamingError>"
+  },
+  {
+    "file": "naming_engine/mod.rs",
+    "name": "name_structure_raw",
+    "async": true,
+    "generics": "<R: Runtime>",
+    "parameters": "app: tauri::AppHandle<R>, smiles: String,",
+    "returnType": "Result<NameStructureRaw, NamingError>"
+  },
+  {
+    "file": "ocsr_engine/mod.rs",
+    "name": "ocsr_engine_status",
+    "async": false,
+    "generics": "<R: Runtime>",
+    "parameters": "app: tauri::AppHandle<R>, state: tauri::State<'_, OcsrEngineState>,",
+    "returnType": "OcsrEngineStatus"
+  },
+  {
+    "file": "ocsr_engine/mod.rs",
+    "name": "ocsr_engine_install",
+    "async": true,
+    "generics": "<R: Runtime>",
+    "parameters": "app: tauri::AppHandle<R>, on_progress: Channel<InstallProgress>,",
+    "returnType": "Result<OcsrEngineStatus, InstallError>"
+  },
+  {
+    "file": "ocsr_engine/mod.rs",
+    "name": "ocsr_engine_cancel_install",
+    "async": false,
+    "generics": "",
+    "parameters": "state: tauri::State<'_, OcsrEngineState>",
+    "returnType": "()"
+  },
+  {
+    "file": "ocsr_engine/mod.rs",
+    "name": "ocsr_engine_uninstall",
+    "async": true,
+    "generics": "<R: Runtime>",
+    "parameters": "app: tauri::AppHandle<R>",
+    "returnType": "OcsrEngineStatus"
+  },
+  {
+    "file": "ocsr_engine/mod.rs",
+    "name": "ocsr_recognize_image",
+    "async": true,
+    "generics": "<R: Runtime>",
+    "parameters": "app: tauri::AppHandle<R>, webview: tauri::Webview<R>, media_type: String, bytes_base64: String, on_progress: Option<JavaScriptChannelId>,",
+    "returnType": "RecognitionResponse"
+  },
+  {
+    "file": "ocsr_engine/mod.rs",
+    "name": "ocsr_recognize_cancel",
+    "async": false,
+    "generics": "",
+    "parameters": "state: tauri::State<'_, OcsrEngineState>",
+    "returnType": "()"
+  },
+  {
+    "file": "opsin.rs",
+    "name": "opsin_status",
+    "async": false,
+    "generics": "<R: Runtime>",
+    "parameters": "app: tauri::AppHandle<R>",
+    "returnType": "OpsinStatus"
+  },
+  {
+    "file": "opsin.rs",
+    "name": "opsin_name_to_structure",
+    "async": true,
+    "generics": "<R: Runtime>",
+    "parameters": "app: tauri::AppHandle<R>, name: String,",
+    "returnType": "Result<OpsinConversion, OpsinError>"
+  },
+  {
+    "file": "plugin_package.rs",
+    "name": "read_plugin_package",
+    "async": false,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, zip_path: PathBuf,",
+    "returnType": "Result<tauri::ipc::Response, String>"
+  },
+  {
+    "file": "problem_reports.rs",
+    "name": "open_problem_report_email",
+    "async": false,
+    "generics": "",
+    "parameters": "url: String",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "problem_reports.rs",
+    "name": "take_pending_crash_report",
+    "async": false,
+    "generics": "<R: Runtime>",
+    "parameters": "app: AppHandle<R>",
+    "returnType": "Option<String>"
+  },
+  {
+    "file": "screen_capture.rs",
+    "name": "screen_capture_available",
+    "async": false,
+    "generics": "",
+    "parameters": "",
+    "returnType": "bool"
+  },
+  {
+    "file": "screen_capture.rs",
+    "name": "screen_capture_permission_status",
+    "async": false,
+    "generics": "",
+    "parameters": "",
+    "returnType": "CapturePermissionCommandResult"
+  },
+  {
+    "file": "screen_capture.rs",
+    "name": "request_screen_capture_permission",
+    "async": false,
+    "generics": "",
+    "parameters": "",
+    "returnType": "CapturePermissionCommandResult"
+  },
+  {
+    "file": "screen_capture.rs",
+    "name": "open_screen_capture_settings",
+    "async": false,
+    "generics": "",
+    "parameters": "",
+    "returnType": "Result<(), ScreenCaptureCommandError>"
+  },
+  {
+    "file": "screen_capture.rs",
+    "name": "relaunch_app",
+    "async": false,
+    "generics": "",
+    "parameters": "app: AppHandle",
+    "returnType": "()"
+  },
+  {
+    "file": "screen_capture.rs",
+    "name": "capture_screen_region",
+    "async": true,
+    "generics": "",
+    "parameters": "app: AppHandle,",
+    "returnType": "Result<ScreenCaptureResponse, ScreenCaptureCommandError>"
+  },
+  {
+    "file": "screen_capture.rs",
+    "name": "retain_recognition_screen_capture",
+    "async": true,
+    "generics": "",
+    "parameters": "app: AppHandle, bytes_base64: String,",
+    "returnType": "Result<String, String>"
+  },
+  {
+    "file": "screen_capture.rs",
+    "name": "reveal_recognition_screen_captures",
+    "async": false,
+    "generics": "",
+    "parameters": "app: AppHandle",
+    "returnType": "Result<(), String>"
+  }
+]

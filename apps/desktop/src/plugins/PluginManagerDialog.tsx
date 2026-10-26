@@ -62,6 +62,7 @@ function requiresRecognitionEngine(pluginId: string | undefined): boolean {
 }
 
 export interface PluginManagerDialogProps {
+  onShown?: () => void;
   runtime: DesktopPluginRuntime;
   bundledPlugins: readonly BundledPluginDescriptor[];
   /** Plugins installed from a package (M36). Empty where installing is unsupported (browser build, tests). */
@@ -160,6 +161,7 @@ export function PluginManagerDialog({
   onUninstallRecognitionEngine,
   onShowRecognitionScreenCaptures,
   onClose,
+  onShown,
   onPluginsChanged
 }: PluginManagerDialogProps) {
   const titleId = useId();
@@ -181,6 +183,12 @@ export function PluginManagerDialog({
   const busy = busyOperation !== undefined;
   const backdropPressStartedRef = useRef(false);
   const dialogRef = useRef<HTMLElement>(null);
+  const shownRef = useRef(false);
+  useEffect(() => {
+    if (shownRef.current) return;
+    shownRef.current = true;
+    onShown?.();
+  }, [onShown]);
 
   const installedCatalogKey = installedPluginCatalogKey(installedPlugins);
   const pendingUpdate =

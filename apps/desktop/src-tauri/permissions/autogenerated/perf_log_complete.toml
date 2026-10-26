@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-perf-log-complete"
+description = "Enables the perf_log_complete command without any pre-configured scope."
+commands.allow = ["perf_log_complete"]
+
+[[permission]]
+identifier = "deny-perf-log-complete"
+description = "Denies the perf_log_complete command without any pre-configured scope."
+commands.deny = ["perf_log_complete"]

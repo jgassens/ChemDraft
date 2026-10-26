@@ -1,3 +1,4 @@
+import { perfHook, perfProbe } from "./perf/runtime";
 import { useEffect, useRef, useState } from "react";
 import { ColorPickerPopoverBody, symbolToolGlyph, toolbarCommandFlyoutGridStyle } from "./ToolPalette";
 import { Icon, type IconName } from "./icons";
@@ -55,6 +56,7 @@ export function PalettePopoverWindow({
   // Whether the owning palette has pushed content at least once. A prewarmed window must not reveal
   // (or answer its own mount content-request) before then — its initial state is a placeholder.
   const contentPushedRef = useRef(false);
+  const perfShownRef = useRef<ReturnType<NonNullable<typeof perfProbe>["surfaceStarted"]>>(undefined);
   // Set the moment this popover is dismissed (Escape, click-away, a chosen flyout command) so an
   // in-flight reveal chain cannot show it again after the user has closed it.
   const dismissedRef = useRef(false);
@@ -98,6 +100,8 @@ export function PalettePopoverWindow({
       if (payload.toolsetId !== toolsetId) {
         return;
       }
+      if (perfShownRef.current) perfHook(() => perfProbe?.surfaceShown(perfShownRef.current, "no-op"));
+      perfShownRef.current = perfHook(() => perfProbe?.surfaceStarted("palette-popover", undefined, payload.kind === "flyout" ? payload.flyout.flyoutId : "artColor"));
       contentPushedRef.current = true;
       // A fresh push is a fresh open — it may follow a dismissal.
       dismissedRef.current = false;
@@ -177,6 +181,10 @@ export function PalettePopoverWindow({
   // effect above keeps the size pixel-perfect once painting resumes.
   useEffect(() => {
     const ready = content.kind === "artColor" || (content.kind === "flyout" && content.flyout.commands.length > 0);
+    if (!ready && perfShownRef.current) {
+      perfHook(() => perfProbe?.surfaceShown(perfShownRef.current, "no-op"));
+      perfShownRef.current = undefined;
+    }
     if (!ready || (prewarm && !contentPushedRef.current)) {
       return;
     }
@@ -197,6 +205,7 @@ export function PalettePopoverWindow({
     // show() would otherwise resurrect a popover the user just clicked away from, and a superseded
     // chain's position write would move the visible window back to the old anchor.
     let cancelled = false;
+    const perfShown = perfShownRef.current;
     void (async () => {
       if (rect && rect.width > 0 && rect.height > 0) {
         await setCurrentWindowLogicalSize({ width: Math.ceil(rect.width), height: Math.ceil(rect.height) }).catch(
@@ -211,12 +220,21 @@ export function PalettePopoverWindow({
         await setCurrentWindowLogicalPosition(anchor).catch(() => undefined);
       }
       if (cancelled || dismissedRef.current) {
+        perfHook(() => perfProbe?.surfaceShown(perfShown, "no-op"));
         return;
       }
-      await showCurrentToolsetPopoverWindow().catch(() => undefined);
+      try {
+        await showCurrentToolsetPopoverWindow();
+        perfHook(() => perfProbe?.surfaceShown(perfShown, "popover-shown"));
+        if (perfShownRef.current === perfShown) perfShownRef.current = undefined;
+      } catch {
+        perfHook(() => perfProbe?.surfaceShown(perfShown, "failed"));
+        if (perfShownRef.current === perfShown) perfShownRef.current = undefined;
+      }
     })();
     return () => {
       cancelled = true;
+      perfHook(() => perfProbe?.surfaceShown(perfShown, "no-op"));
       window.clearTimeout(scrubTimer);
       document.body.style.backgroundColor = "";
     };

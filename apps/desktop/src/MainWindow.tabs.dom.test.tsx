@@ -28,6 +28,14 @@ import * as atomLabelDraft from "./atomLabelDraft";
 import * as nativePaletteReconciliation from "./toolbars/reconcileNativePalettes";
 import type { DialogMessage } from "./dialogs/dialogProtocol";
 import { nativeDialogTransport, type DialogDelivery } from "./dialogs/dialogTransport";
+import { createPerfProbe, PerfProbe, type PerfRecord } from "./perf/probe";
+import { invoke as nativeInvoke } from "@tauri-apps/api/core";
+
+const perfState = vi.hoisted(() => ({ current: undefined as import("./perf/probe").PerfProbe | undefined }));
+vi.mock("./perf/runtime", async original => ({
+  ...await original<typeof import("./perf/runtime")>(),
+  get perfProbe() { return perfState.current; }
+}));
 
 const native = vi.hoisted(() => ({
   desktop: true,
@@ -218,6 +226,7 @@ describe("documents in one window", () => {
   afterEach(() => {
     restorePromptProvider();
     act(() => root?.unmount());
+    perfState.current?.stop(); perfState.current = undefined;
     root = undefined;
     container?.remove();
     window.history.replaceState(null, "", "/");
@@ -242,6 +251,66 @@ describe("documents in one window", () => {
     container.innerHTML = "";
     await mount();
   }
+
+  function recordOpens() {
+    const records: PerfRecord[] = [];
+    const frames = new Map<number, () => void>(); let id = 0;
+    perfState.current = createPerfProbe(true, () => ({
+      target: window, now: () => performance.now(), eventTime: stamp => stamp,
+      frame: callback => { frames.set(++id, callback); return id; }, afterPaint: callback => callback(), cancelFrame: key => { frames.delete(key); },
+      defer: callback => window.queueMicrotask(callback), timeout: callback => window.setTimeout(callback, 120_000), clearTimeout: id => window.clearTimeout(id),
+      write: record => records.push(record), window: "main", platform: "macos", buildStamp: "test", processStart: 0, clockErrorMs: 0
+    }));
+    return () => {
+      const callbacks = [...frames.values()]; frames.clear(); callbacks.forEach(callback => callback());
+      return records.filter(record => record.kind === "document-open");
+    };
+  }
+
+  it("with the probe off installs no perf listeners, registry wrapper or native calls through MainWindow", async () => {
+    const instrument = vi.spyOn(PerfProbe.prototype, "instrumentRegistry");
+    const measuredCommand = vi.spyOn(PerfProbe.prototype, "command");
+    const listen = vi.spyOn(window, "addEventListener");
+    await remount(); await open("Probe off"); await command("document.new");
+    expect(instrument).not.toHaveBeenCalled(); expect(measuredCommand).not.toHaveBeenCalled();
+    expect(listen.mock.calls.filter(([name]) => name.startsWith("chemdraft:perf"))).toEqual([]);
+    expect(vi.mocked(nativeInvoke).mock.calls.filter(([name]) => name.startsWith("perf_log_"))).toEqual([]);
+  });
+
+  it("reports commits only for installed opens and labels an already open file", async () => {
+    const rows = recordOpens();
+    await open("Perf first");
+    expect(rows()).toEqual([expect.objectContaining({ doneSignal: "document-commit" })]);
+    await open("Perf first");
+    expect(rows()).toEqual([
+      expect.objectContaining({ doneSignal: "document-commit" }),
+      expect.objectContaining({ doneSignal: "command-finished", extra: expect.objectContaining({ openOutcome: "already-open" }) })
+    ]);
+  });
+
+  it("labels a startup open queued during hydration, then records its later history install", async () => {
+    let hydrated!: (session: unknown) => void;
+    native.load.mockImplementationOnce(() => new Promise(resolve => { hydrated = resolve; }));
+    const rows = recordOpens(); await remount();
+    await act(async () => native.events.get("chemdraft://open-document")!({
+      path: "/tmp/perf-startup.chemdraft", displayName: "perf-startup.chemdraft", contents: fileContents("Startup")
+    }));
+    expect(rows()).toEqual([expect.objectContaining({ doneSignal: "command-finished", extra: expect.objectContaining({ openOutcome: "queued" }) })]);
+    await act(async () => hydrated(undefined));
+    expect(rows().map(row => row.doneSignal)).toEqual(["command-finished", "document-commit"]);
+  });
+
+  it("labels an open queued while the quit question is active", async () => {
+    saveAskToSaveBeforeQuit(true); await paste("Unsaved drawing");
+    await act(async () => native.promptQuit!(++native.quitId));
+    const rows = recordOpens();
+    await act(async () => native.events.get("chemdraft://open-document")!({
+      path: "/tmp/perf-quit.chemdraft", displayName: "perf-quit.chemdraft", contents: fileContents("After quit")
+    }));
+    expect(rows()).toEqual([expect.objectContaining({ doneSignal: "command-finished", extra: expect.objectContaining({ openOutcome: "queued" }) })]);
+    await modalButton("Cancel");
+    expect(rows().map(row => row.doneSignal)).toEqual(["command-finished", "document-commit"]);
+  });
 
   it.each(["/Users/chemist/drawing.chemdraft", "D:\\drawings\\drawing.chemdraft", "D:\\drawings\\drawing.cdxml"])(
     "saves a restored dirty named tab directly to %s without a picker", async (path) => {

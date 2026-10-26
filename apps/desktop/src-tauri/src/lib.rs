@@ -17,6 +17,7 @@ mod network_test_http;
 mod ocsr_engine;
 mod opsin;
 mod panel_window;
+mod perf_log;
 mod plugin_package;
 #[cfg(test)]
 mod plugin_panel_acl_tests;
@@ -864,6 +865,8 @@ const MAIN_WINDOW_TITLE_GRAB_PT: f64 = 22.0;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let perf_enabled = agent_bridge_status().enabled;
+    let perf_log = perf_log::PerfLog::new(perf_enabled);
     let builder = tauri::Builder::default();
 
     // Registered first, as the plugin requires. A second launch forwards its argv here (a document
@@ -895,7 +898,24 @@ pub fn run() {
         }
     }));
 
+    let builder = if perf_enabled {
+        builder.plugin(
+            tauri::plugin::Builder::<tauri::Wry>::new("perf-probe")
+                .on_window_ready(|window| {
+                    if let Some(state) = window.app_handle().try_state::<perf_log::PerfLog>() {
+                        state.window_created(window.label());
+                    }
+                })
+                .js_init_script(
+                    "Object.defineProperty(window, '__CHEMDRAFT_PERF_ALLOWED__', { value: true });",
+                )
+                .build(),
+        )
+    } else {
+        builder
+    };
     let builder = builder
+        .manage(perf_log)
         .manage(PendingOpenDocument::default())
         .manage(panel_window::PanelFocusState::default())
         .manage(Engine3dSidecarSessions::default())
@@ -1328,6 +1348,10 @@ pub fn run() {
             toggle_preferences_window,
             window_logical_position,
             agent_bridge_status,
+            perf_log::perf_log_clock,
+            perf_log::perf_log_append,
+            perf_log::perf_log_complete,
+            perf_log::perf_log_window_state,
             opsin::opsin_status,
             opsin::opsin_name_to_structure,
             naming_engine::naming_engine_status,

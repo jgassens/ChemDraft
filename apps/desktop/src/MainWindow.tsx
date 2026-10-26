@@ -1,4 +1,5 @@
 import { useExportPreviewEnabled } from "./dialogs/useExportPreviewEnabled";
+import { onPerfStarted, perfCanvasReady, perfHook, perfProbe, startPerfProbe, nativeWindowOpening, nativeWindowShown, perfToggleResolved } from "./perf/runtime";
 import { assistantDocumentContentUnchanged, registerAssistantHistoryPort, type AssistantHistoryPort } from "./assistant/historyPort";
 import { getAssistantTransactions } from "./assistant/assistantTransaction";
 import { acquireNativeUtilitySuspension } from "./nativeUtilitySuspension";
@@ -734,8 +735,6 @@ import {
   listenForKeybindingSettings,
   listenForSpin3dSettings,
   pushKeybindingSchemeToNativeMenu,
-  toggleSpin3dDebuggerWindow,
-  togglePreferencesWindow,
   closeToolsetWindow,
   type ToolsetWindowGeometry,
   type ToolsetArtPaintTarget
@@ -1616,6 +1615,10 @@ const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
 const CURRENT_BUILD_STAMP = "10.26.10.00-codex";
+/** Starts in the background for the document webview under the existing probe gate. */
+export function startMainWindowPerfProbe(): void {
+  perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
+}
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -3073,6 +3076,10 @@ export function MainWindow({
     () => createDesktopShortcutRegistry(shortcutCommands, shortcutPlatform),
     [shortcutCommands, shortcutPlatform]
   );
+  useEffect(() => {
+    const stop = perfHook(() => onPerfStarted(() => { perfHook(() => perfProbe?.setShortcutRegistry(shortcutRegistry)); }));
+    return () => { stop?.(); perfHook(() => perfProbe?.setShortcutRegistry(undefined)); };
+  }, [shortcutRegistry]);
   // The hover leaving the labelled atom (and its own bonds) does not end a hover-label continuation:
   // a pointer drifting mid-word is common on small atoms, so the next key decides
   // (`hoverLabelContinuesForKey`). Leaving only marks that the pointer left, after which a capital
@@ -3186,6 +3193,7 @@ export function MainWindow({
     // must not be captured as style targets for a document whose object ids may happen to match.
     if (!switchingTabs) updateToolbarStyleTargetSnapshot(history.present);
     setDocumentHistory(history);
+    if (perfProbe) perfHook(() => perfProbe?.signal("document-commit"));
   }, [clearObjectTransformPreview, releaseGesturePointer, updateToolbarStyleTargetSnapshot]);
   // `nextDocument` is handed over, not lent: both callers pass a schema-parse result nothing else
   // holds (an opened file's parse, or a newly created document), so the engine admits it without the
@@ -3866,14 +3874,19 @@ export function MainWindow({
     // An explicit toggle makes this toolset's visibility authoritative (see resolvedToolsetIdsRef),
     // so a later-appearing plugin toolset the user opens is persisted normally from here on.
     resolvedToolsetIdsRef.current.add(toolsetId);
+    const perfWindow = perfHook(() => perfProbe?.expectSignal(visibleToolsetIdsRef.current.has(toolsetId) ? "command-finished" : "window-shown"));
 
     if (effectiveNativePalette) {
+      const perfOpen = perfProbe && !visibleToolsetIdsRef.current.has(toolsetId)
+        ? perfHook(() => nativeWindowOpening(`toolset:${toolsetId}`)) : undefined;
       // JS owns visibility, so JS decides open vs close (and passes the window geometry on open)
       // rather than routing through Rust's toggle command.
       const nextState = visibleToolsetIdsRef.current.has(toolsetId)
         ? await closeToolsetWindow(toolsetId)
         : await openToolsetWindow(toolsetId, toolsetWindowGeometry(toolsetId));
       setVisibleToolsetIds((current) => updateVisibleToolsets(current, toolsetId, nextState.open));
+      if (nextState.open) void perfHook(() => nativeWindowShown(perfOpen));
+      if (perfProbe && perfWindow) perfHook(() => perfProbe?.complete(perfWindow, nextState.open ? "window-shown" : "command-finished"));
       // Deliberately closing the Rings toolbar clears the ring selection. The pruning effect no
       // longer does this off `ringInspectorOpen`, so a spurious async "closed" window event can
       // no longer clobber a live selection — only an explicit toggle does.
@@ -3886,6 +3899,7 @@ export function MainWindow({
 
     const wasOpen = visibleToolsetIdsRef.current.has(toolsetId);
     setVisibleToolsetIds((current) => updateVisibleToolsets(current, toolsetId, !current.has(toolsetId)));
+    if (perfProbe && perfWindow) perfHook(() => perfProbe?.complete(perfWindow, wasOpen ? "command-finished" : "window-shown"));
     if (toolsetId === ringInspectorToolsetId && wasOpen) {
       clearNativeRingParts();
     }
@@ -8505,11 +8519,13 @@ export function MainWindow({
     contents: string,
     displayName: string,
     path?: string,
-    options?: OpenDocumentContentsOptions
+    options?: OpenDocumentContentsOptions,
+    reportOutcome?: (outcome: "queued" | "already-open" | "installed") => void
   ) => {
     if (closeTabPromptRef.current || quitInteractionRef.current || keptDrawingsPromptRef.current || (isDesktopRuntime() && !documentSessionHydratedRef.current)) {
       // Wait for the close/kept-drawing prompt and startup restore before activating an OS open-with.
       pendingDocumentOpensRef.current.push({ contents, displayName, path, options });
+      perfHook(() => reportOutcome?.("queued"));
       return;
     }
     const browserKey = path ? undefined : `${displayName}\n${sha256Utf8Hex(contents)}`;
@@ -8521,12 +8537,14 @@ export function MainWindow({
         browserFileKeysRef.current.get(tab.id) === browserKey);
     if (existing) {
       activateDocumentTab(existing.id);
+      perfHook(() => reportOutcome?.("already-open"));
       return;
     }
     const opened = openNativeDocument(contents);
     const resolvedOpen = await resolveOpenResultDocument(opened);
     if (quitInteractionRef.current) {
       pendingDocumentOpensRef.current.push({ contents, displayName, path, options });
+      perfHook(() => reportOutcome?.("queued"));
       return;
     }
     if (!resolvedOpen) {
@@ -8562,6 +8580,7 @@ export function MainWindow({
     setStatus(fitRecommendation
       ? `${openStatus}; imported content exceeds ${pageFitPromptLayoutLabel(fitRecommendation.currentPageTitle, fitRecommendation.currentOrientation)}`
       : openStatus);
+    perfHook(() => reportOutcome?.("installed"));
   }, [activateDocumentTab, addDocumentTab, clearDocumentInteractionState, resetDocumentHistory, snapshotDocumentTab]);
   const openDocumentContentsNowRef = useRef(openDocumentContentsNow);
   openDocumentContentsNowRef.current = openDocumentContentsNow;
@@ -8575,8 +8594,18 @@ export function MainWindow({
     path?: string,
     options?: OpenDocumentContentsOptions
   ): Promise<void> => {
+    const timing = perfHook(() => perfProbe?.documentOpenStarted());
     const run = documentOpenQueueRef.current.then(() =>
-      openDocumentContentsNowRef.current(contents, displayName, path, options));
+      openDocumentContentsNowRef.current(contents, displayName, path, options, outcome => {
+        perfHook(() => {
+          if (!timing) return;
+          if (outcome === "installed") return perfProbe?.documentOpenCommitted(timing);
+          return perfProbe?.documentOpenSkipped(timing, outcome);
+        });
+      }));
+    perfHook(() => {
+      if (timing) return run.catch(() => perfHook(() => perfProbe?.documentOpenFailed(timing)));
+    });
     documentOpenQueueRef.current = run.catch(() => undefined);
     return run;
   }, []);
@@ -8860,6 +8889,7 @@ export function MainWindow({
     }
     if (!isDesktopRuntime()) {
       documentSessionHydratedRef.current = true;
+      perfHook(() => perfCanvasReady());
       return undefined;
     }
 
@@ -8951,6 +8981,7 @@ export function MainWindow({
       .finally(async () => {
         if (active) {
           documentSessionHydratedRef.current = true;
+          perfHook(() => perfCanvasReady());
           if (unrestoredSessionTabsRef.current.length) {
             keptDrawingsPromptRef.current = "notice";
             setKeptDrawingsPrompt("notice");
@@ -9753,6 +9784,7 @@ export function MainWindow({
   // core bindings memo because "plugins.manage" is a core binding that opens the manager.
   const [pluginDiagnosticsOpen, setPluginDiagnosticsOpen] = useState(false);
   const [pluginManagerOpen, setPluginManagerOpen] = useState(false);
+  const pluginManagerTiming = useRef<ReturnType<NonNullable<typeof perfProbe>["surfaceStarted"]>>(undefined);
   const analysisWindowSnapshotsRef = useRef(new Map<string, AnalysisWindowSnapshotPayload>());
   const analysisWindowRevisionRef = useRef(0);
   const publishAnalysisWindow = useCallback(
@@ -9763,6 +9795,7 @@ export function MainWindow({
       options: { open?: boolean; focus?: boolean; width?: number; height?: number } = {}
     ): Promise<boolean> => {
       if (!isDesktopRuntime()) return Promise.resolve(false);
+      const perfWindow = options.open ? perfHook(() => perfProbe?.expectSignal("window-shown")) : undefined;
       const payload: AnalysisWindowSnapshotPayload = {
         pluginId: ANALYSIS_WINDOW_OWNER_ID,
         panelId: windowId,
@@ -9775,20 +9808,23 @@ export function MainWindow({
       // Resolves true once the window is up (or needed no opening), false when the native open
       // failed — callers that track "the window is showing" must not assume it before then.
       return settleAnalysisWindowOpen(
-        () =>
-          options.open
-            ? openPluginPanelWindow({
-                pluginId: ANALYSIS_WINDOW_OWNER_ID,
-                panelId: windowId,
-                title,
-                width: options.width,
-                height: options.height,
-                focus: options.focus ?? false
-              })
-            : Promise.resolve(),
+        async () => {
+          if (!options.open) return;
+          const open = perfProbe ? perfHook(() => nativeWindowOpening(`panel:${ANALYSIS_WINDOW_OWNER_ID}/${windowId}`)) : undefined;
+          await openPluginPanelWindow({
+            pluginId: ANALYSIS_WINDOW_OWNER_ID,
+            panelId: windowId,
+            title,
+            width: options.width,
+            height: options.height,
+            focus: options.focus ?? false
+          });
+          void perfHook(() => nativeWindowShown(open));
+        },
         (message) => setStatus(`Could not open ${title}: ${message}`)
       ).then((opened) => {
         if (opened) void broadcastAnalysisWindowSnapshot(payload).catch(() => undefined);
+        if (perfProbe && perfWindow && opened) perfHook(() => perfProbe?.complete(perfWindow, "window-shown"));
         return opened;
       });
     },
@@ -9827,7 +9863,14 @@ export function MainWindow({
         category: "plugins",
         description: "Enable or disable bundled ChemDraft plugins"
       },
-      () => setPluginManagerOpen(true)
+      () => {
+        if (pluginManagerOpen) {
+          perfHook(() => perfProbe?.signal("dialog-open", PLUGIN_MANAGER_COMMAND_ID));
+          return;
+        }
+        pluginManagerTiming.current = perfHook(() => perfProbe?.surfaceStarted("dialog", PLUGIN_MANAGER_COMMAND_ID, "plugin-manager"));
+        setPluginManagerOpen(true);
+      }
     );
 
     register(
@@ -10384,12 +10427,22 @@ export function MainWindow({
       register(action, () => {
         if (action.id === PREFERENCES_COMMAND_ID) {
           if (!isDesktopRuntime()) {
+            const perfWindow = perfHook(() => perfProbe?.expectSignal("command-finished", action.id));
             setStatus(openBrowserUtilityWindow(PREFERENCES_WINDOW_KIND)
               ? "Preferences opened in browser"
               : "Preferences pop-up blocked");
+            if (perfWindow) perfHook(() => perfProbe?.complete(perfWindow, "command-finished"));
             return;
           }
-          void togglePreferencesWindow().catch(() => {
+          const input = perfHook(() => perfProbe?.expectSignal("window-painted", action.id));
+          void (async () => {
+            // Diagnostics have their own transport; the app command keeps its original contract.
+            const open = perfHook(() => nativeWindowOpening("preferences", action.id));
+            const { invoke } = await import("@tauri-apps/api/core");
+            await invoke("toggle_preferences_window");
+            perfHook(() => perfToggleResolved("preferences", open, input));
+          })().catch(() => {
+            if (input) perfHook(() => perfProbe?.complete(input, "failed"));
             setStatus("Preferences unavailable");
           });
           return;
@@ -10402,7 +10455,15 @@ export function MainWindow({
               : "3D debugger pop-up blocked");
             return;
           }
-          void toggleSpin3dDebuggerWindow().catch(() => {
+          const input = perfHook(() => perfProbe?.expectSignal("window-painted", action.id));
+          void (async () => {
+            // Diagnostics have their own transport; the app command keeps its original contract.
+            const open = perfHook(() => nativeWindowOpening("spin3d-debugger", action.id));
+            const { invoke } = await import("@tauri-apps/api/core");
+            await invoke("toggle_spin3d_debugger_window");
+            perfHook(() => perfToggleResolved("spin3d-debugger", open, input));
+          })().catch(() => {
+            if (input) perfHook(() => perfProbe?.complete(input, "failed"));
             setStatus("3D debugger unavailable");
           });
           return;
@@ -10506,6 +10567,7 @@ export function MainWindow({
     openDocumentFromNativePicker,
     openCustomPageSizeDialog,
     pasteClipboard,
+    pluginManagerOpen,
     publishAnalysisWindow,
     quickActions,
     resetDocumentHistory,
@@ -10537,6 +10599,8 @@ export function MainWindow({
       syncCoreCommands: createCoreCommandRegistrar(commandRegistry, () => coreCommandBindingsRef.current)
     };
   }, []);
+
+  useEffect(() => perfHook(() => onPerfStarted(() => { perfHook(() => perfProbe?.instrumentRegistry(registry)); })), [registry]);
 
   useEffect(() => {
     syncCoreCommands(coreCommandBindings);
@@ -10801,13 +10865,17 @@ export function MainWindow({
         openedPluginPanelWindowsRef.current.add(key);
         // Reports arrive asynchronously after the command that asked for them, so the window must
         // appear without taking the keyboard from whatever the user moved on to.
-        void openPluginPanelWindow({
-          pluginId: panel.pluginId,
-          panelId: panel.panelId,
-          ...panel.preferredWindowSize,
-          title: panel.report.title || panel.title,
-          focus: false
-        }).catch((error: unknown) => {
+        void (async () => {
+          const open = perfProbe ? perfHook(() => nativeWindowOpening(`panel:${panel.pluginId}/${panel.panelId}`, panel.commandId)) : undefined;
+          await openPluginPanelWindow({
+            pluginId: panel.pluginId,
+            panelId: panel.panelId,
+            ...panel.preferredWindowSize,
+            title: panel.report.title || panel.title,
+            focus: false
+          });
+          void perfHook(() => nativeWindowShown(open));
+        })().catch((error: unknown) => {
           openedPluginPanelWindowsRef.current.delete(key);
           pluginPanelReportsRef.current.delete(key);
           pluginRuntime.runtime.panels.closeDetachedPanel(panel.pluginId, panel.panelId);
@@ -11135,7 +11203,7 @@ export function MainWindow({
     []
   );
 
-  const invoke = useCallback(async (commandId: string, options?: { input?: PluginCommandInput }) => {
+  const invokeUnmeasured = useCallback(async (commandId: string, options?: { input?: PluginCommandInput }) => {
     if (isCompoundLayoutCommand(commandId) && !compoundLayoutsEnabledRef.current) {
       setStatus("Enable Compound layout tools in Settings"); return;
     }
@@ -11245,6 +11313,9 @@ export function MainWindow({
       const owner = pluginRuntime.plugins.find((manifest) =>
         manifest.contributes.commands.some((command) => command.id === commandId)
       );
+      if (perfProbe && owner?.contributes.panels.some(panel => pluginPanelOpenCommand(owner, panel.id) === commandId)) {
+        perfHook(() => perfProbe?.expectSignal("window-shown", commandId));
+      }
       const analyzerOwned = owner?.contributes.analyzers.some((analyzer) => analyzer.commandId === commandId) ?? false;
       const queueKey = analyzerOwned && owner ? `analyzer:${owner.id}` : `command:${commandId}`;
       const generation = (pluginCommandGenerationsRef.current.get(queueKey) ?? 0) + 1;
@@ -11314,6 +11385,18 @@ export function MainWindow({
     restoreDocumentHistory,
     showAnalyzerNotice
   ]);
+
+  // Preserve the action's promise itself. Diagnostics never add an await or alter its outcome.
+  const invoke = useMemo(() => {
+    return (commandId: string, options?: { input?: PluginCommandInput }) => {
+      if (!perfProbe) return invokeUnmeasured(commandId, options);
+      const span = perfHook(() => perfProbe?.command(isForcedDocumentHistoryCommandId(commandId) ? stripForcedDocumentHistorySuffix(commandId) : commandId));
+      if (pluginCommandExists(commandId)) perfHook(() => perfProbe?.registryExpected(span));
+      const result = invokeUnmeasured(commandId, options);
+      void result.then(() => perfHook(() => perfProbe?.dispatchReturned(span)), () => perfHook(() => perfProbe?.dispatchReturned(span)));
+      return result;
+    };
+  }, [invokeUnmeasured, pluginCommandExists]);
 
   invokeCommandRef.current = invoke;
 
@@ -19613,6 +19696,7 @@ export function MainWindow({
 
       {pluginManagerOpen ? (
         <PluginManagerDialog
+          onShown={() => perfHook(() => perfProbe?.surfaceShown(pluginManagerTiming.current, "dialog-open"))}
           runtime={pluginRuntime.runtime}
           bundledPlugins={pluginRuntime.bundledPlugins}
           installedPlugins={pluginRuntime.installedPlugins}
@@ -30854,10 +30938,12 @@ function downloadExportResult(filename: string, result: ExportResult): void {
 async function writeNativeExportResult(path: string, result: ExportResult): Promise<void> {
   if (result.kind === "text") {
     await writeNativeTextFile(path, result.contents);
+    if (perfProbe) perfHook(() => perfProbe?.signal("export-written"));
     return;
   }
 
   await writeNativeBinaryFile(path, result.bytes);
+  if (perfProbe) perfHook(() => perfProbe?.signal("export-written"));
 }
 
 function sanitizedDialogNumber(value: number, fallback: number, min: number, max: number): number {

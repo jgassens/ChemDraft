@@ -2,6 +2,7 @@ import { dialogEnvelope, parseDialogMessage, validateDialogDelivery, type Dialog
 import type { ExportOptions, ExportFrame, ExportPreviewResult } from "./exportOptions";
 import type { DialogDelivery, DialogTransport } from "./dialogTransport";
 import type { DialogKind, EngineInstallSnapshot, EngineInstallAction, ToolInstallSnapshot, ToolInstallAction } from "./dialogProtocol";
+import { perfHook, perfProbe, sendPerfCompletion } from "../perf/runtime";
 
 export interface EngineInstallPresenter {
   action(action: EngineInstallAction): void | Promise<void>;
@@ -133,11 +134,16 @@ export class DialogCoordinator {
     if (existing) {
       // Reuse the retained snapshot and native window, preserving its local draft and position.
       const receipt = existing.terminalRequestId ? existing.receipts.get(existing.terminalRequestId) : undefined;
-      if (existing.registration && ((kind === "engineInstall" || kind === "toolInstall") || !existing.terminalRequestId || receipt?.type === "result" && receipt.data.status === "exported")) await this.transport.open(existing.snapshot);
+      if (existing.registration && ((kind === "engineInstall" || kind === "toolInstall") || !existing.terminalRequestId || receipt?.type === "result" && receipt.data.status === "exported")) {
+        if (perfProbe) perfHook(() => perfProbe?.expectCompletion("dialog-open", existing.snapshot.sessionId));
+        await this.transport.open(existing.snapshot);
+        if (perfProbe) perfHook(() => sendPerfCompletion(existing.registration!.windowLabel, existing.snapshot.sessionId, "dialog-open"));
+      }
       return;
     }
     const snapshot: Session["snapshot"] = { protocolVersion: 1, ownerWindowId: "main", documentTabId: tabId,
       dialogKind: kind, sessionId: crypto.randomUUID(), requestId: crypto.randomUUID(), snapshotRevision: 1, type: "snapshot", data } as Session["snapshot"];
+    if (perfProbe) perfHook(() => perfProbe?.expectCompletion("dialog-open", snapshot.sessionId));
     const title = kind === "engineInstall" ? "Engine installation" : kind === "toolInstall" ? "Tool installation" : kind === "export" ? "Export" : kind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size";
     if (!parseDialogMessage(snapshot)) throw new Error(`Invalid ${title} snapshot`);
     const session: Session = { snapshot, engineInstall, toolInstall, receipts: new Map(), inFlight: new Map(), settled: false, ready: false,
@@ -250,6 +256,7 @@ export class DialogCoordinator {
           if (!this.owner.applyArrangementSpacing) throw new Error("Spacing is unavailable");
           await this.owner.applyArrangementSpacing(message.documentTabId, message.data.percent);
         } else await this.owner.applyPageSize(message.documentTabId, message.data);
+        if (perfProbe) perfHook(() => sendPerfCompletion(delivery.windowLabel, message.requestId, "document-commit"));
       } else if (message.data.action === "export" || message.data.action === "chooseDestination") {
         const callback = message.data.action === "export" ? this.owner.export : this.owner.chooseExportDestination;
         if (!callback) throw new Error("Export is unavailable in this document window.");
@@ -259,6 +266,7 @@ export class DialogCoordinator {
           });
         });
         if (receipt.data.status !== "exported") session.terminalRequestId = undefined;
+        else if (perfProbe) perfHook(() => sendPerfCompletion(delivery.windowLabel, message.requestId, "export-written"));
       }
     } catch (error) {
       session.terminalRequestId = undefined;

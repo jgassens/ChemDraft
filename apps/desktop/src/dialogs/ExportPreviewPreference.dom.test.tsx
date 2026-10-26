@@ -14,6 +14,7 @@ import type { ExportDialogState, ExportPreviewResult } from "./exportOptions";
 import { createDialogExportPreview } from "../MainWindow";
 import { applyReactionArrowToolAtPoint, createPhase4Document, exportPhase4Svg, insertNativeTemplateMolecule } from "../documentWorkflow";
 import { parseDialogMessage } from "./dialogProtocol";
+import { PerfProbe } from "../perf/probe";
 
 const ipc = vi.hoisted(() => ({ invoke: vi.fn(), channels: [] as { onmessage(value: unknown): void }[] }));
 vi.mock("@tauri-apps/api/core", () => ({
@@ -29,7 +30,7 @@ beforeEach(() => {
   vi.stubGlobal("localStorage", new MemoryStorage()); vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
 });
-afterEach(() => { act(() => root.unmount()); container.remove(); vi.useRealTimers(); vi.unstubAllGlobals(); });
+afterEach(() => { act(() => root.unmount()); container.remove(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 async function tick(ms = 250) { await act(async () => vi.advanceTimersByTimeAsync(ms)); }
 async function toggle(enabled: boolean) {
   await act(async () => { saveExportPreviewEnabled(enabled); await broadcastExportPreviewSettings(enabled); });
@@ -57,6 +58,23 @@ async function mountHost() {
   await act(async () => { deliver(exportSnapshot); await import("./ExportForm"); });
 }
 const previewCalls = () => ipc.invoke.mock.calls.filter(([command, args]) => command === "dialog_send" && args.message.data.action === "preview");
+
+it.each(["export", "apply"] as const)("with the probe off installs no perf listeners or invokes through dialog ready and %s hooks", async action => {
+  const listen = vi.spyOn(window, "addEventListener");
+  const expectCompletion = vi.spyOn(PerfProbe.prototype, "expectCompletion");
+  if (action === "export") {
+    await mountHost(); await tick();
+    await act(async () => container.querySelector("form")!.requestSubmit());
+  } else {
+    await act(async () => root.render(createElement(DialogWindow, { hostId: "page-size-host" })));
+    await act(async () => deliver({ ...exportSnapshot, dialogKind: "pageSize", data: { title: "Drawing", width: 8.5, height: 11, unit: "inch" } }));
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Apply")!.click());
+  }
+  expect(ipc.invoke.mock.calls.some(([command, args]) => command === "dialog_send" && args.message.data.action === action)).toBe(true);
+  expect(expectCompletion).not.toHaveBeenCalled();
+  expect(listen.mock.calls.filter(([name]) => name.startsWith("chemdraft:perf"))).toEqual([]);
+  expect(ipc.invoke.mock.calls.filter(([command]) => command.startsWith("perf_log_"))).toEqual([]);
+});
 
 it.each(["macos", "windows"] as const)("renders the PDF page layout as an SVG image on %s without a PDF viewer", async platform => {
   saveExportPreviewEnabled(true);
