@@ -1614,7 +1614,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.26.10.00-codex";
+const CURRENT_BUILD_STAMP = "10.26.10.45-codex";
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -1965,7 +1965,7 @@ export function MainWindow({
     // window bubble listeners run, even for consecutive synthetic events.
     const compositionSignals = ["compositionstart", "compositionupdate", "compositionend", "compositioncancel",
       "input", "keydown", "focusin", "focusout"] as const;
-    for (const type of compositionSignals) window.addEventListener(type, syncComposingListeners);
+    for (const type of compositionSignals) window.addEventListener(type, syncComposingListeners, { passive: true });
     // Also cover expiry, overlay removal and any other clear path without keeping a
     // non-passive touch listener on the window between compositions.
     const compositionObserver = new MutationObserver(syncComposingListeners);
@@ -2012,7 +2012,7 @@ export function MainWindow({
     globalThis.document.addEventListener("focusin", restoreOverlayFocus, true);
     window.addEventListener("mousedown", preserveOverlayFocus, true);
     window.addEventListener("mouseup", releaseFocus, true);
-    window.addEventListener("keydown", releaseFocus, true);
+    window.addEventListener("keydown", releaseFocus, { capture: true, passive: true });
     window.addEventListener("pointerdown", down, true);
     window.addEventListener("pointermove", move, true);
     window.addEventListener("pointerup", up, true);

@@ -245,7 +245,7 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
     };
     element?.addEventListener("chemdraft:composition-blocked", showFinishingInput);
     // React has no compositioncancel prop; listen to the native cancellation as well.
-    element?.addEventListener("compositioncancel", endComposition, true);
+    element?.addEventListener("compositioncancel", endComposition, { capture: true, passive: true });
     return () => {
       element?.removeEventListener("compositioncancel", endComposition, true);
       element?.removeEventListener("chemdraft:composition-blocked", showFinishingInput);
@@ -288,7 +288,7 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
     };
     document.addEventListener("focusin", trackFocus, true);
     document.addEventListener("pointerdown", trackPointer, true);
-    document.addEventListener("keydown", trackKeyboard, true);
+    document.addEventListener("keydown", trackKeyboard, { capture: true, passive: true });
     return () => {
       document.removeEventListener("focusin", trackFocus, true);
       document.removeEventListener("pointerdown", trackPointer, true);
@@ -629,13 +629,12 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
     onDoubleClick={event => event.stopPropagation()}
     onContextMenu={event => { event.preventDefault(); event.stopPropagation(); }}
     onWheel={event => event.stopPropagation()}
-    onKeyUp={event => event.stopPropagation()}
     onKeyDown={event => {
-      event.stopPropagation();
+      // IME events must reach the input method and every downstream observer untouched.
+      // The composition guard cancels canvas pointer events only.
+      if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229 || event.key === "Process") return;
       if (isBrowserReloadChord(event, shortcutPlatform)) event.preventDefault();
-      if (event.key !== "Escape" || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229
-        || event.currentTarget.dataset.composing === "true") return;
-      event.preventDefault();
+      if (event.key !== "Escape") return;
       setExpanded(false);
       onFocusDrawing();
     }}

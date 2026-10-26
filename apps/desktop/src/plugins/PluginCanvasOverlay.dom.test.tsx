@@ -700,6 +700,79 @@ describe("PluginCanvasOverlay", () => {
   // Composition handling is shared across platforms. MainWindow's integration suite
   // supplies shortcutPlatform for both platforms; the reload-chord test covers its branch here.
   describe("composition guard", () => {
+    it.each(["Enter", " ", "Escape", "Process", "F5"])("leaves composing %s keydowns and keyups uncancelled and propagating", async key => {
+      await expand();
+      const textarea = container.querySelector("textarea")!;
+      await act(async () => {
+        enterText("あ");
+        textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+      });
+      for (const flags of [{ isComposing: true, keyCode: 13 }, { isComposing: false, keyCode: 229 }]) {
+        for (const type of ["keydown", "keyup"]) {
+          const event = new KeyboardEvent(type, { key, ...flags, bubbles: true, cancelable: true });
+          const prevent = vi.spyOn(event, "preventDefault");
+          const stop = vi.spyOn(event, "stopPropagation");
+          const stopImmediate = vi.spyOn(event, "stopImmediatePropagation");
+          const reached = vi.fn((observed: Event) => {
+            expect(observed).toBe(event);
+            expect(observed.defaultPrevented).toBe(false);
+            expect(observed.cancelBubble).toBe(false);
+          });
+          textarea.addEventListener(type, reached);
+          document.addEventListener(type, reached);
+          window.addEventListener(type, reached);
+          // A second listener at the same node also proves stopImmediatePropagation is absent.
+          const last = vi.fn();
+          window.addEventListener(type, last);
+          try {
+            await act(async () => { expect(textarea.dispatchEvent(event)).toBe(true); });
+            expect(reached).toHaveBeenCalledTimes(3);
+            expect(last).toHaveBeenCalledOnce();
+            expect(prevent).not.toHaveBeenCalled();
+            expect(stop).not.toHaveBeenCalled();
+            expect(stopImmediate).not.toHaveBeenCalled();
+            expect(event.defaultPrevented).toBe(false);
+          } finally {
+            textarea.removeEventListener(type, reached);
+            document.removeEventListener(type, reached);
+            window.removeEventListener(type, reached);
+            window.removeEventListener(type, last);
+          }
+          expect(widget().dataset.composing).toBe("true");
+          expect(widget().dataset.expanded).toBe("true");
+          expect(document.activeElement).toBe(textarea);
+          expect(action).not.toHaveBeenCalled();
+        }
+      }
+      await act(async () => textarea.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "あ" })));
+      await act(async () => textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
+      expect(action).toHaveBeenCalledExactlyOnceWith({ sectionId: overlay.prompt.id, control: "prompt", text: "あ", selected: "codex" });
+    });
+
+    it("passively releases an orphan on plain Escape and collapses without consuming either Escape", async () => {
+      await expand();
+      const textarea = container.querySelector("textarea")!;
+      await act(async () => textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true })));
+      const reached = vi.fn();
+      window.addEventListener("keydown", reached);
+      try {
+        const imeEscape = new KeyboardEvent("keydown", { key: "Escape", keyCode: 229, isComposing: true, bubbles: true, cancelable: true });
+        await act(async () => textarea.dispatchEvent(imeEscape));
+        expect(widget().dataset.expanded).toBe("true");
+        expect(widget().dataset.composing).toBe("true");
+        const escape = new KeyboardEvent("keydown", { key: "Escape", keyCode: 27, bubbles: true, cancelable: true });
+        // No compositionend: the ordinary key passively releases the orphan before collapse.
+        await act(async () => textarea.dispatchEvent(escape));
+        expect(reached.mock.calls.map(([event]) => event)).toEqual([imeEscape, escape]);
+        expect(imeEscape.defaultPrevented).toBe(false);
+        expect(escape.defaultPrevented).toBe(false);
+        expect(widget().dataset.composing).toBeUndefined();
+        expect(widget().dataset.expanded).toBe("false");
+        expect(document.activeElement).toBe(drawing);
+        expect(action).not.toHaveBeenCalled();
+      } finally { window.removeEventListener("keydown", reached); }
+    });
+
     it.each([
       { order: "before end", isComposing: true }, { order: "after end", isComposing: true },
       { order: "before end", isComposing: false }, { order: "after end", isComposing: false },
@@ -1296,12 +1369,14 @@ describe("PluginCanvasOverlay", () => {
     expect(window.localStorage.getItem(expandedKey)).toBeNull();
   });
 
-  it("stops overlay pointer and keyboard events before they reach the canvas", async () => {
-    const seen = vi.fn(); viewport.addEventListener("pointerdown", seen); viewport.addEventListener("keydown", seen);
+  it("stops overlay pointer events but lets keyboard events propagate", async () => {
+    const pointerSeen = vi.fn(); viewport.addEventListener("pointerdown", pointerSeen);
+    const keySeen = vi.fn(); viewport.addEventListener("keydown", keySeen);
     await expand();
     await act(async () => pointer(container.querySelector("textarea")!, "pointerdown", 10, 10));
     await act(async () => container.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true })));
-    expect(seen).not.toHaveBeenCalled();
+    expect(pointerSeen).not.toHaveBeenCalled();
+    expect(keySeen).toHaveBeenCalledOnce();
   });
 
   it("blocks webview reload chords while the prompt owns focus", async () => {

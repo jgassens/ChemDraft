@@ -307,6 +307,73 @@ describe("MainWindow canvas overlays", () => {
         nativePalette={false} shortcutPlatform={platform} />));
     });
 
+    it("leaves all IME events untouched through the textarea and window, then sends and collapses on ordinary keys", async () => {
+      const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
+      const widget = container.querySelector<HTMLElement>(".plugin-canvas-overlay")!;
+      await act(async () => input("あ"));
+      const events: Event[] = [new CompositionEvent("compositionstart", { bubbles: true, cancelable: true })];
+      for (const key of ["Enter", " ", "Escape", "Process", "F5"]) {
+        for (const flags of [{ isComposing: true, keyCode: 13 }, { isComposing: false, keyCode: 229 }]) {
+          for (const type of ["keydown", "keyup"]) events.push(new KeyboardEvent(type, { key, ...flags, bubbles: true, cancelable: true }));
+        }
+      }
+      events.push(
+        new InputEvent("beforeinput", { bubbles: true, cancelable: true, isComposing: true, inputType: "insertCompositionText", data: "あ" }),
+        new InputEvent("input", { bubbles: true, cancelable: true, isComposing: true, inputType: "insertCompositionText", data: "あ" }),
+        new CompositionEvent("compositionupdate", { bubbles: true, cancelable: true, data: "あ" }),
+        new CompositionEvent("compositionend", { bubbles: true, cancelable: true, data: "あ" }),
+        new CompositionEvent("compositioncancel", { bubbles: true, cancelable: true })
+      );
+      for (const event of events) {
+        const reached = vi.fn((observed: Event) => {
+          expect(observed).toBe(event);
+          expect(observed.defaultPrevented).toBe(false);
+          expect(observed.cancelBubble).toBe(false);
+        });
+        const prevent = vi.spyOn(event, "preventDefault");
+        const stop = vi.spyOn(event, "stopPropagation");
+        const stopImmediate = vi.spyOn(event, "stopImmediatePropagation");
+        textarea.addEventListener(event.type, reached);
+        document.addEventListener(event.type, reached);
+        window.addEventListener(event.type, reached);
+        const last = vi.fn();
+        window.addEventListener(event.type, last);
+        try {
+          await act(async () => { expect(textarea.dispatchEvent(event)).toBe(true); });
+          expect(reached).toHaveBeenCalledTimes(3);
+          expect(last).toHaveBeenCalledOnce();
+          expect(prevent).not.toHaveBeenCalled();
+          expect(stop).not.toHaveBeenCalled();
+          expect(stopImmediate).not.toHaveBeenCalled();
+          expect(event.defaultPrevented).toBe(false);
+        } finally {
+          textarea.removeEventListener(event.type, reached);
+          document.removeEventListener(event.type, reached);
+          window.removeEventListener(event.type, reached);
+          window.removeEventListener(event.type, last);
+        }
+        expect(submit).not.toHaveBeenCalled();
+        expect(widget.dataset.expanded).toBe("true");
+        expect(document.activeElement).toBe(textarea);
+      }
+      expect(widget.dataset.composing).toBeUndefined();
+      await send();
+      expect(submit).toHaveBeenCalledOnce();
+      expect(submit.mock.calls[0]![0].input?.text).toBe("あ");
+      // A missing compositionend must also leave the next plain Escape free to collapse.
+      await act(async () => textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true })));
+      const escape = new KeyboardEvent("keydown", { key: "Escape", keyCode: 27, bubbles: true, cancelable: true });
+      const reached = vi.fn();
+      window.addEventListener("keydown", reached);
+      try { await act(async () => textarea.dispatchEvent(escape)); }
+      finally { window.removeEventListener("keydown", reached); }
+      expect(reached).toHaveBeenCalledOnce();
+      expect(escape.defaultPrevented).toBe(false);
+      expect(widget.dataset.composing).toBeUndefined();
+      expect(widget.dataset.expanded).toBe("false");
+      expect(document.activeElement).toBe(container.querySelector(".canvas-region"));
+    });
+
     it("keeps the prompt focused for a press inside the overlay", async () => {
       const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
       expect(document.activeElement).toBe(textarea);
