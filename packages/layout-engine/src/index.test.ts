@@ -1611,7 +1611,7 @@ describe("layout-engine page SVG planner", () => {
         "text|mol_snapshot|molecule|native-atom-label-run|0|0|middle",
         "text|mol_snapshot|molecule|native-atom-label-run|5.8500000000000005|-7.199999999999999|start",
         "text|text_snapshot|text|220|178|start",
-        "tspan|text_snapshot|text|220|178|start",
+        "tspan|text_snapshot|text|220|start",
         "circle|charge_snapshot|electron-mark",
         "line|charge_snapshot|electron-mark|325.832|169|332.168|169",
         "line|charge_snapshot|electron-mark|329|165.832|329|172.168",

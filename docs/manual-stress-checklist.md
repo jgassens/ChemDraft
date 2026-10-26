@@ -1,5 +1,82 @@
 # Manual stress checklist
 
+Latest reaction-arrow automation: [2026-10-24 stress results](reaction-arrows-stress-results.md).
+Native macOS and Windows hands-on items below remain open; automation does not mark them complete.
+
+Feature preferences (macOS and Windows): Compound layout tools starts off. Its indented
+Arrangement Arrows, Offshoot Arrows and Formatted Reaction Conditions checkboxes start off and
+are disabled until the parent is checked. Try every combination, including conditions on an ordinary
+hand-drawn arrow without the other two enabled and offshoots without arrangement arrows.
+Base layouts and standalone Adjust spacing remain available with only the parent on. Arrangement Arrows
+combines layout, arrows and spacing in Arrange with options, replacing the separate Adjust spacing
+menu entry. Invoke either command (including a saved shortcut) with that window open: keep the same
+draft and spacing percentage. Preview every layout with arrows on/off at 100% and 115%, then change
+arrow length without another compound move. Cancel changes nothing; Save applies the whole result
+in one Undo/Redo step. Overlapping/off-page values must disable Save and leave the document unchanged.
+With Arrangement Arrows off, check standalone Adjust spacing again. Arrangement Arrows
+controls Arrange with options; Offshoot Arrows controls Attach offshoot; Formatted Reaction Conditions
+controls the conditions editor, including double-click. Disable a child with its menu/editor open:
+commands disappear live from context menus, custom toolbars and detached palettes, pending editors
+close without applying, and direct commands explain which setting to enable. Disable/re-enable the
+parent and restart: child choices persist but remain unavailable while the parent is off. Open a
+saved drawing with all options off: existing arrows/labels still render, transform and export.
+
+Save a connected Circle with conditions and an offshoot, then use the direct Grid left/center/right,
+Row and Column menu commands. Generated arrows must update with the new layout, rather than leave
+the old circle geometry behind. Matching connections keep styles, labels and branches. One Undo/Redo
+restores/reapplies compounds and connections together. Refused routes change nothing. Repeat after
+native save/reopen; ordinary individual compound movement still leaves its arrows independent.
+
+Right-click each arrow in an overlapping/grouped tree. Attach offshoot must be one submenu with
+Top / outside, Bottom / inside, Full curve — top / inside and Full curve — bottom / outside. Hover/click and Right/Down/Up/Left/Escape navigation
+must work; Enter/Space invokes once on the exact target. Full curve forms a smooth U on both sides
+of the parent's midpoint with a matching head. Slide the diamond tether along straight, curved and
+rotated shaft ink. Drag head/tail independently, then Shift-drag each for aligned paired ends;
+the junction must stay fixed during preview, Save and Undo. Test crossing the tether (no loop).
+Top must start above LTR and RTL straight arrows; curved outside choices stay meaningful.
+Drag its tail/head, move,
+rotate and nonuniformly resize the parent/group; inspect conditions, color inheritance, Undo/Redo,
+duplicate/copy/paste and save/reopen on macOS and Windows. Existing half branches remain unchanged.
+
+Format H₂O on one line and Zn²⁺ on the next using the conditions subscript/superscript buttons;
+repeat with alternating script-heavy lines and multiple script changes within one line. Verify
+vertical clearance in the dialog preview, canvas, SVG and PDF. Check ordinary text/atom labels too.
+Reopen a connected arrangement: Add connecting arrows must be checked and options retained.
+Change Arrow length through its range: only arrow endpoints move in the live preview. Save and
+reopen; IDs/styles and attached offshoots/conditions remain. Uncheck and Cancel (unchanged), then
+uncheck and Save (only owned generated connections/attachments disappear). One Undo restores the
+entire tree and original chemistry. Unrelated hand-drawn arrows must remain. Repeat on both platforms.
+Add/remove a compound from the selection before reopening: Save must rebuild the selected neighbor
+connections. Select two complete arrangements with different Arrow lengths and Save a common length;
+both arrow geometries must match that value while molecule positions and arrow styles stay fixed.
+Repeat with different directions and row/column layouts: length alone keeps each graph, while an
+intentional topology control change rearranges the selection. Change a legacy connection's length
+twice after custom spacing and reopen/save; its spatial order and spacing must remain unchanged.
+Enlarge normal multiline conditions from 16 to 48 px through text styling, including blank lines;
+check line clearance and centered alignment on canvas, SVG and PDF. Rapidly close/reopen spacing
+while native close is delayed; the replacement must still preview/Save and keep its input focus.
+Attach conditions to a nested offshoot, rotate/nonuniformly scale the root, and reopen/export twice;
+the label must stay put after the first normalization, including when object stacking order changes.
+
+On the upper-right curved cycle arrow, add an outward offshoot that flattens toward the right.
+Conditions offer Top / inside and Bottom / outside. Top must face the inside of the branch curve;
+Bottom must face its outside. Toggle both several times: each choice must stay consistent.
+On LTR and RTL straight arrows, Top must be above the shaft and Bottom below. Move, rotate and
+nonuniformly scale curved parents, then repeat. Drag a conditions label
+manually and verify edits/reopen preserve its placement. Check on macOS and Windows.
+
+Reaction-arrow screenshot regression pass (macOS and Windows): open the layout flyout and confirm
+Arrange with options has the same 18 px icon size as its neighbors. Save a connected cycle, adjust
+spacing closer and farther, and confirm arrows reroute while retaining colors, offshoots and
+conditions. Undo each Save once. Draw a new bond immediately after Save, delete only the generated
+arrows, then draw another bond; repeat with native-palette and keyboard tool selection. Reopen and
+cancel the arrangement dialog and confirm the document receives pointer and keyboard input.
+On a strongly curved arrow add both offshoots: retain the outside shape and give the inside head
+equal shaft clearance. Right-click each actual shaft in an overlapping arrow tree and add conditions;
+the label must belong to that exact arrow, avoid nearby ink, and preserve a deliberate manual drag.
+Color the whole arrangement and a parent-only/branch-only selection through Color Controls and the
+existing color toolbar. Shafts and heads must agree; branch-only styling must not recolor its parent.
+
 The standing hands-on checklist for interactive surfaces. It moved here from `AGENTS.md` §20 when that
 file was consolidated (2026-10-04); `AGENTS.md` §14 still requires it. Run every item on **macOS and
 Windows** unless the item names one platform. `docs/windows-port-stress-test.md` records the Windows
@@ -15,6 +92,19 @@ Ring-fill labels: fill every ring of pyridinium, CBPQT4+ and 1,3,5-oxathiazinane
 every bond, without a missing box or white glyph outline. At shared-ring nitrogens each part of the
 halo must match the fill beneath it. Repeat with linear/radial gradients, shadow/glow/sketch, explicit
 label background colours and transparent backgrounds. Compare canvas, PNG, SVG and PDF on both hosts.
+
+Reaction offshoots and conditions (macOS and Windows): right-click straight, curved, resonance,
+equilibrium, retrosynthetic and mechanism arrows. Attach above/outside and below/inside; check the
+midpoint tail and forward tangent, identical head sizes, and parent head-size changes. Edit each
+offshoot's bend/end, attach another branch to it, move/rotate the parent and grouped selections,
+and check live previews, page-edge clamping, Undo/Redo, duplicate, copy/paste, delete and native
+save/reopen. Verify unchanged molecule identity and SVG/PDF/raster appearance. Open Reaction
+conditions, type multiline text with symbols/subscript/superscript and compare its preview and canvas.
+Drag labels and double-click to edit; clear to remove. Move/resize its native window onto another
+monitor. Cancel, Escape and Cmd/Ctrl+W must leave the drawing unchanged; F5/Cmd/Ctrl+R must not reload.
+Switch tabs before Save: it updates its originating drawing once. Edit/replace/close that drawing
+while the editor is open: stale Save must refuse. Check normal window ownership, focus, menus and
+taskbar behavior, coexistence with Page Size/Export, and repeat at different monitor scales.
 
 Document window placement (macOS and Windows): move/resize, quit, and relaunch; the window must
 reopen where it was left, without flashing at the OS cascade position. With no saved frame it
@@ -558,7 +648,33 @@ and Art toolbars open, including at 125%/150% display scale:
   the documents. Hide/minimize after the quit modal appears and request Quit again: the prompt
   must be raised again. Cancel must balance suspension even when its acquisition is still pending.
 
+## Arrow offshoots
+
+On macOS and Windows, with Compound layout tools disabled, right-click a straight or curved
+arrow and choose Attach offshoot. Check both sides for half curves and full curves, including
+right-to-left arrows and an arrow inside a selected group. Keyboard navigation must invoke the
+chosen command once, with one Undo/Redo step. Non-arrow objects must not offer the submenu.
+Drag each endpoint independently; hold Shift to adjust both full-curve endpoints together.
+Slide the full-curve tether along a curved, rotated parent and confirm an exact junction.
+Move, rotate and resize the parent; attached branches and arrowhead sizes must follow.
+Copy/paste, duplicate, save/reopen, export, and delete an arrow with nested branches; check
+that attachment IDs are remapped, the geometry survives, and Undo restores the entire tree.
+These checks do not require optional arrangement arrows or reaction-condition features.
+
 ## Compound layout tools (opt-in)
+
+Arrow geometry regression pass, on both platforms: attach an offshoot above and below a parent.
+Resize the parent alone, both arrows selected and a group, using Shift-hover corner handles and
+typed percentages. Check 200% then 50%, and unequal width/height changes. The offshoot's rise and
+bend scale with the drawing, its tail stays at the parent midpoint, and matching heads remain
+separated. Check the live preview, one Undo/Redo, save/reopen and exported SVG/PDF.
+Arrange unequal diagonal polycyclic molecules with connecting arrows. Their endpoints must clear
+the visible outline, including wedges, hashes and long labels, without stopping at empty frame
+corners. Keep grouped rotated captions clear. Put multiline formatted conditions on a vertical
+curved arrow with an offshoot: the block must clear both shafts and heads, stay on the chosen side
+and inside the page, and have no extra spaces between normal/subscript/superscript runs in export.
+Drag the conditions deliberately; moving, resizing or editing their parent must retain that manual
+placement. Try a crowded chosen side; a new label must refuse an overlap and preserve the drawing.
 
 On macOS and Windows, verify that a fresh Settings/Preferences has Compound layout tools off and
 no layout button/flyout/context/gallery entry is visible. Enable it with a native palette open;
@@ -566,6 +682,15 @@ Main, Art and Layout should update live. Select unequal-size compounds, optional
 and open Arrange › in the selection context menu. Try Circle, Oval, all three Grid justifications,
 Row and Column; check click, hover and keyboard access to the submenu. Confirm unchanged bond lengths,
 labels and stereo, selected compounds retained, one Undo/Redo step, and no generated arrows.
+Open **Arrange with options…** on both platforms. It must use the same movable native dialog host.
+Connecting arrows start off on each new session. Check all layouts and both directions, open and
+closed Circle/Oval, separate grid rows and the snake sequence. Changing any option invalidates the
+old preview until its replacement arrives. Cancel changes nothing; Save creates layout and arrows
+as one Undo/Redo step, retaining compounds and arrows in the selection. Check clearance around wide
+and rotated grouped captions, crowded unselected objects and page edges; refused routes leave the
+drawing unchanged. Bend or resize a generated arrow, add a matching-headed offshoot and conditions,
+and verify save/reopen and SVG/PDF output. Arrows are independent after Save: compound movement
+does not reroute them. Repeat keyboard, IME, tab ownership and close behavior from Adjust spacing.
 Switch Circle/Oval/Grid to Row and Column on a page too small for their usual gaps but large enough
 for the compounds: gaps tighten evenly, molecule sizes stay fixed, and one Undo restores the former
 layout. If even 12 document pixels between compounds will not fit, the drawing stays unchanged.

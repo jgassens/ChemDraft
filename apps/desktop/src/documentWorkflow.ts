@@ -1,7 +1,11 @@
-import { planObjectArrangement, moleculeAnchorForArrangement, moleculeVisualBoundsForArrangement, textVisualBoundsForArrangement, type ArrangementLayout, type ArrangementOptions, type ArrangementItem, type LayoutBounds } from "@chemdraft/layout-engine";
+import { planObjectArrangement, moleculeOutlineForArrangement, moleculeAnchorForArrangement, moleculeVisualBoundsForArrangement, textVisualBoundsForArrangement, type ArrangementLayout, type ArrangementOptions, type ArrangementItem, type LayoutBounds } from "@chemdraft/layout-engine";
 import { snapRotationDegrees } from "./rotationSnap";
+import { arrangementConnectionPairs, defaultArrangementDraft, planArrangementConnections, validArrangementDraft, type ArrangementDraft, type ArrangementConnection } from "@chemdraft/layout-engine";
+import { quadraticArrowGeometry, nativeSemanticArrowHeadSizePx, trimQuadraticRoute, type NativeArtObstacle } from "@chemdraft/art-engine";
 import { snapPlacementDegrees } from "./placementSnap";
 import { projectedDoubleBondSides } from "./interaction/projectedDoubleBondSides";
+import { nativeFormattedTextObjectSize, reconcileReactionArrowAttachments } from "@chemdraft/document-workflow-core";
+import { withArrowAttachmentIds,arrowAttachmentFrame,arrowAttachmentFractionAtPoint } from "@chemdraft/layout-engine";
 import {
   GRAPHIC_CORNER_RADIUS_HANDLE_SIZE_PX,
   OBJECT_RESIZE_HANDLE_OFFSET_PX,
@@ -15,6 +19,8 @@ import {
   clampGraphicShaftMarkSizePx,
   editGraphicCornerRadius,
   editGraphicPathGeometry,
+  editFullCurveOffshootEndpoint,
+  fullCurveOffshootGeometry,
   deleteGraphicPathNode,
   deleteGraphicPathSegment,
   splitGraphicPathSegmentAtPoint,
@@ -2582,14 +2588,26 @@ export function updateNativeGraphicPathHandle(
   document: ChemDraftDocument,
   objectId: string,
   handle: NativeGraphicPathEditHandle,
-  point: PagePoint
+  point: PagePoint,
+  options: {paired?:boolean} = {}
 ): ChemDraftDocument {
   const object = findDocumentObject(document, objectId);
   if (!object || object.type !== "graphic") {
     return document;
   }
 
-  const edited = editGraphicPathGeometry(object, handle, point);
+  let edited:GraphicObject|undefined;
+  const attachment=object.arrowAttachment;
+  if(attachment?.kind==='offshoot'&&attachment.mode==='fullCurve'){
+    if(handle==='tether'){
+      const page=document.pages.find(p=>p.objects.some(o=>o.id===objectId))!,parent=page.objects.find(o=>o.id===attachment.parentObjectId);
+      if(!parent)return document;
+      const tetherFraction=arrowAttachmentFractionAtPoint(page,parent,point);
+      let frame=arrowAttachmentFrame(page,parent,tetherFraction);if(!frame)return document;
+      if(attachment.normalSign===-1)frame={...frame,normal:{x:-frame.normal.x,y:-frame.normal.y}};
+      edited=fullCurveOffshootGeometry({...object,arrowAttachment:{...attachment,frame,tetherFraction}});
+    }else if(handle==='start'||handle==='end')edited=editFullCurveOffshootEndpoint(object,handle,point,options.paired);
+  }else edited=editGraphicPathGeometry(object,handle,point);
   if (!edited || edited === object) {
     return document;
   }
@@ -5540,7 +5558,7 @@ export function applyObjectColorToDocumentObjects(
   // Expand groups to their renderable children: a GroupObject is skipped by render/export, so
   // writing color to the group wrapper changes nothing visible while reporting success.
   const allObjects = document.pages.flatMap((page) => page.objects);
-  const selectedIds = new Set(resolveGroupedDocumentObjectIds(allObjects, objectIds));
+  const selectedIds = new Set(withArrowAttachmentIds(allObjects, resolveGroupedDocumentObjectIds(allObjects, objectIds)));
   if (selectedIds.size === 0) {
     return document;
   }
@@ -6268,11 +6286,15 @@ export function applyGraphicObjectColorToSelection(
     return document;
   }
 
-  return updateGraphicObjects(document, objectIds, (object) => {
-    const opacity = target === "fill" ? graphicFillPaintOpacity(object) : graphicStrokePaintOpacity(object);
-    const currentPaint = target === "fill" ? graphicFillPaintForObject(object) : graphicStrokePaintForObject(object);
+  const ids=withArrowAttachmentIds(document.pages.flatMap(page=>page.objects),objectIds);
+  const paintTarget=(object:GraphicObject)=>target==='fill' && nativeArrowToolIdForGraphic(object) &&
+    !graphicObjectSupportsStyleCapability(object,'fill') ? 'stroke' : target;
+  return updateGraphicObjects(document, ids, (object) => {
+    const actualTarget=paintTarget(object);
+    const opacity = actualTarget === "fill" ? graphicFillPaintOpacity(object) : graphicStrokePaintOpacity(object);
+    const currentPaint = actualTarget === "fill" ? graphicFillPaintForObject(object) : graphicStrokePaintForObject(object);
     const paint = graphicPaintWithPrimaryColor(currentPaint, normalized, opacity);
-    return target === "fill"
+    return actualTarget === "fill"
       ? {
           ...object.style,
           fillColor: normalized,
@@ -6286,7 +6308,7 @@ export function applyGraphicObjectColorToSelection(
           strokeColor: normalized,
           strokePaint: paint
         };
-  }, (object) => graphicObjectSupportsStyleCapability(object, target));
+  }, (object) => graphicObjectSupportsStyleCapability(object, paintTarget(object)));
 }
 
 export function applyGraphicObjectNoneToSelection(
@@ -7122,7 +7144,7 @@ export function deleteSelectedDocumentObjects(
 ): ChemDraftDocument {
   const page = selectionPage(document);
   const selectedIds = new Set(selectedObjectIds);
-  const selectedChildIds = new Set(resolveGroupedDocumentObjectIds(page.objects, selectedObjectIds));
+  const selectedChildIds = new Set(withArrowAttachmentIds(page.objects, resolveGroupedDocumentObjectIds(page.objects, selectedObjectIds)));
   const affectedGroupIds = page.objects
     .filter((object): object is GroupObject =>
       object.type === "group" &&
@@ -8192,6 +8214,7 @@ function addChargeMarkAtPoint(
  * commit changes nothing.
  */
 export function normalizeCommittedDocument(document: ChemDraftDocument): ChemDraftDocument {
+  document = reconcileReactionArrowAttachments(document);
   const reconciled = reconcileNativeChargeMarks(document);
   const recorded = withNativeDocumentLabelBondSides(reconciled);
   // Re-admitted to the patch engine's sharing, as `reconcileNativeChargeMarks` does.
@@ -9718,11 +9741,15 @@ function documentObjectColorChanges(object: DocumentObject, color: string): Part
 
   if (object.type === "graphic") {
     const fillsVisible = graphicObjectHasVisibleFill(object);
-    return styleColorChanges(object, {
+    const changes=styleColorChanges(object, {
       color,
       strokeColor: color,
       ...(fillsVisible ? { fillColor: color } : {})
     });
+    const strokePaint=graphicPaintWithPrimaryColor(graphicStrokePaintForObject(object),color,graphicStrokePaintOpacity(object));
+    const fillPaint=fillsVisible?graphicPaintWithPrimaryColor(graphicFillPaintForObject(object),color,graphicFillPaintOpacity(object)):object.style.fillPaint;
+    const style={...object.style,...changes?.style,strokePaint,...(fillPaint?{fillPaint}:{})};
+    return graphicStylesEqual(object.style,style)?undefined:{style};
   }
 
   return styleColorChanges(object, {
@@ -11682,7 +11709,8 @@ function resizeGraphicObjectDataForFrame(
   oldCenter: PagePoint,
   newCenter: PagePoint,
   scaleX: number,
-  scaleY: number
+  scaleY: number,
+  visualWeightScale = proportionalGraphicScale(scaleX, scaleY)
 ): GraphicObjectData {
   const resizePoint = (point: PagePoint | undefined): PagePoint | undefined =>
     point
@@ -11736,18 +11764,18 @@ function resizeGraphicObjectDataForFrame(
   // fixed-size head along a longer shaft — the arrow would look progressively wrong as it grew.
   // Scale by the OVERALL size change (see proportionalGraphicScale), not by one axis, so stretching
   // an arrow mostly-horizontally still enlarges its head somewhat rather than not at all.
-  const headScale = proportionalGraphicScale(scaleX, scaleY);
-  if (Math.abs(headScale - 1) > 0.0001) {
-    nextData.markerStart = scaleGraphicMarker(data.markerStart, headScale);
-    nextData.markerEnd = scaleGraphicMarker(data.markerEnd, headScale);
-    if (typeof data.dualShaftGapPx === "number" && Number.isFinite(data.dualShaftGapPx)) {
-      nextData.dualShaftGapPx = roundFreehandNumber(Math.max(0.5, data.dualShaftGapPx * headScale));
-    }
+  const geometryScale = proportionalGraphicScale(scaleX, scaleY);
+  if (Math.abs(visualWeightScale - 1) > 0.0001) {
+    nextData.markerStart = scaleGraphicMarker(data.markerStart, visualWeightScale);
+    nextData.markerEnd = scaleGraphicMarker(data.markerEnd, visualWeightScale);
     // An explicit no-reaction cross size scales with the arrow like the heads do; the derived
     // "auto" size follows stroke width, which the same resize already scales.
     if (typeof data.shaftMarkSizePx === "number" && Number.isFinite(data.shaftMarkSizePx)) {
-      nextData.shaftMarkSizePx = clampGraphicShaftMarkSizePx(data.shaftMarkSizePx * headScale);
+      nextData.shaftMarkSizePx = clampGraphicShaftMarkSizePx(data.shaftMarkSizePx * visualWeightScale);
     }
+  }
+  if (Math.abs(geometryScale - 1) > 0.0001 && typeof data.dualShaftGapPx === "number" && Number.isFinite(data.dualShaftGapPx)) {
+    nextData.dualShaftGapPx = roundFreehandNumber(Math.max(0.5, data.dualShaftGapPx * geometryScale));
   }
 
   return nextData;
@@ -13283,7 +13311,7 @@ function expandWithAnchoredMarkIds(
       expanded.add(markId);
     }
   }
-  return expanded;
+  return new Set(withArrowAttachmentIds(pageObjects, [...expanded]));
 }
 
 /**
@@ -13386,6 +13414,14 @@ function groupMoveTranslatesArrowGeometry(object: DocumentObject, movedIds: Read
 }
 
 function clampedObjectMovePosition(page: DocumentPage, object: DocumentObject, position: PagePoint): PagePoint {
+  const attachedIds = withArrowAttachmentIds(page.objects, [object.id]);
+  if (attachedIds.length > 1) {
+    const bounds = selectionBounds(page.objects, attachedIds);
+    if (bounds) {
+      const delta = clampedSelectionMoveDelta(page, bounds, position.x - object.x, position.y - object.y);
+      return { x: object.x + delta.x, y: object.y + delta.y };
+    }
+  }
   return {
     x: clamp(position.x, 0, Math.max(0, page.width - object.width)),
     y: clamp(position.y, 0, Math.max(0, page.height - object.height))
@@ -13552,6 +13588,7 @@ export function selectedArrangementObjectIds(document: ChemDraftDocument): strin
     if (object.type === "group") object.childObjectIds.forEach(includeDescendant);
   });
   const roots = selected.filter((object) => !contained.has(object.id) &&
+    !object.arrangementConnection && !object.arrowAttachment &&
     (object.type !== "group" || resolveGroupedDocumentObjectIds(page.objects, [object.id]).length > 0));
   const moleculeIds = roots.flatMap((object) =>
     resolveGroupedDocumentObjectIds(page.objects, [object.id])
@@ -13562,6 +13599,15 @@ export function selectedArrangementObjectIds(document: ChemDraftDocument): strin
 
 export function arrangeSelectedDocumentObjects(document: ChemDraftDocument, layout: ArrangementLayout,
   options: Pick<ArrangementOptions, "gap" | "columns" | "gridAlignment"> = {}): { document: ChemDraftDocument; status: string } {
+  // An explicit layout change owns generated connections too. Ordinary molecule drags remain
+  // independent; only arrows with saved endpoint metadata enter this routing workflow.
+  if (selectedArrangementConnections(document).length) {
+    const result = arrangeSelectedDocumentObjectsWithOptions(document, {
+      ...selectedArrangementDraft(document), layout,
+      ...(options.gridAlignment !== undefined ? {gridAlignment:options.gridAlignment} : {})
+    }, {...options, preservePositions:false});
+    return {document:result.document,status:result.status};
+  }
   const page = selectionPage(document);
   const items = selectedArrangementObjectIds(document).map(id => arrangementItem(page.objects, id)!);
   const plan = planObjectArrangement(items, layout, { ...options, pageBounds: { x: 0, y: 0, width: page.width, height: page.height } });
@@ -13569,6 +13615,147 @@ export function arrangeSelectedDocumentObjects(document: ChemDraftDocument, layo
     plan.reason === "page" ? "This arrangement does not fit on the page. Try a grid or a larger page." : "Cannot arrange this selection: invalid bounds or spacing." };
   const next = applyLayoutItemMoves(document, plan.placements.flatMap(p => selectionLayoutItemMoves(page.objects, p.id, p.dx, p.dy)), true);
   return { document: next, status: next === document ? "Selection is already arranged" : `Arranged ${items.length} objects in ${layout === "oval" ? "an" : "a"} ${layout}${layout === "grid" ? ` (${options.gridAlignment ?? "center"})` : ""}` };
+}
+
+function selectedArrangementConnections(document:ChemDraftDocument):GraphicObject[] {
+  const ids=new Set(selectedArrangementObjectIds(document));
+  return selectionPage(document).objects.filter((o):o is GraphicObject=>o.type==='graphic' && !!o.arrangementConnection &&
+    ids.has(o.arrangementConnection.fromObjectId)&&ids.has(o.arrangementConnection.toObjectId));
+}
+
+/** Preserve positions only for a complete arrangement (or a union of complete arrangements),
+ * with the saved membership/order and exact directed neighbor graph still intact. */
+const arrangementTopologyKeys=['layout','gridAlignment','reverse','closeCycle','gridOrder'] as const;
+function sameArrangementTopology(a:ArrangementDraft,b:ArrangementDraft):boolean {
+  return arrangementTopologyKeys.every(key=>a[key]===b[key]);
+}
+function canPreserveArrangementConnections(ids:readonly string[], existing:readonly GraphicObject[], draft:ArrangementDraft, fallback:ArrangementDraft, legacyOrder:readonly string[]):boolean {
+  if(!existing.length)return false;
+  // Unchanged topology controls represent a length-only edit of the selection seed.
+  // Each complete arrangement retains its own topology/direction in that case.
+  const lengthOnly=sameArrangementTopology(draft,fallback);
+  if(!lengthOnly&&existing.some(arrow=>!sameArrangementTopology(draft,arrow.arrangementConnection!.settings??fallback)))return false;
+  const orders:{ids:string[];settings:ArrangementDraft}[]=[];
+  for(const arrow of existing) {
+    const order=arrow.arrangementConnection!.itemObjectIds;
+    if(order && !orders.some(saved=>saved.ids.length===order.length&&saved.ids.every((id,i)=>id===order[i])))orders.push({ids:order,settings:arrow.arrangementConnection!.settings??fallback});
+  }
+  // Endpoint/bend-only legacy files have no saved membership. Their full neighbor graph
+  // must still match the selection before treating this as an in-place options edit.
+  if(!orders.length)orders.push({ids:[...legacyOrder],settings:fallback});
+  const selected=new Set(ids),covered=new Set(orders.flatMap(order=>order.ids));
+  if(orders.some(({ids:order})=>new Set(order).size!==order.length||order.some(id=>!selected.has(id)))||ids.some(id=>!covered.has(id)))return false;
+  const expected=orders.flatMap(order=>{
+    const settings=lengthOnly?order.settings:draft;
+    return arrangementConnectionPairs(order.ids,settings).map(([from,to])=>settings.reverse?[to,from]:[from,to]);
+  });
+  if(expected.length!==existing.length)return false;
+  const counts=new Map<string,number>();
+  for(const pair of expected){const key=JSON.stringify(pair);counts.set(key,(counts.get(key)??0)+1);}
+  for(const arrow of existing) {
+    const connection=arrow.arrangementConnection!,key=JSON.stringify([connection.fromObjectId,connection.toObjectId]);
+    const count=counts.get(key)??0;if(!count)return false;counts.set(key,count-1);
+  }
+  return true;
+}
+/** Only explicit generated-connection metadata participates; hand-drawn arrows are never inferred. */
+export function selectedArrangementDraft(document:ChemDraftDocument):ArrangementDraft {
+  const existing=selectedArrangementConnections(document);
+  if(!existing.length)return {...defaultArrangementDraft};
+  const saved=existing[0].arrangementConnection!.settings;
+  if(saved && validArrangementDraft(saved))return {...saved,arrows:true,arrowLength:saved.arrowLength??100};
+  // Earlier builds stored endpoints and bends, but no options. Recover the supported topology
+  // from that explicit relationship and its item positions without classifying ordinary arrows.
+  const page=selectionPage(document),ids=selectedArrangementObjectIds(document);
+  const items=ids.map(id=>arrangementItem(page.objects,id)!);
+  const centers=items.map(item=>item.anchor??{x:item.bounds.x+item.bounds.width/2,y:item.bounds.y+item.bounds.height/2});
+  const dx=Math.max(...centers.map(p=>p.x))-Math.min(...centers.map(p=>p.x));
+  const dy=Math.max(...centers.map(p=>p.y))-Math.min(...centers.map(p=>p.y));
+  const curved=existing.some(o=>Math.hypot(o.arrangementConnection!.bend.x,o.arrangementConnection!.bend.y)>1e-4);
+  const layout=curved?(dx>dy*1.25?'oval':'circle'):dy<1?'row':dx<1?'column':'grid';
+  return {...defaultArrangementDraft,layout,arrows:true,reverse:existing[0].arrangementConnection!.toObjectId===ids[0],
+    closeCycle:curved&&existing.length===ids.length,gridOrder:layout==='grid'&&existing.length===ids.length-1?'snake':'rows'};
+}
+
+/** Preview and Save call the same operation; callers commit its whole result as one Undo entry. */
+export function arrangeSelectedDocumentObjectsWithOptions(document: ChemDraftDocument, draft: ArrangementDraft,
+  options: Pick<ArrangementOptions, "gap" | "columns"> & {preservePositions?:boolean} = {}):
+  { document: ChemDraftDocument; ok: boolean; status: string } {
+  const refuse = (status: string) => ({ document, ok: false, status });
+  if (!validArrangementDraft(draft)) return refuse("Invalid arrangement options.");
+  const page = selectionPage(document);
+  let ids = selectedArrangementObjectIds(document);
+  const savedOrder=selectedArrangementConnections(document).find(o=>o.arrangementConnection?.itemObjectIds)?.arrangementConnection?.itemObjectIds;
+  if(savedOrder?.length===ids.length&&new Set(savedOrder).size===ids.length&&savedOrder.every(id=>ids.includes(id)))ids=[...savedOrder];
+  const items = ids.map(id => arrangementItem(page.objects, id)!);
+  const existing=selectedArrangementConnections(document),previous=selectedArrangementDraft(document);
+  // Older files omit saved order. Recover it with the same spatial ordering used by
+  // the layout planner, rather than page stacking order, without moving anything.
+  const legacyPlan=existing.some(o=>o.arrangementConnection?.itemObjectIds)?undefined:planObjectArrangement(items,draft.layout);
+  const legacyOrder=legacyPlan?.ok?legacyPlan.placements.map(item=>item.id):ids;
+  const sameTopology=options.preservePositions!==false && canPreserveArrangementConnections(ids,existing,draft,previous,legacyOrder);
+  const ownedIds=new Set(withArrowAttachmentIds(page.objects,existing.map(o=>o.id)));
+  if(existing.length && !draft.arrows && sameTopology) {
+    const next=applyPatches(document,[...ownedIds].map(objectId=>({op:'removeObject' as const,objectId})),{now:phase4Timestamp});
+    return {document:applyPatches(next,[{op:'setSelection',pageId:page.id,objectIds:ids}],{now:phase4Timestamp}),ok:true,status:'Removed arrangement connecting arrows'};
+  }
+  const plan = planObjectArrangement(items, draft.layout, { gridAlignment: draft.gridAlignment,
+    ...(draft.arrows ? { gap: 64 } : {}),
+    ...(options.gap!==undefined?{gap:options.gap}:{}),...(options.columns!==undefined?{columns:options.columns}:{}),
+    pageBounds: { x: 0, y: 0, width: page.width, height: page.height } });
+  if (!plan.ok && !sameTopology) return refuse(plan.reason === "page" ? "This arrangement does not fit on the page. Try a larger page or another layout." : "Select at least two objects or groups.");
+  const carried = expandWithAnchoredMarkIds(page.objects, resolveGroupedDocumentObjectIds(page.objects, ids));
+  const obstacles = page.objects.filter(o => o.type !== "group" && !carried.has(o.id) && !ids.includes(o.id) && !ownedIds.has(o.id))
+    .map(o => o.type === "molecule" ? { outline: moleculeOutlineForArrangement(o) } :
+      o.type === "text" ? textVisualBoundsForArrangement(o) : documentObjectVisualBounds(o, page.objects));
+  const routes:{ok:true;connections:ArrangementConnection[]}|{ok:false;reason:string}=sameTopology?{ok:true,connections:[]}:plan.ok?planArrangementConnections(plan,draft,obstacles):{ok:false,reason:'Invalid arrangement'};
+  if(sameTopology && draft.arrows)for(const arrow of existing) {
+    const connection=arrow.arrangementConnection!,from=items.find(i=>i.id===connection.fromObjectId)!,to=items.find(i=>i.id===connection.toObjectId)!;
+    const settings=sameArrangementTopology(draft,previous)?{...(connection.settings??previous),arrows:true,arrowLength:draft.arrowLength??100}:{...draft};
+    const metadata={...connection,settings,...(arrow.id===existing[0].id?{itemObjectIds:connection.itemObjectIds??legacyOrder}:{})};
+    const unchangedLength=(draft.arrowLength??100)===(connection.settings?.arrowLength??100);
+    const editedPoints=graphicPathEditPoints(arrow);
+    if(unchangedLength && editedPoints) {
+      if(routes.ok)routes.connections.push({...editedPoints,arrangementConnection:metadata});
+      continue;
+    }
+    const center=(item:ArrangementItem)=>item.anchor??{x:item.bounds.x+item.bounds.width/2,y:item.bounds.y+item.bounds.height/2};
+    const shapes=(item:ArrangementItem):NativeArtObstacle[]=>item.outlines?.length?item.outlines.map(outline=>({outline})):[item.bounds];
+    const a=center(from),b=center(to);
+    const route=trimQuadraticRoute(a,b,{x:(a.x+b.x)/2+connection.bend.x,y:(a.y+b.y)/2+connection.bend.y},shapes(from),shapes(to),
+      [...items.filter(i=>i!==from&&i!==to).flatMap(shapes),...obstacles],draft.arrowLength??100);
+    if(!route)return refuse('There is too little clear space for this arrow length. Choose a longer arrow or move nearby objects.');
+    if(routes.ok)routes.connections.push({...route,arrangementConnection:metadata});
+  }
+  if (!routes.ok) return refuse(routes.reason);
+  let next = sameTopology?document:plan.ok?applyLayoutItemMoves(document, plan.placements.flatMap(p => selectionLayoutItemMoves(page.objects, p.id, p.dx, p.dy)), true):document;
+  const retained=new Set<string>();
+  const arrowIds: string[] = [];
+  for (const route of routes.connections) {
+    const prior=existing.find(o=>{
+      const before=o.arrangementConnection!,after=route.arrangementConnection;
+      return !retained.has(o.id)&&((before.fromObjectId===after.fromObjectId&&before.toObjectId===after.toObjectId)||
+        (before.fromObjectId===after.toObjectId&&before.toObjectId===after.fromObjectId));
+    });
+    if(prior)retained.add(prior.id);
+    const arrow: GraphicObject = prior && sameTopology && (draft.arrowLength??100)===(prior.arrangementConnection!.settings?.arrowLength??100)
+      ? {...prior,arrangementConnection:route.arrangementConnection}
+      : quadraticArrowGeometry({... (prior??{ id: nextObjectId(next, "arrangement_arrow"), type: "graphic" as const, graphicKind: "path" as const,
+      x: 0, y: 0, width: 1, height: 1, rotation: 0, arrangementConnection: route.arrangementConnection,
+      style: { strokeColor: "#111111", strokeWidth: 1.6, fillColor: "none", strokeLineCap: "butt", artToolId: "reactionArrow", artToolCommandId: "tool.art.reactionArrow" },
+      data: { artToolId: "reactionArrow", artPathKind: "quadratic", markerEnd: { kind: "filled-arrow" as const, sizePx: nativeSemanticArrowHeadSizePx } } }),arrangementConnection:route.arrangementConnection},
+    route.start, route.end, route.middle);
+    const b = documentObjectVisualBounds(arrow, page.objects);
+    if (b.x < 0 || b.y < 0 || b.x + b.width > page.width || b.y + b.height > page.height)
+      return refuse("A connecting arrow would leave the page. Try another layout or a larger page.");
+    next = applyPatches(next, [prior?{op:'updateObject',objectId:prior.id,changes:arrow}:{ op: "addObject", pageId: page.id, object: arrow }], { now: phase4Timestamp });
+    arrowIds.push(arrow.id);
+  }
+  const removed=new Set(withArrowAttachmentIds(page.objects,existing.filter(o=>!retained.has(o.id)).map(o=>o.id)));
+  if(removed.size)next=applyPatches(next,[...removed].map(objectId=>({op:'removeObject' as const,objectId})),{now:phase4Timestamp});
+  next=reconcileReactionArrowAttachments(next);
+  if (arrowIds.length) next = applyPatches(next, [{ op: "setSelection", pageId: page.id, objectIds: [...ids, ...arrowIds] }], { now: phase4Timestamp });
+  return { document: next, ok: true, status: `Arranged ${items.length} objects in ${draft.layout === "oval" ? "an" : "a"} ${draft.layout}${arrowIds.length ? ` with ${arrowIds.length} connecting arrows` : ""}` };
 }
 
 // Share a subpixel roundoff allowance between Save and the slider's page constraints. Without
@@ -13597,8 +13784,45 @@ export function adjustArrangementSpacing(document:ChemDraftDocument,factor:numbe
       return fail("The compounds need more space between them");
   }
   const moves=ids.flatMap((id,i)=>selectionLayoutItemMoves(page.objects,id,deltas[i].x,deltas[i].y));
-  const result=applyLayoutItemMoves(document,moves,true);
+  let result=applyLayoutItemMoves(document,moves,true);
+  // Only this explicit spacing operation reroutes generated connections. Ordinary path edits
+  // and individual molecule moves remain independent and editable.
+  const movedPage=selectionPage(result), selectedIds=new Set(ids);
+  const connections=page.objects.filter((o):o is GraphicObject=>o.type==='graphic' && !!o.arrangementConnection &&
+    selectedIds.has(o.arrangementConnection.fromObjectId) && selectedIds.has(o.arrangementConnection.toObjectId));
+  const excluded=new Set(withArrowAttachmentIds(page.objects,connections.map(o=>o.id)));
+  const obstacles=movedPage.objects.filter(o=>o.type!=='group' && !excluded.has(o.id) &&
+    !resolveGroupedDocumentObjectIds(movedPage.objects,ids).includes(o.id));
+  for(const arrow of connections) {
+    const connection=arrow.arrangementConnection!;
+    const from=arrangementItem(movedPage.objects,connection.fromObjectId)!,to=arrangementItem(movedPage.objects,connection.toObjectId)!;
+    const anchor=(item:ArrangementItem)=>item.anchor??{x:item.bounds.x+item.bounds.width/2,y:item.bounds.y+item.bounds.height/2};
+    const a=anchor(from),b=anchor(to),bend={x:connection.bend.x*factor,y:connection.bend.y*factor};
+    const shapes=(item:ArrangementItem):NativeArtObstacle[]=>item.outlines?.length?item.outlines.map(outline=>({outline})):[item.bounds];
+    const otherItems=ids.filter(id=>id!==from.id&&id!==to.id).map(id=>arrangementItem(movedPage.objects,id)!);
+    const route=trimQuadraticRoute(a,b,{x:(a.x+b.x)/2+bend.x,y:(a.y+b.y)/2+bend.y},shapes(from),shapes(to),
+      [...otherItems.flatMap(shapes),...obstacles.map(o=>o.type==='molecule'?{outline:moleculeOutlineForArrangement(o)}:documentObjectVisualBounds(o,movedPage.objects))],connection.settings?.arrowLength??100);
+    if(!route)return fail('There is too little clear space for connecting arrows at this spacing');
+    const updated=quadraticArrowGeometry({...arrow,arrangementConnection:{...connection,bend}},route.start,route.end,route.middle);
+    const bounds=documentObjectVisualBounds(updated,movedPage.objects);
+    if(bounds.x<0||bounds.y<0||bounds.x+bounds.width>page.width||bounds.y+bounds.height>page.height)
+      return fail('A connecting arrow would leave the page at this spacing');
+    result=applyPatches(result,[{op:'updateObject',objectId:arrow.id,changes:updated}],{now:phase4Timestamp});
+  }
+  result=reconcileReactionArrowAttachments(result);
   return {document:result,ok:true,status:`Spacing adjusted to ${Math.round(factor*100)}%`};
+}
+
+/** The unified dialog always previews and commits the same layout-then-spacing transaction.
+ * A spacing refusal must discard the intermediate arrangement, including generated arrows. */
+export function arrangeAndSpaceSelectedDocumentObjects(document: ChemDraftDocument, factor: number, arrangement?: ArrangementDraft):
+  { document: ChemDraftDocument; ok: boolean; status: string } {
+  if (!arrangement) return adjustArrangementSpacing(document, factor);
+  const arranged = arrangeSelectedDocumentObjectsWithOptions(document, arrangement);
+  if (!arranged.ok) return arranged;
+  if (Math.abs(factor - 1) < 1e-9) return arranged;
+  const spaced = adjustArrangementSpacing(arranged.document, factor);
+  return spaced.ok ? { ...spaced, status: `${arranged.status}; ${spaced.status}` } : { ...spaced, document };
 }
 
 export function arrangementSpacingRange(document:ChemDraftDocument):{min:number;max:number} {
@@ -13668,7 +13892,11 @@ function arrangementItem(pageObjects: readonly DocumentObject[], id: string): Ar
     const anchors=moleculeMembers.map(moleculeAnchorForArrangement);
     const anchor=anchors.length ? {x:anchors.reduce((sum,p)=>sum+p.x,0)/anchors.length,
       y:anchors.reduce((sum,p)=>sum+p.y,0)/anchors.length} : undefined;
-    return { id, ...(anchor ? {anchor} : {}), bounds: {
+    const outlines=visibleMembers.map(object=>object.type==='molecule' ? moleculeOutlineForArrangement(object) : (()=>{
+      const b=object.type==='text' ? textVisualBoundsForArrangement(object) : documentObjectVisualBounds(object,pageObjects);
+      return [{x:b.x,y:b.y},{x:b.x+b.width,y:b.y},{x:b.x+b.width,y:b.y+b.height},{x:b.x,y:b.y+b.height}];
+    })());
+    return { id, outlines, ...(anchor ? {anchor} : {}), bounds: {
       x, y,
       width: Math.max(...boxes.map((b) => b.x + b.width)) - x,
       height: Math.max(...boxes.map((b) => b.y + b.height)) - y
@@ -13821,7 +14049,7 @@ export function duplicateSelectedDocumentObjects(
   const selectedGroups = page.objects.filter((object): object is GroupObject =>
     object.type === "group" && directlySelected.has(object.id)
   );
-  const selectedIds = new Set(selectedTransformObjectIds(document));
+  const selectedIds = new Set(withArrowAttachmentIds(page.objects, selectedTransformObjectIds(document)));
   const selectedObjects = page.objects.filter((object) => selectedIds.has(object.id));
   if (selectedObjects.length === 0) {
     return document;
@@ -13915,8 +14143,19 @@ export function duplicateSelectedDocumentObjects(
   ];
   patches.push({ op: "setSelection", pageId: page.id, objectIds: selectionIds });
 
+  for (const duplicate of duplicates) {
+    if (duplicate.arrangementConnection) {
+      const fromObjectId=duplicateIdByOriginalId.get(duplicate.arrangementConnection.fromObjectId);
+      const toObjectId=duplicateIdByOriginalId.get(duplicate.arrangementConnection.toObjectId);
+      duplicate.arrangementConnection=fromObjectId&&toObjectId?{...duplicate.arrangementConnection,fromObjectId,toObjectId,
+        itemObjectIds:duplicate.arrangementConnection.itemObjectIds?.flatMap(id=>duplicateIdByOriginalId.get(id)??[])}:undefined;
+    }
+    if (!duplicate.arrowAttachment) continue;
+    const parentObjectId = duplicateIdByOriginalId.get(duplicate.arrowAttachment.parentObjectId);
+    duplicate.arrowAttachment = parentObjectId ? { ...duplicate.arrowAttachment, parentObjectId } : undefined;
+  }
   const next = applyPatches(document, patches, { now: phase4Timestamp });
-  return moveDocumentObjects(next, selectionIds, offset.x, offset.y);
+  return reconcileReactionArrowAttachments(moveDocumentObjects(next, selectionIds, offset.x, offset.y));
 }
 
 /**
@@ -13935,7 +14174,7 @@ export function createSelectionClipboardPayload(
   moleculeFragments: readonly NativeMoleculeFragmentSelection[] = []
 ): ChemDraftSelectionClipboardPayload | undefined {
   const page = firstPage(document);
-  const selectedObjectIds = selectedTransformObjectIds(document);
+  const selectedObjectIds = withArrowAttachmentIds(page.objects, selectedTransformObjectIds(document));
   const selectedIdSet = new Set(selectedObjectIds);
   const objects = page.objects.filter((object) => selectedIdSet.has(object.id));
   const selectedGroups = page.objects.filter((object): object is GroupObject =>
@@ -14134,6 +14373,18 @@ export function pasteSelectionClipboardPayload(
   }
 
   // Object ids are reminted on paste; atom ids remain local to their cloned molecule.
+  for (const object of sourceChildren) {
+    const clone = pastedById.get(idBySourceId.get(object.id)!);
+    if (clone?.arrangementConnection) {
+      const fromObjectId=idBySourceId.get(clone.arrangementConnection.fromObjectId);
+      const toObjectId=idBySourceId.get(clone.arrangementConnection.toObjectId);
+      clone.arrangementConnection=fromObjectId&&toObjectId?{...clone.arrangementConnection,fromObjectId,toObjectId,
+        itemObjectIds:clone.arrangementConnection.itemObjectIds?.flatMap(id=>idBySourceId.get(id)??[])}:undefined;
+    }
+    if (!clone?.arrowAttachment) continue;
+    const parentObjectId = idBySourceId.get(clone.arrowAttachment.parentObjectId);
+    clone.arrowAttachment = parentObjectId ? { ...clone.arrowAttachment, parentObjectId } : undefined;
+  }
   // Restore anchors only after every child is present, even if the mark preceded its molecule.
   for (const object of sourceChildren) {
     if (object.type !== "electron-mark" || object.anchor.kind !== "atom") {
@@ -14352,7 +14603,7 @@ function transformOtherObjectAroundPointPatches(
   document: ChemDraftDocument,
   objectId: string,
   center: PagePoint,
-  options: { degrees?: number; scaleX?: number; scaleY?: number }
+  options: { degrees?: number; scaleX?: number; scaleY?: number; arrowVisualWeightScale?: number }
 ): DocumentPatch[] {
   const page = pageContainingObject(document, objectId);
   const object = objectOnPage(page, objectId);
@@ -14387,11 +14638,12 @@ function transformOtherObjectAroundPointPatches(
     changes.anchor = { ...object.anchor, kind: "point", point: { x: newCenter.x, y: newCenter.y } };
   }
   if (object.type === "graphic") {
-    changes.data = resizeGraphicObjectDataForFrame(object.data, oldCenter, newCenter, scaleX, scaleY);
-    // Stroke width scales with the arrow too, so a resized arrow keeps its proportions instead of
-    // turning spindly as it grows. Arrow-family only: other art keeps its existing behaviour, where
-    // a resized rectangle deliberately holds its stroke weight.
-    const strokeScale = proportionalGraphicScale(scaleX, scaleY);
+    const detailScale = isNativeArrowGraphic(object) ? options.arrowVisualWeightScale : undefined;
+    changes.data = resizeGraphicObjectDataForFrame(object.data, oldCenter, newCenter, scaleX, scaleY, detailScale);
+    // Arrow-only resizes retain proportional stroke growth. Mixed molecule/arrow group resizes
+    // soften that growth to sit closer to the molecule bonds' unchanged document-space weight.
+    // Other art retains its existing stroke weight.
+    const strokeScale = detailScale ?? proportionalGraphicScale(scaleX, scaleY);
     if (isNativeArrowGraphic(object) && Math.abs(strokeScale - 1) > 0.0001) {
       const strokeWidth = object.style.strokeWidth;
       if (typeof strokeWidth === "number" && Number.isFinite(strokeWidth) && strokeWidth > 0) {
@@ -14401,6 +14653,13 @@ function transformOtherObjectAroundPointPatches(
         };
       }
     }
+  }
+  if(object.type==='text' && object.arrowAttachment?.kind==='conditions') {
+    const factor=proportionalGraphicScale(scaleX,scaleY),style=nativeTextStyleFromObjectStyle(object.style);
+    const nextStyle={...object.style,fontSizePx:style.fontSizePx*factor,letterSpacingPx:style.letterSpacingPx*factor,paragraphSpacingPx:style.paragraphSpacingPx*factor};
+    const spans=object.spans.map(span=>({...span,style:{...span.style,...(typeof span.style.fontSizePx==='number'?{fontSizePx:span.style.fontSizePx*factor}:{})}}));
+    const size=nativeFormattedTextObjectSize({...object,style:nextStyle,spans});
+    Object.assign(changes,size,{x:newCenter.x-size.width/2,y:newCenter.y-size.height/2,style:nextStyle,spans});
   }
   // Arrow endpoints are absolute page points, so scaling only the frame would leave the drawn arrow
   // at its original size inside a resized box.
@@ -14441,7 +14700,7 @@ export function rotateDocumentObjectsAroundPoint(
     return document;
   }
   const page = firstPage(document);
-  const set = new Set(resolveGroupedDocumentObjectIds(page.objects, ids));
+  const set = new Set(withArrowAttachmentIds(page.objects, resolveGroupedDocumentObjectIds(page.objects, ids)));
   const cascadedMarkIds = cascadeCarriedAnchoredMarkIds(page.objects, set);
   const patches: DocumentPatch[] = [];
   for (const object of page.objects) {
@@ -14478,7 +14737,12 @@ export function scaleDocumentObjectsAroundPoint(
     return document;
   }
   const page = firstPage(document);
-  const set = new Set(resolveGroupedDocumentObjectIds(page.objects, ids));
+  const set = new Set(withArrowAttachmentIds(page.objects, resolveGroupedDocumentObjectIds(page.objects, ids)));
+  // Molecule bond strokes retain their document-space weight during a group resize. Soften the
+  // arrow's visual-weight growth in a mixed selection, while its shaft geometry still scales fully.
+  const mixedMoleculeArrows = page.objects.some(object => set.has(object.id) && object.type === "molecule") &&
+    page.objects.some(object => set.has(object.id) && isNativeArrowGraphic(object));
+  const arrowVisualWeightScale = mixedMoleculeArrows ? Math.sqrt(proportionalGraphicScale(sx, sy)) : undefined;
   const cascadedMarkIds = cascadeCarriedAnchoredMarkIds(page.objects, set);
   const patches: DocumentPatch[] = [];
   for (const object of page.objects) {
@@ -14496,9 +14760,10 @@ export function scaleDocumentObjectsAroundPoint(
     // validation, not one per object, which made a large selection quadratic.
     patches.push(...(object.type === "molecule"
       ? scaleNativeMoleculeObjectAroundPointPatches(document, object.id, center, sx, sy)
-      : transformOtherObjectAroundPointPatches(document, object.id, center, { scaleX: sx, scaleY: sy })));
+      : transformOtherObjectAroundPointPatches(document, object.id, center, { scaleX: sx, scaleY: sy, arrowVisualWeightScale })));
   }
-  return patches.length > 0 ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
+  return patches.length > 0 ? reconcileReactionArrowAttachments(applyPatches(document, patches, { now: phase4Timestamp }),
+    { scale: { objectIds: set, scaleX: sx, scaleY: sy } }) : document;
 }
 
 export type DocumentFlipAxis = "horizontal" | "vertical";
@@ -14533,7 +14798,7 @@ export function flipDocumentObjectsAroundPoint(
   }
 
   const page = firstPage(document);
-  const set = new Set(resolveGroupedDocumentObjectIds(page.objects, ids));
+  const set = new Set(withArrowAttachmentIds(page.objects, resolveGroupedDocumentObjectIds(page.objects, ids)));
   const cascadedMarkIds = cascadeCarriedAnchoredMarkIds(page.objects, set);
   const patches: DocumentPatch[] = [];
   for (const object of page.objects) {
@@ -18460,7 +18725,8 @@ export function copyAsScopeObjects(document: ChemDraftDocument): readonly Docume
     }
   });
 
-  return page.objects.filter((object) => scopeIds.has(object.id));
+  const attachedScopeIds = new Set(withArrowAttachmentIds(page.objects, [...scopeIds]));
+  return page.objects.filter((object) => attachedScopeIds.has(object.id));
 }
 
 export function copyAsScopeMolecules(document: ChemDraftDocument): readonly MoleculeObject[] {

@@ -1,10 +1,13 @@
+import { validArrangementDraft, type ArrangementDraft } from "@chemdraft/layout-engine";
 /** Internal host contract. Advance independently of the public plugin API. No document/path URLs. */
 import type { ExportOptions, ExportFrame, ExportPreviewResult } from "./exportOptions";
+import type { ReactionConditionsDraft } from "@chemdraft/document-workflow-core";
+export type ConditionsSnapshot = { title: string; arrowId: string; draft: ReactionConditionsDraft };
 import { validExportOptions } from "./exportOptionsValidation";
 export const DIALOG_PROTOCOL_VERSION = 1;
 export const DIALOG_MAX_BYTES = 16 * 1024;
 export const DIALOG_PREVIEW_MAX_BYTES = 5 * 1024 * 1024;
-export type DialogKind = "pageSize" | "arrangementSpacing" | "export" | "engineInstall" | "toolInstall";
+export type DialogKind = "pageSize" | "arrangementSpacing" | "reactionConditions" | "export" | "engineInstall" | "toolInstall";
 export type EngineInstallAction = "install" | "cancelInstall" | "close";
 export type ToolInstallAction = "install" | "allow" | "cancelInstall" | "close";
 export type EngineInstallState =
@@ -37,7 +40,7 @@ export interface ToolInstallSnapshot {
 export type DialogPlatform = "macos" | "windows" | "linux";
 export type PageUnit = "inch" | "mm" | "css-px";
 export interface PageSize { width: number; height: number; unit: PageUnit }
-export interface SpacingSnapshot { title: string; minPercent: number; maxPercent: number }
+export interface SpacingSnapshot { title: string; minPercent: number; maxPercent: number; arrangement?: ArrangementDraft }
 export interface SpacingPreview { percent: number; index: number; count: number; chunk: string; error?: string }
 export const SPACING_PREVIEW_CHUNK_SIZE = 2000;
 export const SPACING_PREVIEW_MAX_CHUNKS = 1024;
@@ -61,13 +64,14 @@ export interface ExportDialogResult {
 export type DialogSnapshot = DialogEnvelope & (
   | { dialogKind: "pageSize"; type: "snapshot"; data: PageSize & { title: string } }
   | { dialogKind: "arrangementSpacing"; type: "snapshot"; data: SpacingSnapshot }
+  | { dialogKind: "reactionConditions"; type: "snapshot"; data: ConditionsSnapshot }
   | { dialogKind: "export"; type: "snapshot"; data: { title: string; options: ExportOptions; frame?: ExportFrame } }
   | { dialogKind: "engineInstall"; type: "snapshot"; data: EngineInstallSnapshot }
   | { dialogKind: "toolInstall"; type: "snapshot"; data: ToolInstallSnapshot }
 );
 export type DialogMessage = DialogSnapshot | (DialogEnvelope & (
   | { type: "request" | "ready"; data: Record<string, never> }
-  | { type: "action"; data: ({ action: "apply" } & PageSize) | { action: "apply" | "preview"; percent: number } | { action: "cancel" } | { action: EngineInstallAction | ToolInstallAction } | { action: "export" | "chooseDestination" | "preview"; options: ExportOptions } }
+  | { type: "action"; data: ({ action: "apply" } & PageSize) | { action: "apply" | "preview"; percent: number; arrangement?: ArrangementDraft } | { action: "apply"; draft: ReactionConditionsDraft } | { action: EngineInstallAction | ToolInstallAction } | { action: "cancel" } | { action: "export" | "chooseDestination" | "preview"; options: ExportOptions } }
   | { type: "preview"; data: SpacingPreview }
   | { type: "result"; data: { status: "accepted" | "applied" | "progress" | ExportDialogResult["status"] | "preview" | "frame"; preview?: ExportPreviewResult; frame?: ExportFrame; error?: string; destinationPath?: string; filename?: string; notice?: string } }
   | { type: "closed"; data: { reason: DialogCloseReason } }
@@ -85,11 +89,17 @@ export function validPageSize(v: unknown): v is PageSize {
     typeof v.height === "number" && Number.isFinite(v.height) && v.height > 0 && v.height <= 100000;
 }
 export const validSpacingPercent = (v: unknown): v is number => Number.isInteger(v) && Number(v) >= 25 && Number(v) <= 150;
+export function validConditionsDraft(v: unknown): v is ReactionConditionsDraft {
+  return record(v) && keys(v, ["side", "spans"]) && ["above", "below"].includes(String(v.side)) &&
+    Array.isArray(v.spans) && v.spans.length <= 128 && v.spans.every(span => record(span) && keys(span, ["text", "script"]) &&
+      typeof span.text === "string" && ["normal", "subscript", "superscript"].includes(String(span.script))) &&
+    v.spans.map(span => span.text).join("").length <= 2000 && new TextEncoder().encode(JSON.stringify(v)).length <= 2500;
+}
 export function parseDialogMessage(value: unknown): DialogMessage | undefined {
   try {
     if (new TextEncoder().encode(JSON.stringify(value)).length > (record(value) && value.dialogKind === "export" && value.type === "result" && record(value.data) && value.data.status === "preview" ? DIALOG_PREVIEW_MAX_BYTES : DIALOG_MAX_BYTES)) return undefined;
     if (!record(value) || !keys(value, ["protocolVersion", "ownerWindowId", "documentTabId", "dialogKind", "sessionId", "requestId", "snapshotRevision", "type", "data"])) return undefined;
-    if (value.protocolVersion !== 1 || value.ownerWindowId !== "main" || typeof value.dialogKind !== "string" || !["pageSize", "arrangementSpacing", "export", "engineInstall", "toolInstall"].includes(value.dialogKind) ||
+    if (value.protocolVersion !== 1 || value.ownerWindowId !== "main" || typeof value.dialogKind !== "string" || !["pageSize", "arrangementSpacing", "reactionConditions", "export", "engineInstall", "toolInstall"].includes(value.dialogKind) ||
         !token(value.documentTabId) || !token(value.sessionId) || !token(value.requestId) ||
         !Number.isSafeInteger(value.snapshotRevision) || Number(value.snapshotRevision) < 1 || !record(value.data)) return undefined;
     const d = value.data;
@@ -99,12 +109,14 @@ export function parseDialogMessage(value: unknown): DialogMessage | undefined {
     switch (value.type) {
       case "snapshot": valid = typeof d.title === "string" && d.title.length > 0 && d.title.length <= 256 &&
         (value.dialogKind === "engineInstall" ? validEngineInstallSnapshot(d) : value.dialogKind === "toolInstall" ? validToolInstallSnapshot(d) : value.dialogKind === "pageSize" ? keys(d, ["title", "width", "height", "unit"]) && validPageSize(d) :
-          value.dialogKind === "arrangementSpacing" ? keys(d, ["title", "minPercent", "maxPercent"]) && validSpacingPercent(d.minPercent) && validSpacingPercent(d.maxPercent) && d.minPercent <= 100 && d.maxPercent >= 100 :
+          value.dialogKind === "arrangementSpacing" ? keys(d, ["title", "minPercent", "maxPercent"], ["arrangement"]) && (d.arrangement === undefined || validArrangementDraft(d.arrangement)) && validSpacingPercent(d.minPercent) && validSpacingPercent(d.maxPercent) && d.minPercent <= 100 && d.maxPercent >= 100 :
+          value.dialogKind === "reactionConditions" ? keys(d, ["title", "arrowId", "draft"]) && typeof d.arrowId === "string" && d.arrowId.length > 0 && d.arrowId.length <= 128 && validConditionsDraft(d.draft) :
           keys(d, ["title", "options"], ["frame"]) && validExportOptions(d.options) && (d.frame === undefined || validExportFrame(d.frame))); break;
       case "request": case "ready": valid = keys(d, []); break;
       case "action": valid = value.dialogKind === "engineInstall" ? keys(d, ["action"]) && typeof d.action === "string" && ["install", "cancelInstall", "close"].includes(d.action) : value.dialogKind === "toolInstall" ? keys(d, ["action"]) && typeof d.action === "string" && ["install", "allow", "cancelInstall", "close"].includes(d.action) : d.action === "cancel" ? keys(d, ["action"]) : value.dialogKind === "pageSize"
         ? d.action === "apply" && keys(d, ["action", "width", "height", "unit"]) && validPageSize(d)
-        : value.dialogKind === "arrangementSpacing" ? ["apply", "preview"].includes(String(d.action)) && keys(d, ["action", "percent"]) && validSpacingPercent(d.percent)
+        : value.dialogKind === "arrangementSpacing" ? ["apply", "preview"].includes(String(d.action)) && keys(d, ["action", "percent"], ["arrangement"]) && (d.arrangement === undefined || validArrangementDraft(d.arrangement)) && validSpacingPercent(d.percent)
+        : value.dialogKind === "reactionConditions" ? d.action === "apply" && keys(d, ["action", "draft"]) && validConditionsDraft(d.draft)
         : typeof d.action === "string" && ["export", "chooseDestination", "preview"].includes(d.action) && keys(d, ["action", "options"]) && validExportOptions(d.options); break;
       case "result": if (value.dialogKind === "engineInstall" || value.dialogKind === "toolInstall") { valid = keys(d, ["status"], ["error"]) && typeof d.status === "string" && ["accepted", "cancelled", "error"].includes(d.status) && (d.error === undefined || typeof d.error === "string" && d.error.length <= 1024); break; } if (value.dialogKind === "export" && d.status === "frame") { valid = keys(d, ["status", "frame"]) && validExportFrame(d.frame); break; } if (value.dialogKind === "export" && d.status === "preview") { valid = keys(d, ["status", "preview"]) && validExportPreview(d.preview); break; } valid = keys(d, ["status"], value.dialogKind !== "export" ? ["error"] : ["error", "notice", "destinationPath", "filename"]) &&
         typeof d.status === "string" && (value.dialogKind !== "export" ? ["accepted", "applied", "cancelled", "error"] : ["accepted", "progress", "picked", "exported", "cancelled", "error"]).includes(d.status) &&

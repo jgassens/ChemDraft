@@ -15,7 +15,7 @@ import {
   type KeybindingScheme,
   type KeybindingSettings
 } from "./keybindingSettings";
-import { loadCompoundLayoutSettings, saveCompoundLayoutSettings } from "./compoundLayoutSettings";
+import { compoundLayoutFeatures, loadCompoundLayoutSettings, saveCompoundLayoutSettings } from "./compoundLayoutSettings";
 import { broadcastCompoundLayoutSettings, broadcastKeybindingSettings, broadcastSpin3dSettings, broadcastQuitSettings, broadcastExportPreviewSettings } from "./window-manager";
 
 interface RadioOption<T extends string> {
@@ -143,14 +143,26 @@ export function PreferencesWindow() {
         <h2 id="compound-layout-tools">Compound layout tools</h2>
         <label className="preferences-radio">
           <input type="checkbox" checked={compoundLayouts.enabled} onChange={event => {
-            const next = { enabled: event.currentTarget.checked };
+            const next = { ...compoundLayouts, enabled: event.currentTarget.checked };
             setCompoundLayouts(next);
             saveCompoundLayoutSettings(next);
             void broadcastCompoundLayoutSettings(next);
           }} />
           <span className="preferences-radio-body"><strong>Compound layout tools</strong>
-            <small>Enable circle, oval, grid, row and column layouts and a spacing preview. Off by default.</small></span>
+            <small>Enable circle, oval, grid, row and column layouts and a spacing preview.</small></span>
         </label>
+        <fieldset className="preferences-compound-layout-features" disabled={!compoundLayouts.enabled}>
+          <legend>Optional arrow tools</legend>
+          {compoundLayoutFeatures.map(({ key, title, description }) => <label className="preferences-radio" key={key}>
+            <input type="checkbox" checked={compoundLayouts[key] === true} onChange={event => {
+              const next = { ...compoundLayouts, [key]: event.currentTarget.checked };
+              setCompoundLayouts(next);
+              saveCompoundLayoutSettings(next);
+              void broadcastCompoundLayoutSettings(next);
+            }} />
+            <span className="preferences-radio-body"><strong>{title}</strong><small>{description}</small></span>
+          </label>)}
+        </fieldset>
       </section>
       <section className="preferences-section">
         <h2>Quitting</h2>

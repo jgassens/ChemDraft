@@ -1,5 +1,10 @@
 # ChemDraft Desktop
 
+Conditions use **Top / inside** and **Bottom / outside**. On a curved arrow, Top faces the
+inside of the curve and Bottom the outside. On a straight arrow, Top is the upper page side
+regardless of drawing direction (left for an exactly vertical shaft). Moving or resizing arrows
+retains the curve side; manually positioned labels keep their authored positions until the side is changed.
+
 Preferences includes “Ask to save unsaved changes before quitting”, off by default.
 When enabled, quitting with dirty tabs offers Save / Don't Save / Cancel in a native message
 box, with an accessible in-window fallback if the native box cannot open. Save writes every
@@ -28,6 +33,31 @@ This corrects reqwest 0.12.28's original-URL fallback on redirected transport fa
 asset connection names the asset host. Other error URLs and HTTP status diagnostics retain their
 request/response host. Both engine install dialogs show redacted native network diagnostics, with
 generic download guidance when no recognised diagnostic is available.
+
+Right-click an arrow for **Attach offshoot**, with **Top / outside**, **Bottom / inside** and
+**Full curve — top / inside** and **Full curve — bottom / outside** choices, or **Reaction conditions…**.
+A half offshoot leaves the shaft's midpoint tangentially and follows its
+parent when moved, bent or rotated. Drag its bend or endpoint to reshape it. Full curve extends on
+both sides of the attachment as a smooth U, initially tangent to
+the parent at its midpoint. Drag the diamond tether along the parent shaft to change its attachment
+point. Drag the tail or head independently; hold Shift while dragging either to align both ends
+with equal reach and rise in the tether frame. Holding Shift over a selected full curve also shows
+a third green handle above its frame; drag it to adjust both endpoints equally. The curve passes through that exact tether with a
+smooth forward tangent. Endpoints stop before crossing the tether in its forward direction, avoiding
+loops. Top remains visually above a newly drawn straight arrow regardless of arrow direction;
+curved parents retain the existing outside/inside geometry.
+The existing half-curve side choices keep their geometry. Every offshoot's head size follows
+the parent; resize the parent head to change both. Conditions use normal/subscript/superscript spans,
+a formatted preview and a top/inside or bottom/outside position. They are native text: drag to
+adjust spacing, double-click to reopen the editor, or clear the text to remove it. Save is one Undo
+entry; Cancel is unchanged. The movable native editor stays tied to its originating tab. If that
+drawing changes while it is open, close/reopen before Save. Selection alone does not invalidate it.
+Resizing an arrow or its group scales attached offshoots too, retaining their proportions and head
+separation. Conditions are fitted to their formatted lines and placed clear of nearby drawing ink.
+If no clear position exists on the chosen side, Save explains how to make room. Dragging a label
+keeps that manual position through later movement and editing. Arrangement connections trim to a
+tight molecule outline built from the rendered bonds, stereo marks and labels, allowing longer,
+more balanced arrows beside diagonal molecules.
 
 File > Export includes a preview of the actual exported SVG, PDF, or native raster bytes,
 linked or independent pixel and physical dimensions, DPI, page/content cropping, background controls,
@@ -59,10 +89,50 @@ app bundle only; installed plugin packages stay in Application Support. See
 The desktop palette is a separate Tauri window behind `src/window-manager`. Palette buttons route command IDs back to the main document window, where the existing command registry invokes them. `pnpm dev:web` keeps an in-window docked palette only as a browser-preview fallback.
 
 Compound layouts are opt-in: enable **Compound layout tools** in Settings/Preferences.
+Three indented options are independently opt-in and require that parent setting:
+**Arrangement Arrows** enables one Arrange with options window with layout, connecting arrows
+and spacing controls;
+**Offshoot Arrows** enables Attach offshoot; **Formatted Reaction Conditions** enables the
+conditions editor. All three start off, including for existing profiles. Turning the parent off
+retains the child choices for later. Saved arrows and labels still render and follow their parents
+with these authoring options off. Basic layouts and standalone Adjust spacing need only the parent setting.
+With Arrangement Arrows enabled, the separate Adjust spacing menu entry is folded into Arrange
+with options. Saved shortcuts still open that same window without resetting its draft. The spacing
+slider changes the chosen layout at 25–150%, rerouting arrows while retaining molecule sizes.
+Invalid overlap or page overflow disables Save. Layout, arrows and spacing save as one Undo entry.
 Select two or more compounds or groups, then use Arrange Selection in Main, Art or Layout;
 long-press or press Arrow Down for Circle, Oval, Grid left/center/right, Row or Column.
 Row and Column automatically tighten their default gaps when needed to fit the page,
 keeping at least 12 document pixels between visible compound bounds and preserving molecule sizes.
-Adjust spacing opens a movable native window on desktop, previewing distances while retaining molecule sizes. Save is one Undo step;
+Standalone Adjust spacing opens a movable native window on desktop when Arrangement Arrows is off,
+previewing distances while retaining molecule sizes. Save is one Undo step;
 Cancel/Escape makes no change. Toolbar/context items are hidden and direct commands refuse
 while the setting is off. Existing drawing/export behavior is unchanged by enabling the setting.
+
+**Arrange with options…** in the same submenu opens a preview before changing the drawing.
+**Add connecting arrows** starts off for a new selection. Reopening an existing connected
+arrangement restores its saved options and shows the checkbox checked. Unchecking removes only
+that selection's generated connections and their offshoots/conditions when saved; Cancel changes
+nothing. Matching connections retain their IDs and styles when edited. **Arrow length** previews
+30–100% of the clear route, shortening both ends without moving or resizing molecules. At 100%,
+unchanged existing arrow geometry is preserved. Selecting several complete arrangements applies a
+common length to each connection while keeping their compound positions, individual layouts and
+directions. Changing the topology controls applies that layout to the whole selection. Adding/removing selected
+compounds rebuilds the selected neighbor graph. Circle/Oval offer clockwise or counterclockwise arcs
+and an optional closed loop; Row/Column connect neighbors in either direction. Grid explicitly chooses
+separate rows or a snake sequence. Arrows reserve space around compound and grouped-caption bounds;
+an obstructed or off-page route is refused with the drawing unchanged. Save moves the compounds and
+adds the editable arrows in one Undo step. These arrows support offshoots and reaction conditions.
+They remain editable after Save; moving a compound normally does not reroute them. Explicit layout
+commands (including direct Circle/Grid/Row/Column choices) update selected generated connections
+along with the compounds, retaining matching arrow IDs, styles and attachments. **Adjust spacing**
+reroutes newly generated connections between their original compounds, retaining arrow styles,
+offshoots and conditions in one Undo step. Older connections without endpoint metadata remain
+independent; recreate those connections to enable spacing updates. The arrow-enabled default gap is
+64 document pixels. Color Controls also colors arrow strokes in a mixed compound/arrow selection;
+coloring a parent carries its branch subtree, while selecting a branch styles only that subtree.
+
+Formatted conditions, including normal spans with font-size overrides, use explicit run baselines and reserve each line's ascent/descent,
+so a subscript on one line cannot collide with a superscript on the next. The dialog preview,
+canvas, SVG and PDF share those metrics; ordinary unformatted text and atom labels retain their
+existing layout.
