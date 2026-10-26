@@ -132,6 +132,15 @@ describe("bridge-gated timing probe", () => {
       rafStartMs: 770, firstFrameMs: 780, extra: { inputId: "input-1", frameSource: "destination-window" } });
     probe.stop();
   });
+  it("records native visibility from a cold destination receipt before the origin sees show", () => {
+    const h = harness("main"); const probe = createPerfProbe(true, () => h.env)!;
+    h.native("tool.settings");
+    probe.nativeWindowStarted("cold-open", "tool.settings", "preferences");
+    probe.remoteNativePaint("preferences", 1766, 1810, "preferences", 1770, 1228);
+    expect(h.records[0]).toMatchObject({ doneSignal: "window-painted", windowShownMs: 228,
+      doneMs: 766, firstFrameMs: 810, rafStartMs: 770 });
+    probe.stop();
+  });
   it("explicitly reports a destination that never paints, without reusing an origin frame", () => {
     const h = harness(); const probe = createPerfProbe(true, () => h.env)!;
     h.native("tool.settings"); probe.registryExpected(probe.command("tool.settings"));

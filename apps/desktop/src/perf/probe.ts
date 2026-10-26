@@ -441,7 +441,7 @@ export class PerfProbe {
     });
   }
   /** Paint reports are authenticated by window label; main joins by destination and time. */
-  remoteNativePaint(target: string, at: number, frameAt: number, window: string, rafAt: number): void {
+  remoteNativePaint(target: string, at: number, frameAt: number, window: string, rafAt: number, shownAt?: number): void {
     this.guard(() => {
       const candidates = [...this.pending].filter(span => span.destination === target
         && span.expected === "window-painted" && span.record.t0 <= at + COMPLETION_CLOCK_SKEW_MS
@@ -450,7 +450,7 @@ export class PerfProbe {
         for (const span of candidates) span.record.extra = { ...span.record.extra, destinationAmbiguous: true };
         return;
       }
-      this.remoteCompletion(candidates[0].requestKey!, "window-painted", at, frameAt, window, rafAt);
+      this.remoteCompletion(candidates[0].requestKey!, "window-painted", at, frameAt, window, rafAt, shownAt);
     });
   }
   remoteCompletion(requestKey: string, signal: DoneSignal, at: number, frameAt?: number, window?: string, rafAt?: number, shownAt?: number): void {

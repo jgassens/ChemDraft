@@ -47,6 +47,15 @@ node apps/desktop/src/perf/commandSignatures.ts
 ```
 
 Review and include the snapshot diff with the contract change; tests never regenerate it.
+
+The Rust clock core accepts plain request data, an authenticated window label, an injected
+clock reading and observed destination existence. It emits effects through a sink; only the
+command wrapper holds Tauri handles, delivers JavaScript events or schedules native expiry.
+Unit tests call this core and the plain completion/receipt helpers, never command wrappers or
+`PerfClockContext`. Windows lib test executables have no common-controls v6 manifest; bringing
+Wry window types into these tests pulls in `TaskDialogIndirect` and prevents the executable
+from starting before any test can run.
+
 Only main has `allow-perf-log-window-state`; main and shared dialogs have completion forwarding.
 
 The native `on_window_ready` hook exists only under the existing bridge launch gate. Its
@@ -275,6 +284,8 @@ through a perf-only show notification. A newly created window reports its buffer
 documented post-paint fallback) through `perf_log_append`, with its authenticated window label.
 Rust checks numeric paint/frame bounds and the registered destination/time range, then relays only
 the destination identity, actual label and timestamps. It does not send an ID through an app command.
+The relay includes the registered show timestamp so cold-open origin rows retain `windowShownMs`
+even when the destination paint arrives before the origin processes its own show notification.
 Main matches this report to its pending native-open input by destination label mapping and time
 (`t0 <= paint + 10 ms`, at most 120 seconds old). Exactly one candidate completes; overlapping
 candidates get `extra.destinationAmbiguous` and remain incomplete instead of guessing.
@@ -360,9 +371,10 @@ fake time, and assert the probe disables (no subsequent fault calls or rows):
   timestamp and destinationPaint faults, with PerformanceObserver unavailable.
   Paint Timing entries themselves are simulated in `runtime.test.ts`, which also tests cold
   Preferences/3D Debugger calibration before their show receipt.
-- Rust: direct `perf_log_clock(disable: true)` invocation clears open correlations and refuses
-  subsequent clock requests. File tests cover bounded writes, rotation fallback and invalid input;
-  creation-hook tests cover enabled/disabled startup stamping.
+- Rust: plain `clock_request(disable: true)` invocation clears open correlations and refuses
+  subsequent clock requests; core tests cover cold/warm opens, effect ordering, authenticated
+  forwarding, sink failures and completion timestamp validation. File tests cover bounded writes,
+  rotation fallback and invalid input; creation-hook tests cover enabled/disabled startup stamping.
 
 This matrix tests those hooks, not every internal method or native OS operation. Window effects
 and files are mocked at transport boundaries; real focus/z-order and compositor timing still need

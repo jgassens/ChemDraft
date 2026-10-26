@@ -87,13 +87,22 @@ impl PerfLog {
             opens.clear();
         }
     }
-    fn sample(&self) -> Result<ClockSample, String> {
+    fn clock(&self) -> Result<&Clock, String> {
         if self.disabled.load(Ordering::Relaxed) {
             return Err("Perf probe disabled for this session".into());
         }
-        let clock = self.clock.as_ref().ok_or("Agent bridge is disabled")?;
+        self.clock
+            .as_ref()
+            .ok_or_else(|| "Agent bridge is disabled".into())
+    }
+    fn sample(&self) -> Result<ClockSample, String> {
+        let clock = self.clock()?;
+        self.sample_at(clock.epoch_ms + clock.instant.elapsed().as_secs_f64() * 1000.0)
+    }
+    fn sample_at(&self, now: f64) -> Result<ClockSample, String> {
+        let clock = self.clock()?;
         Ok(ClockSample {
-            now: clock.epoch_ms + clock.instant.elapsed().as_secs_f64() * 1000.0,
+            now,
             process_start: clock.epoch_ms,
             build_stamp: self
                 .build_stamp
@@ -133,7 +142,7 @@ impl PerfLog {
         }
     }
     fn register_stamp(&self, source: &str, stamp: String) -> Result<(), String> {
-        self.sample()?;
+        self.clock()?;
         if source != "main" || stamp.is_empty() || stamp.chars().count() > 256 {
             return Err("Invalid perf build stamp or source window".into());
         }
@@ -305,51 +314,46 @@ fn validate_line(line: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Injected perf-only context. Separating state from transport lets the disable command be
-/// exercised without constructing a native webview (and proves disable never needs one).
-pub(crate) struct PerfClockContext<'a> {
-    state: &'a PerfLog,
-    transport: Option<(tauri::AppHandle, tauri::WebviewWindow)>,
-}
-impl<'a> tauri::ipc::CommandArg<'a, tauri::Wry> for PerfClockContext<'a> {
-    fn from_command(
-        command: tauri::ipc::CommandItem<'a, tauri::Wry>,
-    ) -> Result<Self, tauri::ipc::InvokeError> {
-        let state = command
-            .message
-            .state_ref()
-            .try_get::<PerfLog>()
-            .ok_or_else(|| tauri::ipc::InvokeError::from("Perf log state unavailable"))?
-            .inner();
-        let app = command.message.webview_ref().app_handle().clone();
-        let window =
-            <tauri::WebviewWindow as tauri::ipc::CommandArg<'a, tauri::Wry>>::from_command(
-                command,
-            )?;
-        Ok(Self {
-            state,
-            transport: Some((app, window)),
-        })
-    }
-}
-
-#[tauri::command]
-pub(crate) fn perf_log_clock(
-    context: PerfClockContext<'_>,
+/// Plain clock inputs and effects keep tests independent of the native window runtime.
+/// Windows lib test executables have no common-controls v6 manifest: referencing the Wry
+/// command context from a test pulls in TaskDialogIndirect and prevents the test exe loading.
+#[derive(Default)]
+struct ClockRequest {
     build_stamp: Option<String>,
     native_open: Option<NativeOpen>,
     forward_input: Option<ForwardInput>,
     disable: Option<bool>,
+}
+enum ClockEffect {
+    Forward(serde_json::Value),
+    Expire {
+        label: String,
+        input_id: String,
+        delay_ms: f64,
+    },
+    Open {
+        label: String,
+        payload: serde_json::Value,
+    },
+}
+
+// No Tauri types or clock reads: callers supply the authenticated source, observed window
+// existence and current time. The sink delivers effects, propagating transport errors in order.
+fn clock_request(
+    state: &PerfLog,
+    source: &str,
+    request: ClockRequest,
+    now: f64,
+    destination_exists: bool,
+    mut sink: impl FnMut(ClockEffect) -> Result<(), String>,
 ) -> Result<ClockSample, String> {
-    let state = context.state;
-    state.sample()?;
-    if disable == Some(true) {
+    state.clock()?;
+    if request.disable == Some(true) {
         state.disable();
         return Err("Perf probe disabled for this session".into());
     }
-    let (app, window) = context.transport.ok_or("Perf transport unavailable")?;
-    if let Some(input) = forward_input {
-        if !window.label().starts_with("toolset-")
+    if let Some(input) = request.forward_input {
+        if !source.starts_with("toolset-")
             || input.input_id.is_empty()
             || input.input_id.len() > 128
             || !input.t0.is_finite()
@@ -359,20 +363,16 @@ pub(crate) fn perf_log_clock(
         {
             return Err("Invalid forwarded perf input".into());
         }
-        // Separate diagnostic delivery. Never attach an origin to an app command/event.
-        if let Some(main) = app.get_webview_window("main") {
-            let mut payload = serde_json::to_value(input).map_err(|e| e.to_string())?;
-            payload["window"] = window.label().into();
-            main.eval(format!("window.dispatchEvent(new CustomEvent('chemdraft:perf-forward', {{detail:{payload}}}));"))
-                .map_err(|e| e.to_string())?;
-        }
+        let mut payload = serde_json::to_value(input).map_err(|e| e.to_string())?;
+        payload["window"] = source.into();
+        sink(ClockEffect::Forward(payload))?;
     }
-    if let Some(stamp) = build_stamp {
-        state.register_stamp(window.label(), stamp)?;
+    if let Some(stamp) = request.build_stamp {
+        state.register_stamp(source, stamp)?;
     }
-    if let Some(mut request) = native_open {
+    if let Some(mut request) = request.native_open {
         let label = native_open_label(&request.target).ok_or("Invalid perf open target")?;
-        if window.label() != "main"
+        if source != "main"
             || request.input_id.is_empty()
             || request.input_id.len() > 128
             || !request.t0.is_finite()
@@ -390,7 +390,7 @@ pub(crate) fn perf_log_clock(
             .filter(|previous| previous.input_id == request.input_id)
             .map_or_else(
                 || {
-                    app.get_webview_window(&label).is_none()
+                    !destination_exists
                         || state
                             .created
                             .lock()
@@ -406,38 +406,114 @@ pub(crate) fn perf_log_clock(
         }
         opens.insert(label.clone(), request.clone());
         drop(opens);
-        let expiry_app = app.clone();
-        let expiry_label = label.clone();
-        let expiry_id = request.input_id.clone();
-        let delay_ms = (120_000.0 - (state.sample()?.now - request.t0)).clamp(0.0, 120_000.0);
-        tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs_f64(delay_ms / 1000.0)).await;
-            expiry_app
-                .state::<PerfLog>()
-                .expire_open(&expiry_label, &expiry_id);
-        });
+        sink(ClockEffect::Expire {
+            label: label.clone(),
+            input_id: request.input_id.clone(),
+            delay_ms: (120_000.0 - (now - request.t0)).clamp(0.0, 120_000.0),
+        })?;
         if request.shown_at.is_some() {
-            if let Some(destination) = app.get_webview_window(&label) {
-                let payload = serde_json::to_string(&request).map_err(|e| e.to_string())?;
-                destination.eval(format!("window.dispatchEvent(new CustomEvent('chemdraft:perf-open', {{detail:{payload}}}));"))
-                    .map_err(|e| e.to_string())?;
-            }
+            sink(ClockEffect::Open {
+                label,
+                payload: serde_json::to_value(&request).map_err(|e| e.to_string())?,
+            })?;
         }
     }
-    let mut sample = state.sample()?;
+    let mut sample = state.sample_at(now)?;
     sample.created_at = state
         .created
         .lock()
         .map_err(|_| "Perf creation lock poisoned")?
-        .get(window.label())
+        .get(source)
         .copied();
     sample.native_open = state
         .opens
         .lock()
         .map_err(|_| "Perf opens lock poisoned")?
-        .get(window.label())
+        .get(source)
         .cloned();
     Ok(sample)
+}
+
+pub(crate) struct PerfClockContext<'a> {
+    state: &'a PerfLog,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+}
+impl<'a> tauri::ipc::CommandArg<'a, tauri::Wry> for PerfClockContext<'a> {
+    fn from_command(
+        command: tauri::ipc::CommandItem<'a, tauri::Wry>,
+    ) -> Result<Self, tauri::ipc::InvokeError> {
+        let state = command
+            .message
+            .state_ref()
+            .try_get::<PerfLog>()
+            .ok_or_else(|| tauri::ipc::InvokeError::from("Perf log state unavailable"))?
+            .inner();
+        let app = command.message.webview_ref().app_handle().clone();
+        let window =
+            <tauri::WebviewWindow as tauri::ipc::CommandArg<'a, tauri::Wry>>::from_command(
+                command,
+            )?;
+        Ok(Self { state, app, window })
+    }
+}
+
+#[tauri::command]
+pub(crate) fn perf_log_clock(
+    context: PerfClockContext<'_>,
+    build_stamp: Option<String>,
+    native_open: Option<NativeOpen>,
+    forward_input: Option<ForwardInput>,
+    disable: Option<bool>,
+) -> Result<ClockSample, String> {
+    let PerfClockContext { state, app, window } = context;
+    let now = state.sample()?.now;
+    let destination_exists = native_open
+        .as_ref()
+        .and_then(|request| native_open_label(&request.target))
+        .is_some_and(|label| app.get_webview_window(&label).is_some());
+    clock_request(
+        state,
+        window.label(),
+        ClockRequest {
+            build_stamp,
+            native_open,
+            forward_input,
+            disable,
+        },
+        now,
+        destination_exists,
+        |effect| {
+            match effect {
+                ClockEffect::Forward(payload) => {
+                    // Separate diagnostic delivery. Never attach an origin to an app command/event.
+                    if let Some(main) = app.get_webview_window("main") {
+                        main.eval(format!("window.dispatchEvent(new CustomEvent('chemdraft:perf-forward', {{detail:{payload}}}));"))
+                            .map_err(|e| e.to_string())?;
+                    }
+                }
+                ClockEffect::Expire {
+                    label,
+                    input_id,
+                    delay_ms,
+                } => {
+                    let expiry_app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_secs_f64(delay_ms / 1000.0))
+                            .await;
+                        expiry_app.state::<PerfLog>().expire_open(&label, &input_id);
+                    });
+                }
+                ClockEffect::Open { label, payload } => {
+                    if let Some(destination) = app.get_webview_window(&label) {
+                        destination.eval(format!("window.dispatchEvent(new CustomEvent('chemdraft:perf-open', {{detail:{payload}}}));"))
+                            .map_err(|e| e.to_string())?;
+                    }
+                }
+            }
+            Ok(())
+        },
+    )
 }
 
 /// Diagnostic-only state query, issued after an app toggle has resolved.
@@ -446,10 +522,7 @@ pub(crate) fn perf_log_window_state(
     app: tauri::AppHandle,
     label: String,
 ) -> Result<&'static str, String> {
-    app.state::<PerfLog>().sample()?;
-    if !matches!(label.as_str(), "preferences" | "spin3d-debugger") {
-        return Err("Invalid perf window state target".into());
-    }
+    validate_window_state_target(&app.state::<PerfLog>(), &label)?;
     let Some(window) = app.get_webview_window(&label) else {
         return Ok("absent");
     };
@@ -460,6 +533,14 @@ pub(crate) fn perf_log_window_state(
     } else {
         Ok("hidden")
     }
+}
+
+fn validate_window_state_target(state: &PerfLog, label: &str) -> Result<(), String> {
+    state.clock()?;
+    if !matches!(label, "preferences" | "spin3d-debugger") {
+        return Err("Invalid perf window state target".into());
+    }
+    Ok(())
 }
 
 fn native_open_label(target: &str) -> Option<String> {
@@ -542,7 +623,7 @@ fn native_paint_receipt(
         return None;
     }
     let payload = serde_json::json!({ "target": request.target, "signal": "window-painted",
-        "at": at, "frameAt": frame, "rafAt": raf, "window": source });
+        "at": at, "frameAt": frame, "rafAt": raf, "shownAt": request.shown_at, "window": source });
     opens.remove(source);
     Some(("main".into(), payload))
 }
@@ -602,7 +683,24 @@ pub(crate) fn perf_log_complete(
     window: tauri::WebviewWindow,
     completion: Completion,
 ) -> Result<(), String> {
-    app.state::<PerfLog>().sample()?;
+    let (target, payload) =
+        completion_receipt(&app.state::<PerfLog>(), window.label(), completion)?;
+    let destination = app
+        .get_webview_window(&target)
+        .ok_or("Perf completion window closed")?;
+    destination
+        .eval(format!(
+        "window.dispatchEvent(new CustomEvent('chemdraft:perf-complete', {{detail:{payload}}}));"
+    ))
+        .map_err(|e| e.to_string())
+}
+
+fn completion_receipt(
+    state: &PerfLog,
+    source: &str,
+    completion: Completion,
+) -> Result<(String, serde_json::Value), String> {
+    state.clock()?;
     let Completion {
         target,
         request_key,
@@ -612,7 +710,6 @@ pub(crate) fn perf_log_complete(
         raf_at,
         shown_at,
     } = completion;
-    let source = window.label();
     if !valid_completion(source, &target, &request_key, &signal, at, frame_at) {
         return Err("Invalid perf completion route or payload".into());
     }
@@ -624,16 +721,9 @@ pub(crate) fn perf_log_complete(
     if shown_at.is_some_and(|shown| !shown.is_finite() || shown < 0.0) {
         return Err("Invalid perf shown timestamp".into());
     }
-    let destination = app
-        .get_webview_window(&target)
-        .ok_or("Perf completion window closed")?;
     let payload = serde_json::json!({ "requestKey": request_key, "signal": signal, "at": at,
         "frameAt": frame_at, "rafAt": raf_at, "shownAt": shown_at, "window": source });
-    destination
-        .eval(format!(
-        "window.dispatchEvent(new CustomEvent('chemdraft:perf-complete', {{detail:{payload}}}));"
-    ))
-        .map_err(|e| e.to_string())
+    Ok((target, payload))
 }
 
 fn valid_completion(
@@ -661,7 +751,13 @@ fn valid_completion(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        clock_request, completion_receipt, native_open_label, native_paint_receipt,
+        popover_receipt, valid_completion, validate_line, validate_window_state_target,
+        ClockEffect, ClockRequest, Completion, ForwardInput, NativeOpen, PerfLog, MAX_BYTES,
+        MAX_LINE_BYTES,
+    };
+    use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     fn dir() -> std::path::PathBuf {
@@ -675,7 +771,7 @@ mod tests {
         serde_json::json!({"v":3,"kind":"click","window":"main","platform":"windows","buildStamp":"test","t0":1,"firstFrameMs":2,"doneMs":3,"doneSignal":"document-commit"}).to_string()
     }
     #[test]
-    fn perf_log_clock_disable_clears_opens_and_refuses_later_calls() {
+    fn clock_disable_clears_opens_and_refuses_later_calls() {
         let state = PerfLog::new(true);
         state.opens.lock().unwrap().insert(
             "preferences".into(),
@@ -688,33 +784,243 @@ mod tests {
                 cold: false,
             },
         );
-        assert!(perf_log_clock(
-            PerfClockContext {
-                state: &state,
-                transport: None
+        assert!(clock_request(
+            &state,
+            "main",
+            ClockRequest {
+                disable: Some(true),
+                ..Default::default()
             },
-            None,
-            None,
-            None,
-            Some(true)
+            1100.0,
+            false,
+            |_| panic!("disable must emit no effects")
         )
         .is_err());
         assert!(state.opens.lock().unwrap().is_empty());
         assert_eq!(
-            perf_log_clock(
-                PerfClockContext {
-                    state: &state,
-                    transport: None
-                },
-                None,
-                None,
-                None,
-                None
+            clock_request(
+                &state,
+                "main",
+                ClockRequest::default(),
+                1200.0,
+                false,
+                |_| panic!("disabled probe must emit no effects")
             )
             .err()
             .as_deref(),
             Some("Perf probe disabled for this session")
         );
+    }
+    fn open_request(input_id: &str, shown_at: Option<f64>) -> ClockRequest {
+        ClockRequest {
+            native_open: Some(NativeOpen {
+                target: "preferences".into(),
+                input_id: input_id.into(),
+                t0: 1000.0,
+                command_id: None,
+                shown_at,
+                cold: false,
+            }),
+            ..Default::default()
+        }
+    }
+    #[test]
+    fn clock_preserves_cold_intent_on_show_and_samples_the_destination() {
+        let state = PerfLog::new(true);
+        let mut effects = Vec::new();
+        clock_request(
+            &state,
+            "main",
+            open_request("open-1", None),
+            1100.0,
+            false,
+            |effect| {
+                effects.push(effect);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(
+            matches!(effects.as_slice(), [ClockEffect::Expire { label, input_id, delay_ms }]
+            if label == "preferences" && input_id == "open-1" && *delay_ms == 119_900.0)
+        );
+        effects.clear();
+        // The destination exists now, but this is still the original cold open.
+        clock_request(
+            &state,
+            "main",
+            open_request("open-1", Some(1228.0)),
+            1250.0,
+            true,
+            |effect| {
+                effects.push(effect);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(
+            matches!(effects.as_slice(), [ClockEffect::Expire { .. }, ClockEffect::Open { label, payload }]
+            if label == "preferences" && payload["cold"] == true && payload["shownAt"] == 1228.0)
+        );
+        state
+            .created
+            .lock()
+            .unwrap()
+            .insert("preferences".into(), 1050.0);
+        let sample = clock_request(
+            &state,
+            "preferences",
+            ClockRequest::default(),
+            1300.0,
+            true,
+            |_| panic!("sampling must emit no effects"),
+        )
+        .unwrap();
+        assert_eq!(sample.now, 1300.0);
+        assert_eq!(sample.created_at, Some(1050.0));
+        assert!(sample.native_open.unwrap().cold);
+        // A window created during this input is cold even if it already exists.
+        clock_request(
+            &state,
+            "main",
+            open_request("open-2", None),
+            1400.0,
+            true,
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert!(state.opens.lock().unwrap()["preferences"].cold);
+        state
+            .created
+            .lock()
+            .unwrap()
+            .insert("preferences".into(), 500.0);
+        clock_request(
+            &state,
+            "main",
+            open_request("open-3", None),
+            1500.0,
+            true,
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert!(!state.opens.lock().unwrap()["preferences"].cold);
+    }
+    #[test]
+    fn clock_rejects_invalid_opens_before_state_or_effects_change() {
+        let state = PerfLog::new(true);
+        for (source, request) in [
+            ("preferences", open_request("input", None)),
+            ("main", open_request("", None)),
+            ("main", open_request("input", Some(999.0))),
+            ("main", open_request("input", Some(f64::NAN))),
+        ] {
+            assert!(
+                clock_request(&state, source, request, 1100.0, false, |_| panic!(
+                    "invalid open must emit no effects"
+                ))
+                .is_err()
+            );
+            assert!(state.opens.lock().unwrap().is_empty());
+        }
+        assert!(clock_request(
+            &PerfLog::new(false),
+            "main",
+            ClockRequest::default(),
+            1100.0,
+            false,
+            |_| panic!("disabled bridge must emit no effects")
+        )
+        .is_err());
+    }
+    #[test]
+    fn window_state_query_accepts_only_the_two_diagnostic_targets_when_enabled() {
+        let state = PerfLog::new(true);
+        for label in ["preferences", "spin3d-debugger"] {
+            validate_window_state_target(&state, label).unwrap();
+            assert!(validate_window_state_target(&PerfLog::new(false), label).is_err());
+        }
+        for label in ["main", "toolset-core-main", "dialog-main-export-1", ""] {
+            assert!(validate_window_state_target(&state, label).is_err());
+        }
+    }
+    #[test]
+    fn clock_forwarding_authenticates_source_and_propagates_sink_failure() {
+        let state = PerfLog::new(true);
+        for (source, input_id, t0, command_id) in [
+            ("main", "input", 1000.0, "tool.settings"),
+            ("toolset-core-main", "", 1000.0, "tool.settings"),
+            ("toolset-core-main", "input", f64::INFINITY, "tool.settings"),
+            ("toolset-core-main", "input", 1000.0, ""),
+        ] {
+            let request = ClockRequest {
+                forward_input: Some(ForwardInput {
+                    input_id: input_id.into(),
+                    t0,
+                    command_id: command_id.into(),
+                }),
+                ..Default::default()
+            };
+            assert!(
+                clock_request(&state, source, request, 1100.0, false, |_| panic!(
+                    "invalid forwarding must emit no effects"
+                ))
+                .is_err()
+            );
+        }
+        let mut effects = 0;
+        let result = clock_request(
+            &state,
+            "toolset-core-main",
+            ClockRequest {
+                forward_input: Some(ForwardInput {
+                    input_id: "input".into(),
+                    t0: 1000.0,
+                    command_id: "tool.settings".into(),
+                }),
+                build_stamp: Some("must not register".into()),
+                ..Default::default()
+            },
+            1100.0,
+            false,
+            |effect| {
+                let ClockEffect::Forward(payload) = effect else {
+                    panic!("expected forwarding")
+                };
+                assert_eq!(payload["window"], "toolset-core-main");
+                assert_eq!(payload["inputId"], "input");
+                effects += 1;
+                Err("eval failed".into())
+            },
+        );
+        assert_eq!(result.err().as_deref(), Some("eval failed"));
+        assert_eq!(effects, 1);
+        assert!(state.build_stamp.lock().unwrap().is_none());
+    }
+    #[test]
+    fn completion_receipt_validates_optional_times_without_a_window() {
+        let state = PerfLog::new(true);
+        let completion = || Completion {
+            target: "main".into(),
+            request_key: "session-1".into(),
+            signal: "dialog-open".into(),
+            at: 1100.0,
+            frame_at: Some(1150.0),
+            raf_at: Some(1120.0),
+            shown_at: Some(1050.0),
+        };
+        let (target, payload) =
+            completion_receipt(&state, "dialog-main-export-1", completion()).unwrap();
+        assert_eq!(target, "main");
+        assert_eq!(payload["window"], "dialog-main-export-1");
+        assert_eq!(payload["shownAt"], 1050.0);
+        for (raf, shown) in [(1151.0, 1050.0), (f64::NAN, 1050.0), (1120.0, -1.0)] {
+            let mut invalid = completion();
+            invalid.raf_at = Some(raf);
+            invalid.shown_at = Some(shown);
+            assert!(completion_receipt(&state, "dialog-main-export-1", invalid).is_err());
+        }
+        assert!(completion_receipt(&state, "toolset-core-main", completion()).is_err());
     }
     #[test]
     fn native_paint_relays_only_the_registered_destination_and_time_range() {
@@ -756,6 +1062,7 @@ mod tests {
         assert_eq!(receipt["at"], 1766.0);
         assert_eq!(receipt["frameAt"], 1810.0);
         assert_eq!(receipt["rafAt"], 1770.0);
+        assert_eq!(receipt["shownAt"], 1228.0);
         assert!(native_paint_receipt(&state, source, &row).is_none());
         assert_eq!(
             native_open_label("toolset:core.drawnStructureSettings"),

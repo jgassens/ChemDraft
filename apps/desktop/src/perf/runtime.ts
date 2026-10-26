@@ -247,7 +247,7 @@ async function initializePerfProbe(sourceStamp?: string): Promise<void> {
     if (!detail) return;
     const native = detail as typeof detail & { target?: string };
     if (native.target && native.signal === "window-painted" && native.frameAt !== undefined && native.rafAt !== undefined) {
-      return perfProbe?.remoteNativePaint(native.target, native.at, native.frameAt, native.window, native.rafAt);
+      return perfProbe?.remoteNativePaint(native.target, native.at, native.frameAt, native.window, native.rafAt, native.shownAt);
     }
     if (["popover-shown", "no-op", "failed"].includes(detail.signal) && ["toolset", "settings", "inspector"].includes(windowRole(window.location.search))) {
       const shown = detail as typeof detail & { flyoutId: string };
