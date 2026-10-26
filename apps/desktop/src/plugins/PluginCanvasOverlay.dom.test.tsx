@@ -84,10 +84,11 @@ const statusRowRef = createRef<HTMLElement>();
 let viewportWidth: number;
 let viewportHeight: number;
 
-function pointer(target: Element | Document, type: string, x: number, y: number, buttons = type === "pointerdown" || type === "pointermove" ? 1 : 0): void {
+function pointer(target: Element | Document, type: string, x: number, y: number, buttons = type === "pointerdown" || type === "pointermove" ? 1 : 0): MouseEvent {
   const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, buttons, clientX: x, clientY: y });
   Object.defineProperty(event, "pointerId", { value: 1 });
   target.dispatchEvent(event);
+  return event;
 }
 function enterText(value: string): void {
   const textarea = container.querySelector("textarea")!;
@@ -849,6 +850,37 @@ describe("PluginCanvasOverlay", () => {
     expect(widget().style.height).toBe("600px");
   });
 
+  it("reuses fit subscriptions through resize moves and reads the latest height", async () => {
+    await act(async () => root.unmount());
+    const callbacks: (() => void)[] = [];
+    const disconnect = vi.fn();
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: () => void) { callbacks.push(callback); }
+      observe() {}
+      unobserve() {}
+      disconnect = disconnect;
+    });
+    const matchMedia = vi.fn(() => ({ addEventListener: vi.fn(), removeEventListener: vi.fn() }));
+    vi.stubGlobal("matchMedia", matchMedia);
+    viewportHeight = 900;
+    root = createRoot(container); await render(); await expand();
+    const count = callbacks.length;
+    const queries = matchMedia.mock.calls.length;
+    const disconnections = disconnect.mock.calls.length;
+    const grip = container.querySelector(".plugin-canvas-overlay-resize")!;
+    await act(async () => pointer(grip, "pointerdown", 300, 500));
+    for (const y of [450, 400, 350]) await act(async () => pointer(grip, "pointermove", 300, y));
+    await act(async () => pointer(grip, "pointerup", 300, 350));
+    expect(callbacks).toHaveLength(count);
+    expect(matchMedia).toHaveBeenCalledTimes(queries);
+    expect(disconnect).toHaveBeenCalledTimes(disconnections);
+    expect(widget().style.height).toBe("430px");
+    await act(async () => { viewportHeight = 350; callbacks.forEach(callback => callback()); });
+    expect(widget().style.height).toBe("222px");
+    await act(async () => { viewportHeight = 900; callbacks.forEach(callback => callback()); });
+    expect(widget().style.height).toBe("430px");
+  });
+
   it("fits on DPR changes, re-arms the resolution query, and removes its listener on teardown", async () => {
     await act(async () => root.unmount());
     const queries: { query: string; listeners: Set<() => void> }[] = [];
@@ -908,17 +940,40 @@ describe("PluginCanvasOverlay", () => {
 
   it.each(["macos", "windows"] as const)("cancels header/grip multi-click selection while preserving prompt and transcript selection on %s", async targetPlatform => {
     platform = targetPlatform; await render(); await expand();
-    for (const selector of [".plugin-canvas-overlay-header span", ".plugin-canvas-overlay-resize"]) {
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    const mouseDown = vi.fn();
+    widget().addEventListener("mousedown", mouseDown);
+    for (const selector of [".plugin-canvas-overlay-header span", ".plugin-canvas-overlay-header button", ".plugin-canvas-overlay-resize"]) {
       const target = container.querySelector(selector)!;
       for (const detail of [2, 3]) {
-        const down = new MouseEvent("mousedown", { bubbles: true, cancelable: true, detail });
-        await act(async () => target.dispatchEvent(down));
-        expect(down.defaultPrevented).toBe(true);
+        await act(async () => {
+          const down = pointer(target, "pointerdown", 300, 150);
+          // Header buttons keep their focus semantics; resize chrome cancels pointerdown.
+          expect(down.defaultPrevented).toBe(!target.matches("button"));
+          // No compatibility mousedown follows the cancelled pointerdown.
+          const start = new Event("selectstart", { bubbles: true, cancelable: true });
+          target.dispatchEvent(start);
+          expect(start.defaultPrevented).toBe(true);
+          // Model the browser default: only an uncancelled selectstart creates a range.
+          if (!start.defaultPrevented) {
+            const range = document.createRange(); range.selectNodeContents(widget()); selection.addRange(range);
+          }
+          pointer(target, "pointerup", 300, 150);
+          target.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, detail }));
+        });
+        expect(selection.toString()).toBe("");
       }
+      // Backstop for engines that already extended selection across the overlay.
+      const range = document.createRange(); range.selectNodeContents(widget()); selection.addRange(range);
+      expect(selection.toString()).not.toBe("");
+      await act(async () => target.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, detail: 2 })));
+      expect(selection.rangeCount).toBe(0);
     }
+    expect(mouseDown).not.toHaveBeenCalled();
     await act(async () => enterText("Select this prompt"));
     const textarea = container.querySelector("textarea")!;
-    const down = new MouseEvent("mousedown", { bubbles: true, cancelable: true, detail: 2 });
+    const down = new Event("selectstart", { bubbles: true, cancelable: true });
     textarea.dispatchEvent(down);
     expect(down.defaultPrevented).toBe(false);
     textarea.focus(); textarea.setSelectionRange(0, 6);
@@ -926,12 +981,19 @@ describe("PluginCanvasOverlay", () => {
     expect(textarea.value.slice(textarea.selectionStart, textarea.selectionEnd)).toBe("Select");
     await act(async () => transcriptSource.set([{ role: "assistant", text: "Selectable reply" }]));
     const reply = container.querySelector(".plugin-canvas-overlay-entry span")!;
-    const replyDown = new MouseEvent("mousedown", { bubbles: true, cancelable: true, detail: 2 });
+    const replyDown = new Event("selectstart", { bubbles: true, cancelable: true });
     reply.dispatchEvent(replyDown);
     expect(replyDown.defaultPrevented).toBe(false);
     const range = document.createRange(); range.selectNodeContents(reply);
     window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range);
+    await act(async () => reply.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, detail: 2 })));
     expect(window.getSelection()!.toString()).toBe("Selectable reply");
+    for (const selector of [".plugin-canvas-overlay-header span", ".plugin-canvas-overlay-resize"]) {
+      await act(async () => container.querySelector(selector)!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, detail: 2 })));
+      expect(window.getSelection()!.toString()).toBe("Selectable reply");
+      expect(textarea.value.slice(textarea.selectionStart, textarea.selectionEnd)).toBe("Select");
+      expect(document.activeElement).toBe(textarea);
+    }
     window.getSelection()!.removeAllRanges();
   });
 

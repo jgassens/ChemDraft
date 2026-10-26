@@ -911,7 +911,8 @@ textarea:focus-visible,
   position: absolute; top: 0; left: 0; right: 0; height: 7px;
   cursor: ns-resize; touch-action: none;
 }
-.plugin-canvas-overlay-header, .plugin-canvas-overlay-resize { -webkit-user-select: none; user-select: none; }
+.plugin-canvas-overlay-header, .plugin-canvas-overlay-header *,
+.plugin-canvas-overlay-resize, .plugin-canvas-overlay-resize * { -webkit-user-select: none; user-select: none; }
 .plugin-canvas-overlay-resize::after {
   content: ""; display: block; width: 28px; height: 2px; margin: 2px auto;
   background: var(--cd-border-control);

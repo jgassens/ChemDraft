@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type MouseEvent, type PointerEvent, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type PointerEvent, type RefObject } from "react";
 import type { PluginCanvasOverlayContribution, PluginOverlayTranscriptEntry, PluginOverlayContentSection } from "@chemdraft/plugin-api";
 import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 
@@ -159,6 +159,17 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
   const position = positions[mode];
   const elementRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const element = elementRef.current;
+    // A cancelled pointerdown suppresses compatibility mousedown in Chromium/WebKit.
+    // selectstart is native (React has no corresponding event prop).
+    const preventChromeSelection = (event: Event) => {
+      const target = event.target instanceof Element ? event.target : (event.target as Node | null)?.parentElement;
+      if (target?.closest(".plugin-canvas-overlay-header, .plugin-canvas-overlay-resize")) event.preventDefault();
+    };
+    element?.addEventListener("selectstart", preventChromeSelection);
+    return () => element?.removeEventListener("selectstart", preventChromeSelection);
+  }, []);
   const compositionExpiryRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const composingCanvasRef = useRef<{ element: HTMLElement; tabIndex: string | null } | null>(null);
   const clearComposition = () => {
@@ -288,10 +299,12 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
     };
   };
 
+  const fitRef = useRef<() => void>(() => undefined);
+  const fitObserverRef = useRef<ResizeObserver | undefined>(undefined);
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
     const element = elementRef.current;
-    if (!viewport || !element || gestureActive) return;
+    if (!viewport || !element || gestureActive) { fitRef.current = () => undefined; return; }
     const fit = () => {
       const bounds = drawingArea();
       if (bounds.bottom <= bounds.top) return;
@@ -323,11 +336,23 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
           && current.expanded?.x === next.expanded?.x && current.expanded?.y === next.expanded?.y ? current : next;
       });
     };
+    fitRef.current = fit;
     fit();
+    if (expanded && focusOnExpandRef.current) {
+      focusOnExpandRef.current = false;
+      element.querySelector("textarea")?.focus({ preventScroll: true });
+    }
+  }, [expanded, gestureActive, height, autoFitContent, content, openRequest, overlay.defaultCorner, overlayLayerRef, statusRowRef, viewportRef]);
+
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current;
+    const element = elementRef.current;
+    if (!viewport || !element) return;
+    const fit = () => fitRef.current();
     const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(fit);
+    fitObserverRef.current = observer;
     observer?.observe(viewport);
     observer?.observe(element);
-    if (contentRef.current?.firstElementChild) observer?.observe(contentRef.current.firstElementChild);
     if (overlayLayerRef?.current) observer?.observe(overlayLayerRef.current);
     if (statusRowRef?.current) observer?.observe(statusRowRef.current);
     for (const ruler of viewport.querySelectorAll<HTMLElement>(".ruler-left, .ruler-top, .ruler-corner")) observer?.observe(ruler);
@@ -340,16 +365,21 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
     };
     const onResolutionChange = () => { fit(); watchResolution(); };
     watchResolution();
-    if (expanded && focusOnExpandRef.current) {
-      focusOnExpandRef.current = false;
-      element.querySelector("textarea")?.focus({ preventScroll: true });
-    }
     return () => {
       observer?.disconnect();
+      fitObserverRef.current = undefined;
       window.removeEventListener("resize", fit);
       resolution?.removeEventListener("change", onResolutionChange);
     };
-  }, [expanded, gestureActive, height, autoFitContent, content, openRequest, overlay.defaultCorner, overlayLayerRef, statusRowRef, viewportRef]);
+  }, [overlayLayerRef, statusRowRef, viewportRef]);
+
+  useLayoutEffect(() => {
+    const child = contentRef.current?.firstElementChild;
+    const observer = fitObserverRef.current;
+    if (!child || !observer) return;
+    observer.observe(child);
+    return () => observer.unobserve(child);
+  }, [content, overlayLayerRef, statusRowRef, viewportRef]);
 
   useEffect(() => {
     try { window.localStorage.setItem(`${storageKey}:height`, JSON.stringify(height)); } catch { /* Optional persistence. */ }
@@ -439,8 +469,15 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
     if (resizeRef.current?.pointerId !== event.pointerId) return;
     endResize();
   };
-  const preventOverlaySelection = (event: MouseEvent<HTMLElement>) => {
-    if (event.detail > 1) event.preventDefault();
+  const clearChromeSelection = () => {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed) return;
+    const selectable = elementRef.current?.querySelectorAll("textarea, .plugin-canvas-overlay-transcript");
+    // Preserve deliberate text selections, including reverse/multi-range selections.
+    const insideText = Array.from({ length: selection.rangeCount }, (_, index) => selection.getRangeAt(index))
+      .every(range => Array.from(selectable ?? []).some(element =>
+        element.contains(range.startContainer) && element.contains(range.endContainer)));
+    if (!insideText) selection.removeAllRanges();
   };
   const resetHeight = () => {
     const bounds = drawingArea();
@@ -539,15 +576,14 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
     </button>
     <div className="plugin-canvas-overlay-chat" hidden={!expanded}>
       <div className="plugin-canvas-overlay-resize" aria-label="Resize conversation"
-        onMouseDown={preventOverlaySelection}
+        onDoubleClick={clearChromeSelection}
         onPointerDown={startResize} onPointerMove={moveResize} onPointerUp={stopResize}
         onPointerCancel={stopResize} onLostPointerCapture={stopResize} />
       <div className="plugin-canvas-overlay-header"
-        onMouseDown={preventOverlaySelection}
         title="Drag to resize; double-click to reset height"
         onPointerDown={startResize} onPointerMove={moveResize} onPointerUp={stopResize}
         onPointerCancel={stopResize} onLostPointerCapture={stopResize}
-        onDoubleClick={event => { if (!(event.target as Element).closest("button")) resetHeight(); }}>
+        onDoubleClick={event => { clearChromeSelection(); if (!(event.target as Element).closest("button")) resetHeight(); }}>
         <span>{overlay.title}</span>
         <button type="button" aria-label={`Collapse ${overlay.title}`}
           onPointerDown={event => event.stopPropagation()}
