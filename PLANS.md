@@ -8,6 +8,18 @@ in progress rather than a changelog.
 
 # In flight
 
+## Printed page outlines (owner request, 2026-10-24)
+
+Branch `codex/print-page-guides`, clean base upstream main `f9f1a3d`; no reaction-arrow branch changes.
+Add an optional checkbox and existing eight paper sizes to Custom Page Size. Repeat dotted
+paper boundaries matching the page orientation across the art space as screen-only guides. Persist settings in the native layout,
+keep one Undo with the resize, and validate the native dialog transport.
+Handoff: [printed page outlines](docs/print-page-guides-handoff.md).
+237 focused tests, final root TypeScript, Rust fmt and whitespace passed. Broad checks were stopped
+at the owner’s request to keep usage proportional. Native build/launch, macOS/Windows hands-on and
+complete CI remain unverified before merge.
+
+
 # ChemDraft Assistant plugin (active, branches claude/assistant-*)
 
 ## Objective

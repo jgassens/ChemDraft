@@ -1,18 +1,19 @@
+import { MinimalPageSizePresetIds, findPageSizePreset, type PrintPageGuides } from "@chemdraft/chem-core";
 import { useRef, type KeyboardEvent } from "react";
 import { detectDialogPlatform, validPageSize, type DialogPlatform, type PageSize, type PageUnit } from "./dialogProtocol";
 
-export interface PageSizeDraft { width: string; height: string; unit: PageUnit }
+export interface PageSizeDraft { width: string; height: string; unit: PageUnit; printGuides?: PrintPageGuides }
 export const formatPageSizeFieldValue = (value: number): string => Number(value.toFixed(2)).toString();
 export const pageSizeUnitShortLabel = (unit: PageUnit): string => unit === "inch" ? "in" : unit === "css-px" ? "px" : unit;
 export function pageSizeFromDraft(draft: PageSizeDraft): PageSize | undefined {
-  const size = { width: Number(draft.width), height: Number(draft.height), unit: draft.unit };
+  const size = { width: Number(draft.width), height: Number(draft.height), unit: draft.unit, ...(draft.printGuides ? { printGuides: draft.printGuides } : {}) };
   return draft.width.trim() && draft.height.trim() && validPageSize(size) ? size : undefined;
 }
 const cssPxPerUnit: Record<PageUnit, number> = { inch: 96, mm: 96 / 25.4, "css-px": 1 };
 export function convertPageSizeDraft(draft: PageSizeDraft, unit: PageUnit): PageSizeDraft {
   const convert = (raw: string) => raw.trim() && Number.isFinite(Number(raw))
     ? formatPageSizeFieldValue(Number(raw) * cssPxPerUnit[draft.unit] / cssPxPerUnit[unit]) : raw;
-  return { width: convert(draft.width), height: convert(draft.height), unit };
+  return { ...draft, width: convert(draft.width), height: convert(draft.height), unit };
 }
 /** Shared body for the native route and browser-only in-page fallback. Holds no document state. */
 export function PageSizeForm({ state, title, onChange, onCancel, onApply, busy = false, error,
@@ -38,7 +39,7 @@ export function PageSizeForm({ state, title, onChange, onCancel, onApply, busy =
     onKeyDown={keyDown} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }}>
     <h2>Custom Page Size</h2>
     <p>Drawing: <strong>{title}</strong></p>
-    <p>Enter the page width and height. Margins are kept from the current page.</p>
+    <p>Enter the art-space width and height. Margins are kept from the current page.</p>
     <div className="cd-page-size-fields">
       <label>Width<input autoFocus type="number" min="0" max="100000" step="any" value={state.width}
         onChange={e => onChange({ ...state, width: e.target.value })} aria-describedby={!size ? "page-size-error" : undefined} /></label>
@@ -49,6 +50,16 @@ export function PageSizeForm({ state, title, onChange, onCancel, onApply, busy =
         <option value="inch">Inches</option><option value="mm">Millimeters</option>
         {state.unit === "css-px" ? <option value="css-px">Pixels</option> : null}
       </select></label>
+    </div>
+    <div className="cd-print-guide-settings">
+      <label className="cd-print-guide-toggle"><input type="checkbox" checked={state.printGuides?.enabled ?? false}
+        onChange={e => onChange({ ...state, printGuides: { presetId: state.printGuides?.presetId ?? "letter", enabled: e.target.checked } })} />
+        Show printed page outlines</label>
+      <label className="cd-print-guide-size">Printed page size<select value={state.printGuides?.presetId ?? "letter"}
+        disabled={!state.printGuides?.enabled} onChange={e => onChange({ ...state, printGuides: { enabled: state.printGuides?.enabled ?? false, presetId: e.target.value as PrintPageGuides["presetId"] } })}>
+        {MinimalPageSizePresetIds.map(id => <option key={id} value={id}>{findPageSizePreset(id).title}</option>)}
+      </select></label>
+      <p>Dotted page outlines follow the page orientation and repeat across the art space. Guides are not printed or exported.</p>
     </div>
     <p id="page-size-error" role="status">{error ?? (!size ? "Enter positive width and height (at most 100000)." : "")}</p>
     <div className="cd-page-size-buttons"><button type="button" onClick={onCancel}>Cancel</button>

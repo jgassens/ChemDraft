@@ -102,6 +102,7 @@ export {
 } from "./schemas";
 
 export {
+  type PrintPageGuides,
   CSS_PX_PER_INCH,
   DefaultPageLayout,
   DefaultPageMarginPx,

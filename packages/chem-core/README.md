@@ -13,3 +13,8 @@ Unknown bond orders write as CTfile type 8 (any) in both formats, with one warni
 affected bond ids. This preserves the native unknown order on reimport, but readers treat it as a
 query bond with no chemical order. Chemistry and 3D engine callers pass `unknownBondOrders: "refuse"`; this
 throws the exported `UnknownBondOrderError` with `bondIds` before any output or warnings are emitted.
+
+`PageLayout.printGuides` optionally saves `{ enabled, presetId }` for screen-only printed-page
+outlines. Its preset is one of `MinimalPageSizePresetIds`; omitted settings keep legacy drawings
+guide-free. Page dimensions and margins still describe the art space; guides are not document
+objects and do not participate in chemistry, export or printing.

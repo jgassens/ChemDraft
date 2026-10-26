@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  MinimalPageSizePresetIds,
   PageOrientations,
   PageSizePresetIds,
   PageSizeUnits,
@@ -582,7 +583,8 @@ export const PageLayoutSchema: z.ZodType<NativePageLayout> = z
     marginLeftPx: z.number().finite().nonnegative(),
     sourceUnit: PageSizeUnitSchema.optional(),
     sourceWidth: z.number().finite().positive().optional(),
-    sourceHeight: z.number().finite().positive().optional()
+    sourceHeight: z.number().finite().positive().optional(),
+    printGuides: z.object({ enabled: z.boolean(), presetId: z.enum(MinimalPageSizePresetIds) }).strict().optional()
   })
   .strict();
 

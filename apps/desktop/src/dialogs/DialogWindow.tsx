@@ -74,7 +74,7 @@ export function DialogWindow({ hostId }: { hostId: string }) {
             pendingRequestId.current = undefined;
             setBusy(false);
           }
-          if (message.dialogKind === "pageSize") setDraft({ width: formatPageSizeFieldValue(message.data.width), height: formatPageSizeFieldValue(message.data.height), unit: message.data.unit });
+          if (message.dialogKind === "pageSize") setDraft({ width: formatPageSizeFieldValue(message.data.width), height: formatPageSizeFieldValue(message.data.height), unit: message.data.unit, ...(message.data.printGuides ? { printGuides: message.data.printGuides } : {}) });
           else if (message.dialogKind === "arrangementSpacing") { setPercent(100); setPreview(undefined); }
           else if (message.dialogKind === "export") { setExportDraft({ ...message.data.options, busy: false }); setFrame(message.data.frame); }
           latest = message;

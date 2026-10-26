@@ -28,7 +28,7 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             maximizable: false,
             resizable: false,
             title: "Custom Page Size",
-            size: (420.0, 300.0),
+            size: (460.0, 420.0),
             min_size: (360.0, 260.0),
         }),
         "arrangementSpacing" => Ok(DialogKindSpec {
@@ -85,12 +85,28 @@ pub(crate) struct Message {
     data: Value,
 }
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Snapshot {
     title: String,
     width: f64,
     height: f64,
     unit: String,
+    print_guides: Option<PrintPageGuides>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PrintPageGuides {
+    #[serde(rename = "enabled")]
+    _enabled: bool,
+    preset_id: String,
+}
+impl PrintPageGuides {
+    fn valid(&self) -> bool {
+        matches!(
+            self.preset_id.as_str(),
+            "letter" | "legal" | "a4" | "a3" | "a2" | "a1" | "a0" | "a5"
+        )
+    }
 }
 #[derive(Deserialize)]
 #[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
@@ -99,6 +115,8 @@ enum Action {
         width: f64,
         height: f64,
         unit: String,
+        #[serde(rename = "printGuides")]
+        print_guides: Option<PrintPageGuides>,
     },
     Cancel,
 }
@@ -707,7 +725,10 @@ impl Message {
             "snapshot" => {
                 if self.dialog_kind == "pageSize" {
                     serde_json::from_value::<Snapshot>(self.data.clone()).is_ok_and(|s| {
-                        valid_title(&s.title) && valid_size(s.width, s.height, &s.unit)
+                        valid_title(&s.title)
+                            && valid_size(s.width, s.height, &s.unit)
+                            && s.print_guides.as_ref().is_none_or(PrintPageGuides::valid)
+                            && self.data.get("printGuides").is_none_or(Value::is_object)
                     })
                 } else {
                     serde_json::from_value::<SpacingSnapshot>(self.data.clone()).is_ok_and(|s| {
@@ -727,7 +748,12 @@ impl Message {
                             width,
                             height,
                             unit,
-                        } => valid_size(width, height, &unit),
+                            print_guides,
+                        } => {
+                            valid_size(width, height, &unit)
+                                && print_guides.as_ref().is_none_or(PrintPageGuides::valid)
+                                && self.data.get("printGuides").is_none_or(Value::is_object)
+                        }
                     })
                 } else {
                     serde_json::from_value::<SpacingAction>(self.data.clone()).is_ok_and(
@@ -2829,6 +2855,31 @@ mod tests {
                 flags.4,
                 flags.5
             ));
+        }
+    }
+    #[test]
+    fn page_size_print_guides_are_optional_and_strictly_typed() {
+        for message_type in ["snapshot", "action"] {
+            let mut message = snapshot();
+            message.message_type = message_type.into();
+            if message_type == "action" {
+                message.data.as_object_mut().unwrap().remove("title");
+                message.data["action"] = json!("apply");
+            }
+            assert!(message.validate().is_ok());
+            for preset in ["letter", "legal", "a4", "a3", "a2", "a1", "a0", "a5"] {
+                message.data["printGuides"] = json!({"enabled": true, "presetId": preset});
+                assert!(message.validate().is_ok());
+            }
+            for guides in [
+                json!(null),
+                json!({"enabled": "true", "presetId": "a4"}),
+                json!({"enabled": true, "presetId": "custom"}),
+                json!({"enabled": true, "presetId": "a4", "path": "/tmp"}),
+            ] {
+                message.data["printGuides"] = guides;
+                assert!(message.validate().is_err());
+            }
         }
     }
     #[test]

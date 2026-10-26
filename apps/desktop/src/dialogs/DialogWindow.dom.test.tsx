@@ -213,3 +213,16 @@ it("refreshes preview on frame revision while preserving the user's export draft
   await act(async () => host.receive!({ ...exportedSnapshot, type: "result", requestId: first.requestId, data: { status: "preview", preview: { url: "data:image/png;base64,AAAA", kind: "image", width: 100, height: 100, warnings: [] } } }));
   expect(container.querySelector('img[alt="Export preview"]')).toBeNull();
 });
+
+it("restores saved print guides, sends the changed paper size, and retains it when disabled", async () => {
+  await act(async () => host.receive!({ ...snapshot, snapshotRevision: 2, data: { ...snapshot.data, printGuides: { enabled: true, presetId: "a4" } } }));
+  const checkbox = container.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+  const select = container.querySelector<HTMLSelectElement>('.cd-print-guide-size select')!;
+  expect(checkbox.checked).toBe(true); expect(select.value).toBe("a4");
+  expect([...select.options].map(option => option.text)).toEqual(["US Letter", "US Legal", "A4", "A3", "A2", "A1", "A0", "A5"]);
+  await act(async () => { select.value = "legal"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+  await act(async () => checkbox.click());
+  expect(select.disabled).toBe(true); expect(select.value).toBe("legal");
+  await act(async () => Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Apply")!.click());
+  expect(host.send.mock.calls.at(-1)![1]).toMatchObject({ type: "action", data: { action: "apply", printGuides: { enabled: false, presetId: "legal" } } });
+});

@@ -47,7 +47,14 @@ export interface PageSizePreset {
   category: PageSizeCategory;
 }
 
+export interface PrintPageGuides {
+  enabled: boolean;
+  presetId: (typeof MinimalPageSizePresetIds)[number];
+}
+
 export interface PageLayout {
+  /** Screen-only paper boundaries across the art space; never exported as artwork. */
+  printGuides?: PrintPageGuides;
   presetId: PageSizePresetId;
   orientation: PageOrientation;
   widthPx: number;

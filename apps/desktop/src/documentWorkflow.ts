@@ -101,6 +101,7 @@ import {
   type PageOrientation,
   type PageSizePresetId,
   type PageSizeUnit,
+  type PrintPageGuides,
   type StereoCenterReport,
   type TextSpan,
   type TextObject,
@@ -18316,7 +18317,8 @@ export function applyImportedPageFitRecommendation(
 
 export function setDocumentPageSize(document: ChemDraftDocument, presetId: PageSizePresetId): ChemDraftDocument {
   const page = firstPage(document);
-  const layout = createPageLayout(presetId, page.layout.orientation, pageMarginFromLayout(page.layout));
+  const layout = { ...createPageLayout(presetId, page.layout.orientation, pageMarginFromLayout(page.layout)),
+    ...(page.layout.printGuides ? { printGuides: page.layout.printGuides } : {}) };
 
   return applyPatch(
     document,
@@ -18332,10 +18334,12 @@ export function setDocumentPageSize(document: ChemDraftDocument, presetId: PageS
 /** Apply a user-entered custom page size (width/height in `unit`), keeping current margins. */
 export function setDocumentCustomPageSize(
   document: ChemDraftDocument,
-  size: { width: number; height: number; unit: PageSizeUnit }
+  size: { width: number; height: number; unit: PageSizeUnit; printGuides?: PrintPageGuides }
 ): ChemDraftDocument {
   const page = firstPage(document);
   const layout = createCustomPageLayout(size.width, size.height, size.unit, pageMarginFromLayout(page.layout));
+  const printGuides = size.printGuides ?? page.layout.printGuides;
+  if (printGuides) layout.printGuides = printGuides;
 
   return applyPatch(
     document,
@@ -18353,7 +18357,8 @@ export function setDocumentPageOrientation(
   orientation: PageOrientation
 ): ChemDraftDocument {
   const page = firstPage(document);
-  const layout = createPageLayout(page.layout.presetId, orientation, pageMarginFromLayout(page.layout));
+  const layout = { ...createPageLayout(page.layout.presetId, orientation, pageMarginFromLayout(page.layout)),
+    ...(page.layout.printGuides ? { printGuides: page.layout.printGuides } : {}) };
 
   return applyPatch(
     document,

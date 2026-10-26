@@ -66,3 +66,9 @@ keeping at least 12 document pixels between visible compound bounds and preservi
 Adjust spacing opens a movable native window on desktop, previewing distances while retaining molecule sizes. Save is one Undo step;
 Cancel/Escape makes no change. Toolbar/context items are hidden and direct commands refuse
 while the setting is off. Existing drawing/export behavior is unchanged by enabling the setting.
+
+Custom Page Size includes **Show printed page outlines** and a **Printed page size** dropdown
+with US Letter, US Legal, A4, A3, A2, A1, A0 and A5. Dotted paper boundaries following the page orientation repeat from
+the top-left of the art space, with partial pages at its edges. These are screen guides only;
+they do not tile print jobs or add marks to SVG, PDF or raster exports. Settings travel with the
+native drawing and Apply updates them with the art-space size in one Undo entry.

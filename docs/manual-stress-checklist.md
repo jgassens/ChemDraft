@@ -759,3 +759,13 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
   again. Repeat an Export that needs a picker. Close the source tab while the picker is open and
   confirm no closed or newly reopened Export receives focus. Switch to another app before the
   picker completes and confirm ChemDraft does not take foreground.
+
+Printed page outlines (macOS and Windows): open File > Page Setup > Custom Page Size, enlarge the
+art space to 20 × 30 inches, enable Show printed page outlines and select each of US Letter, US Legal,
+A4, A3, A2, A1, A0 and A5. Check dotted tiles matching the page orientation from the art-space top-left, including partial
+last pages; zoom/pan and draw/select across a boundary. Change units without changing paper choice.
+Apply is one Undo/Redo step for size and guides; Cancel changes neither. Reopen the dialog and
+save/reopen the native drawing to check persistence. Disable/re-enable and retain the paper choice.
+Switch tabs before Apply and confirm only the originating drawing changes. Check exported SVG, PDF
+and PNG contain no guides. Move the native dialog between monitor scales; all controls and Apply
+remain visible, keyboard navigation works, and window ownership/focus remain correct.

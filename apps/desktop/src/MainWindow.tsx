@@ -795,6 +795,8 @@ import type { ExportDialogResult } from "./dialogs/dialogProtocol";
 import { exportDialogHeight, exportDialogSizeError } from "./dialogs/exportPresentation";
 import { DialogCoordinator } from "./dialogs/DialogCoordinator";
 import { nativeDialogTransport } from "./dialogs/dialogTransport";
+import { PrintPageGuideOverlay } from "./PrintPageGuideOverlay";
+import type { PageSize } from "./dialogs/dialogProtocol";
 import { PageSizeForm, formatPageSizeFieldValue, pageSizeUnitShortLabel, type PageSizeDraft } from "./dialogs/PageSizeForm";
 import { atomLabelEditorWidth } from "./atomLabelEditorWidth";
 import {
@@ -1615,7 +1617,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.25.18.33-codex";
+const CURRENT_BUILD_STAMP = "10.25.22.20-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -8581,20 +8583,20 @@ export function MainWindow({
     if (isDesktopRuntime()) {
       const coordinator = dialogCoordinatorRef.current;
       if (!coordinator) { setStatus("Custom Page Size could not open: the dialog host is unavailable."); return; }
-      void coordinator.openPageSize(activeDocumentTabIdRef.current, { title, width, height, unit })
+      void coordinator.openPageSize(activeDocumentTabIdRef.current, { title, width, height, unit, ...(layout?.printGuides ? { printGuides: layout.printGuides } : {}) })
         .catch(error => setStatus(`Custom Page Size could not open: ${String(error)}`));
       return;
     }
-    setCustomPageSizeDialog({ unit, width: formatPageSizeFieldValue(width), height: formatPageSizeFieldValue(height) });
+    setCustomPageSizeDialog({ unit, width: formatPageSizeFieldValue(width), height: formatPageSizeFieldValue(height), ...(layout?.printGuides ? { printGuides: layout.printGuides } : {}) });
   }, []);
 
-  const applyCustomPageSize = useCallback((size: { width: number; height: number; unit: PageSizeUnit }) => {
+  const applyCustomPageSize = useCallback((size: PageSize) => {
     commitDocumentChange((current) => setDocumentCustomPageSize(current, size), "Set Custom Page Size");
     setCustomPageSizeDialog(undefined);
     setStatus(`Page size: custom ${formatPageSizeFieldValue(size.width)} × ${formatPageSizeFieldValue(size.height)} ${pageSizeUnitShortLabel(size.unit)}`);
   }, [commitDocumentChange]);
 
-  const applyPageSizeToTabRef = useRef<(tabId: string, size: { width: number; height: number; unit: PageSizeUnit }) => void>(() => {});
+  const applyPageSizeToTabRef = useRef<(tabId: string, size: PageSize) => void>(() => {});
   applyPageSizeToTabRef.current = (tabId, size) => {
     if (!documentTabsRef.current.some(tab => tab.id === tabId)) throw new Error("The originating drawing was closed.");
     if (tabId === activeDocumentTabIdRef.current) {
@@ -19885,6 +19887,7 @@ export function MainWindow({
                     verticalTicks={verticalCrosshairTicks}
                   />
                 ) : null}
+                <PrintPageGuideOverlay layout={activePage.layout} scale={viewport.scale} />
                 <div className="page-object-stack" data-page-object-stack="true">
                 <PageSvgSurface
                   {...objectViewHandlers}

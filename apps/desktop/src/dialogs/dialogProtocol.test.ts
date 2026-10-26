@@ -117,3 +117,15 @@ it("validates tool install snapshots, states and actions fail closed", () => {
     { state: { status: "installing", phase: "Downloading", bytesDone: 1.5 }, buttons: ["cancelInstall", "close"] }
   ]) expect(parseDialogMessage({ ...message, data: { ...data, ...change } })).toBeUndefined();
 });
+
+it("validates optional print guides on page-size snapshots and actions", () => {
+  for (const type of ["snapshot", "action"] as const) {
+    const data = type === "snapshot" ? snapshot().data : { action: "apply", width: 20, height: 30, unit: "inch" };
+    for (const presetId of ["letter", "legal", "a4", "a3", "a2", "a1", "a0", "a5"]) {
+      expect(parseDialogMessage({ ...snapshot(), type, data: { ...data, printGuides: { enabled: true, presetId } } })).toBeDefined();
+    }
+    for (const printGuides of [null, true, {}, { enabled: "true", presetId: "a4" }, { enabled: true, presetId: "custom" }, { enabled: true, presetId: "a6" }, { enabled: true, presetId: "a4", path: "/tmp" }]) {
+      expect(parseDialogMessage({ ...snapshot(), type, data: { ...data, printGuides } })).toBeUndefined();
+    }
+  }
+});

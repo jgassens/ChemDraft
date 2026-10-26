@@ -7746,4 +7746,12 @@ textarea:focus-visible,
 .cd-page-size-fields input, .cd-page-size-fields select { padding: 6px; background: var(--cd-bg-panel); color: var(--cd-text-primary); border: 1px solid var(--cd-border-subtle); border-radius: 6px; }
 .cd-page-size-buttons { display: flex; gap: 8px; justify-content: flex-end; }
 .cd-page-size-form button { padding: 6px 14px; }
-.cd-page-size-web-fallback .cd-page-size-form { width: 420px; min-height: 300px; border: 1px solid var(--cd-border-subtle); border-radius: 8px; }
+.cd-page-size-web-fallback .cd-page-size-form { width: 460px; min-height: 420px; border: 1px solid var(--cd-border-subtle); border-radius: 8px; }
+
+.cd-print-guide-settings { display: grid; gap: 10px; margin-top: 18px; }
+.cd-print-guide-toggle { display: flex; align-items: center; gap: 6px; }
+.cd-print-guide-size { display: flex; align-items: center; gap: 10px; }
+.cd-print-guide-size select { padding: 6px; background: var(--cd-bg-panel); color: var(--cd-text-primary); border: 1px solid var(--cd-border-subtle); border-radius: 6px; }
+.cd-print-guide-settings p { margin: 0; font-size: 12px; }
+.cd-print-page-guides { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; color: var(--cd-text-secondary); opacity: 0.65; }
+@media print { .cd-print-page-guides { display: none; } }
