@@ -259,6 +259,8 @@ async function undoAtFocus(platform: "macos" | "windows"): Promise<void> {
 
 describe("MainWindow canvas overlays", () => {
   beforeEach(async () => {
+    vi.spyOn(window, "addEventListener");
+    vi.spyOn(window, "removeEventListener");
     vi.stubGlobal("localStorage", new MemoryStorage()); vi.stubGlobal("ResizeObserver", TestResizeObserver); vi.stubGlobal("CSS", { escape: (value: string) => value });
     HTMLElement.prototype.setPointerCapture ??= () => {};
     HTMLElement.prototype.releasePointerCapture ??= () => {};
@@ -553,6 +555,174 @@ describe("MainWindow canvas overlays", () => {
         expect(container.querySelector<HTMLElement>(".plugin-canvas-overlay")!.dataset.expanded).toBe("false");
         expect(document.activeElement).toBe(canvas);
       } finally { vi.useRealTimers(); }
+    });
+
+    it.each(["tool.bond", "tool.text"])("blocks real %s gestures throughout composition", async commandId => {
+      await act(async () => window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId } })));
+      expect(container.querySelector("[data-active-tool]")?.getAttribute("data-active-tool")).toBe(commandId);
+      const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
+      const widget = container.querySelector<HTMLElement>(".plugin-canvas-overlay")!;
+      const page = container.querySelector<HTMLElement>(".page")!;
+      vi.spyOn(page, "getBoundingClientRect").mockReturnValue({ x: 200, y: 200, left: 200, top: 200,
+        width: 600, height: 800, right: 800, bottom: 1000, toJSON: () => ({}) });
+      const capture = vi.spyOn(page, "setPointerCapture");
+      const before = getAssistantHistoryPort().read("initial")!;
+      await act(async () => {
+        textarea.focus();
+        textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+        input("あ");
+      });
+      const reacted = vi.fn();
+      window.addEventListener("pointerdown", reacted, true);
+      try {
+        // Model a transient activeElement while the native IME still owns the
+        // prompt. Exercise the real tools without the React focus guard.
+        const activeElement = vi.spyOn(document, "activeElement", "get");
+        try {
+          activeElement.mockReturnValue(document.body);
+          await canvasPointer(page, "pointerdown");
+          expect(getAssistantHistoryPort().read("initial")).toBe(before);
+          expect(capture).not.toHaveBeenCalled();
+          expect(container.querySelector(".text-object-editor")).toBeNull();
+          await canvasPointer(page, "pointerup");
+        } finally { activeElement.mockRestore(); }
+        for (const target of [page, container.querySelector(".page-svg-surface")!, container.querySelector(".page-interaction-layer")!]) {
+          for (const pointerType of ["mouse", "pen", "touch"]) for (const button of [0, 1, 2, 3, 4]) {
+            const options = { pointerType, button };
+            expect((await canvasPointer(target, "pointerdown", options)).defaultPrevented).toBe(true);
+            expect(getAssistantHistoryPort().read("initial")).toBe(before);
+            expect(widget.hidden).toBe(false);
+            expect(document.activeElement).toBe(textarea);
+            await canvasPointer(target, "pointerup", options);
+          }
+        }
+      } finally { window.removeEventListener("pointerdown", reacted, true); }
+      expect(reacted).not.toHaveBeenCalled();
+      expect(capture).not.toHaveBeenCalled();
+      expect(container.querySelector(".text-object-editor")).toBeNull();
+      expect(getAssistantHistoryPort().read("initial")).toBe(before);
+      expect(widget.dataset.composing).toBe("true");
+      expect(textarea.value).toBe("あ");
+      expect(submit).not.toHaveBeenCalled();
+      expect(select).not.toHaveBeenCalled();
+
+      // The same real tool must work as soon as composition ends.
+      await act(async () => textarea.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "あ" })));
+      await canvasPointer(page, "pointerdown");
+      expect(widget.hidden).toBe(true);
+      expect(getAssistantHistoryPort().read("initial")).not.toBe(before);
+      if (commandId === "tool.bond") {
+        expect(capture).toHaveBeenCalled();
+        expect(getAssistantHistoryPort().read("initial")!.pages[0]!.objects.some(object => object.type === "molecule")).toBe(true);
+      } else expect(container.querySelector(".text-object-editor")).not.toBeNull();
+      await canvasPointer(page, "pointerup");
+      expect(widget.hidden).toBe(false);
+    });
+
+    it.each(["tool.text", "tool.select"])("blocks text-object double-click editing with %s during composition", async commandId => {
+      const port = getAssistantHistoryPort();
+      const initial = port.read("initial")!;
+      const text = testContext().text;
+      await act(async () => {
+        port.push("initial", initial, applyPatch(initial, { op: "addObject", pageId: initial.pages[0]!.id, object: text }), "Test text");
+        window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId } }));
+      });
+      expect(container.querySelector("[data-active-tool]")?.getAttribute("data-active-tool")).toBe(commandId);
+      const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
+      const widget = container.querySelector<HTMLElement>(".plugin-canvas-overlay")!;
+      const target = container.querySelector(`[data-page-svg-object-visual="${text.id}"]`)!;
+      expect(target).not.toBeNull();
+      const before = port.read("initial")!;
+      await act(async () => {
+        textarea.focus();
+        textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+        input("あ");
+        // No render or microtask gap before the double-click.
+        target.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, detail: 2 }));
+      });
+      expect(container.querySelector(".text-object-editor")).toBeNull();
+      expect(port.read("initial")).toBe(before);
+      expect(document.activeElement).toBe(textarea);
+      expect(widget.dataset.composing).toBe("true");
+      expect(textarea.value).toBe("あ");
+      await act(async () => {
+        textarea.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "あ" }));
+        target.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, detail: 2 }));
+      });
+      const editor = container.querySelector(".text-object-editor");
+      expect(editor).not.toBeNull();
+      expect(document.activeElement).toBe(editor);
+      expect(port.read("initial")!.selection.objectIds).toEqual([text.id]);
+    });
+
+    it.each(["compositionend", "compositioncancel", "prompt blur", "timeout", "overlay removal", "unmount"])("removes non-passive composition listeners on %s", async terminal => {
+      const guards = () => vi.mocked(window.addEventListener).mock.calls.filter(([type, , options]) =>
+        type === "touchstart" && typeof options === "object" && options.capture && options.passive === false);
+      const attached = () => guards().length - vi.mocked(window.removeEventListener).mock.calls.filter(([type, listener, options]) =>
+        type === "touchstart" && (options === true || typeof options === "object" && options.capture)
+          && guards().some(([, guard]) => listener === guard)).length;
+      const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
+      expect(guards()).toHaveLength(0);
+      vi.useFakeTimers();
+      try {
+        // Repeat to catch duplicate registration or a listener left after a clear.
+        for (let cycle = 0; cycle < 2; cycle++) {
+          await act(async () => {
+            textarea.focus();
+            textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+            expect(attached()).toBe(1);
+            textarea.dispatchEvent(new CompositionEvent("compositionupdate", { bubbles: true }));
+            expect(attached()).toBe(1);
+          });
+          await act(async () => {
+            if (terminal === "timeout") vi.advanceTimersByTime(10000);
+            else if (terminal === "prompt blur") textarea.blur();
+            else if (terminal === "overlay removal") captured.runtime!.unregisterPlugin(pluginId);
+            else if (terminal === "unmount") root.unmount();
+            else textarea.dispatchEvent(new CompositionEvent(terminal, { bubbles: true }));
+          });
+          expect(attached()).toBe(0);
+          if (terminal === "overlay removal" || terminal === "unmount") break;
+        }
+      } finally { vi.useRealTimers(); }
+    });
+
+    it.each(["mousedown", "touchstart", "contextmenu", "auxclick", "click", "dblclick"])("cancels composing canvas %s before any other listener reacts", async type => {
+      const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
+      const widget = container.querySelector<HTMLElement>(".plugin-canvas-overlay")!;
+      const page = container.querySelector<HTMLElement>(".page")!;
+      const before = getAssistantHistoryPort().read("initial")!;
+      await act(async () => {
+        textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+        input("あ");
+      });
+      const reacted = vi.fn();
+      window.addEventListener(type, reacted, true);
+      page.addEventListener(type, reacted);
+      try {
+        for (const button of [0, 1, 2]) {
+          const event = type === "touchstart" ? new TouchEvent(type, { bubbles: true, cancelable: true })
+            : new MouseEvent(type, { bubbles: true, cancelable: true, button, clientX: 500, clientY: 500 });
+          await act(async () => { expect(page.dispatchEvent(event)).toBe(false); });
+          expect(event.defaultPrevented).toBe(true);
+          expect(reacted).not.toHaveBeenCalled();
+          expect(document.activeElement).toBe(textarea);
+          expect(widget.hidden).toBe(false);
+          expect(widget.dataset.composing).toBe("true");
+          expect(textarea.value).toBe("あ");
+          expect(getAssistantHistoryPort().read("initial")).toBe(before);
+          expect(container.querySelector('[data-context-target-kind="page"]')).toBeNull();
+        }
+        await act(async () => textarea.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "あ" })));
+        await act(async () => page.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 2 })));
+        expect(reacted).toHaveBeenCalled();
+        if (type === "contextmenu") expect(container.querySelector('[data-context-target-kind="page"]')).not.toBeNull();
+      } finally {
+        window.removeEventListener(type, reacted, true);
+        page.removeEventListener(type, reacted);
+      }
+      expect(submit).not.toHaveBeenCalled();
+      expect(select).not.toHaveBeenCalled();
     });
 
     it.each([
