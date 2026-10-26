@@ -58,6 +58,7 @@ import {
   distributeModeCommandIds,
   objectFillOpacityCommandId,
   objectOpacityCommandId,
+  electronMarkStyleCommandId,
   objectColorCommands,
   objectCustomColorCommandId,
   objectGradientAddStopCommand,
@@ -2357,7 +2358,8 @@ function ArtToolbarStyleControls() {
     shortLabel: string,
     value: number,
     commandId: (opacity: number) => string,
-    supportedCount = selectedCount
+    supportedCount = selectedCount,
+    valueLabel?: string
   ) => {
     const percent = Math.round(value * 100);
     const sliderKey = label.toLowerCase().replace(/\s+/g, "-");
@@ -2402,7 +2404,7 @@ function ArtToolbarStyleControls() {
         title={`${supportTitle(label, supportedCount)}: ${percent}%`}>
         <span className="art-inspector-slider-header">
           <span className="art-inspector-slider-label">{shortLabel}</span>
-          <span className="art-inspector-slider-value">{percent}%</span>
+          <span className="art-inspector-slider-value">{valueLabel ?? `${percent}%`}</span>
         </span>
         <input
           type="range"
@@ -2451,6 +2453,7 @@ function ArtToolbarStyleControls() {
                 event.currentTarget.releasePointerCapture(event.pointerId);
               }
               sliderDragRef.current = null;
+              if (valueLabel) onCancel?.();
             }
           }}
           onChange={(event) => {
@@ -2462,12 +2465,31 @@ function ArtToolbarStyleControls() {
           onBlur={() => {
             if (sliderDragRef.current?.sliderKey === sliderKey) {
               sliderDragRef.current = null;
+              if (valueLabel) onCancel?.();
             }
           }}
         />
       </label>
     );
   };
+
+  const marks = currentArtStyle?.electronMarks;
+  const markSliders = marks ? (
+    <div className="art-inspector-row" data-electron-mark-controls="true">
+      {opacitySlider("Electron mark size", "Size", (marks.sizePx - 8) / 100,
+        value => electronMarkStyleCommandId("size", value * 100), marks.count,
+        `${Math.round(marks.sizePx * 10) / 10}px`)}
+      {opacitySlider("Electron mark thickness", "Thickness", (marks.thicknessPx - 0.5) / 5,
+        value => electronMarkStyleCommandId("thickness", value * 100), marks.count,
+        `${Math.round(marks.thicknessPx * 100) / 100}px`)}
+    </div>
+  ) : null;
+  if (marks && marks.count === selectedCount) {
+    return <div className="art-toolbar-style-controls" data-toolbar-style-controls="art"
+      onKeyDown={event => { if (event.key === "Escape") onCancel?.(); }}>
+      {markSliders}
+    </div>;
+  }
 
   return (
     <div
@@ -2492,6 +2514,7 @@ function ArtToolbarStyleControls() {
         }
       }}
     >
+      {markSliders}
       <div className="art-inspector-row art-inspector-main-row">
         <div className="art-target-toggle" role="group" aria-label="Art paint target">
           {supportsFill ? (

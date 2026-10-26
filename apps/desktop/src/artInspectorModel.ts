@@ -71,6 +71,7 @@ export type ArtInspectorAppearanceTarget =
     };
 
 export interface ArtInspectorModel {
+  electronMarks?: { count: number; sizePx: number; thicknessPx: number };
   selectedCount: number;
   selectedObjectIds: string[];
   selectedGraphicIds: string[];
@@ -171,7 +172,9 @@ export function createArtInspectorModel({
   const moleculeObjectIds = styleObjects
     .filter((object): object is MoleculeObject => object.type === "molecule")
     .map((object) => object.id);
-  const selectedCount = styleObjects.length;
+  const marks = document.pages.flatMap(page => page.objects.filter(object =>
+    object.type === "electron-mark" && document.selection.objectIds.includes(object.id)));
+  const selectedCount = styleObjects.length + marks.length;
   const planned = styleObjects.map((object): ArtInspectorPlannedEntry => {
     if (object.type === "graphic") {
       return { object, plan: planNativeArtVisual(object, { coordinateSpace: "local" }) };
@@ -237,12 +240,17 @@ export function createArtInspectorModel({
 
   return {
     selectedCount,
-    selectedObjectIds: styleObjects.map((object) => object.id),
+    ...(marks.length ? { electronMarks: {
+      count: marks.length,
+      sizePx: Math.max(marks[0].width, marks[0].height),
+      thicknessPx: typeof marks[0].style.strokeWidth === "number" ? marks[0].style.strokeWidth : 1.5
+    } } : {}),
+    selectedObjectIds: [...styleObjects, ...marks].map((object) => object.id),
     selectedGraphicIds: graphics.map((object) => object.id),
     selectedGraphicKinds: uniqueGraphicKinds(graphics),
     appearanceTarget: {
       kind: "objects",
-      objectIds: styleObjects.map((object) => object.id),
+      objectIds: [...styleObjects, ...marks].map((object) => object.id),
       moleculeObjectIds,
       hasMoleculeRingOverrides: styleObjects.some((object) => object.type === "molecule" && moleculeHasRingStyles(object))
     },
