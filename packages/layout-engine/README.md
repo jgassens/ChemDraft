@@ -110,3 +110,6 @@ With a page frame, default Row/Column gaps tighten from 48 to no less than 12 do
 when necessary to fit. Explicit `gap` values remain fixed; molecule dimensions never change.
 `textVisualBoundsForArrangement` measures rotated caption frames around the same pivot as SVG
 text rendering, so grouped captions participate in layout clearance and page-fit checks.
+
+Arrow offshoot frames, shaft hit testing, nested attachment resolution, and attachment-tree
+membership are shared in `arrowAttachments.ts`. Canvas and export resolve the same geometry.

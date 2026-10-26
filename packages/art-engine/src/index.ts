@@ -1,4 +1,5 @@
 import type {
+  ArrowAttachmentFrame,
   GraphicEffect,
   GraphicFreehandOptions,
   GraphicFreehandPoint,
@@ -23,6 +24,137 @@ import {
 } from "svg-path-commander/util";
 
 const minimumArcSweepRadians = Math.PI / 180;
+export const nativeSemanticArrowHeadSizePx = 9;
+export const arrowAttachmentPoint = (frame: ArrowAttachmentFrame, point: NativeArtPoint): NativeArtPoint => ({
+  x: frame.origin.x + frame.tangent.x * point.x + frame.normal.x * point.y,
+  y: frame.origin.y + frame.tangent.y * point.x + frame.normal.y * point.y
+});
+
+/** A tangential branch with an ordinary quadratic path and a head matching its parent. */
+export function createArrowOffshootGeometry(object: GraphicObject, frame: ArrowAttachmentFrame,
+  side: "above" | "below", headSize: number, parentObjectId: string, parent?: GraphicObject, mode?: "fullCurve",parentShaft?:readonly NativeArtPoint[]): GraphicObject {
+  const sign = side === "above" ? 1 : -1;
+  const samples=parentShaft??(parent?graphicOpenStrokePageSamplePoints(parent):[]);
+  const first=samples[0],last=samples.at(-1);
+  const straight=first&&last&&samples.every(p=>Math.abs((p.x-first.x)*(last.y-first.y)-(p.y-first.y)*(last.x-first.x))/Math.max(1,Math.hypot(last.x-first.x,last.y-first.y))<.01);
+  const normalSign=straight&&(frame.normal.y>1e-7||Math.abs(frame.normal.y)<=1e-7&&frame.normal.x>0)?-1:1;
+  if(normalSign===-1)frame={...frame,normal:{x:-frame.normal.x,y:-frame.normal.y}};
+  // Keep a short parent's offshoot behind its main head, while reserving room for the head
+  // itself. C=(reach/2,0) gives a forward starting tangent. The editor stores the midpoint
+  // ON the quadratic, M=(reach/2,rise/4), rather than the Bezier control C.
+  const reach = Math.max(headSize * 1.5, Math.min(84, (frame.length ?? 240) * 0.35)), rise = reach * 4 / 7;
+  if(mode==='fullCurve') {
+    // Symmetric endpoints with an on-curve midpoint at the attachment give a full U:
+    // the quadratic passes through the parent's midpoint with its forward tangent.
+    const startOffset={x:-reach,y:sign*reach},endOffset={x:reach,y:sign*reach},middleOffset={x:0,y:0};
+    return fullCurveOffshootGeometry({...object,data:{...object.data,markerEnd:{kind:'filled-arrow',sizePx:headSize}},
+      arrowAttachment:{kind:'offshoot',parentObjectId,side,frame,mode,startOffset,endOffset,middleOffset,tetherFraction:.5,normalSign}});
+  }
+  // A curved parent's inside shaft already bends toward the branch. Measure that bend at
+  // the branch tip so both sides have the same clearance instead of the inside tip converging.
+  let baseline = 0;
+  if (parent) {
+    const points = graphicOpenStrokePageSamplePoints(parent).map(point => ({
+      x: (point.x-frame.origin.x)*frame.tangent.x+(point.y-frame.origin.y)*frame.tangent.y,
+      y: (point.x-frame.origin.x)*frame.normal.x+(point.y-frame.origin.y)*frame.normal.y
+    }));
+    for (let i=1;i<points.length;i++) {
+      const a=points[i-1],b=points[i];
+      if ((a.x<=reach&&b.x>=reach)||(b.x<=reach&&a.x>=reach)) {
+        baseline=a.y+(b.y-a.y)*(reach-a.x)/(b.x-a.x || 1);break;
+      }
+    }
+  }
+  // Retain the outside branch's established shape. Mirror its tip across the parent's
+  // actual shaft for the inside branch, rather than mirroring across the midpoint tangent.
+  const tipRise = (side === 'below' ? 2 * baseline : 0) + sign * rise;
+  const endOffset = { x: reach, y: tipRise }, middleOffset = { x: reach / 2, y: tipRise / 4 };
+  return quadraticArrowGeometry({ ...object, data: { ...object.data, markerEnd: { kind: "filled-arrow", sizePx: headSize } },
+    arrowAttachment: { kind: "offshoot", parentObjectId, side, frame, endOffset, middleOffset,normalSign } },
+  frame.origin, arrowAttachmentPoint(frame, endOffset), arrowAttachmentPoint(frame, middleOffset));
+}
+
+/** A shaft's halfway point and forward tangent, in page space. The normal points outside a
+ * curved shaft; a straight left-to-right shaft uses the upper side. Shared by attachments. */
+export function arrowFrameFromPoints(points: readonly NativeArtPoint[], fraction=.5): ArrowAttachmentFrame | undefined {
+  if (points.length < 2) return undefined;
+  const length = nativeArtPolylineLength(points);
+  if (length < 1e-6) return undefined;
+  const position=length*Math.max(0,Math.min(1,fraction));
+  const origin = nativeArtPolylinePointAtLength(points, position);
+  const before = nativeArtPolylinePointAtLength(points, Math.max(0, position - Math.min(1, length / 4)));
+  const after = nativeArtPolylinePointAtLength(points, Math.min(length, position + Math.min(1, length / 4)));
+  if (!origin || !before || !after) return undefined;
+  const tangent = normalizedVector({ x: after.x - before.x, y: after.y - before.y });
+  if (!tangent) return undefined;
+  let normal = { x: tangent.y, y: -tangent.x };
+  const chordMiddle = midpoint(points[0], points[points.length - 1]);
+  const bow=nativeArtPolylinePointAtLength(points,length/2)!;
+  const bend=(bow.x-chordMiddle.x)*normal.x+(bow.y-chordMiddle.y)*normal.y;
+  if (bend < -0.01)
+    normal = { x: -normal.x, y: -normal.y };
+  return { origin, tangent, normal, length };
+}
+
+export function graphicArrowAttachmentFrame(object: GraphicObject, fraction=.5): ArrowAttachmentFrame | undefined {
+  if (!object.data.dualShaftParallel && !object.data.dualShaft &&
+      ![object.data.markerStart, object.data.markerEnd].some(marker => marker && marker.kind !== "none")) return undefined;
+  return arrowFrameFromPoints(graphicOpenStrokePageSamplePoints(object),fraction);
+}
+
+/** Project a tether handle to the actual sampled shaft and retain normalized arc length. */
+export function arrowShaftFractionAtPoint(points:readonly NativeArtPoint[],point:NativeArtPoint):number {
+  const total=nativeArtPolylineLength(points);let length=0,best=Infinity,fraction=.5;
+  for(let i=1;i<points.length;i++){
+    const a=points[i-1],b=points[i],dx=b.x-a.x,dy=b.y-a.y,segment=Math.hypot(dx,dy);
+    const t=Math.max(0,Math.min(1,((point.x-a.x)*dx+(point.y-a.y)*dy)/(segment*segment||1)));
+    const distance=(point.x-a.x-t*dx)**2+(point.y-a.y-t*dy)**2;
+    if(distance<best){best=distance;fraction=(length+t*segment)/(total||1);}length+=segment;
+  }
+  return fraction;
+}
+
+/** Two native cubic segments share an exact tether and forward tangent. Endpoints remain
+ * independent; monotone tangent reach avoids loops when an endpoint is dragged across the junction. */
+export function fullCurveOffshootGeometry(object:GraphicObject):GraphicObject {
+  const a=object.arrowAttachment;if(a?.kind!=='offshoot'||a.mode!=='fullCurve'||!a.startOffset)return object;
+  const frame=a.frame,S=arrowAttachmentPoint(frame,a.startOffset),A=frame.origin,E=arrowAttachmentPoint(frame,a.endOffset);
+  const reach=Math.max(1,Math.min(Math.abs(a.startOffset.x),Math.abs(a.endOffset.x))*.6);
+  const left=arrowAttachmentPoint(frame,{x:-reach,y:0}),right=arrowAttachmentPoint(frame,{x:reach,y:0});
+  const control=(p:NativeArtPoint,q:NativeArtPoint)=>({x:p.x+(q.x-p.x)*2/3,y:p.y+(q.y-p.y)*2/3});
+  const data:GraphicObject['data']={...object.data,artPathKind:'bezier',pathClosed:false,
+    lineStart:S,lineEnd:E,pathControlPoint:A,pathNodes:[
+      {point:S,outControl:control(S,left)},
+      {point:A,inControl:control(A,left),outControl:control(A,right)},
+      {point:E,inControl:control(E,right)}]};
+  delete data.pathD;deleteSemanticArcData(data);
+  const updated=updateGraphicPathObject({...object,rotation:0},data)??object;
+  // Generic path edits deliberately ignore subpixel changes. A tether is an exact junction:
+  // retain the recalculated node/data even when a copy transform moved it by under that tolerance.
+  return updated.data===data?updated:{...updated,data};
+}
+
+export function editFullCurveOffshootEndpoint(object:GraphicObject,handle:'start'|'end',point:NativeArtPoint,paired=false):GraphicObject {
+  const a=object.arrowAttachment;if(a?.kind!=='offshoot'||a.mode!=='fullCurve'||!a.startOffset)return object;
+  const p={x:(point.x-a.frame.origin.x)*a.frame.tangent.x+(point.y-a.frame.origin.y)*a.frame.tangent.y,
+    y:(point.x-a.frame.origin.x)*a.frame.normal.x+(point.y-a.frame.origin.y)*a.frame.normal.y};
+  p.x=handle==='start'?Math.min(-4,p.x):Math.max(4,p.x);
+  const startOffset=handle==='start'?p:paired?{x:-p.x,y:p.y}:a.startOffset;
+  const endOffset=handle==='end'?p:paired?{x:-p.x,y:p.y}:a.endOffset;
+  return fullCurveOffshootGeometry({...object,arrowAttachment:{...a,startOffset,endOffset,middleOffset:{x:0,y:0}}});
+}
+
+export function arrowFrameForPathD(pathD: string, fraction=.5): ArrowAttachmentFrame | undefined {
+  return arrowFrameFromPoints(svgPathSamplePoints(pathD),fraction);
+}
+export const arrowPathSamplePoints=(pathD:string):NativeArtPoint[]=>svgPathSamplePoints(pathD);
+
+/** Build an ordinary editable quadratic art path. `middle` is a point ON the curve, as in
+ * graphicPathEditPoints, rather than the Bezier control point. */
+export function quadraticArrowGeometry(object: GraphicObject, start: NativeArtPoint,
+  end: NativeArtPoint, middle: NativeArtPoint): GraphicObject {
+  return updateQuadraticCurveObject({ ...object, rotation: 0 }, start, end, middle) ?? object;
+}
 const maximumArcSweepRadians = Math.PI * 2 - Math.PI / 1800;
 const transientFreehandPathCache = new WeakMap<GraphicObject, { revision: string; pathD?: string }>();
 const defaultGlowEffectColor = "#fdd835";
@@ -218,6 +350,7 @@ export interface NativeArtShaftMarkPlan {
 }
 
 export type GraphicPathEditHandle =
+  | "tether"
   | "start"
   | "middle"
   | "end"
@@ -1404,6 +1537,10 @@ function graphicCornerRadius(object: GraphicObject): number {
 }
 
 export function graphicPathEditPoints(object: GraphicObject): GraphicPathEditPoints | undefined {
+  if(object.arrowAttachment?.kind==='offshoot'&&object.arrowAttachment.mode==='fullCurve'){
+    const start=pointMetadata(object.data.lineStart),end=pointMetadata(object.data.lineEnd),middle=pointMetadata(object.data.pathControlPoint);
+    if(start&&end&&middle)return {start,end,middle,pathKind:'quadratic'};
+  }
   const pathKind = graphicPathKind(object);
   if (!pathKind) {
     return undefined;
@@ -1432,6 +1569,7 @@ export function graphicPathEditPoints(object: GraphicObject): GraphicPathEditPoi
 }
 
 export function graphicPathNodeEditPoints(object: GraphicObject): GraphicPathNodeEditPoints | undefined {
+  if(object.arrowAttachment?.kind==='offshoot'&&object.arrowAttachment.mode==='fullCurve')return undefined;
   const pathKind = graphicPathKind(object);
   if (pathKind !== "polyline" && pathKind !== "bezier") {
     return undefined;
@@ -1459,6 +1597,10 @@ export function editGraphicPathGeometry(
   handle: GraphicPathEditHandle,
   point: NativeArtPoint
 ): GraphicObject | undefined {
+  if(object.arrowAttachment?.kind==='offshoot'&&object.arrowAttachment.mode==='fullCurve'){
+    return handle==='start'||handle==='end'?editFullCurveOffshootEndpoint(object,handle,point):object;
+  }
+  if(handle==='tether')return undefined;
   if (/^node:\d+:(in|out)$/.test(handle)) {
     return editGraphicPathControlGeometry(object, handle, point);
   }
@@ -3277,7 +3419,7 @@ function graphicPathLocalBoundsPoints(object: GraphicObject): NativeArtPoint[] {
   ];
 }
 
-function graphicOpenStrokePageSamplePoints(object: GraphicObject): NativeArtPoint[] {
+export function graphicOpenStrokePageSamplePoints(object: GraphicObject): NativeArtPoint[] {
   const localPoints = object.graphicKind === "line"
     ? graphicLineLocalPoints(object)
     : object.graphicKind === "path" ? graphicPathLocalSamplePoints(object) : [];
@@ -3309,6 +3451,16 @@ function graphicPathLocalSamplePoints(object: GraphicObject): NativeArtPoint[] {
   }
 
   if (pathKind === "polyline" || pathKind === "bezier") {
+    if(pathKind==='bezier'&&object.arrowAttachment?.kind==='offshoot'&&object.arrowAttachment.mode==='fullCurve'){
+      const nodes=graphicPathNodes(object),points:NativeArtPoint[]=[];
+      for(let i=1;i<nodes.length;i++){
+        const a=nodes[i-1],b=nodes[i];
+        for(let step=i===1?0:1;step<=32;step++)points.push(pointForArtSpace(object,
+          cubicPointAt(a.point,a.outControl??a.point,b.inControl??b.point,b.point,step/32),'local'));
+      }
+      // Include the shared junction exactly, including in marker-trimmed visible strokes.
+      return points;
+    }
     const pathD = graphicNodePathD(object, pathKind, "local");
     return pathD ? svgPathSamplePoints(pathD) : [];
   }
@@ -3413,7 +3565,7 @@ function svgPathBounds(pathD: string): NativeArtBounds | undefined {
  * whichever corner came last, putting the arrowhead on the wrong end pointing the wrong way. No
  * caller ever wanted them; the two that asked for bounds asked `getPathBBox` directly.
  */
-function svgPathSamplePoints(pathD: string): NativeArtPoint[] {
+export function svgPathSamplePoints(pathD: string): NativeArtPoint[] {
   try {
     if (!isValidPath(pathD)) {
       return [];

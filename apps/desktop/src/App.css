@@ -4108,6 +4108,11 @@ textarea:focus-visible,
   border-color: var(--cd-accent-strong);
 }
 
+.graphic-path-edit-handle-tether {
+  border-radius: 3px;
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+
 .graphic-path-edit-handle-node-selected {
   background: var(--cd-bg-active);
   border-color: var(--cd-accent-strong);
@@ -4646,6 +4651,14 @@ textarea:focus-visible,
   left: calc(50% - 17px);
 }
 
+.object-transform-frame[data-has-paired-curve="true"] .object-rotate-handle {
+  left: calc(50% - 34px);
+}
+
+.object-transform-frame[data-has-paired-curve="true"] .object-tilt3d-handle {
+  left: 50%;
+}
+
 .object-tilt3d-handle {
   position: absolute;
   top: -34px;
@@ -4693,6 +4706,45 @@ textarea:focus-visible,
   height: 19px;
   pointer-events: none;
 }
+
+.object-pair-curve-handle {
+  position: absolute;
+  top: -34px;
+  left: calc(50% + 34px);
+  z-index: 3;
+  display: grid;
+  width: 25px;
+  height: 25px;
+  padding: 0;
+  color: var(--cd-accent-text);
+  background: var(--cd-bg-control-opaque);
+  border: 1.5px solid var(--cd-accent-border);
+  border-radius: var(--cd-radius-control);
+  box-shadow: var(--cd-focus-ring);
+  cursor: grab;
+  place-items: center;
+  pointer-events: all;
+  transform: translateX(-50%);
+}
+
+.object-pair-curve-handle::before {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  width: 1.5px;
+  height: 11px;
+  background: linear-gradient(to bottom, var(--cd-accent), rgb(29 127 104 / 12%));
+  content: "";
+  transform: translateX(-50%);
+}
+
+.object-pair-curve-handle:hover {
+  background: var(--cd-bg-active);
+  border-color: var(--cd-accent-strong);
+}
+
+.object-pair-curve-handle:active { cursor: grabbing; }
+.object-pair-curve-handle svg { width: 19px; height: 19px; pointer-events: none; }
 
 .object-resize-handle {
   position: absolute;

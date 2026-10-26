@@ -558,6 +558,19 @@ and Art toolbars open, including at 125%/150% display scale:
   the documents. Hide/minimize after the quit modal appears and request Quit again: the prompt
   must be raised again. Cancel must balance suspension even when its acquisition is still pending.
 
+## Arrow offshoots
+
+On macOS and Windows, with Compound layout tools disabled, right-click a straight or curved
+arrow and choose Attach offshoot. Check both sides for half curves and full curves, including
+right-to-left arrows and an arrow inside a selected group. Keyboard navigation must invoke the
+chosen command once, with one Undo/Redo step. Non-arrow objects must not offer the submenu.
+Drag each endpoint independently; hold Shift to adjust both full-curve endpoints together.
+Slide the full-curve tether along a curved, rotated parent and confirm an exact junction.
+Move, rotate and resize the parent; attached branches and arrowhead sizes must follow.
+Copy/paste, duplicate, save/reopen, export, and delete an arrow with nested branches; check
+that attachment IDs are remapped, the geometry survives, and Undo restores the entire tree.
+These checks do not require optional arrangement arrows or reaction-condition features.
+
 ## Compound layout tools (opt-in)
 
 On macOS and Windows, verify that a fresh Settings/Preferences has Compound layout tools off and

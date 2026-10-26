@@ -23,3 +23,5 @@ export * from "./smiles";
 export * from "./structureName";
 export * from "./textObjects";
 export * from "./documentStyle";
+
+export * from "./reactionArrowAttachments";

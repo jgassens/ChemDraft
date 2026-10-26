@@ -8,6 +8,13 @@ in progress rather than a changelog.
 
 # In flight
 
+## Standalone arrow offshoots (PR #201)
+
+Rebuilt directly on `jgassens/main` at `20112a1`, with only offshoot geometry, attachment
+lifecycle, commands and editing controls. No unmerged compound-layout or reaction-condition PR
+content belongs in this slice. See [handoff](docs/offshoot-main-only-handoff.md) for validation
+and remaining platform checks.
+
 # ChemDraft Assistant plugin (active, branches claude/assistant-*)
 
 ## Objective

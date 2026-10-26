@@ -142,6 +142,25 @@ export const AnchorSchema = z
   })
   .strict();
 
+export const ArrowAttachmentFrameSchema = z.object({
+  origin: PointSchema, tangent: PointSchema, normal: PointSchema,
+  length: z.number().finite().positive().optional()
+}).strict().refine(frame => Math.abs(Math.hypot(frame.tangent.x, frame.tangent.y) - 1) < 1e-6 &&
+  Math.abs(Math.hypot(frame.normal.x, frame.normal.y) - 1) < 1e-6 &&
+  Math.abs(frame.tangent.x * frame.normal.x + frame.tangent.y * frame.normal.y) < 1e-6,
+  "Arrow attachment axes must be perpendicular unit vectors");
+export const ArrowAttachmentSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("offshoot"), parentObjectId: IdSchema,
+    side: z.enum(["above", "below"]), frame: ArrowAttachmentFrameSchema,
+    endOffset: PointSchema, middleOffset: PointSchema,
+    mode: z.literal("fullCurve").optional(), startOffset: PointSchema.optional(),
+    tetherFraction: z.number().finite().min(0).max(1).optional(),
+    normalSign: z.union([z.literal(1),z.literal(-1)]).optional() }).strict()
+]).refine(attachment => attachment.kind !== "offshoot" || attachment.mode !== "fullCurve" || !!attachment.startOffset,
+  "A full-curve offshoot requires a tail offset");
+export type ArrowAttachment = z.infer<typeof ArrowAttachmentSchema>;
+export type ArrowAttachmentFrame = z.infer<typeof ArrowAttachmentFrameSchema>;
+
 const BaseObjectSchema = z
   .object({
     id: IdSchema,
@@ -151,7 +170,8 @@ const BaseObjectSchema = z
     height: z.number().finite().nonnegative(),
     rotation: z.number().finite().default(0),
     style: MetadataSchema.default({}),
-    compatibility: CompatibilityMetadataSchema.optional()
+    compatibility: CompatibilityMetadataSchema.optional(),
+    arrowAttachment: ArrowAttachmentSchema.optional()
   })
   .strict();
 

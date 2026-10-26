@@ -1,3 +1,4 @@
+import { arrowAttachmentFrame } from "@chemdraft/layout-engine";
 import {
   MinimalPageSizePresetIds,
   findPageSizePreset,
@@ -1948,7 +1949,11 @@ export function createOpenWarningsAction(availability: CommandAvailability = {})
   };
 }
 
+export const arrowOffshootCommandId = (side: "above" | "below" | "fullCurve.above" | "fullCurve.below"): string => `arrow.attachOffshoot.${side}`;
 export function createLayerActions(document: ChemDraftDocument, layoutsEnabled = loadCompoundLayoutSettings().enabled): CommandSpec[] {
+  const arrowPage = document.pages.find(page => page.id === document.selection.pageId) ?? document.pages[0];
+  const arrow = document.selection.objectIds.length === 1 ? arrowPage.objects.find(object => object.id === document.selection.objectIds[0]) : undefined;
+  const hasArrow = !!arrow && !!arrowAttachmentFrame(arrowPage, arrow);
   const hasSelection = document.selection.objectIds.length > 0;
   const hasMultiSelection = document.selection.objectIds.length >= 2;
   const hasDistributableSelection = document.selection.objectIds.length >= 3;
@@ -1956,6 +1961,13 @@ export function createLayerActions(document: ChemDraftDocument, layoutsEnabled =
   const hasArrangementSelection = selectedArrangementObjectIds(document).length >= 2;
   const hasBooleanSelection = selectedArtBooleanEligibleObjectIds(document).length >= 2;
   return [
+    ...[
+      [arrowOffshootCommandId("above"), "Attach offshoot — top / outside"],
+      [arrowOffshootCommandId("below"), "Attach offshoot — bottom / inside"],
+      [arrowOffshootCommandId("fullCurve.above"), "Attach offshoot — full curve — top / inside"],
+      [arrowOffshootCommandId("fullCurve.below"), "Attach offshoot — full curve — bottom / outside"]
+    ].map(([id, title]): CommandSpec => ({ id, title, icon: "export", source: "core", category: "layout",
+      enabled: hasArrow, disabledReason: hasArrow ? undefined : "Select one arrow" })),
     { id: "layout.adjustArrangementSpacing", title: "Adjust arrangement spacing…", icon: "align", source: "core", category: "layout",
       enabled: layoutsEnabled && hasArrangementSelection, disabledReason: layoutsEnabled ? "Select at least two objects or groups" : "Enable Compound layout tools in Settings" },
     ...ArrangementLayouts.flatMap((layout) => (layout === "grid" ? ArrangementGridAlignments : ["center"] as const).map((gridAlignment): CommandSpec => ({

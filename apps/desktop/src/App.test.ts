@@ -3220,7 +3220,7 @@ describe("ChemDraft desktop shell", () => {
     expect(appCss).toContain('.object-transform-frame[data-has-tilt3d="true"] .object-rotate-handle');
     expect(appCss).toContain("left: calc(50% - 17px);");
     expect(appCss).toContain("left: calc(50% + 17px);");
-    expect(appCss).not.toContain("left: calc(50% + 34px);");
+    expect(appCss).toMatch(/\.object-pair-curve-handle \{\s*position: absolute;\s*top: -34px;\s*left: calc\(50% \+ 34px\);/);
   });
 
   it("wires manual stretch entry to molecule resize corners", () => {

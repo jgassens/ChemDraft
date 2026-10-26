@@ -1,3 +1,5 @@
+export * from "./arrowAttachments";
+import { resolveArrowAttachments } from "./arrowAttachments";
 export { DocumentStyleScale, documentStylePointBounds, FigureStyles, type FigureStyle } from "./documentStyle";
 export { medianLength, representativeMoleculeBondLength, scalePageGeometry } from "./pageScale";
 
@@ -1368,6 +1370,7 @@ export function planPageSvgRender(
     anchorResolutionPage?: DocumentPage;
   } = {}
 ): PageSvgRenderPlan {
+  if (!options.anchorResolutionPage) page = resolveArrowAttachments(page);
   const warnings: PageSvgRenderWarning[] = [];
   const crossings = resolvePageBondCrossings(page, warnings);
   const gapsByBondKey = crossings.reduce<Map<string, BondCrossingGap[]>>((byBond, crossing) => {

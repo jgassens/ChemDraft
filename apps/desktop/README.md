@@ -66,3 +66,8 @@ keeping at least 12 document pixels between visible compound bounds and preservi
 Adjust spacing opens a movable native window on desktop, previewing distances while retaining molecule sizes. Save is one Undo step;
 Cancel/Escape makes no change. Toolbar/context items are hidden and direct commands refuse
 while the setting is off. Existing drawing/export behavior is unchanged by enabling the setting.
+
+Right-click an arrow to attach a half or full curve on either side. Full curves have independent
+endpoint handles and a sliding tether; Shift adjusts both endpoints together. Offshoots remain
+native editable graphics and follow parent transforms, arrowhead size, copy/paste and Undo/Redo.
+The commands are available independently of the Compound layout tools preference.
