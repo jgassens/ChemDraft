@@ -58,9 +58,8 @@ vi.mock("./createPluginRuntime", async importOriginal => {
   } };
 });
 
-// This is the actual installed release, including its bundled SDK and command handlers.
-// Only the Worker transport and native windows are replaced, never the plugin registration.
-const fixture = resolve("apps/desktop/src/plugins/__fixtures__/assistant-0.1.0");
+// Original minimal plugin exercises the real loader, worker bridge and host.
+const fixture = resolve("apps/desktop/src/plugins/__fixtures__/detached-panel");
 const manifest = JSON.parse(readFileSync(resolve(fixture, "manifest.json"), "utf8"));
 const entry = readFileSync(resolve(fixture, "entry.js"), "utf8");
 function createWorker(): PluginWorkerHandle {
@@ -109,15 +108,15 @@ afterEach(async () => {
 it.each([
   ["macos", "menu", "tauri://localhost"], ["macos", "overlay", "tauri://localhost"],
   ["windows", "menu", "http://tauri.localhost"], ["windows", "overlay", "http://tauri.localhost"]
-])("loads the REAL bundle on %s through the %s path and replays its detached report", async (_platform, source, origin) => {
+])("loads the test plugin on %s through the %s path and replays its detached report", async (_platform, source, origin) => {
   const container = document.createElement("div"); document.body.append(container);
   root = createRoot(container);
-  await act(async () => root!.render(<MainWindow initialDocument={createPhase4Document("Assistant")}
+  await act(async () => root!.render(<MainWindow initialDocument={createPhase4Document("Test document")}
     initialPaletteMode="hidden" initialRulersVisible={false} nativePalette={false} />));
   const runtime = native.runtime!;
-  const descriptor = loadPackagedPlugin({ baseUrl: `${origin}/installed-plugins/assistant/`, manifest }, {
+  const descriptor = loadPackagedPlugin({ baseUrl: `${origin}/installed-plugins/detached-panel/`, manifest }, {
     createWorker: entryUrl => {
-      expect(entryUrl.href).toBe(`${origin}/installed-plugins/assistant/entry.js`);
+      expect(entryUrl.href).toBe(`${origin}/installed-plugins/detached-panel/entry.js`);
       return createWorker();
     }
   });
@@ -137,15 +136,15 @@ it.each([
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)); });
     const panel = runtime.panels.getDetachedPanels()[0];
     expect(runtime.panels.getDiagnostics()).toEqual([]);
-    expect(panel?.report.title).toBe("ChemDraft Assistant");
+    expect(panel?.report.title).toBe("Panel Test Plugin");
     expect(panel?.report.sections.length).toBeGreaterThan(0);
     expect(panel?.report.sections).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: "prompt", id: "assistant.message", commandId: "plugin.assistant.submit" }),
-      expect.objectContaining({ kind: "actions", id: "assistant.readiness" })
+      expect.objectContaining({ kind: "prompt", id: "paneltest.message", commandId: "plugin.paneltest.submit" }),
+      expect.objectContaining({ kind: "actions", id: "paneltest.readiness" })
     ]));
     const windowId = pluginPanelWindowId(descriptor.manifest.id, panel!.panelId);
     expect(native.invoke).toHaveBeenCalledWith("open_plugin_panel_window", { request: {
-      panelId: windowId, title: "ChemDraft Assistant", width: 440, height: 640
+      panelId: windowId, title: "Panel Test Plugin", width: 440, height: 640
     } });
     // Mount AFTER the first report broadcast, exactly like a newly created native webview.
     // Suppress DOM events: main and the detached webview do not share a DOM in production.
@@ -167,10 +166,10 @@ it.each([
     panelRoot = createRoot(detached);
     await act(async () => panelRoot!.render(<PluginPanelWindow panelId={windowId} />));
     expect(native.invoke).toHaveBeenCalledWith("plugin_panel_event_forward", expect.anything());
-    expect(detached.querySelector(".palette-title-label")?.textContent).toBe("ChemDraft Assistant");
+    expect(detached.querySelector(".palette-title-label")?.textContent).toBe("Panel Test Plugin");
     expect(detached.querySelector("textarea")).not.toBeNull();
-    expect(detached.querySelector("select")?.value).toBe("claude-code");
-    expect(detached.textContent).toContain("Using Claude Code (Anthropic)");
+    expect(detached.querySelector("select")?.value).toBe("local");
+    expect(detached.textContent).toContain("Using local test mode");
     expect(detached.textContent).not.toContain("Waiting for plugin content");
   } finally { descriptor.deactivate?.(); }
 });

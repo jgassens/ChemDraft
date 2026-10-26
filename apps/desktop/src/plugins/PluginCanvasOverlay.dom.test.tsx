@@ -675,6 +675,112 @@ describe("PluginCanvasOverlay", () => {
     await expand(); expect(textarea.value).toBe("Keep this");
   });
 
+  it("keeps composition focus on Escape until compositionend, including across a render", async () => {
+    await expand();
+    const textarea = container.querySelector("textarea")!;
+    await act(async () => {
+      textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+      enterText("あ");
+    });
+    await render();
+    // Some IMEs omit isComposing on the key that dismisses their candidate popup.
+    await act(async () => textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(widget().dataset.expanded).toBe("true");
+    expect(document.activeElement).toBe(textarea);
+    expect(textarea.value).toBe("あ");
+    await act(async () => textarea.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "あ" })));
+    await act(async () => textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(widget().dataset.expanded).toBe("false");
+    expect(document.activeElement).toBe(drawing);
+  });
+
+  // Composition handling is shared across platforms. MainWindow's integration suite
+  // supplies shortcutPlatform for both platforms; the reload-chord test covers its branch here.
+  describe("composition guard", () => {
+    it.each(["prompt blur", "compositionend", "compositioncancel", "timeout"])("clears an orphaned composing flag on %s without submitting the draft", async terminal => {
+      await expand();
+      const textarea = container.querySelector("textarea")!;
+      viewport.setAttribute("tabindex", "-1");
+      await act(async () => enterText("Keep draft"));
+      vi.useFakeTimers();
+      try {
+        for (const signal of ["compositionstart", "input", "keydown"]) {
+          await act(async () => {
+            if (signal === "compositionstart") textarea.dispatchEvent(new CompositionEvent(signal, { bubbles: true }));
+            else if (signal === "input") textarea.dispatchEvent(new InputEvent(signal, { bubbles: true, isComposing: true }));
+            else textarea.dispatchEvent(new KeyboardEvent(signal, { bubbles: true, key: "Process", isComposing: true }));
+          });
+          expect(widget().dataset.composing).toBe("true");
+          expect(viewport.hasAttribute("tabindex")).toBe(false);
+          await act(async () => {
+            // Moving to a control *inside* the overlay must clear a prompt's stale IME state.
+            if (terminal === "prompt blur") container.querySelector("select")!.focus();
+            else if (terminal === "timeout") vi.advanceTimersByTime(12000);
+            else textarea.dispatchEvent(new CompositionEvent(terminal, { bubbles: true }));
+          });
+          expect(widget().dataset.composing).toBeUndefined();
+          expect(viewport.getAttribute("tabindex")).toBe("-1");
+          expect(textarea.value).toBe("Keep draft");
+          expect(action).not.toHaveBeenCalled();
+          await act(async () => textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+          expect(widget().dataset.expanded).toBe("false");
+          expect(document.activeElement).toBe(drawing);
+          await expand();
+        }
+      } finally { vi.useRealTimers(); }
+    });
+
+    it("protects a five-second candidate pause but expires after twelve seconds of silence", async () => {
+      await expand();
+      const textarea = container.querySelector("textarea")!;
+      viewport.setAttribute("tabindex", "-1");
+      vi.useFakeTimers();
+      try {
+        await act(async () => textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true })));
+        await act(async () => vi.advanceTimersByTime(5000));
+        expect(widget().dataset.composing).toBe("true");
+        expect(viewport.hasAttribute("tabindex")).toBe(false);
+        await act(async () => vi.advanceTimersByTime(7000));
+        expect(widget().dataset.composing).toBeUndefined();
+        expect(viewport.getAttribute("tabindex")).toBe("-1");
+        expect(action).not.toHaveBeenCalled();
+      } finally { vi.useRealTimers(); }
+    });
+
+    it.each(["compositionupdate", "input", "input.isComposing", "keydown", "focus"])("renews a real composition's idle timeout on %s", async signal => {
+      await expand();
+      const textarea = container.querySelector("textarea")!;
+      vi.useFakeTimers();
+      try {
+        await act(async () => textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true })));
+        await act(async () => vi.advanceTimersByTime(5000));
+        await act(async () => {
+          if (signal === "compositionupdate") textarea.dispatchEvent(new CompositionEvent(signal, { bubbles: true, data: "あ" }));
+          else if (signal === "keydown") textarea.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Process" }));
+          else if (signal === "focus") textarea.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+          else textarea.dispatchEvent(new InputEvent("input", { bubbles: true, isComposing: signal === "input.isComposing" }));
+        });
+        await act(async () => vi.advanceTimersByTime(5000));
+        expect(widget().dataset.composing).toBe("true");
+        await act(async () => vi.advanceTimersByTime(7000));
+        expect(widget().dataset.composing).toBeUndefined();
+      } finally { vi.useRealTimers(); }
+    });
+
+    it.each([null, "-1", "0"])("restores the canvas tabindex %s on unmount, including after a render", async tabIndex => {
+      if (tabIndex !== null) viewport.setAttribute("tabindex", tabIndex);
+      await expand();
+      const textarea = container.querySelector("textarea")!;
+      await act(async () => textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true })));
+      await render();
+      expect(viewport.hasAttribute("tabindex")).toBe(false);
+      await act(async () => root.unmount());
+      expect(viewport.getAttribute("tabindex")).toBe(tabIndex);
+      root = createRoot(container);
+      await render();
+    });
+  });
+
   it("resizes vertically from the header and restores the saved place on remount", async () => {
     await expand(); const header = container.querySelector(".plugin-canvas-overlay-header")!;
     await act(async () => { pointer(header, "pointerdown", 310, 180); pointer(header, "pointermove", -1000, -1000); });

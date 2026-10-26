@@ -21,6 +21,8 @@ import { MemoryStorage } from "./testSupport/memoryStorage";
 import { DOM_COMMAND_EVENT } from "./window-manager";
 
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
+// Keep the ruler's DOM hit surface; jsdom does not implement its canvas painting context.
+vi.mock("@scena/react-ruler", () => ({ default: () => <canvas /> }));
 const captured = vi.hoisted(() => ({ runtime: undefined as DesktopPluginRuntime | undefined,
   assistantContext: undefined as import("./plugins/createPluginRuntime").DesktopPluginRuntimeOptions["assistantContext"] }));
 const panelActions = vi.hoisted(() => ({ handler: undefined as Parameters<typeof import("./plugins/panelBridge").listenForPluginPanelActions>[0] | undefined }));
@@ -217,6 +219,44 @@ async function typeAtFocus(text: string): Promise<void> {
   });
 }
 
+/** Dispatch through the actual DOM path without supplying the focus handoff under test.
+ * In particular, do not call canvas.focus(): page tools can cancel browser focus defaults. */
+async function canvasPointer(target: Element, type: "pointerdown" | "pointerup",
+  options: MouseEventInit & { pointerType?: string; isPrimary?: boolean } = {}): Promise<MouseEvent> {
+  const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: 500, clientY: 500, ...options });
+  await act(async () => {
+    Object.defineProperties(event, { pointerId: { value: 1 }, pointerType: { value: options.pointerType ?? "mouse" },
+      isPrimary: { value: options.isPrimary ?? true } });
+    target.dispatchEvent(event);
+  });
+  return event;
+}
+
+/** jsdom dispatches mouse events but has no mouse focus/scroll defaults. Run the
+ * WebView2 focus default if mousedown is allowed; this must exercise the focusin
+ * recovery, not merely assert that the pointer handler left activeElement alone. */
+async function canvasMouseDefault(target: HTMLElement, options: MouseEventInit = {}): Promise<MouseEvent> {
+  const event = new MouseEvent("mousedown", { bubbles: true, cancelable: true,
+    button: 0, clientX: 500, clientY: 500, ...options });
+  await act(async () => {
+    if (target.dispatchEvent(event)) {
+      const focusTarget = target.closest<HTMLElement>("[tabindex], input, textarea, select, button, a[href], [contenteditable='true']");
+      if (focusTarget) focusTarget.focus({ preventScroll: true });
+      else if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    }
+  });
+  return event;
+}
+
+async function undoAtFocus(platform: "macos" | "windows"): Promise<void> {
+  await act(async () => {
+    const options = { key: "z", code: "KeyZ", bubbles: true, cancelable: true,
+      metaKey: platform === "macos", ctrlKey: platform === "windows" };
+    document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", options));
+    document.activeElement!.dispatchEvent(new KeyboardEvent("keyup", options));
+  });
+}
+
 describe("MainWindow canvas overlays", () => {
   beforeEach(async () => {
     vi.stubGlobal("localStorage", new MemoryStorage()); vi.stubGlobal("ResizeObserver", TestResizeObserver); vi.stubGlobal("CSS", { escape: (value: string) => value });
@@ -226,6 +266,13 @@ describe("MainWindow canvas overlays", () => {
     submit.mockReset().mockResolvedValue(undefined); select.mockReset().mockResolvedValue(undefined);
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
     await act(async () => root.render(<MainWindow initialPaletteMode="hidden" initialRulersVisible={false} nativePalette={false} />));
+    // jsdom has no layout. Model a bordered, offset viewport with native scrollbar gutters.
+    const canvas = container.querySelector<HTMLElement>(".canvas-region")!;
+    vi.spyOn(canvas, "getBoundingClientRect").mockReturnValue({ x: 100, y: 100, left: 100, top: 100,
+      width: 820, height: 620, right: 920, bottom: 720, toJSON: () => ({}) });
+    for (const [key, value] of Object.entries({ clientLeft: 2, clientTop: 2, clientWidth: 800, clientHeight: 600 })) {
+      vi.spyOn(canvas, key as "clientLeft" | "clientTop" | "clientWidth" | "clientHeight", "get").mockReturnValue(value);
+    }
     await act(async () => {
       captured.runtime!.registerPlugin({ id: pluginId, name: "Overlay test", version: "0.1.0", apiVersion: "^0.1.10",
         entry: "test.js", permissions: ["ui.canvas"], contributes: {
@@ -250,6 +297,352 @@ describe("MainWindow canvas overlays", () => {
     expect(submit.mock.calls[0]![0].input).toEqual({ source: "overlay", overlayId, sectionId: "message",
       control: "prompt", text: "Draw aspirin", selected: "codex" });
     expect(container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!.value).toBe("");
+  });
+
+  describe.each(["macos", "windows"] as const)("canvas focus handoff on %s", platform => {
+    beforeEach(async () => {
+      await act(async () => root.render(<MainWindow initialPaletteMode="hidden" initialRulersVisible={false}
+        nativePalette={false} shortcutPlatform={platform} />));
+    });
+
+    it("keeps the prompt focused for a press inside the overlay", async () => {
+      const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
+      expect(document.activeElement).toBe(textarea);
+      await canvasPointer(textarea, "pointerdown");
+      await canvasPointer(textarea, "pointerup");
+      expect(document.activeElement).toBe(textarea);
+    });
+
+    it.each([
+      { name: "middle button", button: 1 },
+      { name: "secondary pen", button: 0, pointerType: "pen", isPrimary: false },
+      { name: "secondary touch", button: 0, pointerType: "touch", isPrimary: false }
+    ])("keeps the prompt focused for a $name press", async options => {
+      const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
+      expect(document.activeElement).toBe(textarea);
+      await canvasPointer(container.querySelector(".page")!, "pointerdown", options);
+      await canvasPointer(container.querySelector(".canvas-region")!, "pointerup", options);
+      expect(document.activeElement).toBe(textarea);
+    });
+
+    it.each([
+      { name: "right button", button: 2 },
+      { name: "pen barrel button", button: 2, pointerType: "pen" }
+    ])("moves focus to the canvas for a $name press", async options => {
+      const canvas = container.querySelector<HTMLElement>(".canvas-region")!;
+      await canvasPointer(container.querySelector(".page")!, "pointerdown", options);
+      expect(document.activeElement).toBe(canvas);
+      await canvasPointer(canvas, "pointerup", options);
+    });
+
+    it.each([
+      { name: "vertical scrollbar", clientX: 902, clientY: 500 },
+      { name: "horizontal scrollbar", clientX: 500, clientY: 702 },
+      { name: "scrollbar corner", clientX: 910, clientY: 710 },
+      { name: "left border", clientX: 101, clientY: 500 },
+      { name: "top border", clientX: 500, clientY: 101 }
+    ])("keeps the prompt focused for a press on the $name", async options => {
+      const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
+      const canvas = container.querySelector<HTMLElement>(".canvas-region")!;
+      await typeAtFocus("Draft");
+      const blur = vi.fn();
+      const focusout = vi.fn();
+      textarea.addEventListener("blur", blur);
+      textarea.addEventListener("focusout", focusout);
+      expect(document.activeElement).toBe(textarea);
+      const press = await canvasPointer(canvas, "pointerdown", options);
+      expect(press.defaultPrevented).toBe(false);
+      expect(container.querySelector<HTMLElement>(".plugin-canvas-overlay")!.hidden).toBe(false);
+      const focusDefault = vi.fn();
+      canvas.addEventListener("focus", focusDefault, { once: true });
+      const mouse = await canvasMouseDefault(canvas, options);
+      expect(focusDefault).toHaveBeenCalledOnce();
+      expect(mouse.defaultPrevented).toBe(false);
+      expect(document.activeElement).toBe(textarea);
+      expect(blur).toHaveBeenCalledOnce();
+      expect(focusout).toHaveBeenCalledOnce();
+      expect(textarea.value).toBe("Draft");
+      expect(submit).not.toHaveBeenCalled();
+      expect(select).not.toHaveBeenCalled();
+      // Neither mousedown nor scroll is cancelled, so the native scrollbar keeps
+      // its thumb/track action. Model the resulting scroll in layout-less jsdom.
+      const scroll = new Event("scroll", { cancelable: true });
+      await act(async () => {
+        canvas.scrollTop = 120;
+        canvas.scrollLeft = 90;
+        canvas.dispatchEvent(scroll);
+      });
+      expect(scroll.defaultPrevented).toBe(false);
+      expect(canvas.scrollTop).toBe(120);
+      expect(canvas.scrollLeft).toBe(90);
+      await canvasPointer(canvas, "pointerup", options);
+      expect(document.activeElement).toBe(textarea);
+      // Protection lasts only for this press; keyboard/programmatic focus still works.
+      await act(async () => canvas.focus());
+      expect(document.activeElement).toBe(canvas);
+    });
+
+    it("preserves scrollbar focus for mousedown without pointerdown and releases it on mouseup", async () => {
+      const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
+      const canvas = container.querySelector<HTMLElement>(".canvas-region")!;
+      const mouse = await canvasMouseDefault(canvas, { clientX: 910 });
+      expect(mouse.defaultPrevented).toBe(false);
+      expect(document.activeElement).toBe(textarea);
+      await act(async () => canvas.dispatchEvent(new MouseEvent("mouseup", { bubbles: true })));
+      await act(async () => canvas.focus());
+      expect(document.activeElement).toBe(canvas);
+    });
+
+    it.each(["pointerup", "pointercancel"])("undoes repeated engine focus moves throughout a press until %s", async terminal => {
+      const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
+      const canvas = container.querySelector<HTMLElement>(".canvas-region")!;
+      const overlay = container.querySelector<HTMLElement>(".plugin-canvas-overlay")!;
+      vi.useFakeTimers();
+      try {
+        await canvasPointer(canvas, "pointerdown", { clientX: 910 });
+        await canvasMouseDefault(canvas, { clientX: 910 });
+        expect(document.activeElement).toBe(textarea);
+        // Pointer activity renews protection throughout a long scrollbar drag.
+        for (let i = 0; i < 5; i++) {
+          await act(async () => {
+            vi.advanceTimersByTime(400);
+            canvas.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, buttons: 1 }));
+          });
+        }
+        await act(async () => canvas.focus());
+        expect(document.activeElement).toBe(textarea);
+        expect(overlay.dataset.preservingFocus).toBe("true");
+        await act(async () => canvas.dispatchEvent(new Event(terminal, { bubbles: true })));
+        expect(overlay.dataset.preservingFocus).toBeUndefined();
+        await act(async () => canvas.focus());
+        expect(document.activeElement).toBe(canvas);
+      } finally { vi.useRealTimers(); }
+    });
+
+    it("expires preserved focus when a press loses its release", async () => {
+      const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
+      const canvas = container.querySelector<HTMLElement>(".canvas-region")!;
+      const overlay = container.querySelector<HTMLElement>(".plugin-canvas-overlay")!;
+      vi.useFakeTimers();
+      try {
+        await canvasPointer(canvas, "pointerdown", { clientX: 910 });
+        await act(async () => vi.advanceTimersByTime(400));
+        await act(async () => canvas.focus());
+        expect(document.activeElement).toBe(textarea);
+        await act(async () => vi.advanceTimersByTime(101));
+        expect(overlay.dataset.preservingFocus).toBeUndefined();
+        await act(async () => canvas.focus());
+        expect(document.activeElement).toBe(canvas);
+      } finally { vi.useRealTimers(); }
+    });
+
+    it.each(["pointerup", "pointercancel", "lostpointercapture", "blur"])("releases preserved focus after %s even without mouseup", async terminal => {
+      const canvas = container.querySelector<HTMLElement>(".canvas-region")!;
+      const overlay = container.querySelector<HTMLElement>(".plugin-canvas-overlay")!;
+      vi.useFakeTimers();
+      try {
+        // Leave the engine-default focus pending, as when a mouseup is lost.
+        await canvasPointer(canvas, "pointerdown", { clientX: 910 });
+        expect(overlay.dataset.preservingFocus).toBe("true");
+        await act(async () => {
+          if (terminal === "blur") window.dispatchEvent(new Event("blur"));
+          else canvas.dispatchEvent(new Event(terminal, { bubbles: true }));
+        });
+        expect(overlay.dataset.preservingFocus).toBeUndefined();
+        await act(async () => canvas.focus());
+        expect(document.activeElement).toBe(canvas);
+      } finally { vi.useRealTimers(); }
+    });
+
+    it("commits the final input before an immediate canvas press and retains it for Send", async () => {
+      const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
+      const canvas = container.querySelector<HTMLElement>(".canvas-region")!;
+      await typeAtFocus("ab");
+      const valueAtBlur = vi.fn(() => ({ value: textarea.value,
+        hidden: container.querySelector<HTMLElement>(".plugin-canvas-overlay")!.hidden }));
+      textarea.addEventListener("blur", valueAtBlur);
+      // Deliberately no act/render/timer gap between the last input and pointerdown.
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, "abc");
+        textarea.dispatchEvent(new InputEvent("input", { bubbles: true, data: "c", inputType: "insertText" }));
+        const press = new MouseEvent("pointerdown", { bubbles: true, cancelable: true, clientX: 500, clientY: 500 });
+        Object.defineProperties(press, { pointerId: { value: 1 }, isPrimary: { value: true } });
+        canvas.dispatchEvent(press);
+      });
+      expect(document.activeElement).toBe(canvas);
+      expect(valueAtBlur).toHaveReturnedWith({ value: "abc", hidden: false });
+      await canvasPointer(canvas, "pointerup");
+      expect(textarea.value).toBe("abc");
+      await act(async () => textarea.focus());
+      await send();
+      expect(submit.mock.calls[0]![0].input?.text).toBe("abc");
+    });
+
+    it.each(["compositionstart", "input.isComposing", "keydown.isComposing"])("prevents blur and focusout for scrollbar and drawing presses during %s until compositionend", async start => {
+      const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
+      const canvas = container.querySelector<HTMLElement>(".canvas-region")!;
+      const page = container.querySelector<HTMLElement>(".page")!;
+      const blur = vi.fn();
+      const focusout = vi.fn();
+      textarea.addEventListener("blur", blur);
+      textarea.addEventListener("focusout", focusout);
+      await act(async () => {
+        if (start === "compositionstart") textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+        else if (start === "input.isComposing") textarea.dispatchEvent(new InputEvent("input", { bubbles: true, isComposing: true }));
+        else textarea.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Process", isComposing: true }));
+        input("あ");
+      });
+      expect(canvas.hasAttribute("tabindex")).toBe(false);
+      for (const { target, clientX, clientY } of [
+        { target: canvas, clientX: 902, clientY: 500 },
+        { target: canvas, clientX: 500, clientY: 702 },
+        { target: canvas, clientX: 910, clientY: 710 },
+        { target: page, clientX: 500, clientY: 500 }
+      ]) for (const button of [0, 2]) {
+        const options = { button, clientX, clientY };
+        const press = await canvasPointer(target, "pointerdown", options);
+        expect(press.defaultPrevented).toBe(true);
+        // Model an engine that still sends mousedown after a cancelled pointerdown.
+        // Without cancellation, its focus default must blur even without tabindex.
+        const mouse = await canvasMouseDefault(target, options);
+        expect(mouse.defaultPrevented).toBe(true);
+        // Direct engine focus attempts must also leave the composition intact.
+        await act(async () => canvas.focus({ preventScroll: true }));
+        expect(document.activeElement).toBe(textarea);
+        expect(blur).not.toHaveBeenCalled();
+        expect(focusout).not.toHaveBeenCalled();
+        expect(container.querySelector<HTMLElement>(".plugin-canvas-overlay")!.dataset.composing).toBe("true");
+        expect(textarea.value).toBe("あ");
+        expect(submit).not.toHaveBeenCalled();
+        expect(select).not.toHaveBeenCalled();
+        expect(container.querySelector<HTMLElement>(".plugin-canvas-overlay")!.hidden).toBe(false);
+        await canvasPointer(target, "pointerup", options);
+      }
+      await act(async () => {
+        textarea.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "あ" }));
+        input("あ");
+      });
+      expect(canvas.getAttribute("tabindex")).toBe("-1");
+      await canvasPointer(canvas, "pointerdown");
+      expect(document.activeElement).toBe(canvas);
+      await canvasPointer(canvas, "pointerup");
+      await act(async () => textarea.focus());
+      await send();
+      expect(submit.mock.calls[0]![0].input?.text).toBe("あ");
+    });
+
+    it.each(["compositionstart", "input.isComposing", "keydown.isComposing"])("allows canvas focus and Escape after an orphaned %s expires", async start => {
+      const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
+      const canvas = container.querySelector<HTMLElement>(".canvas-region")!;
+      vi.useFakeTimers();
+      try {
+        await act(async () => {
+          if (start === "compositionstart") textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+          else if (start === "input.isComposing") textarea.dispatchEvent(new InputEvent("input", { bubbles: true, isComposing: true }));
+          else textarea.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Process", isComposing: true }));
+        });
+        expect((await canvasPointer(canvas, "pointerdown")).defaultPrevented).toBe(true);
+        await canvasPointer(canvas, "pointerup");
+        await act(async () => vi.advanceTimersByTime(12000));
+        expect(canvas.getAttribute("tabindex")).toBe("-1");
+        await canvasPointer(canvas, "pointerdown");
+        expect(document.activeElement).toBe(canvas);
+        await canvasPointer(canvas, "pointerup");
+        await act(async () => textarea.focus());
+        await act(async () => textarea.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" })));
+        expect(container.querySelector<HTMLElement>(".plugin-canvas-overlay")!.dataset.expanded).toBe("false");
+        expect(document.activeElement).toBe(canvas);
+      } finally { vi.useRealTimers(); }
+    });
+
+    it.each([
+      { selector: ".ruler-top canvas", clientX: 500, clientY: 110 },
+      { selector: ".ruler-left canvas", clientX: 110, clientY: 500 },
+      { selector: ".ruler-corner", clientX: 110, clientY: 110 },
+      // Rulers are pointer-transparent in the browser: the underlying canvas can be the target.
+      { selector: ".canvas-region", clientX: 500, clientY: 110 },
+      { selector: ".canvas-region", clientX: 110, clientY: 500 }
+    ])("keeps the prompt focused under ruler $selector at ($clientX, $clientY)", async ({ selector, ...options }) => {
+      await act(async () => window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "view.toggleRulers" } })));
+      const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
+      const target = container.querySelector(selector)!;
+      expect(target).not.toBeNull();
+      expect(document.activeElement).toBe(textarea);
+      await canvasPointer(target, "pointerdown", options);
+      await canvasPointer(target, "pointerup", options);
+      expect(document.activeElement).toBe(textarea);
+    });
+
+    it("moves focus from the prompt into a canvas text editor after a canvas press", async () => {
+      await act(async () => window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "tool.text" } })));
+      const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
+      await act(async () => textarea.focus());
+      expect(document.activeElement).toBe(textarea);
+      await canvasPointer(container.querySelector(".page")!, "pointerdown");
+      await canvasPointer(container.querySelector(".page")!, "pointerup");
+      const editor = container.querySelector<HTMLTextAreaElement>(".text-object-editor")!;
+      expect(editor).not.toBeNull();
+      expect(document.activeElement).toBe(editor);
+    });
+
+    it.each([
+      { method: "shortcut", draft: "" }, { method: "menu", draft: "" },
+      { method: "shortcut", draft: "Next draft" }, { method: "menu", draft: "Next draft" }
+    ])("routes $method Undo to the document after a page press (draft: '$draft')", async ({ method, draft }) => {
+      const port = getAssistantHistoryPort();
+      const before = port.read("initial")!;
+      submit.mockImplementationOnce(async () => {
+        port.push("initial", before, applyPatch(before, { op: "addObject", pageId: before.pages[0]!.id,
+          object: { id: "assistant_caption", type: "text", x: 50, y: 50, width: 100, height: 20,
+            rotation: 0, style: {}, text: "Assistant result", spans: [] } }), "Assistant result");
+      });
+      await typeAtFocus("Draw");
+      await send();
+      const after = port.read("initial")!;
+      expect(after.pages[0]!.objects.some(object => object.id === "assistant_caption")).toBe(true);
+      const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
+      expect(document.activeElement).toBe(textarea);
+      expect(textarea.value).toBe("");
+      // An empty composer still owns text undo until the user deliberately leaves it.
+      await undoAtFocus(platform);
+      expect(port.read("initial")).toBe(after);
+      await typeAtFocus(draft);
+      const widget = container.querySelector<HTMLElement>(".plugin-canvas-overlay")!;
+      const canvas = container.querySelector<HTMLElement>(".canvas-region")!;
+      await canvasPointer(container.querySelector(".page")!, "pointerdown");
+      expect(document.activeElement).toBe(canvas);
+      await canvasPointer(canvas, "pointerup");
+      expect(widget.hidden).toBe(false);
+      expect(widget.dataset.expanded).toBe("true");
+      expect(document.activeElement).toBe(canvas);
+      if (method === "shortcut") await undoAtFocus(platform);
+      else await act(async () => window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "edit.undo" } })));
+      expect(port.read("initial")!.pages).toEqual(before.pages);
+      expect(textarea.value).toBe(draft);
+      expect(document.activeElement).toBe(canvas);
+    });
+
+    it("does not restore an activated action's focus after a canvas press", async () => {
+      const api = captured.runtime!.host.createCommandContext(pluginId).overlays!;
+      await act(async () => api.setContent({ overlayId, sections: [
+        { kind: "actions", id: "actions", buttons: [{ id: "action", label: "New conversation", commandId: selectId }] }
+      ] }));
+      let finish!: () => void;
+      select.mockImplementationOnce(async context => {
+        await new Promise<void>(resolve => { finish = resolve; });
+        await context.overlays!.setContent({ overlayId, sections: [] });
+      });
+      const button = container.querySelector<HTMLButtonElement>(".plugin-canvas-overlay-primary-actions button")!;
+      await act(async () => { button.focus(); button.click(); });
+      const canvas = container.querySelector<HTMLElement>(".canvas-region")!;
+      try {
+        await canvasPointer(canvas, "pointerdown");
+        expect(document.activeElement).toBe(canvas);
+      } finally { await act(async () => finish()); }
+      await canvasPointer(canvas, "pointerup");
+      expect(button.isConnected).toBe(false);
+      expect(document.activeElement).toBe(canvas);
+    });
   });
 
   it("stacks the canvas overlay above the build stamp but below floating panels", () => {
@@ -379,8 +772,8 @@ describe("MainWindow canvas overlays", () => {
     expect(contributions).not.toHaveBeenCalled(); unsubscribe();
     const widget = container.querySelector<HTMLElement>(".plugin-canvas-overlay")!;
     const canvas = container.querySelector<HTMLElement>(".canvas-region")!;
-    await act(async () => canvas.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }))); expect(widget.hidden).toBe(true);
-    await act(async () => canvas.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }))); expect(widget.hidden).toBe(false);
+    await canvasPointer(canvas, "pointerdown"); expect(widget.hidden).toBe(true);
+    await canvasPointer(canvas, "pointerup"); expect(widget.hidden).toBe(false);
     await act(async () => widget.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
     expect(widget.dataset.expanded).toBe("false"); expect(document.activeElement).toBe(canvas);
   });

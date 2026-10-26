@@ -159,6 +159,39 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
   const position = positions[mode];
   const elementRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  const compositionExpiryRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const composingCanvasRef = useRef<{ element: HTMLElement; tabIndex: string | null } | null>(null);
+  const clearComposition = () => {
+    if (compositionExpiryRef.current !== undefined) clearTimeout(compositionExpiryRef.current);
+    compositionExpiryRef.current = undefined;
+    if (elementRef.current) delete elementRef.current.dataset.composing;
+    const canvas = composingCanvasRef.current;
+    composingCanvasRef.current = null;
+    if (canvas && canvas.tabIndex !== null) canvas.element.setAttribute("tabindex", canvas.tabIndex);
+  };
+  const trackComposition = () => {
+    if (compositionExpiryRef.current !== undefined) clearTimeout(compositionExpiryRef.current);
+    if (elementRef.current) elementRef.current.dataset.composing = "true";
+    const canvas = viewportRef.current;
+    if (canvas && !composingCanvasRef.current) {
+      composingCanvasRef.current = { element: canvas, tabIndex: canvas.getAttribute("tabindex") };
+      // Cancelling pointerdown does not stop every engine's focus default. Prevent
+      // the blur itself: refocusing cannot recover a native IME composition.
+      canvas.removeAttribute("tabindex");
+    }
+    // compositionend can be lost even after a real compositionstart. Input and
+    // composition updates renew this idle guard; an orphan must not trap focus.
+    compositionExpiryRef.current = setTimeout(clearComposition, 10000);
+  };
+  useEffect(() => {
+    const element = elementRef.current;
+    // React has no compositioncancel prop; listen to the native cancellation as well.
+    element?.addEventListener("compositioncancel", clearComposition, true);
+    return () => {
+      element?.removeEventListener("compositioncancel", clearComposition, true);
+      clearComposition();
+    };
+  }, []);
   const focusOnExpandRef = useRef(false);
   const clickedActionRef = useRef<Element | null>(null);
   const activatedActionRef = useRef<{ button: Element | null } | null>(null);
@@ -401,6 +434,22 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
     ref={elementRef}
     className="plugin-canvas-overlay"
     data-expanded={expanded}
+    onCompositionStartCapture={trackComposition}
+    onCompositionUpdateCapture={trackComposition}
+    onCompositionEndCapture={clearComposition}
+    onInputCapture={event => {
+      if ((event.nativeEvent as InputEvent).isComposing || event.currentTarget.dataset.composing === "true") trackComposition();
+    }}
+    onKeyDownCapture={event => {
+      if (event.nativeEvent.isComposing || event.currentTarget.dataset.composing === "true") trackComposition();
+    }}
+    onFocusCapture={event => {
+      if (event.target instanceof HTMLTextAreaElement && event.currentTarget.dataset.composing === "true") trackComposition();
+    }}
+    onBlurCapture={event => {
+      if (event.target instanceof HTMLTextAreaElement
+        || !(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) clearComposition();
+    }}
     hidden={gestureActive}
     style={{ ...(position ? { left: position.x, top: position.y } : { right: 12, bottom: 12 }),
       height: expanded ? displayHeight : undefined }}
@@ -420,7 +469,7 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
     onKeyDown={event => {
       event.stopPropagation();
       if (isBrowserReloadChord(event, shortcutPlatform)) event.preventDefault();
-      if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
+      if (event.key !== "Escape" || event.nativeEvent.isComposing || event.currentTarget.dataset.composing === "true") return;
       event.preventDefault();
       setExpanded(false);
       onFocusDrawing();

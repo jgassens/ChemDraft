@@ -748,9 +748,8 @@ fn codex_feature_policy_has_no_duplicates_or_overlap() {
     }
 }
 
-// Used by scripts/check-codex-tools.mjs. This renders the production template AND environment;
-// This renderer is pure with respect to credentials. The opt-in script owns its disposable
-// read-only login link and must never call production auth reconciliation/write-back.
+// Renders the production arguments and environment for on-demand parity checks.
+// The renderer does not modify credentials; callers manage their own temporary login setup.
 #[test]
 #[ignore = "on-demand real-model parity script supplies CHEMDRAFT_CODEX_PARITY_REQUEST"]
 fn print_codex_template_args() {
