@@ -38,6 +38,13 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             size: (540.0, 600.0),
             min_size: (360.0, 260.0),
         }),
+        "reactionConditions" => Ok(DialogKindSpec {
+            maximizable: false,
+            resizable: true,
+            title: "Reaction conditions",
+            size: (560.0, 620.0),
+            min_size: (380.0, 420.0),
+        }),
         "export" => Ok(DialogKindSpec {
             maximizable: false,
             resizable: true,
@@ -108,12 +115,89 @@ struct SpacingSnapshot {
     title: String,
     min_percent: u32,
     max_percent: u32,
+    arrangement: Option<ArrangementDraft>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ArrangementDraft {
+    layout: String,
+    grid_alignment: String,
+    arrows: bool,
+    reverse: bool,
+    close_cycle: bool,
+    grid_order: String,
+    #[serde(default = "default_arrangement_arrow_length")]
+    arrow_length: f64,
+}
+fn default_arrangement_arrow_length() -> f64 {
+    100.0
+}
+impl ArrangementDraft {
+    fn valid(&self) -> bool {
+        // Read every typed field on both platforms; flags deliberately have no dependencies.
+        let _ = (self.arrows, self.reverse, self.close_cycle);
+        matches!(
+            self.layout.as_str(),
+            "circle" | "oval" | "grid" | "row" | "column"
+        ) && matches!(self.grid_alignment.as_str(), "left" | "center" | "right")
+            && matches!(self.grid_order.as_str(), "rows" | "snake")
+            && self.arrow_length.is_finite()
+            && (30.0..=100.0).contains(&self.arrow_length)
+    }
+}
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ConditionsSpan {
+    text: String,
+    script: String,
+}
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ConditionsDraft {
+    side: String,
+    spans: Vec<ConditionsSpan>,
+}
+impl ConditionsDraft {
+    fn valid(&self) -> bool {
+        matches!(self.side.as_str(), "above" | "below")
+            && self.spans.len() <= 128
+            && self
+                .spans
+                .iter()
+                .map(|span| span.text.encode_utf16().count())
+                .sum::<usize>()
+                <= 2000
+            && self
+                .spans
+                .iter()
+                .all(|span| matches!(span.script.as_str(), "normal" | "subscript" | "superscript"))
+            && serde_json::to_vec(self).is_ok_and(|bytes| bytes.len() <= 2500)
+    }
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ConditionsSnapshot {
+    title: String,
+    arrow_id: String,
+    draft: ConditionsDraft,
+}
+#[derive(Deserialize)]
+#[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
+enum ConditionsAction {
+    Apply { draft: ConditionsDraft },
+    Cancel,
 }
 #[derive(Deserialize)]
 #[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
 enum SpacingAction {
-    Apply { percent: u32 },
-    Preview { percent: u32 },
+    Apply {
+        percent: u32,
+        arrangement: Option<ArrangementDraft>,
+    },
+    Preview {
+        percent: u32,
+        arrangement: Option<ArrangementDraft>,
+    },
     Cancel,
 }
 #[derive(Deserialize)]
@@ -655,6 +739,21 @@ impl Message {
                         && r.error.is_none_or(|s| s.encode_utf16().count() <= 1024)
                 })
             }
+            "snapshot" if self.dialog_kind == "reactionConditions" => {
+                serde_json::from_value::<ConditionsSnapshot>(self.data.clone()).is_ok_and(|s| {
+                    valid_title(&s.title)
+                        && !s.arrow_id.is_empty()
+                        && s.arrow_id.encode_utf16().count() <= 128
+                        && s.draft.valid()
+                })
+            }
+            "action" if self.dialog_kind == "reactionConditions" => serde_json::from_value::<
+                ConditionsAction,
+            >(self.data.clone())
+            .is_ok_and(|action| match action {
+                ConditionsAction::Apply { draft } => draft.valid(),
+                ConditionsAction::Cancel => true,
+            }),
             "snapshot" if self.dialog_kind == "export" => {
                 serde_json::from_value::<ExportSnapshot>(self.data.clone()).is_ok_and(|s| {
                     !s.title.is_empty()
@@ -716,6 +815,7 @@ impl Message {
                             && valid_percent(s.max_percent)
                             && s.min_percent <= 100
                             && s.max_percent >= 100
+                            && s.arrangement.is_none_or(|d| d.valid())
                     })
                 }
             }
@@ -733,8 +833,14 @@ impl Message {
                     serde_json::from_value::<SpacingAction>(self.data.clone()).is_ok_and(
                         |a| match a {
                             SpacingAction::Cancel => true,
-                            SpacingAction::Apply { percent }
-                            | SpacingAction::Preview { percent } => valid_percent(percent),
+                            SpacingAction::Apply {
+                                percent,
+                                arrangement,
+                            }
+                            | SpacingAction::Preview {
+                                percent,
+                                arrangement,
+                            } => valid_percent(percent) && arrangement.is_none_or(|d| d.valid()),
                         },
                     )
                 }
@@ -1943,6 +2049,28 @@ pub(crate) fn on_window_event<R: Runtime>(window: &tauri::Window<R>, event: &Win
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn conditions_drafts_are_typed_bounded_and_have_an_owned_dialog_kind() {
+        let draft = json!({"side":"above","spans":[{"text":"K","script":"normal"},{"text":"2","script":"subscript"},{"text":"CO₃, 80 °C","script":"normal"}]});
+        assert!(
+            serde_json::from_value::<super::ConditionsDraft>(draft.clone())
+                .unwrap()
+                .valid()
+        );
+        for invalid in [
+            json!({"side":"left","spans":[]}),
+            json!({"side":"above","spans":[{"text":"x","script":"html"}]}),
+            json!({"side":"above","spans":[{"text":"Δ".repeat(1400),"script":"normal"}]}),
+        ] {
+            assert!(!serde_json::from_value::<super::ConditionsDraft>(invalid)
+                .unwrap()
+                .valid());
+        }
+        let spec = super::kind_spec("reactionConditions").unwrap();
+        assert_eq!(spec.title, "Reaction conditions");
+        assert!(spec.resizable);
+        assert!(super::is_dialog_label("dialog-main-reactionConditions-1"));
+    }
     use super::*;
     fn engine_install_snapshot() -> Message {
         let mut message = snapshot();
@@ -2617,6 +2745,35 @@ mod tests {
     fn snapshot() -> Message {
         serde_json::from_value(json!({"protocolVersion":1,"ownerWindowId":"main","documentTabId":"tab-1","dialogKind":"pageSize","sessionId":"session-1","requestId":"request-1","snapshotRevision":1,"type":"snapshot","data":{"title":"Drawing","width":8.5,"height":11,"unit":"inch"}})).unwrap()
     }
+    #[test]
+    fn arrangement_options_are_typed_and_bounded() {
+        let draft = json!({"layout":"circle", "gridAlignment":"center", "arrows":true, "reverse":false, "closeCycle":true, "gridOrder":"rows"});
+        assert!(serde_json::from_value::<ArrangementDraft>(draft.clone())
+            .unwrap()
+            .valid());
+        for (field, value) in [
+            ("layout", json!("spiral")),
+            ("gridAlignment", json!("justify")),
+            ("gridOrder", json!("implicit")),
+            ("arrows", json!(1)),
+            ("reverse", json!("false")),
+            ("closeCycle", json!(null)),
+            ("arrowLength", json!(29)),
+            ("arrowLength", json!(101)),
+            ("arrowLength", json!("80")),
+            ("arrowLength", json!(null)),
+            ("commandId", json!("edit.undo")),
+        ] {
+            let mut invalid = draft.clone();
+            invalid[field] = value;
+            assert!(!serde_json::from_value::<ArrangementDraft>(invalid).is_ok_and(|d| d.valid()));
+        }
+        for action in ["preview", "apply"] {
+            let value = json!({"action":action,"percent":100,"arrangement":draft});
+            assert!(serde_json::from_value::<SpacingAction>(value).is_ok());
+        }
+    }
+
     #[test]
     fn spacing_preview_payloads_stay_bounded_and_do_not_reserve_save() {
         let mut message = snapshot();

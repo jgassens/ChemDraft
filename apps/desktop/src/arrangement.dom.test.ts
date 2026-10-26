@@ -84,7 +84,7 @@ describe("auto-arrangement toolbar and history", () => {
     await act(async()=>arrange.dispatchEvent(new KeyboardEvent("keydown",{key:"ArrowRight",bubbles:true,cancelable:true})));
     const menu = container.querySelector<HTMLElement>('[aria-label="Arrange layouts"]')!;
     expect([...menu.querySelectorAll('button')].map(button=>button.textContent?.trim())).toEqual([
-      "Circle", "Oval", "Grid (Left)", "Grid (Centered)", "Grid (Right)", "Row", "Column", "Adjust spacing…"
+      "Circle", "Oval", "Grid (Left)", "Grid (Centered)", "Grid (Right)", "Row", "Column", "Arrange with options…", "Adjust spacing…"
     ]);
     expect(document.activeElement?.getAttribute("data-command-id")).toBe("layout.arrange.circle");
     await act(async()=>document.activeElement!.dispatchEvent(new KeyboardEvent("keydown",{key:"ArrowDown",bubbles:true,cancelable:true})));
@@ -161,11 +161,81 @@ describe("auto-arrangement toolbar and history", () => {
     await route("edit.undo");
     expect(snapshot().pages[0].objects.filter((o) => o.type === "graphic")).toHaveLength(0);
   });
+  it("previews optional connecting arrows, cancels unchanged, and saves layout plus arrows in one Undo step", async () => {
+    await render(true, 4, false); const before = snapshot();
+    await route("layout.arrangeOptions");
+    expect(container.textContent).toContain("Arrange selection");
+    const form = () => container.querySelector<HTMLFormElement>('.arrangement-spacing-dialog')!;
+    const checkbox = () => form().querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    expect(checkbox().checked).toBe(false); expect(snapshot()).toEqual(before);
+    await act(async () => checkbox().click());
+    expect(snapshot()).toEqual(before);
+    expect(form().querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(false);
+    await act(async () => form().querySelector<HTMLButtonElement>('button[type="button"]')!.click());
+    expect(snapshot()).toEqual(before);
+    await route("layout.arrangeOptions"); expect(checkbox().checked).toBe(false);
+    await act(async () => checkbox().click());
+    await act(async () => form().querySelectorAll<HTMLInputElement>('input[type="checkbox"]')[1]!.click());
+    await act(async () => form().dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    const after = snapshot();
+    expect(after.pages[0].objects.filter(o => o.type === "graphic")).toHaveLength(4);
+    expect(container.querySelector('.arrangement-spacing-dialog')).toBeNull();
+    await route("edit.undo"); expect(snapshot()).toEqual(before);
+    await route("edit.redo"); expect(snapshot()).toEqual(after);
+  });
   function pointer(target: EventTarget, type: string, x: number, y: number) {
     const event = new MouseEvent(type, {bubbles:true,cancelable:true,button:0,buttons:type === "pointerup" ? 0 : 1,clientX:x,clientY:y});
     Object.defineProperties(event,{pointerId:{value:31},pointerType:{value:"mouse"},isPrimary:{value:true}});
     target.dispatchEvent(event);
   }
+  it('reopens checked, previews length without compound moves, cancels unchanged, and removes owned arrows in one Undo',async()=>{
+    await render(true,4,false);await route('layout.arrangeOptions');
+    const form=()=>container.querySelector<HTMLFormElement>('form.arrangement-spacing-dialog')!;
+    const checkbox=()=>form().querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    const save=async()=>{await act(async()=>form().dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})));};
+    await act(async()=>checkbox().click());await save();const before=snapshot();
+    await route('layout.arrangeOptions');expect(checkbox().checked).toBe(true);
+    const initial=form().querySelector<HTMLImageElement>('img')!.src,slider=form().querySelector<HTMLInputElement>('input[type="range"]')!;
+    expect(slider).not.toBeNull();
+    await act(async()=>{Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')!.set!.call(slider,'70');slider.dispatchEvent(new Event('input',{bubbles:true}));});
+    expect(form().querySelector<HTMLImageElement>('img')!.src).not.toBe(initial);expect(snapshot()).toEqual(before);
+    await act(async()=>form().querySelector<HTMLButtonElement>('button[type="button"]')!.click());expect(snapshot()).toEqual(before);
+    await route('layout.arrangeOptions');expect(checkbox().checked).toBe(true);
+    await act(async()=>checkbox().click());expect(form().querySelector('input[type="range"]')).toBeNull();await save();
+    expect(snapshot().pages[0].objects.some(o=>o.arrangementConnection)).toBe(false);
+    await route('edit.undo');expect(snapshot()).toEqual(before);
+    await route('edit.redo');expect(snapshot().pages[0].objects.some(o=>o.arrangementConnection)).toBe(false);
+  });
+  it('can draw after arrangement Save and again after deleting generated arrows',async()=>{
+    await render(true,4,false);
+    await route('layout.arrangeOptions');
+    await act(async()=>container.querySelector<HTMLInputElement>('.arrangement-spacing-dialog input[type="checkbox"]')!.click());
+    await act(async()=>container.querySelector('form.arrangement-spacing-dialog')!.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})));
+    const page=container.querySelector<HTMLElement>('.page')!;
+    expect(page).not.toBeNull();
+    vi.spyOn(page,'getBoundingClientRect').mockReturnValue({x:0,y:0,left:0,top:0,width:816,height:1056,right:816,bottom:1056,toJSON:()=>({})});
+    Object.assign(page,{setPointerCapture:vi.fn(),releasePointerCapture:vi.fn(),hasPointerCapture:()=>false});
+    await route('object.color.red');
+    for(const object of snapshot().pages[0].objects.filter(o=>o.arrangementConnection)) {
+      expect(object.style.strokeColor).toBe('#b3261e');
+    }
+    const draw=async(x:number)=>{
+      await route('tool.bond');
+      const before=snapshot().pages[0].objects.length;
+      await act(async()=>{pointer(page,'pointerdown',x,600);pointer(page,'pointerup',x,600);});
+      expect(snapshot().pages[0].objects.length).toBeGreaterThan(before);
+    };
+    await draw(100);
+    const arrows=snapshot().pages[0].objects.filter(o=>o.arrangementConnection);
+    for(const arrow of arrows) {
+      await route('tool.select');
+      const target=container.querySelector<HTMLElement>(`[data-object-id="${arrow.id}"]`)!;
+      await act(async()=>target.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:0,clientY:0})));
+      await route('edit.deleteHoveredNativeTarget');
+    }
+    expect(snapshot().pages[0].objects.some(o=>o.arrangementConnection)).toBe(false);
+    await draw(300);
+  });
   function changeText(input: HTMLTextAreaElement, value: string) {
     Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,"value")!.set!.call(input,value);
     input.dispatchEvent(new Event("input",{bubbles:true}));

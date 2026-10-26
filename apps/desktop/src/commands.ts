@@ -1956,6 +1956,8 @@ export function createLayerActions(document: ChemDraftDocument, layoutsEnabled =
   const hasArrangementSelection = selectedArrangementObjectIds(document).length >= 2;
   const hasBooleanSelection = selectedArtBooleanEligibleObjectIds(document).length >= 2;
   return [
+    { id: "layout.arrangeOptions", title: "Arrange with options…", icon: "arrange", source: "core", category: "layout",
+      enabled: layoutsEnabled && hasArrangementSelection, disabledReason: layoutsEnabled ? "Select at least two objects or groups" : "Enable Compound layout tools in Settings" },
     { id: "layout.adjustArrangementSpacing", title: "Adjust arrangement spacing…", icon: "align", source: "core", category: "layout",
       enabled: layoutsEnabled && hasArrangementSelection, disabledReason: layoutsEnabled ? "Select at least two objects or groups" : "Enable Compound layout tools in Settings" },
     ...ArrangementLayouts.flatMap((layout) => (layout === "grid" ? ArrangementGridAlignments : ["center"] as const).map((gridAlignment): CommandSpec => ({

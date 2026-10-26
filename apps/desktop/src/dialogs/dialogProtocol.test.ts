@@ -1,3 +1,4 @@
+import { defaultArrangementDraft } from "@chemdraft/layout-engine";
 import { describe, expect, it } from "vitest";
 import { engineInstallFixture } from "./engineInstallTestFixtures";
 import { toolInstallFixture } from "./toolInstallTestFixtures";
@@ -116,4 +117,15 @@ it("validates tool install snapshots, states and actions fail closed", () => {
     { state: { status: "consent", extra: true } }, { buttons: ["install", "allow", "close"] },
     { state: { status: "installing", phase: "Downloading", bytesDone: 1.5 }, buttons: ["cancelInstall", "close"] }
   ]) expect(parseDialogMessage({ ...message, data: { ...data, ...change } })).toBeUndefined();
+});
+
+it("accepts only the bounded typed arrangement options on spacing snapshots and actions", () => {
+  const s = { ...snapshot(), dialogKind: "arrangementSpacing", data: { title: "Cycle", minPercent: 100, maxPercent: 100, arrangement: defaultArrangementDraft } };
+  expect(parseDialogMessage(s)).toBeDefined();
+  for (const action of ["apply", "preview"]) {
+    const m = { ...s, type: "action", data: { action, percent: 100, arrangement: defaultArrangementDraft } };
+    expect(parseDialogMessage(m)).toBeDefined();
+    for (const change of [{ layout: "spiral" }, { arrows: 1 }, { reverse: "false" }, { closeCycle: null }, { gridOrder: "implicit" }, { gridAlignment: "justify" }, { commandId: "edit.undo" },{arrowLength:29},{arrowLength:101},{arrowLength:NaN},{arrowLength:'70'},{arrowLength:null}])
+      expect(parseDialogMessage({ ...m, data: { ...m.data, arrangement: { ...defaultArrangementDraft, ...change } } })).toBeUndefined();
+  }
 });

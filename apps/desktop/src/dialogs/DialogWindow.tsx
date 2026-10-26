@@ -1,9 +1,12 @@
+import type { ArrangementDraft } from "@chemdraft/layout-engine";
 import { useExportPreviewEnabled } from "./useExportPreviewEnabled";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { detectDialogPlatform, dialogEnvelope, sameDialog, type DialogMessage } from "./dialogProtocol";
 import { sendDialogMessage, subscribeDialogHost } from "./dialogTransport";
 import { performFocusedFieldSelectAll } from "../editHistoryRouting";
 import { ArrangementSpacingForm } from "./ArrangementSpacingForm";
+import { ReactionConditionsForm } from "./ReactionConditionsForm";
+import type { ReactionConditionsDraft } from "@chemdraft/document-workflow-core";
 import { formatPageSizeFieldValue, PageSizeForm, type PageSizeDraft } from "./PageSizeForm";
 import type { ExportDialogState, ExportOptions, ExportPreviewResult, ExportFrame } from "./exportOptions";
 import { exportOptions } from "./exportOptionsValidation";
@@ -18,7 +21,9 @@ export function DialogWindow({ hostId }: { hostId: string }) {
   const [snapshot, setSnapshot] = useState<Extract<DialogMessage, { type: "snapshot" }>>();
   const [frame, setFrame] = useState<ExportFrame>();
   const [draft, setDraft] = useState<PageSizeDraft>();
+  const [arrangement, setArrangement] = useState<ArrangementDraft>();
   const [percent, setPercent] = useState(100);
+  const [conditions, setConditions] = useState<ReactionConditionsDraft>();
   const currentPercent = useRef(percent);
   currentPercent.current = percent;
   const [preview, setPreview] = useState<string>();
@@ -75,7 +80,8 @@ export function DialogWindow({ hostId }: { hostId: string }) {
             setBusy(false);
           }
           if (message.dialogKind === "pageSize") setDraft({ width: formatPageSizeFieldValue(message.data.width), height: formatPageSizeFieldValue(message.data.height), unit: message.data.unit });
-          else if (message.dialogKind === "arrangementSpacing") { setPercent(100); setPreview(undefined); }
+          else if (message.dialogKind === "arrangementSpacing") { setPercent(100); setArrangement(message.data.arrangement); setPreview(undefined); }
+          else if (message.dialogKind === "reactionConditions") setConditions(message.data.draft);
           else if (message.dialogKind === "export") { setExportDraft({ ...message.data.options, busy: false }); setFrame(message.data.frame); }
           latest = message;
         }
@@ -142,12 +148,12 @@ export function DialogWindow({ hostId }: { hostId: string }) {
       previewRequestId.current = requestId; previewParts.current = undefined;
       clearTimeout(previewTimer.current);
       previewTimer.current = setTimeout(() => { setPreview(undefined); setError("Preview did not arrive. Move the slider to try again."); }, 10000);
-      void sendDialogMessage(hostId, { ...dialogEnvelope(snapshot), requestId, type: "action", data: { action: "preview", percent } })
+      void sendDialogMessage(hostId, { ...dialogEnvelope(snapshot), requestId, type: "action", data: { action: "preview", percent, ...(arrangement ? { arrangement } : {}) } })
         .catch(e => { if (previewRequestId.current === requestId) { clearTimeout(previewTimer.current); setError(String(e)); } });
     }, percent === 100 ? 0 : 120);
     return () => { clearTimeout(debounce); clearTimeout(previewTimer.current); };
-  }, [hostId, snapshot, percent]);
-  useEffect(() => { if (snapshot?.dialogKind === "pageSize" || snapshot?.dialogKind === "arrangementSpacing" || snapshot?.dialogKind === "engineInstall" || snapshot?.dialogKind === "toolInstall") reportReady(); }, [snapshot, reportReady]);
+  }, [hostId, snapshot, percent, arrangement]);
+  useEffect(() => { if (snapshot && snapshot.dialogKind !== "export") reportReady(); }, [snapshot, reportReady]);
   const sendAction = (data: Extract<DialogMessage, { type: "action" }>["data"]) => {
     if (!snapshot) return;
     clearPreview();
@@ -175,11 +181,16 @@ export function DialogWindow({ hostId }: { hostId: string }) {
     });
   };
   if (!snapshot) return <p role="status">{error ?? "Opening dialog…"}</p>;
-  if (snapshot.dialogKind === "arrangementSpacing") return <ArrangementSpacingForm {...snapshot.data} percent={percent}
+  if (snapshot.dialogKind === "reactionConditions" && conditions) return <ReactionConditionsForm title={snapshot.data.title}
+    draft={conditions} onChange={setConditions} busy={busy} error={error} onCancel={() => sendAction({ action: "cancel" })}
+    onSave={() => sendAction({ action: "apply", draft: conditions })} />;
+  if (snapshot.dialogKind === "arrangementSpacing") return <ArrangementSpacingForm {...snapshot.data} arrangement={arrangement} onArrangementChange={value => {
+    previewRequestId.current = undefined; previewParts.current = undefined; setPreview(undefined); setError(undefined); setArrangement(value);
+  }} percent={percent}
     preview={preview} busy={busy} error={error} onChange={value => {
       previewRequestId.current = undefined; previewParts.current = undefined;
       setPreview(undefined); setError(undefined); setPercent(value);
-    }} onCancel={() => sendAction({ action: "cancel" })} onSave={() => sendAction({ action: "apply", percent })} />;
+    }} onCancel={() => sendAction({ action: "cancel" })} onSave={() => sendAction({ action: "apply", percent, ...(arrangement ? { arrangement } : {}) })} />;
   const renderPreview = (options: ExportOptions, signal?: AbortSignal): Promise<ExportPreviewResult> => {
     clearPreview();
     if (!previewEnabledRef.current || signal?.aborted || !snapshot || actionPending.current || cancellationRequested.current) return Promise.reject(new Error("Preview unavailable"));

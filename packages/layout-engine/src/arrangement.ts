@@ -4,7 +4,7 @@ export const ArrangementLayouts = ["circle", "oval", "grid", "row", "column"] as
 export type ArrangementLayout = typeof ArrangementLayouts[number];
 export const ArrangementGridAlignments = ["left", "center", "right"] as const;
 export type ArrangementGridAlignment = typeof ArrangementGridAlignments[number];
-export interface ArrangementItem { id: string; bounds: LayoutBounds; anchor?: LayoutPoint }
+export interface ArrangementItem { id: string; bounds: LayoutBounds; anchor?: LayoutPoint; outlines?: LayoutPoint[][] }
 export interface ArrangementPlacement extends ArrangementItem { dx: number; dy: number }
 export interface ArrangementOptions {
   /** Empty space between visible item bounds, in document CSS pixels. Explicit values are fixed.
@@ -171,6 +171,7 @@ export function planObjectArrangement(
       const bounds = { ...targets[i], x: targets[i].x + offset.x, y: targets[i].y + offset.y };
       const dx=bounds.x-item.bounds.x,dy=bounds.y-item.bounds.y;
       return { id: item.id, bounds, dx, dy,
+        ...(item.outlines ? {outlines:item.outlines.map(outline=>outline.map(p=>({x:p.x+dx,y:p.y+dy})))} : {}),
         ...(item.anchor ? {anchor:{x:item.anchor.x+dx,y:item.anchor.y+dy}} : {}) };
     })
   };
