@@ -115,17 +115,18 @@ function OverlayTranscript({ overlayId, source, expanded, ownSubmit, height }: {
   </div>;
 }
 
-function OverlayStatus({ overlayId, status, statusSource }: {
+function OverlayStatus({ overlayId, status, statusSource, finishingInput }: {
   overlayId: string;
   status: string | undefined;
   statusSource: CanvasOverlayStatusSource | undefined;
+  finishingInput: boolean;
 }) {
   const liveStatus = useSyncExternalStore(
     statusSource?.subscribeCanvasOverlayStatus ?? subscribeNever,
     () => statusSource?.getCanvasOverlayStatuses().get(overlayId) ?? status ?? "",
     () => status ?? ""
   );
-  return <p className="plugin-canvas-overlay-status" role="status">{liveStatus}</p>;
+  return <p className="plugin-canvas-overlay-status" role="status">{finishingInput ? "Finishing input…" : liveStatus}</p>;
 }
 
 /** Host chrome only: actions carry control data; MainWindow resolves the live command declaration. */
@@ -198,16 +199,22 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
     return () => element?.removeEventListener("selectstart", preventChromeSelection);
   }, []);
   const compositionExpiryRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const compositionEndedUntilRef = useRef(-Infinity);
+  const [finishingInput, setFinishingInput] = useState(false);
   const composingCanvasRef = useRef<{ element: HTMLElement; tabIndex: string | null } | null>(null);
   const clearComposition = () => {
     if (compositionExpiryRef.current !== undefined) clearTimeout(compositionExpiryRef.current);
     compositionExpiryRef.current = undefined;
+    if (elementRef.current?.dataset.composing === "true") setFinishingInput(false);
     if (elementRef.current) delete elementRef.current.dataset.composing;
     const canvas = composingCanvasRef.current;
     composingCanvasRef.current = null;
     if (canvas && canvas.tabIndex !== null) canvas.element.setAttribute("tabindex", canvas.tabIndex);
   };
   const trackComposition = () => {
+    // Explicit start/update signals may start a new composition immediately.
+    // Input/keydown callers separately ignore the trailing commit grace window.
+    compositionEndedUntilRef.current = 0;
     if (compositionExpiryRef.current !== undefined) clearTimeout(compositionExpiryRef.current);
     if (elementRef.current) elementRef.current.dataset.composing = "true";
     const canvas = viewportRef.current;
@@ -217,16 +224,31 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
       // the blur itself: refocusing cannot recover a native IME composition.
       canvas.removeAttribute("tabindex");
     }
-    // compositionend can be lost even after a real compositionstart. Input and
-    // composition updates renew this idle guard; an orphan must not trap focus.
-    compositionExpiryRef.current = setTimeout(clearComposition, 10000);
+    // A candidate window can remain open indefinitely while the prompt has focus.
+    // If compositionend is lost, normal input/keydown or blur provides the escape.
+    compositionExpiryRef.current = setTimeout(() => {
+      compositionExpiryRef.current = undefined;
+      const prompt = elementRef.current?.querySelector("textarea");
+      if (!prompt || document.activeElement !== prompt) clearComposition();
+    }, 10000);
+  };
+  const endComposition = () => {
+    // WebKit can deliver the commit's Process/229/isComposing keydown after
+    // compositionend. It must not restart the ten-second orphan focus guard.
+    compositionEndedUntilRef.current = performance.now() + 250;
+    clearComposition();
   };
   useEffect(() => {
     const element = elementRef.current;
+    const showFinishingInput = () => {
+      if (element?.dataset.composing === "true") setFinishingInput(true);
+    };
+    element?.addEventListener("chemdraft:composition-blocked", showFinishingInput);
     // React has no compositioncancel prop; listen to the native cancellation as well.
-    element?.addEventListener("compositioncancel", clearComposition, true);
+    element?.addEventListener("compositioncancel", endComposition, true);
     return () => {
-      element?.removeEventListener("compositioncancel", clearComposition, true);
+      element?.removeEventListener("compositioncancel", endComposition, true);
+      element?.removeEventListener("chemdraft:composition-blocked", showFinishingInput);
       clearComposition();
     };
   }, []);
@@ -574,15 +596,19 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
     data-expanded={expanded}
     onCompositionStartCapture={trackComposition}
     onCompositionUpdateCapture={trackComposition}
-    onCompositionEndCapture={clearComposition}
+    onCompositionEndCapture={endComposition}
     onInputCapture={event => {
-      if ((event.nativeEvent as InputEvent).isComposing || event.currentTarget.dataset.composing === "true") trackComposition();
+      if (!(event.target instanceof HTMLTextAreaElement)) return;
+      const nativeEvent = event.nativeEvent as InputEvent & { keyCode?: number };
+      if (nativeEvent.isComposing) {
+        if (performance.now() >= compositionEndedUntilRef.current) trackComposition();
+      } else if (nativeEvent.keyCode !== 229) clearComposition();
     }}
     onKeyDownCapture={event => {
-      if (event.nativeEvent.isComposing || event.currentTarget.dataset.composing === "true") trackComposition();
-    }}
-    onFocusCapture={event => {
-      if (event.target instanceof HTMLTextAreaElement && event.currentTarget.dataset.composing === "true") trackComposition();
+      if (!(event.target instanceof HTMLTextAreaElement)) return;
+      if (event.nativeEvent.isComposing) {
+        if (performance.now() >= compositionEndedUntilRef.current) trackComposition();
+      } else if (event.nativeEvent.keyCode !== 229) clearComposition();
     }}
     onBlurCapture={event => {
       if (event.target instanceof HTMLTextAreaElement
@@ -607,7 +633,8 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
     onKeyDown={event => {
       event.stopPropagation();
       if (isBrowserReloadChord(event, shortcutPlatform)) event.preventDefault();
-      if (event.key !== "Escape" || event.nativeEvent.isComposing || event.currentTarget.dataset.composing === "true") return;
+      if (event.key !== "Escape" || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229
+        || event.currentTarget.dataset.composing === "true") return;
       event.preventDefault();
       setExpanded(false);
       onFocusDrawing();
@@ -638,7 +665,7 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
         <span>{overlay.title}</span>
         <button type="button" aria-label={`Collapse ${overlay.title}`}
           onPointerDown={event => event.stopPropagation()}
-          onClick={() => { setExpanded(false); onFocusDrawing(); }}>−</button>
+          onClick={() => { clearComposition(); setExpanded(false); onFocusDrawing(); }}>−</button>
       </div>
       {firstActions ? <div className="plugin-canvas-overlay-primary-actions">
         <PluginReportRenderer report={{ title: overlay.title, sections: [firstActions] }} onAction={runAction} />
@@ -654,7 +681,7 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
         draftRestore={draftRestore}
         onConsumeDraftRestore={restore => contentSource?.clearCanvasOverlayDraftRestore?.(overlay.id, restore) ?? false}
         onDraftChange={() => { contentSource?.clearCanvasOverlayDraftRestore?.(overlay.id); }} />
-      <OverlayStatus overlayId={overlay.id} status={status} statusSource={statusSource} />
+      <OverlayStatus overlayId={overlay.id} status={status} statusSource={statusSource} finishingInput={finishingInput} />
       {initializationError ? <p role="alert">{initializationError}</p> : null}
       {onOpenPanel && overlay.showPanelLink !== false ? <button type="button" className="plugin-canvas-overlay-panel" onClick={onOpenPanel}>
         {panelTitle ? `Open ${panelTitle}` : "Open panel"}

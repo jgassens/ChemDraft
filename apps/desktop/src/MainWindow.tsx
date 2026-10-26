@@ -1615,7 +1615,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.25.20.40-codex";
+const CURRENT_BUILD_STAMP = "10.26.10.00-codex";
 /** Whether this page load already asked the native side for a crash note from the last run. */
 let pendingCrashNoteChecked = false;
 const SELECTION_CLIPBOARD_PASTE_OFFSET_PX = 24;
@@ -1929,15 +1929,20 @@ export function MainWindow({
     };
     const blockComposingCanvasPress = (event: Event): boolean => {
       const canvas = canvasRegionRef.current;
-      if (!(event.target instanceof Node) || !canvas?.contains(event.target)
-        || !canvasOverlayLayerRef.current?.querySelector('.plugin-canvas-overlay[data-composing="true"]')) return false;
+      if (!(event.target instanceof Element) || !canvas?.contains(event.target)
+        || event.target.closest(".plugin-canvas-overlay")) return false;
+      const overlay = canvasOverlayLayerRef.current?.querySelector('.plugin-canvas-overlay[data-composing="true"]');
+      if (!overlay) return false;
       // Stop before native focus defaults and tool listeners, including other window
       // capture listeners. IME ownership must not depend on a transient activeElement.
       event.preventDefault();
       event.stopImmediatePropagation();
+      overlay.dispatchEvent(new Event("chemdraft:composition-blocked"));
       return true;
     };
     const overlayLayer = canvasOverlayLayerRef.current;
+    // Guard independent canvas activation paths as well as pointer/mouse presses.
+    // Move/release phases do not open editors and must remain available to overlay resizes.
     const composingEvents = ["touchstart", "contextmenu", "auxclick", "click", "dblclick"] as const;
     let composingListenersAttached = false;
     const removeComposingListeners = () => {

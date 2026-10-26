@@ -191,10 +191,10 @@ describe("assistant writes through mounted desktop normalization", () => {
   });
 });
 
-function input(value: string): void {
+function input(value: string, isComposing = false): void {
   const textarea = container.querySelector(".plugin-canvas-overlay textarea")!;
   Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, value);
-  textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  textarea.dispatchEvent(new InputEvent("input", { bubbles: true, isComposing }));
 }
 async function send(): Promise<void> {
   await act(async () => container.querySelector(".plugin-canvas-overlay textarea")!
@@ -221,7 +221,7 @@ async function typeAtFocus(text: string): Promise<void> {
 
 /** Dispatch through the actual DOM path without supplying the focus handoff under test.
  * In particular, do not call canvas.focus(): page tools can cancel browser focus defaults. */
-async function canvasPointer(target: Element, type: "pointerdown" | "pointerup",
+async function canvasPointer(target: Element, type: "pointerdown" | "pointermove" | "pointerup",
   options: MouseEventInit & { pointerType?: string; isPrimary?: boolean } = {}): Promise<MouseEvent> {
   const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: 500, clientY: 500, ...options });
   await act(async () => {
@@ -492,7 +492,7 @@ describe("MainWindow canvas overlays", () => {
         if (start === "compositionstart") textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
         else if (start === "input.isComposing") textarea.dispatchEvent(new InputEvent("input", { bubbles: true, isComposing: true }));
         else textarea.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Process", isComposing: true }));
-        input("あ");
+        input("あ", true);
       });
       expect(canvas.hasAttribute("tabindex")).toBe(false);
       for (const { target, clientX, clientY } of [
@@ -533,28 +533,103 @@ describe("MainWindow canvas overlays", () => {
       expect(submit.mock.calls[0]![0].input?.text).toBe("あ");
     });
 
-    it.each(["compositionstart", "input.isComposing", "keydown.isComposing"])("allows canvas focus and Escape after an orphaned %s expires", async start => {
+    it.each(["normal keydown", "normal input", "prompt blur", "Escape"])("releases a focused orphan on %s and the next bond press works", async terminal => {
+      await act(async () => window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "tool.bond" } })));
       const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
       const canvas = container.querySelector<HTMLElement>(".canvas-region")!;
+      const page = container.querySelector<HTMLElement>(".page")!;
+      const widget = container.querySelector<HTMLElement>(".plugin-canvas-overlay")!;
+      vi.spyOn(page, "getBoundingClientRect").mockReturnValue({ x: 200, y: 200, left: 200, top: 200,
+        width: 600, height: 800, right: 800, bottom: 1000, toJSON: () => ({}) });
+      const before = getAssistantHistoryPort().read("initial")!;
       vi.useFakeTimers();
       try {
         await act(async () => {
-          if (start === "compositionstart") textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
-          else if (start === "input.isComposing") textarea.dispatchEvent(new InputEvent("input", { bubbles: true, isComposing: true }));
-          else textarea.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Process", isComposing: true }));
+          textarea.focus();
+          textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+          input("あ", true);
+          vi.advanceTimersByTime(12000);
         });
-        expect((await canvasPointer(canvas, "pointerdown")).defaultPrevented).toBe(true);
-        await canvasPointer(canvas, "pointerup");
-        await act(async () => vi.advanceTimersByTime(12000));
+        expect((await canvasPointer(page, "pointerdown")).defaultPrevented).toBe(true);
+        await canvasPointer(page, "pointerup");
+        expect(widget.dataset.composing).toBe("true");
+        expect(widget.querySelector('[role="status"]')?.textContent).toBe("Finishing input…");
+        expect(widget.hidden).toBe(false);
+        expect(document.activeElement).toBe(textarea);
+        expect(getAssistantHistoryPort().read("initial")).toBe(before);
+        await act(async () => {
+          if (terminal === "prompt blur") textarea.blur();
+          else if (terminal === "normal input") input("あb");
+          else textarea.dispatchEvent(new KeyboardEvent("keydown", {
+            bubbles: true, cancelable: true, key: terminal === "Escape" ? "Escape" : "b", isComposing: false, keyCode: 0
+          }));
+        });
+        expect(widget.dataset.composing).toBeUndefined();
+        expect(widget.querySelector('[role="status"]')?.textContent).not.toContain("Finishing input…");
         expect(canvas.getAttribute("tabindex")).toBe("-1");
-        await canvasPointer(canvas, "pointerdown");
-        expect(document.activeElement).toBe(canvas);
-        await canvasPointer(canvas, "pointerup");
-        await act(async () => textarea.focus());
-        await act(async () => textarea.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" })));
-        expect(container.querySelector<HTMLElement>(".plugin-canvas-overlay")!.dataset.expanded).toBe("false");
-        expect(document.activeElement).toBe(canvas);
+        expect(widget.dataset.expanded).toBe(terminal === "Escape" ? "false" : "true");
+        await canvasPointer(page, "pointerdown");
+        await canvasPointer(page, "pointerup");
+        const after = getAssistantHistoryPort().read("initial")!;
+        expect(after).not.toBe(before);
+        expect(after.pages[0]!.objects.some(object => object.type === "molecule")).toBe(true);
       } finally { vi.useRealTimers(); }
+    });
+
+    it("does not arm on a 229 mode key and allows the very next canvas press", async () => {
+      const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
+      await act(async () => textarea.dispatchEvent(new KeyboardEvent("keydown", {
+        bubbles: true, key: "Process", keyCode: 229, isComposing: false
+      })));
+      expect(container.querySelector<HTMLElement>(".plugin-canvas-overlay")!.dataset.composing).toBeUndefined();
+      const canvas = container.querySelector<HTMLElement>(".canvas-region")!;
+      expect((await canvasPointer(canvas, "pointerdown")).defaultPrevented).toBe(false);
+      expect(document.activeElement).toBe(canvas);
+      await canvasPointer(canvas, "pointerup");
+    });
+
+    it("leaves main-window chrome and overlay controls usable during composition", async () => {
+      const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
+      const widget = container.querySelector<HTMLElement>(".plugin-canvas-overlay")!;
+      const canvas = container.querySelector<HTMLElement>(".canvas-region")!;
+      vi.spyOn(container.querySelector<HTMLElement>(".plugin-canvas-overlay-layer")!, "getBoundingClientRect")
+        .mockImplementation(() => canvas.getBoundingClientRect());
+      await act(async () => window.dispatchEvent(new Event("resize")));
+      const chrome = container.querySelector(".document-tab-strip")!;
+      expect(chrome).not.toBeNull();
+      const provider = widget.querySelector("select")!;
+      const collapse = widget.querySelector<HTMLButtonElement>('button[aria-label="Collapse Assistant overlay"]')!;
+      const grip = widget.querySelector<HTMLElement>(".plugin-canvas-overlay-resize")!;
+      const clicked = vi.fn();
+      chrome.addEventListener("click", clicked);
+      await act(async () => textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true })));
+      for (const target of [chrome, provider, collapse]) {
+        expect((await canvasPointer(target, "pointerdown")).defaultPrevented).toBe(false);
+        expect(widget.dataset.composing).toBe("true");
+        await canvasPointer(target, "pointerup");
+      }
+      await act(async () => {
+        expect(chrome.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }))).toBe(true);
+      });
+      expect(clicked).toHaveBeenCalledOnce();
+      expect(widget.dataset.composing).toBe("true");
+      await act(async () => {
+        expect(provider.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }))).toBe(true);
+        provider.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      expect(select).toHaveBeenCalledOnce();
+      expect(widget.dataset.composing).toBe("true");
+      // The grip intentionally prevents the browser's selection default; verify
+      // its own resize handler runs and canvas-targeted captured moves can finish.
+      const heightBefore = widget.style.height;
+      await canvasPointer(grip, "pointerdown", { clientY: 300, buttons: 1 });
+      await canvasPointer(container.querySelector(".page")!, "pointermove", { clientY: 250, buttons: 1 });
+      await canvasPointer(container.querySelector(".page")!, "pointerup", { clientY: 250 });
+      expect(widget.style.height).not.toBe(heightBefore);
+      expect(widget.dataset.composing).toBe("true");
+      await act(async () => collapse.click());
+      expect(widget.dataset.expanded).toBe("false");
+      expect(document.activeElement).toBe(container.querySelector(".canvas-region"));
     });
 
     it.each(["tool.bond", "tool.text"])("blocks real %s gestures throughout composition", async commandId => {
@@ -570,7 +645,7 @@ describe("MainWindow canvas overlays", () => {
       await act(async () => {
         textarea.focus();
         textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
-        input("あ");
+        input("あ", true);
       });
       const reacted = vi.fn();
       window.addEventListener("pointerdown", reacted, true);
@@ -619,43 +694,103 @@ describe("MainWindow canvas overlays", () => {
       expect(widget.hidden).toBe(false);
     });
 
-    it.each(["tool.text", "tool.select"])("blocks text-object double-click editing with %s during composition", async commandId => {
-      const port = getAssistantHistoryPort();
-      const initial = port.read("initial")!;
-      const text = testContext().text;
-      await act(async () => {
-        port.push("initial", initial, applyPatch(initial, { op: "addObject", pageId: initial.pages[0]!.id, object: text }), "Test text");
-        window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId } }));
-      });
-      expect(container.querySelector("[data-active-tool]")?.getAttribute("data-active-tool")).toBe(commandId);
+    it.each(["tool.text", "tool.select"])("blocks text-object double-click editing with %s after a focused candidate pause exceeds the old expiry", async commandId => {
+      vi.useFakeTimers();
+      try {
+        const port = getAssistantHistoryPort();
+        const initial = port.read("initial")!;
+        const text = testContext().text;
+        await act(async () => {
+          port.push("initial", initial, applyPatch(initial, { op: "addObject", pageId: initial.pages[0]!.id, object: text }), "Test text");
+          window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId } }));
+        });
+        expect(container.querySelector("[data-active-tool]")?.getAttribute("data-active-tool")).toBe(commandId);
+        const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
+        const widget = container.querySelector<HTMLElement>(".plugin-canvas-overlay")!;
+        const target = container.querySelector(`[data-page-svg-object-visual="${text.id}"]`)!;
+        expect(target).not.toBeNull();
+        const before = port.read("initial")!;
+        await act(async () => {
+          textarea.focus();
+          textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+          input("あ", true);
+        });
+        await act(async () => vi.advanceTimersByTime(12000));
+        expect(document.activeElement).toBe(textarea);
+        // Text opens on the first pointerdown, whereas Select waits for dblclick.
+        // Exercise both SVG glyphs and the separate interaction chrome, with every
+        // native phase: a lone dblclick never tested the Text-tool edit path.
+        const chrome = container.querySelector(`.text-object[data-object-id="${text.id}"]`)!;
+        expect(chrome).not.toBeNull();
+        for (const hit of [target, chrome]) {
+          for (const detail of [1, 2]) {
+            await canvasPointer(hit, "pointerdown", { detail, buttons: 1 });
+            expect(container.querySelector(".text-object-editor")).toBeNull();
+            await canvasMouseDefault(hit as HTMLElement, { detail, buttons: 1 });
+            await canvasPointer(hit, "pointermove", { detail, buttons: 1 });
+            await canvasPointer(hit, "pointerup", { detail });
+            await act(async () => {
+              for (const type of ["click", ...(detail === 2 ? ["dblclick"] : [])]) {
+                expect(hit.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, detail }))).toBe(false);
+              }
+            });
+            expect(container.querySelector(".text-object-editor")).toBeNull();
+            expect(container.textContent).not.toContain("Editing text");
+            expect(widget.hidden).toBe(false);
+            expect(document.activeElement).toBe(textarea);
+            expect(widget.dataset.composing).toBe("true");
+          }
+        }
+        expect(container.querySelector(".text-object-editor")).toBeNull();
+        expect(port.read("initial")).toBe(before);
+        expect(document.activeElement).toBe(textarea);
+        expect(widget.dataset.composing).toBe("true");
+        expect(textarea.value).toBe("あ");
+        await act(async () => {
+          textarea.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "あ" }));
+          target.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, detail: 2 }));
+        });
+        const editor = container.querySelector(".text-object-editor");
+        expect(editor).not.toBeNull();
+        expect(document.activeElement).toBe(editor);
+        expect(port.read("initial")!.selection.objectIds).toEqual([text.id]);
+      } finally { vi.useRealTimers(); }
+    });
+
+    it.each(["keydown before end", "keydown after end", "keydown after input"])("draws on the very next bond press after WebKit commit (%s)", async order => {
+      await act(async () => window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "tool.bond" } })));
       const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
       const widget = container.querySelector<HTMLElement>(".plugin-canvas-overlay")!;
-      const target = container.querySelector(`[data-page-svg-object-visual="${text.id}"]`)!;
-      expect(target).not.toBeNull();
-      const before = port.read("initial")!;
+      const page = container.querySelector<HTMLElement>(".page")!;
+      vi.spyOn(page, "getBoundingClientRect").mockReturnValue({ x: 200, y: 200, left: 200, top: 200,
+        width: 600, height: 800, right: 800, bottom: 1000, toJSON: () => ({}) });
+      const before = getAssistantHistoryPort().read("initial")!;
       await act(async () => {
         textarea.focus();
         textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
-        input("あ");
-        // No render or microtask gap before the double-click.
-        target.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, detail: 2 }));
-      });
-      expect(container.querySelector(".text-object-editor")).toBeNull();
-      expect(port.read("initial")).toBe(before);
-      expect(document.activeElement).toBe(textarea);
-      expect(widget.dataset.composing).toBe("true");
-      expect(textarea.value).toBe("あ");
-      await act(async () => {
+        input("あ", true);
+        const commitKey = () => textarea.dispatchEvent(new KeyboardEvent("keydown", {
+          key: "Enter", keyCode: 229, isComposing: true, bubbles: true, cancelable: true
+        }));
+        if (order === "keydown before end") commitKey();
         textarea.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "あ" }));
-        target.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, detail: 2 }));
+        if (order === "keydown after end") commitKey();
+        textarea.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: "あ" }));
+        if (order === "keydown after input") commitKey();
+        textarea.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", keyCode: 13, bubbles: true }));
       });
-      const editor = container.querySelector(".text-object-editor");
-      expect(editor).not.toBeNull();
-      expect(document.activeElement).toBe(editor);
-      expect(port.read("initial")!.selection.objectIds).toEqual([text.id]);
+      expect(widget.dataset.composing).toBeUndefined();
+      expect(document.activeElement).toBe(textarea);
+      expect(submit).not.toHaveBeenCalled();
+      await canvasPointer(page, "pointerdown", { buttons: 1 });
+      await canvasPointer(page, "pointerup");
+      const after = getAssistantHistoryPort().read("initial")!;
+      expect(after).not.toBe(before);
+      expect(after.pages[0]!.objects.some(object => object.type === "molecule")).toBe(true);
+      expect(widget.hidden).toBe(false);
     });
 
-    it.each(["compositionend", "compositioncancel", "prompt blur", "timeout", "overlay removal", "unmount"])("removes non-passive composition listeners on %s", async terminal => {
+    it.each(["compositionend", "compositioncancel", "prompt blur", "normal keydown", "overlay removal", "unmount"])("removes non-passive composition listeners on %s", async terminal => {
       const guards = () => vi.mocked(window.addEventListener).mock.calls.filter(([type, , options]) =>
         type === "touchstart" && typeof options === "object" && options.capture && options.passive === false);
       const attached = () => guards().length - vi.mocked(window.removeEventListener).mock.calls.filter(([type, listener, options]) =>
@@ -675,7 +810,7 @@ describe("MainWindow canvas overlays", () => {
             expect(attached()).toBe(1);
           });
           await act(async () => {
-            if (terminal === "timeout") vi.advanceTimersByTime(10000);
+            if (terminal === "normal keydown") textarea.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "b" }));
             else if (terminal === "prompt blur") textarea.blur();
             else if (terminal === "overlay removal") captured.runtime!.unregisterPlugin(pluginId);
             else if (terminal === "unmount") root.unmount();
@@ -687,22 +822,22 @@ describe("MainWindow canvas overlays", () => {
       } finally { vi.useRealTimers(); }
     });
 
-    it.each(["mousedown", "touchstart", "contextmenu", "auxclick", "click", "dblclick"])("cancels composing canvas %s before any other listener reacts", async type => {
+    it.each(["pointerdown", "mousedown", "touchstart", "contextmenu", "auxclick", "click", "dblclick"])("cancels composing canvas %s before any other listener reacts", async type => {
       const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
       const widget = container.querySelector<HTMLElement>(".plugin-canvas-overlay")!;
       const page = container.querySelector<HTMLElement>(".page")!;
       const before = getAssistantHistoryPort().read("initial")!;
       await act(async () => {
         textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
-        input("あ");
+        input("あ", true);
       });
       const reacted = vi.fn();
       window.addEventListener(type, reacted, true);
       page.addEventListener(type, reacted);
       try {
         for (const button of [0, 1, 2]) {
-          const event = type === "touchstart" ? new TouchEvent(type, { bubbles: true, cancelable: true })
-            : new MouseEvent(type, { bubbles: true, cancelable: true, button, clientX: 500, clientY: 500 });
+          const event = type.startsWith("touch") ? new TouchEvent(type, { bubbles: true, cancelable: true })
+            : new MouseEvent(type, { bubbles: true, cancelable: true, button, buttons: 1, clientX: 500, clientY: 500 });
           await act(async () => { expect(page.dispatchEvent(event)).toBe(false); });
           expect(event.defaultPrevented).toBe(true);
           expect(reacted).not.toHaveBeenCalled();
@@ -714,7 +849,9 @@ describe("MainWindow canvas overlays", () => {
           expect(container.querySelector('[data-context-target-kind="page"]')).toBeNull();
         }
         await act(async () => textarea.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "あ" })));
-        await act(async () => page.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 2 })));
+        if (type === "pointermove" || type === "pointerup" || type === "pointerdown") {
+          await canvasPointer(page, type, { button: 2 });
+        } else await act(async () => page.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 2 })));
         expect(reacted).toHaveBeenCalled();
         if (type === "contextmenu") expect(container.querySelector('[data-context-target-kind="page"]')).not.toBeNull();
       } finally {

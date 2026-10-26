@@ -90,10 +90,10 @@ function pointer(target: Element | Document, type: string, x: number, y: number,
   target.dispatchEvent(event);
   return event;
 }
-function enterText(value: string): void {
+function enterText(value: string, isComposing = false): void {
   const textarea = container.querySelector("textarea")!;
   Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, value);
-  textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  textarea.dispatchEvent(new InputEvent("input", { bubbles: true, isComposing }));
 }
 async function render(windowId = "main"): Promise<void> {
   await act(async () => root.render(<PluginCanvasOverlay overlay={{ ...overlay, showPanelLink, prompt: { ...overlay.prompt, maxLength } }} viewportRef={viewportRef}
@@ -683,11 +683,11 @@ describe("PluginCanvasOverlay", () => {
     const textarea = container.querySelector("textarea")!;
     await act(async () => {
       textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
-      enterText("あ");
+      enterText("あ", true);
     });
     await render();
-    // Some IMEs omit isComposing on the key that dismisses their candidate popup.
-    await act(async () => textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    // A conversion Escape stays with the IME; a later non-composing Escape escapes.
+    await act(async () => textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, isComposing: true, keyCode: 229 })));
     expect(widget().dataset.expanded).toBe("true");
     expect(document.activeElement).toBe(textarea);
     expect(textarea.value).toBe("あ");
@@ -700,25 +700,123 @@ describe("PluginCanvasOverlay", () => {
   // Composition handling is shared across platforms. MainWindow's integration suite
   // supplies shortcutPlatform for both platforms; the reload-chord test covers its branch here.
   describe("composition guard", () => {
-    it.each(["prompt blur", "compositionend", "compositioncancel", "timeout"])("clears an orphaned composing flag on %s without submitting the draft", async terminal => {
+    it.each([
+      { order: "before end", isComposing: true }, { order: "after end", isComposing: true },
+      { order: "before end", isComposing: false }, { order: "after end", isComposing: false },
+      { order: "after input", isComposing: true }, { order: "after input", isComposing: false }
+    ])("clears a WebKit commit immediately (229 $order, isComposing=$isComposing)", async ({ order, isComposing }) => {
+      await expand();
+      const textarea = container.querySelector("textarea")!;
+      viewport.setAttribute("tabindex", "-1");
+      await act(async () => {
+        textarea.focus();
+        textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+        const commitKey = () => textarea.dispatchEvent(new KeyboardEvent("keydown", {
+          bubbles: true, cancelable: true, key: "Enter", keyCode: 229, isComposing
+        }));
+        if (order === "before end") commitKey();
+        textarea.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "あ" }));
+        if (order === "after end") commitKey();
+        textarea.dispatchEvent(new InputEvent("input", { bubbles: true, data: "あ", inputType: "insertText" }));
+        if (order === "after input") commitKey();
+        textarea.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "Enter", keyCode: 13 }));
+      });
+      expect(widget().dataset.composing).toBeUndefined();
+      expect(viewport.getAttribute("tabindex")).toBe("-1");
+      expect(document.activeElement).toBe(textarea);
+      expect(action).not.toHaveBeenCalled();
+    });
+
+    it.each(["compositionstart", "compositionupdate", "input.isComposing", "keydown.isComposing"])("protects a new %s after commit, keeping a focused candidate window guarded", async signal => {
+      await expand();
+      const textarea = container.querySelector("textarea")!;
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+      try {
+        await act(async () => {
+          textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+          textarea.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "あ" }));
+        });
+        // Only explicit composition events may re-arm inside the trailing grace window.
+        if (signal.endsWith(".isComposing")) await act(async () => vi.advanceTimersByTime(251));
+        await act(async () => {
+          if (signal === "input.isComposing") textarea.dispatchEvent(new InputEvent("input", { bubbles: true, isComposing: true }));
+          else if (signal === "keydown.isComposing") textarea.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Process", isComposing: true }));
+          else textarea.dispatchEvent(new CompositionEvent(signal, { bubbles: true, data: "い" }));
+        });
+        expect(widget().dataset.composing).toBe("true");
+        await act(async () => vi.advanceTimersByTime(12000));
+        expect(document.activeElement).toBe(textarea);
+        expect(widget().dataset.composing).toBe("true");
+        await act(async () => textarea.blur());
+        expect(widget().dataset.composing).toBeUndefined();
+        expect(action).not.toHaveBeenCalled();
+      } finally { vi.useRealTimers(); }
+    });
+
+    it.each(["input", "keydown"])("ignores trailing composing %s during a monotonic grace window", async signal => {
+      await expand();
+      const textarea = container.querySelector("textarea")!;
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance", "Date"] });
+      const trailing = () => textarea.dispatchEvent(signal === "input"
+        ? new InputEvent("input", { bubbles: true, isComposing: true })
+        : new KeyboardEvent("keydown", { bubbles: true, key: "Process", isComposing: true }));
+      try {
+        await act(async () => {
+          textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+          textarea.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+          // A wall-clock jump must not shorten the grace window.
+          vi.setSystemTime(Date.now() + 60000);
+          trailing();
+        });
+        expect(widget().dataset.composing).toBeUndefined();
+        await act(async () => { vi.advanceTimersByTime(249); trailing(); });
+        expect(widget().dataset.composing).toBeUndefined();
+        await act(async () => { vi.advanceTimersByTime(2); trailing(); });
+        expect(widget().dataset.composing).toBe("true");
+      } finally { vi.useRealTimers(); }
+    });
+
+    it("never arms on keyCode 229 alone, including after commit grace", async () => {
+      await expand();
+      const textarea = container.querySelector("textarea")!;
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+      try {
+        const modeKey = () => textarea.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Process", keyCode: 229 }));
+        await act(async () => modeKey());
+        expect(widget().dataset.composing).toBeUndefined();
+        await act(async () => {
+          textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+          textarea.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+          vi.advanceTimersByTime(251);
+          modeKey();
+        });
+        expect(widget().dataset.composing).toBeUndefined();
+      } finally { vi.useRealTimers(); }
+    });
+
+    it.each(["prompt blur", "compositionend", "compositioncancel", "normal keydown", "normal input", "Escape"])("clears a focused orphan on %s without submitting the draft", async terminal => {
       await expand();
       const textarea = container.querySelector("textarea")!;
       viewport.setAttribute("tabindex", "-1");
       await act(async () => enterText("Keep draft"));
-      vi.useFakeTimers();
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
       try {
         for (const signal of ["compositionstart", "input", "keydown"]) {
+          await act(async () => vi.advanceTimersByTime(251));
           await act(async () => {
             if (signal === "compositionstart") textarea.dispatchEvent(new CompositionEvent(signal, { bubbles: true }));
             else if (signal === "input") textarea.dispatchEvent(new InputEvent(signal, { bubbles: true, isComposing: true }));
             else textarea.dispatchEvent(new KeyboardEvent(signal, { bubbles: true, key: "Process", isComposing: true }));
+            vi.advanceTimersByTime(12000);
           });
           expect(widget().dataset.composing).toBe("true");
           expect(viewport.hasAttribute("tabindex")).toBe(false);
           await act(async () => {
-            // Moving to a control *inside* the overlay must clear a prompt's stale IME state.
             if (terminal === "prompt blur") container.querySelector("select")!.focus();
-            else if (terminal === "timeout") vi.advanceTimersByTime(12000);
+            else if (terminal === "normal input") textarea.dispatchEvent(new InputEvent("input", { bubbles: true, isComposing: false }));
+            else if (terminal === "normal keydown" || terminal === "Escape") textarea.dispatchEvent(new KeyboardEvent("keydown", {
+              bubbles: true, key: terminal === "Escape" ? "Escape" : "b", isComposing: false, keyCode: 0
+            }));
             else textarea.dispatchEvent(new CompositionEvent(terminal, { bubbles: true }));
           });
           expect(widget().dataset.composing).toBeUndefined();
@@ -733,40 +831,19 @@ describe("PluginCanvasOverlay", () => {
       } finally { vi.useRealTimers(); }
     });
 
-    it("protects a five-second candidate pause but expires after twelve seconds of silence", async () => {
+    it("expires an unfocused orphan when blur was lost", async () => {
       await expand();
       const textarea = container.querySelector("textarea")!;
       viewport.setAttribute("tabindex", "-1");
       vi.useFakeTimers();
       try {
         await act(async () => textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true })));
-        await act(async () => vi.advanceTimersByTime(5000));
-        expect(widget().dataset.composing).toBe("true");
-        expect(viewport.hasAttribute("tabindex")).toBe(false);
-        await act(async () => vi.advanceTimersByTime(7000));
+        const active = vi.spyOn(document, "activeElement", "get").mockReturnValue(document.body);
+        try { await act(async () => vi.advanceTimersByTime(10000)); }
+        finally { active.mockRestore(); }
         expect(widget().dataset.composing).toBeUndefined();
         expect(viewport.getAttribute("tabindex")).toBe("-1");
         expect(action).not.toHaveBeenCalled();
-      } finally { vi.useRealTimers(); }
-    });
-
-    it.each(["compositionupdate", "input", "input.isComposing", "keydown", "focus"])("renews a real composition's idle timeout on %s", async signal => {
-      await expand();
-      const textarea = container.querySelector("textarea")!;
-      vi.useFakeTimers();
-      try {
-        await act(async () => textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true })));
-        await act(async () => vi.advanceTimersByTime(5000));
-        await act(async () => {
-          if (signal === "compositionupdate") textarea.dispatchEvent(new CompositionEvent(signal, { bubbles: true, data: "あ" }));
-          else if (signal === "keydown") textarea.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Process" }));
-          else if (signal === "focus") textarea.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
-          else textarea.dispatchEvent(new InputEvent("input", { bubbles: true, isComposing: signal === "input.isComposing" }));
-        });
-        await act(async () => vi.advanceTimersByTime(5000));
-        expect(widget().dataset.composing).toBe("true");
-        await act(async () => vi.advanceTimersByTime(7000));
-        expect(widget().dataset.composing).toBeUndefined();
       } finally { vi.useRealTimers(); }
     });
 
