@@ -193,7 +193,7 @@ import {
   type ProposalDecisionOutcome
 } from "./plugins/panelBridge";
 import { resolvePluginPanelAction } from "./plugins/pluginPanelActions";
-import { PluginCanvasOverlay } from "./plugins/PluginCanvasOverlay";
+import { canvasOverlayDockSlots, PluginCanvasOverlay } from "./plugins/PluginCanvasOverlay";
 import { pluginPanelOpenCommand } from "./plugins/pluginPanelOpenCommand";
 import { canvasOverlayPrompt, OVERLAY_BUSY_MESSAGE, pluginCanvasOverlayOpenCommand } from "./plugins/pluginCanvasOverlayControls";
 import type { PluginPanelActionRequest, PluginPanelActionResult } from "./plugins/pluginPanelActionTypes";
@@ -20215,11 +20215,13 @@ export function MainWindow({
           </div>
         </section>
         <div ref={canvasOverlayLayerRef} className="plugin-canvas-overlay-layer">
-          {pluginRuntime.canvasOverlays.map(({ pluginId, overlay }) => {
+          {canvasOverlayDockSlots(pluginRuntime.canvasOverlays).map(({ pluginId, overlay, dockIndex, dockCount }) => {
             const manifest = pluginRuntime.plugins.find(plugin => plugin.id === pluginId);
             const panel = manifest?.contributes.panels[0];
             const openCommandId = manifest && pluginCanvasOverlayOpenCommand(manifest, overlay.id);
             return <PluginCanvasOverlay key={`${pluginId}:${overlay.id}`} overlay={overlay}
+              dockIndex={dockIndex}
+              dockCount={dockCount}
               shortcutPlatform={shortcutPlatform}
               viewportRef={canvasRegionRef}
               overlayLayerRef={canvasOverlayLayerRef}
