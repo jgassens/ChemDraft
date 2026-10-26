@@ -105,6 +105,39 @@ describe.each(["macos", "windows"] as const)("existing text editing (%s)", platf
     expect(container.querySelector('[role="status"]')?.textContent).not.toBe("No selection");
   }
 
+  it("keeps resized text wrapped after release, blur, Undo and Redo", async () => {
+    await mount("tool.text", true);
+    await click(glyph(), 1);
+    const before = snapshot().document;
+    const text = before.pages[0]!.objects.find(object => object.id === objectId)!;
+    const page = container.querySelector<HTMLElement>(".page")!;
+    const handle = container.querySelector<HTMLElement>('[data-text-resize-edge="right"]')!;
+    const pointer = async (target: Element, type: string, x: number) => {
+      await act(async () => {
+        const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0,
+          buttons: type === "pointerup" ? 0 : 1, clientX: x, clientY: text.y + 10 });
+        Object.defineProperties(event, { pointerId: { value: 17 }, pointerType: { value: "mouse" }, isPrimary: { value: true } });
+        target.dispatchEvent(event);
+      });
+    };
+    const renderedLines = () => container.querySelectorAll(
+      `.page-svg-visual-layer [data-page-svg-object-visual="${objectId}"] text > tspan[x]`).length;
+    await pointer(handle, "pointerdown", text.x + text.width);
+    await pointer(page, "pointermove", text.x + 70);
+    const previewLines = renderedLines();
+    expect(previewLines).toBeGreaterThan(1);
+    await pointer(page, "pointerup", text.x + 70);
+    await act(async () => { editor()?.blur(); });
+    const resized = snapshot().document.pages[0]!.objects.find(object => object.id === objectId)!;
+    expect(resized).toMatchObject({ text: "Reaction conditions", width: 70, style: { textBoxSizingMode: "fixed-width" } });
+    expect(renderedLines()).toBe(previewLines);
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.undo"); });
+    expect(snapshot().document.pages[0]!.objects).toEqual(before.pages[0]!.objects);
+    expect(renderedLines()).toBe(1);
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.redo"); });
+    expect(renderedLines()).toBe(previewLines);
+  });
+
   function expectEditing() {
     expect(editor()?.value).toBe("Reaction conditions");
     expect(editor()?.closest("[data-object-id]")?.getAttribute("data-object-id")).toBe(objectId);

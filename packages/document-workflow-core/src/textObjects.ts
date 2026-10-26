@@ -10,6 +10,7 @@ import {
   textStyleToObjectStyle
 } from "@chemdraft/chem-core";
 import { clamp, firstPage, nextObjectId, type PagePoint, phase4Timestamp } from "./shared";
+import { estimateNativeTextLineWidth, nativeTextSpanLines } from "@chemdraft/layout-engine";
 
 export const nativeTextObjectDimensions = {
   width: 240,
@@ -125,44 +126,8 @@ function normalizeTextLines(text: string): string[] {
   return lines.length > 0 ? lines : [""];
 }
 
-function estimateNativeTextLineWidth(line: string, style: NativeTextStyle): number {
-  if (line.length === 0) {
-    return style.fontSizePx * 0.5;
-  }
-
-  return [...line].reduce((width, character, index) => (
-    width + style.fontSizePx * nativeTextCharacterWidthFactor(character)
-      + (index > 0 ? style.letterSpacingPx : 0)
-  ), 0);
-}
-
 function wrappedNativeTextLineCount(line: string, style: NativeTextStyle, contentWidth: number): number {
-  const safeContentWidth = Math.max(1, contentWidth);
-  return Math.max(1, Math.ceil(estimateNativeTextLineWidth(line, style) / safeContentWidth));
-}
-
-function nativeTextCharacterWidthFactor(character: string): number {
-  if (character === "\t") {
-    return 1.6;
-  }
-
-  if (character.trim().length === 0) {
-    return 0.34;
-  }
-
-  if ("ilI.,:;!|".includes(character)) {
-    return 0.28;
-  }
-
-  if ("mwMW@#%&".includes(character)) {
-    return 0.82;
-  }
-
-  if (/[A-Z0-9]/.test(character)) {
-    return 0.62;
-  }
-
-  return 0.54;
+  return nativeTextSpanLines([{ text: line, script: "normal", style: {} }], style, contentWidth).length;
 }
 
 function roundToTextBoxPixel(value: number): number {

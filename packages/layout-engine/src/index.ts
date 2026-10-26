@@ -69,6 +69,8 @@ import {
   type NativeElementSymbol
 } from "./valence";
 import { formatNumber } from "./formatNumber";
+import { nativeTextSpanLayout } from "./textLayout";
+export { nativeTextSpanLines, estimateNativeTextLineWidth } from "./textLayout";
 import { nativeGroupLabelDisplay, type AtomLabelAnchor } from "./labelGrammar";
 import { moleculeSketchTickPath, type MoleculeSketchTick } from "./sketchTicks";
 
@@ -3500,9 +3502,11 @@ function planTextObjectSvg(object: TextObject, layerIndex: number): PageSvgEleme
     ? object.x + object.width / 2
     : textStyle.textAlign === "right" ? object.x + object.width : object.x;
   const y = object.y + textStyle.fontSizePx;
-  const lineAdvance = textStyle.fontSizePx * textStyle.lineHeight + textStyle.paragraphSpacingPx;
+  const lineAdvance = textStyle.fontSizePx * textStyle.lineHeight;
   const lineFragments = lines.length > 0
-    ? lines.flatMap((line, lineIndex) => textSpanLineFragments(line, lineIndex, x, lineAdvance))
+    ? lines.flatMap((line, lineIndex) => textSpanLineFragments(line.spans, lineIndex, x,
+      lineAdvance + (lineIndex > 0 && line.paragraphIndex !== lines[lineIndex - 1]!.paragraphIndex
+        ? textStyle.paragraphSpacingPx : 0)))
     : [elementFragment("tspan", `text-empty-${object.id}`, { x }, [])];
 
   return elementFragment("text", `object-${object.id}`, objectAttributes(object, layerIndex, {
@@ -3551,20 +3555,10 @@ function textSpanLineFragments(
   );
 }
 
-function textObjectSpanLines(object: TextObject): TextSpan[][] {
-  const spans = textObjectSpansForRendering(object);
-  return spans.reduce<TextSpan[][]>((lines, span) => {
-    const parts = span.text.split(/\r?\n/);
-    parts.forEach((part, index) => {
-      if (index > 0) {
-        lines.push([]);
-      }
-      if (part.length > 0) {
-        lines[lines.length - 1].push({ ...span, text: part });
-      }
-    });
-    return lines;
-  }, [[]]);
+function textObjectSpanLines(object: TextObject): ReturnType<typeof nativeTextSpanLayout> {
+  const fixedWidth = object.style.textBoxSizingMode === "fixed-width" || object.style.textBoxSizingMode === "fixed-size";
+  return nativeTextSpanLayout(textObjectSpansForRendering(object), nativeTextStyleFromObjectStyle(object.style),
+    fixedWidth ? Math.max(1, object.width - 6) : undefined);
 }
 
 export function textObjectSpansForRendering(object: TextObject): TextSpan[] {
