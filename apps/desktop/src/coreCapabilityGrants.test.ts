@@ -32,6 +32,10 @@ describe("core capability grants", () => {
     expect(owners("allow-perf-log-complete").map(g => [g.name, g.capability.windows])).toEqual([
       ["perf-probe.json", ["main", "dialog-main-*"]]
     ]);
+    expect(owners("allow-perf-log-window-state").map(g => [g.name, g.capability.windows])).toEqual([
+      ["perf-probe-main.json", ["main"]]
+    ]);
+    expect(grants.find(g => g.name === "perf-probe-main.json")!.capability.permissions).toEqual(["allow-perf-log-window-state"]);
     expect(grants.find(g => g.name === "perf-probe.json")!.capability.permissions).toEqual(["allow-perf-log-complete"]);
     for (const permission of ["allow-perf-log-clock", "allow-perf-log-append"]) {
       expect(owners(permission).map(g => [g.name, g.capability.windows])).toEqual([

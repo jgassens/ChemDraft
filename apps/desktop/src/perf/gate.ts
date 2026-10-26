@@ -7,6 +7,6 @@ export function perfProbeRequestedFromWindow(): boolean {
   const native = window as Window & { __TAURI_INTERNALS__?: unknown; __TAURI__?: unknown; __CHEMDRAFT_PERF_ALLOWED__?: boolean };
   if (native.__TAURI_INTERNALS__ || native.__TAURI__) return native.__CHEMDRAFT_PERF_ALLOWED__ === true;
   let storage: string | null = null;
-  try { storage = localStorage.getItem("chemdraft.agentBridge"); } catch { /* Same bridge gate. */ }
-  return probeRequested(false, false, location.search, storage);
+  try { storage = window.localStorage.getItem("chemdraft.agentBridge"); } catch { /* Same bridge gate. */ }
+  return probeRequested(false, false, window.location.search, storage);
 }

@@ -14,7 +14,6 @@ import type { DialogDelivery } from "./dialogTransport";
 import * as atomLabelDraft from "../atomLabelDraft";
 import * as workflow from "../documentWorkflow";
 import { perfProbe, startPerfProbe } from "../perf/runtime";
-import { Window as TauriWindow } from "@tauri-apps/api/window";
 
 const native = vi.hoisted(() => ({
   snapshot: undefined as DialogMessage | undefined, receive: undefined as ((message: DialogDelivery) => void) | undefined,
@@ -28,7 +27,6 @@ vi.mock("./dialogTransport", () => ({ nativeDialogTransport: {
 vi.mock("../rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("../window-manager", async original => ({
   ...await original<typeof import("../window-manager")>(), isDesktopRuntime: () => true,
-  togglePreferencesWindow: native.preferences,
   loadDocumentSession: async () => undefined, saveDocumentSession: async () => {},
   loadToolsetLayoutState: async () => undefined, listToolsetWindowStates: async () => [],
   setToolbarsMenu: async () => {}, setQuitPromptEnabled: async () => {},
@@ -53,6 +51,10 @@ beforeEach(async () => {
   vi.clearAllMocks(); native.publish.mockResolvedValue(undefined); native.invoke.mockResolvedValue(null); native.events.clear();
   vi.stubGlobal("localStorage", new MemoryStorage()); vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+  vi.stubGlobal("MessageChannel", class {
+    port1 = { onmessage: () => {}, close() {} };
+    port2 = { postMessage: () => { void Promise.resolve().then(() => this.port1.onmessage()); }, close() {} };
+  });
   vi.spyOn(window, "focus").mockImplementation(() => {});
   window.history.replaceState(null, "", "/?agentBridge=1");
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
@@ -64,25 +66,38 @@ beforeEach(async () => {
 });
 afterEach(() => { perfProbe?.stop(); act(() => root.unmount()); container.remove(); window.history.replaceState(null, "", "/"); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
-it("records Preferences shown and hidden without leaving either command pending", async () => {
+it.each([
+  { commandId: "view.togglePreferences", ipc: "toggle_preferences_window", label: "preferences" },
+  { commandId: "view.toggle3dDebugger", ipc: "toggle_spin3d_debugger_window", label: "spin3d-debugger" }
+])("waits for $label destination paint on Rust's reveal (including covered/minimized), and finishes a hide", async ({ commandId, ipc, label }) => {
   const frames = new Map<number, FrameRequestCallback>(); let id = 0;
   vi.spyOn(window, "requestAnimationFrame").mockImplementation(callback => { frames.set(++id, callback); return id; });
   vi.spyOn(window, "cancelAnimationFrame").mockImplementation(key => { frames.delete(key); });
-  const visible = vi.fn().mockResolvedValue(true);
-  vi.spyOn(TauriWindow, "getByLabel").mockResolvedValue({ isVisible: visible } as unknown as TauriWindow);
   await startPerfProbe("preferences-test");
   for (const open of [true, false]) {
-    visible.mockResolvedValue(open);
-    await command("view.togglePreferences");
+    const registrations = () => native.invoke.mock.calls.filter(([name, args]) => name === "perf_log_clock" && args?.nativeOpen?.shownAt !== undefined).length;
+    const before = registrations();
+    native.invoke.mockImplementation(async (name: string) => name === "perf_log_window_state" ? open ? "visible" : "hidden" : undefined);
+    await command(commandId);
+    if (!open) expect(registrations()).toBe(before);
     for (const frame of [...frames.values()]) frame(0);
     frames.clear();
+    await Promise.resolve();
+    if (open) {
+      expect((localStorage.getItem("chemdraft.perfLog") ?? "").split("\n").filter(Boolean).map(line => JSON.parse(line)).filter(row => row.kind !== "cold-launch")).toEqual([]);
+      const request = native.invoke.mock.calls.find(([name, args]) => name === "perf_log_clock" && args?.nativeOpen)?.[1].nativeOpen;
+      expect(request?.inputId).toBeDefined();
+      const paintedAt = perfProbe!.timestamp()!;
+      perfProbe!.remoteCompletion(request.inputId, "window-painted", paintedAt, paintedAt, label, paintedAt);
+    }
     const rows = (localStorage.getItem("chemdraft.perfLog") ?? "").trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
-    expect(rows.at(-1)).toMatchObject({ commandId: "view.togglePreferences", doneSignal: open ? "window-shown" : "command-finished" });
-    const surfaces = rows.filter(row => row.window === "preferences");
-    expect(surfaces).toHaveLength(1);
-    expect(surfaces[0]).toMatchObject({ kind: "window-shown", doneSignal: "window-shown" });
+    expect(rows.at(-1)).toMatchObject({ commandId, doneSignal: open ? "window-painted" : "command-finished" });
+    if (open) expect(rows.at(-1).windowShownMs).toEqual(expect.any(Number));
   }
-  expect(native.preferences).toHaveBeenCalledTimes(2);
+  expect(native.invoke.mock.calls.filter(([name]) => name === ipc)).toEqual([[ipc], [ipc]]);
+  expect(native.invoke.mock.calls.filter(([name]) => name === "perf_log_window_state")).toEqual([
+    ["perf_log_window_state", { label }], ["perf_log_window_state", { label }]
+  ]);
 });
 
 it("records Plugin Manager only on real opens through the command handler", async () => {
@@ -90,16 +105,16 @@ it("records Plugin Manager only on real opens through the command handler", asyn
   vi.spyOn(window, "requestAnimationFrame").mockImplementation(callback => { frames.set(++id, callback); return id; });
   vi.spyOn(window, "cancelAnimationFrame").mockImplementation(key => { frames.delete(key); });
   await startPerfProbe("plugin-manager-test");
-  const paint = () => { for (const frame of [...frames.values()]) frame(0); frames.clear(); };
+  const paint = async () => { for (const frame of [...frames.values()]) frame(0); frames.clear(); await Promise.resolve(); };
   const surfaces = () => (localStorage.getItem("chemdraft.perfLog") ?? "").trim().split("\n").filter(Boolean)
     .map(line => JSON.parse(line)).filter(row => row.kind === "dialog-open");
-  await command("plugins.manage"); paint();
-  await command("plugins.manage"); paint();
+  await command("plugins.manage"); await paint();
+  await command("plugins.manage"); await paint();
   expect(surfaces()).toHaveLength(1);
   expect(surfaces()[0]).toMatchObject({ commandId: "plugins.manage", extra: { surface: "plugin-manager" } });
   const close = [...document.querySelectorAll<HTMLButtonElement>(".plugin-manager-button")].find(button => button.textContent?.trim() === "Close")!;
   await act(async () => close.click());
-  await command("plugins.manage"); paint();
+  await command("plugins.manage"); await paint();
   expect(surfaces()).toHaveLength(2);
 });
 

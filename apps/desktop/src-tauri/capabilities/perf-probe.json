@@ -2,6 +2,11 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "perf-probe",
   "description": "Bridge-gated monotonic clock and bounded timing log only; no general filesystem access.",
-  "windows": ["main", "dialog-main-*"],
-  "permissions": ["allow-perf-log-complete"]
+  "windows": [
+    "main",
+    "dialog-main-*"
+  ],
+  "permissions": [
+    "allow-perf-log-complete"
+  ]
 }

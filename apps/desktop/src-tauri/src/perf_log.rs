@@ -1,6 +1,7 @@
 //! Bridge-gated timing log. Clock and writer are shared by every webview in this process.
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     fs::{self, OpenOptions},
     io::Write,
     path::Path,
@@ -26,6 +27,9 @@ pub(crate) struct PerfLog {
     build_stamp: Mutex<Option<String>>,
     writer: Mutex<()>,
     error_reported: AtomicBool,
+    opens: Mutex<HashMap<String, NativeOpen>>,
+    created: Mutex<HashMap<String, f64>>,
+    disabled: AtomicBool,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -33,6 +37,28 @@ pub(crate) struct ClockSample {
     now: f64,
     process_start: f64,
     build_stamp: Option<String>,
+    native_open: Option<NativeOpen>,
+    created_at: Option<f64>,
+}
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ForwardInput {
+    input_id: String,
+    t0: f64,
+    command_id: String,
+}
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct NativeOpen {
+    target: String,
+    input_id: String,
+    t0: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    command_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shown_at: Option<f64>,
+    #[serde(default)]
+    cold: bool,
 }
 impl PerfLog {
     /// Call at the beginning of run(), before constructing the Tauri builder. Disabled runs do
@@ -50,9 +76,21 @@ impl PerfLog {
             writer: Mutex::new(()),
             build_stamp: Mutex::new(None),
             error_reported: AtomicBool::new(false),
+            opens: Mutex::new(HashMap::new()),
+            created: Mutex::new(HashMap::new()),
+            disabled: AtomicBool::new(false),
+        }
+    }
+    fn disable(&self) {
+        self.disabled.store(true, Ordering::Relaxed);
+        if let Ok(mut opens) = self.opens.lock() {
+            opens.clear();
         }
     }
     fn sample(&self) -> Result<ClockSample, String> {
+        if self.disabled.load(Ordering::Relaxed) {
+            return Err("Perf probe disabled for this session".into());
+        }
         let clock = self.clock.as_ref().ok_or("Agent bridge is disabled")?;
         Ok(ClockSample {
             now: clock.epoch_ms + clock.instant.elapsed().as_secs_f64() * 1000.0,
@@ -62,7 +100,37 @@ impl PerfLog {
                 .lock()
                 .map_err(|_| "Perf stamp lock poisoned")?
                 .clone(),
+            native_open: None,
+            created_at: None,
         })
+    }
+    pub(crate) fn window_created(&self, label: &str) {
+        if self.disabled.load(Ordering::Relaxed) {
+            return;
+        }
+        let Some(clock) = self.clock.as_ref() else {
+            return;
+        };
+        let now = clock.epoch_ms + clock.instant.elapsed().as_secs_f64() * 1000.0;
+        let Ok(mut created) = self.created.try_lock() else {
+            self.disabled.store(true, Ordering::Relaxed);
+            return;
+        };
+        if created.len() >= 256 {
+            created.clear();
+        }
+        // Labels are reused after destruction: replace the previous creation time.
+        created.insert(label.to_string(), now);
+    }
+    fn expire_open(&self, label: &str, input_id: &str) {
+        if let Ok(mut opens) = self.opens.lock() {
+            if opens
+                .get(label)
+                .is_some_and(|open| open.input_id == input_id)
+            {
+                opens.remove(label);
+            }
+        }
     }
     fn register_stamp(&self, source: &str, stamp: String) -> Result<(), String> {
         self.sample()?;
@@ -153,6 +221,8 @@ fn validate_line(line: &str) -> Result<(), String> {
         "buildStamp",
         "t0",
         "firstFrameMs",
+        "rafStartMs",
+        "windowShownMs",
         "doneMs",
         "doneSignal",
         "extra",
@@ -165,7 +235,7 @@ fn validate_line(line: &str) -> Result<(), String> {
             .is_some_and(|n| n.is_finite() && n >= 0.0)
     };
     if object.keys().any(|k| !allowed.contains(&k.as_str()))
-        || record["v"] != 1
+        || record["v"] != 3
         || !one_of(
             "kind",
             &[
@@ -174,6 +244,7 @@ fn validate_line(line: &str) -> Result<(), String> {
                 "keydown",
                 "native-command",
                 "cold-launch",
+                "startup",
                 "document-open",
                 "window-shown",
                 "dialog-open",
@@ -184,6 +255,9 @@ fn validate_line(line: &str) -> Result<(), String> {
             &[
                 "main",
                 "palette",
+                "toolset",
+                "settings",
+                "inspector",
                 "palette-popover",
                 "dialog",
                 "plugin-panel",
@@ -196,7 +270,7 @@ fn validate_line(line: &str) -> Result<(), String> {
             .as_str()
             .is_some_and(|s| s.len() <= 1024)
         || !number("t0")
-        || ["firstFrameMs", "doneMs"]
+        || ["firstFrameMs", "rafStartMs", "windowShownMs", "doneMs"]
             .iter()
             .any(|key| object.contains_key(*key) && !number(key))
         || (object.contains_key("commandId")
@@ -210,6 +284,9 @@ fn validate_line(line: &str) -> Result<(), String> {
                 &[
                     "document-commit",
                     "window-shown",
+                    "window-painted",
+                    "startup-painted",
+                    "forwarded",
                     "dialog-open",
                     "export-written",
                     "command-finished",
@@ -223,21 +300,180 @@ fn validate_line(line: &str) -> Result<(), String> {
                 ],
             ))
     {
-        return Err("Invalid v1 perf record".into());
+        return Err("Invalid v3 perf record".into());
     }
     Ok(())
 }
 
+/// Injected perf-only context. Separating state from transport lets the disable command be
+/// exercised without constructing a native webview (and proves disable never needs one).
+pub(crate) struct PerfClockContext<'a> {
+    state: &'a PerfLog,
+    transport: Option<(tauri::AppHandle, tauri::WebviewWindow)>,
+}
+impl<'a> tauri::ipc::CommandArg<'a, tauri::Wry> for PerfClockContext<'a> {
+    fn from_command(
+        command: tauri::ipc::CommandItem<'a, tauri::Wry>,
+    ) -> Result<Self, tauri::ipc::InvokeError> {
+        let state = command
+            .message
+            .state_ref()
+            .try_get::<PerfLog>()
+            .ok_or_else(|| tauri::ipc::InvokeError::from("Perf log state unavailable"))?
+            .inner();
+        let app = command.message.webview_ref().app_handle().clone();
+        let window =
+            <tauri::WebviewWindow as tauri::ipc::CommandArg<'a, tauri::Wry>>::from_command(
+                command,
+            )?;
+        Ok(Self {
+            state,
+            transport: Some((app, window)),
+        })
+    }
+}
+
 #[tauri::command]
 pub(crate) fn perf_log_clock(
-    state: tauri::State<'_, PerfLog>,
-    window: tauri::WebviewWindow,
+    context: PerfClockContext<'_>,
     build_stamp: Option<String>,
+    native_open: Option<NativeOpen>,
+    forward_input: Option<ForwardInput>,
+    disable: Option<bool>,
 ) -> Result<ClockSample, String> {
+    let state = context.state;
+    state.sample()?;
+    if disable == Some(true) {
+        state.disable();
+        return Err("Perf probe disabled for this session".into());
+    }
+    let (app, window) = context.transport.ok_or("Perf transport unavailable")?;
+    if let Some(input) = forward_input {
+        if !window.label().starts_with("toolset-")
+            || input.input_id.is_empty()
+            || input.input_id.len() > 128
+            || !input.t0.is_finite()
+            || input.t0 < 0.0
+            || input.command_id.is_empty()
+            || input.command_id.len() > 256
+        {
+            return Err("Invalid forwarded perf input".into());
+        }
+        // Separate diagnostic delivery. Never attach an origin to an app command/event.
+        if let Some(main) = app.get_webview_window("main") {
+            let mut payload = serde_json::to_value(input).map_err(|e| e.to_string())?;
+            payload["window"] = window.label().into();
+            main.eval(format!("window.dispatchEvent(new CustomEvent('chemdraft:perf-forward', {{detail:{payload}}}));"))
+                .map_err(|e| e.to_string())?;
+        }
+    }
     if let Some(stamp) = build_stamp {
         state.register_stamp(window.label(), stamp)?;
     }
-    state.sample()
+    if let Some(mut request) = native_open {
+        let label = native_open_label(&request.target).ok_or("Invalid perf open target")?;
+        if window.label() != "main"
+            || request.input_id.is_empty()
+            || request.input_id.len() > 128
+            || !request.t0.is_finite()
+            || request.t0 < 0.0
+            || request.command_id.as_ref().is_some_and(|id| id.len() > 256)
+            || request
+                .shown_at
+                .is_some_and(|at| !at.is_finite() || at < request.t0)
+        {
+            return Err("Invalid perf open request".into());
+        }
+        let mut opens = state.opens.lock().map_err(|_| "Perf opens lock poisoned")?;
+        request.cold = opens
+            .get(&label)
+            .filter(|previous| previous.input_id == request.input_id)
+            .map_or_else(
+                || {
+                    app.get_webview_window(&label).is_none()
+                        || state
+                            .created
+                            .lock()
+                            .ok()
+                            .and_then(|created| created.get(&label).copied())
+                            .is_some_and(|created| created >= request.t0 - COMPLETION_CLOCK_SKEW_MS)
+                },
+                |previous| previous.cold,
+            );
+        // One outstanding input per destination, bounded even if windows never become ready.
+        if opens.len() >= 256 && !opens.contains_key(&label) {
+            opens.clear();
+        }
+        opens.insert(label.clone(), request.clone());
+        drop(opens);
+        let expiry_app = app.clone();
+        let expiry_label = label.clone();
+        let expiry_id = request.input_id.clone();
+        let delay_ms = (120_000.0 - (state.sample()?.now - request.t0)).clamp(0.0, 120_000.0);
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs_f64(delay_ms / 1000.0)).await;
+            expiry_app
+                .state::<PerfLog>()
+                .expire_open(&expiry_label, &expiry_id);
+        });
+        if request.shown_at.is_some() {
+            if let Some(destination) = app.get_webview_window(&label) {
+                let payload = serde_json::to_string(&request).map_err(|e| e.to_string())?;
+                destination.eval(format!("window.dispatchEvent(new CustomEvent('chemdraft:perf-open', {{detail:{payload}}}));"))
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    let mut sample = state.sample()?;
+    sample.created_at = state
+        .created
+        .lock()
+        .map_err(|_| "Perf creation lock poisoned")?
+        .get(window.label())
+        .copied();
+    sample.native_open = state
+        .opens
+        .lock()
+        .map_err(|_| "Perf opens lock poisoned")?
+        .get(window.label())
+        .cloned();
+    Ok(sample)
+}
+
+/// Diagnostic-only state query, issued after an app toggle has resolved.
+#[tauri::command]
+pub(crate) fn perf_log_window_state(
+    app: tauri::AppHandle,
+    label: String,
+) -> Result<&'static str, String> {
+    app.state::<PerfLog>().sample()?;
+    if !matches!(label.as_str(), "preferences" | "spin3d-debugger") {
+        return Err("Invalid perf window state target".into());
+    }
+    let Some(window) = app.get_webview_window(&label) else {
+        return Ok("absent");
+    };
+    if window.is_minimized().map_err(|e| e.to_string())? {
+        Ok("minimized")
+    } else if window.is_visible().map_err(|e| e.to_string())? {
+        Ok("visible")
+    } else {
+        Ok("hidden")
+    }
+}
+
+fn native_open_label(target: &str) -> Option<String> {
+    if matches!(target, "preferences" | "spin3d-debugger") {
+        Some(target.into())
+    } else if let Some(id) = target.strip_prefix("toolset:") {
+        (!id.is_empty() && id.len() <= 256).then(|| super::toolset_window_label(id))
+    } else if let Some(ids) = target.strip_prefix("panel:") {
+        let (plugin, panel) = ids.split_once('/')?;
+        (!plugin.is_empty() && !panel.is_empty() && ids.len() <= 512)
+            .then(|| super::plugin_panel_identity_window_label(plugin, panel))
+    } else {
+        None
+    }
 }
 
 #[tauri::command]
@@ -249,7 +485,8 @@ pub(crate) async fn perf_log_append(
     // Reject before even resolving app_data_dir. The state was constructed using precisely the
     // existing agent_bridge_status env/argument parser, never renderer flags.
     app.state::<PerfLog>().sample()?;
-    let receipt = popover_receipt(window.label(), &line);
+    let receipt = native_paint_receipt(&app.state::<PerfLog>(), window.label(), &line)
+        .or_else(|| popover_receipt(window.label(), &line));
     let writer_app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let directory = writer_app
@@ -262,9 +499,9 @@ pub(crate) async fn perf_log_append(
     })
     .await
     .map_err(|e| e.to_string())??;
-    // Recording is already granted to popovers. Relay only their own shown boundary to their
-    // owning palette, derived from the authenticated label, without granting general emission
-    // or perf_log_complete access to either window.
+    // Secondary windows can record already. Relay a registered destination's paint to main,
+    // or a popover's reveal to its authenticated owner, without granting general emission
+    // or perf_log_complete access to toolsets.
     if let Some((target, payload)) = receipt {
         if let Some(destination) = app.get_webview_window(&target) {
             destination
@@ -275,6 +512,39 @@ pub(crate) async fn perf_log_append(
         }
     }
     Ok(())
+}
+
+fn native_paint_receipt(
+    state: &PerfLog,
+    source: &str,
+    line: &str,
+) -> Option<(String, serde_json::Value)> {
+    validate_line(line).ok()?;
+    let row: serde_json::Value = serde_json::from_str(line).ok()?;
+    if row["doneSignal"] != "window-painted" {
+        return None;
+    }
+    let mut opens = state.opens.lock().ok()?;
+    let request = opens.get(source)?;
+    let t0 = row["t0"].as_f64()?;
+    let frame = t0 + row["firstFrameMs"].as_f64()?;
+    let at = t0 + row["doneMs"].as_f64()?;
+    let raf = t0 + row["rafStartMs"].as_f64()?;
+    if !at.is_finite()
+        || !frame.is_finite()
+        || !raf.is_finite()
+        || at < request.t0 - COMPLETION_CLOCK_SKEW_MS
+        || at - request.t0 > 120_000.0
+        || frame < raf
+        || frame < at
+        || frame < request.shown_at? - COMPLETION_CLOCK_SKEW_MS
+    {
+        return None;
+    }
+    let payload = serde_json::json!({ "target": request.target, "signal": "window-painted",
+        "at": at, "frameAt": frame, "rafAt": raf, "window": source });
+    opens.remove(source);
+    Some(("main".into(), payload))
 }
 
 fn popover_receipt(source: &str, line: &str) -> Option<(String, serde_json::Value)> {
@@ -299,6 +569,7 @@ fn popover_receipt(source: &str, line: &str) -> Option<(String, serde_json::Valu
     let t0 = row["t0"].as_f64()?;
     let at = t0 + row["doneMs"].as_f64()?;
     let frame = row["firstFrameMs"].as_f64().map(|elapsed| t0 + elapsed);
+    let raf = row["rafStartMs"].as_f64().map(|elapsed| t0 + elapsed);
     if !at.is_finite()
         || (row["doneSignal"] == "popover-shown" && frame.is_none())
         || frame.is_some_and(|frame| !frame.is_finite() || frame < at - COMPLETION_CLOCK_SKEW_MS)
@@ -308,7 +579,7 @@ fn popover_receipt(source: &str, line: &str) -> Option<(String, serde_json::Valu
     Some((
         format!("toolset-{owner}"),
         serde_json::json!({ "requestKey": "popover-shown", "signal": row["doneSignal"],
-            "flyoutId": flyout, "at": at, "frameAt": frame, "window": source }),
+            "flyoutId": flyout, "at": at, "frameAt": frame, "rafAt": raf, "window": source }),
     ))
 }
 
@@ -322,6 +593,8 @@ pub(crate) struct Completion {
     signal: String,
     at: f64,
     frame_at: Option<f64>,
+    raf_at: Option<f64>,
+    shown_at: Option<f64>,
 }
 #[tauri::command]
 pub(crate) fn perf_log_complete(
@@ -336,16 +609,26 @@ pub(crate) fn perf_log_complete(
         signal,
         at,
         frame_at,
+        raf_at,
+        shown_at,
     } = completion;
     let source = window.label();
     if !valid_completion(source, &target, &request_key, &signal, at, frame_at) {
         return Err("Invalid perf completion route or payload".into());
     }
+    if raf_at.is_some_and(|raf| {
+        !raf.is_finite() || raf < 0.0 || frame_at.is_none_or(|frame| frame < raf)
+    }) {
+        return Err("Invalid perf rAF timestamp".into());
+    }
+    if shown_at.is_some_and(|shown| !shown.is_finite() || shown < 0.0) {
+        return Err("Invalid perf shown timestamp".into());
+    }
     let destination = app
         .get_webview_window(&target)
         .ok_or("Perf completion window closed")?;
     let payload = serde_json::json!({ "requestKey": request_key, "signal": signal, "at": at,
-        "frameAt": frame_at, "window": source });
+        "frameAt": frame_at, "rafAt": raf_at, "shownAt": shown_at, "window": source });
     destination
         .eval(format!(
         "window.dispatchEvent(new CustomEvent('chemdraft:perf-complete', {{detail:{payload}}}));"
@@ -389,11 +672,147 @@ mod tests {
         ))
     }
     fn line() -> String {
-        serde_json::json!({"v":1,"kind":"click","window":"main","platform":"windows","buildStamp":"test","t0":1,"firstFrameMs":2,"doneMs":3,"doneSignal":"document-commit"}).to_string()
+        serde_json::json!({"v":3,"kind":"click","window":"main","platform":"windows","buildStamp":"test","t0":1,"firstFrameMs":2,"doneMs":3,"doneSignal":"document-commit"}).to_string()
+    }
+    #[test]
+    fn perf_log_clock_disable_clears_opens_and_refuses_later_calls() {
+        let state = PerfLog::new(true);
+        state.opens.lock().unwrap().insert(
+            "preferences".into(),
+            NativeOpen {
+                target: "preferences".into(),
+                input_id: "open-1".into(),
+                t0: 1000.0,
+                command_id: None,
+                shown_at: None,
+                cold: false,
+            },
+        );
+        assert!(perf_log_clock(
+            PerfClockContext {
+                state: &state,
+                transport: None
+            },
+            None,
+            None,
+            None,
+            Some(true)
+        )
+        .is_err());
+        assert!(state.opens.lock().unwrap().is_empty());
+        assert_eq!(
+            perf_log_clock(
+                PerfClockContext {
+                    state: &state,
+                    transport: None
+                },
+                None,
+                None,
+                None,
+                None
+            )
+            .err()
+            .as_deref(),
+            Some("Perf probe disabled for this session")
+        );
+    }
+    #[test]
+    fn native_paint_relays_only_the_registered_destination_and_time_range() {
+        let state = PerfLog::new(true);
+        let source = "toolset-core-drawnStructureSettings";
+        state.opens.lock().unwrap().insert(
+            source.into(),
+            NativeOpen {
+                target: "toolset:core.drawnStructureSettings".into(),
+                input_id: "input-1".into(),
+                t0: 1000.0,
+                shown_at: Some(1228.0),
+                command_id: Some("tool.settings".into()),
+                cold: true,
+            },
+        );
+        let row = serde_json::json!({"v":3,"kind":"dialog-open","window":"settings",
+            "platform":"windows","buildStamp":"test","t0":1000,"doneMs":766,
+            "firstFrameMs":810,"rafStartMs":770,"windowShownMs":228,
+            "doneSignal":"window-painted","extra":{"inputId":"input-1"}})
+        .to_string();
+        assert!(native_paint_receipt(&state, "main", &row).is_none());
+        assert!(native_paint_receipt(&state, "toolset-core-main", &row).is_none());
+        assert!(native_paint_receipt(
+            &state,
+            source,
+            &row.replace("\"doneMs\":766", "\"doneMs\":120001")
+        )
+        .is_none());
+        assert!(native_paint_receipt(
+            &state,
+            source,
+            &row.replace("\"firstFrameMs\":810", "\"firstFrameMs\":700")
+        )
+        .is_none());
+        let (target, receipt) = native_paint_receipt(&state, source, &row).unwrap();
+        assert_eq!(target, "main");
+        assert_eq!(receipt["target"], "toolset:core.drawnStructureSettings");
+        assert_eq!(receipt["at"], 1766.0);
+        assert_eq!(receipt["frameAt"], 1810.0);
+        assert_eq!(receipt["rafAt"], 1770.0);
+        assert!(native_paint_receipt(&state, source, &row).is_none());
+        assert_eq!(
+            native_open_label("toolset:core.drawnStructureSettings"),
+            Some(source.into())
+        );
+        assert!(native_open_label("main").is_none());
+    }
+    #[test]
+    fn cold_open_clock_payload_omits_the_not_yet_observed_show_timestamp() {
+        let request = NativeOpen {
+            target: "toolset:core.main".into(),
+            input_id: "input-1".into(),
+            t0: 1000.0,
+            command_id: None,
+            shown_at: None,
+            cold: true,
+        };
+        let payload = serde_json::to_value(request).unwrap();
+        assert!(payload.get("shownAt").is_none());
+        assert!(payload.get("commandId").is_none());
+        assert_eq!(payload["cold"], true);
+    }
+    #[test]
+    fn expired_opens_are_removed_without_removing_a_newer_open_for_the_same_window() {
+        let state = PerfLog::new(true);
+        let request = NativeOpen {
+            target: "preferences".into(),
+            input_id: "new-input".into(),
+            t0: 1000.0,
+            command_id: None,
+            shown_at: None,
+            cold: false,
+        };
+        state
+            .opens
+            .lock()
+            .unwrap()
+            .insert("preferences".into(), request);
+        state.expire_open("preferences", "old-input");
+        assert_eq!(state.opens.lock().unwrap().len(), 1);
+        state.expire_open("preferences", "new-input");
+        assert!(state.opens.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn window_creation_is_stamped_before_destination_calibration() {
+        let state = PerfLog::new(true);
+        state.window_created("toolset-core-main");
+        let created = state.created.lock().unwrap()["toolset-core-main"];
+        let calibration = state.sample().unwrap();
+        assert!(created >= calibration.process_start && created <= calibration.now);
+        let disabled = PerfLog::new(false);
+        disabled.window_created("main");
+        assert!(disabled.created.lock().unwrap().is_empty());
     }
     #[test]
     fn popover_shown_receipt_is_restricted_to_the_authenticated_owner() {
-        let row = serde_json::json!({"v":1,"kind":"window-shown","window":"palette-popover",
+        let row = serde_json::json!({"v":3,"kind":"window-shown","window":"palette-popover",
             "platform":"macos","buildStamp":"test","t0":100,"doneMs":30,
             "firstFrameMs":40,"doneSignal":"popover-shown","extra":{"surface":"arrows"}})
         .to_string();
@@ -427,7 +846,7 @@ mod tests {
             ("dialog-open", "dialog-open", "dialog"),
             ("window-shown", "window-shown", "preferences"),
         ] {
-            let row = serde_json::json!({"v":1,"kind":kind,"window":role,"platform":"windows",
+            let row = serde_json::json!({"v":3,"kind":kind,"window":role,"platform":"windows",
                 "buildStamp":"test","t0":1,"doneSignal":signal})
             .to_string();
             validate_line(&row).unwrap();
@@ -532,9 +951,23 @@ mod tests {
                 Some(frame)
             ));
         }
-        for role in ["preferences", "spin3d-debugger"] {
+        for role in [
+            "preferences",
+            "spin3d-debugger",
+            "toolset",
+            "settings",
+            "inspector",
+        ] {
             validate_line(
                 &line().replace("\"window\":\"main\"", &format!("\"window\":\"{role}\"")),
+            )
+            .unwrap();
+        }
+        for (kind, signal) in [("startup", "startup-painted"), ("click", "forwarded")] {
+            validate_line(
+                &line()
+                    .replace("\"kind\":\"click\"", &format!("\"kind\":\"{kind}\""))
+                    .replace("document-commit", signal),
             )
             .unwrap();
         }
@@ -578,8 +1011,12 @@ mod tests {
             "{}".to_string(),
             format!("{}\n{}", line(), line()),
             "x".repeat(MAX_LINE_BYTES + 1),
-            line().replace("\"v\":1", "\"v\":2"),
+            line().replace("\"v\":3", "\"v\":1"),
+            line().replace("\"v\":3", "\"v\":2"),
             line().replace("\"doneMs\":3", "\"doneMs\":-1"),
+            line().replace("\"firstFrameMs\":2", "\"rafStartMs\":-1"),
+            line().replace("\"firstFrameMs\":2", "\"windowShownMs\":\"slow\""),
+            line().replace("\"firstFrameMs\":2", "\"unknownField\":2"),
         ] {
             assert!(state.append(&path, &bad, MAX_BYTES).is_err(), "{bad}");
         }

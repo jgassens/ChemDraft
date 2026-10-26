@@ -1,5 +1,5 @@
 import { useExportPreviewEnabled } from "./useExportPreviewEnabled";
-import { perfProbe, perfSurfaceReady } from "../perf/runtime";
+import { perfHook, perfProbe, perfSurfaceReady } from "../perf/runtime";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { detectDialogPlatform, dialogEnvelope, sameDialog, type DialogMessage } from "./dialogProtocol";
 import { sendDialogMessage, subscribeDialogHost } from "./dialogTransport";
@@ -135,7 +135,7 @@ export function DialogWindow({ hostId }: { hostId: string }) {
     if ((snapshot.dialogKind === "engineInstall" || snapshot.dialogKind === "toolInstall") && readySession.current === snapshot.sessionId) return;
     readySession.current = snapshot.sessionId;
     const sending = sendDialogMessage(hostId, { ...dialogEnvelope(snapshot), requestId: crypto.randomUUID(), type: "ready", data: {} });
-    if (perfProbe) void sending.then(() => perfSurfaceReady("main", snapshot.sessionId, "dialog-open")).catch(() => undefined);
+    if (perfProbe) void sending.then(() => perfHook(() => perfSurfaceReady("main", snapshot.sessionId, "dialog-open"))).catch(() => undefined);
     void sending.catch(e => setError(String(e)));
   }, [hostId, snapshot]);
   useEffect(() => {
@@ -172,8 +172,8 @@ export function DialogWindow({ hostId }: { hostId: string }) {
     const requestId = crypto.randomUUID();
     pendingRequestId.current = requestId;
     if (perfProbe) {
-      if (data.action === "export") perfProbe.expectCompletion("export-written", requestId);
-      else if (data.action === "apply") perfProbe.expectCompletion("document-commit", requestId);
+      if (data.action === "export") perfHook(() => perfProbe?.expectCompletion("export-written", requestId));
+      else if (data.action === "apply") perfHook(() => perfProbe?.expectCompletion("document-commit", requestId));
     }
     startAcceptanceDeadline();
     void sendDialogMessage(hostId, { ...dialogEnvelope(snapshot), requestId, type: "action", data }).catch(e => {

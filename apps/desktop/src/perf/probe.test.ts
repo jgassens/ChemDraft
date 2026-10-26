@@ -20,7 +20,7 @@ function harness(window: PerfRecord["window"] = "palette") {
     },
     now: () => now, eventTime: stamp => 900 + stamp,
     frame: vi.fn(callback => { frames.set(++id, callback); return id; }),
-    cancelFrame: vi.fn(key => { frames.delete(key); }), defer: callback => { tasks.push(callback); },
+    afterPaint: callback => callback(), cancelFrame: vi.fn(key => { frames.delete(key); }), defer: callback => { tasks.push(callback); },
     timeout: vi.fn(callback => { timers.set(++id, callback); return id; }),
     clearTimeout: vi.fn(key => { timers.delete(key); }),
     write: vi.fn(record => { records.push(record); }), window, platform: "macos", buildStamp: "test", processStart: 500, clockErrorMs: 0.2
@@ -35,6 +35,115 @@ function harness(window: PerfRecord["window"] = "palette") {
 }
 
 describe("bridge-gated timing probe", () => {
+  it.each([false, true])("correlates a separate forwarded input before or after app delivery (late=%s)", late => {
+    const h = harness("main"); h.env.correlationDelayMs = 250;
+    const probe = createPerfProbe(true, () => h.env)!;
+    const origin = { inputId: "toolbar-1", commandId: "test.frame", t0: 990, window: "toolset-core-main" };
+    if (!late) probe.forwardedInput(origin);
+    h.native("test.frame"); h.tasks(); h.setTime(1020); h.paint();
+    expect(h.records).toEqual([]); // Only diagnostic output waits; the command already completed.
+    if (late) probe.forwardedInput(origin);
+    h.setTime(1250); [...h.timers.values()].forEach(callback => callback());
+    const rows = h.records.filter(row => row.kind === "native-command");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ t0: 990, firstFrameMs: 30, doneMs: 30,
+      extra: { forwarded: true, originInputId: "toolbar-1", originWindow: "toolset-core-main", nativeDeliveredAt: 1000 } });
+    probe.stop();
+  });
+  it("marks simultaneous forwards ambiguous, without choosing an origin or reusing them", () => {
+    const h = harness("main"); const probe = createPerfProbe(true, () => h.env)!;
+    for (const inputId of ["one", "two"]) probe.forwardedInput({ inputId, commandId: "test.frame", t0: 990, window: "toolset-core-main" });
+    h.native("test.frame"); h.tasks(); h.paint();
+    expect(h.records[0]).toMatchObject({ t0: 1000, extra: { forwardAmbiguous: true, candidateInputIds: ["one", "two"] } });
+    expect(h.records[0].extra?.forwarded).toBeUndefined();
+    h.setTime(1010); h.native("test.frame"); h.tasks(); h.paint();
+    expect(h.records[1]).toMatchObject({ t0: 1010, extra: { forwardAmbiguous: true, candidateInputIds: ["one", "two"] } });
+    expect(h.records[1].extra?.forwarded).toBeUndefined();
+    h.setTime(1241); h.native("test.frame"); h.tasks(); h.paint();
+    expect(h.records[2].extra?.forwardAmbiguous).toBeUndefined();
+    probe.stop();
+  });
+  it("does not correlate stale forwards or an origin hidden in the app command payload", () => {
+    const h = harness("main"); const probe = createPerfProbe(true, () => h.env)!;
+    probe.forwardedInput({ inputId: "stale", commandId: "test.frame", t0: 749, window: "toolset-core-main" });
+    h.listeners.get("chemdraft:native-command")!({ detail: { commandId: "test.frame", perfOrigin: { inputId: "forbidden", t0: 990 } } } as unknown as Event);
+    h.tasks(); h.paint();
+    expect(h.records[0]).toMatchObject({ t0: 1000 });
+    expect(h.records[0].extra?.forwarded).toBeUndefined(); probe.stop();
+  });
+  it("joins destination paint by label and time and refuses overlapping opens", () => {
+    const h = harness("main"); const probe = createPerfProbe(true, () => h.env)!;
+    h.native("view.togglePreferences");
+    probe.nativeWindowStarted("input-1", "view.togglePreferences", "preferences"); h.tasks();
+    probe.remoteNativePaint("spin3d-debugger", 1100, 1120, "spin3d-debugger", 1110);
+    expect(h.records).toEqual([]);
+    probe.remoteNativePaint("preferences", 1100, 1120, "preferences", 1110);
+    expect(h.records[0]).toMatchObject({ doneSignal: "window-painted", doneMs: 100, extra: { inputId: "input-1", completionWindow: "preferences" } });
+    for (const inputId of ["input-2", "input-3"]) {
+      h.native("view.togglePreferences"); probe.nativeWindowStarted(inputId, "view.togglePreferences", "preferences"); h.tasks();
+    }
+    probe.remoteNativePaint("preferences", 1200, 1220, "preferences", 1210);
+    expect(h.records).toHaveLength(1);
+    h.setTime(121000); [...h.timers.values()].forEach(callback => callback());
+    const ambiguous = h.records.filter(row => row.kind === "native-command").slice(1);
+    expect(ambiguous).toHaveLength(2);
+    expect(ambiguous.every(row => row.extra?.destinationAmbiguous && row.extra.missingDestinationPaint)).toBe(true);
+    probe.stop();
+  });
+  it("keeps startup paint distinct and includes creation-to-load time in its t0", () => {
+    const h = harness("inspector"); const probe = createPerfProbe(true, () => h.env)!;
+    probe.destinationPaint({ inputId: "startup-inspector", t0: 500 }, 1100, 1080, "core.art", 1050, "first-contentful-paint");
+    expect(h.records[0]).toMatchObject({ v: 3, kind: "startup", t0: 500, doneSignal: "startup-painted", doneMs: 550, firstFrameMs: 600, window: "inspector" });
+    probe.stop();
+  });
+  it("includes a long rendering turn in firstFrameMs and retains the rAF start", () => {
+    const h = harness(); const painted: (() => void)[] = [];
+    h.env.afterPaint = callback => { painted.push(callback); };
+    const probe = createPerfProbe(true, () => h.env)!;
+    h.native("test.frame"); h.tasks();
+    h.setTime(1016); h.paint();
+    expect(h.records).toEqual([]);
+    h.setTime(1056); painted.splice(0).forEach(callback => callback());
+    expect(h.records[0]).toMatchObject({ rafStartMs: 16, firstFrameMs: 56, doneMs: 56 });
+    probe.stop();
+  });
+  it("invalidates a queued post-frame task when a later DOM commit reschedules the frame", () => {
+    const h = harness(); const painted: (() => void)[] = [];
+    h.env.afterPaint = callback => { painted.push(callback); };
+    const probe = createPerfProbe(true, () => h.env)!;
+    h.native("test.frame"); h.tasks(); h.setTime(1016); h.paint();
+    h.setTime(1020); probe.rendered(); h.setTime(1030); h.paint();
+    h.setTime(1056); painted.shift()!(); expect(h.records).toEqual([]);
+    h.setTime(1070); painted.shift()!();
+    expect(h.records[0]).toMatchObject({ rafStartMs: 30, firstFrameMs: 70, doneMs: 70 });
+    probe.stop();
+  });
+  it("waits for the exact destination input ID, keeping native visibility separate", () => {
+    const h = harness("main"); const probe = createPerfProbe(true, () => h.env)!;
+    h.native("tool.settings");
+    expect(probe.nativeWindowStarted("input-1", "tool.settings")).toMatchObject({ inputId: "input-1", t0: 1000 });
+    h.tasks(); h.setTime(1228); probe.nativeWindowShown("input-1", 1228);
+    probe.signal("window-shown"); probe.rendered(); h.paint();
+    expect(h.records).toEqual([]);
+    probe.remoteCompletion("other-input", "window-painted", 1766, 1780, "toolset-core-drawnStructureSettings", 1770);
+    expect(h.records).toEqual([]);
+    probe.remoteCompletion("input-1", "window-painted", 1766, 1780, "toolset-core-drawnStructureSettings", 1770);
+    expect(h.records[0]).toMatchObject({ doneSignal: "window-painted", doneMs: 766, windowShownMs: 228,
+      rafStartMs: 770, firstFrameMs: 780, extra: { inputId: "input-1", frameSource: "destination-window" } });
+    probe.stop();
+  });
+  it("explicitly reports a destination that never paints, without reusing an origin frame", () => {
+    const h = harness(); const probe = createPerfProbe(true, () => h.env)!;
+    h.native("tool.settings"); probe.registryExpected(probe.command("tool.settings"));
+    h.tasks(); h.paint(); // Discard even an already observed local frame.
+    probe.nativeWindowStarted("closed-window", "tool.settings");
+    probe.nativeWindowShown("closed-window", 1228); h.setTime(121000);
+    for (const timeout of [...h.timers.values()]) timeout();
+    expect(h.records[0]).toMatchObject({ doneSignal: "timeout", windowShownMs: 228,
+      extra: { incomplete: true, missingDestinationPaint: true } });
+    expect(h.records[0].firstFrameMs).toBeUndefined();
+    probe.stop();
+  });
   it.each(["macos", "windows"] as const)("resolves bound %s chords using the app registry, including native clipboard and redo", platform => {
     const h = harness(); const probe = createPerfProbe(true, () => h.env)!;
     const quickActions = createQuickActions(createPhase4Document(), undefined, { canUndo: true, canRedo: true, hasMoleculeFragmentSelection: true });
@@ -186,7 +295,7 @@ describe("bridge-gated timing probe", () => {
     expect(handler).toHaveBeenCalledTimes(1); expect(h.records).toEqual([]);
     h.tasks(); probe.rendered(); h.setTime(1020); h.paint();
     expect(h.records).toHaveLength(1);
-    expect(h.records[0]).toMatchObject({ v: 1, kind: type, commandId: "edit.draw", window: "palette", platform: "macos",
+    expect(h.records[0]).toMatchObject({ v: 3, kind: type, commandId: "edit.draw", window: "palette", platform: "macos",
       buildStamp: "test", t0: 990, firstFrameMs: 30, doneMs: 20, doneSignal: "document-commit" });
     expect(PerfRecordSchema.safeParse(h.records[0]).success).toBe(true);
   });
@@ -242,7 +351,7 @@ describe("bridge-gated timing probe", () => {
     probe.rendered(); h.paint(); expect(h.records).toEqual([]);
     probe.readyCanvas(); probe.readyCanvas(); h.setTime(1600); h.paint();
     expect(h.records).toHaveLength(1);
-    expect(h.records[0]).toMatchObject({ kind: "cold-launch", t0: 500, firstFrameMs: 1100, doneMs: 1100, doneSignal: "canvas-ready" });
+    expect(h.records[0]).toMatchObject({ kind: "cold-launch", t0: 500, firstFrameMs: 1100, doneMs: 500, doneSignal: "canvas-ready" });
   });
   it("does not count a picker/partial render as the document-open frame", () => {
     const h = harness(); const probe = createPerfProbe(true, () => h.env)!;
@@ -285,9 +394,10 @@ describe("bridge-gated timing probe", () => {
     expect(warn).toHaveBeenCalledTimes(2); warn.mockRestore();
   });
   it("rejects malformed schema versions, durations, roles and unknown fields", () => {
-    const valid = { v: 1, kind: "click", window: "main", platform: "windows", buildStamp: "test", t0: 1 };
+    const valid = { v: 3, kind: "click", window: "main", platform: "windows", buildStamp: "test", t0: 1 };
     expect(PerfRecordSchema.safeParse(valid).success).toBe(true);
-    for (const invalid of [{ ...valid, v: 2 }, { ...valid, doneMs: -1 }, { ...valid, t0: NaN }, { ...valid, window: "unknown" }, { ...valid, document: {} }]) {
+    for (const invalid of [{ ...valid, v: 1 }, { ...valid, v: 2 }, { ...valid, doneMs: -1 }, { ...valid, rafStartMs: -1 },
+      { ...valid, windowShownMs: "slow" }, { ...valid, t0: NaN }, { ...valid, window: "unknown" }, { ...valid, document: {} }]) {
       expect(PerfRecordSchema.safeParse(invalid).success).toBe(false);
     }
   });

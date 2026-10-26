@@ -110,6 +110,7 @@ fn main() {
             "perf_log_clock",
             "perf_log_append",
             "perf_log_complete",
+            "perf_log_window_state",
             "window_logical_position",
             "take_pending_open_document",
             "open_problem_report_email",

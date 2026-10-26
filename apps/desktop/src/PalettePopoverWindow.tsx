@@ -1,4 +1,4 @@
-import { perfProbe } from "./perf/runtime";
+import { perfHook, perfProbe } from "./perf/runtime";
 import { useEffect, useRef, useState } from "react";
 import { ColorPickerPopoverBody, symbolToolGlyph, toolbarCommandFlyoutGridStyle } from "./ToolPalette";
 import { Icon, type IconName } from "./icons";
@@ -100,8 +100,8 @@ export function PalettePopoverWindow({
       if (payload.toolsetId !== toolsetId) {
         return;
       }
-      if (perfShownRef.current) perfProbe?.surfaceShown(perfShownRef.current, "no-op");
-      perfShownRef.current = perfProbe?.surfaceStarted("palette-popover", undefined, payload.kind === "flyout" ? payload.flyout.flyoutId : "artColor");
+      if (perfShownRef.current) perfHook(() => perfProbe?.surfaceShown(perfShownRef.current, "no-op"));
+      perfShownRef.current = perfHook(() => perfProbe?.surfaceStarted("palette-popover", undefined, payload.kind === "flyout" ? payload.flyout.flyoutId : "artColor"));
       contentPushedRef.current = true;
       // A fresh push is a fresh open — it may follow a dismissal.
       dismissedRef.current = false;
@@ -182,7 +182,7 @@ export function PalettePopoverWindow({
   useEffect(() => {
     const ready = content.kind === "artColor" || (content.kind === "flyout" && content.flyout.commands.length > 0);
     if (!ready && perfShownRef.current) {
-      perfProbe?.surfaceShown(perfShownRef.current, "no-op");
+      perfHook(() => perfProbe?.surfaceShown(perfShownRef.current, "no-op"));
       perfShownRef.current = undefined;
     }
     if (!ready || (prewarm && !contentPushedRef.current)) {
@@ -220,21 +220,21 @@ export function PalettePopoverWindow({
         await setCurrentWindowLogicalPosition(anchor).catch(() => undefined);
       }
       if (cancelled || dismissedRef.current) {
-        perfProbe?.surfaceShown(perfShown, "no-op");
+        perfHook(() => perfProbe?.surfaceShown(perfShown, "no-op"));
         return;
       }
       try {
         await showCurrentToolsetPopoverWindow();
-        perfProbe?.surfaceShown(perfShown, "popover-shown");
+        perfHook(() => perfProbe?.surfaceShown(perfShown, "popover-shown"));
         if (perfShownRef.current === perfShown) perfShownRef.current = undefined;
       } catch {
-        perfProbe?.surfaceShown(perfShown, "failed");
+        perfHook(() => perfProbe?.surfaceShown(perfShown, "failed"));
         if (perfShownRef.current === perfShown) perfShownRef.current = undefined;
       }
     })();
     return () => {
       cancelled = true;
-      perfProbe?.surfaceShown(perfShown, "no-op");
+      perfHook(() => perfProbe?.surfaceShown(perfShown, "no-op"));
       window.clearTimeout(scrubTimer);
       document.body.style.backgroundColor = "";
     };
