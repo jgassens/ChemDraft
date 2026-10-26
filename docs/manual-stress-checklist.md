@@ -1,5 +1,12 @@
 # Manual stress checklist
 
+Text box resize (Windows and macOS): create a text box, type a multiword sentence, then drag the
+left/right resize handles while editing and after leaving the editor. Narrowing must wrap the
+finished text; widening must reflow it. Release, click away, and reselect: the layout must persist.
+Check Undo/Redo, save/reopen, SVG/PDF/PNG export, center/right alignment, rotated boxes, explicit
+newlines, long words, colors and subscript/superscript. Repeat at different document zoom and
+100%/200% display scaling. Text content, font size, and nearby molecule coordinates must stay unchanged.
+
 The standing hands-on checklist for interactive surfaces. It moved here from `AGENTS.md` §20 when that
 file was consolidated (2026-10-04); `AGENTS.md` §14 still requires it. Run every item on **macOS and
 Windows** unless the item names one platform. `docs/windows-port-stress-test.md` records the Windows

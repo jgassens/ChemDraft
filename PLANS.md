@@ -8,6 +8,15 @@ in progress rather than a changelog.
 
 # In flight
 
+## Text box resize rendering (`fix/text-box-resize`)
+
+Repair the mismatch between the editing preview and finished text after a horizontal resize.
+The shared SVG planner must wrap fixed-width/fixed-size text boxes, retain rich-text spans and
+explicit line breaks, and reflow when widened. Share deterministic width estimates and word
+wrapping with text-box sizing so the stored height accommodates the same lines. Cover the actual
+pointer gesture, commit, Undo/Redo, and shared export rendering. Preserve text content, font size,
+chemistry, and unrelated document objects. Native Windows/macOS visual checks remain pending.
+
 # ChemDraft Assistant plugin (active, branches claude/assistant-*)
 
 ## Objective

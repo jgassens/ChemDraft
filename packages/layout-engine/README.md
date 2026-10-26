@@ -2,6 +2,11 @@
 
 Owns page and object layout operations such as align, distribute, group, rotate, flip, z-order, guides, and page sizing.
 
+`src/textLayout.ts` owns deterministic text-width estimates and word wrapping for resized text
+boxes. The SVG planner (canvas and export) and document text sizing share it. Wrapping preserves
+explicit newlines, rich-text spans and overlong words; it never rewrites stored text. Font metrics
+are estimates rather than measurements from the host's installed fonts.
+
 It also owns pure molecule-growth geometry helpers used by drawing tools, such as planning the next bonded atom position from an existing native molecule graph. The desktop app may consume these plans, but document mutation remains in `chem-core` patches and app workflow code.
 
 `src/labelGrammar.ts` is the one atom-label grammar: what a label's text means (an element, one heavy
