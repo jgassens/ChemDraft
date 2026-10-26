@@ -55,7 +55,7 @@ RDKit MinimalLib (vendored WebAssembly build)
   BSD-3-Clause. Copyright (c) 2006-2026 Rational Discovery LLC, Greg Landrum,
   and other RDKit contributors.
   Source: https://github.com/rdkit/rdkit, tag Release_2026_03_3.
-  Locally modified: 7 patches, recorded in
+  Locally modified: 8 patches (rebuilt 2026-10-26), recorded in
   packages/rdkit-adapter/vendor/patches/ and vendor/BUILD.md.
   Full licence text: packages/rdkit-adapter/vendor/RDKit-LICENSE.txt
 

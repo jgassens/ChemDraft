@@ -1,0 +1,36 @@
+--- a/Code/MinimalLib/minilib.cpp
++++ b/Code/MinimalLib/minilib.cpp
+@@ -577,6 +577,7 @@
+ std::string JSMolBase::optimize_3d_conformer(const std::string &details_json) {
+   std::string forceField = "mmff94";
+   int maxIters = 200;
++  bool ignoreInterfragInteractions = true;
+   if (!details_json.empty()) {
+     auto parsed = bj::parse(details_json);
+     if (parsed.is_object()) {
+@@ -587,6 +588,9 @@
+       if (auto *p = o.if_contains("maxIters")) {
+         maxIters = static_cast<int>(p->to_number<int64_t>());
+       }
++      if (auto *p = o.if_contains("ignoreInterfragInteractions")) {
++        ignoreInterfragInteractions = p->as_bool();
++      }
+     }
+   }
+   std::pair<int, double> res(-1, -1.0);
+@@ -595,11 +599,13 @@
+   if (ran) {
+     if (forceField == "uff") {
+       ffName = "UFF";
+-      res = RDKit::UFF::UFFOptimizeMolecule(get(), maxIters);
++      res = RDKit::UFF::UFFOptimizeMolecule(get(), maxIters, 10.0, -1,
++                                           ignoreInterfragInteractions);
+     } else {
+       std::string variant = (forceField == "mmff94s") ? "MMFF94s" : "MMFF94";
+       ffName = variant;
+-      res = RDKit::MMFF::MMFFOptimizeMolecule(get(), maxIters, variant);
++      res = RDKit::MMFF::MMFFOptimizeMolecule(
++          get(), maxIters, variant, 10.0, -1, ignoreInterfragInteractions);
+     }
+   }
+   bj::object out = chemdraftConformerJson(get(), ran && res.first != -1, false);

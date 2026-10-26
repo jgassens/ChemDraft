@@ -54,7 +54,7 @@ export const PINNED_RDKIT_VERSION = "2026.03.3";
 export const PINNED_PKA_MODEL_SHA256 =
   "3c3dbeceaa66d62c7860ce81c47cd8a81a5ef0f4ad069c4eee4be3def016ce4a";
 
-export const PINNED_RDKIT_WASM_SHA256 = "66dab556e9d55708ce67afbf71e9853ed5fda217a9330961722f838f38836bf0";
+export const PINNED_RDKIT_WASM_SHA256 = "b28002c9f9548639f2fabeeee5930ea2aee3032126e4a5361bd2a41fdb3f9374";
 
 const ENGINE = "rdkit-minimallib-wasm";
 

@@ -62,6 +62,11 @@ export interface RdkitMinimalModule {
 
 export type RdkitModuleLoader = () => Promise<RdkitMinimalModule>;
 
+export interface RdkitGenerate3DConformerOptions extends Generate3DConformerOptions {
+  /** RDKit defaults to true; false includes nonbonded interactions between fragments. */
+  ignoreInterfragInteractions?: boolean;
+}
+
 /** Raised when a caller reaches RDKit before its platform loader has been installed. */
 export class RdkitNotConfiguredError extends Error {
   constructor() {
@@ -617,7 +622,7 @@ function failedEmbed(input: ConformerInput, reason: string, version: string): Pr
  */
 export async function generate3DConformerProgressive(
   input: ConformerInput,
-  options: Generate3DConformerOptions = {}
+  options: RdkitGenerate3DConformerOptions = {}
 ): Promise<ProgressiveConformerResult> {
   const rdkit = await ensureRdkit();
   const version = rdkit.version?.() ?? "unknown";
@@ -653,7 +658,11 @@ export async function generate3DConformerProgressive(
     if (!work) return undefined;
     try {
       const parsed: unknown = JSON.parse(
-        work.optimize_3d_conformer(JSON.stringify({ forceField, maxIters: CANDIDATE_SCORE_ITERATIONS }))
+        work.optimize_3d_conformer(JSON.stringify({
+          forceField,
+          maxIters: CANDIDATE_SCORE_ITERATIONS,
+          ignoreInterfragInteractions: options.ignoreInterfragInteractions
+        }))
       );
       if (!isValidOptimizePayload(parsed, candidate.coords3dByEngineAtom.length)) return undefined;
       const energy = parsed.forceField?.energy;
@@ -804,7 +813,11 @@ export async function generate3DConformerProgressive(
         let candidate: unknown;
         try {
           candidate = JSON.parse(
-            work.optimize_3d_conformer(JSON.stringify({ forceField, maxIters: passBudget }))
+            work.optimize_3d_conformer(JSON.stringify({
+              forceField,
+              maxIters: passBudget,
+              ignoreInterfragInteractions: options.ignoreInterfragInteractions
+            }))
           );
         } catch {
           break; // retain the last valid pass; no valid pass falls back to the embed below
@@ -854,7 +867,7 @@ export const rdkitConformerGenerator: ConformerGenerator3D = {
   },
   async generate3DConformer(
     input: ConformerInput,
-    options: Generate3DConformerOptions = {}
+    options: RdkitGenerate3DConformerOptions = {}
   ): Promise<Generate3DConformerResult> {
     const { embedded, refineFromEmbedded } = await generate3DConformerProgressive(input, options);
     return refineFromEmbedded ? refineFromEmbedded() : embedded;

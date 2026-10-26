@@ -372,6 +372,37 @@ describe("rdkit conformer adapter — embed mapping", () => {
 });
 
 describe("rdkit conformer adapter — refine", () => {
+  it.each([{}, { ignoreInterfragInteractions: undefined }])(
+    "keeps the exact historical optimize JSON when the option is unset (%j)",
+    async (options) => {
+      const mock = installMock();
+      const { refineFromEmbedded } = await generate3DConformerProgressive(INPUT, {
+        optimize: "mmff94", embedCandidates: 2, ...options
+      });
+      refineFromEmbedded!();
+      refineFromEmbedded!(200);
+      expect(mock.optimizeDetails).toEqual([
+        '{"forceField":"mmff94","maxIters":50}',
+        '{"forceField":"mmff94","maxIters":50}',
+        '{"forceField":"mmff94"}',
+        '{"forceField":"mmff94","maxIters":160}'
+      ]);
+    }
+  );
+
+  it.each([true, false])("passes explicit ignoreInterfragInteractions:%s to scoring and every refine pass", async (ignoreInterfragInteractions) => {
+    const mock = installMock({ optimizeResponses: [
+      { status: "not-converged" }, { status: "not-converged" }, { status: "converged" }
+    ] });
+    const { refineFromEmbedded } = await generate3DConformerProgressive(INPUT, {
+      optimize: "uff", embedCandidates: 2, ignoreInterfragInteractions
+    });
+    refineFromEmbedded!(120);
+    expect(mock.optimizeDetails).toEqual([50, 50, 96, 12, 12].map((maxIters) =>
+      JSON.stringify({ forceField: "uff", maxIters, ignoreInterfragInteractions })
+    ));
+  });
+
   it("derives a refinement from the pristine embed molblock and reports the force field", async () => {
     const mock = installMock();
     const { refineFromEmbedded } = await generate3DConformerProgressive(INPUT, { optimize: "mmff94" });
