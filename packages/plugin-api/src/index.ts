@@ -1,5 +1,8 @@
 import type { ChemDraftDocument, DocumentPatch } from "@chemdraft/chem-core";
 import { z } from "zod";
+export * from "./chemistry3d";
+import type { PluginEmbed3DRequest, PluginEmbed3DResult, PluginMinimize3DRequest, PluginMinimize3DResult,
+  PluginFlatten3DRequest, PluginFlatten3DResult } from "./chemistry3d";
 
 // Re-export the chem-core types the SDK's own signatures reference (e.g. `getActiveDocument()` returns
 // a `ChemDraftDocument`, document patch methods take a `DocumentPatch`). Surfacing them here keeps the plugin
@@ -21,6 +24,8 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * 0.1.12 adds bounded overlay report content, command-scoped open/focus, and optional panel links.
  * 0.1.13 adds optional live prompt disabled state to overlays.setContent.
  * 0.1.14 adds one-shot restoreDraft to overlays.setContent, without overwriting a user's draft.
+ * 0.1.15 adds optional 3D chemistry: chemistry.embed3d, minimize3d, flatten3d
+ * (including structured minimize3d clash/contact diagnostics and flatten3d clash refusal).
  *
  * The MINOR stays at 1 for both. For a 0.x release `isPluginApiVersionCompatible` treats the minor as
  * the compatibility boundary, so 0.2.0 would have made every plugin declaring `^0.1.0` — the NMR
@@ -30,7 +35,7 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * local structure recognition, `^0.1.7` for structure naming, `^0.1.8` for external tools), which this host satisfies and an
  * older one correctly does not.
  */
-export const PluginApiVersion = "0.1.14" as const;
+export const PluginApiVersion = "0.1.15" as const;
 
 export const pluginPermissions = [
   "document.read",
@@ -1340,6 +1345,12 @@ export type PluginStructureFromSmilesResult =
   | { available: false; reason: string };
 
 export interface PluginChemistryAPI {
+  /** API 0.1.15: chemistry.compute only, during this plugin's own command. Explicit Hs;
+   * independently embedded components start side by side. Only model.coords may be edited. */
+  embed3d?(request: PluginEmbed3DRequest): Promise<PluginEmbed3DResult>;
+  minimize3d?(request: PluginMinimize3DRequest): Promise<PluginMinimize3DResult>;
+  /** Returns native objects only; insert through documents.applyPatch. Never changes the document. */
+  flatten3d?(request: PluginFlatten3DRequest): Promise<PluginFlatten3DResult>;
   isotopeEnvelope(request: PluginIsotopeEnvelopeRequest): Promise<PluginIsotopeEnvelopeResult>;
   /**
    * Lay a SMILES out as a document object a plugin can propose.

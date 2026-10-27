@@ -12,6 +12,13 @@ scaling, sparse override precedence, terminal carbon labels, hidden implicit hyd
 hydrogens, fonts, save/reopen, undo/redo, Spin 3D, atom-label editor placement, SVG export, and ring
 selection after tab switching/closing.
 
+## Plugin 3D chemistry (macOS and Windows)
+
+With a plugin that declares `chemistry.compute`, embed a two-component complex, arrange and minimize
+it with interfragment forces, then flatten and insert it. The components must not interpenetrate,
+flattening must retain stereochemistry, and one Undo must remove the insertion. Confirm Spin 3D is
+unchanged.
+
 Ring-fill labels: fill every ring of pyridinium, CBPQT4+ and 1,3,5-oxathiazinane with light blue
 (25%), solid blue and a vivid alternating palette (90%). Check N+, NH, O and S: each fill reaches
 every bond, without a missing box or white glyph outline. At shared-ring nitrogens each part of the

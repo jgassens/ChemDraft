@@ -66,6 +66,11 @@ jobs:
       # build.rs -> tauri_build::try_build validates the configured frontendDist (`../dist`), which
       # is gitignored, so cargo cannot even compile without this.
       - run: pnpm --filter @chemdraft/desktop build:web
+        env:
+          # The macOS runner's default V8 heap (~2 GiB) is too small for this build since PR #219
+          # added the plugin 3D chemistry worker. Measured locally: main ~2.42 GB peak RSS, #219
+          # ~2.6 GB; a 2048 MiB heap OOMs. Allow 3 GiB on the 7 GB macOS runner, this step only.
+          NODE_OPTIONS: --max-old-space-size=3072
 
       # Downloads the pinned, SHA-256-verified Sparkle release. build.rs skips staging when the
       # framework is absent, which leaves the test executables unable to link against it.

@@ -258,31 +258,43 @@ function buildAdjacency(bonds: readonly MoleculeBond[]): Map<string, Neighbor[]>
 }
 
 /** Bond ids that lie on at least one ring (endpoints still connected without the bond). */
-function ringBondIds(bonds: readonly MoleculeBond[]): Set<string> {
+function ringBondIds(adjacency: ReadonlyMap<string, readonly Neighbor[]>): Set<string> {
+  // A cycle edge is exactly a non-bridge. Tarjan's low-link pass visits each
+  // adjacency entry once; explicit frames also support arbitrarily long chains.
   const rings = new Set<string>();
-  for (const target of bonds) {
-    const start = target.fromAtomId;
-    const goal = target.toAtomId;
-    const seen = new Set<string>([start]);
-    const queue = [start];
-    let connected = false;
-    while (queue.length > 0) {
-      const current = queue.shift() as string;
-      if (current === goal) {
-        connected = true;
-        break;
-      }
-      for (const bond of bonds) {
-        if (bond.id === target.id) continue;
-        const next =
-          bond.fromAtomId === current ? bond.toAtomId : bond.toAtomId === current ? bond.fromAtomId : undefined;
-        if (next !== undefined && !seen.has(next)) {
-          seen.add(next);
-          queue.push(next);
+  const discovered = new Map<string, number>();
+  const low = new Map<string, number>();
+  let clock = 0;
+  interface Frame { atom: string; parent?: string; edge?: string; next: number }
+  for (const root of adjacency.keys()) {
+    if (discovered.has(root)) continue;
+    discovered.set(root, ++clock);
+    low.set(root, clock);
+    const stack: Frame[] = [{ atom: root, next: 0 }];
+    while (stack.length) {
+      const frame = stack[stack.length - 1];
+      const neighbors = adjacency.get(frame.atom)!;
+      if (frame.next < neighbors.length) {
+        const neighbor = neighbors[frame.next++];
+        if (neighbor.bondId === frame.edge) continue;
+        const visit = discovered.get(neighbor.atomId);
+        if (visit === undefined) {
+          discovered.set(neighbor.atomId, ++clock);
+          low.set(neighbor.atomId, clock);
+          stack.push({ atom: neighbor.atomId, parent: frame.atom, edge: neighbor.bondId, next: 0 });
+        } else {
+          low.set(frame.atom, Math.min(low.get(frame.atom)!, visit));
+          if (visit < discovered.get(frame.atom)!) rings.add(neighbor.bondId);
+        }
+      } else {
+        stack.pop();
+        if (frame.parent !== undefined) {
+          const childLow = low.get(frame.atom)!;
+          if (childLow <= discovered.get(frame.parent)!) rings.add(frame.edge!);
+          low.set(frame.parent, Math.min(low.get(frame.parent)!, childLow));
         }
       }
     }
-    if (connected) rings.add(target.id);
   }
   return rings;
 }
@@ -353,7 +365,7 @@ export function flattenPerspectiveFrom3D(
 
   const atomIndex = new Map(atoms.map((atom, index) => [atom.id, index] as const));
   const adjacency = buildAdjacency(bonds);
-  const rings = ringBondIds(bonds);
+  const rings = ringBondIds(adjacency);
 
   // Raw 3D positions (chirality reference) and projected 2D positions (depiction).
   const raw3d = new Map<string, Vec3>();
@@ -780,6 +792,48 @@ interface CrossingPair {
   depthGap: number;
 }
 
+/** Conservative grid broad phase; exact intersection/depth math stays unchanged. */
+function crossingCandidates(
+  bonds: readonly MoleculeBond[], projected: ReadonlyMap<string, Projected>, medianLength: number
+): (index: number) => number[] {
+  const size = Math.max(medianLength, 1e-9);
+  const grid = new Map<string, number[]>();
+  const cellsByBond: string[][] = [];
+  const oversized: number[] = [];
+  bonds.forEach((bond, index) => {
+    const a = projected.get(bond.fromAtomId);
+    const b = projected.get(bond.toAtomId);
+    const cells: string[] = [];
+    cellsByBond.push(cells);
+    if (!a || !b) return;
+    const x0 = Math.floor(Math.min(a.x, b.x) / size);
+    const x1 = Math.floor(Math.max(a.x, b.x) / size);
+    const y0 = Math.floor(Math.min(a.y, b.y) / size);
+    const y1 = Math.floor(Math.max(a.y, b.y) / size);
+    // Bound memory for extreme coordinates and long bonds. Fall back to exhaustive
+    // candidate checks for those bonds, so no possible intersection is discarded.
+    if (![x0, x1, y0, y1].every(Number.isSafeInteger) || (x1 - x0 + 1) * (y1 - y0 + 1) > 4096) {
+      oversized.push(index);
+      return;
+    }
+    for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) {
+      const key = `${x},${y}`;
+      cells.push(key);
+      const bucket = grid.get(key) ?? [];
+      bucket.push(index);
+      grid.set(key, bucket);
+    }
+  });
+  const oversizedSet = new Set(oversized);
+  return index => {
+    if (oversizedSet.has(index)) return Array.from({ length: bonds.length - index - 1 }, (_, j) => index + j + 1);
+    const found = new Set<number>();
+    for (const key of cellsByBond[index]) for (const other of grid.get(key)!) if (other > index) found.add(other);
+    for (const other of oversized) if (other > index) found.add(other);
+    return [...found].sort((a, b) => a - b);
+  };
+}
+
 function computeCrossings(
   bonds: readonly MoleculeBond[],
   projected: Map<string, Projected>,
@@ -791,8 +845,10 @@ function computeCrossings(
   const depthEpsilon = opts.crossingDepthEpsilonFraction * medianLength;
   const pairs: CrossingPair[] = [];
 
+  const candidates = crossingCandidates(bonds, projected, medianLength);
   for (let i = 0; i < bonds.length; i += 1) {
-    for (let j = i + 1; j < bonds.length; j += 1) {
+    // Preserve i/j order for byte-identical crossings, warnings and depth canary.
+    for (const j of candidates(i)) {
       const a = bonds[i];
       const b = bonds[j];
       // Skip bonds that share an atom (junctions are not crossings).

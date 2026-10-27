@@ -11,6 +11,7 @@
  * panel's envelope are therefore the same computation, and cannot drift.
  */
 import { RESERVED_PLUGIN_OBJECT_IDS } from "./reservedObjectIds";
+export { createChemistry3dProviders } from "../chemistry3d/client";
 export { RESERVED_PLUGIN_OBJECT_IDS } from "./reservedObjectIds";
 
 import { invoke } from "@tauri-apps/api/core";

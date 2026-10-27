@@ -56,8 +56,11 @@ import { TauriExternalToolsEngine, UnsupportedExternalToolsEngine, type External
 import {
   computeIsotopeEnvelopeForPlugin,
   nameToStructureForPlugin,
+  createChemistry3dProviders,
   structureFromSmilesForPlugin
 } from "./pluginChemistry";
+import { chemistry3dReplyLogRequestedFromWindow } from "../chemistry3d/client";
+import { configureChemistry3dReplyLogger } from "./PluginWorkerBridge";
 
 /** Serves an isotope envelope to a plugin holding `chemistry.compute`. */
 export type DesktopIsotopeEnvelopeProvider = (
@@ -86,6 +89,8 @@ function freezeOverlayContent(sections: CanvasOverlayContentSection[]): readonly
 }
 
 export interface DesktopPluginRuntimeOptions {
+  /** Optional injection seam; default providers use the existing in-process conformer worker. */
+  chemistry3d?: import("../chemistry3d/client").Chemistry3dProviders;
   /** Reads the current active document. Called on demand; must reflect the latest state. */
   getActiveDocument: () => ChemDraftDocument | undefined;
   /**
@@ -246,6 +251,10 @@ export interface ProposalDocumentTab {
 }
 
 export function createPluginRuntime(options: DesktopPluginRuntimeOptions): DesktopPluginRuntime {
+  configureChemistry3dReplyLogger(
+    chemistry3dReplyLogRequestedFromWindow() ? reply => console.info("[chemistry3d reply]", reply) : undefined
+  );
+  const chemistry3d = options.chemistry3d ?? createChemistry3dProviders();
   const now = options.now ?? (() => new Date());
   const envelopeProvider =
     options.computeIsotopeEnvelope === undefined ? computeIsotopeEnvelopeForPlugin : options.computeIsotopeEnvelope;
@@ -471,6 +480,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   const notifyCanvasOverlayStatus = () => canvasOverlayStatusListeners.forEach((listener) => listener());
   const readSelection = options.getSelection;
   const host = new DesktopPluginHost({
+    ...chemistry3d,
     commandRegistry: options.commandRegistry,
     overlays: {
       setContent: (pluginId, overlayId, sections, prompt) => {

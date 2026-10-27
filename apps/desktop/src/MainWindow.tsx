@@ -1614,7 +1614,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.27.09.05-codex";
+const CURRENT_BUILD_STAMP = "10.27.12.30-codex";
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -10684,7 +10684,10 @@ export function MainWindow({
         if (documentIdentityRef.current !== documentIdentity) {
           throw new Error("The document changed while the plugin was running; nothing was inserted.");
         }
-        const applied = applyPluginDocumentPatch(documentRef.current, patch);
+        const applied = applyPluginDocumentPatch(documentRef.current, patch, {
+          insertionTarget: { pageId: documentRef.current.pages[0]!.id,
+            bounds: assistantHistoryPort.getViewportRect?.(activeDocumentTabIdRef.current) }
+        });
         const assistantTxId = assistantTransactions.activeTransactionForPlugin(plugin.id, activeDocumentTabIdRef.current);
         if (assistantTxId) {
           assistantTransactions.writeAssistantTransaction(assistantTxId, applied.document, applied.receipt.objectIds);

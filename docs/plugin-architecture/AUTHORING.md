@@ -61,7 +61,8 @@ into core — e.g. `import type { ChemDraftDocument, DocumentPatch } from "@chem
 ```
 
 `apiVersion` in your manifest declares the SDK contract you target (`PluginApiVersion`, currently
-`0.1.14`). API 0.1.14 adds one-shot draft restoration to overlay content; plugins using it
+`0.1.15`). API 0.1.15 adds command-scoped 3D embedding, minimization, and flattening; plugins using
+any of those methods should declare `^0.1.15`. API 0.1.14 adds one-shot draft restoration to overlay content; plugins using it
 should declare `^0.1.14`. API 0.1.13 adds live prompt disabled state to overlay content; plugins using it
 should declare `^0.1.13`. API 0.1.12 adds overlay content and command-scoped opening; plugins that use either
 should declare `^0.1.12`. API 0.1.10 adds panel input and canvas overlays; plugins that use either should declare
@@ -71,7 +72,7 @@ API 0.1.7 adds host-owned `context.chemistry.structureToName`; plugins that use 
 use it should declare `^0.1.6`. API 0.1.5 added command-scoped `context.images.requestImage`, 0.1.4 added
 `context.documents.applyPatch`, and 0.1.3 added the host-owned `context.dialogs.promptText`
 capability. API 0.1.9 adds `context.assistant` for request-scoped tools and MCP sessions.
-Existing `^0.1.0` through `^0.1.14` packages remain compatible, each on a host at or above the version it declares.
+Existing `^0.1.0` through `^0.1.15` packages remain compatible, each on a host at or above the version it declares.
 
 ## Manifest + registration
 
@@ -315,6 +316,146 @@ receipt without the patch. A second proposal of the same `ref`, a forged `ref`, 
 command ends is refused. A plugin that holds `document.read` receives the insertion itself, as before.
 The official MolScribe plugin declares `document.proposePatch`, not `document.read`, and spreads
 `proposedPatch` unchanged, so it takes this path with no code change.
+
+## 3D chemistry (0.1.15)
+
+Declare `chemistry.compute` and `apiVersion: "^0.1.15"` to receive the optional
+`context.chemistry` methods `embed3d`, `minimize3d`, and `flatten3d`. They are available only while
+one of the plugin's own commands is running. They use the app's in-process RDKit WASM worker: they
+do not start a process, use the network, or require a new permission.
+
+Use this sequence for a genuine host–guest or other multi-component complex. It embeds each
+component independently, lets the plugin arrange their relative positions, then relaxes the complex
+and writes the returned native molecules through the normal patch capability:
+
+```ts
+const embedded = await context.chemistry?.embed3d?.({
+  components: [{ smiles: hostSmiles }, { smiles: guestSmiles }],
+  seed: 42
+});
+if (!embedded) throw new Error("3D chemistry is unavailable");
+
+// Arrange the guest relative to the host by changing coordinates only.
+const arranged = moveComponent(embedded.model, 1, { x: 4, y: 0, z: 0 });
+const minimized = await context.chemistry?.minimize3d?.({
+  model: arranged,
+  interfragment: true,
+  maxIters: 10_000
+});
+if (!minimized) throw new Error("3D chemistry is unavailable");
+if (minimized.clash) throw new Error("Clashing 3D model; retry with another arrangement before insertion.");
+
+const flattened = await context.chemistry?.flatten3d?.({
+  model: minimized.model,
+  view: "auto"
+});
+if (!flattened) throw new Error("3D chemistry is unavailable");
+
+// Declare document.read and document.write for this insertion sequence.
+const documents = context.documents;
+if (!documents?.applyPatch) throw new Error("Document writing is unavailable");
+const document = await documents.getActiveDocument();
+const pageId = document?.pages[0]?.id;
+if (!pageId) throw new Error("No document page is available");
+await documents.applyPatch({
+  reason: "Insert complex",
+  patch: {
+    op: "batch",
+    patches: flattened.objects.map((object) => ({ op: "addObject", pageId, object }))
+  }
+});
+```
+
+`embed3d({ components, seed? })` accepts 1–8 `{ smiles }` components and defaults `seed` to 42. It
+creates explicit hydrogens, uses ETKDGv3 per component, and puts components side by side. The plugin
+is responsible for positioning one component relative to another before minimization. It returns
+`{ model, method, warnings }`.
+`minimize3d({ model, forceField?, interfragment, maxIters? })` accepts `mmff94s` (the default),
+`mmff94`, or `uff`; `maxIters` is at most 20,000. `interfragment` is required. Set it to `true` for
+the forces between components of a complex; it is refused for a single component. The returned force
+field result names the field, reports `converged`, `not-converged`, or `setup-failed`, energy, and
+the iterations budget; it may also report the closest inter-component heavy-atom distance in Angstrom. The complete
+result is `{ model, forceField, clash, closestInterComponentHeavyAtomA?, method, warnings }`.
+`clash` is a boolean, true when the closest inter-component heavy-atom contact is below 2.2 A,
+even when the force field reports `converged` or interactions are off. Single-component models
+return `clash: false` and omit the distance. A clash adds a specific warning naming the distance
+and the two atoms. Callers must not insert a clashing model. Screen starting arrangements for
+contacts and interpenetrating rings/chains, and retry with another arrangement; local minimization
+does not search for an unthreaded geometry or guarantee that a converged structure is usable.
+`flatten3d` independently refuses contacts below 2.2 A, including plugin-edited coordinates.
+The host screens the verified model before worker dispatch, so even a cold worker cannot delay
+this refusal behind RDKit startup:
+`flatten3d refused a clashing model: closest inter-component heavy-atom contact is 1.850 A between C atom 1 (component 1) and O atom 10 (component 2); below 2.2 A. Retry with another arrangement.`
+These atom indices are one-based in the complete model; component numbers are one-based too.
+
+The model includes a host-signed `modelToken` over its atoms and bonds. A plugin may change its
+coordinates, but never its chemical graph. `flatten3d({ model, view })` accepts an orthonormal,
+row-major 3×3 rotation (nine numbers) or `"auto"`; it returns one native molecule per component,
+2D coordinates, wedges/hashes for input-specified centres, `depthByAtom`, and warnings. It uses the same
+flattening as Spin 3D and refuses a component whose stereochemistry would not survive. It returns
+`{ objects, depthByAtom, method, warnings }`: inserting them requires `document.write` and
+`documents.applyPatch`, so each call (including one batch) creates one labelled undo entry.
+Returned molecule frames use the same padded atom/label bounds as SMILES paste, without changing
+projected atoms or `depthByAtom`. Placement measures molecules by the union of their frame and atom
+extents, even for plugin-supplied objects with inconsistent frames; other objects use their existing bounds.
+The host preserves authored positions when the inserted group's combined bounds are fully inside
+the page. A group overlapping the page but sticking out is nudged by the smallest translation
+that brings the whole group inside. A group entirely outside the page is translated to the visible
+page center, clamped inside page bounds, before that commit. A group referencing any object that
+existed before the patch (including atom-anchored charges and arrows) is never moved. Relative positions are preserved and
+changed objects stay selected. Only groups needing translation can be refused as too large, atomically with
+`Plugin insertion is larger than the page; choose a larger page or a smaller drawing before inserting.`
+Colliding inserted object ids are rebased to fresh ids. All native references within the batch,
+including attachment points on superatoms and R-groups (standalone or inside molecules), follow
+the rebased objects, including self and forward insertion references. Atom and bond ids remain local
+to their molecule and unchanged; opaque strings and original source ids are preserved.
+Flatten outputs retain input atoms, including separate explicit H atoms from the input SMILES,
+and omit H atoms added only to build the 3D model. Wedges/hashes are reconciled on the retained
+graph; canonical isomeric SMILES must still match. `depthByAtom` is indexed by each returned native
+molecule's atom order, centered on that retained atom centroid and rotated into view, in Angstrom.
+It is not indexed by the model's full explicit-H atom list.
+
+Each SMILES is limited to 5,000 characters; all components together are limited to 500 heavy atoms.
+Embedding has one total budget of 15 seconds multiplied by the supplied component count;
+minimization has 60 seconds and flattening 5 seconds. Queue time counts inside that budget,
+including both the plugin queue and the app-wide worker queue; component progress never resets it.
+An assigned cold worker's module/WASM startup has its own bounded 30-second budget, excluded from
+both work timers. Readiness resumes the remaining work budget, preserving queue time already spent.
+The refusal is `<method> worker startup timed out after 30 seconds.`; work/queue expiry remains
+`<method> timed out after <seconds> seconds including queue time.`. Queueing behind another call's
+startup still counts. Warm PEG2/PEG8 Node measurements and the rationale for keeping the fixed
+five-second flatten budget are in `apps/desktop/src/chemistry3d/README.md`.
+Each plugin may run one 3D call and queue eight; further calls
+fail with `Plugin "<id>" 3D chemistry is busy: at most 1 running call and 8 queued calls are allowed.`
+The app shares at most two reusable RDKit 3D workers. Command end cancels running work and clears
+that plugin's queue; timeout or cancellation terminates the affected worker.
+Minimization checks only the tetrahedral centres and E/Z bonds explicitly specified in each
+component's signed SMILES, both before and after optimization. Unspecified sites are ignored.
+Refusals identify the component and one-based centre or bond, for example
+`Component 1: minimize3d input would change specified tetrahedral stereo at centre 2; restore the input geometry.`
+or `Component 1: minimize3d result would change specified E/Z stereo at bond 2-3; restore the input geometry.`
+Flattening checks incoming geometry by the same rule (phase `flatten3d input`), keeps specified
+stereo, and never adds wedges/hashes at unspecified tetrahedral sites. Plugins must specify E/Z
+with `/` or `\` in the input SMILES for every stereogenic double bond they intend to flatten.
+Native drawing bonds cannot store an open double bond, so `flatten3d` refuses these before depiction
+or view search, using RDKit's stereo perception rather than rejecting all double bonds:
+`Component 1 (CC=CC): double bond 2 has no E/Z in the input, and ChemDraft drawings cannot store an open double bond yet; specify / or \ in the SMILES.`
+The bond index is one-based in the component's input order. With several open stereogenic double
+bonds, the first index is followed by ` (first of <count>)`. Carbonyls, terminal and symmetric alkenes,
+small-ring double bonds, aromatic rings, and a symmetric TTF central double bond pass this check.
+`embed3d` and `minimize3d` still accept unspecified E/Z in the 3D-only model.
+
+Native drawing atoms have no isotope mass field. `flatten3d` therefore refuses isotopic components
+before depiction or view search:
+`Component 1 ([13CH3]CO) carries isotope labels (13C), which ChemDraft drawings cannot store yet; flatten3d refuses rather than drop them.`
+`embed3d` and `minimize3d` still accept and preserve isotopes in the 3D-only model.
+Do not call `minimize3d` for a single
+molecule: normal 2D layout (`structureFromSmiles`) is its appropriate path and does not pay for 3D.
+
+Every result records this method contract: **RDKit MinimalLib Release_2026_03_3 + patches
+0001-0008; ETKDGv3 seed; force field; nonbonded cutoff 10 A; gas phase; no counterions or solvent;
+energies rank starting geometries only and are not binding energies; a local minimum, not an
+equilibrium structure.** A plugin must never present the energy to users as meaningful.
 
 ## Panel input and canvas overlays (0.1.10–0.1.14)
 

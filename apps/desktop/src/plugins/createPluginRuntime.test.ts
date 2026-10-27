@@ -53,6 +53,26 @@ describe("structureFromSmiles command lifetime", () => {
   });
 });
 
+describe("createPluginRuntime 3D chemistry", () => {
+  it("wires all three providers without document.read or native.execute", async () => {
+    const embed3d = vi.fn(async () => { throw new Error("test embed provider"); });
+    const minimize3d = vi.fn(async () => { throw new Error("test minimize provider"); });
+    const flatten3d = vi.fn(async () => { throw new Error("test flatten provider"); });
+    const runtime = createPluginRuntime({ getActiveDocument: () => undefined, chemistry3d: { embed3d, minimize3d, flatten3d } });
+    const id = "org.test.threeD";
+    const command = "plugin.threeD.run";
+    runtime.registerPlugin({ id, name: "3D", version: "0", apiVersion: "^0.1.15", entry: "test", permissions: ["chemistry.compute"],
+      contributes: { commands: [{ id: command, title: "3D" }] } }, { commandHandlers: { [command]: async ctx => {
+        expect(ctx.chemistry?.minimize3d).toBeTypeOf("function");
+        expect(ctx.chemistry?.flatten3d).toBeTypeOf("function");
+        await ctx.chemistry!.embed3d!({ components: [{ smiles: "CC" }] });
+      } } });
+    await expect(runtime.invokeCommand(command)).rejects.toThrow("test embed provider");
+    expect(embed3d).toHaveBeenCalledWith({ components: [{ smiles: "CC" }] }, expect.any(AbortSignal));
+    runtime.unregisterPlugin(id);
+  });
+});
+
 describe("createPluginRuntime canvas overlays", () => {
   const commandId = "plugin.chat.submit";
   const overlayId = "overlay.chat.main";

@@ -74,7 +74,7 @@ export const PLUGIN_WORKER_CAPABILITY_METHODS = {
   documents: ["getActiveDocument", "proposePatch", "applyPatch"],
   panels: ["showReport"],
   overlays: ["setStatus", "setTranscript", "setContent", "open"],
-  chemistry: ["isotopeEnvelope", "nameToStructure", "structureFromSmiles", "structureToName"],
+  chemistry: ["isotopeEnvelope", "nameToStructure", "structureFromSmiles", "structureToName", "embed3d", "minimize3d", "flatten3d"],
   dialogs: ["promptText"],
   images: ["requestImage"],
   recognition: ["recognizeStructure"],

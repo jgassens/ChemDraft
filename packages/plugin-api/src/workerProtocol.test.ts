@@ -124,10 +124,17 @@ describe("isPluginApiVersionCompatible", () => {
     expect(isPluginApiVersionCompatible("^0.1.13", "0.1.12")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.14", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.14", "0.1.13")).toBe(false);
+    expect(isPluginApiVersionCompatible("^0.1.15", PluginApiVersion)).toBe(true);
+    expect(isPluginApiVersionCompatible("^0.1.15", "0.1.14")).toBe(false);
   });
 });
 
 describe("chemistry worker capability allowlist", () => {
+  it("includes all optional API 0.1.15 methods", () => {
+    expect(PLUGIN_WORKER_CAPABILITY_METHODS.chemistry).toEqual([
+      "isotopeEnvelope", "nameToStructure", "structureFromSmiles", "structureToName", "embed3d", "minimize3d", "flatten3d"
+    ]);
+  });
   it("includes structureToName", () => {
     expect(PLUGIN_WORKER_CAPABILITY_METHODS.chemistry).toContain("structureToName");
   });
@@ -158,6 +165,56 @@ describe("checkWorkerHandshake", () => {
 });
 
 describe("runPluginWorker", () => {
+  it("correlates concurrent 3D replies by id even when the second command finishes first", async () => {
+    const endpoint = new ControlledEndpoint();
+    runPluginWorker({ manifest: manifest(["chemistry.compute"]), commandHandlers: {
+      [commandId]: ctx => ctx.chemistry!.embed3d!({ components: [{ smiles: "C" }] })
+    } }, endpoint);
+    endpoint.deliver({ kind: "invokeCommand", commandRequestId: 10, commandId });
+    endpoint.deliver({ kind: "invokeCommand", commandRequestId: 11, commandId });
+    await flush();
+    const requests = endpoint.sent.filter(message => message.kind === "capabilityRequest");
+    expect(requests).toHaveLength(2);
+    expect(requests[0].requestId).not.toBe(requests[1].requestId);
+    endpoint.deliver({ kind: "capabilityResult", requestId: requests[1].requestId, ok: true, value: { from: "second" } });
+    endpoint.deliver({ kind: "capabilityResult", requestId: requests[0].requestId, ok: true, value: { from: "first" } });
+    await flush();
+    expect(endpoint.sent.filter(message => message.kind === "commandSettled")).toEqual([
+      { kind: "commandSettled", commandRequestId: 11, ok: true, value: { from: "second" } },
+      { kind: "commandSettled", commandRequestId: 10, ok: true, value: { from: "first" } }
+    ]);
+  });
+  it("ignores late 3D success/error replies from an aborted command after the next command starts", async () => {
+    const endpoint = new ControlledEndpoint();
+    runPluginWorker({ manifest: manifest(["chemistry.compute"]), commandHandlers: {
+      [commandId]: ctx => ctx.chemistry!.embed3d!({ components: [{ smiles: "C" }] })
+    } }, endpoint);
+    endpoint.deliver({ kind: "invokeCommand", commandRequestId: 10, commandId });
+    await flush();
+    const old = endpoint.sent.find(message => message.kind === "capabilityRequest")!;
+    endpoint.deliver({ kind: "abort", commandRequestId: 10 });
+    endpoint.deliver({ kind: "invokeCommand", commandRequestId: 11, commandId });
+    await flush();
+    const current = endpoint.sent.filter(message => message.kind === "capabilityRequest")[1];
+    expect(current.requestId).not.toBe(old.requestId);
+    endpoint.deliver({ kind: "capabilityResult", requestId: old.requestId, ok: true, value: { from: "cancelled" } });
+    endpoint.deliver({ kind: "capabilityResult", requestId: old.requestId, ok: false, error: { code: "OLD", message: "cancelled error" } });
+    endpoint.deliver({ kind: "capabilityResult", requestId: current.requestId, ok: true, value: { from: "current" } });
+    await flush();
+    expect(endpoint.sent.filter(message => message.kind === "commandSettled")).toEqual([
+      { kind: "commandSettled", commandRequestId: 11, ok: true, value: { from: "current" } }
+    ]);
+  });
+  it.each([false, true])("exposes all three 3D stubs only with chemistry.compute (%s)", async enabled => {
+    const endpoint = new ControlledEndpoint();
+    let methods: unknown[] = [];
+    runPluginWorker({ manifest: manifest(enabled ? ["chemistry.compute"] : []), commandHandlers: {
+      [commandId]: ctx => { methods = [ctx.chemistry?.embed3d, ctx.chemistry?.minimize3d, ctx.chemistry?.flatten3d]; }
+    } }, endpoint);
+    endpoint.deliver({ kind: "invokeCommand", commandRequestId: 1, commandId });
+    await flush();
+    for (const method of methods) expect(typeof method).toBe(enabled ? "function" : "undefined");
+  });
   it("drops malformed command input before invoking plugin code", async () => {
     const endpoint = new ControlledEndpoint();
     let calls = 0;

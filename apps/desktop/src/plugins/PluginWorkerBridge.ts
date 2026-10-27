@@ -42,9 +42,27 @@ export interface PluginWorkerBridgeOptions {
   hostApiVersion?: string;
   /** Maximum time to wait for the worker's protocol handshake. Defaults to 10 seconds. */
   startupTimeoutMs?: number;
+  /** Optional, metadata-only diagnostic sink for plugin 3D chemistry replies. */
+  chemistry3dReplyLogger?: PluginChemistry3dReplyLogger;
 }
 
+export type PluginChemistry3dReplyLogger = (reply: {
+  pluginId: string;
+  commandRequestId: number;
+  requestId: number;
+  method: "embed3d" | "minimize3d" | "flatten3d";
+  ok: boolean;
+  valueKeys: string[];
+  droppedAsStale: boolean;
+}) => void;
+
 const DEFAULT_STARTUP_TIMEOUT_MS = 10_000;
+let defaultChemistry3dReplyLogger: PluginChemistry3dReplyLogger | undefined;
+
+/** Set once by the persistent desktop runtime; undefined keeps normal plugin traffic allocation-free. */
+export function configureChemistry3dReplyLogger(logger: PluginChemistry3dReplyLogger | undefined): void {
+  defaultChemistry3dReplyLogger = logger;
+}
 
 interface PendingInvocation {
   context: PluginCommandContext;
@@ -67,6 +85,7 @@ export class PluginWorkerBridge {
   private readonly createWorker: () => PluginWorkerHandle;
   private readonly hostApiVersion?: string;
   private readonly startupTimeoutMs: number;
+  private readonly chemistry3dReplyLogger: PluginChemistry3dReplyLogger | undefined;
 
   private worker: PluginWorkerHandle | undefined;
   private readyPromise: Promise<void> | undefined;
@@ -82,6 +101,7 @@ export class PluginWorkerBridge {
     this.createWorker = options.createWorker;
     this.hostApiVersion = options.hostApiVersion;
     this.startupTimeoutMs = options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
+    this.chemistry3dReplyLogger = options.chemistry3dReplyLogger ?? defaultChemistry3dReplyLogger;
   }
 
   /** Spawn the worker (if needed) and resolve once its startup handshake passes; reject loudly on a
@@ -389,11 +409,50 @@ export class PluginWorkerBridge {
       });
       return;
     }
+    // A restarted runtime begins capability ids at 1 again. A promise owned by
+    // the old worker must never send its late result/error to the current worker.
+    const worker = this.worker;
+    const isCurrent = () => this.worker === worker && this.pending.get(message.commandRequestId) === invocation;
+    const chemistry3dMethod = this.chemistry3dReplyLogger && message.namespace === "chemistry" &&
+      (message.method === "embed3d" || message.method === "minimize3d" || message.method === "flatten3d")
+      ? message.method : undefined;
     Promise.resolve()
       .then(() => method.apply(capability, [...message.args]))
       .then(
-        (value) => this.sendCapabilityValue(message.requestId, value),
-        (error: unknown) => this.sendCapabilityError(message.requestId, toErrorPayload(error))
+        (value) => {
+          const droppedAsStale = !isCurrent();
+          if (chemistry3dMethod && this.chemistry3dReplyLogger) {
+            try {
+              this.chemistry3dReplyLogger({
+                pluginId: this.pluginId,
+                commandRequestId: message.commandRequestId,
+                requestId: message.requestId,
+                method: chemistry3dMethod,
+                ok: true,
+                valueKeys: value !== null && typeof value === "object" ? Object.keys(value) : [],
+                droppedAsStale
+              });
+            } catch { /* Diagnostics must never affect reply delivery. */ }
+          }
+          if (!droppedAsStale) this.sendCapabilityValue(message.requestId, value);
+        },
+        (error: unknown) => {
+          const droppedAsStale = !isCurrent();
+          if (chemistry3dMethod && this.chemistry3dReplyLogger) {
+            try {
+              this.chemistry3dReplyLogger({
+                pluginId: this.pluginId,
+                commandRequestId: message.commandRequestId,
+                requestId: message.requestId,
+                method: chemistry3dMethod,
+                ok: false,
+                valueKeys: [],
+                droppedAsStale
+              });
+            } catch { /* Diagnostics must never affect reply delivery. */ }
+          }
+          if (!droppedAsStale) this.sendCapabilityError(message.requestId, toErrorPayload(error));
+        }
       );
   }
 

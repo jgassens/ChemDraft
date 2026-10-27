@@ -17,6 +17,7 @@ import {
   runPluginWorker,
   type HostToWorkerMessage,
   type PluginCommandContext,
+  type PluginEmbed3DResult,
   type PluginCommandInput,
   type PluginExternalToolStatus,
   type PluginCommandHandler,
@@ -44,6 +45,7 @@ class FakeEndpoint {
   peer!: FakeEndpoint;
   terminated = false;
   private readonly messageListeners = new Set<MessageListener>();
+  private readonly errorListeners = new Set<(error: Error) => void>();
   private buffer: unknown[] = [];
 
   postMessage(message: unknown): void {
@@ -68,8 +70,12 @@ class FakeEndpoint {
   }
 
   addEventListener(type: string, listener: unknown): void {
+    if (type === "error") {
+      this.errorListeners.add(listener as (error: Error) => void);
+      return;
+    }
     if (type !== "message") {
-      return; // error/messageerror unused by the fake
+      return; // messageerror unused by the fake
     }
     const messageListener = listener as MessageListener;
     this.messageListeners.add(messageListener);
@@ -90,6 +96,10 @@ class FakeEndpoint {
 
   terminate(): void {
     this.terminated = true;
+  }
+
+  crash(): void {
+    for (const listener of this.errorListeners) listener(new Error("simulated worker crash"));
   }
 }
 
@@ -147,6 +157,103 @@ function startWorkerRoutedPlugin(registration: PluginWorkerRegistration): Plugin
 }
 
 describe("PluginWorkerBridge — M34 isolation boundary", () => {
+  it("delivers successful and error capability replies when the logger throws", async () => {
+    const commandId = "plugin.throwingLogger.run";
+    const manifest = parsePluginManifest({ id: "org.test.throwing-logger", name: "Throwing Logger", version: "0", apiVersion: "^0.1.15", entry: "worker.js",
+      permissions: ["chemistry.compute"], contributes: { commands: [{ id: commandId, title: "3D" }] } });
+    let shouldFail = false;
+    const { mainSide, workerSide } = linkedEndpoints();
+    runPluginWorker({ manifest, commandHandlers: { [commandId]: async context => context.chemistry!.embed3d!({ components: [{ smiles: "C" }] }) } }, asEndpoint(workerSide));
+    const throwingBridge = new PluginWorkerBridge({ pluginId: manifest.id, chemistry3dReplyLogger: () => { throw new Error("logger failed"); }, createWorker: () => asHandle(mainSide), hostApiVersion: PluginApiVersion });
+    const context = { chemistry: { embed3d: async () => {
+      if (shouldFail) throw new Error("capability failed");
+      return { ok: true };
+    } } } as unknown as PluginCommandContext;
+    try {
+      await expect(throwingBridge.invokeCommand(commandId, context)).resolves.toEqual({ ok: true });
+      shouldFail = true;
+      await expect(throwingBridge.invokeCommand(commandId, context)).rejects.toMatchObject({ message: "capability failed" });
+    } finally { throwingBridge.terminate(); }
+  });
+  it.each(["result", "error"])("drops a late capability %s after a worker restart reuses request id 1", async kind => {
+    const commandId = "plugin.restart.run";
+    const manifest = parsePluginManifest({ id: "org.test.restart", name: "Restart", version: "0", apiVersion: "^0.1.15", entry: "worker.js",
+      permissions: ["chemistry.compute"], contributes: { commands: [{ id: commandId, title: "3D" }] } });
+    const completions: { resolve(value: unknown): void; reject(error: Error): void }[] = [];
+    const replyLogger = vi.fn();
+    const context = { chemistry: { embed3d: () => new Promise((resolve, reject) => completions.push({ resolve, reject })) } } as unknown as PluginCommandContext;
+    const workers: FakeEndpoint[] = [];
+    const requests: { worker: number; requestId: number }[] = [];
+    const bridge = new PluginWorkerBridge({ pluginId: manifest.id, chemistry3dReplyLogger: replyLogger, createWorker: () => {
+      const { mainSide, workerSide } = linkedEndpoints();
+      const worker = workers.length;
+      mainSide.addEventListener("message", (event: { data: unknown }) => {
+        const message = event.data as { kind: string; requestId: number };
+        if (message.kind === "capabilityRequest") requests.push({ worker, requestId: message.requestId });
+      });
+      runPluginWorker({ manifest, commandHandlers: { [commandId]: ctx => ctx.chemistry!.embed3d!({ components: [{ smiles: "C" }] }) } }, asEndpoint(workerSide));
+      workers.push(mainSide);
+      return asHandle(mainSide);
+    } });
+    try {
+      const first = bridge.invokeCommand(commandId, context);
+      const failed = expect(first).rejects.toMatchObject({ code: PluginWorkerErrorCodes.WorkerCrashed });
+      await vi.waitFor(() => expect(completions).toHaveLength(1));
+      workers[0].crash();
+      await failed;
+      const second = bridge.invokeCommand(commandId, context);
+      const settled = second.then(value => ({ value }), error => ({ error }));
+      await vi.waitFor(() => expect(completions).toHaveLength(2));
+      expect(requests).toEqual([{ worker: 0, requestId: 1 }, { worker: 1, requestId: 1 }]);
+      if (kind === "result") completions[0].resolve({ from: "old worker" });
+      else completions[0].reject(new Error("old worker capability failed"));
+      await flush();
+      completions[1].resolve({ from: "current worker" });
+      await expect(settled).resolves.toEqual({ value: { from: "current worker" } });
+      expect(replyLogger).toHaveBeenCalledWith({
+        pluginId: manifest.id, commandRequestId: 1, requestId: 1, method: "embed3d",
+        ok: kind === "result", valueKeys: kind === "result" ? ["from"] : [], droppedAsStale: true
+      });
+      expect(replyLogger).toHaveBeenCalledWith({
+        pluginId: manifest.id, commandRequestId: 2, requestId: 1, method: "embed3d",
+        ok: true, valueKeys: ["from"], droppedAsStale: false
+      });
+    } finally { bridge.terminate(); }
+  });
+  it("round-trips every 0.1.15 3D method with chemistry.compute alone, including host validation", async () => {
+    const commandId = "plugin.threeD.run";
+    const manifest = parsePluginManifest({ id: "org.test.threeD", name: "3D", version: "0", apiVersion: "^0.1.15", entry: "worker.js",
+      permissions: ["chemistry.compute"], contributes: { commands: [{ id: commandId, title: "3D" }] } });
+    const embedded: PluginEmbed3DResult = {
+      model: { atoms: [{ element: "C", charge: 0, component: 0, addedHydrogen: false }], bonds: [], coords: [0, 0, 0],
+        components: [{ smiles: "C", atomStart: 0, atomCount: 1 }], modelToken: "host-token" },
+      method: { engine: "RDKit MinimalLib Release_2026_03_3 + patches 0001-0008", embedding: "ETKDGv3", seed: 42,
+        forceField: "none", interfragment: false, coordinateUnits: "Angstrom", energyUnits: "kcal/mol", conventions: ["test"] }, warnings: []
+    };
+    const minimized = { ...embedded, model: { ...embedded.model, coords: [1, 2, 3] }, clash: false,
+      forceField: { name: "mmff94s" as const, status: "converged" as const, energy: 1, iterationsBudget: 1000 } };
+    const flattened = { objects: [], depthByAtom: [[3]], method: embedded.method, warnings: ["test warning"] };
+    const embed3d = vi.fn(async () => embedded);
+    const minimize3d = vi.fn(async () => minimized);
+    const flatten3d = vi.fn(async () => flattened);
+    const host = new PluginHost({ embed3d, minimize3d, flatten3d });
+    const bridge = startWorkerRoutedPlugin({ manifest, commandHandlers: { [commandId]: async context => {
+      const chemistry = context.chemistry!;
+      const embed = await chemistry.embed3d!({ components: [{ smiles: "C" }], seed: 42 });
+      const minimize = await chemistry.minimize3d!({ model: embed.model, interfragment: false });
+      await expect(chemistry.minimize3d!({ model: embed.model, interfragment: "false" } as never))
+        .rejects.toThrow("minimize3d interfragment must be a boolean (true or false).");
+      const flatten = await chemistry.flatten3d!({ model: minimize.model, view: "auto" });
+      return { embed, minimize, flatten };
+    } } });
+    host.registerPlugin(manifest, delegatingOptions(manifest, bridge));
+    try {
+      await expect(host.invokeCommand(commandId)).resolves.toEqual({ embed: embedded, minimize: minimized, flatten: flattened });
+      expect(embed3d).toHaveBeenCalledWith({ components: [{ smiles: "C" }], seed: 42 }, expect.any(AbortSignal));
+      expect(minimize3d).toHaveBeenCalledOnce();
+      expect(flatten3d).toHaveBeenCalledWith({ model: minimized.model, view: "auto" }, expect.any(AbortSignal));
+    } finally { bridge.terminate(); }
+  });
   it("round-trips overlay input and status through the real worker capability boundary", async () => {
     const commandId = "plugin.chat.submit";
     const overlayId = "overlay.chat.main";

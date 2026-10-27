@@ -13454,6 +13454,21 @@ export function moveDocumentObjects(
   return patches.length > 0 ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
 }
 
+/** Translate precisely the new objects in a plugin insertion. Unlike selection dragging,
+ * never expand groups/anchors into pre-existing objects outside the write's scope. */
+export function translateInsertedDocumentObjects(
+  document: ChemDraftDocument, ids: readonly string[], dx: number, dy: number
+): ChemDraftDocument {
+  const inserted = new Set(ids);
+  const patches = document.pages.flatMap(page => page.objects.flatMap(object => inserted.has(object.id)
+    ? translateDocumentObjectByPatches(document, object.id, dx, dy, {
+      translateAnchoredGeometry: groupMoveTranslatesArrowGeometry(object, inserted),
+      preserveChargeAnchor: object.type === "electron-mark" && object.anchor.kind === "atom" &&
+        object.anchor.objectId !== undefined && inserted.has(object.anchor.objectId)
+    }) : []));
+  return patches.length ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
+}
+
 export type DocumentAlignMode = "left" | "center" | "right" | "top" | "middle" | "bottom";
 export type DocumentDistributeAxis = "horizontal" | "vertical";
 export type DocumentDistributeMode = "centers" | "spacing";
@@ -17253,9 +17268,44 @@ export function flattenSpunMolecule(
       stereoCenters: []
     };
   }
+  const page = document.pages.find(candidate => candidate.id === pageId);
+  const result = flattenNativeMolecule3d(molecule, coords3d, viewMatrix, { ...options, bounds: page });
+  const { molecule: flattened, crossings, ...outcome } = result;
+  if (!flattened || result.status !== "committed") return { document, ...outcome };
+  const patches: DocumentPatch[] = [{
+    op: "updateObject", objectId, changes: {
+      atoms: flattened.atoms, bonds: flattened.bonds, x: flattened.x, y: flattened.y,
+      width: flattened.width, height: flattened.height, structure: flattened.structure,
+      structureFormat: flattened.structureFormat
+    }
+  }];
+  for (const crossing of page?.crossings ?? []) {
+    if (crossing.bonds.every(ref => ref.objectId === objectId)) {
+      patches.push({ op: "clearCrossingOverride", pageId, bonds: crossing.bonds });
+    }
+  }
+  for (const crossing of crossings ?? []) patches.push({ op: "setCrossingOverride", pageId, crossing });
+  return { document: applyPatches(document, patches, { now: phase4Timestamp }), ...outcome };
+}
+
+/** Pure molecule-level Spin 3D flatten. Shared by document commits and plugin 3D chemistry:
+ * frame conversion, ScreenPlacement, wedge reconciliation, depth styling and stored molfile
+ * all have one implementation. Document patching and page crossing ownership stay in the wrapper. */
+export interface FlattenNative3DOutcome extends Omit<FlattenSpunOutcome, "document"> {
+  molecule?: MoleculeObject;
+  crossings?: ReturnType<typeof flattenPerspectiveFrom3D>["crossings"];
+}
+
+export function flattenNativeMolecule3d(
+  molecule: MoleculeObject,
+  coords3d: ArrayLike<number>,
+  viewMatrix: ViewMatrix,
+  options: { placement?: ScreenPlacement; stereoCenterAtomIds?: ReadonlySet<string>; perceiveStereo?: StereoPerceiver;
+    bounds?: { width: number; height: number } } = {}
+): FlattenNative3DOutcome {
+  const objectId = molecule.id;
   if (coords3d.length !== molecule.atoms.length * 3) {
     return {
-      document,
       status: "refused",
       warnings: [],
       refusalReasons: [`conformer atom count ${coords3d.length / 3} ≠ molecule atom count ${molecule.atoms.length}`],
@@ -17272,7 +17322,6 @@ export function flattenSpunMolecule(
   const hasWedges = molecule.bonds.some((bond) => bond.display?.bondStyle === "wedge" || bond.display?.bondStyle === "hashed");
   if (hasWedges && distinctAbbreviations > stereoPerceptionDistinctLabelLimit) {
     return {
-      document,
       status: "refused",
       warnings: [],
       refusalReasons: [
@@ -17293,7 +17342,6 @@ export function flattenSpunMolecule(
   });
   if (result.status !== "committed" || !result.mol2dProjected) {
     return {
-      document,
       status: "refused",
       warnings: result.warnings,
       refusalReasons: result.refusalReasons,
@@ -17337,7 +17385,7 @@ export function flattenSpunMolecule(
     };
   });
   // Clamp into the page bounds (mirrors scaleParsedMolfileAtoms).
-  const page = document.pages.find((candidate) => candidate.id === pageId);
+  const page = options.bounds;
   if (page) {
     const geometry = moleculeGeometryFromAtoms(nextAtoms);
     const boundedX = clamp(geometry.x, 0, Math.max(0, page.width - geometry.width));
@@ -17439,7 +17487,6 @@ export function flattenSpunMolecule(
     );
     if (!reconciled.ok) {
       return {
-        document,
         status: "refused",
         warnings: result.warnings,
         refusalReasons: [
@@ -17463,40 +17510,16 @@ export function flattenSpunMolecule(
   // see the note where a new molecule's structure is first written. Aromatic bonds pass their Kekulé
   // orders so a literal atom keeps its valence, and anything the writer could not keep is reported
   // with the flatten rather than stored silently.
-  const structure = moleculeToMolfileV2000(stagedMolecule, {
+  const useV3000 = stagedMolecule.atoms.length > 999 || stagedMolecule.bonds.length > 999;
+  const structure = (useV3000 ? moleculeToMolfileV3000 : moleculeToMolfileV2000)(stagedMolecule, {
     fromDocFrame: true,
     warnings: structureWarnings,
     kekuleBondOrders: nativeBondOrderResolution(stagedMolecule.atoms, stagedMolecule.bonds).kekuleOrders
   }).contents;
 
-  const patches: DocumentPatch[] = [
-    {
-      op: "updateObject",
-      objectId,
-      changes: {
-        atoms: nextAtoms,
-        bonds: committedBonds,
-        x: geometry.x,
-        y: geometry.y,
-        width: geometry.width,
-        height: geometry.height,
-        structure,
-        structureFormat: "molfile-v2000"
-      }
-    }
-  ];
-  // Replace this molecule's stale crossing overrides with the freshly baked ones.
-  for (const crossing of page?.crossings ?? []) {
-    if (crossing.bonds.every((ref) => ref.objectId === objectId)) {
-      patches.push({ op: "clearCrossingOverride", pageId, bonds: crossing.bonds });
-    }
-  }
-  for (const crossing of result.crossings) {
-    patches.push({ op: "setCrossingOverride", pageId, crossing });
-  }
-
   return {
-    document: applyPatches(document, patches, { now: phase4Timestamp }),
+    molecule: { ...stagedMolecule, structure, structureFormat: useV3000 ? "molfile-v3000" : "molfile-v2000" },
+    crossings: result.crossings,
     status: "committed",
     warnings: [
       ...result.warnings,

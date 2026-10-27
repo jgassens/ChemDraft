@@ -20,8 +20,11 @@ import {
 } from "@chemdraft/ocl-adapter";
 import {
   ensureRdkit,
-  generate3DConformerProgressive as rdkitGenerate3DConformerProgressive
+  generate3DConformerProgressive as rdkitGenerate3DConformerProgressive,
+  type RdkitGenerate3DConformerOptions
 } from "@chemdraft/rdkit-adapter";
+import { handleChemistry3dRequest, type Chemistry3dWorkRequest, type Chemistry3dWorkResponse } from "./chemistry3d/protocol";
+import { SPIN3D_EMBED_CANDIDATES } from "./chemistry3d/settings";
 import { defaultRefineForceField } from "@chemdraft/chemistry-adapter";
 import type {
   ChemistryWarning,
@@ -51,7 +54,7 @@ export interface ConformerWorkRequest {
   /** Conformer refinement options for this request (Spin 3D mode → engine options).
    *  Embedding ignores these (it is force-field-independent and cached by molfile);
    *  only the refinement stage reads `optimize` / `maxMinimiseIterations`. */
-  options?: Generate3DConformerOptions;
+  options?: RdkitGenerate3DConformerOptions;
   /** Which embed engine to use (Spin 3D Engine setting). Default "auto". */
   enginePreference?: Spin3dEnginePreference;
 }
@@ -91,18 +94,18 @@ function effectiveRefineForceField(
  * refined coordinates per refinement mode here — switching Fast/Balanced/Quality (or
  * MMFF94↔UFF) reuses the embed and never reuses another mode's refined geometry.
  * `"none"` (Fast) is never stored: it has no refined stage. The key is the engine's
- * EFFECTIVE force field + iteration cap, so MMFF94 and UFF refines of the same embed don't
+ * EFFECTIVE force field + iteration cap + interfragment flag, so MMFF94 and UFF refines of the same embed don't
  * collide on RDKit, while an OCL embed (MMFF94-only) shares one key across both selections.
  */
-function refinementKeyFor(
-  options: Generate3DConformerOptions | undefined,
+export function refinementKeyFor(
+  options: RdkitGenerate3DConformerOptions | undefined,
   atomCount: number | undefined,
   engine: ConformerEngineName
 ): string {
   const optimize = options?.optimize ?? "auto";
   if (optimize === "none") return "none";
   const maxIts = options?.maxMinimiseIterations ?? qualityRefineIterationsFor(atomCount);
-  return `${effectiveRefineForceField(options, engine)}:${maxIts}`;
+  return `${effectiveRefineForceField(options, engine)}:${maxIts}:interfragment=${options?.ignoreInterfragInteractions === false}`;
 }
 
 interface CacheEntry {
@@ -112,6 +115,9 @@ interface CacheEntry {
    *  served as a fresh RDKit one — except a `rdkitFallback` entry, which an RDKit/auto
    *  request reuses (re-running RDKit would just fail again). */
   engine: ConformerEngineName;
+  /** The adapter's refinement closure captures this flag at embed time. Never reuse that closure
+   * for the opposite interaction mode, even when the input coordinates are identical. */
+  ignoreInterfragInteractions?: boolean;
   /** This OCL embed was produced because the RDKit embed FAILED for this molfile (RDKit
    *  ETKDG can't embed some large/flexible structures). Lets an RDKit/auto request reuse it
    *  instead of pointlessly re-failing RDKit and re-running the slow OCL fallback each spin. */
@@ -266,6 +272,9 @@ async function runRefine(
   options: { preemptible: boolean; stage: string }
 ): Promise<Generate3DConformerResult | undefined> {
   if ((request.options?.optimize ?? "auto") === "none") return undefined; // Fast — no refine stage
+  // A queued background refine may outlive replacement of its embed by the opposite mode.
+  // Its closure captured the old flag; never memoize that closure under another flag's key.
+  if ((entry.ignoreInterfragInteractions !== false) !== (request.options?.ignoreInterfragInteractions !== false)) return undefined;
 
   const atomCount = entry.embedded.originalAtomCount;
   const key = refinementKeyFor(request.options, atomCount, entry.engine);
@@ -399,7 +408,7 @@ function submit(request: ConformerWorkRequest): void {
     // the now-selected engine. When the engine can't be resolved without probing, don't skip.
     const cached = request.molfile ? cache.get(request.molfile) : undefined;
     const resolvedEngine = resolvedEngineForPreference(request.enginePreference);
-    if (cached && resolvedEngine !== undefined && cacheEntrySatisfies(cached, resolvedEngine)) {
+    if (cached && resolvedEngine !== undefined && cacheEntrySatisfies(cached, resolvedEngine, request.options?.ignoreInterfragInteractions)) {
       postTrace(request, {
         kind: "worker",
         stage: "worker.prefetch.skip",
@@ -510,15 +519,14 @@ async function currentEngine(preference: Spin3dEnginePreference = "auto"): Promi
 /** Whether a cached entry can serve a request resolving to `engine`. An exact engine match
  *  always qualifies; additionally an RDKit/auto request reuses a `rdkitFallback` OCL entry,
  *  since re-running RDKit on that molfile would just fail again and re-incur the OCL embed. */
-function cacheEntrySatisfies(entry: CacheEntry, engine: ConformerEngineName): boolean {
-  return entry.engine === engine || (engine === "rdkit-wasm" && entry.rdkitFallback === true);
+function cacheEntrySatisfies(entry: CacheEntry, engine: ConformerEngineName, ignoreInterfragInteractions?: boolean): boolean {
+  return (entry.ignoreInterfragInteractions !== false) === (ignoreInterfragInteractions !== false) &&
+    (entry.engine === engine || (engine === "rdkit-wasm" && entry.rdkitFallback === true));
 }
 
 // Best-of-K initial embedding: ask the RDKit adapter to rank a few deterministic ETKDG
 // candidates and keep the lowest-energy one (Slice B). The adapter tapers/skips this for large
 // molecules; the tug rebuild path does not request candidates, so it stays single-embed.
-const SPIN3D_EMBED_CANDIDATES = 4;
-
 async function embedConformer(
   request: ConformerWorkRequest,
   engine: ConformerEngineName
@@ -527,10 +535,11 @@ async function embedConformer(
   // Embedding is force-field-independent; always request the refine capability so any mode
   // can be derived from this one embed. The per-mode iteration cap is applied in runRefine.
   // Preserve the UI-level deterministic seed; the worker used to drop it here.
-  const embedOptions: Generate3DConformerOptions = {
+  const embedOptions: RdkitGenerate3DConformerOptions = {
     optimize: "auto",
     seed: request.options?.seed,
-    embedCandidates: SPIN3D_EMBED_CANDIDATES
+    embedCandidates: SPIN3D_EMBED_CANDIDATES,
+    ignoreInterfragInteractions: request.options?.ignoreInterfragInteractions
   };
   if (engine === "rdkit-wasm") {
     return rdkitGenerate3DConformerProgressive(input, embedOptions);
@@ -555,7 +564,7 @@ async function runGenerate(request: ConformerWorkRequest): Promise<void> {
   try {
     const engine = await currentEngine(request.enginePreference);
     const hit = cache.get(molfile);
-    if (hit && cacheEntrySatisfies(hit, engine)) {
+    if (hit && cacheEntrySatisfies(hit, engine, request.options?.ignoreInterfragInteractions)) {
       cachePut(molfile, hit); // refresh LRU position
       postTrace(request, {
         kind: "worker",
@@ -654,6 +663,7 @@ async function runGenerate(request: ConformerWorkRequest): Promise<void> {
     const entry: CacheEntry = {
       embedded,
       engine: effectiveEngine,
+      ignoreInterfragInteractions: request.options?.ignoreInterfragInteractions,
       rdkitFallback,
       refineFromEmbedded,
       refinedByMode: new Map(),
@@ -738,6 +748,11 @@ setOclResourcesUrl(oclResourcesUrl);
 // module is absent or fails to init, currentEngine() falls back to OCL (transparently).
 registerRdkitWasmLoader();
 
-globalThis.addEventListener("message", (event: MessageEvent<ConformerWorkRequest>) => {
+globalThis.addEventListener("message", (event: MessageEvent<ConformerWorkRequest | Chemistry3dWorkRequest>) => {
+  if (event.data.kind === "chemistry3d") {
+    void handleChemistry3dRequest(event.data, (message: Chemistry3dWorkResponse) =>
+      (globalThis as unknown as { postMessage(message: Chemistry3dWorkResponse): void }).postMessage(message));
+    return;
+  }
   submit(event.data);
 });

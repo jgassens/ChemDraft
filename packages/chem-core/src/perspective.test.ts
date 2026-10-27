@@ -48,6 +48,32 @@ const IDENTITY: ViewMatrix = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 // Squash y → 0: every atom projects onto the x-axis (edge-on for any center).
 const Y_SQUASH: ViewMatrix = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 
+it("keeps graph and crossing work linear on explicit-H 100/334/500-heavy-atom chains", () => {
+  // Count actual endpoint reads rather than elapsed time. Both the old cubic ring
+  // scan and an exhaustive crossing scan violate this bound, even on a fast host.
+  for (const count of [100, 334, 500]) {
+    const atoms: AtomSpec[] = [];
+    const bonds: BondSpec[] = [];
+    for (let i = 0; i < count; i++) {
+      atoms.push({ id: `c${i}`, element: "C", x: i * 2, y: i % 2 });
+      if (i) bonds.push({ id: `chain${i}`, from: `c${i - 1}`, to: `c${i}` });
+      for (let h = 0; h < (i === 0 || i === count - 1 ? 3 : 2); h++) {
+        atoms.push({ id: `h${i}_${h}`, element: "H", x: i * 2 + 0.5, y: i % 2 + (h % 2 ? 1 : -1) });
+        bonds.push({ id: `hydrogen${i}_${h}`, from: `c${i}`, to: `h${i}_${h}` });
+      }
+    }
+    const mol = molecule(atoms, bonds);
+    let endpointReads = 0;
+    mol.bonds = mol.bonds.map(bond => new Proxy(bond, { get(target, key, receiver) {
+      if (key === "fromAtomId" || key === "toAtomId") endpointReads++;
+      return Reflect.get(target, key, receiver);
+    } }));
+    const result = flattenPerspectiveFrom3D(mol, atoms.flatMap(atom => [atom.x, atom.y, 0]), IDENTITY);
+    expect(result.status).toBe("committed");
+    expect(endpointReads).toBeLessThan(mol.bonds.length * 100);
+  }
+});
+
 function stereoBonds(mol: MoleculeObject): MoleculeBond[] {
   return mol.bonds.filter(
     (bond) => bond.display?.bondStyle === "wedge" || bond.display?.bondStyle === "hashed"
@@ -148,6 +174,20 @@ describe("flattenPerspectiveFrom3D — achiral / no specified stereo", () => {
 });
 
 describe("flattenPerspectiveFrom3D — single stereocenter", () => {
+  it("prefers a bridge over ring bonds, including cycles in a disconnected component", () => {
+    const { mol, coords3d } = chiralCenter(1);
+    // The first two center bonds now belong to a ring; the other two remain bridges.
+    mol.bonds.push({ id: "ring", fromAtomId: "a1", toAtomId: "a2", order: "single" });
+    const second = chiralCenter(1);
+    mol.atoms.push(...second.mol.atoms.map(atom => ({ ...atom, id: `other_${atom.id}`, x: atom.x + 10 })));
+    mol.bonds.push(...second.mol.bonds.map(bond => ({ ...bond, id: `other_${bond.id}`,
+      fromAtomId: `other_${bond.fromAtomId}`, toAtomId: `other_${bond.toAtomId}` })));
+    mol.bonds.push({ id: "other_ring", fromAtomId: "other_a1", toAtomId: "other_a2", order: "single" });
+    coords3d.push(...second.coords3d.map((value, i) => i % 3 === 0 ? value + 10 : value));
+    const result = flattenPerspectiveFrom3D(mol, coords3d, IDENTITY);
+    expect(result.status).toBe("committed");
+    expect(result.stereoCenters.map(center => center.wedgeBondId)).toEqual(["b3", "other_b3"]);
+  });
   it("commits and places exactly one encoding-sound wedge (handedness +1)", () => {
     const { mol, coords3d } = chiralCenter(1);
     const result = flattenPerspectiveFrom3D(mol, coords3d, IDENTITY);
@@ -427,6 +467,22 @@ describe("flattenPerspectiveFrom3D — E/Z double bonds", () => {
 });
 
 describe("flattenPerspectiveFrom3D — over/under crossings from depth", () => {
+  it("finds crossings at negative/grid-boundary coordinates and across oversized bonds in stable order", () => {
+    const mol = molecule([
+      { id: "a", element: "C", x: -10000, y: -1 }, { id: "b", element: "C", x: 10000, y: -1 },
+      { id: "c", element: "C", x: -1, y: -2 }, { id: "d", element: "C", x: -1, y: 0 },
+      { id: "e", element: "C", x: 1, y: -2 }, { id: "f", element: "C", x: 1, y: 0 },
+      { id: "g", element: "C", x: 20, y: 20 }, { id: "h", element: "C", x: 21, y: 20 }
+    ], [
+      { id: "long", from: "a", to: "b" }, { id: "negative", from: "c", to: "d" },
+      { id: "positive", from: "e", to: "f" }, { id: "distant", from: "g", to: "h" }
+    ]);
+    const result = flattenPerspectiveFrom3D(mol, mol.atoms.flatMap((atom, i) => [atom.x, atom.y, i]), IDENTITY);
+    expect(result.crossings.map(crossing => crossing.bonds.map(bond => bond.bondId))).toEqual([
+      ["long", "negative"], ["long", "positive"]
+    ]);
+    expect(result.crossings.map(crossing => crossing.front.bondId)).toEqual(["negative", "positive"]);
+  });
   it("bakes a CrossingOverride with the nearer-z bond as front", () => {
     // bond1 (a0–a1) at z=0; bond2 (a2–a3) at z=1 crosses it → bond2 is front.
     const mol = molecule(
