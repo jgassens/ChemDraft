@@ -13,6 +13,7 @@ import {
 } from "@chemdraft/chem-core";
 import { documentStyleSvg, exportDocumentToSvg, type ExportWarning } from "@chemdraft/export-engine";
 import type { Depiction2D } from "@chemdraft/ocl-adapter";
+import type { DepictionEngineAvailability } from "@chemdraft/rdkit-adapter/depiction";
 import {
   atomLabelHaloWidthPx,
   DocumentStyleScale,
@@ -27,6 +28,7 @@ import {
 import {
   ensureRdkit,
   generateSmiles2DMolfile,
+  type DepictionRequestOptions,
   RdkitNotConfiguredError
 } from "@chemdraft/rdkit-adapter";
 import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
@@ -44,6 +46,7 @@ import {
 } from "@chemdraft/document-workflow-core";
 
 import { installNodeEngines } from "./engine";
+import { depictSmilesWithDeadline } from "./depictionClient";
 
 export type RenderBackground = "white" | "transparent";
 export type DepictionEngine = "rdkit" | "ocl";
@@ -405,6 +408,7 @@ function identityMolfile(
   const { molecule, placeholderAtoms } = expandNativeMoleculeLabelGroups(drawn);
   const unspecified = new Set(semantics.unspecifiedDoubleBondIndices);
   const kekuleBondOrders = nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders;
+  // V3000 is needed for dative bonds; adjacent three-digit V2000 counts are supported.
   if (semantics.dativeBondIndices.length > 0) {
     return {
       contents: markV3000UnspecifiedDoubleBonds(
@@ -536,26 +540,59 @@ export function stereoCenterCounts(
  * Convert a SMILES string to a ChemDraft-ready 2D depiction. RDKit is preferred; OpenChemLib is
  * used only after an explicit RDKit failure, which is preserved in the returned warnings.
  */
-export async function depictSmiles(smiles: string): Promise<SmilesDepictionResult> {
+export async function depictSmiles(smiles: string, options?: DepictionRequestOptions): Promise<SmilesDepictionResult> {
+  const normalized = normalizedSmilesInput(smiles);
+  // Layout-free input admission remains cheap and preserves the existing typed error contract.
+  try { await rejectOversizedSmiles(normalized); } catch (error) {
+    if (error instanceof InputLimitError || error instanceof UnsupportedMolfileLabelError || isRdkitNotConfiguredError(error)) throw error;
+  }
+  return depictSmilesWithDeadline(normalized, options);
+}
+
+/** Worker entry only. Publish a complete identity-checked fallback before trying CoordGen. */
+export async function depictSmilesInWorker(
+  smiles: string,
+  onStandard: (result: SmilesDepictionResult) => void,
+  options: { standardOnly?: boolean } & DepictionEngineAvailability = {}
+): Promise<SmilesDepictionResult> {
   const normalizedSmiles = normalizedSmilesInput(smiles);
   try {
-    await rejectOversizedSmiles(normalizedSmiles);
+    if (options.rdkitLoadFailure === undefined) await rejectOversizedSmiles(normalizedSmiles);
   } catch (error) {
     if (error instanceof UnsupportedMolfileLabelError || error instanceof InputLimitError || isRdkitNotConfiguredError(error)) throw error;
     // Preserve the normal depiction path: it reports the RDKit failure and may still use OCL.
   }
-  const ocl = await import("@chemdraft/ocl-adapter");
+  const ocl = options.oclLoadFailure === undefined ? await import("@chemdraft/ocl-adapter") : undefined;
+  const warnings = options.oclLoadFailure === undefined ? [] :
+    [`OpenChemLib failed to load: ${options.oclLoadFailure}; stereo center counts are unavailable.`];
+  const countsFor = (molfile: string) => ocl ? stereoCenterCounts(ocl.perceiveStereoCentersFromMolfile(molfile)) :
+    { stereoCenters: 0, unspecifiedStereoCenters: 0 };
   let rdkitFailure: unknown;
 
   try {
+    if (options.rdkitLoadFailure !== undefined) throw new Error(`RDKit failed to load: ${options.rdkitLoadFailure}`);
     installNodeEngines();
-    const molfile = await generateSmiles2DMolfile(normalizedSmiles);
+    // All validation below is synchronous apart from lazy loading (already installed here). The
+    // standard result must be ready before the optional synchronous CoordGen call can start.
+    const sourceCanonicalSmiles = await canonicalSmiles(normalizedSmiles, "input");
+    const molfile = await generateSmiles2DMolfile(normalizedSmiles, {
+      ...options,
+      onStandardMolfile: (standard) => {
+        rejectUnsupportedMolfileLabels(standard, normalizedSmiles);
+        assertMolfileHasKnownBondOrders(standard);
+        const depiction = pastedStructureDepictionFromMolfile(standard);
+        rejectOversizedDepiction(depiction);
+        onStandard({ depiction, molfile: standard, engine: "rdkit",
+          ...countsFor(standard),
+          ...sourceBondSemantics(standard), sourceCanonicalSmiles,
+          identityVerifiedByRdkit: true, warnings: [...warnings] });
+      }
+    });
     rejectUnsupportedMolfileLabels(molfile, normalizedSmiles);
     const depiction = pastedStructureDepictionFromMolfile(molfile);
     rejectOversizedDepiction(depiction);
-    const counts = stereoCenterCounts(ocl.perceiveStereoCentersFromMolfile(molfile));
+    const counts = countsFor(molfile);
     const semantics = sourceBondSemantics(molfile);
-    const sourceCanonicalSmiles = await canonicalSmiles(normalizedSmiles, "input");
     await assertCanonicalIdentity(sourceCanonicalSmiles, molfile);
     return {
       depiction,
@@ -565,7 +602,7 @@ export async function depictSmiles(smiles: string): Promise<SmilesDepictionResul
       sourceCanonicalSmiles,
       identityVerifiedByRdkit: true,
       ...semantics,
-      warnings: []
+      warnings: [...warnings]
     };
   } catch (error) {
     if (error instanceof UnsupportedMolfileLabelError || error instanceof InputLimitError) throw error;
@@ -577,6 +614,7 @@ export async function depictSmiles(smiles: string): Promise<SmilesDepictionResul
     rdkitFailure = error;
   }
 
+  if (!ocl) throw rdkitFailure;
   try {
     const fallback = ocl.depictSmiles2D(normalizedSmiles);
     rejectUnsupportedMolfileLabels(fallback.molfile, normalizedSmiles);
@@ -592,8 +630,8 @@ export async function depictSmiles(smiles: string): Promise<SmilesDepictionResul
     const counts = stereoCenterCounts(ocl.perceiveStereoCentersFromMolfile(fallback.molfile));
     const semantics = sourceBondSemantics(fallback.molfile);
     const [inputCanonicalSmiles, outputCanonicalSmiles] = await Promise.all([
-      optionalCanonicalSmiles(normalizedSmiles),
-      optionalCanonicalSmiles(fallback.molfile)
+      options.rdkitLoadFailure === undefined ? optionalCanonicalSmiles(normalizedSmiles) : undefined,
+      options.rdkitLoadFailure === undefined ? optionalCanonicalSmiles(fallback.molfile) : undefined
     ]);
     if (
       inputCanonicalSmiles !== undefined &&

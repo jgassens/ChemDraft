@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 
 import {
   ensureRdkit,
@@ -144,6 +145,8 @@ describe("RDKit real 2D depiction", () => {
 
   it("uses a wide, readable CoordGen layout for the reported polyether without changing stereo", async () => {
     const molfile = await generateSmiles2DMolfile(REPORTED_POLYETHER_SMILES);
+    expect(createHash("sha256").update(molfile).digest("hex"))
+      .toBe("d870117a48182e672f82660d145378d297e0e9adf084284203d28e2a76eef9ef");
     const geometry = v2000Geometry(molfile);
     const bounds = normalizedDepictionBounds(geometry);
 

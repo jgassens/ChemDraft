@@ -26,10 +26,9 @@ import type {
 import { ISOTOPE_ENVELOPE_METHOD_ID } from "@chemdraft/rdkit-adapter/constants";
 
 import { analysisClient } from "../analysisClient";
-import { loadRdkitWithAppLoader } from "./rdkitAppLoader";
+import { depictSmilesOffThread } from "../depiction2d/client";
 import {
   createSmilesMolecule,
-  pastedStructureDepictionFromMolfile,
   type PastedStructureDepiction
 } from "../documentWorkflow";
 
@@ -108,7 +107,8 @@ export async function computeIsotopeEnvelopeForPlugin(
  */
 export async function structureFromSmilesForPlugin(
   request: PluginStructureFromSmilesRequest,
-  getActiveDocument: () => ChemDraftDocument | undefined
+  getActiveDocument: () => ChemDraftDocument | undefined,
+  signal?: AbortSignal
 ): Promise<PluginStructureFromSmilesResult> {
   const document = getActiveDocument();
   if (!document) {
@@ -122,21 +122,12 @@ export async function structureFromSmilesForPlugin(
   // rather than the `document.read`-checked one, so a plugin holding only `chemistry.compute` could
   // read both.
 
-  const ocl = await import("@chemdraft/ocl-adapter");
   let depiction: PastedStructureDepiction;
+  let warnings: string[] | undefined;
   try {
-    const rdkit = await loadRdkitWithAppLoader(() => import("@chemdraft/rdkit-adapter"));
-    depiction = pastedStructureDepictionFromMolfile(await rdkit.generateSmiles2DMolfile(request.smiles));
-  } catch {
-    try {
-      depiction = pastedStructureDepictionFromMolfile(ocl.depictSmiles2D(request.smiles).molfile);
-    } catch (error) {
-      return {
-        available: true,
-        built: false,
-        reason: structureGenerationFailureReason(request.smiles, error)
-      };
-    }
+    ({ depiction, warnings } = await depictSmilesOffThread(request.smiles, { signal }));
+  } catch (error) {
+    return { available: true, built: false, reason: structureGenerationFailureReason(request.smiles, error) };
   }
 
   if (depiction.atoms.length === 0) {
@@ -155,9 +146,9 @@ export async function structureFromSmilesForPlugin(
     styleSource: "plugin-smiles",
     warningCode: "plugin.smiles_imported",
     // Names the plugin, because "pasted" would be a false account of where this came from.
-    warningMessage: origin
+    warningMessage: [origin
       ? `Generated an editable 2D structure from SMILES supplied by ${origin}.`
-      : "Generated an editable 2D structure from SMILES supplied by a plugin."
+      : "Generated an editable 2D structure from SMILES supplied by a plugin.", ...(warnings ?? [])].join(" ")
   });
 
   RESERVED_PLUGIN_OBJECT_IDS.add(object.id);

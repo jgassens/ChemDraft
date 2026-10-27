@@ -11,8 +11,9 @@ package, as required by AGENTS.md §6 Package boundaries.
 
 | Import | Exports and intended caller |
 | --- | --- |
-| `@chemdraft/rdkit-adapter` | The browser or worker-facing barrel. It groups the analysis API, whose reports cover composition, mass, descriptor, pKa, and ionization methods (`analyzeStructure`, `analyzeStructureDetailed`, `AnalyzeStructureRequest`, `DetailedAnalysis`); composition helpers (`compositionFromRdkitJson`, `hillFormula`, `DerivedComposition`); conformers and loader registration (`generateSmiles2DMolfile`, `generate3DConformerProgressive`, `rdkitConformerGenerator`, `setRdkitModuleLoader`, `ensureRdkit`); isotope-envelope building (`computeEnvelope`, `isotopeEnvelopeContract`, `ISOTOPE_ENVELOPE_METHOD_ID`); derived interpretations (`deriveInterpretation`, `sourceInterpretation`); and RDKit method contracts (`rdkitMethodContracts`, `PINNED_RDKIT_VERSION`, `PINNED_RDKIT_WASM_SHA256`). It also re-exports the legacy adapter entry point. Engine-bound calls reject with `RdkitNotConfiguredError` until a loader is registered, but pure helpers such as `hillFormula`, `compositionFromRdkitJson`, and `rdkitMethodContracts` do not need one. The barrel statically reaches the pKa model through its analysis export, which is why the lighter `./constants` entry exists. |
+| `@chemdraft/rdkit-adapter` | The browser or worker-facing barrel. It groups the analysis API, whose reports cover composition, mass, descriptor, pKa, and ionization methods (`analyzeStructure`, `analyzeStructureDetailed`, `AnalyzeStructureRequest`, `DetailedAnalysis`); composition helpers (`compositionFromRdkitJson`, `hillFormula`, `DerivedComposition`); bounded depiction transport (`createDepictionWorkerClient`, `DepictionWorkerPort`, `DepictionReply`, `DepictionRequestOptions`); conformers and loader registration (`generateSmiles2DMolfile`, `generate3DConformerProgressive`, `rdkitConformerGenerator`, `setRdkitModuleLoader`, `ensureRdkit`); isotope-envelope building (`computeEnvelope`, `isotopeEnvelopeContract`, `ISOTOPE_ENVELOPE_METHOD_ID`); derived interpretations (`deriveInterpretation`, `sourceInterpretation`); and RDKit method contracts (`rdkitMethodContracts`, `PINNED_RDKIT_VERSION`, `PINNED_RDKIT_WASM_SHA256`). It also re-exports the legacy adapter entry point. Engine-bound calls reject with `RdkitNotConfiguredError` until a loader is registered, but pure helpers such as `hillFormula`, `compositionFromRdkitJson`, and `rdkitMethodContracts` do not need one. The barrel statically reaches the pKa model through its analysis export, which is why the lighter `./constants` entry exists. |
 | `@chemdraft/rdkit-adapter/adapter` | `createRdkitAdapter`, `rdkitAdapterCapabilities`, and `rdkitAdapterStatus`. Use this narrower compatibility shim for the `ChemistryAdapter` contract; its methods load analysis on demand. |
+| `@chemdraft/rdkit-adapter/depiction` | Bounded depiction worker transport, request/reply types, budget constants, and engine-readiness helper. UI callers use this entry to avoid the analysis barrel and pKa model data. No engine is initialized by importing it. |
 | `@chemdraft/rdkit-adapter/identifiers` | `computeStructureIdentifiers` and `StructureIdentifiers`. Use for engine-provided canonical SMILES, InChI, and InChI Key from a molblock. |
 | `@chemdraft/rdkit-adapter/constants` | `ISOTOPE_ENVELOPE_METHOD_ID`, `PINNED_PKA_MODEL_SHA256`, `PINNED_RDKIT_VERSION`, `PINNED_RDKIT_WASM_SHA256`, `SOURCE_INTERPRETATION_ID`, and `sourceInterpretation`. Use when constants or the source interpretation are needed without importing the analysis barrel. |
 | `@chemdraft/rdkit-adapter/node` | `installNodeRdkitModuleLoader`. Node callers use it to install the RDKit and IsoSpec loader setup. |
@@ -23,6 +24,18 @@ ionization implementation helpers. Analysis results carry method contracts,
 interpretations, warnings, and statuses; a method can decline with an unsupported
 status. This keeps the adapter aligned with AGENTS.md §8 Analysis and prediction
 claims.
+
+The main entry also exports `createDepictionWorkerClient`, `DepictionWorkerPort`,
+`DepictionReply`, `DepictionRequestOptions`, and the `DEPICTION_*` budget/lifetime constants.
+The client waits for engine readiness before starting its two-second layout deadline,
+supports per-request `AbortSignal` cancellation and interactive priority, and warns on
+deadline or crash fallback. Readiness requires at least one engine: a failed RDKit
+initialization is remembered for that worker's lifetime, so requests go directly to
+OpenChemLib with the load-failure warning. If only OpenChemLib fails, RDKit remains
+available and reports that stereo center counts are unavailable. Browser and Node
+hosts supply their own worker transport; idle death discards the cached transport.
+`AnalyzeStructureRequest.includeDepiction` explicitly disables the optional ionization
+depiction for callers on a UI thread; it defaults to true for worker/headless analysis.
 
 ## Loading
 

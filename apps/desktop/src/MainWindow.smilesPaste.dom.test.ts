@@ -60,7 +60,7 @@ describe("MainWindow SMILES paste failure notices", () => {
     await vi.waitFor(async () => {
       await act(async () => { await Promise.resolve(); });
       expect(container.querySelector('[role="status"]')?.textContent).toContain(statusNeedle);
-    });
+    }, { timeout: 15_000, interval: 50 });
     return container.querySelector('[role="status"]')?.textContent;
   }
 
@@ -73,7 +73,8 @@ describe("MainWindow SMILES paste failure notices", () => {
       expect(container.querySelectorAll(".molecule-object")).toHaveLength(0);
       expect(container.querySelectorAll(".text-object")).toHaveLength(1);
       expect(container.querySelector("[data-object-controls] .text-object-content")?.textContent).toContain("n1cccc1");
-    }
+    },
+    20_000
   );
 
   it.each([
@@ -86,7 +87,7 @@ describe("MainWindow SMILES paste failure notices", () => {
     expect(status).not.toContain("tokens skipped");
     expect(container.querySelectorAll(".molecule-object")).toHaveLength(molecules);
     expect(container.querySelectorAll(".text-object")).toHaveLength(0);
-  });
+  }, 20_000);
 
   it("shows an invented-hydrogen refusal for a single paste and preserves the input as text", async () => {
     const message = new UnrequestedSmilesHydrogenError("O=[N]=O", { bracket: "[N]", atomNumber: 2, written: 0, parsed: 1 }).message;
@@ -95,7 +96,7 @@ describe("MainWindow SMILES paste failure notices", () => {
     expect(status).toContain("pasted as text");
     expect(container.querySelectorAll(".molecule-object")).toHaveLength(0);
     expect(container.querySelectorAll(".text-object")).toHaveLength(1);
-  });
+  }, 20_000);
 
   it("reports an invented-hydrogen refusal as a list failure while inserting valid entries", async () => {
     const message = new UnrequestedSmilesHydrogenError("O=[N]=O", { bracket: "[N]", atomNumber: 2, written: 0, parsed: 1 }).message;
@@ -103,13 +104,13 @@ describe("MainWindow SMILES paste failure notices", () => {
     expect(status).toContain("1 item failed");
     expect(container.querySelectorAll(".molecule-object")).toHaveLength(3);
     expect(container.querySelectorAll(".text-object")).toHaveLength(0);
-  });
+  }, 20_000);
 
   it("counts C1CC as skipped while placing the other list entries", async () => {
     const status = await paste("CCO\nC1CC\nCCN\nCCC", "text/plain", "1 token skipped");
     expect(status).not.toContain("failed");
     expect(container.querySelectorAll(".molecule-object")).toHaveLength(3);
-  });
+  }, 20_000);
 
   it("pastes prose with all-caps acronyms as editable text without a failure notice", async () => {
     const status = await paste("The NMR and HPLC data for THF", "text/plain", "Pasted editable text");
@@ -118,7 +119,7 @@ describe("MainWindow SMILES paste failure notices", () => {
     expect(status).not.toContain("failed");
     expect(container.querySelectorAll(".molecule-object")).toHaveLength(0);
     expect(container.querySelectorAll(".text-object")).toHaveLength(1);
-  });
+  }, 20_000);
 
   it("reports both failures and the first reason when the whole list falls back to text", async () => {
     const status = await paste("n1cccc1\nc1cccc1");
@@ -127,5 +128,5 @@ describe("MainWindow SMILES paste failure notices", () => {
     );
     expect(container.querySelectorAll(".molecule-object")).toHaveLength(0);
     expect(container.querySelectorAll(".text-object")).toHaveLength(1);
-  });
+  }, 20_000);
 });

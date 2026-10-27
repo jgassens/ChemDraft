@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   ensureRdkit,
+  coordGenWithinSizeGuard,
   generate3DConformerProgressive,
   generateSmiles2DMolfile,
   resetRdkitForTesting,
@@ -125,6 +126,7 @@ describe("rdkit adapter — 2D SMILES depiction", () => {
     standardMolfile?: string;
     coordGenMolfile?: string;
     canonicalIdentity?: (structure: string) => string;
+    largestRing?: number;
   } = {}) {
     let input = "";
     let deleted = 0;
@@ -145,6 +147,10 @@ describe("rdkit adapter — 2D SMILES depiction", () => {
             (requestedUseCoordGen ? options.coordGenMolfile : options.standardMolfile) ??
             options.molfile ??
             v2000([{ element: "C" }, { element: "O", x: 1.5 }]),
+          ...(options.largestRing === undefined ? {} : {
+            get_json: () => JSON.stringify({ molecules: [{ extensions: [{ name: "rdkitRepresentation",
+              atomRings: [Array(options.largestRing).fill(0)] }] }] })
+          }),
           ...(options.canonicalIdentity
             ? { get_smiles: () => options.canonicalIdentity!(structure) }
             : {}),
@@ -162,6 +168,41 @@ describe("rdkit adapter — 2D SMILES depiction", () => {
     expect(molfile).toContain("V2000");
     expect(state.useCoordGen()).toEqual([false, true]);
     expect(state.deleted()).toBe(3);
+  });
+
+  it.each([30, 38, 60, 100])("guards CoordGen using RDKit SSSR for a %i-membered ring", async (largestRing) => {
+    const state = install2dMock({ largestRing });
+    await generateSmiles2DMolfile("mock-ring");
+    expect(state.useCoordGen()).toEqual(largestRing <= 30 ? [false, true] : [false]);
+  });
+
+  it("publishes the identity-checked standard before entering CoordGen", async () => {
+    const state = install2dMock({ largestRing: 6 });
+    const standard: string[] = [];
+    await generateSmiles2DMolfile("CO", { onStandardMolfile: (molfile) => {
+      expect(state.useCoordGen()).toEqual([false]);
+      standard.push(molfile);
+    } });
+    expect(standard).toHaveLength(1);
+    expect(state.useCoordGen()).toEqual([false, true]);
+  });
+
+  it.each([
+    [80, 100, [Array(30)], true],
+    [81, 80, [], false],
+    [70, 101, [], false],
+    [70, 90, Array(21).fill(Array(6)), false],
+    [70, 90, [Array(31)], false]
+  ] as const)("makes deterministic CoordGen eligibility from %i atoms / %i bonds", (atoms, bonds, rings, expected) => {
+    const molecule = { get_json: () => JSON.stringify({ molecules: [{ atoms: Array(atoms), bonds: Array(bonds),
+      extensions: [{ name: "rdkitRepresentation", atomRings: rings }] }] }) };
+    expect(coordGenWithinSizeGuard(molecule)).toBe(expected);
+  });
+
+  it("allows standard-only generation without invoking the optional candidate", async () => {
+    const state = install2dMock({ largestRing: 6 });
+    await generateSmiles2DMolfile("CO", { standardOnly: true });
+    expect(state.useCoordGen()).toEqual([false]);
   });
 
   it("fails explicitly and still releases the molecule when 2D generation fails", async () => {

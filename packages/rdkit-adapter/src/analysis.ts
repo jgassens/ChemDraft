@@ -168,6 +168,8 @@ export interface AnalyzeStructureRequest {
    * molecule is what bounds worst-case allocation. Omit for no limit.
    */
   maxHeavyAtoms?: number;
+  /** Omit the optional ionization depiction for callers running on a UI thread. Defaults to true. */
+  includeDepiction?: boolean;
 }
 
 const DEFAULT_FALLBACK_INTERPRETATIONS: readonly DerivedInterpretationId[] = [
@@ -898,7 +900,7 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
         const canonical = request.interpretationOverride
           ? undefined
           : derive("reference-tautomer") ?? derive("reference-protomer");
-        if (!canonical || canonical === context) return ionizationResultFor(contract, context, module);
+        if (!canonical || canonical === context) return ionizationResultFor(contract, context, module, request.includeDepiction !== false);
         registry.assertRunnable(contract.id, canonical.interpretation);
         // The SUBMITTED structure is passed alongside the canonical one, and only for the unsupported
         // -basicity notice. Measured: `reference-protomer` strips the charge from a drawn `C=[OH+]` in
@@ -907,7 +909,7 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
         // derivations preserve atom order, which `siteDetection.real.test.ts` asserts over 12,062
         // molecules.
         return withProtomerNotice(
-          ionizationResultFor(contract, canonical, module, context),
+          ionizationResultFor(contract, canonical, module, request.includeDepiction !== false, context),
           canonical.interpretation
         );
       };
@@ -1183,6 +1185,7 @@ function ionizationResultFor(
   contract: MethodContract,
   context: DerivedContext,
   module: RdkitMinimalModule,
+  includeDepiction: boolean,
   /** The structure as SUBMITTED, when canonicalization replaced it. See `unsupportedBasicityIn`. */
   submitted?: DerivedContext
 ): AnalysisResult {
@@ -1359,7 +1362,7 @@ function ionizationResultFor(
   // pass uses one: `set_new_coords` mutates, and handing every later method a molecule that suddenly
   // has a conformer is the kind of change that shows up somewhere unrelated.
   let depiction: ReturnType<typeof depictionFor>;
-  const forDepiction = copy ? copy.call(module, context.mol) : undefined;
+  const forDepiction = includeDepiction && copy ? copy.call(module, context.mol) : undefined;
   if (forDepiction) {
     try {
       depiction = depictionFor(forDepiction as unknown as Parameters<typeof depictionFor>[0], graph);

@@ -3,9 +3,12 @@ import * as ocl from "@chemdraft/ocl-adapter";
 import { generateSmiles2DMolfile } from "@chemdraft/rdkit-adapter";
 import { smilesListCandidates } from "@chemdraft/clipboard-adapter";
 import { SmilesListPasteError, depictSmilesForPaste, depictSmilesListForPaste } from "./smilesListPaste";
+import { depictInWorker } from "./depiction2d/depict";
+import { depictSmilesOffThread } from "./depiction2d/client";
 import { registerRdkitWasmLoader } from "./rdkitWasmLoader";
 import { applyClipboardPastePayload, createPhase4Document } from "./documentWorkflow";
 
+vi.mock("./depiction2d/client", () => ({ depictSmilesOffThread: vi.fn() }));
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("@chemdraft/rdkit-adapter", () => ({ generateSmiles2DMolfile: vi.fn() }));
 
@@ -13,6 +16,10 @@ beforeAll(async () => { await ocl.ensureOclResources(); });
 beforeEach(() => {
   vi.mocked(generateSmiles2DMolfile).mockReset().mockRejectedValue(new Error("WASM unavailable"));
   vi.mocked(registerRdkitWasmLoader).mockClear();
+  vi.mocked(depictSmilesOffThread).mockReset().mockImplementation((smiles) => depictInWorker(smiles, (input, options) => {
+    registerRdkitWasmLoader();
+    return generateSmiles2DMolfile(input, options);
+  }, () => {}));
 });
 afterEach(() => { vi.restoreAllMocks(); });
 
@@ -24,7 +31,7 @@ describe("depictSmilesForPaste", () => {
     const fallback = vi.spyOn(ocl, "depictSmiles2D");
     const result = await depictSmilesForPaste(smiles);
     expect(registerRdkitWasmLoader).toHaveBeenCalledOnce();
-    expect(generateSmiles2DMolfile).toHaveBeenCalledWith(smiles);
+    expect(generateSmiles2DMolfile).toHaveBeenCalledWith(smiles, expect.objectContaining({ onStandardMolfile: expect.any(Function) }));
     expect(fallback).not.toHaveBeenCalled();
     expect(result?.depiction.atoms).toHaveLength(4);
     expect(result?.depiction.bonds.some((bond) => bond.wedge !== null)).toBe(true);
@@ -68,9 +75,40 @@ describe("depictSmilesForPaste", () => {
     expect(await depictSmilesForPaste("aspirin")).toBeUndefined();
     expect(await depictSmilesForPaste("")).toBeUndefined();
   });
+
+  it("propagates a specific worker failure instead of returning a text-paste fallback", async () => {
+    vi.mocked(depictSmilesOffThread).mockRejectedValueOnce(new Error("2D depiction worker exited (1)."));
+    await expect(depictSmilesForPaste("CCO")).rejects.toThrow("2D depiction worker exited (1).");
+  });
+
+  it("keeps fallback deadline warnings for the status path", async () => {
+    const result = { depiction: ocl.depictSmiles2D("CCO"), stereoCount: 0,
+      warnings: ["2D depiction exceeded its 2000 ms layout deadline; used the standard layout."] };
+    vi.mocked(depictSmilesOffThread).mockResolvedValueOnce(result);
+    expect((await depictSmilesForPaste("CCO"))?.warnings).toEqual(result.warnings);
+  });
 });
 
 describe("depictSmilesListForPaste", () => {
+  it("retains deadline warnings for individual list entries", async () => {
+    const warning = "2D depiction reached its layout deadline; retried the standard layout in a fresh worker.";
+    vi.mocked(depictSmilesOffThread).mockResolvedValueOnce({ depiction: ocl.depictSmiles2D("CCO"), stereoCount: 0, warnings: [warning] });
+    const text = "CCO\nCCN";
+    const result = await depictSmilesListForPaste(text, smilesListCandidates(text));
+    expect(result?.warnings).toEqual([`CCO: ${warning}`]);
+  });
+  it("cancels a long list before submitting later entries", async () => {
+    const controller = new AbortController();
+    vi.mocked(depictSmilesOffThread).mockImplementationOnce(async () => {
+      controller.abort();
+      return { depiction: ocl.depictSmiles2D("CCO"), stereoCount: 0 };
+    });
+    const text = "CCO\nCCN\nCCC\nCCCC";
+    await expect(depictSmilesListForPaste(text, smilesListCandidates(text), undefined, controller.signal))
+      .rejects.toMatchObject({ name: "AbortError" });
+    expect(depictSmilesOffThread).toHaveBeenCalledOnce();
+    expect(depictSmilesOffThread).toHaveBeenCalledWith("CCO", { signal: controller.signal, priority: "background" });
+  });
   it("records each refused ring and continues with later valid entries", async () => {
     const text = "CCO\nn1cccc1\nc1cccc1\n[nH]1cccc1\nc1ccccc1\nCCN";
     const result = await depictSmilesListForPaste(text, smilesListCandidates(text));

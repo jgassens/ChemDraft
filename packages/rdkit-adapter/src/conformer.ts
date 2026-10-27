@@ -44,6 +44,8 @@ export interface RdkitJsMol {
   get_molblock?(): string;
   /** Canonical isomeric SMILES, used by real-engine identity regression tests. */
   get_smiles?(): string;
+  /** RDKit's SSSR atom rings are in the rdkitRepresentation extension. */
+  get_json?(): string;
   /**
    * The canonical tautomer's V2000 molblock, or "" when canonicalisation fails.
    *
@@ -392,13 +394,15 @@ function identityCheckedHorizontalOrientation(
 function generated2DMolfile(
   rdkit: RdkitMinimalModule,
   smiles: string,
-  useCoordGen: boolean
+  useCoordGen: boolean,
+  onParsed?: (molecule: RdkitJsMol) => void
 ): string {
   const molecule = rdkit.get_mol(smiles);
   if (!molecule) {
     throw new Error("RDKit could not parse the pasted SMILES.");
   }
   try {
+    onParsed?.(molecule);
     if (!molecule.set_new_coords || !molecule.get_molblock) {
       throw new Error("The bundled RDKit engine does not expose 2D coordinate generation.");
     }
@@ -415,18 +419,58 @@ function generated2DMolfile(
   }
 }
 
+export const MAX_COORDGEN_RING_ATOMS = 30;
+export const MAX_COORDGEN_ATOMS = 80;
+export const MAX_COORDGEN_BONDS = 100;
+export const MAX_COORDGEN_RING_MEMBERSHIPS = 120;
+
+/** Read ring membership from RDKit, never infer a ring from the SMILES spelling. */
+export function coordGenWithinSizeGuard(molecule: Pick<RdkitJsMol, "get_json">): boolean {
+  // Legacy injected loaders do not expose ring information. The vendored engine always does.
+  if (!molecule.get_json) return true;
+  try {
+    const json = JSON.parse(molecule.get_json()) as {
+      molecules: Array<{ atoms?: unknown[]; bonds?: unknown[]; extensions?: Array<{ name?: string; atomRings?: unknown[][] }> }>;
+    };
+    // Algorithm eligibility depends only on the parsed graph, never elapsed time. Bound the
+    // optional candidate's size and cyclic complexity as well as its largest SSSR ring.
+    return json.molecules.reduce((n, mol) => n + (mol.atoms?.length ?? 0), 0) <= MAX_COORDGEN_ATOMS &&
+      json.molecules.reduce((n, mol) => n + (mol.bonds?.length ?? 0), 0) <= MAX_COORDGEN_BONDS &&
+      json.molecules.every((mol) => mol.extensions?.every((extension) =>
+      extension.name !== "rdkitRepresentation" ||
+      ((extension.atomRings ?? []).every((ring) => ring.length <= MAX_COORDGEN_RING_ATOMS) &&
+        (extension.atomRings ?? []).reduce((n, ring) => n + ring.length, 0) <= MAX_COORDGEN_RING_MEMBERSHIPS)
+    ) !== false);
+  } catch {
+    return false; // Unreadable ring information cannot authorize the expensive candidate.
+  }
+}
+
+export interface Smiles2DOptions {
+  /** Standard-only retry. Both algorithms must run in a terminable worker in the app. */
+  standardOnly?: boolean;
+  /** A validated fallback, published BEFORE entering the synchronous CoordGen WASM call. */
+  onStandardMolfile?: (molfile: string) => void;
+}
+
 /**
- * Generate depiction-grade 2D coordinates for a SMILES with the already bundled RDKit
- * MinimalLib. The module remains lazy: callers register its loader and invoke this only after
- * the user pastes a SMILES. Returning a molfile lets the existing, tested molfile parser own
- * atom/bond extraction and wedge direction semantics.
+ * Generate depiction-grade 2D coordinates for SMILES with the bundled RDKit MinimalLib.
+ * Callers register the lazy loader first. A molfile lets the shared parser own atom/bond
+ * extraction and wedge semantics. Worker/headless primitive: async loading does not make
+ * synchronous WASM interruptible; UI callers must use the bounded worker client.
  */
-export async function generateSmiles2DMolfile(smiles: string): Promise<string> {
+export async function generateSmiles2DMolfile(smiles: string, options: Smiles2DOptions = {}): Promise<string> {
   const rdkit = await ensureRdkit();
-  const standardMolfile = generated2DMolfile(rdkit, smiles, false);
+  let allowCoordGen = !options.standardOnly;
+  const standardMolfile = generated2DMolfile(rdkit, smiles, false, (molecule) => {
+    allowCoordGen = allowCoordGen && coordGenWithinSizeGuard(molecule);
+  });
   // Keep this outside the optional CoordGen try/catch. If RDKit's baseline depiction has already
   // changed stereo, returning it would suppress the caller's safer OpenChemLib fallback.
   const sourceIdentity = validatedStandardIsomericIdentity(rdkit, smiles, standardMolfile);
+  const standard = identityCheckedHorizontalOrientation(rdkit, sourceIdentity, standardMolfile);
+  options.onStandardMolfile?.(standard);
+  if (!allowCoordGen) return standard;
   try {
     const coordGenMolfile = generated2DMolfile(rdkit, smiles, true);
     const preservesIsomericIdentity = coordGenPreservesIsomericIdentity(

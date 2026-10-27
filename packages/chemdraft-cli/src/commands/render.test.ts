@@ -18,7 +18,8 @@ import * as rdkitAdapter from "@chemdraft/rdkit-adapter";
 import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
 import { stereoPerceptionMolfile } from "@chemdraft/document-workflow-core";
 
-import { buildSmilesDocument, renderSmilesToAssets, type RenderedSmiles } from "../document";
+import * as depictionClient from "../depictionClient";
+import { depictSmilesInWorker, buildSmilesDocument, renderSmilesToAssets, type RenderedSmiles } from "../document";
 import { renderHelp, runRenderCommand as runCli } from "./render";
 
 vi.setConfig({ testTimeout: 60_000 });
@@ -477,20 +478,25 @@ describe("headless ChemDraft rendering", () => {
   });
 
   it("uses the OCL fallback when the RDKit loader fails", async () => {
+    const deadline = vi.spyOn(depictionClient, "depictSmilesWithDeadline")
+      .mockImplementation((smiles) => depictSmilesInWorker(smiles, () => {}));
     const depict = vi.spyOn(rdkitAdapter, "generateSmiles2DMolfile")
       .mockRejectedValueOnce(new Error("forced RDKit failure"));
     try {
       const rendered = await renderSmilesToAssets("CCO", { name: "fallback" });
-      expect(depict).toHaveBeenCalledWith("CCO");
+      expect(depict).toHaveBeenCalledWith("CCO", expect.objectContaining({ onStandardMolfile: expect.any(Function) }));
       expect(rendered.engine).toBe("ocl");
       expect(decodePng(rendered.png).width).toBe(600);
       expect(rendered.warnings.join("\n")).toContain("forced RDKit failure");
     } finally {
       depict.mockRestore();
+      deadline.mockRestore();
     }
   });
 
   it("reports each un-kekulizable SMILES with exit 1 and continues the fallback batch", async () => {
+    const deadline = vi.spyOn(depictionClient, "depictSmilesWithDeadline")
+      .mockImplementation((smiles) => depictSmilesInWorker(smiles, () => {}));
     const depict = vi.spyOn(rdkitAdapter, "generateSmiles2DMolfile")
       .mockRejectedValue(new Error("forced RDKit failure"));
     try {
@@ -524,6 +530,7 @@ describe("headless ChemDraft rendering", () => {
       }
     } finally {
       depict.mockRestore();
+      deadline.mockRestore();
     }
   });
 
@@ -535,6 +542,8 @@ describe("headless ChemDraft rendering", () => {
       return error;
     }]
   ] as const)("reports %s without using OCL", async (_label, configurationError) => {
+    const deadline = vi.spyOn(depictionClient, "depictSmilesWithDeadline")
+      .mockImplementation((smiles) => depictSmilesInWorker(smiles, () => {}));
     const depict = vi.spyOn(rdkitAdapter, "generateSmiles2DMolfile")
       .mockRejectedValueOnce(configurationError());
     const stdout: string[] = [];
@@ -543,7 +552,7 @@ describe("headless ChemDraft rendering", () => {
         ["--smiles", "CCO", "--out", join(outputDirectory, "must-not-render.svg")],
         { stdout: (line) => stdout.push(line), stderr: () => undefined }
       );
-      expect(depict).toHaveBeenCalledWith("CCO");
+      expect(depict).toHaveBeenCalledWith("CCO", expect.objectContaining({ onStandardMolfile: expect.any(Function) }));
       expect(code).toBe(1);
       expect(stdout).toHaveLength(1);
       const result = JSON.parse(stdout[0]!);
@@ -553,6 +562,7 @@ describe("headless ChemDraft rendering", () => {
       expect(stdout[0]).not.toContain('"engine":"ocl"');
     } finally {
       depict.mockRestore();
+      deadline.mockRestore();
     }
   }, 60_000);
 });

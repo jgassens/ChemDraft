@@ -4,11 +4,14 @@ import { AssistantCapabilityPermissions } from "@chemdraft/plugin-api";
 import { AssistantTransactions } from "../assistant/assistantTransaction";
 import { testContext } from "../assistant/tools/testContext";
 import type { AssistantHistoryPort } from "../assistant/historyPort";
+import * as assistantTools from "../assistant/assistantTools";
+import * as depiction2d from "../depiction2d/client";
 import { describe, expect, it, vi } from "vitest";
 
 import { createPhase4Document } from "../documentWorkflow";
 import { RECOGNITION_FIXTURE_COMMAND_ID, recognitionFixtureDescriptor } from "../testSupport/recognitionFixturePlugin";
 import { createPluginRuntime } from "./createPluginRuntime";
+import * as pluginChemistry from "./pluginChemistry";
 import { canvasOverlayPrompt } from "./pluginCanvasOverlayControls";
 import { ImageSourceRegistry } from "./ImageSourceProvider";
 import { proposalReviewItem } from "./PatchReviewTray";
@@ -21,6 +24,34 @@ import type {
 } from "./structureRecognitionEngine";
 
 const emptySelection: PluginSelectionSnapshot = { objectIds: [], molecules: [] };
+
+describe("structureFromSmiles command lifetime", () => {
+  it.each([false, true])("aborts outstanding structureFromSmiles when the plugin command ends (throws=%s)", async (throws) => {
+    let signal: AbortSignal | undefined;
+    let pending: Promise<unknown> | undefined;
+    const build = vi.spyOn(pluginChemistry, "structureFromSmilesForPlugin").mockImplementationOnce(async (_request, _document, received) => {
+      signal = received;
+      await new Promise<void>(resolve => received?.addEventListener("abort", () => resolve(), { once: true }));
+      return { available: true, built: false, reason: "cancelled" };
+    });
+    const runtime = createPluginRuntime({ getActiveDocument: () => createPhase4Document("Layout lifetime") });
+    const id = "plugin.layout.build";
+    runtime.registerPlugin({ id: "org.test.layout", name: "Layout", version: "0", apiVersion: "^0.1.14", entry: "worker.js",
+      permissions: ["chemistry.compute", "document.read"], contributes: { commands: [{ id, title: "Build" }] }
+    }, { commandHandlers: { [id]: async ctx => {
+      pending = ctx.chemistry!.structureFromSmiles!({ smiles: "CCO" });
+      expect(signal?.aborted).toBe(false);
+      if (throws) throw new Error("command failure");
+    } } });
+    try {
+      if (throws) await expect(runtime.invokeCommand(id)).rejects.toThrow("command failure");
+      else await runtime.invokeCommand(id);
+      expect(build).toHaveBeenCalledOnce();
+      expect(signal?.aborted).toBe(true);
+      await pending;
+    } finally { build.mockRestore(); runtime.unregisterPlugin("org.test.layout"); }
+  });
+});
 
 describe("createPluginRuntime canvas overlays", () => {
   const commandId = "plugin.chat.submit";
@@ -255,6 +286,48 @@ describe("createPluginRuntime panel input", () => {
 });
 
 describe("createPluginRuntime assistant integration", () => {
+  it("builds structures through the retained chemistry context after the creating command ends", async () => {
+    const { context } = testContext();
+    const transactions = new AssistantTransactions({
+      read: context.getDocument, push: () => {}, amend: () => {}, select: () => {},
+      onUserEdit: () => () => {}, undo: () => false
+    });
+    const runtime = createPluginRuntime({
+      getActiveDocument: context.getDocument, getActiveDocumentTab: () => ({ id: context.tabId }),
+      getAssistantDocument: context.getDocument, assistantTransactions: () => transactions
+    });
+    const id = "plugin.layout.begin";
+    runtime.registerPlugin({ id: context.plugin.id, name: "Assistant", version: "0", apiVersion: "^0.1.14", entry: "worker.js",
+      permissions: [...AssistantCapabilityPermissions], contributes: { commands: [{ id, title: "Begin" }] }
+    }, { commandHandlers: { [id]: ctx => ctx.assistant!.beginRequest({ prompt: "Build ethanol" }) } });
+    // Exercise the default chemistry service retained by the controller, without unrelated tool
+    // validation or insertion. The depiction boundary still observes the actual runtime signal.
+    const call = vi.spyOn(assistantTools, "callAssistantTool").mockImplementationOnce(async retained => {
+      const result = await retained.chemistry.structureFromSmiles({ smiles: "CCO" });
+      return { content: [], structuredContent: { ...result } };
+    });
+    const depict = vi.spyOn(depiction2d, "depictSmilesOffThread").mockImplementationOnce(async (_smiles, options) => {
+      if (options?.signal?.aborted) throw new Error("2D depiction cancelled.");
+      return { stereoCount: 0, depiction: {
+        atoms: [{ element: "C", x: 0, y: 0, charge: 0 }, { element: "C", x: 1, y: 0, charge: 0 },
+          { element: "O", x: 2, y: 0, charge: 0 }],
+        bonds: [{ from: 0, to: 1, order: "single", wedge: null }, { from: 1, to: 2, order: "single", wedge: null }]
+      } };
+    });
+    try {
+      const { requestId } = await runtime.invokeCommand(id) as { requestId: string };
+      const api = runtime.host.createCommandContext(context.plugin.id).assistant!;
+      const result = await api.callTool({ name: "insert_structures", input: {} });
+      expect(result.structuredContent).toMatchObject({ available: true, built: true, object: { type: "molecule" } });
+      expect(call).toHaveBeenCalledOnce();
+      expect(depict).toHaveBeenCalledOnce();
+      await api.endRequest({ requestId });
+    } finally {
+      call.mockRestore(); depict.mockRestore();
+      runtime.unregisterPlugin(context.plugin.id); transactions.dispose();
+    }
+  });
+
   it("lazily wires an injectable MCP engine and request transaction through the host", async () => {
     const fixture = testContext();
     const { context, replace } = fixture;

@@ -253,10 +253,11 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     options.convertNameToStructure === undefined ? nameToStructureForPlugin : options.convertNameToStructure;
   // Bound to the runtime's own document getter: layout needs the page it is being placed on, and a
   // plugin must not be able to name a different document than the one the host is showing.
+  let structureSignal: AbortSignal | undefined;
   const structureProvider =
     options.buildStructureFromSmiles === undefined
       ? (request: PluginStructureFromSmilesRequest) =>
-          structureFromSmilesForPlugin(request, options.getActiveDocument)
+          structureFromSmilesForPlugin(request, options.getActiveDocument, structureSignal)
       : options.buildStructureFromSmiles;
   const nowIso = (): string => {
     const value = now();
@@ -306,7 +307,10 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     }),
     readDocument: options.getAssistantDocument ?? (tabId => getAssistantHistoryPort().read(tabId)),
     transactions: options.assistantTransactions,
-    createContext: options.assistantContext ?? (({ getDocument }) => ({
+    createContext: options.assistantContext ?? (({ getDocument }) => {
+      // These services live for the assistant request, beyond the command that begins it. The
+      // controller owns tool cancellation but exposes no signal here; never capture a command's.
+      return ({
       getViewportRect: options.getAssistantViewportRect ?? (tabId => getAssistantHistoryPort().getViewportRect?.(tabId)),
       now: options.now ?? (() => new Date()),
       render: (svg, settings) => rasterizeSvgNative(svg, "png", settings),
@@ -341,10 +345,10 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
           return nameStructureForPlugin(molecule, engine, status, options.namingCanonicalizer);
         }
       }
-    }))
+    }); })
   });
-  const namingInvocations = new Map<symbol, { pluginId: string; stop: AbortController }>();
-  let namingFrame: symbol[] | undefined;
+  const commandInvocations = new Map<symbol, { pluginId: string; stop: AbortController }>();
+  let commandFrame: symbol[] | undefined;
   let armedSelectionWarnings: string[] | undefined;
   let readingSelectionWarnings: string[] | undefined;
   const proposalTabs = new Map<string, string>();
@@ -362,14 +366,14 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       const tabId = options.getActiveDocumentTab?.().id;
       if (tabId) runningTabCommands.set(tabId, (runningTabCommands.get(tabId) ?? 0) + 1);
       const tokens: symbol[] = [];
-      const previousFrame = namingFrame;
-      namingFrame = tokens;
+      const previousFrame = commandFrame;
+      commandFrame = tokens;
       try {
         const call = super.invokeCommand<Result>(commandId, invokeOptions);
-        namingFrame = previousFrame;
+        commandFrame = previousFrame;
         return await call;
       } finally {
-        for (const token of tokens) { namingInvocations.get(token)?.stop.abort(); namingInvocations.delete(token); }
+        for (const token of tokens) { commandInvocations.get(token)?.stop.abort(); commandInvocations.delete(token); }
         if (tabId) {
           const remaining = (runningTabCommands.get(tabId) ?? 1) - 1;
           if (remaining > 0) runningTabCommands.set(tabId, remaining);
@@ -380,24 +384,36 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     }
 
     override unregisterPlugin(pluginId: string): void {
-      for (const [token, invocation] of namingInvocations) {
-        if (invocation.pluginId === pluginId) { invocation.stop.abort(); namingInvocations.delete(token); }
+      for (const [token, invocation] of commandInvocations) {
+        if (invocation.pluginId === pluginId) { invocation.stop.abort(); commandInvocations.delete(token); }
       }
       super.unregisterPlugin(pluginId);
     }
 
     override createCommandContext(pluginId: string, invocationToken?: symbol, input?: PluginCommandInput): PluginCommandContext {
       const context = super.createCommandContext(pluginId, invocationToken, input);
+      if (invocationToken && commandFrame) {
+        commandFrame.push(invocationToken);
+        commandInvocations.set(invocationToken, { pluginId, stop: new AbortController() });
+      }
+      const commandSignal = invocationToken ? commandInvocations.get(invocationToken)?.stop.signal : undefined;
+      // The host validates permissions and parses synchronously before calling the provider.
+      // Arm only that synchronous span, so concurrent commands retain independent signals.
+      const withStructureSignal = <T,>(call: () => T): T => {
+        const previous = structureSignal;
+        structureSignal = commandSignal;
+        try { return call(); } finally { structureSignal = previous; }
+      };
+      if (context.chemistry?.structureFromSmiles) {
+        const build = context.chemistry.structureFromSmiles;
+        context.chemistry.structureFromSmiles = request => withStructureSignal(() => build(request));
+      }
       const permissions = ["chemistry.compute", "native.execute", "selection.read"] as const;
       if (context.chemistry && (isTauriHost() || options.structureNamingEngine) && permissions.every(permission => this.hasPermission(pluginId, permission))) {
-        if (invocationToken && namingFrame) {
-          namingFrame.push(invocationToken);
-          namingInvocations.set(invocationToken, { pluginId, stop: new AbortController() });
-        }
         const documentKey = options.getActiveDocumentKey?.() ?? documentIdentityKey(options.getActiveDocument());
         context.chemistry.structureToName = async request => {
           for (const permission of permissions) this.requirePermission(pluginId, permission);
-          const invocation = invocationToken ? namingInvocations.get(invocationToken) : undefined;
+          const invocation = invocationToken ? commandInvocations.get(invocationToken) : undefined;
           if (!invocation || invocation.pluginId !== pluginId || invocation.stop.signal.aborted) throw new Error("Structure naming is available only during this plugin command invocation.");
           const parsed = PluginStructureToNameRequestSchema.parse(request);
           if (documentKey !== (options.getActiveDocumentKey?.() ?? documentIdentityKey(options.getActiveDocument()))) throw new Error("The active document changed during the naming command.");

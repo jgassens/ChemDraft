@@ -108,7 +108,9 @@ describe("ChemDraft MCP server", () => {
       expect(error.isError).toBe(true);
       expect(textBlocks(error.content).join("\n")).toMatch(/--style|--dpi/);
     }
-  });
+    // This is the first real render and pays cold engine/module-worker loading. Match the
+    // existing real-render budget below; the worker still enforces its own layout deadline.
+  }, 60_000);
   it.each(chargeSeparationCases)("renders neutral-drawn $name with an info note", async ({ molecule, smiles }) => {
     const document = createEmptyDocument();
     document.pages[0]!.objects = [molecule];
@@ -250,8 +252,8 @@ describe("ChemDraft MCP server", () => {
     expect(result.isError).not.toBe(true);
     expect(JSON.stringify(result.content)).toContain('"type":"image"');
     expect(JSON.stringify(result.content)).toContain('"mimeType":"image/png"');
-    // The first real render in this file, so it pays the cold engine load; like every other real
-    // render here it gets a generous timeout (it overran the 5 s default on the Windows runner).
+    // Real renders can pay cold engine/module-worker loading after idle teardown; retain the
+    // generous Windows test budget separately from the worker's layout deadline.
   }, 60_000);
 
   it("forwards the newly exposed options using the CLI's exact flag names", async () => {

@@ -1614,7 +1614,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.26.21.05-codex";
+const CURRENT_BUILD_STAMP = "10.26.22.10-codex";
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -2230,6 +2230,8 @@ export function MainWindow({
   const pluginRuntimeRef = useRef<DesktopPluginRuntime | undefined>(undefined);
   const dialogCoordinatorRef = useRef<DialogCoordinator | undefined>(undefined);
   const activeDocumentTabIdRef = useRef("initial");
+  const smilesListPasteAbortRef = useRef<AbortController | undefined>(undefined);
+  useEffect(() => () => smilesListPasteAbortRef.current?.abort(), []);
   // Refs carry synchronous command snapshots; activation and strip membership are React state.
   const browserFileKeysRef = useRef(new Map<string, string>());
   const nonPristineTabsRef = useRef(new Set<string>());
@@ -6535,9 +6537,8 @@ export function MainWindow({
   }, [commitDocumentChange, pastePointForViewport, resetPasteUiState, textStyleDefaults]);
 
   // SMILES → editable 2D structure with stereochemistry. The depiction engines are loaded
-  // on demand (kept out of the static startup graph). Keeps failure reasons for the caller's
-  // plain-text fallback notice.
-  const renderPastedSmiles = useCallback(async (smilesText: string): Promise<{ rendered: boolean; reason?: string }> => {
+  // on demand. Parser/chemistry refusals retain text fallback; worker failures reach status.
+  const renderPastedSmiles = useCallback(async (smilesText: string): Promise<{ rendered: boolean; reason?: string; failed?: boolean }> => {
     try {
       const parsed = await depictSmilesForPaste(smilesText);
       if (quitInteractionRef.current) return { rendered: false, reason: "Paste cancelled while quitting" };
@@ -6560,19 +6561,25 @@ export function MainWindow({
       const fit = recommendImportedPageFit(nextDocument);
       setPageFitPrompt(fit ? { ...fit, displayName: "The pasted structure" } : undefined);
       const baseStatus = `Pasted SMILES structure — ${depiction.atoms.length} atoms${stereoCount ? `, ${stereoCount} stereocenter${stereoCount === 1 ? "" : "s"}` : ""}`;
-      setStatus(fit
+      const pasteStatus = fit
         ? `${baseStatus}; content exceeds ${pageFitPromptLayoutLabel(fit.currentPageTitle, fit.currentOrientation)}`
-        : baseStatus);
+        : baseStatus;
+      setStatus([pasteStatus, ...(parsed.warnings ?? [])].join("; "));
       return { rendered: true };
     } catch (error) {
-      return { rendered: false, reason: error instanceof Error ? error.message : String(error) };
+      const reason = error instanceof Error ? error.message : String(error);
+      if ((error as { smilesChemistryRefusal?: boolean })?.smilesChemistryRefusal) return { rendered: false, reason };
+      setStatus(`Clipboard SMILES could not be placed: ${reason}`);
+      return { rendered: false, failed: true, reason };
     }
   }, [commitDocumentChange, pastePointForViewport, resetPasteUiState]);
 
   const applyDetectedClipboardPayload = useCallback((detectedPayload: ClipboardDetectedPayload) => {
+    smilesListPasteAbortRef.current?.abort();
     if (detectedPayload.kind === "smiles" && !/\s/.test(detectedPayload.text.trim())) {
-      void renderPastedSmiles(detectedPayload.text.trim()).then(({ rendered, reason }) => {
+      void renderPastedSmiles(detectedPayload.text.trim()).then(({ rendered, reason, failed }) => {
         if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
+        if (failed) return;
         if (!rendered) {
           applySyncClipboardPayload({ kind: "plain-text", text: detectedPayload.text, sourceType: detectedPayload.sourceType, warnings: [] });
           setStatus(reason
@@ -6592,7 +6599,8 @@ export function MainWindow({
       const pasteAsText = () => applySyncClipboardPayload({ ...detectedPayload, kind: "plain-text" });
       const trimmedText = detectedPayload.text.trim();
       if (looksLikeSmiles(trimmedText) && !/\s/.test(trimmedText)) {
-        void renderPastedSmiles(trimmedText).then(({ rendered, reason }) => {
+        void renderPastedSmiles(trimmedText).then(({ rendered, reason, failed }) => {
+          if (failed) return;
           if (!rendered) {
             pasteAsText();
             if (reason) {
@@ -6602,14 +6610,17 @@ export function MainWindow({
         });
         return;
       }
+      const listAbort = new AbortController();
+      smilesListPasteAbortRef.current = listAbort;
       const pendingList = depictSmilesListForPaste(detectedPayload.text, candidates, (completed, total) => {
         setStatus(`Parsing SMILES list: ${completed} of ${total} tokens`);
-      });
+      }, listAbort.signal);
       if (!pendingList) {
         pasteAsText();
         return;
       }
       void pendingList.then((parsed) => {
+        if (listAbort.signal.aborted) return;
         if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
         if (!parsed) {
           pasteAsText();
@@ -6620,17 +6631,18 @@ export function MainWindow({
         resetPasteUiState();
         setPageFitPrompt(undefined);
         const failure = parsed.failures[0];
-        const baseStatus = insertSmilesMoleculeGridStatus(result, parsed.skipped);
+        const baseStatus = [insertSmilesMoleculeGridStatus(result, parsed.skipped), ...(parsed.warnings ?? [])].join("; ");
         setStatus(failure
           ? `${baseStatus}; ${parsed.failures.length} item${parsed.failures.length === 1 ? "" : "s"} failed: ${failure.error}`
           : baseStatus);
       }).catch((error: unknown) => {
+        if (listAbort.signal.aborted) return;
         if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
-        pasteAsText();
+        if (error instanceof SmilesListPasteError) pasteAsText();
         const failures = error instanceof SmilesListPasteError ? error.failures : [];
-        const firstReason = failures[0]?.error ?? "an unexpected error occurred";
+        const firstReason = failures[0]?.error ?? (error instanceof Error ? error.message : String(error));
         const failureCount = failures.length || 1;
-        setStatus(`Clipboard SMILES list could not be placed; ${failureCount} item${failureCount === 1 ? "" : "s"} failed: ${firstReason}; pasted as text`);
+        setStatus(`Clipboard SMILES list could not be placed; ${failureCount} item${failureCount === 1 ? "" : "s"} failed: ${firstReason}${error instanceof SmilesListPasteError ? "; pasted as text" : ""}`);
       });
       return;
     }
@@ -6638,6 +6650,7 @@ export function MainWindow({
   }, [applySyncClipboardPayload, commitDocumentChange, pastePointForViewport, renderPastedSmiles, resetPasteUiState]);
 
   const applySelectionClipboardPayload = useCallback((payload: NonNullable<ReturnType<typeof createSelectionClipboardPayload>>) => {
+    smilesListPasteAbortRef.current?.abort();
     if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
     const placement = nextSelectionClipboardPastePlacement(
       payload,
@@ -6835,6 +6848,7 @@ export function MainWindow({
   }, []);
 
   const pasteClipboard = useCallback(async () => {
+    smilesListPasteAbortRef.current?.abort();
     const rawPayload = await readClipboardPayload();
     if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
     const selectionPayload = rawPayload.textItems
@@ -8227,6 +8241,7 @@ export function MainWindow({
   }, [assignHoveredNativeDeleteTarget, atomLabelHistorySnapshot, cancelSpin3dSession, installDocumentHistory]);
 
   const cancelDocumentTabSessions = useCallback(() => {
+    smilesListPasteAbortRef.current?.abort();
     clearObjectTransformPreview();
     // Roll back snapshot-based previews while their source document is still installed.
     const preview = rotationInputRef.current ?? objectResizeInputRef.current ??
@@ -8412,6 +8427,7 @@ export function MainWindow({
   }, [addDocumentTab, clearDocumentInteractionState, resetDocumentHistory]);
 
   const removeDocumentTab = useCallback((id: string) => {
+    if (id === activeDocumentTabIdRef.current) smilesListPasteAbortRef.current?.abort();
     let tabs = documentTabsRef.current;
     const index = tabs.findIndex((tab) => tab.id === id);
     if (index < 0) return;

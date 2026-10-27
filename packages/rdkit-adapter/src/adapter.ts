@@ -133,6 +133,8 @@ export function createRdkitAdapter(): ChemistryAdapter {
       value: input.value,
       runId: `chemistry-adapter-${runCounter}`,
       startedAt: new Date().toISOString(),
+      // Legacy adapter calls can run on the document thread and do not consume this depiction.
+      includeDepiction: false,
       ...(methodIds ? { methodIds: [...methodIds] } : {})
     });
   };
