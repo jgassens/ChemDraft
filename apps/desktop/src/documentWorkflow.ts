@@ -17301,8 +17301,15 @@ export function flattenNativeMolecule3d(
   coords3d: ArrayLike<number>,
   viewMatrix: ViewMatrix,
   options: { placement?: ScreenPlacement; stereoCenterAtomIds?: ReadonlySet<string>; perceiveStereo?: StereoPerceiver;
-    bounds?: { width: number; height: number } } = {}
+    bounds?: { width: number; height: number }; onTiming?: (stage: string, ms: number) => void } = {}
 ): FlattenNative3DOutcome {
+  let stageStarted = options.onTiming ? performance.now() : 0;
+  const mark = (stage: string) => {
+    if (!options.onTiming) return;
+    const now = performance.now();
+    options.onTiming(stage, now - stageStarted);
+    stageStarted = now;
+  };
   const objectId = molecule.id;
   if (coords3d.length !== molecule.atoms.length * 3) {
     return {
@@ -17340,6 +17347,7 @@ export function flattenNativeMolecule3d(
     objectId,
     stereoCenterAtomIds: options.stereoCenterAtomIds
   });
+  mark("flatten.projection+crossings");
   if (result.status !== "committed" || !result.mol2dProjected) {
     return {
       status: "refused",
@@ -17448,6 +17456,7 @@ export function flattenNativeMolecule3d(
   // ring double bonds default to the wrong side and render OUTSIDE the ring. Reuse the
   // app's own neighbor-mass heuristic so flattened depictions match drawn ones.
   const sideMolecule: MoleculeObject = { ...molecule, atoms: nextAtoms, bonds: projectedBonds, ...geometry };
+  mark("flatten.placement+depth");
   const nextBonds = projectedDoubleBondSides(sideMolecule).map((bond, bondIndex) => {
     const display: NonNullable<MoleculeBond["display"]> = { ...(bond.display ?? {}) };
     const depthWeight = depthWeightFor(bondIndex);
@@ -17455,6 +17464,7 @@ export function flattenNativeMolecule3d(
     else delete display.depthWeight;
     return Object.keys(display).length > 0 ? { ...bond, display } : { ...bond, display: undefined };
   });
+  mark("flatten.double-bond-sides");
   // Read-back stereo guard: the encoder proved its wedges sound against its own geometric model,
   // but that model can mis-read the squished projection of a dense fused cage. Ask the real CIP
   // perceiver (injected) what the drawing actually says and flip any center that reads the wrong
@@ -17499,6 +17509,7 @@ export function flattenNativeMolecule3d(
     }
     committedBonds = reconciled.bonds;
   }
+  mark("flatten.reconcile-stereo");
 
   const stagedMolecule: MoleculeObject = {
     ...molecule,
@@ -17516,6 +17527,7 @@ export function flattenNativeMolecule3d(
     warnings: structureWarnings,
     kekuleBondOrders: nativeBondOrderResolution(stagedMolecule.atoms, stagedMolecule.bonds).kekuleOrders
   }).contents;
+  mark("flatten.serialize");
 
   return {
     molecule: { ...stagedMolecule, structure, structureFormat: useV3000 ? "molfile-v3000" : "molfile-v2000" },

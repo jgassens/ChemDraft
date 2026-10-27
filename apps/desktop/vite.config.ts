@@ -6,6 +6,7 @@ import react from "@vitejs/plugin-react-swc";
 import { defineConfig, type Plugin } from "vite";
 import { appDataRoot, STABLE_BUNDLE_ID } from "../../scripts/app-data-root.mjs";
 import { labelFromEnv } from "../../scripts/worktree-identity.mjs";
+import { workerChunksGuard, workerRuntimeChunks } from "../../tools/worker-chunks/workerChunks";
 import {
   INSTALLED_PLUGIN_URL_PREFIX,
   INSTALLED_PLUGIN_WORKER_CSP,
@@ -145,6 +146,18 @@ function serveInstalledPluginsInDev(): Plugin {
 }
 
 export default defineConfig({
+  // Explicit diagnostic build only; ordinary app inputs/output remain Vite's defaults.
+  ...(process.env.CHEMDRAFT_WKPROFILE === "1" ? {
+    build: {
+      outDir: "dist/wkprofile",
+      rollupOptions: {
+        input: {
+          app: workspacePackage("./index.html"),
+          wkprofile: workspacePackage("./wkprofile.html")
+        }
+      }
+    }
+  } : {}),
   // SWC React plugin (replaces the Babel one): no 500KB code-generator deopt on the large
   // MainWindow.tsx, and much faster transforms in both dev HMR and production builds.
   plugins: [react(), serveInstalledPluginsInDev()],
@@ -155,9 +168,19 @@ export default defineConfig({
   // with { type: "module" }, so "es" is the correct and compatible output format. Do not remove: the
   // packaged-plugin pipeline (M35/M36) depends on module workers too.
   worker: {
-    format: "es"
+    format: "es",
+    rollupOptions: {
+      output: {
+        // Static imports install listeners during module evaluation (no WebKit TLA message loss).
+        // Keep their shared bindings out of the entry so lazy chunks cannot import it back.
+        manualChunks: workerRuntimeChunks(),
+        onlyExplicitManualChunks: true
+      }
+    },
+    plugins: () => [workerChunksGuard()]
   },
   define: {
+    "import.meta.env.CHEMDRAFT_WKPROFILE": JSON.stringify(process.env.CHEMDRAFT_WKPROFILE === "1" ? "1" : ""),
     __BUILD_STAMP__: JSON.stringify(buildStamp()),
     __WORKTREE_LABEL__: JSON.stringify(worktreeLabel())
   },

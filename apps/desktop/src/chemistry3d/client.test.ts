@@ -286,6 +286,32 @@ describe("3D chemistry conformer worker lifetime", () => {
     await result;
     expect(onTiming.mock.calls.at(-1)![0].stage).toBe("host.embed3d.roundtrip");
   });
+  it("separates request/reply delivery using the shared clock captured before the reply logger", async () => {
+    pool.dispose();
+    let now = 100;
+    vi.stubGlobal("performance", { timeOrigin: 100_000, now: () => now });
+    const onTiming = vi.fn();
+    const replyLogger = vi.fn(() => { now += 7; });
+    TestWorker.autoReady = false;
+    pool = createConformerWorkerPool({ onTiming, replyLogger });
+    const result = pool.run(jobs[0], new AbortController().signal);
+    const worker = TestWorker.instances[0];
+    const expected = { model, method: chemistry3dMethod(42), warnings: [] };
+    now = 130;
+    worker.reply({ kind: "chemistry3d-result", result: expected, transportTrace: {
+      workerReceivedAtEpochMs: 100_108, workerPostedAtEpochMs: 100_124
+    } });
+    // The call resolves through microtasks alone; the deadline has already been cleared.
+    expect(vi.getTimerCount()).toBe(0);
+    await expect(result).resolves.toEqual(expected);
+    const details = { hostPostedAtEpochMs: 100_100, workerReceivedAtEpochMs: 100_108,
+      workerPostedAtEpochMs: 100_124, hostReceivedAtEpochMs: 100_130 };
+    expect(onTiming).toHaveBeenCalledWith({ stage: "host.embed3d.request-delivery", ms: 8, details });
+    expect(onTiming).toHaveBeenCalledWith({ stage: "host.embed3d.result-delivery", ms: 6, details });
+    expect(onTiming).toHaveBeenCalledWith({ stage: "host.embed3d.reply-dispatch", ms: 7 });
+    expect(replyLogger).toHaveBeenCalledWith(expect.objectContaining({ hostReceivedAtEpochMs: 100_130,
+      workerReceivedAtEpochMs: 100_108, workerPostedAtEpochMs: 100_124 }));
+  });
   it.each(jobs)("terminates $method on command cancellation", async job => {
     const controller = new AbortController();
     const result = runInConformerWorker(job, controller.signal);

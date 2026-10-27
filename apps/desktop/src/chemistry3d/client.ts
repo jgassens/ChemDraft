@@ -11,6 +11,7 @@ import { perfHook } from "../perf/runtime";
 import { ModelTokenAuthority, sessionModelTokens } from "./token";
 import type { Chemistry3dJob, Chemistry3dResult, Chemistry3dWorkResponse } from "./protocol";
 import type { Chemistry3dTimingSink } from "./timing";
+import { timeHost3d, timeHost3dAsync } from "./hostTiming";
 
 export type Chemistry3dTransport = (job: Chemistry3dJob, signal: AbortSignal) => Promise<Chemistry3dResult>;
 export type Chemistry3dProviders = Required<Pick<PluginHostOptions, "embed3d" | "minimize3d" | "flatten3d">>;
@@ -22,6 +23,9 @@ export type Chemistry3dReplyLogger = (reply: {
   kind: string | undefined;
   accepted: boolean;
   resultKeys: string[];
+  hostReceivedAtEpochMs?: number;
+  workerReceivedAtEpochMs?: number;
+  workerPostedAtEpochMs?: number;
 }) => void;
 
 // Never reuse an id, even across pool disposal/recreation in the same app session.
@@ -31,9 +35,11 @@ let nextChemistry3dJobId = 1;
  * Work timers start on enqueue, pause for bounded cold startup, and resume on RDKit readiness.
  * A timeout/cancellation destroys that worker, interrupting
  * synchronous WASM; successful calls retain its already-loaded engine. */
-export function createConformerWorkerPool(options?: { onTiming?: Chemistry3dTimingSink; replyLogger?: Chemistry3dReplyLogger }): { run: Chemistry3dTransport; dispose(): void } {
+export function createConformerWorkerPool(options?: { onTiming?: Chemistry3dTimingSink; replyLogger?: Chemistry3dReplyLogger;
+  /** Diagnostic/test injection; normal callers use the production module-worker entry below. */
+  createWorker?: () => Worker }): { run: Chemistry3dTransport; dispose(): void } {
   interface Slot { worker: Worker; initialized?: boolean; task?: Task }
-  interface Task { method: Chemistry3dJob["method"]; start(slot: Slot): void; receive(message: Chemistry3dWorkResponse, workerSlot: number): void; cancel(): void; fail(error: Error): void }
+  interface Task { method: Chemistry3dJob["method"]; start(slot: Slot): void; receive(message: Chemistry3dWorkResponse, workerSlot: number, hostReceivedAtEpochMs?: number): void; cancel(): void; fail(error: Error): void }
   const slots: Slot[] = [];
   const queue: Task[] = [];
   let disposed = false;
@@ -48,13 +54,15 @@ export function createConformerWorkerPool(options?: { onTiming?: Chemistry3dTimi
           if (slots.length >= 2) return;
           // Construction errors must reject the queued call, not escape a reply handler.
           let worker: Worker;
-          try { worker = new Worker(new URL("../conformerWorker.ts", import.meta.url), { type: "module" }); }
+          try { worker = options?.createWorker?.() ?? new Worker(new URL("../conformerWorker.ts", import.meta.url), { type: "module" }); }
           catch (error) { queue.shift()!.fail(error instanceof Error ? error : new Error(String(error))); continue; }
           slot = { worker };
           // Keep one handler for the worker's lifetime. Replacing onmessage during
           // finish/pump lets an already-dispatched reply reach the next task on reuse.
           const ownedSlot = slot;
           worker.onmessage = event => {
+            // Capture at entry, before logging, filtering, timing sinks or promise resolution.
+            const hostReceivedAtEpochMs = options?.onTiming ? performance.timeOrigin + performance.now() : undefined;
             const task = ownedSlot.task;
             if (!task) {
               if (options?.replyLogger) {
@@ -68,13 +76,15 @@ export function createConformerWorkerPool(options?: { onTiming?: Chemistry3dTimi
                     method: undefined,
                     kind: message?.kind,
                     accepted: false,
-                    resultKeys: result !== null && typeof result === "object" ? Object.keys(result) : []
+                    resultKeys: result !== null && typeof result === "object" ? Object.keys(result) : [],
+                    ...(hostReceivedAtEpochMs === undefined ? {} : { hostReceivedAtEpochMs }),
+                    ...(message?.kind === "chemistry3d-result" ? message.transportTrace : {})
                   });
                 } catch { /* Logging must never escape a worker event handler. */ }
               }
               return;
             }
-            task.receive(event.data, slots.indexOf(ownedSlot));
+            task.receive(event.data, slots.indexOf(ownedSlot), hostReceivedAtEpochMs);
           };
           worker.onerror = event => {
             const task = ownedSlot.task;
@@ -100,10 +110,13 @@ export function createConformerWorkerPool(options?: { onTiming?: Chemistry3dTimi
     let resumeOuterStartup: (() => void) | undefined;
     let remaining = timeout;
     let slot: Slot | undefined;
+    let postedAt: number | undefined;
+    let hostPostedAtEpochMs: number | undefined;
     let finished = false;
     const finish = (result?: Chemistry3dResult, error?: Error) => {
       if (finished) return;
       finished = true;
+      if (postedAt !== undefined) options?.onTiming?.({ stage: `host.${job.method}.worker-roundtrip`, ms: performance.now() - postedAt });
       options?.onTiming?.({ stage: `host.${job.method}.roundtrip`, ms: performance.now() - started });
       clearTimeout(timer);
       resumeOuterStartup?.();
@@ -124,7 +137,7 @@ export function createConformerWorkerPool(options?: { onTiming?: Chemistry3dTimi
     const arm = (ms: number) => { clearTimeout(timer); timer = setTimeout(() => finish(undefined,
       new Error(`${job.method} timed out after ${timeout / 1000} seconds including queue time.`)), ms); };
     const abort = () => finish(undefined, new Error(`chemistry.${job.method} cancelled because the plugin command ended.`));
-    const task: Task = { method: job.method, cancel: abort, fail: error => finish(undefined, error), receive: (message, workerSlot) => {
+    const task: Task = { method: job.method, cancel: abort, fail: error => finish(undefined, error), receive: (message, workerSlot, hostReceivedAtEpochMs) => {
       // Kind alone identifies the protocol, not the job. Filter *every* reply,
       // including timing/errors, before it can affect the active task.
       const accepted = !finished && message?.id === id;
@@ -138,7 +151,9 @@ export function createConformerWorkerPool(options?: { onTiming?: Chemistry3dTimi
             method: job.method,
             kind: message?.kind,
             accepted,
-            resultKeys: result !== null && typeof result === "object" ? Object.keys(result) : []
+            resultKeys: result !== null && typeof result === "object" ? Object.keys(result) : [],
+            ...(hostReceivedAtEpochMs === undefined ? {} : { hostReceivedAtEpochMs }),
+            ...(message?.kind === "chemistry3d-result" ? message.transportTrace : {})
           });
         } catch { /* Diagnostics must never affect reply delivery. */ }
       }
@@ -154,7 +169,19 @@ export function createConformerWorkerPool(options?: { onTiming?: Chemistry3dTimi
       }
       if (message.kind === "chemistry3d-timing") { options?.onTiming?.(message.timing); return; }
       if (message.kind === "chemistry3d-error") finish(undefined, new Error(message.message));
-      else if (message.kind === "chemistry3d-result") finish(message.result);
+      else if (message.kind === "chemistry3d-result") {
+        const trace = message.transportTrace;
+        if (trace && hostPostedAtEpochMs !== undefined && hostReceivedAtEpochMs !== undefined) {
+          const details = { hostPostedAtEpochMs, ...trace, hostReceivedAtEpochMs };
+          options?.onTiming?.({ stage: `host.${job.method}.request-delivery`,
+            ms: trace.workerReceivedAtEpochMs - hostPostedAtEpochMs, details });
+          options?.onTiming?.({ stage: `host.${job.method}.result-delivery`,
+            ms: hostReceivedAtEpochMs - trace.workerPostedAtEpochMs, details });
+          options?.onTiming?.({ stage: `host.${job.method}.reply-dispatch`,
+            ms: performance.timeOrigin + performance.now() - hostReceivedAtEpochMs });
+        }
+        finish(message.result);
+      }
     }, start: assigned => {
       slot = assigned;
       if (!slot.initialized) {
@@ -168,6 +195,7 @@ export function createConformerWorkerPool(options?: { onTiming?: Chemistry3dTimi
       const worker = slot.worker;
       try {
         const posting = profiling ? performance.now() : 0;
+        if (profiling) { postedAt = posting; hostPostedAtEpochMs = performance.timeOrigin + posting; }
         worker.postMessage({ kind: "chemistry3d", id, job, ...(profiling ? { profile: true } : {}) });
         options?.onTiming?.({ stage: `host.${job.method}.postMessage`, ms: performance.now() - posting });
       }
@@ -210,32 +238,32 @@ export const runInConformerWorker: Chemistry3dTransport = createConformerWorkerP
 ).run;
 
 export function createChemistry3dProviders(run: Chemistry3dTransport = runInConformerWorker,
-  tokens: ModelTokenAuthority = sessionModelTokens): Chemistry3dProviders {
+  tokens: ModelTokenAuthority = sessionModelTokens, onTiming?: Chemistry3dTimingSink): Chemistry3dProviders {
   return {
     embed3d: async (input, signal) => {
-      const request = PluginEmbed3DRequestSchema.parse(input);
+      const request = timeHost3d(onTiming, "host.embed3d.request-schema", () => PluginEmbed3DRequestSchema.parse(input));
       signal.throwIfAborted();
       const result = await run({ method: "embed3d", request }, signal) as PluginEmbed3DResult;
       signal.throwIfAborted();
-      const model = { ...result.model, modelToken: await tokens.sign(result.model, request.seed ?? 42) };
+      const model = { ...result.model, modelToken: await timeHost3dAsync(onTiming, "host.embed3d.token-sign", () => tokens.sign(result.model, request.seed ?? 42)) };
       signal.throwIfAborted();
       return { ...result, model };
     },
     minimize3d: async (input, signal) => {
-      const request = PluginMinimize3DRequestSchema.parse(input);
+      const request = timeHost3d(onTiming, "host.minimize3d.request-schema", () => PluginMinimize3DRequestSchema.parse(input));
       signal.throwIfAborted();
-      const { model, seed } = await tokens.verify(request.model);
+      const { model, seed } = await timeHost3dAsync(onTiming, "host.minimize3d.token-verify", () => tokens.verify(request.model));
       signal.throwIfAborted();
       const result = await run({ method: "minimize3d", request: { ...request, model }, provenance: chemistry3dMethod(seed) }, signal) as PluginMinimize3DResult;
       signal.throwIfAborted();
       return result;
     },
     flatten3d: async (input, signal) => {
-      const request = PluginFlatten3DRequestSchema.parse(input);
+      const request = timeHost3d(onTiming, "host.flatten3d.request-schema", () => PluginFlatten3DRequestSchema.parse(input));
       signal.throwIfAborted();
-      const { model, seed } = await tokens.verify(request.model);
+      const { model, seed } = await timeHost3dAsync(onTiming, "host.flatten3d.token-verify", () => tokens.verify(request.model));
       signal.throwIfAborted();
-      assertFlattenContacts(model);
+      timeHost3d(onTiming, "host.flatten3d.clash-screen", () => assertFlattenContacts(model));
       const result = await run({ method: "flatten3d", request: { ...request, model }, provenance: chemistry3dMethod(seed) }, signal) as PluginFlatten3DResult;
       signal.throwIfAborted();
       return result;
