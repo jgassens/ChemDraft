@@ -4,6 +4,15 @@ import { ensureRdkit, type RdkitJsMol } from "@chemdraft/rdkit-adapter";
 export interface Chemistry3dTiming { stage: string; ms: number; details?: Record<string, unknown> }
 export type Chemistry3dTimingSink = (event: Chemistry3dTiming) => void;
 
+/** Synchronous stage timer; the normal path neither reads a clock nor wraps RDKit. */
+export function timeChemistry3d<T>(sink: Chemistry3dTimingSink | undefined, stage: string, run: () => T,
+  details?: Record<string, unknown>): T {
+  if (!sink) return run();
+  const started = performance.now();
+  try { return run(); }
+  finally { sink({ stage, ms: performance.now() - started, ...(details ? { details } : {}) }); }
+}
+
 /** Only called by the explicit profiling path. Normal jobs do not patch bindings or read clocks.
  * One job runs at a time in each pool worker. Restore every binding even on a refusal. */
 export async function profileChemistry3d<T>(run: (sink: Chemistry3dTimingSink) => Promise<T>, sink: Chemistry3dTimingSink): Promise<T> {
@@ -35,6 +44,18 @@ export async function profileChemistry3d<T>(run: (sink: Chemistry3dTimingSink) =
     };
     wrap("generate_3d_embed");
     wrap("optimize_3d_conformer");
+    // Separate engine work/string transfer from JS graph/projection work in flatten profiles.
+    // Some bindings are intentionally narrower in the adapter's public interface.
+    const bindings = mol as unknown as Record<string, unknown>;
+    for (const name of ["get_json", "get_molblock", "get_smiles", "set_new_coords", "add_hs", "get_prop"]) {
+      const binding = bindings[name];
+      if (typeof binding !== "function") continue;
+      bindings[name] = Object.assign(function (...bindingArgs: unknown[]) {
+        const start = performance.now();
+        try { return Reflect.apply(binding, mol, bindingArgs); }
+        finally { sink({ stage: `rdkit.binding.${name}`, ms: performance.now() - start }); }
+      }, binding);
+    }
     return mol;
   };
   // Embind overload dispatch consults this.get_mol.overloadTable on the installed function.

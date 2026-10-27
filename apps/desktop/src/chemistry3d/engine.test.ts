@@ -49,8 +49,9 @@ describe("minimize3d worker engine contract", () => {
     const result = await minimize3dInWorker({ model, interfragment: false, maxIters: 1500 }, chemistry3dMethod(42));
     expect(rdkit.optimize.mock.calls.map(([json]) => JSON.parse(json).maxIters)).toEqual([1000, 500]);
     expect(result.forceField).toEqual({ name: "mmff94s", status: "converged", energy: 4, iterationsBudget: 1500 });
-    // Optimization handle + signed SMILES, explicit-H and geometry handles at input and output.
-    expect(rdkit.dispose).toHaveBeenCalledTimes(7);
+    // Optimization handle + signed intent at input and output. No specified stereo needs no
+    // added-H/geometry parse; those handles are still used for specified tetrahedra and E/Z.
+    expect(rdkit.dispose).toHaveBeenCalledTimes(3);
   });
   it("reports setup failure without inventing a fallback field or geometry", async () => {
     rdkit.optimize.mockReturnValue(JSON.stringify({ embedOk: false, coords3dByEngineAtom: [], forceField: { status: "setup-failed" } }));

@@ -1,7 +1,9 @@
-import { installNestedModuleWorkerShim } from "./nestedModuleWorkerShim.js";
+// ESM evaluates this dependency before the runtime's plugin dependencies, including nested workers.
+import "./installWindowsWorkerShim";
+import { recordWorkerEntryEvaluation } from "../../workers/entryEvaluation";
+import { startMassFragmentWorker } from "../../workers/massFragmentRuntime";
 
-installNestedModuleWorkerShim("windows");
-// Static imports would evaluate plugin dependencies before installing the shim.
-await import("./massFragmentPluginWorker");
+recordWorkerEntryEvaluation("mass-fragment-windows", import.meta.url);
+startMassFragmentWorker();
 
 export {};

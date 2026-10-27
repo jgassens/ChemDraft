@@ -90,6 +90,13 @@ describe("plugin 3D chemistry round trips on the vendored WASM", () => {
     expect(timings.filter(event => event.stage === "embed.attempt")).toHaveLength(4);
     expect(timings.find(event => event.stage === "embed.component")?.details).toMatchObject({ component: 1, inputAtoms: 1 });
     expect(rdkit.get_mol).toBe(getMol);
+    await runChemistry3dJob({ method: "flatten3d", request: { model: input.model, view: "auto" }, provenance: input.method },
+      undefined, event => timings.push(event));
+    for (const stage of ["flatten.input-stereo", "flatten.references", "flatten.projection+crossings",
+      "flatten.serialize", "flatten.canonical-roundtrip", "flatten.normalize", "flatten.view", "rdkit.binding.get_json"]) {
+      expect(timings.some(event => event.stage === stage && Number.isFinite(event.ms))).toBe(true);
+    }
+    expect(rdkit.get_mol).toBe(getMol);
     await expect(runChemistry3dJob({ method: "flatten3d", request: {
       model: { ...input.model, atoms: input.model.atoms.map(atom => ({ ...atom, isotope: 13 })) }, view: "auto"
     }, provenance: input.method }, undefined, event => timings.push(event))).rejects.toThrow("carries isotope labels");

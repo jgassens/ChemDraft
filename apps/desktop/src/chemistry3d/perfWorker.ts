@@ -1,5 +1,6 @@
 /** Node-only opt-in benchmark worker. Same job protocol/engine as the desktop worker;
  * local asset reads replace Tauri fetch, so this does not claim WebView timing parity. */
+import { recordWorkerEntryEvaluation } from "../workers/entryEvaluation";
 import { parentPort, workerData } from "node:worker_threads";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -8,6 +9,8 @@ import { ensureRdkit, setRdkitModuleLoader, type RdkitMinimalModule } from "@che
 import { runChemistry3dJob, type Chemistry3dJob } from "./protocol";
 import { closestHeavyContactPair, modelMolblock } from "./model";
 import type { Plugin3DModel } from "@chemdraft/plugin-api";
+
+recordWorkerEntryEvaluation("chemistry3d-perf-node", import.meta.url);
 
 const assets = workerData.assets as string;
 let loads = 0;

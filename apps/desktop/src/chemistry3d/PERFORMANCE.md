@@ -150,3 +150,118 @@ with a four-arm PEG-armed TTF guest.
 for minimize. On slower machines, PEG8-size minimization does not fit unless the iteration budget is
 small. Callers such as the figure tool must cap 3D minimization size and fall back to 2D layout
 beyond that limit, saying so.
+
+## macOS JavaScriptCore (2026-10-27)
+
+The system JSC shell **does not reproduce the reported packaged WKWebView 987–2000 ms
+regression**. Both the original and optimized paths are within 1.4x of Node in this harness.
+The later WKWebView measurements below identify its cause; these shell measurements establish a
+separate, avoidable cost in the real flatten path.
+
+`scripts/profile-flatten-jsc.mjs` uses the existing esbuild dependency to bundle
+`flatten3dInWorker`, `flattenPluginModel`, the shared `flattenNativeMolecule3d`, their real
+layout/chem-core dependencies and the vendored MinimalLib loader into one minified script.
+Both engines execute that same script and load the same WASM bytes from disk. No dependencies
+are installed. Browser asset imports reachable through unused document workflows are stubbed;
+no flatten implementation or chemistry engine is stubbed.
+
+Reproduce the comparison from the repository root (each command is one line):
+
+```sh
+node scripts/profile-flatten-jsc.mjs --model apps/desktop/src/chemistry3d/fixtures/peg2-minimized.json --warm-embed-minimize --stereo-ref 949ac0b6dbb1558090865097db554cc04b678b3d --out tmp/flatten-before
+node scripts/profile-flatten-jsc.mjs --model apps/desktop/src/chemistry3d/fixtures/peg2-minimized.json --warm-embed-minimize --compare tmp/flatten-before --out tmp/flatten-after
+```
+
+`--stereo-ref` replays the original `stereo.ts` from the named base commit while retaining
+the same current stage instrumentation everywhere else. `--compare` fails if either engine's
+complete result differs byte for byte. The directories contain the bundled script, raw
+per-sample stage events (`node.jsonl`, `jsc.jsonl`), and complete result JSON for each engine.
+The script also prints stage medians, call counts, total min/median/max and result SHA-256.
+`--engine node` works without JSC (including on Windows); `--jsc` overrides the executable.
+Use `--no-minify` to check unminified code. Omitting `--model` generates a new seed-42 PEG2
+fixture with the production embed/minimize functions first.
+
+The saved fixture has 170 explicit-H model atoms / 86 retained native atoms: CBPQT4+ and
+four-arm PEG2-TTF, guest centred on host, seed 42, MMFF94s with interfragment interactions.
+It converged in the first 1,000-step pass at 548.207896 kcal/mol with closest heavy contact
+2.668323 A. `--warm-embed-minimize` runs production embed and minimize in **each** measured
+process before loading that identical saved model, reproducing the warm worker history.
+One flatten warms code/WASM paths; the following seven samples use `view: "auto"`, selecting
+identity on the first attempt. No force field runs inside a measured flatten.
+
+Apple M1 Pro, arm64 Node v26.9.0, Darwin 25.6.0, system
+`/System/Library/Frameworks/JavaScriptCore.framework/Versions/A/Helpers/jsc`.
+The host was contended (starting load averages 18.80/35.99/35.64); these are wall times.
+Stage entries sum both components within each sample, then take the median. Binding rows
+are nested within other stages; the view row contains projection through round-trip checks.
+
+| Stage, median ms | Node before | Node after | JSC before | JSC after |
+| --- | ---: | ---: | ---: | ---: |
+| Contacts | 0.083 | 0.073 | 0.081 | 0.084 |
+| Open-double-bond perception | 2.429 | 2.501 | 3.261 | 3.342 |
+| Input stereo guard | 11.488 | 0.904 | 13.230 | 1.170 |
+| References (including canonical input and molfile graph read) | 3.955 | 4.022 | 5.240 | 5.448 |
+| Projection, ring membership, graph backstop and crossings | 1.449 | 1.097 | 1.112 | 1.038 |
+| Placement and depth | 0.112 | 0.116 | 0.115 | 0.087 |
+| Double-bond side/ring detection | 1.142 | 1.177 | 1.024 | 0.982 |
+| Native stereo reconciliation | 1.876 | 1.732 | 2.298 | 2.344 |
+| Native molfile serialization | 0.220 | 0.211 | 0.287 | 0.349 |
+| Canonical output SMILES round-trip | 1.199 | 1.171 | 1.408 | 1.436 |
+| normalizeNativeMoleculeGeometry | 0.016 | 0.017 | 0.020 | 0.022 |
+| First auto-view attempt (nested total) | 6.128 | 5.524 | 6.402 | 6.474 |
+| All RDKit parses (nested total) | 7.270 | 4.181 | 9.559 | 5.624 |
+| RDKit add_hs (nested total) | 5.972 | 0 | 6.410 | 0 |
+| **Full profiled flatten** | **24.532** | **13.831** | **29.748** | **18.031** |
+| Result structured clone, outside flatten | 0.211 | 0.197 | unavailable | unavailable |
+| Host result-schema validation, outside flatten | 0.444 | 0.780 | 0.645 | 0.608 |
+
+Full flatten min/median/max: Node before 22.912/24.532/28.205 ms, after
+11.735/13.831/18.109 ms; JSC before 25.041/29.748/34.221 ms, after
+15.274/18.031/21.958 ms. The measured JSC after median is 1.30x Node.
+The 2D stereo-depiction stage is absent for this stereo-free fixture: its existing fast
+path makes zero `set_new_coords` calls. Stereo fixtures retain the depiction and its timer.
+
+### Measured avoidable work and fix
+
+`assertComponentStereo` previously built and reparsed an explicit-H input, serialized/reparsed
+the entire 3D component, and read both graphs before comparing the specified tetrahedra and
+E/Z bonds. Neither component in this fixture specifies any, so both comparison loops were
+empty. The guard now asks RDKit for the signed input's stereo intent and returns before parsing the
+output molfile when there is nothing to compare. Specified stereo follows the full explicit-H and 3D
+geometry path. The helper is shared with minimization's input/output checks.
+
+The original optimization removed four full-model parses and two `add_hs` calls per PEG2 flatten. For
+stereo-free components, the signed-input intent check is the only parse in `assertComponentStereo`;
+`flatten3d` still reads every result back through its canonical-SMILES check. Total PEG2 flatten
+parses are therefore 13 (down from 19), not 15. It originally reduced the input-stereo stage by about
+11–13x on both engines. It does not remove
+the contact, isotope, open-E/Z, projection, wedge, canonical output or chemistry identity
+guards. No projection/geometry arithmetic or result construction changed.
+
+With deterministic random molecule IDs, all four complete before/after engine results have
+SHA-256 `bc812e136619b9e0f0fdc92df49a3db196b1abb4428524eb3972aa391661b640`.
+`stereoPerformance.test.ts` pins that complete-result hash and full geometry parsing for tetrahedral/E/Z inputs (including
+explicit input H). The required flatten/layout suite passes: 775 tests, four opt-in skips.
+`pnpm lint` passes.
+
+### Limits and next measurement
+
+JSC completed embed, minimize and flatten. Its shell lacks `structuredClone` and `TextDecoder`:
+the fixture-centering setup uses a JSON clone, outside measurement, while MinimalLib uses its
+own UTF-8 fallback. Result-clone timings are explicitly unavailable for JSC. Neither a browser
+decoder nor worker messaging is substituted into these compute measurements.
+
+A separate WKWebView harness could not produce JavaScript samples in this execution sandbox:
+WebKit service sandbox extensions (including `com.apple.coreservices.launchservicesd`) were
+denied and XPC connections failed. No packaged macOS app or Windows WebView2 verification is
+claimed. The later conductor WKWebView measurements below identify the worker-entry cause.
+
+The next measurement is the exact slow packaged model with
+`VITE_CHEMDRAFT_PROFILE_3D=1 ./run-app`. Capture the existing host queue, `postMessage` and
+round-trip events alongside the new worker stages and `rdkit.binding.*` events. This separates
+the measured chemistry work from browser decoding, transport, startup and host validation.
+With profiling off, the new hooks perform no profiling clocks, binding replacement or logging.
+
+## Conductor WKWebView measurements (2026-10-27)
+
+On macOS 26.7.1 with WebKit 21624.5.1.11.3 and an Apple M1 Pro (10 cores), the conductor measured flatten3d wall times of 987–1989 ms before the fix, with roughly 1000 ms quantized delivery residuals, and minimize3d at 2134–2146 ms on samples 2–3. These earlier numbers came from WKWebView-only double evaluation of worker entry chunks. After the fix, flatten3d measured 21–34 ms, minimize3d 944–958 ms, embed3d 1139–1491 ms, and delivery residuals 0–2 ms. Conformer, analysis, depiction2d, and both mass-fragment worker entries each fetched and evaluated once. These measurements precede restored output-molfile validation. Windows WebView2 remains unverified.

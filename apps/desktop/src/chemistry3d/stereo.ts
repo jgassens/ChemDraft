@@ -11,13 +11,16 @@ type StereoGraph = Omit<RdkitJson["molecules"][number], "bonds"> & {
 export function inputWithHydrogens(rdkit: RdkitMinimalModule, smiles: string): RdkitJsMol {
   const input = rdkit.get_mol(smiles, JSON.stringify({ removeHs: false }));
   if (!input) throw new Error("RDKit could not read the signed component SMILES.");
-  try {
-    const addHs = (input as RdkitJsMol & { add_hs?: () => string }).add_hs;
-    if (!addHs) throw new Error("RDKit explicit-hydrogen generation is unavailable.");
-    const explicit = rdkit.get_mol(addHs.call(input), JSON.stringify({ removeHs: false }));
-    if (!explicit) throw new Error("RDKit could not read the explicit-hydrogen input.");
-    return explicit;
-  } finally { input.delete(); }
+  try { return addInputHydrogens(rdkit, input); }
+  finally { input.delete(); }
+}
+
+function addInputHydrogens(rdkit: RdkitMinimalModule, input: RdkitJsMol): RdkitJsMol {
+  const addHs = (input as RdkitJsMol & { add_hs?: () => string }).add_hs;
+  if (!addHs) throw new Error("RDKit explicit-hydrogen generation is unavailable.");
+  const explicit = rdkit.get_mol(addHs.call(input), JSON.stringify({ removeHs: false }));
+  if (!explicit) throw new Error("RDKit could not read the explicit-hydrogen input.");
+  return explicit;
 }
 
 export function stereoGraph(mol: RdkitJsMol): StereoGraph {
@@ -74,9 +77,17 @@ function parity(graph: StereoGraph, center: number): number {
 
 export function assertComponentStereo(rdkit: RdkitMinimalModule, model: Plugin3DModel, index: number, phase: string): void {
   const component = model.components[index];
-  const input = inputWithHydrogens(rdkit, component.smiles);
+  const signed = rdkit.get_mol(component.smiles, JSON.stringify({ removeHs: false }));
+  if (!signed) throw new Error("RDKit could not read the signed component SMILES.");
+  let input: RdkitJsMol | null = null;
   let geometry: RdkitJsMol | null = null;
   try {
+    // This guard compares ONLY specified intent. With none, constructing and sanitizing two
+    // full explicit-H graphs (and assigning 3D stereo) cannot affect its verdict. Ask RDKit
+    // about intent rather than assuming the input's spelling or explicit-H normalization.
+    const intent = stereoGraph(signed);
+    if (!specifiedCenters(intent).size && !intent.bonds.some(bond => bond.stereo === "cis" || bond.stereo === "trans")) return;
+    input = addInputHydrogens(rdkit, signed);
     geometry = rdkit.get_mol(modelMolblock(model, index), JSON.stringify({ removeHs: false }));
     if (!geometry) throw new Error(`Component ${index + 1}: RDKit could not read back ${phase} stereochemistry.`);
     const expected = stereoGraph(input);
@@ -101,5 +112,5 @@ export function assertComponentStereo(rdkit: RdkitMinimalModule, model: Plugin3D
         throw new Error(`Component ${index + 1}: ${phase} would change specified E/Z stereo at bond ${a + 1}-${b + 1}; restore the input geometry.`);
       }
     }
-  } finally { geometry?.delete(); input.delete(); }
+  } finally { geometry?.delete(); input?.delete(); signed.delete(); }
 }

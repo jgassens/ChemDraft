@@ -8,6 +8,7 @@ import { conformerCentroid } from "../interaction/spinOverlay";
 import { projectPoint, quatFromAxisAngle, quatToViewMatrix } from "../interaction/rotation3d";
 import { assertFlattenContacts, readGraph } from "./model";
 import { assertComponentStereo, specifiedCenters, stereoGraph, unspecifiedStereoDoubleBonds } from "./stereo";
+import { timeChemistry3d, type Chemistry3dTimingSink } from "./timing";
 
 function canonical(rdkit: RdkitMinimalModule, input: string): string {
   const mol = rdkit.get_mol(input, JSON.stringify({ removeHs: true }));
@@ -28,9 +29,10 @@ export const AUTO_3D_VIEWS = [rotation9(quatToViewMatrix({ x: 0, y: 0, z: 0, w: 
   ...([[1, 2, 3], [1, 0, 0], [0, 1, 0]] as const).flatMap(axis => [30, 60, 120].map(degrees =>
     rotation9(quatToViewMatrix(quatFromAxisAngle(axis, degrees * Math.PI / 180)))))];
 
-export function flattenPluginModel(request: PluginFlatten3DRequest, method: Plugin3DMethod, rdkit: RdkitMinimalModule): PluginFlatten3DResult {
+export function flattenPluginModel(request: PluginFlatten3DRequest, method: Plugin3DMethod, rdkit: RdkitMinimalModule,
+  timing?: Chemistry3dTimingSink): PluginFlatten3DResult {
   const { model } = request;
-  assertFlattenContacts(model);
+  timeChemistry3d(timing, "flatten.contacts", () => assertFlattenContacts(model));
   // Refuse unsupported isotope storage before any depiction or view search.
   model.components.forEach((component, index) => {
     const labels = [...new Set(model.atoms.slice(component.atomStart, component.atomStart + component.atomCount)
@@ -40,10 +42,11 @@ export function flattenPluginModel(request: PluginFlatten3DRequest, method: Plug
   // CTAB's 'either' flag does not survive native bond serialization. Refuse only bonds
   // RDKit perceives as potential E/Z, until native open-double-bond storage exists.
   model.components.forEach((component, index) => {
-    const open = unspecifiedStereoDoubleBonds(rdkit, component.smiles);
+    const open = timeChemistry3d(timing, "flatten.open-double-bonds", () => unspecifiedStereoDoubleBonds(rdkit, component.smiles), { component: index + 1 });
     if (open.length) throw new Error(`Component ${index + 1} (${component.smiles}): double bond ${open[0]}${open.length > 1 ? ` (first of ${open.length})` : ""} has no E/Z in the input, and ChemDraft drawings cannot store an open double bond yet; specify / or \\ in the SMILES.`);
   });
-  model.components.forEach((_, index) => assertComponentStereo(rdkit, model, index, "flatten3d input"));
+  model.components.forEach((_, index) => timeChemistry3d(timing, "flatten.input-stereo",
+    () => assertComponentStereo(rdkit, model, index, "flatten3d input"), { component: index + 1 }));
   const perceiveStereo: StereoPerceiver = molfile => {
     const mol = rdkit.get_mol(molfile, JSON.stringify({ removeHs: false }));
     if (!mol) throw new Error("RDKit could not perceive flattened stereochemistry.");
@@ -58,7 +61,7 @@ export function flattenPluginModel(request: PluginFlatten3DRequest, method: Plug
   // model-only Hs become implicit again. RDKit chooses heavy-atom wedges on this graph,
   // rather than deleting a wedged H and losing/inverting its centre. add_hs appends atoms,
   // so filtering the signed addedHydrogen flags gives exactly this input atom order.
-  const references = model.components.map((component, componentIndex) => {
+  const references = timeChemistry3d(timing, "flatten.references", () => model.components.map((component, componentIndex) => {
     const mol = rdkit.get_mol(component.smiles, JSON.stringify({ removeHs: false }));
     if (!mol) throw new Error("RDKit could not read the signed component SMILES.");
     try {
@@ -69,7 +72,7 @@ export function flattenPluginModel(request: PluginFlatten3DRequest, method: Plug
       // Stereo-free references need no 2D depiction: the shared helper replaces
       // coordinates anyway. Stereo references need wedges/geometry, now on the
       // retained input graph rather than the much larger explicit-H model.
-      if (/[@/\\]/.test(expected)) mol.set_new_coords(false);
+      if (/[@/\\]/.test(expected)) timeChemistry3d(timing, "flatten.depict2d", () => mol.set_new_coords!(false));
       const graph = parseMolfileGraph(mol.get_molblock());
       const retained = model.atoms.slice(component.atomStart, component.atomStart + component.atomCount)
         .flatMap((atom, i) => atom.element === "H" && atom.addedHydrogen ? [] : [component.atomStart + i]);
@@ -92,10 +95,11 @@ export function flattenPluginModel(request: PluginFlatten3DRequest, method: Plug
     } catch (error) {
       throw new Error(`Component ${componentIndex + 1}: ${error instanceof Error ? error.message : String(error)}`);
     } finally { mol.delete(); }
-  });
+  }));
   const rotations = request.view === "auto" ? AUTO_3D_VIEWS : [request.view.rotation];
   let lastError: unknown;
   for (const rotation of rotations) {
+    const viewStarted = timing ? performance.now() : 0;
     try {
       const view = matrix4(rotation);
       const objects: MoleculeObject[] = [];
@@ -109,6 +113,7 @@ export function flattenPluginModel(request: PluginFlatten3DRequest, method: Plug
         const centerX = rotatedCenter[0] * 20;
         const centerY = -rotatedCenter[1] * 20;
         const outcome = flattenNativeMolecule3d(native, coords, view, {
+          ...(timing ? { onTiming: (stage: string, ms: number) => timing({ stage, ms, details: { component: index + 1 } }) } : {}),
           placement: { centerX, centerY, scale: 20 },
           stereoCenterAtomIds: new Set([...centers].map(i => native.atoms[i].id)),
           ...(native.atoms.length <= 999 && native.bonds.length <= 999 ? { perceiveStereo } : {})
@@ -116,13 +121,13 @@ export function flattenPluginModel(request: PluginFlatten3DRequest, method: Plug
         if (!outcome.molecule || outcome.status !== "committed") {
           throw new Error(`Component ${index + 1}: flatten3d refused this view: ${outcome.refusalReasons.join("; ")}`);
         }
-        const actual = canonical(rdkit, outcome.molecule.structure);
+        const actual = timeChemistry3d(timing, "flatten.canonical-roundtrip", () => canonical(rdkit, outcome.molecule!.structure));
         if (actual !== expected) {
           throw new Error(`Component ${index + 1}: flatten3d would change canonical SMILES with stereochemistry (expected ${expected}, got ${actual}); choose another view or restore the input geometry.`);
         }
         // Use the same atom/label padding as SMILES paste at the plugin result boundary.
         // Only the frame changes; projection, stereo, depth and component offsets stay intact.
-        objects.push(normalizeNativeMoleculeGeometry(outcome.molecule));
+        objects.push(timeChemistry3d(timing, "flatten.normalize", () => normalizeNativeMoleculeGeometry(outcome.molecule!)));
         depthByAtom.push(native.atoms.map((_, i) => projectPoint(view, [coords[i * 3] - center[0],
           coords[i * 3 + 1] - center[1], coords[i * 3 + 2] - center[2]])[2]));
         warnings.push(...outcome.warnings.map(warning => `Component ${index + 1}: ${warning.message}`));
@@ -132,6 +137,7 @@ export function flattenPluginModel(request: PluginFlatten3DRequest, method: Plug
         conventions: [...method.conventions, "Flattening uses the Spin 3D ScreenPlacement contract at 20 document px/Angstrom; no force field is run.",
           "auto: first stereo-preserving view from identity, then 30/60/120 degrees about [1,2,3], X, Y."] } };
     } catch (error) { lastError = error; }
+    finally { timing?.({ stage: "flatten.view", ms: performance.now() - viewStarted, details: { rotation } }); }
   }
   throw lastError;
 }

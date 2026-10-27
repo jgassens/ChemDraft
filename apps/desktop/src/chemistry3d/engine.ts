@@ -11,6 +11,7 @@ import { chemistry3dMethod } from "./method";
 import { SPIN3D_EMBED_CANDIDATES } from "./settings";
 import { assertComponentStereo } from "./stereo";
 import type { Chemistry3dTimingSink } from "./timing";
+import { timeHost3d, timeHost3dAsync } from "./hostTiming";
 
 interface OptimizePayload { embedOk: boolean; coords3dByEngineAtom: number[];
   forceField: { status: "converged" | "not-converged" | "setup-failed"; energy?: number } }
@@ -62,7 +63,7 @@ async function embedComponent(rdkit: RdkitMinimalModule, smiles: string, seed: n
 }
 
 export async function embed3dInWorker(input: PluginEmbed3DRequest, progress: () => void = () => undefined, timing?: Chemistry3dTimingSink): Promise<PluginEmbed3DResult> {
-  const request = PluginEmbed3DRequestSchema.parse(input);
+  const request = timeHost3d(timing, "worker.embed3d.request-schema", () => PluginEmbed3DRequestSchema.parse(input));
   const rdkit = await ensureRdkit();
   const seed = request.seed ?? 42;
   const counts = request.components.map(({ smiles }, index) => {
@@ -107,7 +108,7 @@ export async function embed3dInWorker(input: PluginEmbed3DRequest, progress: () 
 
 export async function minimize3dInWorker(input: PluginMinimize3DRequest, method: Plugin3DMethod, timing?: Chemistry3dTimingSink): Promise<PluginMinimize3DResult> {
   // Strict boolean validation MUST precede JSON/C++ as_bool (including direct worker calls).
-  const request = PluginMinimize3DRequestSchema.parse(input);
+  const request = timeHost3d(timing, "worker.minimize3d.request-schema", () => PluginMinimize3DRequestSchema.parse(input));
   const rdkit = await ensureRdkit();
   const name = request.forceField ?? "mmff94s";
   assertModelStereo(rdkit, request.model, "minimize3d input");
@@ -153,8 +154,9 @@ export async function minimize3dInWorker(input: PluginMinimize3DRequest, method:
         `RDKit could not set up ${name} for this graph; coordinates are unchanged.` : `${name} did not converge within ${iterationsBudget} requested iterations.`])] };
 }
 
-export async function flatten3dInWorker(input: PluginFlatten3DRequest, method: Plugin3DMethod): Promise<PluginFlatten3DResult> {
-  const request = PluginFlatten3DRequestSchema.parse(input);
-  const { flattenPluginModel } = await import("./flatten");
-  return flattenPluginModel(request, method, await ensureRdkit());
+export async function flatten3dInWorker(input: PluginFlatten3DRequest, method: Plugin3DMethod, timing?: Chemistry3dTimingSink): Promise<PluginFlatten3DResult> {
+  const request = timeHost3d(timing, "worker.flatten3d.request-schema", () => PluginFlatten3DRequestSchema.parse(input));
+  const { flattenPluginModel } = await timeHost3dAsync(timing, "worker.flatten3d.module.flatten-import", () => import("./flatten"));
+  const rdkit = await timeHost3dAsync(timing, "worker.flatten3d.ensure-rdkit", () => ensureRdkit());
+  return flattenPluginModel(request, method, rdkit, timing);
 }

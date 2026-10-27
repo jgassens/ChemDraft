@@ -55,7 +55,9 @@ describe("conformer worker 3D reply protocol", () => {
     expect(replies.filter(reply => reply.kind === "chemistry3d-timing").length).toBeGreaterThan(0);
     if (job.method === "embed3d") expect(replies).toContainEqual({ kind: "chemistry3d-progress", id: 123 });
     expect(replies.filter(reply => reply.kind === "chemistry3d-result" || reply.kind === "chemistry3d-error"))
-      .toEqual([{ kind: "chemistry3d-result", id: 123, result }]);
+      .toEqual([{ kind: "chemistry3d-result", id: 123, result, transportTrace: {
+        workerReceivedAtEpochMs: expect.any(Number), workerPostedAtEpochMs: expect.any(Number)
+      } }]);
   });
   it.each(cases)("echoes the id on $job.method failures without posting a result", async ({ job, run }) => {
     vi.mocked(run).mockRejectedValue(new Error("engine failed"));
@@ -74,5 +76,21 @@ describe("conformer worker 3D reply protocol", () => {
       { id: 789, kind: "chemistry3d-ready" }, { id: 789, kind: "chemistry3d-result", result: embedded }
     ]);
     expect(embed3dInWorker).toHaveBeenCalledWith(cases[0].job.request, expect.any(Function), undefined);
+  });
+  it("stamps result posting on the shared clock and posts without waiting for a timer", async () => {
+    vi.useFakeTimers();
+    const now = vi.spyOn(performance, "now").mockReturnValue(10);
+    try {
+      vi.mocked(embed3dInWorker).mockImplementation(async () => {
+        now.mockReturnValue(26);
+        return embedded;
+      });
+      const post = vi.fn();
+      await handleChemistry3dRequest({ kind: "chemistry3d", id: 900, job: cases[0].job, profile: true }, post);
+      expect(post).toHaveBeenLastCalledWith({ kind: "chemistry3d-result", id: 900, result: embedded,
+        transportTrace: { workerReceivedAtEpochMs: performance.timeOrigin + 10,
+          workerPostedAtEpochMs: performance.timeOrigin + 26 } });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { now.mockRestore(); vi.useRealTimers(); }
   });
 });
