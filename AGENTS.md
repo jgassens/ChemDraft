@@ -403,8 +403,10 @@ the label you saw. Only a stable build (on `main`, or `CHEMDRAFT_STABLE_BUILD=1`
 
 The stable app (`/Applications/ChemDraft.app`; `%LOCALAPPDATA%\ChemDraft` on Windows) is built from
 `main` as `org.chemdraft.desktop`. Branch builds are a different application, `ChemDraft (dev)` with
-identifier `org.chemdraft.desktop.dev.<worktree-slug>`, their own app data (fresh settings and
-plugins), and their own single-instance lock; on macOS `run-app` **moves** (never copies) the bundle
+the shared identifier `org.chemdraft.desktop.dev`, one shared app-data folder (settings and installed
+plugins), and one shared single-instance lock. Only one dev build runs at a time; quit it before
+launching another worktree's build. Stable app data and its lock stay separate.
+On macOS `run-app` **moves** (never copies) the bundle
 into `<worktree>/app/`. A branch never builds over, renames, or unregisters the stable app.
 `./run-app --dev` runs a bare binary with no bundle identifier, invisible to identifier-scoped tools.
 Identify a build by its stamp, never by its window.

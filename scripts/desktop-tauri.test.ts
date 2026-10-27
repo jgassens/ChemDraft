@@ -6,7 +6,7 @@ vi.mock("node:child_process", () => ({ spawnSync: vi.fn(() => ({ status: 0 })) }
 vi.mock("node:fs", () => ({ existsSync: vi.fn(() => false), readFileSync: vi.fn(() => "  test-only-key\n") }));
 vi.mock("./worktree-identity.mjs", async (importOriginal) => ({
   ...await importOriginal<typeof import("./worktree-identity.mjs")>(),
-  worktreeIdentity: () => ({ branch: "release/test", label: "checkout [release/test]", devBundleId: "test.dev" })
+  worktreeIdentity: () => ({ branch: "release/test", label: "checkout [release/test]", devBundleId: "org.chemdraft.desktop.dev" })
 }));
 
 afterEach(() => {
@@ -16,12 +16,12 @@ afterEach(() => {
   vi.resetModules();
 });
 
-async function build(platform = "win32") {
+async function build(platform = "win32", stable = true) {
   vi.spyOn(process, "platform", "get").mockReturnValue(platform as NodeJS.Platform);
   vi.spyOn(process, "argv", "get").mockReturnValue(["node", "desktop-tauri.mjs", "--package-build", "--bundles", "nsis"]);
   vi.spyOn(process, "exit").mockImplementation(() => { throw new Error("test exit"); });
   vi.spyOn(console, "log").mockImplementation(() => {});
-  vi.stubEnv("CHEMDRAFT_STABLE_BUILD", "1");
+  vi.stubEnv("CHEMDRAFT_STABLE_BUILD", stable ? "1" : undefined);
   await expect(import("./desktop-tauri.mjs")).rejects.toThrow("test exit");
   const call = vi.mocked(spawnSync).mock.calls.at(-1)!;
   return { args: call[1] as string[], env: call[2]!.env! };
@@ -71,5 +71,16 @@ describe("desktop updater signing", () => {
     const { args } = await build("darwin");
     expect(args).toContain("pnpm prepare:sparkle && pnpm sign:opsin-runtime && PATH=\"$HOME/.cargo/bin:$PATH\" tauri \"$@\"");
     expect(args).not.toContain("--config");
+  });
+});
+
+describe("branch build identity", () => {
+  it.each(["win32", "linux"])("uses the shared dev id and keeps the worktree label on %s", async (platform) => {
+    vi.mocked(existsSync).mockReturnValue(false);
+    const { args, env } = await build(platform, false);
+    const config = JSON.parse(args[args.indexOf("--config") + 1]);
+    expect(config.identifier).toBe("org.chemdraft.desktop.dev");
+    expect(config.productName).toBe("ChemDraft (dev)");
+    expect(env.CHEMDRAFT_WORKTREE_LABEL).toBe("checkout [release/test]");
   });
 });

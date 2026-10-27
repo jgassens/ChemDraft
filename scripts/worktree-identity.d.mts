@@ -1,6 +1,5 @@
 export declare const DEV_PRODUCT_NAME: string;
 export declare function git(rootDir: string, ...args: string[]): string;
-export declare function worktreeSlug(name: string): string;
 export declare function worktreeIdentity(rootDir: string): {
   branch: string;
   label: string;

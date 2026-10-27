@@ -102,8 +102,8 @@ function serveInstalledPluginsInDev(): Plugin {
   const urlPrefix = INSTALLED_PLUGIN_URL_PREFIX;
   const installedPluginWorkerCsp = INSTALLED_PLUGIN_WORKER_CSP;
   // Mirrors `installed_plugins::installed_plugins_root`: app_data_dir() for the identifier the
-  // running app actually has. Under `pnpm dev` that is the per-worktree dev identifier the launcher
-  // exports, not the stable one from `tauri.conf.json`.
+  // running app actually has. Under `pnpm dev` that is the shared dev identifier
+  // `org.chemdraft.desktop.dev`, not the stable one from `tauri.conf.json`.
   const bundleId = process.env.CHEMDRAFT_DEV_BUNDLE_ID || STABLE_BUNDLE_ID;
   const root = join(appDataRoot(), bundleId, "installed-plugins");
 

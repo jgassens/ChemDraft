@@ -11,10 +11,10 @@ CHEMDRAFT_OCSR_ENGINE_DIR="/path/to/<app data>/ocsr-engine" pnpm test:ocsr-real
 ```
 
 Without `CHEMDRAFT_OCSR_ENGINE_DIR`, `run-real-engine-check.mjs` searches the app data folders of the
-stable app (`org.chemdraft.desktop`) and every dev build (`org.chemdraft.desktop.dev.*`) and uses
-the most recently installed engine. It then starts `real_engine_check.py` with that engine's own
-venv interpreter, which runs this checkout's sidecar exactly as the app does. The check only reads
-the engine folder.
+stable app (`org.chemdraft.desktop`), the shared dev app (`org.chemdraft.desktop.dev`), and legacy
+worktree dev builds (`org.chemdraft.desktop.dev.*`), then uses the most recently installed engine. It
+starts `real_engine_check.py` with that engine's own venv interpreter, which runs this checkout's
+sidecar exactly as the app does. The check only reads the engine folder.
 
 Each fixture is tried in three variants, and `expected.json` says what each must produce:
 

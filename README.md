@@ -36,7 +36,7 @@ its SHA-256 before use. Release/appcast instructions are in
 `docs/releasing/macos-updates.md`; Sparkle update checks run only from a packaged macOS app, not the
 browser-only preview.
 
-The `./run-app` helper builds the packaged macOS app and launches it as `ChemDraft (dev)`, identifier `org.chemdraft.desktop.dev.<worktree-slug>`, with its own app data and single-instance lock. It moves the bundle into `<worktree>/app/` and never builds over, renames, or unregisters the stable `/Applications/ChemDraft.app` (`org.chemdraft.desktop`), which is built from `main` (AGENTS.md §15.2 The stable app is never replaced). Use `./run-app --dev` only when you explicitly want Tauri dev mode with Vite/HMR; it runs a bare binary with no bundle identifier. Tauri requires Rust/Cargo to be installed and available on `PATH`.
+The `./run-app` helper builds the packaged macOS app and launches it as `ChemDraft (dev)`. All branch/dev builds share identifier `org.chemdraft.desktop.dev`, one app-data folder (settings and installed plugins), and one single-instance lock. Only one dev build runs at a time; quit it before launching another worktree's build. The helper refuses to launch while another checkout's dev build is running. It moves the bundle into `<worktree>/app/` and never builds over, renames, or unregisters the stable `/Applications/ChemDraft.app` (`org.chemdraft.desktop`), which is built from `main` and keeps separate app data and a separate lock (AGENTS.md §15.2 The stable app is never replaced). Use `./run-app --dev` only when you explicitly want Tauri dev mode with Vite/HMR; it runs a bare binary with no bundle identifier, using the shared dev identifier for app data and the lock. Tauri requires Rust/Cargo to be installed and available on `PATH`.
 
 ## Windows
 
@@ -58,8 +58,9 @@ pnpm --filter @chemdraft/desktop build --bundles nsis
 - The build produces `apps/desktop/src-tauri/target/release/bundle/nsis/ChemDraft_<version>_x64-setup.exe`,
   a per-user installer (no admin); it is unsigned, so SmartScreen will ask once.
 - Built from any branch but `main`, it is `ChemDraft (dev)` (`ChemDraft (dev)_<version>_x64-setup.exe`,
-  installed to `%LOCALAPPDATA%\ChemDraft (dev)`), with a per-worktree identifier — its own app data and
-  single-instance lock, so it installs beside the stable app rather than over it (AGENTS.md §21.2).
+  installed to `%LOCALAPPDATA%\ChemDraft (dev)`), with the shared `org.chemdraft.desktop.dev` identifier,
+  one shared dev app-data folder and one shared single-instance lock. Quit the running dev build before
+  launching another worktree's; the stable app, its data, and its lock stay separate (AGENTS.md §15.2).
   Release automation building a tagged commit sets `CHEMDRAFT_STABLE_BUILD=1`.
 - The released app updates itself: a daily check of a signed feed on `main`, File ▸ Check for
   Updates…, and never a silent install. Publishing an update, and where the signing key lives, is in

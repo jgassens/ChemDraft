@@ -48,8 +48,8 @@ if (existsSync(join(cargoBin, `cargo${exe}`))) {
   prependToPath(env, cargoBin);
 }
 
-// A release build from any branch but main is a different application (AGENTS.md §21.2): its own
-// identifier — hence its own app_data_dir and single-instance lock — and its own product name, which
+// A release build from any branch but main is a different application (AGENTS.md §15.2): the shared
+// dev identifier, app_data_dir and single-instance lock, separate from stable, and a product name which
 // gives the installer its own install directory and uninstall entry. Without this, installing a branch
 // build replaced the stable install and a running stable app swallowed the branch build's launch.
 // CHEMDRAFT_STABLE_BUILD=1 opts out, for release automation building a tagged commit.

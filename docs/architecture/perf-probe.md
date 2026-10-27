@@ -72,7 +72,7 @@ The native writer always resolves **Rust `app.path().app_data_dir()`**, then app
 | macOS | `~/Library/Application Support/org.chemdraft.desktop/perf-log.jsonl` |
 | Windows | `%APPDATA%\org.chemdraft.desktop\perf-log.jsonl` |
 
-Branch builds use their own `org.chemdraft.desktop.dev.<worktree-slug>` identifier in that same rule.
+Branch builds share the `org.chemdraft.desktop.dev` identifier and log folder in that same rule.
 The stable build and branch build never share logs. No Web Inspector is needed: open the file after
 the run. Leave the app open briefly after the final interaction so queued asynchronous writes finish.
 Logging does not delay commands; an abrupt process exit can lose queued lines.

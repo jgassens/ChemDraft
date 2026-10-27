@@ -3,8 +3,8 @@
 //
 // macOS keeps using `run-app --dev` unchanged: it also owns LaunchServices cleanup, stale-process
 // reaping, and Sparkle staging, none of which exist elsewhere. Every other platform gets the parts of
-// run-app that are not macOS-specific — the worktree label, the per-worktree dev identifier (its own
-// app_data_dir, so a dev build never shares state with an installed one), a free dev-server port, and
+// run-app that are not macOS-specific — the worktree label, the shared dev identifier (one dev
+// app_data_dir and lock, separate from stable), a free dev-server port, and
 // the local Engine 3D sidecar override — and then launches the Tauri CLI directly. pnpm runs package
 // scripts through cmd.exe on Windows, which cannot execute the bash launcher or `${VAR:-default}`.
 import { spawn, spawnSync } from "node:child_process";
@@ -138,7 +138,7 @@ console.log(`  bundle id: ${env.CHEMDRAFT_DEV_BUNDLE_ID}`);
 console.log("============================================================");
 console.log("");
 
-// The identifier split gives the dev build its own app_data_dir; devUrl follows the chosen port.
+// All dev builds share app_data_dir and a lock, separate from stable; devUrl follows the chosen port.
 // Passed as one argv element, so no shell quoting is involved on any platform.
 const devConfig = JSON.stringify({
   identifier: env.CHEMDRAFT_DEV_BUNDLE_ID,

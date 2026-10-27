@@ -46,7 +46,7 @@ function discoverEngines() {
       continue;
     }
     for (const name of entries) {
-      if (name !== STABLE_ID && !name.startsWith(`${STABLE_ID}.dev.`)) continue;
+      if (name !== STABLE_ID && name !== `${STABLE_ID}.dev` && !name.startsWith(`${STABLE_ID}.dev.`)) continue;
       const engineDir = join(root, name, "ocsr-engine");
       if (!isUsable(engineDir)) continue;
       const receipt = join(engineDir, "install.json");
