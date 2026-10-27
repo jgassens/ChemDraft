@@ -374,13 +374,12 @@ function parseV2000Molfile(molfile: string): ParsedMolfileGraph {
   }
 
   const countsLine = lines[countsLineIndex] ?? "";
-  const counts = countsLine.match(/^\s*(\d+)\s+(\d+)/);
+  const counts = parseV2000CountsLine(countsLine);
   if (!counts) {
     throw new Error("V2000 molfile is missing its atom/bond counts line.");
   }
 
-  const atomCount = Number(counts[1]);
-  const bondCount = Number(counts[2]);
+  const { atomCount, bondCount } = counts;
   const atomStartIndex = countsLineIndex + 1;
   const atomLines = lines.slice(atomStartIndex, atomStartIndex + atomCount);
   const bondLines = lines.slice(atomStartIndex + atomCount, atomStartIndex + atomCount + bondCount);
@@ -707,12 +706,31 @@ export function smilesListDecision(input: {
     || (input.lineCount >= 2 && input.parsedFirstTokenLines === input.lineCount));
 }
 
+function parseV2000CountsLine(line: string): { atomCount: number; bondCount: number } | undefined {
+  // CTfile counts are aaabbb: two right-justified 3-character integers, with no
+  // separator when both reach 100 (e.g. 266267). Always try these columns first.
+  const atoms = line.slice(0, 3).trim();
+  const bonds = line.slice(3, 6).trim();
+  if (/^\d+$/.test(atoms) && /^\d+$/.test(bonds)) {
+    return { atomCount: Number(atoms), bondCount: Number(bonds) };
+  }
+
+  // Some writers omit padding. Accept separate, at-most-three-digit fields only:
+  // a longer digit run may contain adjacent fixed-width counts and must not be split.
+  const short = line.match(/^\s*(\d{1,3})\s+(\d{1,3})(?=\s|$)/);
+  return short ? { atomCount: Number(short[1]), bondCount: Number(short[2]) } : undefined;
+}
+
 function findV2000CountsLineIndex(lines: readonly string[]): number {
   // A V2000 counts line is "aaabbb...  V2000" (atoms, bonds, then 9 more fields + tag).
   // Requiring either the explicit V2000 tag or the full 6+ field shape avoids mis-reading
   // ordinary two-number text (e.g. "42 17 results found") as a counts line.
   return lines.findIndex((line) =>
-    /^\s*\d+\s+\d+/.test(line) && (/\bV2000\b/.test(line) || line.trim().split(/\s+/).length >= 6)
+    parseV2000CountsLine(line) !== undefined && (
+      /\bV2000\b/.test(line) || line.trim().split(/\s+/).length >= 6 ||
+      // Count the remaining fields separately when aaa and bbb abut.
+      /^(?:\s+\d+){4,}\s*$/.test(line.slice(6))
+    )
   );
 }
 
