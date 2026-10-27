@@ -104,7 +104,7 @@ describe.skipIf(process.platform === "win32")("run-app shared dev lock guard", (
     expect(existsSync(lock)).toBe(true);
   });
 
-  it.each(["INT", "TERM", "HUP"] as const)("holds the lock after %s until the launcher child exits", async (signal) => {
+  it.each(["INT", "TERM", "HUP"] as const)("holds the packaged launch lock after %s without signalling open or the app", async (signal) => {
     const { lock, env } = lockFixture();
     const interrupted = join(env.TMPDIR!, "interrupted");
     const finish = join(env.TMPDIR!, "finish");
@@ -115,7 +115,7 @@ describe.skipIf(process.platform === "win32")("run-app shared dev lock guard", (
         case "$(trap -p ${signal})" in *"''"*) touch "$TMPDIR/interrupted" ;; esac
         return 1
       }
-      DEV_LAUNCHER_EXECUTABLE="$DEV_APP_EXECUTABLE"
+      DEV_LAUNCHER_EXECUTABLE="$RUN_APP_EXECUTABLE"
       # The mock launcher exits on request, with a fallback deadline for failed tests.
       (for _ in {1..150}; do
         [ ! -e "$TMPDIR/finish" ] || exit 0
@@ -123,7 +123,7 @@ describe.skipIf(process.platform === "win32")("run-app shared dev lock guard", (
       done) &
       DEV_LAUNCHER_PID=$!
       printf 'ready\\n'
-      wait_for_launched_app "$DEV_APP_EXECUTABLE" "$DEV_LAUNCHER_PID"
+      wait_for_launched_app "$RUN_APP_EXECUTABLE" "$DEV_LAUNCHER_PID"
     `], { env, stdio: ["ignore", "pipe", "pipe"] });
     const closed = new Promise<number | null>((resolve) => holder.on("close", resolve));
     let stderr = "";
@@ -166,11 +166,110 @@ describe.skipIf(process.platform === "win32")("run-app shared dev lock guard", (
     expect(existsSync(lock)).toBe(false);
   });
 
-  it("handles a signal before any launcher exists under set -u", () => {
+  it.each(["INT", "TERM", "HUP"] as const)("cancels only its dev child group on %s and holds the lock until it exits", async (signal) => {
+    const { lock, env } = lockFixture();
+    const directory = env.TMPDIR!;
+    const interrupted = join(directory, "interrupted");
+    const descendantStopped = join(directory, "descendant-stopped");
+    const finish = join(directory, "finish");
+    writeFileSync(join(directory, "npm"), '#!/bin/bash\nexec "$TEST_NODE" "$TMPDIR/npm.mjs" "$@"\n', { mode: 0o755 });
+    writeFileSync(join(directory, "npm.mjs"), `
+      import { spawn } from 'node:child_process';
+      import { existsSync, writeFileSync } from 'node:fs';
+      import { join } from 'node:path';
+      const directory = process.env.TMPDIR;
+      process.on('SIGINT', () => {});
+      process.on('SIGTERM', () => writeFileSync(join(directory, 'interrupted'), ''));
+      const child = spawn(process.execPath, ['-e', \`
+        const { writeFileSync } = require('node:fs');
+        process.on('SIGTERM', () => {
+          writeFileSync(process.env.TMPDIR + '/descendant-stopped', '');
+          process.exit(0);
+        });
+        console.log('ready');
+        setTimeout(() => process.exit(1), 8000);
+      \`], { stdio: ['ignore', 'pipe', 'inherit'] });
+      child.stdout.once('data', () => console.log('ready'));
+      setInterval(() => { if (existsSync(join(directory, 'finish'))) process.exit(0); }, 20);
+      setTimeout(() => process.exit(1), 8000);
+    `);
+    const devPath = source.slice(source.indexOf('\nif [ "$RUN_MODE" = "--dev" ]; then\n'),
+      source.indexOf('\nstop_existing_dev_server "$DEV_PORT" ignore-unrelated\n'));
+    const holder = spawn("/bin/bash", ["-c", `${definitions}
+      RUN_MODE=--dev
+      acquire_dev_launch_lock
+      select_dev_port() { :; }
+      prime_tauri_context_rebuild_for_dev() { :; }
+      print_launch_banner() { :; }
+      assert_no_other_dev_app() { :; }
+      pgrep() { return 1; }
+      # Reject any cancellation target except the private group of our direct npm child.
+      kill() {
+        if [ "$1" != "-0" ] && [ "$*" != "-TERM -- -$DEV_LAUNCHER_PID" ]; then
+          echo 'unexpected kill' >&2
+          return 99
+        fi
+        builtin kill "$@"
+      }
+      ${devPath}
+    `], { env: { ...env, PATH: `${directory}:${env.PATH}`, TEST_NODE: process.execPath },
+      detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    const closed = new Promise<number | null>((resolve) => holder.on("close", resolve));
+    let stderr = "";
+    holder.stderr.on("data", (chunk) => { stderr += String(chunk); });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        holder.once("error", reject);
+        holder.stdout.once("data", () => resolve());
+        holder.once("exit", () => reject(new Error(`Dev launcher exited early: ${stderr}`)));
+      });
+      // A terminal sends Ctrl-C to run-app's foreground process group.
+      process.kill(-holder.pid!, `SIG${signal}` as NodeJS.Signals);
+      await expect.poll(() => existsSync(interrupted), { timeout: 2000 }).toBe(true);
+      await expect.poll(() => existsSync(descendantStopped), { timeout: 2000 }).toBe(true);
+      expect(existsSync(lock)).toBe(true);
+      expect(holder.exitCode).toBe(null);
+      const second = runShell(`${probeOnly}\nacquire_dev_launch_lock`, env);
+      expect(second.status).toBe(1);
+      expect(second.stderr).toContain("another run-app holds");
+    } finally {
+      writeFileSync(finish, "");
+      await closed;
+    }
+    expect(holder.exitCode).toBe({ INT: 130, TERM: 143, HUP: 129 }[signal]);
+    expect(stderr).not.toContain("unexpected kill");
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  it("bounds the dev cancellation wait if its child ignores TERM", () => {
+    const { lock, env } = lockFixture();
+    const result = runShell(`
+      acquire_dev_launch_lock
+      DEV_LAUNCHER_PID=12345
+      DEV_LAUNCHER_EXECUTABLE="$DEV_APP_EXECUTABLE"
+      DEV_LAUNCHER_OWNS_PROCESS_GROUP=1
+      kill() {
+        case "$*" in
+          '-TERM -- -12345') touch "$TMPDIR/forwarded" ;;
+          '-0 12345') return 0 ;;
+          *) echo 'unexpected kill' >&2; return 99 ;;
+        esac
+      }
+      sleep() { SECONDS=$((SECONDS + 60)); }
+      handle_dev_launch_signal 130
+    `, env);
+    expect(result.status).toBe(130);
+    expect(result.stderr).toBe("");
+    expect(existsSync(join(env.TMPDIR!, "forwarded"))).toBe(true);
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  it.each([0, 1])("handles a signal before any launcher exists under set -u (private group: %s)", (ownsGroup) => {
     const { lock, env } = lockFixture();
     const result = runShell(`${probeOnly}
       acquire_dev_launch_lock
       DEV_LAUNCHER_EXECUTABLE="$DEV_APP_EXECUTABLE"
+      DEV_LAUNCHER_OWNS_PROCESS_GROUP=${ownsGroup}
       handle_dev_launch_signal 129
     `, env);
     expect(result.status).toBe(129);
@@ -305,7 +404,8 @@ describe.skipIf(process.platform === "win32")("run-app shared dev lock guard", (
     expect(main.indexOf("acquire_dev_launch_lock")).toBeLessThan(main.indexOf("assert_no_other_dev_app"));
     expect(main.indexOf("assert_no_other_dev_app")).toBeLessThan(main.indexOf("stop_existing_dev_apps"));
     expect(main.indexOf("assert_no_other_dev_app")).toBeLessThan(main.indexOf("pnpm install"));
-    expect(main).toContain('assert_no_other_dev_app\n  DEV_LAUNCHER_EXECUTABLE="$DEV_APP_EXECUTABLE"\n  npm run dev:tauri &');
+    expect(main).toContain('assert_no_other_dev_app\n  DEV_LAUNCHER_EXECUTABLE="$DEV_APP_EXECUTABLE"');
+    expect(main).toContain('set -m\n  DEV_LAUNCHER_OWNS_PROCESS_GROUP=1\n  npm run dev:tauri &');
     expect(main).toContain('wait_for_launched_app "$DEV_APP_EXECUTABLE" "$dev_launcher_pid"');
     expect(main).toContain('assert_no_other_dev_app\nlaunch_bundle "$RUN_APP_BUNDLE"');
     expect(source).toContain('wait_for_launched_app "$bundle/Contents/MacOS/$executable" "$launcher_pid"');

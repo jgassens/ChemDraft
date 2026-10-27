@@ -34,6 +34,7 @@ DEV_LAUNCH_LOCK="${TMPDIR:-/tmp}/${RUN_APP_BUNDLE_ID}.launch.lock"
 DEV_LAUNCH_LOCK_HELD=0
 DEV_LAUNCHER_PID=""
 DEV_LAUNCHER_EXECUTABLE=""
+DEV_LAUNCHER_OWNS_PROCESS_GROUP=0
 RUN_APP_DISPLAY_NAME="ChemDraft (dev)"
 RUN_APP_BUNDLE_DIR="$ROOT_DIR/app"
 RUN_APP_BUNDLE="$RUN_APP_BUNDLE_DIR/$RUN_APP_DISPLAY_NAME.app"
@@ -152,14 +153,24 @@ launch_lock_directory_is_old() {
 
 handle_dev_launch_signal() {
   # $! covers a signal arriving between starting the child and recording its PID. Ignore further
-  # signals during this bounded handoff; never send a signal to the launcher or the app.
+  # signals during this bounded handoff. Only the --dev child has a private process group;
+  # packaged launches must keep running when we stop waiting for open -W.
   local status="$1" launcher_pid="$DEV_LAUNCHER_PID"
   trap '' INT TERM HUP
   if [ -z "$launcher_pid" ] && [ -n "$DEV_LAUNCHER_EXECUTABLE" ]; then
     # Bash 3.2 treats even ${!:-} as unbound before the first background job under set -u.
     launcher_pid="$(set +u; printf '%s' "$!")"
   fi
-  if [ "$DEV_LAUNCH_LOCK_HELD" = "1" ] && [ -n "$DEV_LAUNCHER_EXECUTABLE" ] && [ -n "$launcher_pid" ]; then
+  if [ "$DEV_LAUNCHER_OWNS_PROCESS_GROUP" = "1" ] && [ -n "$launcher_pid" ]; then
+    # Background jobs can ignore SIGINT. TERM the group created for our own npm child,
+    # including its Tauri/Vite children, never a discovered app or another checkout.
+    kill -TERM -- "-$launcher_pid" 2>/dev/null || true
+    local started="$SECONDS"
+    while kill -0 "$launcher_pid" 2>/dev/null; do
+      [ "$((SECONDS - started))" -lt 60 ] || break
+      sleep 0.1
+    done
+  elif [ "$DEV_LAUNCH_LOCK_HELD" = "1" ] && [ -n "$DEV_LAUNCHER_EXECUTABLE" ] && [ -n "$launcher_pid" ]; then
     wait_for_launched_app "$DEV_LAUNCHER_EXECUTABLE" "$launcher_pid" 60 || true
   fi
   exit "$status"
@@ -782,6 +793,10 @@ if [ "$RUN_MODE" = "--dev" ]; then
   export CHEMDRAFT_DEV_BUNDLE_ID="$RUN_APP_BUNDLE_ID"
   assert_no_other_dev_app
   DEV_LAUNCHER_EXECUTABLE="$DEV_APP_EXECUTABLE"
+  # Bash 3.2 job control gives this child its own group, so cancellation can reach only
+  # this launch's processes and background children do not inherit SIGINT as ignored.
+  set -m
+  DEV_LAUNCHER_OWNS_PROCESS_GROUP=1
   npm run dev:tauri &
   dev_launcher_pid=$!
   DEV_LAUNCHER_PID="$dev_launcher_pid"
