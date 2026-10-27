@@ -324,6 +324,8 @@ consent text must say that it does and that page content can leave the computer.
 
 ## Plugin panel input and canvas overlay (macOS and Windows)
 
+On both platforms with a real mouse and Japanese IME, compose in the text tool and in the assistant/plugin overlay prompt and commit with ONE Return. Click the empty page: the composed text stays committed after that one Return, and canvas keyboard shortcuts work. Repeat after launch and after closing a dialog with nothing focused.
+
 On both platforms, shrink the window to 405 px high, resize the canvas region, and move between display scales: Send stays reachable, the collapsed icon stays inside, and growing restores the remembered height; flick-drag the resize grip outside its bounds and cancel/interruption then hover (no stuck resize); double-click the header/grip (no text selection) and select text normally in the prompt and transcript.
 
 With an API 0.1.12 overlay-only plugin, use its Plugins menu command to expand and focus the

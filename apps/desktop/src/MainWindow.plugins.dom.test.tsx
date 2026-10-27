@@ -305,6 +305,36 @@ describe("MainWindow canvas overlays", () => {
         nativePalette={false} shortcutPlatform={platform} />));
     });
 
+    it("hands focus back from the prompt exactly once for a primary page press (#211)", async () => {
+      const canvas = container.querySelector<HTMLElement>(".canvas-region")!;
+      const focus = vi.spyOn(canvas, "focus");
+      expect(document.activeElement).toBe(container.querySelector(".plugin-canvas-overlay textarea"));
+      await canvasPointer(container.querySelector(".page")!, "pointerdown");
+      expect(document.activeElement).toBe(canvas);
+      expect(focus).toHaveBeenCalledExactlyOnceWith({ preventScroll: true });
+      await canvasPointer(canvas, "pointerup");
+    });
+
+    it("does not claim BODY focus during prompt composition and recovers after compositionend", async () => {
+      const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
+      const canvas = container.querySelector<HTMLElement>(".canvas-region")!;
+      const focus = vi.spyOn(canvas, "focus");
+      await act(async () => {
+        textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+        textarea.blur();
+      });
+      expect(document.activeElement).toBe(document.body);
+      await canvasPointer(canvas, "pointerdown");
+      expect(document.activeElement).toBe(document.body);
+      expect(focus).not.toHaveBeenCalled();
+      await canvasPointer(canvas, "pointerup");
+      await act(async () => textarea.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "あ" })));
+      await canvasPointer(canvas, "pointerdown");
+      expect(document.activeElement).toBe(canvas);
+      expect(focus).toHaveBeenCalledExactlyOnceWith({ preventScroll: true });
+      await canvasPointer(canvas, "pointerup");
+    });
+
     it("keeps the prompt focused for a press inside the overlay", async () => {
       const textarea = container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!;
       expect(document.activeElement).toBe(textarea);
