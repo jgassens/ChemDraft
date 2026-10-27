@@ -12,6 +12,13 @@ scaling, sparse override precedence, terminal carbon labels, hidden implicit hyd
 hydrogens, fonts, save/reopen, undo/redo, Spin 3D, atom-label editor placement, SVG export, and ring
 selection after tab switching/closing.
 
+## Spin 3D (macOS and Windows)
+
+Paste `c1ccccc1.CC(C)(C)C.OCCO` as one native molecule object; with RDKit and the OCL fallback,
+check that all three fragments open apart in their drawn arrangement, stay spatially separate while
+rotating, and remain apart after flatten, save/reopen and Spin again; Copy As SMILES and formula
+must stay unchanged.
+
 ## Plugin 3D chemistry (macOS and Windows)
 
 With a plugin that declares `chemistry.compute`, embed a two-component complex, arrange and minimize

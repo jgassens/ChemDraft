@@ -842,6 +842,7 @@ import {
   type Vec3
 } from "./interaction/rotation3d";
 import { bondDepthWeights, initialViewQuaternion, medianBondLength3d, projectSpin, orientedOverlayScale, overlayScale, spinJoinedBondFragments, type ScreenPlacement } from "./interaction/spinOverlay";
+import { applySpinFragmentArrangement, computeSpinFragmentArrangement, type SpinFragmentArrangement } from "./interaction/spinFragmentPlacement";
 import { getConformerWorkerClient } from "./conformerClient";
 import { buildSpin3dFlattenStereoOptions } from "./spin3dFlattenStereoPolicy";
 import {
@@ -1614,7 +1615,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.27.12.30-codex";
+const CURRENT_BUILD_STAMP = "10.27.13.40-codex";
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -4949,6 +4950,8 @@ export function MainWindow({
       atomCount: molecule.atoms.length
     });
 
+    // Fragment placement uses the opening frame for BOTH stages, independent of any
+    // user rotation made while refinement was running.
     // Stage 1 — the embedded conformer is fully manipulable; the overlay goes up NOW.
     const handleEmbedded = (conformer: Generate3DConformerResult): void => {
       clearSlowTimer();
@@ -4969,13 +4972,16 @@ export function MainWindow({
         setStatus("Selection changed; spin cancelled");
         return;
       }
-      const coords3d = conformer.mapping.coords3dByOriginalAtom;
-      const { bondPairs, atomLabels, atomLabelStyles, atoms, placement } = spinPlacementFor(molecule, coords3d);
+      const embeddedCoords = conformer.mapping.coords3dByOriginalAtom;
+      const openingOrientation = initialViewQuaternion(embeddedCoords);
+      const { bondPairs, atomLabels, atomLabelStyles, atoms, placement } = spinPlacementFor(molecule, embeddedCoords);
+      const fragmentArrangement = computeSpinFragmentArrangement(molecule.atoms, embeddedCoords, bondPairs, openingOrientation);
+      const coords3d = fragmentArrangement ? applySpinFragmentArrangement(embeddedCoords, fragmentArrangement, placement.scale) : embeddedCoords;
       applySpin({
         objectId,
         // Open at a readable angle (principal plane toward the viewer + gentle tilt),
         // not the engine's arbitrary — often edge-on — embedding orientation.
-        quat: initialViewQuaternion(coords3d),
+        quat: openingOrientation,
         coords3d,
         bondPairs,
         sourceMolecule: molecule,
@@ -4983,6 +4989,7 @@ export function MainWindow({
         atomLabelStyles,
         atoms,
         placement,
+        fragmentArrangement,
         selectionBox: { x: molecule.x, y: molecule.y, width: molecule.width, height: molecule.height },
         dragging: false,
         engine: { name: conformer.engine.name, version: conformer.engine.version, forceField: conformer.forceField?.name }
@@ -5010,14 +5017,17 @@ export function MainWindow({
         warningCount: conformer.warnings.length,
         message: conformer.forceField?.status
       });
-      const coords3d = conformer.mapping.coords3dByOriginalAtom;
-      const { bondPairs, atomLabels, placement } = spinPlacementFor(molecule, coords3d);
+      const refinedCoords = conformer.mapping.coords3dByOriginalAtom;
+      // Match the unmodified single-fragment path exactly: the refined conformer
+      // determines its own bond-length scale. Fragment targets are stored in page px
+      // so that recomputing this scale also leaves disconnected centres in place.
+      const { placement } = spinPlacementFor(molecule, refinedCoords);
+      const coords3d = state.fragmentArrangement
+        ? applySpinFragmentArrangement(refinedCoords, state.fragmentArrangement, placement.scale)
+        : refinedCoords;
       applySpin({
         ...state,
         coords3d,
-        bondPairs,
-        sourceMolecule: molecule,
-        atomLabels,
         placement,
         engine: { name: conformer.engine.name, version: conformer.engine.version, forceField: conformer.forceField?.name }
       });
@@ -23071,6 +23081,7 @@ interface Spin3dState {
    *  aware bond-end trimming, matching the committed 2D drawing. */
   atoms: readonly MoleculeAtom[];
   placement: ScreenPlacement;
+  fragmentArrangement?: SpinFragmentArrangement;
   /** The molecule's selection box (page coords): drag inside to rotate, click outside to flatten. */
   selectionBox: { x: number; y: number; width: number; height: number };
   dragging: boolean;
