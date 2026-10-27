@@ -1,3 +1,4 @@
+import { isEditableTarget } from "../editableTarget";
 import { useExportPreviewEnabled } from "./useExportPreviewEnabled";
 import { perfHook, perfProbe, perfSurfaceReady } from "../perf/runtime";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
@@ -13,6 +14,15 @@ import { ToolInstallForm } from "./ToolInstallForm";
 const ExportForm = lazy(() => import("./ExportForm").then(module => ({ default: module.ExportForm })));
 
 export function DialogWindow({ hostId }: { hostId: string }) {
+  useEffect(() => {
+    const onMenu = (event: MouseEvent) => { if (!isEditableTarget(event.target)) event.preventDefault(); };
+    window.document.addEventListener("contextmenu", onMenu);
+    return () => window.document.removeEventListener("contextmenu", onMenu);
+  }, []);
+  return <DialogWindowContent hostId={hostId} />;
+}
+
+function DialogWindowContent({ hostId }: { hostId: string }) {
   const previewEnabled = useExportPreviewEnabled();
   const previewEnabledRef = useRef(previewEnabled);
   previewEnabledRef.current = previewEnabled;

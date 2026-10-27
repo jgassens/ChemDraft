@@ -26,6 +26,9 @@ mod screen_capture;
 mod utility_suspension;
 #[cfg(test)]
 mod utility_suspension_tests;
+mod webview_context_menus;
+#[cfg(test)]
+mod webview_context_menus_tests;
 mod window_drag;
 mod windows_clipboard;
 
@@ -52,6 +55,7 @@ use tauri::{
     webview::PageLoadEvent,
     Emitter, Listener, Manager, RunEvent, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
+use webview_context_menus::disable_default_context_menus;
 
 #[cfg(target_os = "macos")]
 use objc2::MainThreadMarker;
@@ -1533,7 +1537,9 @@ fn configure_document_webview<R: Runtime>(window: &tauri::WebviewWindow<R>) -> R
 }
 
 #[cfg(not(target_os = "macos"))]
-fn configure_document_webview<R: Runtime>(_window: &tauri::WebviewWindow<R>) -> Result<(), String> {
+fn configure_document_webview<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
+    // Also covers Tauri's automatically created config window, which skips create_main_window.
+    disable_default_context_menus(window);
     Ok(())
 }
 
@@ -1682,11 +1688,12 @@ fn create_main_window<R: Runtime>(
             .map_err(|error| error.to_string())?
             .build()
             .map_err(|error| error.to_string())?;
+        disable_default_context_menus(&window);
         let _ = window.set_title(&title);
         return Ok(window);
     }
 
-    WebviewWindowBuilder::new(app, MAIN_WINDOW_LABEL, WebviewUrl::App("/".into()))
+    let window = WebviewWindowBuilder::new(app, MAIN_WINDOW_LABEL, WebviewUrl::App("/".into()))
         .title(&title)
         .inner_size(1280.0, 820.0)
         .min_inner_size(900.0, 640.0)
@@ -1695,7 +1702,9 @@ fn create_main_window<R: Runtime>(
         // Match the config window: ensure_main_window_visible places it before revealing it.
         .visible(false)
         .build()
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    disable_default_context_menus(&window);
+    Ok(window)
 }
 
 /// Window geometry supplied by JS (which owns the toolbar registry) when opening a palette, so Rust
@@ -3718,6 +3727,7 @@ fn build_or_show_plugin_panel<R: Runtime>(
         builder = builder.position(position.x, position.y);
     }
     let window = builder.build().map_err(|error| error.to_string())?;
+    disable_default_context_menus(&window);
     let target = window.clone();
     let installed = run_on_main_thread_blocking(&window, move || {
         panel_window::install_resize_hit_test(&target)
@@ -4226,6 +4236,7 @@ fn build_toolset_popover_window(
     .build()
     .map_err(|error| error.to_string())?;
 
+    disable_default_context_menus(&window);
     configure_toolset_popover_window(&window, false)?;
     // Re-assert the anchor as the FINAL step, mirroring the warm path: panel configuration
     // can nudge the frame, and builder-time positioning has proven less trustworthy than an
@@ -4541,6 +4552,7 @@ fn build_toolset_tooltip_window(app: &tauri::AppHandle) -> Result<(), String> {
     .build()
     .map_err(|error| error.to_string())?;
 
+    disable_default_context_menus(&window);
     configure_toolset_utility_window(&window, false)?;
     // Pure chrome: click-through and invisible to hit-testing. Without this, the tooltip appearing
     // under the cursor would win windowNumberAtPoint in the pointer feed, read as "cursor left the
@@ -5113,7 +5125,7 @@ fn ensure_spin3d_debugger_window<R: Runtime>(
         return Ok(window);
     }
 
-    WebviewWindowBuilder::new(
+    let window = WebviewWindowBuilder::new(
         app,
         spin3d_debugger_window_label(),
         WebviewUrl::App(spin3d_debugger_window_route().into()),
@@ -5126,7 +5138,9 @@ fn ensure_spin3d_debugger_window<R: Runtime>(
     .visible(true)
     .center()
     .build()
-    .map_err(|error| error.to_string())
+    .map_err(|error| error.to_string())?;
+    disable_default_context_menus(&window);
+    Ok(window)
 }
 
 fn spin3d_debugger_window_label() -> &'static str {
@@ -5159,7 +5173,7 @@ fn ensure_preferences_window<R: Runtime>(
         return Ok(window);
     }
 
-    WebviewWindowBuilder::new(
+    let window = WebviewWindowBuilder::new(
         app,
         PREFERENCES_WINDOW_LABEL,
         WebviewUrl::App(PREFERENCES_WINDOW_ROUTE.into()),
@@ -5172,7 +5186,9 @@ fn ensure_preferences_window<R: Runtime>(
     .visible(true)
     .center()
     .build()
-    .map_err(|error| error.to_string())
+    .map_err(|error| error.to_string())?;
+    disable_default_context_menus(&window);
+    Ok(window)
 }
 
 #[tauri::command]
@@ -6926,6 +6942,7 @@ fn ensure_toolset_window<R: Runtime>(
         }
     };
 
+    disable_default_context_menus(&window);
     configure_toolset_utility_window(&window, true)?;
     Ok(())
 }

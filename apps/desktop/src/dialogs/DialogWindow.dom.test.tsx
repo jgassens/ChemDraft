@@ -27,6 +27,24 @@ beforeEach(async () => {
   await act(async () => host.receive!(snapshot));
 });
 afterEach(() => { stopEditRouting(); act(() => root.unmount()); container.remove(); vi.useRealTimers(); vi.unstubAllGlobals(); });
+it("suppresses browser context menus except on editable fields", () => {
+  const menu = (target: Element) => {
+    const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    target.dispatchEvent(event);
+    return event;
+  };
+  expect(menu(container.querySelector("button")!).defaultPrevented).toBe(true);
+  const checkbox = document.createElement("input");
+  checkbox.type = "checkbox";
+  document.body.append(checkbox);
+  expect(menu(checkbox).defaultPrevented).toBe(true);
+  expect(menu(document.body).defaultPrevented).toBe(true);
+  expect(menu(container.querySelector("input")!).defaultPrevented).toBe(false);
+  act(() => root.unmount());
+  root = createRoot(container);
+  expect(menu(document.body).defaultPrevented).toBe(false);
+  checkbox.remove();
+});
 it("re-enables tool installation after a failed attempt and sends a fresh retry action", async () => {
   act(() => root.unmount()); root = createRoot(container);
   await act(async () => root.render(createElement(DialogWindow, { hostId: "tool-host" })));

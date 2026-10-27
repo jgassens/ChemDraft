@@ -1,3 +1,4 @@
+import { isEditableTarget } from "./editableTarget";
 import { useExportPreviewEnabled } from "./dialogs/useExportPreviewEnabled";
 import { onPerfStarted, perfCanvasReady, perfHook, perfProbe, startPerfProbe, nativeWindowOpening, nativeWindowShown, perfToggleResolved } from "./perf/runtime";
 import { assistantDocumentContentUnchanged, registerAssistantHistoryPort, type AssistantHistoryPort } from "./assistant/historyPort";
@@ -1615,7 +1616,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.27.14.15-codex";
+const CURRENT_BUILD_STAMP = "10.27.15.30-codex";
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -15662,6 +15663,7 @@ export function MainWindow({
   // Paste. Without it the only way to paste with the mouse was the Edit menu, because the object
   // menu (the one with Paste in it) needs an object under the pointer.
   const handlePageContextMenu = useCallback((event: ObjectMouseEvent) => {
+    if (isEditableTarget(event.target)) return;
     event.preventDefault();
     event.stopPropagation();
     setObjectContextMenu(undefined);
@@ -18460,6 +18462,7 @@ export function MainWindow({
   }, [openObjectResizeInput]);
 
   const handleObjectContextMenu = useCallback((objectId: string, event: ObjectMouseEvent) => {
+    if (isEditableTarget(event.target)) return;
     const currentDocument = documentRef.current;
     const point = pagePointFromPointerEvent(event);
     const crossingHit = point ? findNearestCrossingHit(pageSvgRenderPlan.crossings, point) : undefined;
@@ -19643,6 +19646,52 @@ export function MainWindow({
   // Also refresh after command-driven tool/selection changes and interaction cancellation.
   useEffect(() => { refreshModifierHintRef.current(); });
 
+  const openCanvasKeyboardContextMenu = useCallback(() => {
+    const page = pageRef.current;
+    if (!page) return;
+    const rect = page.getBoundingClientRect();
+    const selection = documentRef.current.selection.objectIds;
+    const part = selectedNativeMoleculePartsRef.current[0];
+    const objectId = selection[0] ?? part?.objectId;
+    const object = objectId ? findDocumentObject(documentRef.current, objectId) : undefined;
+    if (object) {
+      const bounds = selection.length > 0
+        ? visualSelectionBounds(activePage.objects, selection)
+        : part && part.kind !== "rings" && object.type === "molecule" ? nativeMoleculePartBounds(object,
+            part.kind === "ring" ? { ...part, kind: "parts" } : part) : undefined;
+      const anchor = pageToClient(bounds ?? documentObjectVisualBounds(object, activePage.objects), {
+        pageRect: rect, scale: viewportRef.current.scale
+      });
+      lastCanvasPointerClientPointRef.current = anchor;
+      setPageContextMenu(undefined);
+      setObjectContextMenu({ objectId: object.id, targetKind: part && selection.length === 0 ? "parts" : "object", ...anchor });
+      return;
+    }
+    page.dispatchEvent(new MouseEvent("contextmenu", {
+      bubbles: true, cancelable: true, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2
+    }));
+  }, [activePage.objects]);
+
+  useEffect(() => {
+    const onContextMenu = (event: globalThis.MouseEvent) => {
+      if (!isEditableTarget(event.target)) event.preventDefault();
+    };
+    globalThis.document.addEventListener("contextmenu", onContextMenu);
+    return () => globalThis.document.removeEventListener("contextmenu", onContextMenu);
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.defaultPrevented || isBlockedByModalDialog(event.target) || (event.target !== globalThis.document.body && event.target !== globalThis.document.documentElement)
+        || (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10"))) return;
+      event.preventDefault();
+      event.stopPropagation();
+      openCanvasKeyboardContextMenu();
+    };
+    globalThis.document.addEventListener("keydown", onKeyDown);
+    return () => globalThis.document.removeEventListener("keydown", onKeyDown);
+  }, [openCanvasKeyboardContextMenu]);
+
   return (
     <main
       className={[
@@ -19935,6 +19984,11 @@ export function MainWindow({
           tabIndex={-1}
           className={["canvas-region", rulersVisible ? "rulers-visible" : ""].filter(Boolean).join(" ")}
           aria-label="Document workspace"
+          onKeyDown={(event) => {
+            if (event.target !== event.currentTarget || (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10"))) return;
+            event.preventDefault(); event.stopPropagation();
+            openCanvasKeyboardContextMenu();
+          }}
           onPointerDownCapture={(event) => {
             const canvas = event.currentTarget;
             const overlay = globalThis.document.activeElement?.closest<HTMLElement>(".plugin-canvas-overlay");
@@ -20510,7 +20564,10 @@ export function MainWindow({
             return menuObject ? nativeArrowStyleDefaultFromGraphic(menuObject) : undefined;
           })()}
           position={{ x: objectContextMenu.x, y: objectContextMenu.y }}
+          onFocusReturn={() => canvasRegionRef.current?.focus({ preventScroll: true })}
+          onDismiss={() => { setObjectContextMenu(undefined); canvasRegionRef.current?.focus({ preventScroll: true }); }}
           onInvoke={(commandId) => {
+            canvasRegionRef.current?.focus({ preventScroll: true });
             const menu = objectContextMenu;
             setObjectContextMenu(undefined);
             if (commandId === "atom.toggleWarningSuppression" && menu?.atomWarning) {
@@ -20542,7 +20599,10 @@ export function MainWindow({
       {pageContextMenu ? (
         <PageContextMenu
           position={pageContextMenu}
+          onFocusReturn={() => canvasRegionRef.current?.focus({ preventScroll: true })}
+          onDismiss={() => { setPageContextMenu(undefined); canvasRegionRef.current?.focus({ preventScroll: true }); }}
           onInvoke={(commandId) => {
+            canvasRegionRef.current?.focus({ preventScroll: true });
             setPageContextMenu(undefined);
             invoke(commandId);
           }}
@@ -23746,7 +23806,9 @@ export function ObjectLayerContextMenu({
   atomWarning,
   arrowStyleSource,
   position,
-  onInvoke
+  onInvoke,
+  onFocusReturn,
+  onDismiss = () => {}
 }: {
   layoutActions?: readonly CommandSpec[];
   objectId: string;
@@ -23759,6 +23821,8 @@ export function ObjectLayerContextMenu({
   arrowStyleSource?: { title: string };
   position: ClientPoint;
   onInvoke(commandId: string): void;
+  onFocusReturn?(): void;
+  onDismiss?(): void;
 }) {
   const layerLabel = contextMenuLayerLabel(targetKind, objectIndex, objectCount);
   const hasBondDepthContext = bondDepthContext !== undefined && bondDepthContext.relevantCrossings.length > 0;
@@ -23773,7 +23837,7 @@ export function ObjectLayerContextMenu({
   const [arrangeOpen, setArrangeOpen] = useState(false);
   const arrangeParentRef = useRef<HTMLDivElement | null>(null);
   const arrangeFlyoutRef = useRef<HTMLDivElement | null>(null);
-  const arrangeKeyboardOpenRef = useRef(false);
+  const pendingSubmenuFocusRef = useRef(false);
   const [arrangeFlyoutStyle, setArrangeFlyoutStyle] = useState<CSSProperties>({});
   useLayoutEffect(() => {
     if (layoutActions.length === 0) { setArrangeOpen(false); return; }
@@ -23787,10 +23851,6 @@ export function ObjectLayerContextMenu({
       ...(parentRect.right + flyoutRect.width + 8 > window.innerWidth ? { right: "100%" } : { left: "100%" }),
       top: `${-Math.max(0, parentRect.top + flyoutRect.height + 8 - window.innerHeight)}px`
     });
-    if (arrangeKeyboardOpenRef.current) {
-      flyout.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
-      arrangeKeyboardOpenRef.current = false;
-    }
   }, [arrangeOpen, clampedPosition, layoutActions.length]);
   const copyAsParentRef = useRef<HTMLDivElement | null>(null);
   const copyAsFlyoutRef = useRef<HTMLDivElement | null>(null);
@@ -23815,17 +23875,22 @@ export function ObjectLayerContextMenu({
     });
   }, [copyAsOpen, clampedPosition]);
 
+  const onMenuKeyDown = useCanvasContextMenuKeyboard(menuRef, onDismiss, onFocusReturn, pendingSubmenuFocusRef, () => {
+    setArrangeOpen(false); setCopyAsOpen(false);
+  });
   return (
     <div
       className="object-context-menu"
       role="menu"
       ref={menuRef}
+      onKeyDown={onMenuKeyDown}
       aria-label="Object layer options"
       data-context-object-id={objectId}
       data-context-target-kind={targetKind}
       data-context-layer-index={objectIndex >= 0 ? objectIndex : undefined}
       style={{ left: `${clampedPosition.x}px`, top: `${clampedPosition.y}px` }}
       onContextMenu={(event) => {
+        if (isEditableTarget(event.target)) return;
         event.preventDefault();
         event.stopPropagation();
       }}
@@ -23835,31 +23900,14 @@ export function ObjectLayerContextMenu({
           onPointerEnter={() => { setCopyAsOpen(false); setArrangeOpen(true); }}
           onPointerLeave={() => setArrangeOpen(false)}>
           <button type="button" role="menuitem" aria-haspopup="menu" aria-expanded={arrangeOpen}
+            aria-controls={arrangeOpen ? "canvas-arrange-menu" : undefined}
             className="object-context-menu-item object-context-menu-submenu-trigger" data-context-submenu="arrange"
-            onClick={() => { setCopyAsOpen(false); setArrangeOpen(open => !open); }}
-            onKeyDown={event => {
-              if (event.key === "ArrowRight" || event.key === "ArrowDown") {
-                event.preventDefault(); event.stopPropagation();
-                arrangeKeyboardOpenRef.current = true;
-                setCopyAsOpen(false); setArrangeOpen(true);
-              }
-            }}>
+            onClick={() => { setCopyAsOpen(false); setArrangeOpen(open => !open); }}>
             <span>Arrange</span><span aria-hidden="true" className="object-context-menu-submenu-chevron">›</span>
           </button>
           {arrangeOpen ? (
-            <div className="object-context-menu object-context-menu-flyout" role="menu" aria-label="Arrange layouts"
-              ref={arrangeFlyoutRef} style={arrangeFlyoutStyle}
-              onKeyDown={event => {
-                if (event.key === "Escape" || event.key === "ArrowLeft") {
-                  event.preventDefault(); event.stopPropagation(); setArrangeOpen(false);
-                  arrangeParentRef.current?.querySelector<HTMLButtonElement>('[data-context-submenu="arrange"]')?.focus();
-                } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-                  event.preventDefault(); event.stopPropagation();
-                  const choices = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')];
-                  const index = choices.indexOf(document.activeElement as HTMLButtonElement);
-                  choices[(index + (event.key === "ArrowDown" ? 1 : choices.length - 1)) % choices.length]?.focus();
-                }
-              }}>
+            <div id="canvas-arrange-menu" className="object-context-menu object-context-menu-flyout" role="menu" aria-label="Arrange layouts"
+              ref={arrangeFlyoutRef} style={arrangeFlyoutStyle}>
               {layoutActions.filter(action => action.id !== "layout.adjustArrangementSpacing").map(action => (
                 <button type="button" role="menuitem" className="object-context-menu-item" key={action.id}
                   data-command-id={action.id} disabled={!action.enabled} onClick={() => onInvoke(action.id)}>
@@ -23902,6 +23950,7 @@ export function ObjectLayerContextMenu({
           role="menuitem"
           aria-haspopup="menu"
           aria-expanded={copyAsOpen}
+          aria-controls={copyAsOpen ? "canvas-copy-as-menu" : undefined}
           className="object-context-menu-item object-context-menu-submenu-trigger"
           data-context-submenu="copy-as"
           onClick={() => { setArrangeOpen(false); setCopyAsOpen((open) => !open); }}
@@ -23912,6 +23961,7 @@ export function ObjectLayerContextMenu({
         {copyAsOpen ? (
           <div
             className="object-context-menu object-context-menu-flyout"
+            id="canvas-copy-as-menu"
             role="menu"
             aria-label="Copy As formats"
             ref={copyAsFlyoutRef}
@@ -24042,31 +24092,131 @@ function useClampedContextMenuPosition(
   return clampedPosition;
 }
 
+// Navigate only the direct items of each menu; a flyout has its own wrapping loop.
+function useCanvasContextMenuKeyboard(
+  menuRef: RefObject<HTMLDivElement | null>,
+  onDismiss: () => void,
+  onFocusReturn?: () => void,
+  pendingSubmenuFocusRef?: RefObject<boolean>,
+  closeSubmenus?: () => void
+) {
+  const dismissRef = useRef(onDismiss);
+  dismissRef.current = onDismiss;
+  const focusReturnRef = useRef(onFocusReturn);
+  focusReturnRef.current = onFocusReturn;
+  useLayoutEffect(() => {
+    const root = menuRef.current;
+    if (!root) return;
+    root.querySelector<HTMLButtonElement>('button[role="menuitem"]:not(:disabled)')?.focus();
+    const outside = (event: globalThis.PointerEvent) => {
+      if (!root.contains(event.target as Node)) dismissRef.current();
+    };
+    window.addEventListener("pointerdown", outside, true);
+    return () => {
+      window.removeEventListener("pointerdown", outside, true);
+      if (root.contains(globalThis.document.activeElement) && globalThis.document.hasFocus()) {
+        focusReturnRef.current?.();
+      }
+    };
+  }, [menuRef]);
+  useLayoutEffect(() => {
+    const root = menuRef.current;
+    if (!root) return;
+    for (const button of root.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]')) {
+      button.tabIndex = button === globalThis.document.activeElement ? 0 : -1;
+    }
+    if (pendingSubmenuFocusRef?.current) {
+      const owner = globalThis.document.activeElement;
+      const submenu = owner?.parentElement?.querySelector<HTMLElement>(':scope > [role="menu"]');
+      const first = submenu?.querySelector<HTMLButtonElement>('button[role="menuitem"]:not(:disabled)');
+      if (first) { first.tabIndex = 0; first.focus(); }
+      pendingSubmenuFocusRef.current = false;
+    }
+  });
+  return (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const button = event.target instanceof HTMLButtonElement ? event.target : null;
+    const menu = button?.closest<HTMLElement>('[role="menu"]');
+    if (!button || !menu) return;
+    const buttons = [...menu.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]:not(:disabled)')]
+      .filter(item => item.closest('[role="menu"]') === menu);
+    const focus = (item: HTMLButtonElement | undefined) => {
+      if (!item) return;
+      button.tabIndex = -1; item.tabIndex = 0; item.focus();
+    };
+    const index = buttons.indexOf(button);
+    switch (event.key) {
+      case "ArrowDown": case "ArrowUp":
+        event.preventDefault(); event.stopPropagation();
+        focus(buttons[(index + (event.key === "ArrowDown" ? 1 : buttons.length - 1)) % buttons.length]);
+        break;
+      case "Home": case "End":
+        event.preventDefault(); event.stopPropagation();
+        focus(event.key === "Home" ? buttons[0] : buttons[buttons.length - 1]);
+        break;
+      case "ArrowRight":
+        if (button.getAttribute("aria-haspopup") === "menu") {
+          event.preventDefault(); event.stopPropagation();
+          const submenu = button.parentElement?.querySelector<HTMLElement>(':scope > [role="menu"]');
+          if (submenu) focus(submenu.querySelector<HTMLButtonElement>('button[role="menuitem"]:not(:disabled)') ?? undefined);
+          else { if (pendingSubmenuFocusRef) pendingSubmenuFocusRef.current = true; button.click(); }
+        }
+        break;
+      case "ArrowLeft": case "Escape":
+        if (menu !== menuRef.current) {
+          event.preventDefault(); event.stopPropagation();
+          const owner = menu.parentElement?.querySelector<HTMLButtonElement>(':scope > button[role="menuitem"]');
+          closeSubmenus?.(); focus(owner ?? undefined);
+        } else if (event.key === "Escape") {
+          event.preventDefault(); event.stopPropagation(); dismissRef.current();
+        }
+        break;
+      case "Tab":
+        event.preventDefault(); event.stopPropagation(); dismissRef.current();
+        break;
+      case "Delete": case "Backspace":
+        event.preventDefault(); event.stopPropagation();
+        break;
+      case "Enter": case " ":
+        event.preventDefault(); event.stopPropagation();
+        if (button.getAttribute("aria-haspopup") === "menu" && pendingSubmenuFocusRef) pendingSubmenuFocusRef.current = true;
+        button.click();
+        break;
+    }
+  };
+}
+
 const pageContextMenuItems = [
   { commandId: "clipboard.paste", label: "Paste" },
   { commandId: "edit.selectAll", label: "Select All" }
 ] as const;
 
 /** Right-click menu for bare page: what you can still do when nothing is under the pointer. */
-function PageContextMenu({
+export function PageContextMenu({
   position,
-  onInvoke
+  onInvoke,
+  onFocusReturn,
+  onDismiss = () => {}
 }: {
   position: ClientPoint;
   onInvoke(commandId: string): void;
+  onFocusReturn?(): void;
+  onDismiss?(): void;
 }) {
   const menuRef = useRef<HTMLDivElement | null>(null);
   const clampedPosition = useClampedContextMenuPosition(position, menuRef);
+  const onMenuKeyDown = useCanvasContextMenuKeyboard(menuRef, onDismiss, onFocusReturn);
 
   return (
     <div
       className="object-context-menu"
       role="menu"
       ref={menuRef}
+      onKeyDown={onMenuKeyDown}
       aria-label="Page options"
       data-context-target-kind="page"
       style={{ left: `${clampedPosition.x}px`, top: `${clampedPosition.y}px` }}
       onContextMenu={(event) => {
+        if (isEditableTarget(event.target)) return;
         event.preventDefault();
         event.stopPropagation();
       }}

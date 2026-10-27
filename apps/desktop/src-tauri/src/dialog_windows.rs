@@ -1115,17 +1115,21 @@ pub(crate) async fn dialog_open(
     let builder = builder.parent(&window).map_err(|e| e.to_string())?;
     #[cfg(not(windows))]
     let builder = builder;
-    if let Err(error) = builder.build() {
-        REGISTRY
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .sessions
-            .remove(&registration.host_id);
-        return Err(format!(
-            "Could not create native {} window: {error}",
-            spec.title
-        ));
-    }
+    let dialog_window = match builder.build() {
+        Ok(window) => window,
+        Err(error) => {
+            REGISTRY
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .sessions
+                .remove(&registration.host_id);
+            return Err(format!(
+                "Could not create native {} window: {error}",
+                spec.title
+            ));
+        }
+    };
+    super::disable_default_context_menus(&dialog_window);
     // Owner close/quit does not wait on the construction lock. Discard a late build whose
     // registered session was already settled, rather than leaving an orphan hidden webview.
     if !REGISTRY
@@ -2384,7 +2388,7 @@ mod tests {
             .split("let builder = WebviewWindowBuilder::new(")
             .nth(1)
             .unwrap()
-            .split("if let Err(error) = builder.build()")
+            .split("let dialog_window = match builder.build()")
             .next()
             .unwrap();
         assert!(builder.contains(".minimizable(false)"));

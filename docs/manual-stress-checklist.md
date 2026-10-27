@@ -12,6 +12,15 @@ scaling, sparse override precedence, terminal carbon labels, hidden implicit hyd
 hydrogens, fonts, save/reopen, undo/redo, Spin 3D, atom-label editor placement, SVG export, and ring
 selection after tab switching/closing.
 
+Canvas context menus (macOS and Windows): open the page and object menus with the mouse and keyboard;
+use arrows, Home/End, Arrange and Copy As submenus, Enter, Space, Escape and Tab, then verify canvas
+focus and drawing shortcuts return after an action or dismissal.
+With nothing focused, press Shift+F10: the app menu opens, never the browser menu, and mouse and keyboard input keep working.
+On Windows, right-click and press Shift+F10 in text fields (including textareas) in the document,
+dialogs, plugin panels, Preferences, and color popovers: no browser menu appears and real mouse,
+typing, and Tab input keep working. Ctrl+X/C/V/A still work in text fields. Repeat right-click on
+palettes, tooltips, and the 3D debugger; app menus and subsequent input must keep working.
+
 ## Spin 3D (macOS and Windows)
 
 Paste `c1ccccc1.CC(C)(C)C.OCCO` as one native molecule object; with RDKit and the OCL fallback,
@@ -713,6 +722,7 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
 - Open a native message box and a file picker with Page Size open, including nested boxes. Verify
   it hides with the toolbars and returns in the preserved #140 stacking order, without changing
   remembered toolbar visibility or frames. Close the dialog during suspension: it must stay closed.
+- In a dialog, right-click and press Shift+F10 on non-editable content; no browser menu appears and mouse and Tab input still work. On an editable field, confirm its native menu remains available on macOS; Windows shows no browser menu and Ctrl+X/C/V/A still work.
 - Check first-field focus, invalid dimensions, valid Enter, IME composition Enter, Escape,
   title-bar close, Cmd/Ctrl+W, field-local Undo/Redo, and reload prevention. Test screen-reader labels.
 - With a dialog width/height field focused on macOS, use Cmd+A and Edit > Select All. Only that
