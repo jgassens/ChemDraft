@@ -793,12 +793,13 @@ if [ "$RUN_MODE" = "--dev" ]; then
   export CHEMDRAFT_DEV_BUNDLE_ID="$RUN_APP_BUNDLE_ID"
   assert_no_other_dev_app
   DEV_LAUNCHER_EXECUTABLE="$DEV_APP_EXECUTABLE"
-  # Bash 3.2 job control gives this child its own group, so cancellation can reach only
-  # this launch's processes and background children do not inherit SIGINT as ignored.
-  set -m
   DEV_LAUNCHER_OWNS_PROCESS_GROUP=1
-  npm run dev:tauri &
+  # Enable job control only for the spawn so cancellation can target this launch's process
+  # group; disable it before foreground waits, and keep Vite from reading the terminal.
+  set -m
+  npm run dev:tauri </dev/null &
   dev_launcher_pid=$!
+  set +m
   DEV_LAUNCHER_PID="$dev_launcher_pid"
   wait_for_launched_app "$DEV_APP_EXECUTABLE" "$dev_launcher_pid"
   wait "$dev_launcher_pid"

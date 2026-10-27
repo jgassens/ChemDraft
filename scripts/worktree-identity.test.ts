@@ -405,7 +405,7 @@ describe.skipIf(process.platform === "win32")("run-app shared dev lock guard", (
     expect(main.indexOf("assert_no_other_dev_app")).toBeLessThan(main.indexOf("stop_existing_dev_apps"));
     expect(main.indexOf("assert_no_other_dev_app")).toBeLessThan(main.indexOf("pnpm install"));
     expect(main).toContain('assert_no_other_dev_app\n  DEV_LAUNCHER_EXECUTABLE="$DEV_APP_EXECUTABLE"');
-    expect(main).toContain('set -m\n  DEV_LAUNCHER_OWNS_PROCESS_GROUP=1\n  npm run dev:tauri &');
+    expect(main).toContain('DEV_LAUNCHER_OWNS_PROCESS_GROUP=1\n  # Enable job control only for the spawn so cancellation can target this launch\'s process\n  # group; disable it before foreground waits, and keep Vite from reading the terminal.\n  set -m\n  npm run dev:tauri </dev/null &\n  dev_launcher_pid=$!\n  set +m');
     expect(main).toContain('wait_for_launched_app "$DEV_APP_EXECUTABLE" "$dev_launcher_pid"');
     expect(main).toContain('assert_no_other_dev_app\nlaunch_bundle "$RUN_APP_BUNDLE"');
     expect(source).toContain('wait_for_launched_app "$bundle/Contents/MacOS/$executable" "$launcher_pid"');
