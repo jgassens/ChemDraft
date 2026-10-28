@@ -34,6 +34,7 @@ const escapeXml = (text) => text.replace(/[&<>"']/g, (char) => ({
 })[char]);
 const columns = 3, cellWidth = 360, cellHeight = 310;
 const cells = [];
+const trueScaleImages = [];
 for (const [index, template] of structureTemplates.entries()) {
   const document = createEmptyDocument({ title: template.name });
   const molecule = structureTemplateMolecule(template, {
@@ -52,6 +53,10 @@ for (const [index, template] of structureTemplates.entries()) {
   const x = (index % columns) * cellWidth, y = Math.floor(index / columns) * cellHeight;
   cells.push(`<image x="${x + 12}" y="${y + 12}" width="${cellWidth - 24}" height="${cellHeight - 52}" preserveAspectRatio="xMidYMid meet" href="data:image/png;base64,${Buffer.from(png).toString("base64")}"/>` +
     `<text x="${x + cellWidth / 2}" y="${y + cellHeight - 16}" text-anchor="middle" font-family="Arial, sans-serif" font-size="16">${escapeXml(template.name)}</text>`);
+  // The cropped viewBox is in native document units. Reuse it as the displayed size,
+  // rather than the 800px inspection raster's dimensions: one native unit is one sheet
+  // pixel, so every mean bond is the document default (22px), regardless of host size.
+  trueScaleImages.push({ name: template.name, png, width: cropped.viewBox.width, height: cropped.viewBox.height });
 }
 const width = columns * cellWidth;
 const height = Math.max(1, Math.ceil(structureTemplates.length / columns)) * cellHeight;
@@ -59,3 +64,17 @@ const sheet = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="
 const sheetPath = path.join(out, "contact-sheet.png");
 await writeFile(sheetPath, svgToPng(sheet, width));
 console.log(sheetPath);
+
+const trueCellWidth = Math.ceil(Math.max(cellWidth, ...trueScaleImages.map((entry) => entry.width + 24)));
+const trueCellHeight = Math.ceil(Math.max(cellHeight, ...trueScaleImages.map((entry) => entry.height + 52)));
+const trueWidth = columns * trueCellWidth;
+const trueHeight = Math.max(1, Math.ceil(trueScaleImages.length / columns)) * trueCellHeight;
+const trueCells = trueScaleImages.map((entry, index) => {
+  const x = (index % columns) * trueCellWidth, y = Math.floor(index / columns) * trueCellHeight;
+  return `<image x="${x + (trueCellWidth - entry.width) / 2}" y="${y + 12 + (trueCellHeight - 52 - entry.height) / 2}" width="${entry.width}" height="${entry.height}" href="data:image/png;base64,${Buffer.from(entry.png).toString("base64")}"/>` +
+    `<text x="${x + trueCellWidth / 2}" y="${y + trueCellHeight - 16}" text-anchor="middle" font-family="Arial, sans-serif" font-size="16">${escapeXml(entry.name)}</text>`;
+});
+const trueSheet = `<svg xmlns="http://www.w3.org/2000/svg" width="${trueWidth}" height="${trueHeight}" viewBox="0 0 ${trueWidth} ${trueHeight}"><rect width="100%" height="100%" fill="white"/>${trueCells.join("")}</svg>`;
+const trueSheetPath = path.join(out, "contact-sheet-true-scale.png");
+await writeFile(trueSheetPath, svgToPng(trueSheet, trueWidth));
+console.log(trueSheetPath);

@@ -50,9 +50,11 @@ function read(input: string) {
   const molecule = rdkit.get_mol(input, JSON.stringify({ sanitize: true, removeHs: false, strictParsing: true }));
   if (!molecule) throw new Error(`RDKit could not parse: ${input}`);
   try {
+    const json = JSON.parse(molecule.get_json()) as RdkitJson;
     return {
       smiles: molecule.get_smiles(), // canonical ISOMERIC SMILES is RDKit's default
-      composition: compositionFromRdkitJson(JSON.parse(molecule.get_json()) as RdkitJson)
+      composition: compositionFromRdkitJson(json),
+      json
     };
   } finally {
     molecule.delete();
@@ -117,6 +119,43 @@ describe("structure template identities", () => {
       }
     }
   );
+
+  it("porphine's opposite-NH tautomer retains the PubChem tautomer's skeleton and hydrogen count", () => {
+    const old = read("C1=CC2=CC3=CC=C(N3)C=C4C=CC(=N4)C=C5C=CC(=N5)C=C1N2");
+    const entry = structureTemplates.find((template) => template.id === "porphine")!;
+    const current = read(entry.smiles);
+    expect(current.smiles).not.toBe(old.smiles);
+    expect(current.composition.formula).toBe("C20H14N4");
+    expect(current.composition).toEqual(old.composition);
+    // Both SMILES deliberately traverse the same atoms in the same order. Compare
+    // RDKit's heavy-atom graph with bond orders omitted: only the proton/bond-order
+    // arrangement may change, never the skeleton, charge, isotope or total H count.
+    const skeleton = ({ json }: ReturnType<typeof read>) => ({
+      atoms: json.molecules[0]!.atoms.map((atom) => ({
+        z: atom.z ?? json.defaults?.atom?.z ?? 6,
+        charge: atom.chg ?? json.defaults?.atom?.chg ?? 0,
+        isotope: atom.isotope ?? json.defaults?.atom?.isotope ?? 0
+      })),
+      bonds: json.molecules[0]!.bonds.map(({ atoms: [a, b] }) => [Math.min(a, b), Math.max(a, b)].join(":")).sort(),
+      hydrogens: json.molecules[0]!.atoms.reduce((sum, atom) => sum + (atom.impHs ?? json.defaults?.atom?.impHs ?? 0), 0)
+    });
+    expect(skeleton(current)).toEqual(skeleton(old));
+  });
+
+  it.each(structureTemplates.filter((entry) => entry.family === "porphyrins").map((entry) => [entry.id, entry] as const))(
+    "%s: RDKit reads exactly two inner NH sites on opposite pyrroles",
+    (_id, entry) => {
+      const { json } = read(molblock(entry.layout));
+      const nitrogens = json.molecules[0]!.atoms.flatMap((atom, index) =>
+        (atom.z ?? json.defaults?.atom?.z) === 7 ? [{ atom, index }] : []);
+      expect(nitrogens).toHaveLength(4);
+      const nh = nitrogens.filter(({ atom }) => (atom.impHs ?? json.defaults?.atom?.impHs ?? 0) === 1);
+      expect(nh).toHaveLength(2);
+      const a = entry.layout.atoms[nh[0]!.index]!, b = entry.layout.atoms[nh[1]!.index]!;
+      expect(a.x).toBeCloseTo(-b.x, 4);
+      expect(a.y).toBeCloseTo(-b.y, 4);
+    }
+  );
 });
 
 describe("structure template geometry", () => {
@@ -156,6 +195,15 @@ describe("structure template geometry", () => {
         for (let b = a + 1; b < atoms.length; b += 1) {
           if (!neighbours.has(pair(a, b))) {
             expect(distance(atoms[a]!, atoms[b]!), `atoms ${a}-${b}`).toBeGreaterThanOrEqual(0.6);
+            // Text needs more room than an unlabeled skeletal carbon vertex. Apply
+            // this to every label/non-neighbour pair, including charged carbons.
+            if ([atoms[a]!, atoms[b]!].some((atom) => atom.element !== "C" || (atom.charge ?? 0) !== 0)) {
+              // The visually checked cyclodextrin chairs project a ring oxygen
+              // 0.845 bond lengths from a non-neighbouring carbon corner; the text
+              // remains clear. Keep the full 0.95 threshold for every other family.
+              const minimum = entry.family === "cyclodextrins" ? 0.84 : 0.95;
+              expect(distance(atoms[a]!, atoms[b]!), `label clearance at atoms ${a}-${b}`).toBeGreaterThanOrEqual(minimum);
+            }
           }
         }
       }
@@ -173,6 +221,30 @@ describe("structure template geometry", () => {
       expect(crossings).toBe(allowed);
     }
   );
+
+  it.each([5, 6])("pillar[%i]arene and its dimethoxy derivative share identical skeleton geometry", (n) => {
+    const parent = structureTemplates.find((entry) => entry.id === `pillar-${n}-arene`)!;
+    const methylated = structureTemplates.find((entry) => entry.id === `dimethoxypillar-${n}-arene`)!;
+    const { atoms, bonds } = methylated.layout;
+    const methyls = new Set(atoms.flatMap((atom, index) => {
+      const neighbours = bonds.filter(([a, b]) => a === index || b === index);
+      return atom.element === "C" && neighbours.length === 1 && neighbours.some(([a, b]) =>
+        atoms[a === index ? b : a]!.element === "O") ? [index] : [];
+    }));
+    expect(methyls.size).toBe(2 * n);
+    const retained = atoms.flatMap((_, index) => methyls.has(index) ? [] : [index]);
+    const remap = new Map(retained.map((index, position) => [index, position]));
+    // Whole-template bounding boxes include methyls, so their centring translations
+    // can differ. Align one atom and allow only the four-decimal rounding error.
+    const dx = atoms[0]!.x - parent.layout.atoms[0]!.x, dy = atoms[0]!.y - parent.layout.atoms[0]!.y;
+    retained.forEach((index, position) => {
+      expect(atoms[index]!.element).toBe(parent.layout.atoms[position]!.element);
+      expect(Math.abs(atoms[index]!.x - dx - parent.layout.atoms[position]!.x)).toBeLessThanOrEqual(0.00011);
+      expect(Math.abs(atoms[index]!.y - dy - parent.layout.atoms[position]!.y)).toBeLessThanOrEqual(0.00011);
+    });
+    expect(bonds.filter(([a, b]) => !methyls.has(a) && !methyls.has(b)).map(([a, b, order]) =>
+      [remap.get(a), remap.get(b), order])).toEqual(parent.layout.bonds);
+  });
 });
 
 describe("validation plumbing for future stereochemical and charged families", () => {
