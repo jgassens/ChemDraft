@@ -1,0 +1,192 @@
+// @vitest-environment jsdom
+import { readFileSync } from "node:fs";
+import { act, createElement } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { deserializeDocument, type ChemDraftDocument, type TableObject } from "@chemdraft/chem-core";
+import { smilesListCandidates } from "@chemdraft/clipboard-adapter";
+import { exportTableClipboardPayloads } from "@chemdraft/export-engine";
+import { MainWindow } from "./MainWindow";
+import { CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, createPhase4Document, createSelectionClipboardPayload, insertNativeTextObject } from "./documentWorkflow";
+import { readClipboardPayload, writeClipboardTextItems } from "./clipboard";
+import { depictSmilesListForPaste } from "./smilesListPaste";
+import { DOM_COMMAND_EVENT } from "./window-manager";
+
+vi.mock("./clipboard", async importOriginal => ({
+  ...await importOriginal<typeof import("./clipboard")>(),
+  readClipboardPayload: vi.fn(), writeClipboardTextItems: vi.fn()
+}));
+vi.mock("./smilesListPaste", async importOriginal => ({
+  ...await importOriginal<typeof import("./smilesListPaste")>(),
+  depictSmilesListForPaste: vi.fn()
+}));
+
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+describe("MainWindow table clipboard wiring", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  beforeEach(() => {
+    window.history.replaceState(null, "", "/?agentBridge=1");
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => setTimeout(() => callback(performance.now()), 0));
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => clearTimeout(id));
+    vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+    for (const prototype of [HTMLElement.prototype, SVGElement.prototype]) {
+      for (const key of ["setPointerCapture", "releasePointerCapture", "hasPointerCapture"]) {
+        Object.defineProperty(prototype, key, { configurable: true, value: key === "hasPointerCapture" ? () => false : () => {} });
+      }
+    }
+    vi.mocked(writeClipboardTextItems).mockReset().mockResolvedValue(true);
+    vi.mocked(readClipboardPayload).mockReset().mockResolvedValue({ types: [], textItems: [] });
+    vi.mocked(depictSmilesListForPaste).mockReset();
+    container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+  });
+  afterEach(() => {
+    act(() => root.unmount()); container.remove(); vi.unstubAllGlobals(); vi.restoreAllMocks();
+    window.history.replaceState(null, "", "/"); delete window.__CHEMDRAFT_AGENT__;
+    for (const prototype of [HTMLElement.prototype, SVGElement.prototype]) {
+      for (const key of ["setPointerCapture", "releasePointerCapture", "hasPointerCapture"]) Reflect.deleteProperty(prototype, key);
+    }
+  });
+  async function render(nativeDocument = createPhase4Document("Table clipboard")) {
+    await act(async () => root.render(createElement(MainWindow, { initialDocument: nativeDocument,
+      initialActiveToolCommandId: "tool.select", initialPaletteMode: "hidden", nativePalette: true,
+      initialCrosshairsVisible: false, initialRulersVisible: false })));
+    const page = container.querySelector<HTMLElement>(".page")!;
+    page.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 816, bottom: 1056,
+      width: 816, height: 1056, toJSON: () => ({}) });
+  }
+  async function command(commandId: string) {
+    await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId } })); });
+  }
+  function tableDocument(): ChemDraftDocument {
+    const nativeDocument = deserializeDocument(readFileSync("packages/fixtures/tables/sharpless-reagent-table.json", "utf8"));
+    nativeDocument.selection = { pageId: nativeDocument.pages[0].id, objectIds: [nativeDocument.pages[0].objects[0].id] };
+    return nativeDocument;
+  }
+  function clipboard(html: string, text?: string) {
+    const textItems = [{ type: "text/html", text: html }, ...(text ? [{ type: "text/plain", text }] : [])];
+    return { types: textItems.map(item => item.type), textItems };
+  }
+  const snapshot = () => window.__CHEMDRAFT_AGENT__!.snapshot();
+
+  it.each(["clipboard.copy", "clipboard.cut"])("%s writes the four table formats once; cut then deletes", async commandId => {
+    const source = tableDocument();
+    const table = source.pages[0].objects[0] as TableObject;
+    table.rotation = 15;
+    await render(source);
+    await command(commandId);
+    const exported = exportTableClipboardPayloads(table);
+    expect(writeClipboardTextItems).toHaveBeenCalledTimes(1);
+    const items = vi.mocked(writeClipboardTextItems).mock.calls[0][0];
+    expect(items.map(item => item.type)).toEqual([CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, "text/html", "text/rtf", "text/plain"]);
+    expect(JSON.parse(items[0].text)).toEqual(createSelectionClipboardPayload(source));
+    expect(items.slice(1)).toEqual([
+      { type: "text/html", text: exported.html }, { type: "text/rtf", text: exported.rtf }, { type: "text/plain", text: exported.tsv }
+    ]);
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("A rotated table is copied unrotated.");
+    expect(snapshot().document.pages[0].objects).toHaveLength(commandId === "clipboard.cut" ? 0 : 1);
+    if (commandId === "clipboard.cut") {
+      await command("edit.undo");
+      expect(snapshot().document.pages[0].objects).toEqual(source.pages[0].objects);
+    }
+  });
+
+  it("does not delete on an unsuccessful clipboard write", async () => {
+    await render(tableDocument());
+    vi.mocked(writeClipboardTextItems).mockResolvedValue(false);
+    await command("clipboard.cut");
+    expect(snapshot().document.pages[0].objects).toHaveLength(1);
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("clipboard unavailable");
+  });
+
+  it.each(["menu", "event"])("pastes Word-like HTML via %s as one selected native table and undoes once", async path => {
+    // Keep an earlier object/edit so the undo assertion proves the paste is exactly one step.
+    const before = insertNativeTextObject(createPhase4Document(), { x: 20, y: 20 }, "Existing");
+    await render(before);
+    const raw = clipboard(readFileSync("packages/fixtures/clipboard-tables/word-like.html", "utf8"), "fallback text");
+    vi.mocked(readClipboardPayload).mockResolvedValue(raw);
+    if (path === "menu") await command("clipboard.paste");
+    else {
+      const event = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "clipboardData", { value: { types: raw.types,
+        getData: (type: string) => raw.textItems.find(item => item.type === type)?.text ?? "" } });
+      await act(async () => { window.dispatchEvent(event); });
+      expect(event.defaultPrevented).toBe(true);
+    }
+    const objects = snapshot().document.pages[0].objects;
+    expect(objects).toHaveLength(2);
+    const table = objects[1] as TableObject;
+    expect(table.type).toBe("table");
+    expect(table.rows.map(row => row.cells.map(cell => cell.text))).toEqual([
+      ["Material", "MW (g/mol)", "Density (g/mL)"], ["allyl alcohol", "58.08", "0.854"],
+      ["Ti(OiPr)4", "284.22", "0.96"], ["TBHPa", "90.12", "—"]
+    ]);
+    expect(table.rows[2].cells[0].spans.some(span => span.text === "4" && span.script === "subscript")).toBe(true);
+    expect(snapshot().selection.objectIds).toEqual([table.id]);
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Pasted table");
+    await command("edit.undo");
+    expect(snapshot().document.pages[0].objects).toEqual(before.pages[0].objects);
+    expect(container.textContent).toContain("Undid Paste table");
+    await command("edit.redo");
+    expect(snapshot().document.pages[0].objects[1]).toEqual(table);
+  });
+
+  it("shows a table parser refusal and pastes nothing", async () => {
+    await render();
+    vi.mocked(readClipboardPayload).mockResolvedValue(clipboard(`<table><tr><td>${"x".repeat(2001)}</td></tr></table>`, "fallback text"));
+    await command("clipboard.paste");
+    expect(snapshot().document.pages[0].objects).toHaveLength(0);
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("2001 characters");
+  });
+
+  it("retains parser warnings in the status line", async () => {
+    await render();
+    vi.mocked(readClipboardPayload).mockResolvedValue(clipboard(readFileSync("packages/fixtures/clipboard-tables/google-docs-like.html", "utf8")));
+    await command("clipboard.paste");
+    expect(snapshot().document.pages[0].objects[0].type).toBe("table");
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Merged cells were split");
+  });
+
+  it("keeps a rectangular SMILES list as structures ahead of an HTML table", async () => {
+    await render();
+    const text = "CCO\tCCN\nCCC\tCCCC";
+    const candidates = smilesListCandidates(text);
+    vi.mocked(depictSmilesListForPaste).mockReturnValue(Promise.resolve({ entries: candidates.map(({ token }, i) => ({
+      smiles: token, depiction: { atoms: [{ element: "C", x: 0, y: 0, charge: 0 }, { element: i === 0 ? "O" : "N", x: 22, y: 0, charge: 0 }],
+        bonds: [{ from: 0, to: 1, order: "single", wedge: null }] }
+    })), skipped: 0, failures: [] }));
+    vi.mocked(readClipboardPayload).mockResolvedValue(clipboard(readFileSync("packages/fixtures/clipboard-tables/word-like.html", "utf8"), text));
+    await command("clipboard.paste");
+    expect(depictSmilesListForPaste).toHaveBeenCalledOnce();
+    const objects = snapshot().document.pages[0].objects;
+    expect(objects.filter(object => object.type === "molecule")).toHaveLength(4);
+    expect(objects.some(object => object.type === "table")).toBe(false);
+  });
+
+  it("tries TSV when a prospective SMILES list fails to parse", async () => {
+    await render();
+    vi.mocked(depictSmilesListForPaste).mockReturnValue(Promise.resolve(undefined));
+    vi.mocked(readClipboardPayload).mockResolvedValue({ types: ["text/plain"], textItems: [{ type: "text/plain", text: "CCO\tlabel\nCCN\tother" }] });
+    await command("clipboard.paste");
+    expect(snapshot().document.pages[0].objects[0].type).toBe("table");
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Pasted table");
+  });
+
+  it("pastes the quoted spreadsheet fixture as native cells after chemical parsing declines", async () => {
+    await render();
+    vi.mocked(depictSmilesListForPaste).mockReturnValue(Promise.resolve(undefined));
+    vi.mocked(readClipboardPayload).mockResolvedValue({ types: ["text/plain"], textItems: [{ type: "text/plain",
+      text: readFileSync("packages/fixtures/clipboard-tables/excel-quoted.tsv", "utf8") }] });
+    await command("clipboard.paste");
+    const table = snapshot().document.pages[0].objects[0] as TableObject;
+    expect(table.type).toBe("table");
+    expect(table.rows[1].cells[2].text).toBe("first line\nsecond line");
+    expect(table.rows[2].cells[2].text).toBe("has a\ttab");
+    expect(table.rows[3].cells[2].text).toBe('says "neat"');
+    expect(snapshot().selection.objectIds).toEqual([table.id]);
+    await command("edit.undo");
+    expect(snapshot().document.pages[0].objects).toHaveLength(0);
+    expect(container.textContent).toContain("Undid Paste table");
+  });
+});
