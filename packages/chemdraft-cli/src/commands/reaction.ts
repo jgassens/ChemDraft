@@ -48,8 +48,8 @@ interface ReactionJob extends FigureStyleOptions {
   rxn?: string;
   out: string;
   conditions: string;
-  above: string[];
-  below: string[];
+  above: readonly string[];
+  below: readonly string[];
   caption?: string;
   arrow: ReactionArrowKind;
   width: number;
@@ -65,8 +65,8 @@ interface BatchReactionJob {
   out?: string;
   format?: ReactionOutputFormat;
   conditions?: string;
-  above?: string[];
-  below?: string[];
+  above?: readonly string[];
+  below?: readonly string[];
   caption?: string;
   arrow?: ReactionArrowKind;
   width?: number;
@@ -80,8 +80,8 @@ interface ParsedArguments extends FigureStyleOptions {
   format?: ReactionOutputFormat;
   job?: ReactionJob;
   conditions: string;
-  above: string[];
-  below: string[];
+  above: readonly string[];
+  below: readonly string[];
   caption?: string;
   arrow: ReactionArrowKind;
   width: number;

@@ -1,6 +1,6 @@
 import { defaultCases, insertionDocument, expectDrawingDefaults } from "../drawingDefaults.testHelpers";
 import { describe, expect, it } from "vitest";
-import { DocumentObjectSchema, type Anchor } from "@chemdraft/chem-core";
+import { DocumentObjectSchema, nativeTextStyleFromObjectStyle, type Anchor } from "@chemdraft/chem-core";
 import { documentDrawingDefaults } from "@chemdraft/document-workflow-core";
 import { callAssistantTool } from "./assistantTools";
 import { applyAssistantWrite, buildInsertStructures } from "./writeBuilder";
@@ -253,8 +253,9 @@ describe("assistant document drawing defaults", () => {
     const right = objectRect(molecules[2]!);
     expect(arrow.start.point!.x - left.x - left.width).toBeCloseTo(defaults.bondLengthPx);
     expect(right.x - arrow.end.point!.x).toBeCloseTo(defaults.bondLengthPx);
-    const plus = objects.find(object => object.type === "text" && object.text === "+")!;
-    expect(plus.style.fontSizePx).toBe(defaults.textStyle.fontSizePx);
+    const plus = objects.find(object => object.type === "text" && object.text === "+");
+    if (!plus || plus.type !== "text") throw new Error("Expected a plus-sign text object.");
+    expect(nativeTextStyleFromObjectStyle(plus.style).fontSizePx).toBe(defaults.textStyle.fontSizePx);
     expect(objects.slice(0, existing.length)).toEqual(existing);
   });
   it.each(defaultCases)("uses $bondLengthPx px defaults for structures and group labels", async style => {
