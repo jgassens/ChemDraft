@@ -103,16 +103,18 @@ function hostLayout(entry) {
   // Intersect equal-radius circles at each pair of bridge endpoints. Calix[4]/[5] need
   // a wider lower rim for their inward OH labels: modestly lengthen the bridge bonds
   // before mean normalization (all final lengths remain within 0.85–1.15).
+  // Pillararenes need the larger chord in both parent and methylated hosts: it
+  // leaves a clear central aperture between their inward O-H/O-Me substituents.
   const wideLowerRim = kind === "calix" && n <= 5;
-  const bridgeLength = wideLowerRim ? 1.14 : 1;
-  const chord = wideLowerRim ? 2.2 : pillar || ctv ? Math.sqrt(3) : 1.9;
+  const bridgeLength = pillar ? 1.18 : wideLowerRim ? 1.14 : 1;
+  const chord = pillar ? 2.32 : wideLowerRim ? 2.2 : ctv ? Math.sqrt(3) : 1.9;
   const radialInset = pillar ? 0 : ctv ? Math.sqrt(3) / 2 : 0.5;
   const tangentReach = pillar ? 1 : ctv ? 0.5 : Math.sqrt(3) / 2;
   const radius = radialInset + (chord + 2 * tangentReach * Math.cos(halfSector)) / (2 * Math.sin(halfSector));
   const atoms = [], bonds = [], rings = [];
   const add = (element, position) => { atoms.push({ element, ...position }); return atoms.length - 1; };
-  const branch = (from, element, angle) => {
-    const step = point(angle);
+  const branch = (from, element, angle, length = 1) => {
+    const step = point(angle, length);
     const to = add(element, { x: atoms[from].x + step.x, y: atoms[from].y + step.y });
     bonds.push([from, to, 1]);
     return to;
@@ -131,10 +133,15 @@ function hostLayout(entry) {
     rings.push(ring);
     const oxygenVertices = pillar ? [1, 4] : ctv ? [3, 4] : kind === "resorcin" ? [2, 4] : [0];
     for (const vertex of oxygenVertices) {
-      const angle = orientation + vertex * Math.PI / 3;
+      // Turn the calixarene OH bonds together by 30 degrees, separating their
+      // full OH/HO labels without changing the classic radial benzene skeleton.
+      const angle = orientation + vertex * Math.PI / 3 + (kind === "calix" ? Math.PI / 6 : 0);
       const oxygen = branch(ring[vertex], "O", angle);
-      // A 120-degree C-O-C angle keeps methyl ends away from the central cavity.
-      if (entry.methoxy) branch(oxygen, "C", angle + Math.PI / 3);
+      // Bend C-O-C by 120 degrees. Eight unit bonds plus two bridge bonds per
+      // pillar unit give skeletal mean 0.8 + 0.2 * bridgeLength. Giving the added
+      // O-Me bond that length prevents mean normalization from resizing the
+      // parent skeleton when methyls are added (only bbox centring can change).
+      if (entry.methoxy) branch(oxygen, "C", angle + Math.PI / 3, pillar ? 0.8 + 0.2 * bridgeLength : 1);
     }
     if (entry.tertButyl) {
       const angle = orientation + Math.PI;

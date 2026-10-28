@@ -5,8 +5,8 @@ const entries = [
   {
     id: "porphine", name: "Porphine", synonyms: ["porphin", "porphyrin (parent)", "21H,23H-porphine"],
     cid: 66868, formula: "C20H14N4",
-    smiles: "C1=CC2=CC3=CC=C(N3)C=C4C=CC(=N4)C=C5C=CC(=N5)C=C1N2",
-    note: "The unsubstituted free-base parent macrocycle; PubChem titles this record 'Porphyrin'. The supplied Kekulé tautomer is retained, including its adjacent inner NH sites."
+    smiles: "C1=CC2=CC3C=CC(N=3)=CC4=CC=C(N4)C=C5C=CC(=N5)C=C1N2",
+    note: "Stored as the 21H,23H tautomer chemists draw (NH on opposite pyrroles); PubChem CID 66868 lists the same compound as the 21H,22H tautomer. Tautomers have different canonical SMILES, so the stored SMILES is the drawn one."
   },
   {
     id: "tetraphenylporphyrin", name: "Tetraphenylporphyrin",
