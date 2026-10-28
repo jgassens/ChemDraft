@@ -134,7 +134,7 @@ export const SMILES_PASTE_SOURCE: SmilesMoleculeSource = {
 };
 
 export interface SmilesNativeOptions {
-  /** Opt in to retaining perceived, unassigned E/Z. Product default remains geometry-defined. */
+  /** Retain perceived, unassigned E/Z from the depiction. Desktop SMILES input enables this. */
   openUnspecifiedDoubleBonds?: boolean;
 }
 

@@ -5111,7 +5111,7 @@ export function insertSmilesMoleculeGrid(
     const molecule = createSmilesMolecule(document, { x: margin, y: margin }, entry.depiction, entry.smiles, {
       ...SMILES_PASTE_SOURCE,
       reservedObjectIds
-    });
+    }, { openUnspecifiedDoubleBonds: true });
     reservedObjectIds.add(molecule.id);
     return molecule;
   });
@@ -8854,7 +8854,7 @@ export function applyNativeMoleculeBondOrderTarget(
     return document;
   }
 
-  const nextOrder = nextNativeBondOrder(molecule, bond);
+  const nextOrder = bond.stereo === "either" ? "double" : nextNativeBondOrder(molecule, bond);
   return isNativeBondOrderValue(nextOrder)
     ? applyNativeMoleculeBondOrderValueTarget(document, target, nextOrder)
     : document;
@@ -8878,20 +8878,94 @@ export function applyNativeMoleculeBondOrderValueTarget(
     return document;
   }
 
-  if (order === bond.order || !canSetNativeBondOrder(molecule, bond, order)) {
+  if ((order === bond.order && bond.stereo !== "either") || !canSetNativeBondOrder(molecule, bond, order)) {
     return document;
   }
 
   const bonds = molecule.bonds.map((candidate) =>
-    candidate.id === bond.id ? nativeBondWithOrderAndDisplay(molecule, candidate, order) : candidate
+    candidate.id === bond.id ? nativeBondWithOrderAndDisplay(molecule, withoutDoubleBondStereo(candidate), order) : candidate
   );
-  const nextMolecule = refreshNativeSingleBondGraph(molecule, molecule.atoms, bonds);
+  const refreshed = refreshNativeSingleBondGraph(molecule, molecule.atoms, bonds);
+  const nextMolecule = bond.stereo === "either" ? withStoredBondStereoMolfile(refreshed) : refreshed;
 
   return applyPatch(
     document,
     { op: "updateObject", objectId: molecule.id, changes: nextMolecule },
     { now: phase4Timestamp }
   );
+}
+
+export type BondStereoValue = "either" | "geometry";
+export interface BondStereoAvailability {
+  eitherDisabledReason?: string;
+  geometryDisabledReason?: string;
+  descriptor?: "E" | "Z";
+  value?: BondStereoValue;
+}
+
+function withoutDoubleBondStereo(bond: MoleculeBond): MoleculeBond {
+  const { stereo: _stereo, ...rest } = bond;
+  return rest;
+}
+
+function withStoredBondStereoMolfile(molecule: MoleculeObject): MoleculeObject {
+  const { molecule: expanded, expansions, placeholderAtoms } = expandNativeMoleculeLabelGroups(molecule);
+  return { ...molecule, structureFormat: "molfile-v2000", structure: moleculeToMolfileV2000(expanded, {
+    fromDocFrame: true, unknownBondOrders: "refuse",
+    abbreviations: "rgroup", superatomGroups: expansions, placeholderAtoms,
+    kekuleBondOrders: nativeBondOrderResolution(expanded.atoms, expanded.bonds).kekuleOrders
+  }).contents };
+}
+
+/** Engine perception is injected; clearing the open marker asks OCL about drawn geometry. */
+export function nativeBondStereoAvailability(
+  document: ChemDraftDocument, targets: readonly { objectId: string; bondId: string }[],
+  reader?: DoubleBondStereoReader
+): BondStereoAvailability {
+  const disabled = (reason: string): BondStereoAvailability => ({ eitherDisabledReason: reason, geometryDisabledReason: reason });
+  if (targets.length !== 1) return disabled("Select one double bond");
+  const target = targets[0];
+  const molecule = firstPage(document).objects.find((o): o is MoleculeObject => o.type === "molecule" && o.id === target.objectId);
+  const bond = molecule?.bonds.find(b => b.id === target.bondId);
+  if (!molecule || !bond || bond.order !== "double") return disabled("E/Z requires a double bond");
+  if (molecule.bonds.some(b => b.order === "unknown")) return disabled("Resolve unknown bond orders before changing E/Z");
+  const state: BondStereoAvailability = { value: bond.stereo === "either" ? "either" : "geometry" };
+  if ([bond.fromAtomId, bond.toAtomId].some(id => molecule.atoms.find(a => a.id === id)?.element !== "C")) {
+    return { ...state, eitherDisabledReason: "E/Z unspecified requires a stereogenic carbon–carbon double bond" };
+  }
+  if (nativeMoleculeRings(molecule).some(ring => ring.atomIds.length < 8 && ring.bondIds.includes(bond.id))) {
+    return { ...state, eitherDisabledReason: "This double bond is not stereogenic (small ring)" };
+  }
+  if (!reader) return { ...state, eitherDisabledReason: "E/Z perception is still loading" };
+  try {
+    const unmarked = { ...molecule, bonds: molecule.bonds.map(b => b.id === bond.id ? withoutDoubleBondStereo(b) : b) };
+    const from = molecule.atoms.findIndex(a => a.id === bond.fromAtomId);
+    const to = molecule.atoms.findIndex(a => a.id === bond.toAtomId);
+    // Expand real label groups before CIP perception: Me and a drawn methyl are equivalent.
+    // The shared builder appends expansion atoms, retaining the drawn endpoint indices.
+    const perceived = reader(analysisFacingStructure(unmarked).structure).find(b =>
+      (b.from === from && b.to === to) || (b.from === to && b.to === from));
+    return perceived ? { ...state, descriptor: perceived.descriptor === "unspecified" ? undefined : perceived.descriptor }
+      : { ...state, eitherDisabledReason: "This double bond is not stereogenic (equivalent substituents or a small ring)" };
+  } catch {
+    return { ...state, eitherDisabledReason: "E/Z could not be perceived for this structure" };
+  }
+}
+
+/** One graph patch; callers record one labelled history entry and retain their part selection. */
+export function applyMoleculeBondStereo(
+  document: ChemDraftDocument, targets: readonly { objectId: string; bondId: string }[],
+  value: BondStereoValue, reader?: DoubleBondStereoReader
+): ChemDraftDocument {
+  const state = nativeBondStereoAvailability(document, targets, reader);
+  if (value === "either" ? state.eitherDisabledReason : state.geometryDisabledReason) return document;
+  const target = targets[0];
+  const molecule = firstPage(document).objects.find((o): o is MoleculeObject => o.type === "molecule" && o.id === target.objectId)!;
+  const bond = molecule.bonds.find(b => b.id === target.bondId)!;
+  if ((bond.stereo === "either") === (value === "either")) return document;
+  const bonds = molecule.bonds.map(b => b.id === bond.id ? value === "either" ? { ...b, stereo: "either" as const } : withoutDoubleBondStereo(b) : b);
+  const changes = withStoredBondStereoMolfile({ ...molecule, bonds });
+  return applyPatch(document, { op: "updateObject", objectId: molecule.id, changes }, { now: phase4Timestamp });
 }
 
 /** Display-only edit: retain chemistry, coordinates, and the current selection. */

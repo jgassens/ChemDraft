@@ -3,6 +3,10 @@ import type { PastedStructureDepiction } from "./documentWorkflow";
 import { depictSmilesOffThread } from "./depiction2d/client";
 import type { DepictionRequestOptions } from "@chemdraft/rdkit-adapter";
 
+export function unspecifiedDoubleBondNotice(count: number): string {
+  return `E/Z was not specified for ${count} double bond(s) in the pasted structure. Confirm the geometry.`;
+}
+
 /** Only unparseable text returns undefined; engine failures and chemistry refusals throw. */
 export async function depictSmilesForPaste(
   smiles: string,
@@ -10,7 +14,9 @@ export async function depictSmilesForPaste(
 ): Promise<{ depiction: PastedStructureDepiction; stereoCount: number; warnings?: string[] } | undefined> {
   try {
     const result = await depictSmilesOffThread(smiles, { priority: "interactive", ...options });
-    return result.depiction.atoms.length > 0 ? result : undefined;
+    if (!result.depiction.atoms.length) return undefined;
+    const count = result.depiction.bonds.filter(bond => bond.stereo === "either").length;
+    return count ? { ...result, warnings: [...(result.warnings ?? []), unspecifiedDoubleBondNotice(count)] } : result;
   } catch (error) {
     if ((error as { notSmiles?: boolean })?.notSmiles === true) return undefined;
     throw error;
@@ -72,6 +78,7 @@ async function depictSmilesListCandidates(
     if (!firstTokenColumns.has(token.line)) firstTokenColumns.set(token.line, token.column);
   }
   let parsedFirstTokenLines = 0;
+  let openDoubleBonds = 0;
   for (const [index, candidate] of candidates.entries()) {
     signal?.throwIfAborted();
     let parsed: Awaited<ReturnType<typeof depictSmilesForPaste>> = undefined;
@@ -83,7 +90,10 @@ async function depictSmilesListCandidates(
     }
     if (parsed) {
       entries.push({ smiles: candidate.token, depiction: parsed.depiction });
-      warnings.push(...(parsed.warnings ?? []).map((warning) => `${candidate.token}: ${warning}`));
+      const count = parsed.depiction.bonds.filter(bond => bond.stereo === "either").length;
+      openDoubleBonds += count;
+      warnings.push(...(parsed.warnings ?? []).filter(warning => warning !== unspecifiedDoubleBondNotice(count))
+        .map((warning) => `${candidate.token}: ${warning}`));
       if (candidate.column === firstTokenColumns.get(candidate.line)) parsedFirstTokenLines += 1;
     }
     if (candidates.length > 20 && (index + 1) % 10 === 0) {
@@ -94,6 +104,7 @@ async function depictSmilesListCandidates(
   }
   const lineCount = text.split(/\r\n|\r|\n/).filter((line) => line.trim().length > 0).length;
   if (smilesListDecision({ candidates: tokens.length, parsed: entries.length, lineCount, parsedFirstTokenLines })) {
+    if (openDoubleBonds) warnings.push(unspecifiedDoubleBondNotice(openDoubleBonds));
     return { entries, skipped: tokens.length - entries.length - failures.length, failures, ...(warnings.length ? { warnings } : {}) };
   }
   // Even a list with too few valid entries must retain the reasons it was refused.

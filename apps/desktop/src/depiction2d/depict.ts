@@ -30,6 +30,7 @@ export async function depictInWorker(
     if (options.rdkitLoadFailure !== undefined) throw new Error(`RDKit failed to load: ${options.rdkitLoadFailure}`);
     return fromMolfile(await generateMolfile(smiles, {
       ...options,
+      openUnspecifiedDoubleBonds: true,
       onStandardMolfile: (molfile) => onStandard(fromMolfile(molfile))
     }));
   } catch (error) {
@@ -37,7 +38,7 @@ export async function depictInWorker(
     if (options.rdkitLoadFailure !== undefined) warnings.push(`RDKit failed to load: ${options.rdkitLoadFailure}; used OpenChemLib fallback.`);
     // Preserve the existing complete local fallback, including its chemistry refusal errors.
     let fallback: ReturnType<NonNullable<typeof ocl>["depictSmiles2D"]>;
-    try { fallback = ocl.depictSmiles2D(smiles); }
+    try { fallback = ocl.depictSmiles2D(smiles, { openUnspecifiedDoubleBonds: true }); }
     catch (error) {
       // Only an explicit parser failure is ordinary text. Layout and transport failures must surface.
       if (error instanceof Error && /SmilesParser:/.test(error.message)) {
@@ -51,7 +52,7 @@ export async function depictInWorker(
       // Large OCL coordinates can overflow V2000. Keep the existing structured fallback.
       const depiction: PastedStructureDepiction = {
         atoms: fallback.atoms.map(({ element, x, y, charge }) => ({ element, x, y, charge })),
-        bonds: fallback.bonds.map(({ from, to, order, wedge }) => ({ from, to, order, wedge }))
+        bonds: fallback.bonds.map(({ from, to, order, wedge, stereo }) => ({ from, to, order, wedge, ...(stereo ? { stereo } : {}) }))
       };
       let stereoCount: number;
       try {

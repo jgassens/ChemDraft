@@ -150,7 +150,7 @@ export async function structureFromSmilesForPlugin(
     warningMessage: [origin
       ? `Generated an editable 2D structure from SMILES supplied by ${origin}.`
       : "Generated an editable 2D structure from SMILES supplied by a plugin.", ...(warnings ?? [])].join(" ")
-  });
+  }, { openUnspecifiedDoubleBonds: true });
 
   RESERVED_PLUGIN_OBJECT_IDS.add(object.id);
   return { available: true, built: true, object };

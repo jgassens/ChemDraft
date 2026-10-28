@@ -22,6 +22,23 @@ dialogs, plugin panels, Preferences, and color popovers: no browser menu appears
 typing, and Tab input keep working. Ctrl+X/C/V/A still work in text fields. Repeat right-click on
 palettes, tooltips, and the 3D debugger; app menus and subsequent input must keep working.
 
+## Unspecified E/Z (macOS and Windows)
+
+Paste `CC=CC`, then a list containing two copies of it.
+Each stereogenic double bond keeps unspecified E/Z, shows a small (!) beside its midpoint without
+covering the bond or labels, and its hover text reads exactly "E/Z was not specified for this double
+bond. Confirm the geometry by redrawing the bond or choosing 'Use drawn geometry'." The paste status
+reads "E/Z was not specified for N double bond(s) in the pasted structure. Confirm the geometry."
+with N = 1 for the single paste and N = 2 for the list. Repeat with plain text, chemical MIME
+clipboard text, and native Paste. `C/C=C/C` keeps E and shows no notice; `CC=O` and `CC=C(C)C` have no flag.
+Select a double bond in the floating inspector: E/Z unspecified and Use drawn geometry (E)/(Z)
+each make one labelled Undo entry, keep the bond selected, and survive Undo/Redo and save/reopen.
+Verify the drawn geometry label with both E and Z drawings and unequal CIP priorities. Carbonyls,
+symmetric ends and small rings disable E/Z unspecified with a specific reason. Reapply double order
+with the bond tool or hovered-bond shortcut: the (!) disappears and the bond becomes geometry-defined.
+Move atoms, rotate and restyle first: these keep the flag and badge. SVG, PDF, CDXML exports and
+browser/system print preview contain no badge or hover text.
+
 ## Spin 3D (macOS and Windows)
 
 Paste `c1ccccc1.CC(C)(C)C.OCCO` as one native molecule object; with RDKit and the OCL fallback,

@@ -264,6 +264,8 @@ import {
   createLayerActions,
   createQuickActions,
   createDoubleBondPositionActions,
+  createBondStereoActions,
+  moleculeBondStereoForCommand,
   moleculeDoubleBondPositionForCommand,
   convertTextToAtomLabelCommandId,
   distributeModeCommandIds,
@@ -434,6 +436,7 @@ import {
   nativeRingHotkeyFuseAtBondTarget,
   applyNativeDoubleBondSideTarget,
   applyMoleculeDoubleBondPosition,
+  applyMoleculeBondStereo,
   applyNativeMoleculeBondOrderTarget,
   applyNativeMoleculeBondOrderValueTarget,
   applyNativeMoleculeDeleteTarget,
@@ -879,6 +882,7 @@ import {
 } from "./interaction/hitTest";
 import { createArtInspectorModel, selectedVisualObjectsForArtInspector } from "./artInspectorModel";
 import { createMoleculeInspectorModel, representativeMoleculeBondLengthPx } from "./moleculeInspectorModel";
+import { BondStereoBadges } from "./BondStereoBadges";
 import {
   moleculeInspectorTemplateFilename,
   moleculeInspectorTemplateMimeType,
@@ -1623,7 +1627,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.28.00.40-codex";
+const CURRENT_BUILD_STAMP = "10.28.07.18-codex";
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -2858,13 +2862,15 @@ export function MainWindow({
     paletteInspectorHandlersRef.current = { changeInterpretation: recomputeAnalysisFor };
   }, [recomputeAnalysisFor]);
 
+  const [bondStereoReader, setBondStereoReader] = useState<NonNullable<typeof cachedOclAdapter>["perceiveDoubleBondStereoFromMolfile"] | undefined>(
+      () => cachedOclAdapter?.perceiveDoubleBondStereoFromMolfile);
   const currentMoleculeInspector = useMemo(
     () => createMoleculeInspectorModel(document, {
       selectedObjectIds: document.selection.objectIds,
       selectedPart: selectedNativeMoleculePart,
       selectedParts: selectedNativeMoleculeParts
-    }),
-    [document, document.selection.objectIds, selectedNativeMoleculePart, selectedNativeMoleculeParts]
+    }, bondStereoReader),
+    [document, document.selection.objectIds, selectedNativeMoleculePart, selectedNativeMoleculeParts, bondStereoReader]
   );
   const currentArtStyle = useMemo(() => {
     const model = createArtInspectorModel({
@@ -4727,6 +4733,7 @@ export function MainWindow({
     void import("@chemdraft/ocl-adapter")
       .then((module) => {
         cachedOclAdapter = module;
+        if (!cancelled) setBondStereoReader(() => module.perceiveDoubleBondStereoFromMolfile);
         if (!cancelled) spin3dStereoPerceiverRef.current = module.perceiveStereoCentersFromMolfile;
       })
       .catch(() => {
@@ -6633,7 +6640,8 @@ export function MainWindow({
           atoms: depiction.atoms,
           bonds: depiction.bonds
         },
-        smilesText
+        smilesText,
+        { openUnspecifiedDoubleBonds: true }
       );
       commitDocumentChange(nextDocument);
       resetPasteUiState();
@@ -7859,6 +7867,16 @@ export function MainWindow({
       return baseStyleResult(patch, field);
     };
     const bondTargets = currentMoleculeInspector.targets.bondTargets;
+    const stereo = moleculeBondStereoForCommand(commandId);
+    if (stereo) {
+      const state = currentMoleculeInspector.structure.bondStereo!;
+      const reason = stereo.value === "either" ? state.eitherDisabledReason : state.geometryDisabledReason;
+      return {
+        document: applyMoleculeBondStereo(currentDocument, bondTargets, stereo.value, bondStereoReader),
+        handled: true, targeted: true,
+        message: reason ?? (stereo.value === "either" ? "E/Z unspecified" : "Use drawn geometry")
+      };
+    }
     const position = moleculeDoubleBondPositionForCommand(commandId);
     if (position) {
       return {
@@ -8062,6 +8080,7 @@ export function MainWindow({
 
     return { document: currentDocument, handled: false, targeted: false, message: "" };
   }, [
+    bondStereoReader,
     currentMoleculeInspector.targets.atomTargets,
     currentMoleculeInspector.targets.atomLabelTargets,
     currentMoleculeInspector.targets.bondTargets,
@@ -8082,7 +8101,7 @@ export function MainWindow({
       return true;
     }
 
-    const changed = commitDocumentChange(result.document, moleculeDoubleBondPositionForCommand(commandId) ? result.message : undefined);
+    const changed = commitDocumentChange(result.document, moleculeDoubleBondPositionForCommand(commandId) || moleculeBondStereoForCommand(commandId) ? result.message : undefined);
     setActiveEditorObjectId(undefined);
     setStatus(changed ? result.message : "Selected molecule style unchanged");
     return true;
@@ -9902,6 +9921,9 @@ export function MainWindow({
     };
 
     createDoubleBondPositionActions(currentMoleculeInspector.structure.doubleBondTargetCount).forEach((action) => {
+      register(action, () => { applyMoleculeInspectorCommand(action.id); });
+    });
+    createBondStereoActions(currentMoleculeInspector.structure.bondStereo!).forEach((action) => {
       register(action, () => { applyMoleculeInspectorCommand(action.id); });
     });
 
@@ -27116,6 +27138,7 @@ function DocumentObjectViewContent({
           >
             {selectionBlob}
             {selectedRingBlobs}
+            <BondStereoBadges molecule={object} />
             {object.atoms
               .filter((atom) => invalidAtomIds.has(atom.id))
               .map((atom) => (

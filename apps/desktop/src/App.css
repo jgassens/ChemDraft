@@ -1208,6 +1208,30 @@ textarea:focus-visible,
   min-width: 0;
 }
 
+.molecule-inspector-bond-stereo-actions {
+  display: grid;
+  gap: 4px;
+}
+
+.molecule-inspector-bond-stereo-actions button {
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid var(--cd-border);
+  border-radius: 4px;
+  background: var(--cd-bg);
+  color: var(--cd-text);
+  font: inherit;
+  font-size: 11px;
+}
+
+.molecule-inspector-bond-stereo-actions button[aria-pressed="true"] {
+  background: var(--cd-bg-selected);
+}
+
+.molecule-inspector-bond-stereo-actions button:disabled {
+  color: var(--cd-text-muted);
+}
+
 .molecule-inspector-field > span:first-child {
   min-width: 0;
   overflow-wrap: anywhere;
@@ -5023,6 +5047,14 @@ textarea:focus-visible,
 
 .native-atom-invalid-marker {
   pointer-events: none;
+}
+
+.native-bond-stereo-marker {
+  pointer-events: all;
+}
+
+@media print {
+  .native-bond-stereo-marker { display: none !important; }
 }
 
 .native-atom-invalid-ring {
