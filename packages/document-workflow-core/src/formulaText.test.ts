@@ -41,7 +41,8 @@ describe("formula text", () => {
     // A linear scan grows about 4x for a 4x longer token; the old quadratic scan grew about 16x.
     // The ratio separates them on any machine, unlike the absolute limit that failed on loaded CI runners.
     expect(times[1] / Math.max(times[0], 0.5)).toBeLessThan(10);
-  });
+  // Eight scans of up to 200,000 characters can exceed the 5 s default on a heavily loaded machine; the assertion is the ratio, not the time.
+  }, 30_000);
 
   it("formats formula-like tokens in mixed text", () => {
     for (const text of ["CH2Cl2", "Ti(OiPr)4", "Pd(PPh3)4", "Et3N", "Pd2(dba)3", "CuSO4·5H2O", "SO42-"]) {
