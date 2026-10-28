@@ -870,7 +870,7 @@ export function createBondStereoActions(state: {
     const disabledReason = value === "either" ? state.eitherDisabledReason : state.geometryDisabledReason;
     return {
       id: moleculeBondStereoCommandId(value),
-      title: value === "either" ? "E/Z unspecified" : `Use drawn geometry${state.descriptor ? ` (${state.descriptor})` : ""}`,
+      title: value === "either" ? "Mark E/Z as unspecified" : `Use drawn geometry${state.descriptor ? ` (${state.descriptor})` : ""}`,
       icon: "bond", source: "core", category: "molecule", enabled: !disabledReason, disabledReason
     };
   });

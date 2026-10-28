@@ -186,7 +186,7 @@ describe("editor open E/Z", () => {
     const listener = (event: Event) => sent.push((event as CustomEvent<{ commandId: string }>).detail.commandId);
     window.addEventListener(PALETTE_COMMAND_COMMIT_EVENT, listener);
     try {
-      for (const title of ["E/Z unspecified", "Use drawn geometry (Z)"]) {
+      for (const title of ["Mark E/Z as unspecified", "Use drawn geometry (Z)"]) {
         const button = container.querySelector<HTMLButtonElement>(`button[aria-label="${title}"]`)!;
         expect(button.disabled).toBe(false); act(() => button.click());
       }

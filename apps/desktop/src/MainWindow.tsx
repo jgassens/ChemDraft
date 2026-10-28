@@ -1627,7 +1627,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.28.07.18-codex";
+const CURRENT_BUILD_STAMP = "10.28.08.07-codex";
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -11324,7 +11324,9 @@ export function MainWindow({
       return;
     }
 
-    if (applyMoleculeInspectorCommand(commandId)) {
+    // Stereo actions are registered core commands; let the shared dispatcher enforce their
+    // availability for both the inspector and canvas context menu.
+    if (!moleculeBondStereoForCommand(commandId) && applyMoleculeInspectorCommand(commandId)) {
       return;
     }
 
@@ -20679,6 +20681,15 @@ export function MainWindow({
       {objectContextMenu ? (
         <ObjectLayerContextMenu
           layoutActions={compoundLayoutsEnabled ? layerActions.filter(action => isCompoundLayoutCommand(action.id)) : []}
+          bondStereoActions={(() => {
+            const targets = currentMoleculeInspector.targets.bondTargets;
+            if (targets.length !== 1 || targets[0].objectId !== objectContextMenu.objectId) return [];
+            const molecule = findDocumentObject(document, targets[0].objectId);
+            const bond = molecule?.type === "molecule" ? molecule.bonds.find(b => b.id === targets[0].bondId) : undefined;
+            if (bond?.order !== "double") return [];
+            return createBondStereoActions(currentMoleculeInspector.structure.bondStereo!)
+              .filter(action => moleculeBondStereoForCommand(action.id)?.value === "either" || bond.stereo === "either");
+          })()}
           objectId={objectContextMenu.objectId}
           objectIndex={activePage.objects.findIndex((object) => object.id === objectContextMenu.objectId)}
           objectCount={activePage.objects.length}
@@ -23924,6 +23935,7 @@ function ArtStyleQaLayer({
 
 export function ObjectLayerContextMenu({
   layoutActions = [],
+  bondStereoActions = [],
   objectId,
   objectIndex,
   objectCount,
@@ -23937,6 +23949,7 @@ export function ObjectLayerContextMenu({
   onDismiss = () => {}
 }: {
   layoutActions?: readonly CommandSpec[];
+  bondStereoActions?: readonly CommandSpec[];
   objectId: string;
   objectIndex: number;
   objectCount: number;
@@ -24137,6 +24150,18 @@ export function ObjectLayerContextMenu({
           >
             Set as Default Arrow Style
           </button>
+          <div className="object-context-menu-separator" role="separator" />
+        </>
+      ) : null}
+      {bondStereoActions.length > 0 ? (
+        <>
+          {bondStereoActions.map(action => (
+            <button type="button" role="menuitem" className="object-context-menu-item" key={action.id}
+              data-command-id={action.id} disabled={!action.enabled} title={action.disabledReason}
+              onClick={() => onInvoke(action.id)}>
+              {action.title}
+            </button>
+          ))}
           <div className="object-context-menu-separator" role="separator" />
         </>
       ) : null}
