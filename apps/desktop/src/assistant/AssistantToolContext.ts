@@ -1,4 +1,5 @@
 import type { ChemDraftDocument, DocumentPatch } from "@chemdraft/chem-core";
+import type { ChemicalIdentityFacts } from "@chemdraft/document-workflow-core";
 import type {
   PluginManifest, PluginNameToStructureRequest, PluginNameToStructureResult,
   PluginStructureFromSmilesRequest, PluginStructureFromSmilesResult,
@@ -8,7 +9,7 @@ import type {
 export interface AssistantRect { x: number; y: number; width: number; height: number }
 export interface AssistantPageGrowth { pageId: string; width: number; height: number; description: string; itemCount: number }
 export type AssistantStructureInspection =
-  | { valid: true; canonicalSmiles: string; identitySmiles: string;
+  | { valid: true; canonicalSmiles: string; identitySmiles: string; identityFacts?: ChemicalIdentityFacts;
       formula: string; heavyAtoms: number; warnings: string[] }
   | { valid: false; reason: string };
 

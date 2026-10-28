@@ -343,6 +343,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
             const identity = inspectHydrogenNormalizedIdentity(module, value, stereoReference);
             if (!identity.valid) return identity;
             return { valid: true, canonicalSmiles, identitySmiles: identity.canonicalSmiles,
+              identityFacts: identity.facts,
               formula: composition.formula, warnings: [],
               heavyAtoms: graph.molecules.reduce((count, mol) => count + mol.atoms.filter(atom =>
                 (atom.z ?? graph.defaults?.atom?.z ?? 6) !== 1).length, 0) };

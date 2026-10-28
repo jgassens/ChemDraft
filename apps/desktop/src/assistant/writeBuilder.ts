@@ -85,7 +85,8 @@ export async function assertCanonical(
   await assertMoleculeMatchesSmiles(molecule, input, async (format, value, stereoReference) => {
     const result = format === "smiles" ? await inspectSmiles(context, value)
       : await context.chemistry.inspectStructure(format, value, stereoReference);
-    return result.valid ? { valid: true, canonicalSmiles: result.identitySmiles } : result;
+    return result.valid
+      ? { valid: true, canonicalSmiles: result.identitySmiles, facts: result.identityFacts } : result;
   });
 }
 async function buildMolecule(context: AssistantToolContext, smiles: string): Promise<MoleculeObject> {

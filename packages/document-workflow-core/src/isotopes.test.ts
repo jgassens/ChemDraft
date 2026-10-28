@@ -71,6 +71,7 @@ describe("native isotope chemistry", () => {
     const limited = { get_mol: (value: string, options?: string) => {
       const molecule = module.get_mol(value, options);
       return molecule && { get_smiles: () => molecule.get_smiles!(),
+        get_json: () => molecule.get_json!(),
         delete: () => molecule.delete(), generate_3d_embed: () => "", optimize_3d_conformer: () => "" };
     } };
     expect(() => inspectHydrogenNormalizedIdentity(limited, "C/C=C/C", "CC=CC"))

@@ -10,6 +10,14 @@ import { loadRdkitWithAppLoader } from "./plugins/rdkitAppLoader";
 import type { SmilesListPasteFailure } from "./smilesListPaste";
 import type { RdkitMinimalModule } from "@chemdraft/rdkit-adapter";
 
+export class SmilesIdentityEngineUnavailableError extends Error {
+  constructor(cause: unknown) {
+    super("the structure could not be verified because the RDKit engine did not load: " +
+      (cause instanceof Error ? cause.message : String(cause)));
+    this.name = "SmilesIdentityEngineUnavailableError";
+  }
+}
+
 export function createPasteIdentityInspector(
   load: () => Promise<{ ensureRdkit(): Promise<RdkitMinimalModule> }> =
     () => loadRdkitWithAppLoader(() => import("@chemdraft/rdkit-adapter"))
@@ -18,8 +26,7 @@ export function createPasteIdentityInspector(
     let module;
     try { module = await (await load()).ensureRdkit(); }
     catch (error) {
-      throw new Error("the structure could not be verified because the RDKit engine did not load: " +
-        (error instanceof Error ? error.message : String(error)));
+      throw new SmilesIdentityEngineUnavailableError(error);
     }
     return inspectHydrogenNormalizedIdentity(module, value, stereoReference);
   };

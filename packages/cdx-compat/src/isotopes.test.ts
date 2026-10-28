@@ -37,6 +37,7 @@ describe("CDXML isotope compatibility", () => {
     const molfile = await generateSmiles2DMolfile(smiles, { standardOnly: true });
     const molecule = createSmilesMolecule(document, { x: 200, y: 200 },
       pastedStructureDepictionFromMolfile(molfile), smiles);
+    if (molecule.type !== "molecule") throw new Error("Expected a molecule");
     const exported = exportDocumentToCdxml(applyPatch(document, {
       op: "addObject", pageId: document.pages[0]!.id, object: molecule
     }));

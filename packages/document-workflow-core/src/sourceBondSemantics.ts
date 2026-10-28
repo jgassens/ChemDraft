@@ -95,4 +95,3 @@ export function markV3000UnspecifiedDoubleBonds(
   }
   return lines.join(molfile.includes("\r\n") ? "\r\n" : "\n");
 }
-

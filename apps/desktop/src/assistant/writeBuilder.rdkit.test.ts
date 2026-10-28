@@ -29,6 +29,7 @@ function realContext(selected = true): AssistantToolContext {
       const identity = inspectHydrogenNormalizedIdentity(rdkit, value, stereoReference);
       if (!identity.valid) return identity;
       return { valid: true, canonicalSmiles: mol.get_smiles(), identitySmiles: identity.canonicalSmiles,
+        identityFacts: identity.facts,
         formula: "test-only", warnings: [],
         heavyAtoms: graph.molecules.reduce((sum, molecule) => sum + molecule.atoms.filter(atom => (atom.z ?? defaultZ) !== 1).length, 0) };
     } finally { mol.delete(); }
@@ -40,6 +41,25 @@ function realContext(selected = true): AssistantToolContext {
   return context;
 }
 describe("RDKit assistant write identity", () => {
+  it.each([
+    ["F[C@](Cl)=C=C(Br)I", "allene (axial)"],
+    ["F[C@@](Cl)=C=C(Br)I", "allene (axial)"],
+    ["N[Pt@SP1](N)(Cl)Cl", "square-planar"]
+  ])("refuses unverifiable stereo before building or writing: %s", async (smiles, kind) => {
+    const context = realContext(false);
+    await expect(buildInsertStructures(context, { items: [{ kind: "molecule", smiles }] }))
+      .rejects.toThrow(`${kind} stereochemistry cannot be verified or drawn`);
+    expect(context.write).not.toHaveBeenCalled();
+  });
+
+  it.each(["C[C@H](C)C", "[C@H](F)(F)F", "C[C@H](O)CC"])(
+    "allows harmless chirality marks and ordinary stereocentres: %s", async smiles => {
+      const result = await callAssistantTool(realContext(false), "insert_structures", {
+        items: [{ kind: "molecule", smiles }]
+      });
+      expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    });
+
   it.each(["CC=CC", "CC(C)=CCCC(C)=CC=O", "[2H]C=Cc1ccccc1"])(
     "accepts input-unspecified E/Z during preparation and normalized commit: %s", async smiles => {
       const context = realContext(false);

@@ -25,8 +25,10 @@ import type {
   PluginStructureFromSmilesResult
 } from "@chemdraft/plugin-api";
 import { ISOTOPE_ENVELOPE_METHOD_ID } from "@chemdraft/rdkit-adapter/constants";
-import { assertMoleculeMatchesSmiles } from "@chemdraft/document-workflow-core";
-import { createPasteIdentityInspector } from "../smilesPasteIdentity";
+import {
+  assertMoleculeMatchesSmiles, type InspectChemicalIdentity
+} from "@chemdraft/document-workflow-core";
+import { createPasteIdentityInspector, SmilesIdentityEngineUnavailableError } from "../smilesPasteIdentity";
 
 import { analysisClient } from "../analysisClient";
 import { depictSmilesOffThread } from "../depiction2d/client";
@@ -111,7 +113,8 @@ export async function computeIsotopeEnvelopeForPlugin(
 export async function structureFromSmilesForPlugin(
   request: PluginStructureFromSmilesRequest,
   getActiveDocument: () => ChemDraftDocument | undefined,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  inspect: InspectChemicalIdentity = createPasteIdentityInspector()
 ): Promise<PluginStructureFromSmilesResult> {
   const document = getActiveDocument();
   if (!document) {
@@ -154,12 +157,18 @@ export async function structureFromSmilesForPlugin(
       : "Generated an editable 2D structure from SMILES supplied by a plugin.", ...(warnings ?? [])].join(" ")
   });
 
+  if (object.type !== "molecule") {
+    return { available: true, built: false, reason: "The structure builder did not return a molecule." };
+  }
   RESERVED_PLUGIN_OBJECT_IDS.add(object.id);
   try {
-    await assertMoleculeMatchesSmiles(object, request.smiles, createPasteIdentityInspector());
+    await assertMoleculeMatchesSmiles(object, request.smiles, inspect);
     signal?.throwIfAborted();
   } catch (error) {
     RESERVED_PLUGIN_OBJECT_IDS.delete(object.id);
+    if (error instanceof SmilesIdentityEngineUnavailableError) {
+      return { available: false, reason: error.message };
+    }
     return { available: true, built: false, reason: structureGenerationFailureReason(request.smiles, error) };
   }
   return { available: true, built: true, object };

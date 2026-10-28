@@ -1,5 +1,5 @@
 import type { MoleculeObject } from "@chemdraft/chem-core";
-import type { RdkitJsMol, RdkitMinimalModule } from "@chemdraft/rdkit-adapter";
+import type { RdkitJsMol, RdkitJson, RdkitMinimalModule } from "@chemdraft/rdkit-adapter";
 import { stereoPerceptionMolfile } from "./molecule";
 import { markV2000UnspecifiedDoubleBonds, sourceBondSemantics } from "./sourceBondSemantics";
 
@@ -7,8 +7,66 @@ import { markV2000UnspecifiedDoubleBonds, sourceBondSemantics } from "./sourceBo
 export type InspectChemicalIdentity = (
   format: "smiles" | "molfile", value: string, stereoReference?: string
 ) => Promise<
-  { valid: true; canonicalSmiles: string } | { valid: false; reason: string }
+  { valid: true; canonicalSmiles: string; facts?: ChemicalIdentityFacts } | { valid: false; reason: string }
 >;
+
+export interface ChemicalIdentityFacts {
+  withoutStereo: string;
+  isotopeAtoms: string;
+  chargedAtoms: string;
+}
+
+const withoutStereo = (smiles: string) => smiles.replace(/@(?:TH|AL|SP|TB|OH)\d*|@+|[\\/]/g, "");
+
+/** Inspect tags before RDKit's stereo cleanup can erase unsupported input stereo. */
+function unverifiableStereoReason(
+  module: Pick<RdkitMinimalModule, "get_mol">, value: string
+): string | undefined {
+  const raw = module.get_mol(value, JSON.stringify({
+    removeHs: false, sanitize: false, assignStereo: false
+  }));
+  try {
+    if (!raw?.get_json) throw new Error("RDKit could not inspect the input stereochemistry.");
+    const graph = JSON.parse(raw.get_json()) as RdkitJson;
+    for (const molecule of graph.molecules) {
+      const doubles = molecule.bonds.filter(bond => (bond.bo ?? graph.defaults?.bond?.bo ?? 1) === 2);
+      const axial = molecule.atoms.some((atom, index) => {
+        const stereo = atom.stereo ?? graph.defaults?.atom?.stereo ?? "unspecified";
+        return stereo !== "unspecified" && doubles.some(bond => bond.atoms.includes(index) &&
+          doubles.some(other => other !== bond && other.atoms.some(end => bond.atoms.includes(end))));
+      });
+      if (axial) return "allene (axial) stereochemistry cannot be verified or drawn.";
+    }
+    // RDKit JSON omits non-tetrahedral tags; read them from RDKit's own parsed SMILES instead.
+    const parsedSmiles = raw.get_smiles?.();
+    if (!parsedSmiles) throw new Error("RDKit did not return a canonical SMILES.");
+    const kinds = [
+      parsedSmiles.includes("@SP") ? "square-planar" : undefined,
+      parsedSmiles.includes("@TB") ? "trigonal-bipyramidal" : undefined,
+      parsedSmiles.includes("@OH") ? "octahedral" : undefined
+    ].filter(Boolean);
+    return kinds.length ? `${kinds.join("/")} stereochemistry cannot be verified or drawn.` : undefined;
+  } finally { raw?.delete(); }
+}
+
+function chemicalIdentityFacts(
+  module: Pick<RdkitMinimalModule, "get_mol">, molecule: RdkitJsMol, smiles: string
+): ChemicalIdentityFacts {
+  if (!molecule.get_json) throw new Error("RDKit could not inspect the structure's atoms.");
+  const graph = JSON.parse(molecule.get_json()) as RdkitJson;
+  const atomProperties = (property: "isotope" | "chg") => graph.molecules.flatMap(mol =>
+    mol.atoms.flatMap(atom => {
+      const value = atom[property] ?? graph.defaults?.atom?.[property] ?? 0;
+      return value ? [`${atom.z ?? graph.defaults?.atom?.z ?? 6}:${value}`] : [];
+    })).sort().join(",");
+  const plain = module.get_mol(withoutStereo(smiles), JSON.stringify({ removeHs: true }));
+  try {
+    const canonical = plain?.get_smiles?.();
+    if (!canonical) throw new Error("RDKit could not verify the structure without stereo.");
+    return { withoutStereo: canonical, isotopeAtoms: atomProperties("isotope"),
+      chargedAtoms: atomProperties("chg") };
+  } finally { plain?.delete(); }
+}
 
 /** Remove ordinary explicit H equally on both sides; RDKit retains isotope-labelled hydrogens. */
 export function inspectHydrogenNormalizedIdentity(
@@ -17,9 +75,12 @@ export function inspectHydrogenNormalizedIdentity(
   const molecule = module.get_mol(value, JSON.stringify({ removeHs: true }));
   if (!molecule) return { valid: false, reason: "RDKit could not verify the structure." };
   try {
+    const refusal = unverifiableStereoReason(module, value);
+    if (refusal) return { valid: false, reason: refusal };
     const canonicalSmiles = molecule.get_smiles?.();
     if (!canonicalSmiles) throw new Error("RDKit did not return a canonical SMILES.");
-    return { valid: true, canonicalSmiles: stereoReference && canonicalSmiles !== stereoReference
+    const facts = chemicalIdentityFacts(module, molecule, canonicalSmiles);
+    return { valid: true, facts, canonicalSmiles: stereoReference && canonicalSmiles !== stereoReference
       ? identityOnSpecifiedStereo(module, molecule, canonicalSmiles, stereoReference) : canonicalSmiles };
   } finally { molecule.delete(); }
 }
@@ -29,7 +90,6 @@ export function inspectHydrogenNormalizedIdentity(
 function identityOnSpecifiedStereo(
   module: Pick<RdkitMinimalModule, "get_mol">, output: RdkitJsMol, actual: string, reference: string
 ): string {
-  const withoutStereo = (smiles: string) => smiles.replace(/@+|[\\/]/g, "");
   const parse = (value: string) => module.get_mol(value, JSON.stringify({ removeHs: true }));
   const source = parse(reference);
   const sourcePlain = parse(withoutStereo(reference));
@@ -83,14 +143,17 @@ function identityOnSpecifiedStereo(
 export class ChemicalIdentityMismatchError extends Error {
   readonly difference: string;
 
-  constructor(moleculeId: string, source: string, output: string) {
-    const tokens = (smiles: string, pattern: RegExp) =>
-      [...smiles.matchAll(pattern)].map(match => match[0]).sort().join(",");
-    const differs = (pattern: RegExp) => tokens(source, pattern) !== tokens(output, pattern);
-    const differences = [
-      differs(/\[\d+[A-Za-z]+/g) ? "isotope labels or their positions" : undefined,
-      differs(/[+-]\d*/g) ? "charges" : undefined,
-      differs(/@+|[\\/]/g) ? "stereochemistry" : undefined
+  constructor(
+    moleculeId: string, source: string, output: string,
+    sourceFacts?: ChemicalIdentityFacts, outputFacts?: ChemicalIdentityFacts
+  ) {
+    const stereoOnly = (sourceFacts?.withoutStereo ?? withoutStereo(source)) ===
+      (outputFacts?.withoutStereo ?? withoutStereo(output));
+    const differences = stereoOnly ? ["stereochemistry"] : [
+      sourceFacts && outputFacts && sourceFacts.isotopeAtoms !== outputFacts.isotopeAtoms
+        ? "isotope labels or their positions" : undefined,
+      sourceFacts && outputFacts && sourceFacts.chargedAtoms !== outputFacts.chargedAtoms
+        ? "charges" : undefined
     ].filter(Boolean);
     const difference = differences.join(", ") || "chemical identity";
     super(`Canonical SMILES mismatch for ${moleculeId}; refusing a change to chemical identity ` +
@@ -116,6 +179,7 @@ export async function assertMoleculeMatchesSmiles(
   if (!output.valid) throw new Error(output.reason);
   if (!output.canonicalSmiles) throw new Error("RDKit did not return a canonical SMILES.");
   if (source.canonicalSmiles !== output.canonicalSmiles) {
-    throw new ChemicalIdentityMismatchError(molecule.id, source.canonicalSmiles, output.canonicalSmiles);
+    throw new ChemicalIdentityMismatchError(molecule.id, source.canonicalSmiles, output.canonicalSmiles,
+      source.facts, output.facts);
   }
 }

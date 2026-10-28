@@ -80,11 +80,32 @@ describe("isotope insert paths", () => {
   });
 
   it.each([
+    ["F[C@](Cl)=C=C(Br)I", "FC(Cl)=C=C(Br)I", "allene (axial)"],
+    ["F[C@@](Cl)=C=C(Br)I", "FC(Cl)=C=C(Br)I", "allene (axial)"],
+    ["N[Pt@SP1](N)(Cl)Cl", "N[Pt](N)(Cl)Cl", "square-planar"]
+  ])("refuses unverifiable input stereo in paste, grid and plugin: %s", async (smiles, plain, kind) => {
+    const parsed = (await depictSmilesForPaste(plain))!;
+    const message = `${kind} stereochemistry cannot be verified or drawn`;
+    const document = createEmptyDocument();
+    await expect(checkedSmilesPaste(document, point, parsed.depiction, smiles)).rejects.toThrow(message);
+    const grid = await checkedSmilesGridPaste(document, point, [{ smiles, depiction: parsed.depiction }]);
+    expect(grid.objectIds).toEqual([]);
+    expect(grid.failures).toEqual([{ input: smiles, error: expect.stringContaining(message) }]);
+    const stub = vi.spyOn(depictionClient, "depictSmilesOffThread").mockResolvedValueOnce(parsed);
+    try {
+      expect(await structureFromSmilesForPlugin({ smiles }, () => document)).toMatchObject({
+        available: true, built: false, reason: expect.stringContaining(message)
+      });
+    } finally { stub.mockRestore(); }
+    expect(document.pages[0]!.objects).toEqual([]);
+  });
+
+  it.each([
     "CC=CC", "CC(C)=CCCC(C)=CC=O", "OC(=O)C=CC(=O)O", "CC=CC1CCCCC1",
     "[2H]C=Cc1ccccc1", "C/C=C/C", "[2H]/C=C/c1ccccc1",
     "[H]C([H])([H])O", "C[C@@H](O)CC", "[H]/C(C)=C(/[H])C", "[Na+].[O-]C(=O)c1ccccc1",
     "c1cc[nH]c1", "C[N+](C)(C)C", "[2H]C([2H])([2H])O", "N[C@@H](C)C(=O)O", "F/C=C/F",
-    "C1=CC=CC=C1"
+    "C1=CC=CC=C1", "C[C@H](C)C", "[C@H](F)(F)F"
   ])("accepts real paste depiction without changing identity: %s", async smiles => {
     const parsed = await depictSmilesForPaste(smiles);
     expect(parsed).toBeDefined();
@@ -157,6 +178,13 @@ describe("isotope insert paths", () => {
     expect(failure.message).toContain("stereochemistry");
     expect(failure.message).toContain(`${source} -> ${output}`);
     expect(failure.message).not.toContain("isotope labels");
+  });
+
+  it("names stereochemistry when two specified centres are inverted", async () => {
+    const smiles = "C[C@H](O)[C@@H](N)C", opposite = "C[C@@H](O)[C@H](N)C";
+    const parsed = (await depictSmilesForPaste(opposite))!;
+    await expect(checkedSmilesPaste(createEmptyDocument(), point, parsed.depiction, smiles))
+      .rejects.toThrow("the drawn structure would change stereochemistry");
   });
 
   it.each(isotopeInsertSmiles)("preserves single paste and plugin structure %s", async smiles => {

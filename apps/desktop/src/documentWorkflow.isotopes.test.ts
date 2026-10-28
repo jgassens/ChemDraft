@@ -28,6 +28,7 @@ describe.each([false, true])("isotope relabelling (typed=%s)", (literal) => {
     const molecule = createSmilesMolecule(document, point, {
       atoms: [{ element: "C", isotope: 13, x: 0, y: 0, charge: 0 }], bonds: []
     }, "[13CH4]");
+    if (molecule.type !== "molecule") throw new Error("Expected a molecule");
     const atom = molecule.atoms[0]!;
     // Include an already visible/literal C so retyping C exercises the no-change fast path.
     atom.labelVisible = true;
