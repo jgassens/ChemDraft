@@ -493,6 +493,70 @@ export const TextObjectSchema = BaseObjectSchema.extend({
   spans: z.array(TextSpanSchema).default([])
 }).strict();
 
+export const TABLE_LIMITS = { maxColumns: 64, maxRows: 500, maxCellCharacters: 2000, maxFootnotes: 50 } as const;
+
+export const TableRichTextSchema = z.object({
+  text: z.string().max(TABLE_LIMITS.maxCellCharacters),
+  spans: z.array(TextSpanSchema).default([])
+}).strict();
+
+export const TableCellSchema = TableRichTextSchema.extend({
+  formula: z.enum(["auto", "off"]).optional()
+}).strict();
+
+export const TableColumnSchema = z.object({
+  id: IdSchema,
+  align: degradingEnum(["left", "center", "right", "decimal", "unknown"]),
+  width: z.discriminatedUnion("mode", [
+    z.object({ mode: z.literal("auto") }).strict(),
+    z.object({ mode: z.literal("fixed"), px: z.number().finite().positive().max(4000) }).strict()
+  ]),
+  formula: z.enum(["auto", "off"]).default("auto")
+}).strict();
+
+export const TableRowSchema = z.object({ id: IdSchema, cells: z.array(TableCellSchema) }).strict();
+
+export const TableStyleSchema = z.object({
+  preset: degradingEnum(["three-line", "grid", "unknown"]).default("three-line"),
+  topRulePt: z.number().finite().min(0).max(6).default(1),
+  headerRulePt: z.number().finite().min(0).max(6).default(0.5),
+  bottomRulePt: z.number().finite().min(0).max(6).default(1),
+  gridRulePt: z.number().finite().min(0).max(6).default(0.5),
+  headerBold: z.boolean().default(false),
+  cellPaddingPx: z.object({
+    x: z.number().finite().min(0).max(48).default(6),
+    y: z.number().finite().min(0).max(48).default(2)
+  }).strict().default({})
+}).strict();
+
+const TableObjectShapeSchema = BaseObjectSchema.extend({
+  type: z.literal("table"),
+  tableVersion: z.literal(1),
+  columns: z.array(TableColumnSchema).min(1).max(TABLE_LIMITS.maxColumns),
+  rows: z.array(TableRowSchema).min(1).max(TABLE_LIMITS.maxRows),
+  headerRowCount: z.number().int().nonnegative(),
+  caption: TableRichTextSchema.optional(),
+  footnotes: z.array(TableRichTextSchema).max(TABLE_LIMITS.maxFootnotes).default([]),
+  tableStyle: TableStyleSchema.default({})
+}).strict();
+
+function refineTable(table: z.infer<typeof TableObjectShapeSchema>, ctx: z.RefinementCtx): void {
+  const columnIds = new Set<string>();
+  table.columns.forEach((column, index) => {
+    if (columnIds.has(column.id)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["columns", index, "id"], message: `Duplicate column id "${column.id}".` });
+    columnIds.add(column.id);
+  });
+  const rowIds = new Set<string>();
+  table.rows.forEach((row, index) => {
+    if (rowIds.has(row.id)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["rows", index, "id"], message: `Duplicate row id "${row.id}".` });
+    rowIds.add(row.id);
+    if (row.cells.length !== table.columns.length) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["rows", index, "cells"], message: `Row "${row.id}" must have ${table.columns.length} cells, one per column.` });
+  });
+  if (table.headerRowCount > table.rows.length) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["headerRowCount"], message: "Header row count exceeds the number of rows." });
+}
+
+export const TableObjectSchema = TableObjectShapeSchema.superRefine(refineTable);
+
 export const BracketObjectSchema = BaseObjectSchema.extend({
   type: z.literal("bracket"),
   bracketKind: degradingEnum(["square", "round", "curly", "polymer", "unknown"]),
@@ -555,6 +619,7 @@ export const DocumentObjectSchema = z.discriminatedUnion("type", [
   MechanismArrowObjectSchema,
   ElectronMarkObjectSchema,
   TextObjectSchema,
+  TableObjectShapeSchema,
   BracketObjectSchema,
   GraphicObjectSchema,
   PlusObjectSchema,
@@ -564,7 +629,9 @@ export const DocumentObjectSchema = z.discriminatedUnion("type", [
   RGroupLabelObjectSchema,
   GenericAtomLabelObjectSchema,
   UnknownCompatibilityObjectSchema
-]);
+]).superRefine((object, ctx) => {
+  if (object.type === "table") refineTable(object, ctx);
+});
 
 export const PageSizePresetIdSchema = z.enum(PageSizePresetIds);
 export const PageSizeUnitSchema = z.enum(PageSizeUnits);
@@ -664,6 +731,12 @@ export type MechanismArrowObject = z.infer<typeof MechanismArrowObjectSchema>;
 export type ElectronMarkObject = z.infer<typeof ElectronMarkObjectSchema>;
 export type TextSpan = z.infer<typeof TextSpanSchema>;
 export type TextObject = z.infer<typeof TextObjectSchema>;
+export type TableObject = z.infer<typeof TableObjectSchema>;
+export type TableColumn = z.infer<typeof TableColumnSchema>;
+export type TableRow = z.infer<typeof TableRowSchema>;
+export type TableCell = z.infer<typeof TableCellSchema>;
+export type TableRichText = z.infer<typeof TableRichTextSchema>;
+export type TableStyle = z.infer<typeof TableStyleSchema>;
 export type BracketObject = z.infer<typeof BracketObjectSchema>;
 export type GraphicGradientStop = z.infer<typeof GraphicGradientStopSchema>;
 export type GraphicPaint = z.infer<typeof GraphicPaintSchema>;
