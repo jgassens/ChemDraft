@@ -38,8 +38,10 @@ export interface AssistantToolContext {
     /** Noninteractive: return engineNotInstalled rather than opening installation UI. */
     structureToName(request: PluginStructureToNameRequest): Promise<PluginStructureToNameResult>;
     /** RDKit only; counts, formula and canonicalSmiles retain explicit H.
-     * identitySmiles removes ordinary explicit H, preserving isotopic H. */
-    inspectStructure(format: "smiles" | "molfile", value: string): Promise<AssistantStructureInspection>;
+     * identitySmiles removes ordinary explicit H, preserving isotopic H. With stereoReference,
+     * it compares only stereo specified by that input, while canonicalSmiles stays unmasked. */
+    inspectStructure(format: "smiles" | "molfile", value: string,
+      stereoReference?: string): Promise<AssistantStructureInspection>;
   };
   render(svg: string, opts: { maxDimensionPx: number; background?: string }): Promise<{
     bytes: Uint8Array; width: number; height: number;

@@ -9,19 +9,13 @@ import {
 import { MainWindow } from "./MainWindow";
 import { createPhase4Document, pastedStructureDepictionFromMolfile } from "./documentWorkflow";
 import * as depictionClient from "./depiction2d/client";
+import { ensureRdkit } from "../../../packages/rdkit-adapter/src/conformer";
+import { installDomRdkitLoader } from "./testSupport/rdkitIdentity";
+import { loadRdkitWithAppLoader } from "./plugins/rdkitAppLoader";
 
-// Exercise the paste UI with an OCL canonicalizer stub; isotopeInsertPaths uses real RDKit.
+// Exercise the OCL depiction fallback with a real RDKit identity inspector.
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
-vi.mock("@chemdraft/rdkit-adapter", async () => {
-  const { Molecule } = await import("openchemlib");
-  return {
-    generateSmiles2DMolfile: vi.fn().mockRejectedValue(new Error("WASM unavailable")),
-    ensureRdkit: async () => ({ get_mol: (value: string) => {
-      const molecule = /V2000|V3000/.test(value) ? Molecule.fromMolfile(value) : Molecule.fromSmiles(value);
-      return { get_smiles: () => molecule.toIsomericSmiles(), delete: () => {} };
-    } })
-  };
-});
+vi.mock("./plugins/rdkitAppLoader", () => ({ loadRdkitWithAppLoader: vi.fn(async () => ({ ensureRdkit })) }));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -35,9 +29,10 @@ describe("MainWindow SMILES paste failure notices", () => {
   let container: HTMLDivElement;
   let root: Root;
 
-  beforeAll(async () => { await ensureOclResources(); });
+  beforeAll(async () => { installDomRdkitLoader(); await ensureOclResources(); });
 
   beforeEach(async () => {
+    vi.mocked(loadRdkitWithAppLoader).mockClear().mockResolvedValue({ ensureRdkit });
     vi.stubGlobal("ResizeObserver", TestResizeObserver);
     container = document.createElement("div");
     document.body.append(container);
@@ -61,19 +56,65 @@ describe("MainWindow SMILES paste failure notices", () => {
     vi.restoreAllMocks();
   });
 
-  async function paste(text: string, type = "text/plain", statusNeedle = new UnrequestedSmilesRadicalError("n1cccc1").message) {
+  function dispatchPaste(text: string, type = "text/plain") {
     const event = new Event("paste", { bubbles: true, cancelable: true });
     Object.defineProperty(event, "clipboardData", {
       value: { types: [type], getData: (requested: string) => requested === type ? text : "" }
     });
-    await act(async () => { window.dispatchEvent(event); });
+    window.dispatchEvent(event);
     expect(event.defaultPrevented).toBe(true);
+  }
+
+  async function paste(
+    text: string, type = "text/plain", statusNeedle = new UnrequestedSmilesRadicalError("n1cccc1").message
+  ) {
+    await act(async () => { dispatchPaste(text, type); });
     await vi.waitFor(async () => {
       await act(async () => { await Promise.resolve(); });
       expect(container.querySelector('[role="status"]')?.textContent).toContain(statusNeedle);
     }, { timeout: 15_000, interval: 50 });
     return container.querySelector('[role="status"]')?.textContent;
   }
+
+  it.each(["CCO", "CCO\n"])("pastes %j as text when the injected RDKit loader fails", async text => {
+    vi.mocked(loadRdkitWithAppLoader).mockRejectedValueOnce(new Error("test WASM unavailable"));
+    const status = await paste(text, "text/plain", "SMILES pasted as text:");
+    expect(status).toBe("SMILES pasted as text: the structure could not be verified because " +
+      "the RDKit engine did not load: test WASM unavailable");
+    expect(container.querySelectorAll(".molecule-object")).toHaveLength(0);
+    expect(container.querySelectorAll(".text-object")).toHaveLength(1);
+  });
+
+  it("inserts into the current document after an edit while identity verification waits", async () => {
+    let release!: () => void;
+    const wait = new Promise<void>(resolve => { release = resolve; });
+    const load = vi.mocked(loadRdkitWithAppLoader);
+    const original = load.getMockImplementation()!;
+    load.mockImplementationOnce(async loader => { await wait; return original(loader); });
+    await act(async () => { dispatchPaste("CCO"); });
+    await vi.waitFor(() => { expect(load).toHaveBeenCalled(); });
+    await paste("a caption added while waiting", "text/plain", "Pasted editable text");
+    const noteId = container.querySelector<HTMLElement>(".text-object")!.dataset.objectId;
+    await act(async () => { release(); await wait; });
+    await vi.waitFor(() => {
+      expect(container.querySelector('[role="status"]')?.textContent).toContain("Pasted SMILES structure");
+    });
+    expect(container.querySelectorAll(".molecule-object")).toHaveLength(1);
+    expect(container.querySelectorAll(".text-object")).toHaveLength(1);
+    expect(container.querySelector<HTMLElement>(".text-object")!.dataset.objectId).toBe(noteId);
+  });
+
+  it("caps all-failed list reasons and avoids a zero-sized grid success message", async () => {
+    vi.spyOn(depictionClient, "depictSmilesOffThread").mockResolvedValue({
+      depiction: pastedStructureDepictionFromMolfile(depictSmiles2D("C").molfile), stereoCount: 0
+    });
+    const status = await paste("CCO\nCCN\nCCC\nCCCl\nCCBr", "text/plain", "No SMILES structures were pasted");
+    expect(status).toContain("5 items failed:");
+    expect(status).toContain("and 2 more");
+    expect(status).not.toContain("CCCl:");
+    expect(status).not.toContain("Pasted 0");
+    expect(container.querySelectorAll(".molecule-object")).toHaveLength(0);
+  });
 
   it("refuses a depiction that loses an isotope without inserting structure or text", async () => {
     vi.spyOn(depictionClient, "depictSmilesOffThread").mockResolvedValueOnce({
@@ -159,7 +200,9 @@ describe("MainWindow SMILES paste failure notices", () => {
   it("reports both failures and the first reason when the whole list falls back to text", async () => {
     const status = await paste("n1cccc1\nc1cccc1");
     expect(status).toBe(
-      `Clipboard SMILES list could not be placed; 2 items failed: ${new UnrequestedSmilesRadicalError("n1cccc1").message}; pasted as text`
+      `No SMILES structures were pasted; 2 items failed: n1cccc1: ` +
+      `${new UnrequestedSmilesRadicalError("n1cccc1").message}; c1cccc1: ` +
+      `${new UnrequestedSmilesRadicalError("c1cccc1").message}; pasted as text`
     );
     expect(container.querySelectorAll(".molecule-object")).toHaveLength(0);
     expect(container.querySelectorAll(".text-object")).toHaveLength(1);

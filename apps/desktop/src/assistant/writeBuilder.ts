@@ -79,10 +79,12 @@ export async function inspectMolecule(context: AssistantToolContext, molecule: M
   if (!result.canonicalSmiles) throw new Error("RDKit did not return a canonical SMILES.");
   return { ...result, molfile };
 }
-async function assertCanonical(context: AssistantToolContext, molecule: MoleculeObject, input: string) {
-  await assertMoleculeMatchesSmiles(molecule, input, async (format, value) => {
+export async function assertCanonical(
+  context: AssistantToolContext, molecule: MoleculeObject, input: string
+) {
+  await assertMoleculeMatchesSmiles(molecule, input, async (format, value, stereoReference) => {
     const result = format === "smiles" ? await inspectSmiles(context, value)
-      : await context.chemistry.inspectStructure(format, value);
+      : await context.chemistry.inspectStructure(format, value, stereoReference);
     return result.valid ? { valid: true, canonicalSmiles: result.identitySmiles } : result;
   });
 }

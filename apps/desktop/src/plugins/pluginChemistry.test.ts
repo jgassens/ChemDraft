@@ -5,14 +5,17 @@ import { depictSmilesOffThread } from "../depiction2d/client";
 import * as ocl from "@chemdraft/ocl-adapter";
 import { createPhase4Document } from "../documentWorkflow";
 import { structureFromSmilesForPlugin } from "./pluginChemistry";
+import { ensureRdkit } from "../../../../packages/rdkit-adapter/src/conformer";
+import { installRealRdkitModuleLoader } from "../../../../packages/rdkit-adapter/src/testing";
 
 vi.mock("../depiction2d/client", () => ({ depictSmilesOffThread: vi.fn() }));
 vi.mock("../rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("@chemdraft/rdkit-adapter", () => ({
-  generateSmiles2DMolfile: vi.fn().mockRejectedValue(new Error("WASM unavailable"))
+  generateSmiles2DMolfile: vi.fn().mockRejectedValue(new Error("WASM unavailable")),
+  ensureRdkit: () => ensureRdkit()
 }));
 
-beforeAll(async () => { await ocl.ensureOclResources(); });
+beforeAll(async () => { installRealRdkitModuleLoader(); await ocl.ensureOclResources(); });
 beforeEach(() => {
   vi.mocked(depictSmilesOffThread).mockImplementation((smiles) => depictInWorker(smiles, generateSmiles2DMolfile, () => {}));
 });

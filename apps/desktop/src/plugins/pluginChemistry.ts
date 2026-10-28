@@ -25,6 +25,8 @@ import type {
   PluginStructureFromSmilesResult
 } from "@chemdraft/plugin-api";
 import { ISOTOPE_ENVELOPE_METHOD_ID } from "@chemdraft/rdkit-adapter/constants";
+import { assertMoleculeMatchesSmiles } from "@chemdraft/document-workflow-core";
+import { createPasteIdentityInspector } from "../smilesPasteIdentity";
 
 import { analysisClient } from "../analysisClient";
 import { depictSmilesOffThread } from "../depiction2d/client";
@@ -153,6 +155,13 @@ export async function structureFromSmilesForPlugin(
   });
 
   RESERVED_PLUGIN_OBJECT_IDS.add(object.id);
+  try {
+    await assertMoleculeMatchesSmiles(object, request.smiles, createPasteIdentityInspector());
+    signal?.throwIfAborted();
+  } catch (error) {
+    RESERVED_PLUGIN_OBJECT_IDS.delete(object.id);
+    return { available: true, built: false, reason: structureGenerationFailureReason(request.smiles, error) };
+  }
   return { available: true, built: true, object };
 }
 

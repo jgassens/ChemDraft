@@ -82,12 +82,12 @@ export async function callAssistantTool(context: AssistantToolContext, name: str
         try { return await context.confirmPageGrowth(growth, abort.signal); }
         finally { resumePreparation?.(); }
       },
-      write: async (patch, _signal, checkPreconditions) => {
+      write: async (patch, _signal, checkPreconditions, expectedSmiles) => {
         if (!active) throw new Error(`Assistant tool ${name} timed out.`);
         requireDocument(context);
         const beforeIds = new Set(context.getDocument()!.pages.flatMap(page => page.objects.map(object => object.id)));
         waitForWrite?.();
-        const written = await context.write(patch, abort.signal, checkPreconditions);
+        const written = await context.write(patch, abort.signal, checkPreconditions, expectedSmiles);
         recordAssistantInsertions(context, written.objectIds.filter(id => !beforeIds.has(id)));
         return written;
       }

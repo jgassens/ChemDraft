@@ -1,27 +1,49 @@
-import type { ChemDraftDocument } from "@chemdraft/chem-core";
+import { createEmptyDocument, type ChemDraftDocument } from "@chemdraft/chem-core";
 import {
-  assertMoleculeMatchesSmiles, ChemicalIdentityMismatchError, inspectHydrogenNormalizedIdentity,
+  assertMoleculeMatchesSmiles, ChemicalIdentityMismatchError,
+  inspectHydrogenNormalizedIdentity,
   type InspectChemicalIdentity,
   type PagePoint, type PastedStructureDepiction
 } from "@chemdraft/document-workflow-core";
 import { insertSmilesMolecule, insertSmilesMoleculeGrid } from "./documentWorkflow";
 import { loadRdkitWithAppLoader } from "./plugins/rdkitAppLoader";
 import type { SmilesListPasteFailure } from "./smilesListPaste";
+import type { RdkitMinimalModule } from "@chemdraft/rdkit-adapter";
 
-const inspectPasteIdentity: InspectChemicalIdentity = async (_format, value) => {
-  const rdkit = await loadRdkitWithAppLoader(() => import("@chemdraft/rdkit-adapter"));
-  return inspectHydrogenNormalizedIdentity(await rdkit.ensureRdkit(), value);
-};
+export function createPasteIdentityInspector(
+  load: () => Promise<{ ensureRdkit(): Promise<RdkitMinimalModule> }> =
+    () => loadRdkitWithAppLoader(() => import("@chemdraft/rdkit-adapter"))
+): InspectChemicalIdentity {
+  return async (_format, value, stereoReference) => {
+    let module;
+    try { module = await (await load()).ensureRdkit(); }
+    catch (error) {
+      throw new Error("the structure could not be verified because the RDKit engine did not load: " +
+        (error instanceof Error ? error.message : String(error)));
+    }
+    return inspectHydrogenNormalizedIdentity(module, value, stereoReference);
+  };
+}
+const inspectPasteIdentity = createPasteIdentityInspector();
 
 export class SmilesPasteIdentityError extends Error {
   constructor(smiles: string, cause: unknown) {
     const detail = cause instanceof Error ? cause.message : String(cause);
-    const loss = /\[\d+[A-Za-z]/.test(smiles) ? "isotope labels or their positions" : "chemical identity";
     super(cause instanceof ChemicalIdentityMismatchError
-      ? `SMILES paste refused: the drawn structure would lose ${loss} for "${smiles}". ${detail}`
+      ? `SMILES paste refused: the drawn structure would change ${cause.difference} ` +
+        `for "${smiles}". ${detail}`
       : `SMILES paste refused: chemical identity could not be verified for "${smiles}": ${detail}`);
     this.name = "SmilesPasteIdentityError";
   }
+}
+
+/** Check a depiction without holding a document snapshot across an engine load. */
+export async function verifySmilesPaste(
+  depiction: PastedStructureDepiction, smiles: string,
+  inspect: InspectChemicalIdentity = inspectPasteIdentity
+): Promise<void> {
+  // Normalization of the isolated insert is the same as the final insert into the live document.
+  await checkedSmilesPaste(createEmptyDocument(), { x: 200, y: 200 }, depiction, smiles, inspect);
 }
 
 /** Build and validate the normalized document before the caller commits any change. */
@@ -60,4 +82,21 @@ export async function checkedSmilesGridPaste(
     }
   }
   return { ...(failures.length ? insertSmilesMoleculeGrid(document, point, accepted) : built), failures };
+}
+
+export async function verifySmilesGridEntries(
+  entries: readonly { smiles: string; depiction: PastedStructureDepiction }[],
+  inspect: InspectChemicalIdentity = inspectPasteIdentity
+) {
+  const accepted: typeof entries[number][] = [];
+  const failures: SmilesListPasteFailure[] = [];
+  for (const entry of entries) {
+    try {
+      await verifySmilesPaste(entry.depiction, entry.smiles, inspect);
+      accepted.push(entry);
+    } catch (error) {
+      failures.push({ input: entry.smiles, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return { entries: accepted, failures };
 }

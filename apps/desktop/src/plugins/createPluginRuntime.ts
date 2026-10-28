@@ -329,7 +329,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
         structureFromSmiles: request => options.buildStructureFromSmiles === null ?
           Promise.resolve({ available: false, reason: "Structure layout engine unavailable." }) :
           options.buildStructureFromSmiles ? options.buildStructureFromSmiles(request) : structureFromSmilesForPlugin(request, getDocument),
-        inspectStructure: async (_format, value) => {
+        inspectStructure: async (_format, value, stereoReference) => {
           const rdkit = await loadRdkitWithAppLoader(() => import("@chemdraft/rdkit-adapter"));
           const module = await rdkit.ensureRdkit();
           const molecule = module.get_mol(value, JSON.stringify({ removeHs: false }));
@@ -340,7 +340,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
             if (!jsonMol.get_json || !canonicalSmiles) throw new Error("RDKit structure inspection is unavailable.");
             const graph = JSON.parse(jsonMol.get_json()) as Parameters<typeof rdkit.compositionFromRdkitJson>[0];
             const composition = rdkit.compositionFromRdkitJson(graph);
-            const identity = inspectHydrogenNormalizedIdentity(module, value);
+            const identity = inspectHydrogenNormalizedIdentity(module, value, stereoReference);
             if (!identity.valid) return identity;
             return { valid: true, canonicalSmiles, identitySmiles: identity.canonicalSmiles,
               formula: composition.formula, warnings: [],

@@ -1,7 +1,7 @@
 import type { ChemDraftDocument, DocumentObject, MoleculeObject } from "@chemdraft/chem-core";
 import { normalizeCommittedDocument } from "../documentWorkflow";
 import type { AssistantToolContext } from "./AssistantToolContext";
-import { inspectMolecule, inspectSmiles } from "./writeBuilder";
+import { assertCanonical, inspectMolecule } from "./writeBuilder";
 
 const objectsById = (document: ChemDraftDocument) => new Map(document.pages.flatMap(page =>
   page.objects.map(object => [object.id, { pageId: page.id, object }] as const)));
@@ -64,7 +64,16 @@ export async function verifyNormalizedAssistantWrite(context: AssistantToolConte
       continue;
     }
     const expected = expectedSmiles.get(id);
-    const input = expected === undefined ? await inspectMolecule(context, source) : await inspectSmiles(context, expected);
+    if (expected !== undefined) {
+      try { await assertCanonical(context, molecule, expected); }
+      catch (error) {
+        throw new Error(`refused: placing ${id} there would change its canonical isomeric SMILES ` +
+          "or atom count " +
+          `during desktop normalization: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      continue;
+    }
+    const input = await inspectMolecule(context, source);
     const output = await inspectMolecule(context, molecule);
     if (!input.identitySmiles || !output.identitySmiles ||
       input.identitySmiles !== output.identitySmiles || input.heavyAtoms !== output.heavyAtoms) {

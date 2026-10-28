@@ -1,5 +1,8 @@
 // @vitest-environment jsdom
 import * as smilesListPaste from "./smilesListPaste";
+import * as smilesPasteIdentity from "./smilesPasteIdentity";
+import { ensureRdkit } from "../../../packages/rdkit-adapter/src/conformer";
+import { installDomRdkitLoader } from "./testSupport/rdkitIdentity";
 import { act, createElement, StrictMode } from "react";
 import { setNativePromptProvider, type NativePromptOptions } from "./nativePrompt";
 import { readFileSync } from "node:fs";
@@ -1664,35 +1667,69 @@ describe("documents in one window", () => {
     expect(native.promptShowing).toHaveBeenCalledTimes(1);
   });
 
-  it.each(["clipboard", "depiction"])("prevents an already-running %s paste from changing the saved quit snapshot", async (kind) => {
-    await paste("Existing drawing");
-    let finishPaste: () => void = () => {};
-    if (kind === "clipboard") {
-      native.clipboardPending = new Promise((resolve) => {
-        finishPaste = () => resolve({ types: ["text/plain"], textItems: [{ type: "text/plain", text: "Late clipboard text" }] });
-      });
-      await command("clipboard.paste");
-    } else {
-      const parsed = await smilesListPaste.depictSmilesForPaste("CC");
-      expect(parsed).toBeDefined();
-      vi.spyOn(smilesListPaste, "depictSmilesForPaste").mockImplementationOnce(() => new Promise((resolve) => {
-        finishPaste = () => resolve(parsed);
-      }));
-      await paste("CC");
-    }
-    saveAskToSaveBeforeQuit(true);
-    native.savePicker.mockResolvedValueOnce("/tmp/async-quit.chemdraft");
-    await flush();
-    let finishFlush: () => void = () => {};
-    native.saveSession.mockImplementationOnce(() => new Promise<void>((resolve) => { finishFlush = resolve; }));
-    await quitButton("Save");
-    const saved = bridge().snapshot().document;
-    await act(async () => { finishPaste(); });
-    expect(bridge().snapshot().document).toEqual(saved);
-    expect(bridge().snapshot().file.dirty).toBe(false);
-    expect(native.quit).not.toHaveBeenCalled();
-    await act(async () => { finishFlush(); });
-    expect(native.quit).toHaveBeenCalledTimes(1);
+  it.each(["clipboard", "depiction", "identity", "list identity"])(
+    "prevents an already-running %s paste from changing the saved quit snapshot", async (kind) => {
+      await paste("Existing drawing");
+      let finishPaste: () => void = () => {};
+      if (kind === "clipboard") {
+        native.clipboardPending = new Promise((resolve) => {
+          finishPaste = () => resolve({ types: ["text/plain"],
+            textItems: [{ type: "text/plain", text: "Late clipboard text" }] });
+        });
+        await command("clipboard.paste");
+      } else {
+        const parsed = await smilesListPaste.depictSmilesForPaste("CC");
+        expect(parsed).toBeDefined();
+        if (kind.includes("identity")) {
+          installDomRdkitLoader();
+          const inspect = smilesPasteIdentity.createPasteIdentityInspector(async () => ({ ensureRdkit }));
+          const wait = new Promise<void>(resolve => { finishPaste = resolve; });
+          if (kind === "list identity") {
+            const original = smilesPasteIdentity.verifySmilesGridEntries;
+            const entries = ["CC", "CC"].map(smiles => ({ smiles, depiction: parsed!.depiction }));
+            vi.spyOn(smilesListPaste, "depictSmilesListForPaste")
+              .mockReturnValueOnce(Promise.resolve({ entries, skipped: 0, failures: [] }));
+            vi.spyOn(smilesPasteIdentity, "verifySmilesGridEntries").mockImplementationOnce(async entries => {
+              await wait;
+              return original(entries, inspect);
+            });
+          } else {
+            const original = smilesPasteIdentity.verifySmilesPaste;
+            vi.spyOn(smilesListPaste, "depictSmilesForPaste").mockResolvedValueOnce(parsed);
+            vi.spyOn(smilesPasteIdentity, "verifySmilesPaste")
+              .mockImplementationOnce(async (depiction, smiles) => {
+                await wait;
+                await original(depiction, smiles, inspect);
+              });
+          }
+        } else {
+          vi.spyOn(smilesListPaste, "depictSmilesForPaste")
+            .mockImplementationOnce(() => new Promise((resolve) => {
+              finishPaste = () => resolve(parsed);
+            }));
+        }
+        await paste(kind === "list identity" ? "CC\nCC" : "CC");
+      }
+      saveAskToSaveBeforeQuit(true);
+      native.savePicker.mockResolvedValueOnce("/tmp/async-quit.chemdraft");
+      await flush();
+      let finishFlush: () => void = () => {};
+      native.saveSession.mockImplementationOnce(() =>
+        new Promise<void>(resolve => { finishFlush = resolve; }));
+      await quitButton("Save");
+      const saved = bridge().snapshot().document;
+      await act(async () => { finishPaste(); });
+      if (kind.includes("identity")) {
+        await vi.waitFor(() => {
+          expect(container.querySelector('[role="status"]')?.textContent)
+            .toBe("Paste cancelled while quitting");
+        });
+      }
+      expect(bridge().snapshot().document).toEqual(saved);
+      expect(bridge().snapshot().file.dirty).toBe(false);
+      expect(native.quit).not.toHaveBeenCalled();
+      await act(async () => { finishFlush(); });
+      expect(native.quit).toHaveBeenCalledTimes(1);
   });
 
   it.each(["picker cancelled", "write failed"])("remains editable after quit Save is %s", async (failure) => {

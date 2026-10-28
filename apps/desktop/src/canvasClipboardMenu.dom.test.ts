@@ -2,7 +2,7 @@
 
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { MainWindow } from "./MainWindow";
 import {
   CHEMDRAFT_SELECTION_CLIPBOARD_TYPE,
@@ -14,6 +14,14 @@ import {
 import { depictSmilesForPaste } from "./smilesListPaste";
 import { saveKeybindingSettings } from "./keybindingSettings";
 import type { MoleculeObject } from "@chemdraft/chem-core";
+import { ensureRdkit } from "../../../packages/rdkit-adapter/src/conformer";
+import { installDomRdkitLoader } from "./testSupport/rdkitIdentity";
+
+// jsdom cannot fetch the browser WASM asset URL. Keep the real identity inspector and use the
+// vendored Node loader, just as the other real-engine paste tests do.
+vi.mock("./plugins/rdkitAppLoader", () => ({
+  loadRdkitWithAppLoader: async () => ({ ensureRdkit })
+}));
 
 vi.mock("./smilesListPaste", async (importOriginal) => ({
   ...await importOriginal<typeof import("./smilesListPaste")>(),
@@ -44,6 +52,8 @@ describe("canvas clipboard menu and copy guard", () => {
   let container: HTMLDivElement;
   let root: Root;
   let originalResizeObserver: typeof ResizeObserver | undefined;
+
+  beforeAll(installDomRdkitLoader);
 
   beforeEach(() => {
     vi.mocked(depictSmilesForPaste).mockReset();
@@ -152,6 +162,10 @@ describe("canvas clipboard menu and copy guard", () => {
       value: { types: ["text/plain"], getData: (type: string) => type === "text/plain" ? text : "" }
     });
     await act(async () => { window.dispatchEvent(event); });
+    await vi.waitFor(async () => {
+      await act(async () => { await Promise.resolve(); });
+      expect(container.querySelector('[role="status"]')?.textContent).toContain("Pasted SMILES structure");
+    });
     expect(depictSmilesForPaste).toHaveBeenCalledExactlyOnceWith("CCO");
     expect(container.querySelector('[role="status"]')?.textContent).toContain("Pasted SMILES structure");
     expect(container.querySelectorAll(".text-object")).toHaveLength(0);

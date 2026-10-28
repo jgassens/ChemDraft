@@ -35,6 +35,11 @@ export interface SmilesListPasteFailure {
   error: string;
 }
 
+export function smilesListFailureStatus(failures: readonly SmilesListPasteFailure[]): string {
+  const first = failures.slice(0, 3).map(failure => `${failure.input}: ${failure.error}`).join("; ");
+  return first + (failures.length > 3 ? `; and ${failures.length - 3} more` : "");
+}
+
 /** A rejected list preserves its individual chemistry refusals for the status surface. */
 export class SmilesListPasteError extends Error {
   readonly failures: readonly SmilesListPasteFailure[];

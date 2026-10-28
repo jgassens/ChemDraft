@@ -5,8 +5,10 @@ import { nativeSingleBondGraphMetadata } from "./atoms";
 import { createSmilesMolecule, pastedStructureDepictionFromMolfile } from "./molecule";
 import { nativeSingleBondGraphSmiles } from "./smiles";
 import { moleculeSmiles } from "./moleculeSmiles";
-import { generateSmiles2DMolfile } from "../../rdkit-adapter/src/conformer";
+import { ensureRdkit, generateSmiles2DMolfile } from "../../rdkit-adapter/src/conformer";
 import { installRealRdkitModuleLoader } from "../../rdkit-adapter/src/testing";
+import { assertMoleculeMatchesSmiles, inspectHydrogenNormalizedIdentity } from "./chemicalIdentity";
+import { markV2000UnspecifiedDoubleBonds, sourceBondSemantics } from "./sourceBondSemantics";
 
 beforeAll(() => installRealRdkitModuleLoader());
 
@@ -20,6 +22,60 @@ const bond = (
 });
 
 describe("native isotope chemistry", () => {
+  // These comparisons must keep passing after #229 ("store unspecified double bonds as either") merges.
+  it.each([false, true])("compares unspecified E/Z when output carries either=%s", async either => {
+    const module = await ensureRdkit();
+    const molfile = await generateSmiles2DMolfile("[2H]/C=C/c1ccccc1");
+    const depiction = pastedStructureDepictionFromMolfile(molfile);
+    const molecule = createSmilesMolecule(createEmptyDocument(), { x: 200, y: 200 }, depiction, "unused");
+    const double = molecule.bonds.findIndex(bond => bond.order === "double");
+    await expect(assertMoleculeMatchesSmiles(molecule, "[2H]C=Cc1ccccc1", async (_format, value, reference) =>
+      inspectHydrogenNormalizedIdentity(module, either && _format === "molfile"
+        ? markV2000UnspecifiedDoubleBonds(value, new Set([double])) : value, reference)))
+      .resolves.toBeUndefined();
+    const specified = assertMoleculeMatchesSmiles(molecule, "[2H]/C=C/c1ccccc1",
+      async (_format, value, reference) => inspectHydrogenNormalizedIdentity(module,
+        either && _format === "molfile"
+          ? markV2000UnspecifiedDoubleBonds(value, new Set([double])) : value, reference));
+    if (either) await expect(specified).rejects.toThrow("Canonical SMILES mismatch");
+    else await expect(specified).resolves.toBeUndefined();
+  });
+
+  it.each([
+    ["FC=CC(Cl)Br", "F/C=C/[C@H](Cl)Br", true],
+    ["F/C=C/C(Cl)Br", "F/C=C/[C@H](Cl)Br", true],
+    ["F/C=C/C(Cl)Br", "F/C=C\\[C@H](Cl)Br", false],
+    ["FC=C[C@H](Cl)Br", "F/C=C/[C@@H](Cl)Br", false],
+    ["FC=C[C@H](Cl)Br", "F/C=C/[C@H](Cl)Br", true],
+    ["F/C=C/CC=CC", "F/C=C/C/C=C/C", true],
+    ["[2H]C=Cc1ccccc1", "c1ccccc1/C=C/[2H]", true],
+    ["[CH3]", "C", false], ["[NH4+]", "N", false], ["[13CH4]", "C", false]
+  ])("checks input-specified stereo with graph correspondence: %s -> %s", async (source, output, ok) => {
+    const module = await ensureRdkit();
+    const input = inspectHydrogenNormalizedIdentity(module, source);
+    if (!input.valid) throw new Error(input.reason);
+    const actual = inspectHydrogenNormalizedIdentity(module, output, input.canonicalSmiles);
+    expect(actual.valid && actual.canonicalSmiles === input.canonicalSmiles).toBe(ok);
+  });
+
+  it("shares unknown-double-bond CTAB semantics with the CLI", async () => {
+    const molfile = await generateSmiles2DMolfile("CC=CC");
+    const semantics = sourceBondSemantics(molfile);
+    expect(semantics.unspecifiedDoubleBondIndices).toEqual([1]);
+    expect(sourceBondSemantics(markV2000UnspecifiedDoubleBonds(molfile, new Set([1])))).toEqual(semantics);
+  });
+
+  it("refuses stereo comparison if the engine cannot establish atom/bond correspondence", async () => {
+    const module = await ensureRdkit();
+    const limited = { get_mol: (value: string, options?: string) => {
+      const molecule = module.get_mol(value, options);
+      return molecule && { get_smiles: () => molecule.get_smiles!(),
+        delete: () => molecule.delete(), generate_3d_embed: () => "", optimize_3d_conformer: () => "" };
+    } };
+    expect(() => inspectHydrogenNormalizedIdentity(limited, "C/C=C/C", "CC=CC"))
+      .toThrow("could not establish atom/bond correspondence");
+  });
+
   it.each([
     ["[13CH3]c1ccccc1", "C6[13C]H8"],
     ["c1cc[15n]cc1", "C5H5[15N]"],
