@@ -21,6 +21,19 @@ function htmlPayload(text: string, type = "text/html") {
   return { types: [type], textItems: [{ type, text }] };
 }
 
+function cfHtml(html: string): string {
+  const header = (offsets: number[]) =>
+    "Version:0.9\r\n" +
+    ["StartHTML", "EndHTML", "StartFragment", "EndFragment"]
+      .map((name, index) => `${name}:${String(offsets[index]).padStart(10, "0")}\r\n`)
+      .join("");
+  const start = header([0, 0, 0, 0]).length;
+  const fragmentStart = html.indexOf("<!--StartFragment-->") + "<!--StartFragment-->".length;
+  const fragmentEnd = html.indexOf("<!--EndFragment-->");
+  const offset = (index: number) => start + Buffer.byteLength(html.slice(0, index), "utf8");
+  return header([start, offset(html.length), offset(fragmentStart), offset(fragmentEnd)]) + html;
+}
+
 function readHtml(text: string, type?: string): ClipboardTableResult | undefined {
   return readClipboardHtmlTable(htmlPayload(text, type), parseHtml);
 }
@@ -67,6 +80,12 @@ describe("HTML table fixtures", () => {
         ["CH2Cl2", "84.93", "1.33", "—", "—", "—", "86"]
       ]
     });
+  });
+
+  it.each([false, true])("reads Excel markers inside the table (CF_HTML: %s)", (wrapped) => {
+    const html = fixture("excel-markers-inside-table.html");
+    const result = expectOk(readHtml(wrapped ? cfHtml(html) : html, wrapped ? "HTML Format" : "text/html"));
+    expect(result).toEqual(expectOk(readHtml(fixture("excel-like.html"))));
   });
 
   const wordSpec = {
@@ -134,6 +153,10 @@ describe("HTML table fixtures", () => {
 });
 
 describe("what counts as a table", () => {
+  it("leaves a single HTML cell to the text path", () => {
+    expect(readHtml(table("<tr><td>allyl alcohol</td></tr>"))).toBeUndefined();
+  });
+
   it("is not a table when text sits beside it", () => {
     const lone = "<table><tr><td>a</td><td>b</td></tr></table>";
     expect(readHtml(`<p>See the table below.</p>${lone}`)).toBeUndefined();
@@ -156,39 +179,53 @@ describe("what counts as a table", () => {
   });
 
   it("matches the HTML type case-insensitively", () => {
-    const result = expectOk(readHtml(table("<tr><td>a</td></tr>"), "Public.HTML"));
-    expect(result.spec.rows).toEqual([["a"]]);
+    const result = expectOk(readHtml(table("<tr><td>a</td><td>b</td></tr>"), "Public.HTML"));
+    expect(result.spec.rows).toEqual([["a", "b"]]);
   });
 });
 
 describe("CF_HTML header", () => {
   const document =
-    "<html><body><!--StartFragment--><table><tr><td>x</td></tr></table><!--EndFragment--></body></html>";
+    "<html><body><!--StartFragment--><table><tr><td>x</td><td>y</td></tr></table>" +
+    "<!--EndFragment--></body></html>";
   const header = (start: string) =>
     `Version:0.9\r\nStartHTML:${start}\r\nEndHTML:0000000999\r\n` +
     "StartFragment:0000000000\r\nEndFragment:0000000000\r\n";
-  const bare = "<table><tr><td>x</td></tr></table>";
+  const bare = "<table><tr><td>x</td><td>y</td></tr></table>";
 
   it("drops everything before StartHTML", () => {
     const length = header("0000000000").length;
     const start = String(length).padStart(10, "0");
-    expect(expectOk(readHtml(header(start) + document)).spec.rows).toEqual([["x"]]);
+    expect(expectOk(readHtml(header(start) + document)).spec.rows).toEqual([["x", "y"]]);
     // The header's own words would be text beside the table if the offset were ignored.
-    expect(expectOk(readHtml(header(start) + bare)).spec.rows).toEqual([["x"]]);
+    expect(expectOk(readHtml(header(start) + bare)).spec.rows).toEqual([["x", "y"]]);
   });
 
   it("falls back to the first tag when the offset is unusable", () => {
     for (const start of ["garbage", "0000000003", "0000009999"]) {
-      expect(expectOk(readHtml(header(start) + bare)).spec.rows).toEqual([["x"]]);
-      expect(expectOk(readHtml(header(start) + document)).spec.rows).toEqual([["x"]]);
+      expect(expectOk(readHtml(header(start) + bare)).spec.rows).toEqual([["x", "y"]]);
+      expect(expectOk(readHtml(header(start) + document)).spec.rows).toEqual([["x", "y"]]);
     }
   });
 
   it("uses only the marked fragment when markers are present", () => {
     const html =
       `<html><body><p>outside</p><!--StartFragment-->${bare}<!--EndFragment--><p>after</p></body></html>`;
-    expect(expectOk(readHtml(html)).spec.rows).toEqual([["x"]]);
+    expect(expectOk(readHtml(html)).spec.rows).toEqual([["x", "y"]]);
     expect(readHtml(`<!--StartFragment--><p>inside</p>${bare}<!--EndFragment-->`)).toBeUndefined();
+  });
+
+  it("refuses prose or another table outside an Excel table with internal markers", () => {
+    const html = fixture("excel-markers-inside-table.html");
+    for (const extra of ["<p>Prose</p>", bare]) {
+      expect(readHtml(html.replace(/(<body[^>]*>)/, `$1${extra}`))).toBeUndefined();
+      expect(readHtml(html.replace("</body>", `${extra}</body>`))).toBeUndefined();
+    }
+  });
+
+  it("does not use a table that does not contain the fragment start", () => {
+    expect(readHtml(`${bare}<!--StartFragment--><!--EndFragment-->`)).toBeUndefined();
+    expect(readHtml(`<!--StartFragment--><!--EndFragment-->${bare}`)).toBeUndefined();
   });
 });
 
@@ -266,18 +303,19 @@ describe("table structure", () => {
       readHtml(
         table(
           "<tr><td>  a \n  b&nbsp;&nbsp;c<br>d<p>e</p><div>f</div>" +
-            "<ul><li>g</li><li>h</li></ul> </td></tr>"
+            "<ul><li>g</li><li>h</li></ul> </td><td></td></tr>"
         )
       )
     );
-    expect(result.spec.rows).toEqual([["a b c\nd\ne\nf\ng\nh"]]);
+    expect(result.spec.rows).toEqual([["a b c\nd\ne\nf\ng\nh", ""]]);
   });
 
   it("reads formatting from tags and inline styles and ignores script, style and comments", () => {
     const html = table(
       `<tr><td><strong>B</strong><em>I</em><span style="font-weight:700">W</span>` +
         `<span style="font-style:italic">S</span><span style="vertical-align:sub">x</span>` +
-        `<sup>2</sup><a href="#">link</a><script>alert(1)</script><style>p{}</style><!--c--></td></tr>`
+        `<sup>2</sup><a href="#">link</a><script>alert(1)</script><style>p{}</style><!--c-->` +
+        `</td><td></td></tr>`
     );
     expect(expectOk(readHtml(html)).spec.rows).toEqual([
       [
@@ -292,7 +330,8 @@ describe("table structure", () => {
             { text: "2", script: "superscript" },
             { text: "link" }
           ]
-        }
+        },
+        ""
       ]
     ]);
   });
@@ -300,9 +339,9 @@ describe("table structure", () => {
   it("lets font-weight:normal on a bold tag cancel it, and ignores mso-bidi properties", () => {
     const html = table(
       `<tr><td><b style="font-weight:normal">n</b>` +
-        `<span style="mso-bidi-font-weight:bold;mso-bidi-font-style:italic">m</span></td></tr>`
+        `<span style="mso-bidi-font-weight:bold;mso-bidi-font-style:italic">m</span></td><td></td></tr>`
     );
-    expect(expectOk(readHtml(html)).spec.rows).toEqual([["nm"]]);
+    expect(expectOk(readHtml(html)).spec.rows).toEqual([["nm", ""]]);
   });
 });
 
@@ -368,7 +407,7 @@ describe("HTML limits", () => {
       ok: false,
       reason: "The cell in row 1, column 2 has 2001 characters; ChemDraft table cells hold at most 2000."
     });
-    expectOk(readHtml(table(`<tr><td>${"x".repeat(2000)}</td></tr>`)));
+    expectOk(readHtml(table(`<tr><td>${"x".repeat(2000)}</td><td></td></tr>`)));
   });
 });
 
@@ -432,6 +471,7 @@ describe("TSV tables", () => {
 describe("every imported spec is a valid table spec", () => {
   const results: Array<[string, ClipboardTableResult | undefined]> = [
     ["excel", readHtml(fixture("excel-like.html"))],
+    ["excel internal markers", readHtml(fixture("excel-markers-inside-table.html"))],
     ["word", readHtml(fixture("word-like.html"))],
     ["word cf_html", readHtml(fixture("word-like.cfhtml.txt"), "HTML Format")],
     ["google docs", readHtml(fixture("google-docs-like.html"))],

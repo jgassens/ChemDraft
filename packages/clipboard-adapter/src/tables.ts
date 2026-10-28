@@ -316,8 +316,8 @@ function findHtmlText(payload: ClipboardReadPayload): string | undefined {
   return item?.text;
 }
 
-/** Drops a CF_HTML header (the Windows "HTML Format" envelope) and keeps the marked fragment. */
-function htmlFragment(text: string): string {
+/** Drops a CF_HTML header and keeps both the document and its marked fragment. */
+function htmlFragment(text: string): { html: string; fragment: string } {
   let html = text;
   if (/^\s*Version:/i.test(html)) {
     const offset = Number(/^\s*StartHTML:\s*(\d+)/im.exec(html)?.[1]);
@@ -333,9 +333,9 @@ function htmlFragment(text: string): string {
   const start = html.indexOf(startMarker);
   const end = html.indexOf(endMarker, start >= 0 ? start : 0);
   if (start >= 0) {
-    return html.slice(start + startMarker.length, end >= 0 ? end : undefined);
+    return { html, fragment: html.slice(start + startMarker.length, end >= 0 ? end : undefined) };
   }
-  return end >= 0 ? html.slice(0, end) : html;
+  return { html, fragment: end >= 0 ? html.slice(0, end) : html };
 }
 
 function hasTableAncestor(element: Element): boolean {
@@ -480,7 +480,7 @@ function convertTable(table: Element): ClipboardTableResult | undefined {
   if (nominal > LIMITS.maxColumns) {
     return tooManyColumns(nominal);
   }
-  if (nominal === 0) {
+  if (nominal * rows.length < 2) {
     return undefined;
   }
 
@@ -579,9 +579,24 @@ export function readClipboardHtmlTable(
   if (text === undefined) {
     return undefined;
   }
-  const document = parseHtml(htmlFragment(text));
-  const root: Element = document.body ?? document.documentElement;
-  const tables = Array.from(root.querySelectorAll("table")).filter((table) => !hasTableAncestor(table));
+  const { html, fragment } = htmlFragment(text);
+  let document = parseHtml(fragment);
+  let root: Element = document.body ?? document.documentElement;
+  let tables = Array.from(root.querySelectorAll("table")).filter((table) => !hasTableAncestor(table));
+  if (tables.length === 0 && fragment !== html) {
+    // Excel marks the rows inside the table, so the fragment alone has no table wrapper.
+    document = parseHtml(html);
+    root = document.body ?? document.documentElement;
+    tables = Array.from(root.querySelectorAll("table")).filter((table) => !hasTableAncestor(table));
+    const comments = document.createTreeWalker(root, 128 /* SHOW_COMMENT */);
+    let start = comments.nextNode();
+    while (start && start.nodeValue !== "StartFragment") {
+      start = comments.nextNode();
+    }
+    if (tables.length !== 1 || !start || !tables[0].contains(start)) {
+      return undefined;
+    }
+  }
   if (tables.length !== 1 || hasTextOutside(root, tables[0])) {
     return undefined;
   }

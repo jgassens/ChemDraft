@@ -9,6 +9,10 @@ that structure, not that a given application produces it.
 
 The table content is the Sharpless reagent table in `../tables/sharpless-reagent-table.json`.
 
+`excel-markers-inside-table.html` is a second synthetic Excel fixture. It models Excel's fragment
+marker placement inside `<table>`, after the `<col>` elements and before the first `<tr>`, without
+a CF_HTML envelope. It is still hand-written, not a capture from Excel.
+
 | File | Models |
 |---|---|
 | `excel-like.html` | Office HTML: `<col>` widths, `x:num`, `mso-number-format`, class-based styles, no `<thead>` |
