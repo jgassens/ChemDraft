@@ -17,10 +17,37 @@ import { installRealRdkitModuleLoader } from "../../../packages/rdkit-adapter/sr
 import { depictInWorker } from "./depiction2d/depict";
 import {
   applyEditorSaveResultWithLabelWarnings, createNativeMolfileMolecule,
-  createNativeSavePayload, openNativeDocument
+  applyNativeAtomElementTarget, applyNativeAtomLabelDraft, createNativeSavePayload, openNativeDocument
 } from "./documentWorkflow";
 
 const point = { x: 200, y: 200 };
+
+describe.each([false, true])("isotope relabelling (typed=%s)", (literal) => {
+  it.each(["N", "Cl", "D", "T", "C", "CH3"])("clears carbon-13 when relabelled to %s", (element) => {
+    const document = createEmptyDocument();
+    const molecule = createSmilesMolecule(document, point, {
+      atoms: [{ element: "C", isotope: 13, x: 0, y: 0, charge: 0 }], bonds: []
+    }, "[13CH4]");
+    const atom = molecule.atoms[0]!;
+    // Include an already visible/literal C so retyping C exercises the no-change fast path.
+    atom.labelVisible = true;
+    if (literal) atom.labelLiteral = true;
+    const inserted = applyPatches(document, [
+      { op: "addObject", pageId: document.pages[0]!.id, object: molecule }
+    ]);
+    const target = { kind: "atom" as const, objectId: molecule.id, atomId: atom.id, distanceToPointer: 0 };
+    const result = literal
+      ? applyNativeAtomLabelDraft(inserted, target, element, { element: "C", literal: true })
+      : applyNativeAtomElementTarget(inserted, target, element);
+    const relabelled = result.pages[0]!.objects[0] as MoleculeObject;
+    expect(relabelled.atoms[0]!.element).toBe(element);
+    expect(relabelled.atoms[0]).not.toHaveProperty("isotope");
+    expect(relabelled.atoms[0]!.labelLiteral === true).toBe(literal);
+    expect(relabelled.chemistry?.isotopeLabels).toEqual(
+      element === "D" ? ["2H"] : element === "T" ? ["3H"] : []
+    );
+  });
+});
 
 beforeAll(async () => {
   installRealRdkitModuleLoader();

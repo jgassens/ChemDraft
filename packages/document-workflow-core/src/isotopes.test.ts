@@ -76,7 +76,17 @@ describe("native isotope chemistry", () => {
       .toThrow("could not establish atom/bond correspondence");
   });
 
+  // Literal RDKit 2026.03.5 CalcMolFormula references with separateIsotopes=True and
+  // abbreviateHIsotopes=True; unlabelled formulas retain their existing order.
   it.each([
+    ["[13CH3]C(=O)O", "C[13C]H4O2"],
+    ["[2H]C([2H])([2H])O", "CHD3O"],
+    ["[3H]C([3H])O", "CH2T2O"],
+    ["[2H][2H]", "D2"],
+    ["[2H]O[3H]", "DTO"],
+    ["[2H]C([3H])([2H])[3H]", "CD2T2"],
+    ["O=[13C]=O", "[13C]O2"],
+    ["[13CH3][13CH3]", "[13C]2H6"],
     ["[13CH3]c1ccccc1", "C6[13C]H8"],
     ["c1cc[15n]cc1", "C5H5[15N]"],
     ["CC(=[18O])C", "C3H6[18O]"],

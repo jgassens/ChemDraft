@@ -473,7 +473,7 @@ function parseV2000Molfile(molfile: string): ParsedMolfileGraph {
           throw new Error("V2000 M ISO line has an invalid atom reference.");
         }
         // Validate even an entry subsequently superseded by another property line.
-        normalizeAtomIsotope({ element: "H", isotope: mass });
+        normalizeAtomIsotope({ ...atoms[atomIndex - 1]!, isotope: mass });
         isotopeMasses.set(atomIndex, mass);
       }
       continue;

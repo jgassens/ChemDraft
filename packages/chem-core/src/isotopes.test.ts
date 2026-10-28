@@ -32,6 +32,34 @@ describe("native isotope storage", () => {
     expect(MoleculeObjectSchema.safeParse(mol).success).toBe(false);
   });
 
+  it.each(["CH3", "Ph", "R", "R1", "*", "aryl", " C "])(
+    "rejects isotope mass on non-element label %s in atoms, documents and patches", (element) => {
+      const mol = molecule();
+      mol.atoms[0] = { ...mol.atoms[0]!, element };
+      const result = MoleculeAtomSchema.safeParse(mol.atoms[0]);
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.issues[0]!.message).toContain("requires an element symbol");
+      expect(MoleculeObjectSchema.safeParse(mol).success).toBe(false);
+      const document = createEmptyDocument();
+      document.pages[0]!.objects.push(mol);
+      expect(() => deserializeDocument(JSON.stringify(document))).toThrow();
+      expect(() => applyPatches(createEmptyDocument(), [
+        { op: "addObject", pageId: "page_001", object: mol }
+      ])).toThrow();
+      const valid = applyPatches(createEmptyDocument(), [
+        { op: "addObject", pageId: "page_001", object: molecule() }
+      ]);
+      expect(() => applyPatches(valid, [
+        { op: "updateObject", objectId: "mol", changes: { atoms: mol.atoms } }
+      ])).toThrow();
+    }
+  );
+
+  it("accepts real element symbols including argon, which is distinct from an aryl label", () => {
+    expect(MoleculeAtomSchema.safeParse({ ...molecule().atoms[0], element: "Ar", isotope: 40 }).success)
+      .toBe(true);
+  });
+
   it("normalizes hydrogen-2/3 once and keeps all other atom fields", () => {
     for (const [isotope, element] of [[2, "D"], [3, "T"]] as const) {
       const atom = { id: "h", element: "H", isotope, x: 1, y: 2, formalCharge: 0 };

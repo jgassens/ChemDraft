@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   applyPatch, createEmptyDocument, moleculeToMolfileV2000, type MoleculeObject
 } from "@chemdraft/chem-core";
-import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
+import { nativeBondOrderResolution, planMoleculeAtomLabels } from "@chemdraft/layout-engine";
 import {
   createSmilesMolecule, pastedStructureDepictionFromMolfile
 } from "../../document-workflow-core/src/molecule";
@@ -29,6 +29,37 @@ function importedMolecule(contents: string): MoleculeObject {
 }
 
 describe("CDXML isotope compatibility", () => {
+  it.each([
+    ["[13CH3]C", "13CH3"], ["[13CH3-]", "13CH3-"], ["[15NH4+]", "15NH4+"],
+    ["C[18O-]", "18O-"], ["[2H][O+]([3H])C", "O+"]
+  ])("writes canvas label text, hydrogen counts and charges for %s", async (smiles, expectedLabel) => {
+    const document = createEmptyDocument();
+    const molfile = await generateSmiles2DMolfile(smiles, { standardOnly: true });
+    const molecule = createSmilesMolecule(document, { x: 200, y: 200 },
+      pastedStructureDepictionFromMolfile(molfile), smiles);
+    const exported = exportDocumentToCdxml(applyPatch(document, {
+      op: "addObject", pageId: document.pages[0]!.id, object: molecule
+    }));
+    const canvasLabels = planMoleculeAtomLabels(molecule);
+    expect(canvasLabels.map((plan) => plan.label)).toContain(expectedLabel);
+    const visibleLabels = [...exported.contents.matchAll(/<n\b[^>]*Isotope="\d+"[^>]*><t>(.*?)<\/t>/g)]
+      .map((match) => match[1]!.replace(/<[^>]*>/g, ""));
+    expect(visibleLabels).toEqual(canvasLabels
+      .filter(({ atom }) => atom.isotope !== undefined || atom.element === "D" || atom.element === "T")
+      .map(({ label }) => label));
+    if (expectedLabel.includes("H3")) expect(exported.contents).toContain('<s face="64">3</s>');
+    if (expectedLabel.endsWith("-")) expect(exported.contents).toContain('<s face="32">-</s>');
+    const plain = exported.contents.replace(/<objecttag\b[^>]*\/>/g, "");
+    for (const contents of [exported.contents, plain]) {
+      const restored = importedMolecule(contents);
+      const output = moleculeToMolfileV2000(restored, {
+        fromDocFrame: true,
+        kekuleBondOrders: nativeBondOrderResolution(restored.atoms, restored.bonds).kekuleOrders
+      }).contents;
+      expect(await canonical(output)).toBe(await canonical(smiles));
+    }
+  });
+
   it.each(isotopeFixtures)("preserves $smiles with and without the native payload", async ({ smiles }) => {
     const document = createEmptyDocument();
     const molfile = await generateSmiles2DMolfile(smiles, { standardOnly: true });
@@ -91,7 +122,7 @@ describe("CDXML isotope compatibility", () => {
     }));
     expect(exported.contents).toMatch(/Element="1" Isotope="2"[^>]*><t><s>D<\/s>/);
     expect(exported.contents).toMatch(/Element="1" Isotope="3"[^>]*><t><s>T<\/s>/);
-    expect(exported.contents).toContain('<s face="32">13</s><s>C</s>');
+    expect(exported.contents).toContain('<s face="32">13</s><s>CH</s><s face="64">4</s>');
     const codes = exported.warnings.map(({ code }) => code);
     expect(codes).not.toContain("cdxml.atom_element_symbol_exported");
     expect(codes).not.toContain("cdxml.molecule_metadata_payload_only");

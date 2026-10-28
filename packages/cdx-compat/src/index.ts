@@ -29,6 +29,7 @@ import {
   type TextObject
 } from "@chemdraft/chem-core";
 import { bondedElementLabelMeaning } from "@chemdraft/template-library";
+import { planMoleculeAtomLabels } from "@chemdraft/layout-engine";
 import { sha256Hex, utf8Bytes, utf8String } from "./sha256";
 
 export interface CompatibilityConversionWarning {
@@ -600,6 +601,11 @@ function exportMoleculeObject(
   const fragmentId = idFor(context.ids, molecule.id, allocator);
   const atomIds = new Map<string, string>();
   const bondedAtomIds = new Set(molecule.bonds.flatMap((bond) => [bond.fromAtomId, bond.toAtomId]));
+  const hasIsotopes = molecule.atoms.some((atom) =>
+    atom.isotope !== undefined || atom.element === "D" || atom.element === "T");
+  const labels = hasIsotopes
+    ? new Map(planMoleculeAtomLabels(molecule).map((plan) => [plan.atom.id, plan.layout.runs]))
+    : undefined;
   const atomLines = molecule.atoms.map((atom) => {
     const nodeId = idFor(atomIds, atom.id, allocator);
     // An element symbol chemists write on bonds — "Ar" (aryl), "Ac", "Pr", "Ts" — typed as a label is
@@ -664,8 +670,11 @@ function exportMoleculeObject(
       attributes.push(`NumHydrogens="${atom.hydrogenCount}"`);
     }
     if (isotope !== undefined) {
-      const label = heavyHydrogen ? `<s>${atom.element}</s>`
-        : `<s face="32">${isotope}</s><s>${escapeXmlText(atom.element)}</s>`;
+      const label = (labels?.get(atom.id) ?? []).map((run) => {
+        const face = run.script === "superscript" ? ' face="32"'
+          : run.script === "subscript" ? ' face="64"' : "";
+        return `<s${face}>${escapeXmlText(run.text)}</s>`;
+      }).join("");
       return `<n ${attributes.join(" ")}><t>${label}</t></n>`;
     }
     return `<n ${attributes.join(" ")}/>`;
