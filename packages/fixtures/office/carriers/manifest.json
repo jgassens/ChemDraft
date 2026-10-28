@@ -2,31 +2,41 @@
   {
     "file": "png-ztxt.png",
     "kind": "png zTXt",
-    "sha256": "cb1ca7684bec1d1537dd88e1fbadaed069de962cf9c8d6029471b8a1493c2287"
+    "sha256": "6f1bb356d480f559f966227d8e92b8dd19e81c239a28b8ede265015ced85198e"
   },
   {
     "file": "png-itxt.png",
     "kind": "png iTXt",
-    "sha256": "dc511883769d5211d1f4a88496d9d8be46f4586695baa9249947449717d0fec0"
+    "sha256": "d9ec9278a6ba6cadb2550074bb0fe39f1a9f3071c31aae2ad9680a6d5a5c65e5"
   },
   {
     "file": "png-ztxt-96dpi.png",
     "kind": "png zTXt 96dpi",
-    "sha256": "1a6309a59dc1067f2d34c6b3e39c793e980a9e9c02d08ee006d8b07f355b469a"
+    "sha256": "df3ddf18c1da0d26c8fcf7b5db68921a4af63e9f98e7561b715066860fd7aba0"
   },
   {
     "file": "png-ztxt-384dpi.png",
     "kind": "png zTXt 384dpi",
-    "sha256": "878e9a3b7b3d7828eb7a8bbfb29b4d9f12fed1bf957e945c07fbb8289379b205"
+    "sha256": "779e19ecf724be2c38fe36a41427cc5812f2057aea830d7977bab9623ac7d7f6"
   },
   {
     "file": "svg-metadata.svg",
     "kind": "svg metadata",
-    "sha256": "d76c470da9f5bd22a366b73f1c2252310ce80e7f712b62d6d442fb334c1f018b"
+    "sha256": "004735909a71ea476e65850f0327df7b4365a73a40d3082526cf245006c2e731"
   },
   {
     "file": "svg-comment.svg",
     "kind": "svg comment",
-    "sha256": "5ca20e58781115268a2c100534d284006dafb1ed6100f14a10a17b8829cf2ab6"
+    "sha256": "e5c4d8158d239a300183df3b7c53c9f02d131ff67b197a62b49258958b512220"
+  },
+  {
+    "file": "pdf-embedded.pdf",
+    "kind": "pdf embedded file",
+    "sha256": "e71aaa73cb78871a1bb198dbbed852ff7c2d3e5ac21b18219b11a7392e66ff68"
+  },
+  {
+    "file": "pdf-catalog-key.pdf",
+    "kind": "pdf catalog key",
+    "sha256": "d570421596a2881d0ad327fee00c3037b08d045557a78a9cb3f84ce096a3514f"
   }
 ]

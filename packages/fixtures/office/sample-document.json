@@ -1,7 +1,7 @@
 {
   "schema": "chemdraft.document.v1",
   "id": "doc_001",
-  "title": "sample-document",
+  "title": "Caffeine and ethanol oxidation",
   "createdAt": "2026-10-28T16:00:51.817Z",
   "updatedAt": "2026-05-29T00:00:00.000Z",
   "pages": [
@@ -31,8 +31,8 @@
       "objects": [
         {
           "id": "mol_clipboard_001",
-          "x": 340.96782869752064,
-          "y": 456.2831731061221,
+          "x": 340,
+          "y": 180,
           "width": 134.0643426049587,
           "height": 143.43365378775576,
           "rotation": 0,
@@ -103,99 +103,99 @@
             {
               "id": "a0",
               "element": "C",
-              "x": 467.03217130247936,
-              "y": 550.9778008589386,
+              "x": 466.0643426049587,
+              "y": 274.69462775281653,
               "formalCharge": 0
             },
             {
               "id": "a1",
               "element": "N",
-              "x": 441.49505896595474,
-              "y": 539.4861003075026,
+              "x": 440.5272302684341,
+              "y": 263.20292720138053,
               "formalCharge": 0
             },
             {
               "id": "a2",
               "element": "C",
-              "x": 418.7804695718881,
-              "y": 555.8556133249722,
+              "x": 417.81264087436745,
+              "y": 279.5724402188501,
               "formalCharge": 0
             },
             {
               "id": "a3",
               "element": "O",
-              "x": 421.5973922704126,
-              "y": 583.7168268938779,
+              "x": 420.629563572892,
+              "y": 307.43365378775576,
               "formalCharge": 0
             },
             {
               "id": "a4",
               "element": "C",
-              "x": 393.24335723536353,
-              "y": 544.3695130174696,
+              "x": 392.2755285378429,
+              "y": 268.08633991134747,
               "formalCharge": 0
             },
             {
               "id": "a5",
               "element": "C",
-              "x": 390.426434536839,
-              "y": 516.5082994485639,
+              "x": 389.45860583931835,
+              "y": 240.2251263424418,
               "formalCharge": 0
             },
             {
               "id": "a6",
               "element": "N",
-              "x": 363.06364267801024,
-              "y": 510.5832413669756,
+              "x": 362.0958139804896,
+              "y": 234.3000682608535,
               "formalCharge": 0
             },
             {
               "id": "a7",
               "element": "C",
-              "x": 348.96782869752064,
-              "y": 534.7762951594725,
+              "x": 348,
+              "y": 258.4931220533504,
               "formalCharge": 0
             },
             {
               "id": "a8",
               "element": "N",
-              "x": 367.6222412398372,
-              "y": 555.654004543368,
+              "x": 366.65441254231655,
+              "y": 279.37083143724595,
               "formalCharge": 0
             },
             {
               "id": "a9",
               "element": "C",
-              "x": 361.69158291431535,
-              "y": 583.0223966461302,
+              "x": 360.7237542167947,
+              "y": 306.73922354000814,
               "formalCharge": 0
             },
             {
               "id": "a10",
               "element": "N",
-              "x": 413.1410239309056,
-              "y": 500.13878643109433,
+              "x": 412.17319523338494,
+              "y": 223.85561332497224,
               "formalCharge": 0
             },
             {
               "id": "a11",
               "element": "C",
-              "x": 410.32410123238105,
-              "y": 472.2831731061221,
+              "x": 409.3562725348604,
+              "y": 196,
               "formalCharge": 0
             },
             {
               "id": "a12",
               "element": "C",
-              "x": 438.6781362674302,
-              "y": 511.6304869825304,
+              "x": 437.71030756990956,
+              "y": 235.3473138764083,
               "formalCharge": 0
             },
             {
               "id": "a13",
               "element": "O",
-              "x": 461.3927256614968,
-              "y": 495.2609739650608,
+              "x": 460.42489696397615,
+              "y": 218.97780085893874,
               "formalCharge": 0
             }
           ],
@@ -304,6 +304,302 @@
           },
           "superatoms": [],
           "rGroups": []
+        },
+        {
+          "id": "mol_reaction_001",
+          "x": 267,
+          "y": 431.4050480710326,
+          "width": 64.497533617734,
+          "height": 45.99990385793478,
+          "rotation": 0,
+          "style": {
+            "chainAngleDegrees": 120,
+            "bondLengthPx": 28,
+            "bondStrokeWidthPx": 2,
+            "bondBoldWidthPx": 4.8,
+            "bondColor": "#000000",
+            "bondLineCap": "butt",
+            "bondSpacingMode": "absolute",
+            "bondSpacingPercent": 18,
+            "multipleBondGapPx": 4.8,
+            "doubleBondInsetPx": 4.5,
+            "bondMarginWidthPx": 6,
+            "bondHashSpacingPx": 9,
+            "bondOverlapClearancePx": 6,
+            "atomIndicatorShowQuery": true,
+            "atomIndicatorShowStereochemistry": false,
+            "atomIndicatorShowEnhancedStereochemistry": true,
+            "atomIndicatorShowAtomNumbers": false,
+            "bondIndicatorShowQuery": true,
+            "bondIndicatorShowStereochemistry": false,
+            "bondIndicatorShowReaction": true,
+            "atomLabelFontFamily": "Arial, Helvetica, sans-serif",
+            "atomLabelFontSizePx": 15,
+            "atomLabelFontWeight": 400,
+            "atomLabelFontStyle": "normal",
+            "atomLabelColor": "#000000",
+            "atomLabelBackgroundColor": "#ffffff",
+            "atomLabelPaddingPx": 2,
+            "atomLabelBondClearancePx": 7,
+            "atomLabelAlignment": "automatic",
+            "atomLabelPlacement": "automatic",
+            "atomLabelShowTerminalCarbons": false,
+            "atomLabelHideImplicitHydrogens": false,
+            "stylePresetId": "chemdraft.synthetic",
+            "source": "clipboard-smiles"
+          },
+          "compatibility": {
+            "sourceFormat": "smiles",
+            "warnings": [
+              {
+                "code": "clipboard.smiles_imported",
+                "message": "Generated an editable 2D structure from pasted SMILES."
+              }
+            ],
+            "unknown": {
+              "smiles": "CCO"
+            }
+          },
+          "type": "molecule",
+          "structureFormat": "molfile-v2000",
+          "structure": "\n  ChemDraft\n\n  3  2  0  0  0  0  0  0  0  0999 V2000\n  383.7512 -535.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  407.9991 -521.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  432.2488 -535.0000    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0\n  1  2  1  0  0  0  0\n  2  3  1  0  0  0  0\nM  END\n",
+          "chemistry": {
+            "formula": "C2H6O",
+            "averageMass": 46.069,
+            "exactMass": 46.04186,
+            "atomCount": 3,
+            "bondCount": 2,
+            "totalCharge": 0,
+            "radicalCount": 0,
+            "isotopeLabels": [],
+            "stereochemistry": [],
+            "warnings": []
+          },
+          "atoms": [
+            {
+              "id": "a0",
+              "element": "C",
+              "x": 275,
+              "y": 461.40495192896736,
+              "formalCharge": 0
+            },
+            {
+              "id": "a1",
+              "element": "C",
+              "x": 299.24783348194313,
+              "y": 447.4050480710326,
+              "formalCharge": 0
+            },
+            {
+              "id": "a2",
+              "element": "O",
+              "x": 323.497533617734,
+              "y": 461.40495192896736,
+              "formalCharge": 0
+            }
+          ],
+          "bonds": [
+            {
+              "id": "b0",
+              "fromAtomId": "a0",
+              "toAtomId": "a1",
+              "order": "single"
+            },
+            {
+              "id": "b1",
+              "fromAtomId": "a1",
+              "toAtomId": "a2",
+              "order": "single"
+            }
+          ],
+          "transform": {
+            "scaleX": 1,
+            "scaleY": 1,
+            "rotationDegrees": 0
+          },
+          "superatoms": [],
+          "rGroups": []
+        },
+        {
+          "id": "mol_reaction_002",
+          "x": 492.807533617734,
+          "y": 432.0178868081292,
+          "width": 64.497533617734,
+          "height": 45.99990385793478,
+          "rotation": 0,
+          "style": {
+            "chainAngleDegrees": 120,
+            "bondLengthPx": 28,
+            "bondStrokeWidthPx": 2,
+            "bondBoldWidthPx": 4.8,
+            "bondColor": "#000000",
+            "bondLineCap": "butt",
+            "bondSpacingMode": "absolute",
+            "bondSpacingPercent": 18,
+            "multipleBondGapPx": 4.8,
+            "doubleBondInsetPx": 4.5,
+            "bondMarginWidthPx": 6,
+            "bondHashSpacingPx": 9,
+            "bondOverlapClearancePx": 6,
+            "atomIndicatorShowQuery": true,
+            "atomIndicatorShowStereochemistry": false,
+            "atomIndicatorShowEnhancedStereochemistry": true,
+            "atomIndicatorShowAtomNumbers": false,
+            "bondIndicatorShowQuery": true,
+            "bondIndicatorShowStereochemistry": false,
+            "bondIndicatorShowReaction": true,
+            "atomLabelFontFamily": "Arial, Helvetica, sans-serif",
+            "atomLabelFontSizePx": 15,
+            "atomLabelFontWeight": 400,
+            "atomLabelFontStyle": "normal",
+            "atomLabelColor": "#000000",
+            "atomLabelBackgroundColor": "#ffffff",
+            "atomLabelPaddingPx": 2,
+            "atomLabelBondClearancePx": 7,
+            "atomLabelAlignment": "automatic",
+            "atomLabelPlacement": "automatic",
+            "atomLabelShowTerminalCarbons": false,
+            "atomLabelHideImplicitHydrogens": false,
+            "stylePresetId": "chemdraft.synthetic",
+            "source": "clipboard-smiles"
+          },
+          "compatibility": {
+            "sourceFormat": "smiles",
+            "warnings": [
+              {
+                "code": "clipboard.smiles_imported",
+                "message": "Generated an editable 2D structure from pasted SMILES."
+              }
+            ],
+            "unknown": {
+              "smiles": "CC=O"
+            }
+          },
+          "type": "molecule",
+          "structureFormat": "molfile-v2000",
+          "structure": "\n  ChemDraft\n\n  3  2  0  0  0  0  0  0  0  0999 V2000\n  383.7512 -535.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  407.9991 -521.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  432.2488 -535.0000    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0\n  1  2  1  0  0  0  0\n  2  3  2  0  0  0  0\nM  END\n",
+          "chemistry": {
+            "formula": "C2H4O",
+            "averageMass": 44.053,
+            "exactMass": 44.02621,
+            "atomCount": 3,
+            "bondCount": 2,
+            "totalCharge": 0,
+            "radicalCount": 0,
+            "isotopeLabels": [],
+            "stereochemistry": [],
+            "warnings": []
+          },
+          "atoms": [
+            {
+              "id": "a0",
+              "element": "C",
+              "x": 500.807533617734,
+              "y": 462.017790666064,
+              "formalCharge": 0
+            },
+            {
+              "id": "a1",
+              "element": "C",
+              "x": 525.0553670996771,
+              "y": 448.0178868081292,
+              "formalCharge": 0
+            },
+            {
+              "id": "a2",
+              "element": "O",
+              "x": 549.305067235468,
+              "y": 462.017790666064,
+              "formalCharge": 0
+            }
+          ],
+          "bonds": [
+            {
+              "id": "b0",
+              "fromAtomId": "a0",
+              "toAtomId": "a1",
+              "order": "single"
+            },
+            {
+              "id": "b1",
+              "fromAtomId": "a1",
+              "toAtomId": "a2",
+              "order": "double"
+            }
+          ],
+          "transform": {
+            "scaleX": 1,
+            "scaleY": 1,
+            "rotationDegrees": 0
+          },
+          "superatoms": [],
+          "rGroups": []
+        },
+        {
+          "id": "arrow_003",
+          "type": "reaction-arrow",
+          "x": 361.047533617734,
+          "y": 448,
+          "width": 114.75999999999999,
+          "height": 24,
+          "rotation": 0,
+          "style": {},
+          "arrowKind": "forward",
+          "start": {
+            "kind": "point",
+            "point": {
+              "x": 361.047533617734,
+              "y": 460
+            }
+          },
+          "end": {
+            "kind": "point",
+            "point": {
+              "x": 475.807533617734,
+              "y": 460
+            }
+          },
+          "labels": [],
+          "compatibility": {
+            "sourceFormat": "chemdraft-native",
+            "warnings": [],
+            "unknown": {}
+          }
+        },
+        {
+          "id": "text_004",
+          "type": "text",
+          "x": 385.047533617734,
+          "y": 424,
+          "width": 66.76,
+          "height": 24,
+          "rotation": 0,
+          "style": {
+            "fontFamily": "Arial, Helvetica, sans-serif",
+            "fontSizePx": 14,
+            "color": "#111111",
+            "letterSpacingPx": 0,
+            "lineHeight": 1.2,
+            "paragraphSpacingPx": 0,
+            "textAlign": "center",
+            "fontWeight": 400,
+            "fontStyle": "normal",
+            "textDecoration": "none",
+            "textBoxSizingMode": "auto"
+          },
+          "compatibility": {
+            "sourceFormat": "chemdraft-native",
+            "warnings": [],
+            "unknown": {}
+          },
+          "text": "oxidation",
+          "spans": [
+            {
+              "text": "oxidation",
+              "script": "normal",
+              "style": {}
+            }
+          ]
         }
       ],
       "crossings": []
@@ -311,9 +607,7 @@
   ],
   "selection": {
     "pageId": "page_001",
-    "objectIds": [
-      "mol_clipboard_001"
-    ]
+    "objectIds": []
   },
   "styles": {},
   "plugins": {},
