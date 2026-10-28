@@ -133,7 +133,7 @@ function OverlayStatus({ overlayId, status, statusSource }: {
 
 /** Host chrome only: actions carry control data; MainWindow resolves the live command declaration. */
 export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, status, onAction,
-  overlayLayerRef, statusRowRef, nativePaletteFrames, statusSource, transcriptSource, contentSource, openSource, onInitialize, onOpenPanel, panelTitle, onFocusDrawing, shortcutPlatform, requestPending = false, documentState, dockIndex = 0, dockCount = 1, windowId = window.name || "main" }: {
+  overlayLayerRef, statusRowRef, nativePaletteFrames, statusSource, transcriptSource, contentSource, openSource, onInitialize, onOpenPanel, panelTitle, onFocusDrawing, onExpandedChange, shortcutPlatform, requestPending = false, documentState, dockIndex = 0, dockCount = 1, windowId = window.name || "main" }: {
   overlay: PluginCanvasOverlayContribution;
   dockIndex?: number;
   dockCount?: number;
@@ -157,6 +157,7 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
   /** The contributed panel's live title, supplied by the document window. */
   panelTitle?: string;
   onFocusDrawing: () => void;
+  onExpandedChange?: (expanded: boolean) => void;
   windowId?: string;
   shortcutPlatform?: ShortcutPlatform;
   /** The host acknowledges Send before its command completes. */
@@ -181,6 +182,13 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
   const openRequest = useSyncExternalStore(openSource?.subscribeCanvasOverlayOpen ?? subscribeNever,
     () => openSource?.getCanvasOverlayOpenRequests().get(overlay.id), () => undefined);
   const [expanded, setExpanded] = useState(false);
+  const expandedCallbackRef = useRef(onExpandedChange);
+  expandedCallbackRef.current = onExpandedChange;
+  useEffect(() => {
+    if (!expanded) return;
+    expandedCallbackRef.current?.(true);
+    return () => expandedCallbackRef.current?.(false);
+  }, [expanded]);
   const [positions, setPositions] = useState<Positions>(() => ({
     collapsed: readPosition(`${storageKey}:collapsed`),
     expanded: readPosition(`${storageKey}:expanded`)

@@ -32,7 +32,7 @@ export async function readNativePaletteFrames(): Promise<NativePaletteFrames> {
 
 /** One sampler for all overlays, with no overlapping reads and at most four reads per second. */
 export function observeNativePaletteFrames(publish: (frames: NativePaletteFrames) => void,
-  read = readNativePaletteFrames) {
+  read = readNativePaletteFrames, sampling = false) {
   let stopped = false;
   let reading = false;
   let lastRead = -Infinity;
@@ -49,15 +49,15 @@ export function observeNativePaletteFrames(publish: (frames: NativePaletteFrames
   };
   refresh();
   // show()/hide() do not emit Tauri frame events (notably warm popovers). Sample visibility too.
-  const timer = setInterval(refresh, FRAME_INTERVAL_MS);
-  return { refresh, stop: () => { stopped = true; clearInterval(timer); } };
+  const timer = sampling ? setInterval(refresh, FRAME_INTERVAL_MS) : undefined;
+  return { refresh, stop: () => { stopped = true; if (timer !== undefined) clearInterval(timer); } };
 }
 
-export function useNativePaletteFrames(enabled: boolean): NativePaletteFrames | undefined {
+export function useNativePaletteFrames(enabled: boolean, sampling: boolean): NativePaletteFrames | undefined {
   const [snapshot, setSnapshot] = useState<NativePaletteFrames>();
   useEffect(() => {
     if (!enabled || !("__TAURI_INTERNALS__" in window)) return;
-    const observer = observeNativePaletteFrames(setSnapshot);
+    const observer = observeNativePaletteFrames(setSnapshot, readNativePaletteFrames, sampling);
     let stopped = false;
     const unlisteners: (() => void)[] = [];
     // Reuse the window manager's safe event path, including native move/resize/scale and lifecycle.
@@ -74,6 +74,6 @@ export function useNativePaletteFrames(enabled: boolean): NativePaletteFrames | 
       window.removeEventListener("resize", observer.refresh);
       unlisteners.forEach(stop => stop());
     };
-  }, [enabled]);
+  }, [enabled, sampling]);
   return snapshot;
 }

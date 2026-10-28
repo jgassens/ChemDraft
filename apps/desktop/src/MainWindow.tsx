@@ -1618,7 +1618,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.28.14.00-codex";
+const CURRENT_BUILD_STAMP = "10.28.14.01-codex";
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -10782,7 +10782,16 @@ export function MainWindow({
     }
   });
   const { isPluginCommand: pluginCommandExists, invokePluginCommand } = pluginRuntime;
-  const nativePaletteFrames = useNativePaletteFrames(pluginRuntime.canvasOverlays.length > 0);
+  const [expandedCanvasOverlays, setExpandedCanvasOverlays] = useState<ReadonlySet<string>>(() => new Set());
+  const setCanvasOverlayExpanded = useCallback((key: string, expanded: boolean) => {
+    setExpandedCanvasOverlays(previous => {
+      if (previous.has(key) === expanded) return previous;
+      const next = new Set(previous);
+      if (expanded) next.add(key); else next.delete(key);
+      return next;
+    });
+  }, []);
+  const nativePaletteFrames = useNativePaletteFrames(pluginRuntime.canvasOverlays.length > 0, expandedCanvasOverlays.size > 0);
   canvasOverlaysPresentRef.current = pluginRuntime.canvasOverlays.length > 0;
   pluginRuntimeRef.current = pluginRuntime.runtime;
 
@@ -20473,6 +20482,7 @@ export function MainWindow({
             const panel = manifest?.contributes.panels[0];
             const openCommandId = manifest && pluginCanvasOverlayOpenCommand(manifest, overlay.id);
             return <PluginCanvasOverlay key={`${pluginId}:${overlay.id}`} overlay={overlay}
+              onExpandedChange={expanded => setCanvasOverlayExpanded(`${pluginId}:${overlay.id}`, expanded)}
               dockIndex={dockIndex}
               dockCount={dockCount}
               shortcutPlatform={shortcutPlatform}

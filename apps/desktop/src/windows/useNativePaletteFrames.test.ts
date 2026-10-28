@@ -7,6 +7,27 @@ vi.mock("@tauri-apps/api/window", () => ({ getAllWindows: native.windows, getCur
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe("native palette frame observation", () => {
+  it("samples only while expanded and still permits event refreshes when collapsed", async () => {
+    vi.useFakeTimers();
+    const snapshot: NativePaletteFrames = { frames: [], documentOrigin: { x: 0, y: 0 }, scale: 1 };
+    const read = vi.fn(async () => snapshot);
+    const publish = vi.fn();
+    let observer = observeNativePaletteFrames(publish, read);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(read).toHaveBeenCalledTimes(1);
+    observer.refresh();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(2);
+    observer.stop();
+    observer = observeNativePaletteFrames(publish, read, true);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(read).toHaveBeenCalledTimes(5);
+    observer.stop();
+    observer = observeNativePaletteFrames(publish, read);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(read).toHaveBeenCalledTimes(6);
+    observer.stop();
+  });
   it.each([1, 1.25, 1.5, 2])("reads physical frames at document scale %s, excluding hidden, minimized and closed windows", async scale => {
     const utility = (label: string, visible = true, minimized = false) => ({ label,
       isVisible: async () => visible, isMinimized: async () => minimized,
@@ -28,7 +49,7 @@ describe("native palette frame observation", () => {
     let snapshot: NativePaletteFrames = { frames: [], documentOrigin: { x: 0, y: 0 }, scale: 1 };
     const read = vi.fn(async () => snapshot);
     const publish = vi.fn();
-    const observer = observeNativePaletteFrames(publish, read);
+    const observer = observeNativePaletteFrames(publish, read, true);
     await vi.advanceTimersByTimeAsync(0);
     for (let i = 0; i < 20; i++) observer.refresh();
     expect(read).toHaveBeenCalledTimes(1);
@@ -55,7 +76,7 @@ describe("native palette frame observation", () => {
     let finish!: (snapshot: NativePaletteFrames) => void;
     const read = vi.fn(() => new Promise<NativePaletteFrames>(resolve => { finish = resolve; }));
     const publish = vi.fn();
-    const observer = observeNativePaletteFrames(publish, read);
+    const observer = observeNativePaletteFrames(publish, read, true);
     await vi.advanceTimersByTimeAsync(1000);
     expect(read).toHaveBeenCalledTimes(1);
     observer.stop();
