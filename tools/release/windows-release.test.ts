@@ -6,6 +6,8 @@ import { describe, expect, it } from "vitest";
 
 const workflow = readFileSync(new URL("../../.github/workflows/windows-release.yml", import.meta.url), "utf8");
 const hasPowerShell = spawnSync("pwsh", ["-NoProfile", "-Command", "exit 0"]).status === 0;
+// A cold pwsh start on CI runners can exceed Vitest's 5 s default.
+const pwshTestTimeoutMs = 30_000;
 
 // Execute the workflow's actual scripts, with only the Windows certificate/file APIs mocked.
 function stepScript(name: string) {
@@ -52,7 +54,7 @@ ${stepScript("Verify Authenticode and replace unsigned installer")}`, {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, pwshTestTimeoutMs);
 
   it.each([
     ["true", "true", "false", true, false],
@@ -71,5 +73,5 @@ ${stepScript("Verify Authenticode and replace unsigned installer")}`, {
     });
     expect(result.status === 0, result.stderr).toBe(accepted);
     expect(result.stdout.includes("::warning::UNSIGNED RELEASE UPLOAD OVERRIDE")).toBe(warned);
-  });
+  }, pwshTestTimeoutMs);
 });
