@@ -23,7 +23,7 @@ export type StructureTemplateBond = readonly [
   display?: "wedge" | "hash"
 ];
 
-export interface StructureTemplate {
+interface StructureTemplateData {
   /** Stable kebab-case identifier, independent of the display name. */
   id: string;
   name: string;
@@ -35,7 +35,6 @@ export interface StructureTemplate {
   /** Hill formula; hydrogens in the layout are implicit under standard valence. */
   formula: string;
   charge: number;
-  source: { database: "PubChem"; cid: number };
   layout: {
     atoms: readonly StructureTemplateAtom[];
     bonds: readonly StructureTemplateBond[];
@@ -43,3 +42,10 @@ export interface StructureTemplate {
   /** Only for unavoidable crossings in a family's 2D projection; document the reason at source. */
   allowedCrossings?: number;
 }
+
+/** Missing PubChem records require an explicit identity/source explanation. */
+export type StructureTemplate = StructureTemplateData & (
+  // note explains non-obvious identity choices (including the chosen PubChem record).
+  | { source: { database: "PubChem"; cid: number }; note?: string }
+  | { source: { database: "PubChem"; cid: null }; note: string }
+);

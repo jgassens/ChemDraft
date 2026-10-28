@@ -53,6 +53,10 @@ and a `layout` of atoms and bonds. `structureTemplateById(id)` performs exact ID
 in a stable order, including the currently empty families. This package provides data, without a
 name matcher, UI, or chemistry engine.
 
+An optional `note` explains non-obvious identity choices or the chosen PubChem record. When no clean
+PubChem record exists, `source.cid` is `null` and `note` is required (also checked by the generator).
+Cryptand notes specify that [a.b.c] counts ether oxygen atoms per nitrogen-to-nitrogen bridge.
+
 The coordinate frame uses **bond lengths, y up**, with the bounding box centred on the origin. Mean
 bond length is normalized to 1 before rounding coordinates to four decimals. Atom hydrogens are
 implicit under standard valence; formal charges are explicit when nonzero. Bonds are zero-based
@@ -80,6 +84,15 @@ Windows, using Node's path APIs and no additional dependencies.
 
 `packages/document-workflow-core/tests/structureTemplates.test.ts` automatically checks every entry:
 RDKit's canonical isomeric identity from coordinates/wedges against the stored SMILES, Hill formula,
-charge, bond lengths, atom separation and bond crossings, plus unique IDs, names and normalized
-synonyms (Unicode NFKC, case folding, trimmed/collapsed whitespace). Template-library's own tests
+charge, bond lengths, atom separation and bond crossings, plus unique IDs and normalized
+names/synonyms across templates. The shared matcher in `document-workflow-core` uses Unicode NFKC,
+lowercase, Greek alpha/beta/gamma/delta expansion and removal of whitespace, Unicode dashes, brackets,
+commas, apostrophes and primes; digits retain their order and periods remain significant. Alternate
+spellings may share a key within one template. Template-library's own tests
 run the generator check so committed layouts cannot drift from their source.
+
+Generated atoms and bonds each occupy one line for review. Run `pnpm templates:check-images`
+(or `node tools/template-layouts/render-check.mjs --out <directory>`) to render every template at
+document style through the shared native document exporter, cropping and PNG rasterization used by
+`chemdraft render-document`. The default `tools/template-layouts/.check/` contains one PNG per stable
+template ID and `contact-sheet.png` with names below each structure; these artifacts are ignored.

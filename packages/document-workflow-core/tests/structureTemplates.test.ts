@@ -4,6 +4,7 @@ import { installNodeRdkitModuleLoader } from "@chemdraft/rdkit-adapter/node";
 // RDKit singleton in this worktree when node_modules is shared with another checkout.
 import { compositionFromRdkitJson, ensureRdkit, type RdkitJson } from "../../rdkit-adapter/src/index";
 import { structureTemplates, type StructureTemplate, type StructureTemplateAtom } from "../../template-library/src/index";
+import { normalizeStructureTemplateName } from "../src/structureTemplates";
 
 interface RdkitMol {
   get_smiles(): string;
@@ -78,21 +79,20 @@ function intersects(a: Point, b: Point, c: Point, d: Point): boolean {
     onSegment(a, b, c) || onSegment(a, b, d) || onSegment(c, d, a) || onSegment(c, d, b);
 }
 
-const normalise = (value: string) => value.normalize("NFKC").trim().toLowerCase().replace(/\s+/gu, " ");
+const normalise = normalizeStructureTemplateName;
 
 describe("structure template identities", () => {
   it("has unique stable ids, names and normalised synonyms, with no names shared by different templates", () => {
     expect(structureTemplates.length).toBeGreaterThan(0);
     const ids = structureTemplates.map((entry) => entry.id);
-    const names = structureTemplates.map((entry) => normalise(entry.name));
-    const synonyms = structureTemplates.flatMap((entry) => entry.synonyms.map(normalise));
-    for (const values of [ids, names, synonyms]) expect(new Set(values).size).toBe(values.length);
+    expect(new Set(ids).size).toBe(ids.length);
     const owners = new Map<string, string>();
     for (const entry of structureTemplates) {
       expect(entry.id).toMatch(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
       expect(entry.category).toBe("supramolecular");
       expect(entry.source.database).toBe("PubChem");
-      expect(Number.isInteger(entry.source.cid) && entry.source.cid > 0).toBe(true);
+      if (entry.source.cid === null) expect(entry.note?.trim().length).toBeGreaterThan(0);
+      else expect(Number.isInteger(entry.source.cid) && entry.source.cid > 0).toBe(true);
       for (const spelling of [entry.id, entry.name, ...entry.synonyms]) {
         const key = normalise(spelling);
         expect(key.length).toBeGreaterThan(0);
