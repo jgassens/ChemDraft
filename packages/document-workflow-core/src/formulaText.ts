@@ -175,7 +175,12 @@ export function formulaSpansForMixedText(text: string, sourceSpans: readonly Tex
     const end = start + token.length;
     const original = slice(start, end);
     // Agent formulas already carry their charge as Unicode superscripts; retain those glyphs.
-    const body = token.replace(/[⁰¹²³⁴⁵⁶⁷⁸⁹]*[⁺⁻]$/, "");
+    let bodyEnd = token.length;
+    if (token[bodyEnd - 1] === "⁺" || token[bodyEnd - 1] === "⁻") {
+      bodyEnd -= 1;
+      while (bodyEnd > 0 && "⁰¹²³⁴⁵⁶⁷⁸⁹".includes(token[bodyEnd - 1])) bodyEnd -= 1;
+    }
+    const body = token.slice(0, bodyEnd);
     if (isFormulaToken(body)) {
       const formatted = [...formulaSpansFromText(body, slice(start, start + body.length)), ...slice(start + body.length, end)];
       const scripts = (spans: readonly TextSpan[]) => spans.flatMap(span => Array(span.text.length).fill(span.script));

@@ -93,13 +93,63 @@ describe("chemdraft reaction", () => {
     const batchSvg = await readFile(join(outputDirectory, "labels-batch.svg"), "utf8");
     for (const value of ["catalyst", "solvent", "batch note"]) expect(batchSvg).toContain(value);
   });
-  it.each([{ above: "bad" }, { below: [1] }, { caption: [] }, { above: ["x".repeat(5001)] }])("rejects invalid batch labels %j", async (labels) => {
+  it.each([
+    { labels: { above: "bad" }, error: 'Batch job 1 "above" must be an array of strings.' },
+    { labels: { below: [1] }, error: 'Batch job 1 "below" must be an array of strings.' },
+    { labels: { caption: [] }, error: 'Batch job 1 "caption" must be a string.' },
+    { labels: { above: ["x".repeat(2001)] }, error: 'Batch job 1 "above" + Batch job 1 "below" + Batch job 1 "caption" + Batch job 1 "conditions" exceeds the 2000 character combined limit.' },
+    { labels: { above: Array(7).fill("x") }, error: 'Batch job 1 "above" exceeds the 6 entry limit.' },
+    { labels: { below: Array(7).fill("x") }, error: 'Batch job 1 "below" exceeds the 6 entry limit.' },
+    { labels: { caption: "x".repeat(301) }, error: 'Batch job 1 "caption" exceeds the 300 character limit.' },
+    { labels: { caption: "" }, error: 'Batch job 1 "caption" must be non-empty (1–300 characters).' },
+    { labels: { above: ["x".repeat(900)], below: ["x".repeat(900)], caption: "x".repeat(100), conditions: "x".repeat(101) }, error: 'Batch job 1 "above" + Batch job 1 "below" + Batch job 1 "caption" + Batch job 1 "conditions" exceeds the 2000 character combined limit.' }
+  ])("rejects invalid batch labels: $error", async ({ labels, error }) => {
     const jobs = join(outputDirectory, "invalid-labels.json");
     await writeFile(jobs, JSON.stringify([{ name: "bad", rxn: "CCO>>CCO", ...labels }]));
-    expect(await runReactionCommand(["--batch", jobs, "--out-dir", outputDirectory], { stdout: () => undefined, stderr: () => undefined })).toBe(2);
+    const stderr: string[] = [];
+    expect(await runReactionCommand(["--batch", jobs, "--out-dir", outputDirectory], { stdout: () => undefined, stderr: line => stderr.push(line) })).toBe(2);
+    expect(stderr).toContain(`Error: ${error}`);
   });
-  it.each(["--above", "--below", "--caption"])("rejects oversized %s input", async (flag) => {
-    expect(await runReactionCommand(["--rxn", "CCO>>CCO", flag, "x".repeat(5001), "--out", join(outputDirectory, "large.svg")], { stdout: () => undefined, stderr: () => undefined })).toBe(2);
+  it.each(["--above", "--below", "--conditions", "--caption"])("rejects oversized %s input with its limit", async (flag) => {
+    const limit = flag === "--caption" ? 300 : 2000;
+    const stderr: string[] = [];
+    expect(await runReactionCommand(["--rxn", "CCO>>CCO", flag, "x".repeat(limit + 1), "--out", join(outputDirectory, "large.svg")], { stdout: () => undefined, stderr: line => stderr.push(line) })).toBe(2);
+    expect(stderr[0]).toContain(flag);
+    expect(stderr[0]).toContain(`${limit} character`);
+    expect(stderr[0]).toContain("limit");
+  });
+  it.each(["--above", "--below"])("rejects more than six %s entries", async (flag) => {
+    const stderr: string[] = [];
+    expect(await runReactionCommand(["--rxn", "CCO>>CCO", ...Array(7).fill([flag, "x"]).flat(), "--out", join(outputDirectory, "count.svg")], { stdout: () => undefined, stderr: line => stderr.push(line) })).toBe(2);
+    expect(stderr).toContain(`Error: ${flag} exceeds the 6 entry limit.`);
+  });
+  it.each(["", " \t"])("rejects an empty caption %j", async (caption) => {
+    const stderr: string[] = [];
+    expect(await runReactionCommand(["--rxn", "CCO>>CCO", "--caption", caption, "--out", join(outputDirectory, "caption.svg")], { stdout: () => undefined, stderr: line => stderr.push(line) })).toBe(2);
+    expect(stderr).toContain("Error: --caption must be non-empty (1–300 characters).");
+  });
+  it("caps combined labels including legacy conditions and inherited batch defaults", async () => {
+    const stderr: string[] = [];
+    const io = { stdout: () => undefined, stderr: (line: string) => stderr.push(line) };
+    const args = ["--above", "x".repeat(900), "--below", "x".repeat(900), "--caption", "x".repeat(100)];
+    expect(await runReactionCommand(["--rxn", "CCO>>CCO", ...args, "--conditions", "x".repeat(101), "--out", join(outputDirectory, "combined.svg")], io)).toBe(2);
+    expect(stderr).toContain("Error: --above + --below + --caption + --conditions exceeds the 2000 character combined limit.");
+    const jobs = join(outputDirectory, "combined.json");
+    await writeFile(jobs, JSON.stringify([{ name: "combined", rxn: "CCO>>CCO", conditions: "x".repeat(101) }]));
+    stderr.length = 0;
+    expect(await runReactionCommand(["--batch", jobs, "--out-dir", outputDirectory, ...args], io)).toBe(2);
+    expect(stderr).toContain('Error: Batch job "combined" above + Batch job "combined" below + Batch job "combined" caption + Batch job "combined" conditions exceeds the 2000 character combined limit.');
+  });
+  it("crops the SVG around above, below and caption blocks", async () => {
+    const rendered = await renderReactionScheme("CCO>>CCO", {
+      above: ["1. NaBH4, MeOH", "2. H3O+"], below: ["CH2Cl2", "−20 °C", "4 h"], caption: "A note beneath the complete reaction scheme."
+    });
+    const labels = rendered.document.pages[0]!.objects.filter(object => object.type === "text");
+    expect(labels).toHaveLength(3);
+    expectSchemeInsideViewBox(rendered);
+    const svgViewBox = /viewBox="([^"]+)"/.exec(rendered.svg)![1].split(/\s+/).map(Number);
+    const expected = [rendered.viewBox.x, rendered.viewBox.y, rendered.viewBox.width, rendered.viewBox.height];
+    svgViewBox.forEach((value, index) => expect(value).toBeCloseTo(expected[index], 3));
   });
   it("renders esterification as one cropped scheme with molecule, arrow, plus, and condition objects", async () => {
     const rendered = await renderReactionScheme(
@@ -115,7 +165,11 @@ describe("chemdraft reaction", () => {
       object.type === "text" && object.text === "H2SO4, heat"
     )).toHaveLength(1);
     // Formula counts are split into subscript tspans, while the text object retains the input.
-    expect(rendered.svg).toContain('baseline-shift="sub"');
+    const label = objects.find(object => object.type === "text" && object.text === "H2SO4, heat")!;
+    expect(label.type === "text" && label.spans.map(span => [span.text, span.script])).toEqual([
+      ["H", "normal"], ["2", "subscript"], ["SO", "normal"], ["4", "subscript"], [",", "normal"], [" ", "normal"], ["heat", "normal"]
+    ]);
+    expect([...rendered.svg.matchAll(/<tspan\b[^>]*baseline-shift="sub"[^>]*>([^<]*)<\/tspan>/g)].map(match => match[1])).toEqual(["2", "4"]);
     expect(rendered.agentTexts).toEqual([{
       smiles: "OS(=O)(=O)O",
       text: "H2SO4",
@@ -143,7 +197,22 @@ describe("chemdraft reaction", () => {
     expect(rendered.agentTexts.every((agent) => agent.source === "formula")).toBe(true);
     // Formula subscripts and line wrapping split the SVG text into separate tspans.
     expect(rendered.conditions).toBe("HSO4⁻, HCl, OH⁻, Na⁺, NH4⁺, SO4²⁻, HBr, HF, NH3");
-    expect(rendered.svg).toContain('baseline-shift="sub"');
+    const label = rendered.document.pages[0]!.objects.find(object => object.type === "text" && object.text.startsWith("HSO4⁻"))!;
+    expect(label.type).toBe("text");
+    if (label.type !== "text") throw new Error("Missing charged-agent label");
+    let offset = 0;
+    const scripts = label.spans.flatMap(span => {
+      const start = offset;
+      offset += span.text.length;
+      return span.script === "normal" ? [] : [{ text: span.text, script: span.script, offset: start }];
+    });
+    expect(scripts).toEqual([
+      { text: "4", script: "subscript", offset: label.text.indexOf("HSO4") + 3 },
+      { text: "4", script: "subscript", offset: label.text.indexOf("NH4") + 2 },
+      { text: "4", script: "subscript", offset: label.text.indexOf("SO4²⁻") + 2 },
+      { text: "3", script: "subscript", offset: label.text.indexOf("NH3") + 2 }
+    ]);
+    expect([...rendered.svg.matchAll(/<tspan\b[^>]*baseline-shift="sub"[^>]*>([^<]*)<\/tspan>/g)].map(match => match[1])).toEqual(["4", "4", "4", "3"]);
   }, 60_000);
 
   it("labels the reviewer's bisulfate and HCl agents with charge and H-first order", async () => {

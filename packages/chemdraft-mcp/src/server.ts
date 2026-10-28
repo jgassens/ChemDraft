@@ -14,6 +14,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { z as z4 } from "zod/v4";
 
 import { runAnalyzeCommand } from "../../chemdraft-cli/src/commands/analyze";
 import { runDocumentCommand } from "../../chemdraft-cli/src/commands/document";
@@ -486,23 +487,31 @@ export function createChemDraftMcpServer(
 
   server.registerTool("render_reaction", {
     description: `Render a reaction as a PNG or SVG scheme. reactionSmiles splits roles on '.', while component arrays preserve each entry—including a salt containing '.'—as one molecule object. Agent labels report the formula or the recorded SMILES fallback. ${chemistryHonesty}`,
-    inputSchema: {
-      dpi: z.number().positive().optional(),
-      style: z.enum(FigureStyles).optional(),
-      reactionSmiles: z.string().min(1).optional(),
-      reactants: z.array(z.string().min(1)).min(1).optional(),
-      agents: z.array(z.string().min(1)).optional(),
-      products: z.array(z.string().min(1)).min(1).optional(),
-      conditions: z.string().optional(),
-      above: z.array(z.string()).optional(),
-      below: z.array(z.string()).optional(),
-      caption: z.string().optional(),
-      arrow: z.enum(["forward", "equilibrium", "resonance", "retrosynthesis"]).optional(),
-      width: z.number().positive().optional(),
-      background: z.enum(["white", "transparent"]).optional(),
-      format: z.enum(["png", "svg"]).optional(),
-      outDir: z.string().min(1).optional()
-    }
+    inputSchema: z4.object({
+      dpi: z4.number().positive().optional(),
+      style: z4.enum(FigureStyles).optional(),
+      reactionSmiles: z4.string().min(1).optional(),
+      reactants: z4.array(z4.string().min(1)).min(1).optional(),
+      agents: z4.array(z4.string().min(1)).optional(),
+      products: z4.array(z4.string().min(1)).min(1).optional(),
+      conditions: z4.string().max(2000, "conditions exceeds the 2000 character combined limit.").optional(),
+      above: z4.array(z4.string().max(2000, "above exceeds the 2000 character combined limit.")).max(6, "above exceeds the 6 entry limit.").optional(),
+      below: z4.array(z4.string().max(2000, "below exceeds the 2000 character combined limit.")).max(6, "below exceeds the 6 entry limit.").optional(),
+      caption: z4.string().min(1, "caption must be non-empty (1–300 characters).")
+        .max(300, "caption exceeds the 300 character limit.")
+        .refine((value) => value.trim().length > 0, "caption must be non-empty (1–300 characters).").optional(),
+      arrow: z4.enum(["forward", "equilibrium", "resonance", "retrosynthesis"]).optional(),
+      width: z4.number().positive().optional(),
+      background: z4.enum(["white", "transparent"]).optional(),
+      format: z4.enum(["png", "svg"]).optional(),
+      outDir: z4.string().min(1).optional()
+    }).superRefine((labels, context) => {
+      const text = [...labels.above ?? [], ...labels.below ?? [], labels.caption ?? "", labels.conditions ?? ""];
+      if (text.reduce((total, value) => total + value.length, 0) > 2000) {
+        context.addIssue({ code: "custom", path: ["above"],
+          message: "above + below + caption + conditions exceeds the 2000 character combined limit." });
+      }
+    })
   }, async ({
     style,
     dpi,

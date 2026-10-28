@@ -88,14 +88,14 @@ Reaction schemes accept `above` and `below` arrays (each entry is a deliberate l
 explicit newlines) and an optional `caption`. Blank lines are discarded. `conditionText` remains a
 compatibility adapter: its newline-separated lines precede `above`, with no comma/semicolon guessing.
 Each block has explicit rendered
-newlines and formula spans, measured once without implicit wrapping. Entirely numbered blocks align
-left inside a box centred on the arrow; other blocks and captions align centre.
+newlines and formula spans, measured once without implicit wrapping. Entirely numbered authored blocks
+align left with their visible text centred on the arrow, including wrapped steps; other blocks and captions align centre.
 
 Reaction-label design numbers live together in `src/reactionLabels.ts`: line wrap at **10 bond
 lengths**, minimum arrow **2.5 bond lengths**, total arrow padding beyond the widest block **0.5 bond
 lengths**, label line-box clearance from the visible arrow **0.35 em**, caption top clearance
 **0.8 em**, caption wrap width at least **8 bond lengths**, and default label font **14 px** centred.
-Whitespace is the only wrap point; oversized tokens stay whole. Captions wrap to the greater of
+Spaces and tabs are the only wrap points; NBSP/narrow NBSP and oversized tokens stay whole. Captions wrap to the greater of
 scheme width and that minimum. A line box includes authored paragraph spacing to match rendering.
 `src/textObjects.ts` reuses the renderer's **72%** script font size and existing sizing conventions:
 **6 px** horizontal / **4 px** vertical padding, minimum box **36 × 24 px**, dimensions rounded to

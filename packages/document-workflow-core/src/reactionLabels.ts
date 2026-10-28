@@ -47,27 +47,32 @@ function lineSpans(text: string): TextSpan[] {
   return formulaSpansForMixedText(text) ?? [{ text, script: "normal", style: {} }];
 }
 
-function explicitLines(entries: readonly string[], style: NativeTextStyle, maxWidth: number): string[] {
+function explicitLines(entries: readonly string[]): string[] {
   return entries.flatMap((entry) => entry.replace(/\r\n?/g, "\n").split("\n"))
-    .map((line) => line.trim()).filter(Boolean).flatMap((line) => {
-      if (estimateNativeTextSpanLineWidth(lineSpans(line), style) <= maxWidth) return [line];
-      const lines: string[] = [];
-      let current = "";
-      // Keep whitespace as authored except at an inserted line break. A token is indivisible.
-      for (const match of line.matchAll(/\S+\s*/g)) {
-        const candidate = current + match[0];
-        if (current && estimateNativeTextSpanLineWidth(lineSpans(candidate.trimEnd()), style) > maxWidth) {
-          lines.push(current.trimEnd());
-          current = match[0];
-        } else current = candidate;
-      }
-      if (current) lines.push(current.trimEnd());
-      return lines;
-    });
+    .map((line) => line.replace(/^[ \t]+|[ \t]+$/g, "")).filter(Boolean);
+}
+
+function wrapLines(authoredLines: readonly string[], style: NativeTextStyle, maxWidth: number): string[] {
+  return authoredLines.flatMap((line) => {
+    if (estimateNativeTextSpanLineWidth(lineSpans(line), style) <= maxWidth) return [line];
+    const lines: string[] = [];
+    let current = "";
+    // Break only at spaces/tabs; NBSP and narrow NBSP stay inside indivisible tokens.
+    for (const match of line.matchAll(/[^ \t]+[ \t]*/g)) {
+      const candidate = current + match[0];
+      if (current && estimateNativeTextSpanLineWidth(lineSpans(candidate.replace(/[ \t]+$/, "")), style) > maxWidth) {
+        lines.push(current.replace(/[ \t]+$/, ""));
+        current = match[0];
+      } else current = candidate;
+    }
+    if (current) lines.push(current.replace(/[ \t]+$/, ""));
+    return lines;
+  });
 }
 
 function measureBlock(entries: readonly string[], style: NativeTextStyle, maxWidth: number, caption = false): LabelBlock | undefined {
-  const lines = explicitLines(entries, style, maxWidth);
+  const authoredLines = explicitLines(entries);
+  const lines = wrapLines(authoredLines, style, maxWidth);
   if (!lines.length) return undefined;
   const spanLines = lines.map(lineSpans);
   const spans = spanLines.flatMap((line, index): TextSpan[] => index === 0
@@ -75,7 +80,7 @@ function measureBlock(entries: readonly string[], style: NativeTextStyle, maxWid
   return {
     text: lines.join("\n"),
     spans,
-    style: { ...style, textAlign: !caption && lines.every((line) => /^\d+\.\s/.test(line)) ? "left" : "center" },
+    style: { ...style, textAlign: !caption && authoredLines.every((line) => /^\d+\.\s/.test(line)) ? "left" : "center" },
     size: nativeTextObjectSizeForSpanLines(spanLines, style)
   };
 }
@@ -107,7 +112,8 @@ export function layoutReactionLabels(
   const extent = reactionArrowVerticalExtent(plan.options.arrowKind, plan.arrowLength);
   const clearance = arrowClearanceEm * plan.textStyle.fontSizePx;
   const object = (block: LabelBlock, id: string, center: number, y: number): TextObject => ({
-    id, type: "text", x: center - block.size.width / 2, y,
+    // Left-aligned text starts at object.x; the box's trailing padding is not visible text.
+    id, type: "text", x: center - (block.style.textAlign === "left" ? block.size.contentWidth : block.size.width) / 2, y,
     width: block.size.width, height: block.size.height, rotation: 0,
     style: { ...textStyleToObjectStyle(block.style), textBoxSizingMode: "auto" },
     compatibility: { sourceFormat: "chemdraft-native", warnings: [], unknown: {} },

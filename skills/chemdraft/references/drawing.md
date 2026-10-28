@@ -129,6 +129,7 @@ reaction feasibility, or balance the equation.
 
 For example: `pnpm -s chemdraft reaction --reactant 'CCO' --product 'CCO' --above 'Ti(OiPr)4 (5 mol%)' --above '(+)-DET (6 mol%)' --above 't-BuOOH' --below 'CH2Cl2' --below '−20 °C' --below '4 h' --caption 'Sharpless-style example' --out scheme.svg`.
 Use above for reagents and catalysts, below for solvent, temperature and time; formula subscripts are automatic. MCP `render_reaction` accepts `above` and `below` string arrays and a `caption` string.
+Reaction labels (CLI, batch and MCP) allow at most 6 above and 6 below entries, a non-empty caption of at most 300 characters, and 2000 characters combined across above, below, caption and legacy conditions.
 
 Retrosynthesis puts products (the target) on the left and reactants
 (precursors) on the right: target ⇒ precursors. Other kinds use reactants

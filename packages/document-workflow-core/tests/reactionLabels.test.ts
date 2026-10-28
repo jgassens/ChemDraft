@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  nativeTextStyleFromObjectStyle, type TextObject, type TextSpan
+  createEmptyDocument, nativeTextStyleFromObjectStyle, type TextObject, type TextSpan
 } from "@chemdraft/chem-core";
 import {
   planPageSvgRender, planReactionArrowGeometry, reactionArrowVerticalExtent,
@@ -81,17 +81,47 @@ describe("reaction label policy", () => {
     if (!lines.length) expect(result.above).toBeUndefined();
   });
 
-  it("preserves numbered steps and left-aligns the block inside its centred box", () => {
+  it("preserves numbered steps and centres the left-aligned visible block", () => {
     const result = labels({ above: ["1. NaBH4, MeOH", "2. H3O+"], below: [] });
     expect(result.above!.text).toBe("1. NaBH4, MeOH\n2. H3O+");
     expect(nativeTextStyleFromObjectStyle(result.above!.style).textAlign).toBe("left");
-    expect(result.above!.x + result.above!.width / 2).toBeCloseTo(200);
+    expect(result.above!.x + result.plan.above!.size.contentWidth / 2).toBeCloseTo(200);
     expect(scripts(result.above!)).toEqual([
       { text: "4", script: "subscript", offset: 7 },
       { text: "3", script: "subscript", offset: 19 },
       { text: "+", script: "superscript", offset: 21 }
     ]);
     expect(labels({ above: ["1. heat", "then stir"], below: [] }).above!.style.textAlign).toBe("center");
+  });
+
+  it("keeps numbered authored steps left-aligned after wrapping", () => {
+    const result = labels({ above: ["1. NaBH4, MeOH, then a long enough instruction to wrap", "2. H3O+"], below: [] });
+    expect(result.above!.text.split("\n").length).toBeGreaterThan(2);
+    expect(result.above!.style.textAlign).toBe("left");
+    expect(labels({ above: ["1. heat\n2. stir"], below: [] }).above!.style.textAlign).toBe("left");
+    expect(labels({ above: ["1. heat\nthen stir"], below: [] }).above!.style.textAlign).toBe("center");
+  });
+
+  it.each(["\u00a0", "\u202f"])("never wraps at the non-breaking space %j", (space) => {
+    const temperature = `−20${space}°C`;
+    // The token is wider than the wrapping width; a break inside it would be tempting.
+    const result = labels({ above: [`heat\t${temperature} stir`], below: [], bondLength: 2 });
+    expect(result.above!.text.split("\n")).toEqual(["heat", temperature, "stir"]);
+  });
+
+  it.each([
+    ["1. NaBH4, MeOH", "2. H3O+"], ["1. I"], ["NaBH4, MeOH", "H3O+"], ["I"]
+  ])("centres the visible block using the renderer's text x: %j", (...above) => {
+    const result = labels({ above, below: [], caption: undefined });
+    const object = result.above!;
+    const fragments = planPageSvgRender({ ...createEmptyDocument().pages[0]!, objects: [object] }).fragments.flatMap(elements);
+    const rendered = fragments.find((fragment) => fragment.key === `object-${object.id}`)!;
+    const x = Number(rendered.attrs.x);
+    const style = nativeTextStyleFromObjectStyle(object.style);
+    const widest = result.plan.above!.size.contentWidth;
+    expect(rendered.attrs["text-anchor"]).toBe(style.textAlign === "left" ? "start" : "middle");
+    const visibleCenter = style.textAlign === "left" ? x + widest / 2 : x;
+    expect(Math.abs(visibleCenter - 200)).toBeLessThanOrEqual(0.5);
   });
 
   it("splits explicit newlines, drops blanks, and supports a below-only scheme", () => {

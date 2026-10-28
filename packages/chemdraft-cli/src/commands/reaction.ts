@@ -1,14 +1,11 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 
-import { DocumentTextStyle, type ArrowObject, type ChemDraftDocument, type NativeTextStyle } from "@chemdraft/chem-core";
+import { type ArrowObject, type ChemDraftDocument } from "@chemdraft/chem-core";
 import { exportDocumentToSvg } from "@chemdraft/export-engine";
 import { type FigureStyle } from "@chemdraft/layout-engine";
 import { analyzeStructureDetailed } from "@chemdraft/rdkit-adapter";
-import {
-  layoutReactionScheme,
-  nativeTextObjectSizeForText
-} from "@chemdraft/document-workflow-core";
+import { layoutReactionScheme } from "@chemdraft/document-workflow-core";
 
 import { numericOption, parseOptions, repeatedOption, stringOption } from "../args";
 import { figureStyleHelp, figureStyleOptions, figureStyleResult, parseFigureStyle, validateFigureDpi, type FigureStyleOptions } from "../figureStyle";
@@ -109,7 +106,6 @@ export interface ReactionAgentText {
 }
 
 const REACTION_GUTTER = renderDefaults.padding;
-const CONDITIONS_STYLE: Partial<NativeTextStyle> = { fontSizePx: 14, textAlign: "center" };
 const ARROW_KINDS = new Set<ReactionArrowKind>([
   "forward",
   "equilibrium",
@@ -265,6 +261,25 @@ function repeatedReactionComponents(
   };
 }
 
+function validateReactionLabels(
+  labels: { above?: readonly string[]; below?: readonly string[]; caption?: string; conditions?: string },
+  fieldName: (field: string) => string = (field) => `--${field}`
+): void {
+  for (const field of ["above", "below"] as const) {
+    if ((labels[field]?.length ?? 0) > 6) {
+      throw new CliUsageError(`${fieldName(field)} exceeds the 6 entry limit.`);
+    }
+  }
+  if (labels.caption !== undefined) {
+    if (!labels.caption.trim()) throw new CliUsageError(`${fieldName("caption")} must be non-empty (1–300 characters).`);
+    if (labels.caption.length > 300) throw new CliUsageError(`${fieldName("caption")} exceeds the 300 character limit.`);
+  }
+  const text = [...labels.above ?? [], ...labels.below ?? [], labels.caption ?? "", labels.conditions ?? ""];
+  if (text.reduce((total, value) => total + value.length, 0) > 2000) {
+    throw new CliUsageError(`${["above", "below", "caption", "conditions"].map(fieldName).join(" + ")} exceeds the 2000 character combined limit.`);
+  }
+}
+
 function parseArguments(argv: readonly string[]): ParsedArguments | { help: true } {
   if (argv.includes("--help")) return { help: true };
   const parsed = parseOptions(argv, reactionOptions);
@@ -285,13 +300,11 @@ function parseArguments(argv: readonly string[]): ParsedArguments | { help: true
   const jobsFile = stringOption(parsed, "--batch");
   const outDir = stringOption(parsed, "--out-dir");
   const requestedFormat = stringOption(parsed, "--format");
-  const conditions = stringOption(parsed, "--conditions")?.trim() ?? "";
+  const conditions = stringOption(parsed, "--conditions") ?? "";
   const above = repeatedOption(parsed, "--above");
   const below = repeatedOption(parsed, "--below");
   const caption = stringOption(parsed, "--caption");
-  for (const [label, values] of [["--above", above], ["--below", below], ["--caption", caption === undefined ? [] : [caption]]] as const) {
-    if (values.some((value) => value.length > 5000)) throw new CliUsageError(`${label} text exceeds the 5000 character limit.`);
-  }
+  validateReactionLabels({ above, below, caption, conditions });
   const requestedArrow = stringOption(parsed, "--arrow");
   const arrow = requestedArrow === undefined ? "forward" : reactionArrow(requestedArrow);
   const requestedWidth = stringOption(parsed, "--width");
@@ -375,13 +388,7 @@ function parseBatchJob(candidate: unknown, index: number): BatchReactionJob {
   if (raw.caption !== undefined && typeof raw.caption !== "string") {
     throw new CliUsageError(`Batch job ${index + 1} "caption" must be a string.`);
   }
-  for (const field of ["above", "below", "caption"] as const) {
-    const value = raw[field];
-    if ((Array.isArray(value) ? value : typeof value === "string" ? [value] : []).some((entry) => entry.length > 5000)) {
-      throw new CliUsageError(`Batch job ${index + 1} "${field}" exceeds the 5000 character limit.`);
-    }
-  }
-  return {
+  const job: BatchReactionJob = {
     name: raw.name as string,
     rxn: raw.rxn as string | undefined,
     reactants: raw.reactants as string[] | undefined,
@@ -399,10 +406,16 @@ function parseBatchJob(candidate: unknown, index: number): BatchReactionJob {
       ? undefined
       : reactionBackground(raw.background, `Batch job ${index + 1} background`)
   };
+  validateReactionLabels(job, (field) => `Batch job ${index + 1} "${field}"`);
+  return job;
 }
 
 async function readReactionJobs(args: ParsedArguments): Promise<ReactionJob[]> {
   const jobs = await readBatchFile(args.jobsFile!, parseBatchJob, (job) => {
+    validateReactionLabels({
+      above: job.above ?? args.above, below: job.below ?? args.below,
+      caption: job.caption ?? args.caption, conditions: job.conditions ?? args.conditions
+    }, (field) => `Batch job "${job.name}" ${field}`);
     if (args.style === "document" && job.width !== undefined) throw new CliUsageError(`Batch job "${job.name}" width conflicts with --style document.`);
     const hasArrays = job.reactants !== undefined || job.agents !== undefined || job.products !== undefined;
     if ((job.rxn === undefined) === !hasArrays) {
@@ -434,7 +447,7 @@ async function readReactionJobs(args: ParsedArguments): Promise<ReactionJob[]> {
       input,
       ...(job.rxn !== undefined ? { rxn: job.rxn } : {}),
       out: job.out ?? join(args.outDir!, `${job.name}.${format}`),
-      conditions: job.conditions?.trim() ?? args.conditions,
+      conditions: job.conditions ?? args.conditions,
       above: job.above ?? args.above,
       below: job.below ?? args.below,
       caption: job.caption ?? args.caption,
@@ -652,7 +665,7 @@ export async function renderReactionScheme(
     background?: RenderBackground;
   } = {}
 ): Promise<RenderedReactionScheme> {
-  const conditionsStyle = options.style === "document" ? { ...CONDITIONS_STYLE, ...DocumentTextStyle } : CONDITIONS_STYLE;
+  validateReactionLabels(options);
   const parsed = typeof input === "string" ? parseReactionSmiles(input) : input;
   const arrow = options.arrow ?? "forward";
   if (!ARROW_KINDS.has(arrow)) reactionArrow(arrow);
@@ -676,9 +689,6 @@ export async function renderReactionScheme(
   const visible = [...reactants, ...products];
   const conditionText = [...agentTexts.map((agent) => agent.text), ...(options.conditions?.trim() ? [options.conditions.trim()] : [])]
     .join(", ");
-  const conditionSize = conditionText
-    ? nativeTextObjectSizeForText(conditionText, conditionsStyle)
-    : { width: 0, height: 0 };
   const boundsByComponent = new Map(visible.map((component) => {
     const bounds = documentVisualBounds(component.document);
     return [component, {
@@ -687,15 +697,6 @@ export async function renderReactionScheme(
       height: bounds.maxY - bounds.minY
     }] as const;
   }));
-  const maximumMoleculeHeight = Math.max(
-    renderDefaults.bondLength,
-    ...visible.map((component) => boundsByComponent.get(component)!.height)
-  );
-  const aboveCenter = Math.max(
-    maximumMoleculeHeight / 2,
-    conditionText ? conditionSize.height + REACTION_GUTTER / 2 : 0
-  );
-  const centerY = renderDefaults.padding + aboveCenter;
   const componentFor = (component: BuiltSmilesDocument) => ({
     molecule: component.molecule,
     bounds: boundsByComponent.get(component)!
@@ -709,7 +710,7 @@ export async function renderReactionScheme(
     above: options.above,
     below: options.below,
     caption: options.caption,
-    anchor: { x: renderDefaults.padding, y: centerY },
+    anchor: { x: renderDefaults.padding, y: renderDefaults.padding },
     gutter: REACTION_GUTTER,
     bondLength: renderDefaults.bondLength,
     pagePadding: renderDefaults.padding

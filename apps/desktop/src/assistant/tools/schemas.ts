@@ -35,7 +35,7 @@ export const toolSchemas = {
   insert_reaction: z.object({
     reactants: z.array(SMILES).min(1).max(6), products: z.array(SMILES).min(1).max(6),
     above: z.array(text).max(6).optional(), below: z.array(text).max(6).optional(),
-    caption: z.string().max(300).optional(),
+    caption: text.max(300).optional(),
     reagents: z.array(text).max(3).optional().describe("Compatibility: appended to above, one per line."),
     conditions: z.array(text).max(3).optional().describe("Compatibility: appended to below, one per line."),
     arrowKind: z.enum(["forward", "equilibrium", "retrosynthetic", "resonance"]).default("forward")

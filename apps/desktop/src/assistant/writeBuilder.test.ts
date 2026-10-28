@@ -1,6 +1,7 @@
 import { defaultCases, insertionDocument, expectDrawingDefaults } from "../drawingDefaults.testHelpers";
 import { describe, expect, it } from "vitest";
 import { DocumentObjectSchema, type Anchor } from "@chemdraft/chem-core";
+import { documentDrawingDefaults } from "@chemdraft/document-workflow-core";
 import { callAssistantTool } from "./assistantTools";
 import { applyAssistantWrite, buildInsertStructures } from "./writeBuilder";
 import { testContext } from "./tools/testContext";
@@ -235,6 +236,8 @@ describe("assistant document drawing defaults", () => {
   it.each(defaultCases)("keeps every reaction molecule at the $bondLengthPx px document default", async style => {
     const { context, replace } = testContext(false);
     const document = insertionDocument(style);
+    document.styles.text = { fontSizePx: 18 };
+    const defaults = documentDrawingDefaults(document);
     const existing = structuredClone(document.pages[0]!.objects);
     replace(document);
     const result = await callAssistantTool(context, "insert_reaction", {
@@ -245,6 +248,13 @@ describe("assistant document drawing defaults", () => {
     const molecules = objects.slice(existing.length).filter(object => object.type === "molecule");
     expect(molecules).toHaveLength(3);
     molecules.forEach(object => expectDrawingDefaults(object, style));
+    const arrow = objects.find(object => object.type === "reaction-arrow")!;
+    const left = objectRect(molecules[1]!);
+    const right = objectRect(molecules[2]!);
+    expect(arrow.start.point!.x - left.x - left.width).toBeCloseTo(defaults.bondLengthPx);
+    expect(right.x - arrow.end.point!.x).toBeCloseTo(defaults.bondLengthPx);
+    const plus = objects.find(object => object.type === "text" && object.text === "+")!;
+    expect(plus.style.fontSizePx).toBe(defaults.textStyle.fontSizePx);
     expect(objects.slice(0, existing.length)).toEqual(existing);
   });
   it.each(defaultCases)("uses $bondLengthPx px defaults for structures and group labels", async style => {
