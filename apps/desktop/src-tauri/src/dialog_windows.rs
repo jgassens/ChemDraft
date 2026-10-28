@@ -38,6 +38,13 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             size: (540.0, 600.0),
             min_size: (360.0, 260.0),
         }),
+        "insertTable" => Ok(DialogKindSpec {
+            maximizable: false,
+            resizable: true,
+            title: "Insert Table",
+            size: (480.0, 420.0),
+            min_size: (420.0, 360.0),
+        }),
         "export" => Ok(DialogKindSpec {
             maximizable: false,
             resizable: true,
@@ -101,6 +108,33 @@ enum Action {
         unit: String,
     },
     Cancel,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct InsertTableSnapshot {
+    title: String,
+    rows: u32,
+    columns: u32,
+    header_rows: u32,
+    preset: String,
+}
+#[derive(Deserialize)]
+#[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
+enum InsertTableAction {
+    Apply {
+        rows: u32,
+        columns: u32,
+        #[serde(rename = "headerRows")]
+        header_rows: u32,
+        preset: String,
+    },
+    Cancel,
+}
+fn valid_table_options(rows: u32, columns: u32, header_rows: u32, preset: &str) -> bool {
+    (1..=500).contains(&rows)
+        && (1..=64).contains(&columns)
+        && header_rows <= rows
+        && matches!(preset, "three-line" | "grid")
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -632,6 +666,23 @@ impl Message {
             return Err("Invalid dialog envelope or payload limit exceeded".into());
         }
         let valid = match self.message_type.as_str() {
+            "snapshot" if self.dialog_kind == "insertTable" => {
+                serde_json::from_value::<InsertTableSnapshot>(self.data.clone()).is_ok_and(|s| {
+                    valid_title(&s.title)
+                        && valid_table_options(s.rows, s.columns, s.header_rows, &s.preset)
+                })
+            }
+            "action" if self.dialog_kind == "insertTable" => {
+                serde_json::from_value::<InsertTableAction>(self.data.clone()).is_ok_and(|a| match a {
+                    InsertTableAction::Cancel => true,
+                    InsertTableAction::Apply {
+                        rows,
+                        columns,
+                        header_rows,
+                        preset,
+                    } => valid_table_options(rows, columns, header_rows, &preset),
+                })
+            }
             "snapshot" if self.dialog_kind == "engineInstall" => {
                 serde_json::from_value::<EngineInstallSnapshot>(self.data.clone())
                     .is_ok_and(|s| s.valid())
@@ -2570,7 +2621,11 @@ mod tests {
     }
     #[test]
     fn dialog_activation_during_native_box_waits_for_last_release_and_quit_clears_it() {
-        for dialog in ["dialog-main-pageSize-1", "dialog-main-export-1"] {
+        for dialog in [
+            "dialog-main-pageSize-1",
+            "dialog-main-export-1",
+            "dialog-main-insertTable-1",
+        ] {
             let mut suspension = super::super::utility_suspension::UtilitySuspension::default();
             suspension.begin([(dialog.into(), true, false, true)], None);
             // Focus/activation retries query pending_restore; an open native box has no reveal.
@@ -2592,7 +2647,11 @@ mod tests {
     }
     #[test]
     fn dialog_uses_shared_suspension_order_and_is_never_restored_after_close_or_quit() {
-        for dialog in ["dialog-main-pageSize-1", "dialog-main-export-1"] {
+        for dialog in [
+            "dialog-main-pageSize-1",
+            "dialog-main-export-1",
+            "dialog-main-insertTable-1",
+        ] {
             let toolbar = "toolset-core-main";
             assert!(super::super::is_suspended_utility_label(dialog));
             assert_eq!(
@@ -2677,6 +2736,80 @@ mod tests {
         assert!(message.validate().is_err());
         assert!(is_dialog_label("dialog-main-arrangementSpacing-12"));
         assert!(!is_dialog_label("dialog-main-arrangementSpacing-../main"));
+    }
+    #[test]
+    fn insert_table_registers_and_validates_typed_payloads() {
+        let spec = kind_spec("insertTable").unwrap();
+        assert!(!spec.maximizable);
+        assert!(spec.resizable);
+        assert_eq!(spec.size, (480.0, 420.0));
+        assert_eq!(spec.min_size, (420.0, 360.0));
+        assert_eq!(
+            native_window_title("insertTable", spec.title, "Drawing"),
+            "Insert Table — Drawing"
+        );
+        let capability = include_str!("../capabilities/dialog-host.json");
+        assert!(capability.contains("dialog-main-insertTable-*"));
+        let mut message = snapshot();
+        message.dialog_kind = "insertTable".into();
+        message.data = json!({"title":"Drawing", "rows":4, "columns":3,
+            "headerRows":1, "preset":"three-line"});
+        assert!(message.validate().is_ok());
+        let mut registry = Registry::default();
+        let (registration, _) = register(&mut registry, message.clone(), false).unwrap();
+        assert!(registration
+            .window_label
+            .starts_with("dialog-main-insertTable-"));
+        assert!(is_dialog_label(&registration.window_label));
+        for label in [
+            "dialog-main-insertTable-",
+            "dialog-main-insertTable-../main",
+            "dialog-main-insertTable-12-extra",
+        ] {
+            assert!(!is_dialog_label(label));
+        }
+        for message_type in ["snapshot", "action"] {
+            message.message_type = message_type.into();
+            let mut data = json!({"rows":4, "columns":3, "headerRows":1, "preset":"grid"});
+            if message_type == "snapshot" {
+                data["title"] = json!("Drawing");
+            } else {
+                data["action"] = json!("apply");
+            }
+            message.data = data.clone();
+            assert!(message.validate().is_ok());
+            for (field, value) in [
+                ("rows", json!(0)),
+                ("rows", json!(501)),
+                ("rows", json!(1.5)),
+                ("rows", json!("4")),
+                ("columns", json!(0)),
+                ("columns", json!(65)),
+                ("columns", json!(1.5)),
+                ("headerRows", json!(-1)),
+                ("headerRows", json!(5)),
+                ("headerRows", json!(0.5)),
+                ("preset", json!("unknown")),
+                ("path", json!("/private")),
+            ] {
+                message.data = data.clone();
+                message.data[field] = value;
+                assert!(message.validate().is_err());
+            }
+            for header_rows in [0, 500] {
+                message.data = data.clone();
+                message.data["rows"] = json!(500);
+                message.data["columns"] = json!(64);
+                message.data["headerRows"] = json!(header_rows);
+                assert!(message.validate().is_ok());
+            }
+        }
+        message.data = json!({"action":"cancel"});
+        assert!(message.validate().is_ok());
+        message.data["rows"] = json!(4);
+        assert!(message.validate().is_err());
+        message.data = json!({"action":"preview", "percent":80});
+        assert!(message.validate().is_err());
     }
     #[test]
     fn validates_kind_label_owner_and_payload() {

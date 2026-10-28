@@ -273,6 +273,11 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
       ]
     },
     {
+      id: "insert",
+      label: "Insert",
+      items: [command("table.insertDialog", "Table…")]
+    },
+    {
       id: "view",
       label: "View",
       items: [

@@ -181,12 +181,24 @@ describe("app menu model", () => {
     expect(buildAppMenuModel(EMPTY_CONTEXT).map((section) => section.label)).toEqual([
       "File",
       "Edit",
+      "Insert",
       "View",
       "Structure",
       "Analyze",
       "Plugins",
       "Help"
     ]);
+  });
+
+  it("exposes Insert after Edit and before View with the routed Table command", () => {
+    const model = buildAppMenuModel(EMPTY_CONTEXT);
+    const index = model.findIndex((section) => section.id === "insert");
+    expect(model[index - 1]?.id).toBe("edit");
+    expect(model[index + 1]?.id).toBe("view");
+    expect(model[index]?.items).toEqual([
+      expect.objectContaining({ kind: "command", commandId: "table.insertDialog", label: "Table…", enabled: true })
+    ]);
+    expect(nativeRoutedCommandIds(model)).toContain("table.insertDialog");
   });
 
   it("exposes the core plugin manager in its own native-routed section", () => {
@@ -224,6 +236,7 @@ describe("app menu model", () => {
     expect(model.map((section) => section.label)).toEqual([
       "File",
       "Edit",
+      "Insert",
       "View",
       "Structure",
       "Analyze",

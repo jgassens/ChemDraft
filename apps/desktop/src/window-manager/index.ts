@@ -1,6 +1,7 @@
 import { EXPORT_PREVIEW_STORAGE_KEY, loadExportPreviewEnabled } from "../exportPreviewSettings";
 import type { AnalysisReport } from "@chemdraft/analysis-core";
 import type { NativeTextStyle, TextSpan } from "@chemdraft/chem-core";
+import type { tableInspectorSnapshot } from "../tableCommands";
 import type { ToolsetDefinition } from "@chemdraft/toolset-registry";
 import type { ArtInspectorModel, ArtInspectorPaintTarget } from "../artInspectorModel";
 import type { CommandSpec } from "../commands";
@@ -74,6 +75,7 @@ export type PaletteCommandPayload = ToolsetCommandPayload;
 export type ToolsetActiveToolPayload = ToolsetCommandPayload;
 
 export interface ToolsetTextStylePayload {
+  currentTable?: ReturnType<typeof tableInspectorSnapshot>;
   currentTextStyle: NativeTextStyle;
   currentTextScript: TextSpan["script"];
   currentArtStyle?: ToolsetArtStylePayload;
@@ -160,9 +162,11 @@ export function createToolsetTextStylePayload(
   currentSelection?: ToolbarSelectionModel,
   currentMolecularInspector?: AnalysisReport,
   molecularInspectorBusy = false,
-  molecularInspectorStale = false
+  molecularInspectorStale = false,
+  currentTable?: ReturnType<typeof tableInspectorSnapshot>
 ): ToolsetTextStylePayload {
   return {
+    currentTable,
     currentTextStyle,
     currentTextScript,
     ...(currentArtStyle ? { currentArtStyle, currentArtStyleTarget } : {}),

@@ -1,3 +1,6 @@
+import { applyTableCommand, createTableCommands, createTableInsertAction, parseTableInsertCommandId, resolveActiveTableCell, selectedTable, tableInsertCommandId, tableInspectorSnapshot, type ActiveTableCell, type TableInsertDimensions } from "./tableCommands";
+import { insertTableIntoDocument } from "./documentWorkflow";
+import type { InsertTableOptions } from "./dialogs/dialogProtocol";
 import { isEditableTarget } from "./editableTarget";
 import { ORPHANED_COMPOSITION_IDLE_MS } from "./imeComposition";
 import { useExportPreviewEnabled } from "./dialogs/useExportPreviewEnabled";
@@ -1617,7 +1620,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.27.20.00-codex";
+const CURRENT_BUILD_STAMP = "10.28.13.30-codex";
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -2388,6 +2391,19 @@ export function MainWindow({
   const cancelledAtomLabelEditRef = useRef<AtomLabelEditState | undefined>(undefined);
   const finalizedAtomLabelEditRef = useRef<AtomLabelEditState | undefined>(undefined);
   const [textStyleDefaults, setTextStyleDefaults] = useState<NativeTextStyle>(DefaultNativeTextStyle);
+  const [activeTableCellState, setActiveTableCell] = useState<ActiveTableCell>();
+  const activeTableCell = resolveActiveTableCell(selectedTable(document), activeTableCellState);
+  useEffect(() => {
+    setActiveTableCell(current => current?.tableId === activeTableCell?.tableId &&
+      current?.rowId === activeTableCell?.rowId && current?.columnId === activeTableCell?.columnId ? current : activeTableCell);
+  }, [activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId]);
+  const currentTable = useMemo(() => tableInspectorSnapshot(document, activeTableCell),
+    [document, activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId]);
+  const tableActions = useMemo(() => createTableCommands(document, activeTableCell),
+    [document, activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId]);
+  const insertTableFromDialogRef = useRef<(tabId: string, options: InsertTableOptions) => Promise<void>>(async () => {});
+  const insertTableCommandRef = useRef<(dimensions: TableInsertDimensions, tabId?: string, preset?: "three-line" | "grid") => void>(() => {});
+
   const [activeToolState, setActiveToolState] = useState(() => createActiveToolState(initialActiveToolCommandId));
   const compoundLayoutsEnabled = useCompoundLayoutTools();
   const [unfilteredToolsetRegistry, setToolsetRegistry] = useState<DesktopToolsetRegistry>(() => desktopToolsetRegistry);
@@ -2908,7 +2924,9 @@ export function MainWindow({
       currentMoleculeInspector,
       currentToolbarSelection,
       analysisReport,
-      analysisBusy
+      analysisBusy,
+      false,
+      currentTable
     )
   );
   currentToolbarTextStateRef.current = createToolsetTextStylePayload(
@@ -2919,7 +2937,9 @@ export function MainWindow({
     currentMoleculeInspector,
     currentToolbarSelection,
     analysisReport,
-    analysisBusy
+    analysisBusy,
+    false,
+    currentTable
   );
   const activeEditorMolecule =
     selectedMolecule && selectedMolecule.id === activeEditorObjectId ? selectedMolecule : undefined;
@@ -3063,13 +3083,14 @@ export function MainWindow({
   const shellCommandSpecs = useMemo(
     () => applyKeybindingSchemeToCommands(
       allShellCommands(document, selectedMolecule, {
+        activeTableCell,
         availability: { canUndo, canRedo, hasMultipleTabs: documentTabs.length > 1, hasOpenWarnings: openWarnings !== undefined },
         registry: toolsetRegistry,
         compoundLayoutsEnabled
       }),
       keybindingScheme
     ),
-    [canRedo, canUndo, document, documentTabs.length, keybindingScheme, openWarnings, selectedMolecule, toolsetRegistry, compoundLayoutsEnabled]
+    [activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId, canRedo, canUndo, document, documentTabs.length, keybindingScheme, openWarnings, selectedMolecule, toolsetRegistry, compoundLayoutsEnabled]
   );
   const shellCommandsById = useMemo(
     () => createShellCommandMap(shellCommandSpecs),
@@ -3602,7 +3623,8 @@ export function MainWindow({
         // unchanged while making the effect's identity stable across document changes.
         analysisReportForBroadcast,
         analysisBusy,
-        analysisReportIsStale
+        analysisReportIsStale,
+        currentTable
       )
     ).catch(() => undefined);
     // `analysisReport` reaches this through `analysisReportForBroadcast`, so a detached Molecular
@@ -3612,6 +3634,7 @@ export function MainWindow({
     activeArtPaintTarget,
     analysisBusy,
     analysisReportIsStale,
+    currentTable,
     analysisReportForBroadcast,
     currentArtStyle,
     currentMoleculeInspector,
@@ -8778,6 +8801,7 @@ export function MainWindow({
     if (!isDesktopRuntime()) return;
     const coordinator = new DialogCoordinator(nativeDialogTransport, {
       applyPageSize: (tabId, size) => applyPageSizeToTabRef.current(tabId, size),
+      insertTable: (tabId, options) => insertTableFromDialogRef.current(tabId, options),
       previewArrangementSpacing: (tabId, percent) => previewSpacingRef.current(tabId, percent),
       applyArrangementSpacing: (tabId, percent) => applySpacingRef.current(tabId, percent),
       onSpacingSettled: tabId => { nativeSpacingSourcesRef.current.delete(tabId); }, onError: setStatus,
@@ -9870,6 +9894,37 @@ export function MainWindow({
     []
   );
 
+  insertTableCommandRef.current = (dimensions, tabId = activeDocumentTabIdRef.current, preset = "three-line") => {
+    const active = tabId === activeDocumentTabIdRef.current;
+    const snapshot = active ? undefined : documentTabSnapshotsRef.current.get(tabId);
+    const source = active ? documentHistoryRef.current.present : snapshot?.history.present;
+    if (!source) throw new Error("The originating drawing is closed");
+    if (active && isSnapshotSessionActive()) throw new Error("Finish the current drawing gesture, then insert the table again.");
+    const page = source.pages[0];
+    const canvas = canvasRegionRef.current;
+    const pageRect = pageRef.current?.getBoundingClientRect();
+    const canvasRect = canvas?.getBoundingClientRect();
+    const center = active && canvas && pageRect && canvasRect && canvas.clientWidth && canvas.clientHeight
+      ? { x: (canvasRect.left + canvas.clientWidth / 2 - pageRect.left) / viewportRef.current.scale,
+          y: (canvasRect.top + canvas.clientHeight / 2 - pageRect.top) / viewportRef.current.scale }
+      : { x: page.width / 2, y: page.height / 2 };
+    const next = insertTableIntoDocument(source, { ...dimensions, preset, center, textStyle: textStyleDefaults,
+      newId: prefix => `${prefix}-${crypto.randomUUID()}` });
+    if (active) {
+      commitDocumentChange(next, "Insert table");
+      setStatus("Inserted table");
+    } else if (snapshot) {
+      const present = normalizeCommittedDocument(next);
+      documentUndoLabelsRef.current.set(present, "Insert table");
+      for (const listener of assistantUserEditListenersRef.current) listener(tabId);
+      documentTabSnapshotsRef.current.set(tabId, { ...snapshot,
+        history: { past: boundedHistoryPast([...snapshot.history.past, source], present), present, future: [] },
+        file: { ...snapshot.file, dirty: true }, status: "Inserted table" });
+      nonPristineTabsRef.current.add(tabId);
+      setDocumentTabs([...documentTabsRef.current]);
+    }
+  };
+
   const coreCommandBindingsRef = useRef<Map<string, { spec: CommandSpec; run: () => Promise<void> }>>(
     new Map()
   );
@@ -9888,6 +9943,19 @@ export function MainWindow({
         }
       });
     };
+
+    tableActions.forEach(action => register(action, async () => {
+      if (action.id === "table.insertDialog") {
+        const coordinator = dialogCoordinatorRef.current;
+        if (!coordinator) throw new Error("Insert Table could not open: the native dialog host is unavailable.");
+        const tabId = activeDocumentTabIdRef.current;
+        const title = documentTabsRef.current.find(tab => tab.id === tabId)?.title ?? "Untitled";
+        await coordinator.openInsertTable(tabId, { title: title.slice(0, 256), rows: 6, columns: 4, headerRows: 1, preset: "three-line" });
+      } else {
+        const result = applyTableCommand(documentRef.current, action.id, activeTableCell, prefix => `${prefix}-${crypto.randomUUID()}`);
+        if (result) { commitDocumentChange(result.document, result.label); setStatus(result.label); }
+      }
+    }));
 
     createDoubleBondPositionActions(currentMoleculeInspector.structure.doubleBondTargetCount).forEach((action) => {
       register(action, () => { applyMoleculeInspectorCommand(action.id); });
@@ -10565,6 +10633,7 @@ export function MainWindow({
 
     return bindings;
   }, [
+    tableActions, activeTableCell,
     activateDocumentTab,
     newDocumentTab,
     cycleDocumentTab,
@@ -10638,6 +10707,15 @@ export function MainWindow({
       syncCoreCommands: createCoreCommandRegistrar(commandRegistry, () => coreCommandBindingsRef.current)
     };
   }, []);
+
+  insertTableFromDialogRef.current = async (tabId, options) => {
+    const commandId = tableInsertCommandId(options.rows, options.columns, options.headerRows);
+    if (registry.has(commandId)) throw new Error("Table insertion is already running");
+    registry.register(createTableInsertAction(options.rows, options.columns, options.headerRows), () => {
+      insertTableCommandRef.current(options, tabId, options.preset);
+    });
+    try { await registry.invoke(commandId); } finally { registry.unregister(commandId); }
+  };
 
   useEffect(() => perfHook(() => onPerfStarted(() => { perfHook(() => perfProbe?.instrumentRegistry(registry)); })), [registry]);
 
@@ -11251,6 +11329,12 @@ export function MainWindow({
     }
     if (keptDrawingsPromptRef.current || quitInteractionRef.current) return;
     if (closeTabPromptRef.current && commandId.startsWith("document.")) return;
+    const tableDimensions = parseTableInsertCommandId(commandId);
+    if (tableDimensions) {
+      await insertTableFromDialogRef.current(activeDocumentTabIdRef.current, { ...tableDimensions, preset: "three-line" });
+      return;
+    }
+
     if (commandId === convertTextToAtomLabelCommandId) {
       const disabledReason = selectedTextToAtomLabelDisabledReason(documentRef.current);
       if (disabledReason) {
@@ -26156,6 +26240,7 @@ function PageSvgSurfaceContent({
           {objects.map(object => {
             const preview = previewIds.has(object.id) ? objectTransformPreview : undefined;
             const fragments = objectOverlayFragments.get(object.id)!;
+            const tableBounds = object.type === "table" ? documentObjectInteractionBounds(object, page.objects) : undefined;
             return (
               <g
                 key={object.id}
@@ -26186,8 +26271,9 @@ function PageSvgSurfaceContent({
                   </svg>
                 ) : (
                   <>
-                    {object.type === "bracket" || object.type === "reaction-arrow" ? (
-                      <rect x={object.x} y={object.y} width={object.width} height={object.height}
+                    {object.type === "table" || object.type === "bracket" || object.type === "reaction-arrow" ? (
+                      <rect x={object.x} y={object.y} width={tableBounds?.width ?? object.width} height={tableBounds?.height ?? object.height}
+                        data-table-hit-target={object.type === "table" ? object.id : undefined}
                         transform={projectedPlaneSvgTransformForObject(object)}
                         fill="transparent" pointerEvents="all" />
                     ) : null}

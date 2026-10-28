@@ -42,6 +42,7 @@ import type { IconName } from "./icons";
 import type { ToolbarAssetName } from "./toolbarAssets";
 import { SPIN3D_DEBUGGER_COMMAND_ID } from "./conformerDebug";
 import { NO_OPEN_WARNINGS_REASON, TOGGLE_OPEN_WARNINGS_COMMAND_ID } from "./openWarnings";
+import { createTableCommands, type ActiveTableCell } from "./tableCommands";
 
 export interface CommandAvailability {
   canUndo?: boolean;
@@ -58,6 +59,7 @@ export interface CommandAvailability {
 }
 
 export interface ShellCommandOptions {
+  activeTableCell?: ActiveTableCell;
   compoundLayoutsEnabled?: boolean;
   availability?: CommandAvailability;
   registry?: DesktopToolsetRegistry;
@@ -2279,6 +2281,7 @@ export function allShellCommands(
 ): CommandSpec[] {
   const registry = options.registry ?? desktopToolsetRegistry;
   return dedupeCommands([
+    ...createTableCommands(document, options.activeTableCell),
     ...createQuickActions(document, selectedMolecule, options.availability),
     ...createLayerActions(document, options.compoundLayoutsEnabled),
     // Generated launchers must beat a persisted toolbar occurrence under first-wins dedupe. The

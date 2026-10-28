@@ -46,6 +46,32 @@ it("validates spacing kinds, bounded preview chunks and typed actions without br
   expect(parseDialogMessage({...preview,dialogKind:"export"})).toBeUndefined();
 });
 
+it("validates insert-table snapshots and actions without accepting other dialog payloads", () => {
+  const options = { rows: 4, columns: 3, headerRows: 1, preset: "three-line" };
+  const message = { ...snapshot(), dialogKind: "insertTable", data: { title: "Drawing", ...options } };
+  expect(parseDialogMessage(message)).toEqual(message);
+  for (const preset of ["three-line", "grid"]) {
+    expect(parseDialogMessage({ ...message, type: "action", data: { action: "apply", ...options, preset } })).toBeDefined();
+  }
+  for (const change of [
+    { rows: 0 }, { rows: 501 }, { rows: 1.5 }, { rows: "4" },
+    { columns: 0 }, { columns: 65 }, { columns: 1.5 },
+    { headerRows: -1 }, { headerRows: 5 }, { headerRows: 0.5 },
+    { preset: "unknown" }, { path: "/private" }
+  ]) {
+    expect(parseDialogMessage({ ...message, data: { ...message.data, ...change } })).toBeUndefined();
+    expect(parseDialogMessage({ ...message, type: "action", data: { action: "apply", ...options, ...change } })).toBeUndefined();
+  }
+  for (const headerRows of [0, 500]) {
+    expect(parseDialogMessage({ ...message, data: { ...message.data, rows: 500, columns: 64, headerRows } })).toBeDefined();
+  }
+  expect(parseDialogMessage({ ...message, type: "action", data: { action: "cancel" } })).toBeDefined();
+  expect(parseDialogMessage({ ...message, type: "action", data: { action: "cancel", ...options } })).toBeUndefined();
+  expect(parseDialogMessage({ ...message, type: "action", data: { action: "preview", percent: 80 } })).toBeUndefined();
+  expect(parseDialogMessage({ ...message, data: snapshot().data })).toBeUndefined();
+  expect(parseDialogMessage({ ...message, dialogKind: "pageSize" })).toBeUndefined();
+});
+
 it("restricts large payloads to typed inline image/PDF previews", () => {
   const message = { ...snapshot(), dialogKind: "export", type: "result", data: { status: "preview", preview: { url: "data:image/png;base64," + "A".repeat(20000), kind: "image", width: 600, height: 400, warnings: [] } } };
   expect(parseDialogMessage(message)).toBeDefined();
