@@ -1,3 +1,6 @@
+import { structureTemplateLayoutMessage } from "@chemdraft/document-workflow-core";
+import { insertPastedSmiles } from "./smilesInsertion";
+import { templateMoleculeForSmiles } from "./structureTemplateInsertion";
 import { isEditableTarget } from "./editableTarget";
 import { ORPHANED_COMPOSITION_IDLE_MS } from "./imeComposition";
 import { useExportPreviewEnabled } from "./dialogs/useExportPreviewEnabled";
@@ -541,7 +544,6 @@ import {
   nativeArtToolIsFreehand,
   nativeFreehandStrokeDocument,
   nativePolylinePathDocument,
-  insertSmilesMolecule,
   insertSmilesMoleculeGrid,
   insertSmilesMoleculeGridStatus,
   documentObjectProjectedPlaneTilt,
@@ -1617,7 +1619,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.27.20.00-codex";
+const CURRENT_BUILD_STAMP = "10.28.12.00-codex";
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -3302,6 +3304,11 @@ export function MainWindow({
       if (!readHistory(tabId)) throw new Error("The assistant's document tab is closed; write refused.");
       if (tabId === activeDocumentTabIdRef.current) {
         assistantHistoryWritingRef.current = true;
+        const previousIds = new Set(readHistory(tabId)!.present.pages.flatMap(page => page.objects.map(object => object.id)));
+        const templateMessages = history.present.pages.flatMap(page => page.objects.flatMap(object =>
+          object.type === "molecule" && !previousIds.has(object.id) && history.present.selection.objectIds.includes(object.id)
+            ? [structureTemplateLayoutMessage(object)].filter((message): message is string => !!message) : []));
+        if (templateMessages.length) setStatus(templateMessages.join("; "));
         try { installDocumentHistory(history); } finally { assistantHistoryWritingRef.current = false; }
         fileStateRef.current = { ...fileStateRef.current, dirty: true };
         setFileState(fileStateRef.current);
@@ -6614,8 +6621,9 @@ export function MainWindow({
       if (quitInteractionRef.current) return { rendered: false, reason: "Paste cancelled while quitting" };
       if (!parsed) return { rendered: false };
       const { depiction, stereoCount } = parsed;
-      const nextDocument = insertSmilesMolecule(
-        documentRef.current,
+      const pasteDocument = documentRef.current;
+      const inserted = await insertPastedSmiles(
+        pasteDocument,
         pastePointForViewport(),
         {
           atoms: depiction.atoms,
@@ -6623,7 +6631,9 @@ export function MainWindow({
         },
         smilesText
       );
-      commitDocumentChange(nextDocument);
+      if (quitInteractionRef.current || documentRef.current !== pasteDocument) throw new Error("The document changed while preparing SMILES paste; paste again.");
+      const nextDocument = inserted.document;
+      commitDocumentChange(nextDocument, "Paste SMILES");
       resetPasteUiState();
       // A pasted structure can be larger than the current page (e.g. a long peptide). Offer
       // the same page-resize prompt the external-CDXML import path uses, when the pasted
@@ -6634,7 +6644,7 @@ export function MainWindow({
       const pasteStatus = fit
         ? `${baseStatus}; content exceeds ${pageFitPromptLayoutLabel(fit.currentPageTitle, fit.currentOrientation)}`
         : baseStatus;
-      setStatus([pasteStatus, ...(parsed.warnings ?? [])].join("; "));
+      setStatus([pasteStatus, ...(inserted.status ? [inserted.status] : []), ...(parsed.warnings ?? [])].join("; "));
       return { rendered: true };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
@@ -6689,19 +6699,29 @@ export function MainWindow({
         pasteAsText();
         return;
       }
-      void pendingList.then((parsed) => {
+      void pendingList.then(async (parsed) => {
         if (listAbort.signal.aborted) return;
         if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
         if (!parsed) {
           pasteAsText();
           return;
         }
-        const result = insertSmilesMoleculeGrid(documentRef.current, pastePointForViewport(), parsed.entries);
-        commitDocumentChange(result.document);
+        const pasteDocument = documentRef.current;
+        const reservedIds = new Set<string>();
+        const entries = [];
+        for (const entry of parsed.entries) {
+          const molecule = await templateMoleculeForSmiles(entry.smiles, pasteDocument, pastePointForViewport(), reservedIds);
+          if (molecule) reservedIds.add(molecule.id);
+          entries.push({ ...entry, molecule });
+        }
+        listAbort.signal.throwIfAborted();
+        if (quitInteractionRef.current || documentRef.current !== pasteDocument) throw new Error("The document changed while preparing SMILES paste; paste again.");
+        const result = insertSmilesMoleculeGrid(pasteDocument, pastePointForViewport(), entries);
+        commitDocumentChange(result.document, "Paste SMILES list");
         resetPasteUiState();
         setPageFitPrompt(undefined);
         const failure = parsed.failures[0];
-        const baseStatus = [insertSmilesMoleculeGridStatus(result, parsed.skipped), ...(parsed.warnings ?? [])].join("; ");
+        const baseStatus = [insertSmilesMoleculeGridStatus(result, parsed.skipped), ...entries.flatMap(entry => entry.molecule ? [structureTemplateLayoutMessage(entry.molecule)!] : []), ...(parsed.warnings ?? [])].join("; ");
         setStatus(failure
           ? `${baseStatus}; ${parsed.failures.length} item${parsed.failures.length === 1 ? "" : "s"} failed: ${failure.error}`
           : baseStatus);
@@ -10754,6 +10774,7 @@ export function MainWindow({
         if (documentIdentityRef.current !== documentIdentity) {
           throw new Error("The document changed while the plugin was running; nothing was inserted.");
         }
+        const previousIds = new Set(documentRef.current.pages.flatMap(page => page.objects.map(object => object.id)));
         const applied = applyPluginDocumentPatch(documentRef.current, patch, {
           insertionTarget: { pageId: documentRef.current.pages[0]!.id,
             bounds: assistantHistoryPort.getViewportRect?.(activeDocumentTabIdRef.current) }
@@ -10771,7 +10792,10 @@ export function MainWindow({
           : insertedObject?.type === "text"
             ? patch.reason === "Insert Name" ? "name" : "text"
             : undefined;
-        setStatus(
+        const templateMessages = applied.document.pages.flatMap(page => page.objects.flatMap(object =>
+          object.type === "molecule" && !previousIds.has(object.id) && applied.receipt.objectIds.includes(object.id)
+            ? [structureTemplateLayoutMessage(object)].filter((message): message is string => !!message) : []));
+        setStatus(templateMessages.length ? templateMessages.join("; ") :
           applied.receipt.objectIds.length > 0 && insertedDescription
             ? `${plugin.name}: inserted ${insertedDescription}`
             : `${plugin.name}: applied ${command.title}`

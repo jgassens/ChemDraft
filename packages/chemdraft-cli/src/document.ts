@@ -1,6 +1,7 @@
 import { Resvg } from "@resvg/resvg-js";
 
 import {
+  applyPatches,
   createEmptyDocument,
   DocumentStylePreset,
   isDativeBond,
@@ -39,6 +40,8 @@ import {
   expandNativeMoleculeLabelGroups,
   nativeSingleHeavyElementLabelValence,
   moleculeSmiles,
+  structureTemplateForSmiles,
+  structureTemplateMolecule,
   insertSmilesMolecule,
   pastedStructureDepictionFromMolfile,
   smilesPasteBondLengthPx,
@@ -62,6 +65,7 @@ export interface RenderSmilesOptions {
 }
 
 export interface RenderedSmiles {
+  layout?: string;
   name: string;
   smiles: string;
   svg: string;
@@ -276,6 +280,15 @@ async function optionalCanonicalSmiles(structure: string): Promise<string | unde
     return undefined;
   }
 }
+
+// Stable callback identity lets the shared core cache canonical template identities.
+const templateCanonicalize = async (smiles: string): Promise<string | null> => {
+  const rdkit = await ensureRdkit();
+  const molecule = rdkit.get_mol(smiles);
+  if (!molecule) return null;
+  try { return molecule.get_smiles?.() || null; }
+  finally { molecule.delete(); }
+};
 
 /** Fail closed if RDKit's canonical isomeric SMILES says a conversion changed identity. */
 export async function assertCanonicalIdentity(
@@ -905,6 +918,7 @@ export interface BuildSmilesDocumentOptions {
 }
 
 export interface BuiltSmilesDocument {
+  layout?: string;
   name: string;
   smiles: string;
   document: ChemDraftDocument;
@@ -928,6 +942,29 @@ export async function buildSmilesDocument(
   const trimmedSmiles = normalizedSmilesInput(smiles);
 
   const name = options.name ?? "structure";
+  // Only this coordinate-less SMILES entry point substitutes an authored layout. Native
+  // documents and molfile readers retain their supplied coordinates.
+  installNodeEngines();
+  const template = await structureTemplateForSmiles(trimmedSmiles, templateCanonicalize).catch(() => undefined);
+  if (template) {
+    await rejectOversizedSmiles(trimmedSmiles);
+    let document = createEmptyDocument({ title: name });
+    const page = document.pages[0]!;
+    const molecule = structureTemplateMolecule(template, {
+      document, centre: { x: page.width / 2, y: page.height / 2 }
+    });
+    document = applyPatches(document, [
+      { op: "addObject", pageId: page.id, object: molecule },
+      { op: "setSelection", pageId: page.id, objectIds: [molecule.id] }
+    ]);
+    const sourceCanonicalSmiles = await canonicalSmiles(trimmedSmiles, "input");
+    await assertCanonicalIdentity(sourceCanonicalSmiles, molecule.structure);
+    const ocl = await import("@chemdraft/ocl-adapter");
+    return { name, smiles: trimmedSmiles, document, molecule, layout: `template:${template.id}`,
+      engine: "rdkit", ...stereoCenterCounts(ocl.perceiveStereoCentersFromMolfile(molecule.structure)),
+      unspecifiedDoubleBonds: 0, dativeBonds: 0, sourceCanonicalSmiles,
+      identityVerifiedByRdkit: true, identityMolfile: molecule.structure, warnings: [] };
+  }
   const bondLength = options.style === "document" ? DocumentStylePreset.drawing.bondLengthPx
     : finitePositive(options.bondLength ?? smilesPasteBondLengthPx, "Bond length");
   const depicted = await depictSmiles(trimmedSmiles);
@@ -1017,6 +1054,7 @@ export async function renderSmilesToAssets(
     svg: cropped.svg,
     png,
     engine: built.engine,
+    layout: built.layout,
     stereoCenters: built.stereoCenters,
     unspecifiedStereoCenters: built.unspecifiedStereoCenters,
     unspecifiedDoubleBonds: built.unspecifiedDoubleBonds,

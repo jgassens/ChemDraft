@@ -8,6 +8,8 @@ import { depictSmilesOffThread } from "./depiction2d/client";
 import { registerRdkitWasmLoader } from "./rdkitWasmLoader";
 import { applyClipboardPastePayload, createPhase4Document } from "./documentWorkflow";
 
+// These cases exercise generic depiction; template identity/layout has its own real-engine tests.
+vi.mock("./structureTemplateInsertion", () => ({ templateMoleculeForSmiles: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("./depiction2d/client", () => ({ depictSmilesOffThread: vi.fn() }));
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("@chemdraft/rdkit-adapter", () => ({ generateSmiles2DMolfile: vi.fn() }));

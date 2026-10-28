@@ -2,6 +2,9 @@ import { smilesListDecision, smilesListTokens, type SmilesListCandidate } from "
 import type { PastedStructureDepiction } from "./documentWorkflow";
 import { depictSmilesOffThread } from "./depiction2d/client";
 import type { DepictionRequestOptions } from "@chemdraft/rdkit-adapter";
+import { createEmptyDocument } from "@chemdraft/chem-core";
+import { pastedStructureDepictionFromMolfile } from "@chemdraft/document-workflow-core";
+import { templateMoleculeForSmiles } from "./structureTemplateInsertion";
 
 /** Only unparseable text returns undefined; engine failures and chemistry refusals throw. */
 export async function depictSmilesForPaste(
@@ -9,6 +12,16 @@ export async function depictSmilesForPaste(
   options: DepictionRequestOptions = {}
 ): Promise<{ depiction: PastedStructureDepiction; stereoCount: number; warnings?: string[] } | undefined> {
   try {
+    // A known host must not depend on a generic coordinate generator succeeding first.
+    // Final placement still goes through the shared template builder at document default size.
+    const template = await templateMoleculeForSmiles(smiles, createEmptyDocument(), { x: 0, y: 0 });
+    options.signal?.throwIfAborted();
+    if (template) {
+      const { perceiveStereoCentersFromMolfile } = await import("@chemdraft/ocl-adapter");
+      return { depiction: pastedStructureDepictionFromMolfile(template.structure),
+        stereoCount: perceiveStereoCentersFromMolfile(template.structure)
+          .filter(centre => centre.isStereoCenter && centre.descriptor !== "unspecified").length };
+    }
     const result = await depictSmilesOffThread(smiles, { priority: "interactive", ...options });
     return result.depiction.atoms.length > 0 ? result : undefined;
   } catch (error) {

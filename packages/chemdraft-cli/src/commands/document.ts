@@ -105,7 +105,7 @@ export async function runDocumentCommand(argv: readonly string[], io: CliIo = de
         await writeFile(file, serializeDocument(built.document));
         writeJsonLine(io, { name: job.name, smiles: built.smiles, ok: true, document: file,
           ...figureStyleResult(figure, figure.style === "document" ? documentPhysicalSize(built.document) : undefined),
-          files: [file], ...inventory, engine: built.engine, canonicalSmiles: built.sourceCanonicalSmiles,
+          files: [file], ...inventory, engine: built.engine, layout: built.layout, canonicalSmiles: built.sourceCanonicalSmiles,
           warnings: [...built.warnings, ...(indices.some((value) => value === null)
             ? ["Input atom mapping unavailable; inputAtomIndex is null for unmapped atoms."] : [])] });
       } catch (error) {

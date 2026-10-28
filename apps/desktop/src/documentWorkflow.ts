@@ -5089,7 +5089,7 @@ export function createNativeMolfileMolecule(
 export function insertSmilesMoleculeGrid(
   document: ChemDraftDocument,
   origin: PagePoint,
-  entries: readonly { smiles: string; depiction: PastedStructureDepiction }[],
+  entries: readonly { smiles: string; depiction: PastedStructureDepiction; molecule?: MoleculeObject }[],
   options: { gutterPx?: number } = {}
 ): { document: ChemDraftDocument; objectIds: string[]; columns: number; rows: number; pageResized: boolean } {
   if (entries.length === 0) {
@@ -5101,9 +5101,9 @@ export function insertSmilesMoleculeGrid(
   }
   const margin = 24;
   const page = firstPage(document);
-  const reservedObjectIds = new Set<string>();
+  const reservedObjectIds = new Set(entries.flatMap(entry => entry.molecule ? [entry.molecule.id] : []));
   const molecules = entries.map((entry) => {
-    const molecule = createSmilesMolecule(document, { x: margin, y: margin }, entry.depiction, entry.smiles, {
+    const molecule = entry.molecule ?? createSmilesMolecule(document, { x: margin, y: margin }, entry.depiction, entry.smiles, {
       ...SMILES_PASTE_SOURCE,
       reservedObjectIds
     });

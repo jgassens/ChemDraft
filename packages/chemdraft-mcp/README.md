@@ -55,7 +55,7 @@ details](../chemdraft-cli/README.md#fixed-scale-document-figures).
 - `render_grid` — render named SMILES structures in a PNG or SVG grid.
 - `render_reaction` — render reaction SMILES, or role arrays that keep dot-joined salts together, as a PNG or SVG scheme; agent display text is recorded.
 - `analyze_structure` — run the property and prediction suite with status-bearing summary values.
-- `name_to_structure` — convert a chemical name with OPSIN, optionally rendering it.
+- `name_to_structure` — check ChemDraft built-in structure templates before OPSIN, optionally rendering it (no Java needed for template names).
 - `check_stereo` — inspect tetrahedral R/S centres and E/Z double bonds with 0-based indices.
 - `predict_nmr` — predict 1H/13C shifts and optional spectra. It loads the separately checked-out NMR predictor plugin, which must be listed in `~/.config/chemdraft/trusted-plugins.json`; `CHEMDRAFT_NMR_PLUGIN_DIR` alone never makes an unlisted directory load (see the CLI README, "Plugin trust file").
 - `export_structure` — write CDXML, PDF, SDF, MOL, or SMILES.
@@ -83,3 +83,11 @@ text block and records the retained host path. Any individual returned payload i
 
 Use `pnpm -s` when launching either CLI or MCP scripts: bare `pnpm <script>` prints a script banner
 to stdout, which corrupts JSON Lines and stdio MCP framing.
+
+Use template names such as `beta-cyclodextrin`, `β-CD`, `cucurbit[7]uril` or
+`18-crown-6` with `name_to_structure` rather than writing SMILES for these hosts.
+Name results report `source` and, for templates, `templateId` and `templateName`.
+SMILES drawing tools inherit exact canonical isomeric template matching from the CLI
+and report `layout: "template:<id>"` (per cell/component for grids/reactions).
+Stereo and charge must match; template drawings use the default document bond length.
+`render_document` preserves the coordinates in its native JSON input.
