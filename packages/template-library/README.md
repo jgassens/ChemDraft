@@ -42,3 +42,44 @@ The chemistry these groups take part in (reading a label, free valence, validati
 Placeholders drawn on purpose — R, R′, R1–R99, X, A, Q, M, Nu, E, LG, PG, ?, and the dummy atom `*` —
 which are never structure and never a mistake. Case-sensitive; "Z" is left out because it is also the old
 peptide abbreviation for Cbz.
+
+## Structure templates
+
+`structureTemplates` holds named whole molecules, separate from the atom-label abbreviations above.
+Each `StructureTemplate` has a stable kebab-case `id`, display `name`, `synonyms`, `family`, category
+`"supramolecular"`, vetted isomeric `smiles`, Hill `formula`, net `charge`, a PubChem CID in `source`,
+and a `layout` of atoms and bonds. `structureTemplateById(id)` performs exact ID lookup.
+`structureTemplateFamilyOrder` and `structureTemplateFamilyNames` provide the seven picker families
+in a stable order, including the currently empty families. This package provides data, without a
+name matcher, UI, or chemistry engine.
+
+The coordinate frame uses **bond lengths, y up**, with the bounding box centred on the origin. Mean
+bond length is normalized to 1 before rounding coordinates to four decimals. Atom hydrogens are
+implicit under standard valence; formal charges are explicit when nonzero. Bonds are zero-based
+`[from, to, order, display?]` tuples with Kekulé orders 1–3; `"wedge"` or `"hash"` points from its first
+atom, the stereocentre. An optional `allowedCrossings` count defaults to zero and must be justified
+in the generator only when a family's 2D projection requires crossings.
+
+**Coordinates are original ChemDraft designs constructed from geometry.** PubChem CIDs identify the
+molecules; no database or depiction program supplies their coordinates. The first family contains
+five polygonal crown ethers (12-, 15-, 18-, 21-, and 24-membered rings), benzo-15-crown-5 and two
+dibenzo crowns with outward regular fused hexagons, and three cryptands drawn with left/right
+bridgehead nitrogens and three distinct bridges (upper arc, central zigzag, lower arc).
+
+All seven family files in `src/structureTemplates/` are generated. Their identity metadata and
+layout construction live in the corresponding Node ESM script under `tools/template-layouts/`.
+To add a family, fill its existing generator input and construct its original layout with
+`geometry.mjs` (polygons, equal-bond arcs, rigid transforms, benzene fusion and normalization).
+Keep the stable IDs, preserve vetted isomeric identity and document any unavoidable crossing. The
+registry already imports every family, so it needs no edit. Do not hand-edit the generated files.
+
+Regenerate all families with `pnpm templates:layouts` or `node tools/template-layouts/build.mjs`;
+append `--check` to the Node command to check for stale output without writing. Each family script
+also runs independently, with optional `--check`. Scripts work from any directory on macOS and
+Windows, using Node's path APIs and no additional dependencies.
+
+`packages/document-workflow-core/tests/structureTemplates.test.ts` automatically checks every entry:
+RDKit's canonical isomeric identity from coordinates/wedges against the stored SMILES, Hill formula,
+charge, bond lengths, atom separation and bond crossings, plus unique IDs, names and normalized
+synonyms (Unicode NFKC, case folding, trimmed/collapsed whitespace). Template-library's own tests
+run the generator check so committed layouts cannot drift from their source.
