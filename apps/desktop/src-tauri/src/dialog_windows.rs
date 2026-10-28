@@ -672,17 +672,18 @@ impl Message {
                         && valid_table_options(s.rows, s.columns, s.header_rows, &s.preset)
                 })
             }
-            "action" if self.dialog_kind == "insertTable" => {
-                serde_json::from_value::<InsertTableAction>(self.data.clone()).is_ok_and(|a| match a {
-                    InsertTableAction::Cancel => true,
-                    InsertTableAction::Apply {
-                        rows,
-                        columns,
-                        header_rows,
-                        preset,
-                    } => valid_table_options(rows, columns, header_rows, &preset),
-                })
-            }
+            "action" if self.dialog_kind == "insertTable" => serde_json::from_value::<
+                InsertTableAction,
+            >(self.data.clone())
+            .is_ok_and(|a| match a {
+                InsertTableAction::Cancel => true,
+                InsertTableAction::Apply {
+                    rows,
+                    columns,
+                    header_rows,
+                    preset,
+                } => valid_table_options(rows, columns, header_rows, &preset),
+            }),
             "snapshot" if self.dialog_kind == "engineInstall" => {
                 serde_json::from_value::<EngineInstallSnapshot>(self.data.clone())
                     .is_ok_and(|s| s.valid())
