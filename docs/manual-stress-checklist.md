@@ -15,6 +15,7 @@ selection after tab switching/closing.
 Canvas context menus (macOS and Windows): open the page and object menus with the mouse and keyboard;
 use arrows, Home/End, Arrange and Copy As submenus, Enter, Space, Escape and Tab, then verify canvas
 focus and drawing shortcuts return after an action or dismissal.
+Text commit clicks (macOS and Windows): edit a text object with Bond or Select restored, then click empty canvas or an existing atom; that click commits only, preserves bonds and selection, and focuses SECTION.canvas-region for shortcuts; the next click works normally. Repeat Enter/Escape/Tab, toolbar actions, double-click editing, and IME composition (no mid-composition commit).
 With nothing focused, press Shift+F10: the app menu opens, never the browser menu, and mouse and keyboard input keep working.
 On Windows, right-click and press Shift+F10 in text fields (including textareas) in the document,
 dialogs, plugin panels, Preferences, and color popovers: no browser menu appears and real mouse,
@@ -323,6 +324,8 @@ request: no Claude/Codex CLI process remains and the listener closes. Confirm we
 consent text must say that it does and that page content can leave the computer.
 
 ## Plugin panel input and canvas overlay (macOS and Windows)
+
+On both platforms with a real mouse and Japanese IME, compose in the text tool and in the assistant/plugin overlay prompt and commit with ONE Return. Click the empty page: the composed text stays committed after that one Return, and canvas keyboard shortcuts work. Repeat after launch and after closing a dialog with nothing focused.
 
 On both platforms, shrink the window to 405 px high, resize the canvas region, and move between display scales: Send stays reachable, the collapsed icon stays inside, and growing restores the remembered height; flick-drag the resize grip outside its bounds and cancel/interruption then hover (no stuck resize); double-click the header/grip (no text selection) and select text normally in the prompt and transcript.
 

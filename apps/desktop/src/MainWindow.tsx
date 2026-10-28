@@ -1,4 +1,5 @@
 import { isEditableTarget } from "./editableTarget";
+import { ORPHANED_COMPOSITION_IDLE_MS } from "./imeComposition";
 import { useExportPreviewEnabled } from "./dialogs/useExportPreviewEnabled";
 import { onPerfStarted, perfCanvasReady, perfHook, perfProbe, startPerfProbe, nativeWindowOpening, nativeWindowShown, perfToggleResolved } from "./perf/runtime";
 import { assistantDocumentContentUnchanged, registerAssistantHistoryPort, type AssistantHistoryPort } from "./assistant/historyPort";
@@ -1616,7 +1617,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.27.15.30-codex";
+const CURRENT_BUILD_STAMP = "10.27.20.00-codex";
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -1904,6 +1905,64 @@ export function MainWindow({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const moleculeTemplateInputRef = useRef<HTMLInputElement>(null);
   const canvasRegionRef = useRef<HTMLElement | null>(null);
+  const canvasFocusCompositionRef = useRef({ active: false, recentKey: false });
+  useEffect(() => {
+    // Observe composition anywhere, including editors that stop event propagation.
+    // These listeners only guard the unfocused-canvas handoff; they never consume keys.
+    let composingElement: Element | null = null;
+    let expiry: ReturnType<typeof setTimeout> | undefined;
+    const end = () => {
+      if (expiry !== undefined) clearTimeout(expiry);
+      expiry = undefined;
+      composingElement = null;
+      canvasFocusCompositionRef.current = { active: false, recentKey: false };
+    };
+    const track = (event: Event) => {
+      canvasFocusCompositionRef.current.active = true;
+      if (!composingElement && event.target instanceof Element) {
+        composingElement = event.target;
+      }
+      if (expiry !== undefined) clearTimeout(expiry);
+      // Match PluginCanvasOverlay's 10-second idle recovery. Composition updates,
+      // input and composing keys renew it, so continued IME activity stays protected.
+      expiry = setTimeout(end, ORPHANED_COMPOSITION_IDLE_MS);
+    };
+    const start = (event: Event) => { end(); track(event); };
+    const input = (event: Event) => {
+      if ((event as InputEvent).isComposing) track(event);
+      else end();
+    };
+    const key = (event: globalThis.KeyboardEvent) => {
+      if (event.isComposing) {
+        canvasFocusCompositionRef.current.recentKey = true;
+        track(event);
+      } else end();
+    };
+    // Blur and editor removal do not end a native IME composition. Keep protecting
+    // BODY focus until a terminal event, non-composing input/key, or idle expiry.
+    const focus = (event: FocusEvent) => {
+      if (canvasFocusCompositionRef.current.active && event.target === composingElement) track(event);
+    };
+    globalThis.document.addEventListener("compositionstart", start, true);
+    globalThis.document.addEventListener("compositionupdate", track, true);
+    globalThis.document.addEventListener("compositionend", end, true);
+    globalThis.document.addEventListener("compositioncancel", end, true);
+    globalThis.document.addEventListener("input", input, true);
+    globalThis.document.addEventListener("keydown", key, true);
+    globalThis.document.addEventListener("keyup", key, true);
+    globalThis.document.addEventListener("focusin", focus, true);
+    return () => {
+      globalThis.document.removeEventListener("compositionstart", start, true);
+      globalThis.document.removeEventListener("compositionupdate", track, true);
+      globalThis.document.removeEventListener("compositionend", end, true);
+      globalThis.document.removeEventListener("compositioncancel", end, true);
+      globalThis.document.removeEventListener("input", input, true);
+      globalThis.document.removeEventListener("keydown", key, true);
+      globalThis.document.removeEventListener("keyup", key, true);
+      globalThis.document.removeEventListener("focusin", focus, true);
+      end();
+    };
+  }, []);
   const canvasOverlayLayerRef = useRef<HTMLDivElement | null>(null);
   const statusRowRef = useRef<HTMLDivElement | null>(null);
   const canvasOverlaysPresentRef = useRef(false);
@@ -19991,6 +20050,25 @@ export function MainWindow({
           }}
           onPointerDownCapture={(event) => {
             const canvas = event.currentTarget;
+            const textEditId = activeTextEditObjectIdRef.current;
+            const target = event.target instanceof Element ? event.target : null;
+            // Capture before page/object tools can clear the edit and start a gesture.
+            // Leave editor controls and the edited glyph alone: Text may have restored
+            // Select already when the second press of a double-click reaches that glyph.
+            const editingGlyph = target?.closest("[data-page-svg-object-visual]")?.getAttribute("data-page-svg-object-visual") === textEditId
+              && (activeToolState.activeCommandId === "tool.select" || activeToolState.activeCommandId === "tool.text");
+            const editingControl = target?.closest(".text-resize-handle")?.closest("[data-object-id]")?.getAttribute("data-object-id") === textEditId;
+            if (textEditId && event.button === 0 && event.isPrimary !== false
+              && !isEditableTarget(event.target) && !editingGlyph && !editingControl && isCanvasDrawingPress(canvas, event)) {
+              event.preventDefault();
+              event.stopPropagation();
+              // Keep the native IME and its editor alive until composition terminates.
+              if (canvasFocusCompositionRef.current.active || canvasFocusCompositionRef.current.recentKey) return;
+              clearScheduledTextEditorFocus();
+              finishActiveNativeTextEdit(textEditId);
+              canvas.focus({ preventScroll: true });
+              return;
+            }
             const overlay = globalThis.document.activeElement?.closest<HTMLElement>(".plugin-canvas-overlay");
             if (overlay?.dataset.composing === "true") {
               // Do not blur the IME or let page tools replace its editor mid-composition.
@@ -20003,6 +20081,12 @@ export function MainWindow({
             // native Edit-menu routing back from the overlay before those handlers run.
             // Its document pointer listener has already cancelled action-focus recovery.
             if (overlay) {
+              canvas.focus({ preventScroll: true });
+            } else if (event.button === 0
+              && (globalThis.document.activeElement === globalThis.document.body || globalThis.document.activeElement === globalThis.document.documentElement)
+              && !canvasFocusCompositionRef.current.active && !canvasFocusCompositionRef.current.recentKey
+              && !isEditableTarget(event.target) && !isBlockedByModalDialog(event.target)) {
+              // Page tools cancel default focus. Restore it only when no control owns it.
               canvas.focus({ preventScroll: true });
             }
           }}

@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type PointerEvent, type RefObject } from "react";
+import { ORPHANED_COMPOSITION_IDLE_MS } from "../imeComposition";
 import type { PluginCanvasOverlayContribution, PluginOverlayTranscriptEntry, PluginOverlayContentSection } from "@chemdraft/plugin-api";
 import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 
@@ -219,7 +220,7 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
     }
     // compositionend can be lost even after a real compositionstart. Input and
     // composition updates renew this idle guard; an orphan must not trap focus.
-    compositionExpiryRef.current = setTimeout(clearComposition, 10000);
+    compositionExpiryRef.current = setTimeout(clearComposition, ORPHANED_COMPOSITION_IDLE_MS);
   };
   useEffect(() => {
     const element = elementRef.current;
