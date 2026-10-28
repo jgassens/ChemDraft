@@ -2,7 +2,9 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { nativeTextStyleFromObjectStyle, parseDocument, type TableObject } from "@chemdraft/chem-core";
 import { planPageSvgRender, type PageSvgElementFragment } from "./index";
-import { planTableLayout, planTableObjectSvg, tableVisualBoundsForArrangement } from "./table";
+import {
+  planTableLayout, planTableObjectSvg, tableCellElementId, tableVisualBoundsForArrangement
+} from "./table";
 import { measureTextRun } from "./textMetrics";
 import { elementFragments } from "./testing";
 
@@ -17,6 +19,35 @@ function smallTable(align: TableObject["columns"][number]["align"], texts: strin
 }
 
 describe("table layout and SVG", () => {
+  it("caches immutable snapshots and shares SVG children while keeping layer indices distinct", () => {
+    const input = smallTable("left", ["original"]);
+    const layout = planTableLayout(input), svg = planTableObjectSvg(input, 0);
+    expect(planTableLayout(input)).toBe(layout);
+    expect(planTableLayout({ ...input })).not.toBe(layout);
+    expect(planTableObjectSvg(input, 0)).toBe(svg);
+    const front = planTableObjectSvg(input, 3);
+    expect(planTableObjectSvg(input, 3)).toBe(front);
+    expect(front.children).toBe(svg.children);
+    expect(front.attrs["data-layer-index"]).toBe(3);
+    expect(svg.attrs["data-layer-index"]).toBe(0);
+    const replacement = { ...input, x: input.x + 10 };
+    expect(planTableLayout(replacement)).not.toBe(layout);
+    expect(planTableLayout(replacement).origin.x).toBe(input.x + 10);
+    expect(planTableObjectSvg(replacement, 0)).not.toBe(svg);
+  });
+
+  it("uses the exported cell ID for SVG text with punctuation and Unicode in IDs", () => {
+    const input = smallTable("left", ["value"]);
+    input.id = "table/α"; input.rows[0].id = "row:a-b"; input.columns[0].id = "column b-c";
+    const id = tableCellElementId(input.id, input.rows[0].id, input.columns[0].id);
+    expect(id).toBe(`table-cell-${encodeURIComponent(JSON.stringify([
+      input.id, input.rows[0].id, input.columns[0].id
+    ]))}`);
+    const text = elementFragments(planTableObjectSvg(input, 0)).find(element => element.tag === "text")!;
+    expect(text.attrs.id).toBe(`${id}-line-0-piece-0`);
+    expect(tableCellElementId("t", "a-b", "c")).not.toBe(tableCellElementId("t", "a", "b-c"));
+  });
+
   it("plans stable positive column widths and row heights without changing the document", () => {
     const before = JSON.stringify(table);
     const layout = planTableLayout(table);
@@ -138,10 +169,10 @@ describe("table layout and SVG", () => {
   });
 
   it("keeps captions and multiple multiline footnotes outside the body without resizing columns", () => {
-    const input = smallTable("left", ["i"]);
+    let input = smallTable("left", ["i"]);
     const withoutNotes = planTableLayout(input);
-    input.caption = { text: "a long caption\nsecond line", spans: [] };
-    input.footnotes = [{ text: "first\nsecond", spans: [] }, { text: "last", spans: [] }];
+    input = { ...input, caption: { text: "a long caption\nsecond line", spans: [] },
+      footnotes: [{ text: "first\nsecond", spans: [] }, { text: "last", spans: [] }] };
     const layout = planTableLayout(input);
     expect(layout.columns).toEqual(withoutNotes.columns);
     const advance = style.fontSizePx * 0.9 * style.lineHeight;
@@ -219,6 +250,7 @@ describe("table layout and SVG", () => {
     const input = { ...table, rotation: 90 };
     const unrotated = tableVisualBoundsForArrangement(table);
     const rotated = tableVisualBoundsForArrangement(input);
+    expect(tableVisualBoundsForArrangement(input)).toBe(rotated);
     expect(rotated.width).toBeCloseTo(unrotated.height);
     expect(rotated.height).toBeCloseTo(unrotated.width);
     expect(planTableObjectSvg(input, 2).attrs.transform).toBe(`rotate(90 ${table.x + table.width / 2} ${table.y + table.height / 2})`);

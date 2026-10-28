@@ -4,7 +4,9 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyPatches, type TableObject } from "@chemdraft/chem-core";
 import { buildTableObject } from "@chemdraft/document-workflow-core";
-import { planTableLayout, transformPointForObject } from "@chemdraft/layout-engine";
+import {
+  planTableLayout, tableCellElementId, tableVisualBoundsForArrangement, transformPointForObject
+} from "@chemdraft/layout-engine";
 import { MainWindow } from "./MainWindow";
 import { createPhase4Document } from "./documentWorkflow";
 import { DOM_COMMAND_EVENT } from "./window-manager";
@@ -24,7 +26,9 @@ describe.each(["macos", "windows"] as const)("table real DOM editing (%s)", plat
   const scale = () => (snapshot().viewport as { scale: number }).scale;
   const nativeValueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
   beforeEach(() => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    vi.useFakeTimers({ toFake: [
+      "setTimeout", "clearTimeout", "requestAnimationFrame", "cancelAnimationFrame"
+    ] });
     vi.stubGlobal("localStorage", new MemoryStorage());
     vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
     vi.stubGlobal("CSS", { escape: (value: string) => value });
@@ -242,6 +246,7 @@ describe.each(["macos", "windows"] as const)("table real DOM editing (%s)", plat
     expect(resizer().style.width).toBe("6px"); expect(resizer().style.cursor).toBe("col-resize");
     await pointer(resizer(), "pointerdown", 200, 100);
     await pointer(page(), "pointermove", 210, 100); await pointer(page(), "pointermove", 240, 100);
+    await act(async () => vi.advanceTimersToNextFrame());
     expect(currentTable()).toEqual(before); // Preview is never written into history/present.
     expect(resizer().style.left).toBe(`${(100 + 40 / scale()) * scale() - 3}px`);
     await pointer(page(), "pointerup", 250, 100);
@@ -256,8 +261,29 @@ describe.each(["macos", "windows"] as const)("table real DOM editing (%s)", plat
     await command("table.column.autoFit"); expect(currentTable().columns[0].width).toEqual({ mode: "auto" });
   });
 
+  it("hides only the active cell's shared SVG ID while editing", async () => {
+    await mount({ rows: [["first", "second"], ["third", "fourth"]], formula: "off" });
+    const table = currentTable();
+    const cellText = (column: number) => document.getElementById(
+      `${tableCellElementId(table.id, table.rows[0].id, table.columns[column].id)}-line-0-piece-0`);
+    expect(cellText(0)?.textContent).toBe("first");
+    await open();
+    expect(cellText(0)?.textContent).toBe("");
+    expect(cellText(1)?.textContent).toBe("second");
+    await key("Escape");
+    expect(cellText(0)?.textContent).toBe("first");
+  });
+
   it("uses the stored rotation pivot for editing and clamps/cancels a column drag", async () => {
-    await mount({ rotation: 90 }); await open();
+    await mount({ rotation: 90 });
+    const bounds = tableVisualBoundsForArrangement(currentTable());
+    const hit = container.querySelector("[data-table-hit-target]")!;
+    expect(Number(hit.getAttribute("x"))).toBeCloseTo(bounds.x);
+    expect(Number(hit.getAttribute("y"))).toBeCloseTo(bounds.y);
+    expect(Number(hit.getAttribute("width"))).toBeCloseTo(bounds.width);
+    expect(Number(hit.getAttribute("height"))).toBeCloseTo(bounds.height);
+    expect(hit.getAttribute("transform")).toBeNull();
+    await open();
     const box = planTableLayout(currentTable()).cells[0].box;
     expect(editor()!.parentElement!.style.transform).toBe("rotate(90deg)");
     expect(editor()!.parentElement!.style.transformOrigin).toBe(`${(currentTable().x + currentTable().width / 2 - box.x) * scale()}px ${(currentTable().y + currentTable().height / 2 - box.y) * scale()}px`);
@@ -268,6 +294,7 @@ describe.each(["macos", "windows"] as const)("table real DOM editing (%s)", plat
     await command("edit.undo");
     await pointer(resizer, "pointerdown", 200, 200); await pointer(page(), "pointermove", 200, 300);
     await pointer(page(), "pointercancel", 200, 300); expect(currentTable().columns[0].width).toEqual({ mode: "fixed", px: 100 });
+    await act(async () => vi.advanceTimersToNextFrame());
     await command("edit.undo"); expect(container.textContent).toContain("Nothing to undo");
   });
 });

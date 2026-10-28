@@ -1,6 +1,7 @@
 import { applyTableCommand, applyTableFontCommand, applyTableObjectEdit, createTableCommands, createTableInsertAction, parseTableInsertCommandId, resolveActiveTableCell, selectedTable, tableInsertCommandId, tableInspectorSnapshot, type ActiveTableCell, type TableInsertDimensions } from "./tableCommands";
 import { TableCellEditor, TableColumnResizers, type TableCellEditorHandle } from "./tableCellEditor";
 import { tableCellAtPoint, type TableEditingAction } from "./tableInteraction";
+import { tableCellElementId } from "@chemdraft/layout-engine";
 import { insertTableIntoDocument } from "./documentWorkflow";
 import { pasteTableIntoDocument, readTableClipboardPaste, tableClipboardPasteDecision, tableSelectionClipboardItems } from "./tableClipboardWiring";
 import type { ClipboardReadPayload, ClipboardTableResult } from "@chemdraft/clipboard-adapter";
@@ -242,7 +243,6 @@ import {
   planReactionArrowGeometry,
   projectedPlaneMatrix as documentObjectProjectedPlaneMatrix,
   projectedPlaneSvgTransformForObject,
-  rotationTransform,
   type NativeArtPaintPlan,
   type NativeArtVisualPlan,
   type ResolvedBondCrossing
@@ -1626,7 +1626,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.28.15.30-codex";
+const CURRENT_BUILD_STAMP = "10.28.15.25-codex";
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -26405,7 +26405,8 @@ function PageSvgSurfaceContent({
           {objects.map(object => {
             const preview = previewIds.has(object.id) ? objectTransformPreview : undefined;
             const fragments = objectOverlayFragments.get(object.id)!;
-            const tableBounds = object.type === "table" ? documentObjectInteractionBounds(object, page.objects) : undefined;
+            const tableBounds = object.type === "table"
+              ? documentObjectInteractionBounds(object, page.objects) : undefined;
             return (
               <g
                 key={object.id}
@@ -26437,14 +26438,18 @@ function PageSvgSurfaceContent({
                 ) : (
                   <>
                     {object.type === "table" || object.type === "bracket" || object.type === "reaction-arrow" ? (
-                      <rect x={object.x} y={object.y} width={tableBounds?.width ?? object.width} height={tableBounds?.height ?? object.height}
+                      <rect x={tableBounds?.x ?? object.x} y={tableBounds?.y ?? object.y}
+                        width={tableBounds?.width ?? object.width}
+                        height={tableBounds?.height ?? object.height}
                         data-table-hit-target={object.type === "table" ? object.id : undefined}
-                        transform={object.type === "table" ? rotationTransform(object) : projectedPlaneSvgTransformForObject(object)}
+                        transform={object.type === "table" ? undefined
+                          : projectedPlaneSvgTransformForObject(object)}
                         fill="transparent" pointerEvents="all" />
                     ) : null}
                     {fragments.map(fragment => {
                       const prefix = editingTableCell?.tableId === object.id
-                        ? `table-cell-${encodeURIComponent(JSON.stringify([object.id, editingTableCell.rowId, editingTableCell.columnId]))}-line-` : undefined;
+                        ? `${tableCellElementId(object.id, editingTableCell.rowId,
+                          editingTableCell.columnId)}-line-` : undefined;
                       return renderStaticPageSvgFragment(prefix ? { ...fragment, children: fragment.children.filter(child =>
                         child.kind === "text" || !String(child.attrs.id ?? "").startsWith(prefix)) } : fragment);
                     })}

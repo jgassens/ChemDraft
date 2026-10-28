@@ -254,7 +254,12 @@ export function TableColumnResizers({ table, scale, onPreview, onCommit }: {
   onCommit(table: TableObject, label: string): void;
 }) {
   const drag = useRef<{ pointerId: number; x: number; y: number; width: number; columnId: string;
-    table: TableObject; latest?: TableObject } | undefined>(undefined);
+    table: TableObject; px?: number; latest?: TableObject } | undefined>(undefined);
+  const previewFrame = useRef<number | undefined>(undefined);
+  const cancelPreviewFrame = () => {
+    if (previewFrame.current !== undefined) window.cancelAnimationFrame(previewFrame.current);
+    previewFrame.current = undefined;
+  };
   const latest = useRef({ onPreview, onCommit }); latest.current = { onPreview, onCommit };
   useEffect(() => {
     const move = (event: globalThis.PointerEvent) => {
@@ -263,29 +268,46 @@ export function TableColumnResizers({ table, scale, onPreview, onCommit }: {
       event.preventDefault(); event.stopPropagation();
       const angle = start.table.rotation * Math.PI / 180;
       const delta = ((event.clientX - start.x) * Math.cos(angle) + (event.clientY - start.y) * Math.sin(angle)) / scale;
-      if (delta === 0 && !start.latest) return;
-      start.latest = setTableColumnWidth(start.table, start.columnId,
-        { mode: "fixed", px: Math.max(12, Math.min(4000, start.width + delta)) }).table;
-      latest.current.onPreview(start.latest);
+      if (delta === 0 && start.px === undefined) return;
+      start.px = Math.max(12, Math.min(4000, start.width + delta));
+      if (previewFrame.current !== undefined) return;
+      previewFrame.current = window.requestAnimationFrame(() => {
+        previewFrame.current = undefined;
+        if (drag.current !== start) return;
+        start.latest = { ...start.table, columns: start.table.columns.map(column =>
+          column.id === start.columnId ? { ...column, width: { mode: "fixed", px: start.px! } } : column) };
+        // Warm the shared cache once; resizers, SVG and hit testing reuse this exact snapshot.
+        planTableLayout(start.latest);
+        latest.current.onPreview(start.latest);
+      });
     };
     const end = (event: globalThis.PointerEvent) => {
       const start = drag.current;
       if (!start || event.pointerId !== start.pointerId) return;
       if (event.type === "pointerup") move(event);
+      cancelPreviewFrame();
       drag.current = undefined;
       latest.current.onPreview(undefined);
-      if (event.type === "pointerup" && start.latest && JSON.stringify(start.latest) !== JSON.stringify(start.table)) {
-        latest.current.onCommit(start.latest, "Resize column");
+      const originalWidth = start.table.columns.find(column => column.id === start.columnId)!.width;
+      if (event.type === "pointerup" && start.px !== undefined &&
+        (originalWidth.mode !== "fixed" || originalWidth.px !== start.px)) {
+        const result = setTableColumnWidth(start.table, start.columnId, { mode: "fixed", px: start.px });
+        latest.current.onCommit(result.table, "Resize column");
       }
       event.preventDefault(); event.stopPropagation();
     };
     const cancel = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || !drag.current) return;
+      cancelPreviewFrame();
       drag.current = undefined; latest.current.onPreview(undefined); event.preventDefault(); event.stopPropagation();
     };
     window.addEventListener("pointermove", move, true); window.addEventListener("pointerup", end, true);
     window.addEventListener("pointercancel", end, true); window.addEventListener("keydown", cancel, true);
     return () => {
+      cancelPreviewFrame();
+      if (drag.current) {
+        drag.current = undefined; latest.current.onPreview(undefined);
+      }
       window.removeEventListener("pointermove", move, true); window.removeEventListener("pointerup", end, true);
       window.removeEventListener("pointercancel", end, true); window.removeEventListener("keydown", cancel, true);
     };
@@ -293,6 +315,7 @@ export function TableColumnResizers({ table, scale, onPreview, onCommit }: {
   useEffect(() => {
     // A history/command change during a drag must never be overwritten by its old table snapshot.
     if (drag.current && table !== drag.current.table && table !== drag.current.latest) {
+      cancelPreviewFrame();
       drag.current = undefined; onPreview(undefined);
     }
   }, [table, onPreview]);

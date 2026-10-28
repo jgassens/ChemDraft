@@ -1,5 +1,7 @@
 export { DocumentStyleScale, documentStylePointBounds, FigureStyles, type FigureStyle } from "./documentStyle";
-export { planTableLayout, planTableObjectSvg, tableVisualBoundsForArrangement, type TableLayout } from "./table";
+export {
+  planTableLayout, planTableObjectSvg, tableCellElementId, tableVisualBoundsForArrangement, type TableLayout
+} from "./table";
 export { textAdvanceEm, measureTextRun } from "./textMetrics";
 export { medianLength, representativeMoleculeBondLength, scalePageGeometry } from "./pageScale";
 

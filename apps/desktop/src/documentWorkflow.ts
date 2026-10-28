@@ -4,7 +4,7 @@ import { snapRotationDegrees } from "./rotationSnap";
 import { snapPlacementDegrees } from "./placementSnap";
 import { projectedDoubleBondSides } from "./interaction/projectedDoubleBondSides";
 import { buildTableObject } from "@chemdraft/document-workflow-core";
-import { planTableLayout } from "@chemdraft/layout-engine";
+import { tableVisualBoundsForArrangement } from "@chemdraft/layout-engine";
 import { validTableDimensions, type TableInsertDimensions } from "./dialogs/insertTableOptions";
 import {
   GRAPHIC_CORNER_RADIUS_HANDLE_SIZE_PX,
@@ -12652,8 +12652,7 @@ export function documentObjectInteractionBounds(
   objects: readonly DocumentObject[]
 ): ObjectBounds {
   if (object.type === "table") {
-    const layout = planTableLayout(object);
-    return { x: object.x, y: object.y, width: layout.width, height: layout.height };
+    return tableVisualBoundsForArrangement(object);
   }
   if (object.type === "mechanism-arrow") {
     let snapshot = mechanismBoundsSnapshots.get(objects);

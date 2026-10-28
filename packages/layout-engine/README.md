@@ -117,6 +117,9 @@ text rendering, so grouped captions participate in layout clearance and page-fit
 captions, footnotes and horizontal or grid rules. Cells do not wrap; fixed columns allow overflow.
 `planTableObjectSvg` feeds the shared page SVG plan, and `tableVisualBoundsForArrangement` includes
 the notes, overflow and rotation around the same stored-frame pivot as SVG rendering.
+Interaction, selection and arrangement use these visual bounds. Layout, SVG and bounds are cached
+by immutable table object identity; SVG roots also key on layer index and share their cell fragments.
+Replace the table object when editing it. `tableCellElementId` supplies the shared canvas/SVG cell ID.
 
 `textMetrics.generated.ts` contains only derived Helvetica regular/bold and Symbol Greek/arrow
 advance widths. Regenerate it with

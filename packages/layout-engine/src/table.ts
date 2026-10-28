@@ -38,6 +38,15 @@ export interface TableLayout {
   rules: { x1: number; y1: number; x2: number; y2: number; widthPx: number }[];
 }
 
+// Table objects are immutable snapshots. Replacements, including drag previews, get their own plans.
+const layoutCache = new WeakMap<TableObject, TableLayout>();
+const svgCache = new WeakMap<TableObject, Map<number, PageSvgElementFragment>>();
+const boundsCache = new WeakMap<TableObject, LayoutBounds>();
+
+export function tableCellElementId(tableId: string, rowId: string, columnId: string): string {
+  return `table-cell-${encodeURIComponent(JSON.stringify([tableId, rowId, columnId]))}`;
+}
+
 function richTextLines(value: TableRichText, bold: boolean): TextSpan[][] {
   const spans = value.spans.length > 0 && value.spans.map(span => span.text).join("") === value.text
     ? value.spans : [{ text: value.text, script: "normal" as const, style: {} }];
@@ -80,6 +89,8 @@ function splitDecimal(runs: TextSpan[]): [TextSpan[], TextSpan[]] {
 
 /** All positions are unrotated page coordinates; the stored frame does not constrain content. */
 export function planTableLayout(table: TableObject): TableLayout {
+  const cached = layoutCache.get(table);
+  if (cached) return cached;
   const style = nativeTextStyleFromObjectStyle(table.style);
   const noteStyle = { ...style, fontSizePx: style.fontSizePx * 0.9 };
   const padding = table.tableStyle.cellPaddingPx;
@@ -165,12 +176,28 @@ export function planTableLayout(table: TableObject): TableLayout {
     y = box.y + box.height;
     return box;
   });
-  return { origin: { x: table.x, y: table.y },
+  const layout = { origin: { x: table.x, y: table.y },
     width: Math.max(bodyBox.width, captionBox?.width ?? 0, ...footnoteBoxes.map(box => box.width)),
     height: y - table.y, captionBox, bodyBox, footnoteBoxes, columns, rows, cells, rules };
+  layoutCache.set(table, layout);
+  return layout;
 }
 
 export function planTableObjectSvg(table: TableObject, layerIndex: number): PageSvgElementFragment {
+  let layers = svgCache.get(table);
+  const cached = layers?.get(layerIndex);
+  if (cached) return cached;
+  if (!layers) {
+    layers = new Map();
+    svgCache.set(table, layers);
+  }
+  // Only the root attributes depend on the layer; share the expensive cell fragments across layers.
+  const existing = layers.values().next().value;
+  if (existing) {
+    const fragment = { ...existing, attrs: { ...existing.attrs, "data-layer-index": layerIndex } };
+    layers.set(layerIndex, fragment);
+    return fragment;
+  }
   const layout = planTableLayout(table);
   const style = nativeTextStyleFromObjectStyle(table.style);
   const textElements = (lines: TableLine[], id: string, fontSizePx: number) => lines.flatMap((line, lineIndex) =>
@@ -187,7 +214,7 @@ export function planTableObjectSvg(table: TableObject, layerIndex: number): Page
         "letter-spacing": style.letterSpacingPx, fill: style.color
       }, spans);
     }));
-  return elementFragment("g", `object-${table.id}`, objectAttributes(table, layerIndex, {
+  const fragment = elementFragment("g", `object-${table.id}`, objectAttributes(table, layerIndex, {
     id: `object-${table.id}`, transform: rotationTransform(table)
   }), [
     ...layout.rules.map((rule, index) => elementFragment("line", `${table.id}-rule-${index}`, {
@@ -196,13 +223,18 @@ export function planTableObjectSvg(table: TableObject, layerIndex: number): Page
     })),
     ...(layout.captionBox ? textElements(layout.captionBox.lines, `${table.id}-caption`, style.fontSizePx * 0.9) : []),
     ...layout.cells.flatMap(cell => textElements(cell.lines,
-      `table-cell-${encodeURIComponent(JSON.stringify([table.id, table.rows[cell.rowIndex].id, table.columns[cell.columnIndex].id]))}`, style.fontSizePx)),
+      tableCellElementId(table.id, table.rows[cell.rowIndex].id, table.columns[cell.columnIndex].id),
+      style.fontSizePx)),
     ...layout.footnoteBoxes.flatMap((box, index) => textElements(box.lines, `${table.id}-footnote-${index}`, style.fontSizePx * 0.9))
   ]);
+  layers.set(layerIndex, fragment);
+  return fragment;
 }
 
 /** Includes fixed-column overflow and rule strokes, rotated around the SVG object's stored pivot. */
 export function tableVisualBoundsForArrangement(table: TableObject): LayoutBounds {
+  const cached = boundsCache.get(table);
+  if (cached) return cached;
   const layout = planTableLayout(table);
   const style = nativeTextStyleFromObjectStyle(table.style);
   const boxes: LayoutBounds[] = [layout.bodyBox];
@@ -230,5 +262,7 @@ export function tableVisualBoundsForArrangement(table: TableObject): LayoutBound
     maxX = Math.max(maxX, point.x);
     maxY = Math.max(maxY, point.y);
   }
-  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+  const bounds = { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+  boundsCache.set(table, bounds);
+  return bounds;
 }
