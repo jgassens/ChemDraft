@@ -103,7 +103,8 @@ describe("CLI refuses radical loss before making a canonical source", () => {
     expect(await runDocumentCommand(["--smiles", smiles, "--out", join(directory, "input-label.json")], io)).toBe(1);
     expect(JSON.parse(io.lines[0]!)).toMatchObject({
       ok: false,
-      error: `Atom 1 carries ${properties}; ChemDraft cannot yet draw this radical/isotope label without risking chemical identity.`
+      error: `Atom 1 carries ${properties}; ` +
+        "ChemDraft cannot yet draw this radical without risking chemical identity."
     });
   });
 

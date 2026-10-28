@@ -358,7 +358,7 @@ describe("headless ChemDraft rendering", () => {
     ]);
     for (const [index, result] of results.slice(0, 1).entries()) {
       expect(result.error).toContain(`Atom ${index === 1 ? 2 : 1}`);
-      expect(result.error).toContain("radical/isotope label");
+      expect(result.error).toContain("radical");
       expect(result.error).toContain("cannot yet draw");
     }
   });

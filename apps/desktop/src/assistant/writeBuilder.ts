@@ -3,7 +3,8 @@ import {
   type DocumentObject, type DocumentPatch, type MoleculeObject, type NativeTextStyle
 } from "@chemdraft/chem-core";
 import {
-  assertMoleculeMatchesSmiles, createNativeTextObject, layoutReactionScheme, nextObjectId,
+  assertMoleculeMatchesSmiles, inspectHydrogenNormalizedIdentity,
+  createNativeTextObject, layoutReactionScheme, nextObjectId,
   nativeTextObjectSizeForText, smilesPasteBondLengthPx, stereoPerceptionMolfile,
   nativeAtomLabelReading, nativeSingleBondGraphMetadata, nativeSingleBondGraphSmiles,
   normalizeNativeMoleculeGeometry, defaultNativeMoleculeTransform
@@ -11,6 +12,7 @@ import {
 import { nativeMoleculeRings } from "@chemdraft/layout-engine";
 import { assistantDocumentContentUnchanged } from "./historyPort";
 import { RESERVED_PLUGIN_OBJECT_IDS } from "../plugins/reservedObjectIds";
+import { loadRdkitWithAppLoader } from "../plugins/rdkitAppLoader";
 import {
   assistantScope, recordAssistantInsertions, requireDocument,
   type AssistantToolContext, type AssistantPageGrowth
@@ -80,8 +82,14 @@ export async function inspectMolecule(context: AssistantToolContext, molecule: M
   return { ...result, molfile };
 }
 async function assertCanonical(context: AssistantToolContext, molecule: MoleculeObject, input: string) {
-  await assertMoleculeMatchesSmiles(molecule, input, (format, value) => format === "smiles"
-    ? inspectSmiles(context, value) : context.chemistry.inspectStructure(format, value));
+  await assertMoleculeMatchesSmiles(molecule, input, async (format, value) => {
+    const result = format === "smiles" ? await inspectSmiles(context, value)
+      : await context.chemistry.inspectStructure(format, value);
+    // Host inspection retains all atoms for counting; identity ignores ordinary explicit H.
+    if (!result.valid || !result.canonicalSmiles.includes("[H]")) return result;
+    const rdkit = await loadRdkitWithAppLoader(() => import("@chemdraft/rdkit-adapter"));
+    return inspectHydrogenNormalizedIdentity(await rdkit.ensureRdkit(), result.canonicalSmiles);
+  });
 }
 async function buildMolecule(context: AssistantToolContext, smiles: string): Promise<MoleculeObject> {
   await inspectSmiles(context, smiles); // cap before expensive depiction

@@ -1056,9 +1056,9 @@ function formulaFromElementCounts(counts: ReadonlyMap<string, number>): string {
   // Thus natural O precedes [15N], and labelled carbon stays first without any natural carbon.
   // https://github.com/rdkit/rdkit/blob/master/Code/GraphMol/MolProps.cpp
   // Unlabelled, carbon-free formulas retain the existing conventional alphabetical Hill order.
-  const carbonFirst = [...counts.keys()].some((symbol) => atomKey(symbol).element === "C" ||
-    symbol.startsWith("["));
-  const ranks: Readonly<Record<string, number>> = carbonFirst ? { C: 0, H: 1, D: 2, T: 3 } : {};
+  const carbonOrIsotopes = [...counts.keys()].some((symbol) => atomKey(symbol).element === "C" ||
+    symbol === "D" || symbol === "T" || symbol.startsWith("["));
+  const ranks: Readonly<Record<string, number>> = carbonOrIsotopes ? { C: 0, H: 1, D: 2, T: 3 } : {};
   const orderedElements = [...counts.keys()].sort((left, right) => {
     const a = atomKey(left);
     const b = atomKey(right);

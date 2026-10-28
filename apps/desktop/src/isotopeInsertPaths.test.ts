@@ -2,32 +2,31 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import { createEmptyDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { smilesListCandidates } from "@chemdraft/clipboard-adapter";
 import {
-  assertMoleculeMatchesSmiles, pastedStructureDepictionFromMolfile, type InspectChemicalIdentity
+  assertMoleculeMatchesSmiles, createSmilesMolecule, pastedStructureDepictionFromMolfile,
+  type InspectChemicalIdentity
 } from "@chemdraft/document-workflow-core";
-import { generateSmiles2DMolfile } from "../../../packages/rdkit-adapter/src/conformer";
+import { ensureRdkit, generateSmiles2DMolfile } from "../../../packages/rdkit-adapter/src/conformer";
 import { computeStructureIdentifiers } from "../../../packages/rdkit-adapter/src/identifiers";
 import { installRealRdkitModuleLoader } from "../../../packages/rdkit-adapter/src/testing";
 import {
   isotopeInsertSmiles, expectIsotopeGraph
 } from "../../../packages/document-workflow-core/test/isotopeInsertFixtures";
 import { checkedSmilesPaste, checkedSmilesGridPaste } from "./smilesPasteIdentity";
-import { depictSmilesListForPaste } from "./smilesListPaste";
+import { depictSmilesForPaste, depictSmilesListForPaste } from "./smilesListPaste";
 import { structureFromSmilesForPlugin } from "./plugins/pluginChemistry";
-import { depictSmilesOffThread } from "./depiction2d/client";
+import { applyAssistantWrite, buildInsertStructures } from "./assistant/writeBuilder";
+import { testContext } from "./assistant/tools/testContext";
 
-vi.mock("./depiction2d/client", () => ({ depictSmilesOffThread: vi.fn() }));
+vi.mock("./plugins/rdkitAppLoader", () => ({
+  loadRdkitWithAppLoader: async () => ({ ensureRdkit })
+}));
 const point = { x: 200, y: 200 };
 const inspect: InspectChemicalIdentity = async (_format, value) => {
   const result = await computeStructureIdentifiers(value);
   return result?.smiles
     ? { valid: true, canonicalSmiles: result.smiles } : { valid: false, reason: "invalid" };
 };
-beforeAll(() => {
-  installRealRdkitModuleLoader();
-  vi.mocked(depictSmilesOffThread).mockImplementation(async smiles => ({
-    depiction: pastedStructureDepictionFromMolfile(await generateSmiles2DMolfile(smiles)), stereoCount: 0
-  }));
-});
+beforeAll(() => installRealRdkitModuleLoader());
 
 async function verify(molecule: MoleculeObject, smiles: string) {
   await assertMoleculeMatchesSmiles(molecule, smiles, inspect);
@@ -35,6 +34,54 @@ async function verify(molecule: MoleculeObject, smiles: string) {
 }
 
 describe("isotope insert paths", () => {
+  it.each([
+    "[H]C([H])([H])O", "C[C@@H](O)CC", "[H]/C(C)=C(/[H])C", "[Na+].[O-]C(=O)c1ccccc1",
+    "c1cc[nH]c1", "C[N+](C)(C)C", "[2H]C([2H])([2H])O", "N[C@@H](C)C(=O)O", "F/C=C/F",
+    "C1=CC=CC=C1"
+  ])("accepts real paste depiction without changing identity: %s", async smiles => {
+    const parsed = await depictSmilesForPaste(smiles);
+    expect(parsed).toBeDefined();
+    const pasted = await checkedSmilesPaste(createEmptyDocument(), point, parsed!.depiction, smiles);
+    await verify(pasted.pages[0]!.objects[0] as MoleculeObject, smiles);
+  });
+
+  it.each(["[H]C([H])([H])O", "[H]/C(C)=C(/[H])C"])(
+    "normalizes the assistant's explicit-H inspection as well: %s", async smiles => {
+      const { context } = testContext(false);
+      context.chemistry.inspectStructure = async (_format, value) => {
+        const molecule = (await ensureRdkit()).get_mol(value, JSON.stringify({ removeHs: false }));
+        if (!molecule) throw new Error("RDKit could not parse the structure");
+        try {
+          const graph = JSON.parse(molecule.get_json!());
+          const defaultZ = graph.defaults.atom.z;
+          const heavyAtoms = graph.molecules[0].atoms.filter(
+            (atom: { z?: number }) => (atom.z ?? defaultZ) !== 1).length;
+          return { valid: true, canonicalSmiles: molecule.get_smiles!(), heavyAtoms,
+            formula: "test-only", warnings: [] };
+        } finally { molecule.delete(); }
+      };
+      context.chemistry.structureFromSmiles = async ({ smiles }) => {
+        const parsed = await depictSmilesForPaste(smiles);
+        const object = createSmilesMolecule(context.getDocument()!, point, parsed!.depiction, smiles);
+        return { available: true, built: true, object };
+      };
+      const built = await buildInsertStructures(context, { items: [{ kind: "molecule", smiles }] });
+      const result = await applyAssistantWrite(context, built);
+      const molecule = context.getDocument()!.pages[0]!.objects.find(object =>
+        result.objectIds.includes(object.id) && object.type === "molecule") as MoleculeObject;
+      await verify(molecule, smiles);
+    });
+
+  it.each([
+    ["N[C@@H](C)C(=O)O", "NC(C)C(=O)O"],
+    ["F/C=C/F", "F/C=C\\F"],
+    ["[NH3+]CC(=O)[O-]", "NCC(=O)O"]
+  ])("refuses a depiction with missing or changed stereo or charge: %s", async (smiles, stripped) => {
+    const parsed = await depictSmilesForPaste(stripped);
+    await expect(checkedSmilesPaste(createEmptyDocument(), point, parsed!.depiction, smiles))
+      .rejects.toThrow("SMILES paste refused");
+  });
+
   it.each(isotopeInsertSmiles)("preserves single paste and plugin structure %s", async smiles => {
     const source = await generateSmiles2DMolfile(smiles);
     const document = createEmptyDocument();
@@ -77,7 +124,7 @@ describe("isotope insert paths", () => {
       const before = structuredClone(document);
       const stripped = pastedStructureDepictionFromMolfile(await generateSmiles2DMolfile(
         smiles.replace(/\[2H\]/g, "").replace("[13CH3]", "C")));
-      await expect(checkedSmilesPaste(document, point, stripped, smiles, inspect))
+      await expect(checkedSmilesPaste(document, point, stripped, smiles))
         .rejects.toThrow("SMILES paste refused: the drawn structure would lose isotope labels");
       expect(document).toEqual(before);
       const valid = "CC(=[18O])C";

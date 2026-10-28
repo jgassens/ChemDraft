@@ -76,12 +76,18 @@ describe("CLI isotope preservation", () => {
     expect(rendered.agentTexts[0]).toMatchObject({ smiles: "CC(=[18O])C", source: "formula" });
     expect(rendered.agentTexts[0]!.text).toContain("18");
   });
-  it("continues refusing radicals", async () => {
+  it("refuses a radical reaction agent with a radical-only message", async () => {
+    await expect(renderReactionScheme({
+      reactants: ["CCO"], agents: ["[15N]=O"], products: ["CC=O"]
+    })).rejects.toThrow("SMILES contains a radical that ChemDraft cannot yet draw: [15N]=O");
+  });
+  it.each(["[CH3]", "[15N]=O"])("continues refusing radicals: %s", async smiles => {
     const lines: string[] = [];
-    const code = await runCli(["document", "--smiles", "[CH3]", "--out", join(directory, "radical.json")],
+    const code = await runCli(["document", "--smiles", smiles, "--out", join(directory, "radical.json")],
       { stdout: line => lines.push(line), stderr: () => {} });
     expect(code).toBe(1);
     expect(JSON.parse(lines[0]!)).toMatchObject({ ok: false, error: expect.stringMatching(/radical/) });
+    expect(JSON.parse(lines[0]!).error).not.toContain("radical/isotope");
     await expect(readFile(join(directory, "radical.json"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 });

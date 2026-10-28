@@ -171,7 +171,8 @@ function rejectUnsupportedInputAtomLabels(parsed: RdkitCountJson): void {
     ];
     if (radicals > 0) {
       throw new UnsupportedMolfileLabelError(
-        `Atom ${index + 1} carries ${properties.join(" and ")}; ChemDraft cannot yet draw this radical/isotope label without risking chemical identity.`
+        `Atom ${index + 1} carries ${properties.join(" and ")}; ` +
+          "ChemDraft cannot yet draw this radical without risking chemical identity."
       );
     }
   }
@@ -518,7 +519,7 @@ class UnsupportedMolfileLabelError extends Error {}
 function rejectUnsupportedMolfileLabels(molfile: string, smiles: string): void {
   if (/^M  RAD\b/m.test(molfile)) {
     throw new UnsupportedMolfileLabelError(
-      `SMILES contains a radical/isotope label that ChemDraft cannot yet draw: ${smiles}`
+      `SMILES contains a radical that ChemDraft cannot yet draw: ${smiles}`
     );
   }
 }

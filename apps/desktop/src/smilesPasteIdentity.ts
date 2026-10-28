@@ -1,6 +1,7 @@
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
 import {
-  assertMoleculeMatchesSmiles, ChemicalIdentityMismatchError, type InspectChemicalIdentity,
+  assertMoleculeMatchesSmiles, ChemicalIdentityMismatchError, inspectHydrogenNormalizedIdentity,
+  type InspectChemicalIdentity,
   type PagePoint, type PastedStructureDepiction
 } from "@chemdraft/document-workflow-core";
 import { insertSmilesMolecule, insertSmilesMoleculeGrid } from "./documentWorkflow";
@@ -9,14 +10,7 @@ import type { SmilesListPasteFailure } from "./smilesListPaste";
 
 const inspectPasteIdentity: InspectChemicalIdentity = async (_format, value) => {
   const rdkit = await loadRdkitWithAppLoader(() => import("@chemdraft/rdkit-adapter"));
-  const module = await rdkit.ensureRdkit();
-  const molecule = module.get_mol(value, JSON.stringify({ removeHs: false }));
-  if (!molecule) return { valid: false, reason: "RDKit could not verify the pasted structure." };
-  try {
-    const canonicalSmiles = molecule.get_smiles?.();
-    if (!canonicalSmiles) throw new Error("RDKit did not return a canonical SMILES.");
-    return { valid: true, canonicalSmiles };
-  } finally { molecule.delete(); }
+  return inspectHydrogenNormalizedIdentity(await rdkit.ensureRdkit(), value);
 };
 
 export class SmilesPasteIdentityError extends Error {

@@ -1,10 +1,14 @@
 // The package boundary scans tests too; use the same local runner path as structureName.test.ts.
-import { describe, expect, it } from "../../../node_modules/vitest";
+import { beforeAll, describe, expect, it } from "../../../node_modules/vitest";
 import { createEmptyDocument, type MoleculeAtom, type MoleculeBond } from "@chemdraft/chem-core";
 import { nativeSingleBondGraphMetadata } from "./atoms";
 import { createSmilesMolecule, pastedStructureDepictionFromMolfile } from "./molecule";
 import { nativeSingleBondGraphSmiles } from "./smiles";
 import { moleculeSmiles } from "./moleculeSmiles";
+import { generateSmiles2DMolfile } from "../../rdkit-adapter/src/conformer";
+import { installRealRdkitModuleLoader } from "../../rdkit-adapter/src/testing";
+
+beforeAll(() => installRealRdkitModuleLoader());
 
 const atom = (id: string, element: string, isotope?: number): MoleculeAtom => ({
   id, element, ...(isotope === undefined ? {} : { isotope }), x: 0, y: 0, formalCharge: 0
@@ -16,6 +20,32 @@ const bond = (
 });
 
 describe("native isotope chemistry", () => {
+  it.each([
+    ["[13CH3]c1ccccc1", "C6[13C]H8"],
+    ["c1cc[15n]cc1", "C5H5[15N]"],
+    ["CC(=[18O])C", "C3H6[18O]"],
+    ["[18OH]C(=O)c1ccccc1", "C7H6O[18O]"],
+    ["[15NH2]CC(=O)O", "C2H5O2[15N]"],
+    ["[2H]C(=C)c1ccccc1", "C8H7D"],
+    ["[15NH3]", "H3[15N]"],
+    ["[13CH4]", "[13C]H4"],
+    ["[2H]Cl", "DCl"],
+    ["[18OH2]", "H2[18O]"],
+    ["[37Cl]C(Cl)Cl", "CHCl2[37Cl]"],
+    ["O", "H2O"], ["N", "H3N"], ["C", "CH4"], ["Cc1ccccc1", "C7H8"]
+  ])("matches RDKit's separate-isotope formula for %s", async (smiles, formula) => {
+    const depiction = pastedStructureDepictionFromMolfile(await generateSmiles2DMolfile(smiles));
+    const molecule = createSmilesMolecule(createEmptyDocument(), { x: 100, y: 100 }, depiction, smiles);
+    if (molecule.type !== "molecule") throw new Error("Expected molecule");
+    expect(molecule.chemistry?.formula).toBe(formula);
+  });
+
+  it("matches O[15N] for [15N]=O when its radical is represented in the native graph", () => {
+    // The SMILES depiction drops this radical; formula ordering can still use its native graph.
+    const atoms = [{ ...atom("n", "N", 15), markRadicals: 1 }, atom("o", "O")];
+    expect(nativeSingleBondGraphMetadata(atoms, [bond("n", "o", "double")]).formula).toBe("O[15N]");
+  });
+
   it.each(["D", "T"])("a bonded %s consumes one carbon valence and has no implicit H", (element) => {
     const atoms = [atom("c", "C"), atom("h", element)];
     const bonds = [bond("c", "h")];
