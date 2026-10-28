@@ -9,7 +9,8 @@ import {
 } from "@chemdraft/chem-core";
 import type { ExportWarning } from "@chemdraft/export-engine";
 import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
-import { compositionFromRdkitJson, ensureRdkit, type RdkitJson } from "@chemdraft/rdkit-adapter";
+import { ensureRdkit } from "../../rdkit-adapter/src/conformer";
+import { compositionFromRdkitJson, type RdkitJson } from "../../rdkit-adapter/src/composition";
 import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
 import { installNodeRdkitModuleLoader } from "@chemdraft/rdkit-adapter/node";
 import { abbreviationDefinitions } from "@chemdraft/template-library";

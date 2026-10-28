@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { normalizeAtomIsotope } from "./isotopes";
 import {
   PageOrientations,
   PageSizePresetIds,
@@ -302,6 +303,8 @@ export const MoleculeAtomSchema = z
   .object({
     id: IdSchema,
     element: z.string().min(1),
+    /** Explicit isotope mass number; absent means natural abundance. D/T use their own symbols. */
+    isotope: z.number().int().positive().max(999).optional(),
     x: z.number().finite(),
     y: z.number().finite(),
     z: z.number().finite().optional(),
@@ -430,7 +433,17 @@ export const MoleculeObjectSchema = BaseObjectSchema.extend({
   structureFormat: degradingEnum(["molfile-v3000", "molfile-v2000", "smiles", "unknown"]),
   structure: z.string(),
   chemistry: ChemicalMetadataSchema.optional(),
-  atoms: z.array(MoleculeAtomSchema).default([]),
+  atoms: z.array(MoleculeAtomSchema).superRefine((atoms, context) => {
+    atoms.forEach((atom, index) => {
+      if ((atom.element === "D" || atom.element === "T") && atom.isotope !== undefined) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [index, "isotope"],
+          message: "D and T must not carry an isotope field."
+        });
+      }
+    });
+  }).transform((atoms) => atoms.map(normalizeAtomIsotope)).default([]),
   bonds: z.array(MoleculeBondSchema).default([]),
   transform: MoleculeTransformStateSchema.optional(),
   superatoms: z.array(SuperatomMetadataSchema).default([]),
