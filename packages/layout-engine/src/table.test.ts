@@ -42,6 +42,17 @@ describe("table layout and SVG", () => {
 
   it("meets every decimal piece at the column anchor and centers the headers", () => {
     const layout = planTableLayout(table);
+    for (const column of layout.columns.slice(1)) {
+      const block = column.decimalBlock!;
+      const innerLeft = column.x + table.tableStyle.cellPaddingPx.x;
+      const innerWidth = column.width - 2 * table.tableStyle.cellPaddingPx.x;
+      const blockLeft = column.decimalAnchorX! - block.preWidth;
+      const blockRight = column.decimalAnchorX! + block.postWidth;
+      expect(Math.abs((blockLeft + blockRight) / 2 - (innerLeft + innerWidth / 2))).toBeLessThan(0.01);
+      expect(blockLeft - innerLeft).toBeCloseTo(block.insetLeft);
+      expect(innerLeft + innerWidth - blockRight).toBeCloseTo(block.insetRight);
+    }
+    expect(layout.columns[0].decimalBlock).toBeUndefined();
     for (const cell of layout.cells.filter(cell => cell.columnIndex > 0)) {
       const column = layout.columns[cell.columnIndex];
       const pieces = cell.lines[0].pieces;
@@ -62,16 +73,28 @@ describe("table layout and SVG", () => {
     expect(layout.cells[14].lines[0].pieces[0].runs.some(run => run.script === "subscript")).toBe(true);
   });
 
-  it("uses the pre/post maxima for auto decimal columns and right-aligns fixed decimal blocks", () => {
+  it("centers auto and fixed decimal blocks and starts overflowing blocks at the inner left", () => {
     const input = smallTable("decimal", ["12.3", "4.567", "86", "—", ".5", "5.", "word.point"]);
     const pre = measureTextRun("word.point", { fontSizePx: style.fontSizePx });
     const post = measureTextRun(".567", { fontSizePx: style.fontSizePx });
     const auto = planTableLayout(input);
-    expect(auto.columns[0].decimalAnchorX).toBe(table.x + 6 + pre);
     expect(auto.columns[0].width).toBe(Math.ceil(((pre + post) * 1.04 + 12) * 2) / 2);
-    const fixed = planTableLayout({ ...input, columns: [{ ...input.columns[0], width: { mode: "fixed", px: 40 } }] });
-    expect(fixed.columns[0].width).toBe(40);
-    expect(fixed.columns[0].decimalAnchorX).toBe(table.x + 40 - 6 - post);
+    for (const layout of [auto, planTableLayout({ ...input,
+      columns: [{ ...input.columns[0], width: { mode: "fixed", px: 200 } }] })]) {
+      const column = layout.columns[0];
+      const inset = (column.width - 12 - pre - post) / 2;
+      expect(column.decimalBlock).toEqual({ insetLeft: inset, insetRight: inset,
+        preWidth: pre, postWidth: post });
+      expect(column.decimalAnchorX).toBeCloseTo(table.x + 6 + inset + pre);
+      const center = column.decimalAnchorX! + (post - pre) / 2;
+      expect(Math.abs(center - (column.x + column.width / 2))).toBeLessThan(0.01);
+    }
+    const narrow = planTableLayout({ ...input,
+      columns: [{ ...input.columns[0], width: { mode: "fixed", px: 40 } }] });
+    expect(narrow.columns[0].width).toBe(40);
+    expect(narrow.columns[0].decimalAnchorX).toBe(table.x + 6 + pre);
+    expect(narrow.columns[0].decimalBlock).toEqual({ insetLeft: 0, insetRight: 0,
+      preWidth: pre, postWidth: post });
     expect(auto.cells[6].lines[0].pieces).toHaveLength(1);
     expect(auto.cells[4].lines[0].pieces[0].runs).toEqual([]);
   });

@@ -27,7 +27,12 @@ export interface TableLayout {
   captionBox?: TableTextBox;
   bodyBox: LayoutBounds;
   footnoteBoxes: TableTextBox[];
-  columns: { x: number; width: number; decimalAnchorX?: number }[];
+  columns: {
+    x: number;
+    width: number;
+    decimalAnchorX?: number;
+    decimalBlock?: { insetLeft: number; insetRight: number; preWidth: number; postWidth: number };
+  }[];
   rows: { y: number; height: number }[];
   cells: { rowIndex: number; columnIndex: number; box: LayoutBounds; lines: TableLine[] }[];
   rules: { x1: number; y1: number; x2: number; y2: number; widthPx: number }[];
@@ -105,8 +110,10 @@ export function planTableLayout(table: TableObject): TableLayout {
     }));
     const width = column.width.mode === "fixed" ? column.width.px
       : Math.ceil((Math.max(widest, pre + post) * 1.04 + 2 * padding.x) * 2) / 2;
+    const inset = Math.max(0, (width - 2 * padding.x - pre - post) / 2);
     const result = { x, width, ...(column.align === "decimal" ? {
-      decimalAnchorX: column.width.mode === "fixed" ? x + width - padding.x - post : x + padding.x + pre
+      decimalAnchorX: x + padding.x + inset + pre,
+      decimalBlock: { insetLeft: inset, insetRight: inset, preWidth: pre, postWidth: post }
     } : {}) };
     x += width;
     return result;
