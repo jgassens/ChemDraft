@@ -128,7 +128,8 @@ enum InsertTableAction {
         header_rows: u32,
         preset: String,
     },
-    Cancel,
+    // Struct form: serde ignores deny_unknown_fields on unit variants of internally tagged enums.
+    Cancel {},
 }
 fn valid_table_options(rows: u32, columns: u32, header_rows: u32, preset: &str) -> bool {
     (1..=500).contains(&rows)
@@ -676,7 +677,7 @@ impl Message {
                 InsertTableAction,
             >(self.data.clone())
             .is_ok_and(|a| match a {
-                InsertTableAction::Cancel => true,
+                InsertTableAction::Cancel {} => true,
                 InsertTableAction::Apply {
                     rows,
                     columns,
