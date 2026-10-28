@@ -1728,13 +1728,17 @@ describe("layout-engine page SVG planner", () => {
     expect(dotCx + 2.1).toBeLessThanOrEqual(329 - fontSize * 0.6);
   });
 
-  it("keeps the radical dot at the tuned 0.75·radius offset for a ±1 mark", () => {
+  it("keeps a ±1 radical dot separate from its sign and inside the symbol frame", () => {
     const fragments = plannedChargeMark("charge_radical_single", 1, { radical: true });
 
     expect(fragments[0]?.attrs["data-charge-style"]).toBe("plain");
     expect(fragments[0]?.attrs["data-charge-radical"]).toBe("true");
     const dot = fragments.find((fragment) => fragment.key.startsWith("charge-radical-"));
-    expect(Number(dot?.attrs.cx)).toBeCloseTo(329 - 18 * 0.32 * 0.75, 6);
+    const bar = fragments.find((fragment) => fragment.key.startsWith("charge-bar-"));
+    expect(Number(dot?.attrs.cx) + Number(dot?.attrs.r)).toBeLessThan(
+      Number(bar?.attrs.x1) - Number(bar?.attrs["stroke-width"]) / 2);
+    expect(Number(dot?.attrs.cx) - Number(dot?.attrs.r)).toBeGreaterThanOrEqual(329 - 9);
+    expect(Number(bar?.attrs.x2) + Number(bar?.attrs["stroke-width"]) / 2).toBeLessThanOrEqual(329 + 9);
   });
 
   it("plans atom-label visibility, implicit hydrogens, colors, and transparent backgrounds", () => {

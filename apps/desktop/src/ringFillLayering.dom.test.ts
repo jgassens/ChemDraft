@@ -671,6 +671,81 @@ describe("canvas ring-fill layers", () => {
     }
   );
 
+  it.each([
+    { tool: "tool.plus", spec: { kind: "charge", charge: 1 } },
+    { tool: "tool.minus", spec: { kind: "charge", charge: -1 } },
+    { tool: "tool.plusPlain", spec: { kind: "charge", charge: 1, chargeStyle: "plain" } },
+    { tool: "tool.minusPlain", spec: { kind: "charge", charge: -1, chargeStyle: "plain" } },
+    { tool: "tool.radicalCation", spec: { kind: "charge", charge: 1, radical: true } },
+    { tool: "tool.radicalAnion", spec: { kind: "charge", charge: -1, radical: true } },
+    { tool: "tool.radical", spec: { kind: "radical-dot" } },
+    { tool: "tool.lonePair", spec: { kind: "lone-pair" } }
+  ] as const)("repositions $tool marks from their blank grab area without duplicating them", async ({ tool, spec }) => {
+    const initial = applyChargeToolAtPoint(createPhase4Document("Move electron marks"), spec, { x: 300, y: 300 });
+    const mark = initial.pages[0].objects[0];
+    await renderDocument(initial, tool);
+    const snapshot = () => window.__CHEMDRAFT_AGENT__!.snapshot().document;
+    // This corner is outside the painted dot/sign/circle but inside the mark's frame.
+    const start = { x: mark.x + 1, y: mark.y + 1 };
+    const end = { x: start.x + 45, y: start.y + 30 };
+    const hit = objectVisual(mark.id)!.querySelector('rect[pointer-events="all"]')!;
+    expect(hit).not.toBeNull();
+    expect(hit.getAttribute("fill")).toBe("transparent");
+    expect(Number(hit.getAttribute("width"))).toBe(mark.width);
+    await pointer(hit, "pointerdown", start);
+    await pointer(hit, "pointermove", end);
+    await pointer(hit, "pointerup", end);
+    expect(snapshot().pages[0].objects).toHaveLength(1);
+    expect(snapshot().pages[0].objects[0]).toMatchObject({
+      id: mark.id, x: mark.x + 45, y: mark.y + 30,
+      anchor: { kind: "point", point: { x: 345, y: 330 } }
+    });
+    await command("edit.undo");
+    expect(snapshot().pages[0].objects[0]).toEqual(mark);
+    await command("edit.redo");
+    expect(snapshot().pages[0].objects[0]).toMatchObject({ x: mark.x + 45, y: mark.y + 30 });
+    await command("tool.select");
+    const selectHit = objectVisual(mark.id)!.querySelector('rect[pointer-events="all"]')!;
+    await pointer(selectHit, "pointerdown", end);
+    await pointer(selectHit, "pointermove", start);
+    await pointer(selectHit, "pointerup", start);
+    expect(snapshot().pages[0].objects[0]).toMatchObject({ x: mark.x, y: mark.y });
+    expect(snapshot().pages[0].objects).toHaveLength(1);
+  });
+
+  it.each(["charge", "radical-dot", "lone-pair"] as const)(
+    "resizes %s marks with commands and handles and exports their thickness", async kind => {
+      const initial = applyChargeToolAtPoint(createPhase4Document("Mark appearance"),
+        kind === "charge" ? { kind, charge: 1 } : { kind }, { x: 300, y: 300 });
+      await renderDocument(initial);
+      const mark = initial.pages[0].objects[0];
+      const snapshot = () => window.__CHEMDRAFT_AGENT__!.snapshot().document;
+      const originalRadius = Number(objectVisual(mark.id)!.querySelector("circle")!.getAttribute("r"));
+      await command("object.electronMark.size:28"); // 36 px
+      await command("object.electronMark.thickness:50"); // 3 px
+      expect(snapshot().pages[0].objects[0]).toMatchObject({ width: 36, height: 36, x: 282, y: 282,
+        style: { strokeWidth: 3 } });
+      const exported = new DOMParser().parseFromString(exportDocumentToSvg(snapshot()).contents, "image/svg+xml");
+      const circle = exported.querySelector("circle")!;
+      expect(Number(circle.getAttribute("r"))).toBeGreaterThan(originalRadius);
+      if (kind === "charge") expect(circle.getAttribute("stroke-width")).toBe("3");
+      const handle = container.querySelector(`[data-object-controls="${mark.id}"] [data-object-resize-corner="bottom-right"]`)!;
+      expect(handle).not.toBeNull();
+      const page = container.querySelector(".page")!;
+      await pointer(handle, "pointerdown", { x: 318, y: 318 });
+      await pointer(page, "pointermove", { x: 336, y: 336 });
+      await pointer(page, "pointerup", { x: 336, y: 336 });
+      const resized = snapshot().pages[0].objects[0];
+      expect(resized.width).toBeGreaterThan(36);
+      expect(resized.height).toBeGreaterThan(36);
+      expect(snapshot().pages[0].objects).toHaveLength(1);
+      await command("edit.undo");
+      expect(snapshot().pages[0].objects[0].width).toBe(36);
+      await command("edit.redo");
+      expect(snapshot().pages[0].objects[0]).toEqual(resized);
+    }
+  );
+
   it("groups hundreds of labels into two layers around one native molecule", async () => {
     const fixture = ringLetterDocument(fills[0].style);
     const labels = Array.from({ length: 400 }, (_, index) => ({

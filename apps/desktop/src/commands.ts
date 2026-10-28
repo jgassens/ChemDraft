@@ -1771,7 +1771,24 @@ export const textToolbarActions: CommandSpec[] = [
   ...textScriptCommands.map(({ id, title }) => ({ id, title, icon: "text", source: "core", category: "text" } satisfies CommandSpec))
 ];
 
+export function electronMarkStyleCommandId(property: "size" | "thickness", percent: number): string {
+  return `object.electronMark.${property}:${Math.max(0, Math.min(100, Math.round(percent)))}`;
+}
+
+export const electronMarkStyleCommands = (["size", "thickness"] as const).flatMap(property =>
+  Array.from({ length: 101 }, (_, percent) => ({
+    id: electronMarkStyleCommandId(property, percent),
+    property,
+    value: property === "size" ? 8 + percent : 0.5 + percent * 0.05,
+    title: `Electron mark ${property} ${property === "size" ? 8 + percent : (0.5 + percent * 0.05).toFixed(2)} px`,
+    icon: "style" as const,
+    source: "core" as const,
+    category: "object-style"
+  }))
+);
+
 export const objectStyleActions: CommandSpec[] = [
+  ...electronMarkStyleCommands,
   ...objectStyleTargetCommands.map(({ id, title }) => ({
     id,
     title,

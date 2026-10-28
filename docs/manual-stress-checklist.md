@@ -185,7 +185,11 @@ hover hotkeys in both keybinding schemes (rings 3–0 attach/fuse over atoms and
 sprouts 4/5, carbonyl 2, gem-dimethyl 9, the 0-key cyclic bond closing a ring), with tool keys
 following the selected scheme — `e` over an atom applies the Et nickname in the ChemDraw scheme,
 while ChemDraft's `e` arms the eraser; charge stacking
-by hotkey and by the charge tool up to ±9 and back down to mark removal; the Clear/Restore
+by hotkey and by the charge tool up to ±9 and back down to mark removal; drag circled/plain
+charges, radical ions, radical dots and lone pairs from the blank area around their ink, both
+with Select and with an electron-mark tool active; drag their corner handles to resize, then
+adjust Size and Thickness in the Art toolbar; check canvas/export parity, atom associations,
+Undo/Redo, slider cancellation and save/reopen; the Clear/Restore
 Warnings context menu under whole-molecule and partial selections; element-symbol text converting
 to a naked atom on every edit-ending gesture (Escape, click-away, tool switch), and Delete
 stripping a labeled atom back to skeleton carbon before the second press deletes it; a bond

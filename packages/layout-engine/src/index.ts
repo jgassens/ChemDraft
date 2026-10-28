@@ -3592,9 +3592,12 @@ function chargeMarkFragment(object: ElectronMarkObject, layerIndex: number): Pag
   const centerY = object.y + object.height / 2;
   const radius = Math.min(object.width, object.height) * (magnitude > 1 ? 0.42 : 0.32);
   const barHalf = radius * 0.55;
-  const strokeWidth = 1.5;
+  const strokeWidth = electronMarkStrokeWidth(object);
+  const sizeScale = Math.min(object.width, object.height) / 18;
   const circled = object.chargeStyle !== "plain" && object.radical !== true;
   const children: PageSvgElementFragment[] = [];
+  let radicalDotRadius = (1.35 + strokeWidth * 0.5) * sizeScale;
+  let radicalDotX = centerX - radius * 0.75;
 
   if (circled) {
     children.push(elementFragment("circle", `charge-circle-${object.id}`, {
@@ -3617,11 +3620,23 @@ function chargeMarkFragment(object: ElectronMarkObject, layerIndex: number): Pag
       "font-family": "Arial, Helvetica, sans-serif",
       "font-size": radius * 1.35,
       "font-weight": 700,
-      fill: "#111111"
+      fill: "#111111",
+      stroke: "#111111",
+      "stroke-width": Math.max(0, strokeWidth - 1.5) * 0.4
     }, [textFragment(`charge-count-text-${object.id}`, `${magnitude}${sign > 0 ? "+" : "−"}`)]));
   } else {
-    const signHalf = circled ? barHalf : radius * 0.85;
-    const signX = object.radical === true ? centerX + radius * 0.45 : centerX;
+    let signHalf = circled ? barHalf : radius * 0.85;
+    let signX = centerX;
+    if (object.radical === true) {
+      // Keep the dot separate from the sign's round cap, even at maximum thickness.
+      const gap = 0.5 * sizeScale;
+      const fit = Math.max(0, Math.min(1, (object.width - strokeWidth - gap) / (2 * radicalDotRadius + 2 * signHalf)));
+      radicalDotRadius *= fit;
+      signHalf *= fit;
+      const totalWidth = 2 * radicalDotRadius + 2 * signHalf + strokeWidth + gap;
+      radicalDotX = centerX - totalWidth / 2 + radicalDotRadius;
+      signX = centerX + totalWidth / 2 - signHalf - strokeWidth / 2;
+    }
     children.push(elementFragment("line", `charge-bar-${object.id}`, {
       x1: signX - signHalf,
       y1: centerY,
@@ -3644,15 +3659,13 @@ function chargeMarkFragment(object: ElectronMarkObject, layerIndex: number): Pag
     }
   }
   if (object.radical === true) {
-    // The dot rides left of the glyph it modifies. The 0.75·radius offset was tuned against the
-    // circled ± ring; the multi-magnitude numeral glyph ("2+") is wider than that ring, so its
-    // offset derives from the text's half-extent (two bold glyphs at the 1.35·radius font size)
-    // plus the dot radius and a unit of clearance — otherwise the dot lands on the numeral's edge.
-    const radicalDotOffset = magnitude > 1 ? radius * 1.35 * 0.6 + 3.1 : radius * 0.75;
+    if (magnitude > 1) {
+      radicalDotX = centerX - radius * 1.35 * 0.6 - radicalDotRadius - sizeScale;
+    }
     children.push(elementFragment("circle", `charge-radical-${object.id}`, {
-      cx: centerX - radicalDotOffset,
+      cx: radicalDotX,
       cy: centerY,
-      r: 2.1,
+      r: radicalDotRadius,
       fill: "#111111"
     }));
   }
@@ -3820,12 +3833,19 @@ function mechanismArrowFragment(
 }
 
 /** A lone pair (two dots) or a single unpaired-electron dot. */
+function electronMarkStrokeWidth(object: ElectronMarkObject): number {
+  const width = object.style.strokeWidth;
+  return typeof width === "number" && Number.isFinite(width) ? Math.max(0.5, Math.min(5.5, width)) : 1.5;
+}
+
 function electronDotMarkFragment(object: ElectronMarkObject, layerIndex: number): PageSvgElementFragment {
   const centerX = object.x + object.width / 2;
   const centerY = object.y + object.height / 2;
-  const dotRadius = 2.1;
+  const sizeScale = Math.min(object.width, object.height) / 18;
+  const dotRadius = (1.35 + electronMarkStrokeWidth(object) * 0.5) * sizeScale;
+  const spacing = Math.max(2.1 * 1.6 * sizeScale, dotRadius * 1.1);
   const dots = object.markKind === "lone-pair"
-    ? [centerX - dotRadius * 1.6, centerX + dotRadius * 1.6]
+    ? [centerX - spacing, centerX + spacing]
     : [centerX];
 
   return elementFragment("g", `object-${object.id}`, objectAttributes(object, layerIndex, {

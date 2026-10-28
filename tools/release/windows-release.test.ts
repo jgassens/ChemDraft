@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const workflow = readFileSync(new URL("../../.github/workflows/windows-release.yml", import.meta.url), "utf8");
-const hasPowerShell = spawnSync("pwsh", ["-NoProfile", "-Command", "exit 0"]).status === 0;
+const hasPowerShell = spawnSync("pwsh", ["-NoProfile", "-Command", "exit 0"], { timeout: 20_000 }).status === 0;
 
 // Execute the workflow's actual scripts, with only the Windows certificate/file APIs mocked.
 function stepScript(name: string) {
@@ -16,13 +16,19 @@ function stepScript(name: string) {
 }
 
 function run(script: string, env: Record<string, string>) {
-  return spawnSync("pwsh", ["-NoProfile", "-NonInteractive", "-Command", `$ErrorActionPreference = 'Stop'\n${script}`], {
+  const result = spawnSync("pwsh", ["-NoProfile", "-NonInteractive", "-Command", `$ErrorActionPreference = 'Stop'\n${script}`], {
     encoding: "utf8",
+    timeout: 20_000,
     env: { ...process.env, ...env }
   });
+  // A launch failure or timeout must not masquerade as an expected signature rejection.
+  expect(result.error).toBeUndefined();
+  return result;
 }
 
-describe.skipIf(!hasPowerShell)("Windows release signing gates (requires installed pwsh)", () => {
+// Starting PowerShell can exceed Vitest's five-second default on a busy CI host.
+// Bound the child process separately so a hung shell still fails within the test budget.
+describe.skipIf(!hasPowerShell)("Windows release signing gates (requires installed pwsh)", { timeout: 30_000 }, () => {
   it.each([
     ["Valid", "CN=SignPath Foundation", "SignPath Foundation", true],
     ["Valid", "CN=Unexpected Publisher", "SignPath Foundation", false],

@@ -1,5 +1,16 @@
 # Shipped slices
 
+## Electron-mark repositioning (2026-10-25)
+
+Circled/plain charges, radical ions, radical dots and lone pairs have a transparent grab
+area across their frame. Existing marks drag with Select or an electron-mark tool active,
+without placing duplicates. Independent moves update point anchors for every mark kind.
+Corner handles resize the marks; Art toolbar Size and Thickness sliders preview and commit
+appearance changes through registered commands. Dot size follows the frame; thickness is shared
+by canvas and export. Focused DOM regressions cover dragging, resizing, sliders and Undo/Redo.
+The automated stress results and remaining native checks are recorded in
+[the verification report](../electron-mark-verification.md).
+
 ## Agent skill: one document style for structures, and structure naming (2026-10-22)
 
 Fixed-scale `--style document` on `render`, `grid`, `reaction`, `render-document`, and

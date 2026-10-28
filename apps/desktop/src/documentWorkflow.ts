@@ -11516,6 +11516,28 @@ export interface MoveDocumentObjectOptions {
   cascadeAnchoredMarks?: boolean;
 }
 
+/** Change symbol appearance without changing its charge, radicals or atom identity. */
+export function applyElectronMarkStyleToSelection(
+  document: ChemDraftDocument, property: "size" | "thickness", value: number
+): ChemDraftDocument {
+  if (!Number.isFinite(value)) return document;
+  const selected = new Set(document.selection.objectIds);
+  const patches: DocumentPatch[] = document.pages.flatMap(page => page.objects.flatMap((object): DocumentPatch[] => {
+    if (object.type !== "electron-mark" || !selected.has(object.id)) return [];
+    if (property === "thickness") return [{ op: "updateObject" as const, objectId: object.id,
+      changes: { style: { ...object.style, strokeWidth: Math.max(0.5, Math.min(5.5, value)) } } }];
+    const size = Math.max(8, Math.min(108, value));
+    const ratio = size / Math.max(1, object.width, object.height);
+    const width = object.width * ratio;
+    const height = object.height * ratio;
+    return [{ op: "updateObject" as const, objectId: object.id, changes: {
+      x: object.x + (object.width - width) / 2, y: object.y + (object.height - height) / 2,
+      width, height
+    } }];
+  }));
+  return patches.length ? applyPatches(document, patches, { now: phase4Timestamp }) : document;
+}
+
 export function moveDocumentObject(
   document: ChemDraftDocument,
   objectId: string,
@@ -11582,7 +11604,7 @@ function moveDocumentObjectPatches(
     ];
   }
 
-  if (object.type === "electron-mark" && object.markKind === "charge") {
+  if (object.type === "electron-mark") {
     return [{
       op: "updateObject",
       objectId,
@@ -13169,7 +13191,7 @@ function translateDocumentObjectByPatches(
       }];
   }
 
-  if (object.type === "electron-mark" && object.markKind === "charge") {
+  if (object.type === "electron-mark") {
     return [{
         op: "updateObject",
         objectId,
@@ -14398,8 +14420,8 @@ function transformOtherObjectAroundPointPatches(
     height: nextHeight,
     rotation: normalizeDegrees(object.rotation + degrees)
   };
-  if (object.type === "electron-mark" && object.markKind === "charge") {
-    changes.anchor = { ...object.anchor, kind: "point", point: { x: newCenter.x, y: newCenter.y } };
+  if (object.type === "electron-mark" && object.anchor.kind === "point") {
+    changes.anchor = { ...object.anchor, point: newCenter };
   }
   if (object.type === "graphic") {
     changes.data = resizeGraphicObjectDataForFrame(object.data, oldCenter, newCenter, scaleX, scaleY);

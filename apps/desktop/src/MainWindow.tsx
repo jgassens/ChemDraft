@@ -281,6 +281,7 @@ import {
   objectStyleActions,
   objectMarkerKindForCommand,
   objectMarkerSizeForCommand,
+  electronMarkStyleCommands,
   objectShaftMarkSizeAutoCommandId,
   objectShaftMarkSizeForCommand,
   objectStrokeDashCommands,
@@ -471,6 +472,7 @@ import {
   applyGraphicObjectPaintTypeToSelection,
   applyGraphicObjectMarkerKindToSelection,
   applyGraphicObjectMarkerSizeToSelection,
+  applyElectronMarkStyleToSelection,
   applyGraphicShaftMarkSizeToSelection,
   graphicObjectHasShaftMark,
   applyGraphicObjectStrokeStyleToSelection,
@@ -1617,7 +1619,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.27.20.00-codex";
+const CURRENT_BUILD_STAMP = "10.27.20.01-codex";
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -7390,6 +7392,17 @@ export function MainWindow({
         handled: true,
         targeted: markerObjectIds.length > 0,
         message: markerKind.markerId === "markerEnd" ? "Updated selected arrowhead" : "Updated selected arrow tail"
+      };
+    }
+
+    const electronStyle = electronMarkStyleCommands.find(command => command.id === commandId);
+    if (electronStyle) {
+      return {
+        document: applyElectronMarkStyleToSelection(currentDocument, electronStyle.property, electronStyle.value),
+        handled: true,
+        targeted: currentDocument.pages.some(page => page.objects.some(object =>
+          object.type === "electron-mark" && currentDocument.selection.objectIds.includes(object.id))),
+        message: `Updated electron mark ${electronStyle.property}`
       };
     }
 
@@ -16782,7 +16795,7 @@ export function MainWindow({
     const groupedPointerObjectIds = activeToolState.activeKind === "selection"
       ? groupedDragObjectIdsForPointer(currentDocument, objectId)
       : undefined;
-    const chargeMarkActive = object?.type === "electron-mark" && object.markKind === "charge";
+    const electronMarkActive = object?.type === "electron-mark";
     const nativeMoleculeHit = object?.type === "molecule" && point
       ? nativeMoleculeHitFromPointerTarget(
           object,
@@ -16959,7 +16972,7 @@ export function MainWindow({
       return;
     }
 
-    if (activeChargeToolValue && point && !chargeMarkActive) {
+    if (activeChargeToolValue && point && !electronMarkActive) {
       event.stopPropagation();
       if (nativeMoleculeHit?.kind === "atom") {
         addChargeToHoveredNativeAtom(activeChargeToolValue, { objectId, ...nativeMoleculeHit });
@@ -22476,7 +22489,7 @@ export function shouldDragDocumentObject(object: DocumentObject | undefined, act
     return true;
   }
 
-  return activeToolKind === "charge" && object?.type === "electron-mark" && object.markKind === "charge";
+  return activeToolKind === "charge" && object?.type === "electron-mark";
 }
 
 export function shouldOpenMoleculeEditorFromObjectClick(
@@ -26186,9 +26199,11 @@ function PageSvgSurfaceContent({
                   </svg>
                 ) : (
                   <>
-                    {object.type === "bracket" || object.type === "reaction-arrow" ? (
+                    {object.type === "bracket" || object.type === "reaction-arrow" || object.type === "electron-mark" ? (
                       <rect x={object.x} y={object.y} width={object.width} height={object.height}
-                        transform={projectedPlaneSvgTransformForObject(object)}
+                        transform={object.type === "electron-mark"
+                          ? `rotate(${object.rotation} ${object.x + object.width / 2} ${object.y + object.height / 2})`
+                          : projectedPlaneSvgTransformForObject(object)}
                         fill="transparent" pointerEvents="all" />
                     ) : null}
                     {fragments.map(fragment => renderStaticPageSvgFragment(fragment))}
@@ -26858,7 +26873,7 @@ function DocumentObjectViewContent({
     <ArtObjectTransformFrame
       frameStyle={artObjectTransformFrameStyle}
       targetLabel="selected art object"
-      canProjectedPlaneTilt={object.type !== "graphic" || !graphicObjectIsFreehandPath(object)}
+      canProjectedPlaneTilt={object.type !== "electron-mark" && (object.type !== "graphic" || !graphicObjectIsFreehandPath(object))}
       rotationHandlesVisible={rotationHandlesVisible}
       rotateReadout={rotateReadout}
       projectedPlaneTiltReadout={projectedPlaneTiltReadout}
@@ -27372,7 +27387,7 @@ function DocumentObjectViewContent({
         onPointerCancel={handleObjectPointerCancel}
         onPointerLeave={handleObjectPointerLeave}
       >
-        {chrome(null)}
+        {chrome(artObjectTransformFrame)}
       </div>
     );
   }
@@ -29421,7 +29436,7 @@ interface DocumentObjectProjection {
 }
 
 function documentObjectSupportsArtTransform(object: DocumentObject): boolean {
-  return object.type === "graphic" || object.type === "bracket" || object.type === "reaction-arrow";
+  return object.type === "graphic" || object.type === "bracket" || object.type === "reaction-arrow" || object.type === "electron-mark";
 }
 
 function documentObjectOuterCssTransform(
