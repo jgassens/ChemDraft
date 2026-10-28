@@ -796,3 +796,7 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
 Draw a bond, then paste a SMILES and insert a structure through a plugin and through the
 assistant. All four must have the same bond length, line width and atom-label size. An assistant
 caption must use the atom-label size. Existing structures on the page must not change size.
+
+# Reaction labels
+
+- Ask the assistant for a two-step Sharpless-style scheme and run `pnpm -s chemdraft reaction` with `--above`, `--below`, and `--caption`. Check that reagents stack above and conditions below, close to and centred on the arrow, which is only as long as the widest line; CH2Cl2 and Ti(OiPr)4 show subscripts while step numbers, mol%, °C and h do not. Check the caption sits under the scheme and old single-string conditions still work.

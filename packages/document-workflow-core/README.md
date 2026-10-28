@@ -87,7 +87,7 @@ rescaling them; CLI option parsing, cropping, physical SVG units and PNG DPI sta
 Reaction schemes accept `above` and `below` arrays (each entry is a deliberate line, including any
 explicit newlines) and an optional `caption`. Blank lines are discarded. `conditionText` remains a
 compatibility adapter: its newline-separated lines precede `above`, with no comma/semicolon guessing.
-The deprecated result `condition` is the same TextObject as `above`. Each block has explicit rendered
+Each block has explicit rendered
 newlines and formula spans, measured once without implicit wrapping. Entirely numbered blocks align
 left inside a box centred on the arrow; other blocks and captions align centre.
 

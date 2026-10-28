@@ -158,14 +158,21 @@ describe("assistant writes", () => {
   });
   it("inserts reaction layouts with arrows, labels, and unique ids", async () => {
     const { context } = testContext(false);
-    const result = await callAssistantTool(context, "insert_reaction", { reactants: ["CC", "CC"], products: ["CC"], reagents: ["catalyst"], conditions: ["heat"] });
+    const result = await callAssistantTool(context, "insert_reaction", { reactants: ["CC", "CC"], products: ["CC"], above: ["reagent"], below: ["solvent"], reagents: ["catalyst"], conditions: ["heat"], caption: "note" });
     expect(result.isError).not.toBe(true);
     expect(context.write).toHaveBeenCalledTimes(1);
     expect(context.getDocument()!.pages[0]!.objects.some(object => object.type === "reaction-arrow")).toBe(true);
+    const objects = context.getDocument()!.pages[0]!.objects;
+    const arrow = objects.find(object => object.type === "reaction-arrow")!;
+    const above = objects.find(object => object.type === "text" && object.text === "reagent\ncatalyst")!;
+    expect(above.x + above.width / 2).toBeCloseTo(arrow.x + arrow.width / 2);
+    expect(arrow.width).toBeLessThanOrEqual(above.width + 14.01);
+    expect(objects.some(object => object.type === "text" && object.text === "solvent\nheat")).toBe(true);
+    expect(objects.some(object => object.type === "text" && object.text === "note")).toBe(true);
   });
   it("rejects a combined reaction label exceeding 2000 characters before chemistry", async () => {
     const { context } = testContext();
-    const result = await callAssistantTool(context, "insert_reaction", { reactants: ["CC"], products: ["CC"], conditions: ["x".repeat(1500), "y".repeat(1500)] });
+    const result = await callAssistantTool(context, "insert_reaction", { reactants: ["CC"], products: ["CC"], above: ["x".repeat(1900)], caption: "y".repeat(101) });
     expect(result.isError).toBe(true);
     expect(context.chemistry.structureFromSmiles).not.toHaveBeenCalled();
     expect(context.write).not.toHaveBeenCalled();

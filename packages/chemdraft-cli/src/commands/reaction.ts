@@ -51,6 +51,9 @@ interface ReactionJob extends FigureStyleOptions {
   rxn?: string;
   out: string;
   conditions: string;
+  above: string[];
+  below: string[];
+  caption?: string;
   arrow: ReactionArrowKind;
   width: number;
   background: RenderBackground;
@@ -65,6 +68,9 @@ interface BatchReactionJob {
   out?: string;
   format?: ReactionOutputFormat;
   conditions?: string;
+  above?: string[];
+  below?: string[];
+  caption?: string;
   arrow?: ReactionArrowKind;
   width?: number;
   background?: RenderBackground;
@@ -77,6 +83,9 @@ interface ParsedArguments extends FigureStyleOptions {
   format?: ReactionOutputFormat;
   job?: ReactionJob;
   conditions: string;
+  above: string[];
+  below: string[];
+  caption?: string;
   arrow: ReactionArrowKind;
   width: number;
   background: RenderBackground;
@@ -135,6 +144,9 @@ Batch input is a JSON array of named jobs containing either "rxn" or the arrays 
 Options:
 ${figureStyleHelp}
   --conditions <text>             Additional conditions shown above the arrow
+  --above <text>                  Label above the arrow (repeatable)
+  --below <text>                  Label below the arrow (repeatable)
+  --caption <text>                Note beneath the scheme
   --arrow <kind>                  forward|equilibrium|resonance|retrosynthesis (default: forward)
   --width <px>                    PNG width (default: ${DEFAULT_REACTION_WIDTH})
   --background <kind>             white|transparent (default: white)
@@ -159,6 +171,9 @@ const reactionOptions = {
   "--out-dir": { kind: "value" },
   "--format": { kind: "value" },
   "--conditions": { kind: "value" },
+  "--above": { kind: "value", repeated: true },
+  "--below": { kind: "value", repeated: true },
+  "--caption": { kind: "value" },
   "--arrow": { kind: "value" },
   "--width": { kind: "value" },
   "--background": { kind: "value" },
@@ -271,6 +286,12 @@ function parseArguments(argv: readonly string[]): ParsedArguments | { help: true
   const outDir = stringOption(parsed, "--out-dir");
   const requestedFormat = stringOption(parsed, "--format");
   const conditions = stringOption(parsed, "--conditions")?.trim() ?? "";
+  const above = repeatedOption(parsed, "--above");
+  const below = repeatedOption(parsed, "--below");
+  const caption = stringOption(parsed, "--caption");
+  for (const [label, values] of [["--above", above], ["--below", below], ["--caption", caption === undefined ? [] : [caption]]] as const) {
+    if (values.some((value) => value.length > 5000)) throw new CliUsageError(`${label} text exceeds the 5000 character limit.`);
+  }
   const requestedArrow = stringOption(parsed, "--arrow");
   const arrow = requestedArrow === undefined ? "forward" : reactionArrow(requestedArrow);
   const requestedWidth = stringOption(parsed, "--width");
@@ -287,7 +308,7 @@ function parseArguments(argv: readonly string[]): ParsedArguments | { help: true
       );
     }
     const format = requestedFormat === undefined ? undefined : reactionFormat(requestedFormat);
-    return { mode: "batch", ...figure, jobsFile, outDir, format, conditions, arrow, width, background };
+    return { mode: "batch", ...figure, jobsFile, outDir, format, conditions, above, below, caption, arrow, width, background };
   }
 
   if (!out) throw new CliUsageError("Single-reaction mode requires --out.");
@@ -308,6 +329,7 @@ function parseArguments(argv: readonly string[]): ParsedArguments | { help: true
     mode: "single",
     ...figure,
     conditions,
+    above, below, caption,
     arrow,
     width,
     background,
@@ -318,6 +340,7 @@ function parseArguments(argv: readonly string[]): ParsedArguments | { help: true
       ...(rxn !== undefined ? { rxn } : {}),
       out,
       conditions,
+      above, below, caption,
       arrow,
       width,
       background
@@ -336,7 +359,7 @@ function parseBatchJob(candidate: unknown, index: number): BatchReactionJob {
   if (raw.rxn !== undefined && typeof raw.rxn !== "string") {
     throw new CliUsageError(`Batch job ${index + 1} "rxn" must be a string.`);
   }
-  for (const field of ["reactants", "agents", "products"] as const) {
+  for (const field of ["reactants", "agents", "products", "above", "below"] as const) {
     if (raw[field] !== undefined && (
       !Array.isArray(raw[field]) || !(raw[field] as unknown[]).every((entry) => typeof entry === "string")
     )) {
@@ -349,6 +372,15 @@ function parseBatchJob(candidate: unknown, index: number): BatchReactionJob {
   if (raw.conditions !== undefined && typeof raw.conditions !== "string") {
     throw new CliUsageError(`Batch job ${index + 1} "conditions" must be a string.`);
   }
+  if (raw.caption !== undefined && typeof raw.caption !== "string") {
+    throw new CliUsageError(`Batch job ${index + 1} "caption" must be a string.`);
+  }
+  for (const field of ["above", "below", "caption"] as const) {
+    const value = raw[field];
+    if ((Array.isArray(value) ? value : typeof value === "string" ? [value] : []).some((entry) => entry.length > 5000)) {
+      throw new CliUsageError(`Batch job ${index + 1} "${field}" exceeds the 5000 character limit.`);
+    }
+  }
   return {
     name: raw.name as string,
     rxn: raw.rxn as string | undefined,
@@ -358,6 +390,9 @@ function parseBatchJob(candidate: unknown, index: number): BatchReactionJob {
     out: raw.out as string | undefined,
     format: raw.format === undefined ? undefined : reactionFormat(raw.format, `Batch job ${index + 1} format`),
     conditions: raw.conditions as string | undefined,
+    above: raw.above as string[] | undefined,
+    below: raw.below as string[] | undefined,
+    caption: raw.caption as string | undefined,
     arrow: raw.arrow === undefined ? undefined : reactionArrow(raw.arrow, `Batch job ${index + 1} arrow`),
     width: raw.width === undefined ? undefined : positiveWidth(raw.width, `Batch job ${index + 1} width`),
     background: raw.background === undefined
@@ -400,6 +435,9 @@ async function readReactionJobs(args: ParsedArguments): Promise<ReactionJob[]> {
       ...(job.rxn !== undefined ? { rxn: job.rxn } : {}),
       out: job.out ?? join(args.outDir!, `${job.name}.${format}`),
       conditions: job.conditions?.trim() ?? args.conditions,
+      above: job.above ?? args.above,
+      below: job.below ?? args.below,
+      caption: job.caption ?? args.caption,
       arrow: job.arrow ?? args.arrow,
       width: job.width ?? args.width,
       background: job.background ?? args.background
@@ -608,6 +646,9 @@ export async function renderReactionScheme(
     style?: FigureStyle;
     arrow?: ReactionArrowKind;
     conditions?: string;
+    above?: readonly string[];
+    below?: readonly string[];
+    caption?: string;
     background?: RenderBackground;
   } = {}
 ): Promise<RenderedReactionScheme> {
@@ -665,6 +706,9 @@ export async function renderReactionScheme(
     products: products.map(componentFor),
     arrowKind: arrow,
     conditionText,
+    above: options.above,
+    below: options.below,
+    caption: options.caption,
     anchor: { x: renderDefaults.padding, y: centerY },
     gutter: REACTION_GUTTER,
     bondLength: renderDefaults.bondLength,
@@ -706,6 +750,9 @@ async function renderReactionJob(job: ReactionJob, io: CliIo): Promise<boolean> 
       style: job.style,
       arrow: job.arrow,
       conditions: job.conditions,
+      above: job.above,
+      below: job.below,
+      caption: job.caption,
       background: job.background
     });
     await mkdir(dirname(job.out), { recursive: true });

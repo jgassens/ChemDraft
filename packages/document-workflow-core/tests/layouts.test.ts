@@ -41,7 +41,7 @@ describe("shared reaction and grid layout", () => {
     expect(first.molecules[0]).toMatchObject({ x: 80, y: 110 });
     expect(first.arrow.start).toEqual({ kind: "point", point: { x: 144, y: 120 } });
     expect(overlaps(first.molecules[0]!, first.molecules[1]!)).toBe(false);
-    expect(first.condition?.y).toBeLessThan(first.arrow.y);
+    expect(first.above?.y).toBeLessThan(first.arrow.y);
   });
 
   it("positions grid cells from the anchor with labels below and no overlapping molecules", () => {
@@ -120,7 +120,7 @@ describe("shared reaction and grid layout", () => {
     expect(layoutReactionScheme({ ...options, style: "fit" }).document)
       .toEqual(layoutReactionScheme(options).document);
     const layout = layoutReactionScheme({ ...options, style: "document" });
-    const condition = layout.condition!;
+    const condition = layout.above!;
     const plus = layout.pluses[0]!;
     const conditionSize = nativeTextObjectSizeForText(options.conditionText, DocumentTextStyle);
     const plusSize = nativeTextObjectSizeForText("+", DocumentTextStyle);
@@ -142,7 +142,7 @@ describe("shared reaction and grid layout", () => {
     const textStyle = { fontSizePx: 24, fontWeight: 700 };
     const styled = layoutReactionScheme({ ...options, style: "document", textStyle });
     expect(styled.arrow.width).toBeGreaterThan(layout.arrow.width);
-    for (const text of [styled.condition!, ...styled.pluses]) {
+    for (const text of [styled.above!, ...styled.pluses]) {
       expect(nativeTextStyleFromObjectStyle(text.style)).toMatchObject({ ...DocumentTextStyle, ...textStyle });
     }
   });
@@ -153,7 +153,6 @@ describe("shared reaction and grid layout", () => {
       arrowKind: "forward", conditionText: "H2SO4, heat", above: ["then stir; wait"],
       anchor: { x: 24, y: 120 }, gutter: 24, bondLength: 22, pagePadding: 24
     });
-    expect(layout.condition).toBe(layout.above);
     expect(layout.above!.text).toBe("H2SO4, heat\nthen stir; wait");
     expect(layout.above!.spans.filter((span) => span.script === "subscript").map((span) => span.text)).toEqual(["2", "4"]);
     expect(nativeTextStyleFromObjectStyle(layout.above!.style)).toMatchObject({ fontSizePx: 14, textAlign: "center" });

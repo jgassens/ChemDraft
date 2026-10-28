@@ -80,6 +80,27 @@ function expectSchemeInsideViewBox(rendered: RenderedReactionScheme): void {
 }
 
 describe("chemdraft reaction", () => {
+  it("renders repeated labels and caption from flags and batch jobs", async () => {
+    const stdout: string[] = [];
+    const io = { stdout: (line: string) => stdout.push(line), stderr: () => undefined };
+    const out = join(outputDirectory, "labels.svg");
+    expect(await runReactionCommand(["--rxn", "CCO>>CCO", "--above", "first", "--above", "second", "--below", "CH2Cl2", "--caption", "note", "--out", out], io)).toBe(0);
+    const svg = await readFile(out, "utf8");
+    for (const value of ["first", "second", "note"]) expect(svg).toContain(value);
+    const jobs = join(outputDirectory, "labels.json");
+    await writeFile(jobs, JSON.stringify([{ name: "labels-batch", rxn: "CCO>>CCO", above: ["catalyst"], below: ["solvent"], caption: "batch note" }]));
+    expect(await runReactionCommand(["--batch", jobs, "--out-dir", outputDirectory, "--format", "svg"], io)).toBe(0);
+    const batchSvg = await readFile(join(outputDirectory, "labels-batch.svg"), "utf8");
+    for (const value of ["catalyst", "solvent", "batch note"]) expect(batchSvg).toContain(value);
+  });
+  it.each([{ above: "bad" }, { below: [1] }, { caption: [] }, { above: ["x".repeat(5001)] }])("rejects invalid batch labels %j", async (labels) => {
+    const jobs = join(outputDirectory, "invalid-labels.json");
+    await writeFile(jobs, JSON.stringify([{ name: "bad", rxn: "CCO>>CCO", ...labels }]));
+    expect(await runReactionCommand(["--batch", jobs, "--out-dir", outputDirectory], { stdout: () => undefined, stderr: () => undefined })).toBe(2);
+  });
+  it.each(["--above", "--below", "--caption"])("rejects oversized %s input", async (flag) => {
+    expect(await runReactionCommand(["--rxn", "CCO>>CCO", flag, "x".repeat(5001), "--out", join(outputDirectory, "large.svg")], { stdout: () => undefined, stderr: () => undefined })).toBe(2);
+  });
   it("renders esterification as one cropped scheme with molecule, arrow, plus, and condition objects", async () => {
     const rendered = await renderReactionScheme(
       "CC(=O)O.OCC>OS(=O)(=O)O>CC(=O)OCC",
@@ -93,7 +114,8 @@ describe("chemdraft reaction", () => {
     expect(objects.filter((object) =>
       object.type === "text" && object.text === "H2SO4, heat"
     )).toHaveLength(1);
-    expect(rendered.svg).toContain("H2SO4, heat");
+    // Formula counts are split into subscript tspans, while the text object retains the input.
+    expect(rendered.svg).toContain('baseline-shift="sub"');
     expect(rendered.agentTexts).toEqual([{
       smiles: "OS(=O)(=O)O",
       text: "H2SO4",
@@ -119,7 +141,9 @@ describe("chemdraft reaction", () => {
       ["N", "NH3", "H3N"]
     ]);
     expect(rendered.agentTexts.every((agent) => agent.source === "formula")).toBe(true);
-    expect(rendered.svg).toContain("HSO4⁻, HCl, OH⁻, Na⁺, NH4⁺, SO4²⁻, HBr, HF, NH3");
+    // Formula subscripts and line wrapping split the SVG text into separate tspans.
+    expect(rendered.conditions).toBe("HSO4⁻, HCl, OH⁻, Na⁺, NH4⁺, SO4²⁻, HBr, HF, NH3");
+    expect(rendered.svg).toContain('baseline-shift="sub"');
   }, 60_000);
 
   it("labels the reviewer's bisulfate and HCl agents with charge and H-first order", async () => {

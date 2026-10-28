@@ -47,6 +47,11 @@ function content(fragment: PageSvgFragment): string {
 }
 
 describe("reaction label policy", () => {
+  it("subscripts counts in agent formulas while retaining Unicode charges", () => {
+    const result = labels({ above: ["HSO4⁻, NH4⁺, SO4²⁻"], below: [], caption: undefined });
+    expect(result.above!.text).toBe("HSO4⁻, NH4⁺, SO4²⁻");
+    expect(scripts(result.above!).map(span => span.text)).toEqual(["4", "4", "4"]);
+  });
   it("stacks the Sharpless lines with exactly the formula subscripts and a text-sized arrow", () => {
     const result = labels();
     expect(result.above!.text.split("\n")).toEqual(above);

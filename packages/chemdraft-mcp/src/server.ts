@@ -494,6 +494,9 @@ export function createChemDraftMcpServer(
       agents: z.array(z.string().min(1)).optional(),
       products: z.array(z.string().min(1)).min(1).optional(),
       conditions: z.string().optional(),
+      above: z.array(z.string()).optional(),
+      below: z.array(z.string()).optional(),
+      caption: z.string().optional(),
       arrow: z.enum(["forward", "equilibrium", "resonance", "retrosynthesis"]).optional(),
       width: z.number().positive().optional(),
       background: z.enum(["white", "transparent"]).optional(),
@@ -508,6 +511,7 @@ export function createChemDraftMcpServer(
     agents,
     products,
     conditions,
+    above, below, caption,
     arrow,
     width,
     background,
@@ -533,6 +537,9 @@ export function createChemDraftMcpServer(
           "--out", output
         ];
     if (conditions !== undefined) argv.push("--conditions", conditions);
+    for (const line of above ?? []) argv.push("--above", line);
+    for (const line of below ?? []) argv.push("--below", line);
+    if (caption !== undefined) argv.push("--caption", caption);
     if (arrow !== undefined) argv.push("--arrow", arrow);
     if (width !== undefined) argv.push("--width", String(width));
     if (background !== undefined) argv.push("--background", background);

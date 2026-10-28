@@ -36,8 +36,6 @@ export interface ReactionSchemeLayout {
   above?: TextObject;
   below?: TextObject;
   caption?: TextObject;
-  /** @deprecated Use above. This is the same object as above. */
-  condition?: TextObject;
 }
 
 export interface ReactionSchemeLayoutOptions {
@@ -162,7 +160,6 @@ export function layoutReactionScheme(options: ReactionSchemeLayoutOptions): Reac
   }
   const pageWidth = Math.max(cursor, bounds.maxX) + dx + options.pagePadding;
   const pageHeight = Math.max(options.anchor.y + maximumMoleculeHeight / 2, bounds.maxY) + dy + options.pagePadding;
-  const condition = above;
   const objects = [...molecules, arrow, ...pluses, ...[above, below, caption].filter((text) => text !== undefined)];
 
   return {
@@ -188,8 +185,7 @@ export function layoutReactionScheme(options: ReactionSchemeLayoutOptions): Reac
     arrow,
     ...(above ? { above } : {}),
     ...(below ? { below } : {}),
-    ...(caption ? { caption } : {}),
-    ...(condition ? { condition } : {})
+    ...(caption ? { caption } : {})
   };
 }
 

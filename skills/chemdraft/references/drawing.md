@@ -115,6 +115,9 @@ reaction feasibility, or balance the equation.
 | `--out` | Required single-mode `.png`/`.svg`; extension selects format |
 | `--batch` | Named reaction jobs file |
 | `--conditions` | Additional text; default empty |
+| `--above` | Repeated lines above the arrow |
+| `--below` | Repeated lines below the arrow |
+| `--caption` | Note under the scheme |
 | `--arrow` | `forward` (default), `equilibrium`, `resonance`, `retrosynthesis` |
 | `--style` | `fit` (default) or document fixed physical style |
 | `--dpi` | Document-style PNG resolution, 72–1200; default 300 |
@@ -123,6 +126,9 @@ reaction feasibility, or balance the equation.
 | `--out-dir` | Batch directory; needed for jobs without `out` |
 | `--format` | Batch `png` (default) or `svg` when jobs omit `out` |
 | `--help` | Print help and exit |
+
+For example: `pnpm -s chemdraft reaction --reactant 'CCO' --product 'CCO' --above 'Ti(OiPr)4 (5 mol%)' --above '(+)-DET (6 mol%)' --above 't-BuOOH' --below 'CH2Cl2' --below '−20 °C' --below '4 h' --caption 'Sharpless-style example' --out scheme.svg`.
+Use above for reagents and catalysts, below for solvent, temperature and time; formula subscripts are automatic. MCP `render_reaction` accepts `above` and `below` string arrays and a `caption` string.
 
 Retrosynthesis puts products (the target) on the left and reactants
 (precursors) on the right: target ⇒ precursors. Other kinds use reactants
@@ -137,7 +143,7 @@ Reaction batch shape:
 ]
 ```
 
-Each job may override `out`, `format`, `conditions`, `arrow`, `width`,
+Each job may override `out`, `format`, `conditions`, `above`, `below`, `caption`, `arrow`, `width`,
 `background`. An explicit `out` extension selects that job's format.
 Role arrays preserve dot-joined salts. Use one scheme per step for a
 multi-step synthesis, then place the verified steps in order in the document.

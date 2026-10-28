@@ -293,6 +293,7 @@ describe("ChemDraft MCP server", () => {
         reactants: ["CCO"],
         agents: [],
         products: ["CC=O"],
+        above: ["catalyst", "reagent"], below: ["CH2Cl2"], caption: "note",
         format: "svg",
         background: "transparent"
       }
@@ -311,7 +312,8 @@ describe("ChemDraft MCP server", () => {
       "--padding", "7", "--gutter", "11", "--background", "transparent"
     ]));
     expect(calls.grid?.find((value) => value.endsWith(".svg"))).toBeDefined();
-    expect(calls.reaction).toEqual(expect.arrayContaining(["--background", "transparent"]));
+    expect(calls.reaction).toEqual(expect.arrayContaining(["--background", "transparent", "--above", "catalyst", "reagent", "--below", "CH2Cl2", "--caption", "note"]));
+    expect(calls.reaction?.slice(calls.reaction.indexOf("--above"), calls.reaction.indexOf("--above") + 4)).toEqual(["--above", "catalyst", "--above", "reagent"]);
     expect(calls.reaction?.find((value) => value.endsWith(".svg"))).toBeDefined();
     expect(calls.nmr).toEqual(expect.arrayContaining(["--statistic", "mean", "--ignore-labile"]));
     expect(calls.name).toContain("--allow-ambiguous");

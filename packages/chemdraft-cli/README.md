@@ -203,6 +203,8 @@ arguments.
 
 Render a reaction scheme as PNG or SVG.
 
+Use repeated `--above` and `--below` for lines above and below the arrow, and `--caption` for a note beneath the scheme. Batch jobs accept `above` and `below` arrays and a `caption` string. Formula counts are subscripted automatically; `--conditions` still appends to the agent formula line.
+
 ~~~bash
 pnpm -s chemdraft reaction --rxn 'CC(=O)O.OCC>OS(=O)(=O)O>CC(=O)OCC' --out ester.png
 pnpm -s chemdraft reaction \

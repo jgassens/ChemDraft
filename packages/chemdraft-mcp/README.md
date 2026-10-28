@@ -53,7 +53,7 @@ details](../chemdraft-cli/README.md#fixed-scale-document-figures).
   are inline text, and PDFs are embedded resources. Inline input and files have a 5 MB input
   limit; the CLI's object/atom limits also apply.
 - `render_grid` — render named SMILES structures in a PNG or SVG grid.
-- `render_reaction` — render reaction SMILES, or role arrays that keep dot-joined salts together, as a PNG or SVG scheme; agent display text is recorded.
+- `render_reaction` — render reaction SMILES, or role arrays that keep dot-joined salts together, as a PNG or SVG scheme; agent display text is recorded. Optional `above` and `below` string arrays place lines around the arrow, and `caption` adds a note under the scheme. `conditions` remains supported.
 - `analyze_structure` — run the property and prediction suite with status-bearing summary values.
 - `name_to_structure` — convert a chemical name with OPSIN, optionally rendering it.
 - `check_stereo` — inspect tetrahedral R/S centres and E/Z double bonds with 0-based indices.

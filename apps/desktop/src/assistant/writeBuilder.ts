@@ -16,7 +16,7 @@ import {
   type AssistantToolContext, type AssistantPageGrowth
 } from "./AssistantToolContext";
 import {
-  ASSISTANT_GAP, ASSISTANT_MARGIN, RELATIVE_GAP, choosePagePlacements, objectRect, pageContentRect, relativeRect, unionRects,
+  ASSISTANT_MARGIN, RELATIVE_GAP, choosePagePlacements, objectRect, pageContentRect, relativeRect, unionRects,
   type RelativeSide, type PagePlacements
 } from "./placement";
 import { toolSchemas, type ToolInput } from "./tools/schemas";
@@ -302,7 +302,7 @@ function arrangementCells(objects: DocumentObject[]): DocumentObject[][] {
 export async function buildInsertReaction(context: AssistantToolContext, raw: unknown): Promise<AssistantWrite> {
   const input = toolSchemas.insert_reaction.parse(raw);
   const document = requireDocument(context);
-  if ([...(input.reagents ?? []), ...(input.conditions ?? [])].join("; ").length > 2000) {
+  if ([...(input.above ?? []), ...(input.below ?? []), ...(input.reagents ?? []), ...(input.conditions ?? []), input.caption ?? ""].join("").length > 2000) {
     throw new Error("Combined reaction labels exceed the 2000 character text limit.");
   }
   const molecules: MoleculeObject[] = [];
@@ -310,19 +310,12 @@ export async function buildInsertReaction(context: AssistantToolContext, raw: un
   const components = molecules.map(molecule => { const rect = objectRect(molecule);
     return { molecule, bounds: { minX: rect.x, minY: rect.y, maxX: rect.x + rect.width, maxY: rect.y + rect.height } };
   });
+  const defaults = documentDrawingDefaults(document);
   const scheme = layoutReactionScheme({ reactants: components.slice(0, input.reactants.length), products: components.slice(input.reactants.length),
     arrowKind: input.arrowKind === "retrosynthetic" ? "retrosynthesis" : input.arrowKind,
-    conditionText: [...input.reagents ?? [], ...input.conditions ?? []].join("; "),
-    anchor: { x: ASSISTANT_MARGIN, y: 200 }, gutter: ASSISTANT_GAP, bondLength: documentDrawingDefaults(document).bondLengthPx, pagePadding: ASSISTANT_MARGIN });
-  if (scheme.condition) {
-    // The shared arrow length budgets a 240px wrapping label. Keep its native text box at
-    // that same size even when the full reaction page is much wider.
-    const size = nativeTextObjectSizeForText(scheme.condition.text, { fontSizePx: 14, textAlign: "center" });
-    scheme.condition.width = size.width;
-    scheme.condition.height = size.height;
-    scheme.condition.x = (scheme.arrow.start.point!.x + scheme.arrow.end.point!.x - size.width) / 2;
-    scheme.condition.y = scheme.arrow.start.point!.y - size.height - ASSISTANT_GAP / 2;
-  }
+    above: [...input.above ?? [], ...input.reagents ?? []], below: [...input.below ?? [], ...input.conditions ?? []],
+    caption: input.caption, textStyle: defaults.textStyle,
+    anchor: { x: ASSISTANT_MARGIN, y: 200 }, gutter: defaults.bondLengthPx, bondLength: defaults.bondLengthPx, pagePadding: ASSISTANT_MARGIN });
   const fresh = freshObjects(document, scheme.document.pages[0]!.objects);
   const placed = placement(context, fresh);
   // Retrosynthesis swaps visual sides; retain each molecule's actual source identity.
