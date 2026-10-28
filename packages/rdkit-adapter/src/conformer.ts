@@ -29,6 +29,7 @@ import {
   type Generate3DConformerResult,
   type ProgressiveConformerResult
 } from "@chemdraft/chemistry-adapter";
+import { withOpenUnspecifiedDoubleBonds } from "./openDoubleBonds";
 
 // --- injectable RDKit module ------------------------------------------------
 // The real implementation loads the vendored RDKit_minimal.{js,wasm}; tests inject a
@@ -43,7 +44,8 @@ export interface RdkitJsMol {
   /** Serialize the molecule, including generated 2D coordinates and stereo bonds. */
   get_molblock?(): string;
   /** Canonical isomeric SMILES, used by real-engine identity regression tests. */
-  get_smiles?(): string;
+  get_smiles?(detailsJson?: string): string;
+  get_prop?(name: string): string;
   /** RDKit's SSSR atom rings are in the rdkitRepresentation extension. */
   get_json?(): string;
   /**
@@ -252,11 +254,13 @@ function preferCoordGenDepiction(standardMolfile: string, coordGenMolfile: strin
  */
 function canonicalIsomericIdentity(
   rdkit: RdkitMinimalModule,
-  structure: string
+  structure: string,
+  preserveExplicitHydrogens = false
 ): string | null | undefined {
   let molecule: RdkitJsMol | null;
   try {
-    molecule = rdkit.get_mol(structure);
+    molecule = preserveExplicitHydrogens
+      ? rdkit.get_mol(structure, JSON.stringify({ removeHs: false })) : rdkit.get_mol(structure);
   } catch {
     return null;
   }
@@ -284,15 +288,16 @@ function canonicalIsomericIdentity(
 function validatedStandardIsomericIdentity(
   rdkit: RdkitMinimalModule,
   sourceSmiles: string,
-  standardMolfile: string
+  standardMolfile: string,
+  preserveExplicitHydrogens = false
 ): string | undefined {
-  const sourceIdentity = canonicalIsomericIdentity(rdkit, sourceSmiles);
+  const sourceIdentity = canonicalIsomericIdentity(rdkit, sourceSmiles, preserveExplicitHydrogens);
   if (sourceIdentity === undefined) return undefined;
   if (sourceIdentity === null) {
     throw new Error("RDKit could not verify the source SMILES isomeric identity.");
   }
 
-  const standardIdentity = canonicalIsomericIdentity(rdkit, standardMolfile);
+  const standardIdentity = canonicalIsomericIdentity(rdkit, standardMolfile, preserveExplicitHydrogens);
   if (standardIdentity !== sourceIdentity) {
     throw new Error("RDKit standard 2D depiction changed the source isomeric stereochemistry.");
   }
@@ -308,10 +313,11 @@ function validatedStandardIsomericIdentity(
 function coordGenPreservesIsomericIdentity(
   rdkit: RdkitMinimalModule,
   sourceIdentity: string | undefined,
-  coordGenMolfile: string
+  coordGenMolfile: string,
+  preserveExplicitHydrogens = false
 ): boolean | undefined {
   if (sourceIdentity === undefined) return undefined;
-  const coordGenIdentity = canonicalIsomericIdentity(rdkit, coordGenMolfile);
+  const coordGenIdentity = canonicalIsomericIdentity(rdkit, coordGenMolfile, preserveExplicitHydrogens);
   return coordGenIdentity === sourceIdentity;
 }
 
@@ -381,27 +387,32 @@ function orientHorizontalDepictionFromSmilesStart(molfile: string): string {
 function identityCheckedHorizontalOrientation(
   rdkit: RdkitMinimalModule,
   sourceIdentity: string | undefined,
-  molfile: string
+  molfile: string,
+  preserveExplicitHydrogens = false
 ): string {
   const oriented = orientHorizontalDepictionFromSmilesStart(molfile);
   if (oriented === molfile || sourceIdentity === undefined) return oriented;
   // Reflection is appearance-only only if reparsing proves the same isomer. Keep the already
   // validated unreflected candidate if an unfamiliar molfile stereo encoding cannot be mirrored
   // safely by the V2000 up/down swap above.
-  return canonicalIsomericIdentity(rdkit, oriented) === sourceIdentity ? oriented : molfile;
+  return canonicalIsomericIdentity(rdkit, oriented, preserveExplicitHydrogens) === sourceIdentity ? oriented : molfile;
 }
 
 function generated2DMolfile(
   rdkit: RdkitMinimalModule,
   smiles: string,
   useCoordGen: boolean,
-  onParsed?: (molecule: RdkitJsMol) => void
+  onParsed?: (molecule: RdkitJsMol) => void,
+  openUnspecifiedDoubleBonds = false
 ): string {
-  const molecule = rdkit.get_mol(smiles);
-  if (!molecule) {
+  const source = openUnspecifiedDoubleBonds
+    ? rdkit.get_mol(smiles, JSON.stringify({ removeHs: false })) : rdkit.get_mol(smiles);
+  if (!source) {
     throw new Error("RDKit could not parse the pasted SMILES.");
   }
+  let molecule = source;
   try {
+    if (openUnspecifiedDoubleBonds) molecule = withOpenUnspecifiedDoubleBonds(rdkit, source);
     onParsed?.(molecule);
     if (!molecule.set_new_coords || !molecule.get_molblock) {
       throw new Error("The bundled RDKit engine does not expose 2D coordinate generation.");
@@ -415,6 +426,7 @@ function generated2DMolfile(
     }
     return molfile;
   } finally {
+    if (molecule !== source) source.delete();
     molecule.delete();
   }
 }
@@ -447,6 +459,8 @@ export function coordGenWithinSizeGuard(molecule: Pick<RdkitJsMol, "get_json">):
 }
 
 export interface Smiles2DOptions {
+  /** Opt in to explicit STEREOANY for perceived, unassigned carbon double bonds. */
+  openUnspecifiedDoubleBonds?: boolean;
   /** Standard-only retry. Both algorithms must run in a terminable worker in the app. */
   standardOnly?: boolean;
   /** A validated fallback, published BEFORE entering the synchronous CoordGen WASM call. */
@@ -464,29 +478,30 @@ export async function generateSmiles2DMolfile(smiles: string, options: Smiles2DO
   let allowCoordGen = !options.standardOnly;
   const standardMolfile = generated2DMolfile(rdkit, smiles, false, (molecule) => {
     allowCoordGen = allowCoordGen && coordGenWithinSizeGuard(molecule);
-  });
+  }, options.openUnspecifiedDoubleBonds);
   // Keep this outside the optional CoordGen try/catch. If RDKit's baseline depiction has already
   // changed stereo, returning it would suppress the caller's safer OpenChemLib fallback.
-  const sourceIdentity = validatedStandardIsomericIdentity(rdkit, smiles, standardMolfile);
-  const standard = identityCheckedHorizontalOrientation(rdkit, sourceIdentity, standardMolfile);
+  const sourceIdentity = validatedStandardIsomericIdentity(rdkit, smiles, standardMolfile, options.openUnspecifiedDoubleBonds);
+  const standard = identityCheckedHorizontalOrientation(rdkit, sourceIdentity, standardMolfile, options.openUnspecifiedDoubleBonds);
   options.onStandardMolfile?.(standard);
   if (!allowCoordGen) return standard;
   try {
-    const coordGenMolfile = generated2DMolfile(rdkit, smiles, true);
+    const coordGenMolfile = generated2DMolfile(rdkit, smiles, true, undefined, options.openUnspecifiedDoubleBonds);
     const preservesIsomericIdentity = coordGenPreservesIsomericIdentity(
       rdkit,
       sourceIdentity,
-      coordGenMolfile
+      coordGenMolfile,
+      options.openUnspecifiedDoubleBonds
     );
     const selectedMolfile = preservesIsomericIdentity !== false &&
       preferCoordGenDepiction(standardMolfile, coordGenMolfile)
       ? coordGenMolfile
       : standardMolfile;
-    return identityCheckedHorizontalOrientation(rdkit, sourceIdentity, selectedMolfile);
+    return identityCheckedHorizontalOrientation(rdkit, sourceIdentity, selectedMolfile, options.openUnspecifiedDoubleBonds);
   } catch {
     // The standard depiction is already valid. CoordGen is a readability candidate, not a
     // prerequisite, so a missing/failed optional candidate must not reject the SMILES paste.
-    return identityCheckedHorizontalOrientation(rdkit, sourceIdentity, standardMolfile);
+    return identityCheckedHorizontalOrientation(rdkit, sourceIdentity, standardMolfile, options.openUnspecifiedDoubleBonds);
   }
 }
 

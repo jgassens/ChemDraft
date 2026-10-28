@@ -215,7 +215,7 @@ interface SourceBondSemantics {
   dativeBondIndices: number[];
 }
 
-/** Read the bond semantics the desktop's structural depiction type cannot currently carry. */
+/** Read source E/Z and coordination semantics used for input identity checks. */
 function sourceBondSemantics(molfile: string): SourceBondSemantics {
   const unspecifiedDoubleBondIndices: number[] = [];
   const dativeBondIndices: number[] = [];
@@ -311,6 +311,7 @@ function structuredOclDepiction(depiction: Depiction2D): PastedStructureDepictio
       to: bond.to,
       // Aromatic/unknown orders and wedge direction cross this boundary unchanged.
       order: bond.order,
+      ...(bond.stereo === "either" ? { stereo: "either" as const } : {}),
       wedge: bond.wedge
     }))
   };
@@ -433,14 +434,21 @@ function identityMolfile(
   };
 }
 
-/** Regenerate the current graph, preserving source-only unknown E/Z flags only when the
- * regenerated connection table matches the stored one. The native bond schema has no unknown-E/Z
- * field; trusting the stored molfile without this comparison would hide agent chemical edits.
+/** Regenerate the current graph, preserving legacy stored-only unknown E/Z flags only when the
+ * regenerated connection table matches the stored one. Trusting the stored molfile without this
+ * comparison would hide agent chemical edits. Native either flags take precedence.
  */
 function uncheckedCurrentMoleculeIdentityMolfile(molecule: MoleculeObject, warnings: string[] = []) {
   const currentDativeIndices = molecule.bonds.flatMap((bond, index) => isDativeBond(bond) ? [index] : []);
   const storedSemantics = sourceBondSemantics(molecule.structure);
   const current = { unspecifiedDoubleBondIndices: [], dativeBondIndices: currentDativeIndices };
+  // Native stereo intent is authoritative even after coordinates are edited. The legacy
+  // stored-only compatibility path below remains for documents predating the native field.
+  const eitherDoubleBondCount = molecule.bonds.filter((bond) => bond.order === "double" && bond.stereo === "either").length;
+  if (eitherDoubleBondCount > 0) {
+    warnings.push(`E/Z unspecified for ${eitherDoubleBondCount} double bond(s); the 2D drawing necessarily shows one geometry`);
+    return identityMolfile(molecule, current, warnings);
+  }
   if (storedSemantics.unspecifiedDoubleBondIndices.length === 0) return identityMolfile(molecule, current, warnings);
   const candidate = identityMolfile(molecule, {
     unspecifiedDoubleBondIndices: storedSemantics.unspecifiedDoubleBondIndices,
@@ -937,8 +945,13 @@ export async function buildSmilesDocument(
   document = insertSmilesMolecule(
     document,
     { x: page.width / 2, y: page.height / 2 },
-    depicted.depiction,
-    trimmedSmiles
+    {
+      ...depicted.depiction,
+      bonds: depicted.depiction.bonds.map((bond, index) =>
+        depicted.unspecifiedDoubleBondIndices.includes(index) ? { ...bond, stereo: "either" as const } : bond)
+    },
+    trimmedSmiles,
+    { openUnspecifiedDoubleBonds: true }
   );
   let molecule = moleculeFromDocument(document);
   molecule = withDativeBondStyles(molecule, depicted.dativeBondIndices);
@@ -954,6 +967,7 @@ export async function buildSmilesDocument(
 
   const writerWarnings: string[] = [];
   const serialized = identityMolfile(molecule, depicted, writerWarnings);
+  // Native flags and the stored connection table both retain the input's unspecified E/Z.
   molecule = {
     ...molecule,
     structureFormat: serialized.format,
@@ -1002,7 +1016,9 @@ export async function renderSmilesToAssets(
     throw new Error(`Background must be "white" or "transparent", received "${String(background)}".`);
   }
 
-  const built = await buildSmilesDocument(smiles, { name, bondLength, style: options.style });
+  const built = await buildSmilesDocument(smiles, {
+    name, bondLength, style: options.style
+  });
   const { document, molecule } = built;
 
   const exported = exportDocumentToSvg(document, {

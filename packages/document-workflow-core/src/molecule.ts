@@ -54,7 +54,7 @@ const nativeMoleculePadding = 8;
  *  engine (which stays behind a dynamic import to keep it out of the static graph). */
 export interface PastedStructureDepiction {
   atoms: ReadonlyArray<{ element: string; x: number; y: number; charge: number }>;
-  bonds: ReadonlyArray<{ from: number; to: number; order: MoleculeBond["order"]; wedge: "wedge" | "hashed" | null }>;
+  bonds: ReadonlyArray<{ from: number; to: number; order: MoleculeBond["order"]; stereo?: "either"; wedge: "wedge" | "hashed" | null }>;
 }
 
 /**
@@ -84,6 +84,7 @@ export function pastedStructureDepictionFromMolfile(molfile: string): PastedStru
         // explicitly refuses this same collapse citing AGENTS.md section 5.7. Flattening an
         // un-kekulized aromatic ring to all-single bonds is a silent chemistry change.
         order: bond.order,
+        ...(bond.stereo === "either" ? { stereo: "either" as const } : {}),
         // Dative (dashed) bonds parse with a display style, not a wedge — they fall to null here
         // and keep their style through the structural insert path.
         wedge: bond.bondStyle === "wedge" || bond.bondStyle === "hashed" ? bond.bondStyle : null
@@ -132,6 +133,11 @@ export const SMILES_PASTE_SOURCE: SmilesMoleculeSource = {
   warningMessage: "Generated an editable 2D structure from pasted SMILES."
 };
 
+export interface SmilesNativeOptions {
+  /** Opt in to retaining perceived, unassigned E/Z. Product default remains geometry-defined. */
+  openUnspecifiedDoubleBonds?: boolean;
+}
+
 /**
  * Build the molecule object a SMILES depiction becomes, without touching the document.
  *
@@ -149,7 +155,8 @@ export function createSmilesMolecule(
   point: PagePoint,
   depiction: PastedStructureDepiction,
   smilesText: string,
-  source: SmilesMoleculeSource = SMILES_PASTE_SOURCE
+  source: SmilesMoleculeSource = SMILES_PASTE_SOURCE,
+  options: SmilesNativeOptions = {}
 ): DocumentObject {
   if (depiction.atoms.length === 0) {
     throw new Error("Cannot build a molecule: no atoms were generated.");
@@ -169,7 +176,8 @@ export function createSmilesMolecule(
       id: `b${index}`,
       fromAtomId: `a${bond.from}`,
       toAtomId: `a${bond.to}`,
-      order: bond.order
+      order: bond.order,
+      ...(options.openUnspecifiedDoubleBonds && bond.stereo === "either" ? { stereo: "either" as const } : {})
     })),
     warnings: []
   };
@@ -193,7 +201,8 @@ export function createSmilesMolecule(
         id: `b${index}`,
         fromAtomId: `a${bond.from}`,
         toAtomId: `a${bond.to}`,
-        order: bond.order
+        order: bond.order,
+        ...(options.openUnspecifiedDoubleBonds && bond.stereo === "either" ? { stereo: "either" as const } : {})
       };
       return bond.wedge ? { ...base, display: { bondStyle: bond.wedge } } : base;
     })
@@ -270,9 +279,10 @@ export function insertSmilesMolecule(
   document: ChemDraftDocument,
   point: PagePoint,
   depiction: PastedStructureDepiction,
-  smilesText: string
+  smilesText: string,
+  options: SmilesNativeOptions = {}
 ): ChemDraftDocument {
-  const object = createSmilesMolecule(document, point, depiction, smilesText);
+  const object = createSmilesMolecule(document, point, depiction, smilesText, SMILES_PASTE_SOURCE, options);
   const page = firstPage(document);
 
   return applyPatches(

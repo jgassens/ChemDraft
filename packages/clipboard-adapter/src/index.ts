@@ -83,6 +83,7 @@ export interface ParsedClipboardBond {
   fromAtomId: string;
   toAtomId: string;
   order: "single" | "double" | "triple" | "aromatic" | "unknown";
+  stereo?: "either";
   /** Wedge/hash stereo from the source molfile (V2000 stereo 1=up→wedge, 6=down→hashed;
    *  V3000 CFG=1→wedge, CFG=3→hashed). The narrow end of the wedge is `fromAtomId`.
    *  "dashed" is not stereo: it marks a coordination (dative) bond, type 9. */
@@ -431,6 +432,7 @@ function parseV2000Molfile(molfile: string): ParsedMolfileGraph {
       fromAtomId: atomId(fromIndex),
       toAtomId: atomId(toIndex),
       order: bondOrderFromMolfile(orderCode),
+      ...(orderCode === 2 && stereoCode === 3 ? { stereo: "either" as const } : {}),
       ...(bondStyle ? { bondStyle } : {})
     };
   });
@@ -586,6 +588,7 @@ function parseV3000Molfile(molfile: string): ParsedMolfileGraph {
         fromAtomId: atomId(fromIndex),
         toAtomId: atomId(toIndex),
         order: bondOrderFromMolfile(orderCode),
+        ...(orderCode === 2 && cfg === 2 ? { stereo: "either" as const } : {}),
         ...(bondStyle ? { bondStyle } : {})
       });
     }

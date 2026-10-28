@@ -5,6 +5,7 @@
   "type": "module",
   "dependencies": {
     "@chemdraft/chem-core": "workspace:*",
+    "@chemdraft/clipboard-adapter": "workspace:*",
     "@chemdraft/document-workflow-core": "workspace:*",
     "@chemdraft/export-engine": "workspace:*",
     "@chemdraft/layout-engine": "workspace:*",

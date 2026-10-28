@@ -173,6 +173,7 @@ export async function moleculeSmiles(
     expanded.placeholderAtoms.size === 0 &&
     nativeMoleculeUnspellableLabels(molecule).length === 0 &&
     !molecule.atoms.some((atom) => (atom.markRadicals ?? 0) > 0) &&
+    !molecule.bonds.some((bond) => bond.stereo === "either") &&
     molecule.structureFormat === "smiles" &&
     molecule.structure
   ) {

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { ensureRdkit, resetRdkitForTesting } from "@chemdraft/rdkit-adapter";
+import { compositionFromRdkitJson, ensureRdkit, resetRdkitForTesting, type RdkitJson } from "@chemdraft/rdkit-adapter";
 import { installRealRdkitModuleLoader } from "@chemdraft/rdkit-adapter/testing";
 import { createEmptyDocument, moleculeToMolfileV2000, type MoleculeObject } from "@chemdraft/chem-core";
 import { createSmilesMolecule, moleculeGeometryFromAtoms } from "@chemdraft/document-workflow-core";
@@ -9,6 +9,7 @@ import { runChemistry3dJob } from "./protocol";
 import { ModelTokenAuthority } from "./token";
 import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
 import { unspecifiedStereoDoubleBonds } from "./stereo";
+import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
 import { projectSpin } from "../interaction/spinOverlay";
 import { quatFromAxisAngle, quatToViewMatrix } from "../interaction/rotation3d";
 import { closestHeavyContactPair, heavyContactDescription } from "./model";
@@ -28,6 +29,15 @@ afterAll(() => resetRdkitForTesting());
 async function canonical(input: string): Promise<string> {
   const mol = (await ensureRdkit()).get_mol(input, JSON.stringify({ removeHs: true }))!;
   try { return mol.get_smiles!(); } finally { mol.delete(); }
+}
+
+async function composition(input: string) {
+  const mol = (await ensureRdkit()).get_mol(input, JSON.stringify({ removeHs: false }))!;
+  try {
+    const result = compositionFromRdkitJson(JSON.parse(mol.get_json!()) as RdkitJson);
+    return { formula: result.formula, charge: result.formalCharge, atoms: result.atomCount,
+      bonds: result.bondCount, components: result.components.length };
+  } finally { mol.delete(); }
 }
 
 describe("plugin 3D chemistry round trips on the vendored WASM", () => {
@@ -257,13 +267,11 @@ describe("plugin 3D chemistry round trips on the vendored WASM", () => {
     const input = await providers.embed3d({ components: [{ smiles }] }, stop());
     input.model.coords = invert(input.model, smiles === "CC=CC" ? "E/Z" : "tetrahedral");
     await expect(providers.minimize3d({ model: input.model, interfragment: false }, stop())).resolves.toBeDefined();
-    if (smiles === "CC=CC") {
-      await expect(providers.flatten3d({ model: input.model, view: "auto" }, stop())).rejects.toThrow(
-        "Component 1 (CC=CC): double bond 2 has no E/Z in the input, and ChemDraft drawings cannot store an open double bond yet; specify / or \\ in the SMILES.");
-    } else {
-      const flat = await providers.flatten3d({ model: input.model, view: "auto" }, stop());
-      expect(await canonical((flat.objects[0] as MoleculeObject).structure)).toBe(await canonical(smiles));
-    }
+    const flat = await providers.flatten3d({ model: input.model, view: "auto" }, stop());
+    const molecule = flat.objects[0] as MoleculeObject;
+    expect(await canonical(molecule.structure)).toBe(await canonical(smiles));
+    expect(await composition(molecule.structure)).toEqual(await composition(smiles));
+    expect(molecule.bonds.filter(b => b.stereo === "either")).toHaveLength(smiles === "CC=CC" ? 1 : 0);
   });
 
   it.each([
@@ -277,25 +285,44 @@ describe("plugin 3D chemistry round trips on the vendored WASM", () => {
   });
 
   it.each([
-    ["CC=CC", 2, ""],
-    ["CC=CC=CC", 2, " (first of 2)"],
+    ["CC=CC", 1],
+    ["CC=CC=CC", 2],
     // A specified first alkene does not hide a later open one.
-    ["C/C=C/CC=CC", 5, ""],
+    ["C/C=C/CC=CC", 1],
     // The ring closure precedes the alkene in SMILES traversal, but RDKit stores it last.
-    ["C1CCCCC1C=CC", 7, ""]
-  ] as const)("refuses open E/Z in signed input order before geometry/depiction: %s", async (smiles, bond, count) => {
-    const input = await providers.embed3d({ components: [{ smiles: "CC" }, { smiles }] }, stop());
-    // Even degenerate plugin-edited coordinates cannot bypass the graph-based refusal.
-    input.model.coords.fill(0);
-    // Keep components apart so this exercises open E/Z rather than the earlier contact gate.
-    input.model.atoms.forEach((atom, i) => { input.model.coords[i * 3] = atom.component * 4; });
-    const rdkit = await ensureRdkit();
-    const read = vi.spyOn(rdkit, "get_mol");
-    try {
-      await expect(providers.flatten3d({ model: input.model, view: "auto" }, stop())).rejects.toEqual(new Error(
-        `Component 2 (${smiles}): double bond ${bond}${count} has no E/Z in the input, and ChemDraft drawings cannot store an open double bond yet; specify / or \\ in the SMILES.`));
-      expect(read.mock.calls.every(([structure]) => !structure.startsWith("ChemDraft plugin 3D"))).toBe(true);
-    } finally { read.mockRestore(); }
+    ["C1CCCCC1C=CC", 1],
+    ["[H]C(C)=CC", 1],
+    ["C/C=C/C", 0],
+    ["C/C=C\\C", 0],
+    ["C[C@H](O)C(O)CC", 0]
+  ] as const)("preserves open and specified stereo in native bonds and MOL: %s", async (smiles, count) => {
+    const input = await providers.embed3d({ components: [{ smiles }] }, stop());
+    const flat = await providers.flatten3d({ model: input.model, view: "auto" }, stop());
+    const molecule = flat.objects[0] as MoleculeObject;
+    expect(await canonical(molecule.structure)).toBe(await canonical(smiles));
+    expect(molecule.atoms).toHaveLength(input.model.atoms.filter(a => !a.addedHydrogen).length);
+    expect(molecule.bonds).toHaveLength(input.model.bonds.filter(b =>
+      !input.model.atoms[b.a].addedHydrogen && !input.model.atoms[b.b].addedHydrogen).length);
+    expect(molecule.bonds.filter(b => b.stereo === "either")).toHaveLength(count);
+    for (const molfile of [molecule.structure, moleculeToMolfileV2000(molecule, { fromDocFrame: true,
+      kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders }).contents]) {
+      expect(await canonical(molfile)).toBe(await canonical(smiles));
+      expect(await composition(molfile)).toEqual(await composition(smiles));
+      expect(parseMolfileGraph(molfile).bonds.filter(b => b.stereo === "either")).toHaveLength(count);
+    }
+    const rotation = flat.method.viewRotation!;
+    const retained = input.model.atoms.flatMap((atom, i) => atom.addedHydrogen ? [] : [i]);
+    const coords = retained.flatMap(i => input.model.coords.slice(i * 3, i * 3 + 3));
+    const center = [0, 1, 2].map(axis => coords.filter((_, i) => i % 3 === axis).reduce((a, b) => a + b, 0) / retained.length);
+    const placement = { centerX: (rotation[0] * center[0] + rotation[1] * center[1] + rotation[2] * center[2]) * 20,
+      centerY: -(rotation[3] * center[0] + rotation[4] * center[1] + rotation[5] * center[2]) * 20, scale: 20 };
+    // projectSpin takes a quaternion; the explicit 3×3 view can also be checked by
+    // applying its rows directly, including the component's retained-atom centroid.
+    molecule.atoms.forEach((atom, i) => {
+      const local = [0, 1, 2].map(axis => coords[i * 3 + axis] - center[axis]);
+      expect(atom.x).toBeCloseTo(placement.centerX + 20 * local.reduce((sum, x, j) => sum + rotation[j] * x, 0), 8);
+      expect(atom.y).toBeCloseTo(placement.centerY - 20 * local.reduce((sum, x, j) => sum + rotation[3 + j] * x, 0), 8);
+    });
   });
 
   it.each([

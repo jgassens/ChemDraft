@@ -7,7 +7,7 @@ import { flattenNativeMolecule3d, type StereoPerceiver } from "../documentWorkfl
 import { conformerCentroid } from "../interaction/spinOverlay";
 import { projectPoint, quatFromAxisAngle, quatToViewMatrix } from "../interaction/rotation3d";
 import { assertFlattenContacts, readGraph } from "./model";
-import { assertComponentStereo, specifiedCenters, stereoGraph, unspecifiedStereoDoubleBonds } from "./stereo";
+import { assertComponentStereo, specifiedCenters, stereoGraph, unspecifiedStereoDoubleBondPairs } from "./stereo";
 import { timeChemistry3d, type Chemistry3dTimingSink } from "./timing";
 
 function canonical(rdkit: RdkitMinimalModule, input: string): string {
@@ -39,12 +39,6 @@ export function flattenPluginModel(request: PluginFlatten3DRequest, method: Plug
       .flatMap(atom => atom.isotope ? [`${atom.isotope}${atom.element}`] : []))];
     if (labels.length) throw new Error(`Component ${index + 1} (${component.smiles}) carries isotope labels (${labels.join(", ")}), which ChemDraft drawings cannot store yet; flatten3d refuses rather than drop them.`);
   });
-  // CTAB's 'either' flag does not survive native bond serialization. Refuse only bonds
-  // RDKit perceives as potential E/Z, until native open-double-bond storage exists.
-  model.components.forEach((component, index) => {
-    const open = timeChemistry3d(timing, "flatten.open-double-bonds", () => unspecifiedStereoDoubleBonds(rdkit, component.smiles), { component: index + 1 });
-    if (open.length) throw new Error(`Component ${index + 1} (${component.smiles}): double bond ${open[0]}${open.length > 1 ? ` (first of ${open.length})` : ""} has no E/Z in the input, and ChemDraft drawings cannot store an open double bond yet; specify / or \\ in the SMILES.`);
-  });
   model.components.forEach((_, index) => timeChemistry3d(timing, "flatten.input-stereo",
     () => assertComponentStereo(rdkit, model, index, "flatten3d input"), { component: index + 1 }));
   const perceiveStereo: StereoPerceiver = molfile => {
@@ -69,11 +63,16 @@ export function flattenPluginModel(request: PluginFlatten3DRequest, method: Plug
       const expected = canonical(rdkit, component.smiles);
       const intent = stereoGraph(mol);
       const centers = specifiedCenters(intent);
+      const openPairs = timeChemistry3d(timing, "flatten.open-double-bonds",
+        () => unspecifiedStereoDoubleBondPairs(rdkit, component.smiles, intent), { component: componentIndex + 1 });
+      // Perception indices name bonds in signed input order. Match endpoint pairs
+      // after depiction, never assume molblock bond order (notably at ring closures).
       // Stereo-free references need no 2D depiction: the shared helper replaces
       // coordinates anyway. Stereo references need wedges/geometry, now on the
       // retained input graph rather than the much larger explicit-H model.
       if (/[@/\\]/.test(expected)) timeChemistry3d(timing, "flatten.depict2d", () => mol.set_new_coords!(false));
       const graph = parseMolfileGraph(mol.get_molblock());
+      const atomIndices = new Map(graph.atoms.map((atom, i) => [atom.id, i]));
       const retained = model.atoms.slice(component.atomStart, component.atomStart + component.atomCount)
         .flatMap((atom, i) => atom.element === "H" && atom.addedHydrogen ? [] : [component.atomStart + i]);
       if (graph.atoms.length !== retained.length) throw new Error("RDKit changed the atom count while preparing flatten3d.");
@@ -87,10 +86,22 @@ export function flattenPluginModel(request: PluginFlatten3DRequest, method: Plug
           return { ...atom, y: -atom.y, formalCharge: source.charge,
             ...(source.radical ? { markRadicals: source.radical } : {}) };
         }),
-        bonds: graph.bonds.map(bond => ({ id: bond.id, fromAtomId: bond.fromAtomId, toAtomId: bond.toAtomId,
-          order: bond.order, ...(bond.bondStyle ? { display: { bondStyle: bond.bondStyle } } : {}) }))
+        bonds: graph.bonds.map(bond => {
+          const a = atomIndices.get(bond.fromAtomId)!;
+          const b = atomIndices.get(bond.toAtomId)!;
+          return { id: bond.id, fromAtomId: bond.fromAtomId, toAtomId: bond.toAtomId,
+            order: bond.order,
+            ...(bond.stereo === "either" || openPairs.some(pair => pair.includes(a) && pair.includes(b))
+              ? { stereo: "either" as const } : {}),
+            ...(bond.bondStyle ? { display: { bondStyle: bond.bondStyle } } : {}) };
+        })
       };
-      return { native, expected, centers,
+      const specifiedDoubleBondIds = new Set(native.bonds.flatMap(bond => {
+        const a = atomIndices.get(bond.fromAtomId)!, b = atomIndices.get(bond.toAtomId)!;
+        return intent.bonds.some(source => source.atoms.includes(a) && source.atoms.includes(b) &&
+          (source.stereo === "cis" || source.stereo === "trans")) ? [bond.id] : [];
+      }));
+      return { native, expected, centers, specifiedDoubleBondIds,
         coords: retained.flatMap(i => model.coords.slice(i * 3, i * 3 + 3)) };
     } catch (error) {
       throw new Error(`Component ${componentIndex + 1}: ${error instanceof Error ? error.message : String(error)}`);
@@ -105,7 +116,7 @@ export function flattenPluginModel(request: PluginFlatten3DRequest, method: Plug
       const objects: MoleculeObject[] = [];
       const depthByAtom: number[][] = [];
       const warnings: string[] = [];
-      references.forEach(({ native, expected, coords, centers }, index) => {
+      references.forEach(({ native, expected, coords, centers, specifiedDoubleBondIds }, index) => {
         const center = conformerCentroid(coords);
         // Rotate component centres too, preserving the plugin's relative placement. 20 px/A is
         // fixed, independent of document state. The shared helper supplies ALL projection math.
@@ -116,6 +127,7 @@ export function flattenPluginModel(request: PluginFlatten3DRequest, method: Plug
           ...(timing ? { onTiming: (stage: string, ms: number) => timing({ stage, ms, details: { component: index + 1 } }) } : {}),
           placement: { centerX, centerY, scale: 20 },
           stereoCenterAtomIds: new Set([...centers].map(i => native.atoms[i].id)),
+          specifiedDoubleBondIds,
           ...(native.atoms.length <= 999 && native.bonds.length <= 999 ? { perceiveStereo } : {})
         });
         if (!outcome.molecule || outcome.status !== "committed") {

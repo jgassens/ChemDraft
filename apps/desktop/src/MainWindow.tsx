@@ -549,6 +549,7 @@ import {
   nativeChargeMarkMaxMagnitude,
   nativeChargeStackRefusal,
   stereoPerceptionMolfile,
+  specifiedDoubleBondIdsForFlatten,
   nativeElementFromKeyboardKey,
   nativeHotkeyElementFromSymbol,
   nativeMoleculeInvalidAtomStates,
@@ -1123,6 +1124,8 @@ type Spin3dRotateSnapshot = {
   coords3d: Float64Array;
   /** Fixed visual placement shared by every preview frame in this drag. */
   placement: ScreenPlacement;
+  /** E/Z perception runs once at pointer-down; undefined retains the conservative guard. */
+  specifiedDoubleBondIds?: ReadonlySet<string>;
   atomIds: string[];
   engine?: Spin3dEngineProvenance;
 };
@@ -1602,6 +1605,9 @@ function interactive3dPostOpenPollingComplete(session: Engine3dWorkspaceSessionS
     session.errors.length > 0;
 }
 
+// Filled only by the existing lazy imports; synchronous spin paths never load an engine.
+let cachedOclAdapter: typeof import("@chemdraft/ocl-adapter") | undefined;
+
 const RULER_THICKNESS = 32;
 const INTERACTIVE_3D_DRAG_UPDATE_INTERVAL_MS = 33;
 const INTERACTIVE_3D_POST_OPEN_POLL_COUNT = 8;
@@ -1617,7 +1623,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.27.20.00-codex";
+const CURRENT_BUILD_STAMP = "10.28.00.40-codex";
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -4498,7 +4504,7 @@ export function MainWindow({
     setStatus(`Cleaning up selected ${targetLabel}…`);
     void (async () => {
       try {
-        const { relayoutMolfile2D, perceiveStereoCentersFromMolfile } = await import("@chemdraft/ocl-adapter");
+        const { relayoutMolfile2D, perceiveStereoCentersFromMolfile } = cachedOclAdapter = await import("@chemdraft/ocl-adapter");
         const warnings: string[] = [];
         const changed = commitDocumentChange((current) =>
           engineTargetIds.reduce((next, objectId) => {
@@ -4619,7 +4625,7 @@ export function MainWindow({
         const warnings: string[] = [];
         const molfile = stereoPerceptionMolfile(flattenTarget, warnings);
         if (warnings.length) setStatus(warnings.join(" "));
-        const { perceiveStereoCentersFromMolfile, perceiveUnrepresentableStereo } = await import("@chemdraft/ocl-adapter");
+        const { perceiveStereoCentersFromMolfile, perceiveUnrepresentableStereo } = cachedOclAdapter = await import("@chemdraft/ocl-adapter");
         perceiveStereo = perceiveStereoCentersFromMolfile;
         const perAtom = perceiveStereoCentersFromMolfile(molfile);
         if (perAtom.length === flattenTarget.atoms.length) {
@@ -4652,7 +4658,8 @@ export function MainWindow({
       outcome = flattenSpunMolecule(documentRef.current, state.objectId, state.coords3d, viewMatrix, {
         placement: state.placement,
         stereoCenterAtomIds,
-        perceiveStereo
+        perceiveStereo,
+        perceiveDoubleBondStereo: cachedOclAdapter?.perceiveDoubleBondStereoFromMolfile
       });
     } catch (error) {
       // A flatten guard (e.g. a stale atom reference) throws rather than silently committing
@@ -4719,6 +4726,7 @@ export function MainWindow({
     let cancelled = false;
     void import("@chemdraft/ocl-adapter")
       .then((module) => {
+        cachedOclAdapter = module;
         if (!cancelled) spin3dStereoPerceiverRef.current = module.perceiveStereoCentersFromMolfile;
       })
       .catch(() => {
@@ -4738,12 +4746,16 @@ export function MainWindow({
     sourceDocument: ChemDraftDocument,
     objectId: string,
     warnings: string[]
-  ): { stereoCenterAtomIds?: ReadonlySet<string>; perceiveStereo?: StereoPerceiver } => {
+  ): { stereoCenterAtomIds?: ReadonlySet<string>; perceiveStereo?: StereoPerceiver;
+    perceiveDoubleBondStereo?: NonNullable<typeof cachedOclAdapter>["perceiveDoubleBondStereoFromMolfile"] } => {
     const perceive = spin3dStereoPerceiverRef.current;
     const molecule = findDocumentObject(sourceDocument, objectId);
     if (molecule?.type !== "molecule" || !isNativeMoleculeGraph(molecule)) return {};
     // Perception spelling (abbreviated labels as R-groups): a "Ph" must not read as a carbon.
-    return buildSpin3dFlattenStereoOptions(molecule, perceive, () => stereoPerceptionMolfile(molecule, warnings));
+    return {
+      ...buildSpin3dFlattenStereoOptions(molecule, perceive, () => stereoPerceptionMolfile(molecule, warnings)),
+      perceiveDoubleBondStereo: cachedOclAdapter?.perceiveDoubleBondStereoFromMolfile
+    };
   }, []);
 
   // Monotonic token: stale conformer results (from a superseded spin click) are ignored.
@@ -4753,7 +4765,7 @@ export function MainWindow({
   // desired one-time reposition). After that we remember the exact conformer + committed
   // orientation, so re-spinning reopens the overlay landing on the current drawing instead
   // of re-snapping to a fresh embed's readable angle — letting the user fine-tune position.
-  // Self-invalidating: the stored signature keys on graph identity, so editing the molecule
+  // Self-invalidating: the stored signature keys on graph identity and drawn stereo, so editing the molecule
   // forces a fresh embed (treated as first-time again). Not persisted across reload.
   const spin3dModelCacheRef = useRef<Map<string, { signature: string; coords3d: Float64Array; quat: Quaternion; engine?: Spin3dEngineProvenance }>>(
     new Map()
@@ -4914,7 +4926,7 @@ export function MainWindow({
     let reopen: { coords3d: Float64Array; quat: Quaternion; engine?: Spin3dEngineProvenance } | undefined =
       memoHit ? { coords3d: memoHit.coords3d, quat: memoHit.quat, engine: memoHit.engine } : undefined;
     if (!reopen) {
-      const documentModel = validSpin3dModelFor(molecule);
+      const documentModel = validSpin3dModelFor(molecule, cachedOclAdapter?.storedCoordinatesMatchStereo);
       const coords3d = documentModel ? spin3dModelCoordsForMolecule(documentModel, molecule) : undefined;
       if (documentModel && coords3d) {
         reopen = { coords3d, quat: documentModel.orientation, engine: documentModel.engine };
@@ -5103,7 +5115,7 @@ export function MainWindow({
           stage: "fallback.import",
           path
         }, emitTrace);
-        const ocl = await import("@chemdraft/ocl-adapter");
+        const ocl = cachedOclAdapter = await import("@chemdraft/ocl-adapter");
         const { oclResourcesUrl } = await import("./oclResources");
         ocl.setOclResourcesUrl(oclResourcesUrl);
         importSpan.complete();
@@ -5475,7 +5487,7 @@ export function MainWindow({
     // Engine lazy-loads (same pattern as Spin 3D): the whole re-layout is pure once the module is in.
     void (async () => {
       try {
-        const { relayoutMolfile2D, perceiveStereoCentersFromMolfile } = await import("@chemdraft/ocl-adapter");
+        const { relayoutMolfile2D, perceiveStereoCentersFromMolfile } = cachedOclAdapter = await import("@chemdraft/ocl-adapter");
         const warnings: string[] = [];
         const changed = commitDocumentChange((current) =>
           applyNativeMoleculeEngineRelayout(current, objectId, relayoutMolfile2D, {
@@ -14229,15 +14241,22 @@ export function MainWindow({
   // Returns undefined unless a valid (graph-matching) model is present and its conformer
   // maps cleanly onto the current atoms — callers then fall back to the legacy 2.5D tilt.
   const spin3dRotateSnapshotFor = useCallback((molecule: MoleculeObject): Spin3dRotateSnapshot | undefined => {
-    const model = validSpin3dModelFor(molecule);
+    const model = validSpin3dModelFor(molecule, cachedOclAdapter?.storedCoordinatesMatchStereo);
     if (!model) return undefined;
     const coords3d = spin3dModelCoordsForMolecule(model, molecule);
     if (!coords3d) return undefined;
     const { placement } = spinPlacementFor(molecule, coords3d, model.orientation);
+    let specifiedDoubleBondIds: ReadonlySet<string> | undefined;
+    try {
+      specifiedDoubleBondIds = specifiedDoubleBondIdsForFlatten(molecule, cachedOclAdapter?.perceiveDoubleBondStereoFromMolfile);
+    } catch {
+      // Leave this undefined so flattening uses its conservative fail-closed guard.
+    }
     return {
       startOrientation: model.orientation,
       coords3d,
       placement,
+      specifiedDoubleBondIds,
       atomIds: molecule.atoms.map((atom) => atom.id),
       engine: model.engine
     };
@@ -14289,7 +14308,8 @@ export function MainWindow({
       let changed = document !== drag.startDocument;
       try {
         const outcome = flattenSpunMolecule(drag.startDocument, drag.objectId, model.coords3d, quatToViewMatrix(nextQuat), {
-          placement: model.placement
+          placement: model.placement,
+          specifiedDoubleBondIds: model.specifiedDoubleBondIds
         });
         if (outcome.status === "committed" && outcome.document !== drag.startDocument) {
           drag.lastValidPreviewDocument = outcome.document;
@@ -14609,7 +14629,7 @@ export function MainWindow({
             )
         : rotateDocumentObject(input.startDocument, input.objectId, manualRotationDeltaDegrees(object.rotation, zDegrees));
       if (!input.target && object.type === "molecule" && isNativeMoleculeGraph(object)) {
-        const model = validSpin3dModelFor(object);
+        const model = validSpin3dModelFor(object, cachedOclAdapter?.storedCoordinatesMatchStereo);
         const coords3d = model ? spin3dModelCoordsForMolecule(model, object) : undefined;
         if (model && coords3d) {
           const deltaDegrees = manualRotationDeltaDegrees(nativeMoleculeTransformState(object).rotationDegrees, zDegrees);
@@ -14659,7 +14679,7 @@ export function MainWindow({
     }
 
     if (!input.target) {
-      const model = validSpin3dModelFor(object);
+      const model = validSpin3dModelFor(object, cachedOclAdapter?.storedCoordinatesMatchStereo);
       const coords3d = model ? spin3dModelCoordsForMolecule(model, object) : undefined;
       if (model && coords3d) {
         const xRad = degreesToRadians(xDegrees);
@@ -17880,7 +17900,7 @@ export function MainWindow({
       : object.type === "molecule" ? "selected molecule" : "selected art object";
     const modeledRotationEntry = !selectedFragmentTarget && object.type === "molecule"
       ? (() => {
-          const model = validSpin3dModelFor(object);
+          const model = validSpin3dModelFor(object, cachedOclAdapter?.storedCoordinatesMatchStereo);
           return model !== undefined && spin3dModelCoordsForMolecule(model, object) !== undefined;
         })()
       : false;

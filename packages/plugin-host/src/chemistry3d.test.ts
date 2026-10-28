@@ -3,7 +3,7 @@ import { parsePluginManifest, type PluginChemistryAPI, type PluginEmbed3DResult 
 import { PluginHost } from "./index";
 
 const command = "plugin.test.threeD";
-const manifest = (enabled: boolean) => parsePluginManifest({ id: "org.test.threeD", name: "3D", version: "0", apiVersion: "^0.1.15", entry: "test",
+const manifest = (enabled: boolean) => parsePluginManifest({ id: "org.test.threeD", name: "3D", version: "0", apiVersion: "^0.1.16", entry: "test",
   permissions: enabled ? ["chemistry.compute"] : [], contributes: { commands: [{ id: command, title: "3D" }] } });
 const input = { components: [{ smiles: "C" }] };
 const embedded: PluginEmbed3DResult = {

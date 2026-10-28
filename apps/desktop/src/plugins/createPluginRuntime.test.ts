@@ -61,7 +61,7 @@ describe("createPluginRuntime 3D chemistry", () => {
     const runtime = createPluginRuntime({ getActiveDocument: () => undefined, chemistry3d: { embed3d, minimize3d, flatten3d } });
     const id = "org.test.threeD";
     const command = "plugin.threeD.run";
-    runtime.registerPlugin({ id, name: "3D", version: "0", apiVersion: "^0.1.15", entry: "test", permissions: ["chemistry.compute"],
+    runtime.registerPlugin({ id, name: "3D", version: "0", apiVersion: "^0.1.16", entry: "test", permissions: ["chemistry.compute"],
       contributes: { commands: [{ id: command, title: "3D" }] } }, { commandHandlers: { [command]: async ctx => {
         expect(ctx.chemistry?.minimize3d).toBeTypeOf("function");
         expect(ctx.chemistry?.flatten3d).toBeTypeOf("function");

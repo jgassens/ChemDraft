@@ -6,8 +6,10 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { openChemDraftPayload } from "@chemdraft/cdx-compat";
 import type { ChemDraftDocument, MoleculeObject } from "@chemdraft/chem-core";
+import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
 import { nativeMoleculeRings } from "@chemdraft/layout-engine";
 import { buildSmilesDocument, renderSmilesToAssets } from "../document";
+import { perceiveDoubleBondStereo } from "./stereo";
 import { MAX_DOCUMENT_BYTES, validateDocumentOutputPath } from "../documentInput";
 import { runCli } from "../cli";
 import type { CliIo } from "../output";
@@ -24,6 +26,38 @@ async function run(args: string[]) {
 }
 
 describe("native document agent commands", () => {
+  it.each([
+    { smiles: "CC=CC", open: [1], stereo: [{ bondIndex: 1, descriptor: "unspecified" }] },
+    { smiles: "C/C=C/C", open: [], stereo: [{ bondIndex: 1, descriptor: "E" }] },
+    { smiles: "CC=CC/C=C/C", open: [1], stereo: [
+      { bondIndex: 1, descriptor: "unspecified" }, { bondIndex: 4, descriptor: "E" }
+    ] }
+  ])("preserves exactly the input's open double bonds through default document/render/export: $smiles", async ({ smiles, open, stereo }) => {
+    const input = join(directory, "alkene.json");
+    const built = await run(["document", "--smiles", smiles, "--out", input]);
+    expect(built.code, JSON.stringify(built)).toBe(0);
+    const molecule = openChemDraftPayload(await readFile(input, "utf8")).document!.pages[0]!.objects[0] as MoleculeObject;
+    const eitherIndices = (bonds: readonly { stereo?: string }[]) =>
+      bonds.flatMap((bond, index) => bond.stereo === "either" ? [index] : []);
+    expect(eitherIndices(molecule.bonds)).toEqual(open);
+    expect(eitherIndices(parseMolfileGraph(molecule.structure).bonds)).toEqual(open);
+    expect(molecule.structure).toContain(`  2  3  2  ${open.length ? 3 : 0}`);
+    expect(await perceiveDoubleBondStereo(molecule.structure)).toEqual(stereo);
+    const warning = "E/Z unspecified for 1 double bond(s); the 2D drawing necessarily shows one geometry";
+    if (open.length) expect(built.result.warnings).toContain(warning);
+    else expect(built.result.warnings).not.toContain(warning);
+
+    const rendered = await run(["render-document", "--document", input, "--out", join(directory, "alkene.svg")]);
+    expect(rendered.code, JSON.stringify(rendered)).toBe(0);
+    expect(rendered.result.molecules[0]).toMatchObject({ canonicalSmiles: smiles, unspecifiedDoubleBonds: open.length });
+    const output = join(directory, "alkene.smi");
+    const exported = await run(["export", "--smiles", rendered.result.molecules[0].canonicalSmiles, "--out", output]);
+    expect(exported.code, JSON.stringify(exported)).toBe(0);
+    const roundTrip = (await readFile(output, "utf8")).split("\t")[0]!;
+    expect(roundTrip).toBe(smiles);
+    if (smiles === "CC=CC") expect(roundTrip).not.toMatch(/[/\\]/);
+  }, 60_000);
+
   it.each(chargeSeparationCases)("renders neutral-drawn $name and passes its info note through", async ({ molecule, smiles }) => {
     const built = await buildSmilesDocument(smiles);
     built.document.pages[0]!.objects = [molecule];

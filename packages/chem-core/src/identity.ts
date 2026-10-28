@@ -61,7 +61,7 @@ export interface MoleculeGraphIdentity {
   bondOrderMultiset: string[];
   /** Sum of formal charges over atoms. */
   netCharge: number;
-  /** Hash of the sorted Weisfeiler-Lehman atom colors. */
+  /** Hash of sorted Weisfeiler-Lehman atom colors; edge labels include explicit either intent. */
   connectivitySignature: string;
   /** Display-level stereo markers, canonicalized and sorted. */
   stereoMarkers: StereoMarkerFingerprint[];
@@ -149,8 +149,9 @@ function weisfeilerLehmanColors(
   const adjacency = new Map<string, Array<{ neighbor: string; order: string }>>();
   atoms.forEach((atom) => adjacency.set(atom.id, []));
   bonds.forEach((bond) => {
-    adjacency.get(bond.fromAtomId)?.push({ neighbor: bond.toAtomId, order: bond.order });
-    adjacency.get(bond.toAtomId)?.push({ neighbor: bond.fromAtomId, order: bond.order });
+    const order = bond.stereo === "either" ? `${bond.order}:either` : bond.order;
+    adjacency.get(bond.fromAtomId)?.push({ neighbor: bond.toAtomId, order });
+    adjacency.get(bond.toAtomId)?.push({ neighbor: bond.fromAtomId, order });
   });
 
   let colors = new Map(atoms.map((atom) => [atom.id, atomInitialColor(atom)] as const));
