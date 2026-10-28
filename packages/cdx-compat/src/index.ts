@@ -9,6 +9,7 @@ import {
   elementSymbolForAtomicNumber,
   isDativeBond,
   isEngineDocument,
+  nativeTextStyleFromObjectStyle,
   parseDocument,
   type Anchor,
   type ArrowObject,
@@ -25,8 +26,10 @@ import {
   type MoleculeBond,
   type MoleculeObject,
   type Point,
-  type TextObject
+  type TextObject,
+  type TableObject
 } from "@chemdraft/chem-core";
+import { measureTextRun, planTableLayout } from "@chemdraft/layout-engine";
 import { bondedElementLabelMeaning } from "@chemdraft/template-library";
 import { sha256Hex, utf8Bytes, utf8String } from "./sha256";
 
@@ -183,9 +186,12 @@ export function exportDocumentToCdxml(
   // hashes and parses whatever JSON bytes the envelope carries.
   const nativeJson = JSON.stringify(parsedDocument);
   const nativePayloadHash = sha256Utf8Hex(nativeJson);
-  const visiblePageChildren = parsedDocument.pages.map((page, pageIndex) => buildVisiblePageChildren(page, warnings, pageIndex));
+  const fonts = [...new Set(parsedDocument.pages.flatMap(page => page.objects
+    .filter((object): object is TableObject => object.type === "table")
+    .map(object => nativeTextStyleFromObjectStyle(object.style).fontFamily)))];
+  const visiblePageChildren = parsedDocument.pages.map((page, pageIndex) => buildVisiblePageChildren(page, warnings, pageIndex, fonts));
   const visiblePages = parsedDocument.pages.map((page, pageIndex) => buildPageXml(page, visiblePageChildren[pageIndex]));
-  const visibleEnvelope = buildCdxmlEnvelope(creationProgram, visiblePages);
+  const visibleEnvelope = buildCdxmlEnvelope(creationProgram, visiblePages, fonts);
   const visibleCdxmlHash = visibleHashForCdxml(visibleEnvelope);
   const metadata = buildMetadataObjectTags({
     codecVersion: CdxmlEnvelopeCodecVersion,
@@ -197,7 +203,7 @@ export function exportDocumentToCdxml(
   const envelopePages = parsedDocument.pages.map((page, pageIndex) =>
     buildPageXml(page, `${visiblePageChildren[pageIndex]}${pageIndex === 0 ? metadata : ""}`)
   );
-  const contents = buildCdxmlEnvelope(creationProgram, envelopePages);
+  const contents = buildCdxmlEnvelope(creationProgram, envelopePages, fonts);
   // No runtime self-check that the metadata leaves the visible hash alone. The one this replaced
   // re-parsed and re-hashed the whole finished envelope, payload included — a full XML parse of
   // megabytes on every save — and a textual stand-in could never fire, since `contents` is the
@@ -443,12 +449,14 @@ function unsupportedSchemaWarningFromJson(contents: string): CompatibilityConver
   return undefined;
 }
 
-function buildCdxmlEnvelope(creationProgram: string, pages: readonly string[]): string {
+function buildCdxmlEnvelope(creationProgram: string, pages: readonly string[], fonts: readonly string[]): string {
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">',
     `<CDXML CreationProgram="${escapeXmlAttribute(creationProgram)}">`,
     buildStandardColorTableXml(),
+    ...(fonts.length ? ["  <fonttable>", ...fonts.map((font, index) =>
+      `    <font id="${index + 1}" charset="iso-8859-1" name="${escapeXmlAttribute(font)}"/>`), "  </fonttable>"] : []),
     ...pages,
     "</CDXML>",
     ""
@@ -476,12 +484,12 @@ function buildPageXml(page: DocumentPage, children: string): string {
   return `  <page ${attributes.join(" ")}>${children}</page>`;
 }
 
-function buildVisiblePageChildren(page: DocumentPage, warnings: CompatibilityConversionWarning[], pageIndex: number): string {
+function buildVisiblePageChildren(page: DocumentPage, warnings: CompatibilityConversionWarning[], pageIndex: number, fonts: readonly string[]): string {
   const allocator = createIdAllocator(pageIndex);
   const context = createVisibleExportContext(page);
   const objectsById = new Map(page.objects.map((object) => [object.id, object]));
   const visibleChildren = page.objects
-    .map((object) => exportVisibleObject(object, context, allocator, warnings, objectsById))
+    .map((object) => exportVisibleObject(object, context, allocator, warnings, objectsById, fonts))
     .filter((child) => child.length > 0);
   return visibleChildren.length > 0 ? `\n${visibleChildren.map((child) => indent(child, 4)).join("\n")}\n  ` : "";
 }
@@ -491,8 +499,12 @@ function exportVisibleObject(
   context: VisibleExportContext,
   allocator: IdAllocator,
   warnings: CompatibilityConversionWarning[],
-  objectsById: ReadonlyMap<string, DocumentObject>
+  objectsById: ReadonlyMap<string, DocumentObject>,
+  fonts: readonly string[]
 ): string {
+  if (object.type === "table") {
+    return exportTableObject(object, context.ids, allocator, warnings, fonts);
+  }
   if (object.type === "molecule") {
     return exportMoleculeObject(object, context, allocator, warnings);
   }
@@ -744,6 +756,61 @@ function cdxmlCrossingZForRef(
     });
   }
   return counts.front >= counts.back ? "2" : "1";
+}
+
+function exportTableObject(
+  table: TableObject,
+  ids: Map<string, string>,
+  allocator: IdAllocator,
+  warnings: CompatibilityConversionWarning[],
+  fonts: readonly string[]
+): string {
+  const layout = planTableLayout(table);
+  const style = nativeTextStyleFromObjectStyle(table.style);
+  const font = fonts.indexOf(style.fontFamily) + 1;
+  const texts: string[] = [];
+  const writeLines = (lines: typeof layout.cells[number]["lines"], fontSizePx: number) => {
+    for (const line of lines) {
+      const runs = line.pieces.flatMap(piece => piece.runs);
+      if (!runs.some(run => run.text.length > 0)) continue;
+      const first = line.pieces[0];
+      const after = line.pieces.length === 2 ? line.pieces[1].runs : [];
+      const afterWidth = after.reduce((sum, run) => sum + measureTextRun(run.text, {
+        fontSizePx: run.script === "normal" && typeof run.style.fontSizePx === "number" ? run.style.fontSizePx : fontSizePx,
+        fontWeight: typeof run.style.fontWeight === "number" ? run.style.fontWeight : style.fontWeight,
+        script: run.script
+      }) + [...run.text].length * (typeof run.style.letterSpacingPx === "number" ? run.style.letterSpacingPx : style.letterSpacingPx), 0);
+      const justification = first.anchor === "end" ? "Right" : first.anchor === "middle" ? "Center" : "Left";
+      const runXml = runs.map(run => {
+        const weight = typeof run.style.fontWeight === "number" ? run.style.fontWeight : style.fontWeight;
+        const italic = typeof run.style.fontStyle === "string" ? run.style.fontStyle : style.fontStyle;
+        const face = (weight >= 700 ? 1 : 0) + (italic === "italic" ? 2 : 0) +
+          (run.script === "subscript" ? 32 : run.script === "superscript" ? 64 : 0);
+        const size = run.script === "normal" && typeof run.style.fontSizePx === "number" ? run.style.fontSizePx : fontSizePx;
+        return `<s font="${font}" size="${formatNumber(cssPxToCdxml(size))}" face="${face}">${escapeXmlText(run.text)}</s>`;
+      }).join("");
+      texts.push(`<t id="${allocator.next()}" p="${formatPoint({ x: first.x + afterWidth, y: line.baselineY })}" Justification="${justification}">${runXml}</t>`);
+    }
+  };
+  if (layout.captionBox) writeLines(layout.captionBox.lines, style.fontSizePx * 0.9);
+  layout.cells.forEach(cell => writeLines(cell.lines, style.fontSizePx));
+  layout.footnoteBoxes.forEach(box => writeLines(box.lines, style.fontSizePx * 0.9));
+  const lines = layout.rules.map(rule => exportGraphicAsCdxmlGraphic({
+    id: table.id, type: "graphic", graphicKind: "line", x: rule.x1, y: rule.y1,
+    width: rule.x2 - rule.x1, height: rule.y2 - rule.y1, rotation: 0,
+    style: { strokeWidth: rule.widthPx, strokeColor: style.color }, data: {}
+  }, allocator.next(), warnings));
+  warnings.push({
+    code: "cdxml.table_approximated",
+    message: `Table "${table.id}" was written as ${texts.length} text objects and ${lines.length} lines; other programs will not edit it as a table.`,
+    sourceObjectId: table.id
+  });
+  if (table.rotation !== 0) warnings.push({
+    code: "cdxml.table_rotation_approximated",
+    message: `Table "${table.id}" was exported without its rotation.`,
+    sourceObjectId: table.id
+  });
+  return `<group id="${idFor(ids, table.id, allocator)}">${texts.join("")}${lines.join("")}</group>`;
 }
 
 function exportTextObject(text: TextObject, ids: Map<string, string>, allocator: IdAllocator): string {
