@@ -9,6 +9,8 @@ import type { PluginPanelActionHandler } from "./pluginPanelActionTypes";
 import { isScrolledToBottom } from "./pluginPanelAutoscroll";
 import { PluginInlineMarkdown } from "./PluginInlineMarkdown";
 import { canvasOverlayPrompt, OVERLAY_BUSY_MESSAGE, type CanvasOverlayContentSection, type CanvasOverlayDraftRestore } from "./pluginCanvasOverlayControls";
+import { overlayPlacementAvoidingPalettes, paletteFrameInViewport } from "./overlayPlacement";
+import type { NativePaletteFrames } from "../windows/useNativePaletteFrames";
 
 type Position = { x: number; y: number };
 type Mode = "collapsed" | "expanded";
@@ -131,7 +133,7 @@ function OverlayStatus({ overlayId, status, statusSource }: {
 
 /** Host chrome only: actions carry control data; MainWindow resolves the live command declaration. */
 export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, status, onAction,
-  overlayLayerRef, statusRowRef, statusSource, transcriptSource, contentSource, openSource, onInitialize, onOpenPanel, panelTitle, onFocusDrawing, shortcutPlatform, requestPending = false, documentState, dockIndex = 0, dockCount = 1, windowId = window.name || "main" }: {
+  overlayLayerRef, statusRowRef, nativePaletteFrames, statusSource, transcriptSource, contentSource, openSource, onInitialize, onOpenPanel, panelTitle, onFocusDrawing, shortcutPlatform, requestPending = false, documentState, dockIndex = 0, dockCount = 1, windowId = window.name || "main" }: {
   overlay: PluginCanvasOverlayContribution;
   dockIndex?: number;
   dockCount?: number;
@@ -139,6 +141,7 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
   /** The positioned layer and bottom workspace chrome define the visible drawing area. */
   overlayLayerRef?: RefObject<HTMLElement | null>;
   statusRowRef?: RefObject<HTMLElement | null>;
+  nativePaletteFrames?: NativePaletteFrames;
   gestureActive: boolean;
   status?: string;
   /** Status updates subscribe inside the overlay, never through MainWindow's toolset synchronizer. */
@@ -372,6 +375,7 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
     const element = elementRef.current;
     if (!viewport || !element || gestureActive) { fitRef.current = () => undefined; return; }
     const fit = () => {
+      if (dragRef.current) return;
       const bounds = drawingArea();
       if (bounds.bottom <= bounds.top) return;
       // Size to the drawing area, not the larger overlay layer behind rulers/status/scrollbars.
@@ -392,7 +396,15 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
         height: fittedHeight
       };
       // Refits never alter remembered placement or storage, including the hidden launcher's slot.
-      const next = fittedPosition(mode);
+      const preferred = fittedPosition(mode);
+      const layer = overlayLayerRef?.current?.getBoundingClientRect() ?? viewport.getBoundingClientRect();
+      const palettes = nativePaletteFrames?.frames.map(frame => paletteFrameInViewport(frame,
+        nativePaletteFrames.documentOrigin, nativePaletteFrames.scale, { x: layer.left, y: layer.top })) ?? [];
+      const top = expanded ? Math.min(bounds.bottom, bounds.top + PALETTE_CLEARANCE) : bounds.top;
+      const overlaySize = expanded ? expandedSizeRef.current : { width: ICON_SIZE, height: ICON_SIZE };
+      const next = overlayPlacementAvoidingPalettes({ ...preferred, ...overlaySize },
+        { x: bounds.left, y: top, width: bounds.right - bounds.left, height: bounds.bottom - top },
+        palettes, ["bottom-right", "bottom-left", "top-right", "top-left"]);
       setDisplayPosition(current => current?.x === next.x && current.y === next.y ? current : next);
     };
     fitRef.current = fit;
@@ -401,7 +413,7 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
       focusOnExpandRef.current = false;
       element.querySelector("textarea")?.focus({ preventScroll: true });
     }
-  }, [expanded, gestureActive, height, autoFitContent, content, openRequest, positions, dockIndex, dockCount, overlay.defaultCorner, overlayLayerRef, statusRowRef, viewportRef]);
+  }, [expanded, gestureActive, nativePaletteFrames, height, autoFitContent, content, openRequest, positions, dockIndex, dockCount, overlay.defaultCorner, overlayLayerRef, statusRowRef, viewportRef]);
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
@@ -475,6 +487,7 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
     drag.moved = true;
     suppressClickRef.current = true;
     const next = clampPosition({ x: drag.origin.x + dx, y: drag.origin.y + dy }, drag.mode);
+    setDisplayPosition(next);
     setPositions(current => ({ ...current, [drag.mode]: rememberPosition(next, drag.mode),
       // A launcher drag also places its next expansion nearby. Do this during the user drag,
       // so later refits or clicks cannot save a clamped display position as user intent.
@@ -615,7 +628,7 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
     }}
   >
     <button type="button" className="plugin-canvas-overlay-icon" hidden={expanded}
-      aria-label={overlay.title} aria-expanded={expanded}
+      aria-label={requestPending ? `${overlay.title}: working` : overlay.title} aria-expanded={expanded}
       onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={stopDrag}
       onPointerCancel={stopDrag} onLostPointerCapture={stopDrag}
       onClick={event => {
@@ -625,6 +638,7 @@ export function PluginCanvasOverlay({ overlay, viewportRef, gestureActive, statu
         void initialize();
       }}>
       <img src={overlay.icon} alt="" draggable={false} />
+      {requestPending ? <span className="plugin-canvas-overlay-running" aria-hidden="true" /> : null}
     </button>
     <div className="plugin-canvas-overlay-chat" hidden={!expanded}>
       <div className="plugin-canvas-overlay-resize" aria-label="Resize conversation"

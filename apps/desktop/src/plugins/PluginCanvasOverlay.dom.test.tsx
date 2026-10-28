@@ -41,6 +41,7 @@ let maxLength: number;
 let requestPending: boolean;
 let documentState: object;
 let contentSource: ComponentProps<typeof PluginCanvasOverlay>["contentSource"];
+let nativePaletteFrames: ComponentProps<typeof PluginCanvasOverlay>["nativePaletteFrames"];
 class CanvasOverlayStatusSource {
   private readonly statuses = new Map<string, string>();
   private readonly listeners = new Set<() => void>();
@@ -98,6 +99,7 @@ function enterText(value: string): void {
 async function render(windowId = "main"): Promise<void> {
   await act(async () => root.render(<PluginCanvasOverlay overlay={{ ...overlay, showPanelLink, prompt: { ...overlay.prompt, maxLength } }} viewportRef={viewportRef}
     overlayLayerRef={overlayLayerRef} statusRowRef={statusRowRef}
+    nativePaletteFrames={nativePaletteFrames}
     gestureActive={gestureActive} status={status} onAction={action} windowId={windowId} shortcutPlatform={platform}
     requestPending={requestPending} documentState={documentState}
     statusSource={statusSource}
@@ -112,7 +114,7 @@ function widget(): HTMLDivElement { return container.querySelector(".plugin-canv
 
 describe("PluginCanvasOverlay", () => {
   beforeEach(async () => {
-    maxLength = 20; contentSource = undefined; requestPending = false; documentState = {};
+    maxLength = 20; contentSource = undefined; nativePaletteFrames = undefined; requestPending = false; documentState = {};
     showPanelLink = undefined;
     contentRuntime = createPluginRuntime({ getActiveDocument: () => undefined });
     contentRuntime.registerPlugin({ id: "widget", name: "Widget", version: "0", apiVersion: "^0.1.12", entry: "test.js",
@@ -152,6 +154,86 @@ describe("PluginCanvasOverlay", () => {
     await render();
   });
   afterEach(async () => { await act(async () => root.unmount()); contentRuntime.unregisterPlugin("widget"); viewport.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+  it("marks a pending command on the collapsed icon and still expands it", async () => {
+    await act(async () => contentRuntime.host.createCommandContext("widget").overlays!.setContent({ overlayId: overlay.id,
+      sections: [{ kind: "actions", id: "primary", buttons: [{ id: "stop", label: "Stop", commandId: overlay.commandId }] }] }));
+    requestPending = true;
+    await render();
+    const icon = container.querySelector<HTMLButtonElement>(".plugin-canvas-overlay-icon")!;
+    expect(icon.getAttribute("aria-label")).toBe("Assistant: working");
+    expect(icon.querySelector(".plugin-canvas-overlay-running")).not.toBeNull();
+    await expand();
+    expect(widget().dataset.expanded).toBe("true");
+    const stop = container.querySelector<HTMLButtonElement>(".plugin-canvas-overlay-primary-actions button")!;
+    expect(stop.textContent).toBe("Stop");
+    expect(stop.closest("[hidden]")).toBeNull();
+    expect(stop.disabled).toBe(false);
+    stop.focus();
+    expect(document.activeElement).toBe(stop);
+    await act(async () => stop.click());
+    expect(action).toHaveBeenCalledWith(expect.objectContaining({ control: "button", controlId: "stop" }));
+  });
+
+  it.each([1, 1.25, 1.5, 2])("expands away from a covering native palette at scale %s and returns when it moves away", async scale => {
+    viewportWidth = 1000; viewportHeight = 900;
+    nativePaletteFrames = { documentOrigin: { x: -1200, y: 80 }, scale,
+      frames: [{ x: -1200 + 700 * scale, y: 80 + 600 * scale, width: 100 * scale, height: 100 * scale }] };
+    await render();
+    const writes = vi.spyOn(window.localStorage, "setItem");
+    await expand();
+    expect(widget().style.left).toBe("684px");
+    expect(widget().style.top).toBe("104px");
+    nativePaletteFrames = { ...nativePaletteFrames, frames: [{ x: -3000, y: 80, width: 100, height: 100 }] };
+    await render();
+    expect(widget().style.left).toBe("684px");
+    expect(widget().style.top).toBe("596px");
+    expect(writes.mock.calls.filter(([key]) => key === collapsedKey || key === expandedKey)).toEqual([]);
+  });
+
+  it("defers palette and main-window refits during a canvas gesture", async () => {
+    viewportWidth = 1000; viewportHeight = 900;
+    await render(); await expand();
+    const before = [widget().style.left, widget().style.top];
+    gestureActive = true;
+    nativePaletteFrames = { documentOrigin: { x: 0, y: 0 }, scale: 1,
+      frames: [{ x: 700, y: 600, width: 100, height: 100 }] };
+    await render();
+    await act(async () => window.dispatchEvent(new Event("resize")));
+    expect(widget().hidden).toBe(true);
+    expect([widget().style.left, widget().style.top]).toEqual(before);
+    gestureActive = false; await render();
+    expect(widget().style.top).toBe("104px");
+  });
+
+  it("lets an overlay drag win over incoming palette frames and remembers only the user's position", async () => {
+    viewportWidth = 1000; viewportHeight = 900;
+    await render();
+    await act(async () => window.dispatchEvent(new Event("resize")));
+    const icon = container.querySelector<HTMLButtonElement>(".plugin-canvas-overlay-icon")!;
+    await act(async () => {
+      pointer(icon, "pointerdown", 940, 830);
+      pointer(icon, "pointermove", 840, 730);
+    });
+    const dragged = [widget().style.left, widget().style.top];
+    const saved = window.localStorage.getItem(collapsedKey);
+    nativePaletteFrames = { documentOrigin: { x: 0, y: 0 }, scale: 1,
+      frames: [{ x: 830, y: 720, width: 100, height: 100 }] };
+    await render();
+    await act(async () => window.dispatchEvent(new Event("resize")));
+    expect([widget().style.left, widget().style.top]).toEqual(dragged);
+    await act(async () => pointer(icon, "pointerup", 840, 730));
+    expect([widget().style.left, widget().style.top]).toEqual(dragged);
+    // A later palette move can temporarily avoid the user's placement.
+    nativePaletteFrames = { ...nativePaletteFrames, frames: [{ x: 831, y: 720, width: 100, height: 100 }] };
+    await render();
+    expect([widget().style.left, widget().style.top]).not.toEqual(dragged);
+    expect(window.localStorage.getItem(collapsedKey)).toBe(saved);
+    nativePaletteFrames = { ...nativePaletteFrames, frames: [] };
+    await render();
+    expect([widget().style.left, widget().style.top]).toEqual(dragged);
+    expect(window.localStorage.getItem(collapsedKey)).toBe(saved);
+  });
 
   it.each([false, true])("restores an empty composer after batched content replacements, exactly once and without sending (empty: %s)", async empty => {
     await expand();

@@ -197,6 +197,7 @@ import {
 } from "./plugins/panelBridge";
 import { resolvePluginPanelAction } from "./plugins/pluginPanelActions";
 import { canvasOverlayDockSlots, PluginCanvasOverlay } from "./plugins/PluginCanvasOverlay";
+import { useNativePaletteFrames } from "./windows/useNativePaletteFrames";
 import { pluginPanelOpenCommand } from "./plugins/pluginPanelOpenCommand";
 import { canvasOverlayPrompt, OVERLAY_BUSY_MESSAGE, pluginCanvasOverlayOpenCommand } from "./plugins/pluginCanvasOverlayControls";
 import type { PluginPanelActionRequest, PluginPanelActionResult } from "./plugins/pluginPanelActionTypes";
@@ -1617,7 +1618,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.28.13.00-codex";
+const CURRENT_BUILD_STAMP = "10.28.14.00-codex";
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -10781,6 +10782,7 @@ export function MainWindow({
     }
   });
   const { isPluginCommand: pluginCommandExists, invokePluginCommand } = pluginRuntime;
+  const nativePaletteFrames = useNativePaletteFrames(pluginRuntime.canvasOverlays.length > 0);
   canvasOverlaysPresentRef.current = pluginRuntime.canvasOverlays.length > 0;
   pluginRuntimeRef.current = pluginRuntime.runtime;
 
@@ -20477,6 +20479,7 @@ export function MainWindow({
               viewportRef={canvasRegionRef}
               overlayLayerRef={canvasOverlayLayerRef}
               statusRowRef={statusRowRef}
+              nativePaletteFrames={nativePaletteFrames}
               gestureActive={canvasPointerActive || canvasZoomActive || canvasWheelActive || isSnapshotSessionActive()}
               statusSource={pluginRuntime.runtime}
               transcriptSource={pluginRuntime.runtime}
