@@ -17,6 +17,7 @@ export async function depictSmilesForPaste(
   options: DepictionRequestOptions = {},
   templatePlacement?: TemplatePastePlacement
 ): Promise<{ depiction: PastedStructureDepiction; stereoCount: number; warnings?: string[]; molecule?: MoleculeObject } | undefined> {
+  if (smiles.trim().length === 0) return undefined;
   try {
     // A known host must not depend on a generic coordinate generator succeeding first.
     // Build once at document default size; insertion reuses this molecule (the grid only translates it).

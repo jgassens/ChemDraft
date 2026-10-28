@@ -80,6 +80,12 @@ describe("depictSmilesForPaste", () => {
     expect(await depictSmilesForPaste("")).toBeUndefined();
   });
 
+  it("returns undefined for whitespace-only input without invoking the depiction worker", async () => {
+    expect(await depictSmilesForPaste("")).toBeUndefined();
+    expect(await depictSmilesForPaste("   ")).toBeUndefined();
+    expect(depictSmilesOffThread).not.toHaveBeenCalled();
+  });
+
   it("propagates a specific worker failure instead of returning a text-paste fallback", async () => {
     vi.mocked(depictSmilesOffThread).mockRejectedValueOnce(new Error("2D depiction worker exited (1)."));
     await expect(depictSmilesForPaste("CCO")).rejects.toThrow("2D depiction worker exited (1).");
