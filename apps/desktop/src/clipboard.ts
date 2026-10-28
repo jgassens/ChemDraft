@@ -130,8 +130,23 @@ async function writeBrowserClipboardItems(items: readonly ClipboardWriteItem[]):
     }
   }
 
-  const textItems = items.filter((item): item is ClipboardWriteTextItem => "text" in item);
-  const plainText = preferredPlainText(textItems);
+  const requestedPlainText = items.find((item) => item.type === "text/plain");
+  let plainText: string | undefined;
+  if (requestedPlainText) {
+    if ("text" in requestedPlainText) {
+      plainText = requestedPlainText.text;
+    } else {
+      try {
+        plainText = new TextDecoder("utf-8", { fatal: true }).decode(requestedPlainText.bytes);
+      } catch {
+        reason = "text/plain bytes are not valid UTF-8.";
+        return result([]);
+      }
+    }
+  } else {
+    const textItems = items.filter((item): item is ClipboardWriteTextItem => "text" in item);
+    plainText = preferredPlainText(textItems);
+  }
   if (plainText !== undefined && clipboard?.writeText) {
     try {
       await clipboard.writeText(plainText);

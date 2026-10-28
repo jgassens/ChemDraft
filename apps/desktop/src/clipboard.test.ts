@@ -268,6 +268,44 @@ describe("writeClipboardItems browser fallback", () => {
     expect(native.invoke).not.toHaveBeenCalled();
   });
 
+  it("writes byte-backed plain text through writeText", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    expect(await writeClipboardItems([
+      { type: "text/plain", bytes: new TextEncoder().encode("structure") }
+    ])).toEqual({ ok: true, written: ["text/plain"], failed: [], warnings: [] });
+    expect(writeText).toHaveBeenCalledExactlyOnceWith("structure");
+  });
+
+  it("keeps byte-backed plain text when optional HTML cannot be written", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    expect(await writeClipboardItems([
+      { type: "text/plain", bytes: new TextEncoder().encode("expected") },
+      { type: "text/html", text: "<b>different</b>", required: false }
+    ])).toEqual({
+      ok: true,
+      written: ["text/plain"],
+      failed: [{ type: "text/html", reason: "Browser clipboard does not support this format." }],
+      warnings: []
+    });
+    expect(writeText).toHaveBeenCalledExactlyOnceWith("expected");
+  });
+
+  it("rejects byte-backed plain text that is not valid UTF-8", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    expect(await writeClipboardItems([
+      { type: "text/plain", bytes: Uint8Array.from([0xc3, 0x28]) }
+    ])).toEqual({
+      ok: false,
+      written: [],
+      failed: [{ type: "text/plain", reason: "text/plain bytes are not valid UTF-8." }],
+      warnings: []
+    });
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
   it("keeps the legacy text helper lenient when plain text was written", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("navigator", { clipboard: { writeText } });
