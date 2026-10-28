@@ -37,11 +37,67 @@ describe("native palette frame observation", () => {
       utility("main"), utility("toolset-core-art"), utility("toolset-core-drawn-structure-settings"),
       utility("toolset-popover-core-art"), utility("plugin-panel-demo"),
       utility("toolset-hidden", false), utility("plugin-panel-minimized", true, true),
-      utility("toolset-tooltip"), utility("preferences"),
+      utility("toolset-tooltip"), utility("preferences"), utility("spin3d-debugger"), utility("dialog-main-export-1"),
+      utility("dialog-main-hidden-1", false), utility("preferences", true, true),
+      utility("spin3d-debugger", false), utility("dialog-other-export-1"), utility("unrelated"),
       { ...utility("toolset-closed"), outerPosition: async () => { throw new Error("Closed"); } }
     ]);
     expect(await readNativePaletteFrames()).toEqual({ documentOrigin: { x: -1400, y: 50 }, scale,
-      frames: Array.from({ length: 4 }, () => ({ x: -1200, y: 100, width: 300, height: 400 })) });
+      frames: Array.from({ length: 7 }, () => ({ x: -1200, y: 100, width: 300, height: 400 })) });
+  });
+
+  it("refreshes a collapsed overlay once after a throttled burst, without further events", async () => {
+    vi.useFakeTimers();
+    let snapshot: NativePaletteFrames = { frames: [], documentOrigin: { x: 0, y: 0 }, scale: 1 };
+    const read = vi.fn(async () => snapshot);
+    const publish = vi.fn();
+    const observer = observeNativePaletteFrames(publish, read);
+    await vi.advanceTimersByTimeAsync(100);
+    snapshot = { ...snapshot, frames: [{ x: 10, y: 20, width: 300, height: 400 }] };
+    for (let i = 0; i < 20; i++) observer.refresh();
+    await vi.advanceTimersByTimeAsync(149);
+    expect(read).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(publish).toHaveBeenLastCalledWith(snapshot);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(read).toHaveBeenCalledTimes(2);
+    observer.stop();
+  });
+
+  it.each([100, 600])("queues one nonoverlapping trailing read after an in-flight read taking %s ms", async duration => {
+    vi.useFakeTimers();
+    const snapshot: NativePaletteFrames = { frames: [], documentOrigin: { x: 0, y: 0 }, scale: 1 };
+    let finish!: (snapshot: NativePaletteFrames) => void;
+    const read = vi.fn(() => new Promise<NativePaletteFrames>(resolve => { finish = resolve; }));
+    const observer = observeNativePaletteFrames(vi.fn(), read);
+    for (let i = 0; i < 20; i++) observer.refresh();
+    await vi.advanceTimersByTimeAsync(duration);
+    expect(read).toHaveBeenCalledTimes(1);
+    finish(snapshot);
+    await vi.advanceTimersByTimeAsync(0);
+    if (duration < 250) {
+      expect(read).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(249 - duration);
+      expect(read).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+    }
+    expect(read).toHaveBeenCalledTimes(2);
+    finish(snapshot);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(read).toHaveBeenCalledTimes(2);
+    observer.stop();
+  });
+
+  it("cancels a scheduled trailing refresh on teardown", async () => {
+    vi.useFakeTimers();
+    const read = vi.fn(async (): Promise<NativePaletteFrames> => ({ frames: [], documentOrigin: { x: 0, y: 0 }, scale: 1 }));
+    const observer = observeNativePaletteFrames(vi.fn(), read);
+    await vi.advanceTimersByTimeAsync(100);
+    observer.refresh();
+    observer.stop();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(read).toHaveBeenCalledTimes(1);
   });
 
   it("coalesces move/resize events to four samples per second and notices show, hide and close without events", async () => {

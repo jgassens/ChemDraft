@@ -241,6 +241,10 @@ fn codex_auth_ambiguity_quarantines_without_leaking_tokens_and_persists_fallback
                 let home = env::reconcile_codex_home_auth(platform, &base, &parent);
                 assert_eq!(home.path.as_ref(), Some(&real));
                 assert!(home.fallback_reason.is_some());
+                assert_eq!(
+                    home.fallback_kind,
+                    Some(env::CodexHomeFallbackKind::PreparationFailed)
+                );
                 assert_no_auth_tokens(&format!("{home:?}"));
                 assert!(!target.exists());
             }
@@ -817,6 +821,7 @@ fn codex_real_home_respects_parent_and_platform() {
         let selected = env::CodexHome {
             path: Some("isolated".into()),
             fallback_reason: None,
+            fallback_kind: None,
         }
         .apply(&parent);
         assert!(!selected.contains_key("codex_home"));
@@ -906,6 +911,10 @@ fn codex_home_falls_back_without_copying_credentials() {
         let base = temp.0.join("external-tools");
         let absent = env::prepare_codex_home(platform, &base, &parent);
         assert_eq!(absent.path.as_ref(), Some(&real));
+        assert_eq!(
+            absent.fallback_kind,
+            Some(env::CodexHomeFallbackKind::AuthJsonUnavailable)
+        );
         assert!(absent
             .fallback_reason
             .unwrap()
@@ -916,6 +925,10 @@ fn codex_home_falls_back_without_copying_credentials() {
             Err(std::io::Error::other("cross-volume or permission failure"))
         });
         assert_eq!(failed.path.as_ref(), Some(&real));
+        assert_eq!(
+            failed.fallback_kind,
+            Some(env::CodexHomeFallbackKind::PreparationFailed)
+        );
         assert!(failed
             .fallback_reason
             .unwrap()
@@ -2273,9 +2286,42 @@ fn codex_run_uses_cached_binary_without_rediscovery_or_real_home() {
 }
 
 #[test]
-fn codex_setup_detail_hides_auth_diagnostics_until_broken_on_both_platforms() {
+fn codex_preparation_failures_have_a_generic_kind_on_both_platforms() {
+    for platform in [ProbePlatform::MacOS, ProbePlatform::Windows] {
+        let temp = TempDir::new();
+        let base = temp.0.join("external-tools");
+        let unresolved = env::prepare_codex_home(platform, &base, &ParentEnv::new());
+        assert_eq!(
+            unresolved.fallback_kind,
+            Some(env::CodexHomeFallbackKind::PreparationFailed)
+        );
+        assert!(unresolved
+            .fallback_reason
+            .unwrap()
+            .contains("could not be resolved"));
+
+        let real = temp.0.join("user-codex");
+        private_dir(&real).unwrap();
+        fs::write(real.join("auth.json"), "test-credential").unwrap();
+        let parent = map(&[("CODEX_HOME", real.to_str().unwrap())]);
+        // A file where the private directory belongs must not become credential-store advice.
+        fs::write(&base, "not a directory").unwrap();
+        let failed = env::prepare_codex_home(platform, &base, &parent);
+        assert_eq!(
+            failed.fallback_kind,
+            Some(env::CodexHomeFallbackKind::PreparationFailed)
+        );
+        assert!(failed
+            .fallback_reason
+            .unwrap()
+            .contains("create private Codex home"));
+    }
+}
+
+#[test]
+fn codex_setup_detail_explains_unavailable_auth_when_broken_or_signed_out_on_both_platforms() {
     let temp = TempDir::new();
-    let technical = "Codex home isolation unavailable; using the user's real Codex home. User's Codex auth.json is unavailable (login may use the keychain).";
+    let kind = env::CodexHomeFallbackKind::AuthJsonUnavailable;
     for (platform, expected) in [
         (ProbePlatform::MacOS, "ChemDraft could not read your Codex sign-in from your Mac's Keychain. Sign in again from Setup."),
         (ProbePlatform::Windows, "ChemDraft could not read your Codex sign-in from the system credential store (Credential Manager). Sign in again from Setup."),
@@ -2286,8 +2332,9 @@ fn codex_setup_detail_hides_auth_diagnostics_until_broken_on_both_platforms() {
                 status.state = state;
                 status.signed_in = signed_in;
                 status.detail = matches!(state, ToolState::Missing).then(|| "Tool is not installed.".into());
-                apply_status_detail(&mut status, platform, Some(technical));
-                assert_eq!(status.detail.as_deref(), matches!(state, ToolState::Broken).then_some(expected));
+                apply_status_detail(&mut status, platform, Some(kind));
+                assert_eq!(status.detail.as_deref(), (matches!(state, ToolState::Broken)
+                    || (matches!(state, ToolState::Installed) && signed_in == Some(false))).then_some(expected));
             }
         }
         let mut status = install::managed_status(&temp.0, pins::pin_for(ToolId::Codex, ToolPlatform::DarwinArm64));
@@ -2295,17 +2342,77 @@ fn codex_setup_detail_hides_auth_diagnostics_until_broken_on_both_platforms() {
         status.detail = Some("External tool --version failed.".into());
         apply_status_detail(&mut status, platform, None);
         assert_eq!(status.detail.as_deref(), Some("External tool --version failed."));
-        apply_status_detail(&mut status, platform, Some(technical));
+        apply_status_detail(&mut status, platform, Some(kind));
         assert_eq!(status.detail.as_deref(), Some(format!("External tool --version failed. {expected}").as_str()));
         status.detail = Some(install::managed_update_detail(ToolId::Codex));
         let upgrade = status.detail.clone();
-        apply_status_detail(&mut status, platform, Some(technical));
+        apply_status_detail(&mut status, platform, Some(kind));
         assert_eq!(status.detail, upgrade);
     }
 }
 
 #[test]
-fn normal_setup_status_omits_missing_and_codex_auth_details() {
+fn codex_setup_detail_uses_generic_guidance_for_preparation_failures_on_both_platforms() {
+    let temp = TempDir::new();
+    let expected = "ChemDraft could not prepare its private Codex folder. Check that your disk has space and try Check again.";
+    for platform in [ProbePlatform::MacOS, ProbePlatform::Windows] {
+        for tool in [ToolId::Codex, ToolId::Claude] {
+            for state in [
+                ToolState::Installed,
+                ToolState::Missing,
+                ToolState::Installing,
+                ToolState::Unsupported,
+                ToolState::Broken,
+            ] {
+                for signed_in in [None, Some(false), Some(true)] {
+                    let mut status = install::managed_status(
+                        &temp.0,
+                        pins::pin_for(tool, ToolPlatform::DarwinArm64),
+                    );
+                    status.state = state;
+                    status.signed_in = signed_in;
+                    status.detail = None;
+                    apply_status_detail(
+                        &mut status,
+                        platform,
+                        Some(env::CodexHomeFallbackKind::PreparationFailed),
+                    );
+                    let show = tool == ToolId::Codex
+                        && (matches!(state, ToolState::Broken)
+                            || (matches!(state, ToolState::Installed) && signed_in == Some(false)));
+                    assert_eq!(status.detail.as_deref(), show.then_some(expected));
+                }
+            }
+        }
+        let mut status = install::managed_status(
+            &temp.0,
+            pins::pin_for(ToolId::Codex, ToolPlatform::DarwinArm64),
+        );
+        status.state = ToolState::Broken;
+        status.detail = Some(install::managed_update_detail(ToolId::Codex));
+        let upgrade = status.detail.clone();
+        apply_status_detail(
+            &mut status,
+            platform,
+            Some(env::CodexHomeFallbackKind::PreparationFailed),
+        );
+        assert_eq!(status.detail, upgrade);
+    }
+}
+
+#[test]
+fn status_notices_are_recorded_once_per_distinct_notice() {
+    let notices = Mutex::new(HashSet::new());
+    assert!(first_notice(&notices, "auth unavailable"));
+    assert!(!first_notice(&notices, "auth unavailable"));
+    assert!(first_notice(&notices, "private home creation failed"));
+    assert!(!first_notice(&notices, "private home creation failed"));
+    assert!(!first_notice(&notices, "auth unavailable"));
+    assert_eq!(notices.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn normal_setup_status_omits_missing_details_and_explains_signed_out_preparation_failure() {
     if current_platform().is_none() {
         return;
     }
@@ -2335,7 +2442,10 @@ fn normal_setup_status_omits_missing_and_codex_auth_details() {
             let installed = status_impl(&temp.0, &state, tool, false, None, &parent).unwrap();
             assert!(matches!(installed.state, ToolState::Installed));
             assert_eq!(installed.signed_in, Some(signed_in));
-            assert!(installed.detail.is_none());
+            let expected = (tool == ToolId::Codex && !signed_in).then_some(
+                "ChemDraft could not prepare its private Codex folder. Check that your disk has space and try Check again.",
+            );
+            assert_eq!(installed.detail.as_deref(), expected);
         }
     }
 }

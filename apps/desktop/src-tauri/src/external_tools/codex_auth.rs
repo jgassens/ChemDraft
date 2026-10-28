@@ -1,7 +1,7 @@
 //! Codex saves auth with rename, breaking both symlinks and Windows hard links. Reconcile
 //! before reuse and after every supervised process. Never put credential bytes in diagnostics.
 use super::{
-    env::{self, CodexHome, ParentEnv},
+    env::{self, CodexHome, CodexHomeFallbackKind, ParentEnv},
     probe::ProbePlatform,
 };
 use std::{
@@ -104,6 +104,7 @@ pub(super) fn prepare_codex_home_with_link(
     let real_home = env::real_codex_home(platform, parent)
         .map(|home| std::path::absolute(&home).unwrap_or(home));
     let isolated = base.join("codex-home");
+    let mut fallback_kind = CodexHomeFallbackKind::PreparationFailed;
     let prepared = (|| {
         let real_home = real_home
             .as_ref()
@@ -139,6 +140,7 @@ pub(super) fn prepare_codex_home_with_link(
         // Neither is evidence of a conflicting refresh. Leave it unused and retry isolation
         // after the user's login is available again, without resurrecting it via write-back.
         if !requested.is_file() {
+            fallback_kind = CodexHomeFallbackKind::AuthJsonUnavailable;
             return Err(
                 "User's Codex auth.json is unavailable (login may use the keychain).".into(),
             );
@@ -167,6 +169,7 @@ pub(super) fn prepare_codex_home_with_link(
             };
             if linked {
                 if !auth.is_file() {
+                    fallback_kind = CodexHomeFallbackKind::AuthJsonUnavailable;
                     return Err(
                         "User's Codex auth.json is unavailable (login may use the keychain)."
                             .into(),
@@ -179,6 +182,7 @@ pub(super) fn prepare_codex_home_with_link(
             }
         }
         if !auth.is_file() {
+            fallback_kind = CodexHomeFallbackKind::AuthJsonUnavailable;
             return Err(
                 "User's Codex auth.json is unavailable (login may use the keychain).".into(),
             );
@@ -196,9 +200,11 @@ pub(super) fn prepare_codex_home_with_link(
         Ok(()) => CodexHome {
             path: Some(isolated),
             fallback_reason: None,
+            fallback_kind: None,
         },
         Err(reason) => CodexHome {
             path: real_home,
+            fallback_kind: Some(fallback_kind),
             fallback_reason: Some(format!(
                 "Codex home isolation unavailable; using the user's real Codex home. {reason}"
             )),

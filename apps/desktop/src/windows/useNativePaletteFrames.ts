@@ -17,7 +17,8 @@ export async function readNativePaletteFrames(): Promise<NativePaletteFrames> {
   const [documentOrigin, scale, windows] = await Promise.all([main.innerPosition(), main.scaleFactor(), getAllWindows()]);
   const frames = await Promise.all(windows.filter(win => win.label !== main.label
     && win.label !== "toolset-tooltip"
-    && (win.label.startsWith("toolset-") || win.label.startsWith("plugin-panel-")))
+    && (win.label.startsWith("toolset-") || win.label.startsWith("plugin-panel-")
+      || win.label.startsWith("dialog-main-") || win.label === "preferences" || win.label === "spin3d-debugger"))
     .map(async win => {
       // Prewarmed popovers and hidden palettes still exist; minimized frames aren't obstructions.
       // A window can close between enumeration and any of these calls.
@@ -35,22 +36,39 @@ export function observeNativePaletteFrames(publish: (frames: NativePaletteFrames
   read = readNativePaletteFrames, sampling = false) {
   let stopped = false;
   let reading = false;
+  let requested = false;
+  let trailingTimer: ReturnType<typeof setTimeout> | undefined;
   let lastRead = -Infinity;
   let previous = "";
-  const refresh = () => {
-    if (stopped || reading || Date.now() - lastRead < FRAME_INTERVAL_MS) return;
+  const drain = () => {
+    if (stopped || reading || trailingTimer !== undefined || !requested) return;
+    const delay = FRAME_INTERVAL_MS - (Date.now() - lastRead);
+    if (delay > 0) {
+      trailingTimer = setTimeout(() => { trailingTimer = undefined; drain(); }, delay);
+      return;
+    }
+    requested = false;
     reading = true;
     lastRead = Date.now();
     void read().then(snapshot => {
       const key = JSON.stringify(snapshot);
       if (!stopped && key !== previous) { previous = key; publish(snapshot); }
     }).catch(() => { /* Closing/minimizing the document can temporarily prevent frame reads. */ })
-      .finally(() => { reading = false; });
+      .finally(() => { reading = false; drain(); });
+  };
+  const refresh = () => {
+    if (stopped) return;
+    requested = true;
+    drain();
   };
   refresh();
   // show()/hide() do not emit Tauri frame events (notably warm popovers). Sample visibility too.
   const timer = sampling ? setInterval(refresh, FRAME_INTERVAL_MS) : undefined;
-  return { refresh, stop: () => { stopped = true; if (timer !== undefined) clearInterval(timer); } };
+  return { refresh, stop: () => {
+    stopped = true;
+    if (timer !== undefined) clearInterval(timer);
+    if (trailingTimer !== undefined) clearTimeout(trailingTimer);
+  } };
 }
 
 export function useNativePaletteFrames(enabled: boolean, sampling: boolean): NativePaletteFrames | undefined {

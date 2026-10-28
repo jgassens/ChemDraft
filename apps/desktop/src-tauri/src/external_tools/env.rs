@@ -6,11 +6,18 @@ use std::{
 };
 pub type ParentEnv = BTreeMap<String, String>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodexHomeFallbackKind {
+    AuthJsonUnavailable,
+    PreparationFailed,
+}
+
 /// Sessions remain in this stable home; refreshed credentials reconcile to the user’s login.
 #[derive(Debug)]
 pub struct CodexHome {
     pub path: Option<PathBuf>,
     pub fallback_reason: Option<String>,
+    pub fallback_kind: Option<CodexHomeFallbackKind>,
 }
 impl CodexHome {
     pub fn apply(&self, parent: &ParentEnv) -> ParentEnv {

@@ -26,12 +26,12 @@ use catalog::{identifier, Effort, RenderedRun, ToolId};
 use run::{KillReason, ToolRun};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
     },
     time::Duration,
 };
@@ -447,24 +447,33 @@ fn status_impl(
 ) -> Result<ExternalToolStatus, String> {
     // Auth reconciliation selects the home independently of binary discovery.
     let mut status = status_prepared_impl(base, state, tool, refresh, plugin_id, parent)?;
-    let notice = (tool == ToolId::Codex)
-        .then(|| env::prepare_codex_home(probe::ProbePlatform::current(), base, parent))
-        .and_then(|home| home.fallback_reason);
-    if let Some(notice) = notice.as_deref() {
-        eprintln!("{notice}");
+    let home = (tool == ToolId::Codex)
+        .then(|| env::prepare_codex_home(probe::ProbePlatform::current(), base, parent));
+    if let Some(notice) = home
+        .as_ref()
+        .and_then(|home| home.fallback_reason.as_deref())
+    {
+        static NOTICES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+        if first_notice(NOTICES.get_or_init(|| Mutex::new(HashSet::new())), notice) {
+            eprintln!("{notice}");
+        }
     }
     apply_status_detail(
         &mut status,
         probe::ProbePlatform::current(),
-        notice.as_deref(),
+        home.and_then(|home| home.fallback_kind),
     );
     Ok(status)
+}
+
+fn first_notice(notices: &Mutex<HashSet<String>>, notice: &str) -> bool {
+    notices.lock().unwrap().insert(notice.to_owned())
 }
 
 fn apply_status_detail(
     status: &mut ExternalToolStatus,
     platform: probe::ProbePlatform,
-    codex_home_notice: Option<&str>,
+    codex_home_fallback: Option<env::CodexHomeFallbackKind>,
 ) {
     // A missing auth.json is normal before sign-in or with system credential storage.
     // Keep technical diagnostics in logs, and retain actionable upgrade guidance.
@@ -476,11 +485,17 @@ fn apply_status_detail(
     let tool = status.tool;
     let needs_update = status.detail.as_deref() == Some(&install::managed_update_detail(tool));
     if tool == ToolId::Codex
-        && matches!(status.state, ToolState::Broken)
+        && (matches!(status.state, ToolState::Broken)
+            || (matches!(status.state, ToolState::Installed) && status.signed_in == Some(false)))
         && !needs_update
-        && codex_home_notice.is_some()
     {
-        let notice = codex_auth::sign_in_unavailable_detail(platform);
+        let notice = match codex_home_fallback {
+            Some(env::CodexHomeFallbackKind::AuthJsonUnavailable) => {
+                codex_auth::sign_in_unavailable_detail(platform)
+            }
+            Some(env::CodexHomeFallbackKind::PreparationFailed) => "ChemDraft could not prepare its private Codex folder. Check that your disk has space and try Check again.",
+            None => return,
+        };
         status.detail = Some(match status.detail {
             Some(ref detail) => format!("{detail} {notice}"),
             None => notice.to_owned(),
