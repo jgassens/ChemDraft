@@ -7,7 +7,9 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AssistantCapabilityPermissions, PluginPanelReportSchema, type PluginCommandContext, type PluginAssistantToolResult } from "@chemdraft/plugin-api";
 import { applyPatch, createEmptyDocument, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
-import { createSmilesMolecule, pastedStructureDepictionFromMolfile } from "@chemdraft/document-workflow-core";
+import {
+  createSmilesMolecule, inspectHydrogenNormalizedIdentity, pastedStructureDepictionFromMolfile
+} from "@chemdraft/document-workflow-core";
 import { ensureRdkit, generateSmiles2DMolfile, setRdkitModuleLoader } from "../../../packages/rdkit-adapter/src/conformer";
 import { applyChargeToolAtPoint } from "./documentWorkflow";
 import { getAssistantHistoryPort } from "./assistant/historyPort";
@@ -72,7 +74,10 @@ describe("assistant writes through mounted desktop normalization", () => {
         if (!molecule) return { valid: false, reason: "Invalid structure" };
         try {
           const graph = JSON.parse((molecule as typeof molecule & { get_json(): string }).get_json());
-          return { valid: true, canonicalSmiles: molecule.get_smiles!(), formula: "test-only", warnings: [],
+          const identity = inspectHydrogenNormalizedIdentity(rdkit, value);
+          if (!identity.valid) return identity;
+          return { valid: true, canonicalSmiles: molecule.get_smiles!(),
+            identitySmiles: identity.canonicalSmiles, formula: "test-only", warnings: [],
             heavyAtoms: graph.molecules.reduce((n: number, mol: { atoms: { z?: number }[] }) =>
               n + mol.atoms.filter(atom => (atom.z ?? graph.defaults?.atom?.z ?? 6) !== 1).length, 0) };
         } finally { molecule.delete(); }

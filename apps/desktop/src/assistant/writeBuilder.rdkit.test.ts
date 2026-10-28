@@ -1,11 +1,15 @@
 import { beforeAll, describe, expect, it } from "vitest";
+import { applyPatch, createEmptyDocument } from "@chemdraft/chem-core";
 import { installNodeRdkitModuleLoader } from "@chemdraft/rdkit-adapter/node";
 import { ensureRdkit, generateSmiles2DMolfile } from "../../../../packages/rdkit-adapter/src/conformer";
-import { createSmilesMolecule, pastedStructureDepictionFromMolfile } from "@chemdraft/document-workflow-core";
+import {
+  createSmilesMolecule, inspectHydrogenNormalizedIdentity, pastedStructureDepictionFromMolfile
+} from "@chemdraft/document-workflow-core";
 import { callAssistantTool } from "./assistantTools";
 import { isotopeInsertSmiles, isotopeReactions, expectIsotopeGraph } from
   "../../../../packages/document-workflow-core/test/isotopeInsertFixtures";
 import { buildInsertStructures, inspectMolecule } from "./writeBuilder";
+import { verifyNormalizedAssistantWrite } from "./normalizedWrite";
 import { testContext } from "./tools/testContext";
 import type { AssistantToolContext } from "./AssistantToolContext";
 
@@ -14,12 +18,17 @@ function realContext(selected = true): AssistantToolContext {
   const { context } = testContext(selected);
   context.chemistry.inspectStructure = async (_format, value) => {
     const rdkit = await ensureRdkit();
-    const mol = rdkit.get_mol(value) as { get_smiles(): string; get_json(): string; delete(): void } | null;
+    const mol = rdkit.get_mol(value, JSON.stringify({ removeHs: false })) as {
+      get_smiles(): string; get_json(): string; delete(): void
+    } | null;
     if (!mol) return { valid: false, reason: "RDKit could not parse the structure" };
     try {
       const graph = JSON.parse(mol.get_json()) as { defaults?: { atom?: { z?: number } }; molecules: { atoms: { z?: number }[] }[] };
       const defaultZ = graph.defaults?.atom?.z ?? 6;
-      return { valid: true, canonicalSmiles: mol.get_smiles(), formula: "test-only", warnings: [],
+      const identity = inspectHydrogenNormalizedIdentity(rdkit, value);
+      if (!identity.valid) return identity;
+      return { valid: true, canonicalSmiles: mol.get_smiles(), identitySmiles: identity.canonicalSmiles,
+        formula: "test-only", warnings: [],
         heavyAtoms: graph.molecules.reduce((sum, molecule) => sum + molecule.atoms.filter(atom => (atom.z ?? defaultZ) !== 1).length, 0) };
     } finally { mol.delete(); }
   };
@@ -47,6 +56,25 @@ describe("RDKit assistant write identity", () => {
     context.chemistry.structureFromSmiles = () => original({ smiles: "CC" });
     await expect(buildInsertStructures(context, { items: [{ kind: "molecule", smiles: "CO" }] })).rejects.toThrow("Canonical SMILES mismatch");
     expect(context.write).not.toHaveBeenCalled();
+  });
+  it.each([
+    ["[2H]CO", "CO"], ["[3H]CO", "CO"], ["[1H]CO", "CO"], ["[13CH3]O", "CO"],
+    ["N[C@@H](C)C(=O)O", "NC(C)C(=O)O"], ["F/C=C/F", "F/C=C\\F"],
+    ["[NH3+]CC(=O)[O-]", "NCC(=O)O"], ["CCO", "CO"]
+  ])("refuses identity loss during preparation and commit: %s", async (smiles, changed) => {
+    const context = realContext(false);
+    const original = context.chemistry.structureFromSmiles;
+    context.chemistry.structureFromSmiles = () => original({ smiles: changed });
+    await expect(buildInsertStructures(context, { items: [{ kind: "molecule", smiles }] }))
+      .rejects.toThrow("Canonical SMILES mismatch");
+    expect(context.write).not.toHaveBeenCalled();
+
+    const before = createEmptyDocument();
+    const molecule = createSmilesMolecule(before, { x: 200, y: 200 },
+      pastedStructureDepictionFromMolfile(await generateSmiles2DMolfile(changed)), changed);
+    const patched = applyPatch(before, { op: "addObject", pageId: before.pages[0]!.id, object: molecule });
+    await expect(verifyNormalizedAssistantWrite(context, before, patched, new Set([molecule.id]),
+      new Map([[molecule.id, smiles]]))).rejects.toThrow("canonical isomeric SMILES or atom count");
   });
   it("rejects more than 500 heavy atoms before depiction", async () => {
     const context = realContext();

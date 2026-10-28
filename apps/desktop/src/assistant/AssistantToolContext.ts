@@ -8,7 +8,8 @@ import type {
 export interface AssistantRect { x: number; y: number; width: number; height: number }
 export interface AssistantPageGrowth { pageId: string; width: number; height: number; description: string; itemCount: number }
 export type AssistantStructureInspection =
-  | { valid: true; canonicalSmiles: string; formula: string; heavyAtoms: number; warnings: string[] }
+  | { valid: true; canonicalSmiles: string; identitySmiles: string;
+      formula: string; heavyAtoms: number; warnings: string[] }
   | { valid: false; reason: string };
 
 /** All hooks are bound to the run's tab, never the currently active tab. */
@@ -36,7 +37,8 @@ export interface AssistantToolContext {
     structureFromSmiles(request: PluginStructureFromSmilesRequest): Promise<PluginStructureFromSmilesResult>;
     /** Noninteractive: return engineNotInstalled rather than opening installation UI. */
     structureToName(request: PluginStructureToNameRequest): Promise<PluginStructureToNameResult>;
-    /** RDKit only, no native-writer or OCL fallback; counts and formula are engine results. */
+    /** RDKit only; counts, formula and canonicalSmiles retain explicit H.
+     * identitySmiles removes ordinary explicit H, preserving isotopic H. */
     inspectStructure(format: "smiles" | "molfile", value: string): Promise<AssistantStructureInspection>;
   };
   render(svg: string, opts: { maxDimensionPx: number; background?: string }): Promise<{

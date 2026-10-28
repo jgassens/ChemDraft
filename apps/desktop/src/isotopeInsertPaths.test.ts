@@ -1,8 +1,9 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { createEmptyDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { applyPatch, createEmptyDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { smilesListCandidates } from "@chemdraft/clipboard-adapter";
 import {
-  assertMoleculeMatchesSmiles, createSmilesMolecule, pastedStructureDepictionFromMolfile,
+  assertMoleculeMatchesSmiles, createSmilesMolecule, inspectHydrogenNormalizedIdentity,
+  pastedStructureDepictionFromMolfile,
   type InspectChemicalIdentity
 } from "@chemdraft/document-workflow-core";
 import { ensureRdkit, generateSmiles2DMolfile } from "../../../packages/rdkit-adapter/src/conformer";
@@ -15,6 +16,7 @@ import { checkedSmilesPaste, checkedSmilesGridPaste } from "./smilesPasteIdentit
 import { depictSmilesForPaste, depictSmilesListForPaste } from "./smilesListPaste";
 import { structureFromSmilesForPlugin } from "./plugins/pluginChemistry";
 import { applyAssistantWrite, buildInsertStructures } from "./assistant/writeBuilder";
+import { verifyNormalizedAssistantWrite } from "./assistant/normalizedWrite";
 import { testContext } from "./assistant/tools/testContext";
 
 vi.mock("./plugins/rdkitAppLoader", () => ({
@@ -47,23 +49,40 @@ describe("isotope insert paths", () => {
 
   it.each(["[H]C([H])([H])O", "[H]/C(C)=C(/[H])C"])(
     "normalizes the assistant's explicit-H inspection as well: %s", async smiles => {
-      const { context } = testContext(false);
+      const { context, replace } = testContext(false);
+      replace(createEmptyDocument());
       context.chemistry.inspectStructure = async (_format, value) => {
-        const molecule = (await ensureRdkit()).get_mol(value, JSON.stringify({ removeHs: false }));
+        const rdkit = await ensureRdkit();
+        const molecule = rdkit.get_mol(value, JSON.stringify({ removeHs: false }));
         if (!molecule) throw new Error("RDKit could not parse the structure");
         try {
           const graph = JSON.parse(molecule.get_json!());
           const defaultZ = graph.defaults.atom.z;
           const heavyAtoms = graph.molecules[0].atoms.filter(
             (atom: { z?: number }) => (atom.z ?? defaultZ) !== 1).length;
-          return { valid: true, canonicalSmiles: molecule.get_smiles!(), heavyAtoms,
-            formula: "test-only", warnings: [] };
+          const identity = inspectHydrogenNormalizedIdentity(rdkit, value);
+          if (!identity.valid) return identity;
+          return { valid: true, canonicalSmiles: molecule.get_smiles!(),
+            identitySmiles: identity.canonicalSmiles, heavyAtoms, formula: "test-only", warnings: [] };
         } finally { molecule.delete(); }
       };
       context.chemistry.structureFromSmiles = async ({ smiles }) => {
         const parsed = await depictSmilesForPaste(smiles);
         const object = createSmilesMolecule(context.getDocument()!, point, parsed!.depiction, smiles);
         return { available: true, built: true, object };
+      };
+      const inspection = await context.chemistry.inspectStructure("smiles", smiles);
+      expect(inspection.valid).toBe(true);
+      if (!inspection.valid) throw new Error(inspection.reason);
+      expect(inspection.canonicalSmiles).toContain("[H]");
+      expect(inspection.identitySmiles).not.toContain("[H]");
+      const write = context.write;
+      context.write = async (patch, signal, check, expectedSmiles) => {
+        const before = context.getDocument()!;
+        const patched = applyPatch(before, patch);
+        const ids = [...expectedSmiles?.keys() ?? []];
+        await verifyNormalizedAssistantWrite(context, before, patched, new Set(ids), expectedSmiles);
+        return write(patch, signal, check, expectedSmiles);
       };
       const built = await buildInsertStructures(context, { items: [{ kind: "molecule", smiles }] });
       const result = await applyAssistantWrite(context, built);

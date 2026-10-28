@@ -3,8 +3,7 @@ import {
   type DocumentObject, type DocumentPatch, type MoleculeObject, type NativeTextStyle
 } from "@chemdraft/chem-core";
 import {
-  assertMoleculeMatchesSmiles, inspectHydrogenNormalizedIdentity,
-  createNativeTextObject, layoutReactionScheme, nextObjectId,
+  assertMoleculeMatchesSmiles, createNativeTextObject, layoutReactionScheme, nextObjectId,
   nativeTextObjectSizeForText, smilesPasteBondLengthPx, stereoPerceptionMolfile,
   nativeAtomLabelReading, nativeSingleBondGraphMetadata, nativeSingleBondGraphSmiles,
   normalizeNativeMoleculeGeometry, defaultNativeMoleculeTransform
@@ -12,7 +11,6 @@ import {
 import { nativeMoleculeRings } from "@chemdraft/layout-engine";
 import { assistantDocumentContentUnchanged } from "./historyPort";
 import { RESERVED_PLUGIN_OBJECT_IDS } from "../plugins/reservedObjectIds";
-import { loadRdkitWithAppLoader } from "../plugins/rdkitAppLoader";
 import {
   assistantScope, recordAssistantInsertions, requireDocument,
   type AssistantToolContext, type AssistantPageGrowth
@@ -85,10 +83,7 @@ async function assertCanonical(context: AssistantToolContext, molecule: Molecule
   await assertMoleculeMatchesSmiles(molecule, input, async (format, value) => {
     const result = format === "smiles" ? await inspectSmiles(context, value)
       : await context.chemistry.inspectStructure(format, value);
-    // Host inspection retains all atoms for counting; identity ignores ordinary explicit H.
-    if (!result.valid || !result.canonicalSmiles.includes("[H]")) return result;
-    const rdkit = await loadRdkitWithAppLoader(() => import("@chemdraft/rdkit-adapter"));
-    return inspectHydrogenNormalizedIdentity(await rdkit.ensureRdkit(), result.canonicalSmiles);
+    return result.valid ? { valid: true, canonicalSmiles: result.identitySmiles } : result;
   });
 }
 async function buildMolecule(context: AssistantToolContext, smiles: string): Promise<MoleculeObject> {

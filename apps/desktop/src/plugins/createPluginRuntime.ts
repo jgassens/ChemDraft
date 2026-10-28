@@ -1,4 +1,5 @@
 import { PluginStructureToNameRequestSchema } from "@chemdraft/plugin-api";
+import { inspectHydrogenNormalizedIdentity } from "@chemdraft/document-workflow-core";
 import type { AssistantToolContext } from "../assistant/AssistantToolContext";
 import { AssistantToolsController, type AssistantToolsControllerOptions } from "../assistant/AssistantToolsController";
 import { TauriAssistantMcpEngine, UnsupportedAssistantMcpEngine, type AssistantMcpEngine } from "../assistant/assistantMcpEngine";
@@ -339,7 +340,10 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
             if (!jsonMol.get_json || !canonicalSmiles) throw new Error("RDKit structure inspection is unavailable.");
             const graph = JSON.parse(jsonMol.get_json()) as Parameters<typeof rdkit.compositionFromRdkitJson>[0];
             const composition = rdkit.compositionFromRdkitJson(graph);
-            return { valid: true, canonicalSmiles, formula: composition.formula, warnings: [],
+            const identity = inspectHydrogenNormalizedIdentity(module, value);
+            if (!identity.valid) return identity;
+            return { valid: true, canonicalSmiles, identitySmiles: identity.canonicalSmiles,
+              formula: composition.formula, warnings: [],
               heavyAtoms: graph.molecules.reduce((count, mol) => count + mol.atoms.filter(atom =>
                 (atom.z ?? graph.defaults?.atom?.z ?? 6) !== 1).length, 0) };
           } finally { molecule.delete(); }

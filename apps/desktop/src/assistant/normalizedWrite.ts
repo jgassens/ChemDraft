@@ -66,7 +66,8 @@ export async function verifyNormalizedAssistantWrite(context: AssistantToolConte
     const expected = expectedSmiles.get(id);
     const input = expected === undefined ? await inspectMolecule(context, source) : await inspectSmiles(context, expected);
     const output = await inspectMolecule(context, molecule);
-    if (input.canonicalSmiles !== output.canonicalSmiles || input.heavyAtoms !== output.heavyAtoms) {
+    if (!input.identitySmiles || !output.identitySmiles ||
+      input.identitySmiles !== output.identitySmiles || input.heavyAtoms !== output.heavyAtoms) {
       throw new Error(`refused: placing ${id} there would change its canonical isomeric SMILES or atom count during desktop normalization; choose another position.`);
     }
   }
