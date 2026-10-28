@@ -91,11 +91,12 @@ describe.each(["macos", "windows"] as const)("MainWindow unfocused canvas on %s"
     return editor;
   }
 
-  it("keeps the text-object editor focused on an empty canvas press", async () => {
-    const editor = await openTextEditor();
+  it("commits the text-object editor and focuses the canvas on an empty canvas press", async () => {
+    await openTextEditor();
     await pointer(canvas);
-    expect(document.activeElement).toBe(editor);
-    expect(focus).not.toHaveBeenCalled();
+    expect(container.querySelector(".text-object-editor")).toBeNull();
+    expect(document.activeElement).toBe(canvas);
+    expect(focus).toHaveBeenCalledExactlyOnceWith({ preventScroll: true });
   });
 
   it("does not take focus from an open context menu or its items", async () => {

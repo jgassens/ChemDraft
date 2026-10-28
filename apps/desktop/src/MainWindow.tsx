@@ -1617,7 +1617,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.27.18.00-codex";
+const CURRENT_BUILD_STAMP = "10.27.20.00-codex";
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -20050,6 +20050,25 @@ export function MainWindow({
           }}
           onPointerDownCapture={(event) => {
             const canvas = event.currentTarget;
+            const textEditId = activeTextEditObjectIdRef.current;
+            const target = event.target instanceof Element ? event.target : null;
+            // Capture before page/object tools can clear the edit and start a gesture.
+            // Leave editor controls and the edited glyph alone: Text may have restored
+            // Select already when the second press of a double-click reaches that glyph.
+            const editingGlyph = target?.closest("[data-page-svg-object-visual]")?.getAttribute("data-page-svg-object-visual") === textEditId
+              && (activeToolState.activeCommandId === "tool.select" || activeToolState.activeCommandId === "tool.text");
+            const editingControl = target?.closest(".text-resize-handle")?.closest("[data-object-id]")?.getAttribute("data-object-id") === textEditId;
+            if (textEditId && event.button === 0 && event.isPrimary !== false
+              && !isEditableTarget(event.target) && !editingGlyph && !editingControl && isCanvasDrawingPress(canvas, event)) {
+              event.preventDefault();
+              event.stopPropagation();
+              // Keep the native IME and its editor alive until composition terminates.
+              if (canvasFocusCompositionRef.current.active || canvasFocusCompositionRef.current.recentKey) return;
+              clearScheduledTextEditorFocus();
+              finishActiveNativeTextEdit(textEditId);
+              canvas.focus({ preventScroll: true });
+              return;
+            }
             const overlay = globalThis.document.activeElement?.closest<HTMLElement>(".plugin-canvas-overlay");
             if (overlay?.dataset.composing === "true") {
               // Do not blur the IME or let page tools replace its editor mid-composition.
