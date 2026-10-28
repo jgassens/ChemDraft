@@ -1,5 +1,4 @@
-import { structureTemplateLayoutMessage } from "@chemdraft/document-workflow-core";
-import { insertPastedSmiles } from "./smilesInsertion";
+import { nextObjectId, structureTemplateLayoutMessage } from "@chemdraft/document-workflow-core";
 import { insertStructureTemplate } from "./structureTemplateInsertion";
 import { structureTemplates } from "@chemdraft/template-library";
 import { templateInsertActions, templateInsertCommandId } from "./templateCommands";
@@ -548,6 +547,7 @@ import {
   nativeArtToolIsFreehand,
   nativeFreehandStrokeDocument,
   nativePolylinePathDocument,
+  insertSmilesMolecule,
   insertSmilesMoleculeGrid,
   insertSmilesMoleculeGridStatus,
   documentObjectProjectedPlaneTilt,
@@ -1624,7 +1624,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.28.12.20-codex";
+const CURRENT_BUILD_STAMP = "10.28.12.42-codex";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -6627,25 +6627,32 @@ export function MainWindow({
   const renderPastedSmiles = useCallback(async (smilesText: string): Promise<{ rendered: boolean; reason?: string; failed?: boolean }> => {
     try {
       const pasteDocument = documentRef.current;
-      const parsed = await depictSmilesForPaste(smilesText, {}, { document: pasteDocument, centre: pastePointForViewport() });
+      const parsed = await depictSmilesForPaste(smilesText);
       if (quitInteractionRef.current) return { rendered: false, reason: "Paste cancelled while quitting" };
       if (!parsed) return { rendered: false };
       const { depiction, stereoCount } = parsed;
-      const inserted = parsed.molecule ? {
-        document: applyPatches(pasteDocument, [
-          { op: "addObject", pageId: pasteDocument.pages[0]!.id, object: parsed.molecule },
-          { op: "setSelection", pageId: pasteDocument.pages[0]!.id, objectIds: [parsed.molecule.id] }
-        ]),
-        status: structureTemplateLayoutMessage(parsed.molecule)
-      } : await insertPastedSmiles(
+      const point = pastePointForViewport();
+      // Parsing is document-independent. Allocate the ID and place its authored geometry
+      // against this drawing only once the result is ready, without rebuilding the template.
+      const molecule = parsed.molecule ? { ...parsed.molecule, id: nextObjectId(pasteDocument, "mol_template") } : undefined;
+      const inserted = molecule ? {
+        document: moveDocumentObject(applyPatches(pasteDocument, [
+          { op: "addObject", pageId: pasteDocument.pages[0]!.id, object: molecule },
+          { op: "setSelection", pageId: pasteDocument.pages[0]!.id, objectIds: [molecule.id] }
+        ]), molecule.id, {
+          x: point.x - molecule.width / 2,
+          y: point.y - molecule.height / 2
+        }, { clampToPage: false }),
+        status: structureTemplateLayoutMessage(molecule)
+      } : { document: insertSmilesMolecule(
         pasteDocument,
-        pastePointForViewport(),
+        point,
         {
           atoms: depiction.atoms,
           bonds: depiction.bonds
         },
         smilesText
-      );
+      ), status: undefined };
       if (quitInteractionRef.current || documentRef.current !== pasteDocument) throw new Error("The document changed while preparing SMILES paste; paste again.");
       const nextDocument = inserted.document;
       commitDocumentChange(nextDocument, "Paste SMILES");
@@ -8779,8 +8786,7 @@ export function MainWindow({
       setSelectedNativeMoleculePart(undefined);
       setStatus(result.label);
     } else if (snapshot) {
-      const present = normalizeCommittedDocument(result.document);
-      documentUndoLabelsRef.current.set(present, result.label);
+      const present = prepareDocumentCommit(result.document, result.label);
       for (const listener of assistantUserEditListenersRef.current) listener(tabId);
       documentTabSnapshotsRef.current.set(tabId, { ...snapshot,
         history: { past: boundedHistoryPast([...snapshot.history.past, source], present), present, future: [] },
@@ -8789,7 +8795,7 @@ export function MainWindow({
       setDocumentTabs([...documentTabsRef.current]);
     }
   // isSnapshotSessionActive is declared later and reads only stable refs.
-  }, [assistantHistoryPort, commitDocumentChange]);
+  }, [assistantHistoryPort, commitDocumentChange, prepareDocumentCommit]);
 
   const applyCustomPageSize = useCallback((size: { width: number; height: number; unit: PageSizeUnit }) => {
     commitDocumentChange((current) => setDocumentCustomPageSize(current, size), "Set Custom Page Size");

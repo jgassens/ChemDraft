@@ -138,6 +138,12 @@ async function expectStereoMismatch(identity: string, different: string, expecte
 }
 
 describe("exact isomeric matching", () => {
+  it("does not canonicalize the host catalog for an ordinary small molecule", async () => {
+    const canonical = vi.fn(canonicalize);
+    expect(await structureTemplateForSmiles("CCO", canonical)).toBeUndefined();
+    expect(canonical).toHaveBeenCalledExactlyOnceWith("CCO");
+  });
+
   it("matches a reordered equivalent SMILES", async () => {
     expect((await structureTemplateForSmiles("O1CCOCCOCCOCCOCCOCC1", canonicalize))?.id).toBe("18-crown-6");
   });
