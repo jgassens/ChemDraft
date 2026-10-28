@@ -4,7 +4,8 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deserializeDocument, type ChemDraftDocument } from "@chemdraft/chem-core";
-import { planPageSvgRender, planTableLayout, type PageSvgFragment } from "@chemdraft/layout-engine";
+import { planPageSvgRender, planTableLayout, tableVisualBoundsForArrangement,
+  transformPointForObject, type PageSvgFragment } from "@chemdraft/layout-engine";
 import { MainWindow } from "./MainWindow";
 import { DOM_COMMAND_EVENT, listenForToolsetTextStyle } from "./window-manager";
 import { createPhase4Document } from "./documentWorkflow";
@@ -107,6 +108,38 @@ describe("native tables on the canvas", () => {
       expect(window.__CHEMDRAFT_AGENT__!.snapshot().document).toEqual(before);
       expect(container.textContent).toContain(`Undid ${label}`);
     }
+  });
+
+  it("leaves the empty bounding-box corners outside a 45-degree table hit rect", async () => {
+    const nativeDocument = fixture(), table = nativeDocument.pages[0].objects[0];
+    if (table.type !== "table") throw new Error("Expected table");
+    table.rotation = 45;
+    await render(nativeDocument);
+    const hit = container.querySelector("[data-table-hit-target]")!;
+    const fragment = planPageSvgRender(nativeDocument.pages[0]).fragments
+      .find(part => part.attrs["data-object-id"] === table.id)!;
+    expect(hit.getAttribute("transform")).toBe(fragment.attrs.transform);
+    const layout = planTableLayout(table);
+    expect(Number(hit.getAttribute("x"))).toBe(table.x);
+    expect(Number(hit.getAttribute("y"))).toBe(table.y);
+    expect(Number(hit.getAttribute("width"))).toBe(layout.width);
+    expect(Number(hit.getAttribute("height"))).toBe(layout.height);
+    const bounds = tableVisualBoundsForArrangement(table);
+    const point = { x: bounds.x + 1, y: bounds.y + 1 };
+    expect(point.x).toBeLessThan(bounds.x + bounds.width);
+    expect(point.y).toBeLessThan(bounds.y + bounds.height);
+    // jsdom has no SVG hit tester. Invert the rendered transform and test the actual rect geometry.
+    const [angle, cx, cy] = hit.getAttribute("transform")!.match(/-?\d+(?:\.\d+)?/g)!.map(Number);
+    const local = transformPointForObject({ ...table, rotation: -angle,
+      x: cx - table.width / 2, y: cy - table.height / 2 }, point);
+    const inside = local.x >= Number(hit.getAttribute("x"))
+      && local.x <= Number(hit.getAttribute("x")) + Number(hit.getAttribute("width"))
+      && local.y >= Number(hit.getAttribute("y"))
+      && local.y <= Number(hit.getAttribute("y")) + Number(hit.getAttribute("height"));
+    expect(inside).toBe(false);
+    await pointer(container.querySelector(".page")!, "pointerdown", point.x, point.y);
+    await pointer(container.querySelector(".page")!, "pointerup", point.x, point.y);
+    expect(window.__CHEMDRAFT_AGENT__!.snapshot().selection.objectIds).toEqual([]);
   });
 
   it("broadcasts the selected table state to the floating inspector", async () => {

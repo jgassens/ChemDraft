@@ -166,7 +166,9 @@ describe("paste precedence and table building", () => {
   });
 
   it("returns table limit refusals without falling through to a different format", () => {
-    expect(tableClipboardPasteDecision(payload({ type: "text/html", text: `<table><tr><td>${"x".repeat(2001)}</td></tr></table>` },
+    // A single copied cell pastes as text, so use two cells to exercise table refusal.
+    const html = `<table><tr><td>${"x".repeat(2001)}</td><td></td></tr></table>`;
+    expect(tableClipboardPasteDecision(payload({ type: "text/html", text: html },
       { type: "text/plain", text: "unrelated fallback" }), parseHtml))
       .toMatchObject({ kind: "table", result: { ok: false, reason: expect.stringContaining("2001 characters") } });
     expect(tableClipboardPasteDecision(payload({ type: "text/plain", text: Array.from({ length: 501 }, () => "1\t2").join("\n") }), parseHtml))

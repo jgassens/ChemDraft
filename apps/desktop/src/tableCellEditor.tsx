@@ -9,11 +9,12 @@ import { symbolGlyphForToolCommand, updateNativeTextObjectText,
   updateNativeTextObjectScriptRange, updateNativeTextObjectStyleRange } from "./documentWorkflow";
 import { detectDesktopShortcutPlatform, isBrowserReloadChord } from "./keyboardShortcuts";
 import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
-import type { ActiveTableText } from "./tableCommands";
+import { tableValidationMessage, type ActiveTableText } from "./tableCommands";
 import { tableEditingContent, tableEditingKeyAction, type TableEditingAction } from "./tableInteraction";
 
 export interface TableCellEditorHandle {
   applyCommand(commandId: string): boolean;
+  commit(): boolean;
 }
 
 /** Like native text objects: a textarea owns input/IME, and the shared rich-text view paints runs. */
@@ -65,14 +66,16 @@ export const TableCellEditor = forwardRef<TableCellEditorHandle, {
   };
 
   const finish = (action: TableEditingAction) => {
-    if (closed.current) return;
+    if (closed.current) return true;
     try {
       const value = isUnchanged() ? initialValue.current : draftRef.current;
       finishRef.current({ text: value.text, spans: value.spans }, action);
       closed.current = true;
+      return true;
     } catch (error) {
-      onError(`Cell edit failed: ${error instanceof Error ? error.message : String(error)}`);
+      onError(tableValidationMessage(error));
       editorRef.current?.focus({ preventScroll: true });
+      return false;
     }
   };
   const finishLatest = useRef(finish); finishLatest.current = finish;
@@ -156,7 +159,10 @@ export const TableCellEditor = forwardRef<TableCellEditorHandle, {
     editorRef.current?.focus({ preventScroll: true });
     return true;
   };
-  useImperativeHandle(ref, () => ({ applyCommand }));
+  useImperativeHandle(ref, () => ({ applyCommand, commit: () => {
+    if (composing.current) return false;
+    return finish({ kind: "commit" });
+  } }));
   useLayoutEffect(() => {
     const editor = editorRef.current!;
     editor.focus({ preventScroll: true });

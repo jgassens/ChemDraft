@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyPatches, type TableObject } from "@chemdraft/chem-core";
 import { buildTableObject } from "@chemdraft/document-workflow-core";
 import {
-  planTableLayout, tableCellElementId, tableVisualBoundsForArrangement, transformPointForObject
+  planTableLayout, tableCellElementId, transformPointForObject
 } from "@chemdraft/layout-engine";
 import { MainWindow } from "./MainWindow";
 import { createPhase4Document, insertNativeTextObject } from "./documentWorkflow";
@@ -134,6 +134,60 @@ describe.each(["macos", "windows"] as const)("table real DOM editing (%s)", plat
     await command("edit.undo"); expect(currentTable()).toEqual(before);
   });
 
+  it.each(["caption", 0] as const)("commits the open %s before table commands", async note => {
+    await mount();
+    await command("table.caption.toggle"); await command("table.footnote.add");
+    await command("table.footnote.add");
+    await openNote(note); await type("Uncommitted draft");
+    await command("table.footnote.remove");
+    expect(editor()).toBeNull();
+    const changed = currentTable();
+    expect(changed.footnotes).toHaveLength(1);
+    if (note === "caption") expect(changed.caption?.text).toBe("Uncommitted draft");
+    // Undoing removal must restore the committed draft, including the removed edited note.
+    await command("edit.undo");
+    const committed = currentTable();
+    expect(note === "caption" ? committed.caption?.text : committed.footnotes[0].text)
+      .toBe("Uncommitted draft");
+    await command("edit.undo");
+    expect(note === "caption" ? currentTable().caption?.text : currentTable().footnotes[0].text)
+      .not.toBe("Uncommitted draft");
+  });
+
+  it.each([
+    "table.row.insertBelow", "table.column.insertRight", "table.caption.toggle", "table.footnote.add"
+  ])(
+    "commits a note before %s, retaining it through command undo", async id => {
+      await mount(); await command("table.caption.toggle"); await openNote("caption");
+      await type("Caption draft"); await command(id);
+      expect(editor()).toBeNull();
+      await command("edit.undo");
+      expect(currentTable().caption?.text).toBe("Caption draft");
+      await command("edit.undo");
+      expect(currentTable().caption?.text).toBe("Table 1.");
+    }
+  );
+
+  it("refuses over-cap edits without changing the document or running a command", async () => {
+    await mount({ rows: Array.from({ length: 100 }, () => ["x".repeat(1000), "y".repeat(1000)]),
+      formula: "off" });
+    await open();
+    const before = snapshot().document;
+    await type("x".repeat(1001)); await key("Enter");
+    expect(snapshot().document).toEqual(before);
+    expect(editor()).not.toBeNull();
+    expect(container.querySelector('[role="status"]')?.textContent)
+      .toBe("maxTableCharacters is 200000; actual value is 200001");
+    await command("table.row.insertBelow");
+    expect(snapshot().document).toEqual(before);
+    expect(editor()!.value).toBe("x".repeat(1001));
+    await key("Escape");
+    await command("table.caption.toggle");
+    expect(snapshot().document).toEqual(before);
+    expect(container.querySelector('[role="status"]')?.textContent)
+      .toBe("maxTableCharacters is 200000; actual value is 200008");
+  });
+
   it("edits empty footnotes, leaves Tab/arrows to the textarea and commits on click-outside", async () => {
     await mount(); await command("table.footnote.add");
     const before = currentTable();
@@ -162,6 +216,8 @@ describe.each(["macos", "windows"] as const)("table real DOM editing (%s)", plat
     await openNote(0); await type("Uncommitted"); await command("table.footnote.remove");
     expect(editor()).toBeNull();
     expect(currentTable().footnotes.map(note => note.text)).toEqual(["Last"]);
+    await command("edit.undo");
+    expect(currentTable().footnotes.map(note => note.text)).toEqual(["Uncommitted", "Last"]);
     await command("edit.undo"); expect(currentTable()).toEqual(before);
     await command("table.footnote.remove");
     expect(currentTable().footnotes.map(note => note.text)).toEqual(["First"]);
@@ -413,13 +469,14 @@ describe.each(["macos", "windows"] as const)("table real DOM editing (%s)", plat
 
   it("uses the stored rotation pivot for editing and clamps/cancels a column drag", async () => {
     await mount({ rotation: 90 });
-    const bounds = tableVisualBoundsForArrangement(currentTable());
+    const table = currentTable(), layout = planTableLayout(table);
     const hit = container.querySelector("[data-table-hit-target]")!;
-    expect(Number(hit.getAttribute("x"))).toBeCloseTo(bounds.x);
-    expect(Number(hit.getAttribute("y"))).toBeCloseTo(bounds.y);
-    expect(Number(hit.getAttribute("width"))).toBeCloseTo(bounds.width);
-    expect(Number(hit.getAttribute("height"))).toBeCloseTo(bounds.height);
-    expect(hit.getAttribute("transform")).toBeNull();
+    expect(Number(hit.getAttribute("x"))).toBeCloseTo(table.x);
+    expect(Number(hit.getAttribute("y"))).toBeCloseTo(table.y);
+    expect(Number(hit.getAttribute("width"))).toBeCloseTo(layout.width);
+    expect(Number(hit.getAttribute("height"))).toBeCloseTo(layout.height);
+    expect(hit.getAttribute("transform"))
+      .toBe(`rotate(90 ${table.x + table.width / 2} ${table.y + table.height / 2})`);
     await open();
     const box = planTableLayout(currentTable()).cells[0].box;
     expect(editor()!.parentElement!.style.transform).toBe("rotate(90deg)");

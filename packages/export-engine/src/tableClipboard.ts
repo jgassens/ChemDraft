@@ -173,11 +173,14 @@ function htmlTable(table: TableObject, layout: TableLayout, options: TableClipbo
         cellStyle += `;border-${side}:${border > 0 ? `solid windowtext ${numeric(border)}pt` : "none"}`;
         if (border > 0) cellStyle += `;mso-border-${side}-alt:solid windowtext ${numeric(border)}pt`;
       }
-      if (!header && table.columns[column].align === "decimal" &&
-        /^-?(0|[1-9][0-9]*)(\.[0-9]+)?$/.test(text)) {
-        const decimals = (text.split(".")[1] ?? "").length;
-        const format = decimals > 0 ? `0\\.${"0".repeat(decimals)}` : "0";
-        cellStyle += `;mso-number-format:'${format}'`;
+      if (!header && table.columns[column].align === "decimal") {
+        if (/^-?(0|[1-9][0-9]*)(\.[0-9]+)?$/.test(text)) {
+          const decimals = (text.split(".")[1] ?? "").length;
+          const format = decimals > 0 ? `0\\.${"0".repeat(decimals)}` : "0";
+          cellStyle += `;mso-number-format:'${format}'`;
+        } else if (/^[+\-−]?(?:\d[\d,]*(?:\.\d*)?|\.\d+)$/.test(text.trim())) {
+          cellStyle += ';mso-number-format:&quot;\\@&quot;';
+        }
       }
       const tab = alignment.decimalOffset;
       const tabStyle = tab === undefined ? "" : `;tab-stops:decimal ${numeric(tab * 0.75)}pt`;

@@ -30,7 +30,11 @@ export type ClipboardTableResult =
   | { ok: false; reason: string };
 
 // Mirrors TABLE_LIMITS in chem-core; tables.test.ts asserts the two stay equal.
-const LIMITS = { maxColumns: 64, maxRows: 500, maxCellCharacters: 2000 } as const;
+export const CLIPBOARD_TABLE_LIMITS = {
+  maxColumns: 64, maxRows: 500, maxCellCharacters: 2000,
+  maxTableCharacters: 200000, maxSpansPerCell: 200
+} as const;
+const LIMITS = CLIPBOARD_TABLE_LIMITS;
 
 const WARN_MERGED = "Merged cells were split into separate cells.";
 const WARN_RAGGED = "Short rows were padded with empty cells.";
@@ -62,6 +66,12 @@ function tooLongCell(row: number, column: number, length: number): ClipboardTabl
 
 function cellText(cell: ClipboardTableCell): string {
   return typeof cell === "string" ? cell : cell.text;
+}
+
+function tableCharacterRefusal(count: number): ClipboardTableResult | undefined {
+  if (count <= LIMITS.maxTableCharacters) return undefined;
+  return fail(`This table has ${count.toLocaleString("en-US")} characters; `
+    + `ChemDraft tables hold at most ${LIMITS.maxTableCharacters.toLocaleString("en-US")}.`);
 }
 
 function isNumberText(text: string): boolean {
@@ -538,6 +548,17 @@ function convertTable(table: Element): ClipboardTableResult | undefined {
   const dense = grid.map((row) =>
     Array.from({ length: width }, (_, column) => row[column] ?? { input: "", filler: true })
   );
+  const characterRefusal = tableCharacterRefusal(dense.reduce((sum, row) =>
+    sum + row.reduce((count, entry) => count + cellText(entry.input).length, 0), 0));
+  if (characterRefusal) return characterRefusal;
+  for (const [r, row] of dense.entries()) {
+    for (const [c, { input }] of row.entries()) {
+      if (typeof input !== "string" && input.spans.length > LIMITS.maxSpansPerCell) {
+        return fail(`The cell in row ${r + 1}, column ${c + 1} has ${input.spans.length} spans; `
+          + `ChemDraft table cells hold at most ${LIMITS.maxSpansPerCell}.`);
+      }
+    }
+  }
   if (nested) {
     warnings.add(WARN_NESTED);
   }
@@ -698,6 +719,9 @@ export function readClipboardTsvTable(text: string): ClipboardTableResult | unde
       }
     }
   }
+  const characterRefusal = tableCharacterRefusal(records.reduce((sum, row) =>
+    sum + row.reduce((count, text) => count + text.length, 0), 0));
+  if (characterRefusal) return characterRefusal;
   const columns = Array.from({ length: width }, (_, column): { align: ClipboardTableAlign } => ({
     align: isDecimalColumn(records.map((record) => record[column])) ? "decimal" : "left"
   }));

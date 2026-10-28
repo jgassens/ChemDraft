@@ -332,10 +332,18 @@ describe("table clipboard payloads", () => {
   );
 
   it("formats only canonical decimals as Excel numbers", () => {
-    const input = smallTable(["007", "+5", "0", "-5", "12.30", "01.2", ".5", "5."], "decimal");
+    const texts = ["007", "+5", "1,000", "0", "-5", "12.30", "01.2", ".5", "5.", "—", "label"];
+    const input = smallTable(texts, "decimal");
     const cells = [...htmlDocument(exportTableToHtml(input)).querySelectorAll("td")];
-    expect(cells.map(cell => cell.getAttribute("style")!.includes("mso-number-format")))
-      .toEqual([false, false, true, true, true, false, false, false]);
+    const formats = cells.map(cell => /mso-number-format:([^;]+)/.exec(cell.getAttribute("style")!)?.[1]);
+    expect(formats).toEqual([
+      '"\\@"', '"\\@"', '"\\@"', "'0'", "'0'", "'0\\.00'", '"\\@"', '"\\@"', '"\\@"',
+      undefined, undefined
+    ]);
+    expect(cells.map(cell => cell.textContent)).toEqual(texts);
+    expect(exportTableToTsv(input)).toBe(texts.join("\n"));
+    expect(exportTableToRtf(input)).not.toContain("mso-number-format");
+    expect(exportTableToHtml(smallTable(texts))).not.toContain("mso-number-format");
   });
 
   it("omits all font families and sizes in inherit mode while preserving layout and rich text", () => {

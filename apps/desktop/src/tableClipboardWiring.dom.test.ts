@@ -11,6 +11,8 @@ import { CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, createPhase4Document, createSelecti
 import { readClipboardPayload, writeClipboardTextItems } from "./clipboard";
 import { depictSmilesListForPaste } from "./smilesListPaste";
 import { DOM_COMMAND_EVENT } from "./window-manager";
+import { ZodError } from "zod";
+import * as tableClipboard from "./tableClipboardWiring";
 
 vi.mock("./clipboard", async importOriginal => ({
   ...await importOriginal<typeof import("./clipboard")>(),
@@ -134,10 +136,45 @@ describe("MainWindow table clipboard wiring", () => {
 
   it("shows a table parser refusal and pastes nothing", async () => {
     await render();
-    vi.mocked(readClipboardPayload).mockResolvedValue(clipboard(`<table><tr><td>${"x".repeat(2001)}</td></tr></table>`, "fallback text"));
+    // A single copied cell pastes as text, so use two cells to exercise table refusal.
+    const html = `<table><tr><td>${"x".repeat(2001)}</td><td></td></tr></table>`;
+    vi.mocked(readClipboardPayload).mockResolvedValue(clipboard(html, "fallback text"));
     await command("clipboard.paste");
     expect(snapshot().document.pages[0].objects).toHaveLength(0);
     expect(container.querySelector('[role="status"]')?.textContent).toContain("2001 characters");
+  });
+
+  it("reports total-character and span refusals without pasting fallback text", async () => {
+    await render();
+    const before = snapshot().document;
+    const row = `<tr><td>${"x".repeat(1000)}</td><td>${"y".repeat(1000)}</td></tr>`;
+    vi.mocked(readClipboardPayload).mockResolvedValue(clipboard(`<table>${row.repeat(101)}</table>`,
+      "fallback text"));
+    await command("clipboard.paste");
+    expect(snapshot().document).toEqual(before);
+    expect(container.querySelector('[role="status"]')?.textContent)
+      .toBe("This table has 202,000 characters; ChemDraft tables hold at most 200,000.");
+    const spans = Array.from({ length: 201 }, (_, i) => i % 2 ? "<i>x</i>" : "<b>x</b>").join("");
+    vi.mocked(readClipboardPayload).mockResolvedValue(clipboard(`<table><tr><td>${spans}</td><td></td>`
+      + "</tr></table>", "fallback text"));
+    await command("clipboard.paste");
+    expect(snapshot().document).toEqual(before);
+    expect(container.querySelector('[role="status"]')?.textContent)
+      .toBe("The cell in row 1, column 1 has 201 spans; ChemDraft table cells hold at most 200.");
+  });
+
+  it("shows the first validation issue if a parsed paste fails document validation", async () => {
+    await render();
+    const before = snapshot().document;
+    vi.spyOn(tableClipboard, "pasteTableIntoDocument").mockImplementationOnce(() => {
+      throw new ZodError([{ code: "custom", path: [], message: "This table exceeds a document limit." }]);
+    });
+    const html = "<table><tr><td>a</td><td>b</td></tr></table>";
+    vi.mocked(readClipboardPayload).mockResolvedValue(clipboard(html));
+    await command("clipboard.paste");
+    expect(snapshot().document).toEqual(before);
+    expect(container.querySelector('[role="status"]')?.textContent)
+      .toBe("This table exceeds a document limit.");
   });
 
   it("retains parser warnings in the status line", async () => {

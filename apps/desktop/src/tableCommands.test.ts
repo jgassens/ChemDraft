@@ -13,6 +13,9 @@ import { allShellCommands, textFontCommands, textSizeCommands, textFontFamilyCom
   tableRuleWidthCommandId, parseTableRuleWidthCommandId } from "./commands";
 import { parseDialogMessage } from "./dialogs/dialogProtocol";
 import { DialogCoordinator } from "./dialogs/DialogCoordinator";
+import { ZodError } from "zod";
+import { tableValidationMessage } from "./tableCommands";
+import { DocumentPatchError } from "@chemdraft/chem-core";
 import type { DialogMessage } from "./dialogs/dialogProtocol";
 
 const fixture = (): ChemDraftDocument => {
@@ -22,6 +25,18 @@ const fixture = (): ChemDraftDocument => {
 const ids = () => { let count = 0; return (prefix: string) => `${prefix}-test-${++count}`; };
 
 describe("table commands", () => {
+  it("reports only the first validation issue as plain text", () => {
+    const error = new ZodError([
+      { code: "custom", path: [], message: "This table is too large." },
+      { code: "custom", path: [], message: "A second issue." }
+    ]);
+    expect(tableValidationMessage(error)).toBe("This table is too large.");
+    expect(tableValidationMessage(new DocumentPatchError(error.message))).toBe("This table is too large.");
+    expect(tableValidationMessage(new DocumentPatchError("Cannot update this table.")))
+      .toBe("Cannot update this table.");
+    expect(tableValidationMessage(new Error("Cannot edit this table."))).toBe("Cannot edit this table.");
+  });
+
   it("registers value-encoded header counts and refreshes the header rule in one labelled result", () => {
     const document = fixture(), table = selectedTable(document)!;
     for (let count = 0; count <= Math.min(table.rows.length, 5); count++) {

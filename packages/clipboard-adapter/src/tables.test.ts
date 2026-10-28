@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { TABLE_LIMITS } from "@chemdraft/chem-core";
+import { CLIPBOARD_TABLE_LIMITS } from "./tables";
 import { TableSpecSchema } from "@chemdraft/document-workflow-core";
 import {
   readClipboardHtmlTable,
@@ -60,7 +61,7 @@ const right = { align: "right" } as const;
 
 describe("limits", () => {
   it("match the native table limits", () => {
-    expect(TABLE_LIMITS).toMatchObject({ maxRows: 500, maxColumns: 64, maxCellCharacters: 2000 });
+    expect(TABLE_LIMITS).toMatchObject(CLIPBOARD_TABLE_LIMITS);
   });
 });
 
@@ -381,6 +382,27 @@ describe("alignment", () => {
 });
 
 describe("HTML limits", () => {
+  it("counts characters across header and body cells before building a table", () => {
+    const row = `<tr><td>${"x".repeat(1000)}</td><td>${"y".repeat(1000)}</td></tr>`;
+    const html = `<table><thead>${row}</thead><tbody>${row.repeat(99)}</tbody></table>`;
+    const boundary = expectOk(readHtml(html));
+    expect(() => TableSpecSchema.parse(boundary.spec)).not.toThrow();
+    expect(readHtml(html.replace("<td>x", "<td>xx"))).toEqual({
+      ok: false,
+      reason: "This table has 200,001 characters; ChemDraft tables hold at most 200,000."
+    });
+  });
+
+  it("refuses too many formatted spans in a cell and accepts the boundary", () => {
+    const runs = (count: number) => Array.from({ length: count }, (_, i) =>
+      i % 2 ? "<i>x</i>" : "<b>x</b>").join("");
+    expectOk(readHtml(table(`<tr><td>${runs(200)}</td><td></td></tr>`)));
+    expect(readHtml(table(`<tr><td>${runs(201)}</td><td></td></tr>`))).toEqual({
+      ok: false,
+      reason: "The cell in row 1, column 1 has 201 spans; ChemDraft table cells hold at most 200."
+    });
+  });
+
   it("refuses too many rows, naming the limit and the size", () => {
     const rows = Array.from({ length: 501 }, () => "<tr><td>a</td></tr>").join("");
     expect(readHtml(table(rows))).toEqual({
@@ -412,6 +434,17 @@ describe("HTML limits", () => {
 });
 
 describe("TSV tables", () => {
+  it("refuses an Excel-sized range over the total character cap", () => {
+    const row = Array.from({ length: 64 }, () => "1234567").join("\t");
+    expect(readClipboardTsvTable(Array.from({ length: 500 }, () => row).join("\n"))).toEqual({
+      ok: false,
+      reason: "This table has 224,000 characters; ChemDraft tables hold at most 200,000."
+    });
+    const boundary = Array.from({ length: 100 }, () => `${"x".repeat(1000)}\t${"y".repeat(1000)}`)
+      .join("\n");
+    expectOk(readClipboardTsvTable(boundary));
+  });
+
   it("reads Excel text with quoted tabs, newlines and doubled quotes", () => {
     const result = expectOk(readClipboardTsvTable(fixture("excel-quoted.tsv")));
     expect(result.source).toBe("tsv");

@@ -17,7 +17,7 @@ describe("plugin table preparation and runtime", () => {
     const document = createEmptyDocument();
     const ids = new Set<string>();
     for (let i = 0; i < 30; i++) {
-      const patch = buildPluginTablePatch(spec, document, []).patch;
+      const patch = buildPluginTablePatch(spec, document, []).patch as DocumentPatch;
       if (patch.op !== "addObject" || patch.object.type !== "table") throw new Error("Expected table");
       ids.add(patch.object.id);
       expect(patch.object.rows[0].id).toBe(`${patch.object.id}-r1`);

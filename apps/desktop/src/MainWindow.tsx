@@ -2,6 +2,7 @@ import { applyTableCommand, applyTableFontCommand, applyTableObjectEdit, createT
 import { TableCellEditor, TableColumnResizers, type TableCellEditorHandle } from "./tableCellEditor";
 import { tableEditingContent, tableTextAtPoint, type TableEditingAction } from "./tableInteraction";
 import type { ActiveTableText } from "./tableCommands";
+import { tableValidationMessage } from "./tableCommands";
 import { tableCellElementId } from "@chemdraft/layout-engine";
 import { insertTableIntoDocument } from "./documentWorkflow";
 import { pasteTableIntoDocument, readTableClipboardPaste, tableClipboardPasteDecision, tableSelectionClipboardItems } from "./tableClipboardWiring";
@@ -232,6 +233,7 @@ import {
   planMoleculeAtomLabels,
   recordedLabelBondSide,
   planPageSvgRender,
+  planTableLayout,
   planNativeArtVisual,
   placementAimDegrees,
   sameBondRef,
@@ -1628,7 +1630,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.28.15.50-codex";
+const CURRENT_BUILD_STAMP = "10.28.16.00-codex";
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -6706,7 +6708,7 @@ export function MainWindow({
       resetPasteUiState();
       setStatus(["Pasted table", ...result.warnings].join("; "));
     } catch (error) {
-      setStatus(`Table paste failed: ${error instanceof Error ? error.message : String(error)}`);
+      setStatus(tableValidationMessage(error));
     }
   }, [commitDocumentChange, pastePointForViewport, resetPasteUiState, textStyleDefaults]);
 
@@ -7252,10 +7254,15 @@ export function MainWindow({
       ...stylePatch
     }));
 
-    const tableFontResult = applyTableFontCommand(currentDocument, commandId);
-    if (tableFontResult) {
-      commitDocumentChange(tableFontResult.document, tableFontResult.label);
-      setStatus(tableFontResult.label);
+    try {
+      const tableFontResult = applyTableFontCommand(currentDocument, commandId);
+      if (tableFontResult) {
+        commitDocumentChange(tableFontResult.document, tableFontResult.label);
+        setStatus(tableFontResult.label);
+        return true;
+      }
+    } catch (error) {
+      setStatus(tableValidationMessage(error));
       return true;
     }
 
@@ -10097,12 +10104,15 @@ export function MainWindow({
         const title = documentTabsRef.current.find(tab => tab.id === tabId)?.title ?? "Untitled";
         await coordinator.openInsertTable(tabId, { title: title.slice(0, 256), rows: 6, columns: 4, headerRows: 1, preset: "three-line" });
       } else {
-        const result = applyTableCommand(documentRef.current, action.id, activeTableCell,
-          prefix => `${prefix}-${crypto.randomUUID()}`, tableCellEditRef.current);
-        if (action.id === "table.footnote.remove") {
-          tableCellEditRef.current = undefined; setTableCellEdit(undefined);
+        const editing = tableCellEditRef.current;
+        if (editing && tableCellEditorRef.current?.commit() === false) return;
+        try {
+          const result = applyTableCommand(documentRef.current, action.id, activeTableCell,
+            prefix => `${prefix}-${crypto.randomUUID()}`, editing);
+          if (result) { commitDocumentChange(result.document, result.label); setStatus(result.label); }
+        } catch (error) {
+          setStatus(tableValidationMessage(error));
         }
-        if (result) { commitDocumentChange(result.document, result.label); setStatus(result.label); }
       }
     }));
 
@@ -26483,8 +26493,7 @@ function PageSvgSurfaceContent({
           {objects.map(object => {
             const preview = previewIds.has(object.id) ? objectTransformPreview : undefined;
             const fragments = objectOverlayFragments.get(object.id)!;
-            const tableBounds = object.type === "table"
-              ? documentObjectInteractionBounds(object, page.objects) : undefined;
+            const tableLayout = object.type === "table" ? planTableLayout(object) : undefined;
             return (
               <g
                 key={object.id}
@@ -26516,11 +26525,11 @@ function PageSvgSurfaceContent({
                 ) : (
                   <>
                     {object.type === "table" || object.type === "bracket" || object.type === "reaction-arrow" ? (
-                      <rect x={tableBounds?.x ?? object.x} y={tableBounds?.y ?? object.y}
-                        width={tableBounds?.width ?? object.width}
-                        height={tableBounds?.height ?? object.height}
+                      <rect x={object.x} y={object.y}
+                        width={tableLayout?.width ?? object.width}
+                        height={tableLayout?.height ?? object.height}
                         data-table-hit-target={object.type === "table" ? object.id : undefined}
-                        transform={object.type === "table" ? undefined
+                        transform={object.type === "table" ? String(fragments[0].attrs.transform ?? "")
                           : projectedPlaneSvgTransformForObject(object)}
                         fill="transparent" pointerEvents="all" />
                     ) : null}

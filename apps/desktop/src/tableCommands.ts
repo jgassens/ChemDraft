@@ -7,6 +7,21 @@ import { deleteTableColumns, deleteTableRows, formatTableCellFormula, insertTabl
 import type { CommandSpec } from "./commands";
 import { textStylePatchForCommand } from "./commands";
 import { updateNativeTextObjectStyle } from "./documentWorkflow";
+import { ZodError } from "zod";
+import { DocumentPatchError } from "@chemdraft/chem-core";
+
+/** Validators expose issue messages to users; Error.message serializes the entire issue array. */
+export function tableValidationMessage(error: unknown): string {
+  if (error instanceof DocumentPatchError) {
+    // The patch engine wraps ZodError.message, which contains serialized issues.
+    try {
+      const issues: unknown = JSON.parse(error.message);
+      if (Array.isArray(issues) && typeof issues[0]?.message === "string") return issues[0].message;
+    } catch { /* Ordinary patch errors already carry a plain message. */ }
+  }
+  return error instanceof ZodError ? error.issues[0]?.message ?? "The table is invalid."
+    : error instanceof Error ? error.message : String(error);
+}
 
 export interface ActiveTableCell { tableId: string; rowId: string; columnId: string }
 export type ActiveTableText = ActiveTableCell
