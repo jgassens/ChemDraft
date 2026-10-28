@@ -4,7 +4,7 @@ import { snapRotationDegrees } from "./rotationSnap";
 import { snapPlacementDegrees } from "./placementSnap";
 import { projectedDoubleBondSides } from "./interaction/projectedDoubleBondSides";
 import { buildTableObject } from "@chemdraft/document-workflow-core";
-import { tableVisualBoundsForArrangement } from "@chemdraft/layout-engine";
+import { planTableLayout, tableVisualBoundsForArrangement } from "@chemdraft/layout-engine";
 import { validTableDimensions, type TableInsertDimensions } from "./dialogs/insertTableOptions";
 import {
   GRAPHIC_CORNER_RADIUS_HANDLE_SIZE_PX,
@@ -14285,8 +14285,9 @@ function transformOtherObjectAroundPointPatches(
   const newCenter = Math.abs(degrees) >= 0.05
     ? rotatePointAround(scaledCenter, center, degrees * Math.PI / 180)
     : scaledCenter;
-  const nextWidth = object.width * scaleX;
-  const nextHeight = object.height * scaleY;
+  const tableLayout = object.type === "table" ? planTableLayout(object) : undefined;
+  const nextWidth = tableLayout?.width ?? object.width * scaleX;
+  const nextHeight = tableLayout?.height ?? object.height * scaleY;
   const nextX = newCenter.x - nextWidth / 2;
   const nextY = newCenter.y - nextHeight / 2;
 

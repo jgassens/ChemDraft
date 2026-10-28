@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { TABLE_LIMITS } from "@chemdraft/chem-core";
 import { buildTableObject } from "@chemdraft/document-workflow-core";
 import { planTableLayout, transformPointForObject } from "@chemdraft/layout-engine";
-import { tableCellAtPoint, tableEditingKeyAction } from "./tableInteraction";
+import { tableCellAtPoint, tableTextAtPoint, tableEditingKeyAction } from "./tableInteraction";
 
 let id = 0;
 const table = buildTableObject({ columns: [{ widthPx: 80 }, { widthPx: 90 }], rows: [["", ""], ["", ""]] },
@@ -14,6 +14,29 @@ const decide = (key: string, row = 0, column = 0, text = "abc", start = 1, end =
   tableEditingKeyAction(table, cell(row, column), { key, ...modifiers }, text, start, end);
 
 describe("table cell editing decisions (shared by macOS and Windows)", () => {
+  it("finds captions and empty footnotes across the table width, including rotation", () => {
+    const withNotes = { ...table, rotation: 30, caption: { text: "Caption", spans: [] },
+      footnotes: [{ text: "", spans: [] }, { text: "Last", spans: [] }] };
+    const layout = planTableLayout(withNotes);
+    for (const [box, target] of [[layout.captionBox!, { tableId: table.id, kind: "caption" }],
+      ...layout.footnoteBoxes.map((box, index) =>
+        [box, { tableId: table.id, kind: "footnote", index }] as const)] as const) {
+      const point = transformPointForObject(withNotes, { x: box.x + layout.width / 2,
+        y: box.y + box.height / 2 });
+      expect(tableTextAtPoint(withNotes, point)).toEqual(target);
+      expect(tableCellAtPoint(withNotes, point)).toBeUndefined();
+    }
+  });
+  it("commits notes on Enter, cancels Escape and leaves Tab/arrows as ordinary text keys", () => {
+    for (const target of [{ tableId: table.id, kind: "caption" },
+      { tableId: table.id, kind: "footnote", index: 0 }] as const) {
+      expect(tableEditingKeyAction(table, target, { key: "Enter" }, "", 0)).toEqual({ kind: "commit" });
+      expect(tableEditingKeyAction(table, target, { key: "Escape" }, "", 0)).toEqual({ kind: "cancel" });
+      for (const key of ["Tab", "ArrowLeft", "ArrowDown"]) {
+        expect(tableEditingKeyAction(table, target, { key }, "", 0)).toEqual({ kind: "caret" });
+      }
+    }
+  });
   it("Tabs in row-major order and inserts a row only after the final cell", () => {
     expect(decide("Tab")).toEqual(move(0, 1));
     expect(decide("Tab", 0, 1)).toEqual(move(1, 0));

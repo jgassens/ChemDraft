@@ -8,6 +8,7 @@ import { createPhase4Document, insertNativeTextObject, insertTableIntoDocument, 
 import { applyTableCommand, applyTableFontCommand, createTableCommands, createTableInsertAction, parseTableInsertCommandId,
   resolveActiveTableCell, selectedTable, tableColumnAlignCommandId, tableCommandDisabledReason,
   tableInsertCommandId, tableInspectorSnapshot, tableStyleCommandId, tableRuleWidthsPt } from "./tableCommands";
+import { tableHeaderRowsCommandId } from "./tableCommands";
 import { allShellCommands, textFontCommands, textSizeCommands, textFontFamilyCommandId,
   tableRuleWidthCommandId, parseTableRuleWidthCommandId } from "./commands";
 import { parseDialogMessage } from "./dialogs/dialogProtocol";
@@ -21,6 +22,48 @@ const fixture = (): ChemDraftDocument => {
 const ids = () => { let count = 0; return (prefix: string) => `${prefix}-test-${++count}`; };
 
 describe("table commands", () => {
+  it("registers value-encoded header counts and refreshes the header rule in one labelled result", () => {
+    const document = fixture(), table = selectedTable(document)!;
+    for (let count = 0; count <= Math.min(table.rows.length, 5); count++) {
+      const id = tableHeaderRowsCommandId(count);
+      expect(id).toBe(`table.headerRows.${count}`);
+      expect(allShellCommands(document).find(command => command.id === id)?.enabled).toBe(true);
+      const result = applyTableCommand(document, id, undefined, ids())!;
+      expect(result.label).toBe("Set header rows");
+      const changed = selectedTable(result.document)!;
+      expect(changed.headerRowCount).toBe(count);
+      expect(changed.rows).toEqual(table.rows);
+      expect(changed.height).toBeCloseTo(planTableLayout(changed).height);
+      expect(result.document.selection).toEqual(document.selection);
+    }
+    const small = insertTableIntoDocument(createPhase4Document(), {
+      rows: 1, columns: 1, headerRows: 0, preset: "three-line", center: { x: 100, y: 100 }, newId: ids()
+    });
+    expect(createTableCommands(small).find(command => command.id === "table.headerRows.2"))
+      .toMatchObject({ enabled: false, disabledReason: "Not enough rows in this table" });
+    expect(applyTableCommand(small, "table.headerRows.2", undefined, ids())).toBeUndefined();
+    for (const count of [-1, 1.5, 6, NaN]) expect(() => tableHeaderRowsCommandId(count)).toThrow();
+    for (const id of ["table.headerRows.01", "table.headerRows.6", "table.headerRows.1.extra"]) {
+      expect(applyTableCommand(document, id, undefined, ids())).toBeUndefined();
+    }
+  });
+
+  it("removes the edited footnote, otherwise the last, and disables removal when empty", () => {
+    const document = fixture(), table = selectedTable(document)!;
+    table.footnotes = ["first", "middle", "last"].map(text => ({ text, spans: [] }));
+    const edited = applyTableCommand(document, "table.footnote.remove", undefined, ids(), {
+      tableId: table.id, kind: "footnote", index: 1
+    })!;
+    expect(edited.label).toBe("Edit footnotes");
+    expect(selectedTable(edited.document)!.footnotes.map(note => note.text)).toEqual(["first", "last"]);
+    const last = applyTableCommand(document, "table.footnote.remove", undefined, ids())!;
+    expect(selectedTable(last.document)!.footnotes.map(note => note.text)).toEqual(["first", "middle"]);
+    expect(table.footnotes).toHaveLength(3);
+    table.footnotes = [];
+    expect(createTableCommands(document).find(command => command.id === "table.footnote.remove"))
+      .toMatchObject({ enabled: false, disabledReason: "Table has no footnotes" });
+    expect(applyTableCommand(document, "table.footnote.remove", undefined, ids())).toBeUndefined();
+  });
   it("encodes dimensions and rejects invalid ids and bounds", () => {
     expect(tableInsertCommandId(6, 7, 1)).toBe("table.insert.r6c7h1");
     expect(createTableInsertAction(6, 7, 1).id).toBe("table.insert.r6c7h1");

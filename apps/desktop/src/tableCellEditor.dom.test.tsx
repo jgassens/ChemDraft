@@ -8,7 +8,7 @@ import {
   planTableLayout, tableCellElementId, tableVisualBoundsForArrangement, transformPointForObject
 } from "@chemdraft/layout-engine";
 import { MainWindow } from "./MainWindow";
-import { createPhase4Document } from "./documentWorkflow";
+import { createPhase4Document, insertNativeTextObject } from "./documentWorkflow";
 import { DOM_COMMAND_EVENT } from "./window-manager";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 
@@ -45,7 +45,8 @@ describe.each(["macos", "windows"] as const)("table real DOM editing (%s)", plat
     for (const method of ["setPointerCapture", "releasePointerCapture", "hasPointerCapture"]) Reflect.deleteProperty(Element.prototype, method);
     window.history.replaceState(null, "", "/"); delete window.__CHEMDRAFT_AGENT__;
   });
-  async function mount(options: { rows?: string[][]; formula?: "auto" | "off"; cellFormula?: "auto" | "off"; rotation?: number } = {}) {
+  async function mount(options: { rows?: string[][]; formula?: "auto" | "off";
+    cellFormula?: "auto" | "off"; rotation?: number; mixedSelection?: boolean } = {}) {
     let id = 0;
     const table = buildTableObject({ columns: [{ widthPx: 100, formula: options.formula }, { widthPx: 110, formula: options.formula }],
       rows: options.rows ?? [["", ""], ["", ""]], style: { fontFamily: "Georgia", fontSizePx: 18 } },
@@ -54,8 +55,13 @@ describe.each(["macos", "windows"] as const)("table real DOM editing (%s)", plat
     table.style.color = "#234567";
     if (options.cellFormula) table.rows[0].cells[0].formula = options.cellFormula;
     const empty = createPhase4Document("Table editing");
-    const doc = applyPatches(empty, [{ op: "addObject", pageId: empty.pages[0].id, object: table },
+    let doc = applyPatches(empty, [{ op: "addObject", pageId: empty.pages[0].id, object: table },
       { op: "setSelection", pageId: empty.pages[0].id, objectIds: [table.id] }]);
+    if (options.mixedSelection) {
+      doc = insertNativeTextObject(doc, { x: 400, y: 400 }, "Text");
+      doc = applyPatches(doc, [{ op: "setSelection", pageId: doc.pages[0].id,
+        objectIds: doc.pages[0].objects.map(object => object.id) }]);
+    }
     await act(async () => root.render(<MainWindow initialDocument={doc} initialActiveToolCommandId="tool.select"
       initialPaletteMode="hidden" initialCrosshairsVisible={false} initialRulersVisible={false} nativePalette shortcutPlatform={platform} />));
     const rect = { x: 20, y: -30, left: 20, top: -30, right: 836, bottom: 1026, width: 816, height: 1056, toJSON: () => ({}) };
@@ -73,6 +79,15 @@ describe.each(["macos", "windows"] as const)("table real DOM editing (%s)", plat
   }
   async function open(row = 0, column = 0) {
     const table = currentTable(), box = planTableLayout(table).cells.find(cell => cell.rowIndex === row && cell.columnIndex === column)!.box;
+    await openBox(box);
+  }
+  async function openNote(kind: "caption" | number) {
+    const layout = planTableLayout(currentTable());
+    const box = kind === "caption" ? layout.captionBox! : layout.footnoteBoxes[kind];
+    await openBox({ ...box, width: Math.max(box.width, 10) });
+  }
+  async function openBox(box: { x: number; y: number; width: number; height: number }) {
+    const table = currentTable();
     const point = transformPointForObject(table, { x: box.x + box.width / 2, y: box.y + box.height / 2 });
     const rect = page().getBoundingClientRect(), x = rect.left + point.x * scale(), y = rect.top + point.y * scale();
     const target = container.querySelector("[data-table-hit-target]")!;
@@ -98,6 +113,128 @@ describe.each(["macos", "windows"] as const)("table real DOM editing (%s)", plat
     await act(async () => window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId } })));
   }
   const cell = (row = 0, column = 0) => currentTable().rows[row].cells[column];
+
+  it("edits a caption with rich text in one undo entry and cancels Escape", async () => {
+    await mount(); await command("table.caption.toggle");
+    const before = currentTable();
+    await openNote("caption");
+    expect(editor()!.getAttribute("aria-label")).toBe("Table caption");
+    expect(editor()!.style.fontSize).toBe(`${18 * 0.9 * scale()}px`);
+    await type("Measured yields"); await command("text.italic");
+    await key("Enter");
+    const edited = currentTable();
+    expect(editor()).toBeNull();
+    expect(edited.caption?.text).toBe("Measured yields");
+    expect(edited.caption?.spans.some(span => span.style.fontStyle === "italic")).toBe(true);
+    expect(edited.rows).toEqual(before.rows);
+    await command("edit.undo"); expect(currentTable()).toEqual(before);
+    await command("edit.redo"); expect(currentTable()).toEqual(edited);
+    await openNote("caption"); await type("Discard"); await key("Escape");
+    expect(currentTable()).toEqual(edited);
+    await command("edit.undo"); expect(currentTable()).toEqual(before);
+  });
+
+  it("edits empty footnotes, leaves Tab/arrows to the textarea and commits on click-outside", async () => {
+    await mount(); await command("table.footnote.add");
+    const before = currentTable();
+    await openNote(0);
+    expect(editor()!.getAttribute("aria-label")).toBe("Table footnote");
+    expect((await key("Tab")).defaultPrevented).toBe(false);
+    expect((await key("ArrowLeft")).defaultPrevented).toBe(false);
+    await type("CH2Cl2"); await key("Enter", { shiftKey: true }); await type("CH2Cl2\nConditions");
+    await command("text.bold"); await pointer(page(), "pointerdown", 600, 600);
+    const edited = currentTable();
+    expect(editor()).toBeNull();
+    expect(edited.footnotes[0].text).toBe("CH2Cl2\nConditions");
+    expect(edited.footnotes[0].spans.some(span => span.style.fontWeight === 700)).toBe(true);
+    expect(edited.footnotes[0].spans.every(span => span.script === "normal")).toBe(true);
+    await command("edit.undo"); expect(currentTable()).toEqual(before);
+    await command("edit.redo"); expect(currentTable()).toEqual(edited);
+    await openNote(0); await type("Discard"); await key("Escape");
+    expect(currentTable()).toEqual(edited);
+  });
+
+  it("removes the footnote being edited through the registry, otherwise the last", async () => {
+    await mount(); await command("table.footnote.add"); await command("table.footnote.add");
+    await openNote(0); await type("First"); await key("Enter");
+    await openNote(1); await type("Last"); await key("Enter");
+    const before = currentTable();
+    await openNote(0); await type("Uncommitted"); await command("table.footnote.remove");
+    expect(editor()).toBeNull();
+    expect(currentTable().footnotes.map(note => note.text)).toEqual(["Last"]);
+    await command("edit.undo"); expect(currentTable()).toEqual(before);
+    await command("table.footnote.remove");
+    expect(currentTable().footnotes.map(note => note.text)).toEqual(["First"]);
+    await command("table.footnote.remove"); expect(currentTable().footnotes).toEqual([]);
+    await command("table.footnote.remove"); expect(currentTable().footnotes).toEqual([]);
+  });
+
+  it("reports unavailable Insert Table in the web build without throwing", async () => {
+    await mount(); const before = snapshot().document;
+    await command("table.insertDialog");
+    expect(container.textContent).toContain("Insert Table could not open: the dialog host is unavailable.");
+    expect(snapshot().document).toEqual(before);
+  });
+
+  it("adds a header rule to a table with zero header rows through one undoable command", async () => {
+    await mount(); const before = currentTable();
+    expect(before.headerRowCount).toBe(0);
+    expect(planTableLayout(before).rules).toHaveLength(2);
+    await command("table.headerRows.1");
+    const changed = currentTable(), layout = planTableLayout(changed);
+    expect(changed.headerRowCount).toBe(1);
+    expect(layout.rules).toHaveLength(3);
+    expect(layout.rules[1].y1).toBeCloseTo(layout.rows[0].y + layout.rows[0].height);
+    await command("edit.undo"); expect(currentTable()).toEqual(before);
+    await command("edit.redo"); expect(currentTable()).toEqual(changed);
+  });
+
+  it("reports that tables keep their size after scaling a mixed selection", async () => {
+    await mount({ mixedSelection: true });
+    const before = snapshot().document, original = currentTable();
+    const handle = container.querySelector(
+      '[data-group-selection] [data-object-resize-corner="bottom-right"]')!;
+    expect(handle).not.toBeNull();
+    const rect = page().getBoundingClientRect();
+    const x = rect.left + 500 * scale(), y = rect.top + 450 * scale();
+    await pointer(handle, "pointerdown", x, y);
+    await pointer(page(), "pointermove", x + 100, y + 80);
+    await pointer(page(), "pointerup", x + 100, y + 80);
+    expect(currentTable().width).toBeCloseTo(original.width);
+    expect(currentTable().height).toBeCloseTo(original.height);
+    expect(currentTable().x).not.toBeCloseTo(original.x);
+    expect(container.textContent).toContain("Tables keep their size when scaled");
+    await command("edit.undo"); expect(snapshot().document).toEqual(before);
+  });
+
+  it("offers table row/column commands and keyboard-reachable alignment in the context menu", async () => {
+    await mount();
+    await key("F10", { shiftKey: true }, canvas());
+    const menu = () => container.querySelector<HTMLElement>('[aria-label="Object layer options"]')!;
+    expect(menu()).not.toBeNull();
+    for (const id of ["table.row.insertAbove", "table.row.insertBelow", "table.row.delete",
+      "table.column.insertLeft", "table.column.insertRight", "table.column.delete"]) {
+      expect(menu().querySelector(`[data-command-id="${id}"]`)).not.toBeNull();
+    }
+    const align = [...menu().querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => button.textContent?.includes("Align Column"))!;
+    await act(async () => align.focus());
+    await key("ArrowRight", {}, align);
+    const left = menu().querySelector<HTMLButtonElement>('[data-command-id="table.column.align.left"]')!;
+    expect(document.activeElement).toBe(left);
+    await key("ArrowDown", {}, left);
+    expect(document.activeElement?.textContent).toBe("Centre");
+    await key("ArrowDown", {}, document.activeElement!);
+    await key("ArrowDown", {}, document.activeElement!);
+    await key("Enter", {}, document.activeElement!);
+    expect(currentTable().columns[0].align).toBe("decimal");
+    expect(menu()).toBeNull();
+    await key("F10", { shiftKey: true }, canvas());
+    const insert = menu().querySelector<HTMLButtonElement>('[data-command-id="table.row.insertAbove"]')!;
+    await act(async () => insert.focus()); await key("Enter", {}, insert);
+    expect(currentTable().rows).toHaveLength(3);
+    await command("edit.undo"); expect(currentTable().rows).toHaveLength(2);
+  });
 
   it("opens only one cell, commits typing then formula as two labelled entries, and restores exact undo/redo", async () => {
     await mount(); const initial = currentTable(); await open();

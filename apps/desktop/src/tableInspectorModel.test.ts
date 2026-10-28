@@ -18,6 +18,23 @@ const control = (model: TableInspectorModel, sectionId: string, id: string): Tab
 };
 
 describe("table inspector model", () => {
+  it("shows header counts with selected state and row-limit reasons, and removable footnotes", () => {
+    const model = createTableInspectorModel({ ...snapshot(), rowCount: 2, headerRowCount: 1,
+      footnoteCount: 0 }, id => id === "table.headerRows.0"
+      ? { enabled: false, disabledReason: "Finish editing first" } : { enabled: true })!;
+    const rows = control(model, "header", "headerRows");
+    if (rows.kind !== "segmented") throw new Error("expected segmented");
+    expect(rows.choices.map(choice => choice.commandId))
+      .toEqual([0, 1, 2, 3].map(count => `table.headerRows.${count}`));
+    expect(rows.choices.find(choice => choice.selected)?.commandId).toBe("table.headerRows.1");
+    expect(rows.choices[0].disabledReason).toBe("Finish editing first");
+    expect(rows.choices[2].disabledReason).toBeUndefined();
+    expect(rows.choices[3].disabledReason).toBe("Not enough rows in this table");
+    expect(control(model, "footnotes", "removeFootnote"))
+      .toMatchObject({ commandId: "table.footnote.remove", disabledReason: "Table has no footnotes" });
+    const withNotes = createTableInspectorModel(snapshot())!;
+    expect(control(withNotes, "footnotes", "removeFootnote").disabledReason).toBeUndefined();
+  });
   it("is absent when no table is selected", () => {
     expect(tableInspectorSnapshot(createPhase4Document())).toBeUndefined();
     expect(createTableInspectorModel(undefined)).toBeUndefined();

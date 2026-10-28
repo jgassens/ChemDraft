@@ -9,8 +9,8 @@ import { symbolGlyphForToolCommand, updateNativeTextObjectText,
   updateNativeTextObjectScriptRange, updateNativeTextObjectStyleRange } from "./documentWorkflow";
 import { detectDesktopShortcutPlatform, isBrowserReloadChord } from "./keyboardShortcuts";
 import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
-import type { ActiveTableCell } from "./tableCommands";
-import { tableEditingKeyAction, type TableEditingAction } from "./tableInteraction";
+import type { ActiveTableText } from "./tableCommands";
+import { tableEditingContent, tableEditingKeyAction, type TableEditingAction } from "./tableInteraction";
 
 export interface TableCellEditorHandle {
   applyCommand(commandId: string): boolean;
@@ -20,7 +20,7 @@ export interface TableCellEditorHandle {
 export const TableCellEditor = forwardRef<TableCellEditorHandle, {
   document: ChemDraftDocument;
   table: TableObject;
-  cell: ActiveTableCell;
+  cell: ActiveTableText;
   scale: number;
   platform?: ShortcutPlatform;
   renderText(object: TextObject): ReactNode;
@@ -30,12 +30,16 @@ export const TableCellEditor = forwardRef<TableCellEditorHandle, {
   onError(message: string): void;
 }>(function TableCellEditor({ document: nativeDocument, table, cell, scale, platform = detectDesktopShortcutPlatform(),
   renderText, resolveShortcut, onFinish, onHistoryCommand, onError }, ref) {
-  const row = table.rows.findIndex(item => item.id === cell.rowId);
-  const column = table.columns.findIndex(item => item.id === cell.columnId);
-  const box = planTableLayout(table).cells.find(item => item.rowIndex === row && item.columnIndex === column)!.box;
+  const isNote = "kind" in cell;
+  const row = isNote ? -1 : table.rows.findIndex(item => item.id === cell.rowId);
+  const column = isNote ? -1 : table.columns.findIndex(item => item.id === cell.columnId);
+  const { box, value } = tableEditingContent(table, cell)!;
+  const editorLabel = isNote ? cell.kind === "caption" ? "Table caption" : "Table footnote" : "Table cell";
   const [draft, setDraft] = useState<TextObject>(() => ({ type: "text", id: "table-cell-draft",
-    x: box.x, y: box.y, width: box.width, height: box.height, rotation: 0, style: { ...table.style },
-    text: table.rows[row].cells[column].text, spans: table.rows[row].cells[column].spans }));
+    x: box.x, y: box.y, width: box.width, height: box.height, rotation: 0,
+    style: { ...table.style, ...(isNote ? {
+      fontSizePx: nativeTextStyleFromObjectStyle(table.style).fontSizePx * 0.9
+    } : {}) }, text: value.text, spans: value.spans }));
   const draftRef = useRef(draft);
   const initialValue = useRef(draft);
   const editorRef = useRef<HTMLTextAreaElement>(null);
@@ -173,15 +177,17 @@ export const TableCellEditor = forwardRef<TableCellEditorHandle, {
     };
   }, []);
 
-  const textStyle = nativeTextStyleFromObjectStyle(table.style);
-  const padding = table.tableStyle.cellPaddingPx;
+  const textStyle = nativeTextStyleFromObjectStyle(draft.style);
+  const padding = isNote ? { x: 0, y: 0 } : table.tableStyle.cellPaddingPx;
   const textCss: CSSProperties = { fontFamily: textStyle.fontFamily, fontSize: textStyle.fontSizePx * scale,
-    fontWeight: row < table.headerRowCount && table.tableStyle.headerBold ? Math.max(700, textStyle.fontWeight) : textStyle.fontWeight,
+    fontWeight: !isNote && row < table.headerRowCount && table.tableStyle.headerBold
+      ? Math.max(700, textStyle.fontWeight) : textStyle.fontWeight,
     fontStyle: textStyle.fontStyle, color: textStyle.color, lineHeight: textStyle.lineHeight,
     textDecoration: textStyle.textDecoration, letterSpacing: textStyle.letterSpacingPx * scale,
-    textAlign: table.columns[column].align === "right" ? "right"
+    textAlign: isNote ? "left" : table.columns[column].align === "right" ? "right"
       : ["center", "decimal"].includes(table.columns[column].align) ? "center" : "left" };
-  return <div data-table-cell-editor={table.id} data-row-id={cell.rowId} data-column-id={cell.columnId}
+  return <div data-table-cell-editor={table.id} data-row-id={isNote ? undefined : cell.rowId}
+    data-column-id={isNote ? undefined : cell.columnId}
     style={{ position: "absolute", left: box.x * scale, top: box.y * scale, width: box.width * scale,
       height: box.height * scale, transform: `rotate(${table.rotation}deg)`,
       transformOrigin: `${(table.x + table.width / 2 - box.x) * scale}px ${(table.y + table.height / 2 - box.y) * scale}px`,
@@ -191,7 +197,7 @@ export const TableCellEditor = forwardRef<TableCellEditorHandle, {
       top: padding.y * scale, bottom: padding.y * scale, overflow: "hidden", whiteSpace: "pre", pointerEvents: "none" }}>
       <div ref={previewRef} data-table-cell-preview>{renderText(draft)}</div>
     </div>
-    <textarea ref={editorRef} aria-label="Table cell" spellCheck={false} wrap="off"
+    <textarea ref={editorRef} aria-label={editorLabel} spellCheck={false} wrap="off"
       maxLength={TABLE_LIMITS.maxCellCharacters} value={draft.text}
       style={{ ...textCss, position: "absolute", inset: 0, width: "100%", height: "100%", boxSizing: "border-box",
         border: 0, outline: "1px solid var(--cd-accent, #1d7f68)", borderRadius: 0, resize: "none",

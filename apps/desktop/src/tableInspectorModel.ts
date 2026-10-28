@@ -1,4 +1,5 @@
 import { TABLE_LIMITS } from "@chemdraft/chem-core";
+import { tableHeaderRowsCommandId } from "./tableCommands";
 import { tableColumnAlignCommandId, tableStyleCommandId, tableRuleWidthCommandId, tableRuleWidthsPt, type tableInspectorSnapshot } from "./tableCommands";
 import { textFontCommands, textSizeCommands, textFontFamilyCommandId } from "./commands";
 
@@ -105,7 +106,12 @@ export function createTableInspectorModel(
   const header: TableInspectorSection = {
     id: "header",
     title: "Header",
-    controls: [withReason({
+    controls: [{
+      kind: "segmented", id: "headerRows", label: `Header rows (${snapshot.headerRowCount})`,
+      choices: Array.from({ length: 4 }, (_, count) => choice(String(count), String(count),
+        tableHeaderRowsCommandId(count), snapshot.headerRowCount === count,
+        count > snapshot.rowCount ? "Not enough rows in this table" : undefined))
+    }, withReason({
       kind: "toggle", id: "headerBold", label: "Bold header", commandId: "table.header.bold.toggle", pressed: snapshot.headerBold
     }, reasonFor("table.header.bold.toggle"))]
   };
@@ -157,7 +163,11 @@ export function createTableInspectorModel(
     title: "Footnotes",
     controls: [
       { kind: "readout", id: "footnoteCount", label: "Footnotes", value: String(snapshot.footnoteCount) },
-      withReason({ kind: "button", id: "addFootnote", label: "Add footnote", commandId: "table.footnote.add" }, footnoteReason)
+      withReason({ kind: "button", id: "addFootnote", label: "Add footnote",
+        commandId: "table.footnote.add" }, footnoteReason),
+      withReason({ kind: "button", id: "removeFootnote", label: "Remove footnote",
+        commandId: "table.footnote.remove" }, snapshot.footnoteCount === 0
+        ? "Table has no footnotes" : reasonFor("table.footnote.remove"))
     ]
   };
 

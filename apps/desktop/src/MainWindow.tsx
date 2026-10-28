@@ -1,6 +1,7 @@
 import { applyTableCommand, applyTableFontCommand, applyTableObjectEdit, createTableCommands, createTableInsertAction, parseTableInsertCommandId, resolveActiveTableCell, selectedTable, tableInsertCommandId, tableInspectorSnapshot, type ActiveTableCell, type TableInsertDimensions } from "./tableCommands";
 import { TableCellEditor, TableColumnResizers, type TableCellEditorHandle } from "./tableCellEditor";
-import { tableCellAtPoint, type TableEditingAction } from "./tableInteraction";
+import { tableEditingContent, tableTextAtPoint, type TableEditingAction } from "./tableInteraction";
+import type { ActiveTableText } from "./tableCommands";
 import { tableCellElementId } from "@chemdraft/layout-engine";
 import { insertTableIntoDocument } from "./documentWorkflow";
 import { pasteTableIntoDocument, readTableClipboardPaste, tableClipboardPasteDecision, tableSelectionClipboardItems } from "./tableClipboardWiring";
@@ -109,7 +110,8 @@ import {
   type TableRichText,
   type TextSpan
 } from "@chemdraft/chem-core";
-import { tryNativeSingleBondGraphSmiles, setTableCell, formatTableCellFormula, insertTableRows } from "@chemdraft/document-workflow-core";
+import { tryNativeSingleBondGraphSmiles, setTableCell, formatTableCellFormula, insertTableRows,
+  setTableCaption, setTableFootnotes } from "@chemdraft/document-workflow-core";
 import { atomLabelDraftDocumentUnchanged, createAtomLabelDraftRollback, documentOwnsAtomLabelDraft, recordAtomLabelDraftRollback, restoreAtomLabelDraft, type AtomLabelDraftState } from "./atomLabelDraft";
 import type { EditorSaveResult } from "@chemdraft/editor-adapter";
 import { sha256Utf8Hex } from "@chemdraft/cdx-compat";
@@ -1626,7 +1628,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.28.15.25-codex";
+const CURRENT_BUILD_STAMP = "10.28.15.50-codex";
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -2398,7 +2400,7 @@ export function MainWindow({
   const finalizedAtomLabelEditRef = useRef<AtomLabelEditState | undefined>(undefined);
   const [textStyleDefaults, setTextStyleDefaults] = useState<NativeTextStyle>(DefaultNativeTextStyle);
   const [activeTableCellState, setActiveTableCell] = useState<ActiveTableCell>();
-  const [tableCellEdit, setTableCellEdit] = useState<ActiveTableCell>();
+  const [tableCellEdit, setTableCellEdit] = useState<ActiveTableText>();
   const tableCellEditRef = useRef(tableCellEdit); tableCellEditRef.current = tableCellEdit;
   const tableCellEditorRef = useRef<TableCellEditorHandle>(null);
   const [tableResizePreview, setTableResizePreview] = useState<TableObject>();
@@ -2409,7 +2411,8 @@ export function MainWindow({
   }, [activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId]);
   useEffect(() => {
     if (tableCellEdit && (tableCellEdit.tableId !== activeTableCell?.tableId ||
-      tableCellEdit.rowId !== activeTableCell?.rowId || tableCellEdit.columnId !== activeTableCell?.columnId)) {
+      (!("kind" in tableCellEdit) && (tableCellEdit.rowId !== activeTableCell?.rowId ||
+        tableCellEdit.columnId !== activeTableCell?.columnId)))) {
       setTableCellEdit(undefined);
     }
     setTableResizePreview(undefined);
@@ -7111,17 +7114,17 @@ export function MainWindow({
     startTextObjectEdit(objectId);
   }, [activeToolState.activeCommandId, startTextObjectEdit]);
 
-  const startTableCellEdit = useCallback((table: TableObject, cell: ActiveTableCell) => {
+  const startTableCellEdit = useCallback((table: TableObject, cell: ActiveTableText) => {
     clearScheduledTextEditorFocus();
     setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
     setActiveEditorObjectId(undefined);
     replacePresentDocument(current => selectDocumentObject(current, table.id));
-    setActiveTableCell(cell);
+    if (!("kind" in cell)) setActiveTableCell(cell);
     tableCellEditRef.current = cell;
     setTableCellEdit(cell);
     scheduleInlineEditorFocus(() => pageRef.current?.querySelector<HTMLTextAreaElement>("[data-table-cell-editor] textarea")?.focus({ preventScroll: true }));
-    setStatus("Editing table cell");
+    setStatus("kind" in cell ? `Editing table ${cell.kind}` : "Editing table cell");
   }, [clearScheduledTextEditorFocus, replacePresentDocument, scheduleInlineEditorFocus]);
 
   const commitTableObject = useCallback((table: TableObject, label: string) => {
@@ -7133,6 +7136,20 @@ export function MainWindow({
     const cell = tableCellEditRef.current;
     let table = selectedTable(documentRef.current);
     if (!cell || !table || table.id !== cell.tableId) return;
+    if ("kind" in cell) {
+      const original = tableEditingContent(table, cell)?.value;
+      if (original && action.kind !== "cancel" && JSON.stringify(original) !== JSON.stringify(value)) {
+        const edit = cell.kind === "caption" ? setTableCaption(table, value)
+          : setTableFootnotes(table, table.footnotes.map((note, index) =>
+            index === cell.index ? value : note));
+        commitTableObject(edit.table, edit.label);
+      }
+      clearScheduledTextEditorFocus();
+      tableCellEditRef.current = undefined;
+      setTableCellEdit(undefined);
+      canvasRegionRef.current?.focus({ preventScroll: true });
+      return;
+    }
     const row = table.rows.find(item => item.id === cell.rowId);
     const column = table.columns.findIndex(item => item.id === cell.columnId);
     if (!row || column < 0) return;
@@ -7167,7 +7184,7 @@ export function MainWindow({
     const table = documentRef.current.pages[0].objects.find(object => object.id === owner);
     const rect = pageRef.current?.getBoundingClientRect();
     if (table?.type !== "table" || !rect) return;
-    const cell = tableCellAtPoint(table, { x: (event.clientX - rect.left) / viewportRef.current.scale,
+    const cell = tableTextAtPoint(table, { x: (event.clientX - rect.left) / viewportRef.current.scale,
       y: (event.clientY - rect.top) / viewportRef.current.scale });
     if (!cell) return;
     event.preventDefault(); event.stopPropagation(); startTableCellEdit(table, cell);
@@ -10073,12 +10090,18 @@ export function MainWindow({
     tableActions.forEach(action => register(action, async () => {
       if (action.id === "table.insertDialog") {
         const coordinator = dialogCoordinatorRef.current;
-        if (!coordinator) throw new Error("Insert Table could not open: the native dialog host is unavailable.");
+        if (!coordinator) {
+          setStatus("Insert Table could not open: the dialog host is unavailable."); return;
+        }
         const tabId = activeDocumentTabIdRef.current;
         const title = documentTabsRef.current.find(tab => tab.id === tabId)?.title ?? "Untitled";
         await coordinator.openInsertTable(tabId, { title: title.slice(0, 256), rows: 6, columns: 4, headerRows: 1, preset: "three-line" });
       } else {
-        const result = applyTableCommand(documentRef.current, action.id, activeTableCell, prefix => `${prefix}-${crypto.randomUUID()}`);
+        const result = applyTableCommand(documentRef.current, action.id, activeTableCell,
+          prefix => `${prefix}-${crypto.randomUUID()}`, tableCellEditRef.current);
+        if (action.id === "table.footnote.remove") {
+          tableCellEditRef.current = undefined; setTableCellEdit(undefined);
+        }
         if (result) { commitDocumentChange(result.document, result.label); setStatus(result.label); }
       }
     }));
@@ -16405,7 +16428,9 @@ export function MainWindow({
             ? "Rotated selection"
             : groupTransform.mode === "projected-plane-tilt"
               ? "3D rotate applied"
-              : "Resized selection"
+              : groupTransform.objectIds.some(id =>
+                findDocumentObject(groupTransform.startDocument, id)?.type === "table")
+                ? "Tables keep their size when scaled" : "Resized selection"
         );
       }
       groupTransformDragRef.current = null;
@@ -16517,7 +16542,7 @@ export function MainWindow({
         const changed = commitObjectResize(objectResizeDrag, point);
         const object = findDocumentObject(documentRef.current, objectResizeDrag.objectId);
         const targetLabel = objectResizeDrag.target ? "selected molecule fragment" : documentObjectTransformLabel(object);
-        setStatus(changed
+        setStatus(object?.type === "table" ? "Tables keep their size when scaled" : changed
           ? objectResizeDrag.stretching ? `Stretched ${targetLabel}` : `Resized ${targetLabel}`
           : `${capitalizeLabel(targetLabel)} size unchanged`);
       }
@@ -19335,7 +19360,7 @@ export function MainWindow({
         const changed = commitObjectResize(objectResizeDrag, point);
         const object = findDocumentObject(documentRef.current, objectResizeDrag.objectId);
         const label = documentObjectTransformLabel(object);
-        setStatus(changed
+        setStatus(object?.type === "table" ? "Tables keep their size when scaled" : changed
           ? objectResizeDrag.stretching ? `Stretched ${label}` : `Resized ${label}`
           : `${capitalizeLabel(label)} size unchanged`);
       }
@@ -20376,14 +20401,13 @@ export function MainWindow({
                   objectOverlayFragments={objectOverlayFragments}
                   objectTransformPreview={objectTransformPreview}
                   spinningObjectId={activeSpin3dState?.objectId}
-                  editingTableCell={tableCellEdit}
+                  editingTableCell={tableCellEdit && !("kind" in tableCellEdit) ? tableCellEdit : undefined}
                 />
                 <PageInteractionPortal target={interactionLayer}>
                 {(() => {
                   const table = selectedTable(document);
                   if (!table || activeToolState.activeCommandId !== "tool.select") return null;
-                  const editingCell = tableCellEdit?.tableId === table.id &&
-                    table.rows.some(row => row.id === tableCellEdit.rowId) && table.columns.some(column => column.id === tableCellEdit.columnId)
+                  const editingCell = tableCellEdit && tableEditingContent(table, tableCellEdit)
                     ? tableCellEdit : undefined;
                   return <>
                     <TableColumnResizers key={`${activeDocumentTabId}:${table.id}`} table={tableResizePreview ?? table} scale={viewport.scale}
@@ -20883,6 +20907,7 @@ export function MainWindow({
         }} /> : null}
       {objectContextMenu ? (
         <ObjectLayerContextMenu
+          tableActions={selectedTable(document) ? tableActions : []}
           layoutActions={compoundLayoutsEnabled ? layerActions.filter(action => isCompoundLayoutCommand(action.id)) : []}
           objectId={objectContextMenu.objectId}
           objectIndex={activePage.objects.findIndex((object) => object.id === objectContextMenu.objectId)}
@@ -24129,6 +24154,7 @@ function ArtStyleQaLayer({
 
 export function ObjectLayerContextMenu({
   layoutActions = [],
+  tableActions = [],
   objectId,
   objectIndex,
   objectCount,
@@ -24142,6 +24168,7 @@ export function ObjectLayerContextMenu({
   onDismiss = () => {}
 }: {
   layoutActions?: readonly CommandSpec[];
+  tableActions?: readonly CommandSpec[];
   objectId: string;
   objectIndex: number;
   objectCount: number;
@@ -24166,6 +24193,23 @@ export function ObjectLayerContextMenu({
   // the right edge would clip it and slides up when the bottom would.
   const [copyAsOpen, setCopyAsOpen] = useState(false);
   const [arrangeOpen, setArrangeOpen] = useState(false);
+  const [tableAlignOpen, setTableAlignOpen] = useState(false);
+  const tableAlignParentRef = useRef<HTMLDivElement | null>(null);
+  const tableAlignFlyoutRef = useRef<HTMLDivElement | null>(null);
+  const [tableAlignStyle, setTableAlignStyle] = useState<CSSProperties>({});
+  useLayoutEffect(() => {
+    const parent = tableAlignParentRef.current, flyout = tableAlignFlyoutRef.current;
+    if (!tableAlignOpen || !parent || !flyout) return;
+    const rect = parent.getBoundingClientRect(), menuRect = flyout.getBoundingClientRect();
+    setTableAlignStyle({
+      ...(rect.right + menuRect.width + 8 > window.innerWidth ? { right: "100%" } : { left: "100%" }),
+      top: `${-Math.max(0, rect.top + menuRect.height + 8 - window.innerHeight)}px`
+    });
+  }, [tableAlignOpen, clampedPosition]);
+  const tableRowColumnIds = ["table.row.insertAbove", "table.row.insertBelow", "table.row.delete",
+    "table.column.insertLeft", "table.column.insertRight", "table.column.delete"];
+  const tableRowColumnActions = tableActions.filter(action => tableRowColumnIds.includes(action.id));
+  const tableAlignActions = tableActions.filter(action => action.id.startsWith("table.column.align."));
   const arrangeParentRef = useRef<HTMLDivElement | null>(null);
   const arrangeFlyoutRef = useRef<HTMLDivElement | null>(null);
   const pendingSubmenuFocusRef = useRef(false);
@@ -24207,7 +24251,7 @@ export function ObjectLayerContextMenu({
   }, [copyAsOpen, clampedPosition]);
 
   const onMenuKeyDown = useCanvasContextMenuKeyboard(menuRef, onDismiss, onFocusReturn, pendingSubmenuFocusRef, () => {
-    setArrangeOpen(false); setCopyAsOpen(false);
+    setArrangeOpen(false); setCopyAsOpen(false); setTableAlignOpen(false);
   });
   return (
     <div
@@ -24226,14 +24270,48 @@ export function ObjectLayerContextMenu({
         event.stopPropagation();
       }}
     >
+      {tableRowColumnActions.map(action => (
+        <button type="button" role="menuitem" className="object-context-menu-item" key={action.id}
+          data-command-id={action.id} disabled={action.enabled === false} title={action.disabledReason}
+          onClick={() => onInvoke(action.id)}>{action.title}</button>
+      ))}
+      {tableAlignActions.length > 0 ? <>
+        <div className="object-context-menu-submenu" ref={tableAlignParentRef}
+          onPointerEnter={() => { setArrangeOpen(false); setCopyAsOpen(false); setTableAlignOpen(true); }}
+          onPointerLeave={() => setTableAlignOpen(false)}>
+          <button type="button" role="menuitem" aria-haspopup="menu" aria-expanded={tableAlignOpen}
+            aria-controls={tableAlignOpen ? "canvas-table-align-menu" : undefined}
+            disabled={tableAlignActions.every(action => action.enabled === false)}
+            className="object-context-menu-item object-context-menu-submenu-trigger"
+            onClick={() => {
+              setArrangeOpen(false); setCopyAsOpen(false); setTableAlignOpen(open => !open);
+            }}>
+            <span>Align Column</span><span aria-hidden="true">›</span>
+          </button>
+          {tableAlignOpen ? <div id="canvas-table-align-menu" role="menu" aria-label="Align Column"
+            className="object-context-menu object-context-menu-flyout"
+            ref={tableAlignFlyoutRef} style={tableAlignStyle}>
+            {tableAlignActions.map(action => <button type="button" role="menuitem" key={action.id}
+              className="object-context-menu-item" data-command-id={action.id}
+              disabled={action.enabled === false} title={action.disabledReason}
+              onClick={() => onInvoke(action.id)}>
+              {({ left: "Left", center: "Centre", right: "Right", decimal: "Decimal" } as
+                Record<string, string>)[action.id.split(".").at(-1)!]}
+            </button>)}
+          </div> : null}
+        </div>
+        <div className="object-context-menu-separator" role="separator" />
+      </> : null}
       {layoutActions.length > 0 ? (
         <div className="object-context-menu-submenu" ref={arrangeParentRef}
-          onPointerEnter={() => { setCopyAsOpen(false); setArrangeOpen(true); }}
+          onPointerEnter={() => { setTableAlignOpen(false); setCopyAsOpen(false); setArrangeOpen(true); }}
           onPointerLeave={() => setArrangeOpen(false)}>
           <button type="button" role="menuitem" aria-haspopup="menu" aria-expanded={arrangeOpen}
             aria-controls={arrangeOpen ? "canvas-arrange-menu" : undefined}
             className="object-context-menu-item object-context-menu-submenu-trigger" data-context-submenu="arrange"
-            onClick={() => { setCopyAsOpen(false); setArrangeOpen(open => !open); }}>
+            onClick={() => {
+              setTableAlignOpen(false); setCopyAsOpen(false); setArrangeOpen(open => !open);
+            }}>
             <span>Arrange</span><span aria-hidden="true" className="object-context-menu-submenu-chevron">›</span>
           </button>
           {arrangeOpen ? (
@@ -24273,7 +24351,7 @@ export function ObjectLayerContextMenu({
       <div
         className="object-context-menu-submenu"
         ref={copyAsParentRef}
-        onPointerEnter={() => { setArrangeOpen(false); setCopyAsOpen(true); }}
+        onPointerEnter={() => { setTableAlignOpen(false); setArrangeOpen(false); setCopyAsOpen(true); }}
         onPointerLeave={() => setCopyAsOpen(false)}
       >
         <button
@@ -24284,7 +24362,7 @@ export function ObjectLayerContextMenu({
           aria-controls={copyAsOpen ? "canvas-copy-as-menu" : undefined}
           className="object-context-menu-item object-context-menu-submenu-trigger"
           data-context-submenu="copy-as"
-          onClick={() => { setArrangeOpen(false); setCopyAsOpen((open) => !open); }}
+          onClick={() => { setTableAlignOpen(false); setArrangeOpen(false); setCopyAsOpen((open) => !open); }}
         >
           <span>Copy As</span>
           <span aria-hidden="true" className="object-context-menu-submenu-chevron">›</span>

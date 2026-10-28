@@ -96,6 +96,25 @@ describe("PaletteWindow table inspector", () => {
     });
   };
 
+  it("routes header counts and footnote removal and disables unavailable choices with reasons", async () => {
+    await mount("core.drawnStructureSettings"); await publishTableCommandSpecs();
+    await broadcast({ ...tableSnapshot(), headerRowCount: 1, rowCount: 2, footnoteCount: 1 });
+    const header = container.querySelector('[data-command-id="table.headerRows.1"]')!;
+    expect(header.getAttribute("aria-pressed")).toBe("true");
+    const unavailable = container.querySelector<HTMLButtonElement>('[data-command-id="table.headerRows.3"]')!;
+    expect(unavailable.disabled).toBe(true);
+    expect(unavailable.title).toBe("Not enough rows in this table");
+    await click('[data-command-id="table.headerRows.3"]');
+    await click('[data-command-id="table.headerRows.2"]');
+    await click('[data-command-id="table.footnote.remove"]');
+    expect(routed).toEqual(["table.headerRows.2", "table.footnote.remove"]);
+    await broadcast({ ...tableSnapshot(), footnoteCount: 0 });
+    const remove = container.querySelector<HTMLButtonElement>('[data-command-id="table.footnote.remove"]')!;
+    expect(remove.disabled).toBe(true); expect(remove.title).toBe("Table has no footnotes");
+    await click('[data-command-id="table.footnote.remove"]');
+    expect(routed).toEqual(["table.headerRows.2", "table.footnote.remove"]);
+  });
+
   it("renders the Table section only while a table is selected", async () => {
     await mount("core.drawnStructureSettings");
     await broadcast(undefined);

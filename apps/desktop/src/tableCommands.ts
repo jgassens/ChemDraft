@@ -3,12 +3,23 @@ export { validTableDimensions, type TableInsertDimensions } from "./dialogs/inse
 import { TABLE_LIMITS, applyPatches, nativeTextStyleFromObjectStyle, type ChemDraftDocument, type TableObject } from "@chemdraft/chem-core";
 import { deleteTableColumns, deleteTableRows, formatTableCellFormula, insertTableColumns, insertTableRows,
   setTableCaption, setTableCell, setTableCellFormulaRule, setTableColumnAlign, setTableColumnWidth,
-  setTableFootnotes, setTableStyle } from "@chemdraft/document-workflow-core";
+  setTableFootnotes, setTableHeaderRowCount, setTableStyle } from "@chemdraft/document-workflow-core";
 import type { CommandSpec } from "./commands";
 import { textStylePatchForCommand } from "./commands";
 import { updateNativeTextObjectStyle } from "./documentWorkflow";
 
 export interface ActiveTableCell { tableId: string; rowId: string; columnId: string }
+export type ActiveTableText = ActiveTableCell
+  | { tableId: string; kind: "caption" }
+  | { tableId: string; kind: "footnote"; index: number };
+export function tableHeaderRowsCommandId(count: number): string {
+  if (!Number.isInteger(count) || count < 0 || count > 5) throw new Error("Invalid table header rows");
+  return `table.headerRows.${count}`;
+}
+function headerRowsForCommand(id: string): number | undefined {
+  const match = /^table\.headerRows\.([0-5])$/.exec(id);
+  return match ? Number(match[1]) : undefined;
+}
 export function tableInsertCommandId(rows: number, columns: number, headerRows: number): string {
   if (!validTableDimensions({ rows, columns, headerRows })) throw new Error("Invalid table dimensions");
   return `table.insert.r${rows}c${columns}h${headerRows}`;
@@ -54,11 +65,15 @@ const editTitles = {
   "table.column.autoFit": "Auto-fit Column", "table.style.threeLine": "Three-line Table", "table.style.grid": "Grid Table",
   "table.column.formula.auto": "Automatic Column Formulae", "table.column.formula.off": "Disable Column Formulae",
   "table.header.bold.toggle": "Toggle Bold Headers", "table.caption.toggle": "Toggle Caption", "table.footnote.add": "Add Footnote",
-  "table.cell.formatFormula": "Format Cell as Formula", "table.cell.plainText": "Plain Text Cell"
+  "table.cell.formatFormula": "Format Cell as Formula", "table.cell.plainText": "Plain Text Cell",
+  "table.footnote.remove": "Remove Footnote"
 } as const;
 export function tableCommandDisabledReason(id: string, table?: TableObject, active?: ActiveTableCell): string | undefined {
   if (id === "table.insertDialog" || parseTableInsertCommandId(id)) return undefined;
   if (!table) return "Select a table first";
+  const headerRows = headerRowsForCommand(id);
+  if (headerRows !== undefined && headerRows > table.rows.length) return "Not enough rows in this table";
+  if (id === "table.footnote.remove" && table.footnotes.length === 0) return "Table has no footnotes";
   if (id.startsWith("table.row.insert") && table.rows.length >= TABLE_LIMITS.maxRows) return "Table has the maximum number of rows";
   if (id.startsWith("table.column.insert") && table.columns.length >= TABLE_LIMITS.maxColumns) return "Table has the maximum number of columns";
   if (id === "table.row.delete" && table.rows.length === 1) return "Keep at least one row";
@@ -74,20 +89,25 @@ export function createTableInsertAction(rows: number, columns: number, headerRow
 export function createTableCommands(document: ChemDraftDocument, active?: ActiveTableCell): CommandSpec[] {
   const table = selectedTable(document);
   return [{ id: "table.insertDialog", title: "Table…", icon: "text", source: "core", enabled: true },
-    ...[...Object.entries(editTitles), ...tableRules.flatMap(rule => tableRuleWidthsPt.map(pt =>
+    ...[...Object.entries(editTitles), ...Array.from({ length: 6 }, (_, count) =>
+      [tableHeaderRowsCommandId(count), `Header rows: ${count}`]),
+    ...tableRules.flatMap(rule => tableRuleWidthsPt.map(pt =>
       [tableRuleWidthCommandId(rule, pt), `${rule[0].toUpperCase()}${rule.slice(1)} rule: ${pt} pt`]))].map(([id, title]): CommandSpec => {
       const disabledReason = tableCommandDisabledReason(id, table, active);
       return { id, title, icon: "text", source: "core", enabled: !disabledReason, disabledReason };
     })];
 }
 export function applyTableCommand(document: ChemDraftDocument, id: string, active: ActiveTableCell | undefined,
-  newId: (prefix: string) => string): { document: ChemDraftDocument; label: string } | undefined {
+  newId: (prefix: string) => string, editing?: ActiveTableText
+): { document: ChemDraftDocument; label: string } | undefined {
   const table = selectedTable(document);
   if (!table || tableCommandDisabledReason(id, table, active)) return undefined;
   const cell = resolveActiveTableCell(table, active)!;
   const row = table.rows.findIndex(item => item.id === cell.rowId);
   const column = table.columns.findIndex(item => item.id === cell.columnId);
   let result: { table: TableObject; label: string } | undefined;
+  const headerRows = headerRowsForCommand(id);
+  if (headerRows !== undefined) result = setTableHeaderRowCount(table, headerRows);
   const ruleWidth = parseTableRuleWidthCommandId(id);
   if (ruleWidth) {
     result = setTableStyle(table, { [`${ruleWidth.rule}RulePt`]: ruleWidth.pt });
@@ -115,6 +135,12 @@ export function applyTableCommand(document: ChemDraftDocument, id: string, activ
     case "table.header.bold.toggle": result = setTableStyle(table, { headerBold: !table.tableStyle.headerBold }); break;
     case "table.caption.toggle": result = setTableCaption(table, table.caption ? undefined : { text: "Table 1.", spans: [] }); break;
     case "table.footnote.add": result = setTableFootnotes(table, [...table.footnotes, { text: "", spans: [] }]); break;
+    case "table.footnote.remove": {
+      const index = editing?.tableId === table.id && "kind" in editing && editing.kind === "footnote"
+        && table.footnotes[editing.index] ? editing.index : table.footnotes.length - 1;
+      result = setTableFootnotes(table, table.footnotes.filter((_, i) => i !== index));
+      break;
+    }
     case "table.cell.formatFormula": result = formatTableCellFormula(table, cell.rowId, cell.columnId); break;
     case "table.cell.plainText": {
       const ruled = setTableCellFormulaRule(table, cell.rowId, cell.columnId, "off");
@@ -164,5 +190,6 @@ export function tableInspectorSnapshot(document: ChemDraftDocument, active?: Act
   const { preset, topRulePt, headerRulePt, bottomRulePt, gridRulePt, headerBold } = table.tableStyle;
   return { tableId: table.id, preset, topRulePt, headerRulePt, bottomRulePt, gridRulePt, headerBold, fontFamily, fontSizePx,
     hasCaption: table.caption !== undefined, footnoteCount: table.footnotes.length,
+    headerRowCount: table.headerRowCount, rowCount: table.rows.length,
     activeColumn: column ? { id: column.id, align: column.align, formula: column.formula } : undefined };
 }
