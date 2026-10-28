@@ -8,7 +8,8 @@ pub type ParentEnv = BTreeMap<String, String>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodexHomeFallbackKind {
-    AuthJsonUnavailable,
+    AuthJsonAbsent,
+    AuthJsonUnreadable,
     PreparationFailed,
 }
 

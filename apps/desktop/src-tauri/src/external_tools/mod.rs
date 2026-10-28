@@ -475,7 +475,7 @@ fn apply_status_detail(
     platform: probe::ProbePlatform,
     codex_home_fallback: Option<env::CodexHomeFallbackKind>,
 ) {
-    // A missing auth.json is normal before sign-in or with system credential storage.
+    // A missing auth.json is normal before sign-in; only unreadable auth needs a hint.
     // Keep technical diagnostics in logs, and retain actionable upgrade guidance.
     if matches!(status.state, ToolState::Missing)
         && status.detail.as_deref() == Some("Tool is not installed.")
@@ -490,11 +490,11 @@ fn apply_status_detail(
         && !needs_update
     {
         let notice = match codex_home_fallback {
-            Some(env::CodexHomeFallbackKind::AuthJsonUnavailable) => {
+            Some(env::CodexHomeFallbackKind::AuthJsonUnreadable) => {
                 codex_auth::sign_in_unavailable_detail(platform)
             }
-            Some(env::CodexHomeFallbackKind::PreparationFailed) => "ChemDraft could not prepare its private Codex folder. Check that your disk has space and try Check again.",
-            None => return,
+            Some(env::CodexHomeFallbackKind::PreparationFailed) => "ChemDraft could not set up its private Codex folder. Try Check again; if it keeps failing, reinstall Codex from Setup.",
+            Some(env::CodexHomeFallbackKind::AuthJsonAbsent) | None => return,
         };
         status.detail = Some(match status.detail {
             Some(ref detail) => format!("{detail} {notice}"),

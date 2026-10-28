@@ -139,15 +139,12 @@ pub(super) fn prepare_codex_home_with_link(
         // Logout leaves a dangling symlink on macOS but a readable hard link on Windows.
         // Neither is evidence of a conflicting refresh. Leave it unused and retry isolation
         // after the user's login is available again, without resurrecting it via write-back.
-        if !requested.is_file() {
-            fallback_kind = CodexHomeFallbackKind::AuthJsonUnavailable;
-            return Err(
-                "User's Codex auth.json is unavailable (login may use the keychain).".into(),
-            );
-        }
+        require_readable_auth(&requested, &mut fallback_kind)?;
         // Preserve user-owned symlinks by writing to their actual target, never replacing them.
-        let auth = fs::canonicalize(&requested)
-            .map_err(|e| io_reason("resolve user's Codex auth.json", e))?;
+        let auth = fs::canonicalize(&requested).map_err(|e| {
+            fallback_kind = CodexHomeFallbackKind::AuthJsonUnreadable;
+            io_reason("resolve user's Codex auth.json", e)
+        })?;
         if auth == target {
             return Err("User's CODEX_HOME is already ChemDraft's isolated home.".into());
         }
@@ -168,27 +165,19 @@ pub(super) fn prepare_codex_home_with_link(
                 false
             };
             if linked {
-                if !auth.is_file() {
-                    fallback_kind = CodexHomeFallbackKind::AuthJsonUnavailable;
-                    return Err(
-                        "User's Codex auth.json is unavailable (login may use the keychain)."
-                            .into(),
-                    );
-                }
+                require_readable_auth(&auth, &mut fallback_kind)?;
                 return Ok(());
             }
             if let Err(reason) = reconcile_copy(&target, &auth) {
                 return Err(quarantine(&isolated, &target, reason));
             }
         }
-        if !auth.is_file() {
-            fallback_kind = CodexHomeFallbackKind::AuthJsonUnavailable;
-            return Err(
-                "User's Codex auth.json is unavailable (login may use the keychain).".into(),
-            );
-        }
+        require_readable_auth(&auth, &mut fallback_kind)?;
         let staged = isolated.join(format!("auth-link-{}", super::nonce()));
-        link(platform, &auth, &staged).map_err(|e| io_reason("link Codex auth.json", e))?;
+        link(platform, &auth, &staged).map_err(|e| {
+            fallback_kind = CodexHomeFallbackKind::AuthJsonUnreadable;
+            io_reason("link Codex auth.json", e)
+        })?;
         // std::fs::rename uses replacement on both Unix and Windows (MoveFileExW).
         if let Err(e) = fs::rename(&staged, &target) {
             let _ = fs::remove_file(staged);
@@ -230,6 +219,30 @@ fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, String> {
         Ok(bytes) => Ok(Some(bytes)),
         Err(e) if e.kind() == io::ErrorKind::NotFound && metadata(path)?.is_none() => Ok(None),
         Err(e) => Err(io_reason("read Codex auth.json", e)),
+    }
+}
+fn require_readable_auth(
+    path: &Path,
+    fallback_kind: &mut CodexHomeFallbackKind,
+) -> Result<(), String> {
+    // is_file() hides permission/read errors as absence. Only a confirmed missing path is
+    // normal before sign-in; an existing dangling symlink still counts as unreadable.
+    let result = match fs::metadata(path) {
+        Ok(meta) if !meta.is_file() => Err("User's Codex auth.json is not a regular file.".into()),
+        Ok(_) => read_optional(path),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => read_optional(path),
+        Err(e) => Err(io_reason("inspect Codex auth.json", e)),
+    };
+    match result {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => {
+            *fallback_kind = CodexHomeFallbackKind::AuthJsonAbsent;
+            Err("User's Codex auth.json is absent.".into())
+        }
+        Err(reason) => {
+            *fallback_kind = CodexHomeFallbackKind::AuthJsonUnreadable;
+            Err(reason)
+        }
     }
 }
 fn last_refresh(bytes: &[u8]) -> Result<chrono::DateTime<chrono::FixedOffset>, String> {
