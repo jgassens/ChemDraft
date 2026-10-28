@@ -41,7 +41,9 @@ describe("bond stereo commands", () => {
     expect(state.eitherDisabledReason).toBeUndefined();
     expect(createBondStereoActions(state)[1].title).toBe(`Use drawn geometry (${expected})`);
     const open = applyMoleculeBondStereo(document, [target], "either", perceiveDoubleBondStereoFromMolfile);
-    expect(nativeBondStereoAvailability(open, [target], perceiveDoubleBondStereoFromMolfile).descriptor).toBe(expected);
+    expect(nativeBondStereoAvailability(open, [target], perceiveDoubleBondStereoFromMolfile)).toEqual({
+      value: "either", eitherDisabledReason: "E/Z is already unspecified", descriptor: expected
+    });
     const model = createMoleculeInspectorModel(open, { selectedObjectIds: [], selectedPart: target }, perceiveDoubleBondStereoFromMolfile);
     expect(model.structure.bondStereo?.descriptor).toBe(expected);
   });

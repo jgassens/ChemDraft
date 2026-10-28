@@ -8928,15 +8928,17 @@ export function nativeBondStereoAvailability(
   const molecule = firstPage(document).objects.find((o): o is MoleculeObject => o.type === "molecule" && o.id === target.objectId);
   const bond = molecule?.bonds.find(b => b.id === target.bondId);
   if (!molecule || !bond || bond.order !== "double") return disabled("E/Z requires a double bond");
-  if (molecule.bonds.some(b => b.order === "unknown")) return disabled("Resolve unknown bond orders before changing E/Z");
-  const state: BondStereoAvailability = { value: bond.stereo === "either" ? "either" : "geometry" };
+  const alreadyUnspecified = bond.stereo === "either";
+  const eitherReason = (reason: string) => alreadyUnspecified ? "E/Z is already unspecified" : reason;
+  if (molecule.bonds.some(b => b.order === "unknown")) return { ...disabled("Resolve unknown bond orders before changing E/Z"), eitherDisabledReason: eitherReason("Resolve unknown bond orders before changing E/Z") };
+  const state: BondStereoAvailability = { value: alreadyUnspecified ? "either" : "geometry", ...(alreadyUnspecified ? { eitherDisabledReason: "E/Z is already unspecified" } : {}) };
   if ([bond.fromAtomId, bond.toAtomId].some(id => molecule.atoms.find(a => a.id === id)?.element !== "C")) {
-    return { ...state, eitherDisabledReason: "E/Z unspecified requires a stereogenic carbon–carbon double bond" };
+    return { ...state, eitherDisabledReason: eitherReason("E/Z unspecified requires a stereogenic carbon–carbon double bond") };
   }
   if (nativeMoleculeRings(molecule).some(ring => ring.atomIds.length < 8 && ring.bondIds.includes(bond.id))) {
-    return { ...state, eitherDisabledReason: "This double bond is not stereogenic (small ring)" };
+    return { ...state, eitherDisabledReason: eitherReason("This double bond is not stereogenic (small ring)") };
   }
-  if (!reader) return { ...state, eitherDisabledReason: "E/Z perception is still loading" };
+  if (!reader) return { ...state, eitherDisabledReason: eitherReason("E/Z perception is still loading") };
   try {
     const unmarked = { ...molecule, bonds: molecule.bonds.map(b => b.id === bond.id ? withoutDoubleBondStereo(b) : b) };
     const from = molecule.atoms.findIndex(a => a.id === bond.fromAtomId);
@@ -8946,9 +8948,9 @@ export function nativeBondStereoAvailability(
     const perceived = reader(analysisFacingStructure(unmarked).structure).find(b =>
       (b.from === from && b.to === to) || (b.from === to && b.to === from));
     return perceived ? { ...state, descriptor: perceived.descriptor === "unspecified" ? undefined : perceived.descriptor }
-      : { ...state, eitherDisabledReason: "This double bond is not stereogenic (equivalent substituents or a small ring)" };
+      : { ...state, eitherDisabledReason: eitherReason("This double bond is not stereogenic (equivalent substituents or a small ring)") };
   } catch {
-    return { ...state, eitherDisabledReason: "E/Z could not be perceived for this structure" };
+    return { ...state, eitherDisabledReason: eitherReason("E/Z could not be perceived for this structure") };
   }
 }
 

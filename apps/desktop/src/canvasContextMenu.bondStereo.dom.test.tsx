@@ -104,7 +104,8 @@ describe.each<ShortcutPlatform>(["macos", "windows"])("canvas bond stereo menu (
     await rightClick(original, bond);
     const expected = smiles === "CC=CC" ? "E" : "Z";
     expect(entry("either")?.textContent).toBe("Mark E/Z as unspecified");
-    expect(entry("either")?.disabled).toBe(false);
+    expect(entry("either")?.disabled).toBe(true);
+    expect(entry("either")?.title).toBe("E/Z is already unspecified");
     expect(entry("geometry")?.textContent).toBe(`Use drawn geometry (${expected})`);
     expect(entry("geometry")?.disabled).toBe(false);
     await act(async () => entry("geometry")!.click());
@@ -156,7 +157,8 @@ describe.each<ShortcutPlatform>(["macos", "windows"])("canvas bond stereo menu (
   });
 
   it.each([false, true])("opens with Shift+F10 and activates stereo through arrows and Enter (open: %s)", async open => {
-    const { doc, mol } = drawing("CC=CC", open), bond = mol.bonds.find(b => b.order === "double")!;
+    const { doc, mol } = drawing(open ? "CC=CC" : "C/C=C/C", open), bond = mol.bonds.find(b => b.order === "double")!;
+    if (!open) expect(bond.stereo).toBeUndefined();
     await mount(doc, platform); await selectBond(mol, bond);
     canvas.focus(); await key("F10", true);
     const value = open ? "geometry" : "either";
