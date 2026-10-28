@@ -32,32 +32,58 @@ const hosts = [
   }
 ];
 
+// The compact portals need shallower pentagons than the larger hosts to leave
+// their inward carbonyls and N-CH2-N bridges apart. These original geometric
+// designs tighten bond-length spread while retaining >= 0.95 label clearance.
+// CB[7] fits the 5% window; CB[5]/[6] remain explicit exceptions in the geometry
+// test. All homologues retain the same graph and tangential shared methine edge.
+const compactPortalDesigns = {
+  5: {
+    inner: { a: 1.1011446628, b: 0.7888226553, h: 1.1683883543, carbonyl: 1.1345593463, bridge: 1.0765795517 },
+    outer: { a: 1.2541237317, b: 0.6441875058, h: 0.6941906732, carbonyl: 1.2494736361, bridge: 1.2557186317 },
+    outerHalfChord: 1.2556665852
+  },
+  6: {
+    inner: { a: 0.9451556384, b: 0.8954532135, h: 1.4770917977, carbonyl: 1.0229998658, bridge: 1.0760910898 },
+    outer: { a: 1.1567432562, b: 0.7541142456, h: 0.8041498057, carbonyl: 1.1576352847, bridge: 1.1578248879 },
+    outerHalfChord: 1.1572634195
+  },
+  7: {
+    inner: { a: 0.8098588441, b: 0.9662815691, h: 1.603474658, carbonyl: 1.0138034582, bridge: 1.0179548696 },
+    outer: { a: 1.0578792649, b: 0.8476404023, h: 0.9033581847, carbonyl: 1.0459857583, bridge: 1.05786753 },
+    outerHalfChord: 1.0559153658
+  }
+};
+
+function unitPentagon(a) {
+  // With a unit shared C-C edge, solve both remaining pairs of sides as unit
+  // circle intersections, rather than scaling a regular pentagon independently.
+  const b = Math.sqrt(1 - (a - 0.5) ** 2);
+  return { a, b, h: b + Math.sqrt(1 - a * a), carbonyl: 1, bridge: 1 };
+}
+
 function portalLayout(n) {
   // Two pentagons share a tangential methine C-C edge. Their carbonyls point
   // radially inward/outward; the corresponding N pairs belong to the two portals.
   // A radial shared edge would instead put the two carbonyls on tangential sides.
-  // Use the same shallow, mirror-symmetric glycoluril in every homologue. The
-  // wider outer pentagon permits a larger radius without stretching its CH2
-  // bridges. Inner N atoms sit nearer the shared edge, opening the inner N-CH2-N
-  // angle and leaving room for the carbonyls even in CB[5]. All dimensions below
-  // are geometric design lengths, normalized together only after assembly.
-  const sharedHalfEdge = 0.462;
-  const inner = { a: 1.1, b: 0.692, h: 1.2 };
-  const outer = { a: 1.213, b: 0.54, h: 0.737 };
+  const sharedHalfEdge = 0.5;
+  const { inner, outer, outerHalfChord } = compactPortalDesigns[n] ?? {
+    inner: unitPentagon(0.7), outer: unitPentagon(0.96), outerHalfChord: 0.995
+  };
   const halfSector = Math.PI / n;
   const sin = Math.sin(halfSector), cos = Math.cos(halfSector);
-  // Adjacent outer N atoms have chord 2*((R+b)*sin-a*cos). Set it to 2.454;
-  // two 1.233 bonds meet at an outward vertex on the sector bisector. The inner
-  // bridge is also a circle intersection, giving exactly n-fold symmetry.
-  const radius = (outer.a * cos + 1.227) / sin - outer.b;
+  // Solve the outer N-pair chord for the macrocycle radius. A circle intersection
+  // closes each portal bridge at its prescribed length; the larger hosts use
+  // unit bonds throughout, including both carbonyls and both bridge circuits.
+  const radius = (outer.a * cos + outerHalfChord) / sin - outer.b;
   const bridgeRadius = (nitrogenRadius, a, length, side) => {
     const halfChord = nitrogenRadius * sin - a * cos;
     if (halfChord <= 0 || halfChord >= length) throw new Error(`Invalid CB[${n}] portal chord.`);
     const midpoint = nitrogenRadius * cos + a * sin;
     return midpoint + side * Math.sqrt(length * length - halfChord * halfChord);
   };
-  const innerBridgeRadius = bridgeRadius(radius - inner.b, inner.a, 1, -1);
-  const outerBridgeRadius = bridgeRadius(radius + outer.b, outer.a, 1.233, 1);
+  const innerBridgeRadius = bridgeRadius(radius - inner.b, inner.a, inner.bridge, -1);
+  const outerBridgeRadius = bridgeRadius(radius + outer.b, outer.a, outer.bridge, 1);
   const atoms = [], bonds = [];
   for (let unit = 0; unit < n; unit += 1) {
     const angle = Math.PI / 2 + 2 * unit * halfSector;
@@ -70,9 +96,9 @@ function portalLayout(n) {
     atoms.push(
       point("C", -sharedHalfEdge, 0), point("C", sharedHalfEdge, 0),
       point("N", -inner.a, -inner.b), point("N", inner.a, -inner.b),
-      point("C", 0, -inner.h), point("O", 0, -inner.h - 1.01),
+      point("C", 0, -inner.h), point("O", 0, -inner.h - inner.carbonyl),
       point("N", -outer.a, outer.b), point("N", outer.a, outer.b),
-      point("C", 0, outer.h), point("O", 0, outer.h + 1.15),
+      point("C", 0, outer.h), point("O", 0, outer.h + outer.carbonyl),
       ...[innerBridgeRadius, outerBridgeRadius].map((r) => ({
         element: "C", x: r * Math.cos(angle + halfSector), y: r * Math.sin(angle + halfSector)
       }))

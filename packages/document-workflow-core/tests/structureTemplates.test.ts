@@ -159,6 +159,27 @@ describe("structure template identities", () => {
 });
 
 describe("structure template geometry", () => {
+  // The smaller CB portals still need unequal bonds to keep the inward carbonyls
+  // and N-CH2-N bridges separate at >= 0.95 label clearance, without crossings.
+  // These per-id exceptions retain the absolute 0.85–1.15 check below; larger CB
+  // hosts and every other template must satisfy the tighter relative window.
+  // Achieved min/max relative to mean: CB[5] 0.88256–1.11749, CB[6] 0.92680–1.07318.
+  const nonUniformPortalIds = new Set(["cucurbit-5-uril", "cucurbit-6-uril"]);
+
+  it.each(structureTemplates.filter((entry) => !nonUniformPortalIds.has(entry.id)).map((entry) => [entry.id, entry] as const))(
+    "%s: every bond is within five percent of the template's own mean",
+    (_id, entry) => {
+      const { atoms, bonds } = entry.layout;
+      const lengths = bonds.map(([from, to]) => distance(atoms[from]!, atoms[to]!));
+      const mean = lengths.reduce((sum, length) => sum + length, 0) / lengths.length;
+      lengths.forEach((length, index) => {
+        const [from, to] = bonds[index]!;
+        expect(length / mean, `bond ${from}-${to} relative to mean`).toBeGreaterThanOrEqual(0.95);
+        expect(length / mean, `bond ${from}-${to} relative to mean`).toBeLessThanOrEqual(1.05);
+      });
+    }
+  );
+
   it.each(structureTemplates.map((entry) => [entry.id, entry] as const))(
     "%s: unit bonds, centred coordinates, no close non-neighbours or undeclared crossings",
     (_id, entry) => {
