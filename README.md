@@ -1,5 +1,7 @@
 # ChemDraft
 
+Website: [chemdraft.ai](https://chemdraft.ai)
+
 ChemDraft is a lightweight, local-file-first chemical drawing application under early development. The current milestone has a clean monorepo foundation, strict package boundaries, a native document model scaffold, plugin API/host foundations, page-layout infrastructure, a narrow active Ketcher molecule-editor host, and an optional fixture-backed MolScribe OCSR plugin scaffold.
 
 This repository intentionally does not include full chemistry drawing beyond the first native single-bond and connected carbon-chain slices plus selected-molecule Ketcher editing, full RDKit integration, CDXML/CDX parsing, native clipboard handling, plugin sandboxing, real MolScribe OCSR inference, or proprietary assets yet.
