@@ -28,11 +28,16 @@ const canonicalize = async (smiles: string): Promise<string | null> => {
   finally { molecule.delete(); }
 };
 
+/** Resolve only coordinate-less input, never a document graph or molfile. */
+export async function templateForSmiles(smiles: string) {
+  return structureTemplateForSmiles(smiles, canonicalize).catch(() => undefined);
+}
+
 /** Only call for coordinate-less input, never a document graph or molfile. */
 export async function templateMoleculeForSmiles(smiles: string, document: ChemDraftDocument,
   centre: { x: number; y: number }, reservedObjectIds?: Set<string>) {
   // Failed identity verification cannot authorize a template; retain the ordinary host's
   // depiction fallback and its existing chemistry-refusal/error contract.
-  const template = await structureTemplateForSmiles(smiles, canonicalize).catch(() => undefined);
+  const template = await templateForSmiles(smiles);
   return template ? structureTemplateMolecule(template, { document, centre, reservedObjectIds }) : undefined;
 }
