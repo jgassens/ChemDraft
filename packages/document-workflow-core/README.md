@@ -20,7 +20,8 @@ desktop importers did not change.
 | `documentInventory.ts` | Native atom/bond ids and page geometry, with rings from layout-engine |
 | `textObjects.ts` | Text object sizing, creation, insertion |
 | `reactionArrows.ts` | Reaction arrow creation and insertion |
-| `reactionScheme.ts` | Pure placement of pre-depicted reaction components, plus signs, arrow, and conditions |
+| `reactionScheme.ts` | Pure placement of pre-depicted reaction components, plus signs, arrow, and label blocks |
+| `reactionLabels.ts` | Shared reaction-label lines, whitespace wrapping, formula spans, measured blocks, arrow length, clearances, and caption placement |
 | `gridLayout.ts` | Pure placement of pre-depicted molecules and optional labels in a grid |
 | `atoms.ts` | Valence and charge rules, atom validation, formula metadata, and what is built on a label's reading: each group's verdict and free valence, and the recorded bond side. Re-exports layout-engine's element table, bond-order counting and atom-label grammar (`nativeAtomLabelReading`), under the same names |
 | `labelGroups.ts` | A group's expansion into real atoms appended after the drawn ones, so drawn indices never move. The formula, SMILES, molfile and analysis read that expansion; the document keeps the label. The group's shape and attachment atom (`NativeLabelGroup`, `nativeLabelGroupAttachment`) are layout-engine's, re-exported |
@@ -77,10 +78,30 @@ and an optional `textStyle` override. Document style applies `DocumentTextStyle`
 reaction conditions and plus signs; measurements and placement use the same resolved text style.
 Grid cells in document style accommodate the wider of the molecule or label, and the custom page
 fits all rows and columns with margins given by the anchor. Reaction pages fit the complete scheme;
-condition width sets the minimum arrow length and plus-sign width sets component spacing.
-Callers supply pre-depicted molecules at the intended bond length and a reaction anchor with enough
-room above its centre for the conditions. These layout functions translate molecules without
+above/below block width sets arrow length and plus-sign width sets component spacing.
+Callers supply pre-depicted molecules at the intended bond length. Reaction schemes preserve the
+anchor when it leaves room for page padding, otherwise translating the whole scheme together.
+These layout functions translate molecules without
 rescaling them; CLI option parsing, cropping, physical SVG units and PNG DPI stay with the caller.
+
+Reaction schemes accept `above` and `below` arrays (each entry is a deliberate line, including any
+explicit newlines) and an optional `caption`. Blank lines are discarded. `conditionText` remains a
+compatibility adapter: its newline-separated lines precede `above`, with no comma/semicolon guessing.
+The deprecated result `condition` is the same TextObject as `above`. Each block has explicit rendered
+newlines and formula spans, measured once without implicit wrapping. Entirely numbered blocks align
+left inside a box centred on the arrow; other blocks and captions align centre.
+
+Reaction-label design numbers live together in `src/reactionLabels.ts`: line wrap at **10 bond
+lengths**, minimum arrow **2.5 bond lengths**, total arrow padding beyond the widest block **0.5 bond
+lengths**, label line-box clearance from the visible arrow **0.35 em**, caption top clearance
+**0.8 em**, caption wrap width at least **8 bond lengths**, and default label font **14 px** centred.
+Whitespace is the only wrap point; oversized tokens stay whole. Captions wrap to the greater of
+scheme width and that minimum. A line box includes authored paragraph spacing to match rendering.
+`src/textObjects.ts` reuses the renderer's **72%** script font size and existing sizing conventions:
+**6 px** horizontal / **4 px** vertical padding, minimum box **36 × 24 px**, dimensions rounded to
+**0.01 px**. Padding follows the line box vertically, matching the renderer's baseline origin.
+`layout-engine/src/index.ts` derives visible arrow extents from `planReactionArrowGeometry`, including
+the existing default **1.5 px** shaft stroke shared with rendering; it adds no per-kind label offsets.
 
 `documentDrawingDefaults(document)` resolves `document.styles.drawing` and `document.styles.text`
 without changing existing objects. New native and SMILES molecules share its geometry and style;

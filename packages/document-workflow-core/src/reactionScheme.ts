@@ -12,6 +12,7 @@ import {
 } from "@chemdraft/chem-core";
 import type { FigureStyle } from "@chemdraft/layout-engine";
 import { createNativeReactionArrow } from "./reactionArrows";
+import { layoutReactionLabels, planReactionLabels } from "./reactionLabels";
 import { phase4Timestamp } from "./shared";
 import { nativeTextObjectSizeForText } from "./textObjects";
 
@@ -32,6 +33,10 @@ export interface ReactionSchemeLayout {
   molecules: MoleculeObject[];
   pluses: TextObject[];
   arrow: ArrowObject;
+  above?: TextObject;
+  below?: TextObject;
+  caption?: TextObject;
+  /** @deprecated Use above. This is the same object as above. */
   condition?: TextObject;
 }
 
@@ -42,6 +47,10 @@ export interface ReactionSchemeLayoutOptions {
   reactants: readonly ReactionSchemeComponent[];
   products: readonly ReactionSchemeComponent[];
   arrowKind: ArrowObject["arrowKind"];
+  above?: readonly string[];
+  below?: readonly string[];
+  caption?: string;
+  /** Compatibility adapter: newline-separated above lines, prepended to above. No delimiter guessing. */
   conditionText?: string;
   /** Left edge of the first molecule and vertical centre of the scheme. */
   anchor: { x: number; y: number };
@@ -51,7 +60,6 @@ export interface ReactionSchemeLayoutOptions {
 }
 
 const PLUS_STYLE: Partial<NativeTextStyle> = { fontSizePx: 20, textAlign: "center" };
-const CONDITIONS_STYLE: Partial<NativeTextStyle> = { fontSizePx: 14, textAlign: "center" };
 
 /**
  * Positions already-depicted reaction components without loading a chemistry engine. The anchor
@@ -59,26 +67,31 @@ const CONDITIONS_STYLE: Partial<NativeTextStyle> = { fontSizePx: 14, textAlign: 
  */
 export function layoutReactionScheme(options: ReactionSchemeLayoutOptions): ReactionSchemeLayout {
   const textStyle = { ...(options.style === "document" ? DocumentTextStyle : {}), ...options.textStyle };
-  const conditionsStyle = { ...CONDITIONS_STYLE, ...textStyle };
   const plusStyle = { ...PLUS_STYLE, ...textStyle };
-  const conditionText = options.conditionText?.trim() ?? "";
   const visible = [...options.reactants, ...options.products];
   if (visible.length === 0) throw new Error("A reaction scheme needs at least one molecule.");
 
-  const conditionSize = conditionText
-    ? nativeTextObjectSizeForText(conditionText, conditionsStyle)
-    : { width: 0, height: 0 };
+  const labelPlan = planReactionLabels({
+    above: [...(options.conditionText === undefined ? [] : [options.conditionText]), ...(options.above ?? [])],
+    below: options.below ?? [],
+    caption: options.caption,
+    textStyle,
+    bondLength: options.bondLength,
+    arrowKind: options.arrowKind
+  });
   const plusSize = nativeTextObjectSizeForText("+", plusStyle);
-  const arrowLength = Math.max(options.bondLength * 2.5, conditionSize.width + options.gutter * 2);
+  const arrowLength = labelPlan.arrowLength;
 
   let cursor = options.anchor.x;
   let moleculeNumber = 0;
-  const molecules: MoleculeObject[] = [];
+  let molecules: MoleculeObject[] = [];
+  const moleculeFrames: Array<{ x: number; y: number; width: number; height: number }> = [];
   const plusPoints: Array<{ x: number; y: number }> = [];
   const placeGroup = (components: readonly ReactionSchemeComponent[]): void => {
     components.forEach((component, index) => {
       const width = component.bounds.maxX - component.bounds.minX;
       const height = component.bounds.maxY - component.bounds.minY;
+      moleculeFrames.push({ x: cursor, y: options.anchor.y - height / 2, width, height });
       molecules.push(translateMolecule(
         component.molecule,
         `mol_reaction_${String(moleculeNumber + 1).padStart(3, "0")}`,
@@ -108,36 +121,49 @@ export function layoutReactionScheme(options: ReactionSchemeLayoutOptions): Reac
     options.bondLength,
     ...visible.map((component) => component.bounds.maxY - component.bounds.minY)
   );
-  const pageWidth = cursor + options.pagePadding;
-  const pageHeight = options.anchor.y + maximumMoleculeHeight / 2 + options.pagePadding;
   const empty = createEmptyDocument({ title: "Reaction scheme", now: phase4Timestamp });
   const page = empty.pages[0]!;
-  const arrow = createNativeReactionArrow(
+  let arrow = createNativeReactionArrow(
     { ...empty, pages: [{ ...page, objects: molecules }] },
     { x: arrowStart, y: options.anchor.y },
     { x: arrowEnd, y: options.anchor.y },
     options.arrowKind
   );
-  const pluses = plusPoints.map((point, index) => createLayoutText(
+  let pluses = plusPoints.map((point, index) => createLayoutText(
     nextLayoutId("text", molecules.length + 2 + index),
     point,
     "+",
-    plusStyle,
-    pageWidth,
-    pageHeight
+    plusStyle
   ));
-  const condition = conditionText ? createLayoutText(
-    nextLayoutId("text", molecules.length + 2 + pluses.length),
-    {
-      x: (arrowStart + arrowEnd - conditionSize.width) / 2,
-      y: options.anchor.y - conditionSize.height - options.gutter / 2
-    },
-    conditionText,
-    conditionsStyle,
-    pageWidth,
-    pageHeight
-  ) : undefined;
-  const objects = [...molecules, arrow, ...pluses, ...(condition ? [condition] : [])];
+  let { above, below, caption } = layoutReactionLabels(labelPlan, {
+    arrowMidpoint: { x: (arrowStart + arrowEnd) / 2, y: options.anchor.y },
+    // Callers may include visible atom-label overhangs in bounds, outside the molecule frame.
+    schemeBounds: objectBounds([...moleculeFrames, arrow, ...pluses]),
+    idPrefix: nextLayoutId("text", molecules.length + 2 + pluses.length)
+  });
+  // Preserve the anchor whenever it leaves enough room. If labels extend beyond the page's
+  // top/left margin, translate the complete scheme together, never individual text blocks.
+  const bounds = objectBounds([...molecules, ...moleculeFrames, arrow, ...pluses,
+    ...[above, below, caption].filter((text) => text !== undefined)]);
+  const dx = Math.max(0, options.pagePadding - bounds.minX);
+  const dy = Math.max(0, options.pagePadding - bounds.minY);
+  if (dx || dy) {
+    molecules = molecules.map((molecule) => translateMolecule(molecule, molecule.id, dx, dy));
+    arrow = {
+      ...arrow, x: arrow.x + dx, y: arrow.y + dy,
+      start: { kind: "point", point: { x: arrowStart + dx, y: options.anchor.y + dy } },
+      end: { kind: "point", point: { x: arrowEnd + dx, y: options.anchor.y + dy } }
+    };
+    const translateText = (text: TextObject): TextObject => ({ ...text, x: text.x + dx, y: text.y + dy });
+    pluses = pluses.map(translateText);
+    above = above ? translateText(above) : undefined;
+    below = below ? translateText(below) : undefined;
+    caption = caption ? translateText(caption) : undefined;
+  }
+  const pageWidth = Math.max(cursor, bounds.maxX) + dx + options.pagePadding;
+  const pageHeight = Math.max(options.anchor.y + maximumMoleculeHeight / 2, bounds.maxY) + dy + options.pagePadding;
+  const condition = above;
+  const objects = [...molecules, arrow, ...pluses, ...[above, below, caption].filter((text) => text !== undefined)];
 
   return {
     document: {
@@ -155,11 +181,14 @@ export function layoutReactionScheme(options: ReactionSchemeLayoutOptions): Reac
         },
         objects
       }],
-      selection: { objectIds: [condition?.id ?? pluses.at(-1)?.id ?? arrow.id] }
+      selection: { objectIds: [caption?.id ?? below?.id ?? above?.id ?? pluses.at(-1)?.id ?? arrow.id] }
     },
     molecules,
     pluses,
     arrow,
+    ...(above ? { above } : {}),
+    ...(below ? { below } : {}),
+    ...(caption ? { caption } : {}),
     ...(condition ? { condition } : {})
   };
 }
@@ -178,18 +207,14 @@ function createLayoutText(
   id: string,
   point: { x: number; y: number },
   text: string,
-  style: Partial<NativeTextStyle>,
-  pageWidth: number,
-  pageHeight: number
+  style: Partial<NativeTextStyle>
 ): TextObject {
-  const size = nativeTextObjectSizeForText(text, style, {
-    maxWidth: Math.max(36, pageWidth - point.x)
-  });
+  const size = nativeTextObjectSizeForText(text, style);
   return {
     id,
     type: "text",
-    x: clampToPage(point.x, pageWidth - size.width),
-    y: clampToPage(point.y, pageHeight - size.height),
+    x: point.x,
+    y: point.y,
     width: size.width,
     height: size.height,
     rotation: 0,
@@ -200,8 +225,13 @@ function createLayoutText(
   };
 }
 
-function clampToPage(value: number, maximum: number): number {
-  return Math.min(Math.max(value, 0), Math.max(0, maximum));
+function objectBounds(objects: readonly { x: number; y: number; width: number; height: number }[]): LayoutBounds {
+  return {
+    minX: Math.min(...objects.map((object) => object.x)),
+    minY: Math.min(...objects.map((object) => object.y)),
+    maxX: Math.max(...objects.map((object) => object.x + object.width)),
+    maxY: Math.max(...objects.map((object) => object.y + object.height))
+  };
 }
 
 function nextLayoutId(prefix: string, index: number): string {

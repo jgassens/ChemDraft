@@ -4657,7 +4657,7 @@ export function planNativeArtVisual(
 }
 
 function reactionArrowFragment(object: ArrowObject, layerIndex: number): PageSvgElementFragment {
-  const strokeWidth = typeof object.style.strokeWidth === "number" ? object.style.strokeWidth : 1.5;
+  const strokeWidth = typeof object.style.strokeWidth === "number" ? object.style.strokeWidth : defaultReactionArrowStrokeWidth;
   const start = arrowAnchorPointForObject(object, object.start, { x: object.x, y: object.y + object.height / 2 });
   const end = arrowAnchorPointForObject(object, object.end, { x: object.x + object.width, y: object.y + object.height / 2 });
   const geometry = planReactionArrowGeometry(object.arrowKind, start, end);
@@ -4775,6 +4775,28 @@ const reactionArrowHeadLengthPx = 9;
 const reactionArrowHeadHalfWidthPx = 4.5;
 const equilibriumShaftOffsetPx = 3;
 const retroShaftOffsetPx = 2.5;
+const defaultReactionArrowStrokeWidth = 1.5;
+
+/** Visible vertical bounds for a horizontal reaction arrow, including its rendered stroke. */
+export function reactionArrowVerticalExtent(
+  arrowKind: ArrowObject["arrowKind"],
+  length: number
+): { top: number; bottom: number } {
+  const geometry = planReactionArrowGeometry(arrowKind, { x: 0, y: 0 }, { x: length, y: 0 });
+  // Keep the default shared with reactionArrowFragment's round-capped shafts.
+  const strokeRadius = defaultReactionArrowStrokeWidth / 2;
+  const ranges = [
+    ...geometry.lines.map(({ start, end }) => ({
+      top: Math.min(start.y, end.y) - strokeRadius,
+      bottom: Math.max(start.y, end.y) + strokeRadius
+    })),
+    ...geometry.heads.map((head) => ({
+      top: Math.min(...head.points.map((point) => point.y)) - (head.filled ? 0 : strokeRadius),
+      bottom: Math.max(...head.points.map((point) => point.y)) + (head.filled ? 0 : strokeRadius)
+    }))
+  ];
+  return { top: Math.min(...ranges.map((range) => range.top)), bottom: Math.max(...ranges.map((range) => range.bottom)) };
+}
 
 /** Shared reaction-arrow geometry for the canvas renderer and SVG export: shaft lines plus head
  *  polygons per arrow kind (forward filled head, resonance double head, equilibrium harpoon pair,

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DocumentTextStyle, nativeTextStyleFromObjectStyle, type MoleculeObject } from "@chemdraft/chem-core";
+import { reactionArrowVerticalExtent } from "@chemdraft/layout-engine";
 
 import { layoutGrid, layoutReactionScheme, nativeTextObjectSizeForText, type LayoutBounds } from "../src/index";
 
@@ -127,9 +128,12 @@ describe("shared reaction and grid layout", () => {
     expect(nativeTextStyleFromObjectStyle(condition.style)).toMatchObject(DocumentTextStyle);
     expect(nativeTextStyleFromObjectStyle(plus.style)).toMatchObject(DocumentTextStyle);
     expect(condition).toMatchObject({ width: conditionSize.width, height: conditionSize.height });
-    expect(layout.arrow.width).toBeCloseTo(conditionSize.width + 48);
+    expect(layout.arrow.width).toBeCloseTo(conditionSize.width + 11);
     expect(layout.molecules[1]!.x - layout.molecules[0]!.x).toBeCloseTo(40 + 48 + plusSize.width);
-    expect(condition.y + condition.height).toBe(108);
+    const conditionStyle = nativeTextStyleFromObjectStyle(condition.style);
+    expect(condition.y + conditionStyle.fontSizePx * conditionStyle.lineHeight).toBeCloseTo(
+      120 + reactionArrowVerticalExtent("forward", layout.arrow.width).top - 0.35 * conditionStyle.fontSizePx
+    );
     const page = layout.document.pages[0]!;
     expect(page.width).toBe(layout.molecules[2]!.x + 40 + 24);
     expect(page.layout).toMatchObject({ presetId: "custom", widthPx: page.width, heightPx: page.height });
@@ -141,5 +145,60 @@ describe("shared reaction and grid layout", () => {
     for (const text of [styled.condition!, ...styled.pluses]) {
       expect(nativeTextStyleFromObjectStyle(text.style)).toMatchObject({ ...DocumentTextStyle, ...textStyle });
     }
+  });
+
+  it("adapts legacy conditions before above lines without splitting punctuation or changing text", () => {
+    const layout = layoutReactionScheme({
+      reactants: [{ molecule: molecule("reactant"), bounds: bounds() }], products: [],
+      arrowKind: "forward", conditionText: "H2SO4, heat", above: ["then stir; wait"],
+      anchor: { x: 24, y: 120 }, gutter: 24, bondLength: 22, pagePadding: 24
+    });
+    expect(layout.condition).toBe(layout.above);
+    expect(layout.above!.text).toBe("H2SO4, heat\nthen stir; wait");
+    expect(layout.above!.spans.filter((span) => span.script === "subscript").map((span) => span.text)).toEqual(["2", "4"]);
+    expect(nativeTextStyleFromObjectStyle(layout.above!.style)).toMatchObject({ fontSizePx: 14, textAlign: "center" });
+  });
+
+  it("fits all blocks and a wrapped formula caption with page padding, translating the scheme together", () => {
+    const component = { molecule: molecule("reactant", 40, 80), bounds: bounds(40, 80) };
+    const original = structuredClone(component);
+    const layout = layoutReactionScheme({
+      reactants: [component], products: [component], arrowKind: "equilibrium",
+      above: ["Ti(OiPr)4", "(+)-DET", "t-BuOOH"], below: ["CH2Cl2", "−20 °C", "4 h"],
+      caption: "Product isolated from CH2Cl2 after the reaction and characterized by the stated method.",
+      textStyle: { fontSizePx: 15 },
+      anchor: { x: 0, y: 0 }, gutter: 24, bondLength: 22, pagePadding: 24
+    });
+    const page = layout.document.pages[0]!;
+    for (const object of page.objects) {
+      expect(object.x).toBeGreaterThanOrEqual(24);
+      expect(object.y).toBeGreaterThanOrEqual(24);
+      expect(object.x + object.width).toBeLessThanOrEqual(page.width - 24 + 0.01);
+      expect(object.y + object.height).toBeLessThanOrEqual(page.height - 24 + 0.01);
+    }
+    expect(layout.arrow.start.kind).toBe("point");
+    if (layout.arrow.start.kind !== "point") throw new Error("Expected a point anchor");
+    expect(layout.molecules[0]!.x + 40 + 24).toBe(layout.arrow.start.point.x);
+    expect(layout.molecules[0]!.y + 40).toBe(layout.arrow.start.point.y);
+    expect(layout.caption!.text).toContain("\n");
+    expect(layout.caption!.spans.some((span) => span.script === "subscript")).toBe(true);
+    expect(layout.caption!.y).toBeCloseTo(Math.max(
+      ...layout.molecules.map((entry) => entry.y + entry.height), layout.below!.y + layout.below!.height
+    ) + 0.8 * 15);
+    const left = Math.min(...layout.molecules.map((entry) => entry.x));
+    const right = Math.max(...layout.molecules.map((entry) => entry.x + entry.width));
+    expect(layout.caption!.x + layout.caption!.width / 2).toBeCloseTo((left + right) / 2);
+    expect(component).toEqual(original);
+  });
+
+  it("centres the caption using supplied visible molecule bounds, including label overhangs", () => {
+    const layout = layoutReactionScheme({
+      reactants: [{ molecule: molecule("reactant", 20, 20), bounds: bounds(80, 100) }],
+      products: [], arrowKind: "forward", caption: "Product",
+      anchor: { x: 24, y: 120 }, gutter: 24, bondLength: 22, pagePadding: 24
+    });
+    if (layout.arrow.end.kind !== "point") throw new Error("Expected a point anchor");
+    expect(layout.caption!.x + layout.caption!.width / 2).toBeCloseTo((24 + layout.arrow.end.point.x) / 2);
+    expect(layout.caption!.y).toBeCloseTo(170 + 0.8 * 14);
   });
 });

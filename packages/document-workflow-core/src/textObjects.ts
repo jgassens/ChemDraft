@@ -7,6 +7,7 @@ import {
   type NativeTextStyle,
   nativeTextStyleFromObjectStyle,
   type TextObject,
+  type TextSpan,
   textStyleToObjectStyle
 } from "@chemdraft/chem-core";
 import { clamp, firstPage, nextObjectId, type PagePoint, phase4Timestamp } from "./shared";
@@ -125,15 +126,48 @@ function normalizeTextLines(text: string): string[] {
   return lines.length > 0 ? lines : [""];
 }
 
-function estimateNativeTextLineWidth(line: string, style: NativeTextStyle): number {
+export function estimateNativeTextLineWidth(line: string, style: NativeTextStyle): number {
   if (line.length === 0) {
     return style.fontSizePx * 0.5;
   }
 
-  return [...line].reduce((width, character, index) => (
-    width + style.fontSizePx * nativeTextCharacterWidthFactor(character)
-      + (index > 0 ? style.letterSpacingPx : 0)
-  ), 0);
+  return estimateNativeTextSpanLineWidth([{ text: line, script: "normal", style: {} }], style);
+}
+
+/** Matches the shared SVG renderer: scripts are 72% of the object's font size, while normal
+ * spans may override their font size. Letter spacing continues across span boundaries. */
+export function estimateNativeTextSpanLineWidth(spans: readonly TextSpan[], style: NativeTextStyle): number {
+  let width = 0;
+  let count = 0;
+  for (const span of spans) {
+    const fontSize = span.script === "normal"
+      ? (typeof span.style.fontSizePx === "number" ? span.style.fontSizePx : style.fontSizePx)
+      : style.fontSizePx * 0.72;
+    const letterSpacing = typeof span.style.letterSpacingPx === "number"
+      ? span.style.letterSpacingPx : style.letterSpacingPx;
+    for (const character of span.text) {
+      width += fontSize * nativeTextCharacterWidthFactor(character) + (count > 0 ? letterSpacing : 0);
+      count += 1;
+    }
+  }
+  return width;
+}
+
+/** Sizes explicit rendered lines, with no implicit wrapping or maximum-width clamp. The line
+ * box starts at object.y, as in planTextObjectSvg; the box's padding follows its content. */
+export function nativeTextObjectSizeForSpanLines(
+  lines: readonly (readonly TextSpan[])[],
+  style: NativeTextStyle
+): { width: number; height: number; lineBoxHeight: number; contentWidth: number } {
+  const contentWidth = Math.max(0, ...lines.map((line) => estimateNativeTextSpanLineWidth(line, style)));
+  const lineBoxHeight = lines.length * style.fontSizePx * style.lineHeight
+    + Math.max(0, lines.length - 1) * style.paragraphSpacingPx;
+  return {
+    width: roundToTextBoxPixel(Math.max(nativeTextObjectMinimumDimensions.width, contentWidth + nativeTextBoxHorizontalPadding)),
+    height: roundToTextBoxPixel(Math.max(nativeTextObjectMinimumDimensions.height, lineBoxHeight + nativeTextBoxVerticalPadding)),
+    lineBoxHeight,
+    contentWidth
+  };
 }
 
 function wrappedNativeTextLineCount(line: string, style: NativeTextStyle, contentWidth: number): number {
