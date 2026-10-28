@@ -3,7 +3,6 @@ import { createEmptyDocument, DocumentStylePreset } from "@chemdraft/chem-core";
 import { resolveStructureTemplateName, structureTemplateLayoutMessage, structureTemplateMolecule } from "@chemdraft/document-workflow-core";
 import { installNodeRdkitModuleLoader } from "@chemdraft/rdkit-adapter/node";
 import { nameToStructureForPlugin, structureFromSmilesForPlugin } from "./plugins/pluginChemistry";
-import { insertPastedSmiles } from "./smilesInsertion";
 import { applyClipboardPastePayload } from "./documentWorkflow";
 import { invoke } from "@tauri-apps/api/core";
 import { templateMoleculeForSmiles } from "./structureTemplateInsertion";
@@ -30,12 +29,15 @@ describe("desktop template input boundaries", () => {
     expect(result).toMatchObject({ available: true, built: true,
       object: { style: { source: `structure-template:${template.id}`, bondLengthPx: DocumentStylePreset.drawing.bondLengthPx } } });
   });
-  it("selects the pasted SMILES and reports the layout", async () => {
-    const document = createEmptyDocument();
-    const pasted = await insertPastedSmiles(document, { x: 400, y: 400 }, { atoms: [], bonds: [] }, template.smiles);
-    const molecule = pasted.document.pages[0]!.objects[0]!;
-    expect(pasted.document.selection.objectIds).toEqual([molecule.id]);
-    expect(pasted.status).toBe("Used the β-Cyclodextrin template layout");
+  it("prebuilds the template molecule and layout message for SMILES paste", async () => {
+    const construction = vi.spyOn(workflow, "structureTemplateMolecule");
+    const pasted = await depictSmilesForPaste(template.smiles);
+    const molecule = pasted?.molecule;
+    expect(molecule).toBeDefined();
+    expect(construction).toHaveBeenCalledOnce();
+    expect(molecule).toBe(construction.mock.results[0]!.value);
+    expect(molecule?.style.source).toBe(`structure-template:${template.id}`);
+    expect(structureTemplateLayoutMessage(molecule!)).toBe("Used the β-Cyclodextrin template layout");
   });
   it.each([template.smiles.replace("@@", "@"), template.smiles.replaceAll("@", "")])(
     "does not substitute changed/unspecified stereo", async smiles => {
