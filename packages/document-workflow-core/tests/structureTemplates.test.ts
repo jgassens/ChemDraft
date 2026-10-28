@@ -101,12 +101,16 @@ function segmentToSegmentDistance(a: Point, b: Point, c: Point, d: Point): numbe
 function minimumBondClearance(entry: StructureTemplate) {
   const { atoms, bonds } = entry.layout;
   const mean = bonds.reduce((sum, [a, b]) => sum + distance(atoms[a]!, atoms[b]!), 0) / bonds.length;
-  let minimum = Infinity, pair = "";
+  let minimum = Infinity, pair = "", crossings = 0;
   for (let i = 0; i < bonds.length; i += 1) {
     const [a, b] = bonds[i]!;
     for (let j = i + 1; j < bonds.length; j += 1) {
       const [c, d] = bonds[j]!;
       if (a === c || a === d || b === c || b === d) continue;
+      if (intersects(atoms[a]!, atoms[b]!, atoms[c]!, atoms[d]!)) {
+        crossings += 1;
+        if ((entry.allowedCrossings ?? 0) > 0) continue;
+      }
       const clearance = segmentToSegmentDistance(atoms[a]!, atoms[b]!, atoms[c]!, atoms[d]!) / mean;
       if (clearance < minimum) {
         minimum = clearance;
@@ -114,7 +118,14 @@ function minimumBondClearance(entry: StructureTemplate) {
       }
     }
   }
-  return { minimum, pair };
+  return { minimum, pair, crossings };
+}
+
+function assertBondClearance(entry: StructureTemplate) {
+  const { minimum, pair, crossings } = minimumBondClearance(entry);
+  expect(crossings).toBe(entry.allowedCrossings ?? 0);
+  // With no nonincident pairs left after exemptions, clearance is unconstrained.
+  expect(minimum, `bonds ${pair}`).toBeGreaterThanOrEqual(0.35);
 }
 
 const normalise = normalizeStructureTemplateName;
@@ -282,19 +293,20 @@ describe("structure template geometry", () => {
   it.each(structureTemplates.map((entry) => [entry.id, entry] as const))(
     "%s: nonincident bonds clear each other by at least 0.35 mean bond lengths",
     (_id, entry) => {
-      const { minimum, pair } = minimumBondClearance(entry);
-      expect(Number.isFinite(minimum)).toBe(true);
-      expect(minimum, `bonds ${pair}`).toBeGreaterThanOrEqual(0.35);
+      assertBondClearance(entry);
     }
   );
 
-  it("reports the minimum nonincident bond clearance in each family", () => {
+  it("every family's minimum nonincident bond clearance meets the threshold", () => {
     const minima = new Map<string, number>();
     for (const entry of structureTemplates) {
       const { minimum } = minimumBondClearance(entry);
       minima.set(entry.family, Math.min(minima.get(entry.family) ?? Infinity, minimum));
     }
-    console.info("Minimum bond-to-bond clearance (mean bond lengths):", Object.fromEntries(minima));
+    for (const [family, minimum] of minima) {
+      expect(Number.isFinite(minimum), family).toBe(true);
+      expect(minimum, family).toBeGreaterThanOrEqual(0.35);
+    }
   });
 
   it.each(structureTemplates.map((entry) => [entry.id, entry] as const))(
@@ -397,6 +409,32 @@ describe("structure template geometry", () => {
 });
 
 describe("validation plumbing for future stereochemical and charged families", () => {
+  it("exempts exactly declared crossings, while still rejecting a nonintersecting near-miss", () => {
+    const crossing: StructureTemplate = {
+      ...structureTemplates[0]!, allowedCrossings: 1,
+      layout: {
+        atoms: [[-1, 0], [1, 0], [0, -1], [0, 1], [3, 0], [5, 0]]
+          .map(([x, y]) => ({ element: "C", x: x!, y: y! })),
+        bonds: [[0, 1, 1], [2, 3, 1], [4, 5, 1]]
+      }
+    };
+    expect(() => assertBondClearance(crossing)).not.toThrow();
+    expect(() => assertBondClearance({ ...crossing, layout: {
+      atoms: crossing.layout.atoms.slice(0, 4), bonds: crossing.layout.bonds.slice(0, 2)
+    } })).not.toThrow();
+    expect(() => assertBondClearance({ ...crossing, allowedCrossings: 0 })).toThrow();
+    expect(() => assertBondClearance({ ...crossing, allowedCrossings: 2 })).toThrow();
+    const nearMiss: StructureTemplate = {
+      ...crossing,
+      layout: {
+        atoms: [...crossing.layout.atoms, { element: "C", x: 3, y: 0.2 }, { element: "C", x: 5, y: 0.2 }],
+        bonds: [...crossing.layout.bonds, [6, 7, 1]]
+      }
+    };
+    expect(minimumBondClearance(nearMiss)).toMatchObject({ crossings: 1, pair: "4-5 and 6-7" });
+    expect(() => assertBondClearance(nearMiss)).toThrow();
+  });
+
   it("reads directed wedges and hashes as opposite absolute configurations, and notices a reflection", () => {
     const atoms = [
       { element: "C", x: 0, y: 0 }, { element: "C", x: 1, y: 0 },

@@ -44,6 +44,50 @@ describe("template SMILES paste", () => {
     await act(async () => root.render(<MainWindow initialDocument={drawing} initialPaletteMode="hidden" initialRulersVisible={false} nativePalette={false} />));
     return { port: getAssistantHistoryPort() };
   }
+  it.each([
+    ["THF", "text/plain"], ["Hello", "text/plain"],
+    ["THF", "chemical/x-daylight-smiles"], ["Hello", "chemical/x-daylight-smiles"]
+  ])("pastes %s from %s as editable text without reporting an expected parse rejection", async (text, sourceType) => {
+    const { port } = await mount(createEmptyDocument());
+    vi.spyOn(depictionClient, "depictSmilesOffThread").mockRejectedValueOnce(
+      Object.assign(new Error("SmilesParser: invalid input"), { notSmiles: true })
+    );
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", { value: { types: [sourceType],
+      getData: (type: string) => type === sourceType ? text : "" } });
+    await act(async () => {
+      window.dispatchEvent(event);
+      await vi.waitFor(() => {
+        expect(port.read("initial")!.pages[0]!.objects).toMatchObject([{ type: "text", text }]);
+      });
+    });
+    expect(container.querySelector("[role=status]")?.textContent).toBe("Pasted editable text");
+  });
+  it("continues a three-item list after an empty depiction and reports its reason", async () => {
+    const { port } = await mount(createEmptyDocument());
+    const text = "CCO\nCCN\nCCC";
+    const depiction = vi.spyOn(depictionClient, "depictSmilesOffThread")
+      .mockResolvedValueOnce({ depiction: ocl.depictSmiles2D("CCO"), stereoCount: 0 })
+      .mockResolvedValueOnce({ depiction: { atoms: [], bonds: [] }, stereoCount: 0 })
+      .mockResolvedValueOnce({ depiction: ocl.depictSmiles2D("CCC"), stereoCount: 0 });
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", { value: { types: ["text/plain"],
+      getData: (type: string) => type === "text/plain" ? text : "" } });
+    await act(async () => {
+      window.dispatchEvent(event);
+      await vi.waitFor(() => {
+        expect(port.read("initial")!.pages[0]!.objects).toMatchObject([
+          { type: "molecule", compatibility: { unknown: { smiles: "CCO" } } },
+          { type: "molecule", compatibility: { unknown: { smiles: "CCC" } } }
+        ]);
+      });
+    });
+    expect(container.querySelector("[role=status]")?.textContent)
+      .toContain("1 item failed: The 2D depiction engine returned no atoms.");
+    expect(depiction.mock.calls.map(([smiles]) => smiles)).toEqual(["CCO", "CCN", "CCC"]);
+    await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "edit.undo" } })); });
+    expect(port.read("initial")!.pages[0]!.objects).toHaveLength(0);
+  });
   it("draws the Windows stereo-free beta-CD input using ordinary depiction", async () => {
     expect(noStereoBetaCd).toHaveLength(242);
     const { port } = await mount(createEmptyDocument());

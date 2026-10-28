@@ -1624,7 +1624,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.28.13.45-codex";
+const CURRENT_BUILD_STAMP = "10.28.15.30-codex";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -6630,7 +6630,7 @@ export function MainWindow({
       const pasteDocument = documentRef.current;
       const parsed = await depictSmilesForPaste(smilesText);
       if (quitInteractionRef.current) return { rendered: false, reason: "Paste cancelled while quitting" };
-      if (!parsed) return { rendered: false, reason: "The text is not a valid SMILES structure" };
+      if (!parsed) return { rendered: false };
       const { depiction, stereoCount } = parsed;
       const point = pastePointForViewport();
       // Parsing is document-independent. Allocate the ID and place its authored geometry
@@ -6685,9 +6685,7 @@ export function MainWindow({
         if (failed) return;
         if (!rendered) {
           applySyncClipboardPayload({ kind: "plain-text", text: detectedPayload.text, sourceType: detectedPayload.sourceType, warnings: [] });
-          setStatus(reason
-            ? `Clipboard SMILES could not be parsed: ${reason}; pasted as text`
-            : "Clipboard SMILES could not be parsed; pasted as text");
+          if (reason) setStatus(`Clipboard SMILES could not be parsed: ${reason}; pasted as text`);
         }
       });
       return;

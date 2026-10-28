@@ -32,14 +32,39 @@ const hosts = [
   }
 ];
 
-// One sector is repeated by rigid rotation: a/b locate each N tangentially/
-// radially from the shared methine edge, h locates the carbonyl C. Both CH2
-// circuits bend outward into the gaps between glycolurils, away from the inner
-// carbonyls. The modest glycoluril tilt in CB[7]/[8] opens the inner portal while
-// keeping the carbonyls strictly radial (their O positions are solved separately).
-// CB[5]/[6] retain their existing unequal-bond exceptions; CB[7]/[8]/[10] remain
-// within 5% of their mean. All designs preserve >= 0.75 label-to-bond clearance,
-// >= 0.35 nonincident bond clearance and bridge angles between 90 and 155 degrees.
+// Frozen numerical portal designs (the exploratory optimiser was not retained).
+// Parameter definitions, before finishLayout normalises mean bond length to 1:
+//   shared methine C-C = 1, centred at local (0,0), endpoints (+/-0.5,0).
+//   inner/outer.a = positive tangential N offset: each pair is at x = +/-a.
+//   inner/outer.b = positive radial N offset: y = -b / +b respectively.
+//   inner/outer.h = positive radial carbonyl-C offset: y = -h / +h.
+//   inner/outer.carbonyl = C=O length, directed inward/outward along the
+//     carbonyl C's actual radius AFTER the glycoluril is tilted.
+//   inner/outer.bridge = each of the two equal N-CH2 bond lengths; CH2 is
+//     the outward intersection of circles centred on neighbouring sectors' N.
+//   radius = distance from host centre to the shared methine-edge midpoint.
+//   tilt = rigid glycoluril rotation in radians before translation to radius.
+// Every sector is then repeated by 2*pi/n rotation; no independent atom fitting.
+//
+// Objective: minimise bond-length spread about the mean while opening the inner
+// portal for labels and bent CH2 bridges. Constraints on the normalised layout:
+// every bond 0.85..1.15; for n>=7 every bond/mean 0.95..1.05 (n=5/6 need the
+// wider window); non-neighbour atoms >=0.6, or >=0.95 if either has a label;
+// labels to nonincident bonds >=0.75; nonincident bonds >=0.35; zero crossings.
+// N-CH2-N angles must be 90..155 degrees, i.e. >=25 degrees off straight.
+// Radial C=O and rotational symmetry are enforced by construction, not penalties.
+//
+// To re-derive a feasible design: vary the twelve scalars above for each n in
+// portalLayout, fixing tilt=0 for n=5/6. Use these vectors as feasible seeds, or
+// unitPentagon shapes and the analytic n=10 radius below as initial guesses.
+// Reject invalid bridge chords (not 0<chord<2*bridge), then normalise and measure
+// all constraints with the geometry checks in structureTemplates.test.ts.
+// Minimise max(abs(bondLength/mean-1)), breaking ties by summed squared deviations;
+// a coordinate search with decreasing steps (0.1, 0.01, ... 1e-10), visiting
+// radius, tilt, inner then outer {a,b,h,carbonyl,bridge}, trying +/- each step,
+// provides a dependency-free refinement procedure. This describes re-derivation,
+// not bit-for-bit replay of the lost search: keep the frozen values for identical
+// generated files. Run `node tools/template-layouts/build.mjs --check` to verify.
 const portalDesigns = {
   5: {
     inner: { a: 1.1754680062, b: 0.7370131491, h: 1.3436847367, carbonyl: 1.2421084275, bridge: 0.9997907184 },
