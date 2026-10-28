@@ -106,9 +106,41 @@ describe("template SMILES paste", () => {
     expect(object.style.source).not.toMatch(/^structure-template:/);
     if (object.type !== "molecule") throw new Error("Expected ordinary molecule");
     expect(object.atoms).toHaveLength(77);
-    expect(container.querySelector("[role=status]")?.textContent).toContain("Pasted SMILES structure");
+    expect(object.bonds.filter(bond => bond.display?.bondStyle === "wedge" || bond.display?.bondStyle === "hashed")).toHaveLength(0);
+    const centers = ocl.perceiveStereoCentersFromMolfile(object.structure).filter(center => center.isStereoCenter);
+    expect(centers).toHaveLength(35);
+    expect(centers.every(center => center.descriptor === "unspecified")).toBe(true);
+    expect(container.querySelector("[role=status]")?.textContent).toContain("Pasted SMILES structure — 77 atoms, 35 unspecified stereocenters");
     expect(container.querySelector("[role=status]")?.textContent).not.toContain("template layout");
   }, 60_000);
+  it.each([
+    ["C[C@H](F)[C@H](O)[C@H](Cl)Br", "8 atoms, 3 stereocenters"],
+    ["CC(F)[C@H](O)C(Cl)Br", "8 atoms, 3 stereocenters (2 unspecified)"],
+    ["C[C@H](F)Cl", "4 atoms, 1 stereocenter"]
+  ])("reports specified and unspecified stereo honestly for %s", async (smiles, expected) => {
+    const { port } = await mount(createEmptyDocument());
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", { value: { types: ["text/plain"],
+      getData: (type: string) => type === "text/plain" ? smiles : "" } });
+    await act(async () => {
+      window.dispatchEvent(event);
+      await vi.waitFor(() => expect(port.read("initial")!.pages[0]!.objects).toHaveLength(1));
+    });
+    expect(container.querySelector("[role=status]")?.textContent).toContain(`Pasted SMILES structure — ${expected}`);
+  });
+  it("names a bad list line in the displayed grid status", async () => {
+    const { port } = await mount(createEmptyDocument());
+    const text = "CCO\nC1CC(\nCCN";
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", { value: { types: ["text/plain"],
+      getData: (type: string) => type === "text/plain" ? text : "" } });
+    await act(async () => {
+      window.dispatchEvent(event);
+      await vi.waitFor(() => expect(port.read("initial")!.pages[0]!.objects).toHaveLength(2));
+    });
+    expect(container.querySelector("[role=status]")?.textContent)
+      .toContain("grid; skipped line 2: 'C1CC(' (not valid SMILES)");
+  });
   it.each(["2D depiction exceeded its 2000 ms layout deadline before a standard layout was available.",
     "The 2D depiction worker failed to load."])("shows a specific failure for the Windows input: %s", async reason => {
     const { port } = await mount(createEmptyDocument());

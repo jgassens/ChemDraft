@@ -5047,7 +5047,8 @@ export function insertSmilesMoleculeGrid(
 
 export function insertSmilesMoleculeGridStatus(
   result: ReturnType<typeof insertSmilesMoleculeGrid>,
-  skipped: number
+  skipped: number,
+  skippedItems: readonly { line: number; token: string; reason?: string }[] = []
 ): string {
   let status = `Pasted ${result.objectIds.length} SMILES structures in a ${result.columns} × ${result.rows} grid`;
   if (result.pageResized) {
@@ -5055,7 +5056,13 @@ export function insertSmilesMoleculeGridStatus(
     const unit = pageLayoutSourceUnit(page.layout);
     status += ` (page grown to Custom ${formatPageSizeValue(cssPxToPageSize(page.width, unit))} × ${formatPageSizeValue(cssPxToPageSize(page.height, unit))} ${pageSizeUnitLabel(unit)})`;
   }
-  if (skipped > 0) status += `; ${skipped} token${skipped === 1 ? "" : "s"} skipped`;
+  if (skippedItems.length > 0) {
+    for (const item of skippedItems.slice(0, 3)) {
+      const token = item.token.length > 24 ? `${item.token.slice(0, 23)}…` : item.token;
+      status += `; skipped line ${item.line}: '${token}'${item.reason ? ` (${item.reason})` : ""}`;
+    }
+    if (skippedItems.length > 3) status += `; and ${skippedItems.length - 3} more`;
+  } else if (skipped > 0) status += `; ${skipped} token${skipped === 1 ? "" : "s"} skipped`;
   return status;
 }
 

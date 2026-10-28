@@ -6,7 +6,7 @@ import { SmilesListPasteError, depictSmilesForPaste, depictSmilesListForPaste } 
 import { depictInWorker } from "./depiction2d/depict";
 import { depictSmilesOffThread } from "./depiction2d/client";
 import { registerRdkitWasmLoader } from "./rdkitWasmLoader";
-import { applyClipboardPastePayload, createPhase4Document } from "./documentWorkflow";
+import { applyClipboardPastePayload, createPhase4Document, insertSmilesMoleculeGrid, insertSmilesMoleculeGridStatus } from "./documentWorkflow";
 
 // These cases exercise generic depiction; template identity/layout has its own real-engine tests.
 vi.mock("./structureTemplateInsertion", () => ({ templateMoleculeForSmiles: vi.fn().mockResolvedValue(undefined) }));
@@ -100,6 +100,31 @@ describe("depictSmilesForPaste", () => {
 });
 
 describe("depictSmilesListForPaste", () => {
+  it.each([
+    [["C1CC("], "; skipped line 2: 'C1CC(' (not valid SMILES)"],
+    [["C1CC(", "C2CC(", "C3CC("], "; skipped line 2: 'C1CC(' (not valid SMILES); skipped line 3: 'C2CC(' (not valid SMILES); skipped line 4: 'C3CC(' (not valid SMILES)"],
+    [["C1CC(", "C2CC(", "C3CC(", "C4CC(", "C5CC("], "; skipped line 2: 'C1CC(' (not valid SMILES); skipped line 3: 'C2CC(' (not valid SMILES); skipped line 4: 'C3CC(' (not valid SMILES); and 2 more"],
+    [["C".repeat(40) + "1"], `; skipped line 2: '${"C".repeat(23)}…' (not valid SMILES)`]
+  ] as const)("names skipped lines and caps their status: %j", async (badTokens, suffix) => {
+    // Keep enough valid rows to qualify as a list, even when five entries are bad.
+    const text = ["CCO", ...badTokens, "CCN", "CCC", "CCCC", "CCCCC"].join("\r\n");
+    const parsed = await depictSmilesListForPaste(text, smilesListCandidates(text));
+    expect(parsed?.skipped).toBe(badTokens.length);
+    expect(parsed?.skippedItems).toEqual(badTokens.map((token, index) => ({ line: index + 2, token, reason: "not valid SMILES" })));
+    const grid = insertSmilesMoleculeGrid(createPhase4Document("Skipped lines"), { x: 100, y: 100 }, parsed!.entries);
+    const base = insertSmilesMoleculeGridStatus(grid, 0);
+    expect(insertSmilesMoleculeGridStatus(grid, parsed!.skipped, parsed!.skippedItems)).toBe(base + suffix);
+  });
+
+  it("keeps original line numbers and identifies tokens rejected before parsing", async () => {
+    const text = "CCO aspirin\n\nCCN caffeine";
+    const result = await depictSmilesListForPaste(text, smilesListCandidates(text));
+    expect(result?.skippedItems).toEqual([
+      { line: 1, token: "aspirin", reason: "not valid SMILES" },
+      { line: 3, token: "caffeine", reason: "not valid SMILES" }
+    ]);
+  });
+
   it("retains deadline warnings for individual list entries", async () => {
     const warning = "2D depiction reached its layout deadline; retried the standard layout in a fresh worker.";
     vi.mocked(depictSmilesOffThread).mockResolvedValueOnce({ depiction: ocl.depictSmiles2D("CCO"), stereoCount: 0, warnings: [warning] });

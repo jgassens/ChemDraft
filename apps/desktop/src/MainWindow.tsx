@@ -1624,7 +1624,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.28.15.45-codex";
+const CURRENT_BUILD_STAMP = "10.28.15.50-codex";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -6637,7 +6637,7 @@ export function MainWindow({
       const parsed = await depictSmilesForPaste(smilesText);
       if (quitInteractionRef.current) return { rendered: false, reason: "Paste cancelled while quitting" };
       if (!parsed) return { rendered: false };
-      const { depiction, stereoCount } = parsed;
+      const { depiction } = parsed;
       const point = pastePointForViewport();
       // Parsing is document-independent. Allocate the ID and place its authored geometry
       // against this drawing only once the result is ready, without rebuilding the template.
@@ -6660,8 +6660,26 @@ export function MainWindow({
         },
         smilesText
       ), status: undefined };
-      if (quitInteractionRef.current || documentRef.current !== pasteDocument) throw new Error("The document changed while preparing SMILES paste; paste again.");
       const nextDocument = inserted.document;
+      let stereoStatus = "";
+      const stereoWarnings: string[] = [];
+      try {
+        // Count the actual drawn structure: the worker's total also includes unassigned centers.
+        const pastedMolecule = nextDocument.pages[0]!.objects.find(object =>
+          object.type === "molecule" && nextDocument.selection.objectIds.includes(object.id));
+        if (!pastedMolecule || pastedMolecule.type !== "molecule") throw new Error("The pasted molecule was not found.");
+        const { perceiveStereoCentersFromMolfile } = await import("@chemdraft/ocl-adapter");
+        const centers = perceiveStereoCentersFromMolfile(pastedMolecule.structure).filter(center => center.isStereoCenter);
+        const stereoCount = centers.length;
+        const unspecifiedStereoCount = centers.filter(center => center.descriptor === "unspecified").length;
+        if (stereoCount > 0) {
+          stereoStatus = `, ${stereoCount}${unspecifiedStereoCount === stereoCount ? " unspecified" : ""} stereocenter${stereoCount === 1 ? "" : "s"}`;
+          if (unspecifiedStereoCount > 0 && unspecifiedStereoCount < stereoCount) stereoStatus += ` (${unspecifiedStereoCount} unspecified)`;
+        }
+      } catch (error) {
+        stereoWarnings.push(`Stereocenter counts unavailable: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      if (quitInteractionRef.current || documentRef.current !== pasteDocument) throw new Error("The document changed while preparing SMILES paste; paste again.");
       commitDocumentChange(nextDocument, "Paste SMILES");
       resetPasteUiState();
       // A pasted structure can be larger than the current page (e.g. a long peptide). Offer
@@ -6669,11 +6687,11 @@ export function MainWindow({
       // content overflows and a larger preset (up to A0) would fit it.
       const fit = recommendImportedPageFit(nextDocument);
       setPageFitPrompt(fit ? { ...fit, displayName: "The pasted structure" } : undefined);
-      const baseStatus = `Pasted SMILES structure — ${depiction.atoms.length} atoms${stereoCount ? `, ${stereoCount} stereocenter${stereoCount === 1 ? "" : "s"}` : ""}`;
+      const baseStatus = `Pasted SMILES structure — ${depiction.atoms.length} atoms${stereoStatus}`;
       const pasteStatus = fit
         ? `${baseStatus}; content exceeds ${pageFitPromptLayoutLabel(fit.currentPageTitle, fit.currentOrientation)}`
         : baseStatus;
-      setStatus([pasteStatus, ...(inserted.status ? [inserted.status] : []), ...(parsed.warnings ?? [])].join("; "));
+      setStatus([pasteStatus, ...(inserted.status ? [inserted.status] : []), ...(parsed.warnings ?? []), ...stereoWarnings].join("; "));
       return { rendered: true };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
@@ -6742,7 +6760,7 @@ export function MainWindow({
         resetPasteUiState();
         setPageFitPrompt(undefined);
         const failure = parsed.failures[0];
-        const baseStatus = [insertSmilesMoleculeGridStatus(result, parsed.skipped), ...new Set(entries.flatMap(entry => entry.molecule ? [structureTemplateLayoutMessage(entry.molecule)!] : [])), ...(parsed.warnings ?? [])].join("; ");
+        const baseStatus = [insertSmilesMoleculeGridStatus(result, parsed.skipped, parsed.skippedItems), ...new Set(entries.flatMap(entry => entry.molecule ? [structureTemplateLayoutMessage(entry.molecule)!] : [])), ...(parsed.warnings ?? [])].join("; ");
         setStatus(failure
           ? `${baseStatus}; ${parsed.failures.length} item${parsed.failures.length === 1 ? "" : "s"} failed: ${failure.error}`
           : baseStatus);

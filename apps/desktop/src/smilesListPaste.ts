@@ -50,6 +50,7 @@ function isSmilesChemistryRefusal(error: unknown): error is Error {
 export interface SmilesListPasteResult {
   entries: { smiles: string; depiction: PastedStructureDepiction; molecule?: MoleculeObject }[];
   skipped: number;
+  skippedItems: { line: number; token: string; reason: string }[];
   /** Per-item chemistry or empty-depiction failures, including the input and specific reason. */
   failures: SmilesListPasteFailure[];
   warnings?: string[];
@@ -93,6 +94,7 @@ async function depictSmilesListCandidates(
   const entries: SmilesListPasteResult["entries"] = [];
   const failures: SmilesListPasteResult["failures"] = [];
   const warnings: string[] = [];
+  const handledTokens = new Set<string>();
   const placement = { ...templatePlacement, reservedObjectIds: templatePlacement.reservedObjectIds ?? new Set<string>() };
   const tokens = smilesListTokens(text);
   const firstTokenColumns = new Map<number, number>();
@@ -108,8 +110,10 @@ async function depictSmilesListCandidates(
     } catch (error) {
       if (!isSmilesChemistryRefusal(error) && !(error instanceof EmptySmilesDepictionError)) throw error;
       failures.push({ input: candidate.token, error: error.message });
+      handledTokens.add(`${candidate.line}:${candidate.column}`);
     }
     if (parsed) {
+      handledTokens.add(`${candidate.line}:${candidate.column}`);
       entries.push({ smiles: candidate.token, depiction: parsed.depiction, ...(parsed.molecule ? { molecule: parsed.molecule } : {}) });
       warnings.push(...(parsed.warnings ?? []).map((warning) => `${candidate.token}: ${warning}`));
       if (candidate.column === firstTokenColumns.get(candidate.line)) parsedFirstTokenLines += 1;
@@ -122,7 +126,9 @@ async function depictSmilesListCandidates(
   }
   const lineCount = text.split(/\r\n|\r|\n/).filter((line) => line.trim().length > 0).length;
   if (smilesListDecision({ candidates: tokens.length, parsed: entries.length, lineCount, parsedFirstTokenLines })) {
-    return { entries, skipped: tokens.length - entries.length - failures.length, failures, ...(warnings.length ? { warnings } : {}) };
+    const skippedItems = tokens.filter(token => !handledTokens.has(`${token.line}:${token.column}`))
+      .map(({ line, token }) => ({ line, token, reason: "not valid SMILES" }));
+    return { entries, skipped: skippedItems.length, skippedItems, failures, ...(warnings.length ? { warnings } : {}) };
   }
   // Even a list with too few valid entries must retain the reasons it was refused.
   if (failures.length > 0) throw new SmilesListPasteError(failures);
