@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { readFileSync, mkdtempSync, writeFileSync, rmSync, readdirSync, statSync, symlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { deflateRawSync } from 'node:zlib';
 import { makeEnvelope, checkEnvelope, sha256, MAX_ENVELOPE } from './payload.mjs';
 import { chunks, chunk, makePng, pngFindings, crc32 } from './png.mjs';
-import { makeSvg, svgFindings } from './svg.mjs';
+import { isSvg, makeSvg, svgFindings } from './svg.mjs';
 import { readZip } from './zip.mjs';
 import { makePdf, readPdf, pdfFindings } from './pdf.mjs';
 import { inspectBlob, inspectPath } from './inspect.mjs';
@@ -111,6 +111,24 @@ it('checks ZIP data CRC and entry count', () => {
   expect(() => readZip(tooMany)).toThrow(/2000/);
   const path = join(temp, 'oversized.zip'); writeFileSync(path, tooMany);
   expect(inspectPath(path)[0].error).toMatch(/2000/);
+});
+
+it('isolates the SVG sniffing size-cap error to its ZIP entry', () => {
+  const path = join(temp, 'svg-size-cap.docx');
+  writeFileSync(path, zip([
+    { name: 'word/media/oversized.svg', data: svg },
+    { name: 'word/media/valid.png', data: makePng(png, envelope, 'zTXt') },
+  ]));
+  // Exercise the real size-cap branch without allocating a 200 MB string.
+  const byteLength = vi.spyOn(Buffer, 'byteLength').mockReturnValueOnce(200 * 1024 * 1024 + 1);
+  try {
+    const rows = inspectPath(path);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ entry: 'word/media/oversized.svg', error: 'SVG exceeds 200 MB' });
+    expect(rows[1]).toMatchObject({ entry: 'word/media/valid.png', error: null,
+      findings: [{ envelope: { ok: true } }] });
+    expect(byteLength).toHaveBeenCalledWith(svg.toString('utf8'));
+  } finally { byteLength.mockRestore(); }
 });
 
 describe('complete carrier matrix', () => {
@@ -280,13 +298,30 @@ it.each(['element', 'root', 'ancestor', 'default'])('reads SVG prologs, arbitrar
   const encoded = deflateRawSync(envelope).toString('base64');
   const prefix = scope === 'default' ? '' : 'cd:';
   const declaration = scope === 'default' ? `xmlns='${ns}'` : `xmlns:cd='${ns}'`;
-  const content = `<${prefix}payload encoding='base64-deflate' ${scope === 'element' || scope === 'default' ? declaration : ''}>${encoded}</${prefix}payload>`;
+  const attrs = scope === 'element' || scope === 'default' ? declaration : '';
+  const content = `<${prefix}payload ${scope === 'default' ? `${attrs} encoding='base64-deflate'` : `encoding='base64-deflate' ${attrs}`}>${encoded}</${prefix}payload>`;
   const prolog = ` \n<?xml version="1.0"?>\n<!--${'prolog '.repeat(500)}-->\n<?office test?>\n<!DOCTYPE svg [<!-- \" ] > --><!ENTITY unused SYSTEM "file:///must-not-read"><?dtd test?>]>\n`;
   const text = `${prolog}<svg ${scope === 'root' ? declaration : ''}><metadata ${scope === 'ancestor' ? declaration : ''}>${content}</metadata></svg>`;
   const row = inspectBlob(Buffer.from(text), 'variant.bin');
   expect(row).toMatchObject({ type: 'svg', error: null });
   expect(row.findings).toHaveLength(1);
   expect(row.findings[0].envelope).toMatchObject({ ok: true, sha256: sha256(payload) });
+});
+
+it.each([
+  ['comment whitespace', `<svg><!-- chemdraft:${' '.repeat(200_000)}! --></svg>`],
+  ['prolog whitespace', `${' '.repeat(200_000)}<svg/>`],
+  ['unterminated comment', `<svg><!-- chemdraft:${' '.repeat(200_000)}`],
+  ['attribute name', `<svg ${'a'.repeat(200_000)}></svg>`],
+  ['attribute whitespace', `<svg name${' '.repeat(200_000)}></svg>`],
+  ['unterminated attribute', `<svg name="${'a'.repeat(200_000)}`],
+])('scans 200k adversarial SVG %s in under 500 ms', (_name, text) => {
+  const bytes = Buffer.from(text);
+  for (const scan of [isSvg, svgFindings]) {
+    const start = performance.now();
+    scan(bytes);
+    expect(performance.now() - start).toBeLessThan(500);
+  }
 });
 
 it('reports SVG markers when structure or encoding is not recognised without expanding entities', () => {
@@ -348,17 +383,19 @@ it('accepts padded ZIPs beyond the EOCD search window, retaining zero-ended comm
   expect(checkEnvelope(Buffer.concat([envelope, Buffer.alloc(7)])).notes).toEqual(['Trailing NUL padding: 7 bytes']);
 });
 
-it('builds CF_HTML with 10-digit byte offsets, CRLF header lines and unchanged UTF-8 HTML', () => {
+it('builds CF_HTML with byte offsets excluding its trailing NUL, CRLF headers and unchanged UTF-8 HTML', () => {
   for (const html of [readFileSync(join(fixtureDir, 'sample.html')), Buffer.from('<html>π😀\n<!--StartFragment--><p>é → 文</p><!--EndFragment-->\n</html>')]) {
     const bytes = makeCfHtml(html);
     const header = /^(Version:0\.9\r\nStartHTML:(\d{10})\r\nEndHTML:(\d{10})\r\nStartFragment:(\d{10})\r\nEndFragment:(\d{10})\r\n)/.exec(bytes.toString())!;
     expect(header).not.toBeNull();
     const [start, end, fragmentStart, fragmentEnd] = header.slice(2).map(Number);
     expect(start).toBe(Buffer.byteLength(header[1]));
-    expect(end).toBe(bytes.length);
+    expect(end).toBe(bytes.length - 1);
+    expect(bytes.subarray(end).equals(Buffer.from([0]))).toBe(true);
     expect(bytes.subarray(start, end).equals(html)).toBe(true);
     expect(fragmentStart).toBe(start + html.indexOf('<!--StartFragment-->') + Buffer.byteLength('<!--StartFragment-->'));
     expect(fragmentEnd).toBe(start + html.indexOf('<!--EndFragment-->'));
+    expect(fragmentEnd).toBeLessThan(end);
     expect(bytes.subarray(fragmentStart, fragmentEnd).toString()).toMatch(/^<p>.*<\/p>$/);
   }
   for (const bad of ['<p>missing</p>', '<!--StartFragment-->only start', '<!--EndFragment--><!--StartFragment-->']) {

@@ -13,7 +13,7 @@ export function makeCfHtml(html) {
   const offset = Buffer.byteLength(header([0, 0, 0, 0]));
   const values = [offset, offset + html.length, offset + start + startMarker.length, offset + end];
   if (values.some(n => n > 9999999999)) throw new Error('CF_HTML offset exceeds 10 digits');
-  return Buffer.concat([Buffer.from(header(values)), html]);
+  return Buffer.concat([Buffer.from(header(values)), html, Buffer.from([0])]);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {

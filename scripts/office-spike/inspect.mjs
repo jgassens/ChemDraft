@@ -10,15 +10,15 @@ import { emfFindings } from './emf.mjs';
 
 export function inspectBlob(buf, container, entry = basename(container), expect) {
   let type = 'other', findings = [], image = null, error = null, notes = [];
-  if (buf.subarray(0, 8).toString('hex') === '89504e470d0a1a0a') type = 'png';
-  else if (buf.subarray(0, 3).toString('hex') === 'ffd8ff') type = 'jpeg';
-  else if (buf.subarray(0, 5).toString() === '%PDF-') type = 'pdf';
-  else if (isSvg(buf)) type = 'svg';
-  else if (buf.subarray(0, 3).toString() === 'GIF') type = 'gif';
-  else if (['49492a00', '4d4d002a'].includes(buf.subarray(0, 4).toString('hex'))) type = 'tiff';
-  else if (buf.length >= 44 && buf.readUInt32LE(0) === 1 && buf.toString('ascii', 40, 44) === ' EMF') type = 'emf';
-  else if (buf.subarray(0, 4).toString('hex') === 'd7cdc69a' || (buf.length >= 18 && [1, 2].includes(buf.readUInt16LE(0)) && buf.readUInt16LE(2) === 9 && [0x100, 0x300].includes(buf.readUInt16LE(4)))) type = 'wmf';
   try {
+    if (buf.subarray(0, 8).toString('hex') === '89504e470d0a1a0a') type = 'png';
+    else if (buf.subarray(0, 3).toString('hex') === 'ffd8ff') type = 'jpeg';
+    else if (buf.subarray(0, 5).toString() === '%PDF-') type = 'pdf';
+    else if (isSvg(buf)) type = 'svg';
+    else if (buf.subarray(0, 3).toString() === 'GIF') type = 'gif';
+    else if (['49492a00', '4d4d002a'].includes(buf.subarray(0, 4).toString('hex'))) type = 'tiff';
+    else if (buf.length >= 44 && buf.readUInt32LE(0) === 1 && buf.toString('ascii', 40, 44) === ' EMF') type = 'emf';
+    else if (buf.subarray(0, 4).toString('hex') === 'd7cdc69a' || (buf.length >= 18 && [1, 2].includes(buf.readUInt16LE(0)) && buf.readUInt16LE(2) === 9 && [0x100, 0x300].includes(buf.readUInt16LE(4)))) type = 'wmf';
     if (type === 'png') { const result = pngFindings(buf); findings = result.found; notes = result.notes; image = { width: result.width, height: result.height, dpi: result.dpi }; }
     if (type === 'svg') findings = svgFindings(buf);
     if (type === 'pdf') findings = pdfFindings(buf);

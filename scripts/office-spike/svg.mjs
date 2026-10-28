@@ -64,6 +64,32 @@ export function makeSvg(input, envelope, kind) {
   const at = root.index + root[0].length;
   return Buffer.from(text.slice(0, at) + child + text.slice(at));
 }
+
+// Advance past each name/value once, including malformed or unterminated ones.
+// Retrying an unanchored attribute regex at every character makes long names
+// without '=' quadratic.
+function attributes(raw) {
+  const attrs = new Map();
+  let p = 0;
+  while (p < raw.length) {
+    if (!/[\w.:-]/.test(raw[p])) { p++; continue; }
+    const start = p++;
+    while (p < raw.length && /[\w.:-]/.test(raw[p])) p++;
+    const name = raw.slice(start, p);
+    while (p < raw.length && /\s/.test(raw[p])) p++;
+    if (raw[p] !== '=') continue;
+    p++;
+    while (p < raw.length && /\s/.test(raw[p])) p++;
+    const quote = raw[p];
+    if (quote !== '"' && quote !== "'") continue;
+    const end = raw.indexOf(quote, p + 1);
+    if (end < 0) break;
+    attrs.set(name, raw.slice(p + 1, end));
+    p = end + 1;
+  }
+  return attrs;
+}
+
 export function svgFindings(buf) {
   const text = buf.toString('utf8'), result = [];
   const decode = (carrier, encoded) => {
@@ -72,8 +98,13 @@ export function svgFindings(buf) {
   };
   const stack = [];
   for (const token of markup(text)) {
-    const comment = /^<!--\s*chemdraft:([A-Za-z0-9+/=\s]+)\s*-->$/.exec(token.raw);
-    if (comment) { decode('svg comment', comment[1]); continue; }
+    if (token.raw.startsWith('<!--')) {
+      const body = token.raw.slice(4, token.raw.endsWith('-->') ? -3 : undefined);
+      const marker = /^\s*chemdraft:/.exec(body);
+      const encoded = marker ? body.slice(marker[0].length) : '';
+      if (/^[A-Za-z0-9+/=\s]+$/.test(encoded)) decode('svg comment', encoded);
+      continue;
+    }
     const tag = /^<(\/)?([\w.-]+(?::[\w.-]+)?)\b/.exec(token.raw);
     if (!tag) continue;
     const name = tag[2];
@@ -87,7 +118,7 @@ export function svgFindings(buf) {
       continue;
     }
     if (stack.length >= 256) break;
-    const attrs = new Map([...token.raw.matchAll(/([\w.:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)].map(m => [m[1], m[2] ?? m[3]]));
+    const attrs = attributes(token.raw);
     const namespaces = new Map(stack.at(-1)?.namespaces);
     for (const [key, value] of attrs) {
       if (key === 'xmlns') namespaces.set('', value);

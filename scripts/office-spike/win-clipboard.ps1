@@ -69,7 +69,7 @@ function Make-CfHtml([byte[]]$html) {
   $startFragment = [long]$offset + $utf8.GetByteCount($text.Substring(0, $fragmentStart))
   $endFragment = [long]$offset + $utf8.GetByteCount($text.Substring(0, $end))
   $header = $utf8.GetBytes(($template -f $offset, $endHtml, $startFragment, $endFragment))
-  return ,([byte[]]($header + $html))
+  return ,([byte[]]($header + $html + [byte]0))
 }
 $owner = [SpikeClipboard]::CreateWindowEx(0, 'STATIC', 'ChemDraft clipboard spike', 0, 0, 0, 0, 0, [IntPtr](-3), [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero)
 if ($owner -eq [IntPtr]::Zero) { throw 'Cannot create clipboard owner window' }
