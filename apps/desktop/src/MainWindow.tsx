@@ -1617,7 +1617,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.28.13.20-codex";
+const CURRENT_BUILD_STAMP = "10.28.15.30-codex";
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -1902,6 +1902,12 @@ export function MainWindow({
   nativePalette = shouldDefaultToNativePalettes()
 }: MainWindowProps) {
   useInAppModalUtilitySuspension();
+  // Plugin commands may settle after the document window has unmounted.
+  const mountedRef = useRef(false);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const moleculeTemplateInputRef = useRef<HTMLInputElement>(null);
   const canvasRegionRef = useRef<HTMLElement | null>(null);
@@ -11370,7 +11376,7 @@ export function MainWindow({
           // Collected per invocation: only this command's own selection reads can add to it.
           const selectionWarnings: string[] = [];
           const result = await invokePluginCommand(commandId, { selectionWarnings, input: options?.input });
-          if (pluginCommandGenerationsRef.current.get(queueKey) !== generation) {
+          if (!mountedRef.current || pluginCommandGenerationsRef.current.get(queueKey) !== generation) {
             return;
           }
           const failure = pluginCommandFailure(result);
@@ -11386,7 +11392,7 @@ export function MainWindow({
           }
         })
         .catch((error: unknown) => {
-          if (pluginCommandGenerationsRef.current.get(queueKey) !== generation) {
+          if (!mountedRef.current || pluginCommandGenerationsRef.current.get(queueKey) !== generation) {
             return;
           }
           const message = error instanceof Error ? error.message : String(error);
@@ -11398,9 +11404,11 @@ export function MainWindow({
         if (pluginCommandQueuesRef.current.get(queueKey) === tracked) {
           pluginCommandQueuesRef.current.delete(queueKey);
           pluginCommandGenerationsRef.current.delete(queueKey);
-          setPendingPluginCommands(current => {
-            const next = new Set(current); next.delete(queueKey); return next;
-          });
+          if (mountedRef.current) {
+            setPendingPluginCommands(current => {
+              const next = new Set(current); next.delete(queueKey); return next;
+            });
+          }
         }
       });
       pluginCommandQueuesRef.current.set(queueKey, tracked);
@@ -11409,6 +11417,7 @@ export function MainWindow({
     }
 
     void invokePluginCommand(commandId).catch((error: unknown) => {
+      if (!mountedRef.current) return;
       const message = error instanceof Error ? error.message : String(error);
       setStatus(`Command failed: ${message}`);
     });
