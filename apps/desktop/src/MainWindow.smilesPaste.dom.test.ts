@@ -106,8 +106,8 @@ describe("MainWindow SMILES paste failure notices", () => {
     expect(container.querySelectorAll(".text-object")).toHaveLength(0);
   }, 20_000);
 
-  it("counts C1CC as skipped while placing the other list entries", async () => {
-    const status = await paste("CCO\nC1CC\nCCN\nCCC", "text/plain", "1 token skipped");
+  it("names the skipped line for C1CC while placing the other list entries", async () => {
+    const status = await paste("CCO\nC1CC\nCCN\nCCC", "text/plain", "skipped line 2: 'C1CC' (not valid SMILES)");
     expect(status).not.toContain("failed");
     expect(container.querySelectorAll(".molecule-object")).toHaveLength(3);
   }, 20_000);
