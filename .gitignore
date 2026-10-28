@@ -35,3 +35,6 @@ openclatura/
 
 # Python bytecode from running the OCSR sidecar self-test in place.
 apps/desktop/src-tauri/resources/ocsr/__pycache__/
+
+# Cloudflare wrangler local state
+.wrangler/
