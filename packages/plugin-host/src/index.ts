@@ -1043,7 +1043,9 @@ export class PluginHost {
     this.requirePermission(pluginId, "document.write");
     const invocation = invocationToken ? this.activeCommandInvocations.get(invocationToken) : undefined;
     if (!invocation || invocation.pluginId !== pluginId) {
-      throw new PluginHostError(`Plugin "${pluginId}" may call documents.applyPatch only while one of its own commands is executing.`);
+      throw new PluginHostError(
+        `Plugin "${pluginId}" may call documents.insertTable only while one of its own commands is executing.`
+      );
     }
     if (!this.buildTablePatch) throw new PluginHostError(`This host provides no table builder for plugin "${pluginId}".`);
     const document = await this.getActiveDocument?.();

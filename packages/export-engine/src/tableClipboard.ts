@@ -173,7 +173,8 @@ function htmlTable(table: TableObject, layout: TableLayout, options: TableClipbo
         cellStyle += `;border-${side}:${border > 0 ? `solid windowtext ${numeric(border)}pt` : "none"}`;
         if (border > 0) cellStyle += `;mso-border-${side}-alt:solid windowtext ${numeric(border)}pt`;
       }
-      if (!header && table.columns[column].align === "decimal" && numberPattern.test(text)) {
+      if (!header && table.columns[column].align === "decimal" &&
+        /^-?(0|[1-9][0-9]*)(\.[0-9]+)?$/.test(text)) {
         const decimals = (text.split(".")[1] ?? "").length;
         const format = decimals > 0 ? `0\\.${"0".repeat(decimals)}` : "0";
         cellStyle += `;mso-number-format:'${format}'`;
@@ -279,10 +280,7 @@ function rtfTable(table: TableObject, layout: TableLayout, options: TableClipboa
         result += `\\clpadr${Math.round((table.tableStyle.cellPaddingPx.x + alignment.insetRight) * 15)}`
           + "\\clpadfr3";
       }
-      if (alignment.insetLeft !== undefined) {
-        result += `\\clpadl${Math.round((table.tableStyle.cellPaddingPx.x + alignment.insetLeft) * 15)}`
-          + "\\clpadfl3";
-      }
+      // Word swaps per-cell left and top padding, so encode the left inset in the tab stop instead.
       const planned = layout.columns[column];
       result += `\\cellx${Math.round((planned.x + planned.width - layout.bodyBox.x) * 15)}`;
     }
@@ -290,7 +288,7 @@ function rtfTable(table: TableObject, layout: TableLayout, options: TableClipboa
       const alignment = cellAlignment(table, layout, row, column);
       const tab = alignment.decimalOffset;
       result += `\\pard\\plain\\intbl\\q${alignment.align[0]}\\sa0\\sb0\\sl240\\slmult1`;
-      if (tab !== undefined) result += `\\tqdec\\tx${Math.round(tab * 15)}`;
+      if (tab !== undefined) result += `\\tqdec\\tx${Math.round((tab + (alignment.insetLeft ?? 0)) * 15)}`;
       const cell = layout.cells[row * table.columns.length + column];
       result += `${font()} ${linesText(cell.lines, tab !== undefined)}\\cell`;
     }

@@ -14,7 +14,11 @@ export function buildPluginTablePatch(spec: PluginTableSpec, document: ChemDraft
     RESERVED_PLUGIN_OBJECT_IDS.add(id);
     return id;
   };
-  const { object } = buildTableObject(spec, { id: newId("table"), x: 0, y: 0, newId });
+  const id = newId("table");
+  let row = 0;
+  let column = 0;
+  const localId = (prefix: string) => prefix === "row" ? `${id}-r${++row}` : `${id}-c${++column}`;
+  const { object } = buildTableObject(spec, { id, x: 0, y: 0, newId: localId });
   const selected = selectionBounds(page.objects, selection);
   const visible = viewport ?? { x: 0, y: 0, width: page.width, height: page.height };
   const placed = { ...object,

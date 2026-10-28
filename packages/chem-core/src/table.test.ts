@@ -9,6 +9,26 @@ const document = parseDocument(fixture);
 const table = document.pages[0]!.objects[0] as TableObject;
 
 describe("table objects", () => {
+  it("enforces the new content and font limits at their boundaries", () => {
+    const cell = { text: "x", spans: Array(200).fill({ text: "x", style: {}, script: "normal" }) };
+    const base = { ...table, columns: [table.columns[0]], rows: [{ id: "r", cells: [cell] }],
+      caption: undefined, footnotes: [], headerRowCount: 0,
+      style: { fontFamily: "x".repeat(200), fontSizePx: 400 } };
+    expect(TableObjectSchema.safeParse(base).success).toBe(true);
+    expect(() => TableObjectSchema.parse({ ...base, rows: [{ id: "r", cells: [{ ...cell,
+      spans: [...cell.spans, cell.spans[0]] }] }] })).toThrow(/maxSpansPerCell.*200.*201/);
+    expect(() => TableObjectSchema.parse({ ...base, style: { fontFamily: "x".repeat(201) } }))
+      .toThrow(/maxFontFamilyLength.*200.*201/);
+    for (const size of [0, 401]) {
+      expect(() => TableObjectSchema.parse({ ...base, style: { fontSizePx: size } }))
+        .toThrow(new RegExp(`fontSizePx.*400.*${size}`));
+    }
+    const rows = Array.from({ length: 100 }, (_, i) =>
+      ({ id: `r${i}`, cells: [{ text: "x".repeat(2000) }] }));
+    expect(TableObjectSchema.safeParse({ ...base, rows }).success).toBe(true);
+    expect(() => TableObjectSchema.parse({ ...base, rows, caption: { text: "x" } }))
+      .toThrow(/maxTableCharacters.*200000.*200001/);
+  });
   it("parses and round-trips the complete fixture", () => {
     expect(document).toEqual(fixture);
     expect(deserializeDocument(serializeDocument(document))).toEqual(fixture);
@@ -25,7 +45,8 @@ describe("table objects", () => {
     const column = table.columns[0]!;
     const cell = table.rows[0]!.cells[0]!;
     const columns = Array.from({ length: TABLE_LIMITS.maxColumns }, (_, i) => ({ ...column, id: `c${i}` }));
-    const rows = Array.from({ length: TABLE_LIMITS.maxRows }, (_, i) => ({ id: `r${i}`, cells: columns.map(() => cell) }));
+    const rows = Array.from({ length: TABLE_LIMITS.maxRows }, (_, i) =>
+      ({ id: `r${i}`, cells: columns.map(() => ({ ...cell, text: "", spans: [] })) }));
     const maximum = { ...table, columns, rows, caption: { text: "x".repeat(2000), spans: [] }, footnotes: Array.from({ length: 50 }, () => ({ text: "x", spans: [] })) };
     expect(TableObjectSchema.safeParse(maximum).success).toBe(true);
     expect(TableObjectSchema.safeParse({ ...maximum, columns: [...columns, { ...column, id: "extra" }] }).success).toBe(false);

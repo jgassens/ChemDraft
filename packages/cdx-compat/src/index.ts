@@ -784,7 +784,7 @@ function exportTableObject(
       const runXml = runs.map(run => {
         const weight = typeof run.style.fontWeight === "number" ? run.style.fontWeight : style.fontWeight;
         const italic = typeof run.style.fontStyle === "string" ? run.style.fontStyle : style.fontStyle;
-        const face = (weight >= 700 ? 1 : 0) + (italic === "italic" ? 2 : 0) +
+        const face = (weight >= 600 ? 1 : 0) + (italic === "italic" ? 2 : 0) +
           (run.script === "subscript" ? 32 : run.script === "superscript" ? 64 : 0);
         const size = run.script === "normal" && typeof run.style.fontSizePx === "number" ? run.style.fontSizePx : fontSizePx;
         return `<s font="${font}" size="${formatNumber(cssPxToCdxml(size))}" face="${face}">${escapeXmlText(run.text)}</s>`;

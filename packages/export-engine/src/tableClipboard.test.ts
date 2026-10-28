@@ -156,9 +156,10 @@ describe("table clipboard payloads", () => {
           expect(style).toContain(`text-align:left;tab-stops:decimal ${offsetPt}pt`);
           expect(cellStyle).toContain(`padding-left:${Number((padding * 0.75).toFixed(4))}pt`);
           expect(cellStyle).not.toContain("padding-right");
-          expect(rtfDefinitions[column]).toContain(`\\clpadl${Math.round(padding * 15)}\\clpadfl3`);
+          expect(rtfDefinitions[column]).not.toMatch(/\\clpad[lt]/);
           expect(rtfCells[column]).toMatch(/^\\ql/);
-          expect(rtfCells[column]).toContain(`\\tqdec\\tx${Math.round(block.preWidth * 15)}`);
+          const tabTwips = Math.round((block.insetLeft + block.preWidth) * 15);
+          expect(rtfCells[column]).toContain(`\\tqdec\\tx${tabTwips}`);
           expect(rtfCells[column].match(/\\tab /g)).toHaveLength(1);
         }
         expect(paragraph.textContent).toBe(table.rows[index].cells[column].text);
@@ -322,11 +323,20 @@ describe("table clipboard payloads", () => {
         expect(cell.querySelector("p")?.getAttribute("style")).toContain(`text-align:${side}`);
       }
       const rtf = exportTableToRtf(input);
+      expect(rtf).not.toMatch(/\\clpad[lt]|\\clpadf[lt]/);
       for (const row of rtf.split("\\trowd").slice(1)) {
-        expect(row).toContain(`\\clpad${side[0]}${Math.round(padding * 15)}\\clpadf${side[0]}3`);
+        if (rightAligned) expect(row).toContain(`\\clpadr${Math.round(padding * 15)}\\clpadfr3`);
+        else expect(row).toContain(`\\tqdec\\tx${Math.round((block.insetLeft + block.preWidth) * 15)}`);
       }
     }
   );
+
+  it("formats only canonical decimals as Excel numbers", () => {
+    const input = smallTable(["007", "+5", "0", "-5", "12.30", "01.2", ".5", "5."], "decimal");
+    const cells = [...htmlDocument(exportTableToHtml(input)).querySelectorAll("td")];
+    expect(cells.map(cell => cell.getAttribute("style")!.includes("mso-number-format")))
+      .toEqual([false, false, true, true, true, false, false, false]);
+  });
 
   it("omits all font families and sizes in inherit mode while preserving layout and rich text", () => {
     const inherited = exportTableClipboardPayloads(table, { font: "inherit" });

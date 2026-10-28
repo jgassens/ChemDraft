@@ -26,6 +26,10 @@ const TableRichCellInputSchema = z.object({
   spans: z.array(TableSpanInputSchema).optional(),
   formula: TableFormulaRuleSchema.optional()
 }).strict().superRefine((value, ctx) => {
+  if (value.spans && value.spans.length > TABLE_LIMITS.maxSpansPerCell) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom,
+      message: `maxSpansPerCell is ${TABLE_LIMITS.maxSpansPerCell}; actual value is ${value.spans.length}` });
+  }
   if (value.spans && value.spans.map((item) => item.text).join("") !== value.text) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Span text must match cell text" });
   }
@@ -47,8 +51,19 @@ const TableStyleInputSchema = z.object({
   preset: z.enum(["three-line", "grid"]).optional(),
   headerBold: z.boolean().optional(),
   fontFamily: z.string().optional(),
-  fontSizePx: z.number().finite().positive().optional()
-}).strict();
+  fontSizePx: z.number().optional()
+}).strict().superRefine((style, ctx) => {
+  if (style.fontFamily && style.fontFamily.length > TABLE_LIMITS.maxFontFamilyLength) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["fontFamily"],
+      message: `maxFontFamilyLength is ${TABLE_LIMITS.maxFontFamilyLength}; `
+        + `actual value is ${style.fontFamily.length}` });
+  }
+  if (style.fontSizePx !== undefined && (!Number.isFinite(style.fontSizePx) || style.fontSizePx < 1 ||
+    style.fontSizePx > TABLE_LIMITS.maxFontSizePx)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["fontSizePx"],
+      message: `fontSizePx must be 1..${TABLE_LIMITS.maxFontSizePx}; actual value is ${style.fontSizePx}` });
+  }
+});
 
 type TableSpecShape = {
   columns: Array<{ header?: CellInput }>;
@@ -76,6 +91,12 @@ export const TableSpecSchema = z.object({
   style: TableStyleInputSchema.optional()
 }).strict().superRefine((value, ctx) => {
   const headers = specHeaderRows(value);
+  const length = (cell: CellInput) => (typeof cell === "string" ? cell : cell.text).length;
+  const total = [...headers, ...value.rows].flat().reduce((sum, cell) => sum + length(cell), 0)
+    + (value.caption === undefined ? 0 : length(value.caption))
+    + (value.footnotes ?? []).reduce((sum, cell) => sum + length(cell), 0);
+  if (total > TABLE_LIMITS.maxTableCharacters) ctx.addIssue({ code: z.ZodIssueCode.custom,
+    message: `maxTableCharacters is ${TABLE_LIMITS.maxTableCharacters}; actual value is ${total}` });
   const groups = [["headerRows", headers], ["rows", value.rows]] as const;
   for (const [kind, rows] of groups) {
     const noun = kind === "rows" ? "Row" : "Header row";
@@ -141,7 +162,7 @@ function cellFromInput(value: CellInput, column: TableColumnValue): TableCellVal
 export function buildTableObject(
   input: unknown,
   options: { id: string; x: number; y: number; newId: IdFactory; style?: TableObject["style"] }
-): { object: TableObject; warnings: string[] } {
+): { object: TableObject } {
   const spec = TableSpecSchema.parse(input);
   const columns = spec.columns.map((column) => ({
     id: options.newId("column"),
@@ -176,7 +197,7 @@ export function buildTableObject(
       ...(spec.style?.fontSizePx !== undefined ? { fontSizePx: spec.style.fontSizePx } : {})
     }
   });
-  return { object: frameTable(object), warnings: [] };
+  return { object: frameTable(object) };
 }
 
 function editResult(table: TableObject, label: string): TableEditResult {

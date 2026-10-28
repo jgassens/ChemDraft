@@ -493,11 +493,17 @@ export const TextObjectSchema = BaseObjectSchema.extend({
   spans: z.array(TextSpanSchema).default([])
 }).strict();
 
-export const TABLE_LIMITS = { maxColumns: 64, maxRows: 500, maxCellCharacters: 2000, maxFootnotes: 50 } as const;
+export const TABLE_LIMITS = {
+  maxColumns: 64, maxRows: 500, maxCellCharacters: 2000, maxFootnotes: 50,
+  maxSpansPerCell: 200, maxFontFamilyLength: 200, maxFontSizePx: 400, maxTableCharacters: 200000
+} as const;
 
 export const TableRichTextSchema = z.object({
   text: z.string().max(TABLE_LIMITS.maxCellCharacters),
-  spans: z.array(TextSpanSchema).default([])
+  spans: z.array(TextSpanSchema).default([]).superRefine((spans, ctx) => {
+    if (spans.length > TABLE_LIMITS.maxSpansPerCell) ctx.addIssue({ code: z.ZodIssueCode.custom,
+      message: `maxSpansPerCell is ${TABLE_LIMITS.maxSpansPerCell}; actual value is ${spans.length}` });
+  })
 }).strict();
 
 export const TableCellSchema = TableRichTextSchema.extend({
@@ -541,6 +547,21 @@ const TableObjectShapeSchema = BaseObjectSchema.extend({
 }).strict();
 
 function refineTable(table: z.infer<typeof TableObjectShapeSchema>, ctx: z.RefinementCtx): void {
+  const total = table.rows.flatMap(row => row.cells).reduce((sum, cell) => sum + cell.text.length, 0)
+    + (table.caption?.text.length ?? 0) + table.footnotes.reduce((sum, note) => sum + note.text.length, 0);
+  if (total > TABLE_LIMITS.maxTableCharacters) ctx.addIssue({ code: z.ZodIssueCode.custom,
+    message: `maxTableCharacters is ${TABLE_LIMITS.maxTableCharacters}; actual value is ${total}` });
+  const family = table.style.fontFamily;
+  if (typeof family === "string" && family.length > TABLE_LIMITS.maxFontFamilyLength) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["style", "fontFamily"],
+      message: `maxFontFamilyLength is ${TABLE_LIMITS.maxFontFamilyLength}; actual value is ${family.length}`
+    });
+  }
+  const size = table.style.fontSizePx;
+  if (typeof size === "number" && (!Number.isFinite(size) || size < 1 || size > TABLE_LIMITS.maxFontSizePx)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["style", "fontSizePx"],
+      message: `fontSizePx must be 1..${TABLE_LIMITS.maxFontSizePx}; actual value is ${size}` });
+  }
   const columnIds = new Set<string>();
   table.columns.forEach((column, index) => {
     if (columnIds.has(column.id)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["columns", index, "id"], message: `Duplicate column id "${column.id}".` });

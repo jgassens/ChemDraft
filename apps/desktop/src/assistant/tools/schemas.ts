@@ -9,7 +9,11 @@ const formulaRule = z.enum(["auto", "off"]);
 const tableCell = z.union([z.string().max(TABLE_LIMITS.maxCellCharacters), z.object({
   text: z.string().max(TABLE_LIMITS.maxCellCharacters),
   spans: z.array(z.object({ text: z.string(), script: z.enum(["normal", "subscript", "superscript"]).optional(),
-    bold: z.boolean().optional(), italic: z.boolean().optional() }).strict()).optional(),
+    bold: z.boolean().optional(), italic: z.boolean().optional() }).strict())
+    .max(TABLE_LIMITS.maxSpansPerCell, { error: issue =>
+      `maxSpansPerCell is ${TABLE_LIMITS.maxSpansPerCell}; actual value is `
+      + `${(issue.input as unknown[]).length}` })
+    .optional(),
   formula: formulaRule.optional()
 }).strict()]);
 const tableSpec = z.object({
@@ -19,7 +23,15 @@ const tableSpec = z.object({
   headerRows: z.array(z.array(tableCell)).optional(), caption: tableCell.optional(),
   footnotes: z.array(tableCell).max(TABLE_LIMITS.maxFootnotes).optional(),
   style: z.object({ preset: z.enum(["three-line", "grid"]).optional(), headerBold: z.boolean().optional(),
-    fontFamily: z.string().optional(), fontSizePx: z.number().positive().optional() }).strict().optional(),
+    fontFamily: z.string().max(TABLE_LIMITS.maxFontFamilyLength, { error: issue =>
+      `maxFontFamilyLength is ${TABLE_LIMITS.maxFontFamilyLength}; `
+      + `actual value is ${(issue.input as string).length}` })
+      .optional(),
+    fontSizePx: z.number().min(1, {
+      error: issue => `fontSizePx must be 1..400; actual value is ${issue.input}`
+    }).max(TABLE_LIMITS.maxFontSizePx, {
+      error: issue => `fontSizePx must be 1..400; actual value is ${issue.input}` })
+      .optional() }).strict().optional(),
   besideObjectId: z.string().min(1).max(256).optional()
 }).strict().superRefine(({ besideObjectId: _beside, ...spec }, ctx) => {
   const result = TableSpecSchema.safeParse(spec);

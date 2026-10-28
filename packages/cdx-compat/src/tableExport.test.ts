@@ -70,7 +70,8 @@ describe("CDXML table approximation", () => {
   it("combines bold, italic and script face bits", () => {
     const document = fixture();
     const table = document.pages[0].objects[0] as TableObject;
-    table.rows[1].cells[0] = { text: "x", spans: [{ text: "x", script: "superscript", style: { fontWeight: 700, fontStyle: "italic" } }] };
+    table.rows[1].cells[0] = { text: "x", spans: [{ text: "x", script: "superscript",
+      style: { fontWeight: 600, fontStyle: "italic" } }] };
     const run = [...xml(exportDocumentToCdxml(document).contents).querySelectorAll("group t s")].find(item => item.textContent === "x");
     expect(run?.getAttribute("face")).toBe("67");
   });

@@ -4,6 +4,7 @@ import { parseDocument, TableObjectSchema, type TableObject, type TableRichText 
 import { planTableLayout } from "@chemdraft/layout-engine";
 import {
   buildTableObject,
+  TableSpecSchema,
   deleteTableColumns,
   deleteTableRows,
   formatTableCellFormula,
@@ -119,9 +120,25 @@ function sharplessSpec() {
 }
 
 describe("buildTableObject", () => {
+  it("enforces content and font limits at their boundaries", () => {
+    const spec = { columns: [{}], rows: [[{ text: "x".repeat(200),
+      spans: Array(200).fill({ text: "x" }) }]], style: { fontFamily: "x".repeat(200), fontSizePx: 400 } };
+    expect(TableSpecSchema.safeParse(spec).success).toBe(true);
+    expect(() => TableSpecSchema.parse({ ...spec, rows: [[{ text: "x".repeat(201),
+      spans: Array(201).fill({ text: "x" }) }]] })).toThrow(/maxSpansPerCell.*200.*201/);
+    expect(() => TableSpecSchema.parse({ ...spec, style: { fontFamily: "x".repeat(201) } }))
+      .toThrow(/maxFontFamilyLength.*200.*201/);
+    for (const size of [0, 401]) expect(() => TableSpecSchema.parse({ ...spec, style: { fontSizePx: size } }))
+      .toThrow(new RegExp(`fontSizePx.*400.*${size}`));
+    const rows = Array.from({ length: 100 }, () => ["x".repeat(2000)]);
+    expect(TableSpecSchema.safeParse({ columns: [{}], rows }).success).toBe(true);
+    expect(() => TableSpecSchema.parse({ columns: [{}], rows, footnotes: ["x"] }))
+      .toThrow(/maxTableCharacters.*200000.*200001/);
+  });
   it("builds the Sharpless fixture table from a spec", () => {
-    const { object, warnings } = buildTableObject(sharplessSpec(), buildOptions);
-    expect(warnings).toEqual([]);
+    const result = buildTableObject(sharplessSpec(), buildOptions);
+    expect(result).not.toHaveProperty("warnings");
+    const { object } = result;
     expect(object.id).toBe("table-built");
     expect(object.type).toBe("table");
     expect(stripIds(object)).toEqual(stripIds(fixtureTable));

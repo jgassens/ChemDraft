@@ -115,7 +115,7 @@ export function pasteTableIntoDocument(
   textStyle: Partial<NativeTextStyle>,
   newId: (prefix: string) => string
 ): { document: ChemDraftDocument; warnings: string[] } {
-  const { object, warnings } = buildTableObject(parsed.spec, {
+  const { object } = buildTableObject(parsed.spec, {
     id: newId("table"), x: 0, y: 0, newId, style: textStyleToObjectStyle(textStyle)
   });
   const page = document.pages[0];
@@ -125,6 +125,6 @@ export function pasteTableIntoDocument(
       { op: "addObject", pageId: page.id, object: centered },
       { op: "setSelection", pageId: page.id, objectIds: [centered.id] }
     ]),
-    warnings: [...parsed.warnings, ...warnings]
+    warnings: [...parsed.warnings]
   };
 }

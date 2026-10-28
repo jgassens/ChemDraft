@@ -37,7 +37,8 @@ describe("command-scoped native table insertion", () => {
     let retained!: NonNullable<PluginCommandContext["documents"]["insertTable"]>;
     const s = setup(context => { retained = context.documents.insertTable!; });
     await s.host.invokeCommand("plugin.tables.insert");
-    await expect(retained(spec)).rejects.toThrow('may call documents.applyPatch only while one of its own commands is executing.');
+    await expect(retained(spec)).rejects.toThrow(
+      'may call documents.insertTable only while one of its own commands is executing.');
     await expect(s.host.createCommandContext("org.test.tables").documents.insertTable!(spec)).rejects.toThrow("only while one of its own commands");
     expect(s.buildTablePatch).not.toHaveBeenCalled();
   });

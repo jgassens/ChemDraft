@@ -7,10 +7,25 @@ import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import { createPluginRuntime } from "./createPluginRuntime";
 import { applyPluginDocumentPatch } from "./applyPluginDocumentPatch";
 import { buildPluginTablePatch } from "./buildPluginTablePatch";
+import { RESERVED_PLUGIN_OBJECT_IDS } from "./reservedObjectIds";
 
 const spec: PluginTableSpec = { columns: [{ header: "Formula" }], rows: [["H2O"]] };
 
 describe("plugin table preparation and runtime", () => {
+  it("reserves only object ids when preparing many tables", () => {
+    const before = RESERVED_PLUGIN_OBJECT_IDS.size;
+    const document = createEmptyDocument();
+    const ids = new Set<string>();
+    for (let i = 0; i < 30; i++) {
+      const patch = buildPluginTablePatch(spec, document, []).patch;
+      if (patch.op !== "addObject" || patch.object.type !== "table") throw new Error("Expected table");
+      ids.add(patch.object.id);
+      expect(patch.object.rows[0].id).toBe(`${patch.object.id}-r1`);
+      expect(patch.object.columns[0].id).toBe(`${patch.object.id}-c1`);
+    }
+    expect(ids.size).toBe(30);
+    expect(RESERVED_PLUGIN_OBJECT_IDS.size - before).toBe(30);
+  });
   it("keeps the public input type aligned with the shared validator", () => {
     expectTypeOf<PluginTableSpec>().toEqualTypeOf<z.input<typeof TableSpecSchema>>();
   });

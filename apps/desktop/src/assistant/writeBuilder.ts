@@ -349,11 +349,15 @@ export function buildInsertTable(context: AssistantToolContext, raw: unknown): A
     RESERVED_PLUGIN_OBJECT_IDS.add(id);
     return id;
   };
-  const { object, warnings } = buildTableObject(spec, { id: newId("table_assistant"), x: 0, y: 0, newId });
+  const id = newId("table_assistant");
+  let row = 0;
+  let column = 0;
+  const localId = (prefix: string) => prefix === "row" ? `${id}-r${++row}` : `${id}-c${++column}`;
+  const { object } = buildTableObject(spec, { id, x: 0, y: 0, newId: localId });
   const relative = besideObjectId ? { objectId: besideObjectId, side: "right" as const } : undefined;
   const pageId = besideObjectId ? findObject(document, besideObjectId).page.id : undefined;
   const placed = placement(context, [object], pageId, relative);
-  return insertionPlan(document, insertWrite(placed.page.id, placed.objects, "Inserted table", warnings),
+  return insertionPlan(document, insertWrite(placed.page.id, placed.objects, "Inserted table", []),
     placed.plan, placed.page.id, [[object]], ["table"], "This table");
 }
 export async function buildEditStructure(context: AssistantToolContext, raw: unknown): Promise<AssistantWrite> {

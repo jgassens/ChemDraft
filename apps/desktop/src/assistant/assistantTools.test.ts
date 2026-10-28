@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ASSISTANT_TOOLS, callAssistantTool, listAssistantTools } from "./assistantTools";
 import { toolJsonSchema, toolSchemas, type AssistantToolName } from "./tools/schemas";
 import { testContext } from "./tools/testContext";
+import { RESERVED_PLUGIN_OBJECT_IDS } from "../plugins/reservedObjectIds";
 
 const validInputs: Record<AssistantToolName, unknown> = {
   get_document: {}, get_selection: {}, get_structure: { objectId: "mol", format: "smiles" },
@@ -14,6 +15,23 @@ const validInputs: Record<AssistantToolName, unknown> = {
 };
 afterEach(() => vi.useRealTimers());
 describe("assistant catalog and schema mirrors", () => {
+  it("enforces table content and font boundaries with actual values", () => {
+    const input = { columns: [{}], rows: [[{ text: "x".repeat(200), spans: Array(200).fill({ text: "x" }) }]],
+      style: { fontFamily: "x".repeat(200), fontSizePx: 400 } };
+    expect(toolSchemas.insert_table.safeParse(input).success).toBe(true);
+    expect(() => toolSchemas.insert_table.parse({ ...input, rows: [[{ text: "x".repeat(201),
+      spans: Array(201).fill({ text: "x" }) }]] })).toThrow(/maxSpansPerCell.*200.*201/);
+    expect(() => toolSchemas.insert_table.parse({ ...input, style: { fontFamily: "x".repeat(201) } }))
+      .toThrow(/maxFontFamilyLength.*200.*201/);
+    for (const size of [0, 401]) {
+      expect(() => toolSchemas.insert_table.parse({ ...input, style: { fontSizePx: size } }))
+        .toThrow(new RegExp(`fontSizePx.*400.*${size}`));
+    }
+    const rows = Array.from({ length: 100 }, () => ["x".repeat(2000)]);
+    expect(toolSchemas.insert_table.safeParse({ columns: [{}], rows }).success).toBe(true);
+    expect(() => toolSchemas.insert_table.parse({ columns: [{}], rows, caption: "x" }))
+      .toThrow(/maxTableCharacters.*200000.*200001/);
+  });
   it("ships every name in the amended table with its Zod-derived JSON schema", () => {
     expect(ASSISTANT_TOOLS.map(tool => tool.name).sort()).toEqual(Object.keys(validInputs).sort());
     expect(new Set(ASSISTANT_TOOLS.map(tool => tool.name)).size).toBe(15);
@@ -81,6 +99,19 @@ describe("assistant catalog and schema mirrors", () => {
   });
 });
 describe("assistant calls", () => {
+  it("reserves only one object id per inserted table", async () => {
+    const { context } = testContext(false);
+    const before = RESERVED_PLUGIN_OBJECT_IDS.size;
+    for (let i = 0; i < 10; i++) {
+      const result = await callAssistantTool(context, "insert_table", validInputs.insert_table);
+      expect(result.isError).not.toBe(true);
+      const id = (result.structuredContent!.objectIds as string[])[0]!;
+      const table = context.getDocument()!.pages[0].objects.find(object => object.id === id);
+      expect(table).toMatchObject({ rows: [{ id: `${id}-r1` }, { id: `${id}-r2` }],
+        columns: [{ id: `${id}-c1` }] });
+    }
+    expect(RESERVED_PLUGIN_OBJECT_IDS.size - before).toBe(10);
+  });
   it("inserts a native table beside an object in one write and permits later scoped edits", async () => {
     const { context, text } = testContext(false);
     const inserted = await callAssistantTool(context, "insert_table", {
