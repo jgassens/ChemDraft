@@ -2,25 +2,32 @@ import { smilesListDecision, smilesListTokens, type SmilesListCandidate } from "
 import type { PastedStructureDepiction } from "./documentWorkflow";
 import { depictSmilesOffThread } from "./depiction2d/client";
 import type { DepictionRequestOptions } from "@chemdraft/rdkit-adapter";
-import { createEmptyDocument } from "@chemdraft/chem-core";
-import { pastedStructureDepictionFromMolfile } from "@chemdraft/document-workflow-core";
+import { createEmptyDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { pastedStructureDepictionFromMolfile, type StructureTemplateMoleculeOptions } from "@chemdraft/document-workflow-core";
 import { templateMoleculeForSmiles } from "./structureTemplateInsertion";
+
+type TemplatePastePlacement = Pick<StructureTemplateMoleculeOptions, "document" | "centre" | "reservedObjectIds">;
 
 /** Only unparseable text returns undefined; engine failures and chemistry refusals throw. */
 export async function depictSmilesForPaste(
   smiles: string,
-  options: DepictionRequestOptions = {}
-): Promise<{ depiction: PastedStructureDepiction; stereoCount: number; warnings?: string[] } | undefined> {
+  options: DepictionRequestOptions = {},
+  templatePlacement?: TemplatePastePlacement
+): Promise<{ depiction: PastedStructureDepiction; stereoCount: number; warnings?: string[]; molecule?: MoleculeObject } | undefined> {
   try {
     // A known host must not depend on a generic coordinate generator succeeding first.
-    // Final placement still goes through the shared template builder at document default size.
-    const template = await templateMoleculeForSmiles(smiles, createEmptyDocument(), { x: 0, y: 0 });
+    // Build once at document default size; insertion reuses this molecule (the grid only translates it).
+    const molecule = await templateMoleculeForSmiles(smiles,
+      templatePlacement?.document ?? createEmptyDocument(),
+      templatePlacement?.centre ?? { x: 0, y: 0 },
+      templatePlacement?.reservedObjectIds);
     options.signal?.throwIfAborted();
-    if (template) {
+    if (molecule) {
+      templatePlacement?.reservedObjectIds?.add(molecule.id);
       const { perceiveStereoCentersFromMolfile } = await import("@chemdraft/ocl-adapter");
-      return { depiction: pastedStructureDepictionFromMolfile(template.structure),
-        stereoCount: perceiveStereoCentersFromMolfile(template.structure)
-          .filter(centre => centre.isStereoCenter && centre.descriptor !== "unspecified").length };
+      return { molecule, depiction: pastedStructureDepictionFromMolfile(molecule.structure),
+        stereoCount: perceiveStereoCentersFromMolfile(molecule.structure)
+        .filter(centre => centre.isStereoCenter && centre.descriptor !== "unspecified").length };
     }
     const result = await depictSmilesOffThread(smiles, { priority: "interactive", ...options });
     return result.depiction.atoms.length > 0 ? result : undefined;
@@ -36,7 +43,7 @@ function isSmilesChemistryRefusal(error: unknown): error is Error {
 }
 
 export interface SmilesListPasteResult {
-  entries: { smiles: string; depiction: PastedStructureDepiction }[];
+  entries: { smiles: string; depiction: PastedStructureDepiction; molecule?: MoleculeObject }[];
   skipped: number;
   /** Per-item chemistry failures, including the input and the adapter's specific reason. */
   failures: SmilesListPasteFailure[];
@@ -63,22 +70,25 @@ export function depictSmilesListForPaste(
   text: string,
   candidates: readonly SmilesListCandidate[],
   onProgress?: (completed: number, total: number) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  templatePlacement?: TemplatePastePlacement
 ): Promise<SmilesListPasteResult | undefined> | undefined {
   // No promise or engine load for prose: the caller can insert its text synchronously.
   if (candidates.length < 2) return undefined;
-  return depictSmilesListCandidates(text, candidates, onProgress, signal);
+  return depictSmilesListCandidates(text, candidates, onProgress, signal, templatePlacement);
 }
 
 async function depictSmilesListCandidates(
   text: string,
   candidates: readonly SmilesListCandidate[],
   onProgress?: (completed: number, total: number) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  templatePlacement: TemplatePastePlacement = { document: createEmptyDocument(), centre: { x: 0, y: 0 } }
 ): Promise<SmilesListPasteResult | undefined> {
-  const entries: { smiles: string; depiction: PastedStructureDepiction }[] = [];
+  const entries: SmilesListPasteResult["entries"] = [];
   const failures: SmilesListPasteResult["failures"] = [];
   const warnings: string[] = [];
+  const placement = { ...templatePlacement, reservedObjectIds: templatePlacement.reservedObjectIds ?? new Set<string>() };
   const tokens = smilesListTokens(text);
   const firstTokenColumns = new Map<number, number>();
   for (const token of tokens) {
@@ -89,13 +99,13 @@ async function depictSmilesListCandidates(
     signal?.throwIfAborted();
     let parsed: Awaited<ReturnType<typeof depictSmilesForPaste>> = undefined;
     try {
-      parsed = await depictSmilesForPaste(candidate.token, { signal, priority: "background" });
+      parsed = await depictSmilesForPaste(candidate.token, { signal, priority: "background" }, placement);
     } catch (error) {
       if (!isSmilesChemistryRefusal(error)) throw error;
       failures.push({ input: candidate.token, error: error.message });
     }
     if (parsed) {
-      entries.push({ smiles: candidate.token, depiction: parsed.depiction });
+      entries.push({ smiles: candidate.token, depiction: parsed.depiction, ...(parsed.molecule ? { molecule: parsed.molecule } : {}) });
       warnings.push(...(parsed.warnings ?? []).map((warning) => `${candidate.token}: ${warning}`));
       if (candidate.column === firstTokenColumns.get(candidate.line)) parsedFirstTokenLines += 1;
     }

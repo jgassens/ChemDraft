@@ -1,6 +1,6 @@
 import { structureTemplateLayoutMessage } from "@chemdraft/document-workflow-core";
 import { insertPastedSmiles } from "./smilesInsertion";
-import { templateMoleculeForSmiles, insertStructureTemplate } from "./structureTemplateInsertion";
+import { insertStructureTemplate } from "./structureTemplateInsertion";
 import { structureTemplates } from "@chemdraft/template-library";
 import { templateInsertActions, templateInsertCommandId } from "./templateCommands";
 import { isEditableTarget } from "./editableTarget";
@@ -1624,7 +1624,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.28.14.00-codex";
+const CURRENT_BUILD_STAMP = "10.28.12.20-codex";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -6626,12 +6626,18 @@ export function MainWindow({
   // on demand. Parser/chemistry refusals retain text fallback; worker failures reach status.
   const renderPastedSmiles = useCallback(async (smilesText: string): Promise<{ rendered: boolean; reason?: string; failed?: boolean }> => {
     try {
-      const parsed = await depictSmilesForPaste(smilesText);
+      const pasteDocument = documentRef.current;
+      const parsed = await depictSmilesForPaste(smilesText, {}, { document: pasteDocument, centre: pastePointForViewport() });
       if (quitInteractionRef.current) return { rendered: false, reason: "Paste cancelled while quitting" };
       if (!parsed) return { rendered: false };
       const { depiction, stereoCount } = parsed;
-      const pasteDocument = documentRef.current;
-      const inserted = await insertPastedSmiles(
+      const inserted = parsed.molecule ? {
+        document: applyPatches(pasteDocument, [
+          { op: "addObject", pageId: pasteDocument.pages[0]!.id, object: parsed.molecule },
+          { op: "setSelection", pageId: pasteDocument.pages[0]!.id, objectIds: [parsed.molecule.id] }
+        ]),
+        status: structureTemplateLayoutMessage(parsed.molecule)
+      } : await insertPastedSmiles(
         pasteDocument,
         pastePointForViewport(),
         {
@@ -6701,9 +6707,10 @@ export function MainWindow({
       }
       const listAbort = new AbortController();
       smilesListPasteAbortRef.current = listAbort;
+      const pasteDocument = documentRef.current;
       const pendingList = depictSmilesListForPaste(detectedPayload.text, candidates, (completed, total) => {
         setStatus(`Parsing SMILES list: ${completed} of ${total} tokens`);
-      }, listAbort.signal);
+      }, listAbort.signal, { document: pasteDocument, centre: pastePointForViewport() });
       if (!pendingList) {
         pasteAsText();
         return;
@@ -6715,14 +6722,7 @@ export function MainWindow({
           pasteAsText();
           return;
         }
-        const pasteDocument = documentRef.current;
-        const reservedIds = new Set<string>();
-        const entries = [];
-        for (const entry of parsed.entries) {
-          const molecule = await templateMoleculeForSmiles(entry.smiles, pasteDocument, pastePointForViewport(), reservedIds);
-          if (molecule) reservedIds.add(molecule.id);
-          entries.push({ ...entry, molecule });
-        }
+        const entries = parsed.entries;
         listAbort.signal.throwIfAborted();
         if (quitInteractionRef.current || documentRef.current !== pasteDocument) throw new Error("The document changed while preparing SMILES paste; paste again.");
         const result = insertSmilesMoleculeGrid(pasteDocument, pastePointForViewport(), entries);
@@ -6730,7 +6730,7 @@ export function MainWindow({
         resetPasteUiState();
         setPageFitPrompt(undefined);
         const failure = parsed.failures[0];
-        const baseStatus = [insertSmilesMoleculeGridStatus(result, parsed.skipped), ...entries.flatMap(entry => entry.molecule ? [structureTemplateLayoutMessage(entry.molecule)!] : []), ...(parsed.warnings ?? [])].join("; ");
+        const baseStatus = [insertSmilesMoleculeGridStatus(result, parsed.skipped), ...new Set(entries.flatMap(entry => entry.molecule ? [structureTemplateLayoutMessage(entry.molecule)!] : [])), ...(parsed.warnings ?? [])].join("; ");
         setStatus(failure
           ? `${baseStatus}; ${parsed.failures.length} item${parsed.failures.length === 1 ? "" : "s"} failed: ${failure.error}`
           : baseStatus);

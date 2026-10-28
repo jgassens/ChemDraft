@@ -32,6 +32,8 @@ describe("depictSmilesForPaste", () => {
     vi.mocked(generateSmiles2DMolfile).mockResolvedValue(generated.molfile);
     const fallback = vi.spyOn(ocl, "depictSmiles2D");
     const result = await depictSmilesForPaste(smiles);
+    expect(depictSmilesOffThread).toHaveBeenCalledExactlyOnceWith(smiles, { priority: "interactive" });
+    expect(result?.molecule).toBeUndefined();
     expect(registerRdkitWasmLoader).toHaveBeenCalledOnce();
     expect(generateSmiles2DMolfile).toHaveBeenCalledWith(smiles, expect.objectContaining({ onStandardMolfile: expect.any(Function) }));
     expect(fallback).not.toHaveBeenCalled();

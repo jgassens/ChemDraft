@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createEmptyDocument, DocumentStylePreset } from "@chemdraft/chem-core";
 import { resolveStructureTemplateName, structureTemplateLayoutMessage, structureTemplateMolecule } from "@chemdraft/document-workflow-core";
 import { installNodeRdkitModuleLoader } from "@chemdraft/rdkit-adapter/node";
@@ -7,10 +7,15 @@ import { insertPastedSmiles } from "./smilesInsertion";
 import { applyClipboardPastePayload } from "./documentWorkflow";
 import { invoke } from "@tauri-apps/api/core";
 import { templateMoleculeForSmiles } from "./structureTemplateInsertion";
+import { depictSmilesForPaste } from "./smilesListPaste";
+import { perceiveStereoCentersFromMolfile } from "@chemdraft/ocl-adapter";
+import * as workflow from "@chemdraft/document-workflow-core";
+import * as ocl from "@chemdraft/ocl-adapter";
 
 vi.mock("./plugins/rdkitAppLoader", () => ({ loadRdkitWithAppLoader: (load: () => Promise<unknown>) => load() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn().mockRejectedValue(new Error("No native runtime")) }));
 beforeAll(() => installNodeRdkitModuleLoader());
+afterEach(() => vi.restoreAllMocks());
 vi.setConfig({ testTimeout: 60_000 });
 
 describe("desktop template input boundaries", () => {
@@ -37,6 +42,22 @@ describe("desktop template input boundaries", () => {
       expect(await templateMoleculeForSmiles(smiles, createEmptyDocument(), { x: 400, y: 400 })).toBeUndefined();
     }
   );
+  it("preserves template stereo metadata during paste parsing", async () => {
+    const molecule = structureTemplateMolecule(template, { document: createEmptyDocument(), centre: { x: 0, y: 0 } });
+    const expected = perceiveStereoCentersFromMolfile(molecule.structure)
+      .filter(centre => centre.isStereoCenter && centre.descriptor !== "unspecified").length;
+    const construction = vi.spyOn(workflow, "structureTemplateMolecule");
+    const perception = vi.spyOn(ocl, "perceiveStereoCentersFromMolfile");
+    const depiction = vi.spyOn(ocl, "depictSmiles2D").mockImplementation(() => { throw new Error("Generic depiction unavailable"); });
+    const parsed = await depictSmilesForPaste(template.smiles);
+    expect(parsed?.stereoCount).toBe(expected);
+    expect(expected).toBeGreaterThan(0);
+    expect(construction).toHaveBeenCalledOnce();
+    expect(parsed?.molecule).toBe(construction.mock.results[0]!.value);
+    expect(perception).toHaveBeenCalledExactlyOnceWith(parsed!.molecule!.structure);
+    expect(parsed?.depiction).toEqual(workflow.pastedStructureDepictionFromMolfile(parsed!.molecule!.structure));
+    expect(depiction).not.toHaveBeenCalled();
+  });
   it("does not substitute the same molecule supplied as a molfile paste", () => {
     const document = createEmptyDocument();
     const molecule = structureTemplateMolecule(template, { document, centre: { x: 400, y: 400 } });
