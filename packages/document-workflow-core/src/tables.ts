@@ -10,7 +10,7 @@ import {
   type TableStyle
 } from "@chemdraft/chem-core";
 import { planTableLayout } from "@chemdraft/layout-engine";
-import { formulaSpansForCell } from "./formulaText";
+import { formulaSpansForMixedText } from "./formulaText";
 
 const TableFormulaRuleSchema = z.enum(["auto", "off"]);
 
@@ -129,7 +129,7 @@ function frameTable(value: TableObject): TableObject {
 function cellFromInput(value: CellInput, column: TableColumnValue): TableCellValue {
   const data = richTextFromInput(value);
   if (typeof value === "string" && column.formula === "auto") {
-    data.spans = formulaSpansForCell(data.text, data.spans) ?? data.spans;
+    data.spans = formulaSpansForMixedText(data.text, data.spans) ?? data.spans;
   }
   if (typeof value === "string" || value.formula === undefined) {
     return data;
@@ -349,7 +349,7 @@ export function formatTableCellFormula(
 ): TableEditResult | undefined {
   const [row, column] = cellPosition(table, rowId, columnId);
   const value = table.rows[row].cells[column];
-  const spans = formulaSpansForCell(value.text, value.spans);
+  const spans = formulaSpansForMixedText(value.text, value.spans);
   if (!spans) {
     return undefined;
   }

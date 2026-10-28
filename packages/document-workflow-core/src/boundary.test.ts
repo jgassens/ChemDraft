@@ -121,9 +121,8 @@ const packageJsonPath = join(packageSrc, "..", "package.json");
 function declaredDependencyNames(): string[] {
   const pkg = JSON.parse(readFileSync(packageJsonPath, "utf8")) as {
     dependencies?: Record<string, string>;
-    devDependencies?: Record<string, string>;
   };
-  return [...Object.keys(pkg.dependencies ?? {}), ...Object.keys(pkg.devDependencies ?? {})];
+  return Object.keys(pkg.dependencies ?? {});
 }
 
 function undeclaredPackageSpecifier(specifier: string, declared: string[]): string | undefined {
@@ -232,7 +231,8 @@ describe("document-workflow-core purity", () => {
     const declared = declaredDependencyNames();
     expect(declared.length).toBeGreaterThan(0);
 
-    const files = sourceFiles(packageSrc).filter((file) => file !== thisFile);
+    // This rule is about what the package imports at run time; tests run under the root vitest.
+    const files = sourceFiles(packageSrc).filter((file) => file !== thisFile && !file.endsWith(".test.ts"));
     const violations = files.flatMap((file) =>
       extractSpecifiers(readFileSync(file, "utf8")).flatMap((specifier) => {
         const undeclared = undeclaredPackageSpecifier(specifier, declared);

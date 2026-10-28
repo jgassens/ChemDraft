@@ -40,7 +40,6 @@ import {
   type MoleculeAtom,
   type MoleculeBond,
   type MoleculeObject,
-  type TextSpan,
   type PlusObject,
   type TextObject,
   type ViewMatrix,

@@ -4,16 +4,13 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "zod": "^3.25.76",
     "@chemdraft/chem-core": "workspace:*",
     "@chemdraft/clipboard-adapter": "workspace:*",
     "@chemdraft/export-engine": "workspace:*",
     "@chemdraft/layout-engine": "workspace:*",
     "@chemdraft/rdkit-adapter": "workspace:*",
-    "@chemdraft/template-library": "workspace:*"
-  },
-  "devDependencies": {
-    "vitest": "^3.2.4"
+    "@chemdraft/template-library": "workspace:*",
+    "zod": "^3.25.76"
   },
   "exports": {
     ".": {
