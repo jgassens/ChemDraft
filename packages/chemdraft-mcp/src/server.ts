@@ -356,7 +356,7 @@ export function createChemDraftMcpServer(
   });
 
   server.registerTool("build_document", {
-    description: "Build editable ChemDraft native JSON from SMILES, with atom/bond ids and ring keys, sizes and centers. Use render_document after styling it.",
+    description: "Build editable ChemDraft native JSON from SMILES, with atom/bond ids and ring keys, sizes and centers. Use render_document after styling it. Exact canonical isomeric SMILES matches use built-in template layouts at default bond length and report layout provenance.",
     inputSchema: {
       dpi: z.number().positive().optional(),
       style: z.enum(FigureStyles).optional(),
@@ -412,7 +412,7 @@ export function createChemDraftMcpServer(
   }));
 
   server.registerTool("render_structure", {
-    description: `Render a SMILES structure as PNG, SVG, or both. ${chemistryHonesty}`,
+    description: `Render a SMILES structure as PNG, SVG, or both. Exact canonical isomeric SMILES matches use built-in template layouts at default bond length and report layout provenance. ${chemistryHonesty}`,
     inputSchema: {
       dpi: z.number().positive().optional(),
       style: z.enum(FigureStyles).optional(),
@@ -439,7 +439,7 @@ export function createChemDraftMcpServer(
   }));
 
   server.registerTool("render_grid", {
-    description: `Render named SMILES entries as a PNG or SVG grid. ${chemistryHonesty}`,
+    description: `Render named SMILES entries as a PNG or SVG grid. Exact canonical isomeric SMILES matches use built-in template layouts at default bond length and report layout provenance. ${chemistryHonesty}`,
     inputSchema: {
       dpi: z.number().positive().optional(),
       style: z.enum(FigureStyles).optional(),
@@ -485,7 +485,7 @@ export function createChemDraftMcpServer(
   }));
 
   server.registerTool("render_reaction", {
-    description: `Render a reaction as a PNG or SVG scheme. reactionSmiles splits roles on '.', while component arrays preserve each entry—including a salt containing '.'—as one molecule object. Agent labels report the formula or the recorded SMILES fallback. ${chemistryHonesty}`,
+    description: `Render a reaction as a PNG or SVG scheme. Exact canonical isomeric SMILES matches use built-in template layouts at default bond length and report layout provenance. reactionSmiles splits roles on '.', while component arrays preserve each entry—including a salt containing '.'—as one molecule object. Agent labels report the formula or the recorded SMILES fallback. ${chemistryHonesty}`,
     inputSchema: {
       dpi: z.number().positive().optional(),
       style: z.enum(FigureStyles).optional(),
@@ -561,7 +561,7 @@ export function createChemDraftMcpServer(
   }));
 
   server.registerTool("name_to_structure", {
-    description: `Convert a chemical name with OPSIN, optionally rendering its structure. ${chemistryHonesty}`,
+    description: `Convert a chemical name using ChemDraft built-in templates before OPSIN, optionally rendering its structure. Use template names such as beta-cyclodextrin rather than writing host SMILES. ${chemistryHonesty}`,
     inputSchema: {
       name: z.string().min(1),
       render: z.boolean().optional(),
@@ -613,7 +613,7 @@ export function createChemDraftMcpServer(
   }));
 
   server.registerTool("export_structure", {
-    description: `Export a SMILES structure without changing its chemistry. ${chemistryHonesty}`,
+    description: `Export a SMILES structure without changing its chemistry. Exact canonical isomeric SMILES matches use built-in template layouts at default bond length and report layout provenance. ${chemistryHonesty}`,
     inputSchema: {
       smiles: z.string().min(1),
       format: z.enum(["cdxml", "pdf", "sdf", "mol", "smi"]),

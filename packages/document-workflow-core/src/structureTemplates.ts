@@ -89,3 +89,9 @@ export function structureTemplateMolecule(
     constrainToPage: false
   });
 }
+
+/** Status for a host-built template object; no identity or coordinate inference. */
+export function structureTemplateLayoutMessage(molecule: MoleculeObject): string | undefined {
+  const template = structureTemplates.find(entry => molecule.style.source === `structure-template:${entry.id}`);
+  return template ? `Used the ${template.name} template layout` : undefined;
+}

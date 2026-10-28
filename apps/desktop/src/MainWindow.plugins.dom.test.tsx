@@ -1,3 +1,4 @@
+import { structureFromSmilesForPlugin } from "./plugins/pluginChemistry";
 // @vitest-environment jsdom
 import { act } from "react";
 import { readFileSync } from "node:fs";
@@ -6,8 +7,8 @@ import { resolve } from "node:path";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AssistantCapabilityPermissions, PluginPanelReportSchema, type PluginCommandContext, type PluginAssistantToolResult } from "@chemdraft/plugin-api";
-import { applyPatch, createEmptyDocument, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
-import { createSmilesMolecule, pastedStructureDepictionFromMolfile } from "@chemdraft/document-workflow-core";
+import { applyPatch, createEmptyDocument, DocumentStylePreset, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { createSmilesMolecule, pastedStructureDepictionFromMolfile, resolveStructureTemplateName } from "@chemdraft/document-workflow-core";
 import { ensureRdkit, generateSmiles2DMolfile, setRdkitModuleLoader } from "../../../packages/rdkit-adapter/src/conformer";
 import { applyChargeToolAtPoint } from "./documentWorkflow";
 import { getAssistantHistoryPort } from "./assistant/historyPort";
@@ -21,6 +22,7 @@ import { MemoryStorage } from "./testSupport/memoryStorage";
 import { DOM_COMMAND_EVENT } from "./window-manager";
 
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
+vi.mock("./plugins/rdkitAppLoader", () => ({ loadRdkitWithAppLoader: (load: () => Promise<unknown>) => load() }));
 // Keep the ruler's DOM hit surface; jsdom does not implement its canvas painting context.
 vi.mock("@scena/react-ruler", () => ({ default: () => <canvas /> }));
 const captured = vi.hoisted(() => ({ runtime: undefined as DesktopPluginRuntime | undefined,
@@ -111,6 +113,70 @@ describe("assistant writes through mounted desktop normalization", () => {
     });
     return result;
   }
+
+  it("pastes beta-CD SMILES with template status, selection and one undo", async () => {
+    const { port } = await mount(createEmptyDocument());
+    const template = resolveStructureTemplateName("beta-cyclodextrin")!;
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", { value: { types: ["text/plain"],
+      getData: (type: string) => type === "text/plain" ? template.smiles : "" } });
+    await act(async () => {
+      window.dispatchEvent(event);
+      await vi.waitFor(() => expect(port.read("initial")!.pages[0]!.objects).toHaveLength(1));
+    });
+    const after = port.read("initial")!;
+    expect(after.selection.objectIds).toEqual([after.pages[0]!.objects[0]!.id]);
+    expect(container.querySelector("[role=status]")?.textContent).toContain("Used the β-Cyclodextrin template layout");
+    await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "edit.undo" } })); });
+    expect(port.read("initial")!.pages[0]!.objects).toHaveLength(0);
+    expect(container.querySelector("[role=status]")?.textContent).toContain("Undid Paste SMILES");
+  }, 60_000);
+
+  it("uses template layouts in a pasted SMILES list, with unique selected ids and one undo", async () => {
+    const { port } = await mount(createEmptyDocument());
+    const template = resolveStructureTemplateName("beta-cyclodextrin")!;
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", { value: { types: ["text/plain"],
+      getData: (type: string) => type === "text/plain" ? `${template.smiles}\n${template.smiles}` : "" } });
+    await act(async () => {
+      window.dispatchEvent(event);
+      await vi.waitFor(() => expect(port.read("initial")!.pages[0]!.objects).toHaveLength(2));
+    });
+    const after = port.read("initial")!;
+    expect(new Set(after.selection.objectIds).size).toBe(2);
+    expect(after.pages[0]!.objects.every(object => object.style.source === `structure-template:${template.id}`)).toBe(true);
+    expect(container.querySelector("[role=status]")?.textContent).toContain("Used the β-Cyclodextrin template layout");
+    await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "edit.undo" } })); });
+    expect(port.read("initial")!.pages[0]!.objects).toHaveLength(0);
+  }, 60_000);
+
+  it.each(["insert_structures", "edit_structure"])("%s uses beta-CD layout at default size in one selected undo entry with status", async name => {
+    const drawing = name === "insert_structures" ? createEmptyDocument() : testContext().context.getDocument()!;
+    const old = drawing.pages[0]!.objects.find(object => object.type === "molecule");
+    if (old) drawing.selection.objectIds = [old.id];
+    const { port, push, amend } = await mount(drawing);
+    chemistry.structureFromSmiles = request => structureFromSmilesForPlugin(request, () => port.read("initial"));
+    const template = resolveStructureTemplateName("beta-cyclodextrin")!;
+    const result = await call(name, name === "insert_structures"
+      ? { items: [{ kind: "molecule", smiles: template.smiles }] }
+      : { objectId: old!.id, smiles: template.smiles });
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    const after = port.read("initial")!;
+    const ids = result.structuredContent!.objectIds as string[];
+    const selectedIds = ids.filter(id => after.pages[0]!.objects.some(object => object.id === id));
+    expect(after.selection.objectIds).toEqual(selectedIds);
+    const molecule = after.pages[0]!.objects.find(object => selectedIds.includes(object.id))! as MoleculeObject;
+    expect(molecule.style.source).toBe(`structure-template:${template.id}`);
+    const atoms = new Map(molecule.atoms.map(atom => [atom.id, atom]));
+    const mean = molecule.bonds.reduce((sum, bond) => {
+      const a = atoms.get(bond.fromAtomId)!, b = atoms.get(bond.toAtomId)!;
+      return sum + Math.hypot(a.x - b.x, a.y - b.y);
+    }, 0) / molecule.bonds.length;
+    expect(Math.abs(mean - DocumentStylePreset.drawing.bondLengthPx)).toBeLessThan(1e-6);
+    expect(push).toHaveBeenCalledTimes(1);
+    expect(amend).not.toHaveBeenCalled();
+    expect(container.querySelector("[role=status]")?.textContent).toContain("Used the β-Cyclodextrin template layout");
+  }, 60_000);
 
   it.each([
     { selectedMark: false, kind: "charge" }, { selectedMark: true, kind: "charge" },

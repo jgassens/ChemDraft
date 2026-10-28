@@ -251,7 +251,7 @@ the index in the derived form). not-requested means the method was not run at al
 
 ## name
 
-Convert a chemical name with the bundled OPSIN runtime, optionally rendering the result.
+Resolve a chemical name against ChemDraft built-in structure templates first, then the bundled OPSIN runtime, optionally rendering the result. Matching is exact after case/Greek/synonym normalization, never fuzzy. Template names work without Java or OPSIN installed.
 
 ~~~bash
 pnpm -s chemdraft name --name '2-acetoxybenzoic acid' --render aspirin.png
@@ -394,3 +394,20 @@ other format writes one file per structure into --out-dir, named <job name>.<ext
 --format cdxml|pdf|sdf|mol|smi selects the output format; in single mode it normally infers it from
 --out. One JSON line per structure is written to stdout and progress to stderr. Exit 0 is used when
 every structure succeeds, 1 when any export fails, and 2 for bad arguments.
+
+## Built-in structure template layouts
+
+Use a template name such as `beta-cyclodextrin`, `β-CD`, `cucurbit[7]uril`, or
+`18-crown-6` rather than writing SMILES for these hosts. The `name` result reports
+`source: "template" | "opsin"`; template results also carry `templateId` and
+`templateName`. Existing SMILES fields retain their meaning. `name --render` draws
+the template layout at the default document style.
+
+Coordinate-less SMILES input to `render`, `document`, `grid`, `reaction`, and
+`export` uses the authored layout only when canonical **isomeric** SMILES matches
+exactly, including stereo and charge. Results report `layout: "template:<id>"`
+(on grid cells and reaction `layouts` entries for multi-molecule figures).
+Templates use the default document bond length; ordinary SMILES sizing is unchanged.
+Stereo-free or different stereoisomers do not substitute. Native documents supplied to
+`render-document`, MOL/molfile, CDXML and drawn coordinates retain their layouts; a
+native document built from SMILES inherits the layout chosen by `document`.

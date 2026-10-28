@@ -77,6 +77,19 @@ afterEach(async () => {
 });
 
 describe("ChemDraft MCP server", () => {
+  it("checks built-in templates before OPSIN for name_to_structure", async () => {
+    const client = await connect();
+    const tools = await client.listTools();
+    expect(tools.tools.find(tool => tool.name === "name_to_structure")?.description).toContain("templates before OPSIN");
+    const result = await client.callTool({ name: "name_to_structure", arguments: { name: "β-CD" } });
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    expect(jsonPayload(result.content)).toMatchObject({ ok: true, source: "template", templateId: "beta-cyclodextrin" });
+    const rendered = await client.callTool({ name: "render_structure", arguments: {
+      smiles: jsonPayload(result.content).smiles, format: "svg"
+    } });
+    expect(rendered.isError, JSON.stringify(rendered)).not.toBe(true);
+    expect(jsonPayload(rendered.content)).toMatchObject({ ok: true, layout: "template:beta-cyclodextrin" });
+  }, 60_000);
   it("rejects DPI on every tool format that produces no PNG", async () => {
     const client = await connect();
     const cases = [

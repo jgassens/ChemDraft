@@ -15,6 +15,8 @@ import { depictSmilesForPaste } from "./smilesListPaste";
 import { saveKeybindingSettings } from "./keybindingSettings";
 import type { MoleculeObject } from "@chemdraft/chem-core";
 
+// These cases exercise generic depiction; template identity/layout has its own real-engine tests.
+vi.mock("./structureTemplateInsertion", () => ({ templateMoleculeForSmiles: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("./smilesListPaste", async (importOriginal) => ({
   ...await importOriginal<typeof import("./smilesListPaste")>(),
   depictSmilesForPaste: vi.fn()

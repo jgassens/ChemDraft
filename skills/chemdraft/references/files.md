@@ -7,7 +7,17 @@ file as UTF-8 (`Set-Content -Encoding UTF8` in PowerShell).
 
 ## Chemical name to structure
 
-`name` and MCP `name_to_structure` use the bundled OPSIN 2.9.0 runtime.
+`name` and MCP `name_to_structure` check ChemDraft built-in structure templates
+first, then the bundled OPSIN 2.9.0 runtime. Use a template name such as
+`beta-cyclodextrin`, `β-CD`, `cucurbit[7]uril` or `18-crown-6` rather than
+writing SMILES for these hosts. Template names work without Java. Matching is
+exact after case/Greek/synonym normalization, never fuzzy. Results report
+`source: "template" | "opsin"` and templates add `templateId` and `templateName`.
+`--render` uses their original layout at default document size. Coordinate-less
+SMILES drawing/export paths use that layout only for an exact canonical isomeric
+SMILES match, with stereo and charge included, reporting `layout: "template:<id>"`
+(per cell/component for grids/reactions). Different or missing stereo never
+substitutes. Native/MOL/CDXML coordinates are preserved.
 OPSIN parses chemical names; it is not a universal synonym database.
 When only a name is known, run it before drawing. When it fails on a
 common, trivial or trade name, do one of these, never a guess:

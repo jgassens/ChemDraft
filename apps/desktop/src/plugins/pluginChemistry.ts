@@ -15,6 +15,8 @@ export { createChemistry3dProviders } from "../chemistry3d/client";
 export { RESERVED_PLUGIN_OBJECT_IDS } from "./reservedObjectIds";
 
 import { invoke } from "@tauri-apps/api/core";
+import { resolveStructureTemplateName } from "@chemdraft/document-workflow-core";
+import { templateMoleculeForSmiles } from "../structureTemplateInsertion";
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
 import type {
   PluginIsotopeEnvelopeRequest,
@@ -123,6 +125,20 @@ export async function structureFromSmilesForPlugin(
   // rather than the `document.read`-checked one, so a plugin holding only `chemistry.compute` could
   // read both.
 
+  try {
+    const object = await templateMoleculeForSmiles(request.smiles, document,
+      pluginInsertPoint(document), RESERVED_PLUGIN_OBJECT_IDS);
+    if (object) {
+      if (signal?.aborted) return { available: true, built: false, reason: "2D depiction cancelled." };
+      RESERVED_PLUGIN_OBJECT_IDS.add(object.id);
+      return { available: true, built: true, object };
+    }
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    // An unavailable canonicalizer cannot authorize substitution. Keep the existing depiction
+    // engine's fallback and error reporting for non-template input.
+  }
+
   let depiction: PastedStructureDepiction;
   let warnings: string[] | undefined;
   try {
@@ -213,6 +229,9 @@ const OPSIN_ENGINE_ID = "opsin";
 export async function nameToStructureForPlugin(
   request: PluginNameToStructureRequest
 ): Promise<PluginNameToStructureResult> {
+  const template = resolveStructureTemplateName(request.name);
+  if (template) return { available: true, parsed: true, smiles: template.smiles,
+    engine: { id: "chemdraft-templates", version: "builtin" } };
   let status: OpsinStatusReply;
   try {
     status = await invoke<OpsinStatusReply>("opsin_status");
