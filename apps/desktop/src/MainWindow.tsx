@@ -1,4 +1,4 @@
-import { applyTableCommand, applyTableObjectEdit, createTableCommands, createTableInsertAction, parseTableInsertCommandId, resolveActiveTableCell, selectedTable, tableInsertCommandId, tableInspectorSnapshot, type ActiveTableCell, type TableInsertDimensions } from "./tableCommands";
+import { applyTableCommand, applyTableFontCommand, applyTableObjectEdit, createTableCommands, createTableInsertAction, parseTableInsertCommandId, resolveActiveTableCell, selectedTable, tableInsertCommandId, tableInspectorSnapshot, type ActiveTableCell, type TableInsertDimensions } from "./tableCommands";
 import { TableCellEditor, TableColumnResizers, type TableCellEditorHandle } from "./tableCellEditor";
 import { tableCellAtPoint, type TableEditingAction } from "./tableInteraction";
 import { insertTableIntoDocument } from "./documentWorkflow";
@@ -1624,7 +1624,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.28.14.20-codex";
+const CURRENT_BUILD_STAMP = "10.28.15.10-codex";
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -7206,6 +7206,13 @@ export function MainWindow({
       ...current,
       ...stylePatch
     }));
+
+    const tableFontResult = applyTableFontCommand(currentDocument, commandId);
+    if (tableFontResult) {
+      commitDocumentChange(tableFontResult.document, tableFontResult.label);
+      setStatus(tableFontResult.label);
+      return true;
+    }
 
     if (stylePatch.color) {
       const selectedColor = stylePatch.color;

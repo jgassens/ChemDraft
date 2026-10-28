@@ -1,5 +1,6 @@
 import { TABLE_LIMITS } from "@chemdraft/chem-core";
-import { tableColumnAlignCommandId, tableStyleCommandId, type tableInspectorSnapshot } from "./tableCommands";
+import { tableColumnAlignCommandId, tableStyleCommandId, tableRuleWidthCommandId, tableRuleWidthsPt, type tableInspectorSnapshot } from "./tableCommands";
+import { textFontCommands, textSizeCommands, textFontFamilyCommandId } from "./commands";
 
 /** What the main window publishes for a selected table (`tableInspectorSnapshot`). */
 export type TableInspectorSnapshot = NonNullable<ReturnType<typeof tableInspectorSnapshot>>;
@@ -31,7 +32,7 @@ export type TableInspectorControl =
   | (ControlBase & { kind: "segmented"; choices: TableInspectorChoice[] })
   | (ControlBase & { kind: "toggle"; commandId: string; pressed: boolean })
   | (ControlBase & { kind: "button"; commandId: string })
-  /** A value with no registered command behind it yet: shown, never editable. */
+  /** Informational values, such as the footnote count. */
   | (ControlBase & { kind: "readout"; value: string });
 
 export interface TableInspectorSection {
@@ -86,17 +87,19 @@ export function createTableInspectorModel(
     }]
   };
 
-  // No command sets a rule width yet (only the preset commands exist), so rules are values, not controls.
+  const ruleControl = (rule: "top" | "header" | "bottom" | "grid", label: string): TableInspectorControl => ({
+    kind: "segmented", id: `${rule}Rule`, label,
+    choices: tableRuleWidthsPt.map(width => choice(String(width), pt(width), tableRuleWidthCommandId(rule, width),
+      snapshot[`${rule}RulePt`] === width))
+  });
   const rules: TableInspectorSection = {
     id: "rules",
     title: "Rules",
     controls: snapshot.preset === "three-line"
       ? [
-        { kind: "readout", id: "topRule", label: "Top rule", value: pt(snapshot.topRulePt) },
-        { kind: "readout", id: "headerRule", label: "Header rule", value: pt(snapshot.headerRulePt) },
-        { kind: "readout", id: "bottomRule", label: "Bottom rule", value: pt(snapshot.bottomRulePt) }
+        ruleControl("top", "Top rule"), ruleControl("header", "Header rule"), ruleControl("bottom", "Bottom rule")
       ]
-      : [{ kind: "readout", id: "gridRule", label: "Grid line width", value: pt(snapshot.gridRulePt) }]
+      : [ruleControl("grid", "Grid line width")]
   };
 
   const header: TableInspectorSection = {
@@ -107,13 +110,18 @@ export function createTableInspectorModel(
     }, reasonFor("table.header.bold.toggle"))]
   };
 
-  // Font commands (`text.font.*`) act on text objects only; a selected table has none, so read-only.
+  const fontChoices = textFontCommands.map(font => choice(font.id, font.title.slice(6), font.id, snapshot.fontFamily === font.fontFamily));
+  if (!fontChoices.some(item => item.selected)) {
+    const id = textFontFamilyCommandId(snapshot.fontFamily);
+    fontChoices.push(choice(id, snapshot.fontFamily, id, true));
+  }
   const font: TableInspectorSection = {
     id: "font",
     title: "Font",
     controls: [
-      { kind: "readout", id: "fontFamily", label: "Family", value: snapshot.fontFamily },
-      { kind: "readout", id: "fontSize", label: "Size", value: `${Number(snapshot.fontSizePx.toFixed(2))} px` }
+      { kind: "segmented", id: "fontFamily", label: "Family", choices: fontChoices },
+      { kind: "segmented", id: "fontSize", label: `Size (${Number(snapshot.fontSizePx.toFixed(2))} px)`,
+        choices: textSizeCommands.map(size => choice(size.id, size.title.slice(6), size.id, Math.abs(snapshot.fontSizePx - size.fontSizePx) < 0.001)) }
     ]
   };
 
@@ -125,10 +133,10 @@ export function createTableInspectorModel(
     choices: ALIGNMENTS.map(({ align, label }) =>
       choice(align, label, tableColumnAlignCommandId(align), column?.align === align, column ? undefined : noColumn))
   }];
-  // Column formula auto/off has no column-level command (the cell commands below set a cell rule), so read-only.
   columnControls.push({
-    kind: "readout", id: "formula", label: "Formulae",
-    value: column ? (FORMULA_LABELS[column.formula] ?? String(column.formula)) : "—",
+    kind: "segmented", id: "formula", label: "Formulae",
+    choices: (["auto", "off"] as const).map(rule => choice(rule, FORMULA_LABELS[rule], `table.column.formula.${rule}`,
+      column?.formula === rule, column ? undefined : noColumn)),
     ...(column ? {} : { disabledReason: noColumn })
   });
   const columnSection: TableInspectorSection = { id: "column", title: "Column", controls: columnControls };

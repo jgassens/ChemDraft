@@ -5,9 +5,11 @@ import { planTableLayout } from "@chemdraft/layout-engine";
 import { createPhase4Document, insertNativeTextObject, insertTableIntoDocument, moveDocumentObject,
   createSelectionClipboardPayload, parseSelectionClipboardPayload, pasteSelectionClipboardPayload,
   groupSelectedDocumentObjects, ungroupSelectedDocumentObjects } from "./documentWorkflow";
-import { applyTableCommand, createTableCommands, createTableInsertAction, parseTableInsertCommandId,
+import { applyTableCommand, applyTableFontCommand, createTableCommands, createTableInsertAction, parseTableInsertCommandId,
   resolveActiveTableCell, selectedTable, tableColumnAlignCommandId, tableCommandDisabledReason,
-  tableInsertCommandId, tableInspectorSnapshot, tableStyleCommandId } from "./tableCommands";
+  tableInsertCommandId, tableInspectorSnapshot, tableStyleCommandId, tableRuleWidthsPt } from "./tableCommands";
+import { allShellCommands, textFontCommands, textSizeCommands, textFontFamilyCommandId,
+  tableRuleWidthCommandId, parseTableRuleWidthCommandId } from "./commands";
 import { parseDialogMessage } from "./dialogs/dialogProtocol";
 import { DialogCoordinator } from "./dialogs/DialogCoordinator";
 import type { DialogMessage } from "./dialogs/dialogProtocol";
@@ -44,6 +46,68 @@ describe("table commands", () => {
     expect(resolveActiveTableCell(undefined, active)).toBeUndefined();
   });
 
+  it("registers and resolves every supported rule width and refuses unlisted or malformed values", () => {
+    const document = fixture(), before = structuredClone(document);
+    const commands = allShellCommands(document);
+    for (const rule of ["top", "header", "bottom", "grid"] as const) {
+      for (const pt of tableRuleWidthsPt) {
+        const id = tableRuleWidthCommandId(rule, pt);
+        expect(id).toBe(`table.rule.${rule}.${pt}`);
+        expect(parseTableRuleWidthCommandId(id)).toEqual({ rule, pt });
+        expect(commands.find(command => command.id === id)).toMatchObject({ enabled: true, title: expect.any(String) });
+        const result = applyTableCommand(document, id, undefined, ids())!;
+        expect(result.label).toBe("Change rule width");
+        const table = selectedTable(result.document)!;
+        expect(table.tableStyle).toEqual({ ...selectedTable(document)!.tableStyle, [`${rule}RulePt`]: pt });
+        expect(table.rows).toEqual(selectedTable(document)!.rows);
+        expect(result.document.selection).toEqual(document.selection);
+        expect(table.width).toBeCloseTo(planTableLayout(table).width);
+        expect(table.height).toBeCloseTo(planTableLayout(table).height);
+      }
+    }
+    for (const id of ["table.rule.top.0.1", "table.rule.top.3", "table.rule.top.1.0", "table.rule.top.-1", "table.rule.side.1", "table.rule.top.NaN", "table.rule.top.1.extra"]) {
+      expect(parseTableRuleWidthCommandId(id)).toBeUndefined();
+      expect(applyTableCommand(document, id, undefined, ids())).toBeUndefined();
+      expect(commands.some(command => command.id === id)).toBe(false);
+    }
+    expect(() => tableRuleWidthCommandId("top", 0.1)).toThrow("Invalid table rule width");
+    expect(document).toEqual(before);
+  });
+
+  const fonts = [...textFontCommands.map(font => [font.id, { fontFamily: font.fontFamily }, "Change font family"] as const),
+    ...textSizeCommands.map(size => [size.id, { fontSizePx: size.fontSizePx }, "Change font size"] as const),
+    [textFontFamilyCommandId("PT Sans Narrow"), { fontFamily: "PT Sans Narrow" }, "Change font family"] as const];
+  it.each(fonts)("%s styles a selected table and refreshes its frame with one undo label", (id, patch, label) => {
+    const document = fixture(), before = structuredClone(document);
+    const result = applyTableFontCommand(document, id)!;
+    const table = selectedTable(result.document)!;
+    expect(result.label).toBe(label);
+    expect(table.style).toMatchObject(patch);
+    expect(table.width).toBeCloseTo(planTableLayout(table).width);
+    expect(table.height).toBeCloseTo(planTableLayout(table).height);
+    expect(table.rows).toEqual(selectedTable(document)!.rows);
+    expect(result.document.selection).toEqual(document.selection);
+    expect(document).toEqual(before);
+  });
+
+  it.each(fonts)("%s changes a mixed text/table selection in a single result", (id, patch, label) => {
+    const inserted = insertNativeTextObject(fixture(), { x: 20, y: 20 }, "Text");
+    const document = { ...inserted, selection: { ...inserted.selection, objectIds: inserted.pages[0].objects.map(object => object.id) } };
+    const before = structuredClone(document);
+    const result = applyTableFontCommand(document, id)!;
+    expect(result.label).toBe(label);
+    expect(result.document.selection).toEqual(before.selection);
+    for (const object of result.document.pages[0].objects) expect(object.style).toMatchObject(patch);
+    expect(document).toEqual(before);
+  });
+
+  it("declines non-font commands and invalid font ids without changing tables", () => {
+    for (const id of ["text.bold", "text.color.red", "text.size.99", "text.font.family:%00bad", "text.font.family:%"]) {
+      expect(applyTableFontCommand(fixture(), id)).toBeUndefined();
+    }
+    expect(applyTableFontCommand(createPhase4Document(), "text.font.times")).toBeUndefined();
+  });
+
   const cases: [string, string, (table: TableObject, before: TableObject) => void][] = [
     ["table.row.insertAbove", "Insert row", (t, b) => { expect(t.rows).toHaveLength(b.rows.length + 1); expect(t.rows[2].cells.every(c => c.text === "")).toBe(true); expect(t.rows[3].id).toBe(b.rows[2].id); }],
     ["table.row.insertBelow", "Insert row", (t, b) => { expect(t.rows).toHaveLength(b.rows.length + 1); expect(t.rows[3].cells.every(c => c.text === "")).toBe(true); }],
@@ -53,6 +117,11 @@ describe("table commands", () => {
     ["table.column.delete", "Delete column", (t, b) => { expect(t.columns).toHaveLength(b.columns.length - 1); expect(t.columns.some(c => c.id === b.columns[2].id)).toBe(false); }],
     ...(["left", "center", "right", "decimal"] as const).map(align => [tableColumnAlignCommandId(align), "Align column", (t: TableObject) => expect(t.columns[2].align).toBe(align)] as [string, string, (t: TableObject) => void]),
     ["table.column.autoFit", "Resize column", t => expect(t.columns[2].width).toEqual({ mode: "auto" })],
+    ...(["auto", "off"] as const).map(formula => [`table.column.formula.${formula}`, "Set column formula", (t: TableObject, b: TableObject) => {
+      expect(t.columns[2].formula).toBe(formula);
+      expect(t.columns.filter((_, i) => i !== 2)).toEqual(b.columns.filter((_, i) => i !== 2));
+      expect(t.rows).toEqual(b.rows);
+    }] as [string, string, (t: TableObject, b: TableObject) => void]),
     ["table.style.threeLine", "Style table", t => expect(t.tableStyle.preset).toBe("three-line")],
     ["table.style.grid", "Style table", t => expect(t.tableStyle.preset).toBe("grid")],
     ["table.header.bold.toggle", "Style table", t => expect(t.tableStyle.headerBold).toBe(true)],

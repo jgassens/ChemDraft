@@ -2,7 +2,8 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { TABLE_LIMITS, deserializeDocument, type ChemDraftDocument } from "@chemdraft/chem-core";
 import { createPhase4Document } from "./documentWorkflow";
-import { applyTableCommand, createTableCommands, tableInspectorSnapshot } from "./tableCommands";
+import { applyTableCommand, applyTableFontCommand, tableInspectorSnapshot } from "./tableCommands";
+import { allShellCommands, textFontFamilyCommandId } from "./commands";
 import { createTableInspectorModel, type TableInspectorControl, type TableInspectorModel } from "./tableInspectorModel";
 
 const fixture = (): ChemDraftDocument => {
@@ -39,14 +40,18 @@ describe("table inspector model", () => {
     }
   });
 
-  it("shows three rule widths for three-line and one for grid, read-only", () => {
+  it("offers registered rule widths for the current preset and marks the active width", () => {
     const base = snapshot();
     const three = createTableInspectorModel({ ...base, preset: "three-line", topRulePt: 1.5, headerRulePt: 0.75, bottomRulePt: 1.5 })!;
-    expect(three.sections[1].controls.map(item => [item.id, item.kind, item.kind === "readout" ? item.value : ""])).toEqual([
-      ["topRule", "readout", "1.5 pt"], ["headerRule", "readout", "0.75 pt"], ["bottomRule", "readout", "1.5 pt"]
+    expect(three.sections[1].controls.map(item => [item.id, item.kind, item.kind === "segmented" ? item.choices.find(choice => choice.selected)?.commandId : ""])).toEqual([
+      ["topRule", "segmented", "table.rule.top.1.5"], ["headerRule", "segmented", "table.rule.header.0.75"], ["bottomRule", "segmented", "table.rule.bottom.1.5"]
     ]);
     const grid = createTableInspectorModel({ ...base, preset: "grid", gridRulePt: 0.5 })!;
-    expect(grid.sections[1].controls).toEqual([{ kind: "readout", id: "gridRule", label: "Grid line width", value: "0.5 pt" }]);
+    expect(grid.sections[1].controls).toHaveLength(1);
+    const widths = control(grid, "rules", "gridRule");
+    if (widths.kind !== "segmented") throw new Error("expected segmented");
+    expect(widths.choices.map(item => item.commandId)).toEqual([0, 0.25, 0.5, 0.75, 1, 1.5, 2].map(width => `table.rule.grid.${width}`));
+    expect(widths.choices.find(item => item.selected)?.commandId).toBe("table.rule.grid.0.5");
   });
 
   it("toggles header bold and caption through their commands", () => {
@@ -59,12 +64,16 @@ describe("table inspector model", () => {
       .toMatchObject({ pressed: true });
   });
 
-  it("shows font as read-only values", () => {
+  it("offers existing font commands, including a custom current family", () => {
     const base = snapshot();
-    const model = createTableInspectorModel({ ...base, fontFamily: "Georgia, serif", fontSizePx: 12 })!;
-    expect(model.sections[3].controls.every(item => item.kind === "readout")).toBe(true);
-    expect(control(model, "font", "fontFamily")).toMatchObject({ value: "Georgia, serif" });
-    expect(control(model, "font", "fontSize")).toMatchObject({ value: "12 px" });
+    const model = createTableInspectorModel({ ...base, fontFamily: "Georgia, serif", fontSizePx: 16 })!;
+    const family = control(model, "font", "fontFamily"), size = control(model, "font", "fontSize");
+    if (family.kind !== "segmented" || size.kind !== "segmented") throw new Error("expected segmented");
+    expect(family.choices.find(item => item.selected)?.commandId).toBe("text.font.georgia");
+    expect(size.choices.find(item => item.selected)?.commandId).toBe("text.size.12");
+    const custom = control(createTableInspectorModel({ ...base, fontFamily: "PT Sans Narrow" })!, "font", "fontFamily");
+    if (custom.kind !== "segmented") throw new Error("expected segmented");
+    expect(custom.choices.find(item => item.selected)?.commandId).toBe(textFontFamilyCommandId("PT Sans Narrow"));
   });
 
   it("offers the four column alignments and selects the active one", () => {
@@ -77,9 +86,13 @@ describe("table inspector model", () => {
       ["table.column.align.right", false], ["table.column.align.decimal", true]
     ]);
     expect(align.choices.every(item => item.disabledReason === undefined)).toBe(true);
-    expect(control(model, "column", "formula")).toMatchObject({ kind: "readout", value: "Auto" });
+    expect(control(model, "column", "formula")).toMatchObject({ kind: "segmented", choices: [
+      { commandId: "table.column.formula.auto", selected: true }, { commandId: "table.column.formula.off", selected: false }
+    ] });
     const off = createTableInspectorModel({ ...base, activeColumn: { id: "c1", align: "left", formula: "off" } })!;
-    expect(control(off, "column", "formula")).toMatchObject({ value: "Off" });
+    expect(control(off, "column", "formula")).toMatchObject({ choices: [
+      { commandId: "table.column.formula.auto", selected: false }, { commandId: "table.column.formula.off", selected: true }
+    ] });
   });
 
   it("disables the column controls with a reason when there is no active column", () => {
@@ -112,18 +125,28 @@ describe("table inspector model", () => {
     expect(control(model, "header", "headerBold").disabledReason).toBe("Unavailable right now");
   });
 
-  it("only references commands that tableCommands registers, and they apply to the document", () => {
+  it("preserves live disabled reasons for rule widths, fonts and column formulae", () => {
+    const disabledIds = ["table.rule.top.0.5", "text.font.times", "text.size.12", "table.column.formula.off"];
+    const model = createTableInspectorModel(snapshot(), id => disabledIds.includes(id)
+      ? { enabled: false, disabledReason: "Finish editing first" } : { enabled: true })!;
+    const choices = model.sections.flatMap(section => section.controls.flatMap(item => item.kind === "segmented" ? item.choices : []));
+    for (const id of disabledIds) expect(choices.find(item => item.commandId === id)?.disabledReason).toBe("Finish editing first");
+  });
+
+  it("references registered commands or the custom font family and they apply to the document", () => {
     const document = fixture();
-    const registered = new Set(createTableCommands(document).map(command => command.id));
+    const registered = new Set(allShellCommands(document).map(command => command.id));
     const model = createTableInspectorModel(tableInspectorSnapshot(document))!;
     const commandIds = model.sections.flatMap(section => section.controls.flatMap(item =>
       item.kind === "segmented" ? item.choices.map(choice => choice.commandId) : item.kind === "readout" ? [] : [item.commandId]));
-    expect(commandIds).toHaveLength(11);
+    expect(commandIds.length).toBeGreaterThan(11);
     for (const id of commandIds) {
-      expect(registered.has(id)).toBe(true);
+      expect(registered.has(id) || id.startsWith("text.font.family:")).toBe(true);
       // The fixture's default cell has no formula, so Format as formula is correctly declined there.
       const declined = id === "table.cell.formatFormula";
-      expect(applyTableCommand(document, id, undefined, (prefix: string) => `${prefix}-x`) === undefined).toBe(declined);
+      const result = id.startsWith("text.") ? applyTableFontCommand(document, id)
+        : applyTableCommand(document, id, undefined, (prefix: string) => `${prefix}-x`);
+      expect(result === undefined).toBe(declined);
     }
   });
 });

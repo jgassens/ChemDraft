@@ -1102,6 +1102,7 @@ function TableInspectorSections({ model, onInvoke }: { model: TableInspectorMode
       case "segmented":
         return (
           <div className="molecule-inspector-effect-row" role="group" aria-label={control.label} key={control.id} data-table-control={control.id}>
+            <span>{control.label}</span>
             {control.choices.map((choice) => (
               <button
                 type="button"

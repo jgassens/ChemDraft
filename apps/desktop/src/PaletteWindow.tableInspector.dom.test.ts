@@ -146,6 +146,13 @@ describe("PaletteWindow table inspector", () => {
       "table.header.bold.toggle",
       "table.column.align.right",
       "table.column.align.decimal",
+      "table.rule.top.0.25",
+      "table.rule.header.0.5",
+      "table.rule.bottom.2",
+      "text.font.times",
+      "text.size.18",
+      "table.column.formula.off",
+      "table.column.formula.auto",
       "table.caption.toggle",
       "table.footnote.add",
       "table.cell.plainText"
@@ -173,15 +180,44 @@ describe("PaletteWindow table inspector", () => {
     expect(left.disabled).toBe(true);
     expect(left.title).toBe("Click a cell to choose a column");
     await click('[data-command-id="table.column.align.left"]');
+    const formula = container.querySelector<HTMLButtonElement>('[data-command-id="table.column.formula.auto"]')!;
+    expect(formula.disabled).toBe(true);
+    expect(formula.title).toBe("Click a cell to choose a column");
+    await click('[data-command-id="table.column.formula.auto"]');
     expect(routed).toEqual([]);
   });
 
-  it("shows font and rule widths as read-only text, not editable inputs", async () => {
+  it("reflects rule widths, font family and size, and column formula selections", async () => {
     await mount("core.drawnStructureSettings");
-    await broadcast({ ...tableSnapshot(), preset: "three-line", topRulePt: 1.5, fontFamily: "Georgia, serif" });
+    await broadcast({ ...tableSnapshot(), preset: "three-line", topRulePt: 1.5, fontFamily: "Georgia, serif", fontSizePx: 24 });
     const inspector = container.querySelector("[data-table-inspector]")!;
-    expect(inspector.querySelector("input, select")).toBeNull();
     expect(inspector.querySelector('[data-table-control="topRule"]')?.textContent).toContain("1.5 pt");
-    expect(inspector.querySelector('[data-table-control="fontFamily"]')?.textContent).toContain("Georgia, serif");
+    for (const id of ["table.rule.top.1.5", "text.font.georgia", "text.size.18"]) {
+      expect(inspector.querySelector(`[data-command-id="${id}"]`)?.getAttribute("aria-pressed")).toBe("true");
+    }
+    expect(inspector.querySelector('[data-table-control="gridRule"]')).toBeNull();
+    await broadcast({ ...tableSnapshot(), preset: "grid", gridRulePt: 0.75 });
+    expect(inspector.querySelector('[data-table-control="topRule"]')).toBeNull();
+    expect(inspector.querySelector('[data-command-id="table.rule.grid.0.75"]')?.getAttribute("aria-pressed")).toBe("true");
+    await publishTableCommandSpecs();
+    await click('[data-command-id="table.rule.grid.0.5"]');
+    expect(routed).toEqual(["table.rule.grid.0.5"]);
+  });
+
+  it("does not send unavailable rule, font or formula commands and shows their reasons", async () => {
+    await mount("core.drawnStructureSettings");
+    const ids = ["table.rule.top.0.5", "text.font.times", "text.size.12", "table.column.formula.off"];
+    await act(async () => {
+      await broadcastToolsetCommandSpecs(allShellCommands(selectedTableDocument()).map(command => ids.includes(command.id)
+        ? { ...command, enabled: false, disabledReason: "Finish editing first" } : command));
+    });
+    await broadcast(tableSnapshot());
+    for (const id of ids) {
+      const button = container.querySelector<HTMLButtonElement>(`[data-table-inspector] [data-command-id="${id}"]`)!;
+      expect(button.disabled).toBe(true);
+      expect(button.title).toBe("Finish editing first");
+      await click(`[data-table-inspector] [data-command-id="${id}"]`);
+    }
+    expect(routed).toEqual([]);
   });
 });

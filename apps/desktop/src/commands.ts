@@ -43,6 +43,7 @@ import type { ToolbarAssetName } from "./toolbarAssets";
 import { SPIN3D_DEBUGGER_COMMAND_ID } from "./conformerDebug";
 import { NO_OPEN_WARNINGS_REASON, TOGGLE_OPEN_WARNINGS_COMMAND_ID } from "./openWarnings";
 import { createTableCommands, type ActiveTableCell } from "./tableCommands";
+export { tableRuleWidthCommandId, parseTableRuleWidthCommandId } from "./tableCommands";
 
 export interface CommandAvailability {
   canUndo?: boolean;
