@@ -1,4 +1,6 @@
-import { applyTableCommand, createTableCommands, createTableInsertAction, parseTableInsertCommandId, resolveActiveTableCell, selectedTable, tableInsertCommandId, tableInspectorSnapshot, type ActiveTableCell, type TableInsertDimensions } from "./tableCommands";
+import { applyTableCommand, applyTableObjectEdit, createTableCommands, createTableInsertAction, parseTableInsertCommandId, resolveActiveTableCell, selectedTable, tableInsertCommandId, tableInspectorSnapshot, type ActiveTableCell, type TableInsertDimensions } from "./tableCommands";
+import { TableCellEditor, TableColumnResizers, type TableCellEditorHandle } from "./tableCellEditor";
+import { tableCellAtPoint, type TableEditingAction } from "./tableInteraction";
 import { insertTableIntoDocument } from "./documentWorkflow";
 import type { InsertTableOptions } from "./dialogs/dialogProtocol";
 import { isEditableTarget } from "./editableTarget";
@@ -100,9 +102,11 @@ import {
   type NativeTextStyle,
   type ObjectReorderPlacement,
   type TextObject,
+  type TableObject,
+  type TableRichText,
   type TextSpan
 } from "@chemdraft/chem-core";
-import { tryNativeSingleBondGraphSmiles } from "@chemdraft/document-workflow-core";
+import { tryNativeSingleBondGraphSmiles, setTableCell, formatTableCellFormula, insertTableRows } from "@chemdraft/document-workflow-core";
 import { atomLabelDraftDocumentUnchanged, createAtomLabelDraftRollback, documentOwnsAtomLabelDraft, recordAtomLabelDraftRollback, restoreAtomLabelDraft, type AtomLabelDraftState } from "./atomLabelDraft";
 import type { EditorSaveResult } from "@chemdraft/editor-adapter";
 import { sha256Utf8Hex } from "@chemdraft/cdx-compat";
@@ -1620,7 +1624,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.28.13.30-codex";
+const CURRENT_BUILD_STAMP = "10.28.14.20-codex";
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -2392,11 +2396,23 @@ export function MainWindow({
   const finalizedAtomLabelEditRef = useRef<AtomLabelEditState | undefined>(undefined);
   const [textStyleDefaults, setTextStyleDefaults] = useState<NativeTextStyle>(DefaultNativeTextStyle);
   const [activeTableCellState, setActiveTableCell] = useState<ActiveTableCell>();
+  const [tableCellEdit, setTableCellEdit] = useState<ActiveTableCell>();
+  const tableCellEditRef = useRef(tableCellEdit); tableCellEditRef.current = tableCellEdit;
+  const tableCellEditorRef = useRef<TableCellEditorHandle>(null);
+  const [tableResizePreview, setTableResizePreview] = useState<TableObject>();
   const activeTableCell = resolveActiveTableCell(selectedTable(document), activeTableCellState);
   useEffect(() => {
     setActiveTableCell(current => current?.tableId === activeTableCell?.tableId &&
       current?.rowId === activeTableCell?.rowId && current?.columnId === activeTableCell?.columnId ? current : activeTableCell);
   }, [activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId]);
+  useEffect(() => {
+    if (tableCellEdit && (tableCellEdit.tableId !== activeTableCell?.tableId ||
+      tableCellEdit.rowId !== activeTableCell?.rowId || tableCellEdit.columnId !== activeTableCell?.columnId)) {
+      setTableCellEdit(undefined);
+    }
+    setTableResizePreview(undefined);
+  }, [activeDocumentTabId, activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId]);
+  useEffect(() => { setTableCellEdit(undefined); }, [activeDocumentTabId]);
   const currentTable = useMemo(() => tableInspectorSnapshot(document, activeTableCell),
     [document, activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId]);
   const tableActions = useMemo(() => createTableCommands(document, activeTableCell),
@@ -2967,7 +2983,11 @@ export function MainWindow({
       literal: true, beforeAtom: activeAtomLabelEdit.beforeAtom, beforeMolecule: activeAtomLabelEdit.beforeMolecule
     });
   }, [document, activeAtomLabelEdit]);
-  const labelDisplayPage = useMemo(() => planDisplayPage(activePage, atomLabelPreview), [activePage, atomLabelPreview]);
+  const labelDisplayPage = useMemo(() => {
+    const page = planDisplayPage(activePage, atomLabelPreview);
+    return tableResizePreview ? { ...page, objects: page.objects.map(object =>
+      object.id === tableResizePreview.id ? tableResizePreview : object) } : page;
+  }, [activePage, atomLabelPreview, tableResizePreview]);
   // The double-bond hover plan changes SVG geometry only, as before label previews.
   // Object views keep real bond metadata for selection chrome and interaction.
   const plannedDisplayPage = useMemo(() => planDisplayPage(labelDisplayPage, undefined, nativeDoubleBondSidePreview),
@@ -6548,6 +6568,9 @@ export function MainWindow({
   const clearStampInteractionState = useCallback(() => {
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
+    setTableCellEdit(undefined);
+    tableCellEditRef.current = undefined;
+    setTableResizePreview(undefined);
     setActiveGraphicTransformObjectId(undefined);
     setSelectedGraphicPathNode(undefined);
     setActiveAtomLabelEdit(undefined);
@@ -7060,7 +7083,70 @@ export function MainWindow({
     startTextObjectEdit(objectId);
   }, [activeToolState.activeCommandId, startTextObjectEdit]);
 
+  const startTableCellEdit = useCallback((table: TableObject, cell: ActiveTableCell) => {
+    clearScheduledTextEditorFocus();
+    setActiveTextEditObjectId(undefined);
+    setActiveAtomLabelEdit(undefined);
+    setActiveEditorObjectId(undefined);
+    replacePresentDocument(current => selectDocumentObject(current, table.id));
+    setActiveTableCell(cell);
+    tableCellEditRef.current = cell;
+    setTableCellEdit(cell);
+    scheduleInlineEditorFocus(() => pageRef.current?.querySelector<HTMLTextAreaElement>("[data-table-cell-editor] textarea")?.focus({ preventScroll: true }));
+    setStatus("Editing table cell");
+  }, [clearScheduledTextEditorFocus, replacePresentDocument, scheduleInlineEditorFocus]);
+
+  const commitTableObject = useCallback((table: TableObject, label: string) => {
+    commitDocumentChange(current => applyTableObjectEdit(current, table), label);
+    setStatus(label);
+  }, [commitDocumentChange]);
+
+  const finishTableCellEdit = useCallback((value: TableRichText, action: TableEditingAction) => {
+    const cell = tableCellEditRef.current;
+    let table = selectedTable(documentRef.current);
+    if (!cell || !table || table.id !== cell.tableId) return;
+    const row = table.rows.find(item => item.id === cell.rowId);
+    const column = table.columns.findIndex(item => item.id === cell.columnId);
+    if (!row || column < 0) return;
+    if (action.kind !== "cancel") {
+      const original = row.cells[column];
+      if (JSON.stringify({ text: original.text, spans: original.spans }) !== JSON.stringify(value)) {
+        const edit = setTableCell(table, cell.rowId, cell.columnId, value);
+        commitTableObject(edit.table, edit.label);
+        table = edit.table;
+        if ((original.formula ?? table.columns[column].formula) === "auto") {
+          const formatted = formatTableCellFormula(table, cell.rowId, cell.columnId);
+          if (formatted) { commitTableObject(formatted.table, formatted.label); table = formatted.table; }
+        }
+      }
+    }
+    let next = action.kind === "commit" ? action.next : undefined;
+    if (action.kind === "commit" && action.insertRow) {
+      const inserted = insertTableRows(table, table.rows.length, 1, prefix => `${prefix}-${crypto.randomUUID()}`);
+      commitTableObject(inserted.table, inserted.label);
+      next = { tableId: table.id, rowId: inserted.table.rows.at(-1)!.id, columnId: table.columns[0].id };
+    }
+    clearScheduledTextEditorFocus();
+    tableCellEditRef.current = next;
+    setTableCellEdit(next);
+    if (next) setActiveTableCell(next);
+    else canvasRegionRef.current?.focus({ preventScroll: true });
+  }, [clearScheduledTextEditorFocus, commitTableObject]);
+
+  const handleTableDoubleClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    if (activeToolState.activeCommandId !== "tool.select" || isEditableTarget(event.target)) return;
+    const owner = (event.target as Element).closest("[data-page-svg-object-visual]")?.getAttribute("data-page-svg-object-visual");
+    const table = documentRef.current.pages[0].objects.find(object => object.id === owner);
+    const rect = pageRef.current?.getBoundingClientRect();
+    if (table?.type !== "table" || !rect) return;
+    const cell = tableCellAtPoint(table, { x: (event.clientX - rect.left) / viewportRef.current.scale,
+      y: (event.clientY - rect.top) / viewportRef.current.scale });
+    if (!cell) return;
+    event.preventDefault(); event.stopPropagation(); startTableCellEdit(table, cell);
+  }, [activeToolState.activeCommandId, startTableCellEdit]);
+
   const applyTextStyleCommand = useCallback((commandId: string): boolean => {
+    if (tableCellEditorRef.current?.applyCommand(commandId)) return true;
     const currentDocument = documentRef.current;
     const toolbarStyleTarget = toolbarStyleTargetRef.current;
     const snapshotTextSelection = toolbarStyleTarget?.textRange;
@@ -8313,6 +8399,11 @@ export function MainWindow({
     if (nextHistory.present.selection.objectIds.length === 0) {
       toolbarStyleTargetRef.current = undefined;
     }
+    const tableWasEditing = Boolean(tableCellEditRef.current);
+    setTableCellEdit(undefined);
+    tableCellEditRef.current = undefined;
+    setTableResizePreview(undefined);
+    if (tableWasEditing) canvasRegionRef.current?.focus({ preventScroll: true });
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveGraphicTransformObjectId(undefined);
@@ -12443,6 +12534,17 @@ export function MainWindow({
         event.preventDefault();
       }
 
+      if (tableCellEditRef.current) return;
+      if (event.key === "Enter" && !event.ctrlKey && !event.metaKey && !event.altKey &&
+        !event.shiftKey && !event.defaultPrevented && !shouldIgnoreShortcutTarget(event.target, event.key) &&
+        !isBlockedByModalDialog(event.target)) {
+        const table = selectedTable(documentRef.current);
+        const cell = resolveActiveTableCell(table, activeTableCellState);
+        if (table && cell) {
+          event.preventDefault(); startTableCellEdit(table, cell); return;
+        }
+      }
+
       // An open modal dialog owns the keyboard. MainWindow also has a capture-phase Escape listener, so
       // its global handlers must opt out explicitly; propagation control inside a dialog is too late.
       // A key the canvas never sees (in a dialog or another text field) ends a hover-label
@@ -12747,6 +12849,8 @@ export function MainWindow({
     selectedNativeMoleculePart,
     assignHoveredNativeDeleteTarget,
     shortcutRegistry,
+    activeTableCellState,
+    startTableCellEdit,
     startAtomLabelEdit,
     switchToSelectTool,
     syncPathArtPreview,
@@ -20213,6 +20317,7 @@ export function MainWindow({
                 onPointerCancel={handlePagePointerCancel}
                 onPointerLeave={handlePagePointerLeave}
                 onContextMenu={handlePageContextMenu}
+                onDoubleClickCapture={handleTableDoubleClick}
               >
                 {crosshairsVisible ? (
                   <CrosshairOverlay
@@ -20231,8 +20336,26 @@ export function MainWindow({
                   objectOverlayFragments={objectOverlayFragments}
                   objectTransformPreview={objectTransformPreview}
                   spinningObjectId={activeSpin3dState?.objectId}
+                  editingTableCell={tableCellEdit}
                 />
                 <PageInteractionPortal target={interactionLayer}>
+                {(() => {
+                  const table = selectedTable(document);
+                  if (!table || activeToolState.activeCommandId !== "tool.select") return null;
+                  const editingCell = tableCellEdit?.tableId === table.id &&
+                    table.rows.some(row => row.id === tableCellEdit.rowId) && table.columns.some(column => column.id === tableCellEdit.columnId)
+                    ? tableCellEdit : undefined;
+                  return <>
+                    <TableColumnResizers key={`${activeDocumentTabId}:${table.id}`} table={tableResizePreview ?? table} scale={viewport.scale}
+                      onPreview={setTableResizePreview} onCommit={commitTableObject} />
+                    {editingCell ? <TableCellEditor key={`${activeDocumentTabId}:${JSON.stringify(editingCell)}`}
+                      ref={tableCellEditorRef} document={document} table={table} cell={editingCell} scale={viewport.scale}
+                      platform={shortcutPlatform} renderText={object => <TextObjectContent object={object} noWrap />}
+                      resolveShortcut={event => shortcutRegistry.resolve({ key: event.key, shiftKey: event.shiftKey,
+                        metaKey: event.metaKey, ctrlKey: event.ctrlKey, altKey: event.altKey })}
+                      onFinish={finishTableCellEdit} onHistoryCommand={restoreDocumentHistory} onError={setStatus} /> : null}
+                  </>;
+                })()}
                 {activeNativeTemplateId && templatePreview ? (
                   <NativeTemplateGhostOverlay
                     plan={templatePreview}
@@ -26178,6 +26301,7 @@ function PageSvgSurfaceContent({
   objectOverlayFragments,
   objectTransformPreview,
   spinningObjectId,
+  editingTableCell,
   ...handlers
 }: {
   ariaLabel: string;
@@ -26189,6 +26313,7 @@ function PageSvgSurfaceContent({
   objectTransformPreview?: ObjectTransformPreviewState;
   /** The id of the molecule being spun in 3D; its drawn structure fades to a faint ghost. */
   spinningObjectId?: string;
+  editingTableCell?: ActiveTableCell;
   onPointerDown(objectId: string, event: ObjectPointerEvent): void;
   onPointerMove(objectId: string, event: ObjectPointerEvent): void;
   onPointerUp(objectId: string, event: ObjectPointerEvent): void;
@@ -26277,7 +26402,12 @@ function PageSvgSurfaceContent({
                         transform={projectedPlaneSvgTransformForObject(object)}
                         fill="transparent" pointerEvents="all" />
                     ) : null}
-                    {fragments.map(fragment => renderStaticPageSvgFragment(fragment))}
+                    {fragments.map(fragment => {
+                      const prefix = editingTableCell?.tableId === object.id
+                        ? `table-cell-${encodeURIComponent(JSON.stringify([object.id, editingTableCell.rowId, editingTableCell.columnId]))}-line-` : undefined;
+                      return renderStaticPageSvgFragment(prefix ? { ...fragment, children: fragment.children.filter(child =>
+                        child.kind === "text" || !String(child.attrs.id ?? "").startsWith(prefix)) } : fragment);
+                    })}
                   </>
                 )}
               </g>
@@ -30254,9 +30384,10 @@ function formatSvgNumber(value: number): number {
   return Number(value.toFixed(3));
 }
 
-function TextObjectContent({ editing = false, object }: { editing?: boolean; object: TextObject }) {
+function TextObjectContent({ editing = false, object, noWrap = false }: { editing?: boolean; object: TextObject; noWrap?: boolean }) {
   return (
-    <span className={["text-object-content", editing ? "text-object-edit-preview" : ""].filter(Boolean).join(" ")}>
+    <span className={["text-object-content", editing ? "text-object-edit-preview" : ""].filter(Boolean).join(" ")}
+      style={noWrap ? { whiteSpace: "pre", overflowWrap: "normal" } : undefined}>
       {textObjectSpansForRendering(object).map((span, index) => (
         <span
           className="text-object-run"

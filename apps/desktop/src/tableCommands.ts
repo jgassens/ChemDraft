@@ -98,10 +98,14 @@ export function applyTableCommand(document: ChemDraftDocument, id: string, activ
     }
   }
   if (!result) return undefined;
-  return { label: result.label, document: applyPatches(document, [
-    { op: "updateObject", objectId: table.id, changes: result.table },
+  return { label: result.label, document: applyTableObjectEdit(document, result.table) };
+}
+/** Cell edits, column drags and registered commands share the same patch and selection path. */
+export function applyTableObjectEdit(document: ChemDraftDocument, table: TableObject): ChemDraftDocument {
+  return applyPatches(document, [
+    { op: "updateObject", objectId: table.id, changes: table },
     { op: "setSelection", pageId: document.pages.find(page => page.objects.some(object => object.id === table.id))!.id, objectIds: [table.id] }
-  ]) };
+  ]);
 }
 export function tableInspectorSnapshot(document: ChemDraftDocument, active?: ActiveTableCell) {
   const table = selectedTable(document);
