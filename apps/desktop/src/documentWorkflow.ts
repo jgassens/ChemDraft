@@ -8854,7 +8854,7 @@ export function applyNativeMoleculeBondOrderTarget(
     return document;
   }
 
-  const nextOrder = bond.stereo === "either" ? "double" : nextNativeBondOrder(molecule, bond);
+  const nextOrder = nextNativeBondOrder(molecule, bond);
   return isNativeBondOrderValue(nextOrder)
     ? applyNativeMoleculeBondOrderValueTarget(document, target, nextOrder)
     : document;

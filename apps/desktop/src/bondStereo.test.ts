@@ -82,12 +82,14 @@ describe("bond stereo commands", () => {
   it("redraw and reapplying double order clear the flag; move, rotation and restyling keep it", () => {
     const { document, molecule, target } = drawing("C/C=C/C");
     const open = applyMoleculeBondStereo(document, [target], "either", perceiveDoubleBondStereoFromMolfile);
-    for (const changed of [applyNativeMoleculeBondOrderTarget(open, target), applyNativeMoleculeBondOrderValueTarget(open, target, "double")]) {
-      const next = getSelectedMolecule(changed)!;
-      expect(next.bonds.find(b => b.id === target.bondId)).toMatchObject({ order: "double" });
-      expect(next.bonds.find(b => b.id === target.bondId)?.stereo).toBeUndefined();
-      expect(parseMolfileGraph(next.structure).bonds.every(b => b.stereo === undefined)).toBe(true);
-    }
+    const redrawn = getSelectedMolecule(applyNativeMoleculeBondOrderValueTarget(open, target, "double"))!;
+    expect(redrawn.bonds.find(b => b.id === target.bondId)).toMatchObject({ order: "double" });
+    expect(redrawn.bonds.find(b => b.id === target.bondId)?.stereo).toBeUndefined();
+    expect(parseMolfileGraph(redrawn.structure).bonds.every(b => b.stereo === undefined)).toBe(true);
+    const cycled = getSelectedMolecule(applyNativeMoleculeBondOrderTarget(open, target))!;
+    expect(cycled.bonds.find(b => b.id === target.bondId)).toMatchObject({ order: "triple" });
+    expect(cycled.bonds.find(b => b.id === target.bondId)?.stereo).toBeUndefined();
+    expect(parseMolfileGraph(cycled.structure).bonds.every(b => b.stereo === undefined)).toBe(true);
     for (const changed of [
       moveNativeMoleculeParts(open, { objectId: molecule.id, kind: "atom", atomId: molecule.atoms[0].id }, { x: 10, y: 15 }),
       rotateDocumentObject(open, molecule.id, 30),
