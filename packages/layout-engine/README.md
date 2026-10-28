@@ -110,3 +110,16 @@ With a page frame, default Row/Column gaps tighten from 48 to no less than 12 do
 when necessary to fit. Explicit `gap` values remain fixed; molecule dimensions never change.
 `textVisualBoundsForArrangement` measures rotated caption frames around the same pivot as SVG
 text rendering, so grouped captions participate in layout clearance and page-fit checks.
+
+## Tables
+
+`planTableLayout` measures native tables without a DOM, including rich-text scripts, decimal tabs,
+captions, footnotes and horizontal or grid rules. Cells do not wrap; fixed columns allow overflow.
+`planTableObjectSvg` feeds the shared page SVG plan, and `tableVisualBoundsForArrangement` includes
+the notes, overflow and rotation around the same stored-frame pivot as SVG rendering.
+
+`textMetrics.generated.ts` contains only derived Helvetica regular/bold and Symbol Greek/arrow
+advance widths. Regenerate it with
+`node packages/layout-engine/scripts/generate-text-metrics.mjs <Adobe Core 14 AFM directory>`
+from the repository root. The generator verifies the oblique widths, retains Adobe's notices and
+permission paragraph verbatim, and records the modification. Do not add the source AFM files.
