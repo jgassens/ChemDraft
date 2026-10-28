@@ -71,7 +71,9 @@ export function StructureTemplatePicker({ title, templateIds, onInsert, onClose,
         <h3 id={`template-family-${family}`}>{structureTemplateFamilyNames[family]}</h3>
         <div className="cd-template-grid" role="group" aria-label={structureTemplateFamilyNames[family]}>
           {templates.map((template, index) => {
-            const description = [template.formula, ...template.synonyms].join("; ");
+            const charge = template.charge;
+            const formula = template.formula + (charge ? ` ${Math.abs(charge) === 1 ? "" : Math.abs(charge)}${charge > 0 ? "+" : "-"}` : "");
+            const description = [formula, ...template.synonyms].join("; ");
             return <button key={template.id} type="button" data-template-id={template.id} aria-label={template.name}
               aria-describedby={`template-description-${template.id}`} title={description} aria-disabled={busy}
               style={template.id.startsWith("pillar-") && index % 2 === 1 ? { gridColumnStart: 1 } : undefined}

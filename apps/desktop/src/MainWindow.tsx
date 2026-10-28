@@ -1624,7 +1624,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.28.15.35-opus";
+const CURRENT_BUILD_STAMP = "10.28.15.45-codex";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -6631,6 +6631,7 @@ export function MainWindow({
   // SMILES → editable 2D structure with stereochemistry. The depiction engines are loaded
   // on demand. Parser/chemistry refusals retain text fallback; worker failures reach status.
   const renderPastedSmiles = useCallback(async (smilesText: string): Promise<{ rendered: boolean; reason?: string; failed?: boolean }> => {
+    setStatus("Drawing the pasted SMILES…");
     try {
       const pasteDocument = documentRef.current;
       const parsed = await depictSmilesForPaste(smilesText);
@@ -6690,9 +6691,7 @@ export function MainWindow({
         if (failed) return;
         if (!rendered) {
           applySyncClipboardPayload({ kind: "plain-text", text: detectedPayload.text, sourceType: detectedPayload.sourceType, warnings: [] });
-          setStatus(reason
-            ? `Clipboard SMILES could not be parsed: ${reason}; pasted as text`
-            : "Clipboard SMILES could not be parsed; pasted as text");
+          if (reason) setStatus(`Clipboard SMILES could not be parsed: ${reason}; pasted as text`);
         }
       });
       return;
@@ -6961,7 +6960,13 @@ export function MainWindow({
 
   const pasteClipboard = useCallback(async () => {
     smilesListPasteAbortRef.current?.abort();
-    const rawPayload = await readClipboardPayload();
+    let rawPayload: Awaited<ReturnType<typeof readClipboardPayload>>;
+    try {
+      rawPayload = await readClipboardPayload();
+    } catch (error) {
+      setStatus(`Couldn't read the clipboard: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
     if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
     const selectionPayload = rawPayload.textItems
       .map((item) => parseSelectionClipboardPayload(item.text))
@@ -6981,6 +6986,8 @@ export function MainWindow({
     // otherwise the actual clipboard content above (e.g. external text/SMILES) wins.
     if (selectionClipboardPayloadRef.current) {
       applySelectionClipboardPayload(selectionClipboardPayloadRef.current);
+    } else {
+      setStatus("Couldn't paste: the clipboard contains no supported drawing or text content.");
     }
   }, [applyDetectedClipboardPayload, applySelectionClipboardPayload]);
 

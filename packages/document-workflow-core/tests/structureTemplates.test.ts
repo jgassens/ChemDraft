@@ -66,6 +66,15 @@ const distance = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
 const orientation = (a: Point, b: Point, c: Point) => (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
 const epsilon = 1e-8;
 
+function pointToSegmentDistance(point: Point, from: Point, to: Point): number {
+  const dx = to.x - from.x, dy = to.y - from.y;
+  const squaredLength = dx * dx + dy * dy;
+  if (squaredLength === 0) return distance(point, from);
+  const fraction = Math.max(0, Math.min(1,
+    ((point.x - from.x) * dx + (point.y - from.y) * dy) / squaredLength));
+  return distance(point, { x: from.x + fraction * dx, y: from.y + fraction * dy });
+}
+
 function onSegment(a: Point, b: Point, p: Point): boolean {
   return Math.abs(orientation(a, b, p)) <= epsilon &&
     p.x >= Math.min(a.x, b.x) - epsilon && p.x <= Math.max(a.x, b.x) + epsilon &&
@@ -79,6 +88,44 @@ function intersects(a: Point, b: Point, c: Point, d: Point): boolean {
   const opposite = (x: number, y: number) => (x > epsilon && y < -epsilon) || (x < -epsilon && y > epsilon);
   return (opposite(abc, abd) && opposite(cda, cdb)) ||
     onSegment(a, b, c) || onSegment(a, b, d) || onSegment(c, d, a) || onSegment(c, d, b);
+}
+
+function segmentToSegmentDistance(a: Point, b: Point, c: Point, d: Point): number {
+  if (intersects(a, b, c, d)) return 0;
+  return Math.min(
+    pointToSegmentDistance(a, c, d), pointToSegmentDistance(b, c, d),
+    pointToSegmentDistance(c, a, b), pointToSegmentDistance(d, a, b)
+  );
+}
+
+function minimumBondClearance(entry: StructureTemplate) {
+  const { atoms, bonds } = entry.layout;
+  const mean = bonds.reduce((sum, [a, b]) => sum + distance(atoms[a]!, atoms[b]!), 0) / bonds.length;
+  let minimum = Infinity, pair = "", crossings = 0;
+  for (let i = 0; i < bonds.length; i += 1) {
+    const [a, b] = bonds[i]!;
+    for (let j = i + 1; j < bonds.length; j += 1) {
+      const [c, d] = bonds[j]!;
+      if (a === c || a === d || b === c || b === d) continue;
+      if (intersects(atoms[a]!, atoms[b]!, atoms[c]!, atoms[d]!)) {
+        crossings += 1;
+        if ((entry.allowedCrossings ?? 0) > 0) continue;
+      }
+      const clearance = segmentToSegmentDistance(atoms[a]!, atoms[b]!, atoms[c]!, atoms[d]!) / mean;
+      if (clearance < minimum) {
+        minimum = clearance;
+        pair = `${a}-${b} and ${c}-${d}`;
+      }
+    }
+  }
+  return { minimum, pair, crossings };
+}
+
+function assertBondClearance(entry: StructureTemplate) {
+  const { minimum, pair, crossings } = minimumBondClearance(entry);
+  expect(crossings).toBe(entry.allowedCrossings ?? 0);
+  // With no nonincident pairs left after exemptions, clearance is unconstrained.
+  expect(minimum, `bonds ${pair}`).toBeGreaterThanOrEqual(0.35);
 }
 
 const normalise = normalizeStructureTemplateName;
@@ -159,6 +206,27 @@ describe("structure template identities", () => {
 });
 
 describe("structure template geometry", () => {
+  // The smaller CB portals still need unequal bonds to keep radial inward carbonyls
+  // and visibly bent N-CH2-N bridges separate at >= 0.95 atom-label clearance, without crossings.
+  // These per-id exceptions retain the absolute 0.85–1.15 check below; larger CB
+  // hosts and every other template must satisfy the tighter relative window.
+  // Achieved min/max relative to mean: CB[5] 0.85095–1.14870, CB[6] 0.89604–1.11290.
+  const nonUniformPortalIds = new Set(["cucurbit-5-uril", "cucurbit-6-uril"]);
+
+  it.each(structureTemplates.filter((entry) => !nonUniformPortalIds.has(entry.id)).map((entry) => [entry.id, entry] as const))(
+    "%s: every bond is within five percent of the template's own mean",
+    (_id, entry) => {
+      const { atoms, bonds } = entry.layout;
+      const lengths = bonds.map(([from, to]) => distance(atoms[from]!, atoms[to]!));
+      const mean = lengths.reduce((sum, length) => sum + length, 0) / lengths.length;
+      lengths.forEach((length, index) => {
+        const [from, to] = bonds[index]!;
+        expect(length / mean, `bond ${from}-${to} relative to mean`).toBeGreaterThanOrEqual(0.95);
+        expect(length / mean, `bond ${from}-${to} relative to mean`).toBeLessThanOrEqual(1.05);
+      });
+    }
+  );
+
   it.each(structureTemplates.map((entry) => [entry.id, entry] as const))(
     "%s: unit bonds, centred coordinates, no close non-neighbours or undeclared crossings",
     (_id, entry) => {
@@ -222,6 +290,99 @@ describe("structure template geometry", () => {
     }
   );
 
+  it.each(structureTemplates.map((entry) => [entry.id, entry] as const))(
+    "%s: nonincident bonds clear each other by at least 0.35 mean bond lengths",
+    (_id, entry) => {
+      assertBondClearance(entry);
+    }
+  );
+
+  it("every family's minimum nonincident bond clearance meets the threshold", () => {
+    const minima = new Map<string, number>();
+    for (const entry of structureTemplates) {
+      const { minimum } = minimumBondClearance(entry);
+      minima.set(entry.family, Math.min(minima.get(entry.family) ?? Infinity, minimum));
+    }
+    for (const [family, minimum] of minima) {
+      expect(Number.isFinite(minimum), family).toBe(true);
+      expect(minimum, family).toBeGreaterThanOrEqual(0.35);
+    }
+  });
+
+  it.each(structureTemplates.map((entry) => [entry.id, entry] as const))(
+    "%s: every atom label clears every bond that does not contain it",
+    (_id, entry) => {
+      const { atoms, bonds } = entry.layout;
+      for (const [index, atom] of atoms.entries()) {
+        if (atom.element === "C" && (atom.charge ?? 0) === 0) continue;
+        for (const [from, to] of bonds) {
+          if (index === from || index === to) continue;
+          expect(pointToSegmentDistance(atom, atoms[from]!, atoms[to]!),
+            `label ${index} to bond ${from}-${to}`).toBeGreaterThanOrEqual(0.75);
+        }
+      }
+    }
+  );
+
+  it.each(structureTemplates.filter((entry) => entry.family === "cucurbiturils").map((entry) => [entry.id, entry] as const))(
+    "%s: every carbonyl is radial and every glycoluril/bridge sector is a rigid repeat",
+    (_id, entry) => {
+      const { atoms } = entry.layout;
+      const n = atoms.length / 12;
+      expect(Number.isInteger(n)).toBe(true);
+      // Odd-membered hosts have a translated bounding-box centre. Recover the
+      // rotational centre from the repeated shared methine edges instead.
+      const centre = { x: 0, y: 0 };
+      for (let unit = 0; unit < n; unit += 1) {
+        for (const index of [12 * unit, 12 * unit + 1]) {
+          centre.x += atoms[index]!.x / (2 * n);
+          centre.y += atoms[index]!.y / (2 * n);
+        }
+      }
+      for (let unit = 0; unit < n; unit += 1) {
+        const angle = 2 * Math.PI * unit / n, cos = Math.cos(angle), sin = Math.sin(angle);
+        for (let index = 0; index < 12; index += 1) {
+          const original = atoms[index]!, repeated = atoms[12 * unit + index]!;
+          const x = original.x - centre.x, y = original.y - centre.y;
+          expect(repeated.element).toBe(original.element);
+          expect(distance(repeated, { x: centre.x + x * cos - y * sin, y: centre.y + x * sin + y * cos }),
+            `sector ${unit}, atom ${index}`).toBeLessThanOrEqual(0.0002);
+        }
+        for (const [index, direction] of [[4, -1], [8, 1]] as const) {
+          const c = atoms[12 * unit + index]!, o = atoms[12 * unit + index + 1]!;
+          const rx = c.x - centre.x, ry = c.y - centre.y;
+          const dx = o.x - c.x, dy = o.y - c.y;
+          const product = Math.hypot(rx, ry) * Math.hypot(dx, dy);
+          expect(Math.abs(rx * dy - ry * dx) / product, `carbonyl at ${12 * unit + index}`)
+            .toBeLessThanOrEqual(0.0002);
+          expect(direction * (rx * dx + ry * dy)).toBeGreaterThan(0);
+          expect(direction * (distance(o, centre) - distance(c, centre))).toBeGreaterThan(0);
+        }
+      }
+    }
+  );
+
+  it.each(structureTemplates.filter((entry) => entry.family === "cucurbiturils").map((entry) => [entry.id, entry] as const))(
+    "%s: every methylene bridge has a visible, unsquashed bend",
+    (_id, entry) => {
+      const { atoms, bonds } = entry.layout;
+      let bridges = 0;
+      for (const [index, atom] of atoms.entries()) {
+        if (atom.element !== "C") continue;
+        const neighbours = bonds.flatMap(([from, to]) => from === index ? [to] : to === index ? [from] : []);
+        if (neighbours.length !== 2 || !neighbours.every((other) => atoms[other]!.element === "N")) continue;
+        bridges += 1;
+        const [a, b] = neighbours.map((other) => atoms[other]!);
+        const cosine = ((a!.x - atom.x) * (b!.x - atom.x) + (a!.y - atom.y) * (b!.y - atom.y)) /
+          (distance(a!, atom) * distance(b!, atom));
+        const degrees = Math.acos(Math.max(-1, Math.min(1, cosine))) * 180 / Math.PI;
+        expect(degrees, `bridge carbon ${index}: avoid a tiny caret`).toBeGreaterThanOrEqual(90);
+        expect(degrees, `bridge carbon ${index}: at least 25 degrees off straight`).toBeLessThanOrEqual(155);
+      }
+      expect(bridges).toBe(atoms.length / 6);
+    }
+  );
+
   it.each([5, 6])("pillar[%i]arene and its dimethoxy derivative share identical skeleton geometry", (n) => {
     const parent = structureTemplates.find((entry) => entry.id === `pillar-${n}-arene`)!;
     const methylated = structureTemplates.find((entry) => entry.id === `dimethoxypillar-${n}-arene`)!;
@@ -248,6 +409,32 @@ describe("structure template geometry", () => {
 });
 
 describe("validation plumbing for future stereochemical and charged families", () => {
+  it("exempts exactly declared crossings, while still rejecting a nonintersecting near-miss", () => {
+    const crossing: StructureTemplate = {
+      ...structureTemplates[0]!, allowedCrossings: 1,
+      layout: {
+        atoms: [[-1, 0], [1, 0], [0, -1], [0, 1], [3, 0], [5, 0]]
+          .map(([x, y]) => ({ element: "C", x: x!, y: y! })),
+        bonds: [[0, 1, 1], [2, 3, 1], [4, 5, 1]]
+      }
+    };
+    expect(() => assertBondClearance(crossing)).not.toThrow();
+    expect(() => assertBondClearance({ ...crossing, layout: {
+      atoms: crossing.layout.atoms.slice(0, 4), bonds: crossing.layout.bonds.slice(0, 2)
+    } })).not.toThrow();
+    expect(() => assertBondClearance({ ...crossing, allowedCrossings: 0 })).toThrow();
+    expect(() => assertBondClearance({ ...crossing, allowedCrossings: 2 })).toThrow();
+    const nearMiss: StructureTemplate = {
+      ...crossing,
+      layout: {
+        atoms: [...crossing.layout.atoms, { element: "C", x: 3, y: 0.2 }, { element: "C", x: 5, y: 0.2 }],
+        bonds: [...crossing.layout.bonds, [6, 7, 1]]
+      }
+    };
+    expect(minimumBondClearance(nearMiss)).toMatchObject({ crossings: 1, pair: "4-5 and 6-7" });
+    expect(() => assertBondClearance(nearMiss)).toThrow();
+  });
+
   it("reads directed wedges and hashes as opposite absolute configurations, and notices a reflection", () => {
     const atoms = [
       { element: "C", x: 0, y: 0 }, { element: "C", x: 1, y: 0 },
@@ -278,5 +465,15 @@ describe("validation plumbing for future stereochemical and charged families", (
     expect(intersects({ x: 0, y: 0 }, { x: 2, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 })).toBe(true);
     expect(intersects({ x: 0, y: 0 }, { x: 2, y: 0 }, { x: 1, y: 0 }, { x: 3, y: 0 })).toBe(true);
     expect(intersects({ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 2, y: 0 }, { x: 3, y: 0 })).toBe(false);
+  });
+
+  it("measures interior, endpoint and parallel bond clearance and gives intersections zero clearance", () => {
+    const a = { x: 0, y: 0 }, b = { x: 2, y: 0 };
+    expect(segmentToSegmentDistance(a, b, { x: 1, y: 0.4 }, { x: 1, y: 2 })).toBeCloseTo(0.4);
+    expect(segmentToSegmentDistance(a, b, { x: 3, y: 1 }, { x: 4, y: 2 })).toBeCloseTo(Math.SQRT2);
+    expect(segmentToSegmentDistance(a, b, { x: 0.5, y: 0.35 }, { x: 1.5, y: 0.35 })).toBeCloseTo(0.35);
+    expect(segmentToSegmentDistance(a, b, { x: 3, y: 0 }, { x: 4, y: 0 })).toBe(1);
+    expect(segmentToSegmentDistance(a, b, { x: 1, y: -1 }, { x: 1, y: 1 })).toBe(0);
+    expect(segmentToSegmentDistance(a, b, { x: 1, y: 0 }, { x: 3, y: 0 })).toBe(0);
   });
 });

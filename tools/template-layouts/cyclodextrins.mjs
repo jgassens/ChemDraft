@@ -41,8 +41,10 @@ function glucoseChair() {
   // Local +y faces the secondary rim; the primary CH2OH extends towards local -y.
   return [...ring, primaryCarbon,
     { element: "O", ...step(primaryCarbon, -40) },
-    { element: "O", ...step(ring[1], 100) },
-    { element: "O", ...step(ring[2], 130) }
+    // Fan the secondary OH bonds apart on every chair. In particular, the
+    // bottom unit must leave room for the full HO/OH text, not just its oxygen.
+    { element: "O", ...step(ring[1], 90) },
+    { element: "O", ...step(ring[2], 135) }
   ];
 }
 

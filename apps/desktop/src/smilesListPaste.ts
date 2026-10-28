@@ -8,6 +8,9 @@ import { templateMoleculeForSmiles } from "./structureTemplateInsertion";
 
 type TemplatePastePlacement = Pick<StructureTemplateMoleculeOptions, "document" | "centre" | "reservedObjectIds">;
 
+/** A valid input with no drawable atoms is an item failure, not a worker failure. */
+class EmptySmilesDepictionError extends Error {}
+
 /** Only unparseable text returns undefined; engine failures and chemistry refusals throw. */
 export async function depictSmilesForPaste(
   smiles: string,
@@ -30,7 +33,8 @@ export async function depictSmilesForPaste(
         .filter(centre => centre.isStereoCenter && centre.descriptor !== "unspecified").length };
     }
     const result = await depictSmilesOffThread(smiles, { priority: "interactive", ...options });
-    return result.depiction.atoms.length > 0 ? result : undefined;
+    if (result.depiction.atoms.length === 0) throw new EmptySmilesDepictionError("The 2D depiction engine returned no atoms.");
+    return result;
   } catch (error) {
     if ((error as { notSmiles?: boolean })?.notSmiles === true) return undefined;
     throw error;
@@ -45,7 +49,7 @@ function isSmilesChemistryRefusal(error: unknown): error is Error {
 export interface SmilesListPasteResult {
   entries: { smiles: string; depiction: PastedStructureDepiction; molecule?: MoleculeObject }[];
   skipped: number;
-  /** Per-item chemistry failures, including the input and the adapter's specific reason. */
+  /** Per-item chemistry or empty-depiction failures, including the input and specific reason. */
   failures: SmilesListPasteFailure[];
   warnings?: string[];
 }
@@ -101,7 +105,7 @@ async function depictSmilesListCandidates(
     try {
       parsed = await depictSmilesForPaste(candidate.token, { signal, priority: "background" }, placement);
     } catch (error) {
-      if (!isSmilesChemistryRefusal(error)) throw error;
+      if (!isSmilesChemistryRefusal(error) && !(error instanceof EmptySmilesDepictionError)) throw error;
       failures.push({ input: candidate.token, error: error.message });
     }
     if (parsed) {
