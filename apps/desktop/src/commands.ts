@@ -42,6 +42,8 @@ import type { IconName } from "./icons";
 import type { ToolbarAssetName } from "./toolbarAssets";
 import { SPIN3D_DEBUGGER_COMMAND_ID } from "./conformerDebug";
 import { NO_OPEN_WARNINGS_REASON, TOGGLE_OPEN_WARNINGS_COMMAND_ID } from "./openWarnings";
+import { templateDialogAction, templateInsertActions } from "./templateCommands";
+export { templateInsertCommandId } from "./templateCommands";
 
 export interface CommandAvailability {
   canUndo?: boolean;
@@ -123,6 +125,7 @@ export function createQuickActions(
     { id: "view.zoomIn", title: "Zoom In", icon: "zoomIn", shortcut: "Cmd++", source: "core" },
     { id: "view.toggleToolPalette", title: "Toggle Tool Palette", icon: "palette", source: "core" },
     { id: "export.open", title: "Export...", icon: "export", shortcut: "Shift+Cmd+E", source: "core" },
+    templateDialogAction,
     {
       id: "analyze.molecularProperties",
       title: "Molecular Inspector…",
@@ -2292,6 +2295,7 @@ export function allShellCommands(
     ...viewActions,
     createOpenWarningsAction(options.availability),
     ...pageSizeActions,
+    ...templateInsertActions,
     pageCustomSizeAction,
     ...pageOrientationActions,
     ...textToolbarActions,

@@ -150,6 +150,38 @@ describe("toolset bridge interactions", () => {
   }
 
   // Heavy DOM render and undo regression can exceed Vitest's default on busy CI hosts.
+  it("inserts a template from its registered command with one labelled Undo and selection", async () => {
+    await renderMainWindow();
+    await act(async () => { routeCommand("template.insert.beta-cyclodextrin"); });
+    const molecule = () => container.querySelector('[data-object-id^="mol_template"]');
+    expect(molecule()).not.toBeNull();
+    expect(container.querySelector('[data-object-controls^="mol_template"]')).not.toBeNull();
+    await act(async () => { routeCommand("edit.undo"); });
+    expect(molecule()).toBeNull();
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Undid Insert β-Cyclodextrin");
+    await act(async () => { routeCommand("edit.redo"); });
+    expect(molecule()).not.toBeNull();
+  }, 20_000);
+
+  it("keeps the browser picker targeted at its source tab while another drawing is visible", async () => {
+    await renderMainWindow();
+    await act(async () => { routeCommand("template.insertDialog"); await import("./dialogs/StructureTemplatePicker"); });
+    expect(container.querySelector('.cd-template-browser [role="dialog"]')).not.toBeNull();
+    await act(async () => { routeCommand("document.new"); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-template-id="beta-cyclodextrin"]')!.click(); });
+    expect(container.querySelector('.page [data-object-id^="mol_template"]')).toBeNull();
+    await act(async () => { routeCommand("document.activateTab.initial"); });
+    expect(container.querySelector('.page [data-object-id^="mol_template"]')).not.toBeNull();
+    expect(container.querySelector('.cd-template-browser [role="dialog"]')).not.toBeNull();
+    act(() => container.querySelector<HTMLElement>(".canvas-region")!.focus());
+    await act(async () => { routeCommand("edit.undo"); });
+    expect(container.querySelector('.page [data-object-id^="mol_template"]')).toBeNull();
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Undid Insert β-Cyclodextrin");
+    await act(async () => { routeCommand("document.closeTab.initial"); });
+    await act(async () => { [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Don't Save")!.click(); });
+    expect(container.querySelector('.cd-template-browser')).toBeNull();
+  }, 20_000);
+
   it("centers every double bond of a whole selected molecule as one undo entry", async () => {
     const initial = insertNativeTemplateMolecule(createPhase4Document("Whole molecule position"), { x: 300, y: 300 }, "benzene");
     const molecule = initial.pages[0].objects[0] as MoleculeObject;

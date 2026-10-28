@@ -45,6 +45,22 @@ peptide abbreviation for Cbz.
 
 ## Structure templates
 
+### Picker
+
+Insert > Templates… opens the desktop's modeless, document-owned picker (the browser preview has
+an in-page fallback). It is also available in Customize Main Toolbar, with an original ring/grid
+glyph, and is not on the default toolbar. Search matches normalized substrings of names and
+synonyms, including Greek or spelled-out `beta`, `β-CD`, `crown`, `cucurbit[7]` and `pillar`.
+Families follow this package's order; pillararenes sit beside their matching dimethoxy variants.
+Tiles show shared-renderer SVG drawings, with synonyms/formula in their accessible description.
+Arrow keys navigate; click, Enter or Space inserts and keeps the picker open. Escape closes it.
+
+`template.insertDialog` opens or focuses the picker; `template.insert.<id>` inserts one template
+into the source drawing, selected and centred in its visible view, at the default bond length,
+as one labelled Undo entry. The dialog has no document capability and loads no chemistry engine.
+
+### Data and layouts
+
 `structureTemplates` holds named whole molecules, separate from the atom-label abbreviations above.
 Each `StructureTemplate` has a stable kebab-case `id`, display `name`, `synonyms`, `family`, category
 `"supramolecular"`, vetted isomeric `smiles`, Hill `formula`, net `charge`, a PubChem CID in `source`,

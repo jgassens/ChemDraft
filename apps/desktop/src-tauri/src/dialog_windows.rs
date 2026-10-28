@@ -24,6 +24,13 @@ struct DialogKindSpec {
 }
 fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
     match kind {
+        "structureTemplates" => Ok(DialogKindSpec {
+            maximizable: false,
+            resizable: true,
+            title: "Templates",
+            size: (620.0, 700.0),
+            min_size: (420.0, 360.0),
+        }),
         "pageSize" => Ok(DialogKindSpec {
             maximizable: false,
             resizable: false,
@@ -108,6 +115,28 @@ struct SpacingSnapshot {
     title: String,
     min_percent: u32,
     max_percent: u32,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StructureTemplatesSnapshot {
+    title: String,
+    template_ids: Vec<String>,
+}
+fn template_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 80
+        && id
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+}
+#[derive(Deserialize)]
+#[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
+enum StructureTemplatesAction {
+    Insert {
+        #[serde(rename = "templateId")]
+        template_id: String,
+    },
+    Cancel,
 }
 #[derive(Deserialize)]
 #[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
@@ -632,6 +661,38 @@ impl Message {
             return Err("Invalid dialog envelope or payload limit exceeded".into());
         }
         let valid = match self.message_type.as_str() {
+            "snapshot" if self.dialog_kind == "structureTemplates" => {
+                serde_json::from_value::<StructureTemplatesSnapshot>(self.data.clone()).is_ok_and(
+                    |s| {
+                        valid_title(&s.title)
+                            && !s.title.contains('\0')
+                            && !s.template_ids.is_empty()
+                            && s.template_ids.len() <= 64
+                            && s.template_ids.iter().all(|id| template_id(id))
+                            && s.template_ids
+                                .iter()
+                                .collect::<std::collections::HashSet<_>>()
+                                .len()
+                                == s.template_ids.len()
+                    },
+                )
+            }
+            "action" if self.dialog_kind == "structureTemplates" => serde_json::from_value::<
+                StructureTemplatesAction,
+            >(self.data.clone())
+            .is_ok_and(|action| match action {
+                StructureTemplatesAction::Cancel => true,
+                StructureTemplatesAction::Insert { template_id: id } => template_id(&id),
+            }),
+            "result" if self.dialog_kind == "structureTemplates" => {
+                serde_json::from_value::<Receipt>(self.data.clone()).is_ok_and(|r| {
+                    matches!(
+                        r.status.as_str(),
+                        "accepted" | "inserted" | "cancelled" | "error"
+                    ) && optional_string_fields(&self.data, &["error"])
+                        && r.error.is_none_or(|s| s.encode_utf16().count() <= 2048)
+                })
+            }
             "snapshot" if self.dialog_kind == "engineInstall" => {
                 serde_json::from_value::<EngineInstallSnapshot>(self.data.clone())
                     .is_ok_and(|s| s.valid())
@@ -923,6 +984,14 @@ fn send_host(session: &Session, message: &Message) -> Result<(), String> {
 }
 /// Reserve before forwarding: request-ID dedup alone cannot prevent two distinct Apply requests.
 fn reserve_action(session: &mut Session, message: &Message) -> Result<bool, String> {
+    if message.dialog_kind == "structureTemplates"
+        && message.data["action"] == "insert"
+        && !session.snapshot.data["templateIds"]
+            .as_array()
+            .is_some_and(|ids| ids.contains(&message.data["templateId"]))
+    {
+        return Err("Unknown structure template in this dialog".into());
+    }
     if message.dialog_kind == "arrangementSpacing" && message.data["action"] == "preview" {
         return if session.terminal_request.is_none() {
             Ok(true)
@@ -1073,6 +1142,7 @@ pub(crate) async fn dialog_open(
         session.ready
             && (session.snapshot.dialog_kind == "engineInstall"
                 || session.snapshot.dialog_kind == "toolInstall"
+                || session.snapshot.dialog_kind == "structureTemplates"
                 || session.terminal_request.is_none()
                 || session
                     .terminal_request
@@ -1285,7 +1355,7 @@ pub(crate) fn dialog_publish(
         }
         if matches!(
             message.data["status"].as_str(),
-            Some("error" | "picked" | "cancelled")
+            Some("error" | "picked" | "cancelled" | "inserted")
         ) && session.terminal_request.as_ref() == Some(&message.request_id)
         {
             session.terminal_request = None;
@@ -1948,6 +2018,51 @@ pub(crate) fn on_window_event<R: Runtime>(window: &tauri::Window<R>, event: &Win
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn structure_templates_registration_and_actions_are_bounded_on_all_platforms() {
+        let mut message = snapshot();
+        message.dialog_kind = "structureTemplates".into();
+        message.data =
+            json!({"title":"Drawing A","templateIds":["beta-cyclodextrin","pillar-5-arene"]});
+        assert!(message.validate().is_ok());
+        let spec = kind_spec("structureTemplates").unwrap();
+        assert!(spec.resizable && !spec.maximizable);
+        let mut registry = Registry::default();
+        let (registration, build) = register(&mut registry, message.clone(), false).unwrap();
+        assert!(build);
+        assert!(registration
+            .window_label
+            .starts_with("dialog-main-structureTemplates-"));
+        assert!(is_dialog_label(&registration.window_label));
+        assert!(include_str!("../capabilities/dialog-host.json")
+            .contains("dialog-main-structureTemplates-*"));
+        assert!(!register(&mut registry, message.clone(), false).unwrap().1);
+        let session = registry.sessions.get_mut(&registration.host_id).unwrap();
+        message.message_type = "action".into();
+        for data in [
+            json!({"action":"insert"}),
+            json!({"action":"insert","templateId":"../main"}),
+            json!({"action":"insert","templateId":"beta-cyclodextrin","commandId":"document.new"}),
+        ] {
+            message.data = data;
+            assert!(message.validate().is_err());
+        }
+        message.data = json!({"action":"insert","templateId":"unknown"});
+        assert!(reserve_action(session, &message).is_err());
+        message.data = json!({"action":"insert","templateId":"beta-cyclodextrin"});
+        assert!(message.validate().is_ok());
+        assert!(reserve_action(session, &message).unwrap());
+        assert!(!reserve_action(session, &message).unwrap());
+        message.request_id = "second-insert".into();
+        assert!(reserve_action(session, &message).is_err());
+        session.terminal_request = None;
+        assert!(reserve_action(session, &message).unwrap());
+        message.message_type = "snapshot".into();
+        message.data = json!({"title":"A","templateIds":["beta-cyclodextrin","beta-cyclodextrin"]});
+        assert!(message.validate().is_err());
+        message.data = json!({"title":"A","templateIds":[],"extra":true});
+        assert!(message.validate().is_err());
+    }
     fn engine_install_snapshot() -> Message {
         let mut message = snapshot();
         message.dialog_kind = "engineInstall".into();
