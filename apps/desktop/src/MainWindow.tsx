@@ -1903,7 +1903,7 @@ export function MainWindow({
 }: MainWindowProps) {
   useInAppModalUtilitySuspension();
   // Plugin commands may settle after the document window has unmounted.
-  const mountedRef = useRef(false);
+  const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;
     return () => { mountedRef.current = false; };
