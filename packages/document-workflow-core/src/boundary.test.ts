@@ -231,7 +231,8 @@ describe("document-workflow-core purity", () => {
     const declared = declaredDependencyNames();
     expect(declared.length).toBeGreaterThan(0);
 
-    const files = sourceFiles(packageSrc).filter((file) => file !== thisFile);
+    // This rule is about what the package imports at run time; tests run under the root vitest.
+    const files = sourceFiles(packageSrc).filter((file) => file !== thisFile && !file.endsWith(".test.ts"));
     const violations = files.flatMap((file) =>
       extractSpecifiers(readFileSync(file, "utf8")).flatMap((specifier) => {
         const undeclared = undeclaredPackageSpecifier(specifier, declared);

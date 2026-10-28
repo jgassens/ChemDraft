@@ -40,7 +40,6 @@ import {
   type MoleculeAtom,
   type MoleculeBond,
   type MoleculeObject,
-  type TextSpan,
   type PlusObject,
   type TextObject,
   type ViewMatrix,
@@ -172,7 +171,6 @@ import {
   applyNativeChainTool,
   applyReactionArrowToolAtPoint,
   bracketKindForToolCommand,
-  formulaSpansFromText,
   insertNativeBracket,
   insertNativeReactionArrow,
   planNativeChainVertices,
@@ -2015,95 +2013,6 @@ describe("Phase 4 document workflow", () => {
     // re-resolve once per added carbon (3 carbons cost 15 here, 22 carbons 110).
     expect(short.work).toBe(oneResolution);
     expect(long.work).toBe(oneResolution);
-  });
-
-  it("classifies a long digit run in linear time", () => {
-    // The body pattern used to offer two ways to match a digit — `[A-Z][a-z]?\d*` and a standalone
-    // `\d+` — so an n-digit run had 2^(n-1) parses. A trailing character that fails the match sent
-    // the engine through all of them: pasting a 40-digit label froze the app outright.
-    const pathological = `C${"1".repeat(40)}!-`;
-    const started = performance.now();
-    expect(formulaSpansFromText(pathological).map((span) => span.text).join("")).toBe(pathological);
-    expect(performance.now() - started).toBeLessThan(100);
-
-    // Same language as before: the shapes that were formulas still are.
-    // A leading coefficient stays normal text; only a digit run *after* an element or a closing
-    // bracket is a count.
-    expect(formulaSpansFromText("2H2O").map((span) => `${span.text}:${span.script}`)).toEqual([
-      "2H:normal",
-      "2:subscript",
-      "O:normal"
-    ]);
-    expect(formulaSpansFromText("(CH3)3C+").at(-1)).toMatchObject({ text: "+", script: "superscript" });
-    expect(formulaSpansFromText("Fe(CN)63-").at(-1)).toMatchObject({ text: "3-", script: "superscript" });
-    // And a bare sign is still not a charge.
-    expect(formulaSpansFromText("-")).toEqual([{ text: "-", script: "normal", style: {} }]);
-  });
-
-  it("formats formula text spans with subscripts and a superscript charge", () => {
-    expect(formulaSpansFromText("H2O")).toEqual([
-      { text: "H", script: "normal", style: {} },
-      { text: "2", script: "subscript", style: {} },
-      { text: "O", script: "normal", style: {} }
-    ]);
-    expect(formulaSpansFromText("C6H12O6")).toEqual([
-      { text: "C", script: "normal", style: {} },
-      { text: "6", script: "subscript", style: {} },
-      { text: "H", script: "normal", style: {} },
-      { text: "12", script: "subscript", style: {} },
-      { text: "O", script: "normal", style: {} },
-      { text: "6", script: "subscript", style: {} }
-    ]);
-    expect(formulaSpansFromText("SO42-")).toEqual([
-      { text: "SO", script: "normal", style: {} },
-      { text: "4", script: "subscript", style: {} },
-      { text: "2-", script: "superscript", style: {} }
-    ]);
-    expect(formulaSpansFromText("Ca2+")).toEqual([
-      { text: "Ca", script: "normal", style: {} },
-      { text: "2+", script: "superscript", style: {} }
-    ]);
-    expect(formulaSpansFromText("plain")).toEqual([
-      { text: "plain", script: "normal", style: {} }
-    ]);
-  });
-
-  it("separates a charge magnitude from an atom count in common ions", () => {
-    // "Ca2+" and "NH4+" are spelled the same way but the digit means different things: a lone
-    // element symbol takes the digit as its charge, a polyatomic body keeps it as a count.
-    const scripts = (formula: string) =>
-      formulaSpansFromText(formula).map((span) => `${span.text}:${span.script}`);
-
-    expect(scripts("NH4+")).toEqual(["NH:normal", "4:subscript", "+:superscript"]);
-    expect(scripts("NO3-")).toEqual(["NO:normal", "3:subscript", "-:superscript"]);
-    expect(scripts("ClO4-")).toEqual(["ClO:normal", "4:subscript", "-:superscript"]);
-    expect(scripts("MnO4-")).toEqual(["MnO:normal", "4:subscript", "-:superscript"]);
-    expect(scripts("PO43-")).toEqual(["PO:normal", "4:subscript", "3-:superscript"]);
-    expect(scripts("Ca2+")).toEqual(["Ca:normal", "2+:superscript"]);
-    expect(scripts("Fe3+")).toEqual(["Fe:normal", "3+:superscript"]);
-    expect(scripts("Na+")).toEqual(["Na:normal", "+:superscript"]);
-
-    // A trailing hyphen on a prefix is not a charge.
-    expect(scripts("trans-")).toEqual(["trans-:normal"]);
-    expect(scripts("Boc-")).toEqual(["Boc-:normal"]);
-    expect(scripts("tert-")).toEqual(["tert-:normal"]);
-  });
-
-  it("preserves source span styling when reformatting a formula", () => {
-    const styled: TextSpan[] = [
-      { text: "H2", script: "normal", style: { color: "#b3261e", fontWeight: 700 } },
-      { text: "O", script: "normal", style: { color: "#1b5e20" } }
-    ];
-    const spans = formulaSpansFromText("H2O", styled);
-
-    expect(spans.map((span) => `${span.text}:${span.script}`)).toEqual([
-      "H:normal",
-      "2:subscript",
-      "O:normal"
-    ]);
-    expect(spans[0].style).toMatchObject({ color: "#b3261e", fontWeight: 700 });
-    expect(spans[1].style).toMatchObject({ color: "#b3261e", fontWeight: 700 });
-    expect(spans[2].style).toMatchObject({ color: "#1b5e20" });
   });
 
   it("applies formula formatting to selected text objects only", () => {
