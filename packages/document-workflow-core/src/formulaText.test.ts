@@ -3,6 +3,38 @@ import type { TextSpan } from "@chemdraft/chem-core";
 import { formulaSpansForMixedText, formulaSpansFromText } from "./formulaText";
 
 describe("formula text", () => {
+  it("leaves trailing punctuation plain after formulas", () => {
+    for (const punctuation of [",", ";", ":", ".", "!", "?", "*", "†", "‡"]) {
+      const spans = formulaSpansForMixedText(`NaBH4${punctuation}`);
+      expect(spans?.map(span => `${span.text}:${span.script}`)).toEqual([
+        "NaBH:normal", "4:subscript", `${punctuation}:normal`
+      ]);
+    }
+    for (const text of ["1.", "1.00", "Step2.", "TBHP*"]) {
+      expect(formulaSpansForMixedText(text), text).toBeUndefined();
+    }
+  });
+
+  it("formats hydrogen isotopes and decimal hydrate coefficients", () => {
+    const scripts = (text: string) =>
+      formulaSpansForMixedText(text)?.map(span => `${span.text}:${span.script}`);
+    expect(scripts("D2O")).toEqual(["D:normal", "2:subscript", "O:normal"]);
+    expect(scripts("T2O")).toEqual(["T:normal", "2:subscript", "O:normal"]);
+    expect(scripts("CDCl3")).toEqual(["CDCl:normal", "3:subscript"]);
+    expect(scripts("CD3OD")).toEqual(["CD:normal", "3:subscript", "OD:normal"]);
+    expect(scripts("CaSO4·0.5H2O")).toEqual([
+      "CaSO:normal", "4:subscript", "·0.5H:normal", "2:subscript", "O:normal"
+    ]);
+    expect(formulaSpansForMixedText("CaSO4.5H2O")).toBeUndefined();
+  });
+
+  it("classifies a long formula token in linear time", () => {
+    const token = `${"H".repeat(199_998)}2x`;
+    const started = performance.now();
+    expect(formulaSpansForMixedText(token)).toBeUndefined();
+    expect(performance.now() - started).toBeLessThan(200);
+  });
+
   it("formats formula-like tokens in mixed text", () => {
     for (const text of ["CH2Cl2", "Ti(OiPr)4", "Pd(PPh3)4", "Et3N", "Pd2(dba)3", "CuSO4·5H2O", "SO42-"]) {
       expect(formulaSpansForMixedText(text)?.some(span => span.script === "subscript"), text).toBe(true);

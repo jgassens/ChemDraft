@@ -108,31 +108,48 @@ export function formulaSpansFromText(text: string, sourceSpans: readonly TextSpa
   return runs.map((run) => ({ text: run.text, script: run.script, style: { ...(run.style ?? {}) } }));
 }
 
-const formulaParts = [...elementSymbols, ..."Me Et Pr iPr nPr Bu nBu tBu sBu iBu Ph Bn Bz Ac Ts Ms Tf Tol Boc Cbz Fmoc TMS TES TBS TIPS Cp Cy Py dba cod acac dppf".split(" ")].sort((a, b) => b.length - a.length);
+const formulaParts = [
+  ...elementSymbols, "D", "T",
+  ...("Me Et Pr iPr nPr Bu nBu tBu sBu iBu Ph Bn Bz Ac Ts Ms Tf Tol Boc Cbz Fmoc " +
+    "TMS TES TBS TIPS Cp Cy Py dba cod acac dppf").split(" ")
+].sort((a, b) => b.length - a.length);
 
 // Only fully parsed tokens with a count are formatted. C18-like labels can pass this
 // heuristic; a separate undo entry lets the user undo that accepted miss.
 function isFormulaToken(token: string): boolean {
   if (!/[A-Za-z)\]]\d/.test(token)) return false;
-  let body = token.replace(/[+\-±−]$/, "");
-  // TODO(isotopes): a leading mass number before an element symbol (13CH3I) is read as a coefficient and stays plain; the isotope-label work decides whether it becomes a superscript (¹³CH₃I).
-  body = body.replace(/^\d+/, "");
+  const end = /[+\-±−]$/.test(token) ? token.length - 1 : token.length;
+  // TODO(isotopes): a leading mass number before an element symbol (13CH3I) is read as a coefficient and
+  // stays plain; the isotope-label work decides whether it becomes a superscript (¹³CH₃I).
+  let index = 0;
+  while (index < end && /\d/.test(token[index])) index += 1;
   const stack: string[] = [];
   let hasPart = false;
-  while (body.length) {
-    const char = body[0];
-    if (char === "(" || char === "[") { stack.push(char); body = body.slice(1); continue; }
+  while (index < end) {
+    const char = token[index];
+    if (char === "(" || char === "[") { stack.push(char); index += 1; continue; }
     if (char === ")" || char === "]") {
       if (stack.pop() !== (char === ")" ? "(" : "[")) return false;
-      body = body.slice(1); continue;
+      index += 1; continue;
     }
-    const digits = /^\d+/.exec(body);
-    if (digits) { body = body.slice(digits[0].length); continue; }
-    if (char === "·") { body = body.slice(1); continue; }
-    const part = formulaParts.find(value => body.startsWith(value));
+    if (/\d/.test(char)) {
+      while (index < end && /\d/.test(token[index])) index += 1;
+      continue;
+    }
+    if (char === "·") {
+      index += 1;
+      const coefficientStart = index;
+      while (index < end && /\d/.test(token[index])) index += 1;
+      if (index > coefficientStart && token[index] === "." && /\d/.test(token[index + 1] ?? "")) {
+        index += 1;
+        while (index < end && /\d/.test(token[index])) index += 1;
+      }
+      continue;
+    }
+    const part = formulaParts.find(value => index + value.length <= end && token.startsWith(value, index));
     if (!part) return false;
     hasPart = true;
-    body = body.slice(part.length);
+    index += part.length;
   }
   return hasPart && stack.length === 0;
 }
@@ -154,7 +171,7 @@ export function formulaSpansForMixedText(text: string, sourceSpans: readonly Tex
   for (const match of text.matchAll(/\S+/g)) {
     const start = match.index;
     result.push(...slice(offset, start));
-    const token = match[0].replace(/[,;:]+$/, "");
+    const token = match[0].replace(/[,;:.!?*†‡]+$/, "");
     const end = start + token.length;
     const original = slice(start, end);
     if (isFormulaToken(token)) {
