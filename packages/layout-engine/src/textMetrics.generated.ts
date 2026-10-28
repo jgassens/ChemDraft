@@ -2,12 +2,12 @@
 Comment Copyright (c) 1985, 1987, 1989, 1990, 1997 Adobe Systems Incorporated.  All Rights Reserved.
 Comment Copyright (c) 1985, 1987, 1989, 1990, 1997 Adobe Systems Incorporated. All rights reserved.
 
-This file and the 14 PostScript(R) AFM files it accompanies may be used, copied, 
-and distributed for any purpose and without charge, with or without modification, 
-provided that all copyright notices are retained; that the AFM files are not 
-distributed without this file; that all modifications to this file or any of 
-the AFM files are prominently noted in the modified file(s); and that this 
-paragraph is not modified. Adobe Systems has no responsibility or obligation 
+This file and the 14 PostScript(R) AFM files it accompanies may be used, copied,
+and distributed for any purpose and without charge, with or without modification,
+provided that all copyright notices are retained; that the AFM files are not
+distributed without this file; that all modifications to this file or any of
+the AFM files are prominently noted in the modified file(s); and that this
+paragraph is not modified. Adobe Systems has no responsibility or obligation
 to support the use of the AFM files.
 
 Modified: reduced to advance widths per Unicode code point by scripts/generate-text-metrics.mjs.

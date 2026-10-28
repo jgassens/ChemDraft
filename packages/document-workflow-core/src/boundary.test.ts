@@ -121,8 +121,9 @@ const packageJsonPath = join(packageSrc, "..", "package.json");
 function declaredDependencyNames(): string[] {
   const pkg = JSON.parse(readFileSync(packageJsonPath, "utf8")) as {
     dependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
   };
-  return Object.keys(pkg.dependencies ?? {});
+  return [...Object.keys(pkg.dependencies ?? {}), ...Object.keys(pkg.devDependencies ?? {})];
 }
 
 function undeclaredPackageSpecifier(specifier: string, declared: string[]): string | undefined {

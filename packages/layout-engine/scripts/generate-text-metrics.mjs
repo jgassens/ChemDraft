@@ -80,4 +80,4 @@ const license = readFileSync(join(directory, "readme.txt"), "utf8").match(/This 
 if (!license) throw new Error("Missing Adobe licence paragraph");
 const header = `/*\n${[...copyrightLines].join("\n")}\n\n${license}\n\nModified: reduced to advance widths per Unicode code point by scripts/generate-text-metrics.mjs.\nGenerated file; do not edit.\n*/\n`;
 const output = header + `\nexport const helveticaAdvances: Readonly<Record<number, number>> = ${JSON.stringify(widths(regular), null, 2)};\n\nexport const helveticaBoldAdvances: Readonly<Record<number, number>> = ${JSON.stringify(widths(bold), null, 2)};\n`;
-writeFileSync(new URL("../src/textMetrics.generated.ts", import.meta.url), output);
+writeFileSync(new URL("../src/textMetrics.generated.ts", import.meta.url), output.replace(/[ \t]+$/gm, ""));
