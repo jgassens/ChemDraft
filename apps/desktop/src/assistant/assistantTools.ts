@@ -29,7 +29,7 @@ function define<N extends AssistantToolName>(name: N, description: string, permi
   return { name, description, inputSchema: toolJsonSchema(name), permissions, timeoutMs, readOnly,
     handler: async (context, input) => handler(context, toolSchemas[name].parse(input) as ToolInput<N>) };
 }
-// The amended table enumerates fourteen names (four reads, three chemistry, seven writes).
+// Four reads, three chemistry tools, and eight writes.
 export const ASSISTANT_TOOLS: readonly AssistantToolDefinition[] = [
   define("get_document", "Read a bounded summary of the pinned document. inScope marks objects the request may change.", READ, true, read.getDocument),
   define("get_selection", "Read the objects selected when Send was pressed; empty means only insertion is allowed.", ["selection.read"], true, read.getSelection),
@@ -41,6 +41,7 @@ export const ASSISTANT_TOOLS: readonly AssistantToolDefinition[] = [
   define("insert_structures", "Insert up to 24 molecule/group/text items in a host-positioned row or grid. Molecule labels are captions; group labels are native abbreviation or condensed-formula atoms (e.g. methyl: {kind:'group',label:'CH3'}, Ph, Boc, OTs).", CHEM_WRITE, false, write.insertStructures, 60_000),
   define("insert_reaction", "Insert a reaction scheme with up to six reactants and six products, plus reagent and condition labels.", CHEM_WRITE, false, write.insertReaction, 60_000),
   define("insert_text", "Insert up to 2000 characters, optionally beside a document object. The host chooses coordinates.", WRITE, false, write.insertText),
+  define("insert_table", "Insert a native editable table, optionally beside besideObjectId; the host chooses placement. Formulas typed as plain strings in text columns get subscripts automatically. Put numbers in decimal columns and units in the header. The table never computes values.", WRITE, false, write.insertTable),
   define("edit_structure", "Replace an in-scope molecule with verified SMILES, preserving its centre by default.", CHEM_WRITE, false, write.editStructure, 60_000),
   define("delete_objects", "Delete up to 100 in-scope objects. Any out-of-scope id refuses the entire call.", WRITE, false, write.deleteObjects),
   define("style_objects", "Change only style on up to 100 in-scope objects; atoms and bonds stay unchanged.", WRITE, false, write.styleObjects),

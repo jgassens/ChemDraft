@@ -26,6 +26,7 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * 0.1.14 adds one-shot restoreDraft to overlays.setContent, without overwriting a user's draft.
  * 0.1.15 adds optional 3D chemistry: chemistry.embed3d, minimize3d, flatten3d
  * (including structured minimize3d clash/contact diagnostics and flatten3d clash refusal).
+ * 0.1.16 adds command-scoped documents.insertTable with a validated native PluginTableSpec.
  *
  * The MINOR stays at 1 for both. For a 0.x release `isPluginApiVersionCompatible` treats the minor as
  * the compatibility boundary, so 0.2.0 would have made every plugin declaring `^0.1.0` — the NMR
@@ -35,7 +36,7 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * local structure recognition, `^0.1.7` for structure naming, `^0.1.8` for external tools), which this host satisfies and an
  * older one correctly does not.
  */
-export const PluginApiVersion = "0.1.15" as const;
+export const PluginApiVersion = "0.1.16" as const;
 
 export const pluginPermissions = [
   "document.read",
@@ -945,6 +946,29 @@ export interface PluginStorage {
   listKeys(): Promise<string[]>;
 }
 
+/** Native table input. Plain strings in text columns receive automatic formula subscripts;
+ * decimal columns default to formula off. Tables display supplied values and never compute them. */
+export type PluginTableCell = string | {
+  text: string;
+  spans?: Array<{ text: string; script?: "normal" | "subscript" | "superscript"; bold?: boolean; italic?: boolean }>;
+  formula?: "auto" | "off";
+};
+
+/** Mirrors the shared TableSpecSchema input without importing host implementation packages. */
+export interface PluginTableSpec {
+  columns: Array<{
+    header?: PluginTableCell;
+    align?: "left" | "center" | "right" | "decimal";
+    widthPx?: number;
+    formula?: "auto" | "off";
+  }>;
+  rows: PluginTableCell[][];
+  headerRows?: PluginTableCell[][];
+  caption?: PluginTableCell;
+  footnotes?: PluginTableCell[];
+  style?: { preset?: "three-line" | "grid"; headerBold?: boolean; fontFamily?: string; fontSizePx?: number };
+}
+
 export interface PluginDocumentAPI {
   getActiveDocument(): Promise<ChemDraftDocument | undefined>;
   proposePatch(proposal: ProposedDocumentPatch): Promise<ProposedPatchReceipt>;
@@ -953,6 +977,11 @@ export interface PluginDocumentAPI {
    *  Flat batches of 1..256 ops are atomic. Other operations must be proposed.
    *  A plugin declaring the recognition permissions may not declare `document.write` at all. */
   applyPatch?(patch: ProposedDocumentPatch): Promise<AppliedPatchReceipt>;
+  /** API 0.1.16: document.write, only during this plugin's own command, like applyPatch.
+   * Host validates and places a native table beside the selection or at the viewport centre.
+   * One "Insert table" undo entry; the table stays selected and is editable by this invocation.
+   * Invalid input rejects with validation errors identifying the offending row/cell. */
+  insertTable?(spec: PluginTableSpec): Promise<AppliedPatchReceipt>;
 }
 
 export const PluginStructureFormatSchema = z.enum(["smiles", "molfile-v2000", "molfile-v3000", "unknown"]);

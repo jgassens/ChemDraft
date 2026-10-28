@@ -3,7 +3,7 @@ import {
   type DocumentObject, type DocumentPatch, type MoleculeObject, type NativeTextStyle
 } from "@chemdraft/chem-core";
 import {
-  createNativeTextObject, layoutReactionScheme, nextObjectId,
+  buildTableObject, createNativeTextObject, layoutReactionScheme, nextObjectId,
   nativeTextObjectSizeForText, smilesPasteBondLengthPx, stereoPerceptionMolfile,
   nativeAtomLabelReading, nativeSingleBondGraphMetadata, nativeSingleBondGraphSmiles,
   normalizeNativeMoleculeGeometry, defaultNativeMoleculeTransform
@@ -340,6 +340,21 @@ export function buildInsertText(context: AssistantToolContext, raw: unknown): As
   const placed = placement(context, object, pageId, input.relativeTo);
   return insertionPlan(document, insertWrite(placed.page.id, placed.objects, "Inserted text", []),
     placed.plan, placed.page.id, [object], [input.text.slice(0, 80)], "This text");
+}
+export function buildInsertTable(context: AssistantToolContext, raw: unknown): AssistantWrite {
+  const { besideObjectId, ...spec } = toolSchemas.insert_table.parse(raw);
+  const document = requireDocument(context);
+  const newId = (prefix: string) => {
+    const id = nextObjectId(document, prefix, RESERVED_PLUGIN_OBJECT_IDS);
+    RESERVED_PLUGIN_OBJECT_IDS.add(id);
+    return id;
+  };
+  const { object, warnings } = buildTableObject(spec, { id: newId("table_assistant"), x: 0, y: 0, newId });
+  const relative = besideObjectId ? { objectId: besideObjectId, side: "right" as const } : undefined;
+  const pageId = besideObjectId ? findObject(document, besideObjectId).page.id : undefined;
+  const placed = placement(context, [object], pageId, relative);
+  return insertionPlan(document, insertWrite(placed.page.id, placed.objects, "Inserted table", warnings),
+    placed.plan, placed.page.id, [[object]], ["table"], "This table");
 }
 export async function buildEditStructure(context: AssistantToolContext, raw: unknown): Promise<AssistantWrite> {
   const input = toolSchemas.edit_structure.parse(raw);

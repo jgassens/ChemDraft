@@ -126,10 +126,16 @@ describe("isPluginApiVersionCompatible", () => {
     expect(isPluginApiVersionCompatible("^0.1.14", "0.1.13")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.15", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.15", "0.1.14")).toBe(false);
+    expect(PluginApiVersion).toBe("0.1.16");
+    expect(isPluginApiVersionCompatible("^0.1.16", PluginApiVersion)).toBe(true);
+    expect(isPluginApiVersionCompatible("^0.1.16", "0.1.15")).toBe(false);
   });
 });
 
 describe("chemistry worker capability allowlist", () => {
+  it("includes command-scoped table insertion", () => {
+    expect(PLUGIN_WORKER_CAPABILITY_METHODS.documents).toContain("insertTable");
+  });
   it("includes all optional API 0.1.15 methods", () => {
     expect(PLUGIN_WORKER_CAPABILITY_METHODS.chemistry).toEqual([
       "isotopeEnvelope", "nameToStructure", "structureFromSmiles", "structureToName", "embed3d", "minimize3d", "flatten3d"

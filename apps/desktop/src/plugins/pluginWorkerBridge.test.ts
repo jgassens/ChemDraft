@@ -35,6 +35,8 @@ import { AssistantCapabilityPermissions } from "@chemdraft/plugin-api";
 
 import { createBundledPluginDescriptors } from "./registerBundledPlugins";
 import { PluginWorkerBridge, PluginWorkerBridgeError } from "./PluginWorkerBridge";
+import { createEmptyDocument } from "@chemdraft/chem-core";
+import { buildPluginTablePatch } from "./buildPluginTablePatch";
 
 type MessageListener = (event: { data: unknown }) => void;
 
@@ -789,6 +791,27 @@ describe("every chemistry method survives the worker boundary", () => {
 });
 
 describe("documents.applyPatch survives the worker boundary", () => {
+  it("round-trips a native table spec and receipt through the gated worker capability", async () => {
+    const manifest = parsePluginManifest({ id: "org.test.table-worker", name: "Table Worker", version: "1",
+      apiVersion: "^0.1.16", entry: "worker.js", permissions: ["document.write"],
+      contributes: { commands: [{ id: "plugin.tableWorker.insert", title: "Make table" }] }
+    });
+    const applyDocumentPatch = vi.fn(async () => ({ applied: true as const, objectIds: ["table_worker"] }));
+    const host = new PluginHost({ getActiveDocument: () => createEmptyDocument(),
+      buildTablePatch: buildPluginTablePatch, applyDocumentPatch });
+    const bridge = startWorkerRoutedPlugin({ manifest, commandHandlers: {
+      "plugin.tableWorker.insert": context => context.documents.insertTable!({
+        columns: [{ header: "Formula" }], rows: [["H2O"]]
+      })
+    } });
+    host.registerPlugin(manifest, delegatingOptions(manifest, bridge));
+    try {
+      await expect(host.invokeCommand("plugin.tableWorker.insert")).resolves.toEqual({ applied: true, objectIds: ["table_worker"] });
+      expect(applyDocumentPatch).toHaveBeenCalledOnce();
+      expect(applyDocumentPatch).toHaveBeenCalledWith(expect.objectContaining({ undoLabel: "Insert table",
+        patch: expect.objectContaining({ patch: expect.objectContaining({ op: "addObject", object: expect.objectContaining({ type: "table" }) }) }) }));
+    } finally { bridge.terminate(); }
+  });
   it("round-trips a command-scoped direct patch to the host", async () => {
     const manifest = parsePluginManifest({
       id: "org.test.apply-patch-worker",

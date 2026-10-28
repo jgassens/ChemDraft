@@ -173,7 +173,9 @@ export function runPluginWorker(
       ...(has("document.write")
         ? {
             applyPatch: (patch: Parameters<NonNullable<PluginDocumentAPI["applyPatch"]>>[0]) =>
-              call("documents", "applyPatch", [patch]) as ReturnType<NonNullable<PluginDocumentAPI["applyPatch"]>>
+              call("documents", "applyPatch", [patch]) as ReturnType<NonNullable<PluginDocumentAPI["applyPatch"]>>,
+            insertTable: (spec: Parameters<NonNullable<PluginDocumentAPI["insertTable"]>>[0]) =>
+              call("documents", "insertTable", [spec]) as ReturnType<NonNullable<PluginDocumentAPI["insertTable"]>>
           }
         : {})
     };
