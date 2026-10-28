@@ -160,7 +160,7 @@ interface RdkitCountJson {
   molecules?: Array<{ atoms?: Array<{ z?: number; nRad?: number; isotope?: number }> }>;
 }
 
-/** Check the input graph before an MDL intermediate can collapse radical/isotope labels. */
+/** Check the input graph before an MDL intermediate can collapse radical labels. */
 function rejectUnsupportedInputAtomLabels(parsed: RdkitCountJson): void {
   for (const [index, atom] of (parsed.molecules?.[0]?.atoms ?? []).entries()) {
     const radicals = atom.nRad ?? parsed.defaults?.atom?.nRad ?? 0;
@@ -169,7 +169,7 @@ function rejectUnsupportedInputAtomLabels(parsed: RdkitCountJson): void {
       ...(radicals > 0 ? [`${radicals} radical electron${radicals === 1 ? "" : "s"}`] : []),
       ...(isotope > 0 ? [`isotope ${isotope}`] : [])
     ];
-    if (properties.length > 0) {
+    if (radicals > 0) {
       throw new UnsupportedMolfileLabelError(
         `Atom ${index + 1} carries ${properties.join(" and ")}; ChemDraft cannot yet draw this radical/isotope label without risking chemical identity.`
       );
@@ -516,7 +516,7 @@ export async function documentWithPhysicalStyle(document: ChemDraftDocument, war
 class UnsupportedMolfileLabelError extends Error {}
 
 function rejectUnsupportedMolfileLabels(molfile: string, smiles: string): void {
-  if (/^M  (?:RAD|ISO)\b/m.test(molfile)) {
+  if (/^M  RAD\b/m.test(molfile)) {
     throw new UnsupportedMolfileLabelError(
       `SMILES contains a radical/isotope label that ChemDraft cannot yet draw: ${smiles}`
     );

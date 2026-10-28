@@ -331,7 +331,7 @@ describe("headless ChemDraft rendering", () => {
     }
   );
 
-  it("fails loudly instead of dropping radical or isotope labels", async () => {
+  it("preserves isotope labels while refusing radicals", async () => {
     const jobsPath = join(outputDirectory, "unsupported-labels.json");
     await writeFile(jobsPath, JSON.stringify([
       { name: "radical", smiles: "[CH3]" },
@@ -352,11 +352,11 @@ describe("headless ChemDraft rendering", () => {
     expect(code).toBe(1);
     expect(results.map(({ smiles, ok }) => ({ smiles, ok }))).toEqual([
       { smiles: "[CH3]", ok: false },
-      { smiles: "C[13CH2]O", ok: false },
-      { smiles: "[2H]C(Cl)(Br)F", ok: false },
+      { smiles: "C[13CH2]O", ok: true },
+      { smiles: "[2H]C(Cl)(Br)F", ok: true },
       { smiles: "CCO", ok: true }
     ]);
-    for (const [index, result] of results.slice(0, 3).entries()) {
+    for (const [index, result] of results.slice(0, 1).entries()) {
       expect(result.error).toContain(`Atom ${index === 1 ? 2 : 1}`);
       expect(result.error).toContain("radical/isotope label");
       expect(result.error).toContain("cannot yet draw");

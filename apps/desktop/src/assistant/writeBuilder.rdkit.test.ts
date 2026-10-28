@@ -3,6 +3,8 @@ import { installNodeRdkitModuleLoader } from "@chemdraft/rdkit-adapter/node";
 import { ensureRdkit, generateSmiles2DMolfile } from "../../../../packages/rdkit-adapter/src/conformer";
 import { createSmilesMolecule, pastedStructureDepictionFromMolfile } from "@chemdraft/document-workflow-core";
 import { callAssistantTool } from "./assistantTools";
+import { isotopeInsertSmiles, isotopeReactions, expectIsotopeGraph } from
+  "../../../../packages/document-workflow-core/test/isotopeInsertFixtures";
 import { buildInsertStructures, inspectMolecule } from "./writeBuilder";
 import { testContext } from "./tools/testContext";
 import type { AssistantToolContext } from "./AssistantToolContext";
@@ -80,7 +82,39 @@ describe("RDKit assistant write identity", () => {
     if (old.type !== "molecule" || after.type !== "molecule") throw new Error("expected molecule");
     expect((await inspectMolecule(context, after)).canonicalSmiles).toBe((await inspectMolecule(context, old)).canonicalSmiles);
   });
-  it.each(["[13CH4]", "[CH3]"])("refuses any isotope or radical loss for %s", async smiles => {
+  it.each(isotopeInsertSmiles)("inserts isotopes successfully: %s", async smiles => {
+    const context = realContext(false);
+    const result = await callAssistantTool(context, "insert_structures", {
+      items: [{ kind: "molecule", smiles }]
+    });
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    const ids = result.structuredContent!.objectIds as string[];
+    const molecule = context.getDocument()!.pages[0]!.objects.find(object => ids.includes(object.id))!;
+    if (molecule.type !== "molecule") throw new Error("expected molecule");
+    const input = await context.chemistry.inspectStructure("smiles", smiles);
+    expect((await inspectMolecule(context, molecule)).canonicalSmiles)
+      .toBe(input.valid ? input.canonicalSmiles : "");
+    expectIsotopeGraph(molecule, await generateSmiles2DMolfile(smiles));
+  });
+  it.each(isotopeReactions)("inserts the worked reaction: $products", async reaction => {
+    const context = realContext(false);
+    context.confirmPageGrowth = async () => true;
+    const result = await callAssistantTool(context, "insert_reaction", reaction);
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    const ids = result.structuredContent!.objectIds as string[];
+    const molecules = context.getDocument()!.pages[0]!.objects.filter(object =>
+      object.type === "molecule" && ids.includes(object.id));
+    const inputs = [...reaction.reactants, ...reaction.products];
+    expect(molecules).toHaveLength(inputs.length);
+    for (const [index, molecule] of molecules.entries()) {
+      if (molecule.type !== "molecule") throw new Error("expected molecule");
+      const input = await context.chemistry.inspectStructure("smiles", inputs[index]!);
+      expect((await inspectMolecule(context, molecule)).canonicalSmiles)
+        .toBe(input.valid ? input.canonicalSmiles : "");
+      expectIsotopeGraph(molecule, await generateSmiles2DMolfile(inputs[index]!));
+    }
+  });
+  it.each(["[CH3]"])("refuses any isotope or radical loss for %s", async smiles => {
     const context = realContext(false);
     const result = await callAssistantTool(context, "insert_structures", { items: [{ kind: "molecule", smiles }] });
     if (result.isError) {

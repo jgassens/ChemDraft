@@ -394,3 +394,7 @@ other format writes one file per structure into --out-dir, named <job name>.<ext
 --format cdxml|pdf|sdf|mol|smi selects the output format; in single mode it normally infers it from
 --out. One JSON line per structure is written to stdout and progress to stderr. Exit 0 is used when
 every structure succeeds, 1 when any export fails, and 2 for bad arguments.
+
+Isotope labels and their positions are preserved in native documents, rendering, reaction schemes,
+and MOL V2000/V3000, SDF, SMILES and CDXML exports. D/T represent hydrogen-2/3; other isotope
+masses are stored per atom. Radical inputs remain refused by drawing and export commands.

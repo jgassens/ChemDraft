@@ -246,6 +246,7 @@ import { createRdkitAdapter } from "@chemdraft/rdkit-adapter/adapter";
 import { buildAnalysisReport, type AnalysisReport, type AnalysisRun } from "@chemdraft/analysis-core";
 import { analysisClient } from "./analysisClient";
 import { inspectClipboardPayload, looksLikeSmiles, smilesListCandidates, type ClipboardDetectedPayload } from "@chemdraft/clipboard-adapter";
+import { checkedSmilesPaste, checkedSmilesGridPaste } from "./smilesPasteIdentity";
 import { SmilesListPasteError, depictSmilesForPaste, depictSmilesListForPaste } from "./smilesListPaste";
 import type { Generate3DConformerResult, StructureAnalysisResult } from "@chemdraft/chemistry-adapter";
 import {
@@ -541,8 +542,6 @@ import {
   nativeArtToolIsFreehand,
   nativeFreehandStrokeDocument,
   nativePolylinePathDocument,
-  insertSmilesMolecule,
-  insertSmilesMoleculeGrid,
   insertSmilesMoleculeGridStatus,
   documentObjectProjectedPlaneTilt,
   nativeBondStyleForToolCommand,
@@ -1617,7 +1616,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.27.20.00-codex";
+const CURRENT_BUILD_STAMP = "10.28.13.05-codex";
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -6614,8 +6613,9 @@ export function MainWindow({
       if (quitInteractionRef.current) return { rendered: false, reason: "Paste cancelled while quitting" };
       if (!parsed) return { rendered: false };
       const { depiction, stereoCount } = parsed;
-      const nextDocument = insertSmilesMolecule(
-        documentRef.current,
+      const beforePaste = documentRef.current;
+      const nextDocument = await checkedSmilesPaste(
+        beforePaste,
         pastePointForViewport(),
         {
           atoms: depiction.atoms,
@@ -6623,6 +6623,9 @@ export function MainWindow({
         },
         smilesText
       );
+      if (documentRef.current !== beforePaste || quitInteractionRef.current) {
+        throw new Error("The document changed while checking the paste; paste again.");
+      }
       commitDocumentChange(nextDocument);
       resetPasteUiState();
       // A pasted structure can be larger than the current page (e.g. a long peptide). Offer
@@ -6639,7 +6642,8 @@ export function MainWindow({
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       if ((error as { smilesChemistryRefusal?: boolean })?.smilesChemistryRefusal) return { rendered: false, reason };
-      setStatus(`Clipboard SMILES could not be placed: ${reason}`);
+      setStatus(reason.startsWith("SMILES paste refused:")
+        ? reason : `Clipboard SMILES could not be placed: ${reason}`);
       return { rendered: false, failed: true, reason };
     }
   }, [commitDocumentChange, pastePointForViewport, resetPasteUiState]);
@@ -6689,21 +6693,30 @@ export function MainWindow({
         pasteAsText();
         return;
       }
-      void pendingList.then((parsed) => {
+      void pendingList.then(async (parsed) => {
         if (listAbort.signal.aborted) return;
         if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
         if (!parsed) {
           pasteAsText();
           return;
         }
-        const result = insertSmilesMoleculeGrid(documentRef.current, pastePointForViewport(), parsed.entries);
-        commitDocumentChange(result.document);
-        resetPasteUiState();
-        setPageFitPrompt(undefined);
-        const failure = parsed.failures[0];
+        const beforePaste = documentRef.current;
+        const result = await checkedSmilesGridPaste(beforePaste, pastePointForViewport(), parsed.entries);
+        if (listAbort.signal.aborted) return;
+        if (documentRef.current !== beforePaste || quitInteractionRef.current) {
+          throw new Error("The document changed while checking the paste; paste again.");
+        }
+        parsed.failures.push(...result.failures);
+        if (result.objectIds.length > 0) {
+          commitDocumentChange(result.document);
+          resetPasteUiState();
+          setPageFitPrompt(undefined);
+        }
+        const failures = parsed.failures.map(failure => `${failure.input}: ${failure.error}`).join("; ");
         const baseStatus = [insertSmilesMoleculeGridStatus(result, parsed.skipped), ...(parsed.warnings ?? [])].join("; ");
-        setStatus(failure
-          ? `${baseStatus}; ${parsed.failures.length} item${parsed.failures.length === 1 ? "" : "s"} failed: ${failure.error}`
+        const failureCount = parsed.failures.length;
+        setStatus(failures
+          ? `${baseStatus}; ${failureCount} item${failureCount === 1 ? "" : "s"} failed: ${failures}`
           : baseStatus);
       }).catch((error: unknown) => {
         if (listAbort.signal.aborted) return;

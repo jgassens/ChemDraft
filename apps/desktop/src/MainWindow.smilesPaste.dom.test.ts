@@ -3,15 +3,25 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { ensureOclResources, UnrequestedSmilesHydrogenError, UnrequestedSmilesRadicalError } from "@chemdraft/ocl-adapter";
+import {
+  depictSmiles2D, ensureOclResources, UnrequestedSmilesHydrogenError, UnrequestedSmilesRadicalError
+} from "@chemdraft/ocl-adapter";
 import { MainWindow } from "./MainWindow";
-import { createPhase4Document } from "./documentWorkflow";
+import { createPhase4Document, pastedStructureDepictionFromMolfile } from "./documentWorkflow";
+import * as depictionClient from "./depiction2d/client";
 
-// Exercise the real paste helper and OCL refusal, with RDKit's unavailable-engine fallback.
+// Exercise the paste UI with an OCL canonicalizer stub; isotopeInsertPaths uses real RDKit.
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
-vi.mock("@chemdraft/rdkit-adapter", () => ({
-  generateSmiles2DMolfile: vi.fn().mockRejectedValue(new Error("WASM unavailable"))
-}));
+vi.mock("@chemdraft/rdkit-adapter", async () => {
+  const { Molecule } = await import("openchemlib");
+  return {
+    generateSmiles2DMolfile: vi.fn().mockRejectedValue(new Error("WASM unavailable")),
+    ensureRdkit: async () => ({ get_mol: (value: string) => {
+      const molecule = /V2000|V3000/.test(value) ? Molecule.fromMolfile(value) : Molecule.fromSmiles(value);
+      return { get_smiles: () => molecule.toIsomericSmiles(), delete: () => {} };
+    } })
+  };
+});
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -48,6 +58,7 @@ describe("MainWindow SMILES paste failure notices", () => {
     act(() => { root.unmount(); });
     container.remove();
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   async function paste(text: string, type = "text/plain", statusNeedle = new UnrequestedSmilesRadicalError("n1cccc1").message) {
@@ -63,6 +74,30 @@ describe("MainWindow SMILES paste failure notices", () => {
     }, { timeout: 15_000, interval: 50 });
     return container.querySelector('[role="status"]')?.textContent;
   }
+
+  it("refuses a depiction that loses an isotope without inserting structure or text", async () => {
+    vi.spyOn(depictionClient, "depictSmilesOffThread").mockResolvedValueOnce({
+      depiction: pastedStructureDepictionFromMolfile(depictSmiles2D("Cc1ccccc1").molfile), stereoCount: 0
+    });
+    const status = await paste("[13CH3]c1ccccc1", "text/plain", "SMILES paste refused:");
+    expect(status).toContain("isotope labels or their positions");
+    expect(container.querySelectorAll(".molecule-object")).toHaveLength(0);
+    expect(container.querySelectorAll(".text-object")).toHaveLength(0);
+  }, 20_000);
+
+  it("skips only an isotope-losing list entry and names it", async () => {
+    const original = depictionClient.depictSmilesOffThread;
+    vi.spyOn(depictionClient, "depictSmilesOffThread").mockImplementation((smiles, options) =>
+      smiles === "[13CH3]c1ccccc1"
+        ? Promise.resolve({
+          depiction: pastedStructureDepictionFromMolfile(depictSmiles2D("Cc1ccccc1").molfile),
+          stereoCount: 0 })
+        : original(smiles, options));
+    const status = await paste("[13CH3]c1ccccc1\nCCO\nCCN", "text/plain", "SMILES paste refused:");
+    expect(status).toContain("1 item failed: [13CH3]c1ccccc1");
+    expect(container.querySelectorAll(".molecule-object")).toHaveLength(2);
+    expect(container.querySelectorAll(".text-object")).toHaveLength(0);
+  }, 20_000);
 
   it.each(["text/plain", "chemical/x-daylight-smiles"])(
     "shows the specific n1cccc1 refusal pasted as %s, while preserving the input as text",

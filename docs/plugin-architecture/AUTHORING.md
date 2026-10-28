@@ -819,3 +819,8 @@ publisher-signature design needs its own plugin key, separate from Sparkle's app
 To host the *extracted source* elsewhere, merge the core-enablement surface
 (`docs/plugin-architecture/CORE-ENABLEMENT.md`) and add one `{ manifest, options }` entry to that
 host's `registerBundledPlugins` catalog.
+
+API 0.1.16 adds optional positive integer `isotope` mass numbers to native document atoms.
+Native molecule objects returned by `chemistry.structureFromSmiles` and passed through document
+patches also preserve isotope masses. Hydrogen-2 and hydrogen-3 use elements `D` and `T` without an
+`isotope` field; other labelled atoms (including hydrogen-1) carry the mass number in `isotope`.

@@ -97,7 +97,6 @@ describe("CLI refuses radical loss before making a canonical source", () => {
 
   it.each([
     { smiles: "[CH3]", properties: "1 radical electron" },
-    { smiles: "[13CH4]", properties: "isotope 13" },
     { smiles: "[13CH3]", properties: "1 radical electron and isotope 13" }
   ])("describes only the properties carried by input $smiles", async ({ smiles, properties }) => {
     const io = collectIo();
@@ -108,7 +107,7 @@ describe("CLI refuses radical loss before making a canonical source", () => {
     });
   });
 
-  it.each(["[C]", "[CH]", "[CH3]", "[2H]", "[3H]"])("refuses radical/isotope SMILES input with an atom-specific message: %s", async (smiles) => {
+  it.each(["[C]", "[CH]", "[CH3]", "[2H]", "[3H]"])("refuses radical SMILES input with an atom-specific message: %s", async (smiles) => {
     for (const command of [runDocumentCommand, runExportCommand]) {
       const out = join(directory, command === runDocumentCommand ? "input.json" : "input.sdf");
       const io = collectIo();

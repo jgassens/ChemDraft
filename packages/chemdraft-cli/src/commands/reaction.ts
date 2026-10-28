@@ -580,7 +580,7 @@ async function agentText(smiles: string, index: number): Promise<ReactionAgentTe
     if (composition?.kind !== "composition") {
       throw new Error("RDKit composition did not return a source result.");
     }
-    if (composition.radicalElectronCount > 0 || composition.hasExplicitIsotopes) {
+    if (composition.radicalElectronCount > 0) {
       throw new Error(`SMILES contains a radical/isotope label that ChemDraft cannot yet draw: ${smiles}`);
     }
     const text = reactionFormula(composition);
