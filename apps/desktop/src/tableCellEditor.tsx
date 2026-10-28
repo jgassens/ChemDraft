@@ -14,7 +14,7 @@ import { tableEditingContent, tableEditingKeyAction, type TableEditingAction } f
 
 export interface TableCellEditorHandle {
   applyCommand(commandId: string): boolean;
-  commit(): boolean;
+  commit(): true | false | "composing";
 }
 
 /** Like native text objects: a textarea owns input/IME, and the shared rich-text view paints runs. */
@@ -160,7 +160,7 @@ export const TableCellEditor = forwardRef<TableCellEditorHandle, {
     return true;
   };
   useImperativeHandle(ref, () => ({ applyCommand, commit: () => {
-    if (composing.current) return false;
+    if (composing.current) return "composing";
     return finish({ kind: "commit" });
   } }));
   useLayoutEffect(() => {

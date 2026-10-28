@@ -154,6 +154,26 @@ describe.each(["macos", "windows"] as const)("table real DOM editing (%s)", plat
       .not.toBe("Uncommitted draft");
   });
 
+  it("reports when a table command is refused during IME composition", async () => {
+    await mount(); await command("table.footnote.add"); await openNote(0);
+    await act(async () => editor()!.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true })));
+    await command("table.footnote.remove");
+    expect(editor()).not.toBeNull();
+    expect(currentTable().footnotes).toHaveLength(1);
+    expect(container.querySelector('[role="status"]')?.textContent)
+      .toBe("Finish typing in the table first.");
+  });
+
+  it("keeps the validation message when a table command cannot commit an invalid draft", async () => {
+    await mount({ rows: Array.from({ length: 100 }, () => ["x".repeat(1000), "y".repeat(1000)]),
+      formula: "off" });
+    await open(); await type("x".repeat(1001));
+    await command("table.caption.toggle");
+    expect(editor()).not.toBeNull();
+    expect(container.querySelector('[role="status"]')?.textContent)
+      .toBe("maxTableCharacters is 200000; actual value is 200001");
+  });
+
   it.each([
     "table.row.insertBelow", "table.column.insertRight", "table.caption.toggle", "table.footnote.add"
   ])(

@@ -65,7 +65,7 @@ same per-platform clipboard path used for other rich clipboard data. HTML and RT
 borders only where the table has rules, no shading, zero paragraph margins, and fixed column widths.
 Decimal alignment follows the shared layout rule. HTML declares Excel number formats for canonical
 numbers and assigns number-like text a text number format so Excel preserves it as text. RTF omits
-per-cell left and top padding because Word interprets `\\clpadl` as top padding; the layout inset is
+per-cell left and top padding because Word interprets `\clpadl` as top padding; the layout inset is
 instead carried in the decimal tab stop. Paste recognizes tables in HTML and spreadsheet text,
 preserving text, basic emphasis, subscripts/superscripts, alignment and widths where provided. Excel
 fragment markers inside a `<table>` are handled by finding the containing table. A 1×1 HTML table is

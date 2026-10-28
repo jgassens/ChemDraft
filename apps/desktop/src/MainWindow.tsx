@@ -10105,7 +10105,14 @@ export function MainWindow({
         await coordinator.openInsertTable(tabId, { title: title.slice(0, 256), rows: 6, columns: 4, headerRows: 1, preset: "three-line" });
       } else {
         const editing = tableCellEditRef.current;
-        if (editing && tableCellEditorRef.current?.commit() === false) return;
+        if (editing) {
+          const commit = tableCellEditorRef.current?.commit();
+          if (commit === "composing") {
+            setStatus("Finish typing in the table first.");
+            return;
+          }
+          if (commit === false) return;
+        }
         try {
           const result = applyTableCommand(documentRef.current, action.id, activeTableCell,
             prefix => `${prefix}-${crypto.randomUUID()}`, editing);
