@@ -43,8 +43,8 @@ const captionClearanceEm = 0.8;
 const minimumCaptionWidthInBonds = 8;
 const defaultLabelStyle: Partial<NativeTextStyle> = { fontSizePx: 14, textAlign: "center" };
 
-function lineSpans(text: string): TextSpan[] {
-  return formulaSpansForMixedText(text) ?? [{ text, script: "normal", style: {} }];
+function lineSpans(text: string, caption = false): TextSpan[] {
+  return (!caption && formulaSpansForMixedText(text)) || [{ text, script: "normal", style: {} }];
 }
 
 function explicitLines(entries: readonly string[]): string[] {
@@ -52,15 +52,15 @@ function explicitLines(entries: readonly string[]): string[] {
     .map((line) => line.replace(/^[ \t]+|[ \t]+$/g, "")).filter(Boolean);
 }
 
-function wrapLines(authoredLines: readonly string[], style: NativeTextStyle, maxWidth: number): string[] {
+function wrapLines(authoredLines: readonly string[], style: NativeTextStyle, maxWidth: number, caption: boolean): string[] {
   return authoredLines.flatMap((line) => {
-    if (estimateNativeTextSpanLineWidth(lineSpans(line), style) <= maxWidth) return [line];
+    if (estimateNativeTextSpanLineWidth(lineSpans(line, caption), style) <= maxWidth) return [line];
     const lines: string[] = [];
     let current = "";
     // Break only at spaces/tabs; NBSP and narrow NBSP stay inside indivisible tokens.
     for (const match of line.matchAll(/[^ \t]+[ \t]*/g)) {
       const candidate = current + match[0];
-      if (current && estimateNativeTextSpanLineWidth(lineSpans(candidate.replace(/[ \t]+$/, "")), style) > maxWidth) {
+      if (current && estimateNativeTextSpanLineWidth(lineSpans(candidate.replace(/[ \t]+$/, ""), caption), style) > maxWidth) {
         lines.push(current.replace(/[ \t]+$/, ""));
         current = match[0];
       } else current = candidate;
@@ -72,9 +72,9 @@ function wrapLines(authoredLines: readonly string[], style: NativeTextStyle, max
 
 function measureBlock(entries: readonly string[], style: NativeTextStyle, maxWidth: number, caption = false): LabelBlock | undefined {
   const authoredLines = explicitLines(entries);
-  const lines = wrapLines(authoredLines, style, maxWidth);
+  const lines = wrapLines(authoredLines, style, maxWidth, caption);
   if (!lines.length) return undefined;
-  const spanLines = lines.map(lineSpans);
+  const spanLines = lines.map((line) => lineSpans(line, caption));
   const spans = spanLines.flatMap((line, index): TextSpan[] => index === 0
     ? line : [{ text: "\n", script: "normal", style: {} }, ...line]);
   return {

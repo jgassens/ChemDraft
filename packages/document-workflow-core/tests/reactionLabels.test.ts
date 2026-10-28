@@ -47,6 +47,14 @@ function content(fragment: PageSvgFragment): string {
 }
 
 describe("reaction label policy", () => {
+  it("keeps captions plain while formatting above-arrow formulas", () => {
+    const captionText = "SN2 pathway; H2 uptake; C2-symmetric ligand; CH2Cl2 used";
+    const result = labels({ above: ["CH2Cl2"], below: [], caption: captionText, bondLength: 100 });
+    expect(result.caption!.text).toBe(captionText);
+    expect(result.caption!.spans.map(span => span.text).join("")).toBe(captionText);
+    expect(result.caption!.spans.every(span => span.script === "normal")).toBe(true);
+    expect(scripts(result.above!).map(span => span.text)).toEqual(["2", "2"]);
+  });
   it("subscripts counts in agent formulas while retaining Unicode charges", () => {
     const result = labels({ above: ["HSO4⁻, NH4⁺, SO4²⁻"], below: [], caption: undefined });
     expect(result.above!.text).toBe("HSO4⁻, NH4⁺, SO4²⁻");
@@ -182,7 +190,7 @@ describe("reaction label policy", () => {
       "CH2Cl2 CH2Cl2 CH2Cl2", "CH2Cl2 CH2Cl2 CH2Cl2", "CH2Cl2 CH2Cl2"
     ]);
     expect(result.caption!.x + result.caption!.width / 2).toBe(100);
-    expect(scripts(result.caption!).every((span) => span.text === "2" && span.script === "subscript")).toBe(true);
+    expect(scripts(result.caption!)).toEqual([]);
   });
 
   it("renders the planned lines and script spans through the canvas/export page renderer", () => {

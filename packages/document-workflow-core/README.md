@@ -88,7 +88,8 @@ Reaction schemes accept `above` and `below` arrays (each entry is a deliberate l
 explicit newlines) and an optional `caption`. Blank lines are discarded. `conditionText` remains a
 compatibility adapter: its newline-separated lines precede `above`, with no comma/semicolon guessing.
 Each block has explicit rendered
-newlines and formula spans, measured once without implicit wrapping. Entirely numbered authored blocks
+newlines and formula spans, measured once without implicit wrapping. Captions are not formula-formatted; mechanism names such as SN2 are never subscripted.
+Entirely numbered authored blocks
 align left with their visible text centred on the arrow, including wrapped steps; other blocks and captions align centre.
 
 Reaction-label design numbers live together in `src/reactionLabels.ts`: line wrap at **10 bond

@@ -3,6 +3,19 @@ import type { TextSpan } from "@chemdraft/chem-core";
 import { formulaSpansForMixedText, formulaSpansFromText } from "./formulaText";
 
 describe("formula text", () => {
+  it.each(["SN1", "SN2", "SNi", "SNAr", "SN1'", "SN2'", "E1", "E2", "E1cB", "E1cb"])(
+    "leaves mechanism label %s plain alone and in text", (label) => {
+      for (const text of [label, `via an ${label} pathway`, `${label} elimination`, `${label},`]) {
+        expect(formulaSpansForMixedText(text), text).toBeUndefined();
+      }
+    }
+  );
+
+  it("still formats formulas resembling mechanism labels", () => {
+    for (const text of ["SnCl2", "NaBH4"]) {
+      expect(formulaSpansForMixedText(text)?.filter(span => span.script === "subscript").map(span => span.text)).toEqual([text === "SnCl2" ? "2" : "4"]);
+    }
+  });
   it.each([
     ["NH4⁺", ["NH:normal", "4:subscript", "⁺:normal"]],
     ["SO4²⁻", ["SO:normal", "4:subscript", "²⁻:normal"]],
