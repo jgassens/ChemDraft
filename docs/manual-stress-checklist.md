@@ -736,6 +736,32 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
 - In the browser preview, check the same form/validation in the documented in-page fallback.
   Force native creation failure on desktop: show an error and never display the browser overlay.
 
+## Structure template picker (macOS and Windows)
+
+- Open Insert > Templates…; confirm Insert follows Edit and precedes View. Add Templates… from
+  Customize Main Toolbar, exit customization and open it there. It is absent from the default bar.
+- Confirm the picker is a separate movable, modeless window, centred over the originating drawing
+  on first open. Draw and use floating toolbars alongside it. Invoke Templates… again: the retained
+  window comes forward with its search and position intact.
+- Search `β-CD`, `beta`, `BETA cyclodextrin`, `CD`, `cucurbit[7]`, `crown`, and `pillar`; check
+  normalized substring matches, family headings/order, names, formula/synonym descriptions, and an
+  honest empty state. Pillar[n]arene and its 1,4-dimethoxy variant must be side by side.
+- Tab/Down from search into tiles; use arrows, Home/End, Enter and Space. Each activation inserts
+  once and leaves the picker open. Test IME Enter, Escape, title-bar close and Cmd/Ctrl+W; F5 and
+  Cmd/Ctrl+R must not reload. Check screen-reader names and descriptions and visible keyboard focus.
+- Insert every populated family (crowns/cryptands, cyclodextrins, cucurbiturils, calixarenes/
+  pillararenes/resorcinarenes/CTV, cyclophanes, porphyrins). Compare bond size with a newly hand-drawn
+  bond, including after changing a selected molecule's style. The template stays at default size,
+  is centred in the visible source view, remains editable and is selected. Undo once removes one
+  insertion; Redo restores it exactly. Repeat with the source tab inactive; only that tab changes.
+- Close or replace the originating tab while the picker is open or still starting: it disappears
+  and late actions cannot edit a replacement drawing. Repeat with two source tabs and two pickers.
+- Move the picker outside the document window and onto another monitor, close/reopen, and confirm
+  its saved position. Repeat with mixed DPI and a removed monitor. On Windows verify no taskbar
+  entry, document ownership, normal focus/Alt-Tab behavior, and no menu attached to utility windows.
+  On macOS verify floating toolbar usability, app deactivation, native-box suspension and restoration.
+- In the browser preview, exercise the same picker body in the documented in-page fallback.
+
 ## Native Export (macOS and Windows)
 
 - Launch this worktree's labelled build. Choose Export and verify a movable native window centred

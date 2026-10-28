@@ -1,6 +1,21 @@
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
 import { structureTemplateForSmiles, structureTemplateMolecule } from "@chemdraft/document-workflow-core";
 import { loadRdkitWithAppLoader } from "./plugins/rdkitAppLoader";
+import { applyPatches } from "@chemdraft/chem-core";
+import { structureTemplateById } from "@chemdraft/template-library";
+
+/** Same add/select patch transaction as SMILES inserts, without a depiction engine. */
+export function insertStructureTemplate(document: ChemDraftDocument, id: string, centre: { x: number; y: number }) {
+  const template = structureTemplateById(id);
+  if (!template) throw new Error(`Unknown structure template: ${id}`);
+  const page = document.pages[0];
+  if (!page) throw new Error("The drawing has no page for this template.");
+  const object = structureTemplateMolecule(template, { document, centre });
+  return { document: applyPatches(document, [
+    { op: "addObject", pageId: page.id, object },
+    { op: "setSelection", pageId: page.id, objectIds: [object.id] }
+  ]), label: `Insert ${template.name}` };
+}
 
 // Keep this callback stable for the core's canonical identity cache. RDKit returns canonical
 // isomeric SMILES by default; no stereo removal, neutralization or alternate identity engine.

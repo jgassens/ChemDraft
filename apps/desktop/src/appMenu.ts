@@ -273,6 +273,11 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
       ]
     },
     {
+      id: "insert",
+      label: "Insert",
+      items: [command("template.insertDialog", "Templates…")]
+    },
+    {
       id: "view",
       label: "View",
       items: [

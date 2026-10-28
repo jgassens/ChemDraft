@@ -1,6 +1,8 @@
 import { structureTemplateLayoutMessage } from "@chemdraft/document-workflow-core";
 import { insertPastedSmiles } from "./smilesInsertion";
-import { templateMoleculeForSmiles } from "./structureTemplateInsertion";
+import { templateMoleculeForSmiles, insertStructureTemplate } from "./structureTemplateInsertion";
+import { structureTemplates } from "@chemdraft/template-library";
+import { templateInsertActions, templateInsertCommandId } from "./templateCommands";
 import { isEditableTarget } from "./editableTarget";
 import { ORPHANED_COMPOSITION_IDLE_MS } from "./imeComposition";
 import { useExportPreviewEnabled } from "./dialogs/useExportPreviewEnabled";
@@ -38,6 +40,8 @@ import {
   Fragment,
   createElement,
   memo,
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -797,6 +801,7 @@ import { exportOptions } from "./dialogs/exportOptionsValidation";
 import type { ExportDialogResult } from "./dialogs/dialogProtocol";
 import { exportDialogHeight, exportDialogSizeError } from "./dialogs/exportPresentation";
 import { DialogCoordinator } from "./dialogs/DialogCoordinator";
+import type { StructureTemplatesSnapshot } from "./dialogs/dialogProtocol";
 import { nativeDialogTransport } from "./dialogs/dialogTransport";
 import { PageSizeForm, formatPageSizeFieldValue, pageSizeUnitShortLabel, type PageSizeDraft } from "./dialogs/PageSizeForm";
 import { atomLabelEditorWidth } from "./atomLabelEditorWidth";
@@ -1619,7 +1624,8 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.28.12.00-codex";
+const CURRENT_BUILD_STAMP = "10.28.14.00-codex";
+const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -2292,6 +2298,9 @@ export function MainWindow({
   documentTabsRef.current = documentTabs;
   const pluginRuntimeRef = useRef<DesktopPluginRuntime | undefined>(undefined);
   const dialogCoordinatorRef = useRef<DialogCoordinator | undefined>(undefined);
+  const [browserTemplates, setBrowserTemplates] = useState<(StructureTemplatesSnapshot & { tabId: string }) | undefined>();
+  const templateCommandTargetRef = useRef<string | undefined>(undefined);
+  const dispatchTemplateRef = useRef<(tabId: string, id: string) => Promise<void>>(async () => {});
   const activeDocumentTabIdRef = useRef("initial");
   const smilesListPasteAbortRef = useRef<AbortController | undefined>(undefined);
   useEffect(() => () => smilesListPasteAbortRef.current?.abort(), []);
@@ -8523,6 +8532,7 @@ export function MainWindow({
     if (index < 0) return;
     pluginRuntimeRef.current?.closeProposalDocumentTab(id, tabs[index]!.title);
     void dialogCoordinatorRef.current?.closeTab(id);
+    setBrowserTemplates(current => current?.tabId === id ? undefined : current);
     exportGrantsRef.current.delete(id);
     if (browserExportTabRef.current === id) { browserExportTabRef.current = undefined; browserExportSessionRef.current = undefined; setExportDialog(undefined); }
     // Closing the last document keeps the window open with a fresh document identity and history.
@@ -8619,6 +8629,7 @@ export function MainWindow({
     // A pristine tab keeps its tab ID but now represents a different document. Settle its drafts
     // synchronously before replacing the history; late actions must never target the opened file.
     void dialogCoordinatorRef.current?.closeTab(id);
+    setBrowserTemplates(current => current?.tabId === id ? undefined : current);
     exportGrantsRef.current.delete(id);
     if (browserExportTabRef.current === id) { browserExportTabRef.current = undefined; browserExportSessionRef.current = undefined; setExportDialog(undefined); }
     const tabs = documentTabsRef.current.map((tab) => tab.id === id ? { ...tab, title: displayName } : tab);
@@ -8723,6 +8734,63 @@ export function MainWindow({
     setCustomPageSizeDialog({ unit, width: formatPageSizeFieldValue(width), height: formatPageSizeFieldValue(height) });
   }, []);
 
+  const openTemplatesDialog = useCallback(() => {
+    const tabId = activeDocumentTabIdRef.current;
+    const data = { title: (documentTabsRef.current.find(tab => tab.id === tabId)?.title ?? "Untitled").slice(0, 256),
+      templateIds: structureTemplates.map(template => template.id) };
+    if (isDesktopRuntime()) {
+      const coordinator = dialogCoordinatorRef.current;
+      if (!coordinator) { setStatus("Templates could not open: the dialog host is unavailable."); return; }
+      void coordinator.openStructureTemplates(tabId, data).catch(error => setStatus(`Templates could not open: ${String(error)}`));
+    } else {
+      setBrowserTemplates(current => current?.tabId === tabId ? current : { ...data, tabId });
+      globalThis.document.querySelector<HTMLInputElement>(".cd-template-browser input")?.focus();
+    }
+  }, []);
+
+  const insertTemplateToTab = useCallback((tabId: string, id: string) => {
+    if (quitInteractionRef.current) throw new Error("Finish quitting before inserting a template.");
+    if (keptDrawingsPromptRef.current || closeTabPromptRef.current === tabId) throw new Error("Finish the open drawing question before inserting a template.");
+    if (!documentTabsRef.current.some(tab => tab.id === tabId)) throw new Error("The originating drawing was closed.");
+    const active = tabId === activeDocumentTabIdRef.current;
+    if (active && isSnapshotSessionActive()) throw new Error("Finish the current drawing gesture, then insert the template again.");
+    if (active) {
+      const labelEdit = activeAtomLabelEditRef.current;
+      if (labelEdit) {
+        tabEditFinishersRef.current.finalizeAtomLabelDraft(labelEdit);
+        activeAtomLabelEditRef.current = undefined;
+      }
+      const textEdit = activeTextEditObjectIdRef.current;
+      if (textEdit) {
+        tabEditFinishersRef.current.finishActiveNativeTextEdit(textEdit);
+        activeTextEditObjectIdRef.current = undefined;
+      }
+    }
+    const snapshot = documentTabSnapshotsRef.current.get(tabId);
+    const source = active ? documentHistoryRef.current.present : snapshot?.history.present;
+    if (!source) throw new Error("The originating drawing is unavailable.");
+    const page = source.pages[0]!;
+    const visible = assistantHistoryPort.getViewportRect?.(tabId);
+    const centre = visible ? { x: visible.x + visible.width / 2, y: visible.y + visible.height / 2 }
+      : { x: page.width / 2, y: page.height / 2 };
+    const result = insertStructureTemplate(source, id, centre);
+    if (active) {
+      commitDocumentChange(result.document, result.label);
+      setSelectedNativeMoleculePart(undefined);
+      setStatus(result.label);
+    } else if (snapshot) {
+      const present = normalizeCommittedDocument(result.document);
+      documentUndoLabelsRef.current.set(present, result.label);
+      for (const listener of assistantUserEditListenersRef.current) listener(tabId);
+      documentTabSnapshotsRef.current.set(tabId, { ...snapshot,
+        history: { past: boundedHistoryPast([...snapshot.history.past, source], present), present, future: [] },
+        parts: [], file: { ...snapshot.file, dirty: true }, status: result.label });
+      nonPristineTabsRef.current.add(tabId);
+      setDocumentTabs([...documentTabsRef.current]);
+    }
+  // isSnapshotSessionActive is declared later and reads only stable refs.
+  }, [assistantHistoryPort, commitDocumentChange]);
+
   const applyCustomPageSize = useCallback((size: { width: number; height: number; unit: PageSizeUnit }) => {
     commitDocumentChange((current) => setDocumentCustomPageSize(current, size), "Set Custom Page Size");
     setCustomPageSizeDialog(undefined);
@@ -8797,6 +8865,7 @@ export function MainWindow({
   useEffect(() => {
     if (!isDesktopRuntime()) return;
     const coordinator = new DialogCoordinator(nativeDialogTransport, {
+      insertTemplate: (tabId, id) => dispatchTemplateRef.current(tabId, id),
       applyPageSize: (tabId, size) => applyPageSizeToTabRef.current(tabId, size),
       previewArrangementSpacing: (tabId, percent) => previewSpacingRef.current(tabId, percent),
       applyArrangementSpacing: (tabId, percent) => applySpacingRef.current(tabId, percent),
@@ -9909,6 +9978,12 @@ export function MainWindow({
       });
     };
 
+    templateInsertActions.forEach(action => register(action, () => {
+      const tabId = templateCommandTargetRef.current ?? activeDocumentTabIdRef.current;
+      templateCommandTargetRef.current = undefined;
+      insertTemplateToTab(tabId, action.id.slice("template.insert.".length));
+    }));
+
     createDoubleBondPositionActions(currentMoleculeInspector.structure.doubleBondTargetCount).forEach((action) => {
       register(action, () => { applyMoleculeInspectorCommand(action.id); });
     });
@@ -10034,6 +10109,7 @@ export function MainWindow({
         if (action.id === "export.open") {
           openExportDialog();
         }
+        if (action.id === "template.insertDialog") openTemplatesDialog();
         if (action.id === "analyze.molecularProperties") {
           // Desktop analysis never occupies a toolbar or the drawing viewport. Open the shared
           // analysis-window host before starting the worker so progress/empty state is visible.
@@ -10622,6 +10698,8 @@ export function MainWindow({
     compoundLayoutsEnabled,
     nativePalette,
     openExportDialog,
+    openTemplatesDialog,
+    insertTemplateToTab,
     openInteractive3dWorkspace,
     openDocumentFromNativePicker,
     openCustomPageSizeDialog,
@@ -10658,6 +10736,12 @@ export function MainWindow({
       syncCoreCommands: createCoreCommandRegistrar(commandRegistry, () => coreCommandBindingsRef.current)
     };
   }, []);
+
+  dispatchTemplateRef.current = async (tabId, id) => {
+    templateCommandTargetRef.current = tabId;
+    try { await registry.invoke(templateInsertCommandId(id)); }
+    finally { templateCommandTargetRef.current = undefined; }
+  };
 
   useEffect(() => perfHook(() => onPerfStarted(() => { perfHook(() => perfProbe?.instrumentRegistry(registry)); })), [registry]);
 
@@ -20648,6 +20732,10 @@ export function MainWindow({
           />
         ) : null}
       </section>
+      {!isDesktopRuntime() && browserTemplates ? <div className="cd-template-browser"><Suspense fallback={<p role="status">Opening Templates…</p>}>
+        <StructureTemplatePicker {...browserTemplates} onClose={() => setBrowserTemplates(undefined)}
+          onInsert={id => { void dispatchTemplateRef.current(browserTemplates.tabId, id).catch(error => setStatus(String(error))); }} />
+      </Suspense></div> : null}
       {!isDesktopRuntime() && spacingSource ? <ArrangementSpacingDialog document={spacingSource} onCancel={() => setSpacingSource(undefined)}
         onSave={factor => {
           if (documentRef.current !== spacingSource) {
