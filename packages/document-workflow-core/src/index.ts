@@ -21,5 +21,6 @@ export * from "./reactionScheme";
 export * from "./shared";
 export * from "./smiles";
 export * from "./structureName";
+export * from "./structureTemplates";
 export * from "./textObjects";
 export * from "./documentStyle";

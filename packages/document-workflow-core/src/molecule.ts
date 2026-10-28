@@ -5,7 +5,6 @@ import {
   applyPatches,
   type ChemDraftDocument,
   ChemDraftSyntheticStylePreset,
-  type DocumentObject,
   type MoleculeAtom,
   type MoleculeBond,
   type MoleculeObject,
@@ -132,6 +131,14 @@ export const SMILES_PASTE_SOURCE: SmilesMoleculeSource = {
   warningMessage: "Generated an editable 2D structure from pasted SMILES."
 };
 
+/** Placement policy for pre-authored layouts; defaults retain SMILES paste behavior. */
+export interface MoleculeDepictionPlacement {
+  targetBondLengthPx?: number;
+  style?: Record<string, unknown>;
+  /** Defaults to true for paste; authored templates can retain their requested centre. */
+  constrainToPage?: boolean;
+}
+
 /**
  * Build the molecule object a SMILES depiction becomes, without touching the document.
  *
@@ -149,12 +156,17 @@ export function createSmilesMolecule(
   point: PagePoint,
   depiction: PastedStructureDepiction,
   smilesText: string,
-  source: SmilesMoleculeSource = SMILES_PASTE_SOURCE
-): DocumentObject {
+  source: SmilesMoleculeSource = SMILES_PASTE_SOURCE,
+  placement: MoleculeDepictionPlacement = {}
+): MoleculeObject {
   if (depiction.atoms.length === 0) {
     throw new Error("Cannot build a molecule: no atoms were generated.");
   }
   const page = firstPage(document);
+  const targetBondLengthPx = placement.targetBondLengthPx ?? smilesPasteBondLengthPx;
+  if (!Number.isFinite(targetBondLengthPx) || targetBondLengthPx <= 0) {
+    throw new Error("Cannot build a molecule: target bond length must be positive and finite.");
+  }
 
   const pseudoGraph: ParsedMolfileGraph = {
     format: "molfile-v2000",
@@ -178,7 +190,8 @@ export function createSmilesMolecule(
     pseudoGraph,
     point,
     page,
-    smilesPasteBondLengthPx
+    targetBondLengthPx,
+    placement.constrainToPage
   ).map((atom) => ({
     id: atom.id,
     element: atom.element,
@@ -244,7 +257,8 @@ export function createSmilesMolecule(
     transform: defaultNativeMoleculeTransform,
     style: {
       ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
-      bondLengthPx: smilesPasteBondLengthPx,
+      ...placement.style,
+      bondLengthPx: targetBondLengthPx,
       source: source.styleSource
     },
     compatibility: {
@@ -456,7 +470,8 @@ export function scaleParsedMolfileAtoms(
   graph: ParsedMolfileGraph,
   point: PagePoint,
   page: ChemDraftDocument["pages"][number],
-  targetBondLengthPx: number = nativeBondLengthPx
+  targetBondLengthPx: number = nativeBondLengthPx,
+  constrainToPage = true
 ): ParsedMolfileGraph["atoms"] {
   const averageBondLength = averageParsedMolfileBondLength(graph);
   const scale = averageBondLength > 0 ? targetBondLengthPx / averageBondLength : targetBondLengthPx / 1.5;
@@ -476,6 +491,7 @@ export function scaleParsedMolfileAtoms(
     x: atom.x + point.x - center.x,
     y: atom.y + point.y - center.y
   }));
+  if (!constrainToPage) return atoms;
   const geometry = moleculeGeometryFromAtoms(atoms);
   const boundedX = clamp(geometry.x, 0, Math.max(0, page.width - geometry.width));
   const boundedY = clamp(geometry.y, 0, Math.max(0, page.height - geometry.height));

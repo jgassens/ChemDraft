@@ -24,6 +24,7 @@
     "release:windows-manifest": "tsx tools/release/windows-update-manifest.ts",
     "test": "vitest run",
     "templates:layouts": "node tools/template-layouts/build.mjs",
+    "templates:check-images": "node tools/template-layouts/render-check.mjs",
     "test:ocsr-real": "node packages/fixtures/ocsr/run-real-engine-check.mjs",
     "build:sdk": "node scripts/build-sdk.mjs plugin-api && node scripts/build-sdk.mjs plugin-host"
   },

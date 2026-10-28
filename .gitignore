@@ -38,3 +38,6 @@ apps/desktop/src-tauri/resources/ocsr/__pycache__/
 
 # Cloudflare wrangler local state
 .wrangler/
+
+# Local structure template render checks (never committed).
+tools/template-layouts/.check/

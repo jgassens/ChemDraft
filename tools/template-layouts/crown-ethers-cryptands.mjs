@@ -115,7 +115,9 @@ function template(entry, layout) {
     id: entry.id, name: entry.name, synonyms: entry.synonyms,
     family: "crown-ethers-cryptands", category: "supramolecular",
     smiles: entry.smiles, formula: entry.formula, charge: 0,
-    source: { database: "PubChem", cid: entry.cid }, layout
+    source: { database: "PubChem", cid: entry.cid },
+    ...(entry.bridges ? { note: "The [a.b.c] convention counts ether oxygen atoms in each of the three bridges between the nitrogen bridgeheads." } : {}),
+    layout
   };
 }
 
