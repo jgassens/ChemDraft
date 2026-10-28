@@ -9,6 +9,7 @@ user action from configuring a headless tool.
 
 | Plugin | Agent reach |
 |---|---|
+| ChemDraft Assistant (`org.chemdraft.assistant`) | Desktop plugin for asking Claude Code or Codex to draw and edit on the page under the user's account; one Undo reverses a request |
 | NMR Shift Predictor (`org.chemdraft.nmr.predictor`) | Desktop plugin; `nmr` / `predict_nmr` loads a separate owner-trusted source checkout |
 | Name to Structure (OPSIN) (`org.chemdraft.opsin.nameToStructure`) | Desktop insertion plugin; `name` / `name_to_structure` independently uses the bundled OPSIN runtime, without loading this plugin |
 | Name from Structure (Orthonym) (`org.chemdraft.naming.orthonym`) | Desktop-only structure-to-name plugin from `github.com/jgassens/ChemDraft-Orthonym-Plugin`; no CLI/MCP structure-to-name capability. Inside the app, the assistant tool `structure_to_name` reports the host naming-engine result and does not open installation UI |

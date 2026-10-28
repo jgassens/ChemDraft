@@ -44,6 +44,13 @@ export interface OfficialPluginCatalogEntry {
  */
 export const OFFICIAL_PLUGIN_CATALOG: readonly OfficialPluginCatalogEntry[] = [
   {
+    pluginId: "org.chemdraft.assistant",
+    displayName: "ChemDraft Assistant",
+    description: "Ask Claude Code or Codex, under your own account, to draw and edit on the page. It changes only what is selected plus what it adds, and one Undo reverses a request.",
+    repository: "jgassens/ChemDraft-Assistant-Releases",
+    assetStem: "chemdraft-assistant"
+  },
+  {
     pluginId: "org.chemdraft.naming.orthonym",
     displayName: "Name from Structure (Orthonym)",
     description: "Name the selected structure. Every name shown was read back by OPSIN as exactly the drawn structure. Installing it also downloads a local naming engine (about 100 MB).",

@@ -10,6 +10,15 @@
       "identifier": "http:default",
       "allow": [
         {
+          "url": "https://api.github.com/repos/jgassens/ChemDraft-Assistant-Releases/releases/latest"
+        },
+        {
+          "url": "https://github.com/jgassens/ChemDraft-Assistant-Releases/releases/download/*/chemdraft-assistant-*.zip"
+        },
+        {
+          "url": "https://github.com/jgassens/ChemDraft-Assistant-Releases/releases/download/*/chemdraft-assistant-*.zip.sha256"
+        },
+        {
           "url": "https://api.github.com/repos/jgassens/ChemDraft-NMR-Plugin/releases/latest"
         },
         {
