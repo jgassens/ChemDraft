@@ -223,6 +223,9 @@ importers:
       '@chemdraft/chem-core':
         specifier: workspace:*
         version: link:../chem-core
+      '@chemdraft/layout-engine':
+        specifier: workspace:*
+        version: link:../layout-engine
       '@chemdraft/template-library':
         specifier: workspace:*
         version: link:../template-library
