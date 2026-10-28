@@ -915,6 +915,17 @@ fn codex_home_falls_back_without_copying_credentials() {
             absent.fallback_kind,
             Some(env::CodexHomeFallbackKind::AuthJsonAbsent)
         );
+        for state in [ToolState::Installed, ToolState::Broken] {
+            let mut status = install::managed_status(
+                &temp.0,
+                pins::pin_for(ToolId::Codex, ToolPlatform::DarwinArm64),
+            );
+            status.state = state;
+            status.signed_in = Some(false);
+            status.detail = None;
+            apply_status_detail(&mut status, platform, absent.fallback_kind);
+            assert!(status.detail.is_none());
+        }
         assert!(absent
             .fallback_reason
             .unwrap()
@@ -922,18 +933,38 @@ fn codex_home_falls_back_without_copying_credentials() {
         fs::write(real.join("auth.json"), "test-credential").unwrap();
         for kind in [
             std::io::ErrorKind::PermissionDenied,
+            std::io::ErrorKind::Unsupported,
             std::io::ErrorKind::Other,
         ] {
             let failed =
-                env::prepare_codex_home_with_link(platform, &base, &parent, |actual, _, _| {
+                env::prepare_codex_home_with_link(platform, &base, &parent, |actual, auth, _| {
                     assert_eq!(actual, platform);
+                    assert_eq!(fs::read_to_string(auth).unwrap(), "test-credential");
                     Err(kind.into())
                 });
             assert_eq!(failed.path.as_ref(), Some(&real));
             assert_eq!(
                 failed.fallback_kind,
-                Some(env::CodexHomeFallbackKind::AuthJsonUnreadable)
+                Some(env::CodexHomeFallbackKind::PreparationFailed)
             );
+            for state in [ToolState::Installed, ToolState::Broken] {
+                let mut status = install::managed_status(
+                    &temp.0,
+                    pins::pin_for(ToolId::Codex, ToolPlatform::DarwinArm64),
+                );
+                status.state = state;
+                status.signed_in = Some(false);
+                status.detail = None;
+                apply_status_detail(&mut status, platform, failed.fallback_kind);
+                let detail = status.detail.unwrap();
+                assert_eq!(
+                    detail,
+                    "ChemDraft could not set up its private Codex folder. Try Check again; if it keeps failing, restart ChemDraft."
+                );
+                assert!(!detail.contains("Keychain"));
+                assert!(!detail.contains("Credential Manager"));
+                assert!(!detail.contains("Sign in again"));
+            }
             assert!(failed
                 .fallback_reason
                 .unwrap()
@@ -965,6 +996,23 @@ fn codex_home_distinguishes_unreadable_auth_from_absence_on_both_platforms() {
             home.fallback_kind,
             Some(env::CodexHomeFallbackKind::AuthJsonUnreadable)
         );
+        for state in [ToolState::Installed, ToolState::Broken] {
+            let mut status = install::managed_status(
+                &temp.0,
+                pins::pin_for(ToolId::Codex, ToolPlatform::DarwinArm64),
+            );
+            status.state = state;
+            status.signed_in = Some(false);
+            status.detail = None;
+            apply_status_detail(&mut status, platform, home.fallback_kind);
+            let detail = status.detail.unwrap();
+            let credential_store = match platform {
+                ProbePlatform::MacOS => "Keychain",
+                ProbePlatform::Windows => "Credential Manager",
+            };
+            assert!(detail.contains(credential_store));
+            assert!(detail.contains("Sign in again from Setup."));
+        }
         assert!(home
             .fallback_reason
             .unwrap()
@@ -2477,7 +2525,7 @@ fn codex_setup_detail_adds_nothing_for_absent_auth_on_both_platforms() {
 #[test]
 fn codex_setup_detail_uses_generic_guidance_for_preparation_failures_on_both_platforms() {
     let temp = TempDir::new();
-    let expected = "ChemDraft could not set up its private Codex folder. Try Check again; if it keeps failing, reinstall Codex from Setup.";
+    let expected = "ChemDraft could not set up its private Codex folder. Try Check again; if it keeps failing, restart ChemDraft.";
     for platform in [ProbePlatform::MacOS, ProbePlatform::Windows] {
         for tool in [ToolId::Codex, ToolId::Claude] {
             for state in [
@@ -2585,7 +2633,7 @@ fn normal_setup_status_omits_missing_details_and_explains_signed_out_preparation
             assert!(matches!(installed.state, ToolState::Installed));
             assert_eq!(installed.signed_in, Some(signed_in));
             let expected = (tool == ToolId::Codex && !signed_in).then_some(
-                "ChemDraft could not set up its private Codex folder. Try Check again; if it keeps failing, reinstall Codex from Setup.",
+                "ChemDraft could not set up its private Codex folder. Try Check again; if it keeps failing, restart ChemDraft.",
             );
             assert_eq!(installed.detail.as_deref(), expected);
         }

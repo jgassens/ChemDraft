@@ -493,7 +493,7 @@ fn apply_status_detail(
             Some(env::CodexHomeFallbackKind::AuthJsonUnreadable) => {
                 codex_auth::sign_in_unavailable_detail(platform)
             }
-            Some(env::CodexHomeFallbackKind::PreparationFailed) => "ChemDraft could not set up its private Codex folder. Try Check again; if it keeps failing, reinstall Codex from Setup.",
+            Some(env::CodexHomeFallbackKind::PreparationFailed) => "ChemDraft could not set up its private Codex folder. Try Check again; if it keeps failing, restart ChemDraft.",
             Some(env::CodexHomeFallbackKind::AuthJsonAbsent) | None => return,
         };
         status.detail = Some(match status.detail {

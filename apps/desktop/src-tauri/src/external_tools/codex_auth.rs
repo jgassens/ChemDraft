@@ -174,10 +174,8 @@ pub(super) fn prepare_codex_home_with_link(
         }
         require_readable_auth(&auth, &mut fallback_kind)?;
         let staged = isolated.join(format!("auth-link-{}", super::nonce()));
-        link(platform, &auth, &staged).map_err(|e| {
-            fallback_kind = CodexHomeFallbackKind::AuthJsonUnreadable;
-            io_reason("link Codex auth.json", e)
-        })?;
+        // The user's auth is readable; link failures concern ChemDraft's private folder.
+        link(platform, &auth, &staged).map_err(|e| io_reason("link Codex auth.json", e))?;
         // std::fs::rename uses replacement on both Unix and Windows (MoveFileExW).
         if let Err(e) = fs::rename(&staged, &target) {
             let _ = fs::remove_file(staged);
