@@ -32,26 +32,28 @@ const hosts = [
   }
 ];
 
-// The compact portals need shallower pentagons than the larger hosts to leave
-// their inward carbonyls and N-CH2-N bridges apart. These original geometric
-// designs tighten bond-length spread while retaining >= 0.95 label clearance.
-// CB[7] fits the 5% window; CB[5]/[6] remain explicit exceptions in the geometry
-// test. All homologues retain the same graph and tangential shared methine edge.
+// Each design is one repeated glycoluril/bridge sector, rotated without any
+// per-unit adjustments. Both bridge circuits have open bends (inner >= 90 degrees;
+// outer >= 25 degrees off straight), so skeletal CH2 vertices survive N-label
+// clipping even at the bottom of the drawing. CB[5]/[6] require the existing
+// bond-length exceptions to leave both the bridges and carbonyl labels clear.
+// Turn the inward carbonyls together to open their portal without pushing oxygen
+// labels into the neighbouring glycoluril. This remains rotationally symmetric.
 const compactPortalDesigns = {
   5: {
-    inner: { a: 1.1011446628, b: 0.7888226553, h: 1.1683883543, carbonyl: 1.1345593463, bridge: 1.0765795517 },
-    outer: { a: 1.2541237317, b: 0.6441875058, h: 0.6941906732, carbonyl: 1.2494736361, bridge: 1.2557186317 },
-    outerHalfChord: 1.2556665852
+    inner: { a: 0.9916263235, b: 0.8745475885, h: 1.6592373452, carbonyl: 1.3345953795, bridge: 1.0032463289, turn: 0.5108164517 },
+    outer: { a: 1.3431660992, b: 0.5399115744, h: 0.5565596675, carbonyl: 1.3126098966, bridge: 1.3395381870 },
+    outerHalfChord: 1.2994220804
   },
   6: {
-    inner: { a: 0.9451556384, b: 0.8954532135, h: 1.4770917977, carbonyl: 1.0229998658, bridge: 1.0760910898 },
-    outer: { a: 1.1567432562, b: 0.7541142456, h: 0.8041498057, carbonyl: 1.1576352847, bridge: 1.1578248879 },
-    outerHalfChord: 1.1572634195
+    inner: { a: 0.7350352967, b: 0.9670922475, h: 1.8425834425, carbonyl: 1.1897395599, bridge: 1.0026200024, turn: 0.5233749562 },
+    outer: { a: 1.2093943480, b: 0.6951321715, h: 0.6951358766, carbonyl: 1.2051158714, bridge: 1.2084351095 },
+    outerHalfChord: 1.1722517735
   },
   7: {
-    inner: { a: 0.8098588441, b: 0.9662815691, h: 1.603474658, carbonyl: 1.0138034582, bridge: 1.0179548696 },
-    outer: { a: 1.0578792649, b: 0.8476404023, h: 0.9033581847, carbonyl: 1.0459857583, bridge: 1.05786753 },
-    outerHalfChord: 1.0559153658
+    inner: { a: 0.4980550329, b: 0.9978019071, h: 1.8952534426, carbonyl: 1.0506218941, bridge: 0.9947792938, turn: 0.5280074079 },
+    outer: { a: 1.0763661172, b: 0.8132672608, h: 0.8315290864, carbonyl: 1.0198685754, bridge: 1.0692164745 },
+    outerHalfChord: 1.0359926727
   }
 };
 
@@ -68,7 +70,8 @@ function portalLayout(n) {
   // A radial shared edge would instead put the two carbonyls on tangential sides.
   const sharedHalfEdge = 0.5;
   const { inner, outer, outerHalfChord } = compactPortalDesigns[n] ?? {
-    inner: unitPentagon(0.7), outer: unitPentagon(0.96), outerHalfChord: 0.995
+    inner: { ...unitPentagon(n === 8 ? 0.4975 : 0.6), turn: n === 8 ? 0.35 : 0 },
+    outer: unitPentagon(n === 8 ? 0.9975 : 0.98), outerHalfChord: 0.965
   };
   const halfSector = Math.PI / n;
   const sin = Math.sin(halfSector), cos = Math.cos(halfSector);
@@ -96,7 +99,8 @@ function portalLayout(n) {
     atoms.push(
       point("C", -sharedHalfEdge, 0), point("C", sharedHalfEdge, 0),
       point("N", -inner.a, -inner.b), point("N", inner.a, -inner.b),
-      point("C", 0, -inner.h), point("O", 0, -inner.h - inner.carbonyl),
+      point("C", 0, -inner.h),
+      point("O", inner.carbonyl * Math.sin(inner.turn ?? 0), -inner.h - inner.carbonyl * Math.cos(inner.turn ?? 0)),
       point("N", -outer.a, outer.b), point("N", outer.a, outer.b),
       point("C", 0, outer.h), point("O", 0, outer.h + outer.carbonyl),
       ...[innerBridgeRadius, outerBridgeRadius].map((r) => ({

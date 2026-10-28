@@ -131,9 +131,10 @@ function hostLayout(entry) {
     rings.push(ring);
     const oxygenVertices = pillar ? [1, 4] : ctv ? [3, 4] : kind === "resorcin" ? [2, 4] : [0];
     for (const vertex of oxygenVertices) {
-      // Turn the calixarene OH bonds together by 30 degrees, separating their
-      // full OH/HO labels without changing the classic radial benzene skeleton.
-      const angle = orientation + vertex * Math.PI / 3 + (kind === "calix" ? Math.PI / 6 : 0);
+      // Fan the inner labels into the aperture, clear of the neighbouring ring.
+      // Parent and dimethoxy pillararenes use exactly the same oxygen positions.
+      const turn = kind === "calix" ? Math.PI / 4 : pillar ? Math.PI / 9 : 0;
+      const angle = orientation + vertex * Math.PI / 3 + turn;
       const oxygen = branch(ring[vertex], "O", angle);
       // Unit O-Me bonds preserve the parent's unit-bond skeleton under mean
       // normalization; adding methyls changes only bounding-box centring.

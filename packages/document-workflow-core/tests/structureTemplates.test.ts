@@ -66,6 +66,15 @@ const distance = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
 const orientation = (a: Point, b: Point, c: Point) => (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
 const epsilon = 1e-8;
 
+function pointToSegmentDistance(point: Point, from: Point, to: Point): number {
+  const dx = to.x - from.x, dy = to.y - from.y;
+  const squaredLength = dx * dx + dy * dy;
+  if (squaredLength === 0) return distance(point, from);
+  const fraction = Math.max(0, Math.min(1,
+    ((point.x - from.x) * dx + (point.y - from.y) * dy) / squaredLength));
+  return distance(point, { x: from.x + fraction * dx, y: from.y + fraction * dy });
+}
+
 function onSegment(a: Point, b: Point, p: Point): boolean {
   return Math.abs(orientation(a, b, p)) <= epsilon &&
     p.x >= Math.min(a.x, b.x) - epsilon && p.x <= Math.max(a.x, b.x) + epsilon &&
@@ -160,10 +169,10 @@ describe("structure template identities", () => {
 
 describe("structure template geometry", () => {
   // The smaller CB portals still need unequal bonds to keep the inward carbonyls
-  // and N-CH2-N bridges separate at >= 0.95 label clearance, without crossings.
+  // and visibly bent N-CH2-N bridges separate at >= 0.95 label clearance, without crossings.
   // These per-id exceptions retain the absolute 0.85–1.15 check below; larger CB
   // hosts and every other template must satisfy the tighter relative window.
-  // Achieved min/max relative to mean: CB[5] 0.88256–1.11749, CB[6] 0.92680–1.07318.
+  // Achieved min/max relative to mean: CB[5] 0.85438–1.14767, CB[6] 0.90288–1.09953.
   const nonUniformPortalIds = new Set(["cucurbit-5-uril", "cucurbit-6-uril"]);
 
   it.each(structureTemplates.filter((entry) => !nonUniformPortalIds.has(entry.id)).map((entry) => [entry.id, entry] as const))(
@@ -240,6 +249,42 @@ describe("structure template geometry", () => {
       const allowed = entry.allowedCrossings ?? 0;
       expect(Number.isInteger(allowed) && allowed >= 0).toBe(true);
       expect(crossings).toBe(allowed);
+    }
+  );
+
+  it.each(structureTemplates.map((entry) => [entry.id, entry] as const))(
+    "%s: every atom label clears every bond that does not contain it",
+    (_id, entry) => {
+      const { atoms, bonds } = entry.layout;
+      for (const [index, atom] of atoms.entries()) {
+        if (atom.element === "C" && (atom.charge ?? 0) === 0) continue;
+        for (const [from, to] of bonds) {
+          if (index === from || index === to) continue;
+          expect(pointToSegmentDistance(atom, atoms[from]!, atoms[to]!),
+            `label ${index} to bond ${from}-${to}`).toBeGreaterThanOrEqual(0.75);
+        }
+      }
+    }
+  );
+
+  it.each(structureTemplates.filter((entry) => entry.family === "cucurbiturils").map((entry) => [entry.id, entry] as const))(
+    "%s: every methylene bridge has a visible, unsquashed bend",
+    (_id, entry) => {
+      const { atoms, bonds } = entry.layout;
+      let bridges = 0;
+      for (const [index, atom] of atoms.entries()) {
+        if (atom.element !== "C") continue;
+        const neighbours = bonds.flatMap(([from, to]) => from === index ? [to] : to === index ? [from] : []);
+        if (neighbours.length !== 2 || !neighbours.every((other) => atoms[other]!.element === "N")) continue;
+        bridges += 1;
+        const [a, b] = neighbours.map((other) => atoms[other]!);
+        const cosine = ((a!.x - atom.x) * (b!.x - atom.x) + (a!.y - atom.y) * (b!.y - atom.y)) /
+          (distance(a!, atom) * distance(b!, atom));
+        const degrees = Math.acos(Math.max(-1, Math.min(1, cosine))) * 180 / Math.PI;
+        expect(degrees, `bridge carbon ${index}: avoid a tiny caret`).toBeGreaterThanOrEqual(90);
+        expect(degrees, `bridge carbon ${index}: at least 25 degrees off straight`).toBeLessThanOrEqual(155);
+      }
+      expect(bridges).toBe(atoms.length / 6);
     }
   );
 
