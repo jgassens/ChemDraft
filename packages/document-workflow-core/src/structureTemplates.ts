@@ -32,7 +32,7 @@ export function resolveStructureTemplateName(text: string): StructureTemplate | 
 }
 
 type Canonicalize = StructureNameDeps["canonicalize"];
-const canonicalTemplates = new WeakMap<Canonicalize, Promise<ReadonlyMap<string, StructureTemplate>>>();
+const canonicalTemplates = new WeakMap<Canonicalize, Map<number, Promise<ReadonlyMap<string, StructureTemplate>>>>();
 
 /** Exact canonical isomeric identity only: no stereo removal, neutralization or desalting. */
 export async function structureTemplateForSmiles(
@@ -41,14 +41,27 @@ export async function structureTemplateForSmiles(
 ): Promise<StructureTemplate | undefined> {
   const input = await canonicalize(smiles);
   if (input === null) return undefined;
-  let entries = canonicalTemplates.get(canonicalize);
+  // Count tokens in the engine's canonical SMILES (ordinary H is implicit by contract).
+  // This is only a cheap rejection filter, never an identity/valence/stereo decision.
+  // Small ordinary molecules and unrelated macrocycles must not canonicalize the entire
+  // catalog, including the much larger hosts, before reaching their normal depiction path.
+  const atomCount = input.match(/\[[^\]]*\]|Br|Cl|[A-Za-z*]/g)?.length ?? 0;
+  const candidates = structureTemplates.filter(template => template.layout.atoms.length === atomCount);
+  if (!candidates.length) return undefined;
+  let bySize = canonicalTemplates.get(canonicalize);
+  if (!bySize) {
+    bySize = new Map();
+    canonicalTemplates.set(canonicalize, bySize);
+  }
+  let entries = bySize.get(atomCount);
   if (!entries) {
-    entries = Promise.all(structureTemplates.map(async (template) =>
+    entries = Promise.all(candidates.map(async (template) =>
       [await canonicalize(template.smiles), template] as const
     )).then((pairs) => new Map(pairs.flatMap(([key, template]) => key === null ? [] : [[key, template] as const])));
-    canonicalTemplates.set(canonicalize, entries);
+    bySize.set(atomCount, entries);
     // A transient engine failure must not poison this caller's cache permanently.
-    void entries.catch(() => canonicalTemplates.delete(canonicalize));
+    const cache = bySize;
+    void entries.catch(() => cache.delete(atomCount));
   }
   return (await entries).get(input);
 }

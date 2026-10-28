@@ -40,6 +40,30 @@ describe("template SMILES paste", () => {
     await act(async () => root.render(<MainWindow initialDocument={drawing} initialPaletteMode="hidden" initialRulersVisible={false} nativePalette={false} />));
     return { port: getAssistantHistoryPort() };
   }
+  it("assigns distinct IDs to successive single-template pastes and undoes only the last paste", async () => {
+    const { port } = await mount(createEmptyDocument());
+    // jsdom has no layout; give paste a visible centre inside the page so the page-fit
+    // confirmation does not intercept the next clipboard event.
+    Object.defineProperties(container.querySelector(".canvas-region")!, {
+      clientWidth: { value: 600 }, clientHeight: { value: 600 }
+    });
+    const template = resolveStructureTemplateName("18-crown-6")!;
+    for (const count of [1, 2]) {
+      const event = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "clipboardData", { value: { types: ["text/plain"],
+        getData: (type: string) => type === "text/plain" ? template.smiles : "" } });
+      await act(async () => {
+        window.dispatchEvent(event);
+        await vi.waitFor(() => expect(port.read("initial")!.pages[0]!.objects).toHaveLength(count));
+      });
+    }
+    const after = port.read("initial")!;
+    const objects = after.pages[0]!.objects;
+    expect(new Set(objects.map(object => object.id)).size).toBe(2);
+    expect(after.selection.objectIds).toEqual([objects[1]!.id]);
+    await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "edit.undo" } })); });
+    expect(port.read("initial")!.pages[0]!.objects).toEqual([objects[0]]);
+  });
   it.each([1, 2])("constructs each of %i template entries once without generic depiction, with selection and one undo", async count => {
     const { port } = await mount(createEmptyDocument());
     const construction = vi.spyOn(workflow, "structureTemplateMolecule");
