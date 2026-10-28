@@ -158,7 +158,7 @@ describe("shared reaction and grid layout", () => {
     expect(nativeTextStyleFromObjectStyle(layout.above!.style)).toMatchObject({ fontSizePx: 14, textAlign: "center" });
   });
 
-  it("fits all blocks and a wrapped formula caption with page padding, translating the scheme together", () => {
+  it("fits all blocks and a wrapped plain-prose caption with page padding, translating the scheme together", () => {
     const component = { molecule: molecule("reactant", 40, 80), bounds: bounds(40, 80) };
     const original = structuredClone(component);
     const layout = layoutReactionScheme({
@@ -180,7 +180,8 @@ describe("shared reaction and grid layout", () => {
     expect(layout.molecules[0]!.x + 40 + 24).toBe(layout.arrow.start.point.x);
     expect(layout.molecules[0]!.y + 40).toBe(layout.arrow.start.point.y);
     expect(layout.caption!.text).toContain("\n");
-    expect(layout.caption!.spans.some((span) => span.script === "subscript")).toBe(true);
+    expect(layout.caption!.spans.every((span) => span.script === "normal")).toBe(true);
+    expect(layout.caption!.text).toContain("CH2Cl2");
     expect(layout.caption!.y).toBeCloseTo(Math.max(
       ...layout.molecules.map((entry) => entry.y + entry.height), layout.below!.y + layout.below!.height
     ) + 0.8 * 15);
