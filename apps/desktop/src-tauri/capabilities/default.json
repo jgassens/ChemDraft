@@ -49,6 +49,7 @@
     "allow-route-toolset-command",
     "allow-sync-plugin-menu-items",
     "allow-read-clipboard-payload",
+    "allow-write-clipboard-items",
     "allow-write-clipboard-text-items",
     "allow-write-clipboard-image",
     "allow-toggle-spin3d-debugger-window",
