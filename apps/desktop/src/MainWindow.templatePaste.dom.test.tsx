@@ -10,6 +10,7 @@ import * as workflow from "@chemdraft/document-workflow-core";
 import * as ocl from "@chemdraft/ocl-adapter";
 import * as rdkit from "@chemdraft/rdkit-adapter";
 import * as depictionClient from "./depiction2d/client";
+import * as clipboard from "./clipboard";
 import { resolveStructureTemplateName } from "@chemdraft/document-workflow-core";
 import { setRdkitModuleLoader } from "../../../packages/rdkit-adapter/src/conformer";
 import { getAssistantHistoryPort } from "./assistant/historyPort";
@@ -25,7 +26,10 @@ vi.mock("@chemdraft/document-workflow-core", async original => ({ ...await origi
 class TestResizeObserver { observe() {} unobserve() {} disconnect() {} }
 let root: Root;
 let container: HTMLDivElement;
+vi.setConfig({ testTimeout: 60_000 });
 describe("template SMILES paste", () => {
+  // Exact 242-character Windows runbook input, retained here without an external-file dependency.
+  const noStereoBetaCd = "C([CH]1[CH]2[CH]([CH]([CH](O1)O[CH]3[CH](O[CH]([CH]([CH]3O)O)O[CH]4[CH](O[CH]([CH]([CH]4O)O)O[CH]5[CH](O[CH]([CH]([CH]5O)O)O[CH]6[CH](O[CH]([CH]([CH]6O)O)O[CH]7[CH](O[CH]([CH]([CH]7O)O)O[CH]8[CH](O[CH](O2)[CH]([CH]8O)O)CO)CO)CO)CO)CO)CO)O)O)O";
   beforeEach(() => {
     const glue = resolve("packages/rdkit-adapter/vendor/RDKit_minimal.js");
     const factory = new Function("require", "__dirname", `${readFileSync(glue, "utf8")}\n;return initRDKitModule;`)(createRequire(glue), resolve("packages/rdkit-adapter/vendor"));
@@ -40,6 +44,69 @@ describe("template SMILES paste", () => {
     await act(async () => root.render(<MainWindow initialDocument={drawing} initialPaletteMode="hidden" initialRulersVisible={false} nativePalette={false} />));
     return { port: getAssistantHistoryPort() };
   }
+  it("draws the Windows stereo-free beta-CD input using ordinary depiction", async () => {
+    expect(noStereoBetaCd).toHaveLength(242);
+    const { port } = await mount(createEmptyDocument());
+    Object.defineProperties(container.querySelector(".canvas-region")!, {
+      clientWidth: { value: 600 }, clientHeight: { value: 600 }
+    });
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", { value: { types: ["text/plain"],
+      getData: (type: string) => type === "text/plain" ? noStereoBetaCd : "" } });
+    await act(async () => {
+      window.dispatchEvent(event);
+      await vi.waitFor(() => expect(port.read("initial")!.pages[0]!.objects).toHaveLength(1), { timeout: 30_000 });
+    });
+    const object = port.read("initial")!.pages[0]!.objects[0]!;
+    expect(object.type).toBe("molecule");
+    expect(object.style.source).not.toMatch(/^structure-template:/);
+    if (object.type !== "molecule") throw new Error("Expected ordinary molecule");
+    expect(object.atoms).toHaveLength(77);
+    expect(container.querySelector("[role=status]")?.textContent).toContain("Pasted SMILES structure");
+    expect(container.querySelector("[role=status]")?.textContent).not.toContain("template layout");
+  }, 60_000);
+  it.each(["2D depiction exceeded its 2000 ms layout deadline before a standard layout was available.",
+    "The 2D depiction worker failed to load."])("shows a specific failure for the Windows input: %s", async reason => {
+    const { port } = await mount(createEmptyDocument());
+    vi.spyOn(depictionClient, "depictSmilesOffThread").mockRejectedValueOnce(new Error(reason));
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", { value: { types: ["text/plain"],
+      getData: (type: string) => type === "text/plain" ? noStereoBetaCd : "" } });
+    await act(async () => { window.dispatchEvent(event); });
+    await vi.waitFor(async () => {
+      await act(async () => {});
+      expect(container.querySelector("[role=status]")?.textContent)
+        .toContain(`Clipboard SMILES could not be placed: ${reason}`);
+    }, { timeout: 10_000 });
+    expect(port.read("initial")!.pages[0]!.objects).toHaveLength(0);
+  });
+  it("reports an empty depiction instead of silently dropping a SMILES paste", async () => {
+    await mount(createEmptyDocument());
+    vi.spyOn(depictionClient, "depictSmilesOffThread").mockResolvedValueOnce({
+      depiction: { atoms: [], bonds: [] }, stereoCount: 0
+    });
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", { value: { types: ["text/plain"],
+      getData: (type: string) => type === "text/plain" ? noStereoBetaCd : "" } });
+    await act(async () => { window.dispatchEvent(event); });
+    await vi.waitFor(async () => {
+      await act(async () => {});
+      expect(container.querySelector("[role=status]")?.textContent)
+        .toContain("Clipboard SMILES could not be placed: The 2D depiction engine returned no atoms.");
+    });
+  });
+  it.each([false, true])("reports native clipboard %s failure/empty content", async empty => {
+    await mount(createEmptyDocument());
+    const read = vi.spyOn(clipboard, "readClipboardPayload");
+    if (empty) read.mockResolvedValueOnce({ types: [], textItems: [] });
+    else read.mockRejectedValueOnce(new Error("Windows clipboard is unavailable"));
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "clipboard.paste" } }));
+    });
+    expect(container.querySelector("[role=status]")?.textContent).toContain(empty
+      ? "Couldn't paste: the clipboard contains no supported drawing or text content."
+      : "Couldn't read the clipboard: Windows clipboard is unavailable");
+  });
   it("assigns distinct IDs to successive single-template pastes and undoes only the last paste", async () => {
     const { port } = await mount(createEmptyDocument());
     // jsdom has no layout; give paste a visible centre inside the page so the page-fit
@@ -77,7 +144,8 @@ describe("template SMILES paste", () => {
       getData: (type: string) => type === "text/plain" ? Array(count).fill(template.smiles).join("\n") : "" } });
     await act(async () => {
       window.dispatchEvent(event);
-      await vi.waitFor(() => expect(port.read("initial")!.pages[0]!.objects).toHaveLength(count));
+      await vi.waitFor(() => expect(port.read("initial")!.pages[0]!.objects,
+        container.querySelector("[role=status]")?.textContent ?? "missing status").toHaveLength(count), { timeout: 10_000 });
     });
     const after = port.read("initial")!;
     expect(new Set(after.selection.objectIds).size).toBe(count);

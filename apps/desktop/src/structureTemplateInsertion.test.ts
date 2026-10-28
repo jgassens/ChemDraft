@@ -3,7 +3,9 @@ import { createEmptyDocument, DocumentStylePreset } from "@chemdraft/chem-core";
 import { resolveStructureTemplateName, structureTemplateLayoutMessage, structureTemplateMolecule } from "@chemdraft/document-workflow-core";
 import { installNodeRdkitModuleLoader } from "@chemdraft/rdkit-adapter/node";
 import { nameToStructureForPlugin, structureFromSmilesForPlugin } from "./plugins/pluginChemistry";
-import { applyClipboardPastePayload } from "./documentWorkflow";
+import { applyClipboardPastePayload, insertSmilesMolecule } from "./documentWorkflow";
+import { depictSmilesOffThread } from "./depiction2d/client";
+import { ensureRdkit } from "@chemdraft/rdkit-adapter";
 import { invoke } from "@tauri-apps/api/core";
 import { templateMoleculeForSmiles } from "./structureTemplateInsertion";
 import { depictSmilesForPaste } from "./smilesListPaste";
@@ -19,6 +21,23 @@ vi.setConfig({ testTimeout: 60_000 });
 
 describe("desktop template input boundaries", () => {
   const template = resolveStructureTemplateName("beta-cyclodextrin")!;
+  it("depicts stereo-free beta-CD through main's unchanged worker path and preserves its identity", async () => {
+    const smiles = template.smiles.replaceAll("@", "");
+    expect(smiles).toHaveLength(242);
+    // This is the complete depictSmilesForPaste algorithm at 385079d6, before template lookup.
+    const parsed = await depictSmilesOffThread(smiles, { priority: "interactive" });
+    expect(parsed.depiction.atoms).toHaveLength(77);
+    const drawing = insertSmilesMolecule(createEmptyDocument(), { x: 400, y: 400 }, parsed.depiction, smiles);
+    const molecule = drawing.pages[0]!.objects[0]!;
+    if (molecule.type !== "molecule") throw new Error("Expected molecule");
+    expect(molecule.style.source).not.toMatch(/^structure-template:/);
+    expect(molecule.bonds).toHaveLength(84);
+    const rdkit = await ensureRdkit();
+    const input = rdkit.get_mol(smiles)!;
+    const output = rdkit.get_mol(molecule.structure)!;
+    try { expect(output.get_smiles!()).toBe(input.get_smiles!()); }
+    finally { input.delete(); output.delete(); }
+  });
   it("returns template SMILES and engine without querying OPSIN", async () => {
     expect(await nameToStructureForPlugin({ name: "β-CD" })).toEqual({ available: true, parsed: true,
       smiles: template.smiles, engine: { id: "chemdraft-templates", version: "builtin" } });

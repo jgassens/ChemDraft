@@ -57,3 +57,17 @@ it("filters while retaining search focus and exposes the empty state", async () 
   expect((document.activeElement as HTMLElement).dataset.templateId).toBe(firstCyclodextrin.id);
   await search("no such template"); expect(container.textContent).toContain("No templates match");
 });
+it("includes net charge in the visible description, accessible description and tooltip", async () => {
+  const charged = structureTemplates.find(template => template.charge === 4)!;
+  const neutral = structureTemplates.find(template => template.charge === 0)!;
+  await act(async () => root.render(createElement(StructureTemplatePicker, {
+    title: "A", templateIds: [charged.id, neutral.id], onInsert: vi.fn(), onClose: vi.fn()
+  })));
+  for (const template of [charged, neutral]) {
+    const tile = container.querySelector<HTMLButtonElement>(`[data-template-id="${template.id}"]`)!;
+    const description = container.querySelector(`#${tile.getAttribute("aria-describedby")}`)!;
+    const formula = template.formula + (template.charge ? " 4+" : "");
+    expect(description.textContent?.split("; ")[0]).toBe(formula);
+    expect(tile.title).toBe(description.textContent);
+  }
+});

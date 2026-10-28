@@ -30,7 +30,8 @@ export async function depictSmilesForPaste(
         .filter(centre => centre.isStereoCenter && centre.descriptor !== "unspecified").length };
     }
     const result = await depictSmilesOffThread(smiles, { priority: "interactive", ...options });
-    return result.depiction.atoms.length > 0 ? result : undefined;
+    if (result.depiction.atoms.length === 0) throw new Error("The 2D depiction engine returned no atoms.");
+    return result;
   } catch (error) {
     if ((error as { notSmiles?: boolean })?.notSmiles === true) return undefined;
     throw error;
