@@ -100,8 +100,10 @@ export function applyTableCommand(document: ChemDraftDocument, id: string, activ
     case "table.column.insertLeft": result = insertTableColumns(table, column, 1, newId); break;
     case "table.column.insertRight": result = insertTableColumns(table, column + 1, 1, newId); break;
     case "table.column.delete": result = deleteTableColumns(table, [cell.columnId]); break;
-    case "table.column.align.left": case "table.column.align.center": case "table.column.align.right": case "table.column.align.decimal":
-      result = setTableColumnAlign(table, cell.columnId, id.split(".").at(-1) as TableObject["columns"][number]["align"]); break;
+    case "table.column.align.left": result = setTableColumnAlign(table, cell.columnId, "left"); break;
+    case "table.column.align.center": result = setTableColumnAlign(table, cell.columnId, "center"); break;
+    case "table.column.align.right": result = setTableColumnAlign(table, cell.columnId, "right"); break;
+    case "table.column.align.decimal": result = setTableColumnAlign(table, cell.columnId, "decimal"); break;
     case "table.column.autoFit": result = setTableColumnWidth(table, cell.columnId, { mode: "auto" }); break;
     case "table.column.formula.auto": case "table.column.formula.off":
       result = setTableStyle({ ...table, columns: table.columns.map(item => item.id === cell.columnId

@@ -240,6 +240,7 @@ import {
   planReactionArrowGeometry,
   projectedPlaneMatrix as documentObjectProjectedPlaneMatrix,
   projectedPlaneSvgTransformForObject,
+  rotationTransform,
   type NativeArtPaintPlan,
   type NativeArtVisualPlan,
   type ResolvedBondCrossing
@@ -26406,7 +26407,7 @@ function PageSvgSurfaceContent({
                     {object.type === "table" || object.type === "bracket" || object.type === "reaction-arrow" ? (
                       <rect x={object.x} y={object.y} width={tableBounds?.width ?? object.width} height={tableBounds?.height ?? object.height}
                         data-table-hit-target={object.type === "table" ? object.id : undefined}
-                        transform={projectedPlaneSvgTransformForObject(object)}
+                        transform={object.type === "table" ? rotationTransform(object) : projectedPlaneSvgTransformForObject(object)}
                         fill="transparent" pointerEvents="all" />
                     ) : null}
                     {fragments.map(fragment => {

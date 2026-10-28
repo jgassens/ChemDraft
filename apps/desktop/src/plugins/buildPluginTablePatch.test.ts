@@ -1,6 +1,6 @@
-import { applyPatch, createEmptyDocument, createDocumentHistory, undo, redo } from "@chemdraft/chem-core";
+import { applyPatch, createEmptyDocument, createDocumentHistory, undo, redo, type DocumentPatch } from "@chemdraft/chem-core";
 import { TableSpecSchema } from "@chemdraft/document-workflow-core";
-import type { PluginTableSpec } from "@chemdraft/plugin-api";
+import type { AppliedPatchReceipt, PluginTableSpec } from "@chemdraft/plugin-api";
 import type { PluginPatchApplicationRequest } from "@chemdraft/plugin-host";
 import type { z } from "zod";
 import { describe, expect, expectTypeOf, it, vi } from "vitest";
@@ -16,8 +16,9 @@ describe("plugin table preparation and runtime", () => {
   });
   it("centres an unselected table in the viewport", () => {
     const prepared = buildPluginTablePatch(spec, createEmptyDocument(), [], { x: 100, y: 200, width: 600, height: 400 });
-    if (prepared.patch.op !== "addObject") throw new Error("Expected table insertion");
-    const table = prepared.patch.object;
+    const patch = prepared.patch as DocumentPatch;
+    if (patch.op !== "addObject") throw new Error("Expected table insertion");
+    const table = patch.object;
     expect(table.x + table.width / 2).toBe(400);
     expect(table.y + table.height / 2).toBe(400);
   });
@@ -39,7 +40,7 @@ describe("plugin table preparation and runtime", () => {
     runtime.registerPlugin({ id: "org.test.tables", name: "Tables", version: "1", apiVersion: "^0.1.16", entry: "plugin.js",
       permissions: ["document.write"], contributes: { commands: [{ id: "plugin.tables.insert", title: "Make table" }] }
     }, { commandHandlers: { "plugin.tables.insert": context => context.documents.insertTable!(spec) } });
-    const receipt = await runtime.invokeCommand<{ applied: true; objectIds: string[] }>("plugin.tables.insert");
+    const receipt = await runtime.invokeCommand("plugin.tables.insert") as AppliedPatchReceipt;
     expect(applyDocumentPatch).toHaveBeenCalledOnce();
     expect(commits).toHaveLength(1);
     expect(commits[0]!.label).toBe("Insert table");
