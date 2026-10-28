@@ -18,7 +18,8 @@ import { exportDocumentToPdf } from "./pdf";
 import { exportDocumentToSvg } from "./svg";
 import { extractPdfTextRuns, pdfFontStreams, sfntName, sfntTable } from "./pdf.testUtils";
 import { ringHaloDocument } from "../../layout-engine/src/ringFillHalos.fixture";
-import { nativeMoleculeRings } from "@chemdraft/layout-engine";
+import { nativeMoleculeRings, planPageSvgRender } from "@chemdraft/layout-engine";
+import { elementFragments } from "@chemdraft/layout-engine/testing";
 
 function filledRingFixture(): MoleculeObject {
   const atoms = [[100, 100], [180, 100], [180, 180], [100, 180]].map(([x, y], i) => ({ id: `a${i}`, element: "C", x: x!, y: y!, formalCharge: 0 }));
@@ -30,6 +31,70 @@ function filledRingFixture(): MoleculeObject {
 const timestamp = "2026-05-29T00:00:00.000Z";
 
 describe("exportDocumentToPdf", () => {
+  it("exports CC=CC with either stereo as the canvas's crossed segments in SVG and painted PDF strokes", async () => {
+    const document = createEmptyDocument({ now: timestamp });
+    const molecule: MoleculeObject = {
+      id: "either-alkene", type: "molecule", x: 30, y: 30, width: 180, height: 120, rotation: 0,
+      structureFormat: "smiles", structure: "CC=CC", superatoms: [], rGroups: [],
+      style: { source: "chemdraft-native-drawing" },
+      atoms: [
+        { id: "a", element: "C", x: 30, y: 130, formalCharge: 0 },
+        { id: "b", element: "C", x: 60, y: 80, formalCharge: 0 },
+        { id: "c", element: "C", x: 120, y: 80, formalCharge: 0 },
+        { id: "d", element: "C", x: 150, y: 30, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "ab", fromAtomId: "a", toAtomId: "b", order: "single" },
+        { id: "bc", fromAtomId: "b", toAtomId: "c", order: "double", stereo: "either",
+          display: { doubleBondSide: "right" } },
+        { id: "cd", fromAtomId: "c", toAtomId: "d", order: "single" }
+      ]
+    };
+    const page = document.pages[0]!;
+    page.objects = [molecule];
+    const before = JSON.stringify(document);
+    const canvasLines = planPageSvgRender(page).fragments.flatMap(elementFragments).filter((fragment) =>
+      fragment.tag === "line" && String(fragment.attrs.class).startsWith("native-bond-line"));
+    const crossed = canvasLines.filter((line) => line.attrs["data-bond-stereo"] === "either");
+    expect(canvasLines).toHaveLength(4);
+    expect(crossed).toHaveLength(2);
+    for (const { attrs } of crossed) {
+      expect((Number(attrs.x1) + Number(attrs.x2)) / 2).toBe(90);
+      expect((Number(attrs.y1) + Number(attrs.y2)) / 2).toBe(80);
+      expect(attrs.y1).not.toBe(attrs.y2);
+    }
+
+    const svgDom = new JSDOM(exportDocumentToSvg(document).contents, { contentType: "image/svg+xml" });
+    try {
+      expect(svgDom.window.document.querySelectorAll('line[data-bond-stereo="either"]')).toHaveLength(2);
+      for (const { attrs } of canvasLines) {
+        const line = svgDom.window.document.querySelector(
+          `line[data-bond-id="${attrs["data-bond-id"]}"][data-bond-segment="${attrs["data-bond-segment"]}"]`)!;
+        expect(line).not.toBeNull();
+        for (const key of ["x1", "y1", "x2", "y2", "stroke-width"] as const) {
+          expect(Number(line.getAttribute(key))).toBeCloseTo(Number(attrs[key]), 3);
+        }
+        expect(line.getAttribute("stroke")).toBe(attrs.stroke);
+      }
+    } finally {
+      svgDom.window.close();
+    }
+
+    const result = await withPdfDom((domParser) => exportDocumentToPdf(document, { domParser, compress: false }));
+    const points = pdfDrawingPoints(Buffer.from(result.bytes).toString("latin1"));
+    const endpoints = canvasLines.flatMap(({ attrs }) => [
+      [Number(attrs.x1), Number(attrs.y1)], [Number(attrs.x2), Number(attrs.y2)]
+    ]);
+    expect(points).toHaveLength(endpoints.length);
+    // The default full-page SVG maps document pixels to points (72/96), then PDF flips Y.
+    endpoints.forEach(([x, y], index) => {
+      expect(points[index]![0]).toBeCloseTo(x! * 0.75, 6);
+      expect(points[index]![1]).toBeCloseTo((page.height - y!) * 0.75, 6);
+    });
+    expect(result.warnings).toEqual([]);
+    expect(JSON.stringify(document)).toBe(before);
+  });
+
   it.each(["pyridinium", "blue-box", "oxathiazinane"] as const)("%s PNG has no white antialias fringe around glyph halos", (name) => {
     const { document, object } = ringHaloDocument(name, "solid");
     const source = exportDocumentToSvg(document).contents.replace(/viewBox="[^"]*"/,

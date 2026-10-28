@@ -2877,6 +2877,7 @@ function nativeBondSegmentFragments(
     class: className,
     "data-bond-id": segment.bond.id,
     "data-bond-order": segment.bond.order,
+    ...(segment.bond.stereo === "either" ? { "data-bond-stereo": "either" } : {}),
     "data-bond-segment": segment.segment,
     "data-bond-style": bondStyle,
     "data-double-bond-side": segment.doubleBondSide
@@ -4982,6 +4983,18 @@ function bondLineSegments(
   const gap = nativeMultipleBondGapPx(drawingStyle);
 
   if (bond.order === "double") {
+    if (bond.stereo === "either") {
+      // Use the centered double's clearance and separation, exchanging the far endpoints.
+      // Keep these out of the junction-miter pass so the two strokes retain their shared midpoint.
+      return [gap / 2, -gap / 2].map((offset, index) => ({
+        x1: x1 + normal.x * offset,
+        y1: y1 + normal.y * offset,
+        x2: x2 - normal.x * offset,
+        y2: y2 - normal.y * offset,
+        segment: index === 0 ? "primary" : "secondary",
+        doubleBondSide: "center"
+      }));
+    }
     if (doubleBondRendersSymmetric(fromAtom, toAtom, object, bond, ringInteriorSide)) {
       return [gap / 2, -gap / 2].map((offset, index) => ({
         x1: x1 + normal.x * offset,
@@ -5057,8 +5070,8 @@ function joinCenteredDoubleBondSegments(
   groups: readonly PageMoleculeBondSegmentGroup[],
   labeledAtoms: ReadonlySet<string>
 ): void {
-  const centeredGroups = groups.filter(({ segments }) =>
-    segments.some((segment) => segment.doubleBondSide === "center")
+  const centeredGroups = groups.filter(({ bond, segments }) =>
+    bond.stereo !== "either" && segments.some((segment) => segment.doubleBondSide === "center")
   );
   if (centeredGroups.length === 0) {
     return;
@@ -5082,7 +5095,7 @@ function joinCenteredDoubleBondSegments(
       const neighbors = (incident.get(atomId) ?? []).filter((neighbor) => neighbor !== group);
       if (labeledAtoms.has(atomId) || neighbors.some(({ bond }) => {
         const style = nativeBondDisplayStyle(bond);
-        return style === "wedge" || style === "hashed" || style === "dashed";
+        return bond.stereo === "either" || style === "wedge" || style === "hashed" || style === "dashed";
       })) {
         continue;
       }
