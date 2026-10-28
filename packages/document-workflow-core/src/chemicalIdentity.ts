@@ -32,8 +32,12 @@ function unverifiableStereoReason(
       const doubles = molecule.bonds.filter(bond => (bond.bo ?? graph.defaults?.bond?.bo ?? 1) === 2);
       const axial = molecule.atoms.some((atom, index) => {
         const stereo = atom.stereo ?? graph.defaults?.atom?.stereo ?? "unspecified";
-        return stereo !== "unspecified" && doubles.some(bond => bond.atoms.includes(index) &&
-          doubles.some(other => other !== bond && other.atoms.some(end => bond.atoms.includes(end))));
+        if (stereo === "unspecified") return false;
+        const attached = doubles.filter(bond => bond.atoms.includes(index));
+        if (attached.length !== 1) return false;
+        const bond = attached[0]!;
+        const center = bond.atoms.find(end => end !== index)!;
+        return doubles.some(other => other !== bond && other.atoms.includes(center));
       });
       if (axial) return "allene (axial) stereochemistry cannot be verified or drawn.";
     }

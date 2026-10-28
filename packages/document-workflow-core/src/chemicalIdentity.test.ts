@@ -1,7 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from "../../../node_modules/vitest";
-import { ensureRdkit, resetRdkitForTesting } from "../../rdkit-adapter/src/conformer";
+import { createEmptyDocument } from "@chemdraft/chem-core";
+import { ensureRdkit, generateSmiles2DMolfile, resetRdkitForTesting } from "../../rdkit-adapter/src/conformer";
 import { installRealRdkitModuleLoader } from "../../rdkit-adapter/src/testing";
-import { ChemicalIdentityMismatchError, inspectHydrogenNormalizedIdentity } from "./chemicalIdentity";
+import {
+  assertMoleculeMatchesSmiles, ChemicalIdentityMismatchError, inspectHydrogenNormalizedIdentity
+} from "./chemicalIdentity";
+import { createSmilesMolecule, pastedStructureDepictionFromMolfile } from "./molecule";
 
 beforeAll(() => installRealRdkitModuleLoader());
 afterAll(() => resetRdkitForTesting());
@@ -27,6 +31,34 @@ describe("unverifiable input stereo", () => {
     "allows harmless chirality marks and supported or unspecified stereo: %s", async input => {
       expect(inspectHydrogenNormalizedIdentity(await ensureRdkit(), input).valid).toBe(true);
     });
+});
+
+describe("supported sulfur stereo", () => {
+  it.each([
+    "C[S@](=O)(=N)c1ccccc1",
+    "C[S@](=O)(=NC)c1ccccc1",
+    "O=[S@@](=NC(C)=O)(C)c1ccccc1",
+    "C[S@](=O)c1ccccc1"
+  ])("matches its own drawing: %s", async input => {
+    const module = await ensureRdkit();
+    const depiction = pastedStructureDepictionFromMolfile(await generateSmiles2DMolfile(input));
+    const molecule = createSmilesMolecule(createEmptyDocument(), { x: 100, y: 100 }, depiction, input);
+    if (molecule.type !== "molecule") throw new Error("Expected molecule");
+    await expect(assertMoleculeMatchesSmiles(molecule, input, async (_format, value, reference) =>
+      inspectHydrogenNormalizedIdentity(module, value, reference))).resolves.toBeUndefined();
+  });
+
+  it("refuses an inverted sulfoximine drawing as a stereochemistry mismatch", async () => {
+    const module = await ensureRdkit();
+    const input = "C[S@](=O)(=N)c1ccccc1";
+    const inverted = "C[S@@](=O)(=N)c1ccccc1";
+    const depiction = pastedStructureDepictionFromMolfile(await generateSmiles2DMolfile(inverted));
+    const molecule = createSmilesMolecule(createEmptyDocument(), { x: 100, y: 100 }, depiction, inverted);
+    if (molecule.type !== "molecule") throw new Error("Expected molecule");
+    await expect(assertMoleculeMatchesSmiles(molecule, input, async (_format, value, reference) =>
+      inspectHydrogenNormalizedIdentity(module, value, reference)))
+      .rejects.toThrow("(stereochemistry)");
+  });
 });
 
 describe("chemical identity mismatch classification", () => {
