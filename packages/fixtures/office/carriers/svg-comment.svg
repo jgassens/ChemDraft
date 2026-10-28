@@ -1,0 +1,981 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="170.485" height="172.784" viewBox="323.808 447.283 170.485 172.784" role="img" aria-label="sample-document"><!-- chemdraft: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 -->
+  <rect x="323.808" y="447.283" width="170.485" height="172.784" fill="#ffffff" />
+
+
+  <g data-object-id="mol_clipboard_001" data-layer-index="0" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-structure="
+  ChemDraft
+
+ 14 15  0  0  0  0  0  0  0  0999 V2000
+  467.0322 -550.9778    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  441.4951 -539.4861    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  418.7805 -555.8556    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  421.5974 -583.7168    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  393.2434 -544.3695    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  390.4264 -516.5083    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  363.0636 -510.5832    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  348.9678 -534.7763    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  367.6222 -555.6540    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  361.6916 -583.0224    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  413.1410 -500.1388    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  410.3241 -472.2832    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  438.6781 -511.6305    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  461.3927 -495.2610    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  1  2  1  0  0  0  0
+  2  3  1  0  0  0  0
+  3  4  2  0  0  0  0
+  3  5  1  0  0  0  0
+  5  6  2  0  0  0  0
+  6  7  1  0  0  0  0
+  7  8  2  0  0  0  0
+  8  9  1  0  0  0  0
+  9 10  1  0  0  0  0
+  6 11  1  0  0  0  0
+ 11 12  1  0  0  0  0
+ 11 13  1  0  0  0  0
+ 13 14  2  0  0  0  0
+ 13  2  1  0  0  0  0
+  9  5  1  0  0  0  0
+M  END
+" data-atom-count="14" data-bond-count="15" data-style-preset-id="chemdraft.synthetic" data-bond-layer-id="b0">
+    <line data-bond-id="b0" data-bond-order="single" data-bond-segment="primary" x1="467.032" y1="550.978" x2="448.145" y2="542.479" stroke="#000000" stroke-width="2" stroke-linecap="butt" />
+  </g>
+  <g data-object-id="mol_clipboard_001" data-layer-index="0" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-structure="
+  ChemDraft
+
+ 14 15  0  0  0  0  0  0  0  0999 V2000
+  467.0322 -550.9778    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  441.4951 -539.4861    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  418.7805 -555.8556    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  421.5974 -583.7168    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  393.2434 -544.3695    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  390.4264 -516.5083    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  363.0636 -510.5832    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  348.9678 -534.7763    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  367.6222 -555.6540    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  361.6916 -583.0224    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  413.1410 -500.1388    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  410.3241 -472.2832    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  438.6781 -511.6305    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  461.3927 -495.2610    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  1  2  1  0  0  0  0
+  2  3  1  0  0  0  0
+  3  4  2  0  0  0  0
+  3  5  1  0  0  0  0
+  5  6  2  0  0  0  0
+  6  7  1  0  0  0  0
+  7  8  2  0  0  0  0
+  8  9  1  0  0  0  0
+  9 10  1  0  0  0  0
+  6 11  1  0  0  0  0
+ 11 12  1  0  0  0  0
+ 11 13  1  0  0  0  0
+ 13 14  2  0  0  0  0
+ 13  2  1  0  0  0  0
+  9  5  1  0  0  0  0
+M  END
+" data-atom-count="14" data-bond-count="15" data-style-preset-id="chemdraft.synthetic" data-bond-layer-id="b1">
+    <line data-bond-id="b1" data-bond-order="single" data-bond-segment="primary" x1="434.845" y1="544.278" x2="418.78" y2="555.856" stroke="#000000" stroke-width="2" stroke-linecap="butt" />
+  </g>
+  <g data-object-id="mol_clipboard_001" data-layer-index="0" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-structure="
+  ChemDraft
+
+ 14 15  0  0  0  0  0  0  0  0999 V2000
+  467.0322 -550.9778    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  441.4951 -539.4861    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  418.7805 -555.8556    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  421.5974 -583.7168    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  393.2434 -544.3695    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  390.4264 -516.5083    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  363.0636 -510.5832    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  348.9678 -534.7763    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  367.6222 -555.6540    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  361.6916 -583.0224    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  413.1410 -500.1388    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  410.3241 -472.2832    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  438.6781 -511.6305    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  461.3927 -495.2610    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  1  2  1  0  0  0  0
+  2  3  1  0  0  0  0
+  3  4  2  0  0  0  0
+  3  5  1  0  0  0  0
+  5  6  2  0  0  0  0
+  6  7  1  0  0  0  0
+  7  8  2  0  0  0  0
+  8  9  1  0  0  0  0
+  9 10  1  0  0  0  0
+  6 11  1  0  0  0  0
+ 11 12  1  0  0  0  0
+ 11 13  1  0  0  0  0
+ 13 14  2  0  0  0  0
+ 13  2  1  0  0  0  0
+  9  5  1  0  0  0  0
+M  END
+" data-atom-count="14" data-bond-count="15" data-style-preset-id="chemdraft.synthetic" data-bond-layer-id="b2">
+    <line data-bond-id="b2" data-bond-order="double" data-bond-segment="primary" data-double-bond-side="center" x1="416.253" y1="554.719" x2="418.188" y2="573.858" stroke="#000000" stroke-width="2" stroke-linecap="butt" />
+    <line data-bond-id="b2" data-bond-order="double" data-bond-segment="secondary" data-double-bond-side="center" x1="421.029" y1="554.235" x2="422.964" y2="573.375" stroke="#000000" stroke-width="2" stroke-linecap="butt" />
+  </g>
+  <g data-object-id="mol_clipboard_001" data-layer-index="0" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-structure="
+  ChemDraft
+
+ 14 15  0  0  0  0  0  0  0  0999 V2000
+  467.0322 -550.9778    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  441.4951 -539.4861    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  418.7805 -555.8556    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  421.5974 -583.7168    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  393.2434 -544.3695    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  390.4264 -516.5083    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  363.0636 -510.5832    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  348.9678 -534.7763    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  367.6222 -555.6540    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  361.6916 -583.0224    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  413.1410 -500.1388    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  410.3241 -472.2832    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  438.6781 -511.6305    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  461.3927 -495.2610    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  1  2  1  0  0  0  0
+  2  3  1  0  0  0  0
+  3  4  2  0  0  0  0
+  3  5  1  0  0  0  0
+  5  6  2  0  0  0  0
+  6  7  1  0  0  0  0
+  7  8  2  0  0  0  0
+  8  9  1  0  0  0  0
+  9 10  1  0  0  0  0
+  6 11  1  0  0  0  0
+ 11 12  1  0  0  0  0
+ 11 13  1  0  0  0  0
+ 13 14  2  0  0  0  0
+ 13  2  1  0  0  0  0
+  9  5  1  0  0  0  0
+M  END
+" data-atom-count="14" data-bond-count="15" data-style-preset-id="chemdraft.synthetic" data-bond-layer-id="b3">
+    <line data-bond-id="b3" data-bond-order="single" data-bond-segment="primary" x1="418.78" y1="555.856" x2="393.243" y2="544.37" stroke="#000000" stroke-width="2" stroke-linecap="butt" />
+  </g>
+  <g data-object-id="mol_clipboard_001" data-layer-index="0" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-structure="
+  ChemDraft
+
+ 14 15  0  0  0  0  0  0  0  0999 V2000
+  467.0322 -550.9778    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  441.4951 -539.4861    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  418.7805 -555.8556    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  421.5974 -583.7168    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  393.2434 -544.3695    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  390.4264 -516.5083    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  363.0636 -510.5832    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  348.9678 -534.7763    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  367.6222 -555.6540    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  361.6916 -583.0224    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  413.1410 -500.1388    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  410.3241 -472.2832    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  438.6781 -511.6305    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  461.3927 -495.2610    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  1  2  1  0  0  0  0
+  2  3  1  0  0  0  0
+  3  4  2  0  0  0  0
+  3  5  1  0  0  0  0
+  5  6  2  0  0  0  0
+  6  7  1  0  0  0  0
+  7  8  2  0  0  0  0
+  8  9  1  0  0  0  0
+  9 10  1  0  0  0  0
+  6 11  1  0  0  0  0
+ 11 12  1  0  0  0  0
+ 11 13  1  0  0  0  0
+ 13 14  2  0  0  0  0
+ 13  2  1  0  0  0  0
+  9  5  1  0  0  0  0
+M  END
+" data-atom-count="14" data-bond-count="15" data-style-preset-id="chemdraft.synthetic" data-bond-layer-id="b4">
+    <line data-bond-id="b4" data-bond-order="double" data-bond-segment="primary" data-double-bond-side="right" x1="393.243" y1="544.37" x2="390.426" y2="516.508" stroke="#000000" stroke-width="2" stroke-linecap="butt" />
+    <line data-bond-id="b4" data-bond-order="double" data-bond-segment="secondary" data-double-bond-side="right" x1="388.015" y1="540.375" x2="386.103" y2="521.468" stroke="#000000" stroke-width="2" stroke-linecap="butt" />
+  </g>
+  <g data-object-id="mol_clipboard_001" data-layer-index="0" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-structure="
+  ChemDraft
+
+ 14 15  0  0  0  0  0  0  0  0999 V2000
+  467.0322 -550.9778    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  441.4951 -539.4861    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  418.7805 -555.8556    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  421.5974 -583.7168    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  393.2434 -544.3695    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  390.4264 -516.5083    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  363.0636 -510.5832    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  348.9678 -534.7763    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  367.6222 -555.6540    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  361.6916 -583.0224    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  413.1410 -500.1388    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  410.3241 -472.2832    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  438.6781 -511.6305    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  461.3927 -495.2610    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  1  2  1  0  0  0  0
+  2  3  1  0  0  0  0
+  3  4  2  0  0  0  0
+  3  5  1  0  0  0  0
+  5  6  2  0  0  0  0
+  6  7  1  0  0  0  0
+  7  8  2  0  0  0  0
+  8  9  1  0  0  0  0
+  9 10  1  0  0  0  0
+  6 11  1  0  0  0  0
+ 11 12  1  0  0  0  0
+ 11 13  1  0  0  0  0
+ 13 14  2  0  0  0  0
+ 13  2  1  0  0  0  0
+  9  5  1  0  0  0  0
+M  END
+" data-atom-count="14" data-bond-count="15" data-style-preset-id="chemdraft.synthetic" data-bond-layer-id="b5">
+    <line data-bond-id="b5" data-bond-order="single" data-bond-segment="primary" x1="390.426" y1="516.508" x2="369.905" y2="512.065" stroke="#000000" stroke-width="2" stroke-linecap="butt" />
+  </g>
+  <g data-object-id="mol_clipboard_001" data-layer-index="0" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-structure="
+  ChemDraft
+
+ 14 15  0  0  0  0  0  0  0  0999 V2000
+  467.0322 -550.9778    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  441.4951 -539.4861    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  418.7805 -555.8556    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  421.5974 -583.7168    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  393.2434 -544.3695    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  390.4264 -516.5083    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  363.0636 -510.5832    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  348.9678 -534.7763    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  367.6222 -555.6540    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  361.6916 -583.0224    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  413.1410 -500.1388    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  410.3241 -472.2832    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  438.6781 -511.6305    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  461.3927 -495.2610    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  1  2  1  0  0  0  0
+  2  3  1  0  0  0  0
+  3  4  2  0  0  0  0
+  3  5  1  0  0  0  0
+  5  6  2  0  0  0  0
+  6  7  1  0  0  0  0
+  7  8  2  0  0  0  0
+  8  9  1  0  0  0  0
+  9 10  1  0  0  0  0
+  6 11  1  0  0  0  0
+ 11 12  1  0  0  0  0
+ 11 13  1  0  0  0  0
+ 13 14  2  0  0  0  0
+ 13  2  1  0  0  0  0
+  9  5  1  0  0  0  0
+M  END
+" data-atom-count="14" data-bond-count="15" data-style-preset-id="chemdraft.synthetic" data-bond-layer-id="b6">
+    <line data-bond-id="b6" data-bond-order="double" data-bond-segment="primary" data-double-bond-side="right" x1="357.179" y1="520.683" x2="348.968" y2="534.776" stroke="#000000" stroke-width="2" stroke-linecap="butt" />
+    <line data-bond-id="b6" data-bond-order="double" data-bond-segment="secondary" data-double-bond-side="right" x1="360.493" y1="524.53" x2="353.949" y2="535.762" stroke="#000000" stroke-width="2" stroke-linecap="butt" />
+  </g>
+  <g data-object-id="mol_clipboard_001" data-layer-index="0" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-structure="
+  ChemDraft
+
+ 14 15  0  0  0  0  0  0  0  0999 V2000
+  467.0322 -550.9778    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  441.4951 -539.4861    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  418.7805 -555.8556    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  421.5974 -583.7168    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  393.2434 -544.3695    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  390.4264 -516.5083    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  363.0636 -510.5832    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  348.9678 -534.7763    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  367.6222 -555.6540    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  361.6916 -583.0224    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  413.1410 -500.1388    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  410.3241 -472.2832    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  438.6781 -511.6305    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  461.3927 -495.2610    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  1  2  1  0  0  0  0
+  2  3  1  0  0  0  0
+  3  4  2  0  0  0  0
+  3  5  1  0  0  0  0
+  5  6  2  0  0  0  0
+  6  7  1  0  0  0  0
+  7  8  2  0  0  0  0
+  8  9  1  0  0  0  0
+  9 10  1  0  0  0  0
+  6 11  1  0  0  0  0
+ 11 12  1  0  0  0  0
+ 11 13  1  0  0  0  0
+ 13 14  2  0  0  0  0
+ 13  2  1  0  0  0  0
+  9  5  1  0  0  0  0
+M  END
+" data-atom-count="14" data-bond-count="15" data-style-preset-id="chemdraft.synthetic" data-bond-layer-id="b7">
+    <line data-bond-id="b7" data-bond-order="single" data-bond-segment="primary" x1="348.968" y1="534.776" x2="360.972" y2="548.211" stroke="#000000" stroke-width="2" stroke-linecap="butt" />
+  </g>
+  <g data-object-id="mol_clipboard_001" data-layer-index="0" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-structure="
+  ChemDraft
+
+ 14 15  0  0  0  0  0  0  0  0999 V2000
+  467.0322 -550.9778    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  441.4951 -539.4861    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  418.7805 -555.8556    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  421.5974 -583.7168    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  393.2434 -544.3695    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  390.4264 -516.5083    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  363.0636 -510.5832    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  348.9678 -534.7763    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  367.6222 -555.6540    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  361.6916 -583.0224    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  413.1410 -500.1388    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  410.3241 -472.2832    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  438.6781 -511.6305    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  461.3927 -495.2610    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  1  2  1  0  0  0  0
+  2  3  1  0  0  0  0
+  3  4  2  0  0  0  0
+  3  5  1  0  0  0  0
+  5  6  2  0  0  0  0
+  6  7  1  0  0  0  0
+  7  8  2  0  0  0  0
+  8  9  1  0  0  0  0
+  9 10  1  0  0  0  0
+  6 11  1  0  0  0  0
+ 11 12  1  0  0  0  0
+ 11 13  1  0  0  0  0
+ 13 14  2  0  0  0  0
+ 13  2  1  0  0  0  0
+  9  5  1  0  0  0  0
+M  END
+" data-atom-count="14" data-bond-count="15" data-style-preset-id="chemdraft.synthetic" data-bond-layer-id="b8">
+    <line data-bond-id="b8" data-bond-order="single" data-bond-segment="primary" x1="365.434" y1="565.754" x2="361.692" y2="583.022" stroke="#000000" stroke-width="2" stroke-linecap="butt" />
+  </g>
+  <g data-object-id="mol_clipboard_001" data-layer-index="0" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-structure="
+  ChemDraft
+
+ 14 15  0  0  0  0  0  0  0  0999 V2000
+  467.0322 -550.9778    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  441.4951 -539.4861    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  418.7805 -555.8556    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  421.5974 -583.7168    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  393.2434 -544.3695    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  390.4264 -516.5083    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  363.0636 -510.5832    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  348.9678 -534.7763    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  367.6222 -555.6540    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  361.6916 -583.0224    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  413.1410 -500.1388    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  410.3241 -472.2832    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  438.6781 -511.6305    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  461.3927 -495.2610    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  1  2  1  0  0  0  0
+  2  3  1  0  0  0  0
+  3  4  2  0  0  0  0
+  3  5  1  0  0  0  0
+  5  6  2  0  0  0  0
+  6  7  1  0  0  0  0
+  7  8  2  0  0  0  0
+  8  9  1  0  0  0  0
+  9 10  1  0  0  0  0
+  6 11  1  0  0  0  0
+ 11 12  1  0  0  0  0
+ 11 13  1  0  0  0  0
+ 13 14  2  0  0  0  0
+ 13  2  1  0  0  0  0
+  9  5  1  0  0  0  0
+M  END
+" data-atom-count="14" data-bond-count="15" data-style-preset-id="chemdraft.synthetic" data-bond-layer-id="b9">
+    <line data-bond-id="b9" data-bond-order="single" data-bond-segment="primary" x1="390.426" y1="516.508" x2="406.491" y2="504.931" stroke="#000000" stroke-width="2" stroke-linecap="butt" />
+  </g>
+  <g data-object-id="mol_clipboard_001" data-layer-index="0" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-structure="
+  ChemDraft
+
+ 14 15  0  0  0  0  0  0  0  0999 V2000
+  467.0322 -550.9778    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  441.4951 -539.4861    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  418.7805 -555.8556    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  421.5974 -583.7168    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  393.2434 -544.3695    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  390.4264 -516.5083    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  363.0636 -510.5832    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  348.9678 -534.7763    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  367.6222 -555.6540    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  361.6916 -583.0224    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  413.1410 -500.1388    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  410.3241 -472.2832    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  438.6781 -511.6305    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  461.3927 -495.2610    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  1  2  1  0  0  0  0
+  2  3  1  0  0  0  0
+  3  4  2  0  0  0  0
+  3  5  1  0  0  0  0
+  5  6  2  0  0  0  0
+  6  7  1  0  0  0  0
+  7  8  2  0  0  0  0
+  8  9  1  0  0  0  0
+  9 10  1  0  0  0  0
+  6 11  1  0  0  0  0
+ 11 12  1  0  0  0  0
+ 11 13  1  0  0  0  0
+ 13 14  2  0  0  0  0
+ 13  2  1  0  0  0  0
+  9  5  1  0  0  0  0
+M  END
+" data-atom-count="14" data-bond-count="15" data-style-preset-id="chemdraft.synthetic" data-bond-layer-id="b10">
+    <line data-bond-id="b10" data-bond-order="single" data-bond-segment="primary" x1="412.12" y1="490.039" x2="410.324" y2="472.283" stroke="#000000" stroke-width="2" stroke-linecap="butt" />
+  </g>
+  <g data-object-id="mol_clipboard_001" data-layer-index="0" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-structure="
+  ChemDraft
+
+ 14 15  0  0  0  0  0  0  0  0999 V2000
+  467.0322 -550.9778    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  441.4951 -539.4861    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  418.7805 -555.8556    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  421.5974 -583.7168    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  393.2434 -544.3695    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  390.4264 -516.5083    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  363.0636 -510.5832    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  348.9678 -534.7763    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  367.6222 -555.6540    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  361.6916 -583.0224    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  413.1410 -500.1388    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  410.3241 -472.2832    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  438.6781 -511.6305    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  461.3927 -495.2610    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  1  2  1  0  0  0  0
+  2  3  1  0  0  0  0
+  3  4  2  0  0  0  0
+  3  5  1  0  0  0  0
+  5  6  2  0  0  0  0
+  6  7  1  0  0  0  0
+  7  8  2  0  0  0  0
+  8  9  1  0  0  0  0
+  9 10  1  0  0  0  0
+  6 11  1  0  0  0  0
+ 11 12  1  0  0  0  0
+ 11 13  1  0  0  0  0
+ 13 14  2  0  0  0  0
+ 13  2  1  0  0  0  0
+  9  5  1  0  0  0  0
+M  END
+" data-atom-count="14" data-bond-count="15" data-style-preset-id="chemdraft.synthetic" data-bond-layer-id="b11">
+    <line data-bond-id="b11" data-bond-order="single" data-bond-segment="primary" x1="419.791" y1="503.131" x2="438.678" y2="511.63" stroke="#000000" stroke-width="2" stroke-linecap="butt" />
+  </g>
+  <g data-object-id="mol_clipboard_001" data-layer-index="0" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-structure="
+  ChemDraft
+
+ 14 15  0  0  0  0  0  0  0  0999 V2000
+  467.0322 -550.9778    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  441.4951 -539.4861    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  418.7805 -555.8556    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  421.5974 -583.7168    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  393.2434 -544.3695    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  390.4264 -516.5083    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  363.0636 -510.5832    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  348.9678 -534.7763    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  367.6222 -555.6540    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  361.6916 -583.0224    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  413.1410 -500.1388    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  410.3241 -472.2832    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  438.6781 -511.6305    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  461.3927 -495.2610    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  1  2  1  0  0  0  0
+  2  3  1  0  0  0  0
+  3  4  2  0  0  0  0
+  3  5  1  0  0  0  0
+  5  6  2  0  0  0  0
+  6  7  1  0  0  0  0
+  7  8  2  0  0  0  0
+  8  9  1  0  0  0  0
+  9 10  1  0  0  0  0
+  6 11  1  0  0  0  0
+ 11 12  1  0  0  0  0
+ 11 13  1  0  0  0  0
+ 13 14  2  0  0  0  0
+ 13  2  1  0  0  0  0
+  9  5  1  0  0  0  0
+M  END
+" data-atom-count="14" data-bond-count="15" data-style-preset-id="chemdraft.synthetic" data-bond-layer-id="b12">
+    <line data-bond-id="b12" data-bond-order="double" data-bond-segment="primary" data-double-bond-side="center" x1="438.957" y1="514.388" x2="456.146" y2="502" stroke="#000000" stroke-width="2" stroke-linecap="butt" />
+    <line data-bond-id="b12" data-bond-order="double" data-bond-segment="secondary" data-double-bond-side="center" x1="436.151" y1="510.493" x2="453.34" y2="498.106" stroke="#000000" stroke-width="2" stroke-linecap="butt" />
+  </g>
+  <g data-object-id="mol_clipboard_001" data-layer-index="0" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-structure="
+  ChemDraft
+
+ 14 15  0  0  0  0  0  0  0  0999 V2000
+  467.0322 -550.9778    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  441.4951 -539.4861    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  418.7805 -555.8556    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  421.5974 -583.7168    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  393.2434 -544.3695    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  390.4264 -516.5083    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  363.0636 -510.5832    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  348.9678 -534.7763    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  367.6222 -555.6540    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  361.6916 -583.0224    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  413.1410 -500.1388    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  410.3241 -472.2832    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  438.6781 -511.6305    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  461.3927 -495.2610    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  1  2  1  0  0  0  0
+  2  3  1  0  0  0  0
+  3  4  2  0  0  0  0
+  3  5  1  0  0  0  0
+  5  6  2  0  0  0  0
+  6  7  1  0  0  0  0
+  7  8  2  0  0  0  0
+  8  9  1  0  0  0  0
+  9 10  1  0  0  0  0
+  6 11  1  0  0  0  0
+ 11 12  1  0  0  0  0
+ 11 13  1  0  0  0  0
+ 13 14  2  0  0  0  0
+ 13  2  1  0  0  0  0
+  9  5  1  0  0  0  0
+M  END
+" data-atom-count="14" data-bond-count="15" data-style-preset-id="chemdraft.synthetic" data-bond-layer-id="b13">
+    <line data-bond-id="b13" data-bond-order="single" data-bond-segment="primary" x1="438.678" y1="511.63" x2="440.474" y2="529.386" stroke="#000000" stroke-width="2" stroke-linecap="butt" />
+  </g>
+  <g data-object-id="mol_clipboard_001" data-layer-index="0" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-structure="
+  ChemDraft
+
+ 14 15  0  0  0  0  0  0  0  0999 V2000
+  467.0322 -550.9778    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  441.4951 -539.4861    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  418.7805 -555.8556    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  421.5974 -583.7168    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  393.2434 -544.3695    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  390.4264 -516.5083    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  363.0636 -510.5832    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  348.9678 -534.7763    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  367.6222 -555.6540    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  361.6916 -583.0224    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  413.1410 -500.1388    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  410.3241 -472.2832    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  438.6781 -511.6305    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  461.3927 -495.2610    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  1  2  1  0  0  0  0
+  2  3  1  0  0  0  0
+  3  4  2  0  0  0  0
+  3  5  1  0  0  0  0
+  5  6  2  0  0  0  0
+  6  7  1  0  0  0  0
+  7  8  2  0  0  0  0
+  8  9  1  0  0  0  0
+  9 10  1  0  0  0  0
+  6 11  1  0  0  0  0
+ 11 12  1  0  0  0  0
+ 11 13  1  0  0  0  0
+ 13 14  2  0  0  0  0
+ 13  2  1  0  0  0  0
+  9  5  1  0  0  0  0
+M  END
+" data-atom-count="14" data-bond-count="15" data-style-preset-id="chemdraft.synthetic" data-bond-layer-id="b14">
+    <line data-bond-id="b14" data-bond-order="single" data-bond-segment="primary" x1="374.272" y1="552.725" x2="393.243" y2="544.37" stroke="#000000" stroke-width="2" stroke-linecap="butt" />
+  </g>
+  <circle data-object-id="mol_clipboard_001" data-layer-index="0" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-structure="
+  ChemDraft
+
+ 14 15  0  0  0  0  0  0  0  0999 V2000
+  467.0322 -550.9778    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  441.4951 -539.4861    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  418.7805 -555.8556    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  421.5974 -583.7168    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  393.2434 -544.3695    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  390.4264 -516.5083    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  363.0636 -510.5832    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  348.9678 -534.7763    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  367.6222 -555.6540    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  361.6916 -583.0224    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  413.1410 -500.1388    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  410.3241 -472.2832    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  438.6781 -511.6305    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  461.3927 -495.2610    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  1  2  1  0  0  0  0
+  2  3  1  0  0  0  0
+  3  4  2  0  0  0  0
+  3  5  1  0  0  0  0
+  5  6  2  0  0  0  0
+  6  7  1  0  0  0  0
+  7  8  2  0  0  0  0
+  8  9  1  0  0  0  0
+  9 10  1  0  0  0  0
+  6 11  1  0  0  0  0
+ 11 12  1  0  0  0  0
+ 11 13  1  0  0  0  0
+ 13 14  2  0  0  0  0
+ 13  2  1  0  0  0  0
+  9  5  1  0  0  0  0
+M  END
+" data-atom-count="14" data-bond-count="15" data-style-preset-id="chemdraft.synthetic" data-atom-id="a2" cx="418.78" cy="555.856" r="1.16" fill="#000000" stroke="none" pointer-events="none" />
+  <circle data-object-id="mol_clipboard_001" data-layer-index="0" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-structure="
+  ChemDraft
+
+ 14 15  0  0  0  0  0  0  0  0999 V2000
+  467.0322 -550.9778    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  441.4951 -539.4861    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  418.7805 -555.8556    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  421.5974 -583.7168    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  393.2434 -544.3695    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  390.4264 -516.5083    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  363.0636 -510.5832    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  348.9678 -534.7763    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  367.6222 -555.6540    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  361.6916 -583.0224    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  413.1410 -500.1388    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  410.3241 -472.2832    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  438.6781 -511.6305    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  461.3927 -495.2610    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  1  2  1  0  0  0  0
+  2  3  1  0  0  0  0
+  3  4  2  0  0  0  0
+  3  5  1  0  0  0  0
+  5  6  2  0  0  0  0
+  6  7  1  0  0  0  0
+  7  8  2  0  0  0  0
+  8  9  1  0  0  0  0
+  9 10  1  0  0  0  0
+  6 11  1  0  0  0  0
+ 11 12  1  0  0  0  0
+ 11 13  1  0  0  0  0
+ 13 14  2  0  0  0  0
+ 13  2  1  0  0  0  0
+  9  5  1  0  0  0  0
+M  END
+" data-atom-count="14" data-bond-count="15" data-style-preset-id="chemdraft.synthetic" data-atom-id="a4" cx="393.243" cy="544.37" r="1.16" fill="#000000" stroke="none" pointer-events="none" />
+  <circle data-object-id="mol_clipboard_001" data-layer-index="0" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-structure="
+  ChemDraft
+
+ 14 15  0  0  0  0  0  0  0  0999 V2000
+  467.0322 -550.9778    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  441.4951 -539.4861    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  418.7805 -555.8556    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  421.5974 -583.7168    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  393.2434 -544.3695    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  390.4264 -516.5083    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  363.0636 -510.5832    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  348.9678 -534.7763    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  367.6222 -555.6540    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  361.6916 -583.0224    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  413.1410 -500.1388    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  410.3241 -472.2832    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  438.6781 -511.6305    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  461.3927 -495.2610    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  1  2  1  0  0  0  0
+  2  3  1  0  0  0  0
+  3  4  2  0  0  0  0
+  3  5  1  0  0  0  0
+  5  6  2  0  0  0  0
+  6  7  1  0  0  0  0
+  7  8  2  0  0  0  0
+  8  9  1  0  0  0  0
+  9 10  1  0  0  0  0
+  6 11  1  0  0  0  0
+ 11 12  1  0  0  0  0
+ 11 13  1  0  0  0  0
+ 13 14  2  0  0  0  0
+ 13  2  1  0  0  0  0
+  9  5  1  0  0  0  0
+M  END
+" data-atom-count="14" data-bond-count="15" data-style-preset-id="chemdraft.synthetic" data-atom-id="a5" cx="390.426" cy="516.508" r="1.16" fill="#000000" stroke="none" pointer-events="none" />
+  <circle data-object-id="mol_clipboard_001" data-layer-index="0" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-structure="
+  ChemDraft
+
+ 14 15  0  0  0  0  0  0  0  0999 V2000
+  467.0322 -550.9778    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  441.4951 -539.4861    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  418.7805 -555.8556    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  421.5974 -583.7168    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  393.2434 -544.3695    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  390.4264 -516.5083    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  363.0636 -510.5832    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  348.9678 -534.7763    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  367.6222 -555.6540    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  361.6916 -583.0224    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  413.1410 -500.1388    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  410.3241 -472.2832    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  438.6781 -511.6305    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  461.3927 -495.2610    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  1  2  1  0  0  0  0
+  2  3  1  0  0  0  0
+  3  4  2  0  0  0  0
+  3  5  1  0  0  0  0
+  5  6  2  0  0  0  0
+  6  7  1  0  0  0  0
+  7  8  2  0  0  0  0
+  8  9  1  0  0  0  0
+  9 10  1  0  0  0  0
+  6 11  1  0  0  0  0
+ 11 12  1  0  0  0  0
+ 11 13  1  0  0  0  0
+ 13 14  2  0  0  0  0
+ 13  2  1  0  0  0  0
+  9  5  1  0  0  0  0
+M  END
+" data-atom-count="14" data-bond-count="15" data-style-preset-id="chemdraft.synthetic" data-atom-id="a7" cx="348.968" cy="534.776" r="1.16" fill="#000000" stroke="none" pointer-events="none" />
+  <circle data-object-id="mol_clipboard_001" data-layer-index="0" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-structure="
+  ChemDraft
+
+ 14 15  0  0  0  0  0  0  0  0999 V2000
+  467.0322 -550.9778    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  441.4951 -539.4861    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  418.7805 -555.8556    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  421.5974 -583.7168    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  393.2434 -544.3695    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  390.4264 -516.5083    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  363.0636 -510.5832    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  348.9678 -534.7763    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  367.6222 -555.6540    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  361.6916 -583.0224    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  413.1410 -500.1388    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  410.3241 -472.2832    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  438.6781 -511.6305    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  461.3927 -495.2610    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  1  2  1  0  0  0  0
+  2  3  1  0  0  0  0
+  3  4  2  0  0  0  0
+  3  5  1  0  0  0  0
+  5  6  2  0  0  0  0
+  6  7  1  0  0  0  0
+  7  8  2  0  0  0  0
+  8  9  1  0  0  0  0
+  9 10  1  0  0  0  0
+  6 11  1  0  0  0  0
+ 11 12  1  0  0  0  0
+ 11 13  1  0  0  0  0
+ 13 14  2  0  0  0  0
+ 13  2  1  0  0  0  0
+  9  5  1  0  0  0  0
+M  END
+" data-atom-count="14" data-bond-count="15" data-style-preset-id="chemdraft.synthetic" data-atom-id="a12" cx="438.678" cy="511.63" r="1.16" fill="#000000" stroke="none" pointer-events="none" />
+  <g data-object-id="mol_clipboard_001" data-layer-index="0" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-structure="
+  ChemDraft
+
+ 14 15  0  0  0  0  0  0  0  0999 V2000
+  467.0322 -550.9778    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  441.4951 -539.4861    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  418.7805 -555.8556    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  421.5974 -583.7168    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  393.2434 -544.3695    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  390.4264 -516.5083    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  363.0636 -510.5832    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  348.9678 -534.7763    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  367.6222 -555.6540    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  361.6916 -583.0224    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  413.1410 -500.1388    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  410.3241 -472.2832    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  438.6781 -511.6305    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  461.3927 -495.2610    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  1  2  1  0  0  0  0
+  2  3  1  0  0  0  0
+  3  4  2  0  0  0  0
+  3  5  1  0  0  0  0
+  5  6  2  0  0  0  0
+  6  7  1  0  0  0  0
+  7  8  2  0  0  0  0
+  8  9  1  0  0  0  0
+  9 10  1  0  0  0  0
+  6 11  1  0  0  0  0
+ 11 12  1  0  0  0  0
+ 11 13  1  0  0  0  0
+ 13 14  2  0  0  0  0
+ 13  2  1  0  0  0  0
+  9  5  1  0  0  0  0
+M  END
+" data-atom-count="14" data-bond-count="15" data-style-preset-id="chemdraft.synthetic" transform="translate(441.495 539.486)" data-atom-label="N" fill="#000000" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="400" font-style="normal">
+    <text x="0" y="0" dy="0.35em" text-anchor="middle" fill="#ffffff" stroke="#ffffff" stroke-width="4.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">N</text>
+    <text data-atom-label-run="normal" x="0" y="0" dy="0.35em" text-anchor="middle">N</text>
+  </g>
+  <g data-object-id="mol_clipboard_001" data-layer-index="0" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-structure="
+  ChemDraft
+
+ 14 15  0  0  0  0  0  0  0  0999 V2000
+  467.0322 -550.9778    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  441.4951 -539.4861    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  418.7805 -555.8556    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  421.5974 -583.7168    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  393.2434 -544.3695    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  390.4264 -516.5083    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  363.0636 -510.5832    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  348.9678 -534.7763    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  367.6222 -555.6540    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  361.6916 -583.0224    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  413.1410 -500.1388    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  410.3241 -472.2832    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  438.6781 -511.6305    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  461.3927 -495.2610    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  1  2  1  0  0  0  0
+  2  3  1  0  0  0  0
+  3  4  2  0  0  0  0
+  3  5  1  0  0  0  0
+  5  6  2  0  0  0  0
+  6  7  1  0  0  0  0
+  7  8  2  0  0  0  0
+  8  9  1  0  0  0  0
+  9 10  1  0  0  0  0
+  6 11  1  0  0  0  0
+ 11 12  1  0  0  0  0
+ 11 13  1  0  0  0  0
+ 13 14  2  0  0  0  0
+ 13  2  1  0  0  0  0
+  9  5  1  0  0  0  0
+M  END
+" data-atom-count="14" data-bond-count="15" data-style-preset-id="chemdraft.synthetic" transform="translate(421.597 583.717)" data-atom-label="O" fill="#000000" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="400" font-style="normal">
+    <text x="0" y="0" dy="0.35em" text-anchor="middle" fill="#ffffff" stroke="#ffffff" stroke-width="4.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">O</text>
+    <text data-atom-label-run="normal" x="0" y="0" dy="0.35em" text-anchor="middle">O</text>
+  </g>
+  <g data-object-id="mol_clipboard_001" data-layer-index="0" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-structure="
+  ChemDraft
+
+ 14 15  0  0  0  0  0  0  0  0999 V2000
+  467.0322 -550.9778    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  441.4951 -539.4861    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  418.7805 -555.8556    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  421.5974 -583.7168    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  393.2434 -544.3695    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  390.4264 -516.5083    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  363.0636 -510.5832    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  348.9678 -534.7763    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  367.6222 -555.6540    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  361.6916 -583.0224    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  413.1410 -500.1388    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  410.3241 -472.2832    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  438.6781 -511.6305    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  461.3927 -495.2610    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  1  2  1  0  0  0  0
+  2  3  1  0  0  0  0
+  3  4  2  0  0  0  0
+  3  5  1  0  0  0  0
+  5  6  2  0  0  0  0
+  6  7  1  0  0  0  0
+  7  8  2  0  0  0  0
+  8  9  1  0  0  0  0
+  9 10  1  0  0  0  0
+  6 11  1  0  0  0  0
+ 11 12  1  0  0  0  0
+ 11 13  1  0  0  0  0
+ 13 14  2  0  0  0  0
+ 13  2  1  0  0  0  0
+  9  5  1  0  0  0  0
+M  END
+" data-atom-count="14" data-bond-count="15" data-style-preset-id="chemdraft.synthetic" transform="translate(363.064 510.583)" data-atom-label="N" fill="#000000" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="400" font-style="normal">
+    <text x="0" y="0" dy="0.35em" text-anchor="middle" fill="#ffffff" stroke="#ffffff" stroke-width="4.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">N</text>
+    <text data-atom-label-run="normal" x="0" y="0" dy="0.35em" text-anchor="middle">N</text>
+  </g>
+  <g data-object-id="mol_clipboard_001" data-layer-index="0" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-structure="
+  ChemDraft
+
+ 14 15  0  0  0  0  0  0  0  0999 V2000
+  467.0322 -550.9778    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  441.4951 -539.4861    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  418.7805 -555.8556    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  421.5974 -583.7168    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  393.2434 -544.3695    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  390.4264 -516.5083    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  363.0636 -510.5832    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  348.9678 -534.7763    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  367.6222 -555.6540    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  361.6916 -583.0224    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  413.1410 -500.1388    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  410.3241 -472.2832    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  438.6781 -511.6305    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  461.3927 -495.2610    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  1  2  1  0  0  0  0
+  2  3  1  0  0  0  0
+  3  4  2  0  0  0  0
+  3  5  1  0  0  0  0
+  5  6  2  0  0  0  0
+  6  7  1  0  0  0  0
+  7  8  2  0  0  0  0
+  8  9  1  0  0  0  0
+  9 10  1  0  0  0  0
+  6 11  1  0  0  0  0
+ 11 12  1  0  0  0  0
+ 11 13  1  0  0  0  0
+ 13 14  2  0  0  0  0
+ 13  2  1  0  0  0  0
+  9  5  1  0  0  0  0
+M  END
+" data-atom-count="14" data-bond-count="15" data-style-preset-id="chemdraft.synthetic" transform="translate(367.622 555.654)" data-atom-label="N" fill="#000000" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="400" font-style="normal">
+    <text x="0" y="0" dy="0.35em" text-anchor="middle" fill="#ffffff" stroke="#ffffff" stroke-width="4.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">N</text>
+    <text data-atom-label-run="normal" x="0" y="0" dy="0.35em" text-anchor="middle">N</text>
+  </g>
+  <g data-object-id="mol_clipboard_001" data-layer-index="0" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-structure="
+  ChemDraft
+
+ 14 15  0  0  0  0  0  0  0  0999 V2000
+  467.0322 -550.9778    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  441.4951 -539.4861    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  418.7805 -555.8556    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  421.5974 -583.7168    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  393.2434 -544.3695    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  390.4264 -516.5083    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  363.0636 -510.5832    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  348.9678 -534.7763    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  367.6222 -555.6540    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  361.6916 -583.0224    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  413.1410 -500.1388    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  410.3241 -472.2832    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  438.6781 -511.6305    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  461.3927 -495.2610    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  1  2  1  0  0  0  0
+  2  3  1  0  0  0  0
+  3  4  2  0  0  0  0
+  3  5  1  0  0  0  0
+  5  6  2  0  0  0  0
+  6  7  1  0  0  0  0
+  7  8  2  0  0  0  0
+  8  9  1  0  0  0  0
+  9 10  1  0  0  0  0
+  6 11  1  0  0  0  0
+ 11 12  1  0  0  0  0
+ 11 13  1  0  0  0  0
+ 13 14  2  0  0  0  0
+ 13  2  1  0  0  0  0
+  9  5  1  0  0  0  0
+M  END
+" data-atom-count="14" data-bond-count="15" data-style-preset-id="chemdraft.synthetic" transform="translate(413.141 500.139)" data-atom-label="N" fill="#000000" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="400" font-style="normal">
+    <text x="0" y="0" dy="0.35em" text-anchor="middle" fill="#ffffff" stroke="#ffffff" stroke-width="4.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">N</text>
+    <text data-atom-label-run="normal" x="0" y="0" dy="0.35em" text-anchor="middle">N</text>
+  </g>
+  <g data-object-id="mol_clipboard_001" data-layer-index="0" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-structure="
+  ChemDraft
+
+ 14 15  0  0  0  0  0  0  0  0999 V2000
+  467.0322 -550.9778    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  441.4951 -539.4861    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  418.7805 -555.8556    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  421.5974 -583.7168    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  393.2434 -544.3695    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  390.4264 -516.5083    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  363.0636 -510.5832    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  348.9678 -534.7763    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  367.6222 -555.6540    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  361.6916 -583.0224    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  413.1410 -500.1388    0.0000 N   0  0  0  0  0  0  0  0  0  0  0  0
+  410.3241 -472.2832    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  438.6781 -511.6305    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+  461.3927 -495.2610    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+  1  2  1  0  0  0  0
+  2  3  1  0  0  0  0
+  3  4  2  0  0  0  0
+  3  5  1  0  0  0  0
+  5  6  2  0  0  0  0
+  6  7  1  0  0  0  0
+  7  8  2  0  0  0  0
+  8  9  1  0  0  0  0
+  9 10  1  0  0  0  0
+  6 11  1  0  0  0  0
+ 11 12  1  0  0  0  0
+ 11 13  1  0  0  0  0
+ 13 14  2  0  0  0  0
+ 13  2  1  0  0  0  0
+  9  5  1  0  0  0  0
+M  END
+" data-atom-count="14" data-bond-count="15" data-style-preset-id="chemdraft.synthetic" transform="translate(461.393 495.261)" data-atom-label="O" fill="#000000" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="400" font-style="normal">
+    <text x="0" y="0" dy="0.35em" text-anchor="middle" fill="#ffffff" stroke="#ffffff" stroke-width="4.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">O</text>
+    <text data-atom-label-run="normal" x="0" y="0" dy="0.35em" text-anchor="middle">O</text>
+  </g>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+</svg>
