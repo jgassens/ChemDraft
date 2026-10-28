@@ -9,6 +9,7 @@ describe("toolInstallSnapshot", () => {
     const snapshot = toolInstallSnapshot(status, { id: "plugin", name: "Plugin" }, { status: "consent" });
     expect(snapshot.title).toBe(`Update ${name}`);
     expect(snapshot.intent).toBe("update");
+    expect(snapshot.disclosure).toContain(`${name} is a command-line program from ${snapshot.publisher}. ChemDraft runs it for you; you will not need to use a terminal except to sign in.`);
     expect(snapshot.disclosure).toContain(`ChemDraft's copy of ${name} is from an older ChemDraft version.`);
     expect(snapshot.disclosure).toContain(`Updating downloads ${name} ${base.pinnedVersion} from ${snapshot.downloadHost} and replaces ChemDraft's copy; your own installs and your sign-in are not touched.`);
     expect(snapshot.downloadBytes).toBe(base.pinnedDownloadBytes);
@@ -30,6 +31,7 @@ describe("toolInstallSnapshot", () => {
       { id: "plugin", name: "Plugin" }, { status: "consent" });
     expect(snapshot.downloadBytes).toBe(0);
     expect(snapshot.requiredDiskBytes).toBe(0);
+    expect(snapshot.disclosure).toContain("Codex is a command-line program from OpenAI. ChemDraft runs it for you; you will not need to use a terminal except to sign in.");
     expect(validToolInstallSnapshot(snapshot)).toBe(true);
   });
   it.each(states)("produces the shared buttons for $state.status", row => {
@@ -40,6 +42,9 @@ describe("toolInstallSnapshot", () => {
   it.each([["claude", "Anthropic"], ["codex", "OpenAI"]] as const)("names %s's publisher", (tool, publisher) => {
     const snapshot = toolInstallSnapshot({ ...base, tool, publisher }, { id: "plugin", name: "Plugin" });
     expect(snapshot.publisher).toBe(publisher);
+    const name = tool === "claude" ? "Claude Code" : "Codex";
+    expect(snapshot.disclosure).toContain(`${name} is a command-line program from ${publisher}. ChemDraft runs it for you; you will not need to use a terminal except to sign in.`);
+    expect(snapshot.disclosure.match(/is a command-line program/g)).toHaveLength(1);
     expect(snapshot.disclosure.match(/leaves? this computer/g)).toHaveLength(1);
     expect(snapshot.disclosure.match(/The AI can search the web and read web pages\./g)).toHaveLength(1);
     expect(snapshot.disclosure).toContain(`Your prompt and the open page, including any unpublished structures, leave this computer and go to ${publisher}`);

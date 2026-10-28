@@ -2273,6 +2273,74 @@ fn codex_run_uses_cached_binary_without_rediscovery_or_real_home() {
 }
 
 #[test]
+fn codex_setup_detail_hides_auth_diagnostics_until_broken_on_both_platforms() {
+    let temp = TempDir::new();
+    let technical = "Codex home isolation unavailable; using the user's real Codex home. User's Codex auth.json is unavailable (login may use the keychain).";
+    for (platform, expected) in [
+        (ProbePlatform::MacOS, "ChemDraft could not read your Codex sign-in from your Mac's Keychain. Sign in again from Setup."),
+        (ProbePlatform::Windows, "ChemDraft could not read your Codex sign-in from the system credential store (Credential Manager). Sign in again from Setup."),
+    ] {
+        for state in [ToolState::Installed, ToolState::Missing, ToolState::Installing, ToolState::Unsupported, ToolState::Broken] {
+            for signed_in in [None, Some(false), Some(true)] {
+                let mut status = install::managed_status(&temp.0, pins::pin_for(ToolId::Codex, ToolPlatform::DarwinArm64));
+                status.state = state;
+                status.signed_in = signed_in;
+                status.detail = matches!(state, ToolState::Missing).then(|| "Tool is not installed.".into());
+                apply_status_detail(&mut status, platform, Some(technical));
+                assert_eq!(status.detail.as_deref(), matches!(state, ToolState::Broken).then_some(expected));
+            }
+        }
+        let mut status = install::managed_status(&temp.0, pins::pin_for(ToolId::Codex, ToolPlatform::DarwinArm64));
+        status.state = ToolState::Broken;
+        status.detail = Some("External tool --version failed.".into());
+        apply_status_detail(&mut status, platform, None);
+        assert_eq!(status.detail.as_deref(), Some("External tool --version failed."));
+        apply_status_detail(&mut status, platform, Some(technical));
+        assert_eq!(status.detail.as_deref(), Some(format!("External tool --version failed. {expected}").as_str()));
+        status.detail = Some(install::managed_update_detail(ToolId::Codex));
+        let upgrade = status.detail.clone();
+        apply_status_detail(&mut status, platform, Some(technical));
+        assert_eq!(status.detail, upgrade);
+    }
+}
+
+#[test]
+fn normal_setup_status_omits_missing_and_codex_auth_details() {
+    if current_platform().is_none() {
+        return;
+    }
+    let temp = TempDir::new();
+    let parent = ParentEnv::new();
+    for tool in [ToolId::Codex, ToolId::Claude] {
+        let state = ExternalToolsState::default();
+        let missing = status_impl(&temp.0, &state, tool, true, None, &parent).unwrap();
+        assert!(matches!(missing.state, ToolState::Missing));
+        assert!(missing.detail.is_none());
+        for signed_in in [false, true] {
+            state
+                .probes
+                .get_or_probe(tool, true, || {
+                    Ok(probe::ProbeResult {
+                        path: stub().to_owned(),
+                        version: tool.spec().minimum_version.into(),
+                        auth: catalog::AuthStatus {
+                            signed_in,
+                            auth_method: None,
+                            detail: None,
+                        },
+                        probed_at: "now".into(),
+                    })
+                })
+                .unwrap();
+            let installed = status_impl(&temp.0, &state, tool, false, None, &parent).unwrap();
+            assert!(matches!(installed.state, ToolState::Installed));
+            assert_eq!(installed.signed_in, Some(signed_in));
+            assert!(installed.detail.is_none());
+        }
+    }
+}
+
+#[test]
 fn codex_status_uses_injected_discovery_and_reports_missing_helper_as_broken() {
     if current_platform().is_none() {
         return;

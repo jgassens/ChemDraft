@@ -15,6 +15,13 @@ static AUTH_LOCK: Mutex<()> = Mutex::new(());
 const BLOCKED: &str = "auth-reconcile-blocked";
 const CONFLICT_PREFIX: &str = "auth.json.chemdraft-conflict-";
 
+pub(super) fn sign_in_unavailable_detail(platform: ProbePlatform) -> &'static str {
+    match platform {
+        ProbePlatform::MacOS => "ChemDraft could not read your Codex sign-in from your Mac's Keychain. Sign in again from Setup.",
+        ProbePlatform::Windows => "ChemDraft could not read your Codex sign-in from the system credential store (Credential Manager). Sign in again from Setup.",
+    }
+}
+
 /// Only host-owned paths, captured BEFORE CODEX_HOME is changed for the child.
 #[derive(Clone)]
 pub(super) struct CodexAuth {

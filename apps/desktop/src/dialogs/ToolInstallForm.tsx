@@ -27,6 +27,7 @@ export function ToolInstallForm({ snapshot, onAction, busy = false, error, platf
     <p>Requested by {snapshot.pluginName} ({snapshot.pluginId})</p>
     {state.status === "notInstalled" ? <p>Download from {snapshot.publisher}: version {snapshot.version}, from {snapshot.downloadHost}, {formatBytes(snapshot.downloadBytes)}.</p> : null}
     <p>{snapshot.disclosure}</p>
+    <p>When you sign in, a terminal window opens. Complete sign-in there, then return to Setup.</p>
     {needsDownload ? <p>Needs about {formatBytes(snapshot.requiredDiskBytes)} free while installing. {snapshot.freeDiskBytes === null ? "Free space on this disk: unknown." : `Free now: ${formatBytes(snapshot.freeDiskBytes)}.`}</p> : null}
     {state.status === "consent" ? <p role="status">Allow {snapshot.pluginName} to {intent === "update" ? "update and use" : intent === "download" ? "download and use" : "use"} {snapshot.toolName}?</p> : null}
     {state.status === "installing" ? <div role="status"><p>{state.phase}</p>

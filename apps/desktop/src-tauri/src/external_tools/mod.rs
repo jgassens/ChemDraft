@@ -450,15 +450,42 @@ fn status_impl(
     let notice = (tool == ToolId::Codex)
         .then(|| env::prepare_codex_home(probe::ProbePlatform::current(), base, parent))
         .and_then(|home| home.fallback_reason);
-    // Keep the actionable upgrade message plain without changing auth preparation.
+    if let Some(notice) = notice.as_deref() {
+        eprintln!("{notice}");
+    }
+    apply_status_detail(
+        &mut status,
+        probe::ProbePlatform::current(),
+        notice.as_deref(),
+    );
+    Ok(status)
+}
+
+fn apply_status_detail(
+    status: &mut ExternalToolStatus,
+    platform: probe::ProbePlatform,
+    codex_home_notice: Option<&str>,
+) {
+    // A missing auth.json is normal before sign-in or with system credential storage.
+    // Keep technical diagnostics in logs, and retain actionable upgrade guidance.
+    if matches!(status.state, ToolState::Missing)
+        && status.detail.as_deref() == Some("Tool is not installed.")
+    {
+        status.detail = None;
+    }
+    let tool = status.tool;
     let needs_update = status.detail.as_deref() == Some(&install::managed_update_detail(tool));
-    if let Some(notice) = notice.filter(|_| !needs_update) {
+    if tool == ToolId::Codex
+        && matches!(status.state, ToolState::Broken)
+        && !needs_update
+        && codex_home_notice.is_some()
+    {
+        let notice = codex_auth::sign_in_unavailable_detail(platform);
         status.detail = Some(match status.detail {
-            Some(detail) => format!("{detail} {notice}"),
-            None => notice,
+            Some(ref detail) => format!("{detail} {notice}"),
+            None => notice.to_owned(),
         });
     }
-    Ok(status)
 }
 
 fn status_prepared_impl(
