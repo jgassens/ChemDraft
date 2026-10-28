@@ -6,6 +6,9 @@ import { testContext } from "../assistant/tools/testContext";
 import type { AssistantHistoryPort } from "../assistant/historyPort";
 import * as assistantTools from "../assistant/assistantTools";
 import * as depiction2d from "../depiction2d/client";
+import * as pasteIdentity from "../smilesPasteIdentity";
+import { ensureRdkit } from "../../../../packages/rdkit-adapter/src/conformer";
+import { installRealRdkitModuleLoader } from "../../../../packages/rdkit-adapter/src/testing";
 import { describe, expect, it, vi } from "vitest";
 
 import { createPhase4Document } from "../documentWorkflow";
@@ -307,6 +310,10 @@ describe("createPluginRuntime panel input", () => {
 
 describe("createPluginRuntime assistant integration", () => {
   it("builds structures through the retained chemistry context after the creating command ends", async () => {
+    // Use the real Node engine for identity checks; the app loader expects a browser environment.
+    installRealRdkitModuleLoader();
+    const inspect = pasteIdentity.createPasteIdentityInspector(async () => ({ ensureRdkit }));
+    const inspector = vi.spyOn(pasteIdentity, "createPasteIdentityInspector").mockReturnValueOnce(inspect);
     const { context } = testContext();
     const transactions = new AssistantTransactions({
       read: context.getDocument, push: () => {}, amend: () => {}, select: () => {},
@@ -343,7 +350,7 @@ describe("createPluginRuntime assistant integration", () => {
       expect(depict).toHaveBeenCalledOnce();
       await api.endRequest({ requestId });
     } finally {
-      call.mockRestore(); depict.mockRestore();
+      call.mockRestore(); depict.mockRestore(); inspector.mockRestore();
       runtime.unregisterPlugin(context.plugin.id); transactions.dispose();
     }
   });

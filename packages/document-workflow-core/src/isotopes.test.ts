@@ -28,6 +28,7 @@ describe("native isotope chemistry", () => {
     const molfile = await generateSmiles2DMolfile("[2H]/C=C/c1ccccc1");
     const depiction = pastedStructureDepictionFromMolfile(molfile);
     const molecule = createSmilesMolecule(createEmptyDocument(), { x: 200, y: 200 }, depiction, "unused");
+    if (molecule.type !== "molecule") throw new Error("Expected molecule");
     const double = molecule.bonds.findIndex(bond => bond.order === "double");
     await expect(assertMoleculeMatchesSmiles(molecule, "[2H]C=Cc1ccccc1", async (_format, value, reference) =>
       inspectHydrogenNormalizedIdentity(module, either && _format === "molfile"
