@@ -32,28 +32,34 @@ const hosts = [
   }
 ];
 
-// Each design is one repeated glycoluril/bridge sector, rotated without any
-// per-unit adjustments. Both bridge circuits have open bends (inner >= 90 degrees;
-// outer >= 25 degrees off straight), so skeletal CH2 vertices survive N-label
-// clipping even at the bottom of the drawing. CB[5]/[6] require the existing
-// bond-length exceptions to leave both the bridges and carbonyl labels clear.
-// Turn the inward carbonyls together to open their portal without pushing oxygen
-// labels into the neighbouring glycoluril. This remains rotationally symmetric.
-const compactPortalDesigns = {
+// One sector is repeated by rigid rotation: a/b locate each N tangentially/
+// radially from the shared methine edge, h locates the carbonyl C. Both CH2
+// circuits bend outward into the gaps between glycolurils, away from the inner
+// carbonyls. The modest glycoluril tilt in CB[7]/[8] opens the inner portal while
+// keeping the carbonyls strictly radial (their O positions are solved separately).
+// CB[5]/[6] retain their existing unequal-bond exceptions; CB[7]/[8]/[10] remain
+// within 5% of their mean. All designs preserve >= 0.75 label-to-bond clearance,
+// >= 0.35 nonincident bond clearance and bridge angles between 90 and 155 degrees.
+const portalDesigns = {
   5: {
-    inner: { a: 0.9916263235, b: 0.8745475885, h: 1.6592373452, carbonyl: 1.3345953795, bridge: 1.0032463289, turn: 0.5108164517 },
-    outer: { a: 1.3431660992, b: 0.5399115744, h: 0.5565596675, carbonyl: 1.3126098966, bridge: 1.3395381870 },
-    outerHalfChord: 1.2994220804
+    inner: { a: 1.1754680062, b: 0.7370131491, h: 1.3436847367, carbonyl: 1.2421084275, bridge: 0.9997907184 },
+    outer: { a: 1.3493420374, b: 0.5273081742, h: 0.5136119162, carbonyl: 1.3446511622, bridge: 1.3457152810 },
+    radius: 3.5628989483, tilt: 0
   },
   6: {
-    inner: { a: 0.7350352967, b: 0.9670922475, h: 1.8425834425, carbonyl: 1.1897395599, bridge: 1.0026200024, turn: 0.5233749562 },
-    outer: { a: 1.2093943480, b: 0.6951321715, h: 0.6951358766, carbonyl: 1.2051158714, bridge: 1.2084351095 },
-    outerHalfChord: 1.1722517735
+    inner: { a: 0.6543929205, b: 0.9895204409, h: 1.7929182997, carbonyl: 1.0084750416, bridge: 1.2127935339 },
+    outer: { a: 1.2357367519, b: 0.6722827835, h: 0.6939926052, carbonyl: 1.2377949291, bridge: 1.2357096005 },
+    radius: 3.8686638297, tilt: 0
   },
   7: {
-    inner: { a: 0.4980550329, b: 0.9978019071, h: 1.8952534426, carbonyl: 1.0506218941, bridge: 0.9947792938, turn: 0.5280074079 },
-    outer: { a: 1.0763661172, b: 0.8132672608, h: 0.8315290864, carbonyl: 1.0198685754, bridge: 1.0692164745 },
-    outerHalfChord: 1.0359926727
+    inner: { a: 0.5675572011, b: 0.9574590017, h: 1.7509011871, carbonyl: 0.9601055372, bridge: 1.0472662664 },
+    outer: { a: 1.0586906814, b: 0.7809436208, h: 0.7905783429, carbonyl: 1.0586402951, bridge: 1.0587178726 },
+    radius: 3.7607494353, tilt: 0.1855418430
+  },
+  8: {
+    inner: { a: 0.5123158969, b: 0.9943330908, h: 1.8356100814, carbonyl: 0.9979640451, bridge: 1.0003714525 },
+    outer: { a: 1.0063426566, b: 0.8822798731, h: 0.9529463432, carbonyl: 1.0148158969, bridge: 1.0148158969 },
+    radius: 4.0467367666, tilt: 0.1899273956
   }
 };
 
@@ -65,47 +71,41 @@ function unitPentagon(a) {
 }
 
 function portalLayout(n) {
-  // Two pentagons share a tangential methine C-C edge. Their carbonyls point
-  // radially inward/outward; the corresponding N pairs belong to the two portals.
-  // A radial shared edge would instead put the two carbonyls on tangential sides.
+  // Two pentagons share a nearly tangential methine C-C edge; their corresponding
+  // N pairs belong to the two portals. Tilt is applied to the entire glycoluril,
+  // never to individual bridges or individual repeats.
   const sharedHalfEdge = 0.5;
-  const { inner, outer, outerHalfChord } = compactPortalDesigns[n] ?? {
-    inner: { ...unitPentagon(n === 8 ? 0.4975 : 0.6), turn: n === 8 ? 0.35 : 0 },
-    outer: unitPentagon(n === 8 ? 0.9975 : 0.98), outerHalfChord: 0.965
-  };
   const halfSector = Math.PI / n;
-  const sin = Math.sin(halfSector), cos = Math.cos(halfSector);
-  // Solve the outer N-pair chord for the macrocycle radius. A circle intersection
-  // closes each portal bridge at its prescribed length; the larger hosts use
-  // unit bonds throughout, including both carbonyls and both bridge circuits.
-  const radius = (outer.a * cos + outerHalfChord) / sin - outer.b;
-  const bridgeRadius = (nitrogenRadius, a, length, side) => {
-    const halfChord = nitrogenRadius * sin - a * cos;
-    if (halfChord <= 0 || halfChord >= length) throw new Error(`Invalid CB[${n}] portal chord.`);
-    const midpoint = nitrogenRadius * cos + a * sin;
-    return midpoint + side * Math.sqrt(length * length - halfChord * halfChord);
+  const { inner, outer, radius, tilt } = portalDesigns[n] ?? {
+    inner: unitPentagon(0.6), outer: unitPentagon(0.98), tilt: 0,
+    radius: (0.98 * Math.cos(halfSector) + 0.965) / Math.sin(halfSector) - unitPentagon(0.98).b
   };
-  const innerBridgeRadius = bridgeRadius(radius - inner.b, inner.a, inner.bridge, -1);
-  const outerBridgeRadius = bridgeRadius(radius + outer.b, outer.a, outer.bridge, 1);
   const atoms = [], bonds = [];
   for (let unit = 0; unit < n; unit += 1) {
     const angle = Math.PI / 2 + 2 * unit * halfSector;
-    // Local x is tangential and y is radial; this is a rigid rotation/translation.
-    const point = (element, x, y) => ({
-      element,
-      x: (radius + y) * Math.cos(angle) - x * Math.sin(angle),
-      y: (radius + y) * Math.sin(angle) + x * Math.cos(angle)
-    });
+    const point = (element, x, y) => {
+      const tx = x * Math.cos(tilt) - y * Math.sin(tilt);
+      const ty = x * Math.sin(tilt) + y * Math.cos(tilt);
+      return {
+        element,
+        x: (radius + ty) * Math.cos(angle) - tx * Math.sin(angle),
+        y: (radius + ty) * Math.sin(angle) + tx * Math.cos(angle)
+      };
+    };
+    // Aim from the carbonyl C along its actual radius, even in a tilted unit.
+    const oxygen = (y, length) => {
+      const carbon = point("C", 0, y);
+      const scale = 1 + length / Math.hypot(carbon.x, carbon.y);
+      return { element: "O", x: carbon.x * scale, y: carbon.y * scale };
+    };
     atoms.push(
       point("C", -sharedHalfEdge, 0), point("C", sharedHalfEdge, 0),
       point("N", -inner.a, -inner.b), point("N", inner.a, -inner.b),
-      point("C", 0, -inner.h),
-      point("O", inner.carbonyl * Math.sin(inner.turn ?? 0), -inner.h - inner.carbonyl * Math.cos(inner.turn ?? 0)),
+      point("C", 0, -inner.h), oxygen(-inner.h, -inner.carbonyl),
       point("N", -outer.a, outer.b), point("N", outer.a, outer.b),
-      point("C", 0, outer.h), point("O", 0, outer.h + outer.carbonyl),
-      ...[innerBridgeRadius, outerBridgeRadius].map((r) => ({
-        element: "C", x: r * Math.cos(angle + halfSector), y: r * Math.sin(angle + halfSector)
-      }))
+      point("C", 0, outer.h), oxygen(outer.h, outer.carbonyl),
+      // Filled from neighbouring N positions after every sector exists.
+      point("C", 0, 0), point("C", 0, 0)
     );
     const offset = 12 * unit, next = 12 * ((unit + 1) % n);
     // Each glycoluril contributes C4N4O2 plus two CH2 bridges: C6H6N4O2.
@@ -116,6 +116,24 @@ function portalLayout(n) {
       [3, 10, 1], [7, 11, 1]
     ]) bonds.push([offset + from, offset + to, order]);
     bonds.push([offset + 10, next + 2, 1], [offset + 11, next + 6, 1]);
+  }
+  for (let unit = 0; unit < n; unit += 1) {
+    const offset = 12 * unit, next = 12 * ((unit + 1) % n);
+    for (const [from, to, bridge, length] of [
+      [offset + 3, next + 2, offset + 10, inner.bridge],
+      [offset + 7, next + 6, offset + 11, outer.bridge]
+    ]) {
+      const a = atoms[from], b = atoms[to];
+      const dx = b.x - a.x, dy = b.y - a.y, chord = Math.hypot(dx, dy);
+      if (chord <= 0 || chord >= 2 * length) throw new Error(`Invalid CB[${n}] portal chord.`);
+      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+      const height = Math.sqrt(length * length - chord * chord / 4);
+      // The outward circle intersection keeps the inner bridge clear of C=O.
+      const candidates = [-1, 1].map((side) => ({
+        element: "C", x: mx + side * height * dy / chord, y: my - side * height * dx / chord
+      }));
+      atoms[bridge] = candidates.reduce((a, b) => Math.hypot(a.x, a.y) > Math.hypot(b.x, b.y) ? a : b);
+    }
   }
   return finishLayout({ atoms, bonds });
 }
@@ -129,7 +147,7 @@ export const generator = {
     family: "cucurbiturils", category: "supramolecular",
     smiles: entry.smiles, formula: entry.formula, charge: 0,
     source: { database: "PubChem", cid: entry.cid },
-    note: [entry.note, "Planar portal view with tangential shared methine C-C bonds, inward and outward carbonyls, and two methylene bridges between each neighbouring pair of glycolurils. Methine stereochemistry is unspecified, as in the PubChem identity."].filter(Boolean).join(" "),
+    note: [entry.note, "Rotationally symmetric planar portal view with nearly tangential shared methine C-C bonds, radial inward and outward carbonyls, and two bent methylene bridges between each neighbouring pair of glycolurils. Methine stereochemistry is unspecified, as in the PubChem identity."].filter(Boolean).join(" "),
     layout: portalLayout(entry.n)
   }))
 };
