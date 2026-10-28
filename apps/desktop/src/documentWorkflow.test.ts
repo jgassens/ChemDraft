@@ -1,3 +1,4 @@
+import { defaultCases, bondDepiction, insertionDocument, expectDrawingDefaults } from "./drawingDefaults.testHelpers";
 import { hitToleranceForScale } from "./interaction/hitTest";
 import { rawMolfileFixture } from "@chemdraft/layout-engine/testing";
 import { describe, expect, it } from "vitest";
@@ -55,7 +56,6 @@ import {
   insertSmilesMolecule,
   insertSmilesMoleculeGrid,
   insertSmilesMoleculeGridStatus,
-  smilesPasteBondLengthPx,
   type PastedStructureDepiction,
   pastedStructureDepictionFromMolfile,
   applyImportedPageFitRecommendation,
@@ -140,6 +140,8 @@ import {
   createNativeArtGraphicObject,
   createNativeFreehandGraphicObject,
   createNativeSavePayload,
+  createNativeTextObject,
+  createNativeTemplateMolecule,
   createNativeSingleBondMolecule,
   createNativeMolfileMolecule,
   createPhase4Document,
@@ -1178,9 +1180,9 @@ describe("SMILES molecule grid", () => {
       expect(object.x + object.width / 2).toBeCloseTo(24 + (index % 3 + 0.5) * cellWidth);
       expect(object.y + object.height / 2).toBeCloseTo(24 + (Math.floor(index / 3) + 0.5) * cellHeight);
       if (object.type !== "molecule") throw new Error("Expected a molecule");
-      expect(object.style.bondLengthPx).toBe(smilesPasteBondLengthPx);
+      expect(object.style.bondLengthPx).toBe(nativeBondLengthPx);
       expect(Math.hypot(object.atoms[1].x - object.atoms[0].x, object.atoms[1].y - object.atoms[0].y))
-        .toBeCloseTo(smilesPasteBondLengthPx);
+        .toBeCloseTo(nativeBondLengthPx);
     });
     expectContainedAndSeparated(result.document);
     expect(insertSmilesMoleculeGridStatus(result, 2)).toBe("Pasted 6 SMILES structures in a 3 × 2 grid; 2 tokens skipped");
@@ -17633,5 +17635,41 @@ describe("ring placement valence guard", () => {
     const fused = bondPlan(document, molecule, "gb1", "cyclohexane");
     expect(fused).toMatchObject({ kind: "fuse-bond" });
     expect(fused?.fallbackReason).toBeUndefined();
+  });
+});
+
+
+describe("document drawing defaults for native insertions", () => {
+  it.each(defaultCases)("uses $bondLengthPx px for new molecules and leaves existing objects intact", style => {
+    const document = insertionDocument(style);
+    const existing = structuredClone(document.pages[0]!.objects);
+    const single = insertSmilesMolecule(document, { x: 350, y: 350 }, bondDepiction, "CO");
+    expectDrawingDefaults(single.pages[0]!.objects.at(-1), style);
+    expect(single.pages[0]!.objects.slice(0, 2)).toEqual(existing);
+    const grid = insertSmilesMoleculeGrid(document, { x: 350, y: 350 }, [
+      { smiles: "CO", depiction: bondDepiction }, { smiles: "CO", depiction: bondDepiction }
+    ]).document;
+    grid.pages[0]!.objects.slice(2).forEach(object => expectDrawingDefaults(object, style));
+    expect(grid.pages[0]!.objects.slice(0, 2)).toEqual(existing);
+    const firstBond = createNativeSingleBondMolecule(document, { x: 350, y: 350 });
+    expectDrawingDefaults(firstBond, style);
+    const inserted = applyPatches(document, [{ op: "addObject", pageId: document.pages[0]!.id, object: firstBond }]);
+    expect(inserted.pages[0]!.objects.slice(0, 2)).toEqual(existing);
+    for (const template of ["cyclohexane", "chairCyclohexaneA", "benzene"] as const) {
+      expectDrawingDefaults(createNativeTemplateMolecule(document, { x: 350, y: 350 }, template), style);
+    }
+    const chain = applyNativeChainTool(document, { x: 350, y: 350 }, { x: 450, y: 400 });
+    expectDrawingDefaults(chain.pages[0]!.objects.at(-1), style);
+    expect(chain.pages[0]!.objects.slice(0, 2)).toEqual(existing);
+    const molfile = moleculeToMolfileV2000(firstBond, { fromDocFrame: true,
+      kekuleBondOrders: layoutEngine.nativeBondOrderResolution(firstBond.atoms, firstBond.bonds).kekuleOrders }).contents;
+    const pastedMolfile = createNativeMolfileMolecule(document, { x: 350, y: 350 }, molfile, "molfile-v2000");
+    expectDrawingDefaults(pastedMolfile, style);
+    const withTypedText = applyPatch(document, { op: "addObject", pageId: document.pages[0]!.id,
+      object: { ...createNativeTextObject(document, { x: 350, y: 350 }, "N"), id: "typed" } });
+    const typed = convertNativeTextObjectToAtom(withTypedText, "typed", { skipAtomLabel: true });
+    expectDrawingDefaults(typed.pages[0]!.objects.at(-1), style);
+    expect(typed.pages[0]!.objects.slice(0, 2)).toEqual(existing);
+    expect(document.pages[0]!.objects).toEqual(existing);
   });
 });

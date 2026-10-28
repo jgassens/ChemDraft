@@ -68,7 +68,6 @@ import {
   pageMarginFromLayout,
   nativeDrawingStyleFromObjectStyle,
   nativeTextStyleFromObjectStyle,
-  stylePresetToObjectStyle,
   textStyleToObjectStyle,
   type Anchor,
   type ArrowObject,
@@ -188,6 +187,7 @@ import {
   nativeAtomValidationState,
   type NativeAtomValidationState,
   nativeBondByAtomPair,
+  documentDrawingDefaults,
   nativeBondLengthPx,
   nativeBondOrderValue,
   nativeComponents,
@@ -248,7 +248,6 @@ export {
   normalizeNativeAtomElementLabel,
   pastedStructureDepictionFromMolfile,
   phase4Timestamp,
-  smilesPasteBondLengthPx,
   stereoPerceptionMolfile
 } from "@chemdraft/document-workflow-core";
 export type {
@@ -878,6 +877,7 @@ export function createAdapterFallbackMolecule(
     rotation: 0,
     transform: defaultNativeMoleculeTransform,
     style: {
+      ...documentDrawingDefaults(document).objectStyle,
       source: "editor-adapter-fallback"
     },
     compatibility: {
@@ -926,7 +926,7 @@ export function createNativeSingleBondMolecule(
   options: NativeBondToolOptions = {}
 ): MoleculeObject {
   const page = firstPage(document);
-  const objectStyle = stylePresetToObjectStyle(ChemDraftSyntheticStylePreset);
+  const { objectStyle, bondLengthPx: nativeBondLength } = documentDrawingDefaults(document);
   // The first bond lands at the zig-zag half-angle — (180° − chainAngleDegrees)/2, 30° above
   // horizontal for the default 120° chain angle — rising left-to-right, ChemDraw's first-bond
   // orientation, rather than flat. The angle comes from the same preset style the new molecule
@@ -1267,7 +1267,7 @@ function planChainVerticesForOptions(
 
 /** Chain tool: press-drag draws an alkane zig-zag in one gesture. Anchored on an existing atom it
  *  appends carbons to that molecule using the molecule's own bond length and chain angle;
- *  otherwise it seeds a new native molecule from the synthetic preset. With `options.pathPoints`
+ *  otherwise it seeds a new native molecule from the document drawing defaults. With `options.pathPoints`
  *  (the flexible variant) the zig-zag follows the pointer path instead of a straight axis. Pure —
  *  the caller previews with replacePresentDocument and commits once. */
 export function applyNativeChainTool(
@@ -1312,7 +1312,7 @@ export function applyNativeChainTool(
     );
   }
 
-  const presetStyle = nativeDrawingStyleFromObjectStyle(stylePresetToObjectStyle(ChemDraftSyntheticStylePreset));
+  const { drawing: presetStyle, objectStyle } = documentDrawingDefaults(document);
   const start = {
     x: clamp(startPoint.x, 0, page.width),
     y: clamp(startPoint.y, 0, page.height)
@@ -1353,7 +1353,7 @@ export function applyNativeChainTool(
     rotation: 0,
     transform: defaultNativeMoleculeTransform,
     style: {
-      ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+      ...objectStyle,
       source: "chemdraft-native-drawing",
       drawingPrimitive: "chain"
     },
@@ -2967,11 +2967,12 @@ export function createNativeTemplateMolecule(
   templateId: NativeMoleculeTemplateId
 ): MoleculeObject {
   const page = firstPage(document);
+  const { bondLengthPx: nativeBondLength, objectStyle } = documentDrawingDefaults(document);
   const center = {
     x: clamp(point.x, nativeBondLength, page.width - nativeBondLength),
     y: clamp(point.y, nativeBondLength, page.height - nativeBondLength)
   };
-  const geometry = nativeTemplateGeometry(center, templateId);
+  const geometry = nativeTemplateGeometry(center, templateId, nativeBondLength);
   const atoms = geometry.atoms;
   const bonds = geometry.bonds;
   const moleculeGeometry = moleculeGeometryFromAtoms(atoms);
@@ -2986,7 +2987,7 @@ export function createNativeTemplateMolecule(
     rotation: 0,
     transform: defaultNativeMoleculeTransform,
     style: {
-      ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+      ...objectStyle,
       source: "chemdraft-native-drawing",
       drawingPrimitive: templateId
     },
@@ -3250,6 +3251,7 @@ function createStandaloneTemplateAwayFromExistingAtoms(
   templateId: NativeMoleculeTemplateId
 ): MoleculeObject | undefined {
   const page = firstPage(document);
+  const { bondLengthPx: nativeBondLength } = documentDrawingDefaults(document);
   const existingAtoms = page.objects
     .filter((object): object is MoleculeObject => object.type === "molecule")
     .flatMap((molecule) => molecule.atoms);
@@ -3338,7 +3340,8 @@ export function applyNativeTemplateToolAtTarget(
 
 function nativeTemplateGeometry(
   center: PagePoint,
-  templateId: NativeMoleculeTemplateId
+  templateId: NativeMoleculeTemplateId,
+  bondLengthPx: number
 ): { atoms: MoleculeAtom[]; bonds: MoleculeBond[] } {
   if (
     templateId === "cyclopropane" ||
@@ -3347,7 +3350,7 @@ function nativeTemplateGeometry(
     templateId === "cycloheptane" ||
     templateId === "cyclooctane"
   ) {
-    const atoms = regularNativeRingAtoms(center, nativeTemplateRingSize(templateId), -Math.PI / 2);
+    const atoms = regularNativeRingAtoms(center, nativeTemplateRingSize(templateId), -Math.PI / 2, bondLengthPx);
     return { atoms, bonds: nativeRingBonds(atoms, () => ({ order: "single" })) };
   }
 
@@ -3355,12 +3358,12 @@ function nativeTemplateGeometry(
     // Vertex at the top (flat left/right sides) — the orientation ChemDraw stamps and the one
     // journals draw, so hotkey sprouts from the top/bottom vertices head vertically and the
     // side-vertex sprouts head out diagonally.
-    const atoms = regularNativeRingAtoms(center, 6, -Math.PI / 2);
+    const atoms = regularNativeRingAtoms(center, 6, -Math.PI / 2, bondLengthPx);
     return { atoms, bonds: nativeRingBonds(atoms, () => ({ order: "single" })) };
   }
 
   if (templateId === "benzene") {
-    const atoms = regularNativeRingAtoms(center, 6, -Math.PI / 2);
+    const atoms = regularNativeRingAtoms(center, 6, -Math.PI / 2, bondLengthPx);
     return {
       atoms,
       bonds: nativeRingBonds(atoms, (index, fromAtom, toAtom) => {
@@ -3376,10 +3379,10 @@ function nativeTemplateGeometry(
     };
   }
 
-  return nativeChairCyclohexaneGeometry(center, templateId === "chairCyclohexaneB");
+  return nativeChairCyclohexaneGeometry(center, templateId === "chairCyclohexaneB", bondLengthPx);
 }
 
-function regularNativeRingAtoms(center: PagePoint, size: number, rotation: number): MoleculeAtom[] {
+function regularNativeRingAtoms(center: PagePoint, size: number, rotation: number, nativeBondLength: number): MoleculeAtom[] {
   const radius = nativeBondLength / (2 * Math.sin(Math.PI / size));
   return Array.from({ length: size }, (_, index) => {
     const angle = rotation + index * Math.PI * 2 / size;
@@ -3395,9 +3398,10 @@ function regularNativeRingAtoms(center: PagePoint, size: number, rotation: numbe
 
 function nativeChairCyclohexaneGeometry(
   center: PagePoint,
-  reflected: boolean
+  reflected: boolean,
+  bondLengthPx: number
 ): { atoms: MoleculeAtom[]; bonds: MoleculeBond[] } {
-  const atoms = nativeChairCyclohexaneBasePoints(reflected).map((point, index) => ({
+  const atoms = nativeChairCyclohexaneBasePoints(reflected, bondLengthPx).map((point, index) => ({
     id: `atom_${String(index + 1).padStart(3, "0")}`,
     element: "C",
     ...offsetPoint(center, point),
@@ -3407,7 +3411,7 @@ function nativeChairCyclohexaneGeometry(
   return { atoms, bonds: nativeRingBonds(atoms, () => ({ order: "single" })) };
 }
 
-function nativeChairCyclohexaneBasePoints(reflected: boolean): PagePoint[] {
+function nativeChairCyclohexaneBasePoints(reflected: boolean, nativeBondLength: number = nativeBondLengthPx): PagePoint[] {
   const points: PagePoint[] = [{ x: 0, y: 0 }];
 
   nativeChairCyclohexaneDirections(reflected).slice(0, -1).forEach((degrees) => {
@@ -4713,7 +4717,7 @@ export function convertNativeTextObjectToAtom(
     rotation: 0,
     transform: defaultNativeMoleculeTransform,
     style: {
-      ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+      ...documentDrawingDefaults(document).objectStyle,
       source: "chemdraft-native-drawing"
     },
     compatibility: {
@@ -5031,7 +5035,8 @@ export function createNativeMolfileMolecule(
   }
 
   const page = firstPage(document);
-  const atoms = scaleParsedMolfileAtoms(graph, point, page).map((atom) => ({
+  const { bondLengthPx, objectStyle } = documentDrawingDefaults(document);
+  const atoms = scaleParsedMolfileAtoms(graph, point, page, bondLengthPx).map((atom) => ({
     id: atom.id,
     element: atom.element,
     x: atom.x,
@@ -5068,7 +5073,7 @@ export function createNativeMolfileMolecule(
     rotation: 0,
     transform: defaultNativeMoleculeTransform,
     style: {
-      ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+      ...objectStyle,
       source: "clipboard-molfile"
     },
     compatibility: {
@@ -18862,7 +18867,7 @@ function createClipboardTextStructureMolecule(
     rotation: 0,
     transform: defaultNativeMoleculeTransform,
     style: {
-      ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
+      ...documentDrawingDefaults(document).objectStyle,
       source: "clipboard-chemical-text"
     },
     compatibility: {

@@ -1,10 +1,10 @@
 import {
-  applyPatch, ChemDraftSyntheticStylePreset, stylePresetToObjectStyle, DocumentObjectSchema, type Anchor, type ChemDraftDocument,
+  applyPatch, DocumentObjectSchema, type Anchor, type ChemDraftDocument,
   type DocumentObject, type DocumentPatch, type MoleculeObject, type NativeTextStyle
 } from "@chemdraft/chem-core";
 import {
   createNativeTextObject, layoutReactionScheme, nextObjectId,
-  nativeTextObjectSizeForText, smilesPasteBondLengthPx, stereoPerceptionMolfile,
+  nativeTextObjectSizeForText, documentDrawingDefaults, stereoPerceptionMolfile,
   nativeAtomLabelReading, nativeSingleBondGraphMetadata, nativeSingleBondGraphSmiles,
   normalizeNativeMoleculeGeometry, defaultNativeMoleculeTransform
 } from "@chemdraft/document-workflow-core";
@@ -97,7 +97,7 @@ async function buildMolecule(context: AssistantToolContext, smiles: string): Pro
 }
 
 /** A typed native label, with the same literal-atom semantics and warnings as the canvas. */
-function buildGroup(label: string): MoleculeObject {
+function buildGroup(document: ChemDraftDocument, label: string): MoleculeObject {
   const reading = nativeAtomLabelReading(label, { bonded: false, typed: true });
   if (!["group", "spelled", "formula"].includes(reading.kind)) {
     throw new Error(`Unknown standalone group label "${label}". Use an abbreviation or condensed formula such as CH3, Me, Ph, Boc, OTs or OMe; placeholders and bare element symbols are not groups.`);
@@ -106,7 +106,7 @@ function buildGroup(label: string): MoleculeObject {
   return normalizeNativeMoleculeGeometry({
     id: "group", type: "molecule", x: 0, y: 0, width: 0, height: 0, rotation: 0,
     transform: { ...defaultNativeMoleculeTransform },
-    style: { ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset), source: "chemdraft-native-drawing" },
+    style: { ...documentDrawingDefaults(document).objectStyle, source: "chemdraft-native-drawing" },
     compatibility: { sourceFormat: "chemdraft-native", warnings: [], unknown: {} },
     structureFormat: "smiles", structure: nativeSingleBondGraphSmiles(atoms, []),
     chemistry: nativeSingleBondGraphMetadata(atoms, []), atoms, bonds: [], superatoms: [], rGroups: []
@@ -198,7 +198,7 @@ function freshObjects(document: ChemDraftDocument, objects: readonly DocumentObj
   });
 }
 function assistantText(document: ChemDraftDocument, text: string, style: Partial<NativeTextStyle> = {}) {
-  const object = createNativeTextObject(document, { x: 0, y: 0 }, text, style);
+  const object = createNativeTextObject(document, { x: 0, y: 0 }, text, { ...documentDrawingDefaults(document).textStyle, ...style });
   // Wrap captions at the content width, never at the outer paper edge. Only text boxes reflow;
   // molecule geometry and the document's bond length are untouched.
   const maxWidth = pageContentRect(document.pages[0]!).width;
@@ -242,7 +242,7 @@ export async function buildInsertStructures(context: AssistantToolContext, raw: 
   const sourceMolecules: MoleculeObject[] = [];
   for (const item of input.items) {
     if (item.kind === "molecule") sourceMolecules.push(await buildMolecule(context, item.smiles));
-    if (item.kind === "group") sourceMolecules.push(buildGroup(item.label));
+    if (item.kind === "group") sourceMolecules.push(buildGroup(document, item.label));
   }
   const columns = input.arrangement === "row" ? input.items.length : Math.ceil(Math.sqrt(input.items.length));
   let moleculeIndex = 0;
@@ -313,7 +313,7 @@ export async function buildInsertReaction(context: AssistantToolContext, raw: un
   const scheme = layoutReactionScheme({ reactants: components.slice(0, input.reactants.length), products: components.slice(input.reactants.length),
     arrowKind: input.arrowKind === "retrosynthetic" ? "retrosynthesis" : input.arrowKind,
     conditionText: [...input.reagents ?? [], ...input.conditions ?? []].join("; "),
-    anchor: { x: ASSISTANT_MARGIN, y: 200 }, gutter: ASSISTANT_GAP, bondLength: smilesPasteBondLengthPx, pagePadding: ASSISTANT_MARGIN });
+    anchor: { x: ASSISTANT_MARGIN, y: 200 }, gutter: ASSISTANT_GAP, bondLength: documentDrawingDefaults(document).bondLengthPx, pagePadding: ASSISTANT_MARGIN });
   if (scheme.condition) {
     // The shared arrow length budgets a 240px wrapping label. Keep its native text box at
     // that same size even when the full reaction page is much wider.

@@ -2,6 +2,7 @@ import { Resvg } from "@resvg/resvg-js";
 
 import {
   createEmptyDocument,
+  stylePresetToObjectStyle,
   DocumentStylePreset,
   isDativeBond,
   moleculeToMolfileV2000,
@@ -41,12 +42,14 @@ import {
   moleculeSmiles,
   insertSmilesMolecule,
   pastedStructureDepictionFromMolfile,
-  smilesPasteBondLengthPx,
   type PastedStructureDepiction
 } from "@chemdraft/document-workflow-core";
 
 import { installNodeEngines } from "./engine";
 import { depictSmilesWithDeadline } from "./depictionClient";
+
+// CLI figures retain their established fit-style size independently of canvas defaults.
+const CLI_DEFAULT_BOND_LENGTH_PX = 28;
 
 export type RenderBackground = "white" | "transparent";
 export type DepictionEngine = "rdkit" | "ocl";
@@ -929,7 +932,7 @@ export async function buildSmilesDocument(
 
   const name = options.name ?? "structure";
   const bondLength = options.style === "document" ? DocumentStylePreset.drawing.bondLengthPx
-    : finitePositive(options.bondLength ?? smilesPasteBondLengthPx, "Bond length");
+    : finitePositive(options.bondLength ?? CLI_DEFAULT_BOND_LENGTH_PX, "Bond length");
   const depicted = await depictSmiles(trimmedSmiles);
   let document = createEmptyDocument({ title: name });
   const page = document.pages[0];
@@ -938,12 +941,15 @@ export async function buildSmilesDocument(
     document,
     { x: page.width / 2, y: page.height / 2 },
     depicted.depiction,
-    trimmedSmiles
+    trimmedSmiles,
+    { bondLengthPx: CLI_DEFAULT_BOND_LENGTH_PX,
+      ...(options.style === "document" ? { objectStyle: stylePresetToObjectStyle(DocumentStylePreset) } : {}) }
   );
   let molecule = moleculeFromDocument(document);
   molecule = withDativeBondStyles(molecule, depicted.dativeBondIndices);
   document = replaceMolecule(document, molecule);
-  if (Math.abs(bondLength - smilesPasteBondLengthPx) > 0.0001) {
+  // Retain the CLI's established mean-then-median scaling and rounding for identical output.
+  if (Math.abs(bondLength - CLI_DEFAULT_BOND_LENGTH_PX) > 0.0001) {
     document = applyMoleculeTargetBondLength(document, [molecule.id], bondLength);
     molecule = moleculeFromDocument(document);
   }
@@ -995,7 +1001,7 @@ export async function renderSmilesToAssets(
 ): Promise<RenderedSmiles> {
   const name = options.name ?? "structure";
   const width = finitePositive(options.width ?? DEFAULT_WIDTH, "PNG width");
-  const bondLength = finitePositive(options.bondLength ?? smilesPasteBondLengthPx, "Bond length");
+  const bondLength = finitePositive(options.bondLength ?? CLI_DEFAULT_BOND_LENGTH_PX, "Bond length");
   const padding = finiteNonNegative(options.padding ?? DEFAULT_PADDING, "Padding");
   const background = options.background ?? "white";
   if (background !== "white" && background !== "transparent") {
@@ -1030,6 +1036,6 @@ export async function renderSmilesToAssets(
 export const renderDefaults = {
   width: DEFAULT_WIDTH,
   padding: DEFAULT_PADDING,
-  bondLength: smilesPasteBondLengthPx,
+  bondLength: CLI_DEFAULT_BOND_LENGTH_PX,
   background: "white" as const
 };

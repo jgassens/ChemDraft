@@ -496,7 +496,8 @@ describe("assistant requests and MCP bridge", () => {
       const pending = s.controller.callTool(s.plugin, { name: "move_objects", input });
       await vi.waitFor(() => expect(s.gate.pending()).toBe(1));
       const before = s.context.getDocument()!;
-      const withMark = applyChargeToolAtPoint(before, 1, { x: atom.x - 30, y: atom.y });
+      // Keep the mark within the molecule-scaled association radius at the new 22px default.
+      const withMark = applyChargeToolAtPoint(before, 1, { x: atom.x - 30 * 22 / 28, y: atom.y });
       s.port.push(s.context.tabId, before, withMark, "Draw charge");
       s.userEdits.forEach(listener => listener(s.context.tabId));
       s.gesture.active = false;

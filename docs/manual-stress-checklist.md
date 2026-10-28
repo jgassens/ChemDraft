@@ -790,3 +790,9 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
   again. Repeat an Export that needs a picker. Close the source tab while the picker is open and
   confirm no closed or newly reopened Export receives focus. Switch to another app before the
   picker completes and confirm ChemDraft does not take foreground.
+
+## Inserted drawing defaults
+
+Draw a bond, then paste a SMILES and insert a structure through a plugin and through the
+assistant. All four must have the same bond length, line width and atom-label size. An assistant
+caption must use the atom-label size. Existing structures on the page must not change size.
