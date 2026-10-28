@@ -1,15 +1,17 @@
 import { afterAll, describe, expect, it } from 'vitest';
-import { readFileSync, mkdtempSync, writeFileSync, rmSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, mkdtempSync, writeFileSync, rmSync, readdirSync, statSync, symlinkSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { deflateRawSync } from 'node:zlib';
 import { makeEnvelope, checkEnvelope, sha256, MAX_ENVELOPE } from './payload.mjs';
-import { chunks, makePng, pngFindings, crc32 } from './png.mjs';
+import { chunks, chunk, makePng, pngFindings, crc32 } from './png.mjs';
 import { makeSvg, svgFindings } from './svg.mjs';
 import { readZip } from './zip.mjs';
-import { makePdf, readPdf } from './pdf.mjs';
+import { makePdf, readPdf, pdfFindings } from './pdf.mjs';
 import { inspectBlob, inspectPath } from './inspect.mjs';
 import { makeCarriers } from './make-carriers.mjs';
+import { makeCfHtml } from './cf-html.mjs';
 
 const payload = '{"name":"caffeine"}';
 const envelope = makeEnvelope(payload);
@@ -47,12 +49,35 @@ describe('office spike primitives', () => {
     const replaced = makePng(existing, envelope, 'zTXt', 384);
     expect(chunks(replaced).filter(item => item.type === 'pHYs')).toHaveLength(1);
     expect(pngFindings(replaced).dpi[0]).toBeCloseTo(384, 1);
+    expect(pngFindings(replaced).found).toHaveLength(1);
+    const changed = makePng(replaced, makeEnvelope('{}'), 'iTXt');
+    expect(pngFindings(changed).found).toHaveLength(1);
+    expect(checkEnvelope(pngFindings(changed).found[0].envelope).sha256).toBe(sha256('{}'));
   });
   it('rejects truncated PNG and invalid ZIP', () => {
     expect(() => chunks(png.subarray(0, png.length - 1))).toThrow();
     expect(() => readZip(Buffer.from('PK'))).toThrow();
   });
 });
+
+function carrierContents(bytes: Buffer, type: string) {
+  if (type === 'png') return {
+    payloads: pngFindings(bytes).found.map(f => JSON.parse(f.envelope.toString())),
+    records: chunks(bytes).map(c => ({ type: c.type, data: ['zTXt', 'iTXt'].includes(c.type) ? c.data.subarray(0, c.type === 'zTXt' ? 11 : 14) : c.data })),
+  };
+  if (type === 'svg') return {
+    payloads: svgFindings(bytes).map(f => JSON.parse(f.envelope.toString())),
+    records: bytes.toString().replace(/(encoding="base64-deflate">)[A-Za-z0-9+/=]+/g, '$1PAYLOAD').replace(/(<!-- chemdraft:)[A-Za-z0-9+/=]+/g, '$1PAYLOAD'),
+  };
+  const parsed = readPdf(bytes);
+  return {
+    payloads: pdfFindings(bytes).map(f => JSON.parse(f.envelope.toString())),
+    records: [...parsed.objects].map(([id, record]) => [id, record?.gen ?? null]),
+    catalog: [...parsed.catalog].map(([key, value]) => [key, value.raw]),
+    trailer: [...parsed.trailer].map(([key, value]) => [key, value.raw]),
+    original: bytes.subarray(0, pdf.length),
+  };
+}
 
 function zip(entries: { name: string; data: Buffer; deflate?: boolean }[]) {
   const locals: Buffer[] = [], centrals: Buffer[] = []; let offset = 0;
@@ -98,8 +123,9 @@ describe('complete carrier matrix', () => {
     for (const item of manifest) {
       const bytes = readFileSync(join(out, item.file));
       expect(sha256(bytes)).toBe(item.sha256);
-      expect(bytes.equals(readFileSync(join(fixtureDir, 'carriers', item.file)))).toBe(true);
       const row = inspectBlob(bytes, item.file, item.file, expected);
+      const committed = readFileSync(join(fixtureDir, 'carriers', item.file));
+      expect(carrierContents(bytes, row.type)).toEqual(carrierContents(committed, row.type));
       expect(row.error).toBeNull();
       expect(row.findings).toHaveLength(1);
       expect(row.findings[0]).toMatchObject({ envelope: { ok: true, sha256: expected }, matchesExpect: true });
@@ -222,6 +248,132 @@ it('detects EMF GDI comment envelopes, unknown marker encodings and corrupt reco
   for (const data of [Buffer.concat([Buffer.from('chemdraft\0'), envelope]), Buffer.from('chemdraft:' + deflateRawSync(envelope).toString('base64'))]) {
     expect(inspectBlob(emf(data), 'sample.emf').findings[0]).toMatchObject({ carrier: 'emf GDI comment', envelope: { ok: true } });
   }
-  expect(inspectBlob(emf(Buffer.from('chemdraft unknown')), 'unknown.emf').findings[0].error).toMatch(/unknown/);
+  expect(inspectBlob(emf(Buffer.from('chemdraft:\u0001unknown')), 'unknown.emf').findings[0].error).toMatch(/unknown/);
+  for (const creator of ['Created by ChemDraft', 'chemdraft is the creator']) {
+    expect(inspectBlob(emf(Buffer.from(creator)), 'creator.emf')).toMatchObject({ error: null, findings: [] });
+  }
+  expect(inspectBlob(emf(envelope), 'json.emf').findings[0].envelope.ok).toBe(true);
   expect(inspectBlob(emf(envelope).subarray(0, -1), 'truncated.emf').error).toMatch(/truncated/);
+});
+
+function pngText(type: string, data: Buffer) {
+  return Buffer.concat([png.subarray(0, 8), ...chunks(png).flatMap(c => c.type === 'IEND'
+    ? [chunk(type, data), chunk(c.type, c.data)] : [chunk(c.type, c.data)])]);
+}
+
+it.each([
+  ['tEXt', Buffer.concat([Buffer.from('chemdraft\0'), envelope])],
+  ['iTXt', Buffer.concat([Buffer.from('chemdraft\0\x00\x00en\0translated keyword\0'), envelope])],
+])('reads uncompressed PNG %s payloads and replaces existing payload chunks', (type, data) => {
+  const bytes = pngText(type, data);
+  const found = pngFindings(bytes).found;
+  expect(found).toHaveLength(1);
+  expect(found[0].envelope.equals(envelope)).toBe(true);
+  expect(inspectBlob(bytes, 'uncompressed.png').findings[0].envelope.ok).toBe(true);
+  const replaced = makePng(bytes, makeEnvelope('{}'), 'zTXt');
+  expect(pngFindings(replaced).found).toHaveLength(1);
+  expect(checkEnvelope(pngFindings(replaced).found[0].envelope).sha256).toBe(sha256('{}'));
+});
+
+it.each(['element', 'root', 'ancestor', 'default'])('reads SVG prologs, arbitrary prefixes and %s namespace bindings', scope => {
+  const ns = 'https://chemdraft.ai/ns/spike/1';
+  const encoded = deflateRawSync(envelope).toString('base64');
+  const prefix = scope === 'default' ? '' : 'cd:';
+  const declaration = scope === 'default' ? `xmlns='${ns}'` : `xmlns:cd='${ns}'`;
+  const content = `<${prefix}payload encoding='base64-deflate' ${scope === 'element' || scope === 'default' ? declaration : ''}>${encoded}</${prefix}payload>`;
+  const prolog = ` \n<?xml version="1.0"?>\n<!--${'prolog '.repeat(500)}-->\n<?office test?>\n<!DOCTYPE svg [<!-- \" ] > --><!ENTITY unused SYSTEM "file:///must-not-read"><?dtd test?>]>\n`;
+  const text = `${prolog}<svg ${scope === 'root' ? declaration : ''}><metadata ${scope === 'ancestor' ? declaration : ''}>${content}</metadata></svg>`;
+  const row = inspectBlob(Buffer.from(text), 'variant.bin');
+  expect(row).toMatchObject({ type: 'svg', error: null });
+  expect(row.findings).toHaveLength(1);
+  expect(row.findings[0].envelope).toMatchObject({ ok: true, sha256: sha256(payload) });
+});
+
+it('reports SVG markers when structure or encoding is not recognised without expanding entities', () => {
+  const ns = 'https://chemdraft.ai/ns/spike/1';
+  for (const text of [
+    `<svg><payload xmlns="${ns}" encoding="unknown">chemdraft-spike</payload></svg>`,
+    '<!DOCTYPE svg [<!ENTITY payload SYSTEM "file:///must-not-read">]><svg><!--chemdraft-spike-->&payload;</svg>',
+    `<svg xmlns:x="${ns}"><g xmlns:x="wrong"><x:payload encoding="base64-deflate">AAAA</x:payload></g></svg>`,
+  ]) {
+    expect(inspectBlob(Buffer.from(text), 'unknown.svg')).toMatchObject({ error: null,
+      findings: [{ carrier: 'svg marker', note: 'marker present, structure not recognised' }] });
+  }
+});
+
+it.each(['word', 'ppt'])('inspects %s embeddings, including renamed carriers and undecoded OLE markers', host => {
+  const ole = Buffer.concat([Buffer.from('d0cf11e0a1b11ae1', 'hex'), Buffer.from('chemdraft-spike', 'utf16le')]);
+  const entries = [
+    { name: `${host}/embeddings/png.bin`, data: makePng(png, envelope, 'zTXt') },
+    { name: `${host}/embeddings/svg.bin`, data: makeSvg(svg, envelope, 'metadata') },
+    { name: `${host}/embeddings/pdf.bin`, data: makePdf(pdf, envelope, 'embedded') },
+    { name: `${host}/embeddings/emf.bin`, data: emf(envelope) },
+    { name: `${host}/embeddings/ole.bin`, data: ole },
+    { name: `${host}/_rels/document.xml.rels`, data: Buffer.from('<Relationships><Relationship Target="embeddings/ole.bin"/></Relationships>') },
+  ];
+  const path = join(temp, `${host}-embedded.zip`); writeFileSync(path, zip(entries));
+  const rows = inspectPath(path);
+  expect(rows).toHaveLength(5);
+  expect(rows.slice(0, 4).every(row => row.error === null && row.findings[0].envelope.ok)).toBe(true);
+  expect(rows[4]).toMatchObject({ guess: 'OLE compound file (not a ZIP)', references: [`${host}/document.xml`],
+    findings: [{ carrier: 'raw marker', note: 'marker present, container not decoded' }] });
+  expect(inspectBlob(Buffer.from('unrelated creator ChemDraft'), 'other.bin').findings).toEqual([]);
+});
+
+it.each([
+  ['png', makePng(png, envelope, 'zTXt')],
+  ['pdf', makePdf(pdf, envelope, 'embedded')],
+  ['json', envelope],
+  ['emf', emf(envelope)],
+])('accepts trailing NUL padding in %s and reports its length, while rejecting non-zero garbage', (kind, bytes) => {
+  const row = inspectBlob(Buffer.concat([bytes, Buffer.alloc(137)]), `padded.${kind}`);
+  expect(row.error).toBeNull();
+  expect(row.findings[0].envelope.ok).toBe(true);
+  expect(kind === 'json' ? row.findings[0].envelope.notes : row.notes).toEqual(['Trailing NUL padding: 137 bytes']);
+  const bad = inspectBlob(Buffer.concat([bytes, Buffer.from([0, 65, 0])]), `bad.${kind}`);
+  if (kind === 'json') expect(bad.findings[0].envelope.ok).toBe(false);
+  else expect(bad.error).toBeTruthy();
+});
+
+it('accepts padded ZIPs beyond the EOCD search window, retaining zero-ended comments and exact padding notes', () => {
+  const original = zip([{ name: 'word/embeddings/payload.bin', data: envelope }]);
+  const commented = Buffer.from(original); commented.writeUInt16LE(3, commented.length - 2);
+  const bytes = Buffer.concat([commented, Buffer.from([65, 0, 0])]);
+  const padded = Buffer.concat([bytes, Buffer.alloc(70000)]);
+  expect(readZip(bytes).notes).toBeUndefined();
+  expect(readZip(padded).notes).toEqual(['Trailing NUL padding: 70000 bytes']);
+  const path = join(temp, 'padded.docx'); writeFileSync(path, padded);
+  expect(inspectPath(path)[0]).toMatchObject({ error: null, notes: ['Trailing NUL padding: 70000 bytes'], findings: [{ envelope: { ok: true } }] });
+  expect(() => readZip(Buffer.concat([original, Buffer.from([0, 65, 0])]))).toThrow();
+  expect(checkEnvelope(Buffer.concat([envelope, Buffer.alloc(7)])).notes).toEqual(['Trailing NUL padding: 7 bytes']);
+});
+
+it('builds CF_HTML with 10-digit byte offsets, CRLF header lines and unchanged UTF-8 HTML', () => {
+  for (const html of [readFileSync(join(fixtureDir, 'sample.html')), Buffer.from('<html>π😀\n<!--StartFragment--><p>é → 文</p><!--EndFragment-->\n</html>')]) {
+    const bytes = makeCfHtml(html);
+    const header = /^(Version:0\.9\r\nStartHTML:(\d{10})\r\nEndHTML:(\d{10})\r\nStartFragment:(\d{10})\r\nEndFragment:(\d{10})\r\n)/.exec(bytes.toString())!;
+    expect(header).not.toBeNull();
+    const [start, end, fragmentStart, fragmentEnd] = header.slice(2).map(Number);
+    expect(start).toBe(Buffer.byteLength(header[1]));
+    expect(end).toBe(bytes.length);
+    expect(bytes.subarray(start, end).equals(html)).toBe(true);
+    expect(fragmentStart).toBe(start + html.indexOf('<!--StartFragment-->') + Buffer.byteLength('<!--StartFragment-->'));
+    expect(fragmentEnd).toBe(start + html.indexOf('<!--EndFragment-->'));
+    expect(bytes.subarray(fragmentStart, fragmentEnd).toString()).toMatch(/^<p>.*<\/p>$/);
+  }
+  for (const bad of ['<p>missing</p>', '<!--StartFragment-->only start', '<!--EndFragment--><!--StartFragment-->']) {
+    expect(() => makeCfHtml(Buffer.from(bad))).toThrow(/markers/);
+  }
+});
+
+it('runs both CLIs through a symlinked directory (a junction on Windows)', () => {
+  const link = join(temp, 'linked-tools');
+  symlinkSync(resolve('scripts/office-spike'), link, process.platform === 'win32' ? 'junction' : 'dir');
+  const inspect = spawnSync(process.execPath, [join(link, 'inspect.mjs'), join(fixtureDir, 'sample-envelope.json'), '--json'], { encoding: 'utf8' });
+  expect(inspect.status, inspect.stderr).toBe(0);
+  expect(JSON.parse(inspect.stdout)[0].findings[0].envelope.ok).toBe(true);
+  const out = join(temp, 'symlink-carriers');
+  const make = spawnSync(process.execPath, [join(link, 'make-carriers.mjs'), '--payload', join(fixtureDir, 'sample-document.json'), '--png', join(fixtureDir, 'sample.png'), '--svg', join(fixtureDir, 'sample.svg'), '--pdf', join(fixtureDir, 'sample.pdf'), '--out', out], { encoding: 'utf8' });
+  expect(make.status, make.stderr).toBe(0);
+  expect(JSON.parse(readFileSync(join(out, 'manifest.json'), 'utf8'))).toHaveLength(8);
 });

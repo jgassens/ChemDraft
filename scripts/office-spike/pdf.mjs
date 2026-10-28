@@ -1,5 +1,5 @@
 import { deflateSync, inflateSync } from 'node:zlib';
-import { MAX_ENVELOPE } from './payload.mjs';
+import { MAX_ENVELOPE, trailingNuls, paddingNotes } from './payload.mjs';
 
 // Deliberately small PDF reader: classic xrefs, no object streams or encryption.
 function parser(text, start = 0) {
@@ -58,6 +58,8 @@ const dictionary = entries => `<<\n${[...entries].map(([key, v]) => `/${key.repl
 const dict = v => { if (v?.type !== 'dict') throw new Error('Expected PDF dictionary'); return v.entries; };
 
 export function readPdf(buf) {
+  const padding = trailingNuls(buf);
+  buf = buf.subarray(0, buf.length - padding);
   const text = buf.toString('latin1');
   if (!text.startsWith('%PDF-')) throw new Error('Invalid PDF signature');
   const end = /startxref\s+(\d+)\s+%%EOF\s*$/.exec(text);
@@ -115,7 +117,7 @@ export function readPdf(buf) {
     return inflateSync(bytes, { maxOutputLength: MAX_ENVELOPE });
   }
   const catalogRef = trailer.get('Root'), catalog = dict(resolve(catalogRef));
-  return { text, xref, objects, trailer, catalogRef, catalog, resolve, stream };
+  return { text, xref, objects, trailer, catalogRef, catalog, resolve, stream, notes: paddingNotes(padding) };
 }
 
 function namePairs(pdf, node, seen = new Set()) {
@@ -166,6 +168,7 @@ export function makePdf(buf, envelope, kind) {
 
 export function pdfFindings(buf) {
   const pdf = readPdf(buf), result = [];
+  if (pdf.notes.length) result.notes = pdf.notes;
   const take = (carrier, ref) => { try { result.push({ carrier, envelope: pdf.stream(ref) }); } catch (error) { result.push({ carrier, error: error.message }); } };
   if (pdf.catalog.has('ChemDraftPayload')) take('pdf catalog key', pdf.catalog.get('ChemDraftPayload'));
   if (pdf.catalog.has('Names')) {

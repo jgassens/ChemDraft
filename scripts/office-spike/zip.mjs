@@ -1,5 +1,6 @@
 import { inflateRawSync } from 'node:zlib';
 import { crc32 } from './png.mjs';
+import { trailingNuls, paddingNotes } from './payload.mjs';
 
 export const MAX_ENTRIES = 2000;
 export const MAX_INFLATED = 200 * 1024 * 1024;
@@ -15,9 +16,12 @@ function checkExtra(buf, start, length) {
 }
 
 export function readZip(buf) {
-  let eocd = -1;
-  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65557); i--) {
-    if (buf.readUInt32LE(i) === 0x06054b50 && i + 22 + buf.readUInt16LE(i + 20) === buf.length) { eocd = i; break; }
+  let eocd = -1, end = -1;
+  const nonzeroEnd = buf.length - trailingNuls(buf);
+  for (let i = Math.min(buf.length - 22, nonzeroEnd); i >= Math.max(0, nonzeroEnd - 65557); i--) {
+    if (buf.readUInt32LE(i) !== 0x06054b50) continue;
+    const candidateEnd = i + 22 + buf.readUInt16LE(i + 20);
+    if (candidateEnd <= buf.length && candidateEnd >= nonzeroEnd) { eocd = i; end = candidateEnd; break; }
   }
   if (eocd < 0) throw new Error('Missing or truncated ZIP central directory');
   const count = buf.readUInt16LE(eocd + 10), size = buf.readUInt32LE(eocd + 12), offset = buf.readUInt32LE(eocd + 16);
@@ -54,5 +58,6 @@ export function readZip(buf) {
     entries.push({ name, data }); p += 46 + nameLength + extra + comment;
   }
   if (p !== offset + size) throw new Error('Invalid ZIP central directory size');
+  if (end < buf.length) entries.notes = paddingNotes(buf.length - end);
   return entries;
 }

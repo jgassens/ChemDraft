@@ -1,5 +1,5 @@
 import { deflateSync, inflateSync } from 'node:zlib';
-import { MAX_ENVELOPE } from './payload.mjs';
+import { MAX_ENVELOPE, trailingNuls, paddingNotes } from './payload.mjs';
 
 const signature = Buffer.from('89504e470d0a1a0a', 'hex');
 export function crc32(data) {
@@ -29,13 +29,15 @@ export function chunks(buf) {
     result.push({ type, data }); p += n + 12;
     if (type === 'IEND') break;
   }
-  if (result[0]?.type !== 'IHDR' || result.at(-1)?.type !== 'IEND' || p !== buf.length) throw new Error('Invalid PNG chunk order');
+  if (result[0]?.type !== 'IHDR' || result.at(-1)?.type !== 'IEND' || trailingNuls(buf.subarray(p)) !== buf.length - p) throw new Error('Invalid PNG chunk order or trailing bytes');
+  if (p < buf.length) result.notes = paddingNotes(buf.length - p);
   return result;
 }
 export function makePng(buf, envelope, kind, dpi) {
   const compressed = deflateSync(envelope);
   const content = kind === 'iTXt' ? Buffer.concat([Buffer.from('chemdraft\0\x01\x00\0\0'), compressed]) : Buffer.concat([Buffer.from('chemdraft\0\x00'), compressed]);
-  const parts = chunks(buf).filter(c => !dpi || c.type !== 'pHYs');
+  const parts = chunks(buf).filter(c => (!dpi || c.type !== 'pHYs') &&
+    !(['tEXt', 'zTXt', 'iTXt'].includes(c.type) && c.data.subarray(0, 10).equals(Buffer.from('chemdraft\0'))));
   const output = [signature];
   for (const item of parts) {
     if (item.type === 'IEND') output.push(chunk(kind, content));
@@ -53,16 +55,19 @@ export function pngFindings(buf) {
   let dpi = null;
   for (const { type, data } of list) {
     if (type === 'pHYs' && data.length === 9 && data[8] === 1) dpi = [data.readUInt32BE(0) * 0.0254, data.readUInt32BE(4) * 0.0254];
-    if (!['zTXt', 'iTXt'].includes(type) || !data.subarray(0, 10).equals(Buffer.from('chemdraft\0'))) continue;
+    if (!['tEXt', 'zTXt', 'iTXt'].includes(type) || !data.subarray(0, 10).equals(Buffer.from('chemdraft\0'))) continue;
     try {
-      let offset = 11;
+      let offset = type === 'tEXt' ? 10 : 11, compressed = type !== 'tEXt';
       if (type === 'iTXt') {
-        if (data[10] !== 1 || data[11] !== 0) throw new Error('Unsupported iTXt compression');
+        if (![0, 1].includes(data[10]) || data[11] !== 0) throw new Error('Unsupported iTXt compression');
+        compressed = data[10] === 1;
         offset = 12;
         for (let i = 0; i < 2; i++) { offset = data.indexOf(0, offset); if (offset < 0) throw new Error('Malformed iTXt'); offset++; }
-      } else if (data[10] !== 0) throw new Error('Unsupported zTXt compression');
-      found.push({ carrier: `png ${type}`, envelope: inflateSync(data.subarray(offset), { maxOutputLength: MAX_ENVELOPE }) });
+      } else if (type === 'zTXt' && data[10] !== 0) throw new Error('Unsupported zTXt compression');
+      const envelope = compressed ? inflateSync(data.subarray(offset), { maxOutputLength: MAX_ENVELOPE }) : data.subarray(offset);
+      if (envelope.length > MAX_ENVELOPE) throw new Error('PNG envelope exceeds 20 MB');
+      found.push({ carrier: `png ${type}`, envelope });
     } catch (error) { found.push({ carrier: `png ${type}`, error: error.message }); }
   }
-  return { width: ihdr.readUInt32BE(0), height: ihdr.readUInt32BE(4), dpi, found };
+  return { width: ihdr.readUInt32BE(0), height: ihdr.readUInt32BE(4), dpi, found, notes: list.notes ?? [] };
 }

@@ -32,7 +32,8 @@ function Open-Board([IntPtr]$owner) {
 }
 function Make-Dib([string]$path) {
   Add-Type -AssemblyName System.Drawing
-  $bitmap = New-Object System.Drawing.Bitmap($path)
+  $resolved = (Resolve-Path -LiteralPath $path).Path
+  $bitmap = New-Object System.Drawing.Bitmap($resolved)
   try {
     $width = $bitmap.Width; $height = $bitmap.Height
     if ([long]$width * $height * 4 -gt 209715076) { throw 'DIBV5 exceeds 200 MB' }
@@ -51,6 +52,25 @@ function Make-Dib([string]$path) {
     return ,$stream.ToArray()
   } finally { $bitmap.Dispose(); if ($writer) { $writer.Dispose() }; if ($stream) { $stream.Dispose() } }
 }
+# Reference implementation and byte-offset tests: cf-html.mjs / spike.test.ts.
+function Make-CfHtml([byte[]]$html) {
+  $utf8 = New-Object System.Text.UTF8Encoding($false, $true)
+  $text = $utf8.GetString($html)
+  $startMarker = '<!--StartFragment-->'; $endMarker = '<!--EndFragment-->'
+  $start = $text.IndexOf($startMarker, [StringComparison]::Ordinal)
+  if ($start -lt 0) { throw 'HTML requires ordered <!--StartFragment--> and <!--EndFragment--> markers' }
+  $fragmentStart = $start + $startMarker.Length
+  $end = $text.IndexOf($endMarker, $fragmentStart, [StringComparison]::Ordinal)
+  if ($end -lt 0) { throw 'HTML requires ordered <!--StartFragment--> and <!--EndFragment--> markers' }
+  $template = "Version:0.9`r`nStartHTML:{0:D10}`r`nEndHTML:{1:D10}`r`nStartFragment:{2:D10}`r`nEndFragment:{3:D10}`r`n"
+  $offset = $utf8.GetByteCount(($template -f 0, 0, 0, 0))
+  $endHtml = [long]$offset + $html.Length
+  if ($endHtml -gt 9999999999) { throw 'CF_HTML offset exceeds 10 digits' }
+  $startFragment = [long]$offset + $utf8.GetByteCount($text.Substring(0, $fragmentStart))
+  $endFragment = [long]$offset + $utf8.GetByteCount($text.Substring(0, $end))
+  $header = $utf8.GetBytes(($template -f $offset, $endHtml, $startFragment, $endFragment))
+  return ,([byte[]]($header + $html))
+}
 $owner = [SpikeClipboard]::CreateWindowEx(0, 'STATIC', 'ChemDraft clipboard spike', 0, 0, 0, 0, 0, [IntPtr](-3), [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero)
 if ($owner -eq [IntPtr]::Zero) { throw 'Cannot create clipboard owner window' }
 $opened = $false
@@ -65,6 +85,7 @@ try {
         'CF_UNICODETEXT' { $format = 13; $text = [System.IO.File]::ReadAllText((Resolve-Path -LiteralPath $path)); $bytes = [System.Text.Encoding]::Unicode.GetBytes(($text -replace "`r?`n", "`r`n") + [char]0) }
         'CF_DIBV5' { $format = 17; $bytes = Make-Dib $path }
         'CF_ENHMETAFILE' { $format = 14; $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $path)); $emf = $true }
+        'HTML Format' { $format = [SpikeClipboard]::RegisterClipboardFormat($name); $bytes = Make-CfHtml ([System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $path))) }
         default {
           if ($name -notin @('PNG', 'image/png', 'image/svg+xml', 'application/pdf', 'PDF', 'application/x-chemdraft-selection+json')) { throw "Unsupported write format: $name" }
           $format = [SpikeClipboard]::RegisterClipboardFormat($name); $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $path))
