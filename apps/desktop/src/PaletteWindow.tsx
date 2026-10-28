@@ -10,7 +10,8 @@ import {
   type ToolbarPopoverAnchor
 } from "./ToolPalette";
 import { writeClipboardTextItems } from "./clipboard";
-import { allShellCommands, type CommandSpec } from "./commands";
+import { allShellCommands, drawnStructureSettingsToolsetId, type CommandSpec } from "./commands";
+import { createTableInspectorModel, type TableInspectorControl, type TableInspectorModel, type TableInspectorSnapshot } from "./tableInspectorModel";
 import { createPhase4Document } from "./documentWorkflow";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import { applyKeybindingSchemeToCommands } from "./keybindingScheme";
@@ -169,6 +170,7 @@ export function PaletteWindow({
   const [currentArtStyle, setCurrentArtStyle] = useState<ToolsetArtStylePayload | undefined>();
   const [currentArtStyleTarget, setCurrentArtStyleTarget] = useState<ToolsetArtPaintTarget>("fill");
   const [currentMoleculeInspector, setCurrentMoleculeInspector] = useState<ToolsetMoleculeInspectorPayload | undefined>();
+  const [currentTable, setCurrentTable] = useState<TableInspectorSnapshot | undefined>();
   const [currentSelection, setCurrentSelection] = useState<ToolbarSelectionModel | undefined>();
   const [currentMolecularInspector, setCurrentMolecularInspector] = useState<AnalysisReport | undefined>();
   const [molecularInspectorBusy, setMolecularInspectorBusy] = useState(false);
@@ -503,6 +505,7 @@ export function PaletteWindow({
       setCurrentArtStyle(payload.currentArtStyle);
       setCurrentArtStyleTarget(payload.currentArtStyle?.activePaintTarget ?? payload.currentArtStyleTarget ?? "fill");
       setCurrentMoleculeInspector(payload.currentMoleculeInspector);
+      setCurrentTable(payload.currentTable);
       // Version skew degrades to the pre-variant behavior: an unknown kind reads as no selection
       // model at all rather than freezing the palette on a rejected payload.
       setCurrentSelection(
@@ -978,6 +981,12 @@ export function PaletteWindow({
     );
   };
 
+  // The Table section lives in the Drawn Structure Settings inspector window and exists only while a
+  // table is selected. Availability comes from the same command specs the toolbars use.
+  const tableInspector = toolsetId === drawnStructureSettingsToolsetId
+    ? createTableInspectorModel(currentTable, (commandId) => commandOverrides.get(commandId))
+    : undefined;
+
   return (
     <main
       ref={shellRef}
@@ -1038,6 +1047,89 @@ export function PaletteWindow({
       ) : (
         renderPalette(paletteGroups)
       )}
+      {tableInspector ? <TableInspectorSections model={tableInspector} onInvoke={invokeCommand} /> : null}
     </main>
+  );
+}
+
+function TableInspectorSections({ model, onInvoke }: { model: TableInspectorModel; onInvoke: (commandId: string) => void }) {
+  const renderControl = (control: TableInspectorControl) => {
+    const blockPointer = (event: PointerEvent) => event.stopPropagation();
+    switch (control.kind) {
+      case "readout":
+        return (
+          <div className="molecule-inspector-field" key={control.id} data-table-control={control.id}>
+            <span>{control.label}</span>
+            <span>{control.value}</span>
+            {control.disabledReason ? <span className="molecule-inspector-empty-message">{control.disabledReason}</span> : null}
+          </div>
+        );
+      case "toggle":
+        return (
+          <button
+            type="button"
+            key={control.id}
+            className={["toolbar-text-button", control.pressed ? "active" : ""].filter(Boolean).join(" ")}
+            aria-pressed={control.pressed}
+            disabled={control.disabledReason !== undefined}
+            title={control.disabledReason}
+            data-command-id={control.commandId}
+            data-table-control={control.id}
+            data-palette-control="true"
+            onPointerDown={blockPointer}
+            onClick={() => onInvoke(control.commandId)}
+          >
+            {control.label}
+          </button>
+        );
+      case "button":
+        return (
+          <button
+            type="button"
+            key={control.id}
+            className="toolbar-text-button"
+            disabled={control.disabledReason !== undefined}
+            title={control.disabledReason}
+            data-command-id={control.commandId}
+            data-table-control={control.id}
+            data-palette-control="true"
+            onPointerDown={blockPointer}
+            onClick={() => onInvoke(control.commandId)}
+          >
+            {control.label}
+          </button>
+        );
+      case "segmented":
+        return (
+          <div className="molecule-inspector-effect-row" role="group" aria-label={control.label} key={control.id} data-table-control={control.id}>
+            {control.choices.map((choice) => (
+              <button
+                type="button"
+                key={choice.id}
+                className={["toolbar-text-button", choice.selected ? "active" : ""].filter(Boolean).join(" ")}
+                aria-pressed={choice.selected}
+                disabled={choice.disabledReason !== undefined}
+                title={choice.disabledReason}
+                data-command-id={choice.commandId}
+                data-palette-control="true"
+                onPointerDown={blockPointer}
+                onClick={() => onInvoke(choice.commandId)}
+              >
+                {choice.label}
+              </button>
+            ))}
+          </div>
+        );
+    }
+  };
+  return (
+    <div role="group" aria-label="Table" data-table-inspector={model.tableId}>
+      {model.sections.map((section) => (
+        <div className="molecule-inspector-section" key={section.id} data-table-inspector-section={section.id}>
+          <span className="molecule-inspector-target-label">{section.title}</span>
+          {section.controls.map(renderControl)}
+        </div>
+      ))}
+    </div>
   );
 }
