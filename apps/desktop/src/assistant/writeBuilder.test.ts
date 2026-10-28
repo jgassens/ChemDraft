@@ -225,6 +225,21 @@ describe("assistant writes", () => {
 
 
 describe("assistant document drawing defaults", () => {
+  it.each(defaultCases)("keeps every reaction molecule at the $bondLengthPx px document default", async style => {
+    const { context, replace } = testContext(false);
+    const document = insertionDocument(style);
+    const existing = structuredClone(document.pages[0]!.objects);
+    replace(document);
+    const result = await callAssistantTool(context, "insert_reaction", {
+      reactants: ["CC", "CC"], products: ["CC"], conditions: ["heat"]
+    });
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    const objects = context.getDocument()!.pages[0]!.objects;
+    const molecules = objects.slice(existing.length).filter(object => object.type === "molecule");
+    expect(molecules).toHaveLength(3);
+    molecules.forEach(object => expectDrawingDefaults(object, style));
+    expect(objects.slice(0, existing.length)).toEqual(existing);
+  });
   it.each(defaultCases)("uses $bondLengthPx px defaults for structures and group labels", async style => {
     const { context, replace } = testContext(false);
     const document = insertionDocument(style);

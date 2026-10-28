@@ -3870,7 +3870,7 @@ function attachNativeChairTemplateToAtom(
   point: PagePoint,
   reflected: boolean
 ): MoleculeObject | undefined {
-  const basePoints = nativeChairCyclohexaneBasePoints(reflected);
+  const basePoints = nativeChairCyclohexaneBasePoints(reflected, nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx);
   const desiredDirection = nativeTemplateDirectionForAtom(molecule, sharedAtom, point);
   const candidates = basePoints.map((basePoint, sharedIndex) => {
     const centerVector = { x: -basePoint.x, y: -basePoint.y };
@@ -4466,6 +4466,7 @@ function nativeRingVerticesForSharedAtom(
   point: PagePoint,
   size: number
 ): PagePoint[] | undefined {
+  const nativeBondLength = nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx;
   const radius = nativeBondLength / (2 * Math.sin(Math.PI / size));
   const centerDirection = nativeTemplateDirectionForAtom(molecule, sharedAtom, point);
   const center = {
@@ -4542,7 +4543,7 @@ function nativeTemplateSpiroCrowding(
   size: number,
   direction: 1 | -1
 ): number {
-  const radius = nativeBondLength / (2 * Math.sin(Math.PI / size));
+  const radius = nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx / (2 * Math.sin(Math.PI / size));
   const step = Math.PI * 2 / size;
   const candidatePoints = Array.from({ length: size - 1 }, (_, index) => ({
     x: center.x + Math.cos(sharedAngle + direction * step * (index + 1)) * radius,

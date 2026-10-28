@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createEmptyDocument, ChemDraftSyntheticStylePreset } from "@chemdraft/chem-core";
+import { createEmptyDocument, ChemDraftSyntheticStylePreset, nativeDrawingStyleFromObjectStyle } from "@chemdraft/chem-core";
 import { documentDrawingDefaults } from "../src/drawingDefaults";
 
 describe("document drawing defaults", () => {
@@ -44,6 +44,31 @@ describe("document drawing defaults", () => {
   it.each([8, 120])("accepts inclusive bond length boundary %s", bondLengthPx => {
     const document = createEmptyDocument(); document.styles.drawing = { bondLengthPx };
     expect(documentDrawingDefaults(document).bondLengthPx).toBe(bondLengthPx);
+  });
+  it.each([
+    "doubleBondInsetPx", "bondMarginWidthPx", "bondOverlapClearancePx",
+    "atomLabelPaddingPx", "atomLabelBondClearancePx"
+  ] as const)("honours zero and rejects negative/non-finite %s", field => {
+    const document = createEmptyDocument();
+    for (const value of [0, -1, NaN]) {
+      document.styles.drawing = { [field]: value };
+      const defaults = documentDrawingDefaults(document);
+      const expected = value === 0 ? 0 : ChemDraftSyntheticStylePreset.drawing[field];
+      expect(defaults.drawing[field]).toBe(expected);
+      expect(defaults.objectStyle[field]).toBe(expected);
+    }
+  });
+  it("uses chem-core's numeric field rules, with the insertion bond-length range", () => {
+    const document = createEmptyDocument();
+    const fields = Object.entries(ChemDraftSyntheticStylePreset.drawing)
+      .filter(([, value]) => typeof value === "number").map(([key]) => key);
+    for (const value of [0, -1, NaN, Infinity, 1, 30]) {
+      const input = Object.fromEntries(fields.map(key => [key, value]));
+      document.styles.drawing = input;
+      expect(documentDrawingDefaults(document).drawing).toEqual(nativeDrawingStyleFromObjectStyle({
+        ...input, bondLengthPx: value >= 8 && value <= 120 ? value : 22
+      }));
+    }
   });
   it("resolves custom text independently and retains valid siblings of bad fields", () => {
     const document = createEmptyDocument();

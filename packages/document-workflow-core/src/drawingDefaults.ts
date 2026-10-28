@@ -19,17 +19,13 @@ function record(value: unknown): Record<string, unknown> {
 export function documentDrawingDefaults(document: ChemDraftDocument): DocumentDrawingDefaults {
   const preset = ChemDraftSyntheticStylePreset;
   const input = record(document.styles.drawing);
-  const overrides: Record<string, unknown> = {};
-  // chem-core's resolver validates string enums and supplies their preset fallback. There is
-  // no drawing-style Zod schema; prefilter numeric values here for the insertion contract.
-  for (const key of Object.keys(preset.drawing) as (keyof NativeDrawingStyle)[]) {
-    const value = input[key];
-    if (typeof value !== typeof preset.drawing[key]) continue;
-    if (typeof value === "number" && (!Number.isFinite(value) || value <= 0)) continue;
-    if (key === "bondLengthPx" && (Number(value) < 8 || Number(value) > 120)) continue;
-    overrides[key] = value;
-  }
-  const drawing = nativeDrawingStyleFromObjectStyle(overrides);
+  // Keep chem-core's per-field validation, including fields that permit zero. Only bond
+  // length has an additional insertion range; invalid siblings still resolve independently.
+  const drawing = nativeDrawingStyleFromObjectStyle({
+    ...input,
+    bondLengthPx: typeof input.bondLengthPx === "number" && input.bondLengthPx >= 8 && input.bondLengthPx <= 120
+      ? input.bondLengthPx : preset.drawing.bondLengthPx
+  });
   const objectStyle = stylePresetToObjectStyle({ ...preset, id: drawing.stylePresetId, drawing });
   const text = record(document.styles.text);
   const textStyle: Partial<NativeTextStyle> = {

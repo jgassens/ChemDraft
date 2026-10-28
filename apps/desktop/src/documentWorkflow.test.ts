@@ -17640,6 +17640,61 @@ describe("ring placement valence guard", () => {
 
 
 describe("document drawing defaults for native insertions", () => {
+  it("uses custom defaults for adapter fallback and chemical-text clipboard placeholders", () => {
+    const document = insertionDocument(defaultCases[1]!);
+    const existing = structuredClone(document.pages[0]!.objects);
+    const fallback = selectedMolecule(insertAdapterFallbackMolecule(document));
+    const clipboard = selectedMolecule(applyClipboardPastePayload(document, {
+      kind: "smiles", text: "CCO", warnings: []
+    }, { x: 350, y: 350 }).document);
+    for (const molecule of [fallback, clipboard]) {
+      expect(molecule.style).toEqual({
+        ...DefaultNativeDrawingStyle, ...defaultCases[1]!,
+        source: molecule === fallback ? "editor-adapter-fallback" : "clipboard-chemical-text"
+      });
+    }
+    expect(document.pages[0]!.objects).toEqual(existing);
+  });
+  describe.each([
+    { targetLength: 30, documentLength: 22 },
+    { targetLength: 28, documentLength: 22 },
+    { targetLength: 22, documentLength: 30 }
+  ])("attachments at $targetLength px with $documentLength px document defaults", ({ targetLength, documentLength }) => {
+    it.each(["cyclohexane", "benzene", "chairCyclohexaneA", "chairCyclohexaneB"] as const)(
+      "uses the target's geometry and preserves its style for atom and bond anchored %s", templateId => {
+        const document = createPhase4Document("Attachment defaults");
+        document.styles.drawing = { bondLengthPx: targetLength };
+        // Benzene needs a terminal atom: an aromatic spiro junction would exceed valence.
+        const inserted = templateId === "benzene"
+          ? insertNativeSingleBondMolecule(document, { x: 360, y: 320 })
+          : insertNativeTemplateMolecule(document, { x: 360, y: 320 }, "cyclohexane");
+        const seed = { ...inserted, styles: { ...inserted.styles, drawing: { bondLengthPx: documentLength } } };
+        const molecule = selectedMolecule(seed);
+        const original = structuredClone(molecule);
+        const atomTarget = moleculeAtomTarget(molecule, "atom_001");
+        const bondTarget = moleculeBondTarget(molecule, "bond_001");
+        const results = [
+          applyNativeTemplateToolAtTarget(seed, atomTarget, moleculeAtom(molecule, "atom_001"), templateId),
+          applyNativeTemplateToolAtTarget(seed, bondTarget, moleculeBondMidpoint(molecule, "bond_001"), templateId),
+          applyNativeRingAttachAtAtomTarget(seed, atomTarget, templateId),
+          applyNativeRingFuseAtBondTarget(seed, bondTarget, templateId)
+        ];
+        for (const result of results) {
+          const attached = selectedMolecule(result);
+          const addedBonds = attached.bonds.filter(bond => !molecule.bonds.some(existing => existing.id === bond.id));
+          expect(addedBonds).toHaveLength(attached.atoms.length - molecule.atoms.length + 1);
+          expect(addedBonds.length).toBeGreaterThan(0);
+          for (const bond of addedBonds) {
+            const from = moleculeAtom(attached, bond.fromAtomId);
+            const to = moleculeAtom(attached, bond.toAtomId);
+            expect(Math.abs(Math.hypot(to.x - from.x, to.y - from.y) - targetLength)).toBeLessThan(0.05);
+          }
+          expect(attached.style).toEqual(original.style);
+        }
+        expect(selectedMolecule(seed)).toEqual(original);
+      }
+    );
+  });
   it.each(defaultCases)("uses $bondLengthPx px for new molecules and leaves existing objects intact", style => {
     const document = insertionDocument(style);
     const existing = structuredClone(document.pages[0]!.objects);
