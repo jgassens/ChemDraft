@@ -29,10 +29,18 @@ describe("formula text", () => {
   });
 
   it("classifies a long formula token in linear time", () => {
-    const token = `${"H".repeat(199_998)}2x`;
-    const started = performance.now();
-    expect(formulaSpansForMixedText(token)).toBeUndefined();
-    expect(performance.now() - started).toBeLessThan(200);
+    const tokens = [50_000, 200_000].map(n => `${"H".repeat(n - 2)}2x`);
+    for (const token of tokens) formulaSpansForMixedText(token);
+    const times = tokens.map(token => Math.min(...Array.from({ length: 3 }, () => {
+      const started = performance.now();
+      const result = formulaSpansForMixedText(token);
+      const elapsed = performance.now() - started;
+      expect(result).toBeUndefined();
+      return elapsed;
+    })));
+    // A linear scan grows about 4x for a 4x longer token; the old quadratic scan grew about 16x.
+    // The ratio separates them on any machine, unlike the absolute limit that failed on loaded CI runners.
+    expect(times[1] / Math.max(times[0], 0.5)).toBeLessThan(10);
   });
 
   it("formats formula-like tokens in mixed text", () => {
