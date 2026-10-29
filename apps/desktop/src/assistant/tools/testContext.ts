@@ -31,7 +31,9 @@ export function testContext(selected = true) {
         leaf.op === "updateObject" || leaf.op === "moveObject" ? [leaf.objectId] : []) };
     }),
     chemistry: {
-      inspectStructure: vi.fn(async (format, value) => ({ valid: true as const, canonicalSmiles: format === "smiles" ? value : "CC",
+      inspectStructure: vi.fn(async (format, value) => ({ valid: true as const,
+        canonicalSmiles: format === "smiles" ? value : "CC",
+        identitySmiles: format === "smiles" ? value : "CC",
         heavyAtoms: 2, formula: "C2H6", warnings: [] })),
       structureFromSmiles: vi.fn(async () => ({ available: true as const, built: true as const, object: moleculeFixture(document!) })),
       nameToStructure: vi.fn(async () => ({ available: true as const, parsed: true as const, smiles: "CC", engine: { id: "opsin", version: "test" } })),

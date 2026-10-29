@@ -10,6 +10,7 @@ import {
   type MoleculeBond,
   type MoleculeObject,
   moleculeToMolfileV2000,
+  normalizeAtomIsotope,
   UnknownBondOrderError,
   type MoleculeTransformState
 } from "@chemdraft/chem-core";
@@ -48,7 +49,7 @@ const nativeMoleculePadding = 8;
  *  adapter's `depictSmiles2D`. Kept structural so this module never imports the
  *  engine (which stays behind a dynamic import to keep it out of the static graph). */
 export interface PastedStructureDepiction {
-  atoms: ReadonlyArray<{ element: string; x: number; y: number; charge: number }>;
+  atoms: ReadonlyArray<{ element: string; isotope?: number; x: number; y: number; charge: number }>;
   bonds: ReadonlyArray<{ from: number; to: number; order: MoleculeBond["order"]; wedge: "wedge" | "hashed" | null }>;
 }
 
@@ -63,6 +64,7 @@ export function pastedStructureDepictionFromMolfile(molfile: string): PastedStru
   return {
     atoms: graph.atoms.map((atom) => ({
       element: atom.element,
+      ...(atom.isotope === undefined ? {} : { isotope: atom.isotope }),
       x: atom.x,
       y: atom.y,
       charge: atom.formalCharge
@@ -161,9 +163,10 @@ export function createSmilesMolecule(
   const bondLengthPx = options.bondLengthPx ?? defaults.bondLengthPx;
   const pseudoGraph: ParsedMolfileGraph = {
     format: "molfile-v2000",
-    atoms: depiction.atoms.map((atom, index) => ({
+    atoms: depiction.atoms.map((atom, index) => normalizeAtomIsotope({
       id: `a${index}`,
       element: atom.element,
+      ...(atom.isotope === undefined ? {} : { isotope: atom.isotope }),
       x: atom.x,
       y: atom.y,
       formalCharge: atom.charge
@@ -185,6 +188,7 @@ export function createSmilesMolecule(
   ).map((atom) => ({
     id: atom.id,
     element: atom.element,
+    ...(atom.isotope === undefined ? {} : { isotope: atom.isotope }),
     x: atom.x,
     y: atom.y,
     formalCharge: atom.formalCharge

@@ -3,7 +3,7 @@ import {
   type DocumentObject, type DocumentPatch, type MoleculeObject, type NativeTextStyle
 } from "@chemdraft/chem-core";
 import {
-  createNativeTextObject, layoutReactionScheme, nextObjectId,
+  assertMoleculeMatchesSmiles, createNativeTextObject, layoutReactionScheme, nextObjectId,
   nativeTextObjectSizeForText, documentDrawingDefaults, stereoPerceptionMolfile,
   nativeAtomLabelReading, nativeSingleBondGraphMetadata, nativeSingleBondGraphSmiles,
   normalizeNativeMoleculeGeometry, defaultNativeMoleculeTransform
@@ -79,12 +79,15 @@ export async function inspectMolecule(context: AssistantToolContext, molecule: M
   if (!result.canonicalSmiles) throw new Error("RDKit did not return a canonical SMILES.");
   return { ...result, molfile };
 }
-async function assertCanonical(context: AssistantToolContext, molecule: MoleculeObject, input: string) {
-  const source = await inspectSmiles(context, input);
-  const output = await inspectMolecule(context, molecule);
-  if (source.canonicalSmiles !== output.canonicalSmiles) {
-    throw new Error(`Canonical SMILES mismatch for ${molecule.id}; refusing a change to chemical identity (including radical or isotope loss).`);
-  }
+export async function assertCanonical(
+  context: AssistantToolContext, molecule: MoleculeObject, input: string
+) {
+  await assertMoleculeMatchesSmiles(molecule, input, async (format, value, stereoReference) => {
+    const result = format === "smiles" ? await inspectSmiles(context, value)
+      : await context.chemistry.inspectStructure(format, value, stereoReference);
+    return result.valid
+      ? { valid: true, canonicalSmiles: result.identitySmiles, facts: result.identityFacts } : result;
+  });
 }
 async function buildMolecule(context: AssistantToolContext, smiles: string): Promise<MoleculeObject> {
   await inspectSmiles(context, smiles); // cap before expensive depiction

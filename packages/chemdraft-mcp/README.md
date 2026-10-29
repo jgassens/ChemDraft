@@ -62,7 +62,9 @@ details](../chemdraft-cli/README.md#fixed-scale-document-figures).
 
 Reaction labels allow at most 6 `above` and 6 `below` entries, a non-empty `caption` of at most 300 characters, and 2000 characters combined across above, below, caption and legacy `conditions`.
 
-Radicals and isotopes that ChemDraft cannot preserve are refused rather than silently changed. Analysis values retain their method contracts and reported pKa intervals; NMR J values and multiplicities are estimates.
+Radicals are refused rather than silently changed. Isotope labels and their positions are preserved.
+Analysis values retain their method contracts and reported pKa intervals; NMR J values and
+multiplicities are estimates.
 
 For styled figures, call `build_document`, edit its returned JSON using the reported ids and ring
 centers, then call `render_document` with `documentJson`. Ring fills, bold/hashed bonds, sketch

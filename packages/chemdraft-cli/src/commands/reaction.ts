@@ -631,8 +631,8 @@ async function agentText(smiles: string, index: number): Promise<ReactionAgentTe
     if (composition?.kind !== "composition") {
       throw new Error("RDKit composition did not return a source result.");
     }
-    if (composition.radicalElectronCount > 0 || composition.hasExplicitIsotopes) {
-      throw new Error(`SMILES contains a radical/isotope label that ChemDraft cannot yet draw: ${smiles}`);
+    if (composition.radicalElectronCount > 0) {
+      throw new Error(`SMILES contains a radical that ChemDraft cannot yet draw: ${smiles}`);
     }
     const text = reactionFormula(composition);
     if (!text) {
@@ -647,7 +647,7 @@ async function agentText(smiles: string, index: number): Promise<ReactionAgentTe
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (message.startsWith("SMILES contains a radical/isotope label")) throw error;
+    if (message.startsWith("SMILES contains a radical")) throw error;
     throw new Error(`Unable to validate reaction agent SMILES "${smiles}": ${message}`);
   }
 }

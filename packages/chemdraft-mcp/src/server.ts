@@ -333,7 +333,8 @@ function exportFiles(result: Record<string, unknown>, format: string): OutputFil
   return [{ path, kind: format === "pdf" ? "resource" : "text" }];
 }
 
-const chemistryHonesty = "Radicals and isotope labels are refused rather than silently changed.";
+const chemistryHonesty = "Radicals are refused rather than silently changed; " +
+  "isotope labels and their positions are preserved.";
 
 /** Create the reusable server instance used by stdio and in-memory MCP clients. */
 export function createChemDraftMcpServer(
@@ -356,7 +357,9 @@ export function createChemDraftMcpServer(
   });
 
   server.registerTool("build_document", {
-    description: "Build editable ChemDraft native JSON from SMILES, with atom/bond ids and ring keys, sizes and centers. Use render_document after styling it.",
+    description: "Build editable ChemDraft native JSON from SMILES, with atom/bond ids and ring keys, " +
+      "sizes and centers. Use render_document after styling it. " +
+      "Isotope labels are preserved; radicals are refused.",
     inputSchema: {
       dpi: z.number().positive().optional(),
       style: z.enum(FigureStyles).optional(),

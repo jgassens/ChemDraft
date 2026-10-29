@@ -172,7 +172,8 @@ export async function moleculeSmiles(
     expanded.expansions.length === 0 &&
     expanded.placeholderAtoms.size === 0 &&
     nativeMoleculeUnspellableLabels(molecule).length === 0 &&
-    !molecule.atoms.some((atom) => (atom.markRadicals ?? 0) > 0) &&
+    !molecule.atoms.some((atom) => (atom.markRadicals ?? 0) > 0 ||
+      atom.isotope !== undefined || atom.element === "D" || atom.element === "T") &&
     molecule.structureFormat === "smiles" &&
     molecule.structure
   ) {
@@ -237,7 +238,7 @@ export function engineSmilesAtomWarnings(
     // Unspellable labels already have an explicit placeholder warning; still check their marks.
     const expectedElement = placeholderAtoms.has(atom.id) || !element ? "*" : element;
     const radicals = atom.markRadicals ?? 0;
-    const isotope = atom.element === "D" ? 2 : atom.element === "T" ? 3 : 0;
+    const isotope = atom.element === "D" ? 2 : atom.element === "T" ? 3 : atom.isotope ?? 0;
     const bondedHydrogens = (resolution.bondsByAtom.get(atom.id) ?? []).filter((bond) => {
       const neighbor = atomsById.get(bond.fromAtomId === atom.id ? bond.toAtomId : bond.fromAtomId);
       return neighbor && ["H", "D", "T"].includes(neighbor.element);
