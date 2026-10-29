@@ -1,3 +1,4 @@
+import { defaultCases, insertionDocument, expectDrawingDefaults } from "../drawingDefaults.testHelpers";
 import { describe, expect, it } from "vitest";
 import { DocumentObjectSchema, type Anchor } from "@chemdraft/chem-core";
 import { callAssistantTool } from "./assistantTools";
@@ -219,5 +220,61 @@ describe("assistant writes", () => {
     await expect(applyAssistantWrite(context, { patch: { op: "batch", patches: [{ op: "removeObject", objectId: "missing" }] }, summary: "test", warnings: [] })).rejects.toThrow('object "missing" does not exist');
     await expect(applyAssistantWrite(context, { patch: { op: "batch", patches: Array.from({ length: 257 }, () => ({ op: "removeObject", objectId: "x" })) }, summary: "test", warnings: [] })).rejects.toThrow("1..256");
     expect(context.write).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("assistant document drawing defaults", () => {
+  it.each(defaultCases)("keeps every reaction molecule at the $bondLengthPx px document default", async style => {
+    const { context, replace } = testContext(false);
+    const document = insertionDocument(style);
+    const existing = structuredClone(document.pages[0]!.objects);
+    replace(document);
+    const result = await callAssistantTool(context, "insert_reaction", {
+      reactants: ["CC", "CC"], products: ["CC"], conditions: ["heat"]
+    });
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    const objects = context.getDocument()!.pages[0]!.objects;
+    const molecules = objects.slice(existing.length).filter(object => object.type === "molecule");
+    expect(molecules).toHaveLength(3);
+    molecules.forEach(object => expectDrawingDefaults(object, style));
+    expect(objects.slice(0, existing.length)).toEqual(existing);
+  });
+  it.each(defaultCases)("uses $bondLengthPx px defaults for structures and group labels", async style => {
+    const { context, replace } = testContext(false);
+    const document = insertionDocument(style);
+    replace(document);
+    const existing = structuredClone(document.pages[0]!.objects);
+    const result = await callAssistantTool(context, "insert_structures", { items: [
+      { kind: "molecule", smiles: "CC", label: "Name" }, { kind: "group", label: "Ph" },
+      { kind: "text", text: "Standalone" }, { kind: "text", text: "Explicit", style: { fontSizePx: 25 } }
+    ] });
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    const objects = context.getDocument()!.pages[0]!.objects;
+    expect(objects.slice(0, 2)).toEqual(existing);
+    expectDrawingDefaults(objects[2], style);
+    expectDrawingDefaults(objects[4], style); // Group labels have no bonds; style still carries their size.
+    expect(objects[3]).toMatchObject({ type: "text", style: { fontSizePx: style.atomLabelFontSizePx, fontFamily: style.atomLabelFontFamily } });
+    expect(objects[5]).toMatchObject({ type: "text", style: { fontSizePx: style.atomLabelFontSizePx } });
+    expect(objects[6]).toMatchObject({ type: "text", style: { fontSizePx: 25 } });
+    expect(document.pages[0]!.objects).toEqual(existing);
+  });
+  it("uses custom document text defaults for molecule captions and standalone text with explicit style on top", async () => {
+    const { context, replace } = testContext(false);
+    const document = insertionDocument(defaultCases[0]!);
+    document.styles.text = { fontFamily: "Times", fontSizePx: 21, color: "#123456", fontWeight: 600, fontStyle: "italic" };
+    replace(document);
+    const existing = structuredClone(document.pages[0]!.objects);
+    const result = await callAssistantTool(context, "insert_structures", { items: [
+      { kind: "molecule", smiles: "CC", label: "Caption" }, { kind: "text", text: "Standalone" }
+    ] });
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    for (const index of [3, 4]) expect(context.getDocument()!.pages[0]!.objects[index]).toMatchObject({ style: document.styles.text });
+    const explicit = await callAssistantTool(context, "insert_text", { text: "Override", style: { fontSizePx: 25, bold: false, italic: false } });
+    expect(explicit.isError, JSON.stringify(explicit)).not.toBe(true);
+    expect(context.getDocument()!.pages[0]!.objects.at(-1)).toMatchObject({ style: {
+      fontFamily: "Times", fontSizePx: 25, color: "#123456", fontWeight: 400, fontStyle: "normal"
+    } });
+    expect(context.getDocument()!.pages[0]!.objects.slice(0, 2)).toEqual(existing);
   });
 });
