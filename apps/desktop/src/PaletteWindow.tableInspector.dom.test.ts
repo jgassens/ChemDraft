@@ -204,6 +204,7 @@ describe("PaletteWindow table inspector", () => {
     expect(inspector.classList.contains("molecule-inspector-controls")).toBe(true);
     expect(getComputedStyle(inspector).width).toBe("520px");
     expect(inspector.querySelector('input[type="checkbox"]')).toBeNull();
+    const referenceControl = inspector.querySelector<HTMLElement>('[data-table-control="headerRows"] span')!;
 
     for (const button of inspector.querySelectorAll<HTMLButtonElement>("button")) {
       expect(button.classList.contains("toolbar-text-button")).toBe(true);
@@ -220,8 +221,8 @@ describe("PaletteWindow table inspector", () => {
       expect(button.classList.contains("molecule-inspector-template-button")).toBe(true);
       expect(button.style.width).toBe("");
       expect(getComputedStyle(button).width).toBe("auto");
-      expect(getComputedStyle(button).fontFamily).toBe("inherit");
-      expect(getComputedStyle(button).fontSize).toBe("11px");
+      expect(getComputedStyle(button).fontFamily).toBe(getComputedStyle(referenceControl).fontFamily);
+      expect(getComputedStyle(button).fontSize).toBe(getComputedStyle(referenceControl).fontSize);
     }
     for (const field of inspector.querySelectorAll<HTMLElement>("[data-table-control]")) {
       if (field.tagName === "BUTTON") continue;
