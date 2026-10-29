@@ -298,9 +298,9 @@ export function installPluginPanelInputFocus(
       // Reports retain their existing per-click generation policy.
       setEditing(true, !editableFocus, pointerClassificationBefore);
     } else {
-      // A native drag runs Tao's modal move loop. Release the lease now, but let
-      // WM_EXITSIZEMOVE return foreground after the drag, never at pointerdown.
-      const startsDrag = editableFocus && isPaletteWindowDragPress(shell, event);
+      // Only Windows has WM_EXITSIZEMOVE to return foreground after Tao's modal drag.
+      // macOS must retain its pointerdown hand-back or the palette remains key.
+      const startsDrag = platform === "windows" && editableFocus && isPaletteWindowDragPress(shell, event);
       if (editing) finish(false, false, pointerClassificationBefore, !startsDrag);
       else if (startsDrag) setEditing(false, true, pointerClassificationBefore, false);
       else if (editableFocus) returnPointerFocus(pointerClassificationBefore);

@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
+import { ColorPickerPopoverBody } from "../ToolPalette";
+import { objectCustomColorCommandId } from "../commands";
+
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const native = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke }));
@@ -114,7 +120,7 @@ describe("window-manager palette preview transport", () => {
           if (args.commandId === "document.nextTab") activeDocument = "B";
         }
       });
-      const commit = sendPaletteCommandCommit("molecule.structure.bondLength:31");
+      const commit = sendPaletteCommandCommit("molecule.structure.bondLength:31", { settleBeforeForward: true });
       const forward = sendPaletteCommand(command, { preserveInputFocus: true });
       await started;
       expect(native.invoke).toHaveBeenCalledExactlyOnceWith("route_toolset_command", {
@@ -128,10 +134,69 @@ describe("window-manager palette preview transport", () => {
     }
   );
 
+  it("delivers applyAndCommitColor's preview then ordinary commit on the event transport", async () => {
+    (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    const sends: Promise<void>[] = [];
+    try {
+      await act(async () => root.render(createElement(ColorPickerPopoverBody, {
+        value: "#111111",
+        onPreviewColor: (color) => { sends.push(sendPaletteCommandPreview(objectCustomColorCommandId(color))); },
+        onCommitColor: (color) => { sends.push(sendPaletteCommandCommit(objectCustomColorCommandId(color))); }
+      })));
+      const input = container.querySelector<HTMLInputElement>(".color-hex-field input")!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "#1E88E5");
+        input.dispatchEvent(new InputEvent("input", { inputType: "insertText", bubbles: true }));
+      });
+      await Promise.all(sends);
+      await sendPaletteCommandCancel("palette.preview.cancel");
+      expect(sends).toHaveLength(2);
+      expect(tauriEventBus.emit.mock.calls).toEqual([
+        ["chemdraft://palette-command-preview", { commandId: objectCustomColorCommandId("#1e88e5") }],
+        ["chemdraft://palette-command-commit", { commandId: objectCustomColorCommandId("#1e88e5") }],
+        ["chemdraft://palette-command-cancel", { commandId: "palette.preview.cancel" }]
+      ]);
+      expect(native.invoke).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+    }
+  });
+
+  it.each(["preview", "commit"] as const)("flushes an earlier slider %s before a typed settle commit and shortcut", async (event) => {
+    (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+    let release!: () => void;
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const observed: string[] = [];
+    tauriEventBus.emit.mockImplementationOnce(async () => {
+      entered();
+      await blocked;
+      observed.push(event);
+    });
+    const earlier = (event === "preview" ? sendPaletteCommandPreview : sendPaletteCommandCommit)("molecule.structure.bondLength:25");
+    await started;
+    const settle = sendPaletteCommandCommit("molecule.structure.bondLength:31", { settleBeforeForward: true });
+    const forward = sendPaletteCommand("document.nextTab");
+    // Let the IPC queue run while the slider's event-plugin invocation is unresolved.
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    expect(native.invoke).not.toHaveBeenCalled();
+    native.invoke.mockImplementation(async (_route, args) => {
+      observed.push(args.commit ? "settle" : "shortcut");
+    });
+    release();
+    await Promise.all([earlier, settle, forward]);
+    expect(observed).toEqual([event, "settle", "shortcut"]);
+  });
+
   it("does not forward a queued app command when its preceding commit fails", async () => {
     (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
     native.invoke.mockRejectedValueOnce(new Error("Commit delivery failed"));
-    const commit = sendPaletteCommandCommit("molecule.structure.bondLength:31");
+    const commit = sendPaletteCommandCommit("molecule.structure.bondLength:31", { settleBeforeForward: true });
     const forward = sendPaletteCommand("document.nextTab");
     await expect(commit).rejects.toThrow("Commit delivery failed");
     await expect(forward).rejects.toThrow("Commit delivery failed");

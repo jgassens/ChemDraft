@@ -473,7 +473,7 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
       vi.mocked(sendPaletteCommandCommit).mockClear();
       const event = await press(input, key, { ...modifier, shiftKey });
       expect(event.defaultPrevented, command).toBe(true);
-      expect(sendPaletteCommandCommit).toHaveBeenCalledExactlyOnceWith(moleculeStructureBondLengthCommandId(31));
+      expect(sendPaletteCommandCommit).toHaveBeenCalledExactlyOnceWith(moleculeStructureBondLengthCommandId(31), { settleBeforeForward: true });
       expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith(command, { preserveInputFocus: true });
       expect(vi.mocked(sendPaletteCommandCommit).mock.invocationCallOrder[0])
         .toBeLessThan(vi.mocked(sendPaletteCommand).mock.invocationCallOrder[0]!);
@@ -534,25 +534,27 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith("view.zoomIn");
   });
 
-  it.each(["title", "background"])("ends a lease on a %s drag press without returning foreground at pointerdown", async (surface) => {
+  it.each(["title", "background"])("ends a lease on a %s drag press with platform-specific foreground hand-back", async (surface) => {
     const input = await mountSettings();
     await clickControl(input);
     const target = container.querySelector<HTMLElement>(surface === "title" ? ".palette-title" : ".palette-window-shell")!;
     await act(async () => pointer(target, "pointerdown"));
     await flush();
     expect(leases().map(([, args]) => args.editing)).toEqual([true, false]);
-    expect(leases().at(-1)![1]).toMatchObject({ returnFocus: false });
+    // Only Windows returns foreground at WM_EXITSIZEMOVE; macOS hands back now.
+    expect(leases().at(-1)![1]).toMatchObject({ returnFocus: platform === "macos" });
     expect(document.activeElement).not.toBe(input);
     expect(startPaletteWindowDrag).toHaveBeenCalledExactlyOnceWith(expect.any(Number), expect.any(Number));
   });
 
-  it("does not return foreground on an unleased background drag press", async () => {
+  it("uses platform-specific foreground hand-back on an unleased background drag press", async () => {
     await mountSettings();
     const shell = container.querySelector<HTMLElement>(".palette-window-shell")!;
     await act(async () => pointer(shell, "pointerdown"));
     await flush();
     expect(leases()).toHaveLength(1);
-    expect(leases()[0]![1]).toMatchObject({ editing: false, returnFocus: false });
+    // macOS has no end-of-drag hand-back, even when the palette has no input lease.
+    expect(leases()[0]![1]).toMatchObject({ editing: false, returnFocus: platform === "macos" });
   });
 
   it("uses the document capture guard during a pending palette click, allowing Save and keyup", async () => {

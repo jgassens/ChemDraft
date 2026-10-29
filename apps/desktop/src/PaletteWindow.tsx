@@ -132,6 +132,7 @@ export function PaletteWindow({
 }) {
   const dragRef = useRef<PaletteWindowDrag | null>(null);
   const shellRef = useRef<HTMLElement | null>(null);
+  const settlingBeforeForwardRef = useRef(false);
   const lastLoggedSizeRef = useRef<string>("");
   const sizeAnimationFrameRef = useRef<number | undefined>(undefined);
   const compoundLayoutsEnabled = useCompoundLayoutTools();
@@ -678,7 +679,12 @@ export function PaletteWindow({
         // and commands share ordered IPC; suppress AppKit's menu when settling a draft.
         if (platform === "macos" && NATIVE_MENU_COMMAND_IDS.has(menuCommand) && !drafts?.length) return;
         event.preventDefault();
-        drafts?.forEach((control) => control.dispatchEvent(new Event(PALETTE_INPUT_FOCUS_COMMIT_EVENT)));
+        settlingBeforeForwardRef.current = true;
+        try {
+          drafts?.forEach((control) => control.dispatchEvent(new Event(PALETTE_INPUT_FOCUS_COMMIT_EVENT)));
+        } finally {
+          settlingBeforeForwardRef.current = false;
+        }
         const leased = isPaletteInputFocusPending(shellRef.current) || !!paletteInputFocusControl(shellRef.current);
         void (leased ? sendPaletteCommand(menuCommand, { preserveInputFocus: true })
           : sendPaletteCommand(menuCommand)).catch(() => undefined);
@@ -730,7 +736,9 @@ export function PaletteWindow({
     void sendPaletteCommandPreview(commandId).catch(() => undefined);
   };
   const commitPreviewCommand = (commandId: string) => {
-    void sendPaletteCommandCommit(commandId).catch(() => undefined);
+    void (settlingBeforeForwardRef.current
+      ? sendPaletteCommandCommit(commandId, { settleBeforeForward: true })
+      : sendPaletteCommandCommit(commandId)).catch(() => undefined);
   };
   const cancelPreviewCommand = () => {
     void sendPaletteCommandCancel("palette.preview.cancel").catch(() => undefined);

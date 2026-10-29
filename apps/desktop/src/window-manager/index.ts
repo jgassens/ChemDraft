@@ -698,8 +698,8 @@ export async function sendPaletteCommandPreview(commandId: string): Promise<void
   return emitToolsetCommandEvent(PALETTE_COMMAND_PREVIEW_EVENT, commandId);
 }
 
-export async function sendPaletteCommandCommit(commandId: string): Promise<void> {
-  if (isDesktopRuntime()) return routeToolsetCommand(commandId, { commit: true });
+export async function sendPaletteCommandCommit(commandId: string, options?: { settleBeforeForward: true }): Promise<void> {
+  if (options?.settleBeforeForward && isDesktopRuntime()) return routeToolsetCommand(commandId, { commit: true });
   return emitToolsetCommandEvent(PALETTE_COMMAND_COMMIT_EVENT, commandId);
 }
 
@@ -707,9 +707,10 @@ export async function sendPaletteCommandCancel(commandId: string): Promise<void>
   return emitToolsetCommandEvent(PALETTE_COMMAND_CANCEL_EVENT, commandId);
 }
 
-// Commits and app shortcuts must arrive in order in the same destination webview. A separate
-// event-bus commit can be overtaken by a tab switch or Save routed through native-command.
+// Only shortcut-settle commits share this queue with app commands. Ordinary commits stay
+// on the event bus with their previews and cancels.
 let paletteCommandQueue: Promise<void> = Promise.resolve();
+const pendingPaletteEvents = new Set<Promise<void>>();
 export function routeToolsetCommand(
   commandId: string, options?: { preserveInputFocus?: boolean; commit?: boolean }
 ): Promise<void> {
@@ -718,7 +719,12 @@ export function routeToolsetCommand(
   // No client-side `emit` — that used to also fan out over the tauri event bus, so every command
   // arrived several times and needed `dedupeAdjacentCommands` to collapse it.
   const payload = createToolsetCommandPayload(commandId);
+  // The number control also has a previewing slider. Flush all earlier event sends,
+  // including its release commit, before entering synchronous IPC. Tauri emit resolves
+  // after enqueueing the destination eval; the subsequent route cannot pass that eval.
+  const earlierEvents = options?.commit ? [...pendingPaletteEvents] : [];
   const next = paletteCommandQueue.then(async () => {
+    if (options?.commit) await Promise.all(earlierEvents);
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("route_toolset_command", { ...payload, ...options });
   });
@@ -728,7 +734,14 @@ export function routeToolsetCommand(
   return next;
 }
 
-async function emitToolsetCommandEvent(eventName: string, commandId: string): Promise<void> {
+function emitToolsetCommandEvent(eventName: string, commandId: string): Promise<void> {
+  const pending = deliverToolsetCommandEvent(eventName, commandId);
+  pendingPaletteEvents.add(pending);
+  void pending.then(() => pendingPaletteEvents.delete(pending), () => pendingPaletteEvents.delete(pending));
+  return pending;
+}
+
+async function deliverToolsetCommandEvent(eventName: string, commandId: string): Promise<void> {
   const payload = createToolsetCommandPayload(commandId);
   dispatchDomToolsetEvent(eventName, payload);
   if (!isDesktopRuntime()) {

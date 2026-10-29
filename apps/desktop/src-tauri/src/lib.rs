@@ -4670,7 +4670,7 @@ fn route_toolset_command(
     preserve_input_focus: Option<bool>,
     commit: Option<bool>,
 ) -> Result<(), String> {
-    if utility_windows_suspended() {
+    if utility_windows_suspended() && !commit.unwrap_or(false) {
         return Ok(());
     }
     let command_id = command_id.trim();
@@ -4682,8 +4682,8 @@ fn route_toolset_command(
         let main = app
             .get_webview_window(MAIN_WINDOW_LABEL)
             .ok_or_else(|| "Main document window is not available.".to_string())?;
-        // Commits share the ordered command transport but retain their old no-focus side
-        // effect: a blur commit may be ending a lease to start a native window drag.
+        // Shortcut-settle commits retain the event-bus commit's no-focus behavior and
+        // delivery while utility windows are suspended (for example by a native prompt).
         return dispatch_dom_toolset_event(
             &main,
             &ToolsetCommandPayload {
