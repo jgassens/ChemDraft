@@ -97,8 +97,8 @@ export function structureTemplateMolecule(
     warningMessage: `Inserted ${template.name} using its original ChemDraft layout.${template.note ? ` ${template.note}` : ""}`,
     reservedObjectIds
   }, {
-    targetBondLengthPx: nativeDrawingStyleFromObjectStyle(style).bondLengthPx,
-    style,
+    bondLengthPx: nativeDrawingStyleFromObjectStyle(style).bondLengthPx,
+    objectStyle: style,
     constrainToPage: false
   });
 }

@@ -7,10 +7,10 @@ import { resolve } from "node:path";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AssistantCapabilityPermissions, PluginPanelReportSchema, type PluginCommandContext, type PluginAssistantToolResult } from "@chemdraft/plugin-api";
-import { applyPatch, createEmptyDocument, DocumentStylePreset, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
-import { createSmilesMolecule, pastedStructureDepictionFromMolfile, resolveStructureTemplateName } from "@chemdraft/document-workflow-core";
+import { applyPatch, createEmptyDocument, DocumentStylePreset, nativeDrawingStyleFromObjectStyle, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { applyMoleculeTargetBondLength, createSmilesMolecule, pastedStructureDepictionFromMolfile, resolveStructureTemplateName } from "@chemdraft/document-workflow-core";
 import { ensureRdkit, generateSmiles2DMolfile, setRdkitModuleLoader } from "../../../packages/rdkit-adapter/src/conformer";
-import { applyChargeToolAtPoint } from "./documentWorkflow";
+import { applyChargeToolAtPoint, normalizeCommittedDocument } from "./documentWorkflow";
 import { getAssistantHistoryPort } from "./assistant/historyPort";
 import { buildMoveObjects, inspectMolecule } from "./assistant/writeBuilder";
 import { testContext } from "./assistant/tools/testContext";
@@ -183,17 +183,30 @@ describe("assistant writes through mounted desktop normalization", () => {
     { selectedMark: false, kind: "lone-pair" }, { selectedMark: true, kind: "radical-dot" }
   ] as const)("refuses a relative move that would attach a $kind mark (selected: $selectedMark), without changing document or history", async ({ selectedMark, kind }) => {
     const fixture = testContext();
+    // Keep an existing 28px molecule: the 22px default's 25.3px association radius
+    // cannot bridge placement's 8px molecule padding + 12px gap + 9px mark half-width.
+    // Merely shrinking the offset makes placement move the atom at least 29px away.
+    fixture.replace(applyMoleculeTargetBondLength(fixture.context.getDocument()!, [fixture.molecule.id], 28));
     const input = { objectIds: [fixture.molecule.id], to: { relativeTo: fixture.text.id, side: "right" as const } };
     const drawing = fixture.context.getDocument()!;
     const planned = applyPatch(drawing, buildMoveObjects(fixture.context, input).patch);
     const moved = planned.pages[0]!.objects.find(object => object.id === fixture.molecule.id)! as MoleculeObject;
     const atom = moved.atoms[0]!;
-    const withMark = applyChargeToolAtPoint(drawing, kind === "charge" ? 1 : { kind }, { x: atom.x - 30, y: atom.y });
+    // Just outside one bond length, but inside the 1.15-bond association radius.
+    const markOffset = nativeDrawingStyleFromObjectStyle(moved.style).bondLengthPx * 1.1;
+    const withMark = applyChargeToolAtPoint(drawing, kind === "charge" ? 1 : { kind }, { x: atom.x - markOffset, y: atom.y });
     const mark = withMark.pages[0]!.objects.find(object => object.type === "electron-mark")!;
     const { port, push, amend, select } = await mount(applyPatch(withMark, { op: "setSelection",
       objectIds: [fixture.molecule.id, ...(selectedMark ? [mark.id] : [])] }));
     const before = port.read("initial")!;
     expect(before.pages[0]!.objects.find(object => object.id === mark.id)).toMatchObject({ anchor: { kind: "point" } });
+    // Replan with the mark present, as the live tool does, and prove the unsafe
+    // normalized result would attach it before asserting that the host refuses it.
+    const unsafe = normalizeCommittedDocument(applyPatch(before,
+      buildMoveObjects({ ...fixture.context, getDocument: () => before }, input).patch));
+    expect(unsafe.pages[0]!.objects.find(object => object.id === mark.id)).toMatchObject({
+      anchor: { kind: "atom", objectId: moved.id, atomId: atom.id }
+    });
     expect((await inspectMolecule({ ...fixture.context, chemistry }, before.pages[0]!.objects[0] as MoleculeObject)).canonicalSmiles).toBe("CC");
     const result = await call("move_objects", input);
     // Before the guard, this mounted path reported success with [] warnings and committed

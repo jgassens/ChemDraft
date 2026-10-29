@@ -25,3 +25,4 @@ export * from "./structureName";
 export * from "./structureTemplates";
 export * from "./textObjects";
 export * from "./documentStyle";
+export * from "./drawingDefaults";

@@ -10,8 +10,7 @@ import {
   type MoleculeObject,
   moleculeToMolfileV2000,
   UnknownBondOrderError,
-  type MoleculeTransformState,
-  stylePresetToObjectStyle
+  type MoleculeTransformState
 } from "@chemdraft/chem-core";
 import { type ParsedMolfileGraph, parseMolfileGraph } from "@chemdraft/clipboard-adapter";
 import { isDefaultCenteredDoubleBond, nativeBondOrderResolution, ringInteriorDoubleBondSides } from "@chemdraft/layout-engine";
@@ -24,6 +23,8 @@ import {
   type PagePoint,
   phase4Timestamp
 } from "./shared";
+
+import { documentDrawingDefaults, type DocumentDrawingDefaults } from "./drawingDefaults";
 
 export type NativeDoubleBondSide = NonNullable<MoleculeBond["display"]>["doubleBondSide"];
 
@@ -39,12 +40,6 @@ export const nativeSingleBondDimensions = {
 } as const;
 
 export const nativeBondLengthPx = ChemDraftSyntheticStylePreset.drawing.bondLengthPx;
-
-// Coordinate-free SMILES need a little more room than hand-drawn/native structures. At the
-// 22 px drawing default, a 15 px heteroatom label and a stereobond consume most of a fused-ring
-// bond. A 28 px target keeps the normal line/font weights while giving generated polycycles the
-// same open proportions users expect from a chemical depiction engine.
-export const smilesPasteBondLengthPx = 28;
 
 const nativeMoleculePadding = 8;
 
@@ -131,11 +126,10 @@ export const SMILES_PASTE_SOURCE: SmilesMoleculeSource = {
   warningMessage: "Generated an editable 2D structure from pasted SMILES."
 };
 
-/** Placement policy for pre-authored layouts; defaults retain SMILES paste behavior. */
-export interface MoleculeDepictionPlacement {
-  targetBondLengthPx?: number;
-  style?: Record<string, unknown>;
-  /** Defaults to true for paste; authored templates can retain their requested centre. */
+export interface SmilesMoleculeOptions {
+  bondLengthPx?: number;
+  objectStyle?: DocumentDrawingDefaults["objectStyle"];
+  /** Defaults to true for paste; authored templates keep their requested centre. */
   constrainToPage?: boolean;
 }
 
@@ -157,17 +151,17 @@ export function createSmilesMolecule(
   depiction: PastedStructureDepiction,
   smilesText: string,
   source: SmilesMoleculeSource = SMILES_PASTE_SOURCE,
-  placement: MoleculeDepictionPlacement = {}
+  options: SmilesMoleculeOptions = {}
 ): MoleculeObject {
   if (depiction.atoms.length === 0) {
     throw new Error("Cannot build a molecule: no atoms were generated.");
   }
   const page = firstPage(document);
-  const targetBondLengthPx = placement.targetBondLengthPx ?? smilesPasteBondLengthPx;
-  if (!Number.isFinite(targetBondLengthPx) || targetBondLengthPx <= 0) {
+  const defaults = documentDrawingDefaults(document);
+  const bondLengthPx = options.bondLengthPx ?? defaults.bondLengthPx;
+  if (!Number.isFinite(bondLengthPx) || bondLengthPx <= 0) {
     throw new Error("Cannot build a molecule: target bond length must be positive and finite.");
   }
-
   const pseudoGraph: ParsedMolfileGraph = {
     format: "molfile-v2000",
     atoms: depiction.atoms.map((atom, index) => ({
@@ -190,8 +184,8 @@ export function createSmilesMolecule(
     pseudoGraph,
     point,
     page,
-    targetBondLengthPx,
-    placement.constrainToPage
+    bondLengthPx,
+    options.constrainToPage
   ).map((atom) => ({
     id: atom.id,
     element: atom.element,
@@ -256,9 +250,8 @@ export function createSmilesMolecule(
     rotation: 0,
     transform: defaultNativeMoleculeTransform,
     style: {
-      ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
-      ...placement.style,
-      bondLengthPx: targetBondLengthPx,
+      ...(options.objectStyle ?? defaults.objectStyle),
+      bondLengthPx,
       source: source.styleSource
     },
     compatibility: {
@@ -284,9 +277,10 @@ export function insertSmilesMolecule(
   document: ChemDraftDocument,
   point: PagePoint,
   depiction: PastedStructureDepiction,
-  smilesText: string
+  smilesText: string,
+  options: SmilesMoleculeOptions = {}
 ): ChemDraftDocument {
-  const object = createSmilesMolecule(document, point, depiction, smilesText);
+  const object = createSmilesMolecule(document, point, depiction, smilesText, SMILES_PASTE_SOURCE, options);
   const page = firstPage(document);
 
   return applyPatches(
