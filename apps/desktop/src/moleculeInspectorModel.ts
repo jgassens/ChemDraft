@@ -386,6 +386,17 @@ function createStructureModel(
     const bond = objectById.get(target.objectId)?.bonds.find((candidate) => candidate.id === target.bondId);
     return bond?.order === "double" ? [bond] : [];
   });
+  const bondLengthPx = uniformValue(
+    bondEntries.length > 0 ? bondStyleEntries : moleculeEntries,
+    ({ object, style }) => bondEntries.length > 0 ? style.bondLengthPx : representativeMoleculeBondLengthPx(object),
+    fallback.bondLengthPx,
+    bondEntries.length > 0 ? Object.is : (first, second) => Math.abs(first - second) <= 0.01
+  );
+  if (bondEntries.length === 0 && bondLengthPx.value !== null) {
+    // Match the numeric field's three-decimal display precision after comparing
+    // the measured lengths, so rounding cannot hide a difference over 0.01 px.
+    bondLengthPx.value = Number(bondLengthPx.value.toFixed(3));
+  }
 
   return {
     enabled: targetCount > 0,
@@ -397,11 +408,7 @@ function createStructureModel(
     targetKind,
     values: {
       chainAngleDegrees: uniformValue(moleculeEntries, ({ style }) => style.chainAngleDegrees, fallback.chainAngleDegrees),
-      bondLengthPx: uniformValue(
-        bondEntries.length > 0 ? bondStyleEntries : moleculeEntries,
-        ({ object, style }) => bondEntries.length > 0 ? style.bondLengthPx : representativeMoleculeBondLengthPx(object),
-        fallback.bondLengthPx
-      ),
+      bondLengthPx,
       bondStrokeWidthPx: uniformValue(bondStyleEntries, ({ style }) => style.bondStrokeWidthPx, fallback.bondStrokeWidthPx),
       bondBoldWidthPx: uniformValue(bondStyleEntries, ({ style }) => style.bondBoldWidthPx, fallback.bondBoldWidthPx),
       bondColor: uniformValue(

@@ -797,6 +797,119 @@ function TextToolbarStyleControls() {
 
 const MOLECULE_INSPECTOR_TABS = ["structure", "atom-labels", "templates"] as const;
 
+function MoleculeInspectorNumericControl({
+  label, value, mixed, range, commandId, disabled, onCommit, onPreview, onCancel
+}: {
+  label: string;
+  value: number | null | undefined;
+  mixed: boolean | undefined;
+  range: { min: number; max: number; step: number };
+  commandId: (value: number) => string;
+  disabled: boolean;
+  onCommit: (commandId: string) => void;
+  onPreview: (commandId: string) => void;
+  onCancel: (() => void) | undefined;
+}) {
+  const effectiveValue = value ?? range.min;
+  const modelText = mixed ? "" : formatInspectorNumber(effectiveValue);
+  // null follows the model; a focused draft survives incoming palette snapshots.
+  const [draft, setDraft] = useState<string | null>(null);
+  const dirty = useRef(false);
+  const pointerStepping = useRef(false);
+  const revert = () => {
+    dirty.current = false;
+    setDraft(null);
+  };
+  const commit = (rawValue: string) => {
+    revert();
+    if (rawValue.trim() === "") {
+      // Clearing a field or leaving an unedited Mixed field must never apply 0.
+      return;
+    }
+    const parsed = Number(rawValue);
+    if (Number.isFinite(parsed)) {
+      onCommit(commandId(Math.max(range.min, Math.min(range.max, parsed))));
+    }
+  };
+
+  return (
+    <label className="molecule-inspector-field molecule-inspector-number-field">
+      <span>{label}</span>
+      <input
+        type="number"
+        min={range.min}
+        max={range.max}
+        step={range.step}
+        value={draft ?? modelText}
+        placeholder={mixed ? "Mixed" : undefined}
+        disabled={disabled}
+        aria-label={label}
+        data-palette-control="true"
+        onFocus={() => setDraft(modelText)}
+        onPointerDown={(event) => {
+          event.stopPropagation();
+          pointerStepping.current = true;
+        }}
+        onPointerUp={() => { pointerStepping.current = false; }}
+        onPointerCancel={() => { pointerStepping.current = false; }}
+        onChange={(event) => {
+          // Native spin buttons emit input during a pointer press, without a text
+          // inputType. Typing/paste carry an inputType (and keydown clears the flag).
+          if (pointerStepping.current && !(event.nativeEvent as InputEvent).inputType) {
+            commit(event.currentTarget.value);
+            return;
+          }
+          dirty.current = true;
+          setDraft(event.currentTarget.value);
+        }}
+        onBlur={(event) => {
+          pointerStepping.current = false;
+          if (dirty.current) {
+            commit(event.currentTarget.value);
+          } else {
+            revert();
+          }
+        }}
+        onKeyDown={(event) => {
+          pointerStepping.current = false;
+          if (event.key === "Enter") {
+            event.preventDefault();
+            commit(event.currentTarget.value);
+          } else if (event.key === "Escape") {
+            revert();
+            onCancel?.();
+          } else if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+            event.preventDefault();
+            if (event.key === "ArrowUp") {
+              event.currentTarget.stepUp();
+            } else {
+              event.currentTarget.stepDown();
+            }
+            commit(event.currentTarget.value);
+          }
+        }}
+      />
+      <input
+        type="range"
+        min={range.min}
+        max={range.max}
+        step={range.step}
+        value={effectiveValue}
+        disabled={disabled}
+        aria-label={`${label} slider`}
+        data-palette-control="true"
+        onPointerDown={(event) => event.stopPropagation()}
+        onChange={(event) => onPreview(commandId(Number(event.currentTarget.value)))}
+        onPointerUp={(event) => {
+          event.stopPropagation();
+          commit(event.currentTarget.value);
+        }}
+        onKeyUp={(event) => commit(event.currentTarget.value)}
+      />
+    </label>
+  );
+}
+
 function MoleculeInspectorControls({ ringOnly = false }: { ringOnly?: boolean }) {
   const {
     currentMoleculeInspector,
@@ -985,71 +1098,18 @@ function MoleculeInspectorControls({ ringOnly = false }: { ringOnly?: boolean })
     commandId: (value: number) => string,
     disabled: boolean
   ) => {
-    const effectiveValue = valueOrFallback(value, range.min);
-    const parseInputValue = (rawValue: string): number | undefined => {
-      const trimmed = rawValue.trim();
-      if (trimmed === "") {
-        // Empty (cleared, or an unedited "Mixed") field: Number("") is 0, which would
-        // silently stamp 0 onto every target. Treat blank as "leave unchanged".
-        return undefined;
-      }
-      const parsed = Number(trimmed);
-      return Number.isFinite(parsed) ? parsed : undefined;
-    };
-    const commitValue = (rawValue: string) => {
-      const nextValue = parseInputValue(rawValue);
-      if (nextValue !== undefined) {
-        invokeOrCommit(commandId(nextValue));
-      }
-    };
     return (
-      <label className="molecule-inspector-field molecule-inspector-number-field">
-        <span>{label}</span>
-        <input
-          type="number"
-          min={range.min}
-          max={range.max}
-          step={range.step}
-          value={mixed ? "" : formatInspectorNumber(effectiveValue)}
-          placeholder={mixed ? "Mixed" : undefined}
-          disabled={disabled}
-          aria-label={label}
-          data-palette-control="true"
-          onPointerDown={(event) => event.stopPropagation()}
-          onChange={(event) => {
-            const nextValue = parseInputValue(event.currentTarget.value);
-            if (nextValue !== undefined) {
-              previewCommand(commandId(nextValue));
-            }
-          }}
-          onBlur={(event) => commitValue(event.currentTarget.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              commitValue(event.currentTarget.value);
-            }
-            if (event.key === "Escape") {
-              onCancel?.();
-            }
-          }}
-        />
-        <input
-          type="range"
-          min={range.min}
-          max={range.max}
-          step={range.step}
-          value={effectiveValue}
-          disabled={disabled}
-          aria-label={`${label} slider`}
-          data-palette-control="true"
-          onPointerDown={(event) => event.stopPropagation()}
-          onChange={(event) => previewCommand(commandId(Number(event.currentTarget.value)))}
-          onPointerUp={(event) => {
-            event.stopPropagation();
-            invokeOrCommit(commandId(Number(event.currentTarget.value)));
-          }}
-          onKeyUp={(event) => invokeOrCommit(commandId(Number(event.currentTarget.value)))}
-        />
-      </label>
+      <MoleculeInspectorNumericControl
+        label={label}
+        value={value}
+        mixed={mixed}
+        range={range}
+        commandId={commandId}
+        disabled={disabled}
+        onCommit={invokeOrCommit}
+        onPreview={previewCommand}
+        onCancel={onCancel}
+      />
     );
   };
 

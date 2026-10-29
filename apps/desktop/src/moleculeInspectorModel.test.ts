@@ -3,6 +3,27 @@ import { createEmptyDocument, type ChemDraftDocument, type GraphicObject, type M
 import { createMoleculeInspectorModel, resolveMoleculeInspectorTargets } from "./moleculeInspectorModel";
 
 describe("moleculeInspectorModel", () => {
+  it("tolerates measured bond-length noise, rounds the shared display value, and keeps other fields exact", () => {
+    const molecules = [22, 21.996, 22.004].map((length, index) => {
+      const molecule = singleBondMolecule(`noise_${index}`, 0);
+      molecule.atoms[1].x = length;
+      molecule.style.bondStrokeWidthPx = 1 + index * 0.001;
+      return molecule;
+    });
+    const selection = { selectedObjectIds: molecules.map((molecule) => molecule.id) };
+    const model = createMoleculeInspectorModel(documentWithObjects(molecules), selection);
+    expect(model.structure.values.bondLengthPx).toEqual({ value: 22, mixed: false });
+    expect(model.structure.values.bondStrokeWidthPx.mixed).toBe(true);
+
+    molecules[0].atoms[1].x = 22.0004;
+    expect(createMoleculeInspectorModel(documentWithObjects(molecules), selection).structure.values.bondLengthPx)
+      .toEqual({ value: 22, mixed: false });
+
+    molecules[1].atoms[1].x = 22.5;
+    expect(createMoleculeInspectorModel(documentWithObjects(molecules.slice(0, 2)), selection).structure.values.bondLengthPx)
+      .toEqual({ value: null, mixed: true });
+  });
+
   it("keeps position disabled for a whole molecule without a double bond", () => {
     const molecule = singleBondMolecule("single", 100);
     const model = createMoleculeInspectorModel(documentWithObjects([molecule]), { selectedObjectIds: [molecule.id] });
