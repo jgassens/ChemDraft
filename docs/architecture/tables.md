@@ -75,10 +75,14 @@ alignment and widths where provided. Excel fragment markers inside a `<table>` a
 the containing table. A 1×1 HTML table is treated as text rather than pasted as a table. For Excel's
 narrow-column `#######` display text, a cell recovers its value from the same-grid plain-text flavor
 or `x:num` when present. Overflow caption and footnote rows marked `mso-ignore:colspan` become the
-caption and footnotes. A readable HTML table wins over a plain-text chemistry guess, while true
-chemical formats retain precedence. A pasted table is clamped onto the page. When more than one source
-flavor is present, structured ChemDraft selection takes precedence; ordinary drawing selection copy
-remains a drawing even when it contains a table.
+caption and footnotes. Paste precedence is ChemDraft's own selection, then true chemical formats
+(molfile, CDXML and chemical MIME types). Plausible plain text for a single SMILES or a qualifying
+SMILES list is parsed and identity-verified as chemistry before HTML is considered, so accompanying
+HTML does not override it. A readable table is the fallback when chemistry declines; prose-heavy
+Office tables with words such as MW, (+)-DET or CH2Cl2 that only look chemical skip the chemistry
+attempt and paste as tables. Plain text is the final fallback. A pasted table is clamped onto the
+page. When more than one source flavor is present, structured ChemDraft selection takes precedence;
+ordinary drawing selection copy remains a drawing even when it contains a table.
 
 Paste fixtures are synthetic stand-ins for Excel, Word and Google Docs clipboard payloads. They test
 known HTML/CF_HTML and quoted TSV shapes, but are not captures from those applications.
