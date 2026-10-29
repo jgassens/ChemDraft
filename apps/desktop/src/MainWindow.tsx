@@ -215,6 +215,7 @@ import {
   nativeBondOrderResolution,
   nativeElementFromAtomLabel,
   nativeMoleculeRings,
+  nativeTextScriptFontScale,
   nonElementAtomLabelPlacement,
   defaultMechanismArrowControls,
   planMoleculeAtomLabels,
@@ -1620,7 +1621,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.29.09.45-codex";
+const CURRENT_BUILD_STAMP = "10.29.11.20-codex";
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -27431,7 +27432,7 @@ function DocumentObjectViewContent({
       color: "transparent",
       caretColor: textStyle.color,
       ...(objectTextScript === "normal" ? {} : {
-        fontSize: `calc(${textStyle.fontSizePx * 0.72}px * var(--page-scale))`,
+        fontSize: `calc(${textStyle.fontSizePx * nativeTextScriptFontScale}px * var(--page-scale))`,
         lineHeight: Math.max(1, textStyle.lineHeight),
         paddingTop: objectTextScript === "subscript" ? `calc(${textStyle.fontSizePx * 0.3}px * var(--page-scale))` : 0,
         paddingBottom: objectTextScript === "superscript" ? `calc(${textStyle.fontSizePx * 0.28}px * var(--page-scale))` : 0
