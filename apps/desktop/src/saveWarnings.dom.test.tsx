@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { parseDocument, type ChemDraftDocument } from "@chemdraft/chem-core";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { MainWindow } from "./MainWindow";
 import { createNativeSavePayload, createPhase4Document } from "./documentWorkflow";
 import { saveKeybindingSettings } from "./keybindingSettings";
@@ -48,9 +48,49 @@ class TestResizeObserver {
 
 const tableDocument = () => parseDocument(JSON.parse(readFileSync("packages/fixtures/tables/sharpless-reagent-table.json", "utf8")));
 
+it("keeps empty status space click-through and only the truncated text interactive", () => {
+  const css = readFileSync("apps/desktop/src/App.css", "utf8");
+  function rule(selector: string): string {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = css.match(new RegExp(`(?:^|\\n)${escaped}\\s*\\{([^}]+)\\}`, "m"));
+    expect(match, selector).not.toBeNull();
+    return match![1]!;
+  }
+  expect(rule(".status-row")).toContain("pointer-events: none;");
+  expect(rule(".status-row")).toContain("align-items: baseline;");
+  expect(rule(".status-row-main")).toContain("align-items: baseline;");
+  expect(rule(".status-row-main")).toContain("flex: 1 1 0;");
+  const slot = rule(".status-message-slot");
+  expect(slot).toContain("pointer-events: none;");
+  expect(slot).toContain("flex: 1 1 0;");
+  expect(slot).toContain("min-width: 0;");
+  expect(slot).toContain("display: flex;");
+  const text = rule(".status-message,\n.status-modifier-hint");
+  expect(text).toContain("flex: 0 1 auto;");
+  expect(text).toContain("min-width: 0;");
+  expect(text).toContain("text-overflow: ellipsis;");
+  expect(text).toContain("overflow: hidden;");
+  expect(text).toContain("white-space: nowrap;");
+  const interactive = rule(".status-message");
+  expect(interactive).toContain("pointer-events: auto;");
+  expect(interactive).not.toMatch(/flex(?:-grow)?:/);
+  expect(css).not.toContain(".status-message[data-file-warning-help]");
+  expect(rule(".open-warnings-button")).toContain("flex: 0 0 auto;");
+  expect(rule(".open-warnings-message")).not.toMatch(/(?:display|color|white-space):/);
+});
+
 describe("save warnings in the existing file warnings list", () => {
   let container: HTMLDivElement;
   let root: Root;
+  let styles: HTMLStyleElement;
+
+  beforeAll(() => {
+    styles = document.createElement("style");
+    styles.textContent = readFileSync("apps/desktop/src/App.css", "utf8");
+    document.head.append(styles);
+  });
+
+  afterAll(() => styles.remove());
 
   beforeEach(() => {
     native.desktop = false;
@@ -117,6 +157,41 @@ describe("save warnings in the existing file warnings list", () => {
     await act(async () => { target.click(); });
   }
 
+  async function expectHoverHelp(messages: readonly string[]) {
+    const previousStatus = status().textContent;
+    const slot = status().parentElement!;
+    expect(slot.className).toBe("status-message-slot");
+    expect(getComputedStyle(slot).pointerEvents).toBe("none");
+    expect(getComputedStyle(container.querySelector(".status-row-main")!).pointerEvents).toBe("none");
+    for (const target of [status(), button()!]) {
+      // React's mouse-enter/leave handlers are reached through real bubbling DOM events.
+      expect(getComputedStyle(target).pointerEvents).toBe("auto");
+      await act(async () => { target.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })); });
+      for (const message of messages) expect(status().textContent).toContain(message);
+      expect(status().hasAttribute("data-file-warning-help")).toBe(true);
+      expect(getComputedStyle(status()).whiteSpace).toBe("nowrap");
+      expect(getComputedStyle(status()).flexGrow).toBe("0");
+      expect(getComputedStyle(status()).textOverflow).toBe("ellipsis");
+      expect(status().parentElement).toBe(slot);
+      expect(slot.nextElementSibling).toBe(button());
+      await act(async () => { target.dispatchEvent(new MouseEvent("mouseout", { bubbles: true })); });
+      expect(status().textContent).toBe(previousStatus);
+      expect(status().hasAttribute("data-file-warning-help")).toBe(false);
+    }
+    await act(async () => { button()!.focus(); });
+    for (const message of messages) expect(status().textContent).toContain(message);
+    await act(async () => { button()!.blur(); });
+    expect(status().textContent).toBe(previousStatus);
+  }
+
+  function expectReadableMessages(scope: Element, messages: readonly string[]) {
+    const entries = [...scope.querySelectorAll<HTMLElement>(".open-warnings-message")];
+    expect(entries.map(entry => entry.textContent)).toEqual(messages);
+    for (const entry of entries) {
+      expect(getComputedStyle(entry).visibility).toBe("visible");
+    }
+  }
+
   async function activate(index: number) {
     await click(container.querySelectorAll<HTMLButtonElement>('[role="tab"]')[index]!);
   }
@@ -145,7 +220,7 @@ describe("save warnings in the existing file warnings list", () => {
     return warning!;
   }
 
-  it("makes every save warning message reachable from the existing button and status tooltip", async () => {
+  it("shows every save warning in status hover help and as readable text in the list", async () => {
     const document = tableDocument();
     // Also prove the tooltip retains multiple full messages, rather than only the first warning.
     const table = document.pages[0]!.objects[0]!;
@@ -162,14 +237,23 @@ describe("save warnings in the existing file warnings list", () => {
     expect(button()?.textContent).toBe(`${payload.warnings.length} warnings`);
     expect(button()?.title).toBe("Show the warnings from saving this document");
     expect(list()).toBeNull();
+    await expectHoverHelp(payload.warnings.map(warning => warning.message));
 
     await click(button()!);
     expect(list()?.getAttribute("aria-label")).toBe(`Saved ${payload.filename}: ${payload.warnings.length} warnings`);
     const row = list()?.querySelector('[data-warning-code="cdxml.table_approximated"]');
     expect(row?.querySelector(".open-warnings-message")?.textContent).toBe(warning.message);
     for (const warning of payload.warnings) expect(list()?.textContent).toContain(warning.message);
+    expectReadableMessages(list()!, payload.warnings.map(warning => warning.message));
+    expect(warning.message).toContain("so other programs will not edit it as a table; ChemDraft reopens it exactly from the embedded ChemDraft payload.");
     expect(button()?.getAttribute("aria-controls")).toBe(list()?.id);
     expect(button()?.title).toBe("Hide the warnings from saving this document");
+    const show = row!.querySelector<HTMLButtonElement>("[data-open-warning-show]")!;
+    const press = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+    await act(async () => { show.dispatchEvent(press); });
+    expect(press.defaultPrevented).toBe(true);
+    await click(show);
+    expect(bridge().snapshot().selection.objectIds).toEqual([table.id]);
 
     await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
     expect(list()).toBeNull();
@@ -208,7 +292,9 @@ describe("save warnings in the existing file warnings list", () => {
     const count = button()!.textContent;
     await click(button()!);
     const openHeading = list()!.getAttribute("aria-label");
-    const messages = [...list()!.querySelectorAll(".open-warnings-message")].map((row) => row.textContent);
+    const messages = [...list()!.querySelectorAll(".open-warnings-message")].map((row) => row.textContent!);
+    expectReadableMessages(list()!, messages);
+    await expectHoverHelp(messages);
     expect(createNativeSavePayload(bridge().snapshot().document).warnings).toHaveLength(0);
 
     await command("document.save");
@@ -239,6 +325,9 @@ describe("save warnings in the existing file warnings list", () => {
     expect(groups[1]!.getAttribute("aria-label")).toMatch(/^Saved /);
     expect(groups[0]!.textContent).not.toContain("Table written");
     for (const warning of payload.warnings) expect(groups[1]!.textContent).toContain(warning.message);
+    const allMessages = [...list()!.querySelectorAll(".open-warnings-message")].map(row => row.textContent!);
+    await expectHoverHelp(allMessages);
+    expectReadableMessages(list()!, allMessages);
     expect(button()?.getAttribute("aria-controls")).toBe(list()?.id);
 
     // Repeating the save replaces its report, without duplicating findings or changing the open report.

@@ -1639,7 +1639,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.29.13.15-codex";
+const CURRENT_BUILD_STAMP = "10.29.13.40-codex";
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -2589,7 +2589,16 @@ export function MainWindow({
   const [openWarningsReport, setOpenWarningsReport] = useState<OpenWarningsReport | undefined>();
   const [saveWarningsReport, setSaveWarningsReport] = useState<OpenWarningsReport | undefined>();
   const [openWarningsListOpen, setOpenWarningsListOpen] = useState(false);
+  const [fileWarningsHovered, setFileWarningsHovered] = useState(false);
+  const [fileWarningsFocused, setFileWarningsFocused] = useState(false);
+  useEffect(() => {
+    setFileWarningsHovered(false);
+    setFileWarningsFocused(false);
+  }, [activeDocumentTabId]);
   const warningReports = fileWarningReports(openWarningsReport, saveWarningsReport);
+  const fileWarningHelp = fileWarningsTooltip(warningReports);
+  // Like hoveredNativeWarning, file hover help temporarily replaces the status, without changing it.
+  const visibleFileWarningHelp = fileWarningsHovered || fileWarningsFocused ? fileWarningHelp : undefined;
   const openWarnings: OpenWarningsReport | undefined = warningReports[0];
   const fileWarningCount = warningReports.reduce((count, report) => count + report.warnings.length, 0);
   const openWarningsListShown = openWarningsListOpen && openWarnings !== undefined;
@@ -20966,16 +20975,21 @@ export function MainWindow({
             Positioned apart, a long status or a branch build's long stamp ran one into the other. */}
         <div ref={statusRowRef} className="status-row" data-status-row>
           <div className="status-row-main">
-            <span data-status-message role="status" aria-live="polite" className="status-message"
-              title={fileWarningsTooltip(warningReports)}>
-              {interactive3dWorkspace
-                ? [
-                    interactive3dWorkspace.status,
-                    interactive3dWorkspace.energyLabel,
-                    ...new Set(interactive3dWorkspace.session?.warnings ?? []),
-                    "Esc to close"
-                  ].filter(Boolean).join(" · ")
-                : hoveredNativeWarning ?? status}
+            <span className="status-message-slot">
+              <span data-status-message role="status" aria-live="polite" className="status-message"
+                data-file-warning-help={visibleFileWarningHelp ? true : undefined}
+                onMouseEnter={() => setFileWarningsHovered(true)}
+                onMouseLeave={() => setFileWarningsHovered(false)}
+                title={fileWarningHelp}>
+                {visibleFileWarningHelp ?? (interactive3dWorkspace
+                  ? [
+                      interactive3dWorkspace.status,
+                      interactive3dWorkspace.energyLabel,
+                      ...new Set(interactive3dWorkspace.session?.warnings ?? []),
+                      "Esc to close"
+                    ].filter(Boolean).join(" · ")
+                  : hoveredNativeWarning ?? status)}
+              </span>
             </span>
             {openWarnings ? (
               <button
@@ -20986,6 +21000,10 @@ export function MainWindow({
                 aria-expanded={openWarningsListShown}
                 aria-controls={openWarningsListShown ? OPEN_WARNINGS_LIST_ID : undefined}
                 title={`${openWarningsListShown ? "Hide" : "Show"} the warnings from ${warningReports.length > 1 ? "opening and saving" : openWarnings.operation === "save" ? "saving" : "opening"} this document`}
+                onMouseEnter={() => setFileWarningsHovered(true)}
+                onMouseLeave={() => setFileWarningsHovered(false)}
+                onFocus={() => setFileWarningsFocused(true)}
+                onBlur={() => setFileWarningsFocused(false)}
                 // Keep keyboard focus where it was (the canvas), so tool shortcuts work straight after.
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => {

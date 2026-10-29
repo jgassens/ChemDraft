@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { readFileSync } from "node:fs";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -170,6 +171,48 @@ describe.each(["macos", "windows"] as const)("text paste formatting (%s)", platf
   });
 
   const clipboardBusy = "The clipboard is in use by another application.";
+
+  it.each(["native", "snapshot"] as const)("pastes a Word table once from the desktop %s path, preserving formatting and warnings", async source => {
+    // Keep the Office-shaped markup, and include a dropped image to exercise a nonempty warning.
+    const html = readFileSync("packages/fixtures/clipboard-tables/word-like.html", "utf8")
+      .replace("allyl alcohol<o:p>", 'allyl alcohol<img src="reagent.png"><o:p>');
+    const htmlType = platform === "macos" ? "public.html" : "HTML Format";
+    const nativePayload = nativeClipboard("native fallback text");
+    nativePayload.types.push(htmlType);
+    nativePayload.textItems.push({ type: htmlType, text: html });
+    await mount(source === "native" ? nativePayload : new Error(clipboardBusy));
+    // A different table in DataTransfer proves usable native content wins; the snapshot case
+    // expires DataTransfer as soon as the event handler returns, before the native rejection.
+    const event = await paste({
+      "text/html": source === "native" ? "<table><tr><td>DOM</td><td>fallback</td></tr></table>" : html,
+      "text/plain": "DOM fallback text"
+    });
+    expect(event.defaultPrevented).toBe(true);
+    expect(nativeReads()).toHaveLength(1);
+    expect(objects()).toHaveLength(1);
+    const table = objects()[0]!;
+    expect(table.type).toBe("table");
+    if (table.type !== "table") throw new Error("Expected a pasted native table");
+    expect(table.rows.map(row => row.cells.map(cell => cell.text))).toEqual([
+      ["Material", "MW (g/mol)", "Density (g/mL)"],
+      ["allyl alcohol", "58.08", "0.854"],
+      ["Ti(OiPr)4", "284.22", "0.96"],
+      ["TBHPa", "90.12", "—"]
+    ]);
+    expect(table.rows[0]!.cells[0]!.spans).toContainEqual(expect.objectContaining({ text: "Material", style: { fontWeight: 700 } }));
+    expect(table.rows[2]!.cells[0]!.spans).toContainEqual(expect.objectContaining({ text: "4", script: "subscript" }));
+    expect(table.rows[3]!.cells[0]!.spans).toContainEqual(expect.objectContaining({ text: "a", script: "superscript" }));
+    expect(table.columns[1]!.align).toBe("right");
+    expect(window.__CHEMDRAFT_AGENT__!.snapshot().selection.objectIds).toEqual([table.id]);
+    expect(status()).toBe("Pasted table; Images in the table were not imported.");
+    expect(status()).not.toMatch(/Paste failed|Nothing to paste/);
+    expect(depictSmilesForPaste).not.toHaveBeenCalled();
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.undo"); });
+    expect(objects()).toHaveLength(0);
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.redo"); });
+    expect(objects()).toEqual([table]);
+    expect(nativeReads()).toHaveLength(1);
+  });
 
   it("uses the synchronous DataTransfer snapshot when the native read rejects", async () => {
     await mount(clipboardBusy);

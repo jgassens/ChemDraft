@@ -5810,7 +5810,8 @@ textarea:focus-visible,
 }
 
 .status-row-main {
-  flex: 1 1 auto;
+  /* Allocate independently of the help text so it cannot shift the warnings button or stamp. */
+  flex: 1 1 0;
   min-width: 0;
   display: flex;
   align-items: baseline;
@@ -5829,6 +5830,20 @@ textarea:focus-visible,
 
 .status-modifier-hint {
   opacity: 0.7;
+}
+
+/* Reserve click-through space so warning help cannot move the warnings button under the pointer.
+   Only the content-sized, single-line text inside receives hover events; it still truncates. */
+.status-message-slot {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  pointer-events: none;
+}
+
+.status-message {
+  pointer-events: auto;
 }
 
 /* Shrinks far ahead of the status (its shrink factor dwarfs the left part's), down to its floor; the
