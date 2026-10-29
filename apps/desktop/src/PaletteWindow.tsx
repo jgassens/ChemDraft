@@ -13,7 +13,7 @@ import { writeClipboardTextItems } from "./clipboard";
 import { allShellCommands, type CommandSpec } from "./commands";
 import { createPhase4Document } from "./documentWorkflow";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
-import { installPaletteInputFocus, isPaletteInputFocusPending } from "./plugins/pluginPanelInputFocus";
+import { installPaletteInputFocus, isPaletteInputFocusPending, paletteInputFocusControl } from "./plugins/pluginPanelInputFocus";
 import { isTextEditingElement } from "./editHistoryRouting";
 import { applyKeybindingSchemeToCommands } from "./keybindingScheme";
 import { isCompoundLayoutCommand } from "./compoundLayoutSettings";
@@ -664,7 +664,10 @@ export function PaletteWindow({
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      const target = event.target instanceof Element ? event.target : null;
+      // WebKit/WebView2 can temporarily target body during a control click. The leased
+      // destination still owns editing keys, and non-text controls still forward shortcuts.
+      const target = event.target instanceof Element && event.target !== document.body
+        ? event.target : paletteInputFocusControl(shellRef.current) ?? null;
       if (event.defaultPrevented || isPaletteInputFocusPending(shellRef.current) ||
         isTextEditingElement(target)) return;
       // Activation, value and editing keys belong to every form control. In

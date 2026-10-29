@@ -276,14 +276,12 @@ unsafe extern "system" fn focus_subclass(
 ) -> isize {
     use windows_sys::Win32::UI::{
         Shell::{DefSubclassProc, RemoveWindowSubclass},
-        WindowsAndMessaging::{
-            MA_NOACTIVATE, WA_INACTIVE, WM_ACTIVATE, WM_ACTIVATEAPP, WM_MOUSEACTIVATE, WM_NCDESTROY,
-        },
+        WindowsAndMessaging::{WA_INACTIVE, WM_ACTIVATE, WM_ACTIVATEAPP, WM_NCDESTROY},
     };
-    if message == WM_MOUSEACTIVATE {
-        // Keep NOACTIVATE throughout a lease; still deliver the click to WebView2.
-        return MA_NOACTIVATE as isize;
-    }
+    // Observe focus without overriding mouse activation. Palettes keep WS_EX_NOACTIVATE,
+    // but WebView2 must be allowed to activate them for a native colour picker. Forcing
+    // MA_NOACTIVATE here (newly installed on palettes) prevents that popup from opening.
+    // Ordinary command clicks still return focus through the guarded pointer hand-back.
     // Observe genuine top-level loss synchronously, including during acquisition.
     // WebView2 child focus transitions are not lease boundaries.
     if message == WM_ACTIVATE || (message == WM_ACTIVATEAPP && wparam == 0) {

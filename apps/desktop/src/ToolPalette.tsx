@@ -819,13 +819,17 @@ function MoleculeInspectorNumericControl({
   const dirty = useRef(false);
   const pointerStepping = useRef(false);
   const lastCommitted = useRef<number | undefined>(undefined);
+  const committedValues = useRef(new Set<string>());
   const [sliderDraft, setSliderDraft] = useState<number | null>(null);
   const sliderChanged = useRef<number | undefined>(undefined);
   const sliderPreviewedValues = useRef(new Set<number>());
   useEffect(() => {
-    if (!dirty.current) {
+    // Own acknowledgements can arrive late/out of order during a held arrow or spinner.
+    // Retain the latest step and its dedupe until an external value (including undo) arrives.
+    if (!dirty.current && !committedValues.current.has(modelText)) {
       setDraft(null);
       lastCommitted.current = undefined;
+      committedValues.current.clear();
     }
   }, [modelText]);
   useEffect(() => {
@@ -840,6 +844,7 @@ function MoleculeInspectorNumericControl({
   const revert = () => {
     dirty.current = false;
     lastCommitted.current = undefined;
+    committedValues.current.clear();
     setDraft(null);
   };
   useEffect(() => {
@@ -848,6 +853,7 @@ function MoleculeInspectorNumericControl({
       dirty.current = false;
       pointerStepping.current = false;
       lastCommitted.current = undefined;
+      committedValues.current.clear();
       setDraft(null);
     };
     input?.addEventListener(PALETTE_INPUT_FOCUS_CANCEL_EVENT, cancel);
@@ -867,6 +873,7 @@ function MoleculeInspectorNumericControl({
       // here makes a held arrow (or native spin button) start every tick at the old model.
       setDraft(formatInspectorNumber(next));
       if (next !== lastCommitted.current) {
+        committedValues.current.add(formatInspectorNumber(next));
         lastCommitted.current = next;
         onCommit(commandId(next));
       }

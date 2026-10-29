@@ -3104,8 +3104,16 @@ async fn set_plugin_panel_input_focus(
                     // Never use Tao's force_window_active (including its synthetic Alt fallback).
                     // Keep NOACTIVATE throughout the lease and drop delayed background requests.
                     let hwnd = target.hwnd().map_err(|error| error.to_string())?.0;
+                    let already_active = unsafe {
+                        windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() == hwnd
+                    };
                     if !panel_window::focus_if_app_active(hwnd) {
                         return Ok(false);
+                    }
+                    // A native colour popup may have opened during the click default before
+                    // this IPC runs. Refocusing its WebView2 owner would dismiss the popup.
+                    if already_active {
+                        return Ok(true);
                     }
                 }
                 #[cfg(not(any(target_os = "macos", windows)))]

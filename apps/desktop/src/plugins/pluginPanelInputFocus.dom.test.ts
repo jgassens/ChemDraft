@@ -853,6 +853,45 @@ describe("panel input keyboard focus", () => {
 });
 
 describe.each(["macos", "windows"] as const)("palette control focus settling (%s)", (platform) => {
+  it("restores a non-text click default that blurs after the native reply", async () => {
+    vi.useFakeTimers();
+    const { shell, request } = mount('<input type="range">', platform, Promise.resolve(), true);
+    const range = shell.querySelector("input")!;
+    let settle!: (acquired: boolean) => void;
+    request.mockImplementationOnce(() => new Promise<boolean>((resolve) => { settle = resolve; }));
+    pointerDown(range);
+    await flush();
+    pointerUp(range, false);
+    click(range);
+    settle(true);
+    await flush(); // Native reply runs between click capture and the browser's final default.
+    range.blur();
+    await vi.runAllTimersAsync();
+    await flush();
+    expect(document.activeElement).toBe(range);
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true]);
+  });
+
+  it("does not blur a colour control while its native lease reply is pending", async () => {
+    const { shell, request } = mount('<input type="color">', platform, Promise.resolve(), true);
+    const color = shell.querySelector("input")!;
+    const blur = vi.spyOn(color, "blur");
+    let settle!: (acquired: boolean) => void;
+    request.mockImplementationOnce(() => new Promise<boolean>((resolve) => { settle = resolve; }));
+    pointerDown(color);
+    color.focus(); // The native picker needs its launching control to keep DOM focus.
+    await flush();
+    expect(document.activeElement).toBe(color);
+    expect(blur).not.toHaveBeenCalled();
+    pointerUp(color, false);
+    click(color);
+    settle(true);
+    await flush();
+    expect(document.activeElement).toBe(color);
+    expect(blur).not.toHaveBeenCalled();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true]);
+  });
+
   it.each(["same", "another"])("keeps the lease when null-relatedTarget blur returns to %s palette control", async (destination) => {
     vi.useFakeTimers();
     const { shell, request } = mount('<input type="number"><select><option>One</option></select>', platform, Promise.resolve(), true);

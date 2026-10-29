@@ -358,6 +358,46 @@ describe("palette numeric controls", () => {
     expect(onCommit).toHaveBeenCalledTimes(4);
   });
 
+  it.each(["ArrowUp", "spinner"])("keeps held %s steps ahead of late, out-of-order snapshots", async (gesture) => {
+    if (gesture === "spinner") {
+      await act(async () => field().dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })));
+    }
+    async function tick(expected: number) {
+      if (gesture === "ArrowUp") await key("ArrowUp");
+      else await act(async () => {
+        field().stepUp();
+        field().dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      expect(field().value).toBe(String(expected));
+    }
+    await tick(22.5);
+    await tick(23);
+    await tick(23.5);
+    let latest = 23.5;
+    for (const acknowledgement of [23, 22.5, 23.5, 24, 23]) {
+      model = inspectorModel(acknowledgement);
+      await render();
+      expect(field().value).toBe(String(latest));
+      latest += 0.5;
+      await tick(latest);
+    }
+    expect(onCommit.mock.calls).toEqual(
+      Array.from({ length: 8 }, (_, index) => [moleculeStructureBondLengthCommandId(22.5 + index * 0.5)])
+    );
+    // An undo/selection snapshot outside this control's sent values takes effect immediately,
+    // even before the held gesture ends. It also permits a fresh edit to an earlier value.
+    model = inspectorModel(22);
+    await render();
+    expect(document.activeElement).toBe(field());
+    expect(field().value).toBe("22");
+    await tick(22.5);
+    await act(async () => {
+      field().dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
+      field().blur();
+    });
+    expect(onCommit).toHaveBeenCalledTimes(9);
+  });
+
   it("steps a held native spinner from each current value and stops committing at the limit", async () => {
     await act(async () => field().dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })));
     for (let i = 0; i < 4; i++) {

@@ -103,17 +103,16 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     vi.restoreAllMocks();
   });
 
-  async function mountSettings() {
-    await act(async () => root.render(createElement(PaletteWindow, { toolsetId: "core.drawnStructureSettings" })));
+  async function mountSettings(toolsetId = "core.drawnStructureSettings", model = createMoleculeInspectorModel(selectedMolecule(), { selectedObjectIds: ["mol_input_focus"] })) {
+    await act(async () => root.render(createElement(PaletteWindow, { toolsetId })));
     await flush();
     // jsdom has no pointer capture implementation; support the shell's drag cleanup.
     for (const element of container.querySelectorAll<HTMLElement>("*")) element.hasPointerCapture = () => false;
-    const model = createMoleculeInspectorModel(selectedMolecule(), { selectedObjectIds: ["mol_input_focus"] });
     await act(async () => {
       await broadcastToolsetTextStyle(createToolsetTextStylePayload(DefaultNativeTextStyle, "normal", undefined, "fill", model));
     });
     const input = container.querySelector<HTMLInputElement>('input[aria-label="Target bond length"]')!;
-    expect(input?.disabled).toBe(false);
+    if (toolsetId === "core.drawnStructureSettings") expect(input?.disabled).toBe(false);
     return input;
   }
 
@@ -139,7 +138,9 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     (listener as EventListener)({
       target, isTrusted: true, button: 0, pointerId: 1, clientX: 10, clientY: 10, detail
     } as unknown as Event);
-    target.dispatchEvent(new MouseEvent(type, { button: 0, detail, bubbles: true, cancelable: true }));
+    const event = new MouseEvent(type, { button: 0, detail, bubbles: true, cancelable: true });
+    target.dispatchEvent(event);
+    return event;
   }
 
   async function clickControl(control: HTMLElement, detail = 1) {
@@ -163,6 +164,128 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
       : kind === "range" ? '[aria-label="Target bond length slider"]'
         : kind === "button" ? "button:not(:disabled)" : `input[type="${kind}"]`)!;
   }
+
+  it.each(["same checkbox", "another checkbox", "number to slider"])("focuses WebKit's unfocused click on %s without releasing the lease", async (sequence) => {
+    const number = await mountSettings();
+    const checks = [...container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')];
+    const first = sequence === "number to slider" ? number : checks[0]!;
+    const next = sequence === "number to slider"
+      ? container.querySelector<HTMLInputElement>('[aria-label="Target bond length slider"]')!
+      : sequence === "another checkbox" ? checks[1]! : first;
+    await clickControl(first);
+    for (const control of [next, next]) {
+      vi.mocked(sendPaletteCommand).mockClear();
+      await act(async () => {
+        pointer(control, "pointerdown");
+        control.dispatchEvent(new MouseEvent("mousedown", { button: 0, bubbles: true, cancelable: true }));
+        // Real WebKit mousedown default: old control loses focus, clicked control stays unfocused.
+        (document.activeElement as HTMLElement).blur();
+      });
+      await flush(); // A held mouse can outlast the settled-blur timer before mouseup/click.
+      expect(leases().map(([, args]) => args.editing)).toEqual([true]);
+      await act(async () => {
+        pointer(control, "pointerup");
+        control.dispatchEvent(new MouseEvent("mouseup", { button: 0, bubbles: true, cancelable: true }));
+        pointer(control, "click");
+      });
+      await flush();
+      expect(document.activeElement).toBe(control);
+      expect(leases().map(([, args]) => args.editing)).toEqual([true]);
+      vi.mocked(sendPaletteCommand).mockClear(); // Checkbox click itself is a style command.
+      for (const key of ["Delete", "Backspace"]) {
+        await act(async () => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })));
+      }
+      expect(sendPaletteCommand).not.toHaveBeenCalled();
+      await act(async () => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", {
+        key: "z", ctrlKey: platform === "windows", metaKey: platform === "macos", bubbles: true, cancelable: true
+      })));
+      expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith("edit.undo");
+    }
+  });
+
+  it("routes body-targeted keys through the leased non-text control", async () => {
+    await mountSettings();
+    await clickControl(await nonTextControl("range"));
+    for (const key of ["Delete", "Backspace"]) {
+      await act(async () => document.body.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })));
+    }
+    expect(sendPaletteCommand).not.toHaveBeenCalled();
+    await act(async () => document.body.dispatchEvent(new KeyboardEvent("keydown", {
+      key: "z", ctrlKey: platform === "windows", metaKey: platform === "macos", bubbles: true, cancelable: true
+    })));
+    expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith("edit.undo");
+  });
+
+  it.each(["Bond color", "Label color", "Atom label background color", "Custom ring fill color", "Ring effect color"])(
+    "preserves %s click defaults, node and focus through lease acquisition and snapshots", async (label) => {
+      const doc = structuredClone(selectedMolecule());
+      const molecule = doc.pages[0].objects[0] as MoleculeObject;
+      // A real ring supplies both Rings colour controls, including a visible glow effect.
+      molecule.atoms = Array.from({ length: 6 }, (_, index) => ({
+        id: `a${index}`, element: "C", formalCharge: 0,
+        x: 160 + 30 * Math.cos(index * Math.PI / 3), y: 160 + 30 * Math.sin(index * Math.PI / 3)
+      }));
+      molecule.bonds = molecule.atoms.map((atom, index) => ({
+        id: `b${index}`, fromAtomId: atom.id, toAtomId: molecule.atoms[(index + 1) % 6]!.id, order: "single"
+      }));
+      const model = createMoleculeInspectorModel(doc, { selectedObjectIds: [molecule.id] });
+      const ring = label === "Custom ring fill color" || label === "Ring effect color";
+      // Select the ring through the same model contract the document sends to the palette.
+      if (ring) {
+        const { nativeMoleculeRings } = await import("@chemdraft/layout-engine");
+        const selected = nativeMoleculeRings(molecule)[0]!;
+        Object.assign(model, createMoleculeInspectorModel(doc, {
+          selectedObjectIds: [molecule.id], selectedPart: {
+            objectId: molecule.id, kind: "ring", ringKey: selected.ringKey,
+            atomIds: selected.atomIds, bondIds: selected.bondIds
+          }
+        }));
+        model.rings.values.effect.value = "glow";
+        model.rings.effectKinds = ["glow"];
+        model.rings.effectControls.glow.presentCount = 1;
+      }
+      model.atomLabels.values.backgroundColor.value = "#ffffff";
+      await mountSettings(ring ? "core.ringInspector" : "core.drawnStructureSettings", model);
+      if (label === "Label color" || label === "Atom label background color") {
+        await act(async () => container.querySelector<HTMLButtonElement>("#molecule-inspector-tab-atom-labels")!.click());
+      }
+      const color = container.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!;
+      expect(color?.disabled).toBe(false);
+      const blur = vi.spyOn(color, "blur");
+      const focus = vi.spyOn(HTMLElement.prototype, "focus");
+      let settle!: (acquired: boolean) => void;
+      native.invoke.mockImplementationOnce(() => new Promise<boolean>((resolve) => { settle = resolve; }));
+      const snapshots = async () => {
+        await broadcastToolsetTextStyle(createToolsetTextStylePayload(DefaultNativeTextStyle, "normal", undefined, "fill", structuredClone(model)));
+        expect(container.querySelector(`input[aria-label="${label}"]`)).toBe(color);
+      };
+      await act(async () => {
+        expect(pointer(color, "pointerdown").defaultPrevented).toBe(false);
+        const down = new MouseEvent("mousedown", { button: 0, bubbles: true, cancelable: true });
+        color.dispatchEvent(down);
+        expect(down.defaultPrevented).toBe(false);
+        color.focus(); // Browser default on WebView2; never suspend this non-text focus.
+        await snapshots();
+      });
+      await flush();
+      expect(document.activeElement).toBe(color);
+      await act(async () => {
+        pointer(color, "pointerup");
+        color.dispatchEvent(new MouseEvent("mouseup", { button: 0, bubbles: true }));
+        expect(pointer(color, "click").defaultPrevented).toBe(false);
+        await snapshots();
+      });
+      settle(true);
+      await flush();
+      await act(snapshots);
+      expect(document.activeElement).toBe(color);
+      expect(blur).not.toHaveBeenCalled();
+      expect(focus).toHaveBeenCalledTimes(1);
+      expect(focus.mock.contexts.every((target) => target === color)).toBe(true);
+      expect(leases().map(([, args]) => args.editing)).toEqual([true]);
+      expect(sendPaletteCommandCommit).not.toHaveBeenCalled();
+    }
+  );
 
   // Deliberately reverse the earlier text-only rule: otherwise Delete lands on the document.
   it.each(["select", "range", "checkbox", "color"])("leases a clicked %s and forwards its next palette hotkey", async (kind) => {
