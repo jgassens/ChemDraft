@@ -45,14 +45,13 @@ byte-identical to the one pasted.
 | Paste over a selected picture | Added a second picture in both apps; see below. | Not yet measured |
 | Prompts with blank files | No save dialogs, repair prompts or Protected View prompts appeared. | Not yet measured |
 
-After save and reopen, selecting the picture and copying it back used Cmd+Home, Shift+Right,
-Cmd+C in Word; in PowerPoint it used Cmd+A on the slide, then Cmd+C. The clipboard's
-`com.adobe.pdf` was the original PDF byte-identical, with a valid carrier.
-`com.microsoft.Art--GVML-ClipFormat` was a GVML zip (Office's own zip-based clipboard format for
-drawings) whose `clipboard/media/image1.emf` wrapped the same PDF. `public.png`, `public.tiff` and
-`public.jpeg`; Word also advertised `com.microsoft.image-svg-xml` but supplied no data. Word's
-copy-back had `public.png`, `public.tiff` and `public.jpeg`; PowerPoint's had only `public.tiff`.
-None carried the hidden drawing.
+After save and reopen, selecting the picture and copying it back used Cmd+Home, Shift+Right, Cmd+C
+in Word; in PowerPoint it used Cmd+A on the slide, then Cmd+C. The clipboard's `com.adobe.pdf` was
+the original PDF byte-identical, with a valid carrier. `com.microsoft.Art--GVML-ClipFormat` was a
+GVML zip (Office's own zip-based clipboard format for drawings) whose `clipboard/media/image1.emf`
+wrapped the same PDF. The other pictures were fresh renders without the hidden drawing: Word's
+copy-back had `public.png`, `public.tiff` and `public.jpeg`, and PowerPoint's had only `public.tiff`.
+Word also advertised `com.microsoft.image-svg-xml` but supplied no data.
 
 Copying a whole unsaved Word document with Cmd+A, Cmd+C gave a re-rendered `com.adobe.pdf` without
 a carrier. Its `public.rtf` (7.9 MB) held `\emfblip` and `\wmetafile8` picture groups, each
