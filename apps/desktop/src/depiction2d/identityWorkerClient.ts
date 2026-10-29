@@ -18,7 +18,7 @@ export class IdentityWorkerUnavailableError extends Error {}
 /** The caller's timer can terminate synchronous WASM. Requests never run on the calling thread. */
 export function createIdentityWorkerClient(
   factory: () => IdentityWorkerPort,
-  budgetMs = IDENTITY_VERIFICATION_BUDGET_MS,
+  budgetMs: number | ((stereoReference?: string) => number) = IDENTITY_VERIFICATION_BUDGET_MS,
   startupMs = IDENTITY_WORKER_STARTUP_MS
 ): StructureInspector {
   let worker: IdentityWorkerPort | undefined;
@@ -67,8 +67,9 @@ export function createIdentityWorkerClient(
         cancel = () => finish(undefined, signal?.reason, true);
         const inspect = (): void => {
           clearTimeout(timer);
+          const requestBudgetMs = typeof budgetMs === "function" ? budgetMs(stereoReference) : budgetMs;
           timer = setTimeout(() => finish(undefined,
-            new IdentityVerificationTimeoutError(budgetMs), true), budgetMs);
+            new IdentityVerificationTimeoutError(requestBudgetMs), true), requestBudgetMs);
           worker?.postMessage({ id, format, value, stereoReference });
         };
         try {

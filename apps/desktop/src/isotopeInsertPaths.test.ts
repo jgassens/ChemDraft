@@ -19,7 +19,7 @@ import { insertSmilesMolecule } from "./documentWorkflow";
 import { depictSmilesForPaste, depictSmilesListForPaste, smilesListFailureStatus } from "./smilesListPaste";
 import * as depictionClient from "./depiction2d/client";
 import type { StructureInspector } from "./depiction2d/identityProtocol";
-import { IdentityWorkerUnavailableError } from "./depiction2d/identityWorkerClient";
+import { IDENTITY_VERIFICATION_BUDGET_MS, IdentityWorkerUnavailableError } from "./depiction2d/identityWorkerClient";
 import { structureFromSmilesForPlugin } from "./plugins/pluginChemistry";
 import { applyAssistantWrite, buildInsertStructures } from "./assistant/writeBuilder";
 import { verifyNormalizedAssistantWrite } from "./assistant/normalizedWrite";
@@ -112,11 +112,12 @@ describe("isotope insert paths", () => {
   it("terminates a stuck identity check, refuses insertion, and pastes the next list entry", async () => {
     const nodeEntry = "./test/identityNodeClient.mjs";
     const node: { createNodeIdentityInspector(options: {
-      budgetMs: number; slowStereoReference: string; onTerminate(): void
+      budgetMs: (stereoReference?: string) => number; slowStereoReference: string; onTerminate(): void
     }): StructureInspector } = await import(/* @vite-ignore */ nodeEntry);
     const terminated = vi.fn();
     const worker = node.createNodeIdentityInspector({
-      budgetMs: 50, slowStereoReference: "CCO", onTerminate: terminated
+      budgetMs: reference => reference === "CCO" ? 50 : IDENTITY_VERIFICATION_BUDGET_MS,
+      slowStereoReference: "CCO", onTerminate: terminated
     });
     const inspect = createPasteIdentityInspector(worker);
     const document = createEmptyDocument();
