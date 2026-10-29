@@ -668,8 +668,12 @@ export function PaletteWindow({
       // destination still owns editing keys, and non-text controls still forward shortcuts.
       const target = event.target instanceof Element && event.target !== document.body
         ? event.target : paletteInputFocusControl(shellRef.current) ?? null;
+      // Only clean inspector numbers delegate history to the document. Other text keys
+      // and every uncommitted typed draft retain the browser's editing behavior.
+      const numberHistory = target?.matches('input[type="number"][data-palette-number-draft="false"]') &&
+        !event.isComposing && (event.ctrlKey || event.metaKey) && ["z", "y"].includes(event.key.toLowerCase());
       if (event.defaultPrevented || isPaletteInputFocusPending(shellRef.current) ||
-        isTextEditingElement(target)) return;
+        (isTextEditingElement(target) && !numberHistory)) return;
       // Activation, value and editing keys belong to every form control. In
       // particular, Delete/Backspace here must never delete document objects.
       if (target?.closest("input, textarea, select, button") &&
@@ -685,6 +689,7 @@ export function PaletteWindow({
         repeat: event.repeat,
         target: target?.closest("input, select")?.parentElement ?? event.target
       });
+      if (numberHistory && commandId !== "edit.undo" && commandId !== "edit.redo") return;
       if (!commandId) {
         // Select type-ahead must not change a style when a printable key has no command.
         if (target?.closest("select") && event.key.length === 1 &&

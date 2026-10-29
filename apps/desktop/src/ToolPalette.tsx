@@ -817,7 +817,12 @@ function MoleculeInspectorNumericControl({
   const [draft, setDraft] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const dirty = useRef(false);
-  const pointerStepping = useRef(false);
+  const setTypedDraft = (typed: boolean) => {
+    dirty.current = typed;
+    // The window's native key listener reads this after React's handler, including
+    // commits whose formatted text is unchanged and therefore cause no render.
+    if (inputRef.current) inputRef.current.dataset.paletteNumberDraft = String(typed);
+  };
   const lastCommitted = useRef<number | undefined>(undefined);
   const committedValues = useRef(new Set<string>());
   const [sliderDraft, setSliderDraft] = useState<number | null>(null);
@@ -845,7 +850,7 @@ function MoleculeInspectorNumericControl({
     sliderPreviewedValues.current.clear();
   }, [value, mixed]);
   const revert = () => {
-    dirty.current = false;
+    setTypedDraft(false);
     lastCommitted.current = undefined;
     committedValues.current.clear();
     setDraft(null);
@@ -853,8 +858,7 @@ function MoleculeInspectorNumericControl({
   useEffect(() => {
     const input = inputRef.current;
     const cancel = () => {
-      dirty.current = false;
-      pointerStepping.current = false;
+      setTypedDraft(false);
       lastCommitted.current = undefined;
       committedValues.current.clear();
       setDraft(null);
@@ -863,7 +867,7 @@ function MoleculeInspectorNumericControl({
     return () => input?.removeEventListener(PALETTE_INPUT_FOCUS_CANCEL_EVENT, cancel);
   }, []);
   const commit = (rawValue: string) => {
-    dirty.current = false;
+    setTypedDraft(false);
     if (rawValue.trim() === "") {
       // Clearing a field or leaving an unedited Mixed field must never apply 0.
       revert();
@@ -871,11 +875,13 @@ function MoleculeInspectorNumericControl({
     }
     const parsed = Number(rawValue);
     if (Number.isFinite(parsed)) {
-      const next = Math.max(range.min, Math.min(range.max, parsed));
+      const next = Number(formatInspectorNumber(Math.max(range.min, Math.min(range.max, parsed))));
       // Keep steps local until the document's asynchronous snapshot catches up. Reverting
       // here makes a held arrow (or native spin button) start every tick at the old model.
       setDraft(formatInspectorNumber(next));
-      if (next !== lastCommitted.current) {
+      // Compare at the displayed precision. A pending step is the current local value;
+      // otherwise retyping the model must not add an identical document history entry.
+      if (next !== (lastCommitted.current ?? (mixed ? undefined : Number(modelText)))) {
         committedValues.current.add(formatInspectorNumber(next));
         lastCommitted.current = next;
         onCommit(commandId(next));
@@ -906,16 +912,15 @@ function MoleculeInspectorNumericControl({
         disabled={disabled}
         aria-label={label}
         data-palette-control="true"
+        data-palette-number-draft={dirty.current ? "true" : "false"}
         onPointerDown={(event) => {
           event.stopPropagation();
-          pointerStepping.current = true;
         }}
-        onPointerUp={() => { pointerStepping.current = false; }}
-        onPointerCancel={() => { pointerStepping.current = false; }}
         onChange={(event) => {
-          // Native spin buttons emit input during a pointer press, without a text
-          // inputType. Typing/paste carry an inputType (and keydown clears the flag).
-          if (pointerStepping.current && !(event.nativeEvent as InputEvent).inputType) {
+          const inputType = (event.nativeEvent as InputEvent).inputType;
+          // Native stepping notifications have no text inputType, including notifications
+          // after an arrow key or pointer release. They commit and leave no typed draft.
+          if (!inputType) {
             if (mixed && (draft ?? modelText) === "") {
               // Native spin buttons step a blank field to min. Mixed has no starting value.
               event.currentTarget.value = "";
@@ -924,18 +929,22 @@ function MoleculeInspectorNumericControl({
             commit(event.currentTarget.value);
             return;
           }
-          dirty.current = true;
+          // Only text entry (including paste and IME) starts a draft. Native history may
+          // modify an existing draft, but must never turn a clean step into typed text.
+          if (!dirty.current && !inputType.startsWith("insert") && !inputType.startsWith("delete")) {
+            event.currentTarget.value = draft ?? modelText;
+            return;
+          }
+          setTypedDraft(true);
           setDraft(event.currentTarget.value);
         }}
         onBlur={(event) => {
-          pointerStepping.current = false;
           if (dirty.current) {
             commit(event.currentTarget.value);
           }
           revert();
         }}
         onKeyDown={(event) => {
-          pointerStepping.current = false;
           if (event.key === "Enter") {
             event.preventDefault();
             commit(event.currentTarget.value);

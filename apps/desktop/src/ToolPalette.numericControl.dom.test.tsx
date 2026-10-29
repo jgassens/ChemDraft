@@ -56,10 +56,10 @@ describe("palette numeric controls", () => {
     return container.querySelector<HTMLInputElement>('input[aria-label="Target bond length"]')!;
   }
 
-  async function input(value: string, element = field()) {
+  async function input(value: string, element = field(), inputType = "insertText") {
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(element, value);
-      element.dispatchEvent(new Event("input", { bubbles: true }));
+      element.dispatchEvent(new InputEvent("input", { inputType, bubbles: true }));
     });
   }
 
@@ -140,7 +140,7 @@ describe("palette numeric controls", () => {
       await key("ArrowUp");
     } else if (action === "spinner") {
       await act(async () => field().dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })));
-      await input("22.5");
+      await input("22.5", field(), "");
       await act(async () => field().dispatchEvent(new MouseEvent("pointerup", { bubbles: true })));
     }
     if (action !== "untouched") {
@@ -197,13 +197,23 @@ describe("palette numeric controls", () => {
 
   it("commits a native pointer step immediately without a second blur commit", async () => {
     await act(async () => field().dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })));
-    await input("23");
+    await input("23", field(), "");
     expect(onCommit).toHaveBeenCalledExactlyOnceWith(moleculeStructureBondLengthCommandId(23));
     await act(async () => {
       field().dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
       field().blur();
     });
     expect(onCommit).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips retyping the displayed value in every shared number field", async () => {
+    for (const element of container.querySelectorAll<HTMLInputElement>('.molecule-inspector-number-field input[type="number"]:not(:disabled)')) {
+      await act(async () => element.focus());
+      await input(element.value, element);
+      await key("Enter", element);
+      await act(async () => element.blur());
+    }
+    expect(onCommit).not.toHaveBeenCalled();
   });
 
   it("keeps slider preview and immediate commit on pointer release", async () => {
@@ -494,7 +504,7 @@ describe("palette numeric controls", () => {
     await act(async () => field().focus());
     if (action === "spinner") {
       await act(async () => field().dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })));
-      await input("8"); // Chromium/WebKit's native spin default from a blank min=8 field.
+      await input("8", field(), ""); // Chromium/WebKit's native spin default from a blank min=8 field.
       await act(async () => field().dispatchEvent(new MouseEvent("pointerup", { bubbles: true })));
     } else {
       await key(action);

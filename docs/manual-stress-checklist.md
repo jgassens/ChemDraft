@@ -37,7 +37,13 @@ click default briefly leaves focus on the page body.
 Select type-ahead without a shortcut does not change the style. Escape returns the keyboard to the
 document. Tool/command buttons never borrow it. Cmd/Ctrl+Z and tool hotkeys still reach the document
 from non-text controls. A focused number follows undo immediately unless it holds typed, uncommitted
-text. Click Bond color, Label color, Atom label background color, Custom ring fill color and Ring
+text. Focus Target bond length at 22, step ArrowUp three times to 23.5, then press real Cmd/Ctrl+Z
+inside the box: the document undoes once and the focused box shows 23. Undo again to 22.5 using
+the app command: the box refreshes immediately, and Tab adds no edit. Redo with Cmd+Shift+Z on
+macOS and Ctrl+Shift+Z / Ctrl+Y on Windows, and repeat after spinner clicks. An untouched number
+also forwards history. Type an uncommitted value: undo/redo now edits only its text. Retype the
+displayed model value and Tab or Enter: no undo entry; type a different value: exactly one entry.
+Click Bond color, Label color, Atom label background color, Custom ring fill color and Ring
 effect color: each opens its native picker on both platforms (the Windows palette may activate
 for it). Leave it open through palette snapshots; clicking the canvas dismisses it without
 changing the drawing. Open the colour popover, type a hex shorthand and press Enter: the colour

@@ -127,6 +127,124 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     });
   }
 
+  function lengthModel(length: number) {
+    const model = createMoleculeInspectorModel(selectedMolecule(), { selectedObjectIds: ["mol_input_focus"] });
+    model.structure.values.bondLengthPx = { value: length, mixed: false };
+    return model;
+  }
+
+  async function snapshot(length: number) {
+    await act(async () => broadcastToolsetTextStyle(
+      createToolsetTextStylePayload(DefaultNativeTextStyle, "normal", undefined, "fill", lengthModel(length))
+    ));
+  }
+
+  async function press(input: HTMLInputElement, key: string, modifiers: KeyboardEventInit = {}) {
+    const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...modifiers });
+    await act(async () => input.dispatchEvent(event));
+    return event;
+  }
+
+  async function browserInput(input: HTMLInputElement, value: string, inputType = "") {
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+      input.dispatchEvent(new InputEvent("input", { inputType, bubbles: true }));
+    });
+  }
+
+  async function steppedNumber(gesture = "arrow") {
+    const input = await mountSettings("core.drawnStructureSettings", lengthModel(22));
+    await clickControl(input);
+    for (const value of [22.5, 23, 23.5]) {
+      if (gesture === "arrow") await press(input, "ArrowUp");
+      else await act(async () => {
+        pointer(input, "pointerdown");
+        if (gesture === "released spinner") pointer(input, "pointerup");
+      });
+      // Stepping can notify during the pointer press, after release or after an arrow.
+      await browserInput(input, String(value));
+      if (gesture === "spinner") await act(async () => pointer(input, "pointerup"));
+      await snapshot(value);
+    }
+    expect(input.value).toBe("23.5");
+    expect(sendPaletteCommandCommit).toHaveBeenCalledTimes(3);
+    return input;
+  }
+
+  it.each(["untouched", "arrow", "spinner", "released spinner"])("forwards document undo/redo once from a focused %s number, preventing native history", async (kind) => {
+    const input = kind !== "untouched" ? await steppedNumber(kind)
+      : await mountSettings("core.drawnStructureSettings", lengthModel(22));
+    if (kind === "untouched") await clickControl(input);
+    const historyInput = vi.fn();
+    input.addEventListener("input", historyInput);
+    const modifier = { ctrlKey: platform === "windows", metaKey: platform === "macos" };
+    const undoneValue = kind === "untouched" ? 21.5 : 23;
+    const redoneValue = kind === "untouched" ? 22 : 23.5;
+    const chords: Array<{ key: string; shiftKey?: boolean; command: string; value: number; inputType: string }> = [
+      { key: "z", command: "edit.undo", value: undoneValue, inputType: "historyUndo" },
+      { key: "z", shiftKey: true, command: "edit.redo", value: redoneValue, inputType: "historyRedo" },
+      ...(platform === "windows" ? [{ key: "y", command: "edit.redo", value: redoneValue, inputType: "historyRedo" }] : [])
+    ];
+    for (const chord of chords) {
+      vi.mocked(sendPaletteCommand).mockClear();
+      const event = await press(input, chord.key, { ...modifier, shiftKey: chord.shiftKey });
+      // jsdom has no native text history default; reproduce it only if the browser may run it.
+      if (!event.defaultPrevented) await browserInput(input, input.value, chord.inputType);
+      expect(event.defaultPrevented).toBe(true);
+      expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith(chord.command);
+      expect(historyInput).not.toHaveBeenCalled();
+      await snapshot(chord.value);
+      expect(document.activeElement).toBe(input);
+      expect(input.value).toBe(String(chord.value));
+    }
+  });
+
+  it.each(["insertText", "deleteContentBackward", "insertFromPaste", "insertCompositionText"])("keeps undo/redo native throughout an uncommitted %s draft", async (inputType) => {
+    const input = await mountSettings("core.drawnStructureSettings", lengthModel(22));
+    await clickControl(input);
+    await browserInput(input, "30", inputType);
+    for (const chord of [
+      { key: "z", inputType: "historyUndo", value: "22" },
+      { key: platform === "windows" ? "y" : "z", shiftKey: platform === "macos", inputType: "historyRedo", value: "30" }
+    ]) {
+      const event = await press(input, chord.key, {
+        ctrlKey: platform === "windows", metaKey: platform === "macos", shiftKey: chord.shiftKey
+      });
+      expect(event.defaultPrevented).toBe(false);
+      await browserInput(input, chord.value, chord.inputType);
+      expect(input.value).toBe(chord.value);
+      expect(sendPaletteCommand).not.toHaveBeenCalled();
+      expect(sendPaletteCommandCommit).not.toHaveBeenCalled();
+    }
+  });
+
+  it("follows outside undo snapshots after native step input while focused, then Tabs without a commit", async () => {
+    const input = await steppedNumber();
+    vi.mocked(sendPaletteCommandCommit).mockClear();
+    for (const value of [23, 22.5]) {
+      await snapshot(value);
+      expect(document.activeElement).toBe(input);
+      expect(input.value).toBe(String(value));
+    }
+    await press(input, "Tab");
+    await act(async () => container.querySelector<HTMLInputElement>('[aria-label="Target bond length slider"]')!.focus());
+    expect(input.value).toBe("22.5");
+    expect(sendPaletteCommandCommit).not.toHaveBeenCalled();
+  });
+
+  it.each(["Tab", "Enter"])("skips an equal typed value on %s but commits a different value once", async (key) => {
+    const input = await mountSettings("core.drawnStructureSettings", lengthModel(22));
+    await clickControl(input);
+    for (const value of ["22", "22.0001", "30"]) {
+      await type(input, value);
+      await press(input, key);
+      if (key === "Tab") await act(async () => input.blur());
+      expect(sendPaletteCommandCommit).toHaveBeenCalledTimes(value === "30" ? 1 : 0);
+      if (value !== "30") await clickControl(input);
+    }
+    expect(sendPaletteCommandCommit).toHaveBeenCalledExactlyOnceWith(moleculeStructureBondLengthCommandId(30));
+  });
+
   function pointer(target: HTMLElement, type: "pointerdown" | "pointerup" | "click", detail = 1) {
     const owner = container.querySelector(".palette-window-shell")!;
     const listener = type === "pointerup"
