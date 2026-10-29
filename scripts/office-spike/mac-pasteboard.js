@@ -41,7 +41,7 @@ function run(args) {
       for (let j = 0; j < Number(types.count); j++) {
         const type = ObjC.unwrap(types.objectAtIndex(j));
         const data = item.dataForType($(type));
-        if (!data) { records.push({ type, itemIndex: i, note: 'No data' }); continue; }
+        if (!data || data.isNil()) { records.push({ type, itemIndex: i, note: 'No data' }); continue; }
         const filename = `${i}-${j}-${type.replace(/[^A-Za-z0-9._-]/g, '_')}`;
         const path = dir.stringByAppendingPathComponent(filename);
         if (!data.writeToFileAtomically(path, true)) throw new Error('Cannot write ' + filename);
