@@ -8,7 +8,7 @@ import { Chemistry3dQueue } from "./chemistry3dQueue";
 import { chemistry3dTimeoutMs } from "./chemistry3dDeadline";
 import { chemistry3dResultError } from "./chemistry3dResult";
 export { chemistry3dTimeoutMs, CHEMISTRY3D_STARTUP_TIMEOUT_MS, pauseChemistry3dDeadlineForStartup } from "./chemistry3dDeadline";
-import { AssistantCapabilityPermissions, type PluginAssistantAPI } from "@chemdraft/plugin-api";
+import { AssistantCapabilityPermissions, isPluginApiVersionCompatible, type PluginAssistantAPI } from "@chemdraft/plugin-api";
 import type { ChemDraftDocument } from "@chemdraft/plugin-api";
 import type {
   AppliedPatchReceipt,
@@ -946,8 +946,9 @@ export class PluginHost {
           ? {
               applyPatch: async (patch: ProposedDocumentPatch) =>
                 this.applyPatchForPlugin(pluginId, invocationToken, patch),
-              insertTable: async (spec: PluginTableSpec) =>
-                this.insertTableForPlugin(pluginId, invocationToken, spec)
+              ...(isPluginApiVersionCompatible("^0.1.18", plugin.manifest.apiVersion.trim().replace(/^[~^]/, ""))
+                ? { insertTable: async (spec: PluginTableSpec) => this.insertTableForPlugin(pluginId, invocationToken, spec) }
+                : {})
             }
           : {})
       },

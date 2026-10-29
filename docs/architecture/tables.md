@@ -96,7 +96,7 @@ that establishes the format's representation.
 
 ## Agent insertion
 
-Plugin API 0.1.17 adds command-scoped `documents.insertTable(spec)` for plugins with `document.write`.
+Plugin API 0.1.18 adds command-scoped `documents.insertTable(spec)` for plugins with `document.write`.
 The assistant exposes the corresponding `insert_table` tool. Both accept validated table content and
 insert through the document patch path, leaving the inserted table selected.
 

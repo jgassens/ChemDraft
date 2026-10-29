@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { PluginHost, type PluginHostOptions, type PluginPatchApplicationRequest } from "./index";
 
 const spec: PluginTableSpec = { columns: [{ header: "Formula" }], rows: [["H2O"]] };
-function setup(run: (context: PluginCommandContext) => unknown, write = true, overrides: PluginHostOptions = {}) {
+function setup(run: (context: PluginCommandContext) => unknown, write = true, overrides: PluginHostOptions = {}, apiVersion = "^0.1.18") {
   let document = createEmptyDocument();
   let sequence = 0;
   const buildTablePatch = vi.fn((input: PluginTableSpec) => {
@@ -19,13 +19,19 @@ function setup(run: (context: PluginCommandContext) => unknown, write = true, ov
     return { applied: true as const, objectIds: patch.op === "addObject" ? [patch.object.id] : [] };
   });
   const host = new PluginHost({ getActiveDocument: () => document, buildTablePatch, applyDocumentPatch, ...overrides });
-  host.registerPlugin({ id: "org.test.tables", name: "Tables", version: "1", apiVersion: "^0.1.17", entry: "plugin.js",
+  host.registerPlugin({ id: "org.test.tables", name: "Tables", version: "1", apiVersion, entry: "plugin.js",
     permissions: write ? ["document.write"] : [], contributes: { commands: [{ id: "plugin.tables.insert", title: "Make table" }] }
   }, { commandHandlers: { "plugin.tables.insert": run } });
   return { host, buildTablePatch, applyDocumentPatch, document: () => document };
 }
 
 describe("command-scoped native table insertion", () => {
+  it("exposes insertTable only to plugins declaring API 0.1.18 or newer", async () => {
+    const old = setup(context => expect(context.documents.insertTable).toBeUndefined(), true, {}, "^0.1.17");
+    const current = setup(context => expect(context.documents.insertTable).toBeTypeOf("function"));
+    await old.host.invokeCommand("plugin.tables.insert");
+    await current.host.invokeCommand("plugin.tables.insert");
+  });
   it("omits the capability without document.write and uses the same permission error as applyPatch", async () => {
     const s = setup(context => expect(context.documents.insertTable).toBeUndefined(), false);
     await s.host.invokeCommand("plugin.tables.insert");

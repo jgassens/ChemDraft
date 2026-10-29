@@ -126,11 +126,11 @@ describe("isPluginApiVersionCompatible", () => {
     expect(isPluginApiVersionCompatible("^0.1.14", "0.1.13")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.15", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.15", "0.1.14")).toBe(false);
-    expect(PluginApiVersion).toBe("0.1.17");
+    expect(PluginApiVersion).toBe("0.1.18");
     expect(isPluginApiVersionCompatible("^0.1.16", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.16", "0.1.15")).toBe(false);
-    expect(isPluginApiVersionCompatible("^0.1.17", PluginApiVersion)).toBe(true);
-    expect(isPluginApiVersionCompatible("^0.1.17", "0.1.16")).toBe(false);
+    expect(isPluginApiVersionCompatible("^0.1.18", PluginApiVersion)).toBe(true);
+    expect(isPluginApiVersionCompatible("^0.1.18", "0.1.17")).toBe(false);
   });
 });
 
