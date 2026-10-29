@@ -8788,7 +8788,7 @@ export function applyNativeMoleculeBondOrderValueTarget(
   );
 }
 
-export type BondStereoValue = "either" | "geometry";
+export type BondStereoValue = "either" | "geometry" | "flipped";
 export interface BondStereoAvailability {
   eitherDisabledReason?: string;
   geometryDisabledReason?: string;
@@ -8803,11 +8803,48 @@ function withoutDoubleBondStereo(bond: MoleculeBond): MoleculeBond {
 
 function withStoredBondStereoMolfile(molecule: MoleculeObject): MoleculeObject {
   const { molecule: expanded, expansions, placeholderAtoms } = expandNativeMoleculeLabelGroups(molecule);
-  return { ...molecule, structureFormat: "molfile-v2000", structure: moleculeToMolfileV2000(expanded, {
+  const molfile = moleculeToMolfileV2000(expanded, {
     fromDocFrame: true, unknownBondOrders: "refuse",
     abbreviations: "rgroup", superatomGroups: expansions, placeholderAtoms,
     kekuleBondOrders: nativeBondOrderResolution(expanded.atoms, expanded.bonds).kekuleOrders
-  }).contents };
+  });
+  if (molfile.warnings.length) throw new Error(`Cannot preserve chemistry while changing E/Z: ${molfile.warnings.join("; ")}`);
+  return { ...molecule, structureFormat: "molfile-v2000", structure: preserveBondStereoSourceProperties(molecule, molfile.contents) };
+}
+
+/** The native atom model has no mass field. Retain indexed V2000 isotope/radical data when
+ * changing only geometry/stereo; never let rebuilding the molfile silently erase it. */
+function preserveBondStereoSourceProperties(molecule: MoleculeObject, contents: string): string {
+  const source = molecule.structure.split(/\r?\n/);
+  const sourceCounts = source.findIndex(line => line.includes("V2000"));
+  if (sourceCounts < 0) return contents;
+  const atomCount = Number(source[sourceCounts].slice(0, 3));
+  const originalAtoms = source.slice(sourceCounts + 1, sourceCounts + 1 + atomCount);
+  const isotopes = source.filter(line => line.startsWith("M  ISO"));
+  const radicals = source.filter(line => line.startsWith("M  RAD"));
+  const radicalAtoms = originalAtoms.flatMap((line, i) => Number(line.slice(36, 39)) === 4 ? [i + 1] : []);
+  if (!isotopes.length && !radicals.length && !radicalAtoms.length && !originalAtoms.some(line => Number(line.slice(34, 36)))) return contents;
+  const next = contents.split("\n");
+  const counts = next.findIndex(line => line.includes("V2000"));
+  if (counts < 0 || Number(next[counts].slice(0, 3)) !== atomCount || originalAtoms.some((line, i) =>
+    line.slice(31, 34) !== next[counts + 1 + i].slice(31, 34))) {
+    throw new Error("Cannot preserve isotope/radical atom mapping while changing double-bond geometry");
+  }
+  originalAtoms.forEach((line, i) => {
+    const index = counts + 1 + i;
+    next[index] = next[index].slice(0, 34) + line.slice(34, 36) + next[index].slice(36);
+  });
+  const sourceRadicals = new Map(radicalAtoms.map(index => [index, 2]));
+  for (const line of radicals) {
+    const fields = line.trim().split(/\s+/).slice(3).map(Number);
+    for (let i = 0; i < fields.length; i += 2) sourceRadicals.set(fields[i], fields[i + 1]);
+  }
+  // A native radical annotation wins for that atom. A generated M RAD line for
+  // some other atom must not discard all the source-only radicals in the molecule.
+  const retainedRadicals = [...sourceRadicals].filter(([index]) => molecule.atoms[index - 1]?.markRadicals === undefined)
+    .map(([index, code]) => `M  RAD  1${String(index).padStart(4)}${String(code).padStart(4)}`);
+  next.splice(next.findIndex(line => line.startsWith("M  END")), 0, ...isotopes, ...retainedRadicals);
+  return next.join("\n");
 }
 
 /** Engine perception is injected; clearing the open marker asks OCL about drawn geometry. */
@@ -8821,9 +8858,22 @@ export function nativeBondStereoAvailability(
   const molecule = firstPage(document).objects.find((o): o is MoleculeObject => o.type === "molecule" && o.id === target.objectId);
   const bond = molecule?.bonds.find(b => b.id === target.bondId);
   if (!molecule || !bond || bond.order !== "double") return disabled("E/Z requires a double bond");
+  if ((molecule.structureFormat === "smiles" && /\[\d+/.test(molecule.structure)) ||
+    (molecule.structureFormat === "molfile-v3000" && /\b(?:MASS|RAD)=/.test(molecule.structure))) {
+    return disabled("Retained isotope/radical data requires a V2000 molfile before changing E/Z");
+  }
   const alreadyUnspecified = bond.stereo === "either";
   const eitherReason = (reason: string) => alreadyUnspecified ? "E/Z is already unspecified" : reason;
   if (molecule.bonds.some(b => b.order === "unknown")) return { ...disabled("Resolve unknown bond orders before changing E/Z"), eitherDisabledReason: eitherReason("Resolve unknown bond orders before changing E/Z") };
+  const unmarked = { ...molecule, bonds: molecule.bonds.map(b => b.id === bond.id ? withoutDoubleBondStereo(b) : b) };
+  let geometryStructure: string;
+  try {
+    geometryStructure = withStoredBondStereoMolfile(unmarked).structure;
+  } catch {
+    // Both choices rebuild this molfile. A source-only property without a safe
+    // atom mapping must disable both, including clearing an existing open marker.
+    return disabled("Cannot preserve all stored properties while changing E/Z");
+  }
   const state: BondStereoAvailability = { value: alreadyUnspecified ? "either" : "geometry", ...(alreadyUnspecified ? { eitherDisabledReason: "E/Z is already unspecified" } : {}) };
   if ([bond.fromAtomId, bond.toAtomId].some(id => molecule.atoms.find(a => a.id === id)?.element !== "C")) {
     return { ...state, eitherDisabledReason: eitherReason("E/Z unspecified requires a stereogenic carbon–carbon double bond") };
@@ -8833,12 +8883,11 @@ export function nativeBondStereoAvailability(
   }
   if (!reader) return { ...state, eitherDisabledReason: eitherReason("E/Z perception is still loading") };
   try {
-    const unmarked = { ...molecule, bonds: molecule.bonds.map(b => b.id === bond.id ? withoutDoubleBondStereo(b) : b) };
     const from = molecule.atoms.findIndex(a => a.id === bond.fromAtomId);
     const to = molecule.atoms.findIndex(a => a.id === bond.toAtomId);
     // Expand real label groups before CIP perception: Me and a drawn methyl are equivalent.
     // The shared builder appends expansion atoms, retaining the drawn endpoint indices.
-    const perceived = reader(analysisFacingStructure(unmarked).structure).find(b =>
+    const perceived = reader(geometryStructure).find(b =>
       (b.from === from && b.to === to) || (b.from === to && b.to === from));
     return perceived ? { ...state, descriptor: perceived.descriptor === "unspecified" ? undefined : perceived.descriptor }
       : { ...state, eitherDisabledReason: eitherReason("This double bond is not stereogenic (equivalent substituents or a small ring)") };
@@ -8847,11 +8896,76 @@ export function nativeBondStereoAvailability(
   }
 }
 
+/** Atoms on one end of an acyclic bond. Ring bonds cannot be reflected independently. */
+function doubleBondReflectionEnd(molecule: MoleculeObject, bond: MoleculeBond): Set<string> | undefined {
+  const component = (start: string) => {
+    const ids = new Set([start]);
+    for (const id of ids) for (const edge of molecule.bonds) {
+      if (edge.id === bond.id) continue;
+      if (edge.fromAtomId === id) ids.add(edge.toAtomId);
+      if (edge.toAtomId === id) ids.add(edge.fromAtomId);
+    }
+    return ids;
+  };
+  const from = component(bond.fromAtomId);
+  if (from.has(bond.toAtomId)) return undefined;
+  const to = component(bond.toAtomId);
+  return from.size < to.size ? from : to;
+}
+
+export function nativeBondStereoFlipDisabledReason(
+  document: ChemDraftDocument, targets: readonly { objectId: string; bondId: string }[], reader?: DoubleBondStereoReader
+): string | undefined {
+  const state = nativeBondStereoAvailability(document, targets, reader);
+  if (state.geometryDisabledReason) return state.geometryDisabledReason;
+  if (!state.descriptor) return "A stereogenic double bond with drawn E/Z geometry is required";
+  const molecule = firstPage(document).objects.find((o): o is MoleculeObject => o.type === "molecule" && o.id === targets[0].objectId)!;
+  const bond = molecule.bonds.find(b => b.id === targets[0].bondId)!;
+  if (!doubleBondReflectionEnd(molecule, bond)) return "Ring geometry cannot be flipped independently";
+  const from = molecule.atoms.find(a => a.id === bond.fromAtomId)!;
+  const to = molecule.atoms.find(a => a.id === bond.toAtomId)!;
+  if (Math.hypot(to.x - from.x, to.y - from.y) < 0.001) return "Draw a nonzero double bond before flipping geometry";
+  return undefined;
+}
+
+function applyFlippedMoleculeBondStereo(
+  document: ChemDraftDocument, targets: readonly { objectId: string; bondId: string }[], reader?: DoubleBondStereoReader
+): ChemDraftDocument {
+  if (nativeBondStereoFlipDisabledReason(document, targets, reader)) return document;
+  const target = targets[0];
+  const page = firstPage(document);
+  const molecule = page.objects.find((o): o is MoleculeObject => o.type === "molecule" && o.id === target.objectId)!;
+  const bond = molecule.bonds.find(b => b.id === target.bondId)!;
+  const end = doubleBondReflectionEnd(molecule, bond)!;
+  const from = molecule.atoms.find(a => a.id === bond.fromAtomId)!;
+  const to = molecule.atoms.find(a => a.id === bond.toAtomId)!;
+  const dx = to.x - from.x, dy = to.y - from.y, squared = dx * dx + dy * dy;
+  const reflect = (point: PagePoint): PagePoint => {
+    const projection = ((point.x - from.x) * dx + (point.y - from.y) * dy) / squared;
+    return { x: 2 * (from.x + projection * dx) - point.x, y: 2 * (from.y + projection * dy) - point.y };
+  };
+  const atoms = molecule.atoms.map(atom => end.has(atom.id) ? { ...atom, ...reflect(atom) } : atom);
+  const bonds = molecule.bonds.map(edge => {
+    if (edge.id === bond.id) return withoutDoubleBondStereo(edge);
+    // Reflection reverses the drawing plane: swap wedges/hashes on the reflected end
+    // to retain tetrahedral stereo. Other double bonds have both ends reflected.
+    const style = edge.display?.bondStyle;
+    return end.has(edge.fromAtomId) && end.has(edge.toAtomId) && (style === "wedge" || style === "hashed")
+      ? { ...edge, display: { ...edge.display, bondStyle: style === "wedge" ? "hashed" as const : "wedge" as const } } : edge;
+  });
+  const changes = withStoredBondStereoMolfile(normalizeNativeMoleculeGeometry({ ...molecule, atoms, bonds }));
+  return applyPatches(document, [
+    { op: "updateObject", objectId: molecule.id, changes },
+    ...anchoredElectronMarkTransformPatches(page.objects, molecule.id, end, reflect)
+  ], { now: phase4Timestamp });
+}
+
 /** One graph patch; callers record one labelled history entry and retain their part selection. */
 export function applyMoleculeBondStereo(
   document: ChemDraftDocument, targets: readonly { objectId: string; bondId: string }[],
   value: BondStereoValue, reader?: DoubleBondStereoReader
 ): ChemDraftDocument {
+  if (value === "flipped") return applyFlippedMoleculeBondStereo(document, targets, reader);
   const state = nativeBondStereoAvailability(document, targets, reader);
   if (value === "either" ? state.eitherDisabledReason : state.geometryDisabledReason) return document;
   const target = targets[0];

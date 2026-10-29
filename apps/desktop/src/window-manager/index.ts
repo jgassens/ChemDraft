@@ -332,7 +332,8 @@ export interface ToolsetFlyoutSnapshot {
    * inline toolbar-distribute-menu always used; without this the grid in the icon+label layout
    * places a lone icon-less label into the narrow icon column and it gets ellipsized.
    */
-  variant?: "menu" | "distribute";
+  variant?: "menu" | "distribute" | "bondStereo";
+  keyboardOpen?: boolean;
 }
 
 /**
@@ -404,6 +405,23 @@ export async function listenForToolsetPopoverContentRequests(
   return listenTauriEvent<{ toolsetId: string }>(TOOLSET_POPOVER_CONTENT_REQUEST_EVENT, (event) =>
     handler(event.payload.toolsetId)
   );
+}
+
+export interface BondStereoPopoverAction {
+  sessionId: string;
+  action: "geometry" | "flipped" | "keep" | "close";
+}
+const BOND_STEREO_POPOVER_ACTION_EVENT = "chemdraft://bond-stereo-popover-action";
+
+export async function sendBondStereoPopoverAction(payload: BondStereoPopoverAction): Promise<void> {
+  if (!isDesktopRuntime()) return;
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit(BOND_STEREO_POPOVER_ACTION_EVENT, payload);
+}
+
+export async function listenForBondStereoPopoverActions(handler: (payload: BondStereoPopoverAction) => void): Promise<Unlisten> {
+  if (!isDesktopRuntime()) return () => undefined;
+  return listenTauriEvent<BondStereoPopoverAction>(BOND_STEREO_POPOVER_ACTION_EVENT, event => handler(event.payload));
 }
 
 export async function toggleSpin3dDebuggerWindow(): Promise<void> {
@@ -803,7 +821,7 @@ export async function startPaletteWindowDrag(grabX: number, grabY: number): Prom
   await invoke("start_window_drag", { grabX, grabY });
 }
 
-export async function currentWindowLogicalPosition(): Promise<ToolsetWindowPosition | undefined> {
+export async function currentWindowLogicalPosition(origin: "outer" | "inner" = "outer"): Promise<ToolsetWindowPosition | undefined> {
   if (!isDesktopRuntime()) {
     return undefined;
   }
@@ -813,7 +831,11 @@ export async function currentWindowLogicalPosition(): Promise<ToolsetWindowPosit
   // the first popover open to a fabricated origin while every later call was fine. Rust
   // asks the window server directly and has no warm-up.
   const { invoke } = await import("@tauri-apps/api/core");
-  const position = await invoke<{ x: number; y: number }>("window_logical_position");
+  // Canvas client rectangles start inside the document's native title bar and borders.
+  // Undecorated palettes retain their existing outer-origin contract.
+  const position = origin === "inner"
+    ? await invoke<{ x: number; y: number }>("window_logical_position", { contentOrigin: true })
+    : await invoke<{ x: number; y: number }>("window_logical_position");
   if (typeof position?.x !== "number" || typeof position?.y !== "number") {
     return undefined;
   }

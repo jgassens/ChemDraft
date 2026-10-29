@@ -1,10 +1,11 @@
 import type { MoleculeObject } from "@chemdraft/chem-core";
 import { nativeMoleculeBondDrawingStyle, nativeMultipleBondGapPx, planMoleculeAtomLabels } from "@chemdraft/layout-engine";
+import type { BondStereoBadgeRequest } from "./useBondStereoPopover";
 
 export const OPEN_DOUBLE_BOND_TOOLTIP = "E/Z was not specified for this double bond. Confirm the geometry by redrawing the bond or choosing 'Use drawn geometry'.";
 
 /** Editor status chrome only. Label bounds come from the shared renderer. */
-export function BondStereoBadges({ molecule }: { molecule: MoleculeObject }) {
+export function BondStereoBadges({ molecule, onOpen }: { molecule: MoleculeObject; onOpen?: (request: BondStereoBadgeRequest) => void }) {
   const openBonds = molecule.bonds.filter(bond => bond.order === "double" && bond.stereo === "either");
   if (!openBonds.length) return null;
   const atoms = new Map(molecule.atoms.map(atom => [atom.id, atom]));
@@ -26,7 +27,17 @@ export function BondStereoBadges({ molecule }: { molecule: MoleculeObject }) {
       p.x + 7 < b.x || p.x - 7 > b.x + b.width || p.y + 7 < b.y || p.y - 7 > b.y + b.height)) ?? candidates[0];
     const x = point.x - molecule.x, y = point.y - molecule.y;
     return [<g key={bond.id} className="native-atom-invalid-marker native-bond-stereo-marker" data-unspecified-bond-id={bond.id}
-      onPointerDown={event => { event.preventDefault(); event.stopPropagation(); }}>
+      role="button" tabIndex={0} aria-label="E/Z not specified" aria-haspopup="dialog"
+      onPointerDown={event => { event.preventDefault(); event.stopPropagation(); }}
+      onPointerUp={event => event.stopPropagation()}
+      onClick={event => { event.stopPropagation(); onOpen?.({ objectId: molecule.id, bondId: bond.id,
+        rect: event.currentTarget.getBoundingClientRect(), keyboard: false }); }}
+      onKeyDown={event => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault(); event.stopPropagation();
+        if (!event.repeat) onOpen?.({ objectId: molecule.id, bondId: bond.id,
+          rect: event.currentTarget.getBoundingClientRect(), keyboard: true });
+      }}>
       <title>{OPEN_DOUBLE_BOND_TOOLTIP}</title>
       <circle className="native-atom-invalid-ring" cx={x} cy={y} r="6" />
       <text className="native-atom-invalid-exclamation" x={x} y={y}>!</text>

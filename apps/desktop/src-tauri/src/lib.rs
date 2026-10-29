@@ -4215,7 +4215,11 @@ fn build_toolset_popover_window(
         ),
         app,
     )
-    .title("ChemDraft color picker")
+    .title(if toolset_id == "core.bondStereo" {
+        "E/Z not specified"
+    } else {
+        "ChemDraft color picker"
+    })
     // The JS side sizes this to the popover content (setCurrentWindowLogicalSize); start with a
     // sensible color-picker footprint so the first paint isn't jarringly wrong.
     .inner_size(320.0, 300.0)
@@ -4225,6 +4229,7 @@ fn build_toolset_popover_window(
     // must be able to take keyboard focus. It stays a NonactivatingPanel (see below), so
     // becoming key doesn't yank the app's activation away from the document.
     .focusable(true)
+    .focused(false)
     .resizable(false)
     .decorations(false)
     .skip_taskbar(true)
@@ -4303,12 +4308,18 @@ struct WindowLogicalPosition {
 /// palette-local offset, as if the palette sat at the origin — and every later call
 /// was fine. Native reads have no warm-up; the window server is the source of truth.
 #[tauri::command]
-fn window_logical_position(window: tauri::WebviewWindow) -> Result<WindowLogicalPosition, String> {
+fn window_logical_position(
+    window: tauri::WebviewWindow,
+    content_origin: Option<bool>,
+) -> Result<WindowLogicalPosition, String> {
     let scale = window.scale_factor().map_err(|error| error.to_string())?;
-    let position = window
-        .outer_position()
-        .map_err(|error| error.to_string())?
-        .to_logical::<f64>(scale);
+    let position = if content_origin.unwrap_or(false) {
+        window.inner_position()
+    } else {
+        window.outer_position()
+    }
+    .map_err(|error| error.to_string())?
+    .to_logical::<f64>(scale);
     Ok(WindowLogicalPosition {
         x: position.x,
         y: position.y,

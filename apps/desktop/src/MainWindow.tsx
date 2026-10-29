@@ -265,6 +265,7 @@ import {
   createQuickActions,
   createDoubleBondPositionActions,
   createBondStereoActions,
+  createFlippedBondStereoAction,
   moleculeBondStereoForCommand,
   moleculeDoubleBondPositionForCommand,
   convertTextToAtomLabelCommandId,
@@ -437,6 +438,7 @@ import {
   applyNativeDoubleBondSideTarget,
   applyMoleculeDoubleBondPosition,
   applyMoleculeBondStereo,
+  nativeBondStereoFlipDisabledReason,
   applyNativeMoleculeBondOrderTarget,
   applyNativeMoleculeBondOrderValueTarget,
   applyNativeMoleculeDeleteTarget,
@@ -883,6 +885,7 @@ import {
 import { createArtInspectorModel, selectedVisualObjectsForArtInspector } from "./artInspectorModel";
 import { createMoleculeInspectorModel, representativeMoleculeBondLengthPx } from "./moleculeInspectorModel";
 import { BondStereoBadges } from "./BondStereoBadges";
+import { useBondStereoPopover, type BondStereoBadgeRequest } from "./useBondStereoPopover";
 import {
   moleculeInspectorTemplateFilename,
   moleculeInspectorTemplateMimeType,
@@ -1627,7 +1630,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.28.15.45-codex";
+const CURRENT_BUILD_STAMP = "10.28.16.00-codex";
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -7876,11 +7879,12 @@ export function MainWindow({
     const stereo = moleculeBondStereoForCommand(commandId);
     if (stereo) {
       const state = currentMoleculeInspector.structure.bondStereo!;
-      const reason = stereo.value === "either" ? state.eitherDisabledReason : state.geometryDisabledReason;
+      const reason = stereo.value === "flipped" ? nativeBondStereoFlipDisabledReason(currentDocument, bondTargets, bondStereoReader)
+        : stereo.value === "either" ? state.eitherDisabledReason : state.geometryDisabledReason;
       return {
         document: applyMoleculeBondStereo(currentDocument, bondTargets, stereo.value, bondStereoReader),
         handled: true, targeted: true,
-        message: reason ?? (stereo.value === "either" ? "E/Z unspecified" : "Use drawn geometry")
+        message: reason ?? (stereo.value === "either" ? "E/Z unspecified" : stereo.value === "flipped" ? "Use the other geometry" : "Use drawn geometry")
       };
     }
     const position = moleculeDoubleBondPositionForCommand(commandId);
@@ -9929,7 +9933,10 @@ export function MainWindow({
     createDoubleBondPositionActions(currentMoleculeInspector.structure.doubleBondTargetCount).forEach((action) => {
       register(action, () => { applyMoleculeInspectorCommand(action.id); });
     });
-    createBondStereoActions(currentMoleculeInspector.structure.bondStereo!).forEach((action) => {
+    [ ...createBondStereoActions(currentMoleculeInspector.structure.bondStereo!),
+      createFlippedBondStereoAction(currentMoleculeInspector.structure.bondStereo!,
+        nativeBondStereoFlipDisabledReason(document, currentMoleculeInspector.targets.bondTargets, bondStereoReader))
+    ].forEach((action) => {
       register(action, () => { applyMoleculeInspectorCommand(action.id); });
     });
 
@@ -19646,6 +19653,19 @@ export function MainWindow({
     ]
   );
 
+  const openBondStereoPopover = useBondStereoPopover({
+    document, targets: currentMoleculeInspector.targets.bondTargets, reader: bondStereoReader,
+    select: target => {
+      setSelectedNativeMoleculePart({ objectId: target.objectId, kind: "bond", bondId: target.bondId });
+      setObjectContextMenu(undefined);
+    },
+    invoke: commandId => invokeCommandRef.current(commandId),
+    focusCanvas: () => {
+      canvasRegionRef.current?.focus({ preventScroll: true });
+      void focusCurrentWindowAndWebview({ onlyIfAppActive: true }).catch(() => undefined);
+    }
+  });
+
   // Handlers every object view receives. Most of them close over the document, so their identities
   // change on every edit, which forced all of a page's object views to re-render: 5,000 molecules
   // cost ~450 ms per single-object edit. Routed through stable wrappers, `DocumentObjectView`'s memo
@@ -19681,6 +19701,7 @@ export function MainWindow({
     onObjectResizeInputHome: handleObjectResizeInputHome,
     onObjectResizeInputCancel: handleObjectResizeInputCancel,
     onContextMenu: handleObjectContextMenu,
+    onBondStereoBadgeOpen: openBondStereoPopover,
     onTextChange: updateTextObjectContent,
     onTextEditFinish: finishActiveNativeTextEdit,
     onTextSelectionChange: recordTextSelection,
@@ -20097,6 +20118,14 @@ export function MainWindow({
           className={["canvas-region", rulersVisible ? "rulers-visible" : ""].filter(Boolean).join(" ")}
           aria-label="Document workspace"
           onKeyDown={(event) => {
+            if (event.target === event.currentTarget && event.key === "Tab" && !event.shiftKey) {
+              const targets = currentMoleculeInspector.targets.bondTargets;
+              if (targets.length === 1) {
+                const badge = event.currentTarget.querySelector<SVGGElement>(
+                  `[data-object-controls="${targets[0].objectId}"] [data-unspecified-bond-id="${targets[0].bondId}"]`);
+                if (badge) { event.preventDefault(); event.stopPropagation(); badge.focus(); return; }
+              }
+            }
             if (event.target !== event.currentTarget || (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10"))) return;
             event.preventDefault(); event.stopPropagation();
             openCanvasKeyboardContextMenu();
@@ -20697,7 +20726,7 @@ export function MainWindow({
             const bond = molecule?.type === "molecule" ? molecule.bonds.find(b => b.id === targets[0].bondId) : undefined;
             if (bond?.order !== "double") return [];
             return createBondStereoActions(currentMoleculeInspector.structure.bondStereo!)
-              .filter(action => moleculeBondStereoForCommand(action.id)?.value === "either" || bond.stereo === "either");
+              .filter(action => moleculeBondStereoForCommand(action.id)?.value === (bond.stereo === "either" ? "geometry" : "either"));
           })()}
           objectId={objectContextMenu.objectId}
           objectIndex={activePage.objects.findIndex((object) => object.id === objectContextMenu.objectId)}
@@ -26580,8 +26609,10 @@ function DocumentObjectViewContent({
   onTextResizeStart,
   onAtomLabelChange,
   onAtomLabelCancel,
-  onAtomLabelFinish
+  onAtomLabelFinish,
+  onBondStereoBadgeOpen
 }: {
+  onBondStereoBadgeOpen(request: BondStereoBadgeRequest): void;
   object: DocumentObject;
   layerIndex: number;
   interactionLayer: HTMLDivElement | null;
@@ -27167,12 +27198,11 @@ function DocumentObjectViewContent({
           <svg
             className="native-molecule-overlay native-molecule-interaction-overlay"
             viewBox={`0 0 ${object.width} ${object.height}`}
-            aria-hidden="true"
             style={spinning ? { opacity: 0.1 } : undefined}
           >
             {selectionBlob}
             {selectedRingBlobs}
-            <BondStereoBadges molecule={object} />
+            <BondStereoBadges molecule={object} onOpen={onBondStereoBadgeOpen} />
             {object.atoms
               .filter((atom) => invalidAtomIds.has(atom.id))
               .map((atom) => (

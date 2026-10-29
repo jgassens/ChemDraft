@@ -5050,6 +5050,7 @@ textarea:focus-visible,
 }
 
 .native-bond-stereo-marker {
+  cursor: pointer;
   pointer-events: all;
 }
 
@@ -7781,3 +7782,8 @@ textarea:focus-visible,
 .cd-page-size-buttons { display: flex; gap: 8px; justify-content: flex-end; }
 .cd-page-size-form button { padding: 6px 14px; }
 .cd-page-size-web-fallback .cd-page-size-form { width: 420px; min-height: 300px; border: 1px solid var(--cd-border-subtle); border-radius: 8px; }
+
+.native-bond-stereo-marker:focus-visible .native-atom-invalid-ring { stroke: var(--cd-accent, #2965c7); stroke-width: 3; }
+.bond-stereo-popover { width: 290px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.bond-stereo-popover p { margin: 0; line-height: 1.4; white-space: normal; }
+.bond-stereo-popover button { min-height: 28px; text-align: left; }

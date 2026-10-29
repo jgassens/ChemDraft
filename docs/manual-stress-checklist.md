@@ -39,6 +39,26 @@ with the bond tool or hovered-bond shortcut: the (!) disappears and the bond bec
 Move atoms, rotate and restyle first: these keep the flag and badge. SVG, PDF, CDXML exports and
 browser/system print preview contain no badge or hover text.
 
+Click the (!) badge, then repeat with exactly one open bond selected: focus the canvas, Tab to the
+badge, and press Enter or Space. A small native popover anchors below it, showing “E/Z not specified”,
+the geometry explanation, both geometry choices (correct E/Z labels), and Keep unspecified.
+Confirm and flip each record exactly one labelled Undo entry, retain bond selection, and Undo/Redo
+restore geometry and the badge. Flip moves only one end's substituents; test unequal CIP priorities,
+nearby stereocentres, conjugated bonds and charged/isotopic substituents. Keep unspecified, Escape
+and click-away change no document/history, close, and return focus to the canvas. Repeat click-away
+from a floating toolbar and keyboard Tab/Shift+Tab within the popover.
+Right-click an open bond: “Mark E/Z as unspecified” is absent. On a non-stereogenic double bond it
+remains disabled with its reason. The inspector retains its previous behavior.
+Move the document between monitors at 100% and 150%/200% scaling (including negative monitor
+coordinates): the popover follows the badge on the destination monitor, never takes focus on a mouse
+open until clicked, has no taskbar entry on Windows, and closes when switching tabs/documents.
+Check print and SVG/PDF/CDXML again with the popover open: neither badge nor popover is included.
+Dismiss during the first cold open, then immediately reopen from a badge. Only the newest request
+may appear or act; an older create/reveal finishing late must not hide it. Change the selection or
+switch tabs while it opens and verify that a late action cannot affect the new selection/document.
+Ring bonds refuse the flip with a reason. If retained isotope/radical properties cannot be mapped
+through a label expansion, both geometry choices refuse rather than discarding those properties.
+
 ## Spin 3D (macOS and Windows)
 
 Paste `c1ccccc1.CC(C)(C)C.OCCO` as one native molecule object; with RDKit and the OCL fallback,

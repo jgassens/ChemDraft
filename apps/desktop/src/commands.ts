@@ -855,12 +855,12 @@ export const customMoleculeStructureBondSpacingPercentCommandPrefix = "molecule.
 export const customMoleculeStructureMultipleBondGapCommandPrefix = "molecule.structure.multipleBondGap:";
 export const customMoleculeStructureDoubleBondInsetCommandPrefix = "molecule.structure.doubleBondInset:";
 export type DoubleBondPosition = "left" | "center" | "right" | "automatic";
-export type BondStereoValue = "either" | "geometry";
+export type BondStereoValue = "either" | "geometry" | "flipped";
 export function moleculeBondStereoCommandId(value: BondStereoValue): string {
   return `molecule.bondStereo:${value}`;
 }
 export function moleculeBondStereoForCommand(id: string): { value: BondStereoValue } | undefined {
-  return (["either", "geometry"] as const).map(value => ({ value }))
+  return (["either", "geometry", "flipped"] as const).map(value => ({ value }))
     .find(({ value }) => moleculeBondStereoCommandId(value) === id);
 }
 export function createBondStereoActions(state: {
@@ -874,6 +874,14 @@ export function createBondStereoActions(state: {
       icon: "bond", source: "core", category: "molecule", enabled: !disabledReason, disabledReason
     };
   });
+}
+/** Exposed by the open-bond popover, leaving the inspector's existing actions intact. */
+export function createFlippedBondStereoAction(state: { descriptor?: "E" | "Z" }, disabledReason?: string): CommandSpec {
+  return {
+    id: moleculeBondStereoCommandId("flipped"),
+    title: `Use the other geometry${state.descriptor ? ` (${state.descriptor === "E" ? "Z" : "E"})` : ""}`,
+    icon: "bond", source: "core", category: "molecule", enabled: !disabledReason, disabledReason
+  };
 }
 export function moleculeDoubleBondPositionCommandId(value: DoubleBondPosition): string {
   return `molecule.structure.doubleBondPosition:${value}`;

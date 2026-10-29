@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 import { act } from "react";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChemDraftDocument, MoleculeBond, MoleculeObject } from "@chemdraft/chem-core";
@@ -9,9 +11,26 @@ import { CommandRegistry } from "@chemdraft/plugin-host";
 import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { MainWindow, ObjectLayerContextMenu } from "./MainWindow";
 import { createBondStereoActions, moleculeBondStereoCommandId } from "./commands";
-import { applyMoleculeBondStereo, createPhase4Document, getSelectedMolecule, insertNativeMolfileMolecule, selectDocumentObjects } from "./documentWorkflow";
+import { applyMoleculeBondStereo, createPhase4Document, getSelectedMolecule, insertNativeMolfileMolecule, selectDocumentObjects, exportPhase4Svg, exportPhase4Pdf, exportPhase4Cdxml } from "./documentWorkflow";
 import { MemoryStorage } from "./testSupport/memoryStorage";
-import { DOM_COMMAND_EVENT } from "./window-manager";
+import { DOM_COMMAND_EVENT, openToolsetPopoverWindow, setToolsetPopoverContent, closeToolsetPopoverWindow,
+  currentWindowLogicalPosition, type BondStereoPopoverAction } from "./window-manager";
+const nativePopover = vi.hoisted(() => ({
+  action: undefined as undefined | ((payload: BondStereoPopoverAction) => void),
+  request: undefined as undefined | ((id: string) => void),
+  dismiss: undefined as undefined | (() => void)
+}));
+vi.mock("./window-manager", async importOriginal => ({
+  ...await importOriginal<typeof import("./window-manager")>(),
+  currentWindowLogicalPosition: vi.fn(async () => ({ x: 100, y: 200 })),
+  openToolsetPopoverWindow: vi.fn(async () => {}),
+  closeToolsetPopoverWindow: vi.fn(async () => {}),
+  setToolsetPopoverContent: vi.fn(async () => {}),
+  focusCurrentWindowAndWebview: vi.fn(async () => {}),
+  listenForBondStereoPopoverActions: vi.fn(async handler => { nativePopover.action = handler; return () => {}; }),
+  listenForToolsetPopoverContentRequests: vi.fn(async handler => { nativePopover.request = handler; return () => {}; }),
+  listenForToolsetPopoverDismiss: vi.fn(async handler => { nativePopover.dismiss = handler; return () => {}; })
+}));
 
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("@scena/react-ruler", () => ({ default: () => <canvas /> }));
@@ -23,6 +42,7 @@ let captures: (PropertyDescriptor | undefined)[];
 beforeAll(async () => { await ensureOclResources(); });
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  vi.clearAllMocks();
   vi.stubGlobal("localStorage", new MemoryStorage());
   vi.stubGlobal("ResizeObserver", TestResizeObserver);
   vi.stubGlobal("CSS", { escape: (value: string) => value });
@@ -103,9 +123,9 @@ describe.each<ShortcutPlatform>(["macos", "windows"])("canvas bond stereo menu (
     const invoke = vi.spyOn(CommandRegistry.prototype, "invoke");
     await rightClick(original, bond);
     const expected = smiles === "CC=CC" ? "E" : "Z";
-    expect(entry("either")?.textContent).toBe("Mark E/Z as unspecified");
-    expect(entry("either")?.disabled).toBe(true);
-    expect(entry("either")?.title).toBe("E/Z is already unspecified");
+    // Already-open bonds omit the redundant action: macOS paints disabled context items
+    // like enabled ones. Disabled-with-reason remains for actual inapplicability below.
+    expect(entry("either")).toBeNull();
     expect(entry("geometry")?.textContent).toBe(`Use drawn geometry (${expected})`);
     expect(entry("geometry")?.disabled).toBe(false);
     await act(async () => entry("geometry")!.click());
@@ -188,4 +208,115 @@ it("uses the command's plain geometry title while perception is loading", async 
     bondStereoActions={createBondStereoActions({ eitherDisabledReason: "E/Z perception is still loading" })} />));
   expect(entry("geometry")?.textContent).toBe("Use drawn geometry"); expect(entry("geometry")?.disabled).toBe(false);
   expect(entry("either")?.title).toBe("E/Z perception is still loading"); expect(entry("either")?.disabled).toBe(true);
+});
+
+
+describe.each<ShortcutPlatform>(["macos", "windows"])("native badge popover (%s)", platform => {
+  async function openBadge(keyboard?: "Enter" | " ") {
+    const { doc, mol } = drawing("CC=CC", true);
+    const bond = mol.bonds.find(b => b.stereo === "either")!;
+    await mount(doc, platform);
+    let badge = container.querySelector<SVGGElement>("[data-unspecified-bond-id]")!;
+    badge.getBoundingClientRect = () => ({ left: 30, bottom: 50 }) as DOMRect;
+    expect(badge.getAttribute("role")).toBe("button");
+    expect(badge.getAttribute("tabindex")).toBe("0");
+    expect(badge.closest('[aria-hidden="true"]')).toBeNull();
+    expect(badge.querySelector("title")?.textContent).toContain("E/Z was not specified");
+    if (keyboard) {
+      await selectBond(mol, bond);
+      badge = container.querySelector<SVGGElement>("[data-unspecified-bond-id]")!;
+      badge.getBoundingClientRect = () => ({ left: 30, bottom: 50 }) as DOMRect;
+      canvas.focus(); await key("Tab");
+      expect(document.activeElement).toBe(badge);
+      await key(keyboard);
+    } else await act(async () => {
+      for (const type of ["pointerdown", "pointerup", "click"]) {
+        badge.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0 }));
+      }
+    });
+    expect(currentWindowLogicalPosition).toHaveBeenCalledWith("inner");
+    expect(openToolsetPopoverWindow).toHaveBeenCalledWith("core.bondStereo", "flyout", 130, 254);
+    const content = vi.mocked(setToolsetPopoverContent).mock.calls.at(-1)![1];
+    expect(setToolsetPopoverContent).toHaveBeenLastCalledWith("core.bondStereo", expect.anything(), { x: 130, y: 254 });
+    if (content.kind !== "flyout") throw new Error("Expected flyout");
+    expect(content.flyout).toMatchObject({ variant: "bondStereo", title: "E/Z not specified", keyboardOpen: !!keyboard });
+    expect(content.flyout.commands.map(c => c.title)).toEqual(["Use drawn geometry (E)", "Use the other geometry (Z)"]);
+    await act(async () => nativePopover.request?.("core.bondStereo"));
+    expect(vi.mocked(setToolsetPopoverContent).mock.calls.at(-1)![1]).toEqual(content);
+    return { original: molecule(), bond, content };
+  }
+  it.each(["geometry", "flipped"] as const)("%s invokes once, selects the bond and records exactly one labelled undo step", async action => {
+    const { original, bond, content } = await openBadge();
+    const invoke = vi.spyOn(CommandRegistry.prototype, "invoke");
+    const payload = { sessionId: content.flyout.id!, action };
+    await act(async () => { nativePopover.action?.(payload); nativePopover.action?.(payload); });
+    expect(invoke.mock.calls.filter(([id]) => id === moleculeBondStereoCommandId(action))).toHaveLength(1);
+    expect(molecule().bonds.find(b => b.id === bond.id)?.stereo).toBeUndefined();
+    expect(perceiveDoubleBondStereoFromMolfile(molecule().structure)[0].descriptor).toBe(action === "geometry" ? "E" : "Z");
+    expect(window.__CHEMDRAFT_AGENT__!.snapshot().selectedNativeMoleculePart).toMatchObject({ kind: "bond", bondId: bond.id });
+    expect(document.activeElement).toBe(canvas);
+    await command("edit.undo"); expect(molecule()).toEqual(original);
+    expect(container.querySelector('[role="status"]')?.textContent).toBe(action === "geometry" ? "Undid Use drawn geometry" : "Undid Use the other geometry");
+    await command("edit.undo"); expect(molecule()).toEqual(original);
+    await command("edit.redo");
+    expect(molecule().bonds.find(b => b.id === bond.id)?.stereo).toBeUndefined();
+  });
+  it.each(["keep", "escape", "click-away", "palette-away"] as const)("%s closes, returns canvas focus and does not edit or record undo", async action => {
+    const { original, content } = await openBadge(action === "escape" ? "Enter" : undefined);
+    await act(async () => {
+      if (action === "keep") nativePopover.action?.({ sessionId: content.flyout.id!, action: "keep" });
+      if (action === "escape") canvas.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+      if (action === "click-away") canvas.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+      if (action === "palette-away") nativePopover.dismiss?.();
+    });
+    expect(closeToolsetPopoverWindow).toHaveBeenCalledWith("core.bondStereo");
+    expect(document.activeElement).toBe(canvas); expect(molecule()).toEqual(original);
+    await command("edit.undo"); expect(molecule()).toEqual(original);
+  });
+  it("opens with Space through the canvas Tab path and never exports the badge/popover", async () => {
+    await openBadge(" ");
+    const doc = window.__CHEMDRAFT_AGENT__!.snapshot().document;
+    vi.stubGlobal("getComputedStyle", window.getComputedStyle.bind(window));
+    const pdf = await exportPhase4Pdf(doc, { compress: false });
+    for (const output of [exportPhase4Svg(doc).contents, exportPhase4Cdxml(doc).contents, new TextDecoder().decode(pdf.bytes)]) {
+      expect(output).not.toContain("native-bond-stereo-marker"); expect(output).not.toContain("E/Z not specified");
+      expect(output).not.toContain("This double bond"); expect(output).not.toMatch(/>!<|\(!\) Tj/);
+    }
+    expect(container.querySelector('[role="dialog"][aria-label="E/Z not specified"]')).toBeNull();
+    const css = readFileSync(resolve("apps/desktop/src/App.css"), "utf8");
+    expect(css).toMatch(/@media print\s*\{\s*\.native-bond-stereo-marker\s*\{\s*display: none !important/);
+  });
+
+  it("cancels a cold open before opening a new session, without stale content or writes", async () => {
+    const { doc } = drawing("CC=CC", true);
+    await mount(doc, platform);
+    let finishOpen!: () => void;
+    vi.mocked(openToolsetPopoverWindow).mockImplementationOnce(() => new Promise<void>(resolve => { finishOpen = resolve; }));
+    const clickBadge = () => container.querySelector<SVGGElement>("[data-unspecified-bond-id]")!
+      .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await act(async () => { clickBadge(); });
+    expect(setToolsetPopoverContent).not.toHaveBeenCalled();
+    await act(async () => canvas.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })));
+    await act(async () => { clickBadge(); });
+    expect(openToolsetPopoverWindow).toHaveBeenCalledTimes(1);
+    await act(async () => finishOpen());
+    expect(openToolsetPopoverWindow).toHaveBeenCalledTimes(2);
+    expect(setToolsetPopoverContent).toHaveBeenCalledTimes(1);
+    const content = vi.mocked(setToolsetPopoverContent).mock.calls[0][1];
+    if (content.kind !== "flyout") throw new Error("Expected flyout");
+    await act(async () => nativePopover.action?.({ sessionId: "stale-session", action: "flipped" }));
+    expect(molecule().bonds.some(bond => bond.stereo === "either")).toBe(true);
+    await act(async () => nativePopover.action?.({ sessionId: content.flyout.id!, action: "geometry" }));
+    expect(molecule().bonds.every(bond => bond.stereo === undefined)).toBe(true);
+  });
+
+  it("dismisses on a document edit and rejects the old action", async () => {
+    const { content } = await openBadge();
+    await command("edit.selectAll");
+    const current = molecule();
+    const invoke = vi.spyOn(CommandRegistry.prototype, "invoke");
+    await act(async () => nativePopover.action?.({ sessionId: content.flyout.id!, action: "flipped" }));
+    expect(invoke.mock.calls.filter(([id]) => id === moleculeBondStereoCommandId("flipped"))).toHaveLength(0);
+    expect(molecule()).toEqual(current);
+  });
 });
