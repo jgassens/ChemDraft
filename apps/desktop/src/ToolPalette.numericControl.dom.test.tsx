@@ -181,6 +181,59 @@ describe("palette numeric controls", () => {
     expect(onCommit).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    { snapshots: [30, 31], finish: "pointerup" },
+    { snapshots: [31, 30], finish: "pointerup" },
+    { snapshots: [30, 31], finish: "blur" },
+    { snapshots: [31, 30], finish: "blur" }
+  ])("keeps the latest slider value through preview acknowledgements $snapshots until $finish", async ({ snapshots, finish }) => {
+    const slider = container.querySelector<HTMLInputElement>('input[aria-label="Target bond length slider"]')!;
+    await act(async () => {
+      slider.focus();
+      slider.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    });
+    await input("30", slider);
+    await input("31", slider);
+    expect(onPreview.mock.calls).toEqual([30, 31].map((value) => [moleculeStructureBondLengthCommandId(value)]));
+    const displayedValues: string[] = [];
+    for (const value of snapshots) {
+      model = inspectorModel(value);
+      await render();
+      displayedValues.push(slider.value);
+    }
+    await act(async () => {
+      if (finish === "blur") slider.blur();
+      else slider.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
+    });
+    expect(onCommit).toHaveBeenCalledExactlyOnceWith(moleculeStructureBondLengthCommandId(31));
+    expect(displayedValues).toEqual(["31", "31"]);
+    await act(async () => {
+      slider.blur();
+      slider.focus();
+      slider.dispatchEvent(new KeyboardEvent("keyup", { key: "Shift", bubbles: true }));
+      slider.blur();
+    });
+    expect(onCommit).toHaveBeenCalledTimes(1);
+  });
+
+  it("supersedes a slider gesture when an unpreviewed model value arrives before release", async () => {
+    const slider = container.querySelector<HTMLInputElement>('input[aria-label="Target bond length slider"]')!;
+    await act(async () => {
+      slider.focus();
+      slider.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    });
+    await input("31", slider);
+    expect(onPreview).toHaveBeenCalledExactlyOnceWith(moleculeStructureBondLengthCommandId(31));
+    model = inspectorModel(40);
+    await render();
+    expect(slider.value).toBe("40");
+    await act(async () => {
+      slider.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
+      slider.blur();
+    });
+    expect(onCommit).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])("Tab to the slider commits only a typed number (Mixed: %s)", async (mixed) => {
     if (mixed) {
       model.structure.values.bondLengthPx = { value: null, mixed: true };

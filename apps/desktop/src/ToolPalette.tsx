@@ -821,11 +821,15 @@ function MoleculeInspectorNumericControl({
   const lastCommitted = useRef<number | undefined>(undefined);
   const [sliderDraft, setSliderDraft] = useState<number | null>(null);
   const sliderChanged = useRef<number | undefined>(undefined);
+  const sliderPreviewedValues = useRef(new Set<number>());
   useEffect(() => {
+    // Snapshots can acknowledge this gesture's previews late or out of order.
+    // Keep the latest draft and pending commit until release in either case.
+    if (!mixed && value != null && sliderPreviewedValues.current.has(value)) return;
+    // An unpreviewed value or Mixed state supersedes the pending gesture.
     setSliderDraft(null);
-    // A matching snapshot can be our own preview; its release must still commit.
-    // A different value or Mixed state supersedes the pending gesture.
-    if (mixed || sliderChanged.current !== value) sliderChanged.current = undefined;
+    sliderChanged.current = undefined;
+    sliderPreviewedValues.current.clear();
   }, [value, mixed]);
   const revert = () => {
     dirty.current = false;
@@ -867,6 +871,7 @@ function MoleculeInspectorNumericControl({
   const commitSlider = () => {
     const next = sliderChanged.current;
     sliderChanged.current = undefined;
+    sliderPreviewedValues.current.clear();
     setSliderDraft(null);
     if (next !== undefined) onCommit(commandId(next));
   };
@@ -949,6 +954,7 @@ function MoleculeInspectorNumericControl({
           const next = Number(event.currentTarget.value);
           if (next === (sliderDraft ?? effectiveValue)) return;
           sliderChanged.current = next;
+          sliderPreviewedValues.current.add(next);
           setSliderDraft(next);
           onPreview(commandId(next));
         }}
