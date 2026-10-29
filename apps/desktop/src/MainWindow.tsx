@@ -246,7 +246,7 @@ import {
 import { createRdkitAdapter } from "@chemdraft/rdkit-adapter/adapter";
 import { buildAnalysisReport, type AnalysisReport, type AnalysisRun } from "@chemdraft/analysis-core";
 import { analysisClient } from "./analysisClient";
-import { inspectClipboardPayload, looksLikeSmiles, smilesListCandidates, type ClipboardDetectedPayload } from "@chemdraft/clipboard-adapter";
+import { inspectClipboardPayload, looksLikeSmiles, smilesListCandidates, type ClipboardDetectedPayload, type ClipboardReadPayload } from "@chemdraft/clipboard-adapter";
 import { verifySmilesPaste, verifySmilesPasteInput, verifySmilesGridEntries } from "./smilesPasteIdentity";
 import {
   SmilesListPasteError, depictSmilesForPaste, depictSmilesListForPaste, smilesListFailureStatus
@@ -1621,7 +1621,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.29.12.17-codex";
+const CURRENT_BUILD_STAMP = "10.29.12.38-codex";
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -6950,29 +6950,42 @@ export function MainWindow({
     }
   }, []);
 
-  const pasteClipboard = useCallback(async () => {
+  const pasteClipboard = useCallback(async (domPayload?: ClipboardReadPayload) => {
     smilesListPasteAbortRef.current?.abort();
-    const rawPayload = await readClipboardPayload();
-    if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
-    const selectionPayload = rawPayload.textItems
-      .map((item) => parseSelectionClipboardPayload(item.text))
-      .find((payload) => payload !== undefined);
-    if (selectionPayload) {
-      applySelectionClipboardPayload(selectionPayload);
-      return;
+    let rawPayload: ClipboardReadPayload | undefined;
+    let readFailure: string | undefined;
+    try {
+      rawPayload = await readClipboardPayload();
+    } catch (error) {
+      readFailure = error instanceof Error ? error.message : String(error);
     }
+    if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
+    // Prefer the native private flavor, then other native content. The event snapshot is a
+    // fallback when the native clipboard was busy or empty; DataTransfer is no longer readable here.
+    for (const payload of [rawPayload, domPayload]) {
+      if (!payload) continue;
+      const selectionPayload = payload.textItems
+        .map((item) => parseSelectionClipboardPayload(item.text))
+        .find((selection) => selection !== undefined);
+      if (selectionPayload) {
+        applySelectionClipboardPayload(selectionPayload);
+        return;
+      }
 
-    const detectedPayload = inspectClipboardPayload(rawPayload);
-    if (detectedPayload.kind !== "empty") {
-      applyDetectedClipboardPayload(detectedPayload);
-      return;
+      const detectedPayload = inspectClipboardPayload(payload);
+      if (detectedPayload.kind !== "empty") {
+        applyDetectedClipboardPayload(detectedPayload);
+        return;
+      }
     }
 
     // Only reuse the last in-app ChemDraft selection when the clipboard has nothing usable;
     // otherwise the actual clipboard content above (e.g. external text/SMILES) wins.
     if (selectionClipboardPayloadRef.current) {
       applySelectionClipboardPayload(selectionClipboardPayloadRef.current);
+      return;
     }
+    setStatus(readFailure !== undefined ? `Paste failed: ${readFailure}` : "Nothing to paste");
   }, [applyDetectedClipboardPayload, applySelectionClipboardPayload]);
 
   const updateTextObjectContent = useCallback((objectId: string, text: string) => {
@@ -11944,6 +11957,15 @@ export function MainWindow({
         return;
       }
 
+      // WKWebView and WebView2 cannot expose the natively written private ChemDraft flavor
+      // through DataTransfer. Read natively before a text/plain fallback can lose formatting.
+      if (isDesktopRuntime()) {
+        const domPayload = clipboardPayloadFromDataTransfer(event.clipboardData);
+        event.preventDefault();
+        void pasteClipboard(domPayload);
+        return;
+      }
+
       const detectedPayload = inspectClipboardPayload(clipboardPayloadFromDataTransfer(event.clipboardData));
       if (detectedPayload.kind !== "empty") {
         event.preventDefault();
@@ -11951,14 +11973,8 @@ export function MainWindow({
         return;
       }
 
-      // The clipboard event carried nothing usable. On desktop, read the native clipboard (the
-      // private ChemDraft flavor survives there); otherwise reuse the last in-app selection so an
-      // in-session copy still pastes, without overriding real external clipboard content above.
-      if (isDesktopRuntime()) {
-        event.preventDefault();
-        void pasteClipboard();
-        return;
-      }
+      // Reuse the last in-app selection when the browser event carried nothing usable,
+      // without overriding real external clipboard content above.
       if (selectionClipboardPayloadRef.current) {
         event.preventDefault();
         applySelectionClipboardPayload(selectionClipboardPayloadRef.current);
