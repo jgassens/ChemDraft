@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Molecule } from "openchemlib";
 import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
-import { applyPatches } from "@chemdraft/chem-core";
+import { applyPatches, moleculeToMolfileV3000, type ElectronMarkObject } from "@chemdraft/chem-core";
 import { depictSmiles2D, perceiveDoubleBondStereoFromMolfile } from "@chemdraft/ocl-adapter";
 import {
   applyMoleculeBondStereo, applyMoleculeDoubleBondPosition, applyNativeMoleculeBondOrderTarget,
@@ -82,6 +82,49 @@ describe("bond stereo commands", () => {
     expect(perceiveDoubleBondStereoFromMolfile(next.structure)[0].descriptor).toBe("E");
   });
 
+  it.each(["smiles", "v2000", "v3000-aamap", "v3000-positional"] as const)("refuses E/Z changes on atom-mapped %s sources", format => {
+    const { document, molecule, target } = drawing("C/C=C/C");
+    let structureFormat = molecule.structureFormat;
+    let structure = molecule.structure;
+    if (format === "smiles") {
+      structureFormat = "smiles";
+      structure = "[CH3:1]/C=C/C";
+    } else if (format === "v2000") {
+      const lines = structure.split("\n");
+      const atomLine = lines.findIndex(line => line.includes("V2000")) + 1;
+      // Only the atom-map column changes: no isotope/radical properties trigger preservation.
+      lines[atomLine] = lines[atomLine].slice(0, 60) + "  1" + lines[atomLine].slice(63);
+      structure = lines.join("\n");
+    } else {
+      structureFormat = "molfile-v3000";
+      const lines = moleculeToMolfileV3000(molecule, { fromDocFrame: true, kekuleBondOrders: new Map() }).contents.split("\n");
+      const atomLine = lines.indexOf("M  V30 BEGIN ATOM") + 1;
+      lines[atomLine] = format === "v3000-aamap" ? `${lines[atomLine]} AAMAP=1`
+        : lines[atomLine].replace(/ 0$/, " 1");
+      structure = lines.join("\n");
+    }
+    // Include existing unspecified stereo so restoring geometry really would rebuild the source.
+    for (const unspecified of [false, true]) {
+      const mapped = applyPatches(document, [{ op: "updateObject", objectId: molecule.id, changes: {
+        structureFormat, structure,
+        bonds: molecule.bonds.map(bond => bond.id === target.bondId && unspecified ? { ...bond, stereo: "either" as const } : bond)
+      } }]);
+      const before = structuredClone(mapped);
+      const reason = "Atom mapping must be removed before changing E/Z";
+      const state = nativeBondStereoAvailability(mapped, [target], perceiveDoubleBondStereoFromMolfile);
+      expect(state).toEqual({ eitherDisabledReason: reason, geometryDisabledReason: reason });
+      expect(createBondStereoActions(state)).toEqual([
+        expect.objectContaining({ enabled: false, disabledReason: reason }),
+        expect.objectContaining({ enabled: false, disabledReason: reason })
+      ]);
+      expect(nativeBondStereoFlipDisabledReason(mapped, [target], perceiveDoubleBondStereoFromMolfile)).toBe(reason);
+      for (const value of ["either", "geometry", "flipped"] as const) {
+        expect(applyMoleculeBondStereo(mapped, [target], value, perceiveDoubleBondStereoFromMolfile)).toBe(mapped);
+      }
+      expect(mapped).toEqual(before);
+    }
+  });
+
   it("redraw and reapplying double order clear the flag; move, rotation and restyling keep it", () => {
     const { document, molecule, target } = drawing("C/C=C/C");
     const open = applyMoleculeBondStereo(document, [target], "either", perceiveDoubleBondStereoFromMolfile);
@@ -104,6 +147,45 @@ describe("bond stereo commands", () => {
 
 
 describe("reflecting one double-bond end", () => {
+  it.each([0, 35, 90, -40])("mirrors anchored lone-pair centres and rotations about a %s° bond axis", axisDegrees => {
+    const drawingState = drawing("C/C=C/C");
+    const initialFrom = drawingState.molecule.atoms.find(atom => atom.id === drawingState.bond.fromAtomId)!;
+    const initialTo = drawingState.molecule.atoms.find(atom => atom.id === drawingState.bond.toAtomId)!;
+    const initialAngle = Math.atan2(initialTo.y - initialFrom.y, initialTo.x - initialFrom.x) * 180 / Math.PI;
+    const document = rotateDocumentObject(drawingState.document, drawingState.molecule.id, axisDegrees - initialAngle);
+    const molecule = getSelectedMolecule(document)!;
+    const { bond, target } = drawingState;
+    const from = molecule.atoms.find(atom => atom.id === bond.fromAtomId)!;
+    const to = molecule.atoms.find(atom => atom.id === bond.toAtomId)!;
+    const reflectedAtomId = molecule.bonds.find(edge => edge.id !== bond.id &&
+      (edge.fromAtomId === to.id || edge.toAtomId === to.id))!;
+    const reflectedAtom = molecule.atoms.find(atom => atom.id === (reflectedAtomId.fromAtomId === to.id
+      ? reflectedAtomId.toAtomId : reflectedAtomId.fromAtomId))!;
+    const moving: ElectronMarkObject = {
+      id: "moving-pair", type: "electron-mark", markKind: "lone-pair",
+      x: reflectedAtom.x + 5, y: reflectedAtom.y - 12, width: 8, height: 8, rotation: 77, style: {},
+      anchor: { kind: "atom", objectId: molecule.id, atomId: reflectedAtom.id }
+    };
+    const fixed: ElectronMarkObject = {
+      ...moving, id: "fixed-pair", x: from.x + 5, y: from.y - 12, rotation: 23,
+      anchor: { kind: "atom", objectId: molecule.id, atomId: from.id }
+    };
+    const marked = applyPatches(document, [moving, fixed].map(object => ({
+      op: "addObject" as const, pageId: document.pages[0].id, object
+    })));
+    const flipped = applyMoleculeBondStereo(marked, [target], "flipped", perceiveDoubleBondStereoFromMolfile);
+    const next = flipped.pages[0].objects.find(object => object.id === moving.id)!;
+    const axisRadians = axisDegrees * Math.PI / 180;
+    const normal = { x: -Math.sin(axisRadians), y: Math.cos(axisRadians) };
+    const center = { x: moving.x + moving.width / 2, y: moving.y + moving.height / 2 };
+    const distance = (center.x - from.x) * normal.x + (center.y - from.y) * normal.y;
+    expect(next.x + next.width / 2).toBeCloseTo(center.x - 2 * distance * normal.x, 5);
+    expect(next.y + next.height / 2).toBeCloseTo(center.y - 2 * distance * normal.y, 5);
+    expect(next.rotation).toBeCloseTo(((2 * axisDegrees - moving.rotation) % 360 + 360) % 360, 3);
+    expect(next).toMatchObject({ anchor: moving.anchor, width: moving.width, height: moving.height });
+    expect(flipped.pages[0].objects.find(object => object.id === fixed.id)).toEqual(fixed);
+  });
+
   it.each([
     ["C/C=C/C", "C/C=C\\C"],
     ["[CH2]/C=C/C", "[CH2]/C=C\\C"],

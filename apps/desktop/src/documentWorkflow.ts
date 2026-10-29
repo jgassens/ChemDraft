@@ -8801,7 +8801,28 @@ function withoutDoubleBondStereo(bond: MoleculeBond): MoleculeBond {
   return rest;
 }
 
+const atomMappedBondStereoDisabledReason = "Atom mapping must be removed before changing E/Z";
+
+/** Atom maps exist only in the source structure, not in the native atom model. */
+function bondStereoSourceHasAtomMapping(molecule: MoleculeObject): boolean {
+  if (molecule.structureFormat === "smiles") return /\[[^\]]*:\d+\]/.test(molecule.structure);
+  if (molecule.structureFormat === "molfile-v3000") {
+    if (/\bAAMAP\s*=\s*[1-9]\d*\b/.test(molecule.structure)) return true;
+    // Standard V3000 also has a positional atom-map field after x/y/z.
+    const atomBlock = molecule.structure.split("M  V30 BEGIN ATOM")[1]?.split("M  V30 END ATOM")[0];
+    return atomBlock?.split(/\r?\n/).some(line => {
+      const fields = line.trim().split(/\s+/);
+      return fields[0] === "M" && fields[1] === "V30" && Number(fields[7]) > 0;
+    }) ?? false;
+  }
+  const source = molecule.structure.split(/\r?\n/);
+  const counts = source.findIndex(line => line.includes("V2000"));
+  return counts >= 0 && source.slice(counts + 1, counts + 1 + Number(source[counts].slice(0, 3)))
+    .some(line => Number(line.slice(60, 63)) > 0);
+}
+
 function withStoredBondStereoMolfile(molecule: MoleculeObject): MoleculeObject {
+  if (bondStereoSourceHasAtomMapping(molecule)) throw new Error(atomMappedBondStereoDisabledReason);
   const { molecule: expanded, expansions, placeholderAtoms } = expandNativeMoleculeLabelGroups(molecule);
   const molfile = moleculeToMolfileV2000(expanded, {
     fromDocFrame: true, unknownBondOrders: "refuse",
@@ -8858,6 +8879,7 @@ export function nativeBondStereoAvailability(
   const molecule = firstPage(document).objects.find((o): o is MoleculeObject => o.type === "molecule" && o.id === target.objectId);
   const bond = molecule?.bonds.find(b => b.id === target.bondId);
   if (!molecule || !bond || bond.order !== "double") return disabled("E/Z requires a double bond");
+  if (bondStereoSourceHasAtomMapping(molecule)) return disabled(atomMappedBondStereoDisabledReason);
   if ((molecule.structureFormat === "smiles" && /\[\d+/.test(molecule.structure)) ||
     (molecule.structureFormat === "molfile-v3000" && /\b(?:MASS|RAD)=/.test(molecule.structure))) {
     return disabled("Retained isotope/radical data requires a V2000 molfile before changing E/Z");
@@ -8956,7 +8978,9 @@ function applyFlippedMoleculeBondStereo(
   const changes = withStoredBondStereoMolfile(normalizeNativeMoleculeGeometry({ ...molecule, atoms, bonds }));
   return applyPatches(document, [
     { op: "updateObject", objectId: molecule.id, changes },
-    ...anchoredElectronMarkTransformPatches(page.objects, molecule.id, end, reflect)
+    ...anchoredElectronMarkTransformPatches(page.objects, molecule.id, end, reflect, {
+      reflectionAxisDegrees: radiansToDegrees(Math.atan2(dy, dx))
+    })
   ], { now: phase4Timestamp });
 }
 
@@ -13432,7 +13456,7 @@ function anchoredElectronMarkTransformPatches(
   moleculeId: string,
   atomIds: ReadonlySet<string>,
   transformPoint: (point: PagePoint) => PagePoint,
-  frame: { rotationDeltaDegrees?: number; scaleX?: number; scaleY?: number; flipAxis?: DocumentFlipAxis } = {}
+  frame: { rotationDeltaDegrees?: number; scaleX?: number; scaleY?: number; flipAxis?: DocumentFlipAxis; reflectionAxisDegrees?: number } = {}
 ): DocumentPatch[] {
   const scaleX = frame.scaleX ?? 1;
   const scaleY = frame.scaleY ?? 1;
@@ -13448,7 +13472,11 @@ function anchoredElectronMarkTransformPatches(
       changes.width = nextWidth;
       changes.height = nextHeight;
     }
-    if (frame.flipAxis !== undefined) {
+    if (frame.reflectionAxisDegrees !== undefined) {
+      // Angles run clockwise in the y-down canvas: reflection about α maps θ to 2α−θ.
+      // A horizontal flip reverses x (α=90°); a vertical flip reverses y (α=0°).
+      changes.rotation = normalizeDegrees(2 * frame.reflectionAxisDegrees - mark.rotation);
+    } else if (frame.flipAxis !== undefined) {
       // The mirror of a glyph at angle θ sits at 180−θ (horizontal axis) or −θ (vertical) — the
       // same rule flipOtherObjectAroundPointPatches applies to a directly-flipped mark.
       changes.rotation = normalizeDegrees(frame.flipAxis === "horizontal" ? 180 - mark.rotation : -mark.rotation);
