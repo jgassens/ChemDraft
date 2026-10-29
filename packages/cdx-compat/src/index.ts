@@ -802,7 +802,7 @@ function exportTableObject(
   }, allocator.next(), warnings));
   warnings.push({
     code: "cdxml.table_approximated",
-    message: `Table "${table.id}" was written as ${texts.length} text objects and ${lines.length} lines; other programs will not edit it as a table.`,
+    message: `Table "${table.id}" was written as ${texts.length} text objects and ${lines.length} lines, so other programs will not edit it as a table; ChemDraft reopens it exactly from the embedded ChemDraft payload.`,
     sourceObjectId: table.id
   });
   if (table.rotation !== 0) warnings.push({

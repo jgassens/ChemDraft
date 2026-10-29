@@ -20,7 +20,7 @@ describe("CDXML table approximation", () => {
     const count = table.rows.flatMap(row => row.cells).filter(cell => cell.text.length > 0).length + 1 + table.footnotes.length;
     expect(texts).toHaveLength(count);
     expect(result.warnings).toContainEqual({ code: "cdxml.table_approximated", sourceObjectId: table.id,
-      message: `Table "${table.id}" was written as ${count} text objects and 3 lines; other programs will not edit it as a table.` });
+      message: `Table "${table.id}" was written as ${count} text objects and 3 lines, so other programs will not edit it as a table; ChemDraft reopens it exactly from the embedded ChemDraft payload.` });
     const titanium = texts.find(text => text.textContent === "Ti(OiPr)4")!;
     const solvent = texts.find(text => text.textContent === "CH2Cl2")!;
     expect([...titanium.querySelectorAll("s")].find(run => run.textContent === "4")?.getAttribute("face")).toBe("32");
