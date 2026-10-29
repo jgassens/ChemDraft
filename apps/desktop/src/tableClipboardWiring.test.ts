@@ -89,6 +89,96 @@ describe("table-only copy", () => {
 });
 
 describe("paste precedence and table building", () => {
+  it.each([
+    "external,html,tsv", "external,tsv,html", "html,external,tsv",
+    "html,tsv,external", "tsv,external,html", "tsv,html,external"
+  ])("pastes the complete Excel table in any text flavour order (%s)", order => {
+    const tsv = fixture("excel-overflow-notes.tsv");
+    const items: Record<string, ClipboardReadPayload["textItems"][number]> = {
+      external: { type: "public.utf16-external-plain-text", text: tsv.replace(/0\.854|1\.204/g, "#######").replace(/\t/g, "\n") },
+      html: { type: "public.html", text: fixture("excel-overflow-notes.html") },
+      tsv: { type: "public.utf16-plain-text", text: tsv }
+    };
+    const raw = payload(...order.split(",").map(name => items[name]));
+    const parsed = readTableClipboardPaste(raw, parseHtml);
+    expect(tableClipboardPasteDecision(raw, parseHtml)).toEqual({ kind: "table", result: parsed });
+    if (!parsed?.ok) throw new Error("Expected Excel-shaped table");
+    expect(parsed.source).toBe("html");
+    expect(parsed.spec.caption).toBe("Table S2. Sharpless reagent plan (synthetic).");
+    expect(parsed.spec.headerRows).toHaveLength(1);
+    expect(parsed.spec.headerRows?.[0]).toHaveLength(7);
+    expect(parsed.spec.columns).toHaveLength(7);
+    expect(parsed.spec.rows).toHaveLength(5);
+    expect(parsed.spec.rows.every(row => row.length === 7)).toBe(true);
+    expect(parsed.spec.rows[0][2]).toBe("0.854");
+    expect(parsed.spec.rows[2][2]).toBe("1.204");
+    expect(parsed.spec.footnotes).toEqual([{ text: "a TBHP stock solution; synthetic example.", spans: [
+      { text: "a", script: "superscript" }, { text: " TBHP stock solution; synthetic example." }
+    ] }]);
+    expect(parsed.warnings).toEqual([]);
+  });
+
+  it.each([
+    "public.utf8-plain-text", "public.utf16-plain-text", "text/plain", "public.plain-text", "NSStringPboardType"
+  ])("prefers %s over external plain text for TSV-only paste", type => {
+    const tsv = fixture("excel-overflow-notes.tsv");
+    const external = { type: "public.utf16-external-plain-text", text: tsv.replace(/0\.854|1\.204/g, "#######").replace(/\t/g, "\n") };
+    const plain = { type, text: tsv };
+    for (const items of [[external, plain], [plain, external]]) {
+      const parsed = readTableClipboardPaste(payload(...items), parseHtml);
+      expect(parsed).toMatchObject({ ok: true, source: "tsv", warnings: [] });
+      if (!parsed?.ok) throw new Error("Expected TSV table");
+      expect(parsed.spec.caption).toBe("Table S2. Sharpless reagent plan (synthetic).");
+      expect(parsed.spec.columns).toHaveLength(7);
+      // Standalone TSV keeps the heading as data.
+      expect(parsed.spec.rows).toHaveLength(6);
+      expect(parsed.spec.rows[1][2]).toBe("0.854");
+      expect(parsed.spec.rows[3][2]).toBe("1.204");
+      expect(parsed.spec.footnotes).toEqual(["a TBHP stock solution; synthetic example."]);
+    }
+  });
+
+  it.each(["text/plain", "public.text", "public.utf16-external-plain-text"])("prefers tabbed %s among equally preferred flavours", type => {
+    const lines = { type, text: "one\ntwo\nthree\nfour" };
+    const tabs = { type, text: "one\ttwo\nthree\tfour" };
+    for (const items of [[lines, tabs], [tabs, lines]]) {
+      expect(readTableClipboardPaste(payload(...items), parseHtml)).toMatchObject({
+        ok: true, source: "tsv", spec: { rows: [["one", "two"], ["three", "four"]] }, warnings: []
+      });
+    }
+  });
+
+  it("prefers standard plain text even when the external flavour has tabs", () => {
+    const external = { type: "public.utf16-external-plain-text", text: "wrong\tgrid\nwrong\tgrid" };
+    const plain = { type: "text/plain", text: "ordinary prose" };
+    expect(readTableClipboardPaste(payload(external, plain), parseHtml)).toBeUndefined();
+  });
+
+  it("reads the Windows Excel payload with RTF before HTML and CF_UNICODETEXT", () => {
+    // The native reader maps HTML Format and CF_UNICODETEXT to these MIME types.
+    // CF_TEXT is omitted; Csv and workbook formats appear only in types, not textItems.
+    const raw = payload(
+      { type: "text/rtf", text: "{\\rtf1 synthetic table}" },
+      { type: "text/html", text: fixture("excel-overflow-notes.html") },
+      { type: "text/plain", text: fixture("excel-overflow-notes.tsv").replace(/\r\n|\r|\n/g, "\r\n") }
+    );
+    raw.types.push("Csv", "Biff8");
+    const parsed = readTableClipboardPaste(raw, parseHtml);
+    expect(tableClipboardPasteDecision(raw, parseHtml)).toEqual({ kind: "table", result: parsed });
+    if (!parsed?.ok) throw new Error("Expected Windows Excel-shaped table");
+    expect(parsed.spec.caption).toBe("Table S2. Sharpless reagent plan (synthetic).");
+    expect(parsed.spec.headerRows).toHaveLength(1);
+    expect(parsed.spec.columns).toHaveLength(7);
+    expect(parsed.spec.rows).toHaveLength(5);
+    expect(parsed.spec.rows.every(row => row.length === 7)).toBe(true);
+    expect(parsed.spec.rows[0][2]).toBe("0.854");
+    expect(parsed.spec.rows[2][2]).toBe("1.204");
+    expect(parsed.spec.footnotes).toHaveLength(1);
+    expect(parsed.warnings).toEqual([]);
+    expect(readTableClipboardPaste({ ...raw, textItems: raw.textItems.filter(item => item.type !== "text/html") }, parseHtml))
+      .toMatchObject({ ok: true, source: "tsv", warnings: [] });
+  });
+
   it.each(["word-office-notes", "excel-overflow-notes"])("recognizes the %s table despite incidental SMILES candidates", name => {
     const raw = payload(
       { type: "public.utf8-plain-text", text: fixture(`${name}.tsv`) },
@@ -103,11 +193,12 @@ describe("paste precedence and table building", () => {
     expect(parsed.spec.caption).toBeDefined();
     expect(parsed.spec.footnotes).toHaveLength(1);
     expect(parsed.warnings).toEqual([]);
-    if (name === "word-office-notes") expect(parsed.spec.headerRows).toHaveLength(1);
+    expect(parsed.spec.headerRows).toHaveLength(1);
     const built = pasteTableIntoDocument(createPhase4Document(), parsed, { x: 408, y: 528 }, {}, ids());
     const table = built.document.pages[0].objects[0] as TableObject;
     expect(table.rows).toHaveLength(6);
-    expect(table.caption?.text).toBe("Table S1. Sharpless reagent quantities (synthetic).");
+    expect(table.caption?.text).toBe(name === "word-office-notes"
+      ? "Table S1. Sharpless reagent quantities (synthetic)." : "Table S2. Sharpless reagent plan (synthetic).");
     expect(table.footnotes.map(note => note.text)).toEqual(["a TBHP stock solution; synthetic example."]);
     expect(table.rows[1].cells[2].text).toBe("0.854");
     expect(table.rows[3].cells[2].text).toBe("1.204");

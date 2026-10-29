@@ -702,14 +702,22 @@ function convertTable(
   // Boundary notes may have fillers: their positions and empty cells are still checked
   // against the entire untrimmed TSV grid before any overflow value is recovered.
   const hasOverflow = dense.some((row) => row.some((entry) => OVERFLOW_PATTERN.test(cellText(entry.input))));
-  const plain = hasOverflow && !nested && dense.every((row, r) => r < start || r >= end || row.every((entry) => !entry.filler))
-    ? payload.textItems.find((item) => isTextLikeType(item.type)) : undefined;
-  const tsv = plain ? readTsvTable(plain.text, 1, true) : undefined;
   const normalizedText = (cell: ClipboardTableCell): string => cellText(cell).replace(/\s+/g, " ").trim();
   // Confirm both dimensions and the visible cells, so unrelated/reordered TSV cannot supply values.
-  const matchingRows = tsv?.ok && tsv.spec.columns.length === width && tsv.spec.rows.length === dense.length
-    && dense.every((row, r) => row.every((entry, c) => entry.overflow || normalizedText(entry.input) === normalizedText(tsv.spec.rows[r][c])))
-    ? tsv.spec.rows : undefined;
+  // Excel's external plain text can precede its real TSV and has one cell per line.
+  // Check every text flavour until the entire grid matches, including the boundary notes.
+  let matchingRows: ClipboardTableCell[][] | undefined;
+  if (hasOverflow && !nested && dense.every((row, r) => r < start || r >= end || row.every((entry) => !entry.filler))) {
+    for (const item of payload.textItems) {
+      if (!isTextLikeType(item.type)) continue;
+      const tsv = readTsvTable(item.text, 1, true);
+      if (tsv?.ok && tsv.spec.columns.length === width && tsv.spec.rows.length === dense.length
+        && dense.every((row, r) => row.every((entry, c) => entry.overflow || normalizedText(entry.input) === normalizedText(tsv.spec.rows[r][c])))) {
+        matchingRows = tsv.spec.rows;
+        break;
+      }
+    }
+  }
   for (const [r, row] of dense.entries()) {
     for (const [c, entry] of row.entries()) {
       if (OVERFLOW_PATTERN.test(cellText(entry.input))) {

@@ -9,6 +9,7 @@ import {
   readClipboardHtmlTable,
   readClipboardTsvTable,
   smilesListDecision,
+  type ClipboardReadPayload,
   type ClipboardTableResult
 } from "./index";
 
@@ -168,6 +169,33 @@ describe("Excel overflow recovery", () => {
   const excelHeaders = ["Material", "MW (g/mol)", "Density (g/mL)", "Equiv.", "mmol", "Mass (g)", "Volume (mL)"];
   const textOf = (cell: string | { text: string }) => typeof cell === "string" ? cell : cell.text;
 
+  it.each([
+    "external,html,tsv", "external,tsv,html", "html,external,tsv",
+    "html,tsv,external", "tsv,external,html", "tsv,html,external"
+  ])("matches the full Excel grid regardless of text flavour order (%s)", order => {
+    const tsv = fixture("excel-overflow-notes.tsv");
+    const items: Record<string, ClipboardReadPayload["textItems"][number]> = {
+      external: { type: "public.utf16-external-plain-text", text: tsv.replace(/0\.854|1\.204/g, "#######").replace(/\t/g, "\n") },
+      html: { type: "public.html", text: fixture("excel-overflow-notes.html") },
+      tsv: { type: "public.utf8-plain-text", text: tsv }
+    };
+    expect(items.external.text).not.toContain("\t");
+    const textItems = order.split(",").map(name => items[name]);
+    const payload: ClipboardReadPayload = { types: textItems.map(item => item.type), textItems };
+    const result = expectOk(readClipboardHtmlTable(payload, parseHtml));
+    expect(result.source).toBe("html");
+    expect(result.spec.caption).toBe("Table S2. Sharpless reagent plan (synthetic).");
+    expect(result.spec.headerRows).toEqual([excelHeaders]);
+    expect(result.spec.columns).toHaveLength(7);
+    expect(result.spec.rows).toHaveLength(5);
+    expect(result.spec.rows.every(row => row.length === 7)).toBe(true);
+    expect(result.spec.rows[0][2]).toBe("0.854");
+    expect(result.spec.rows[2][2]).toBe("1.204");
+    expect(result.spec.footnotes?.map(textOf)).toEqual(["a TBHP stock solution; synthetic example."]);
+    expect(result.warnings).toEqual([]);
+    expect(TableSpecSchema.parse(result.spec)).toEqual(result.spec);
+  });
+
   it.each(["\n", "\r", "\r\n"])("recovers Density from the full tab-padded TSV grid (%j)", newline => {
     const html = fixture("excel-overflow-notes.html");
     const tsv = fixture("excel-overflow-notes.tsv").replace(/\n/g, newline);
@@ -269,6 +297,36 @@ describe("Excel overflow recovery", () => {
     expect(result.spec.rows[2][2]).toBe("#######");
     expect(result.warnings).toHaveLength(2);
     expect(result.warnings.every(warning => warning.includes("overflow"))).toBe(true);
+  });
+
+  it.each(["caption", "footnote", "body", "dimensions", "malformed"])("skips a nonmatching first TSV (%s) and uses a later matching grid", part => {
+    const tsv = fixture("excel-overflow-notes.tsv");
+    let different = tsv;
+    if (part === "caption") different = tsv.replace("Table S2.", "Different caption.");
+    if (part === "footnote") different = tsv.replace("TBHP stock solution", "Unrelated stock solution");
+    if (part === "body") different = tsv.replace("allyl alcohol", "Unrelated reagent");
+    if (part === "dimensions") different += "Extra\trow\t\t\t\t\t\r";
+    if (part === "malformed") different = '"broken\tfield';
+    const textItems = [
+      { type: "text/plain", text: different },
+      { type: "public.html", text: fixture("excel-overflow-notes.html") },
+      { type: "public.utf8-plain-text", text: tsv }
+    ];
+    const result = expectOk(readClipboardHtmlTable({ types: textItems.map(item => item.type), textItems }, parseHtml));
+    expect(result).toEqual(expectOk(readHtmlAndTsv(fixture("excel-overflow-notes.html"), tsv)));
+  });
+
+  it("names a truly unrecoverable cell while recovering the other Density value from a later flavour", () => {
+    const tsv = fixture("excel-overflow-notes.tsv").replace("1.204", "#######");
+    const textItems = [
+      { type: "public.utf16-external-plain-text", text: tsv.replace("0.854", "#######").replace(/\t/g, "\n") },
+      { type: "public.html", text: fixture("excel-overflow-notes.html") },
+      { type: "public.utf16-plain-text", text: tsv }
+    ];
+    const result = expectOk(readClipboardHtmlTable({ types: textItems.map(item => item.type), textItems }, parseHtml));
+    expect(result.spec.rows[0][2]).toBe("0.854");
+    expect(result.spec.rows[2][2]).toBe("#######");
+    expect(result.warnings).toEqual([expect.stringMatching(/row 5, column 3.*Excel overflow.*value was unavailable/)]);
   });
 
   const overflow = `<table><tr><td>Material</td><td>Density</td></tr>`

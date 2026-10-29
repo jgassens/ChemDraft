@@ -83,7 +83,15 @@ export function tableSelectionClipboardItems(
 export function readTableClipboardPaste(payload: ClipboardReadPayload, parseHtml: ParseHtml): ClipboardTableResult | undefined {
   const html = readClipboardHtmlTable(payload, parseHtml);
   if (html !== undefined) return html;
-  const plainText = payload.textItems.find(item => isTextLikeType(item.type));
+  // Excel also supplies external plain text with one cell per line and displayed overflow.
+  // Prefer the standard plain-text flavours, then tabs within either preference group.
+  const plainTypes = new Set([
+    "public.utf8-plain-text", "public.utf16-plain-text", "text/plain", "public.plain-text", "nsstringpboardtype"
+  ]);
+  const preference = (item: ClipboardReadPayload["textItems"][number]): number =>
+    (plainTypes.has(item.type.trim().toLowerCase()) ? 2 : 0) + (item.text.includes("\t") ? 1 : 0);
+  const plainText = payload.textItems.filter(item => isTextLikeType(item.type))
+    .sort((a, b) => preference(b) - preference(a))[0];
   return plainText ? readClipboardTsvTable(plainText.text) : undefined;
 }
 
