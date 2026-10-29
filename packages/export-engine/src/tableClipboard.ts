@@ -24,7 +24,6 @@ type Lines = TableLayout["cells"][number]["lines"];
 type Side = "top" | "bottom" | "left" | "right";
 const sides: Side[] = ["top", "bottom", "left", "right"];
 const rtfSides = { top: "t", bottom: "b", left: "l", right: "r" };
-const numberPattern = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
 
 function numeric(value: number): string {
   return String(Number(value.toFixed(4)));
@@ -91,26 +90,6 @@ function htmlRun(run: TextSpan, style: NativeTextStyle): string {
 
 function htmlLines(lines: Lines, style: NativeTextStyle): string {
   return lines.map(line => lineRuns(line, style).map(run => htmlRun(run, style)).join("")).join("<br>");
-}
-
-function equalDecimalPlaces(table: TableObject, column: number): boolean {
-  const values = table.rows.slice(table.headerRowCount).map(row => row.cells[column].text)
-    .filter(text => text.length > 0);
-  return values.length > 0 && values.every(text => numberPattern.test(text))
-    && new Set(values.map(text => (text.split(".")[1] ?? "").length)).size === 1;
-}
-
-function rtfCellAlignment(table: TableObject, layout: TableLayout, row: number, column: number) {
-  const align = table.columns[column].align;
-  if (align !== "decimal") return { align: align === "unknown" ? "left" : align };
-  if (row < table.headerRowCount) return { align: "center" as const };
-  const block = layout.columns[column].decimalBlock!;
-  if (equalDecimalPlaces(table, column)) return { align: "right" as const, insetRight: block.insetRight };
-  return {
-    align: "left" as const,
-    insetLeft: block.insetLeft,
-    decimalOffset: block.preWidth
-  };
 }
 
 function htmlCellAlignment(table: TableObject, layout: TableLayout, row: number, column: number) {
@@ -235,14 +214,19 @@ function rtfEscape(value: string): string {
 }
 
 function rtfTable(table: TableObject, layout: TableLayout, options: TableClipboardOptions): string {
+  const padding = table.tableStyle.cellPaddingPx;
+  const padx = Math.round(padding.x * 15);
+  const pady = Math.round(padding.y * 15);
   // RTF readers wrap text in undersized cells. Expand fixed columns to their natural content
-  // width (which includes both paddings), then round each width up to a whole twip. Replan so
-  // decimal insets and tabs still describe the interior of the exported cells.
+  // width, rounding the interior up separately from the two serialized margins so neither
+  // padding is lost to twip rounding. Replan decimal insets inside those exported widths;
+  // they consume the existing interior space, rather than being added to the width again.
   const natural = planTableLayout({
     ...table, columns: table.columns.map(column => ({ ...column, width: { mode: "auto" as const } }))
   });
   const widths = layout.columns.map((column, index) =>
-    Math.ceil(Math.max(column.width, natural.columns[index].width) * 15));
+    Math.max(Math.ceil(column.width * 15),
+      Math.ceil((natural.columns[index].width - 2 * padding.x) * 15) + 2 * padx));
   layout = planTableLayout({
     ...table, columns: table.columns.map((column, index) => ({
       ...column, width: { mode: "fixed" as const, px: widths[index] / 15 }
@@ -287,13 +271,11 @@ function rtfTable(table: TableObject, layout: TableLayout, options: TableClipboa
     if (run.script === "superscript") format += "\\super";
     return format ? `{${format} ${text}}` : text;
   };
-  const linesText = (lines: Lines, decimalTab = false) => lines.map(line =>
-    (decimalTab ? "\\tab " : "") + lineRuns(line, style).map(runText).join("")).join("\\line ");
+  const linesText = (lines: Lines) => lines.map(line =>
+    lineRuns(line, style).map(runText).join("")).join("\\line ");
   if (layout.captionBox) {
     result += `\\pard\\plain\\sa80\\sb0${font(0.9)} ${linesText(layout.captionBox.lines)}\\par\n`;
   }
-  const padx = Math.round(table.tableStyle.cellPaddingPx.x * 15);
-  const pady = Math.round(table.tableStyle.cellPaddingPx.y * 15);
   for (let row = 0; row < table.rows.length; row++) {
     result += `\\trowd\\trgaph${padx}\\trleft0\\trpaddl${padx}\\trpaddfl3\\trpaddr${padx}\\trpaddfr3`
       + `\\trpaddt${pady}\\trpaddft3\\trpaddb${pady}\\trpaddfb3`
@@ -304,27 +286,30 @@ function rtfTable(table: TableObject, layout: TableLayout, options: TableClipboa
       const borders = cellBorders(layout, row, column);
       for (const side of sides) {
         result += `\\clbrdr${rtfSides[side]}` + (borders[side] > 0
-          ? `\\brdrs\\brdrw${Math.round(borders[side] * 20)}\\brdrcf0` : "\\brdrnil");
+          ? `\\brdrs\\brdrw${Math.round(borders[side] * 20)}\\brdrcf0`
+          // Word imports brdrnil as a sized "none" border (6 eighth-points in the
+          // failing paste), unlike HTML's "nil". Explicitly remove it and its width.
+          : "\\brdrnone\\brdrw0");
       }
       result += `\\clshdng0\\clftsWidth3\\clwWidth${widths[column]}`;
       if (row < table.headerRowCount) result += "\\clvertalb";
-      const alignment = rtfCellAlignment(table, layout, row, column);
+      // Match the passing HTML path: right alignment plus a per-cell right inset
+      // preserves decimal anchors without Word's wrapping decimal-tab paragraphs.
+      const alignment = htmlCellAlignment(table, layout, row, column);
       if (alignment.insetRight !== undefined) {
         result += `\\clpadr${Math.round((table.tableStyle.cellPaddingPx.x + alignment.insetRight) * 15)}`
           + "\\clpadfr3";
       }
-      // Word swaps per-cell left and top padding. Row padding supplies the text margin;
-      // only the decimal block's extra inset belongs in the tab stop relative to that margin.
+      // Word swaps per-cell left and top padding. Keep those margins on the row;
+      // clpadr replaces the row's right margin and already includes its base padding.
       const planned = layout.columns[column];
       result += `\\cellx${Math.round((planned.x + planned.width - layout.bodyBox.x) * 15)}`;
     }
     for (let column = 0; column < table.columns.length; column++) {
-      const alignment = rtfCellAlignment(table, layout, row, column);
-      const tab = alignment.decimalOffset;
+      const alignment = htmlCellAlignment(table, layout, row, column);
       result += `\\pard\\plain\\intbl\\q${alignment.align[0]}\\sa0\\sb0\\sl240\\slmult1`;
-      if (tab !== undefined) result += `\\tqdec\\tx${Math.round((tab + (alignment.insetLeft ?? 0)) * 15)}`;
       const cell = layout.cells[row * table.columns.length + column];
-      result += `${font()} ${linesText(cell.lines, tab !== undefined)}\\cell`;
+      result += `${font()} ${linesText(cell.lines)}\\cell`;
     }
     result += "\\row\n";
   }

@@ -49,10 +49,12 @@ function balancedRtf(rtf: string): void {
 
 // Explicit golden helper: run UPDATE_TABLE_CLIPBOARD_GOLDENS=1 pnpm exec vitest run
 // --configLoader runner packages/export-engine/src/tableClipboard.test.ts, then review the four files.
+// Set UPDATE_TABLE_CLIPBOARD_GOLDENS=rtf to update only the RTF fixture.
 // Ordinary tests only read goldens; snapshot update flags never rewrite these fixtures.
 function compareGolden(suffix: string, value: string): void {
   const url = new URL(`../../fixtures/tables/sharpless.table.${suffix}`, import.meta.url);
-  if (process.env.UPDATE_TABLE_CLIPBOARD_GOLDENS === "1") writeFileSync(url, value, "utf8");
+  const update = process.env.UPDATE_TABLE_CLIPBOARD_GOLDENS;
+  if (update === "1" || update === suffix) writeFileSync(url, value, "utf8");
   expect(Buffer.from(value, "utf8")).toEqual(readFileSync(url));
 }
 
@@ -132,13 +134,14 @@ describe("table clipboard payloads", () => {
       const definitions = row.split("\\pard")[0].split(/\\cellx\d+/).slice(0, -1);
       for (const definition of definitions) {
         expect(definition).toContain(index === 0 ? "\\clbrdrt\\brdrs\\brdrw20\\brdrcf0"
-          : "\\clbrdrt\\brdrnil");
+          : "\\clbrdrt\\brdrnone\\brdrw0");
         expect(definition).toContain(index === 0 ? "\\clbrdrb\\brdrs\\brdrw10\\brdrcf0"
-          : index === 5 ? "\\clbrdrb\\brdrs\\brdrw20\\brdrcf0" : "\\clbrdrb\\brdrnil");
-        expect(definition).toContain("\\clbrdrl\\brdrnil\\clbrdrr\\brdrnil");
+          : index === 5 ? "\\clbrdrb\\brdrs\\brdrw20\\brdrcf0" : "\\clbrdrb\\brdrnone\\brdrw0");
+        expect(definition).toContain("\\clbrdrl\\brdrnone\\brdrw0\\clbrdrr\\brdrnone\\brdrw0");
         expect(definition).toContain("\\clshdng0");
       }
     });
+    expect(payloads.rtf).not.toContain("\\brdrnil");
     expect(payloads.rtf).not.toMatch(/\\cl(?:cbpat|cfpat)\b/);
   });
 
@@ -180,7 +183,9 @@ describe("table clipboard payloads", () => {
     }
   });
 
-  it("keeps RTF decimal tabs relative to the row-padded text margin", () => {
+  it("uses padded right alignment instead of Word's wrapping decimal tabs in RTF", () => {
+    const font = nativeTextStyleFromObjectStyle(table.style);
+    const measure = (text: string) => measureTextRun(text, { ...font, script: "normal" });
     payloads.rtf.split("\\trowd").slice(1).forEach((row, index) => {
       const definitions = row.split("\\pard")[0].split(/\\cellx\d+/);
       const cells = row.split("\\pard\\plain\\intbl").slice(1);
@@ -190,19 +195,31 @@ describe("table clipboard payloads", () => {
         if (index === 0) {
           expect(definitions[column]).not.toContain("\\clpad");
           expect(cells[column]).toMatch(/^\\qc/);
-        } else if (column === 1) {
-          const padding = table.tableStyle.cellPaddingPx.x + block.insetRight;
-          expect(definitions[column]).toContain(`\\clpadr${Math.round(padding * 15)}\\clpadfr3`);
-          expect(cells[column]).toMatch(/^\\qr/);
-          expect(cells[column]).not.toMatch(/\\tqdec|\\tab /);
         } else {
-          const tabTwips = Math.round((block.insetLeft + block.preWidth) * 15);
-          expect(cells[column]).toMatch(/^\\ql/);
-          expect(cells[column]).toContain(`\\tqdec\\tx${tabTwips}`);
-          expect(cells[column].match(/\\tab /g)).toHaveLength(1);
+          const text = table.rows[index].cells[column].text;
+          const post = text.includes(".") ? text.slice(text.indexOf(".")) : "";
+          const padding = table.tableStyle.cellPaddingPx.x + block.insetRight + block.postWidth - measure(post);
+          const rightTwips = Math.round(padding * 15);
+          expect(definitions[column]).toContain(`\\clpadr${rightTwips}\\clpadfr3`);
+          expect(cells[column]).toMatch(/^\\qr/);
+          // clpadr replaces the row's right margin. It must fit with the full
+          // number and left padding inside BOTH the preferred width and cellx.
+          const required = 90 + Math.ceil(measure(text) * 15) + rightTwips;
+          const width = Number(/\\clwWidth(\d+)/.exec(definitions[column])![1]);
+          expect(width).toBeGreaterThanOrEqual(required);
+          const edges = [...row.matchAll(/\\cellx(\d+)/g)].map(match => Number(match[1]));
+          expect(edges[column] - edges[column - 1]).toBeGreaterThanOrEqual(required);
+          const anchor = (width - rightTwips) / 15 - measure(post);
+          expect(anchor).toBeCloseTo(block.insetLeft + table.tableStyle.cellPaddingPx.x + block.preWidth, 1);
         }
       }
+      expect(row).not.toMatch(/\\tqdec|\\tx\d|\\tab /);
     });
+    // The two failing Word cells now use the passing HTML paste's margins;
+    // their existing widths (2010 and 1275 twips) already include that padding.
+    const firstBody = payloads.rtf.split("\\trowd")[2].split("\\pard")[0].split(/\\cellx\d+/);
+    expect(firstBody[2]).toContain("\\clwWidth2010\\clpadr607\\clpadfr3");
+    expect(firstBody[5]).toContain("\\clwWidth1275\\clpadr390\\clpadfr3");
   });
 
   it("preserves scripts in cells and footnotes", () => {
@@ -242,14 +259,19 @@ describe("table clipboard payloads", () => {
   it.each(["left", "decimal"] as const)("fits %s content and both paddings in narrow RTF columns", align => {
     const input = smallTable(["1.00", "12345.6", "—", "0.1234"], align);
     input.columns[0].width = { mode: "fixed", px: 12 };
-    input.tableStyle.cellPaddingPx = { x: 6.03, y: 2.07 };
+    input.tableStyle.cellPaddingPx = { x: 6.04, y: 2.07 };
     const font = nativeTextStyleFromObjectStyle(input.style);
     const measure = (text: string) => measureTextRun(text, { ...font, script: "normal" });
     const widest = align === "decimal" ? measure("12345") + measure(".1234") : measure("12345.6");
     const padx = Math.round(input.tableStyle.cellPaddingPx.x * 15);
     const pady = Math.round(input.tableStyle.cellPaddingPx.y * 15);
-    for (const row of exportTableToRtf(input).split("\\trowd").slice(1)) {
+    const natural = planTableLayout({
+      ...input, columns: [{ ...input.columns[0], width: { mode: "auto" } }]
+    });
+    const interiorTwips = Math.ceil((natural.columns[0].width - 2 * input.tableStyle.cellPaddingPx.x) * 15);
+    for (const [index, row] of exportTableToRtf(input).split("\\trowd").slice(1).entries()) {
       const width = Number(/\\clwWidth(\d+)/.exec(row)![1]);
+      expect(width).toBeGreaterThanOrEqual(interiorTwips + 2 * padx);
       expect(width).toBeGreaterThanOrEqual(Math.ceil(widest * 15) + 2 * padx);
       expect(row).toContain(`\\cellx${width}`);
       expect(row).toContain(`\\trftsWidth3\\trwWidth${width}`);
@@ -257,13 +279,16 @@ describe("table clipboard payloads", () => {
       expect(row).toContain(`\\trpaddr${padx}\\trpaddfr3`);
       expect(row).toContain(`\\trpaddt${pady}\\trpaddft3\\trpaddb${pady}\\trpaddfb3`);
       if (align === "decimal") {
-        const tab = Number(/\\tqdec\\tx(\d+)/.exec(row)![1]);
-        expect(tab).toBeGreaterThanOrEqual(Math.ceil(measure("12345") * 15));
-        expect(padx + tab + measure(".1234") * 15 + padx).toBeLessThanOrEqual(width);
+        const right = Number(/\\clpadr(\d+)/.exec(row)![1]);
+        const text = input.rows[index].cells[0].text;
+        expect(padx + Math.ceil(measure(text) * 15) + right).toBeLessThanOrEqual(width);
         const exported = planTableLayout({
           ...input, columns: [{ ...input.columns[0], width: { mode: "fixed", px: width / 15 } }]
         });
-        expect(padx + tab).toBeCloseTo((exported.columns[0].decimalAnchorX! - input.x) * 15, 0);
+        const post = text.includes(".") ? text.slice(text.indexOf(".")) : "";
+        expect((width - right) / 15 - measure(post))
+          .toBeCloseTo(exported.columns[0].decimalAnchorX! - input.x, 1);
+        expect(row).not.toMatch(/\\tqdec|\\tab /);
       }
     }
   });
@@ -301,9 +326,10 @@ describe("table clipboard payloads", () => {
     }
     const rtf = exportTableToRtf(input);
     for (const side of ["t", "b", "l", "r"]) {
-      expect([...rtf.matchAll(new RegExp(`\\\\clbrdr${side}\\b`, "g"))]).toHaveLength(42);
+      expect([...rtf.matchAll(new RegExp(`\\\\clbrdr${side}\\\\brdrs\\\\brdrw10\\\\brdrcf0`, "g"))])
+        .toHaveLength(42);
     }
-    expect(rtf).toContain("\\brdrw10\\brdrcf0");
+    expect(rtf).not.toMatch(/\\brdrnone|\\brdrnil|\\brdrw0\b/);
     expect(html).toContain("background:transparent;mso-shading:transparent");
   });
 
@@ -316,7 +342,7 @@ describe("table clipboard payloads", () => {
       tableStyle: { ...table.tableStyle, topRulePt: 0, headerRulePt: 0, bottomRulePt: 0 }
     };
     for (const side of ["t", "b", "l", "r"]) {
-      expect(exportTableToRtf(input).match(new RegExp(`\\\\clbrdr${side}\\\\brdrnil`, "g")))
+      expect(exportTableToRtf(input).match(new RegExp(`\\\\clbrdr${side}\\\\brdrnone\\\\brdrw0`, "g")))
         .toHaveLength(table.rows.length * table.columns.length);
     }
     expect(exportTableToRtf(input)).not.toContain("\\brdrs");
@@ -346,7 +372,7 @@ describe("table clipboard payloads", () => {
     expect(payloads.rtf).not.toMatch(/#111111|\\cf\d|\\red17\\green17\\blue17/);
     expect(payloads.rtf).toContain("{\\colortbl;}");
     expect(payloads.html).toContain('>0.854</p>');
-    expect(payloads.rtf).toContain("\\tab 0.854\\cell");
+    expect(payloads.rtf).toContain(" 0.854\\cell");
 
     const input = smallTable(["0.854", "red", "default"], "decimal");
     input.style = { ...input.style, color: "#ff0000" };
@@ -366,9 +392,9 @@ describe("table clipboard payloads", () => {
     expect(cells[1].innerHTML).toBe('<span style="color:#ff0000">red</span>');
     expect(cells[2].innerHTML).toBe("default");
     expect(rtf).toContain("{\\colortbl;\\red255\\green0\\blue0;}");
-    expect(rtf).toContain("\\tab 0.854\\cell");
-    expect(rtf).toContain("\\tab {\\cf1 red}\\cell");
-    expect(rtf).toContain("\\tab default\\cell");
+    expect(rtf).toContain(" 0.854\\cell");
+    expect(rtf).toContain(" {\\cf1 red}\\cell");
+    expect(rtf).toContain(" default\\cell");
     expect(rtf).not.toContain("\\brdrcf1");
     expect(html).not.toContain("#111111");
     expect(rtf).not.toContain("\\red17\\green17\\blue17");
@@ -392,10 +418,15 @@ describe("table clipboard payloads", () => {
       }
       const rtf = exportTableToRtf(input);
       expect(rtf).not.toMatch(/\\clpad[lt]|\\clpadf[lt]/);
-      for (const row of rtf.split("\\trowd").slice(1)) {
-        if (texts.length === 2) expect(row).toContain(`\\clpadr${Math.round(padding * 15)}\\clpadfr3`);
-        else expect(row).toContain(`\\tqdec\\tx${Math.round((block.insetLeft + block.preWidth) * 15)}`);
-      }
+      rtf.split("\\trowd").slice(1).forEach((row, index) => {
+        const text = texts[index];
+        const post = text.includes(".") ? text.slice(text.indexOf(".")) : "";
+        const postWidth = measureTextRun(post, { ...nativeTextStyleFromObjectStyle(input.style), script: "normal" });
+        const cellPadding = padding + block.postWidth - postWidth;
+        expect(row).toContain(`\\clpadr${Math.round(cellPadding * 15)}\\clpadfr3`);
+        expect(row).toContain("\\intbl\\qr");
+        expect(row).not.toMatch(/\\tqdec|\\tab /);
+      });
     }
   );
 
@@ -436,6 +467,12 @@ describe("table clipboard payloads", () => {
       expect(cell.querySelector("p")?.getAttribute("style")).toContain("text-align:right");
     });
     expect(cells[1].querySelector("sup b")?.textContent).toBe("0");
+    exportTableToRtf(input).split("\\trowd").slice(1).forEach((row, index) => {
+      const padding = input.tableStyle.cellPaddingPx.x + block.insetRight + block.postWidth - postWidths[index];
+      expect(row).toContain(`\\clpadr${Math.round(padding * 15)}\\clpadfr3`);
+      expect(row).toContain("\\intbl\\qr");
+      expect(row).not.toMatch(/\\tqdec|\\tab /);
+    });
   });
 
   it("omits all font families and sizes in inherit mode while preserving layout and rich text", () => {
@@ -484,7 +521,7 @@ describe("table clipboard payloads", () => {
     const html = htmlDocument(exportTableToHtml(decimal));
     expect(html.querySelectorAll("td span")).toHaveLength(0);
     expect(html.querySelector("td p")?.textContent).toBe("1.23.45");
-    expect(exportTableToRtf(decimal)).toContain("\\line \\tab ");
+    expect(exportTableToRtf(decimal)).toContain("1.2\\line 3.45");
   });
 
   it("warns for unrotated copying and natural-width overflow without mutating its input", () => {
