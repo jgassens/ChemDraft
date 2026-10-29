@@ -670,8 +670,10 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
 - Start the install and cancel partway: no `naming-engine.partial` remains and no python or java
   process is left running (Activity Monitor / Task Manager). Then run the full install to completion.
 - Name each of these and read the result: ethanol (a PIN), aspirin, L-alanine (the stereo warning is
-  shown), a sodium salt, TEMPO (a radical). Isotope-labelled structures cannot yet be drawn; their
-  exact-match handling is covered by the real-RDKit test (`pluginStructureNaming.rdkit.test.ts`).
+  shown), a sodium salt, TEMPO (a radical). Name an isotope-labelled structure, such as CD4 or CH3OD
+  pasted as SMILES `[2H]C([2H])([2H])[2H]` or `CO[2H]`: the name must reflect the isotope or the
+  structure is declined; a name for the unlabelled molecule is a FAIL. Exact-match handling is also
+  covered by the real-RDKit test (`pluginStructureNaming.rdkit.test.ts`).
   Glycine zwitterion is declined with no name;
   `[Fe]` is declined as an unsupported element. A declined structure never shows a guessed name.
 - Select several molecules: one row each, capped at 10. Copy puts exactly the name on the clipboard
@@ -808,3 +810,7 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
 Draw a bond, then paste a SMILES and insert a structure through a plugin and through the
 assistant. All four must have the same bond length, line width and atom-label size. An assistant
 caption must use the atom-label size. Existing structures on the page must not change size.
+
+# Reaction labels
+
+- Ask the assistant for a two-step Sharpless-style scheme and run `pnpm -s chemdraft reaction` with `--above`, `--below`, and `--caption`. Check that reagents stack above and conditions below, close to and centred on the arrow, which is only as long as the widest line; CH2Cl2 and Ti(OiPr)4 show subscripts while step numbers, mol%, °C and h do not. Check the caption sits under the scheme and old single-string conditions still work.

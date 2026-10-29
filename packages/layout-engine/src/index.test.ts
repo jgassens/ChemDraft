@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { nativeTextSubscriptBottomEm } from "./textMetrics";
 import {
   ChemDraftSyntheticStylePreset,
   DocumentPageSchema,
@@ -59,6 +60,20 @@ const baseInput = {
   pageBounds: { x: 0, y: 0, width: 816, height: 1056 },
   objectBounds: { x: 152, y: 204, width: 96, height: 32 }
 } satisfies Omit<BondExtensionPlanningInput, "clickPoint">;
+
+describe("native subscript ink", () => {
+  it("ends digit and non-descender subscripts at their shifted baseline", () => {
+    expect(nativeTextSubscriptBottomEm("4")).toBe(0.4);
+    expect(nativeTextSubscriptBottomEm("0123456789ABCdef+−-–—")).toBe(0.4);
+  });
+
+  it("reserves script descent for descender letters and punctuation", () => {
+    expect(nativeTextSubscriptBottomEm("Hp")).toBeCloseTo(0.5512, 8);
+    for (const glyph of "gjpqyQ()[]{},;|_") {
+      expect(nativeTextSubscriptBottomEm(`4${glyph}`)).toBeCloseTo(0.5512, 8);
+    }
+  });
+});
 
 describe("layout-engine molecule growth planning", () => {
   it("reports atom degrees from native molecule graph edges", () => {
