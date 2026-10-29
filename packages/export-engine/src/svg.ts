@@ -99,7 +99,7 @@ export function exportDocumentToSvg(document: ChemDraftDocument, options: SvgExp
   };
 }
 
-function serializeSvgFragment(fragment: PageSvgFragment, indent: number): string {
+function serializeSvgFragment(fragment: PageSvgFragment, indent: number, insideText = false): string {
   const pad = " ".repeat(indent);
   if (fragment.kind === "text") {
     return `${pad}${escapeXml(fragment.text)}`;
@@ -110,11 +110,18 @@ function serializeSvgFragment(fragment: PageSvgFragment, indent: number): string
   }
 
   const attrs = serializeSvgAttributes(fragment.attrs);
+  // SVG treats formatting whitespace inside text as visible content. Keep the entire
+  // text subtree inline (including nested tspans), just as the canvas's DOM plan does.
+  const inline = insideText || fragment.tag === "text" || fragment.tag === "tspan";
   const children = fragment.children
-    .map((child) => serializeSvgFragment(child, indent + 2))
+    .map((child) => serializeSvgFragment(child, inline ? 0 : indent + 2, inline))
     .filter((child) => child.length > 0);
   if (fragment.children.length === 0) {
     return `${pad}<${fragment.tag}${attrs} />`;
+  }
+
+  if (inline) {
+    return `${pad}<${fragment.tag}${attrs}>${children.join("")}</${fragment.tag}>`;
   }
 
   if (fragment.children.every((child) => child.kind === "text")) {
