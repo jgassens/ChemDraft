@@ -4,6 +4,19 @@ import type { BondStereoBadgeRequest } from "./useBondStereoPopover";
 
 export const OPEN_DOUBLE_BOND_TOOLTIP = "E/Z was not specified for this double bond. Confirm the geometry by redrawing the bond or choosing 'Use drawn geometry'.";
 
+/** Resolve editor chrome before the canvas routes a press to handles or molecule tools.
+ * Client bounds include the actual SVG placement and zoom, even when a handle covers it.
+ */
+export function bondStereoBadgeAtPointer(canvas: Element, event: { target: EventTarget | null; clientX: number; clientY: number }): SVGGElement | undefined {
+  const direct = event.target instanceof Element ? event.target.closest<SVGGElement>("[data-unspecified-bond-id]") : null;
+  if (direct && canvas.contains(direct)) return direct;
+  return [...canvas.querySelectorAll<SVGGElement>("[data-unspecified-bond-id]")].reverse().find(badge => {
+    const rect = badge.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0 && event.clientX >= rect.left && event.clientX <= rect.right
+      && event.clientY >= rect.top && event.clientY <= rect.bottom;
+  });
+}
+
 /** Editor status chrome only. Label bounds come from the shared renderer. */
 export function BondStereoBadges({ molecule, onOpen }: { molecule: MoleculeObject; onOpen?: (request: BondStereoBadgeRequest) => void }) {
   const openBonds = molecule.bonds.filter(bond => bond.order === "double" && bond.stereo === "either");

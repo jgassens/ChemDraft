@@ -51,7 +51,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode
 } from "react";
-import { createPortal } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 import {
   graphicObjectIntersectsPolygon,
   graphicObjectIntersectsRect,
@@ -884,7 +884,7 @@ import {
 } from "./interaction/hitTest";
 import { createArtInspectorModel, selectedVisualObjectsForArtInspector } from "./artInspectorModel";
 import { createMoleculeInspectorModel, representativeMoleculeBondLengthPx } from "./moleculeInspectorModel";
-import { BondStereoBadges } from "./BondStereoBadges";
+import { BondStereoBadges, bondStereoBadgeAtPointer } from "./BondStereoBadges";
 import { useBondStereoPopover, type BondStereoBadgeRequest } from "./useBondStereoPopover";
 import {
   moleculeInspectorTemplateFilename,
@@ -19653,13 +19653,28 @@ export function MainWindow({
     ]
   );
 
+  // Opening status chrome is read-only. Keep the popover's command target separate
+  // from selection until the user chooses a geometry command.
+  const [bondStereoPopoverTarget, setBondStereoPopoverTarget] = useState<{
+    target: { objectId: string; bondId: string };
+    document: ChemDraftDocument;
+    parts: NativeMoleculeSelectionPart[];
+  }>();
+  const badgePressRef = useRef<{ badge: SVGGElement; pointerId: number } | undefined>(undefined);
   const openBondStereoPopover = useBondStereoPopover({
-    document, targets: currentMoleculeInspector.targets.bondTargets, reader: bondStereoReader,
+    document, targets: bondStereoPopoverTarget?.document === document && bondStereoPopoverTarget.parts === selectedNativeMoleculeParts
+      ? [bondStereoPopoverTarget.target] : currentMoleculeInspector.targets.bondTargets, reader: bondStereoReader,
     select: target => {
-      setSelectedNativeMoleculePart({ objectId: target.objectId, kind: "bond", bondId: target.bondId });
+      setBondStereoPopoverTarget({ target, document, parts: selectedNativeMoleculeParts });
       setObjectContextMenu(undefined);
     },
-    invoke: commandId => invokeCommandRef.current(commandId),
+    invoke: commandId => {
+      if (!bondStereoPopoverTarget) return;
+      // Registry availability and handlers read the rendered inspector selection.
+      // Publish the chosen target before invoking the existing registered command.
+      flushSync(() => setSelectedNativeMoleculePart({ ...bondStereoPopoverTarget.target, kind: "bond" }));
+      return invokeCommandRef.current(commandId);
+    },
     focusCanvas: () => {
       canvasRegionRef.current?.focus({ preventScroll: true });
       void focusCurrentWindowAndWebview({ onlyIfAppActive: true }).catch(() => undefined);
@@ -20132,6 +20147,17 @@ export function MainWindow({
           }}
           onPointerDownCapture={(event) => {
             const canvas = event.currentTarget;
+            if (event.button === 0 && event.isPrimary !== false) {
+              badgePressRef.current = undefined;
+              const badge = bondStereoBadgeAtPointer(canvas, event);
+              if (badge) {
+                // Handles can be the browser's topmost target. Claim the badge by
+                // coordinates before any resize, selection, move or marquee handler.
+                event.preventDefault(); event.stopPropagation();
+                badgePressRef.current = { badge, pointerId: event.pointerId };
+                return;
+              }
+            }
             const textEditId = activeTextEditObjectIdRef.current;
             const target = event.target instanceof Element ? event.target : null;
             // Capture before page/object tools can clear the edit and start a gesture.
@@ -20170,6 +20196,43 @@ export function MainWindow({
               && !isEditableTarget(event.target) && !isBlockedByModalDialog(event.target)) {
               // Page tools cancel default focus. Restore it only when no control owns it.
               canvas.focus({ preventScroll: true });
+            }
+          }}
+          onPointerMoveCapture={event => {
+            if (badgePressRef.current && badgePressRef.current.pointerId === event.pointerId) event.stopPropagation();
+          }}
+          onPointerUpCapture={event => {
+            if (badgePressRef.current && badgePressRef.current.pointerId === event.pointerId) {
+              event.preventDefault(); event.stopPropagation();
+            }
+          }}
+          onPointerCancelCapture={event => {
+            if (badgePressRef.current && badgePressRef.current.pointerId === event.pointerId) {
+              badgePressRef.current = undefined;
+              event.stopPropagation();
+            }
+          }}
+          onMouseDownCapture={event => {
+            if (badgePressRef.current && event.button === 0) { event.preventDefault(); event.stopPropagation(); }
+          }}
+          onMouseUpCapture={event => {
+            if (badgePressRef.current && event.button === 0) { event.preventDefault(); event.stopPropagation(); }
+          }}
+          onClickCapture={event => {
+            const press = badgePressRef.current;
+            if (!press || event.button !== 0) return;
+            badgePressRef.current = undefined;
+            event.preventDefault(); event.stopPropagation();
+            if (bondStereoBadgeAtPointer(event.currentTarget, event) !== press.badge) return;
+            const objectId = press.badge.closest("[data-object-controls], [data-object-id]");
+            const ownerId = objectId?.getAttribute("data-object-controls") ?? objectId?.getAttribute("data-object-id");
+            const bondId = press.badge.getAttribute("data-unspecified-bond-id");
+            if (ownerId && bondId) openBondStereoPopover({ objectId: ownerId, bondId,
+              rect: press.badge.getBoundingClientRect(), keyboard: false });
+          }}
+          onDoubleClickCapture={event => {
+            if (event.button === 0 && bondStereoBadgeAtPointer(event.currentTarget, event)) {
+              event.preventDefault(); event.stopPropagation();
             }
           }}
           onDragOver={(event) => {
