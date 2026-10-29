@@ -100,15 +100,17 @@ On macOS, write one item with multiple flavors and dump all items with JXA:
 
 ```text
 osascript -l JavaScript scripts/office-spike/mac-pasteboard.js write packages/fixtures/office/carriers public.png=png-ztxt.png public.svg-image=svg-metadata.svg
-osascript -l JavaScript scripts/office-spike/mac-pasteboard.js write packages/fixtures/office public.png=carriers/png-ztxt.png com.adobe.pdf=carriers/pdf-embedded.pdf public.svg-image=carriers/svg-metadata.svg application/x-chemdraft-selection+json=sample-envelope.json public.utf8-plain-text=text.txt public.html=sample.html
+osascript -l JavaScript scripts/office-spike/mac-pasteboard.js write packages/fixtures/office public.png=carriers/png-ztxt.png com.adobe.pdf=carriers/pdf-embedded.pdf public.svg-image=carriers/svg-metadata.svg dyn.ah62d4rv4gu80c6durvy0g2pyrf106p52fzv0u3prqv3gc3xyfz30n5dfqr4gw55sfrzhg55s=sample-envelope.json public.utf8-plain-text=text.txt public.html=sample.html
 osascript -l JavaScript scripts/office-spike/mac-pasteboard.js dump /path/to/dump
 node scripts/office-spike/inspect.mjs /path/to/dump --json
 ```
 
 `public.html` takes the HTML file's bytes unchanged: JXA reads `NSData` and passes it directly to
-`setDataForType`, without decoding or rewriting text. `application/x-chemdraft-selection+json` is
-deliberately the macOS pasteboard type because ChemDraft's native writer uses that literal type
-(`apps/desktop/src-tauri/src/lib.rs`), so this trial mirrors what the app ships.
+`setDataForType`, without decoding or rewriting text. `NSPasteboardItem`, used by the JXA script,
+refuses MIME-style names as “not a valid UTI string”. ChemDraft's native writer uses NSPasteboard
+`setString`/`setData`, which accepts `application/x-chemdraft-selection+json` and stores it under
+the dynamic type `dyn.ah62d4rv4gu80c6durvy0g2pyrf106p52fzv0u3prqv3gc3xyfz30n5dfqr4gw55sfrzhg55s`
+plus the MIME name. The example uses that dynamic type to mirror what the app puts on the pasteboard.
 
 On Windows, `-Write` accepts an array of `format=file` specifications; `CF_DIBV5` takes a PNG,
 `CF_UNICODETEXT` a text file, `HTML Format` a UTF-8 HTML file, and `CF_ENHMETAFILE` an EMF. Paths can be absolute.
