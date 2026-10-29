@@ -1,5 +1,9 @@
 export { DocumentStyleScale, documentStylePointBounds, FigureStyles, type FigureStyle } from "./documentStyle";
 export { medianLength, representativeMoleculeBondLength, scalePageGeometry } from "./pageScale";
+export {
+  nativeTextMetrics, nativeTextCharacterWidthFactor, nativeTextSubscriptBottomEm,
+  nativeTextScriptFontScale, nativeTextSubscriptOffsetEm, nativeTextSuperscriptOffsetEm
+} from "./textMetrics";
 
 import {
   DefaultNativeDrawingStyle,
@@ -69,6 +73,7 @@ import {
   type NativeElementSymbol
 } from "./valence";
 import { formatNumber } from "./formatNumber";
+import { nativeTextScriptFontScale, nativeTextSubscriptOffsetEm, nativeTextSuperscriptOffsetEm } from "./textMetrics";
 import { nativeGroupLabelDisplay, type AtomLabelAnchor } from "./labelGrammar";
 import { moleculeSketchTickPath, type MoleculeSketchTick } from "./sketchTicks";
 
@@ -3490,17 +3495,6 @@ function projectionDistanceAlongSegment(
   };
 }
 
-export const nativeTextScriptFontScale = 0.72;
-// WebKit/Chromium shift SVG sub/super by half the script font's height (ascent + descent).
-// At 72% size Arial's 2288/2048-em height gives 0.4021875 parent em; use 0.4 for
-// both directions to retain that placement without depending on host font metrics.
-// https://github.com/WebKit/WebKit/blob/main/Source/WebCore/rendering/svg/SVGTextLayoutEngineBaseline.cpp
-// https://github.com/chromium/chromium/blob/main/third_party/blink/renderer/core/layout/inline/inline_box_state.cc
-// Keep the offset independent of a span's own size: changing its size must not move the line.
-// Explicit coordinates also work in svg2pdf, which ignores baseline-shift and percentage sizes.
-const nativeTextSubscriptOffsetEm = 0.4;
-const nativeTextSuperscriptOffsetEm = 0.4;
-
 function planTextObjectSvg(object: TextObject, layerIndex: number): PageSvgElementFragment {
   const textStyle = nativeTextStyleFromObjectStyle(object.style);
   const lines = textObjectSpanLines(object);
@@ -4686,7 +4680,7 @@ export function planNativeArtVisual(
 }
 
 function reactionArrowFragment(object: ArrowObject, layerIndex: number): PageSvgElementFragment {
-  const strokeWidth = typeof object.style.strokeWidth === "number" ? object.style.strokeWidth : 1.5;
+  const strokeWidth = typeof object.style.strokeWidth === "number" ? object.style.strokeWidth : defaultReactionArrowStrokeWidth;
   const start = arrowAnchorPointForObject(object, object.start, { x: object.x, y: object.y + object.height / 2 });
   const end = arrowAnchorPointForObject(object, object.end, { x: object.x + object.width, y: object.y + object.height / 2 });
   const geometry = planReactionArrowGeometry(object.arrowKind, start, end);
@@ -4800,10 +4794,47 @@ export interface ReactionArrowGeometry {
   heads: Array<{ points: readonly LayoutPoint[]; filled: boolean }>;
 }
 
-const reactionArrowHeadLengthPx = 9;
+export const reactionArrowHeadLengthPx = 9;
 const reactionArrowHeadHalfWidthPx = 4.5;
 const equilibriumShaftOffsetPx = 3;
 const retroShaftOffsetPx = 2.5;
+const defaultReactionArrowStrokeWidth = 1.5;
+
+/** Inward depth of the actual heads/chevron, including any stroked outline.
+ * Labels reserve this depth at both ends so their centre stays on the arrow midpoint. */
+export function reactionArrowHeadDepthPx(arrowKind: ArrowObject["arrowKind"]): number {
+  const length = 4 * reactionArrowHeadLengthPx;
+  const geometry = planReactionArrowGeometry(arrowKind, { x: 0, y: 0 }, { x: length, y: 0 });
+  const inwardDepth = (point: LayoutPoint, strokeRadius: number) => Math.min(point.x, length - point.x) + strokeRadius;
+  return Math.max(0,
+    ...geometry.heads.flatMap(head => head.points.map(point =>
+      inwardDepth(point, head.filled ? 0 : defaultReactionArrowStrokeWidth / 2))),
+    ...geometry.lines.filter(line => line.start.y !== line.end.y).flatMap(line =>
+      [line.start, line.end].map(point => inwardDepth(point, defaultReactionArrowStrokeWidth / 2))));
+}
+
+/** Visible vertical bounds for a horizontal reaction arrow, including its rendered stroke.
+ * Shaft-only bounds exclude heads/chevrons: labels reserve their space horizontally instead. */
+export function reactionArrowVerticalExtent(
+  arrowKind: ArrowObject["arrowKind"],
+  length: number,
+  part: "all" | "shafts" = "all"
+): { top: number; bottom: number } {
+  const geometry = planReactionArrowGeometry(arrowKind, { x: 0, y: 0 }, { x: length, y: 0 });
+  // Keep the default shared with reactionArrowFragment's round-capped shafts.
+  const strokeRadius = defaultReactionArrowStrokeWidth / 2;
+  const ranges = [
+    ...geometry.lines.filter(({ start, end }) => part === "all" || start.y === end.y).map(({ start, end }) => ({
+      top: Math.min(start.y, end.y) - strokeRadius,
+      bottom: Math.max(start.y, end.y) + strokeRadius
+    })),
+    ...(part === "shafts" ? [] : geometry.heads).map((head) => ({
+      top: Math.min(...head.points.map((point) => point.y)) - (head.filled ? 0 : strokeRadius),
+      bottom: Math.max(...head.points.map((point) => point.y)) + (head.filled ? 0 : strokeRadius)
+    }))
+  ];
+  return { top: Math.min(...ranges.map((range) => range.top)), bottom: Math.max(...ranges.map((range) => range.bottom)) };
+}
 
 /** Shared reaction-arrow geometry for the canvas renderer and SVG export: shaft lines plus head
  *  polygons per arrow kind (forward filled head, resonance double head, equilibrium harpoon pair,
@@ -5829,7 +5860,7 @@ export function atomLabelRunFontSize(script: AtomLabelScript, drawingStyle: Nati
     return undefined;
   }
 
-  return drawingStyle.atomLabelFontSizePx * (script === "superscript" ? 0.88 : 0.72);
+  return drawingStyle.atomLabelFontSizePx * (script === "superscript" ? 0.88 : nativeTextScriptFontScale);
 }
 
 /**

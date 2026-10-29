@@ -15,6 +15,8 @@ import { elementSymbols, type TextSpan } from "@chemdraft/chem-core";
  */
 const formulaBodyPattern = /^\d*(?:(?:[A-Z][a-z]?|[()[\]·])\d*)*$/;
 const singleElementPattern = /^[A-Z][a-z]?$/;
+// These are reaction-mechanism names, not formulas.
+const mechanismLabels = new Set(["SN1", "SN2", "SNi", "SNAr", "SN1'", "SN2'", "E1", "E2", "E1cB", "E1cb"]);
 
 /**
  * Index where a trailing charge begins, or `text.length` when there is none.
@@ -174,8 +176,15 @@ export function formulaSpansForMixedText(text: string, sourceSpans: readonly Tex
     const token = match[0].replace(/[,;:.!?*†‡]+$/, "");
     const end = start + token.length;
     const original = slice(start, end);
-    if (isFormulaToken(token)) {
-      const formatted = formulaSpansFromText(token, original);
+    // Agent formulas already carry their charge as Unicode superscripts; retain those glyphs.
+    let bodyEnd = token.length;
+    if (token[bodyEnd - 1] === "⁺" || token[bodyEnd - 1] === "⁻") {
+      bodyEnd -= 1;
+      while (bodyEnd > 0 && "⁰¹²³⁴⁵⁶⁷⁸⁹".includes(token[bodyEnd - 1])) bodyEnd -= 1;
+    }
+    const body = token.slice(0, bodyEnd);
+    if (!mechanismLabels.has(token) && isFormulaToken(body)) {
+      const formatted = [...formulaSpansFromText(body, slice(start, start + body.length)), ...slice(start + body.length, end)];
       const scripts = (spans: readonly TextSpan[]) => spans.flatMap(span => Array(span.text.length).fill(span.script));
       if (JSON.stringify(scripts(original)) !== JSON.stringify(scripts(formatted))) changed = true;
       result.push(...formatted);
