@@ -6,6 +6,7 @@ pasted picture carries. It is the Windows twin of the macOS run recorded in
 described in [README.md](README.md).
 
 **Prerequisites**
+- Run in the built-in Windows PowerShell 5.1 or in PowerShell 7 on Windows.
 - Word and PowerPoint for Windows (desktop apps), installed and signed in, on the machine that runs this.
 - Node 22.2 or newer (`node --version`); `blank-docs.mjs` needs `zlib.crc32`.
 - A ChemDraft checkout at `C:\dev\check` whose `origin` is the GitHub repository.
@@ -68,12 +69,12 @@ to see whether Windows Office will use one.
 3. Click Word's title bar (not the page), then **Ctrl+V**. Screenshot. Record what appeared and how sharp it is.
 4. **Ctrl+S**, wait 2 s, screenshot (no dialog), then **Ctrl+W**.
 5. ```powershell
-   node scripts\office-spike\inspect.mjs C:\dev\office-phase0\files\W1.docx --expect 44b8cd5066b705b079a87503c8e5f61042ba03c1927fd9a02e90bd20d10d73dc > C:\dev\office-phase0\inspect-W1-saved.tsv; "INSPECT-OK exit=$LASTEXITCODE"
+   node scripts\office-spike\inspect.mjs C:\dev\office-phase0\files\W1.docx --expect 44b8cd5066b705b079a87503c8e5f61042ba03c1927fd9a02e90bd20d10d73dc --out C:\dev\office-phase0\inspect-W1-saved.tsv; "INSPECT-OK exit=$LASTEXITCODE"
    ```
 6. `Start-Process winword -ArgumentList '"C:\dev\office-phase0\files\W1.docx"'`. Screenshot: same picture?
 7. **Ctrl+Home**, then **Shift+Right** (selects the inline picture). Screenshot: selection frame. **Ctrl+C**.
 8. ```powershell
-   .\scripts\office-spike\win-clipboard.ps1 -Dump C:\dev\office-phase0\dumps\W1-reopened; "DUMP-OK"; node scripts\office-spike\inspect.mjs C:\dev\office-phase0\dumps\W1-reopened --expect 44b8cd5066b705b079a87503c8e5f61042ba03c1927fd9a02e90bd20d10d73dc > C:\dev\office-phase0\inspect-W1-copyback.tsv; "INSPECT-OK exit=$LASTEXITCODE"
+   .\scripts\office-spike\win-clipboard.ps1 -Dump C:\dev\office-phase0\dumps\W1-reopened; "DUMP-OK"; node scripts\office-spike\inspect.mjs C:\dev\office-phase0\dumps\W1-reopened --expect 44b8cd5066b705b079a87503c8e5f61042ba03c1927fd9a02e90bd20d10d73dc --out C:\dev\office-phase0\inspect-W1-copyback.tsv; "INSPECT-OK exit=$LASTEXITCODE"
    ```
 9. **Ctrl+W**.
 

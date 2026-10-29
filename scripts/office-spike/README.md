@@ -20,6 +20,12 @@ distinguishes byte-identical media from changed media with a valid payload. An a
 an empty findings list; a malformed/unsupported carrier has an error. Inspection exits 1 on malformed
 input, corrupt carriers, or expectation mismatch, and 2 on missing path arguments.
 
+Use `--out <file>` to save the same TSV (or JSON with `--json`) as UTF-8 without a BOM,
+with no stdout output and unchanged exit codes. For example:
+`node scripts/office-spike/inspect.mjs saved.docx --out inspection.tsv`.
+Use this instead of `>` in Windows PowerShell 5.1: redirection decodes Node's output through
+the console code page and writes UTF-16, which can corrupt non-ASCII text.
+
 ZIPs are read from their central directory (stored/deflate, CRC checked, at most 2000 entries and
 200 MB inflated). ZIP64, encryption and multi-disk archives are refused. Input files are capped at
 200 MB. DOCX/PPTX/XLSX media references resolve relative to each source part, including slide and

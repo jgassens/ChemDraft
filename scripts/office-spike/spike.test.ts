@@ -25,6 +25,80 @@ const pdf = readFileSync(join(fixtureDir, 'sample.pdf'));
 const temp = mkdtempSync(join(tmpdir(), 'office-spike-'));
 afterAll(() => rmSync(temp, { recursive: true, force: true }));
 
+describe('inspect CLI output files', () => {
+  const cli = resolve('scripts/office-spike/inspect.mjs');
+
+  it.each(['success', 'mismatch', 'error', 'missing input'])('preserves stdout bytes and exit codes for %s', scenario => {
+    const folder = mkdtempSync(join(temp, 'inspect-out-'));
+    const input = 'café-文.bin';
+    if (scenario !== 'missing input') writeFileSync(join(folder, input), scenario === 'error' ? png.subarray(0, 20) : envelope);
+    const args = [input, ...(scenario === 'mismatch' ? ['--expect', '0'.repeat(64)] : [])];
+    for (const json of [false, true]) {
+      const options = json ? ['--json'] : [];
+      const stdout = spawnSync(process.execPath, [cli, ...args, ...options], { cwd: folder });
+      const out = `output with spaces.${json ? 'json' : 'tsv'}`;
+      const saved = spawnSync(process.execPath, [cli, ...args, ...options, '--out', out], { cwd: folder });
+      expect(stdout.status, stdout.stderr.toString()).toBe(scenario === 'success' ? 0 : 1);
+      expect(saved.status, saved.stderr.toString()).toBe(stdout.status);
+      expect(saved.stdout.length).toBe(0);
+      const bytes = readFileSync(join(folder, out));
+      expect(bytes.equals(stdout.stdout)).toBe(true);
+      expect(bytes.subarray(0, 3).toString('hex')).not.toBe('efbbbf');
+      expect(bytes.includes(Buffer.from(input, 'utf8'))).toBe(true);
+    }
+  });
+
+  it.each([{ options: [] }, { options: ['--json'] }])('keeps usage exit code 2 with --out and no input paths ($options)', ({ options }) => {
+    const out = join(temp, `usage-${options.length}.txt`);
+    const stdout = spawnSync(process.execPath, [cli, ...options]);
+    const saved = spawnSync(process.execPath, [cli, ...options, '--out', out]);
+    expect(stdout.status).toBe(2);
+    expect(saved.status).toBe(stdout.status);
+    expect(saved.stdout.length).toBe(0);
+    expect(saved.stderr.toString()).toContain('[--out <file>]');
+  });
+
+  it.each([{ value: [] }, { value: [''] }, { value: ['--json'] }])('rejects --out without a file value ($value) like an invalid --expect', ({ value }) => {
+    const input = join(fixtureDir, 'sample-envelope.json');
+    const invalidExpect = spawnSync(process.execPath, [cli, input, '--expect']);
+    const run = spawnSync(process.execPath, [cli, input, '--out', ...value]);
+    expect(invalidExpect.status).toBe(1);
+    expect(run.status).toBe(invalidExpect.status);
+    expect(run.stdout.length).toBe(0);
+    expect(run.stderr.toString()).toContain('--out requires a file path');
+  });
+});
+
+describe('Windows PowerShell 5.1 static guard', () => {
+  const splitWithCount = /\.Split\([^\r\n;]*,\s*\d+\s*\)/i;
+  const unsupported = [
+    splitWithCount, /\?\?/, /\?\./, / && /, / \|\| /,
+    /-Parallel\b/i, /-AsHashtable\b/i, /-AsArray\b/i, /\bJoin-String\b/i,
+    /-AsByteStream\b/i, /\butf8NoBOM\b/i, /\$IsWindows\b/i, /\$IsMacOS\b/i,
+    /\$IsLinux\b/i, /\bToHexString\b/i, /-AdditionalChildPath\b/i, /-LeafBase\b/i,
+  ];
+  function scripts(directory: string): string[] {
+    return readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
+      const path = join(directory, entry.name);
+      return entry.isDirectory() ? scripts(path) : /\.ps1$/i.test(entry.name) ? [path] : [];
+    });
+  }
+
+  it.each(scripts('scripts/office-spike'))('%s declares 5.1, stays ASCII and avoids known newer forms', path => {
+    const bytes = readFileSync(path);
+    expect(bytes.every(byte => byte <= 0x7f), 'BOM-less PS 5.1 scripts must stay ASCII').toBe(true);
+    const text = bytes.toString('ascii');
+    expect(text.split(/\r?\n/, 1)[0]).toBe('#Requires -Version 5.1');
+    const code = text.replace(/#.*$/gm, '');
+    for (const pattern of unsupported) expect(code, pattern.toString()).not.toMatch(pattern);
+  });
+
+  it('catches the original .NET Core Split overload while allowing the 5.1 operator', () => {
+    expect("$parts = $spec.Split(@('='), 2)").toMatch(splitWithCount);
+    expect("$parts = $spec -split '=', 2").not.toMatch(splitWithCount);
+  });
+});
+
 const blankParts = {
   docx: [
     '[Content_Types].xml', '_rels/.rels', 'word/document.xml', 'word/_rels/document.xml.rels',

@@ -1,4 +1,4 @@
-import { readFileSync, statSync, readdirSync, realpathSync } from 'node:fs';
+import { readFileSync, writeFileSync, statSync, readdirSync, realpathSync } from 'node:fs';
 import { join, basename, posix } from 'node:path';
 import { readZip } from './zip.mjs';
 import { pathToFileURL } from 'node:url';
@@ -123,15 +123,23 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
   const expect = index < 0 ? undefined : args[index + 1];
   if (index >= 0 && !/^[a-f\d]{64}$/i.test(expect ?? '')) throw new Error('--expect requires a SHA-256 hex digest');
   if (index >= 0) args.splice(index, 2);
+  const outIndex = args.indexOf('--out');
+  const out = outIndex < 0 ? undefined : args[outIndex + 1];
+  if (outIndex >= 0 && (!out || out.startsWith('--'))) throw new Error('--out requires a file path');
+  if (outIndex >= 0) args.splice(outIndex, 2);
   const paths = args.filter(x => x !== '--json');
-  if (!paths.length) { console.error('Usage: inspect.mjs <path...> [--expect <sha256>] [--json]'); process.exitCode = 2; }
+  if (!paths.length) { console.error('Usage: inspect.mjs <path...> [--expect <sha256>] [--json] [--out <file>]'); process.exitCode = 2; }
   else {
     const rows = paths.flatMap(path => { try { return inspectPath(path, expect); } catch (error) { return [{ container: path, error: error.message }]; } });
-    if (json) console.log(JSON.stringify(rows, null, 2));
+    const lines = [];
+    if (json) lines.push(JSON.stringify(rows, null, 2));
     else {
-      console.log('Container\tEntry\tType\tBytes\tSHA-256\tPixels / DPI\tReferences\tCarriers / errors / blob guess\tNotes');
-      for (const row of rows) console.log([row.container, row.entry, row.type, row.size, row.sha256, row.image ? `${row.image.width}x${row.image.height} / ${row.image.dpi?.join('x') ?? 'unspecified'}` : '', row.references?.join(', '), row.error ?? (row.findings?.map(f => `${f.carrier}: ${f.envelope?.ok ? 'valid' : f.error || f.envelope?.reason || f.note}${f.envelope?.notes ? `; ${f.envelope.notes.join('; ')}` : ''}${f.matchesExpect === null || f.matchesExpect === undefined ? '' : `; expect=${f.matchesExpect}`}`).join(', ') || `${row.guess ?? ''} ${row.firstBytes ?? ''}`), row.notes?.join('; ')].join('\t'));
+      lines.push('Container\tEntry\tType\tBytes\tSHA-256\tPixels / DPI\tReferences\tCarriers / errors / blob guess\tNotes');
+      for (const row of rows) lines.push([row.container, row.entry, row.type, row.size, row.sha256, row.image ? `${row.image.width}x${row.image.height} / ${row.image.dpi?.join('x') ?? 'unspecified'}` : '', row.references?.join(', '), row.error ?? (row.findings?.map(f => `${f.carrier}: ${f.envelope?.ok ? 'valid' : f.error || f.envelope?.reason || f.note}${f.envelope?.notes ? `; ${f.envelope.notes.join('; ')}` : ''}${f.matchesExpect === null || f.matchesExpect === undefined ? '' : `; expect=${f.matchesExpect}`}`).join(', ') || `${row.guess ?? ''} ${row.firstBytes ?? ''}`), row.notes?.join('; ')].join('\t'));
     }
+    const output = lines.join('\n') + '\n';
+    if (out) writeFileSync(out, output, 'utf8');
+    else process.stdout.write(output);
     if (rows.some(row => row.error || row.findings?.some(f => f.error || f.envelope?.ok === false || f.matchesExpect === false))) process.exitCode = 1;
   }
 }

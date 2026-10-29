@@ -1,3 +1,4 @@
+#Requires -Version 5.1
 param([string[]]$Write, [string]$Dump)
 $ErrorActionPreference = 'Stop'
 if (($null -eq $Write) -eq ([string]::IsNullOrEmpty($Dump))) { throw 'Use -Write <format=file>... or -Dump <directory>' }
@@ -32,7 +33,7 @@ function Open-Board([IntPtr]$owner) {
 }
 function Make-Dib([string]$path) {
   Add-Type -AssemblyName System.Drawing
-  $resolved = (Resolve-Path -LiteralPath $path).Path
+  $resolved = (Resolve-Path -LiteralPath $path).ProviderPath
   $bitmap = New-Object System.Drawing.Bitmap($resolved)
   try {
     $width = $bitmap.Width; $height = $bitmap.Height
@@ -79,16 +80,16 @@ try {
   $prepared = @()
   if ($Write) {
     foreach ($spec in $Write) {
-      $parts = $spec.Split(@('='), 2); if ($parts.Count -ne 2) { throw "Invalid format=file: $spec" }
+      $parts = $spec -split '=', 2; if ($parts.Count -ne 2) { throw "Invalid format=file: $spec" }
       $name = $parts[0]; $path = $parts[1]; $format = 0; $emf = $false
       switch ($name) {
-        'CF_UNICODETEXT' { $format = 13; $text = [System.IO.File]::ReadAllText((Resolve-Path -LiteralPath $path)); $bytes = [System.Text.Encoding]::Unicode.GetBytes(($text -replace "`r?`n", "`r`n") + [char]0) }
+        'CF_UNICODETEXT' { $format = 13; $text = [System.IO.File]::ReadAllText((Resolve-Path -LiteralPath $path).ProviderPath); $bytes = [System.Text.Encoding]::Unicode.GetBytes(($text -replace "`r?`n", "`r`n") + [char]0) }
         'CF_DIBV5' { $format = 17; $bytes = Make-Dib $path }
-        'CF_ENHMETAFILE' { $format = 14; $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $path)); $emf = $true }
-        'HTML Format' { $format = [SpikeClipboard]::RegisterClipboardFormat($name); $bytes = Make-CfHtml ([System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $path))) }
+        'CF_ENHMETAFILE' { $format = 14; $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $path).ProviderPath); $emf = $true }
+        'HTML Format' { $format = [SpikeClipboard]::RegisterClipboardFormat($name); $bytes = Make-CfHtml ([System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $path).ProviderPath)) }
         default {
           if ($name -notin @('PNG', 'image/png', 'image/svg+xml', 'application/pdf', 'PDF', 'application/x-chemdraft-selection+json')) { throw "Unsupported write format: $name" }
-          $format = [SpikeClipboard]::RegisterClipboardFormat($name); $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $path))
+          $format = [SpikeClipboard]::RegisterClipboardFormat($name); $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $path).ProviderPath)
         }
       }
       if ($format -eq 0) { throw "Cannot register $name" }
@@ -114,6 +115,7 @@ try {
       }
     }
   } else {
+    $Dump = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Dump)
     [void][System.IO.Directory]::CreateDirectory($Dump); $records = @(); $format = [uint32]0
     while (($format = [SpikeClipboard]::EnumClipboardFormats($format)) -ne 0) {
       $builder = New-Object System.Text.StringBuilder 256; [void][SpikeClipboard]::GetClipboardFormatName($format, $builder, $builder.Capacity)
