@@ -130,48 +130,49 @@ export async function structureFromSmilesForPlugin(
   // rather than the `document.read`-checked one, so a plugin holding only `chemistry.compute` could
   // read both.
 
+  let object: ReturnType<typeof createSmilesMolecule> | undefined;
   try {
-    const object = await templateMoleculeForSmiles(request.smiles, document,
+    object = await templateMoleculeForSmiles(request.smiles, document,
       pluginInsertPoint(document), RESERVED_PLUGIN_OBJECT_IDS);
-    if (object) {
-      if (signal?.aborted) return { available: true, built: false, reason: "2D depiction cancelled." };
-      RESERVED_PLUGIN_OBJECT_IDS.add(object.id);
-      return { available: true, built: true, object };
-    }
   } catch (error) {
     if (signal?.aborted) throw error;
     // An unavailable canonicalizer cannot authorize substitution. Keep the existing depiction
     // engine's fallback and error reporting for non-template input.
   }
-
-  let depiction: PastedStructureDepiction;
-  let warnings: string[] | undefined;
-  try {
-    ({ depiction, warnings } = await depictSmilesOffThread(request.smiles, { signal }));
-  } catch (error) {
-    return { available: true, built: false, reason: structureGenerationFailureReason(request.smiles, error) };
+  if (object && signal?.aborted) {
+    return { available: true, built: false, reason: "2D depiction cancelled." };
   }
 
-  if (depiction.atoms.length === 0) {
-    return { available: true, built: false, reason: "The structure came back with no atoms." };
-  }
+  if (!object) {
+    let depiction: PastedStructureDepiction;
+    let warnings: string[] | undefined;
+    try {
+      ({ depiction, warnings } = await depictSmilesOffThread(request.smiles, { signal }));
+    } catch (error) {
+      return { available: true, built: false, reason: structureGenerationFailureReason(request.smiles, error) };
+    }
 
-  const origin = request.origin?.trim();
-  // `reservedObjectIds` is what stops two proposals colliding. `nextObjectId` is purely
-  // document-derived and deterministic, and this function deliberately does NOT insert — the object
-  // waits in the review queue until the user accepts it. So a plugin that builds two structures
-  // before either lands got `mol_plugin_001` twice, and accepting the second threw
-  // `DocumentPatchError: object "mol_plugin_001" already exists` from `addObject`.
-  const object = createSmilesMolecule(document, pluginInsertPoint(document), depiction, request.smiles, {
-    objectIdPrefix: "mol_plugin",
-    reservedObjectIds: RESERVED_PLUGIN_OBJECT_IDS,
-    styleSource: "plugin-smiles",
-    warningCode: "plugin.smiles_imported",
-    // Names the plugin, because "pasted" would be a false account of where this came from.
-    warningMessage: [origin
-      ? `Generated an editable 2D structure from SMILES supplied by ${origin}.`
-      : "Generated an editable 2D structure from SMILES supplied by a plugin.", ...(warnings ?? [])].join(" ")
-  });
+    if (depiction.atoms.length === 0) {
+      return { available: true, built: false, reason: "The structure came back with no atoms." };
+    }
+
+    const origin = request.origin?.trim();
+    // `reservedObjectIds` is what stops two proposals colliding. `nextObjectId` is purely
+    // document-derived and deterministic, and this function deliberately does NOT insert — the object
+    // waits in the review queue until the user accepts it. So a plugin that builds two structures
+    // before either lands got `mol_plugin_001` twice, and accepting the second threw
+    // `DocumentPatchError: object "mol_plugin_001" already exists` from `addObject`.
+    object = createSmilesMolecule(document, pluginInsertPoint(document), depiction, request.smiles, {
+      objectIdPrefix: "mol_plugin",
+      reservedObjectIds: RESERVED_PLUGIN_OBJECT_IDS,
+      styleSource: "plugin-smiles",
+      warningCode: "plugin.smiles_imported",
+      // Names the plugin, because "pasted" would be a false account of where this came from.
+      warningMessage: [origin
+        ? `Generated an editable 2D structure from SMILES supplied by ${origin}.`
+        : "Generated an editable 2D structure from SMILES supplied by a plugin.", ...(warnings ?? [])].join(" ")
+    });
+  }
 
   if (object.type !== "molecule") {
     return { available: true, built: false, reason: "The structure builder did not return a molecule." };

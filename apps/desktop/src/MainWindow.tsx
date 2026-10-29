@@ -552,6 +552,7 @@ import {
   nativeFreehandStrokeDocument,
   nativePolylinePathDocument,
   insertSmilesMoleculeGridStatus,
+  visibleSkippedItems,
   insertSmilesMolecule,
   insertSmilesMoleculeGrid,
   documentObjectProjectedPlaneTilt,
@@ -6786,11 +6787,23 @@ export function MainWindow({
           resetPasteUiState();
           setPageFitPrompt(undefined);
         }
-        const failures = smilesListFailureStatus(parsed.failures);
+        const renderedSkippedItems = new Set(visibleSkippedItems(parsed.skippedItems));
+        const unmatchedSkippedItems = [...parsed.skippedItems];
+        // Failures have no line; match tokens by occurrence order, consuming each skipped item once.
+        const displayedFailures = result.objectIds.length
+          ? parsed.failures.flatMap(failure => {
+            const index = unmatchedSkippedItems.findIndex(item => item.token === failure.input);
+            if (index < 0) return [failure];
+            const [item] = unmatchedSkippedItems.splice(index, 1);
+            if (renderedSkippedItems.has(item!)) return [];
+            return [{ ...failure, error: item!.reason }];
+          })
+          : parsed.failures;
+        const failures = smilesListFailureStatus(displayedFailures);
         const placementStatus = result.objectIds.length
           ? insertSmilesMoleculeGridStatus(result, parsed.skipped, parsed.skippedItems) : "No SMILES structures were pasted";
         const baseStatus = [placementStatus, ...new Set(entries.flatMap(entry => entry.molecule ? [structureTemplateLayoutMessage(entry.molecule)!] : [])), ...(parsed.warnings ?? [])].join("; ");
-        const failureCount = parsed.failures.length;
+        const failureCount = displayedFailures.length;
         setStatus(failures
           ? `${baseStatus}; ${failureCount} item${failureCount === 1 ? "" : "s"} failed: ${failures}` +
             (engineUnavailable ? "; pasted as text" : "")

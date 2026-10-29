@@ -225,9 +225,55 @@ describe("MainWindow SMILES paste", () => {
     ["F/C=C=C=C/F", "cumulene cis/trans"],
     ["N[Pt@SP1](N)(Cl)Cl", "square-planar"]
   ])("skips only the unverifiable stereo entry in a two-item list: %s", async (smiles, kind) => {
-    const status = await paste(`${smiles}\nCCO`, "text/plain", "SMILES paste refused:");
-    expect(status).toContain(`1 item failed: ${smiles}`);
+    const status = await paste(`CCO\n${smiles}`, "text/plain", `${kind} stereochemistry cannot be verified or drawn`);
+    expect(status).toContain(`skipped line 2: '${smiles}'`);
+    expect(status!.split(smiles)).toHaveLength(2);
+    expect(status).not.toContain("item failed");
     expect(status).toContain(`${kind} stereochemistry cannot be verified or drawn`);
+    expect(container.querySelectorAll(".molecule-object")).toHaveLength(1);
+    expect(container.querySelectorAll(".text-object")).toHaveLength(0);
+  }, 20_000);
+
+  it("caps skipped refusals at three and reports the remaining two reasons once", async () => {
+    const refusals = [
+      ["OC(Cl)=[C@]=C(C)F", "allene (axial)"],
+      ["F/C=C=C=C/F", "cumulene cis/trans"],
+      ["N[Pt@SP1](N)(Cl)Cl", "square-planar"],
+      ["F[P@TB1](Cl)(Br)(N)I", "trigonal-bipyramidal"],
+      ["F[Co@OH1](Cl)(Br)(N)(O)I", "octahedral"]
+    ];
+    const status = await paste(["CCO", ...refusals.map(([smiles]) => smiles)].join("\n"),
+      "text/plain", "Pasted 1 SMILES structures");
+    for (const [index, [smiles, kind]] of refusals.entries()) {
+      expect(status!.split(smiles!)).toHaveLength(2);
+      expect(status!.split(`${kind} stereochemistry cannot be verified or drawn`)).toHaveLength(2);
+      if (index < 3) expect(status).toContain(`skipped line ${index + 2}: '${smiles}' (`);
+      else expect(status).not.toContain(`skipped line ${index + 2}:`);
+    }
+    expect(status).toContain("; and 2 more; 2 items failed: F[P@TB1](Cl)(Br)(N)I:");
+    expect(status).toContain("; F[Co@OH1](Cl)(Br)(N)(O)I: octahedral");
+    expect(container.querySelectorAll(".molecule-object")).toHaveLength(1);
+    expect(container.querySelectorAll(".text-object")).toHaveLength(0);
+  }, 20_000);
+
+  it("retains later failures when the same refused token occurs five times", async () => {
+    const smiles = "N[Pt@SP1](N)(Cl)Cl";
+    const status = await paste(["CCO", ...Array<string>(5).fill(smiles)].join("\n"),
+      "text/plain", "Pasted 1 SMILES structures");
+    expect(status!.split(smiles)).toHaveLength(6);
+    expect(status!.split("square-planar stereochemistry cannot be verified or drawn")).toHaveLength(6);
+    expect(status).toContain("; and 2 more; 2 items failed:");
+    expect(status).not.toContain("skipped line 5:");
+    expect(status).not.toContain("skipped line 6:");
+  }, 20_000);
+
+  it("still reports non-identity failures alongside a skipped identity refusal", async () => {
+    const smiles = "N[Pt@SP1](N)(Cl)Cl";
+    const status = await paste(`CCO\n${smiles}\nn1cccc1`);
+    expect(status).toContain(`skipped line 2: '${smiles}'`);
+    expect(status!.split(smiles)).toHaveLength(2);
+    expect(status).toContain("square-planar stereochemistry cannot be verified or drawn");
+    expect(status).toContain(`1 item failed: n1cccc1: ${new UnrequestedSmilesRadicalError("n1cccc1").message}`);
     expect(container.querySelectorAll(".molecule-object")).toHaveLength(1);
     expect(container.querySelectorAll(".text-object")).toHaveLength(0);
   }, 20_000);
