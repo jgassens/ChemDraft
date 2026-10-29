@@ -1,7 +1,7 @@
 //! Codex saves auth with rename, breaking both symlinks and Windows hard links. Reconcile
 //! before reuse and after every supervised process. Never put credential bytes in diagnostics.
 use super::{
-    env::{self, CodexHome, ParentEnv},
+    env::{self, CodexHome, CodexHomeFallbackKind, ParentEnv},
     probe::ProbePlatform,
 };
 use std::{
@@ -14,6 +14,13 @@ use std::{
 static AUTH_LOCK: Mutex<()> = Mutex::new(());
 const BLOCKED: &str = "auth-reconcile-blocked";
 const CONFLICT_PREFIX: &str = "auth.json.chemdraft-conflict-";
+
+pub(super) fn sign_in_unavailable_detail(platform: ProbePlatform) -> &'static str {
+    match platform {
+        ProbePlatform::MacOS => "ChemDraft could not read your Codex sign-in from your Mac's Keychain. Sign in again from Setup.",
+        ProbePlatform::Windows => "ChemDraft could not read your Codex sign-in from the system credential store (Credential Manager). Sign in again from Setup.",
+    }
+}
 
 /// Only host-owned paths, captured BEFORE CODEX_HOME is changed for the child.
 #[derive(Clone)]
@@ -97,6 +104,7 @@ pub(super) fn prepare_codex_home_with_link(
     let real_home = env::real_codex_home(platform, parent)
         .map(|home| std::path::absolute(&home).unwrap_or(home));
     let isolated = base.join("codex-home");
+    let mut fallback_kind = CodexHomeFallbackKind::PreparationFailed;
     let prepared = (|| {
         let real_home = real_home
             .as_ref()
@@ -131,14 +139,12 @@ pub(super) fn prepare_codex_home_with_link(
         // Logout leaves a dangling symlink on macOS but a readable hard link on Windows.
         // Neither is evidence of a conflicting refresh. Leave it unused and retry isolation
         // after the user's login is available again, without resurrecting it via write-back.
-        if !requested.is_file() {
-            return Err(
-                "User's Codex auth.json is unavailable (login may use the keychain).".into(),
-            );
-        }
+        require_readable_auth(&requested, &mut fallback_kind)?;
         // Preserve user-owned symlinks by writing to their actual target, never replacing them.
-        let auth = fs::canonicalize(&requested)
-            .map_err(|e| io_reason("resolve user's Codex auth.json", e))?;
+        let auth = fs::canonicalize(&requested).map_err(|e| {
+            fallback_kind = CodexHomeFallbackKind::AuthJsonUnreadable;
+            io_reason("resolve user's Codex auth.json", e)
+        })?;
         if auth == target {
             return Err("User's CODEX_HOME is already ChemDraft's isolated home.".into());
         }
@@ -159,24 +165,16 @@ pub(super) fn prepare_codex_home_with_link(
                 false
             };
             if linked {
-                if !auth.is_file() {
-                    return Err(
-                        "User's Codex auth.json is unavailable (login may use the keychain)."
-                            .into(),
-                    );
-                }
+                require_readable_auth(&auth, &mut fallback_kind)?;
                 return Ok(());
             }
             if let Err(reason) = reconcile_copy(&target, &auth) {
                 return Err(quarantine(&isolated, &target, reason));
             }
         }
-        if !auth.is_file() {
-            return Err(
-                "User's Codex auth.json is unavailable (login may use the keychain).".into(),
-            );
-        }
+        require_readable_auth(&auth, &mut fallback_kind)?;
         let staged = isolated.join(format!("auth-link-{}", super::nonce()));
+        // The user's auth is readable; link failures concern ChemDraft's private folder.
         link(platform, &auth, &staged).map_err(|e| io_reason("link Codex auth.json", e))?;
         // std::fs::rename uses replacement on both Unix and Windows (MoveFileExW).
         if let Err(e) = fs::rename(&staged, &target) {
@@ -189,9 +187,11 @@ pub(super) fn prepare_codex_home_with_link(
         Ok(()) => CodexHome {
             path: Some(isolated),
             fallback_reason: None,
+            fallback_kind: None,
         },
         Err(reason) => CodexHome {
             path: real_home,
+            fallback_kind: Some(fallback_kind),
             fallback_reason: Some(format!(
                 "Codex home isolation unavailable; using the user's real Codex home. {reason}"
             )),
@@ -217,6 +217,30 @@ fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, String> {
         Ok(bytes) => Ok(Some(bytes)),
         Err(e) if e.kind() == io::ErrorKind::NotFound && metadata(path)?.is_none() => Ok(None),
         Err(e) => Err(io_reason("read Codex auth.json", e)),
+    }
+}
+fn require_readable_auth(
+    path: &Path,
+    fallback_kind: &mut CodexHomeFallbackKind,
+) -> Result<(), String> {
+    // is_file() hides permission/read errors as absence. Only a confirmed missing path is
+    // normal before sign-in; an existing dangling symlink still counts as unreadable.
+    let result = match fs::metadata(path) {
+        Ok(meta) if !meta.is_file() => Err("User's Codex auth.json is not a regular file.".into()),
+        Ok(_) => read_optional(path),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => read_optional(path),
+        Err(e) => Err(io_reason("inspect Codex auth.json", e)),
+    };
+    match result {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => {
+            *fallback_kind = CodexHomeFallbackKind::AuthJsonAbsent;
+            Err("User's Codex auth.json is absent.".into())
+        }
+        Err(reason) => {
+            *fallback_kind = CodexHomeFallbackKind::AuthJsonUnreadable;
+            Err(reason)
+        }
     }
 }
 fn last_refresh(bytes: &[u8]) -> Result<chrono::DateTime<chrono::FixedOffset>, String> {

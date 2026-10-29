@@ -19,6 +19,7 @@ import { MainWindow } from "./MainWindow";
 import type { DesktopPluginRuntime } from "./plugins/createPluginRuntime";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 import { DOM_COMMAND_EVENT } from "./window-manager";
+import * as nativePaletteObserver from "./windows/useNativePaletteFrames";
 
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 // Keep the ruler's DOM hit surface; jsdom does not implement its canvas painting context.
@@ -297,6 +298,36 @@ describe("MainWindow canvas overlays", () => {
     expect(submit.mock.calls[0]![0].input).toEqual({ source: "overlay", overlayId, sectionId: "message",
       control: "prompt", text: "Draw aspirin", selected: "codex" });
     expect(container.querySelector<HTMLTextAreaElement>(".plugin-canvas-overlay textarea")!.value).toBe("");
+  });
+
+  it("feeds live native palette frames into the overlay relative to the document's offset layer", async () => {
+    const layer = container.querySelector<HTMLElement>(".plugin-canvas-overlay-layer")!;
+    vi.spyOn(layer, "getBoundingClientRect").mockReturnValue({ x: 40, y: 50, left: 40, top: 50,
+      width: 1000, height: 900, right: 1040, bottom: 950, toJSON: () => ({}) });
+    await act(async () => window.dispatchEvent(new Event("resize")));
+    const widget = container.querySelector<HTMLElement>(".plugin-canvas-overlay")!;
+    const remembered = [widget.style.left, widget.style.top];
+    expect(remembered).toEqual(["562px", "372px"]);
+    let snapshot: nativePaletteObserver.NativePaletteFrames = {
+      documentOrigin: { x: -1000, y: 100 }, scale: 1.5,
+      frames: [{ x: -1000 + 700 * 1.5, y: 100 + 500 * 1.5, width: 100 * 1.5, height: 100 * 1.5 }]
+    };
+    const useFrames = nativePaletteObserver.useNativePaletteFrames;
+    const frames = vi.spyOn(nativePaletteObserver, "useNativePaletteFrames").mockImplementation((enabled, sampling) => {
+      useFrames(enabled, sampling);
+      return snapshot;
+    });
+    const rerender = () => act(async () => root.render(<MainWindow initialPaletteMode="hidden" initialRulersVisible={false} nativePalette={false} />));
+    await rerender();
+    expect(frames).toHaveBeenLastCalledWith(true, true);
+    expect([widget.style.left, widget.style.top]).toEqual(["562px", "124px"]);
+    snapshot = { ...snapshot, frames: [] };
+    await rerender();
+    expect([widget.style.left, widget.style.top]).toEqual(remembered);
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Collapse Assistant overlay"]')!.click());
+    expect(frames).toHaveBeenLastCalledWith(true, false);
+    await act(async () => container.querySelector<HTMLButtonElement>(".plugin-canvas-overlay-icon")!.click());
+    expect(frames).toHaveBeenLastCalledWith(true, true);
   });
 
   describe.each(["macos", "windows"] as const)("canvas focus handoff on %s", platform => {

@@ -26,12 +26,12 @@ use catalog::{identifier, Effort, RenderedRun, ToolId};
 use run::{KillReason, ToolRun};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
     },
     time::Duration,
 };
@@ -447,18 +447,60 @@ fn status_impl(
 ) -> Result<ExternalToolStatus, String> {
     // Auth reconciliation selects the home independently of binary discovery.
     let mut status = status_prepared_impl(base, state, tool, refresh, plugin_id, parent)?;
-    let notice = (tool == ToolId::Codex)
-        .then(|| env::prepare_codex_home(probe::ProbePlatform::current(), base, parent))
-        .and_then(|home| home.fallback_reason);
-    // Keep the actionable upgrade message plain without changing auth preparation.
+    let home = (tool == ToolId::Codex)
+        .then(|| env::prepare_codex_home(probe::ProbePlatform::current(), base, parent));
+    if let Some(notice) = home
+        .as_ref()
+        .and_then(|home| home.fallback_reason.as_deref())
+    {
+        static NOTICES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+        if first_notice(NOTICES.get_or_init(|| Mutex::new(HashSet::new())), notice) {
+            eprintln!("{notice}");
+        }
+    }
+    apply_status_detail(
+        &mut status,
+        probe::ProbePlatform::current(),
+        home.and_then(|home| home.fallback_kind),
+    );
+    Ok(status)
+}
+
+fn first_notice(notices: &Mutex<HashSet<String>>, notice: &str) -> bool {
+    notices.lock().unwrap().insert(notice.to_owned())
+}
+
+fn apply_status_detail(
+    status: &mut ExternalToolStatus,
+    platform: probe::ProbePlatform,
+    codex_home_fallback: Option<env::CodexHomeFallbackKind>,
+) {
+    // A missing auth.json is normal before sign-in; only unreadable auth needs a hint.
+    // Keep technical diagnostics in logs, and retain actionable upgrade guidance.
+    if matches!(status.state, ToolState::Missing)
+        && status.detail.as_deref() == Some("Tool is not installed.")
+    {
+        status.detail = None;
+    }
+    let tool = status.tool;
     let needs_update = status.detail.as_deref() == Some(&install::managed_update_detail(tool));
-    if let Some(notice) = notice.filter(|_| !needs_update) {
+    if tool == ToolId::Codex
+        && (matches!(status.state, ToolState::Broken)
+            || (matches!(status.state, ToolState::Installed) && status.signed_in == Some(false)))
+        && !needs_update
+    {
+        let notice = match codex_home_fallback {
+            Some(env::CodexHomeFallbackKind::AuthJsonUnreadable) => {
+                codex_auth::sign_in_unavailable_detail(platform)
+            }
+            Some(env::CodexHomeFallbackKind::PreparationFailed) => "ChemDraft could not set up its private Codex folder. Try Check again; if it keeps failing, restart ChemDraft.",
+            Some(env::CodexHomeFallbackKind::AuthJsonAbsent) | None => return,
+        };
         status.detail = Some(match status.detail {
-            Some(detail) => format!("{detail} {notice}"),
-            None => notice,
+            Some(ref detail) => format!("{detail} {notice}"),
+            None => notice.to_owned(),
         });
     }
-    Ok(status)
 }
 
 fn status_prepared_impl(

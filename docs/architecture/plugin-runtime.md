@@ -323,3 +323,15 @@ Adding a plugin is one import + one `registerPlugin` call in
 `registerBundledPlugins`. New report section kinds, capability APIs, and
 contribution enumerators are additive to `plugin-api`/`plugin-host`; the desktop
 report renderer is the single place UI is added, once, for all plugins.
+# Native palette windows stack above the document webview
+
+The canvas overlay cannot paint above native palettes; placement needs to move it away from overlapping palette frames.
+The document window shares one `useNativePaletteFrames` observer across its overlays. It reads visible,
+non-minimized toolset windows (including warm popovers) and plugin panels, using Tauri outer physical
+frames, the document's inner physical origin, and its scale factor on both macOS and Windows. Native
+frame/lifecycle and toolset-state events request updates; a 250 ms visibility sample also covers
+`show()`/`hide()`, which emit no frame event. Reads never overlap and run at most four times per second.
+Each overlay converts those frames relative to its positioned layer and fits on expansion, frame
+changes, and document resize. Placement starts from the remembered user position on every refit, so
+an automatic move is temporary and returns when the palette moves away. Canvas gestures suspend
+refits; overlay drags update only user placement and suppress automatic movement until release.

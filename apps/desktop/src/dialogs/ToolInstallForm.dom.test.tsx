@@ -19,6 +19,9 @@ it.each(["macos", "windows"] as const)("shows and invokes Update for both tools 
         await act(async () => root.render(createElement(ToolInstallForm, { snapshot, onAction, platform })));
         expect(container.querySelector('[role="dialog"]')?.getAttribute("aria-label")).toBe(`Update ${name}`);
         expect(container.querySelector("h2")?.textContent).toBe(`Update ${name}`);
+        expect(container.textContent).toContain(`${name} is a command-line program from ${publisher}. ChemDraft runs it for you; you will not need to use a terminal except to sign in.`);
+        expect(container.textContent).toContain("When you sign in, a terminal window opens. Complete sign-in there, then return to Setup.");
+        expect(container.textContent?.match(/is a command-line program/g)).toHaveLength(1);
         expect(container.textContent).toContain(`ChemDraft's copy of ${name} is from an older ChemDraft version.`);
         expect(container.textContent).toContain(`Updating downloads ${name} 2.0.0 from ${host} and replaces ChemDraft's copy; your own installs and your sign-in are not touched.`);
         expect(container.textContent).toContain(`Your prompt and the open page, including any unpublished structures, leave this computer and go to ${publisher} when you send a request.`);
@@ -51,6 +54,8 @@ it.each(["user", "managed"] as const)("asks only to use an installed %s tool, wi
       { id: "plugin", name: "ChemDraft Assistant" }, { status: "consent" });
       await act(async () => root.render(createElement(ToolInstallForm, { snapshot, onAction: vi.fn(), platform })));
       expect(container.textContent).toContain("Allow ChemDraft Assistant to use Codex?");
+      expect(container.textContent).toContain("Codex is a command-line program from OpenAI. ChemDraft runs it for you; you will not need to use a terminal except to sign in.");
+      expect(container.textContent).toContain("When you sign in, a terminal window opens. Complete sign-in there, then return to Setup.");
       expect(container.textContent).not.toMatch(/download|MB|free while installing/i);
       expect(container.textContent?.match(/leave this computer and go to OpenAI/g)).toHaveLength(1);
       expect(container.textContent?.match(/The AI can search the web and read web pages\./g)).toHaveLength(1);
@@ -69,12 +74,16 @@ it.each([["Anthropic", "Claude Code"], ["OpenAI", "Codex"]])('names %s and web a
     expect(container.textContent).toContain(`open page, including any unpublished structures, leave this computer and go to ${publisher}`);
     expect(container.textContent).toContain("The vendor program uses your own account; Clear conversation removes ChemDraft's local conversation files.");
     expect(container.textContent).toContain(`Download from ${publisher}: version 2.0.0, from downloads.example.test, 125 MB.`);
+    expect(container.textContent).toContain(`${toolName} is a command-line program from ${publisher}. ChemDraft runs it for you; you will not need to use a terminal except to sign in.`);
+    expect(container.textContent).toContain("When you sign in, a terminal window opens. Complete sign-in there, then return to Setup.");
     await act(async () => root.render(createElement(ToolInstallForm, { snapshot: { ...toolInstallFixture(publisher), disclosure, toolName, state: { status: "consent" }, buttons: ["allow", "close"] }, onAction: vi.fn(), platform: "windows" })));
     expect(container.textContent?.match(/leaves? this computer/g)).toHaveLength(1);
     expect(container.textContent?.match(/The AI can search the web and read web pages\./g)).toHaveLength(1);
     expect(container.textContent).toContain(`open page, including any unpublished structures, leave this computer and go to ${publisher}`);
     expect(container.textContent).toContain("The vendor program uses your own account; Clear conversation removes ChemDraft's local conversation files.");
     expect([...container.querySelectorAll("button")].map(button => button.textContent)).toEqual(["Allow", "Close"]);
+    expect(container.textContent).toContain(`${toolName} is a command-line program from ${publisher}. ChemDraft runs it for you; you will not need to use a terminal except to sign in.`);
+    expect(container.textContent).toContain("When you sign in, a terminal window opens. Complete sign-in there, then return to Setup.");
   } finally { act(() => root.unmount()); container.remove(); vi.unstubAllGlobals(); }
 });
 
