@@ -13,14 +13,15 @@ import { scanPictures } from './scan.mjs';
 export function inspectBlob(buf, container, entry = basename(container), expect, context = { depth: 0, budget: { count: 0, bytes: 0 } }) {
   let type = 'other', findings = [], image = null, error = null, notes = [];
   const nestedEntries = [];
+  let budgetFailed = false, sniffed = false;
   const nested = (bytes, label, metadata) => {
-    if (context.depth >= 4) throw new Error('Nested picture depth exceeds 4');
-    if (++context.budget.count > 2000) throw new Error('Nested entry count exceeds 2000');
-    if (context.budget.bytes + bytes.length > 200 * 1024 * 1024) throw new Error('Nested inspection bytes exceed 200 MB');
+    const failBudget = message => { budgetFailed = true; throw new Error(message); };
+    if (context.depth >= 4) failBudget('Nested picture depth exceeds 4');
+    if (++context.budget.count > 2000) failBudget('Nested entry count exceeds 2000');
+    if (context.budget.bytes + bytes.length > 200 * 1024 * 1024) failBudget('Nested inspection bytes exceed 200 MB');
     context.budget.bytes += bytes.length;
     const row = inspectBlob(bytes, container, `${entry} > ${label}`, expect, {
       depth: context.depth + 1, budget: context.budget, emfFormat: label.startsWith('EMF multiformat'),
-      scanAlso: /^wmetafile/.test(metadata?.kind ?? ''),
     });
     nestedEntries.push({ ...row, ...metadata });
   };
@@ -35,6 +36,7 @@ export function inspectBlob(buf, container, entry = basename(container), expect,
     else if (['49492a00', '4d4d002a'].includes(buf.subarray(0, 4).toString('hex'))) type = 'tiff';
     else if (buf.length >= 44 && buf.readUInt32LE(0) === 1 && buf.toString('ascii', 40, 44) === ' EMF') type = 'emf';
     else if (buf.subarray(0, 4).toString('hex') === 'd7cdc69a' || (buf.length >= 18 && [1, 2].includes(buf.readUInt16LE(0)) && buf.readUInt16LE(2) === 9 && [0x100, 0x300].includes(buf.readUInt16LE(4)))) type = 'wmf';
+    sniffed = true;
     if (context.emfFormat) entry += ` (${type.toUpperCase()})`;
     if (type === 'png') { const result = pngFindings(buf); findings = result.found; notes = result.notes; image = { width: result.width, height: result.height, dpi: result.dpi }; }
     if (type === 'svg') findings = svgFindings(buf);
@@ -43,10 +45,18 @@ export function inspectBlob(buf, container, entry = basename(container), expect,
     if (type === 'rtf') rtfPictures(buf, nested);
     if (type === 'other' && (checkEnvelope(buf).ok || (/^\s*\{/.test(buf.toString('utf8', 0, 40)) && hasPayloadMarker(buf)))) findings = [{ carrier: 'private JSON', envelope: buf }];
     else if (!['png', 'svg', 'pdf', 'emf', 'rtf'].includes(type) && hasPayloadMarker(buf)) findings = [{ carrier: 'raw marker', note: 'marker present, container not decoded' }];
-    // Office can label EMF bytes as wmetafile8. Preserve the magic-based parsed
-    // result, and also exercise the fallback for this unsupported RTF blip kind.
-    if (context.scanAlso || (!['png', 'svg', 'pdf', 'emf', 'rtf'].includes(type) && !findings.some(f => f.carrier === 'private JSON'))) scanPictures(buf, nested);
-  } catch (e) { error = e.message; }
+  } catch (e) { error = e.message; nestedEntries.length = 0; findings = []; }
+  // Independently recover opaque pictures when typed parsing failed or found none.
+  // Keep the input size guard ahead of the fallback as well.
+  if (sniffed && !budgetFailed && buf.length <= 200 * 1024 * 1024 &&
+      (error || (!findings.some(f => f.carrier !== 'raw marker') && !nestedEntries.length)) &&
+      !['png', 'svg', 'pdf', 'jpeg', 'gif', 'tiff'].includes(type)) {
+    try { scanPictures(buf, nested, note => notes.push(note)); }
+    catch (e) { error = e.message; }
+  }
+  if (type === 'rtf' && !nestedEntries.length && hasPayloadMarker(buf)) {
+    findings.push({ carrier: 'raw marker', note: 'marker present, container not decoded' });
+  }
   notes = [...notes, ...(findings.notes ?? [])];
   return { container, entry, type, size: buf.length, sha256: sha256(buf), image, notes, findings: findings.map(({ envelope, ...item }) => {
     const checked = envelope ? checkEnvelope(envelope) : null;

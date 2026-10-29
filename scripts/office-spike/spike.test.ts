@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it, vi } from 'vitest';
-import { readFileSync, mkdtempSync, writeFileSync, rmSync, readdirSync, statSync, symlinkSync } from 'node:fs';
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, readdirSync, statSync, symlinkSync } from 'node:fs';
 import { join, resolve, posix } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -13,7 +13,8 @@ import { makePdf, readPdf, pdfFindings } from './pdf.mjs';
 import { inspectBlob, inspectPath } from './inspect.mjs';
 import { makeCarriers } from './make-carriers.mjs';
 import { makeCfHtml } from './cf-html.mjs';
-import { MAX_PICTURE } from './rtf.mjs';
+import { MAX_PICTURE, rtfPictures } from './rtf.mjs';
+import { emfFindings } from './emf.mjs';
 
 const payload = '{"name":"caffeine"}';
 const envelope = makeEnvelope(payload);
@@ -554,14 +555,21 @@ describe('nested Office pictures (synthetic)', () => {
     expect(inspect('special.rtf', Buffer.concat([Buffer.from('{\\rtf1{\\pict\\macpict\\bin4 '), special, Buffer.from('}}')]))[1]).toMatchObject({ kind: 'macpict', sha256: sha256(special), error: null });
   });
 
-  it('labels WMF fallback finds and scans wmetafile8 even when Office labels EMF bytes as WMF', () => {
+  it('labels WMF fallback finds without duplicating EMF bytes labelled as WMF', () => {
     const blob = Buffer.concat([Buffer.from('d7cdc69a', 'hex'), Buffer.alloc(20), embedded, Buffer.from('opaque suffix')]);
     const rows = inspect('synthetic.wmf', blob);
     expect(rows[0].type).toBe('wmf');
     expect(rows[1]).toMatchObject({ entry: 'synthetic.wmf > byte scan at 24 (PDF; found by byte scan)', foundBy: 'byte scan', findings: [{ matchesExpect: true }] });
     const rtf = Buffer.from('{\\rtf1{\\pict\\wmetafile8 ' + wrapped.toString('hex') + '}}');
     const fromRtf = inspect('wmf.rtf', rtf);
-    expect(fromRtf.some(row => row.entry.includes('pict[0] wmetafile8 > byte scan') && row.foundBy === 'byte scan' && row.findings[0]?.matchesExpect)).toBe(true);
+    expect(fromRtf).toHaveLength(3);
+    expect(fromRtf[2]).toMatchObject({ entry: 'wmf.rtf > pict[0] wmetafile8 > EMF multiformat[0] (PDF)', findings: [{ matchesExpect: true }] });
+    expect(fromRtf.some(row => row.foundBy === 'byte scan')).toBe(false);
+    const damaged = Buffer.concat([wrapped, Buffer.from('junk after EOF')]);
+    const recovered = inspect('damaged.rtf', Buffer.from('{\\rtf1{\\pict\\wmetafile8 ' + damaged.toString('hex') + '}}'));
+    expect(recovered).toHaveLength(3);
+    expect(recovered[1].error).toMatch(/trailing bytes/);
+    expect(recovered[2]).toMatchObject({ foundBy: 'byte scan', size: embedded.length, sha256: sha256(embedded), findings: [{ matchesExpect: true }] });
   });
 
   it.each(['ole', 'rtfd', 'webarchive', 'unknown'])('scans %s blobs for bounded PNG and SVG pictures', kind => {
@@ -627,9 +635,103 @@ describe('nested Office pictures (synthetic)', () => {
   });
 
   it('reports unterminated scan candidates and caps candidate counts', () => {
-    expect(inspect('short-scan.bin', Buffer.from('blob%PDF-no end'))[0].error).toMatch(/missing terminator within 20 MB/);
+    expect(inspect('short-scan.bin', Buffer.from('blob%PDF-no end'))[0]).toMatchObject({ error: null, notes: [expect.stringMatching(/missing terminator within 20 MB/)] });
     const tinySvg = Buffer.from('<svg></svg>');
     expect(inspect('many-scans.bin', Buffer.concat([Buffer.from('blob'), ...Array(129).fill(tinySvg)]))[0].error).toMatch(/candidate count exceeds 128/);
+  });
+
+  it.each(['plain text ', '<html>stray ', 'd0cf11e0a1b11ae1'])('keeps scanning after a stray PDF marker in %s and exits zero', prefix => {
+    const rows = inspect('stray.bin', Buffer.concat([Buffer.from(prefix), Buffer.from('%PDF stray'), carrierPng]));
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ error: null, notes: [expect.stringMatching(/Byte scan PDF/)] });
+    expect(rows[1]).toMatchObject({ type: 'png', findings: [{ matchesExpect: true }] });
+    const run = spawnSync(process.execPath, ['scripts/office-spike/inspect.mjs', join(temp, 'stray.bin')], { encoding: 'utf8' });
+    expect(run.status, run.stderr).toBe(0);
+  });
+
+  it.each(['\r\n', '\n', '\r'])('includes the PDF end-of-line %j in carved bytes', eol => {
+    const original = Buffer.concat([embedded.subarray(0, embedded.lastIndexOf('%%EOF') + 5), Buffer.from(eol)]);
+    const rows = inspect('eol.bin', Buffer.concat([Buffer.from('opaque'), original, Buffer.from('suffix')]));
+    expect(rows[1]).toMatchObject({ size: original.length, sha256: sha256(original), findings: [{ matchesExpect: true }] });
+  });
+
+  it('decodes objdata as nested blobs and restores raw RTF marker notes', () => {
+    const ole = Buffer.concat([Buffer.from('d0cf11e0a1b11ae1', 'hex'), carrierPng]);
+    const rows = inspect('object.rtf', Buffer.from('{\\rtf1{\\*\\objdata ' + ole.toString('hex') + '}}'));
+    expect(rows).toHaveLength(3);
+    expect(rows[1].entry).toContain('objdata[0]');
+    expect(rows[2]).toMatchObject({ foundBy: 'byte scan', findings: [{ matchesExpect: true }] });
+    expect(inspect('marker.rtf', Buffer.from('{\\rtf1 chemdraft-spike}'))[0]).toMatchObject({ error: null, findings: [{ carrier: 'raw marker', note: 'marker present, container not decoded' }] });
+  });
+
+  it('scans an EMF when typed parsing succeeds without finding a carrier', () => {
+    const rows = inspect('empty-parser.emf', emf(Buffer.concat([Buffer.from('opaque'), embedded])));
+    expect(rows).toHaveLength(2);
+    expect(rows[0].error).toBeNull();
+    expect(rows[1]).toMatchObject({ foundBy: 'byte scan', sha256: sha256(embedded), findings: [{ matchesExpect: true }] });
+  });
+
+  it('shares picture count and hex validation limits with objdata', () => {
+    expect(() => rtfPictures(Buffer.from('{\\rtf1' + '{\\pict 00}'.repeat(128) + '{\\*\\objdata 00}'.repeat(129) + '}'), () => {})).toThrow(/picture count/);
+    expect(() => rtfPictures(Buffer.from('{\\rtf1{\\*\\objdata 123}}'), () => {})).toThrow(/odd-length hex/);
+  });
+
+  it('ignores escaped bytes and backslashes in pict, and mixes hex with binary', () => {
+    const input = Buffer.concat([Buffer.from("{\\rtf1{\\pict 01\\'ff\\\\02\\bin2 "), Buffer.from([123, 92]), Buffer.from('0304}}')]);
+    const decoded: Buffer[] = [];
+    rtfPictures(input, bytes => decoded.push(bytes));
+    expect(decoded).toEqual([Buffer.from([1, 2, 123, 92, 3, 4])]);
+    expect(() => rtfPictures(Buffer.from('{\\rtf1{\\pict 0\\bin1 x}}'), () => {})).toThrow(/odd-length hex before bin/);
+    expect(() => rtfPictures(Buffer.from("{\\rtf1{\\pict \\'xz}}"), () => {})).toThrow(/Invalid RTF escaped byte/);
+  });
+
+  it('emits nested pict groups in opening order', () => {
+    const rows: [string, string][] = [];
+    rtfPictures(Buffer.from('{\\rtf1{\\pict 01{\\pict 02}03}{\\pict 04}}'), (bytes, label) => rows.push([label, bytes.toString('hex')]));
+    expect(rows).toEqual([['pict[0] unknown blip', '0103'], ['pict[1] unknown blip', '02'], ['pict[2] unknown blip', '04']]);
+  });
+
+  it('checks per-picture and total span caps before decoded allocation', () => {
+    const one = '{\\pict ' + '00 '.repeat(100000) + '}';
+    const alloc = vi.spyOn(Buffer, 'alloc');
+    try {
+      expect(() => rtfPictures(Buffer.from('{\\rtf1{\\pict ' + '00 '.repeat(100001) + '}}'), () => {})).toThrow(/picture data spans exceed 100000/);
+      expect(() => rtfPictures(Buffer.from('{\\rtf1' + one + one + '{\\pict 00}}'), () => {})).toThrow(/total picture data spans exceed 200000/);
+      expect(alloc).not.toHaveBeenCalled();
+    } finally { alloc.mockRestore(); }
+  });
+
+  it('enforces shared nested entry and byte budgets before child inspection', () => {
+    for (const [budget, pattern] of [
+      [{ count: 2000, bytes: 0 }, /entry count exceeds 2000/],
+      [{ count: 0, bytes: 200 * 1024 * 1024 - embedded.length + 1 }, /bytes exceed 200 MB/],
+    ] as const) {
+      const row = inspectBlob(wrapped, 'budget.emf', 'budget.emf', expected, { depth: 0, budget: { ...budget } });
+      expect(row.error).toMatch(pattern);
+      expect(row.nestedEntries).toBeUndefined();
+    }
+    const exact = inspectBlob(wrapped, 'exact.emf', 'exact.emf', expected, { depth: 0, budget: { count: 1999, bytes: 200 * 1024 * 1024 - embedded.length } });
+    expect(exact.nestedEntries).toHaveLength(1);
+    expect(exact.error).toBeNull();
+  });
+
+  it('enforces directory depth and path caps', () => {
+    const root = join(temp, 'directories');
+    const deep = join(root, 'a', 'b', 'c', 'd'); mkdirSync(deep, { recursive: true });
+    writeFileSync(join(deep, 'unread.bin'), carrierPng);
+    expect(inspectPath(root)[0].error).toMatch(/directory depth exceeds 4/);
+    expect(inspectPath(root, undefined, { depth: 0, budget: { count: 1999 } })[0].error).toMatch(/path count exceeds 2000/);
+    expect(inspectPath(root, undefined, { depth: 0, budget: { count: 2000 } })[0].error).toMatch(/path count exceeds 2000/);
+  });
+
+  it('rejects a non-first header, second header, and 16-byte EOF', () => {
+    const header = wrapped.subarray(0, 88), end = wrapped.subarray(-20);
+    const other = Buffer.alloc(8); other.writeUInt32LE(2); other.writeUInt32LE(8, 4);
+    for (const bytes of [Buffer.concat([other, header, end]), Buffer.concat([header, header, end])]) {
+      expect(() => emfFindings(bytes)).toThrow(/Invalid EMF header/);
+    }
+    const short = Buffer.from(end.subarray(0, 16)); short.writeUInt32LE(16, 4);
+    expect(() => emfFindings(Buffer.concat([header, short]))).toThrow(/Truncated EMF EOF/);
   });
 
   it('scans separate PDFs while retaining the last EOF of incremental updates', () => {

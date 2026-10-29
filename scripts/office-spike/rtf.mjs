@@ -7,7 +7,7 @@ const hex = c => digit(c) ? c - 48 : c >= 65 && c <= 70 ? c - 55 : c >= 97 && c 
 // Iterative RTF lexer. Picture properties in child destinations are skipped;
 // braces and backslashes inside \bin are bytes, never group syntax.
 export function rtfPictures(buf, nested) {
-  const stack = []; let p = 0, count = 0, decoded = 0, spans = 0;
+  const stack = [], completed = []; let p = 0, count = 0, objects = 0, decoded = 0, spans = 0;
   const add = (pic, start, end, binary) => {
     const length = end - start;
     if (binary && pic.nibbles % 2) throw new Error('RTF pict has odd-length hex before bin');
@@ -31,16 +31,7 @@ export function rtfPictures(buf, nested) {
         const length = pic.binary + pic.nibbles / 2;
         if (decoded + length > 200 * 1024 * 1024) throw new Error('RTF decoded pictures exceed 200 MB');
         decoded += length;
-        const bytes = Buffer.alloc(length); let at = 0, high = -1;
-        for (const span of pic.spans) {
-          if (span.binary) { buf.copy(bytes, at, span.start, span.end); at += span.end - span.start; }
-          else for (let i = span.start; i < span.end; i++) {
-            const nibble = hex(buf[i]);
-            if (high < 0) high = nibble;
-            else { bytes[at++] = high * 16 + nibble; high = -1; }
-          }
-        }
-        nested(bytes, `pict[${pic.index}] ${pic.kind}`, { kind: pic.kind, ...pic.dimensions });
+        completed.push({ pic, length });
       }
     } else if (c === 92) {
       const start = p;
@@ -61,10 +52,10 @@ export function rtfPictures(buf, nested) {
       if (p - digitsStart > 10) throw new Error('RTF control parameter exceeds 10 digits');
       const value = p > digitsStart ? Number(buf.toString('ascii', numberStart, p)) : null;
       if (buf[p] === 32) p++;
-      if (word === 'pict') {
+      if (word === 'pict' || word === 'objdata') {
         if (!frame || frame.picture) throw new Error('Invalid RTF pict group');
-        if (count >= 256) throw new Error('RTF picture count exceeds 256');
-        frame.picture = { index: count++, kind: 'unknown blip', dimensions: {}, spans: [], nibbles: 0, binary: 0 };
+        if (count + objects >= 256) throw new Error('RTF picture count exceeds 256');
+        frame.picture = { destination: word, index: word === 'pict' ? count++ : objects++, order: count + objects, kind: 'unknown blip', dimensions: {}, spans: [], nibbles: 0, binary: 0 };
       }
       const pic = frame?.picture;
       if (pic) {
@@ -87,4 +78,16 @@ export function rtfPictures(buf, nested) {
     } else if (!stack.length && !space(c) && c !== 0) throw new Error('RTF trailing bytes outside root group');
   }
   if (stack.length) throw new Error('Truncated RTF group');
+  for (const { pic, length } of completed.sort((a, b) => a.pic.order - b.pic.order)) {
+    const bytes = Buffer.alloc(length); let at = 0, high = -1;
+    for (const span of pic.spans) {
+      if (span.binary) { buf.copy(bytes, at, span.start, span.end); at += span.end - span.start; }
+      else for (let i = span.start; i < span.end; i++) {
+        const nibble = hex(buf[i]);
+        if (high < 0) high = nibble;
+        else { bytes[at++] = high * 16 + nibble; high = -1; }
+      }
+    }
+    nested(bytes, `${pic.destination}[${pic.index}] ${pic.kind}`, { kind: pic.kind, ...pic.dimensions });
+  }
 }
