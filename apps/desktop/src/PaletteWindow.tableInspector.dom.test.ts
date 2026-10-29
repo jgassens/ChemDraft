@@ -215,6 +215,14 @@ describe("PaletteWindow table inspector", () => {
         expect(button.classList.contains("molecule-inspector-template-button")).toBe(true);
       }
     }
+    for (const id of ["addFootnote", "removeFootnote", "formatFormula", "plainText"]) {
+      const button = inspector.querySelector<HTMLButtonElement>(`[data-table-control="${id}"]`)!;
+      expect(button.classList.contains("molecule-inspector-template-button")).toBe(true);
+      expect(button.style.width).toBe("");
+      expect(getComputedStyle(button).width).toBe("auto");
+      expect(getComputedStyle(button).fontFamily).toBe("inherit");
+      expect(getComputedStyle(button).fontSize).toBe("11px");
+    }
     for (const field of inspector.querySelectorAll<HTMLElement>("[data-table-control]")) {
       if (field.tagName === "BUTTON") continue;
       expect(field.classList.contains("molecule-inspector-field")).toBe(true);

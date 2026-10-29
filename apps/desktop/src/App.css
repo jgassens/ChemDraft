@@ -2291,6 +2291,13 @@ textarea:focus-visible,
   line-height: 1;
 }
 
+.table-inspector-controls .molecule-inspector-template-button {
+  width: auto;
+  padding: 0 10px;
+  font-family: inherit;
+  font-size: 11px;
+}
+
 .toolbar-metric-group .toolbar-text-button {
   width: 34px;
   font-size: 10px;
