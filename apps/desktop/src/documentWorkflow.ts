@@ -3761,7 +3761,7 @@ function isNativeChairTemplate(templateId: NativeMoleculeTemplateId): boolean {
 }
 
 function nativeTemplateBondLength(molecule: MoleculeObject): number {
-  // Corner-handle resizing changes coordinates without changing the stored drawing style.
+  // Imported molecules can have coordinates that disagree with the stored drawing style.
   // Only a molecule without measurable bonds (such as a single atom) needs the style fallback.
   return representativeMoleculeBondLength(molecule) ??
     nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx;
@@ -4537,7 +4537,7 @@ function nativeTemplateDirectionForAtom(
   atom: MoleculeAtom,
   point: PagePoint
 ): number {
-  const nativeBondLength = nativeTemplateBondLength(molecule);
+  // Keep grip tolerance fixed in page pixels, like the atom hit radius used by the hover target.
   const pointDistance = distance(atom, point);
   if (pointDistance > nativeBondLength * 0.35) {
     return Math.atan2(point.y - atom.y, point.x - atom.x);
@@ -5922,14 +5922,14 @@ export function applyMoleculeTargetBondLengthToBonds(
         anchoredAtomIds.add(to.id);
       });
 
-      const nextObject = normalizeNativeMoleculeGeometry({
+      const nextObject = withMeasuredNativeMoleculeBondLength(normalizeNativeMoleculeGeometry({
         ...object,
         atoms: object.atoms.map((atom) => atomById.get(atom.id) ?? atom),
         style: {
           ...object.style,
           bondLengths: nextBondLengths
         }
-      });
+      }));
       const changes = moleculeObjectChanges(object, nextObject);
       return Object.keys(changes).length === 0
         ? []
@@ -12541,6 +12541,15 @@ export function tiltNativeMoleculeObjectsProjectedPlane(
   return params.result(applyPatches(document, patches, { now: phase4Timestamp }), true);
 }
 
+/** Record the resized geometry's growth length without scaling strokes or typography. */
+function withMeasuredNativeMoleculeBondLength(molecule: MoleculeObject): MoleculeObject {
+  const bondLengthPx = representativeMoleculeBondLength(molecule);
+  return bondLengthPx === undefined ? molecule : {
+    ...molecule,
+    style: { ...molecule.style, bondLengthPx }
+  };
+}
+
 export function resizeNativeMoleculeParts(
   document: ChemDraftDocument,
   target: NativeMoleculePartMoveTarget,
@@ -12567,7 +12576,7 @@ export function resizeNativeMoleculeParts(
   }
 
   const center = objectCenter(bounds);
-  const resized = normalizeNativeMoleculeGeometry({
+  const resized = withMeasuredNativeMoleculeBondLength(normalizeNativeMoleculeGeometry({
     ...molecule,
     atoms: molecule.atoms.map((atom) => targetAtomIds.has(atom.id)
       ? {
@@ -12576,7 +12585,7 @@ export function resizeNativeMoleculeParts(
           y: center.y + (atom.y - center.y) * scaleY
         }
       : atom)
-  });
+  }));
 
   return applyPatch(
     document,
@@ -12604,7 +12613,7 @@ export function resizeNativeMoleculeObject(
 
   const center = objectCenter(molecule);
   const transform = nativeMoleculeTransformState(molecule);
-  const resized = withNativeMoleculeTransform(normalizeNativeMoleculeGeometry({
+  const resized = withMeasuredNativeMoleculeBondLength(withNativeMoleculeTransform(normalizeNativeMoleculeGeometry({
     ...molecule,
     atoms: molecule.atoms.map((atom) => ({
       ...atom,
@@ -12615,7 +12624,7 @@ export function resizeNativeMoleculeObject(
     ...transform,
     scaleX: transform.scaleX * scaleX,
     scaleY: transform.scaleY * scaleY
-  });
+  }));
 
   return applyPatch(
     document,
@@ -14248,7 +14257,7 @@ function scaleNativeMoleculeObjectAroundPointPatches(
   }
 
   const transform = nativeMoleculeTransformState(molecule);
-  const resized = withNativeMoleculeTransform(normalizeNativeMoleculeGeometry({
+  const resized = withMeasuredNativeMoleculeBondLength(withNativeMoleculeTransform(normalizeNativeMoleculeGeometry({
     ...molecule,
     atoms: molecule.atoms.map((atom) => ({
       ...atom,
@@ -14259,7 +14268,7 @@ function scaleNativeMoleculeObjectAroundPointPatches(
     ...transform,
     scaleX: transform.scaleX * scaleX,
     scaleY: transform.scaleY * scaleY
-  });
+  }));
   const markPatches = anchoredElectronMarkTransformPatches(
     page.objects,
     molecule.id,
@@ -19035,6 +19044,7 @@ function carbonylOxygenPointForAtom(
   pageHeight: number,
   direction?: PagePoint
 ): PagePoint {
+  const nativeBondLength = nativeTemplateBondLength(molecule);
   const atom = molecule.atoms.find((candidate) => candidate.id === atomId);
   if (!atom) {
     return { x: nativeBondLength, y: 0 };

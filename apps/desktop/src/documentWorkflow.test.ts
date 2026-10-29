@@ -105,6 +105,7 @@ import {
   applyFreeformSingleBondToolAtPoint,
   applyNativeBondDisplayStyleTarget,
   applyNativeAtomSproutTarget,
+  commitNativeAtomLabelTarget,
   applyNativeCarbonylAtAtomTarget,
   applyNativeRingAttachAtAtomTarget,
   applyNativeRingFuseAtBondTarget,
@@ -3508,7 +3509,7 @@ describe("Phase 4 document workflow", () => {
     expect(cleanedMolecule.bonds).toEqual(molecule.bonds);
     expect(cleanedMolecule.structure).toBe(molecule.structure);
     cleanedMolecule.bonds.forEach((bond) => {
-      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
+      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeDrawingStyleFromObjectStyle(resizedMolecule.style).bondLengthPx, 2);
     });
     expect(moleculeAngleDegrees(cleanedMolecule, "atom_001", "atom_002", "atom_003")).toBeCloseTo(120, 2);
   });
@@ -3996,7 +3997,7 @@ describe("Phase 4 document workflow", () => {
       rotationDegrees: 0
     });
     cleanedMolecule.bonds.forEach((bond) => {
-      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
+      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeDrawingStyleFromObjectStyle(stretchedMolecule.style).bondLengthPx, 2);
     });
     expect(moleculeAngleDegrees(cleanedMolecule, "atom_001", "atom_002", "atom_003")).toBeCloseTo(120, 2);
   });
@@ -4036,7 +4037,7 @@ describe("Phase 4 document workflow", () => {
         rotationDegrees: 0
       });
       molecule.bonds.forEach((bond) => {
-        expect(moleculeBondLength(molecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
+        expect(moleculeBondLength(molecule, bond.id)).toBeCloseTo(nativeDrawingStyleFromObjectStyle(moleculeById(distorted, molecule.id).style).bondLengthPx, 2);
       });
       expect(moleculeAngleDegrees(molecule, "atom_001", "atom_002", "atom_003")).toBeCloseTo(120, 2);
     });
@@ -4063,7 +4064,7 @@ describe("Phase 4 document workflow", () => {
       rotationDegrees: 0
     });
     cleanedMolecule.bonds.forEach((bond) => {
-      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
+      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeDrawingStyleFromObjectStyle(moleculeById(distorted, molecule.id).style).bondLengthPx, 2);
     });
   });
 
@@ -4975,7 +4976,7 @@ describe("Phase 4 document workflow", () => {
     expect(cleanedMolecule.bonds.find((bond) => bond.id === "bond_002")?.order).toBe("triple");
     expect(cleanedMolecule.structure).toBe(selectedMolecule(stretched).structure);
     cleanedMolecule.bonds.forEach((bond) => {
-      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
+      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeDrawingStyleFromObjectStyle(selectedMolecule(stretched).style).bondLengthPx, 2);
     });
     expect(moleculeAngleDegrees(cleanedMolecule, "atom_001", "atom_002", "atom_003")).toBeCloseTo(180, 3);
   });
@@ -4996,7 +4997,7 @@ describe("Phase 4 document workflow", () => {
     expect(cleanedMolecule.chemistry?.formula).toBe("C3H4");
     expect(cleanedMolecule.bonds).toEqual(selectedMolecule(allene).bonds);
     cleanedMolecule.bonds.forEach((bond) => {
-      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
+      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeDrawingStyleFromObjectStyle(selectedMolecule(stretched).style).bondLengthPx, 2);
     });
     expect(moleculeAngleDegrees(cleanedMolecule, "atom_001", "atom_002", "atom_003")).toBeCloseTo(180, 2);
   });
@@ -5029,7 +5030,7 @@ describe("Phase 4 document workflow", () => {
     expect(cleanedMolecule.bonds).toEqual(closedMolecule.bonds);
     expect(cleanedMolecule.structure).toBe("C1CCCCC1");
     cleanedMolecule.bonds.forEach((bond) => {
-      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
+      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeDrawingStyleFromObjectStyle(selectedMolecule(distorted).style).bondLengthPx, 2);
     });
     expect(moleculeAngleDegrees(cleanedMolecule, "atom_002", "atom_001", "atom_006")).toBeCloseTo(120, 2);
     expect(nativeMoleculeTransformState(cleanedMolecule)).toEqual({
@@ -5087,7 +5088,7 @@ describe("Phase 4 document workflow", () => {
     expect(cleanedMolecule.bonds).toEqual(selectedMolecule(cyclohexene).bonds);
     expect(cleanedMolecule.structure).toBe("C1=CCCCC1");
     cleanedMolecule.bonds.forEach((bond) => {
-      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
+      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeDrawingStyleFromObjectStyle(selectedMolecule(distorted).style).bondLengthPx, 2);
     });
     expect(moleculeAngleDegrees(cleanedMolecule, "atom_002", "atom_001", "atom_006")).toBeCloseTo(120, 2);
     expect(nativeMoleculeTransformState(cleanedMolecule)).toEqual({
@@ -15829,7 +15830,7 @@ describe("PR #7 review regression fixes", () => {
 
     expect(bondLength(next, "bond_001")).toBeCloseTo(96, 6);
     expect(bondLength(next, "bond_003")).toBeCloseTo(untouchedBefore, 6);
-    expect(next.style.bondLengthPx).toBeUndefined();
+    expect(next.style.bondLengthPx).toBe(representativeMoleculeBondLength(next));
     expect(next.style.bondLengths).toEqual({ bond_001: 96 });
     expect(next.bonds.map((bond) => bond.id)).toEqual(molecule.bonds.map((bond) => bond.id));
   });
@@ -17548,6 +17549,153 @@ describe("ring placement valence guard", () => {
 });
 
 
+describe("resized molecule drawing size", () => {
+  function fixture() {
+    const seed = insertNativeTemplateMolecule(createPhase4Document("Resize style"), { x: 360, y: 320 }, "cyclohexane");
+    const molecule = selectedMolecule(seed);
+    return applyPatch(seed, { op: "updateObject", objectId: molecule.id, changes: {
+      style: { ...molecule.style, bondStrokeWidthPx: 1.7, atomLabelFontSizePx: 17,
+        bondColor: "#123456", bondStrokeWidths: { bond_001: 2.1 } }
+    } });
+  }
+
+  const resizePaths = ["object", "parts", "selection"] as const;
+  describe.each(resizePaths)("%s resize", path => {
+    it.each([2.5, 0.6])("updates only the measured style length at %sx in one undo step", factor => {
+      const seed = fixture();
+      const original = selectedMolecule(seed);
+      const document = insertNativeSingleBondMolecule(seed, { x: 650, y: 600 });
+      const untouched = selectedMolecule(document);
+      const resized = path === "object"
+        ? resizeNativeMoleculeObject(document, original.id, { x: factor, y: factor })
+        : path === "parts"
+          ? resizeNativeMoleculeParts(document, { objectId: original.id, kind: "parts",
+              atomIds: original.atoms.map(atom => atom.id), bondIds: [] }, { x: factor, y: factor })
+          : scaleDocumentObjectsAroundPoint(document, [original.id], { x: 360, y: 320 }, factor, factor);
+      const molecule = resized.pages[0]!.objects.find(object => object.id === original.id) as MoleculeObject;
+      const measured = representativeMoleculeBondLength(molecule)!;
+      expect(measured).toBeCloseTo(representativeMoleculeBondLength(original)! * factor, 2);
+      expect(molecule.style).toEqual({ ...original.style, bondLengthPx: measured });
+      expect(resized.pages[0]!.objects.find(object => object.id === untouched.id)).toEqual(untouched);
+      expect(molecule.bonds).toEqual(original.bonds);
+      expect(molecule.chemistry).toEqual(original.chemistry);
+      // MainWindow commits the complete resize result as one history snapshot.
+      const history = { past: [document], present: resized, future: [] };
+      const restored = undo(history);
+      expect(restored.present).toEqual(document);
+      expect(redo(restored).present).toEqual(resized);
+    });
+
+    it("measures nonuniform stretches and partial selections rather than multiplying the old style", () => {
+      const seed = fixture();
+      const original = selectedMolecule(seed);
+      const resized = path === "object"
+        ? resizeNativeMoleculeObject(seed, original.id, { x: 2.5, y: 0.6 })
+        : path === "parts"
+          ? resizeNativeMoleculeParts(seed, { objectId: original.id, kind: "bond", bondId: "bond_001" }, { x: 2.5, y: 0.6 })
+          : scaleDocumentObjectsAroundPoint(seed, [original.id], { x: 360, y: 320 }, 2.5, 0.6);
+      const molecule = selectedMolecule(resized);
+      expect(molecule.style).toEqual({ ...original.style, bondLengthPx: representativeMoleculeBondLength(molecule) });
+    });
+  });
+
+  it.each([2.5, 0.6])("keeps the growth length truthful after an inspector bond resize of %sx", factor => {
+    const seed = fixture();
+    const original = selectedMolecule(seed);
+    const targetLength = representativeMoleculeBondLength(original)! * factor;
+    const resized = applyMoleculeTargetBondLengthToBonds(seed,
+      original.bonds.map(bond => ({ objectId: original.id, bondId: bond.id })), targetLength);
+    const molecule = selectedMolecule(resized);
+    expect(molecule.style).toEqual({ ...original.style,
+      bondLengths: Object.fromEntries(original.bonds.map(bond => [bond.id, targetLength])),
+      bondLengthPx: representativeMoleculeBondLength(molecule) });
+    expect(molecule.bonds).toEqual(original.bonds);
+    expect(undo({ past: [seed], present: resized, future: [] }).present).toEqual(seed);
+  });
+
+  describe.each([2.5, 0.6])("additions after %sx corner resize", factor => {
+    it.each(["cyclohexane", "chairCyclohexaneA", "chairCyclohexaneB"] as const)(
+      "keeps %s atom attachment at the resized size", templateId => {
+        const seed = fixture();
+        const original = selectedMolecule(seed);
+        const resized = resizeNativeMoleculeObject(seed, original.id, { x: factor, y: factor });
+        const molecule = selectedMolecule(resized);
+        const measured = representativeMoleculeBondLength(molecule)!;
+        expect(molecule.style).toEqual({ ...original.style, bondLengthPx: measured });
+        const source = molecule.atoms[0]!;
+        for (const result of [
+          applyNativeTemplateToolAtTarget(resized, moleculeAtomTarget(molecule, source.id), source, templateId),
+          applyNativeRingAttachAtAtomTarget(resized, moleculeAtomTarget(molecule, source.id), templateId)
+        ]) {
+          const attached = selectedMolecule(result);
+          const added = attached.bonds.filter(bond => !molecule.bonds.some(old => old.id === bond.id));
+          expect(added).toHaveLength(6);
+          for (const bond of added) expect(Math.abs(bondLength(attached, bond.id) - measured)).toBeLessThan(0.1);
+          expect(attached.style).toEqual(molecule.style);
+        }
+      }
+    );
+
+    it.each(["bond", "sprout", "cyclic", "chain", "label", "carbonyl", "freeform"] as const)(
+      "sizes the %s addition from the resized molecule", tool => {
+        const seed = fixture();
+        const original = selectedMolecule(seed);
+        const resized = resizeNativeMoleculeObject(seed, original.id, { x: factor, y: factor });
+        const molecule = selectedMolecule(resized);
+        const source = molecule.atoms[0]!;
+        const target = moleculeAtomTarget(molecule, source.id);
+        const measured = representativeMoleculeBondLength(molecule)!;
+        const point = { x: source.x, y: source.y - measured };
+        const result = tool === "bond" ? applySingleBondToolAtPoint(resized, source)
+          : tool === "sprout" ? applyNativeAtomSproutTarget(resized, target, "wedge")
+          : tool === "cyclic" ? applyNativeAtomSproutTarget(resized, target, "cyclic")
+          : tool === "chain" ? applyNativeChainTool(resized, source, { x: source.x, y: source.y - measured * 3 }, target)
+          : tool === "label" ? commitNativeAtomLabelTarget(resized, target, "OMe").document
+          : tool === "carbonyl" ? applyNativeCarbonylAtAtomTarget(resized, target)
+          : applyFreeformSingleBondToolAtPoint(resized, molecule.id, source.id, point);
+        const grown = selectedMolecule(result);
+        const added = grown.bonds.filter(bond => !molecule.bonds.some(old => old.id === bond.id));
+        expect(added.length).toBeGreaterThan(0);
+        for (const bond of added) expect(Math.abs(bondLength(grown, bond.id) - measured)).toBeLessThan(0.1);
+        if (tool === "freeform") {
+          const preview = previewNativeMoleculeFreeformBondGrowth(molecule, source.id, point, 1000, 1000)!;
+          expect(Math.abs(preview.length - measured)).toBeLessThan(0.1);
+          expect(preview.lengthAngstrom).toBeCloseTo(1.56, 2);
+        }
+      }
+    );
+
+    it("snaps a dragged endpoint to the resized length", () => {
+      const seed = insertNativeSingleBondMolecule(createPhase4Document("Resized snap"), { x: 360, y: 320 });
+      const resized = resizeNativeMoleculeObject(seed, selectedMolecule(seed).id, { x: factor, y: factor });
+      const molecule = selectedMolecule(resized);
+      const anchor = molecule.atoms[0]!;
+      const dragged = molecule.atoms[1]!;
+      const measured = representativeMoleculeBondLength(molecule)!;
+      const unit = { x: (dragged.x - anchor.x) / measured, y: (dragged.y - anchor.y) / measured };
+      const delta = snapNativeMoleculePartDragDelta(molecule, { objectId: molecule.id, kind: "atom", atomId: dragged.id },
+        { x: unit.x * 2, y: unit.y * 2 });
+      expect(Math.hypot(dragged.x + delta.x - anchor.x, dragged.y + delta.y - anchor.y)).toBeCloseTo(measured, 2);
+    });
+  });
+
+  it("keeps the spiro ghost at the same atom and orientation as a nearby click on a shrunk molecule", () => {
+    const seed = fixture();
+    const resized = resizeNativeMoleculeObject(seed, selectedMolecule(seed).id, { x: 0.6, y: 0.6 });
+    const molecule = selectedMolecule(resized);
+    const atom = molecule.atoms[0]!;
+    const target = moleculeAtomTarget(molecule, atom.id);
+    const click = { x: atom.x, y: atom.y + 6 };
+    expect(findNativeMoleculeAtomHit(molecule, click)?.atomId).toBe(atom.id);
+    // Successful hover plans are cached per target while the pointer moves inside its hit area.
+    const ghost = planNativeTemplatePlacement(resized, { point: atom, target }, "cyclohexane")!;
+    const committed = selectedMolecule(applyNativeTemplateToolAtTarget(resized, target, click, "cyclohexane"));
+    expect(ghost.kind).toBe("attach-atom");
+    expect(committed.atoms).toEqual(ghost.molecule.atoms);
+    expect(committed.bonds).toEqual(ghost.molecule.bonds);
+  });
+});
+
 describe("document drawing defaults for native insertions", () => {
   it.each(["cyclohexane", "benzene", "chairCyclohexaneA", "chairCyclohexaneB"] as const)(
     "attaches and fuses %s at the actual bond length after a corner-handle resize", templateId => {
@@ -17556,9 +17704,11 @@ describe("document drawing defaults for native insertions", () => {
       const inserted = insertNativeSingleBondMolecule(document, { x: 360, y: 320 });
       const original = selectedMolecule(inserted);
       const originalLength = representativeMoleculeBondLength(original)!;
-      // This is the MainWindow corner-handle path: coordinates scale, drawing style does not.
+      // Ring attachment also handles imported molecules whose drawing style is stale.
       const resized = resizeNativeMoleculeObject(inserted, original.id, { x: 2.5, y: 2.5 });
-      const molecule = selectedMolecule(resized);
+      const truthful = selectedMolecule(resized);
+      const stale = applyPatch(resized, { op: "updateObject", objectId: truthful.id, changes: { style: original.style } });
+      const molecule = selectedMolecule(stale);
       const measuredLength = representativeMoleculeBondLength(molecule)!;
       expect(originalLength).toBeCloseTo(22, 2);
       expect(measuredLength).toBeCloseTo(originalLength * 2.5, 6);
@@ -17569,10 +17719,10 @@ describe("document drawing defaults for native insertions", () => {
       const atomTarget = moleculeAtomTarget(molecule, "atom_001");
       const bondTarget = moleculeBondTarget(molecule, "bond_001");
       const results = [
-        applyNativeTemplateToolAtTarget(resized, atomTarget, moleculeAtom(molecule, "atom_001"), templateId),
-        applyNativeTemplateToolAtTarget(resized, bondTarget, moleculeBondMidpoint(molecule, "bond_001"), templateId),
-        applyNativeRingAttachAtAtomTarget(resized, atomTarget, templateId),
-        applyNativeRingFuseAtBondTarget(resized, bondTarget, templateId)
+        applyNativeTemplateToolAtTarget(stale, atomTarget, moleculeAtom(molecule, "atom_001"), templateId),
+        applyNativeTemplateToolAtTarget(stale, bondTarget, moleculeBondMidpoint(molecule, "bond_001"), templateId),
+        applyNativeRingAttachAtAtomTarget(stale, atomTarget, templateId),
+        applyNativeRingFuseAtBondTarget(stale, bondTarget, templateId)
       ];
       for (const result of results) {
         const attached = selectedMolecule(result);
