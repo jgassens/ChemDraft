@@ -5904,7 +5904,7 @@ export function atomDisplayLabelPlacement(
           - dativeDeprotonationCount(atom, bonds, atoms, resolution)
       ));
 
-  if (element === "C" && formalCharge === 0) {
+  if (element === "C" && formalCharge === 0 && atom.isotope === undefined) {
     const terminalCarbon = atoms.length > 0 && heavyAtomNeighborCount(atom.id, resolution) === 1;
     // "Naked" means no bond at all, not zero covalent valence: a dashed (dative) bond
     // contributes no valence, so testing valenceUsed here labeled the carbon at the end of
@@ -5923,6 +5923,7 @@ export function atomDisplayLabelPlacement(
   // HO, not OH, when the bond comes from the right: chem-core's side test, the same one that
   // records a cyano label's bond side, so the drawing and the chemistry agree on "right".
   const hydrogenBeforeElement =
+    atom.isotope === undefined &&
     implicitHydrogens === "H" &&
     element !== "H" &&
     singleHeavyNeighbor !== undefined &&
@@ -5930,7 +5931,7 @@ export function atomDisplayLabelPlacement(
   return {
     label: hydrogenBeforeElement
       ? `${implicitHydrogens}${element}${chargeLabelSuffix(labelCharge)}`
-      : `${element}${implicitHydrogens}${chargeLabelSuffix(labelCharge)}`
+      : `${atom.isotope ?? ""}${element}${implicitHydrogens}${chargeLabelSuffix(labelCharge)}`
   };
 }
 

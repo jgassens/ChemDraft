@@ -72,3 +72,6 @@ including `kind: "prompt"`; its command and optional select command must also be
 plugin. `context.overlays.setStatus({ overlayId, text })` requires `ui.canvas`, accepts at most
 120 characters, and clears the status with an empty string. Overlay commands receive
 `context.input.source = "overlay"` with the owned `overlayId`.
+
+API 0.1.16 adds optional positive integer isotope mass numbers to native document atoms.
+Native molecule objects and document patches preserve isotope masses; hydrogen-2/3 use D/T elements.
