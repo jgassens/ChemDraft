@@ -4213,8 +4213,8 @@ async fn prewarm_toolset_tooltip(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 /// The actual builder configuration is also the test seam for native creation.
-/// `parent` is an owner on Windows (not a child HWND), and an AppKit child on macOS.
-/// Missing document ownership fails creation rather than leaving a taskbar window.
+/// `parent` is an owner on Windows (not a child HWND). Keep macOS popovers unparented:
+/// AppKit child windows can reveal hidden/prewarmed windows and alter their level/Spaces behavior.
 fn toolset_popover_window_config(
     label: &str,
     toolset_id: &str,
@@ -4235,7 +4235,10 @@ fn toolset_popover_window_config(
             "ChemDraft color picker"
         }
         .into(),
+        #[cfg(windows)]
         parent: Some(MAIN_WINDOW_LABEL.into()),
+        #[cfg(not(windows))]
+        parent: None,
         width: 320.0,
         height: 300.0,
         min_width: Some(96.0),
@@ -9138,7 +9141,10 @@ mod tests {
             ToolsetPopoverFocusMode::Preserve,
         );
         // These are passed directly to WebviewWindowBuilder::from_config.
+        #[cfg(windows)]
         assert_eq!(config.parent.as_deref(), Some(MAIN_WINDOW_LABEL));
+        #[cfg(not(windows))]
+        assert_eq!(config.parent, None);
         assert!(!config.focusable);
         assert!(!config.focus); // Tao's Windows SW_SHOWNOACTIVATE path.
         assert!(!config.visible);
@@ -9167,23 +9173,31 @@ mod tests {
 
     #[cfg(not(windows))]
     #[test]
-    fn bond_stereo_mouse_popover_is_owned_and_nonactivating() {
+    fn bond_stereo_mouse_popover_is_unparented_and_nonactivating() {
         assert_bond_stereo_mouse_creation();
     }
 
     #[test]
     fn keyboard_popovers_and_color_picker_inputs_remain_focusable() {
-        for (toolset, kind) in [("core.bondStereo", "flyout"), ("core.art", "artColor")] {
+        for (toolset, kind, prewarm) in [
+            ("core.bondStereo", "flyout", false),
+            ("core.art", "artColor", false),
+            ("core.art", "artColor", true),
+        ] {
             let config = toolset_popover_window_config(
                 "popover",
                 toolset,
                 kind,
-                false,
+                prewarm,
                 ToolsetPopoverFocusMode::Focus,
             );
             assert!(config.focusable);
             assert!(!config.focus);
+            assert!(!config.visible);
+            #[cfg(windows)]
             assert_eq!(config.parent.as_deref(), Some(MAIN_WINDOW_LABEL));
+            #[cfg(not(windows))]
+            assert_eq!(config.parent, None);
         }
     }
 

@@ -27405,6 +27405,14 @@ function DocumentObjectViewContent({
                   ) : null}
                 </button>
               ) : null}
+            </div>
+          ) : null}
+          {transformFrame && (rotationInput || resizeInput) ? (
+            <div
+              className="object-transform-input-layer"
+              data-has-tilt3d={canProjectedPlaneTilt ? "true" : undefined}
+              style={transformFrameStyle}
+            >
               {rotationInput ? (
                 <RotationInputPopover
                   input={rotationInput}

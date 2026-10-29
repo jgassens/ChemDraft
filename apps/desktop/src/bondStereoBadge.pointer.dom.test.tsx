@@ -46,7 +46,7 @@ beforeEach(() => {
   // invented z-indices, alongside the real MainWindow handle/badge element tree.
   const css = readFileSync(resolve("apps/desktop/src/App.css"), "utf8");
   overlayStyles = document.createElement("style");
-  overlayStyles.textContent = [...css.matchAll(/\.(?:document-object-chrome|native-molecule-overlay|native-bond-stereo-badge-layer|native-bond-stereo-marker|native-atom-invalid-marker|object-transform-frame|object-resize-handle)\s*\{[^}]*\}/g)]
+  overlayStyles.textContent = [...css.matchAll(/\.(?:document-object-chrome|native-molecule-overlay|native-bond-stereo-badge-layer|native-bond-stereo-marker|native-atom-invalid-marker|object-transform-frame|object-transform-input-layer|graphic-gradient-control-layer|graphic-gradient-handle|object-resize-handle)\s*\{[^}]*\}/g)]
     .map(match => match[0]).join("\n");
   document.head.append(overlayStyles);
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
@@ -63,11 +63,18 @@ afterEach(async () => {
 function rect(left: number, top: number, width: number, height: number): DOMRect {
   return { x: left, y: top, left, top, right: left + width, bottom: top + height, width, height, toJSON: () => ({}) };
 }
-async function mount(platform: ShortcutPlatform) {
+async function mount(platform: ShortcutPlatform, { gradient = false, selected = false } = {}) {
   const inserted = insertNativeMolfileMolecule(createPhase4Document("Badge pointer priority"), { x: 250, y: 250 },
     depictSmiles2D("CC=CC", { openUnspecifiedDoubleBonds: true }).molfile, "molfile-v2000");
   const molecule = getSelectedMolecule(inserted)!;
-  const doc = selectDocumentObjects(inserted, inserted.pages[0].id, []);
+  const doc = gradient ? {
+    ...inserted, pages: [{ ...inserted.pages[0], objects: [{ ...molecule, style: {
+      ...molecule.style, fillMode: "solid" as const, fillPaint: {
+        kind: "linear-gradient" as const, units: "object" as const, x1: 0, y1: 0, x2: 1, y2: 1,
+        stops: [{ offset: 0, color: "#ffffff" }, { offset: 1, color: "#1648ff" }]
+      }
+    } }] }]
+  } : selected ? inserted : selectDocumentObjects(inserted, inserted.pages[0].id, []);
   await act(async () => root.render(<MainWindow initialDocument={doc} initialActiveToolCommandId="tool.select"
     initialPaletteMode="hidden" initialCrosshairsVisible={false} initialRulersVisible={false} nativePalette={false}
     shortcutPlatform={platform} />));
@@ -160,7 +167,7 @@ describe.each<ShortcutPlatform>(["macos", "windows"])("badge pointer priority (%
     expect(selection()).toEqual(selected);
     expect(currentDocument()).toBe(before);
   });
-  it("opens over an overlapping selection handle without starting resize or changing selection", async () => {
+  it.each(["badge", "handle"])("opens over an overlapping selection handle with the %s as event target without starting resize or changing selection", async target => {
     const molecule = await mount(platform);
     await click(object(), bondPoint(molecule));
     const center = badgePoint(molecule);
@@ -186,7 +193,9 @@ describe.each<ShortcutPlatform>(["macos", "windows"])("badge pointer priority (%
     expect(getComputedStyle(overlap!.handle).pointerEvents).toBe("all");
     // The actual overlapping candidates, ordered as elementFromPoint would
     // choose them. The old DOM/CSS chose the resize button and fails above.
-    const hit = badgeZ > frameZ ? badge.querySelector("circle")! : overlap!.handle;
+    // Exercise both the topmost badge and the coordinate claim when the native
+    // event still targets the overlapping handle (before/while chrome repaints).
+    const hit = target === "badge" ? badge.querySelector("circle")! : overlap!.handle;
     const before = currentDocument(), selected = selection(), previousStatus = status();
     capture.mockClear();
     await click(hit, overlap!.point);
@@ -199,6 +208,48 @@ describe.each<ShortcutPlatform>(["macos", "windows"])("badge pointer priority (%
     // A leaked resize/move gesture would apply this movement after the click.
     await act(async () => { send(container.querySelector(".page")!, "pointermove", { x: 330, y: 320 }); });
     expect(currentDocument()).toBe(before);
+  });
+
+  it.each(["scale", "rotation"])("stacks badges above handles but below the typed %s input layer", async kind => {
+    // Typed transform entry is available only for whole molecules.
+    const molecule = await mount(platform, { selected: true });
+    badgePoint(molecule);
+    // Rotation handles are revealed with Shift; scale inputs open from any corner.
+    await act(async () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "Shift", shiftKey: true, bubbles: true })));
+    const handle = container.querySelector(kind === "scale" ? ".object-resize-handle" : ".object-rotate-handle")!;
+    expect(handle).not.toBeNull();
+    await act(async () => send(handle, "dblclick", { x: 0, y: 0 }));
+    const input = container.querySelector(`[data-${kind === "scale" ? "scale" : "rotation"}-input-popover]`)!;
+    expect(input).not.toBeNull();
+    const inputLayer = input.closest(".object-transform-input-layer")!;
+    const badgeLayer = container.querySelector(".native-bond-stereo-badge-layer")!;
+    const frame = handle.closest<HTMLElement>(".object-transform-frame")!;
+    expect(inputLayer).not.toBeNull();
+    expect(inputLayer.parentElement).toBe(badgeLayer.parentElement);
+    expect(input.closest(".object-transform-frame")).toBeNull();
+    expect(getComputedStyle(inputLayer).position).toBe("absolute");
+    expect((inputLayer as HTMLElement).style.cssText).toBe(frame.style.cssText);
+    expect(Number(getComputedStyle(frame).zIndex)).toBeLessThan(Number(getComputedStyle(badgeLayer).zIndex));
+    expect(Number(getComputedStyle(badgeLayer).zIndex)).toBeLessThan(Number(getComputedStyle(inputLayer).zIndex));
+    expect(getComputedStyle(inputLayer).pointerEvents).toBe("none");
+  });
+
+  it("stacks gradient handles above the badge layer in the same chrome context", async () => {
+    await mount(platform, { gradient: true });
+    const badgeLayer = container.querySelector(".native-bond-stereo-badge-layer")!;
+    const gradientLayer = container.querySelector(".graphic-gradient-control-layer")!;
+    expect(gradientLayer).not.toBeNull();
+    const handles = [...container.querySelectorAll("[data-graphic-gradient-handle]")];
+    expect(handles).toHaveLength(2);
+    expect(gradientLayer.parentElement).toBe(badgeLayer.parentElement);
+    expect(getComputedStyle(gradientLayer).position).toBe("absolute");
+    expect(Number(getComputedStyle(gradientLayer).zIndex)).toBeGreaterThan(Number(getComputedStyle(badgeLayer).zIndex));
+    for (const handle of handles) {
+      expect(handle.parentElement).toBe(badgeLayer.parentElement);
+      expect(Number(getComputedStyle(handle).zIndex)).toBeGreaterThan(Number(getComputedStyle(badgeLayer).zIndex));
+      expect(Number(getComputedStyle(handle).zIndex)).toBeGreaterThan(Number(getComputedStyle(gradientLayer).zIndex));
+      expect(getComputedStyle(handle).pointerEvents).toBe("all");
+    }
   });
 
   it.each(["molecule", "page"])("opens with nothing selected through the %s target without changing selection", async target => {

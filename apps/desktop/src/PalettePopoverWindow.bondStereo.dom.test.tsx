@@ -66,6 +66,39 @@ describe("document-owned bond stereo popover", () => {
       kind: "flyout", flyout: expect.objectContaining({ variant: "bondStereo", keyboardOpen: keyboard })
     }), { x: 130, y: 254 });
   });
+  it("logs a failed preserve reveal, hides, and releases the document session without activating", async () => {
+    const manager = await vi.importActual<typeof import("./window-manager")>("./window-manager");
+    const host = window as typeof window & { __TAURI__?: unknown };
+    const error = new Error("native preserve reveal failed");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await act(async () => root.render(<Owner />));
+    const ownerAction = native.action;
+    await act(async () => container.querySelector("button")!.click());
+    const [, content, anchor] = vi.mocked(setToolsetPopoverContent).mock.calls[0];
+    expect(content.kind).toBe("flyout");
+    if (content.kind !== "flyout") throw new Error("Expected E/Z flyout");
+    const sessionId = content.flyout.id!;
+    host.__TAURI__ = {};
+    try {
+      // Use the real reveal transport so the no-activating-fallback guarantee and
+      // the popover-to-document close notification are exercised together.
+      native.show.mockImplementationOnce(() => manager.showCurrentToolsetPopoverWindow("preserve"));
+      native.invoke.mockRejectedValueOnce(error);
+      vi.mocked(sendBondStereoPopoverAction).mockImplementationOnce(async payload => { ownerAction?.(payload); });
+      await act(async () => root.render(<><Owner /><PalettePopoverWindow toolsetId="core.bondStereo" kind="flyout" prewarm /></>));
+      await act(async () => native.content?.({ toolsetId: "core.bondStereo", ...content, anchor }));
+      expect(native.invoke).toHaveBeenCalledWith("show_toolset_popover_window", { focusMode: "preserve" });
+      expect(warn).toHaveBeenCalledWith("Toolset popover reveal failed", error);
+      expect(native.hide).toHaveBeenCalledTimes(1);
+      expect(sendBondStereoPopoverAction).toHaveBeenCalledWith({ sessionId, action: "close" });
+      expect(closeToolsetPopoverWindow).toHaveBeenCalledTimes(1);
+      expect(native.fallbackShow).not.toHaveBeenCalled();
+      expect(native.focus).not.toHaveBeenCalled();
+      // A later action from the failed session has no remaining authority.
+      await act(async () => ownerAction?.({ sessionId, action: "close" }));
+      expect(closeToolsetPopoverWindow).toHaveBeenCalledTimes(1);
+    } finally { delete host.__TAURI__; }
+  });
   it.each(["pointer-away", "escape", "scroll", "viewport", "move", "resize", "scale"])("closes a never-focused mouse open on %s", async trigger => {
     await act(async () => root.render(<Owner />));
     await act(async () => container.querySelector("button")!.click());
@@ -221,6 +254,23 @@ describe("open-bond native popover body", () => {
     expect(native.show).toHaveBeenCalledTimes(2);
     await act(async () => finishReveal());
     expect(native.hide).not.toHaveBeenCalled();
+    await act(async () => container.querySelector("button")!.click());
+    expect(sendBondStereoPopoverAction).toHaveBeenCalledWith({ sessionId: "session-2", action: "geometry" });
+  });
+  it("does not let an older failed reveal close a newly opened session", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let failReveal!: (error: Error) => void;
+    native.show.mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { failReveal = reject; }));
+    await open();
+    await act(async () => native.content?.({ toolsetId: "core.bondStereo", kind: "flyout", flyout: {
+      id: "session-2", flyoutId: "core.bondStereo", title: "E/Z not specified", variant: "bondStereo",
+      commands: [{ id: "molecule.bondStereo:geometry", title: "Use drawn geometry (E)", enabled: true, active: false }]
+    } }));
+    const error = new Error("older reveal failed");
+    await act(async () => failReveal(error));
+    expect(warn).toHaveBeenCalledWith("Toolset popover reveal failed", error);
+    expect(native.hide).not.toHaveBeenCalled();
+    expect(sendBondStereoPopoverAction).not.toHaveBeenCalled();
     await act(async () => container.querySelector("button")!.click());
     expect(sendBondStereoPopoverAction).toHaveBeenCalledWith({ sessionId: "session-2", action: "geometry" });
   });

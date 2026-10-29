@@ -271,7 +271,15 @@ export function PalettePopoverWindow({
         }
         perfHook(() => perfProbe?.surfaceShown(perfShown, "popover-shown"));
         if (perfShownRef.current === perfShown) perfShownRef.current = undefined;
-      } catch {
+      } catch (error) {
+        console.warn("Toolset popover reveal failed", error);
+        // A failed nonactivating reveal must release the document's E/Z session,
+        // without hiding or closing a newer session that reused this window.
+        if (contentRef.current === content) {
+          dismissedRef.current = true;
+          notifyBondStereoClose();
+          hidePopoverWindow();
+        }
         perfHook(() => perfProbe?.surfaceShown(perfShown, "failed"));
         if (perfShownRef.current === perfShown) perfShownRef.current = undefined;
       }
