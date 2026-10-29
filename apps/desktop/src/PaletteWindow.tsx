@@ -728,6 +728,7 @@ export function PaletteWindow({
   );
 
   const openPopover = (anchor: ToolbarPopoverAnchor, kind: string, content: ToolsetPopoverContent) => {
+    content = { ...content, openedAt: toolsetPopoverTimestamp() };
     void (async () => {
       // No silent origin fallback: a failed position read once sent the first popover
       // open to the anchor offset from (0,0) — inches from its button — while every

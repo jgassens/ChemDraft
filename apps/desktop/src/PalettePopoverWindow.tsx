@@ -60,6 +60,7 @@ export function PalettePopoverWindow({
   // (or answer its own mount content-request) before then — its initial state is a placeholder.
   const contentPushedRef = useRef(false);
   const contentOpenedAt = useRef(0);
+  const latestDismissAt = useRef(-Infinity);
   const perfShownRef = useRef<ReturnType<NonNullable<typeof perfProbe>["surfaceStarted"]>>(undefined);
   // Set the moment this popover is dismissed (Escape, click-away, a chosen flyout command) so an
   // in-flight reveal chain cannot show it again after the user has closed it.
@@ -77,8 +78,7 @@ export function PalettePopoverWindow({
   const [artStyle, setArtStyle] = useState<ToolsetArtStylePayload | undefined>();
   const contentRef = useRef(content);
   contentRef.current = content;
-  const notifyBondStereoClose = () => {
-    const current = contentRef.current;
+  const notifyBondStereoClose = (current = contentRef.current) => {
     if (current.kind === "flyout" && current.flyout.variant === "bondStereo" && current.flyout.id) {
       void sendBondStereoPopoverAction({ sessionId: current.flyout.id, action: "close" }).catch(() => undefined);
     }
@@ -113,6 +113,14 @@ export function PalettePopoverWindow({
       if (payload.toolsetId !== toolsetId) {
         return;
       }
+      contentPushedRef.current = true;
+      const openedAt = payload.openedAt ?? toolsetPopoverTimestamp();
+      // Dismiss IPC and content IPC can arrive in either order. A genuine press
+      // after this open began wins even if the window had no content at the time.
+      if (latestDismissAt.current >= openedAt) {
+        notifyBondStereoClose(payload);
+        return;
+      }
       if (payload.kind === "flyout" && payload.flyout.variant === "bondStereo" && payload.flyout.id) {
         if (closedBondStereoSessions.current.has(payload.flyout.id)) return;
         const current = contentRef.current;
@@ -122,9 +130,8 @@ export function PalettePopoverWindow({
       }
       if (perfShownRef.current) perfHook(() => perfProbe?.surfaceShown(perfShownRef.current, "no-op"));
       perfShownRef.current = perfHook(() => perfProbe?.surfaceStarted("palette-popover", undefined, payload.kind === "flyout" ? payload.flyout.flyoutId : "artColor"));
-      contentPushedRef.current = true;
       // A fresh push is a fresh open — it may follow a dismissal.
-      contentOpenedAt.current = toolsetPopoverTimestamp();
+      contentOpenedAt.current = openedAt;
       dismissedRef.current = false;
       if (payload.anchor && typeof payload.anchor.x === "number" && typeof payload.anchor.y === "number") {
         anchorRef.current = payload.anchor;
@@ -300,7 +307,7 @@ export function PalettePopoverWindow({
       return undefined;
     }
     const fallback = window.setTimeout(() => {
-      if (contentPushedRef.current) {
+      if (contentPushedRef.current || dismissedRef.current) {
         return;
       }
       void showCurrentToolsetPopoverWindow().catch(() => undefined);
@@ -349,9 +356,13 @@ export function PalettePopoverWindow({
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     void listenForToolsetPopoverDismiss(payload => {
-      // Broadcast delivery can lag behind the click that replaces this window's
-      // content. A press before that content was set must not hide the new open.
-      if (payload?.requestedAt !== undefined && payload.requestedAt < contentOpenedAt.current) return;
+      // Remember even an out-of-order broadcast for content still in transit.
+      // Only presses before the originating open are stale, not presses before
+      // the content arrived in this webview.
+      if (payload?.requestedAt !== undefined) {
+        latestDismissAt.current = Math.max(latestDismissAt.current, payload.requestedAt);
+        if (payload.requestedAt < contentOpenedAt.current) return;
+      }
       dismissedRef.current = true;
       notifyBondStereoClose();
       hidePopoverWindow();

@@ -6,12 +6,13 @@ import { PalettePopoverWindow } from "./PalettePopoverWindow";
 import { sendBondStereoPopoverAction, sendPaletteCommand, type ToolsetPopoverDismissPayload, type ToolsetPopoverContentPayload } from "./window-manager";
 import { useBondStereoPopover } from "./useBondStereoPopover";
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
-import { closeToolsetPopoverWindow, openToolsetPopoverWindow, setToolsetPopoverContent } from "./window-manager";
+import { closeToolsetPopoverWindow, currentWindowLogicalPosition, openToolsetPopoverWindow, setToolsetPopoverContent } from "./window-manager";
 
 const native = vi.hoisted(() => ({
   content: undefined as undefined | ((payload: ToolsetPopoverContentPayload) => void),
   action: undefined as undefined | ((payload: { sessionId: string; action: string }) => void),
   dismiss: undefined as undefined | ((payload?: ToolsetPopoverDismissPayload) => void),
+  request: undefined as undefined | ((toolsetId: string) => void),
   hide: vi.fn(async () => {}), focus: vi.fn(async () => {}), show: vi.fn(async () => {}),
   invoke: vi.fn(async (_command: string, _args?: Record<string, unknown>) => {}),
   fallbackShow: vi.fn(async () => {}),
@@ -40,7 +41,7 @@ vi.mock("./window-manager", async importOriginal => ({
   sendBondStereoPopoverAction: vi.fn(async () => {}), sendPaletteCommand: vi.fn(async () => {}),
   currentWindowLogicalPosition: vi.fn(async () => ({ x: 100, y: 200 })),
   openToolsetPopoverWindow: vi.fn(async () => {}), closeToolsetPopoverWindow: vi.fn(async () => {}),
-  setToolsetPopoverContent: vi.fn(async () => {}), listenForToolsetPopoverContentRequests: vi.fn(async () => () => {}),
+  setToolsetPopoverContent: vi.fn(async () => {}), listenForToolsetPopoverContentRequests: vi.fn(async handler => { native.request = handler; return () => {}; }),
   sendPaletteCommandCancel: vi.fn(async () => {})
 }));
 
@@ -65,6 +66,22 @@ describe("document-owned bond stereo popover", () => {
     expect(setToolsetPopoverContent).toHaveBeenCalledWith("core.bondStereo", expect.objectContaining({
       kind: "flyout", flyout: expect.objectContaining({ variant: "bondStereo", keyboardOpen: keyboard })
     }), { x: 130, y: 254 });
+  });
+  it("carries the session's original open time through delayed positioning and startup replay", async () => {
+    const now = vi.spyOn(performance, "now").mockReturnValue(100);
+    let finishPosition!: (position: { x: number; y: number }) => void;
+    vi.mocked(currentWindowLogicalPosition).mockImplementationOnce(() => new Promise(resolve => { finishPosition = resolve; }));
+    await act(async () => root.render(<Owner />));
+    await act(async () => container.querySelector("button")!.click());
+    expect(setToolsetPopoverContent).not.toHaveBeenCalled();
+    now.mockReturnValue(300);
+    await act(async () => finishPosition({ x: 100, y: 200 }));
+    const content = vi.mocked(setToolsetPopoverContent).mock.calls[0][1];
+    expect(content.openedAt).toBe(performance.timeOrigin + 100);
+    now.mockReturnValue(400);
+    await act(async () => native.request?.("core.bondStereo"));
+    expect(setToolsetPopoverContent).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(setToolsetPopoverContent).mock.calls[1][1]).toEqual(content);
   });
   it("logs a failed preserve reveal, hides, and releases the document session without activating", async () => {
     const manager = await vi.importActual<typeof import("./window-manager")>("./window-manager");
@@ -165,6 +182,72 @@ async function open(keyboardOpen = false) {
 }
 
 describe("open-bond native popover body", () => {
+  function snapshot(variant: "artColor" | "menu" | "bondStereo", openedAt: number): ToolsetPopoverContentPayload {
+    const timing = { openedAt };
+    return variant === "artColor" ? { toolsetId: "core.art", kind: "artColor", ...timing } : {
+      toolsetId: variant === "bondStereo" ? "core.bondStereo" : "core.art", kind: "flyout", ...timing,
+      flyout: { id: "delayed-session", flyoutId: variant, title: "Choices", variant,
+        commands: [{ id: "tool.rectangle", title: "Rectangle", enabled: true, active: false }] }
+    };
+  }
+  it.each(["artColor", "menu", "bondStereo"] as const)("never reveals delayed %s content after a genuine dismiss arrived first", async variant => {
+    vi.spyOn(performance, "now").mockReturnValue(300);
+    const payload = snapshot(variant, performance.timeOrigin + 100);
+    await act(async () => root.render(<PalettePopoverWindow toolsetId={payload.toolsetId} kind={payload.kind} prewarm />));
+    await act(async () => native.dismiss?.({ requestedAt: performance.timeOrigin + 200 }));
+    await act(async () => native.content?.(payload));
+    expect(native.show).not.toHaveBeenCalled();
+    if (variant === "bondStereo") {
+      expect(sendBondStereoPopoverAction).toHaveBeenCalledWith({ sessionId: "delayed-session", action: "close" });
+    }
+    // A startup replay must not resurrect that same cancelled open either.
+    await act(async () => native.content?.(payload));
+    expect(native.show).not.toHaveBeenCalled();
+  });
+  it.each(["artColor", "menu", "bondStereo"] as const)("hides %s for a genuine press delivered after content even when the press predates delivery", async variant => {
+    vi.spyOn(performance, "now").mockReturnValue(300);
+    const payload = snapshot(variant, performance.timeOrigin + 100);
+    await act(async () => root.render(<PalettePopoverWindow toolsetId={payload.toolsetId} kind={payload.kind} prewarm />));
+    await act(async () => native.content?.(payload));
+    expect(native.show).toHaveBeenCalledTimes(1);
+    await act(async () => native.dismiss?.({ requestedAt: performance.timeOrigin + 200 }));
+    expect(native.hide).toHaveBeenCalledTimes(1);
+    if (variant === "bondStereo") {
+      expect(sendBondStereoPopoverAction).toHaveBeenCalledWith({ sessionId: "delayed-session", action: "close" });
+    }
+  });
+  it.each(["before", "after"])("honors a dismiss stamped exactly at the open time delivered %s content", async order => {
+    vi.spyOn(performance, "now").mockReturnValue(300);
+    const payload = snapshot("artColor", performance.timeOrigin + 100);
+    const dismiss = () => native.dismiss?.({ requestedAt: payload.openedAt! });
+    await act(async () => root.render(<PalettePopoverWindow toolsetId="core.art" prewarm />));
+    if (order === "before") await act(async () => dismiss());
+    await act(async () => native.content?.(payload));
+    if (order === "after") await act(async () => dismiss());
+    expect(native.show).toHaveBeenCalledTimes(order === "before" ? 0 : 1);
+    expect(native.hide).toHaveBeenCalledTimes(1);
+  });
+  it("retains the latest dismiss despite out-of-order delivery and allows a genuinely newer open", async () => {
+    vi.spyOn(performance, "now").mockReturnValue(500);
+    await act(async () => root.render(<PalettePopoverWindow toolsetId="core.art" prewarm />));
+    await act(async () => native.dismiss?.({ requestedAt: performance.timeOrigin + 300 }));
+    await act(async () => native.dismiss?.({ requestedAt: performance.timeOrigin + 100 }));
+    await act(async () => native.content?.(snapshot("artColor", performance.timeOrigin + 200)));
+    expect(native.show).not.toHaveBeenCalled();
+    await act(async () => native.content?.(snapshot("artColor", performance.timeOrigin + 400)));
+    expect(native.show).toHaveBeenCalledTimes(1);
+    await act(async () => native.content?.(snapshot("artColor", performance.timeOrigin + 200)));
+    expect(native.hide).toHaveBeenCalledTimes(2); // Only the two original dismiss broadcasts.
+  });
+  it.each(["artColor", "menu", "bondStereo"] as const)("ignores the opening-press dismiss delivered before %s content", async variant => {
+    vi.spyOn(performance, "now").mockReturnValue(300);
+    const payload = snapshot(variant, performance.timeOrigin + 200);
+    await act(async () => root.render(<PalettePopoverWindow toolsetId={payload.toolsetId} kind={payload.kind} prewarm />));
+    await act(async () => native.dismiss?.({ requestedAt: performance.timeOrigin + 100 }));
+    await act(async () => native.content?.(payload));
+    expect(native.show).toHaveBeenCalledTimes(1);
+    expect(sendBondStereoPopoverAction).not.toHaveBeenCalled();
+  });
   it("keeps the shared color picker reveal focusable and its text input editable", async () => {
     await act(async () => root.render(<PalettePopoverWindow toolsetId="core.art" kind="artColor" prewarm />));
     await act(async () => native.content?.({ toolsetId: "core.art", kind: "artColor" }));

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { dismissToolsetPopovers, listenForToolsetPopoverDismiss, TOOLSET_POPOVER_DISMISS_EVENT, toolsetPopoverTimestamp } from "./index";
+import { dismissToolsetPopovers, listenForToolsetPopoverDismiss, listenForToolsetPopoverContent, setToolsetPopoverContent,
+  TOOLSET_POPOVER_DISMISS_EVENT, toolsetPopoverTimestamp } from "./index";
 
 const transport = vi.hoisted(() => ({
   emit: vi.fn(async (_event: string, _payload?: unknown) => {}),
@@ -38,5 +39,19 @@ it("preserves unconditional unstamped broadcasts, including Tauri's null payload
     transport.receive?.({ event: TOOLSET_POPOVER_DISMISS_EVENT, id: 1, payload });
     expect(handler).toHaveBeenLastCalledWith(payload);
   }
+  stop();
+});
+
+it("transports the originating open time with the content without restamping it", async () => {
+  const handler = vi.fn();
+  const stop = await listenForToolsetPopoverContent(handler);
+  const openedAt = toolsetPopoverTimestamp() - 100;
+  const content = { kind: "artColor", openedAt } as const;
+  const anchor = { x: 10, y: 20 };
+  await setToolsetPopoverContent("core.art", content, anchor);
+  const payload = { toolsetId: "core.art", anchor, ...content };
+  expect(transport.emit).toHaveBeenCalledWith("chemdraft://toolset-popover-content", payload);
+  transport.receive?.({ event: "chemdraft://toolset-popover-content", id: 1, payload });
+  expect(handler).toHaveBeenCalledWith(payload);
   stop();
 });

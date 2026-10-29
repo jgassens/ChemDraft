@@ -113,7 +113,7 @@ export function useBondStereoPopover(options: {
     const actions = [createBondStereoActions(state)[1], createFlippedBondStereoAction(state,
       nativeBondStereoFlipDisabledReason(document, [target], reader))];
     const id = `bond-stereo-${Date.now()}-${++serial.current}`;
-    const opened: Session = { id, openedAt, document, target, content: { kind: "flyout", flyout: {
+    const opened: Session = { id, openedAt, document, target, content: { kind: "flyout", openedAt, flyout: {
       id, flyoutId: BOND_STEREO_POPOVER_ID, title: "E/Z not specified", variant: "bondStereo", keyboardOpen: request.keyboard,
       commands: actions.map(action => ({ id: action.id, title: action.title, enabled: action.enabled !== false,
         active: false, disabledReason: action.disabledReason }))

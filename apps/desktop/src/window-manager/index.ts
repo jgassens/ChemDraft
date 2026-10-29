@@ -355,9 +355,14 @@ export interface ToolsetFlyoutSnapshot {
  * so opening the colour picker vs a flyout dropdown just swaps the content in the same window —
  * no per-kind windows to keep in sync, and no way for a stale kind to coexist.
  */
-export type ToolsetPopoverContent =
+export type ToolsetPopoverContent = {
+  /** Captured by the opener before any async work, using toolsetPopoverTimestamp().
+   *  Retained on startup replays so a delayed snapshot cannot undo click-away. */
+  openedAt?: number;
+} & (
   | { kind: "artColor" }
-  | { kind: "flyout"; flyout: ToolsetFlyoutSnapshot };
+  | { kind: "flyout"; flyout: ToolsetFlyoutSnapshot }
+);
 
 /** Where the popover's top-left belongs, in global logical coordinates. Rides the content
  *  push so the popover can re-assert it AFTER sizing itself: macOS anchors window resizes
