@@ -23,7 +23,7 @@ export function InsertTableForm({ title, initial, onSubmit, onCancel, busy = fal
       }
       if (event.key === "F5" || modifier && event.key.toLowerCase() === "r") event.preventDefault();
     }} onSubmit={event => { event.preventDefault(); if (valid && !busy && !composing.current) onSubmit(options); }}>
-    <h2>Insert Table</h2><p>Drawing: <strong>{title}</strong></p>
+    <h2>Insert Table</h2><p className="cd-insert-table-drawing">Drawing: <strong title={title}>{title}</strong></p>
     <div className="cd-page-size-fields">
       <label>Rows<input autoFocus type="number" min={1} max={500} step={1} value={rows} onChange={e => setRows(e.target.value)} /></label>
       <label>Columns<input type="number" min={1} max={64} step={1} value={columns} onChange={e => setColumns(e.target.value)} /></label>
