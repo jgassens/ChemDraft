@@ -23,6 +23,11 @@ it.each(["macos", "windows"] as const)("reserves status space and stable row met
     expect(form.classList.contains("cd-insert-table-form")).toBe(true);
     expect(getComputedStyle(form).display).toBe("flex");
     expect(getComputedStyle(form).minHeight).toBe("max(240px, 100vh)");
+    // Native minimum width leaves 444px after padding: three 90px inputs, three
+    // 10px gaps and ample room for the native Style select on either platform.
+    const native = readFileSync("apps/desktop/src-tauri/src/dialog_windows.rs", "utf8");
+    const spec = native.match(/"insertTable" => Ok\(DialogKindSpec \{([\s\S]*?)\}\),/)![1]!;
+    expect(spec).toContain("min_size: (480.0, 240.0)");
     const status = container.querySelector('[role="status"]')!;
     expect(status.textContent).toBe("");
     expect(getComputedStyle(status).minHeight).toBe("32px");

@@ -791,6 +791,23 @@ describe("every chemistry method survives the worker boundary", () => {
 });
 
 describe("documents.applyPatch survives the worker boundary", () => {
+  it.each([["^0.1.17", false], ["^0.1.18", true]] as const)(
+    "offers insertTable across the worker boundary for %s: %s", async (apiVersion, present) => {
+      const manifest = parsePluginManifest({ id: "org.test.table-worker", name: "Table Worker", version: "1",
+        apiVersion, entry: "worker.js", permissions: ["document.write"],
+        contributes: { commands: [{ id: "plugin.tableWorker.insert", title: "Make table" }] }
+      });
+      const host = new PluginHost();
+      const bridge = startWorkerRoutedPlugin({ manifest, commandHandlers: {
+        "plugin.tableWorker.insert": context => ({ present: typeof context.documents.insertTable === "function" })
+      } });
+      host.registerPlugin(manifest, delegatingOptions(manifest, bridge));
+      try {
+        await expect(host.invokeCommand("plugin.tableWorker.insert")).resolves.toEqual({ present });
+      } finally { bridge.terminate(); }
+    }
+  );
+
   it("round-trips a native table spec and receipt through the gated worker capability", async () => {
     const manifest = parsePluginManifest({ id: "org.test.table-worker", name: "Table Worker", version: "1",
       apiVersion: "^0.1.18", entry: "worker.js", permissions: ["document.write"],

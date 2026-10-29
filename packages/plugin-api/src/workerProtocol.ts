@@ -237,6 +237,13 @@ function compareSemver(a: Semver, b: Semver): number {
   return a.major - b.major || a.minor - b.minor || a.patch - b.patch;
 }
 
+/** Whether the declared API range starts at or after the introduction of documents.insertTable.
+ * Exact, caret and tilde ranges have the same lower bound as in the compatibility check below. */
+export function supportsPluginTableInsertion(declaredRange: string): boolean {
+  const minimum = parseSemver(declaredRange.trim().replace(/^[~^]/, ""));
+  return minimum !== undefined && compareSemver(minimum, { major: 0, minor: 1, patch: 18 }) >= 0;
+}
+
 /**
  * Pragmatic compatibility check for the worker startup handshake: does the host's concrete
  * {@link PluginApiVersion} satisfy the range a plugin declares in its manifest `apiVersion`? Supports

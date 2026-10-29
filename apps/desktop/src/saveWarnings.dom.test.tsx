@@ -61,6 +61,7 @@ it("keeps empty status space click-through and only the truncated text interacti
   expect(rule(".status-row-main")).toContain("align-items: baseline;");
   expect(rule(".status-row-main")).toContain("flex: 1 1 auto;");
   const slot = rule(".status-message-slot");
+  expect(slot).toContain("contain: inline-size;");
   expect(slot).toContain("pointer-events: none;");
   expect(slot).toContain("flex: 1 1 0;");
   expect(slot).toContain("min-width: 0;");

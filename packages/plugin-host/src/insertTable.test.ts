@@ -26,11 +26,11 @@ function setup(run: (context: PluginCommandContext) => unknown, write = true, ov
 }
 
 describe("command-scoped native table insertion", () => {
-  it("exposes insertTable only to plugins declaring API 0.1.18 or newer", async () => {
-    const old = setup(context => expect(context.documents.insertTable).toBeUndefined(), true, {}, "^0.1.17");
-    const current = setup(context => expect(context.documents.insertTable).toBeTypeOf("function"));
-    await old.host.invokeCommand("plugin.tables.insert");
-    await current.host.invokeCommand("plugin.tables.insert");
+  it.each([
+    ["^0.1.17", false], ["^0.1.18", true], ["^0.1.20", true], ["^0.2.0", true], ["0.1.18", true]
+  ] as const)("gates insertTable by the declared minimum %s", async (apiVersion, present) => {
+    const s = setup(context => expect(typeof context.documents.insertTable).toBe(present ? "function" : "undefined"), true, {}, apiVersion);
+    await s.host.invokeCommand("plugin.tables.insert");
   });
   it("omits the capability without document.write and uses the same permission error as applyPatch", async () => {
     const s = setup(context => expect(context.documents.insertTable).toBeUndefined(), false);

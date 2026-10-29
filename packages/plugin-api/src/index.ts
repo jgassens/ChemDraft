@@ -1850,6 +1850,7 @@ export {
   PLUGIN_WORKER_CAPABILITY_METHODS,
   PluginWorkerErrorCodes,
   isPluginApiVersionCompatible,
+  supportsPluginTableInsertion,
   checkWorkerHandshake,
   type PluginWorkerCapabilityNamespace,
   type PluginWorkerErrorPayload,

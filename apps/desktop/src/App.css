@@ -5837,6 +5837,8 @@ textarea:focus-visible,
 /* Give remaining space to the slot, keeping the warnings button after it rather than after the text.
    Only the content-sized, single-line text inside receives hover events; it still truncates. */
 .status-message-slot {
+  /* Hover help must not contribute to the row's content basis and move the warnings button. */
+  contain: inline-size;
   flex: 1 1 0;
   min-width: 0;
   display: flex;

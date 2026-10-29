@@ -12,6 +12,7 @@ import {
   PluginWorkerErrorCodes,
   checkWorkerHandshake,
   isPluginApiVersionCompatible,
+  supportsPluginTableInsertion,
   type HostToWorkerMessage,
   type PluginWorkerEndpoint,
   type WorkerToHostMessage
@@ -66,6 +67,15 @@ function manifest(permissions: PluginManifest["permissions"]): PluginManifest {
     }
   });
 }
+
+describe("supportsPluginTableInsertion", () => {
+  it.each([
+    ["^0.1.17", false], ["^0.1.18", true], ["^0.1.20", true], ["^0.2.0", true], ["0.1.18", true],
+    ["~0.1.17", false], [" ~0.1.18 ", true], ["invalid", false]
+  ] as const)("checks the minimum of %s", (range, expected) => {
+    expect(supportsPluginTableInsertion(range)).toBe(expected);
+  });
+});
 
 describe("isPluginApiVersionCompatible", () => {
   it("accepts a caret range the host satisfies and rejects one it does not", () => {
