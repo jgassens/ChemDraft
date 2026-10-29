@@ -2,7 +2,7 @@
 // The output has the input shape of TableSpecSchema in document-workflow-core, which this package must not
 // import; tables.test.ts parses every result with that schema.
 
-import type { ClipboardReadPayload } from "./index";
+import { isTextLikeType, type ClipboardReadPayload } from "./index";
 
 export type ClipboardTableAlign = "left" | "center" | "right" | "decimal";
 
@@ -17,11 +17,13 @@ export interface ClipboardTableSpan {
 /** A cell is plain text, or text with formatted runs whose texts join to the cell text. */
 export type ClipboardTableCell = string | { text: string; spans: ClipboardTableSpan[] };
 
-/** A table in the shape the native table builder accepts (no caption or footnotes). */
+/** A table in the shape the native table builder accepts. */
 export interface ClipboardTableSpec {
   columns: Array<{ align: ClipboardTableAlign }>;
   rows: ClipboardTableCell[][];
   headerRows?: ClipboardTableCell[][];
+  caption?: ClipboardTableCell;
+  footnotes?: ClipboardTableCell[];
 }
 
 /** A detected table, or the reason a table-shaped clipboard cannot be imported. */
@@ -32,7 +34,7 @@ export type ClipboardTableResult =
 // Mirrors TABLE_LIMITS in chem-core; tables.test.ts asserts the two stay equal.
 export const CLIPBOARD_TABLE_LIMITS = {
   maxColumns: 64, maxRows: 500, maxCellCharacters: 2000,
-  maxTableCharacters: 200000, maxSpansPerCell: 200
+  maxTableCharacters: 200000, maxSpansPerCell: 200, maxFootnotes: 50
 } as const;
 const LIMITS = CLIPBOARD_TABLE_LIMITS;
 
@@ -40,10 +42,16 @@ const WARN_MERGED = "Merged cells were split into separate cells.";
 const WARN_RAGGED = "Short rows were padded with empty cells.";
 const WARN_NESTED = "Nested tables were flattened to text.";
 const WARN_IMAGES = "Images in the table were not imported.";
-const WARN_CAPTION = "The table caption was not imported.";
 
 const NUMBER_PATTERNS = [/^[+\-−]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?$/, /^[+\-−]?\.\d+$/];
 const DASH_PATTERN = /^[-–—]$/;
+const OVERFLOW_PATTERN = /^#+$/;
+const EXCEL_NUMBER_PATTERN = /^[+\-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+\-]?\d+)?$/;
+
+function overflowWarning(row: number, column: number): string {
+  return `The cell in row ${row}, column ${column} contains Excel overflow text (#); `
+    + "its value was unavailable in x:num and the matching TSV, so the overflow text was kept.";
+}
 
 function fail(reason: string): ClipboardTableResult {
   return { ok: false, reason };
@@ -72,6 +80,44 @@ function tableCharacterRefusal(count: number): ClipboardTableResult | undefined 
   if (count <= LIMITS.maxTableCharacters) return undefined;
   return fail(`This table has ${count.toLocaleString("en-US")} characters; `
     + `ChemDraft tables hold at most ${LIMITS.maxTableCharacters.toLocaleString("en-US")}.`);
+}
+
+/** Captions and footnotes have the same text/run caps as cells and count toward the table total. */
+function addTableNotes(
+  result: Extract<ClipboardTableResult, { ok: true }>,
+  leading: ClipboardTableCell[],
+  trailing: ClipboardTableCell[]
+): ClipboardTableResult {
+  if (trailing.length > LIMITS.maxFootnotes) {
+    return fail(`The table has ${trailing.length} footnotes; ChemDraft tables hold at most ${LIMITS.maxFootnotes}.`);
+  }
+  for (const [kind, notes] of [["caption paragraph", leading], ["footnote", trailing]] as const) {
+    for (const [index, note] of notes.entries()) {
+      if (cellText(note).length > LIMITS.maxCellCharacters) {
+        return fail(`The ${kind} ${index + 1} has ${cellText(note).length} characters; `
+          + `ChemDraft table cells hold at most ${LIMITS.maxCellCharacters}.`);
+      }
+      if (typeof note !== "string" && note.spans.length > LIMITS.maxSpansPerCell) {
+        return fail(`The ${kind} ${index + 1} has ${note.spans.length} spans; `
+          + `ChemDraft table cells hold at most ${LIMITS.maxSpansPerCell}.`);
+      }
+    }
+  }
+  const allCells = [...(result.spec.headerRows ?? []).flat(), ...result.spec.rows.flat(), ...leading, ...trailing];
+  const refusal = tableCharacterRefusal(allCells.reduce((sum, cell) => sum + cellText(cell).length, 0));
+  if (refusal) return refusal;
+  return {
+    ...result,
+    spec: {
+      ...result.spec,
+      ...(leading.length ? { caption: leading[leading.length - 1] } : {}),
+      ...(trailing.length ? { footnotes: trailing } : {})
+    },
+    warnings: [
+      ...result.warnings,
+      ...leading.slice(0, -1).map((note) => `The paragraph before the caption was not imported: ${JSON.stringify(cellText(note))}.`)
+    ]
+  };
 }
 
 function isNumberText(text: string): boolean {
@@ -112,6 +158,7 @@ interface Piece {
 interface CellEntry {
   input: ClipboardTableCell;
   filler: boolean;
+  overflow?: boolean;
   align?: ClipboardTableAlign;
 }
 interface RowSource {
@@ -357,22 +404,49 @@ function hasTableAncestor(element: Element): boolean {
   return false;
 }
 
-function hasTextOutside(node: Node, table: Element): boolean {
-  for (const child of Array.from(node.childNodes)) {
-    if (child === table) {
-      continue;
+/** Only paragraphs around the table can be represented as a caption and footnotes. */
+function tableNotes(root: Element, table: Element): {
+  leading: ClipboardTableCell[]; trailing: ClipboardTableCell[]; unsafe: boolean;
+} {
+  const leading: ClipboardTableCell[] = [];
+  const trailing: ClipboardTableCell[] = [];
+  let after = false;
+  let unsafe = false;
+  const walk = (node: Node, format: Format): void => {
+    if (node === table) {
+      after = true;
+      return;
     }
-    if (child.nodeType === 3) {
-      if (/[^\s ]/.test(child.nodeValue ?? "")) {
-        return true;
-      }
-    } else if (child.nodeType === 1 && !SKIP_TAGS.has(tagOf(child as Element))) {
-      if (hasTextOutside(child, table)) {
-        return true;
-      }
+    if (node.nodeType === 3) {
+      unsafe ||= /[^\s ]/.test(node.nodeValue ?? "");
+      return;
     }
+    if (node.nodeType !== 1) return;
+    const element = node as Element;
+    const tag = tagOf(element);
+    if (SKIP_TAGS.has(tag) || styleProperty(element, "display") === "none") return;
+    const inherited = childFormat(element, format);
+    if (tag === "p" || (tag === "div" && !element.querySelector("p, div, table"))) {
+      const collector = new CellCollector();
+      for (const child of Array.from(element.childNodes)) collector.walk(child, inherited);
+      const note = collector.finish();
+      unsafe ||= collector.images || collector.nested;
+      if (cellText(note) !== "") (after ? trailing : leading).push(note);
+      return;
+    }
+    if (tag === "img" || tag === "svg") unsafe = true;
+    for (const child of Array.from(element.childNodes)) walk(child, inherited);
+  };
+  walk(root, PLAIN);
+  const caption = Array.from(table.children).find((child) => tagOf(child) === "caption");
+  if (caption) {
+    const collector = new CellCollector();
+    for (const child of Array.from(caption.childNodes)) collector.walk(child, childFormat(caption, PLAIN));
+    const note = collector.finish();
+    unsafe ||= collector.images || collector.nested;
+    if (cellText(note) !== "") leading.push(note);
   }
-  return false;
+  return { leading, trailing, unsafe };
 }
 
 /** Row sources in thead, tbody, tfoot order, each knowing where its row group ends. */
@@ -474,10 +548,10 @@ function specFromGrid(
   };
 }
 
-function convertTable(table: Element): ClipboardTableResult | undefined {
+function convertTable(table: Element, payload: ClipboardReadPayload): ClipboardTableResult | undefined {
   const { rows, headCount } = collectRows(table);
   if (rows.length === 0) {
-    return undefined;
+    return fail("The HTML table has no readable rows.");
   }
   if (rows.length > LIMITS.maxRows) {
     return tooManyRows(rows.length);
@@ -490,6 +564,7 @@ function convertTable(table: Element): ClipboardTableResult | undefined {
   if (nominal > LIMITS.maxColumns) {
     return tooManyColumns(nominal);
   }
+  if (nominal === 0) return fail("The HTML table has no readable cells.");
   if (nominal * rows.length < 2) {
     return undefined;
   }
@@ -499,6 +574,7 @@ function convertTable(table: Element): ClipboardTableResult | undefined {
   const headerFlags: boolean[] = [];
   let nested = false;
   let images = false;
+  let originalCharacters = 0;
   for (let r = 0; r < rows.length; r += 1) {
     const cells = cellsOf(rows[r].element);
     headerFlags.push(cells.length > 0 && cells.every((cell) => tagOf(cell) === "th"));
@@ -521,15 +597,28 @@ function convertTable(table: Element): ClipboardTableResult | undefined {
       }
       nested ||= collector.nested;
       images ||= collector.images;
-      const input = collector.finish();
+      let input = collector.finish();
       if (cellText(input).length > LIMITS.maxCellCharacters) {
         return tooLongCell(r + 1, c + 1, cellText(input).length);
+      }
+      originalCharacters += cellText(input).length;
+      if (typeof input !== "string" && input.spans.length > LIMITS.maxSpansPerCell) {
+        return fail(`The cell in row ${r + 1}, column ${c + 1} has ${input.spans.length} spans; `
+          + `ChemDraft table cells hold at most ${LIMITS.maxSpansPerCell}.`);
+      }
+      const overflow = OVERFLOW_PATTERN.test(cellText(input));
+      if (overflow) {
+        const number = cell.getAttribute("x:num")?.trim();
+        if (number && EXCEL_NUMBER_PATTERN.test(number) && Number.isFinite(Number(number))) input = number;
       }
       const align = cellAlign(cell, rows[r].element);
       for (let dr = 0; dr < rowspan; dr += 1) {
         for (let dc = 0; dc < colspan; dc += 1) {
+          if (grid[r + dr][c + dc] !== undefined) {
+            return fail(`The HTML table has overlapping merged cells at row ${r + dr + 1}, column ${c + dc + 1}.`);
+          }
           grid[r + dr][c + dc] =
-            dr === 0 && dc === 0 ? { input, filler: false, align } : { input: "", filler: true };
+            dr === 0 && dc === 0 ? { input, filler: false, overflow, align } : { input: "", filler: true };
         }
       }
       c += colspan;
@@ -548,25 +637,42 @@ function convertTable(table: Element): ClipboardTableResult | undefined {
   const dense = grid.map((row) =>
     Array.from({ length: width }, (_, column) => row[column] ?? { input: "", filler: true })
   );
-  const characterRefusal = tableCharacterRefusal(dense.reduce((sum, row) =>
-    sum + row.reduce((count, entry) => count + cellText(entry.input).length, 0), 0));
-  if (characterRefusal) return characterRefusal;
+  const originalRefusal = tableCharacterRefusal(originalCharacters);
+  if (originalRefusal) return originalRefusal;
+  // Expanded/padded/nested HTML grids do not have a reliable one-to-one TSV cell mapping.
+  const hasOverflow = dense.some((row) => row.some((entry) => OVERFLOW_PATTERN.test(cellText(entry.input))));
+  const plain = hasOverflow && !nested && dense.every((row) => row.every((entry) => !entry.filler))
+    ? payload.textItems.find((item) => isTextLikeType(item.type)) : undefined;
+  const tsv = plain ? readTsvTable(plain.text, 1) : undefined;
+  const normalizedText = (cell: ClipboardTableCell): string => cellText(cell).replace(/\s+/g, " ").trim();
+  // Confirm both dimensions and the visible cells, so unrelated/reordered TSV cannot supply values.
+  const matchingRows = tsv?.ok && tsv.spec.columns.length === width && tsv.spec.rows.length === dense.length
+    && dense.every((row, r) => row.every((entry, c) => entry.overflow || normalizedText(entry.input) === normalizedText(tsv.spec.rows[r][c])))
+    ? tsv.spec.rows : undefined;
   for (const [r, row] of dense.entries()) {
-    for (const [c, { input }] of row.entries()) {
-      if (typeof input !== "string" && input.spans.length > LIMITS.maxSpansPerCell) {
-        return fail(`The cell in row ${r + 1}, column ${c + 1} has ${input.spans.length} spans; `
-          + `ChemDraft table cells hold at most ${LIMITS.maxSpansPerCell}.`);
+    for (const [c, entry] of row.entries()) {
+      if (OVERFLOW_PATTERN.test(cellText(entry.input))) {
+        const replacement = matchingRows?.[r][c];
+        if (replacement !== undefined && cellText(replacement).trim() !== "" &&
+          !OVERFLOW_PATTERN.test(cellText(replacement).trim())) {
+          entry.input = replacement;
+        } else {
+          warnings.add(overflowWarning(r + 1, c + 1));
+        }
+      }
+      if (cellText(entry.input).length > LIMITS.maxCellCharacters) {
+        return tooLongCell(r + 1, c + 1, cellText(entry.input).length);
       }
     }
   }
+  const characterRefusal = tableCharacterRefusal(dense.reduce((sum, row) =>
+    sum + row.reduce((count, entry) => count + cellText(entry.input).length, 0), 0));
+  if (characterRefusal) return characterRefusal;
   if (nested) {
     warnings.add(WARN_NESTED);
   }
   if (images) {
     warnings.add(WARN_IMAGES);
-  }
-  if (Array.from(table.children).some((child) => tagOf(child) === "caption" && child.textContent?.trim())) {
-    warnings.add(WARN_CAPTION);
   }
 
   let headerCount = headCount;
@@ -578,19 +684,22 @@ function convertTable(table: Element): ClipboardTableResult | undefined {
   if (headerCount >= dense.length) {
     headerCount = 0;
   }
-  const order = [WARN_MERGED, WARN_RAGGED, WARN_NESTED, WARN_IMAGES, WARN_CAPTION];
+  const order = [WARN_MERGED, WARN_RAGGED, WARN_NESTED, WARN_IMAGES];
   return {
     ok: true,
     spec: specFromGrid(dense, headerCount, width),
-    warnings: order.filter((warning) => warnings.has(warning)),
+    warnings: [
+      ...order.filter((warning) => warnings.has(warning)),
+      ...Array.from(warnings).filter((warning) => !order.includes(warning))
+    ],
     source: "html"
   };
 }
 
 /**
  * Reads a table from the clipboard's HTML item (Excel, Word, Google Docs and Sheets). Returns undefined
- * unless the HTML holds exactly one outermost table and no other visible text, so a table inside a
- * paragraph of prose stays text. `parseHtml` parses a string in the host's DOM (a DOMParser).
+ * unless the HTML holds a table. One outermost table may have caption/footnote paragraphs around it;
+ * ambiguous or unsafe table-shaped HTML is refused. `parseHtml` uses the host's DOM (a DOMParser).
  */
 export function readClipboardHtmlTable(
   payload: ClipboardReadPayload,
@@ -601,12 +710,21 @@ export function readClipboardHtmlTable(
     return undefined;
   }
   const { html, fragment } = htmlFragment(text);
-  let document = parseHtml(fragment);
+  let document: Document;
+  try {
+    document = parseHtml(fragment);
+  } catch {
+    return fail("The clipboard HTML could not be parsed safely as a table.");
+  }
   let root: Element = document.body ?? document.documentElement;
   let tables = Array.from(root.querySelectorAll("table")).filter((table) => !hasTableAncestor(table));
   if (tables.length === 0 && fragment !== html) {
     // Excel marks the rows inside the table, so the fragment alone has no table wrapper.
-    document = parseHtml(html);
+    try {
+      document = parseHtml(html);
+    } catch {
+      return fail("The clipboard HTML could not be parsed safely as a table.");
+    }
     root = document.body ?? document.documentElement;
     tables = Array.from(root.querySelectorAll("table")).filter((table) => !hasTableAncestor(table));
     const comments = document.createTreeWalker(root, 128 /* SHOW_COMMENT */);
@@ -614,14 +732,26 @@ export function readClipboardHtmlTable(
     while (start && start.nodeValue !== "StartFragment") {
       start = comments.nextNode();
     }
+    if (tables.length > 1) {
+      return fail("The clipboard contains multiple HTML tables; copy one table at a time.");
+    }
     if (tables.length !== 1 || !start || !tables[0].contains(start)) {
       return undefined;
     }
   }
-  if (tables.length !== 1 || hasTextOutside(root, tables[0])) {
-    return undefined;
+  if (tables.length === 0) {
+    return /<table\b/i.test(fragment) ? fail("The HTML table has no readable table structure.") : undefined;
   }
-  return convertTable(tables[0]);
+  if (tables.length > 1) {
+    return fail("The clipboard contains multiple HTML tables; copy one table at a time.");
+  }
+  const result = convertTable(tables[0], payload);
+  if (!result?.ok) return result;
+  const notes = tableNotes(root, tables[0]);
+  if (notes.unsafe) {
+    return fail("The content around the HTML table cannot be read safely as caption and footnote paragraphs; copy just the table and its paragraphs.");
+  }
+  return addTableNotes(result, notes.leading, notes.trailing);
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -669,6 +799,7 @@ function parseTsvRecords(text: string): string[][] | undefined {
         return undefined;
       }
       field = field.replace(/\r\n?/g, "\n");
+      if (index < text.length && !["\t", "\n", "\r"].includes(text[index])) return undefined;
       continue;
     }
     if (char === "\t") {
@@ -691,39 +822,63 @@ function parseTsvRecords(text: string): string[][] | undefined {
 
 /**
  * Reads a table from plain text copied out of a spreadsheet: at least two lines, each with the same
- * number of tab-separated fields (two or more). There are no header rows; the user decides those.
+ * number of tab-separated fields (two or more), optionally surrounded by caption/footnote lines
+ * without tabs. There are no header rows; the user decides those. Ambiguous blocks are refused.
  */
 export function readClipboardTsvTable(text: string): ClipboardTableResult | undefined {
+  return readTsvTable(text, 2);
+}
+
+/** HTML recovery already established a table, so its matching TSV may have just one row. */
+function readTsvTable(text: string, minRows: number): ClipboardTableResult | undefined {
   const records = parseTsvRecords(text);
   if (!records) {
-    return undefined;
+    return text.includes("\t") ? fail("The tab-separated table has a malformed quoted field.") : undefined;
   }
   const last = records[records.length - 1];
   if (last && last.length === 1 && last[0] === "") {
     records.pop();
   }
-  const width = records[0]?.length ?? 0;
-  if (records.length < 2 || width < 2 || records.some((record) => record.length !== width)) {
-    return undefined;
+  const start = records.findIndex((record) => record.length > 1);
+  if (start < 0) return undefined;
+  let end = start;
+  while (end < records.length && records[end].length > 1) end += 1;
+  if (records.slice(end).some((record) => record.length > 1)) {
+    return fail("The clipboard contains separated tab-separated blocks; copy one rectangular table at a time.");
   }
-  if (records.length > LIMITS.maxRows) {
-    return tooManyRows(records.length);
+  const grid = records.slice(start, end);
+  const width = grid[0].length;
+  if (grid.length < minRows) {
+    if (records.length === 1) return undefined;
+    return fail("The tab-separated table needs at least two rows with two or more columns.");
+  }
+  if (grid.some((record) => record.length !== width)) {
+    return fail("The tab-separated table has rows with different numbers of columns; copy a rectangular table.");
+  }
+  if (grid.length > LIMITS.maxRows) {
+    return tooManyRows(grid.length);
   }
   if (width > LIMITS.maxColumns) {
     return tooManyColumns(width);
   }
-  for (let r = 0; r < records.length; r += 1) {
+  const warnings: string[] = [];
+  for (let r = 0; r < grid.length; r += 1) {
     for (let c = 0; c < width; c += 1) {
-      if (records[r][c].length > LIMITS.maxCellCharacters) {
-        return tooLongCell(r + 1, c + 1, records[r][c].length);
+      if (grid[r][c].length > LIMITS.maxCellCharacters) {
+        return tooLongCell(r + 1, c + 1, grid[r][c].length);
       }
+      if (OVERFLOW_PATTERN.test(grid[r][c].trim())) warnings.push(overflowWarning(r + 1, c + 1));
     }
   }
-  const characterRefusal = tableCharacterRefusal(records.reduce((sum, row) =>
+  const characterRefusal = tableCharacterRefusal(grid.reduce((sum, row) =>
     sum + row.reduce((count, text) => count + text.length, 0), 0));
   if (characterRefusal) return characterRefusal;
   const columns = Array.from({ length: width }, (_, column): { align: ClipboardTableAlign } => ({
-    align: isDecimalColumn(records.map((record) => record[column])) ? "decimal" : "left"
+    align: isDecimalColumn(grid.map((record) => record[column])) ? "decimal" : "left"
   }));
-  return { ok: true, spec: { columns, rows: records }, warnings: [], source: "tsv" };
+  return addTableNotes(
+    { ok: true, spec: { columns, rows: grid }, warnings, source: "tsv" },
+    records.slice(0, start).map((record) => record[0]).filter((note) => note.trim() !== ""),
+    records.slice(end).map((record) => record[0]).filter((note) => note.trim() !== "")
+  );
 }

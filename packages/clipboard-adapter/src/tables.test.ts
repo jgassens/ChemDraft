@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { TABLE_LIMITS } from "@chemdraft/chem-core";
 import { CLIPBOARD_TABLE_LIMITS } from "./tables";
-import { TableSpecSchema } from "@chemdraft/document-workflow-core";
+import { buildTableObject, TableSpecSchema } from "@chemdraft/document-workflow-core";
 import {
   readClipboardHtmlTable,
   readClipboardTsvTable,
@@ -39,6 +39,13 @@ function readHtml(text: string, type?: string): ClipboardTableResult | undefined
   return readClipboardHtmlTable(htmlPayload(text, type), parseHtml);
 }
 
+function readHtmlAndTsv(html: string, tsv: string): ClipboardTableResult | undefined {
+  const payload = htmlPayload(html);
+  payload.types.push("text/plain");
+  payload.textItems.push({ type: "text/plain", text: tsv });
+  return readClipboardHtmlTable(payload, parseHtml);
+}
+
 function table(body: string): string {
   return `<html><body><table>${body}</table></body></html>`;
 }
@@ -49,6 +56,10 @@ function expectOk(result: ClipboardTableResult | undefined) {
     throw new Error("expected a table");
   }
   return result;
+}
+
+function expectRefusal(result: ClipboardTableResult | undefined, reason: RegExp) {
+  expect(result).toEqual({ ok: false, reason: expect.stringMatching(reason) });
 }
 
 function bold(text: string) {
@@ -153,20 +164,214 @@ describe("HTML table fixtures", () => {
   });
 });
 
+describe("Excel overflow recovery", () => {
+  const overflow = `<table><tr><td>Material</td><td>Density</td></tr>`
+    + `<tr><td>allyl alcohol</td><td x:num>#######</td></tr></table>`;
+
+  it("prefers x:num over TSV only for overflow text, without rounding the numeric attribute", () => {
+    const html = table(`<tr><td x:num="0.85399999999999998">#######</td>`
+      + `<td x:num="1.204">1.20</td><td x:num>2.00</td><td>#note</td></tr>`);
+    const result = expectOk(readHtmlAndTsv(html, "9\t9\t9\t9"));
+    expect(result.spec.rows).toEqual([["0.85399999999999998", "1.20", "2.00", "#note"]]);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("recovers both synthetic Density cells from x:num without plain text", () => {
+    const result = expectOk(readHtml(fixture("excel-like.html")));
+    expect(result.spec.rows[1][2]).toBe("0.854");
+    expect(result.spec.rows[3][2]).toBe("1.204");
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("recovers the same grid from the synthetic TSV when numeric attributes are unavailable", () => {
+    const html = fixture("excel-like.html").replace(/ x:num="(?:0\.854|1\.204)"/g, " x:num");
+    const result = expectOk(readHtmlAndTsv(html, fixture("excel-like.tsv")));
+    expect(result.spec).toEqual(expectOk(readHtml(fixture("excel-like.html"))).spec);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it.each(["", '="not a number"', '="1e999"'])("uses TSV for empty or invalid x:num (%s)", (value) => {
+    const result = expectOk(readHtmlAndTsv(overflow.replace("x:num", `x:num${value}`), "Material\tDensity\nallyl alcohol\t0.854"));
+    expect(result.spec.rows[1][1]).toBe("0.854");
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("recovers a single HTML row from matching TSV without changing standalone TSV detection", () => {
+    const result = expectOk(readHtmlAndTsv(table("<tr><td>a</td><td>###</td></tr>"), "a\t1.204"));
+    expect(result.spec.rows).toEqual([["a", "1.204"]]);
+    expect(result.warnings).toEqual([]);
+    expect(readClipboardTsvTable("a\t1.204")).toBeUndefined();
+  });
+
+  it.each([
+    undefined,
+    "Material\tDensity\nallyl alcohol\t###",
+    "Material\tDensity\nallyl alcohol\t",
+    "Material\tDensity\nunrelated reagent\t1.204",
+    "Material\tDensity\textra\nallyl alcohol\t0.854\textra",
+    "Material\tDensity\nallyl alcohol\t0.854\nextra\t1",
+    'Material\tDensity\n"broken\t0.854',
+    `Material\tDensity\nallyl alcohol\t${"x".repeat(2001)}`
+  ])("keeps unresolved overflow with its row and column when TSV is absent, mismatched, or unsafe (%#)", (tsv) => {
+    const result = expectOk(tsv === undefined ? readHtml(overflow) : readHtmlAndTsv(overflow, tsv));
+    expect(result.spec.rows[1][1]).toBe("#######");
+    expect(result.warnings).toEqual([expect.stringMatching(/row 2, column 2.*Excel overflow.*value was unavailable/)]);
+  });
+
+  it("warns for every unresolved cell in the synthetic Excel fixture", () => {
+    const result = expectOk(readHtml(fixture("excel-like.html").replace(/ x:num="(?:0\.854|1\.204)"/g, "")));
+    expect(result.warnings).toEqual([
+      expect.stringMatching(/row 2, column 3.*overflow/),
+      expect.stringMatching(/row 4, column 3.*overflow/)
+    ]);
+  });
+
+  it("does not map TSV values into an expanded merged grid", () => {
+    const html = table(`<tr><td colspan=2>###</td></tr><tr><td>a</td><td>b</td></tr>`);
+    const result = expectOk(readHtmlAndTsv(html, "1.204\t\na\tb"));
+    expect(result.spec.rows[0][0]).toBe("###");
+    expect(result.warnings).toContainEqual(expect.stringMatching(/row 1, column 1.*overflow/));
+  });
+
+  it("does not map TSV in DOM order to HTML rows reordered by their section", () => {
+    const html = "<table><tfoot><tr><td>footer</td><td>###</td></tr></tfoot>"
+      + "<tbody><tr><td>body</td><td>###</td></tr></tbody></table>";
+    const result = expectOk(readHtmlAndTsv(html, "footer\t1.204\nbody\t0.854"));
+    expect(result.spec.rows).toEqual([["body", "###"], ["footer", "###"]]);
+    expect(result.warnings).toHaveLength(2);
+  });
+
+  it("enforces the cell cap on original overflow text and recovered x:num values", () => {
+    expectRefusal(readHtml(table(`<tr><td x:num="0.854">${"#".repeat(2001)}</td><td>a</td></tr>`)), /row 1, column 1 has 2001 characters/);
+    const number = `0.${"0".repeat(1999)}`;
+    expectRefusal(readHtml(table(`<tr><td x:num="${number}">###</td><td>a</td></tr>`)), /row 1, column 1 has 2001 characters/);
+  });
+
+  it("enforces the total character cap after recovering x:num values", () => {
+    const number = `0.${"0".repeat(998)}`;
+    const row = `<tr><td x:num="${number}">###</td><td x:num="${number}">###</td></tr>`;
+    expectOk(readHtml(table(row.repeat(100))));
+    expectRefusal(readHtml(table(row.repeat(100).replace(`x:num="${number}"`, `x:num="${number}0"`))), /200,001 characters/);
+  });
+
+  it("warns about pure overflow text in standalone TSV too", () => {
+    const result = expectOk(readClipboardTsvTable("Density\tNote\n#######\t#note"));
+    expect(result.spec.rows[1]).toEqual(["#######", "#note"]);
+    expect(result.warnings).toEqual([expect.stringMatching(/row 2, column 1.*overflow/)]);
+  });
+});
+
+describe("Word-like captions and footnotes", () => {
+  it.each([false, true])("reads one HTML table among paragraphs (CF_HTML: %s)", (wrapped) => {
+    const html = fixture("word-like-notes.html");
+    const result = expectOk(readHtml(wrapped ? cfHtml(html) : html, wrapped ? "HTML Format" : "text/html"));
+    expect(result.warnings).toEqual([]);
+    expect(result.spec.caption).toEqual({ text: "Table 1. Reagent properties", spans: [
+      { text: "Table 1.", bold: true }, { text: " Reagent properties" }
+    ] });
+    expect(result.spec.footnotes).toEqual([
+      { text: "a Synthetic reagent data.", spans: [{ text: "a", script: "superscript" }, { text: " Synthetic reagent data." }] },
+      "Densities are in g/mL."
+    ]);
+    expect(result.spec.rows).toEqual([
+      ["Material", "Density (g/mL)"], ["allyl alcohol", "0.854"],
+      [{ text: "Ti(OiPr)4", spans: [{ text: "Ti(OiPr)" }, { text: "4", script: "subscript" }] }, "0.96"]
+    ]);
+    let id = 0;
+    const { object } = buildTableObject(result.spec, { id: "table", x: 0, y: 0, newId: () => `note-${++id}` });
+    expect(object.caption?.text).toBe("Table 1. Reagent properties");
+    expect(object.footnotes.map((note) => note.text)).toEqual(["a Synthetic reagent data.", "Densities are in g/mL."]);
+  });
+
+  it.each(["\n", "\r\n"])("reads the rectangular TSV block surrounded by caption/footnote lines (%j)", (newline) => {
+    const result = expectOk(readClipboardTsvTable(fixture("word-like-notes.tsv").replace(/\n/g, newline)));
+    expect(result.warnings).toEqual([]);
+    expect(result.spec.caption).toBe("Table 1. Reagent properties");
+    expect(result.spec.footnotes).toEqual(["a Synthetic reagent data.", "Densities are in g/mL."]);
+    expect(result.spec.rows).toEqual([["Material", "Density (g/mL)"], ["allyl alcohol", "0.854"], ["Ti(OiPr)4", "0.96"]]);
+    expect(() => TableSpecSchema.parse(result.spec)).not.toThrow();
+  });
+
+  it("keeps quoted tabs and newlines in table cells with surrounding notes", () => {
+    const result = expectOk(readClipboardTsvTable('Caption\na\t"has\ta tab"\nb\t"two\nlines"\nFootnote'));
+    expect(result.spec).toMatchObject({ caption: "Caption", rows: [["a", "has\ta tab"], ["b", "two\nlines"]], footnotes: ["Footnote"] });
+  });
+
+  it.each(["html", "tsv"])("uses the immediately preceding paragraph as caption and names earlier omitted prose (%s)", (source) => {
+    const result = expectOk(source === "html"
+      ? readHtml(`<p>Introduction</p><p>Caption</p>${withHead}<p>Footnote</p>`)
+      : readClipboardTsvTable("Introduction\nCaption\na\tb\nc\td\nFootnote"));
+    expect(result.spec.caption).toBe("Caption");
+    expect(result.spec.footnotes).toEqual(["Footnote"]);
+    expect(result.warnings).toEqual(['The paragraph before the caption was not imported: "Introduction".']);
+  });
+
+  it("preserves an HTML caption element", () => {
+    const result = expectOk(readHtml(table("<caption>Caption</caption><tr><td>a</td><td>b</td></tr>")));
+    expect(result.spec.caption).toBe("Caption");
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("refuses unrepresentable surrounding content or unreadable table structures", () => {
+    expectRefusal(readHtml(`bare text${withHead}`), /content around the HTML table cannot be read safely/);
+    expectRefusal(readHtml(`<p>Caption<img src="x"></p>${withHead}`), /content around the HTML table cannot be read safely/);
+    expectRefusal(readHtml("<table></table>"), /no readable rows/);
+    expectRefusal(readHtml("<table><tr></tr><tr></tr></table>"), /no readable cells/);
+    expectRefusal(readHtml(table('<tr><td>a</td><td rowspan=2>b</td></tr><tr><td colspan=2>c</td></tr>')), /overlapping merged cells at row 2, column 2/);
+    expectRefusal(readClipboardHtmlTable(htmlPayload(withHead), () => { throw new Error("parse failed"); }), /could not be parsed safely/);
+  });
+
+  const withNotes = (source: string, caption: string, footnotes: string[], content?: string) => source === "html"
+    ? readHtml(`<p>${caption}</p>${content ?? withHead}${footnotes.map((note) => `<p>${note}</p>`).join("")}`)
+    : readClipboardTsvTable(`${caption}\n${content ?? "A\tB\n1\t2"}\n${footnotes.join("\n")}`);
+
+  it.each(["html", "tsv"])("enforces caption/footnote text and count caps (%s)", (source) => {
+    const boundary = expectOk(withNotes(source, "x".repeat(2000), Array.from({ length: 50 }, () => "Footnote")));
+    expect(() => TableSpecSchema.parse(boundary.spec)).not.toThrow();
+    expectRefusal(withNotes(source, "x".repeat(2001), []), /caption paragraph 1 has 2001 characters/);
+    expectRefusal(withNotes(source, "Caption", ["x".repeat(2001)]), /footnote 1 has 2001 characters/);
+    expectRefusal(withNotes(source, "Caption", Array.from({ length: 51 }, () => "Footnote")), /51 footnotes.*at most 50/);
+  });
+
+  it.each(["html", "tsv"])("counts surrounding notes toward the table character cap (%s)", (source) => {
+    const body = source === "html"
+      ? table(`<tr><td>${"x".repeat(1000)}</td><td>${"y".repeat(1000)}</td></tr>`.repeat(99))
+      : Array.from({ length: 99 }, () => `${"x".repeat(1000)}\t${"y".repeat(1000)}`).join("\n");
+    expectOk(withNotes(source, "x".repeat(1000), ["y".repeat(1000)], body));
+    expectRefusal(withNotes(source, "x".repeat(1001), ["y".repeat(1000)], body), /200,001 characters/);
+  });
+
+  it("enforces formatted span caps on caption and footnote paragraphs", () => {
+    const runs = (count: number) => Array.from({ length: count }, (_, i) => i % 2 ? "<i>x</i>" : "<b>x</b>").join("");
+    expectOk(withNotes("html", runs(200), [runs(200)]));
+    expectRefusal(withNotes("html", runs(201), []), /caption paragraph 1 has 201 spans/);
+    expectRefusal(withNotes("html", "Caption", [runs(201)]), /footnote 1 has 201 spans/);
+  });
+
+  it.each(["html", "tsv"])("keeps table dimension caps when notes surround the grid (%s)", (source) => {
+    const tall = source === "html" ? table("<tr><td>a</td><td>b</td></tr>".repeat(501)) : "a\tb\n".repeat(501).trimEnd();
+    expectRefusal(withNotes(source, "Caption", ["Footnote"], tall), /501 rows.*at most 500/);
+    const wide = source === "html"
+      ? table(`<tr>${"<td>a</td>".repeat(65)}</tr>`)
+      : Array.from({ length: 2 }, () => Array.from({ length: 65 }, () => "a").join("\t")).join("\n");
+    expectRefusal(withNotes(source, "Caption", ["Footnote"], wide), /65 columns.*at most 64/);
+  });
+});
+
 describe("what counts as a table", () => {
   it("leaves a single HTML cell to the text path", () => {
     expect(readHtml(table("<tr><td>allyl alcohol</td></tr>"))).toBeUndefined();
   });
 
-  it("is not a table when text sits beside it", () => {
+  it("reads a caption paragraph beside a table, but keeps the two-cell minimum", () => {
     const lone = "<table><tr><td>a</td><td>b</td></tr></table>";
-    expect(readHtml(`<p>See the table below.</p>${lone}`)).toBeUndefined();
+    expect(expectOk(readHtml(`<p>See the table below.</p>${lone}`)).spec.caption).toBe("See the table below.");
     expect(readHtml(`<table><tr><td>a</td></tr></table><p>Footnote</p>`)).toBeUndefined();
   });
 
-  it("is not a table with no table, or with two", () => {
+  it("is not a table with no table, and refuses multiple tables", () => {
     expect(readHtml("<p>just text</p>")).toBeUndefined();
-    expect(readHtml("<table><tr><td>a</td></tr></table><table><tr><td>b</td></tr></table>")).toBeUndefined();
+    expectRefusal(readHtml("<table><tr><td>a</td></tr></table><table><tr><td>b</td></tr></table>"), /multiple HTML tables/);
     const plain = { types: ["text/plain"], textItems: [{ type: "text/plain", text: "a" }] };
     expect(readClipboardHtmlTable(plain, parseHtml)).toBeUndefined();
   });
@@ -213,15 +418,15 @@ describe("CF_HTML header", () => {
     const html =
       `<html><body><p>outside</p><!--StartFragment-->${bare}<!--EndFragment--><p>after</p></body></html>`;
     expect(expectOk(readHtml(html)).spec.rows).toEqual([["x", "y"]]);
-    expect(readHtml(`<!--StartFragment--><p>inside</p>${bare}<!--EndFragment-->`)).toBeUndefined();
+    expect(expectOk(readHtml(`<!--StartFragment--><p>inside</p>${bare}<!--EndFragment-->`)).spec.caption).toBe("inside");
   });
 
-  it("refuses prose or another table outside an Excel table with internal markers", () => {
+  it("reads paragraphs around Excel internal markers and refuses another table", () => {
     const html = fixture("excel-markers-inside-table.html");
-    for (const extra of ["<p>Prose</p>", bare]) {
-      expect(readHtml(html.replace(/(<body[^>]*>)/, `$1${extra}`))).toBeUndefined();
-      expect(readHtml(html.replace("</body>", `${extra}</body>`))).toBeUndefined();
-    }
+    expect(expectOk(readHtml(html.replace(/(<body[^>]*>)/, "$1<p>Caption</p>"))).spec.caption).toBe("Caption");
+    expect(expectOk(readHtml(html.replace("</body>", "<p>Footnote</p></body>"))).spec.footnotes).toEqual(["Footnote"]);
+    expectRefusal(readHtml(html.replace(/(<body[^>]*>)/, `$1${bare}`)), /multiple HTML tables/);
+    expectRefusal(readHtml(html.replace("</body>", `${bare}</body>`)), /multiple HTML tables/);
   });
 
   it("does not use a table that does not contain the fragment start", () => {
@@ -468,12 +673,15 @@ describe("TSV tables", () => {
     expect(result.spec.headerRows).toBeUndefined();
   });
 
-  it("is not a table for one column, one line, uneven lines, or a broken quote", () => {
+  it("is not a table for one column or one line, and refuses unsafe table shapes", () => {
     expect(readClipboardTsvTable("one\ntwo\nthree")).toBeUndefined();
     expect(readClipboardTsvTable("a\tb")).toBeUndefined();
-    expect(readClipboardTsvTable("a\tb\nc")).toBeUndefined();
-    expect(readClipboardTsvTable("a\tb\nc\td\te")).toBeUndefined();
-    expect(readClipboardTsvTable('a\tb\n"c\td')).toBeUndefined();
+    expectRefusal(readClipboardTsvTable("a\tb\nc"), /at least two rows/);
+    expectRefusal(readClipboardTsvTable("a\tb\nc\td\te"), /different numbers of columns/);
+    expectRefusal(readClipboardTsvTable('a\tb\n"c\td'), /malformed quoted field/);
+    expectRefusal(readClipboardTsvTable('a\tb\n"c"junk\td'), /malformed quoted field/);
+    expectRefusal(readClipboardTsvTable("a\tb\nc\td\nfootnote\ne\tf\ng\th"), /separated tab-separated blocks/);
+    expectRefusal(readClipboardTsvTable("a\tb\n\nc\td"), /separated tab-separated blocks/);
     expect(readClipboardTsvTable("")).toBeUndefined();
   });
 
@@ -507,6 +715,9 @@ describe("every imported spec is a valid table spec", () => {
     ["excel internal markers", readHtml(fixture("excel-markers-inside-table.html"))],
     ["word", readHtml(fixture("word-like.html"))],
     ["word cf_html", readHtml(fixture("word-like.cfhtml.txt"), "HTML Format")],
+    ["word notes html", readHtml(fixture("word-like-notes.html"))],
+    ["word notes tsv", readClipboardTsvTable(fixture("word-like-notes.tsv"))],
+    ["excel tsv", readClipboardTsvTable(fixture("excel-like.tsv"))],
     ["google docs", readHtml(fixture("google-docs-like.html"))],
     ["google sheets", readHtml(fixture("google-sheets-like.html"))],
     ["thead", readHtml(withHead)],
