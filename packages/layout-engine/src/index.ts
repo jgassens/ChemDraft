@@ -3498,6 +3498,17 @@ function projectionDistanceAlongSegment(
   };
 }
 
+export const nativeTextScriptFontScale = 0.72;
+// WebKit/Chromium shift SVG sub/super by half the script font's height (ascent + descent).
+// At 72% size Arial's 2288/2048-em height gives 0.4021875 parent em; use 0.4 for
+// both directions to retain that placement without depending on host font metrics.
+// https://github.com/WebKit/WebKit/blob/main/Source/WebCore/rendering/svg/SVGTextLayoutEngineBaseline.cpp
+// https://github.com/chromium/chromium/blob/main/third_party/blink/renderer/core/layout/inline/inline_box_state.cc
+// Keep the offset independent of a span's own size: changing its size must not move the line.
+// Explicit coordinates also work in svg2pdf, which ignores baseline-shift and percentage sizes.
+const nativeTextSubscriptOffsetEm = 0.4;
+const nativeTextSuperscriptOffsetEm = 0.4;
+
 function planTextObjectSvg(object: TextObject, layerIndex: number): PageSvgElementFragment {
   const textStyle = nativeTextStyleFromObjectStyle(object.style);
   const lines = textObjectSpanLines(object);
@@ -3509,8 +3520,13 @@ function planTextObjectSvg(object: TextObject, layerIndex: number): PageSvgEleme
     : textStyle.textAlign === "right" ? object.x + object.width : object.x;
   const y = object.y + textStyle.fontSizePx;
   const lineAdvance = textStyle.fontSizePx * textStyle.lineHeight + textStyle.paragraphSpacingPx;
+  // Preserve the established markup for wholly unscripted text. With scripts, reset each
+  // line's baseline, then move relatively within it to keep one text-anchor chunk per line.
+  const hasScripts = lines.some(line => line.some(span => span.script !== "normal"));
   const lineFragments = lines.length > 0
-    ? lines.flatMap((line, lineIndex) => textSpanLineFragments(line, lineIndex, x, lineAdvance))
+    ? lines.flatMap((line, lineIndex) => textSpanLineFragments(
+      line, lineIndex, x, lineAdvance, textStyle.fontSizePx, hasScripts ? y + lineIndex * lineAdvance : undefined
+    ))
     : [elementFragment("tspan", `text-empty-${object.id}`, { x }, [])];
 
   return elementFragment("text", `object-${object.id}`, objectAttributes(object, layerIndex, {
@@ -3533,31 +3549,44 @@ export function textSpanLineFragments(
   line: TextSpan[],
   lineIndex: number,
   x: number,
-  lineAdvancePx: number
+  lineAdvancePx: number,
+  parentFontSizePx: number,
+  baselineY: number | undefined
 ): PageSvgElementFragment[] {
   if (line.length === 0) {
     return [
       elementFragment("tspan", `text-line-empty-${lineIndex}`, {
         x,
-        dy: lineIndex === 0 ? undefined : lineAdvancePx
+        ...(baselineY === undefined ? {} : { y: baselineY }),
+        dy: baselineY === undefined && lineIndex > 0 ? lineAdvancePx : undefined
       })
     ];
   }
 
-  return line.map((span, spanIndex) =>
-    elementFragment("tspan", `text-line-${lineIndex}-${spanIndex}-${span.text}`, {
+  let previousScriptOffsetPx = 0;
+  return line.map((span, spanIndex) => {
+    const fontSizePx = metadataNumber(span.style.fontSizePx);
+    const scriptOffsetEm = span.script === "subscript" ? nativeTextSubscriptOffsetEm
+      : span.script === "superscript" ? -nativeTextSuperscriptOffsetEm : 0;
+    const scriptOffsetPx = parentFontSizePx * scriptOffsetEm;
+    const relativeScriptOffsetPx = scriptOffsetPx - previousScriptOffsetPx;
+    previousScriptOffsetPx = scriptOffsetPx;
+    return elementFragment("tspan", `text-line-${lineIndex}-${spanIndex}-${span.text}`, {
       x: spanIndex === 0 ? x : undefined,
-      dy: spanIndex === 0 && lineIndex > 0 ? lineAdvancePx : undefined,
-      "baseline-shift": span.script === "normal" ? undefined : span.script === "superscript" ? "super" : "sub",
-      "font-size": span.script === "normal" ? metadataNumber(span.style.fontSizePx) : "72%",
+      ...(baselineY === undefined || spanIndex > 0 ? {} : { y: baselineY + scriptOffsetPx }),
+      dy: baselineY === undefined
+        ? (spanIndex === 0 && lineIndex > 0 ? lineAdvancePx : undefined)
+        : (spanIndex === 0 ? undefined : relativeScriptOffsetPx),
+      "font-size": span.script === "normal" ? fontSizePx
+        : `${Number((parentFontSizePx * nativeTextScriptFontScale).toFixed(6))}px`,
       fill: metadataString(span.style.color),
       "font-family": metadataString(span.style.fontFamily),
       "font-weight": metadataNumber(span.style.fontWeight),
       "font-style": metadataFontStyle(span.style.fontStyle),
       "text-decoration": metadataString(span.style.textDecoration),
       "letter-spacing": metadataNumber(span.style.letterSpacingPx)
-    }, [textFragment(`text-line-${lineIndex}-${spanIndex}-text`, span.text)])
-  );
+    }, [textFragment(`text-line-${lineIndex}-${spanIndex}-text`, span.text)]);
+  });
 }
 
 function textObjectSpanLines(object: TextObject): TextSpan[][] {

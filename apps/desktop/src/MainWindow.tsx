@@ -228,6 +228,7 @@ import {
   nativeBondOrderResolution,
   nativeElementFromAtomLabel,
   nativeMoleculeRings,
+  nativeTextScriptFontScale,
   nonElementAtomLabelPlacement,
   defaultMechanismArrowControls,
   planMoleculeAtomLabels,
@@ -27787,7 +27788,7 @@ function DocumentObjectViewContent({
       color: "transparent",
       caretColor: textStyle.color,
       ...(objectTextScript === "normal" ? {} : {
-        fontSize: `calc(${textStyle.fontSizePx * 0.72}px * var(--page-scale))`,
+        fontSize: `calc(${textStyle.fontSizePx * nativeTextScriptFontScale}px * var(--page-scale))`,
         lineHeight: Math.max(1, textStyle.lineHeight),
         paddingTop: objectTextScript === "subscript" ? `calc(${textStyle.fontSizePx * 0.3}px * var(--page-scale))` : 0,
         paddingBottom: objectTextScript === "superscript" ? `calc(${textStyle.fontSizePx * 0.28}px * var(--page-scale))` : 0
