@@ -48,8 +48,10 @@ it("installs native focus observation for palettes and popovers and resets per-w
 it("allows Windows palette colour popups to activate without a second WebView2 focus", () => {
   const panel = readNative("src/panel_window.rs");
   const observer = panel.split('unsafe extern "system" fn focus_subclass(')[1]!.split("\n#[cfg(windows)]")[0]!;
-  expect(observer).not.toContain("if message == WM_MOUSEACTIVATE");
+  // Observing WM_MOUSEACTIVATE is needed to guard click-to-lease delivery.
+  // Only overriding its result with MA_NOACTIVATE breaks native colour popups.
   expect(observer).not.toContain("return MA_NOACTIVATE");
+  expect(readNative("src/palette_key_guard.rs")).not.toContain("return MA_NOACTIVATE");
   expect(observer).toContain("DefSubclassProc(hwnd, message, wparam, lparam)");
   // The native default remains non-activating; pointer-intent leases grant input focus.
   expect(panel).toContain("(style | (WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)");

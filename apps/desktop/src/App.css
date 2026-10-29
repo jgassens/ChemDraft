@@ -7749,3 +7749,10 @@ textarea:focus-visible,
 .cd-page-size-buttons { display: flex; gap: 8px; justify-content: flex-end; }
 .cd-page-size-form button { padding: 6px 14px; }
 .cd-page-size-web-fallback .cd-page-size-form { width: 420px; min-height: 300px; border: 1px solid var(--cd-border-subtle); border-radius: 8px; }
+
+/* Disabled native form controls may suppress pointer events entirely in WebKit.
+   Let the wrapper classify the click and lease the palette shell as a keyboard sink. */
+.palette-window-shell :is(input, textarea, select, button):disabled,
+.palette-popover-shell :is(input, textarea, select, button):disabled {
+  pointer-events: none;
+}

@@ -13,7 +13,7 @@ import { writeClipboardTextItems } from "./clipboard";
 import { allShellCommands, type CommandSpec } from "./commands";
 import { createPhase4Document } from "./documentWorkflow";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
-import { installPaletteInputFocus, isPaletteInputFocusPending, paletteInputFocusControl } from "./plugins/pluginPanelInputFocus";
+import { disabledControlAtPointer, installPaletteInputFocus, isPaletteInputFocusPending, paletteInputFocusControl } from "./plugins/pluginPanelInputFocus";
 import { editHistoryDirection, forceDocumentHistoryCommandId, isCleanPaletteNumberInput, isTextEditingElement } from "./editHistoryRouting";
 import { applyKeybindingSchemeToCommands } from "./keybindingScheme";
 import { isCompoundLayoutCommand } from "./compoundLayoutSettings";
@@ -864,7 +864,8 @@ export function PaletteWindow({
       return;
     }
 
-    if ((event.target as HTMLElement).closest("button, select, input, textarea, [data-palette-control]")) {
+    if ((event.target as HTMLElement).closest("button, select, input, textarea, [data-palette-control]") ||
+      (shellRef.current && disabledControlAtPointer(shellRef.current, event.nativeEvent))) {
       return;
     }
 
@@ -878,7 +879,8 @@ export function PaletteWindow({
       return;
     }
 
-    if ((event.target as HTMLElement).closest("button, select, input, textarea, [data-palette-control]")) {
+    if ((event.target as HTMLElement).closest("button, select, input, textarea, [data-palette-control]") ||
+      (shellRef.current && disabledControlAtPointer(shellRef.current, event.nativeEvent))) {
       return;
     }
 

@@ -1,29 +1,105 @@
-//! A palette click precedes its webview's asynchronous focus IPC. Until the DOM
-//! classifies that click, keys still addressed to the document must be dropped.
-//! This runs before native accelerators as well as before webview key delivery.
+//! Native pointer observation and a bounded guard while the palette page classifies
+//! a click. Webview key delivery is guarded in MainWindow on BOTH platforms.
 
-use std::sync::Mutex;
+use std::{
+    sync::{Mutex, OnceLock},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
+use tauri::{Emitter, Listener, Manager};
 
-static POINTER_OWNER: Mutex<Option<String>> = Mutex::new(None);
+#[path = "palette_key_guard_state.rs"]
+mod state;
+pub(crate) use state::End;
+pub(crate) use state::{blocks_menu, keeps_palette_focus};
 
-#[cfg(any(target_os = "macos", windows))]
-pub(super) fn pointer(label: Option<&str>) {
-    *POINTER_OWNER.lock().unwrap() = label.map(str::to_owned);
+static GUARD: Mutex<state::Guard> = Mutex::new(state::Guard::new());
+const EVENT: &str = "chemdraft://palette-click-pending";
+
+fn now() -> u64 {
+    static START: OnceLock<Instant> = OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_millis() as u64
 }
 
-pub(super) fn release(label: &str) {
-    let mut owner = POINTER_OWNER.lock().unwrap();
-    if owner.as_deref() == Some(label) {
-        *owner = None;
+fn publish<R: tauri::Runtime>(app: &tauri::AppHandle<R>, label: &str, event: Option<state::Event>) {
+    if let Some(event) = event {
+        // The page echoes the click sequence with its classification/release. Main
+        // drops only editing keydowns until this sequence is cleared or expires.
+        let _ = app.emit_to(super::super::MAIN_WINDOW_LABEL, EVENT, event);
+        if !label.is_empty() && label != super::super::MAIN_WINDOW_LABEL {
+            let _ = app.emit_to(label, EVENT, event);
+        }
     }
 }
 
-pub(crate) fn blocks_document() -> bool {
-    POINTER_OWNER.lock().unwrap().is_some()
+pub(super) fn end<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    label: &str,
+    why: End,
+    sequence: Option<u64>,
+    before: u64,
+) {
+    let event = GUARD.lock().unwrap().end(label, why, sequence, before);
+    publish(app, label, event);
+}
+
+/// The active document's WebView2 child may receive clicks without sending
+/// WM_MOUSEACTIVATE to our thread. Its capture listener acknowledges the click.
+pub(crate) fn observe_document_pointer_release<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Release {
+        sequence: u64,
+        pointer_before: u64,
+    }
+    let target = app.clone();
+    app.listen("chemdraft://palette-click-outside", move |event| {
+        if let Ok(release) = serde_json::from_str::<Release>(event.payload()) {
+            end(
+                &target,
+                "",
+                End::Released,
+                (release.sequence != 0).then_some(release.sequence),
+                release.pointer_before,
+            );
+        }
+    });
+}
+
+pub(super) fn blocks_document() -> bool {
+    GUARD.lock().unwrap().blocks(now())
 }
 
 #[cfg(any(target_os = "macos", windows))]
-pub(super) fn is_palette(label: &str) -> bool {
+pub(super) fn pointer<R: tauri::Runtime>(app: &tauri::AppHandle<R>, label: Option<&str>) {
+    let Some(label) = label.filter(|label| is_palette(label)) else {
+        end(app, "", End::Outside, None, 0);
+        return;
+    };
+    // There is no document-key race when this palette already holds the keyboard.
+    if app
+        .get_webview_window(label)
+        .is_some_and(|window| super::holds_input_focus(&window))
+    {
+        end(app, label, End::Acquired, None, 0);
+        return;
+    }
+    let wall_time = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let event = GUARD.lock().unwrap().pointer(label, now(), wall_time);
+    publish(app, label, Some(event));
+    let app = app.clone();
+    let label = label.to_owned();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(state::TIMEOUT_MS)).await;
+        let expired = GUARD.lock().unwrap().timeout(event.sequence, now());
+        publish(&app, &label, expired);
+    });
+}
+
+#[cfg(any(target_os = "macos", windows))]
+fn is_palette(label: &str) -> bool {
     label.starts_with("toolset-") && super::super::is_input_focus_window_label(label)
 }
 
@@ -34,14 +110,13 @@ pub(super) fn install<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> Re
         runtime::{AnyObject, ProtocolObject},
     };
     use objc2_app_kit::{
-        NSApplicationDidResignActiveNotification, NSEvent, NSEventMask, NSEventType, NSWindow,
+        NSApplicationDidResignActiveNotification, NSEvent, NSEventMask, NSEventModifierFlags,
+        NSEventType, NSWindow,
     };
     use objc2_foundation::{NSNotification, NSNotificationCenter, NSObjectProtocol};
     use std::{cell::RefCell, ptr::NonNull};
-    use tauri::Manager;
 
     thread_local! {
-        // One application-local monitor, retained for the lifetime of the event loop.
         static MONITOR: RefCell<Option<Retained<AnyObject>>> = const { RefCell::new(None) };
         static DEACTIVATION: RefCell<Option<Retained<ProtocolObject<dyn NSObjectProtocol>>>> = const { RefCell::new(None) };
     }
@@ -60,14 +135,29 @@ pub(super) fn install<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> Re
                     let window = unsafe { pointer.as_ref() }?;
                     (window.windowNumber() == native.windowNumber()).then_some(label)
                 });
-            if matches!(native.r#type(), NSEventType::KeyDown | NSEventType::KeyUp) {
-                if label.as_deref() == Some(super::super::MAIN_WINDOW_LABEL) && blocks_document() {
+            if native.r#type() == NSEventType::KeyDown {
+                // Only KeyDown, never KeyUp. Menu equivalents may not reach the
+                // webview, so this uses the same editing-key policy as MainWindow.
+                let modifiers = native.modifierFlags();
+                let key = native
+                    .charactersIgnoringModifiers()
+                    .map(|s| s.to_string())
+                    .unwrap_or_default();
+                if label.as_deref() == Some(super::super::MAIN_WINDOW_LABEL)
+                    && blocks_document()
+                    && state::editing_key(
+                        &key,
+                        modifiers.contains(NSEventModifierFlags::Command),
+                        modifiers.contains(NSEventModifierFlags::Control),
+                        modifiers.contains(NSEventModifierFlags::Option),
+                    )
+                {
                     return std::ptr::null_mut();
                 }
             } else if native.r#type() == NSEventType::LeftMouseDown {
-                pointer(label.as_deref().filter(|label| is_palette(label)));
+                pointer(&app, label.as_deref());
             } else {
-                pointer(None);
+                end(&app, "", End::Outside, None, 0);
             }
             event.as_ptr()
         });
@@ -76,14 +166,16 @@ pub(super) fn install<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> Re
                 NSEventMask::LeftMouseDown
                     | NSEventMask::RightMouseDown
                     | NSEventMask::OtherMouseDown
-                    | NSEventMask::KeyDown
-                    | NSEventMask::KeyUp,
+                    | NSEventMask::KeyDown,
                 &callback,
             )
         }
         .ok_or("Could not guard palette keyboard acquisition.")?;
         *monitor.borrow_mut() = Some(token);
-        let resigned = block2::RcBlock::new(move |_: NonNull<NSNotification>| pointer(None));
+        let app = window.app_handle().clone();
+        let resigned = block2::RcBlock::new(move |_: NonNull<NSNotification>| {
+            end(&app, "", End::Deactivated, None, 0);
+        });
         DEACTIVATION.with(|observer| {
             *observer.borrow_mut() = Some(unsafe {
                 NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
@@ -98,96 +190,101 @@ pub(super) fn install<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> Re
     })
 }
 
+// WebView2 keys belong to its browser process. Do not use a WH_GETMESSAGE hook
+// on the app thread. Observe top-level mouse activation (also on the document)
+// and notify the main webview, whose capture listener sees its actual keydowns.
 #[cfg(windows)]
 mod windows {
-    use std::{cell::RefCell, rc::Rc};
-    use tauri::Manager;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CallNextHookEx, GetAncestor, SetWindowsHookExW, GA_ROOT, HHOOK, MSG, PM_REMOVE,
-        WH_GETMESSAGE, WM_KEYFIRST, WM_KEYLAST, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_NCLBUTTONDOWN,
-        WM_NCMBUTTONDOWN, WM_NCRBUTTONDOWN, WM_NULL, WM_RBUTTONDOWN,
+    use super::*;
+    use std::rc::Rc;
+    use windows_sys::Win32::UI::{
+        Shell::{DefSubclassProc, GetWindowSubclass, RemoveWindowSubclass, SetWindowSubclass},
+        WindowsAndMessaging::{
+            WM_ACTIVATEAPP, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_MOUSEACTIVATE, WM_NCDESTROY,
+            WM_NCLBUTTONDOWN, WM_RBUTTONDOWN, WM_SHOWWINDOW,
+        },
     };
 
-    type Observe = Rc<dyn Fn(usize, bool) -> bool>;
-    thread_local! {
-        static MONITOR: RefCell<Option<(HHOOK, Observe)>> = const { RefCell::new(None) };
+    struct Observer {
+        pointer: Rc<dyn Fn(bool)>,
+        end: Rc<dyn Fn(End)>,
     }
 
-    unsafe extern "system" fn messages(code: i32, wparam: usize, lparam: isize) -> isize {
-        if code >= 0 && wparam == PM_REMOVE as usize {
-            let message = &mut *(lparam as *mut MSG);
-            let key = (WM_KEYFIRST..=WM_KEYLAST).contains(&message.message);
-            if matches!(
-                message.message,
-                WM_RBUTTONDOWN
-                    | WM_MBUTTONDOWN
-                    | WM_NCLBUTTONDOWN
-                    | WM_NCRBUTTONDOWN
-                    | WM_NCMBUTTONDOWN
-            ) {
-                super::pointer(None);
-            } else if key || message.message == WM_LBUTTONDOWN {
-                let observe =
-                    MONITOR.with(|monitor| monitor.borrow().as_ref().map(|(_, f)| f.clone()));
-                if let Some(observe) = observe {
-                    if observe(GetAncestor(message.hwnd, GA_ROOT) as usize, key) {
-                        // Remove the message before TranslateAccelerator/TranslateMessage,
-                        // including character messages already queued by the webview.
-                        message.message = WM_NULL;
-                        message.wParam = 0;
-                        message.lParam = 0;
-                    }
-                }
-            }
+    unsafe extern "system" fn observe(
+        hwnd: windows_sys::Win32::Foundation::HWND,
+        message: u32,
+        wparam: usize,
+        lparam: isize,
+        id: usize,
+        data: usize,
+    ) -> isize {
+        let observer = &*(data as *const Observer);
+        if message == WM_MOUSEACTIVATE {
+            let primary = ((lparam >> 16) & 0xffff) == WM_LBUTTONDOWN as isize;
+            let pointer = observer.pointer.clone();
+            pointer(primary);
+        } else if matches!(message, WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_NCLBUTTONDOWN) {
+            let end = observer.end.clone();
+            end(End::Outside);
+        } else if message == WM_ACTIVATEAPP && wparam == 0 {
+            let end = observer.end.clone();
+            end(End::Deactivated);
+        } else if message == WM_SHOWWINDOW && wparam == 0 {
+            let end = observer.end.clone();
+            end(End::Hide);
         }
-        CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam)
+        if message == WM_NCDESTROY {
+            let end = observer.end.clone();
+            end(End::Destroy);
+            RemoveWindowSubclass(hwnd, Some(observe), id);
+            let result = DefSubclassProc(hwnd, message, wparam, lparam);
+            drop(Box::from_raw(data as *mut Observer));
+            return result;
+        }
+        DefSubclassProc(hwnd, message, wparam, lparam)
     }
 
-    pub(crate) fn install<R: tauri::Runtime>(
+    pub(super) fn install<R: tauri::Runtime>(
         window: &tauri::WebviewWindow<R>,
     ) -> Result<(), String> {
-        MONITOR.with(|monitor| {
-            if monitor.borrow().is_some() {
-                return Ok(());
-            }
-            let app = window.app_handle().clone();
-            let observe: Observe = Rc::new(move |root, key| {
-                let label = app
-                    .webview_windows()
-                    .into_iter()
-                    .find_map(|(label, window)| {
-                        (window.hwnd().ok()?.0 as usize == root).then_some(label)
-                    });
-                if key {
-                    label.as_deref() == Some(super::super::super::MAIN_WINDOW_LABEL)
-                        && super::blocks_document()
+        let hwnd = window.hwnd().map_err(|error| error.to_string())?.0;
+        const ID: usize = 3;
+        let mut existing = 0;
+        if unsafe { GetWindowSubclass(hwnd, Some(observe), ID, &mut existing) } != 0 {
+            return Ok(());
+        }
+        let app = window.app_handle().clone();
+        let label = window.label().to_owned();
+        let end_app = app.clone();
+        let end_label = label.clone();
+        let data = Box::into_raw(Box::new(Observer {
+            pointer: Rc::new(move |primary| pointer(&app, primary.then_some(label.as_str()))),
+            end: Rc::new(move |why| {
+                let label = if matches!(why, End::Deactivated) {
+                    ""
                 } else {
-                    super::pointer(label.as_deref().filter(|label| super::is_palette(label)));
-                    false
-                }
-            });
-            let hook = unsafe {
-                SetWindowsHookExW(
-                    WH_GETMESSAGE,
-                    Some(messages),
-                    std::ptr::null_mut(),
-                    windows_sys::Win32::System::Threading::GetCurrentThreadId(),
-                )
-            };
-            if hook.is_null() {
-                return Err(format!(
-                    "Could not guard palette keyboard acquisition: {}",
-                    std::io::Error::last_os_error()
-                ));
+                    &end_label
+                };
+                end(&end_app, label, why, None, 0);
+            }),
+        }));
+        if unsafe { SetWindowSubclass(hwnd, Some(observe), ID, data as usize) } == 0 {
+            unsafe {
+                drop(Box::from_raw(data));
             }
-            *monitor.borrow_mut() = Some((hook, observe));
-            Ok(())
-        })
+            return Err(format!(
+                "Could not observe palette pointer intent: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        Ok(())
     }
 }
 
 #[cfg(windows)]
-pub(super) use windows::install;
+pub(super) fn install<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
+    windows::install(window)
+}
 
 #[cfg(not(any(target_os = "macos", windows)))]
 pub(super) fn install<R: tauri::Runtime>(_window: &tauri::WebviewWindow<R>) -> Result<(), String> {

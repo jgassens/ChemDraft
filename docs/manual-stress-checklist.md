@@ -30,6 +30,16 @@ Cmd/Ctrl+A: the palette ignores them until Escape or a click elsewhere. In the T
 click the size dropdown and repeat: type-ahead and arrows belong to the select, Escape dismisses
 its popup, and Select All never selects canvas objects. Choosing a size keeps keys in the select.
 After each case, click a palette tool button or its background and verify tool hotkeys work again.
+While a number box or Text size select holds the keyboard, verify Save, Open, Export, View and
+Copy still work; repeat Save immediately after mouse-down, before the lease reply. During that
+pending interval, Cmd/Ctrl+A, Cut/Paste, Undo/Redo, Delete/Backspace and tool/bond typing must not
+reach the document. Cmd+Q, Cmd+H, Cmd/Ctrl+W and preferences must retain their menu behavior,
+including after a disabled-field click. Repeat on Windows with the document WebView2 focused.
+Drag the palette background (including a press without movement), close it on pointerdown, switch
+apps, and click the canvas or another window: no guard may remain. With a loading/unresponsive
+palette page, editing hotkeys must recover after about one second. Rapidly click a button then a
+number box while native IPC is delayed: the old button release must not clear the new click.
+Hold Shift across a palette click and release it: document modifier state must not stay latched.
 Double- and triple-click a number box, then type 3, Delete and Backspace: the box keeps focus and
 the drawing never changes. With another app in front, clicking a palette field does NOT bring
 ChemDraft forward or take its keys, by design: floating palettes never yank focus from another app.
@@ -46,8 +56,9 @@ PageUp/PageDown never reach the drawing. Slider arrows apply each changed value 
 Repeat a checkbox click, click checkbox A then B, and click a number then its slider:
 each clicked control keeps focus and Delete/Backspace stay off the drawing, even when WebKit's
 click default briefly leaves focus on the page body.
-Selects retain native type-ahead and Escape dismissal; leaving the control returns the keyboard.
-Escape in other controls returns the keyboard to the document. Tool/command buttons never borrow it.
+Selects retain native type-ahead; Escape dismisses an open popup, and Escape with the popup
+closed returns the keyboard to the document, as it does in other controls. Enabled tool/command
+buttons never borrow it; disabled controls use the palette shell as their typing sink.
 Cmd/Ctrl+Z still reaches document history from non-text controls; tool hotkeys still work from
 checkboxes, sliders and colour controls. A focused number follows undo immediately unless it holds typed, uncommitted
 text. Focus Target bond length at 22, step ArrowUp three times to 23.5, then press real Cmd/Ctrl+Z

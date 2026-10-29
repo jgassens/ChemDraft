@@ -964,6 +964,18 @@ pub fn run() {
 
     builder
         .on_page_load(|webview, payload| {
+            if matches!(payload.event(), PageLoadEvent::Finished) {
+                if let Some(window) = webview.app_handle().get_webview_window(webview.label()) {
+                    let target = window.clone();
+                    if let Err(error) = run_on_main_thread_blocking(&window, move || {
+                        panel_window::install_pointer_guard(&target)
+                    })
+                    .and_then(|result| result)
+                    {
+                        eprintln!("Could not observe window pointer intent: {error}");
+                    }
+                }
+            }
             if is_input_focus_window_label(webview.label())
                 && matches!(payload.event(), PageLoadEvent::Started)
             {
@@ -1140,6 +1152,13 @@ pub fn run() {
                         return;
                     }
                     api.prevent_close();
+                    panel_window::end_pointer_guard(
+                        window.app_handle(),
+                        window.label(),
+                        panel_window::PointerGuardEnd::Hide,
+                        None,
+                        0,
+                    );
                     if let Err(error) = window.hide() {
                         eprintln!(
                             "Could not hide ChemDraft panel window {}: {error}",
@@ -1215,6 +1234,7 @@ pub fn run() {
         })
         .setup(|app| {
             let app = app.handle();
+            panel_window::observe_document_pointer_release(app);
             // Programmatic panel removal hides a reusable window, so it produces neither
             // CloseRequested nor Destroyed. Cancel its native restore work via the same bridge
             // messages that clear the report and notify the host of a panel's close control.
@@ -1485,6 +1505,10 @@ fn ensure_main_window_visible<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(
         None => create_main_window(app)?,
     };
 
+    let target = window.clone();
+    run_on_main_thread_blocking(&window, move || {
+        panel_window::install_pointer_guard(&target)
+    })??;
     let already_on_screen = window.is_visible().unwrap_or(false);
     main_window_placement::reveal_after_preparation(
         |errors| {
@@ -1988,6 +2012,13 @@ async fn suspend_toolset_windows(
                 {
                     continue;
                 }
+                panel_window::end_pointer_guard(
+                    window.app_handle(),
+                    window.label(),
+                    panel_window::PointerGuardEnd::Hide,
+                    None,
+                    0,
+                );
                 if let Err(error) = window.hide() {
                     // A failed acquisition must undo its own temporary hides; JS will not release
                     // an acquisition that rejected and will use the in-app fallback instead.
@@ -2424,6 +2455,13 @@ fn close_toolset_window(
     let state = mark_toolset_window_closed(&app, &toolset_id)?;
 
     if let Some(window) = window {
+        panel_window::end_pointer_guard(
+            window.app_handle(),
+            window.label(),
+            panel_window::PointerGuardEnd::Hide,
+            None,
+            0,
+        );
         window.hide().map_err(|error| error.to_string())?;
     }
 
@@ -3062,11 +3100,21 @@ async fn set_plugin_panel_input_focus(
     page_token: String,
     editing: bool,
     generation: u64,
+    click_sequence: Option<u64>,
+    pointer_before: Option<u64>,
 ) -> Result<bool, String> {
     validate_plugin_panel_focus_caller(window.label())?;
+    let before = pointer_before.unwrap_or(0);
     // Register the pending generation BEFORE marshalling acquisition to the UI thread.
     // A native loss while that operation is queued must cancel it, not be forgotten.
     let Some(epoch) = panel_window::request(&window, generation, &page_token, editing) else {
+        panel_window::end_pointer_guard(
+            window.app_handle(),
+            window.label(),
+            panel_window::PointerGuardEnd::Refused,
+            click_sequence,
+            before,
+        );
         return Ok(false);
     };
     let target = window.clone();
@@ -3074,6 +3122,13 @@ async fn set_plugin_panel_input_focus(
         if !panel_window::is_current(&target, generation, epoch)
             || (editing && !panel_window::acquired(&target, generation, epoch, true))
         {
+            panel_window::end_pointer_guard(
+                target.app_handle(),
+                target.label(),
+                panel_window::PointerGuardEnd::Refused,
+                click_sequence,
+                before,
+            );
             return Ok(false);
         }
         if editing {
@@ -3144,12 +3199,29 @@ async fn set_plugin_panel_input_focus(
                 epoch,
                 result.as_ref().copied().unwrap_or(false),
             );
+            panel_window::end_pointer_guard(
+                target.app_handle(),
+                target.label(),
+                if held {
+                    panel_window::PointerGuardEnd::Acquired
+                } else {
+                    panel_window::PointerGuardEnd::Refused
+                },
+                click_sequence,
+                before,
+            );
             if !held && panel_window::is_current(&target, generation, epoch) {
                 let _ = target.set_focusable(false);
             }
             result.map(|_| held)
         } else {
-            panel_window::release_pointer_guard(target.label());
+            panel_window::end_pointer_guard(
+                target.app_handle(),
+                target.label(),
+                panel_window::PointerGuardEnd::Released,
+                click_sequence,
+                before,
+            );
             // Tao tracks focus on the parent HWND; WebView2 moves it into a child HWND.
             // The foreground top-level window remains the authoritative Windows lease owner.
             #[cfg(windows)]
@@ -4298,6 +4370,13 @@ fn configure_toolset_popover_window<R: Runtime>(
 #[tauri::command]
 fn close_toolset_popover(app: tauri::AppHandle, toolset_id: String) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(&toolset_popover_window_label(&toolset_id)) {
+        panel_window::end_pointer_guard(
+            window.app_handle(),
+            window.label(),
+            panel_window::PointerGuardEnd::Hide,
+            None,
+            0,
+        );
         window.hide().map_err(|error| error.to_string())?;
     }
     Ok(())
@@ -4611,7 +4690,7 @@ fn route_toolset_command(
     emit_command_to_main(&app, command_id)?;
     // Select changes and clean-number undo update the document while the control
     // keeps the keyboard. Button/background clicks release the lease themselves.
-    if window.label().starts_with("toolset-") && panel_window::holds_input_focus(&window) {
+    if panel_window::keeps_palette_focus(window.label(), panel_window::holds_input_focus(&window)) {
         return Ok(());
     }
     if let Err(error) = focus_main_document_window_impl(&app, MainWindowFocusMode::Force) {
@@ -5845,7 +5924,7 @@ fn emit_menu_command<R: Runtime>(
         .map(|(label, _)| label);
     let target_label = menu_command_target_label(command_id, focused_label.as_deref());
     if target_label == MAIN_WINDOW_LABEL {
-        if panel_window::palette_blocks_document_keys() {
+        if panel_window::palette_blocks_menu(true, command_id) {
             return Ok(());
         }
         return emit_command_to_main(app, command_id);

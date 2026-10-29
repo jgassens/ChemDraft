@@ -3,6 +3,7 @@ import { listenCurrentWindowEvent } from "../window-manager/tauriEvents";
 import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { detectDesktopShortcutPlatform } from "../keyboardShortcuts";
 import { isTextEditingElement } from "../editHistoryRouting";
+import { isDisabledPaletteTypingKey, isPendingPaletteEditingKey, listenPaletteClickPending } from "../palettePendingKeys";
 
 /** Form controls borrow the keyboard; command buttons never do. Labels count as their control. */
 export function panelEditableControl(target: EventTarget | null, includeDisabled = false): HTMLElement | undefined {
@@ -22,6 +23,33 @@ export function panelEditableControl(target: EventTarget | null, includeDisabled
   if (control instanceof HTMLSelectElement) return control;
   const editable = control.getAttribute("contenteditable");
   return editable === "" || editable === "true" || editable === "plaintext-only" ? control : undefined;
+}
+
+/** Disabled inputs have pointer-events:none; WebKit sends the press to the wrapper. */
+export function disabledControlAtPointer(
+  shell: HTMLElement, event: Pick<PointerEvent, "target" | "clientX" | "clientY">
+): HTMLElement | undefined {
+  const selector = "input:disabled, textarea:disabled, select:disabled, button:disabled";
+  const target = event.target instanceof Element ? event.target : null;
+  if (!target || !shell.contains(target)) return;
+  const direct = target.closest<HTMLElement>(selector);
+  if (direct) return direct;
+  // Prefer geometry when a label wraps more than one field (number plus slider).
+  const controls = [...shell.querySelectorAll<HTMLElement>(selector)];
+  const hit = controls.find((control) => {
+    const rect = control.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0 && event.clientX >= rect.left &&
+      event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom;
+  });
+  if (hit) return hit;
+  // Accessible labels and single-control wrappers count as the field. A section
+  // or palette background containing disabled descendants must still be draggable.
+  const label = target.closest("label");
+  if (label && shell.contains(label)) return label.querySelector<HTMLElement>(selector) ?? undefined;
+  if (target === shell) return;
+  const children = [...target.children].filter((child) => child.matches("input, textarea, select, button"));
+  const child = children.length === 1 ? children[0] : undefined;
+  return child instanceof HTMLElement && child.matches(selector) ? child : undefined;
 }
 
 export interface NativePanelFocusEvent {
@@ -55,11 +83,13 @@ function registerNativeInputFocus(): Promise<string> {
     invoke<string>("register_plugin_panel_input_focus"));
 }
 
-async function requestNativeInputFocus(editing: boolean, generation: number): Promise<boolean> {
+async function requestNativeInputFocus(
+  editing: boolean, generation: number, clickSequence?: number, pointerBefore?: number
+): Promise<boolean> {
   if (!isDesktopRuntime()) return editing;
   const token = await registerNativeInputFocus();
   const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<boolean>("set_plugin_panel_input_focus", { editing, generation, pageToken: token });
+  return invoke<boolean>("set_plugin_panel_input_focus", { editing, generation, pageToken: token, clickSequence, pointerBefore });
 }
 
 async function listenNativePanelFocus(listener: (event: NativePanelFocusEvent) => void): Promise<() => void> {
@@ -89,6 +119,19 @@ export function installPluginPanelInputFocus(
     void registerNativeInputFocus().catch((error: unknown) =>
       console.error("Could not register panel input focus:", error));
   }
+  let clickSequence: number | undefined;
+  let latestClickSequence = 0;
+  let unsubscribePointer: (() => void) | undefined;
+  const pointerSubscribed = editableFocus && isDesktopRuntime() ? listenPaletteClickPending((event) => {
+    if (disposed || event.sequence < latestClickSequence ||
+      (event.sequence === latestClickSequence && clickSequence === undefined)) return;
+    latestClickSequence = event.sequence;
+    clickSequence = event.pending ? event.sequence : undefined;
+  }).then((unsubscribe) => {
+    if (disposed) unsubscribe();
+    else unsubscribePointer = unsubscribe;
+  }) : Promise.resolve();
+  void pointerSubscribed.catch((error: unknown) => console.error("Could not observe palette clicks:", error));
   let editing = false;
   let acquiredControlFocus = false;
   let suspendingControlFocus = false;
@@ -127,6 +170,9 @@ export function installPluginPanelInputFocus(
       if (next) shell.dataset.paletteInputFocus = acquiredControlFocus ? "held" : "pending";
       else delete shell.dataset.paletteInputFocus;
     }
+    // Capture before queueing IPC, never when the queued release eventually runs.
+    const requestedClick = clickSequence;
+    const pointerBefore = Date.now();
     const requestedChain = leaseChain;
     const requestedRevision = revision = ++nextGeneration;
     // Every request has a generation, including retries. Keep IPC serialized through native
@@ -136,9 +182,12 @@ export function installPluginPanelInputFocus(
       try {
         // Subscribe before acquiring: a native loss can precede the acquisition reply.
         await subscribed;
+        await pointerSubscribed;
         if (requestedRevision !== revision) return;
         if (next) nativeGenerations.add(requestedRevision);
-        const acquired = await requestFocus(next, requestedRevision);
+        const acquired = await (requestFocus === requestNativeInputFocus
+          ? requestNativeInputFocus(next, requestedRevision, requestedClick, pointerBefore)
+          : requestFocus(next, requestedRevision));
         if (next && requestedChain === leaseChain) {
           if (!acquired) finish(true);
           else {
@@ -215,7 +264,7 @@ export function installPluginPanelInputFocus(
     pointerActive = true;
     pointerClickTarget = event.target;
     selectionGesture = undefined;
-    const control = editableControl(event.target);
+    const control = (editableFocus ? disabledControlAtPointer(shell, event) : undefined) ?? editableControl(event.target);
     if (control && shell.contains(control)) {
       clearTimeout(controlBlurTimer);
       if (editableFocus && acquiredControlFocus) pendingPaletteShells.delete(shell);
@@ -231,6 +280,7 @@ export function installPluginPanelInputFocus(
       setEditing(true, !editableFocus);
     } else {
       if (editing) finish();
+      else if (editableFocus) returnPointerFocus(); // Classification already says non-editing.
       if (reportText(event.target)) {
         selectionGesture = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, dragged: false };
       }
@@ -369,9 +419,11 @@ export function installPluginPanelInputFocus(
     if (!editableFocus || !editing || (event.target !== document.body &&
       (!(event.target instanceof Node) || !shell.contains(event.target)))) return;
     if (event.key === "Escape" || event.key === "Tab") return;
-    if (!acquiredControlFocus || leasedControl?.matches(":disabled")) {
-      // The native guard covers keys still addressed to the document. Drop those
-      // already delivered to this webview while its caret has no destination yet.
+    const drop = leasedControl?.matches(":disabled")
+      ? isDisabledPaletteTypingKey(event)
+      : !acquiredControlFocus && isPendingPaletteEditingKey(event);
+    if (drop) {
+      // App menu shortcuts keep their default, even during acquisition or in a sink.
       event.preventDefault();
       event.stopImmediatePropagation();
     }
@@ -383,8 +435,8 @@ export function installPluginPanelInputFocus(
     const control = editableControl(event.target) ?? (editableFocus ? leasedControl : undefined);
     if (!editing || event.isComposing) return;
     if (event.key === "Escape" && !event.defaultPrevented) {
-      // A native select owns Escape (dismiss its popup without blurring its owner).
-      if (editableFocus && control instanceof HTMLSelectElement && !control.disabled) return;
+      // An open native select popup consumes its own Escape. Escape delivered to
+      // this page means the popup is closed and ends the lease like any control.
       event.preventDefault();
       event.stopPropagation(); // Escape finishes editing; it must not close the report window.
       finish();
@@ -433,7 +485,7 @@ export function installPluginPanelInputFocus(
     if (selectionLease) {
       if (selectionNodes.some((node) => !shell.contains(node))) finish();
     } else if (editing && (!leasedControl || !shell.contains(leasedControl) ||
-      editableControl(leasedControl) !== leasedControl)) finish();
+      (editableControl(leasedControl) !== leasedControl && !(editableFocus && leasedControl.matches(":disabled"))))) finish();
   });
   observer.observe(shell, { childList: true, subtree: true, attributes: true,
     attributeFilter: ["disabled", "readonly", "contenteditable", "type"] });
@@ -464,6 +516,7 @@ export function installPluginPanelInputFocus(
     clearTimeout(controlBlurTimer);
     clearTimeout(pointerFocusTimer);
     unsubscribeFocus?.();
+    unsubscribePointer?.();
     observer.disconnect();
     shell.removeEventListener("pointerdown", pointerDown, true);
     window.removeEventListener("pointermove", pointerMove, true);

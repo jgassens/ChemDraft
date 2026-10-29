@@ -10,7 +10,20 @@ mod installation;
 #[path = "palette_key_guard.rs"]
 mod key_guard;
 pub(crate) use installation::finish_installation;
-pub(crate) use key_guard::blocks_document as palette_blocks_document_keys;
+pub(crate) use key_guard::{
+    keeps_palette_focus, observe_document_pointer_release, End as PointerGuardEnd,
+};
+
+pub(crate) fn palette_blocks_menu(document_target: bool, command: &str) -> bool {
+    key_guard::blocks_menu(key_guard::blocks_document(), document_target, command)
+}
+
+/// Pointer observation alone does not alter window styles or input leases.
+pub(crate) fn install_pointer_guard<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+) -> Result<(), String> {
+    key_guard::install(window)
+}
 #[cfg(target_os = "macos")]
 #[path = "panel_focus_macos.rs"]
 mod macos;
@@ -18,8 +31,14 @@ mod macos;
 #[derive(Default)]
 pub(crate) struct PanelFocusState(Mutex<HashMap<String, focus_lease::Lease>>);
 
-pub(crate) fn release_pointer_guard(label: &str) {
-    key_guard::release(label);
+pub(crate) fn end_pointer_guard<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    label: &str,
+    why: PointerGuardEnd,
+    sequence: Option<u64>,
+    before: u64,
+) {
+    key_guard::end(app, label, why, sequence, before);
 }
 
 pub(crate) fn holds_input_focus<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> bool {
@@ -33,7 +52,13 @@ pub(crate) fn holds_input_focus<R: tauri::Runtime>(window: &tauri::WebviewWindow
 }
 
 pub(crate) fn reset_for_webview<R: tauri::Runtime>(window: &tauri::Window<R>) {
-    key_guard::release(window.label());
+    key_guard::end(
+        window.app_handle(),
+        window.label(),
+        PointerGuardEnd::Destroy,
+        None,
+        0,
+    );
     window
         .state::<PanelFocusState>()
         .0
@@ -112,7 +137,13 @@ pub(crate) fn is_current<R: tauri::Runtime>(
 // never from WebView2 child focus messages or delayed Tauri Focused events.
 pub(crate) fn activation<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>, active: bool) {
     if !active {
-        key_guard::release(window.label());
+        key_guard::end(
+            window.app_handle(),
+            window.label(),
+            PointerGuardEnd::Deactivated,
+            None,
+            0,
+        );
     }
     let generation = {
         let state = window.state::<PanelFocusState>();
@@ -140,7 +171,13 @@ pub(crate) fn activation<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>, ac
 }
 
 pub(crate) fn forget<R: tauri::Runtime>(window: &tauri::Window<R>) {
-    key_guard::release(window.label());
+    key_guard::end(
+        window.app_handle(),
+        window.label(),
+        PointerGuardEnd::Destroy,
+        None,
+        0,
+    );
     window
         .state::<PanelFocusState>()
         .0
@@ -264,14 +301,8 @@ pub(crate) fn install_input_focus<R: tauri::Runtime>(
     key_guard::install(window)?;
     let hwnd = window.hwnd().map_err(|error| error.to_string())?.0;
     let target = window.clone();
-    let label = window.label().to_string();
     let data = Box::into_raw(Box::new(FocusObserver {
         activation: std::rc::Rc::new(move |active| activation(&target, active)),
-        pointer: std::rc::Rc::new(move || {
-            if key_guard::is_palette(&label) {
-                key_guard::pointer(Some(&label));
-            }
-        }),
     }));
     unsafe {
         SetWindowLongPtrW(
@@ -293,7 +324,6 @@ pub(crate) fn install_input_focus<R: tauri::Runtime>(
 #[cfg(windows)]
 struct FocusObserver {
     activation: std::rc::Rc<dyn Fn(bool)>,
-    pointer: std::rc::Rc<dyn Fn()>,
 }
 
 #[cfg(windows)]
@@ -307,15 +337,8 @@ unsafe extern "system" fn focus_subclass(
 ) -> isize {
     use windows_sys::Win32::UI::{
         Shell::{DefSubclassProc, RemoveWindowSubclass},
-        WindowsAndMessaging::{
-            WA_INACTIVE, WM_ACTIVATE, WM_ACTIVATEAPP, WM_LBUTTONDOWN, WM_MOUSEACTIVATE,
-            WM_NCDESTROY,
-        },
+        WindowsAndMessaging::{WA_INACTIVE, WM_ACTIVATE, WM_ACTIVATEAPP, WM_NCDESTROY},
     };
-    if message == WM_MOUSEACTIVATE && ((lparam >> 16) & 0xffff) == WM_LBUTTONDOWN as isize {
-        let pointer = (*(data as *const FocusObserver)).pointer.clone();
-        pointer();
-    }
     // Observe focus without overriding mouse activation. Palettes keep WS_EX_NOACTIVATE,
     // but WebView2 must be allowed to activate them for a native colour picker. Forcing
     // MA_NOACTIVATE here (newly installed on palettes) prevents that popup from opening.
