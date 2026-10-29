@@ -165,34 +165,108 @@ describe("HTML table fixtures", () => {
 });
 
 describe("Excel overflow recovery", () => {
-  it("extracts overflowing Excel boundary notes and recovers Density from the full CR-only TSV grid", () => {
+  const excelHeaders = ["Material", "MW (g/mol)", "Density (g/mL)", "Equiv.", "mmol", "Mass (g)", "Volume (mL)"];
+  const textOf = (cell: string | { text: string }) => typeof cell === "string" ? cell : cell.text;
+
+  it.each(["\n", "\r", "\r\n"])("recovers Density from the full tab-padded TSV grid (%j)", newline => {
     const html = fixture("excel-overflow-notes.html");
-    const tsv = fixture("excel-overflow-notes.tsv");
+    const tsv = fixture("excel-overflow-notes.tsv").replace(/\n/g, newline);
     expect(html).not.toContain("x:num");
-    expect(tsv).toContain("\t\t\t\t\t\t\r");
-    expect(tsv).not.toContain("\n");
+    expect(tsv).toContain(`\t\t\t\t\t\t${newline}`);
     const result = expectOk(readHtmlAndTsv(html, tsv));
     expect(result.spec.columns).toHaveLength(7);
-    expect(result.spec.rows).toHaveLength(6);
-    expect(result.spec.rows[1][2]).toBe("0.854");
-    expect(result.spec.rows[3][2]).toBe("1.204");
-    expect(result.spec.caption).toBe("Table S1. Sharpless reagent quantities (synthetic).");
-    expect(result.spec.footnotes).toEqual([{ text: "a TBHP stock solution; synthetic example.", spans: [
-      { text: "a", script: "superscript" }, { text: " TBHP stock solution; synthetic example." }
-    ] }]);
+    expect(result.spec.rows.map(row => row.map(textOf))).toEqual([
+      ["allyl alcohol", "58.08", "0.854", "1.00", "17.22", "1.00", "1.17"],
+      ["Ti(OiPr)4", "284.22", "0.96", "0.05", "0.861", "0.245", "0.255"],
+      ["(+)-DET", "206.19", "1.204", "0.06", "1.033", "0.213", "0.177"],
+      ["TBHPa", "90.12", "—", "2.0", "34.44", "—", "6.26"],
+      ["CH2Cl2", "84.93", "1.33", "—", "—", "—", "86"]
+    ]);
     expect(result.warnings).toEqual([]);
     expect(TableSpecSchema.parse(result.spec)).toEqual(result.spec);
   });
 
+  it("extracts colspan caption and short colspan footnote without a merged-cells warning, even without TSV", () => {
+    const result = expectOk(readHtml(fixture("excel-overflow-notes.html")));
+    expect(result.spec.caption).toBe("Table S2. Sharpless reagent plan (synthetic).");
+    expect(result.spec.footnotes).toEqual([{ text: "a TBHP stock solution; synthetic example.", spans: [
+      { text: "a", script: "superscript" }, { text: " TBHP stock solution; synthetic example." }
+    ] }]);
+    expect(result.warnings).toEqual([
+      expect.stringMatching(/row 3, column 3.*overflow/),
+      expect.stringMatching(/row 5, column 3.*overflow/)
+    ]);
+  });
+
+  it("recognizes Excel's class-styled td heading after its caption as one header row", () => {
+    const result = expectOk(readHtmlAndTsv(fixture("excel-overflow-notes.html"), fixture("excel-overflow-notes.tsv")));
+    expect(result.spec.headerRows).toEqual([excelHeaders]);
+    expect(result.spec.rows).toHaveLength(5);
+    expect(result.spec.rows.every(row => row.length === 7)).toBe(true);
+    expect(result.spec.columns).toEqual([left, ...Array.from({ length: 6 }, () => ({ align: "decimal" }))]);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("does not infer headers from non-Excel borders or an inline override removing a header border", () => {
+    const html = fixture("excel-overflow-notes.html");
+    for (const modified of [
+      html.replace('xmlns:x="urn:schemas-microsoft-com:office:excel"', "").replace("Excel.Sheet", "Other"),
+      html.replace("class=xl22 width=90 style='width:67pt'", "class=xl22 width=90 style='width:67pt;border-top:none'")
+    ]) {
+      expect(expectOk(readHtml(modified)).spec.headerRows).toBeUndefined();
+    }
+  });
+
+  it("does not treat an ordinary Excel grid with borders on every row as a header", () => {
+    const html = '<html xmlns:x="urn:schemas-microsoft-com:office:excel"><head><style>'
+      + '.xl1 { border-top:1pt solid black; border-bottom:1pt solid black; }</style></head><body><table>'
+      + '<tr><td class=xl1>a</td><td class=xl1>1.00</td></tr>'
+      + '<tr><td class=xl1>b</td><td class=xl1>2.00</td></tr></table></body></html>';
+    expect(expectOk(readHtml(html)).spec.headerRows).toBeUndefined();
+  });
+
+  it("recognizes tab-padded notes in standalone TSV, retaining the heading as data", () => {
+    const result = expectOk(readClipboardTsvTable(fixture("excel-overflow-notes.tsv")));
+    expect(result.spec.caption).toBe("Table S2. Sharpless reagent plan (synthetic).");
+    expect(result.spec.footnotes).toEqual(["a TBHP stock solution; synthetic example."]);
+    expect(result.spec.headerRows).toBeUndefined();
+    expect(result.spec.rows).toHaveLength(6);
+    expect(result.spec.rows[0]).toEqual(excelHeaders);
+    expect(result.warnings).toEqual([]);
+    expect(TableSpecSchema.parse(result.spec)).toEqual(result.spec);
+  });
+
+  it("keeps sparse and all-empty TSV data rows inside the table, and populated boundary rows", () => {
+    const result = expectOk(readClipboardTsvTable(
+      "Caption\t\t\na\t\t1.00\ninterior label\t\t\n\t\t\nb\t2.00\t\nFootnote\t\t"
+    ));
+    expect(result.spec.caption).toBe("Caption");
+    expect(result.spec.footnotes).toEqual(["Footnote"]);
+    expect(result.spec.rows).toEqual([
+      ["a", "", "1.00"], ["interior label", "", ""], ["", "", ""], ["b", "2.00", ""]
+    ]);
+    expect(result.warnings).toEqual([]);
+    expect(expectOk(readClipboardTsvTable("a\t\t1.00\nb\t2.00\t")).spec).toMatchObject({
+      rows: [["a", "", "1.00"], ["b", "2.00", ""]]
+    });
+  });
+
+  it("keeps refusals and note limits for tab-padded TSV boundaries", () => {
+    expectRefusal(readClipboardTsvTable("Caption\t\nA\tB\nC\tD\tE\nFootnote\t"), /different numbers of columns/);
+    expectRefusal(readClipboardTsvTable("A\tB\nseparator\nC\tD\nFootnote\t"), /separated tab-separated blocks/);
+    expectRefusal(readClipboardTsvTable(`${"x".repeat(2001)}\t\nA\tB\nC\tD`), /caption paragraph 1 has 2001 characters/);
+    expectRefusal(readClipboardTsvTable(`A\tB\nC\tD\n${"Footnote\t\n".repeat(51)}`), /51 footnotes/);
+  });
+
   it.each(["caption", "footnote", "body", "dimensions"])("does not recover Excel values when the full TSV %s differs", part => {
     let tsv = fixture("excel-overflow-notes.tsv");
-    if (part === "caption") tsv = tsv.replace("Table S1.", "Different caption.");
+    if (part === "caption") tsv = tsv.replace("Table S2.", "Different caption.");
     if (part === "footnote") tsv = tsv.replace("TBHP stock solution", "Unrelated stock solution");
     if (part === "body") tsv = tsv.replace("allyl alcohol", "Unrelated reagent");
     if (part === "dimensions") tsv += "Extra\trow\t\t\t\t\t\r";
     const result = expectOk(readHtmlAndTsv(fixture("excel-overflow-notes.html"), tsv));
-    expect(result.spec.rows[1][2]).toBe("#######");
-    expect(result.spec.rows[3][2]).toBe("#######");
+    expect(result.spec.rows[0][2]).toBe("#######");
+    expect(result.spec.rows[2][2]).toBe("#######");
     expect(result.warnings).toHaveLength(2);
     expect(result.warnings.every(warning => warning.includes("overflow"))).toBe(true);
   });

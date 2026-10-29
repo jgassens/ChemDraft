@@ -179,7 +179,10 @@ function tagOf(element: Element): string {
 }
 
 function styleProperty(element: Element, name: string): string | undefined {
-  const style = element.getAttribute("style");
+  return declarationProperty(element.getAttribute("style"), name);
+}
+
+function declarationProperty(style: string | null, name: string): string | undefined {
   if (!style) {
     return undefined;
   }
@@ -489,6 +492,38 @@ function cellsOf(row: Element): Element[] {
   return Array.from(row.children).filter((child) => tagOf(child) === "td" || tagOf(child) === "th");
 }
 
+/** Excel uses td cells with class-based top and bottom rules for a heading, not th/thead.
+ * Read only its simple class rules; never load stylesheets or infer headers from cell contents.
+ */
+function excelHeaderTest(table: Element): (row: Element) => boolean {
+  const document = table.ownerDocument;
+  const excel = document.documentElement.getAttribute("xmlns:x") === "urn:schemas-microsoft-com:office:excel"
+    || Array.from(document.querySelectorAll("meta")).some(meta =>
+      meta.getAttribute("name")?.toLowerCase() === "progid" && meta.getAttribute("content") === "Excel.Sheet");
+  const rules: Array<{ className: string; declarations: string }> = [];
+  if (excel) {
+    for (const style of Array.from(document.querySelectorAll("style"))) {
+      for (const match of (style.textContent ?? "").matchAll(/(?:^|[}\s])\.([\w-]+)\s*\{([^{}]*)\}/g)) {
+        rules.push({ className: match[1], declarations: match[2] });
+      }
+    }
+  }
+  const border = (cell: Element, name: string): boolean => {
+    let value: string | undefined;
+    for (const rule of rules) {
+      if (cell.classList.contains(rule.className)) value = declarationProperty(rule.declarations, name) ?? value;
+    }
+    value = styleProperty(cell, name) ?? value;
+    return value !== undefined && /\b(solid|double|dashed|dotted)\b/.test(value)
+      && !/^0(?:[a-z]+)?(?:\s|$)/.test(value);
+  };
+  return row => {
+    const cells = cellsOf(row);
+    return excel && cells.length > 1 && cells.every(cell =>
+      border(cell, "border-top") && border(cell, "border-bottom"));
+  };
+}
+
 function spanAttribute(element: Element, name: string, fallback: number, max: number): number {
   const value = Number.parseInt(element.getAttribute(name) ?? "", 10);
   return Number.isFinite(value) && value >= 1 ? Math.min(value, max) : fallback;
@@ -669,7 +704,7 @@ function convertTable(
   const hasOverflow = dense.some((row) => row.some((entry) => OVERFLOW_PATTERN.test(cellText(entry.input))));
   const plain = hasOverflow && !nested && dense.every((row, r) => r < start || r >= end || row.every((entry) => !entry.filler))
     ? payload.textItems.find((item) => isTextLikeType(item.type)) : undefined;
-  const tsv = plain ? readTsvTable(plain.text, 1) : undefined;
+  const tsv = plain ? readTsvTable(plain.text, 1, true) : undefined;
   const normalizedText = (cell: ClipboardTableCell): string => cellText(cell).replace(/\s+/g, " ").trim();
   // Confirm both dimensions and the visible cells, so unrelated/reordered TSV cannot supply values.
   const matchingRows = tsv?.ok && tsv.spec.columns.length === width && tsv.spec.rows.length === dense.length
@@ -706,6 +741,10 @@ function convertTable(
   if (headerCount === 0) {
     while (start + headerCount < end && headerFlags[start + headerCount]) {
       headerCount += 1;
+    }
+    if (headerCount === 0 && body.length > 1 && !mergedRows.has(start) && !rowspanRows.has(start)) {
+      const isExcelHeader = excelHeaderTest(table);
+      if (isExcelHeader(rows[start].element) && !isExcelHeader(rows[start + 1].element)) headerCount = 1;
     }
   }
   if (headerCount >= body.length) {
@@ -851,14 +890,15 @@ function parseTsvRecords(text: string): string[][] | undefined {
 /**
  * Reads a table from plain text copied out of a spreadsheet: at least two lines, each with the same
  * number of tab-separated fields (two or more), optionally surrounded by caption/footnote lines
- * without tabs. There are no header rows; the user decides those. Ambiguous blocks are refused.
+ * with no populated fields after the first. There are no header rows; the user decides those.
+ * Ambiguous blocks are refused.
  */
 export function readClipboardTsvTable(text: string): ClipboardTableResult | undefined {
   return readTsvTable(text, 2);
 }
 
 /** HTML recovery already established a table, so its matching TSV may have just one row. */
-function readTsvTable(text: string, minRows: number): ClipboardTableResult | undefined {
+function readTsvTable(text: string, minRows: number, preserveBoundaryRows = false): ClipboardTableResult | undefined {
   const records = parseTsvRecords(text);
   if (!records) {
     return text.includes("\t") ? fail("The tab-separated table has a malformed quoted field.") : undefined;
@@ -867,13 +907,18 @@ function readTsvTable(text: string, minRows: number): ClipboardTableResult | und
   if (last && last.length === 1 && last[0] === "") {
     records.pop();
   }
-  const start = records.findIndex((record) => record.length > 1);
+  // Excel pads caption/footnote lines with tabs. Only strip these at the boundaries;
+  // a sparse row inside the rectangle is still data. HTML recovery needs the full grid.
+  const isNote = (record: string[]): boolean => record.length === 1
+    || (!preserveBoundaryRows && record[0].trim() !== "" && record.slice(1).every(field => field === ""));
+  const start = records.findIndex((record) => !isNote(record));
   if (start < 0) return undefined;
   let end = start;
   while (end < records.length && records[end].length > 1) end += 1;
-  if (records.slice(end).some((record) => record.length > 1)) {
+  if (records.slice(end).some((record) => !isNote(record))) {
     return fail("The clipboard contains separated tab-separated blocks; copy one rectangular table at a time.");
   }
+  while (end > start && isNote(records[end - 1])) end -= 1;
   const grid = records.slice(start, end);
   const width = grid[0].length;
   if (grid.length < minRows) {
