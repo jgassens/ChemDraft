@@ -19,7 +19,7 @@ function setup(run: (context: PluginCommandContext) => unknown, write = true, ov
     return { applied: true as const, objectIds: patch.op === "addObject" ? [patch.object.id] : [] };
   });
   const host = new PluginHost({ getActiveDocument: () => document, buildTablePatch, applyDocumentPatch, ...overrides });
-  host.registerPlugin({ id: "org.test.tables", name: "Tables", version: "1", apiVersion: "^0.1.16", entry: "plugin.js",
+  host.registerPlugin({ id: "org.test.tables", name: "Tables", version: "1", apiVersion: "^0.1.17", entry: "plugin.js",
     permissions: write ? ["document.write"] : [], contributes: { commands: [{ id: "plugin.tables.insert", title: "Make table" }] }
   }, { commandHandlers: { "plugin.tables.insert": run } });
   return { host, buildTablePatch, applyDocumentPatch, document: () => document };

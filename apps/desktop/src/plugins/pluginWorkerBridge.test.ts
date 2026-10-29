@@ -793,7 +793,7 @@ describe("every chemistry method survives the worker boundary", () => {
 describe("documents.applyPatch survives the worker boundary", () => {
   it("round-trips a native table spec and receipt through the gated worker capability", async () => {
     const manifest = parsePluginManifest({ id: "org.test.table-worker", name: "Table Worker", version: "1",
-      apiVersion: "^0.1.16", entry: "worker.js", permissions: ["document.write"],
+      apiVersion: "^0.1.17", entry: "worker.js", permissions: ["document.write"],
       contributes: { commands: [{ id: "plugin.tableWorker.insert", title: "Make table" }] }
     });
     const applyDocumentPatch = vi.fn(async () => ({ applied: true as const, objectIds: ["table_worker"] }));

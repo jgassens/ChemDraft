@@ -52,7 +52,7 @@ describe("plugin table preparation and runtime", () => {
       return result.receipt;
     });
     const runtime = createPluginRuntime({ getActiveDocument: () => document, applyDocumentPatch });
-    runtime.registerPlugin({ id: "org.test.tables", name: "Tables", version: "1", apiVersion: "^0.1.16", entry: "plugin.js",
+    runtime.registerPlugin({ id: "org.test.tables", name: "Tables", version: "1", apiVersion: "^0.1.17", entry: "plugin.js",
       permissions: ["document.write"], contributes: { commands: [{ id: "plugin.tables.insert", title: "Make table" }] }
     }, { commandHandlers: { "plugin.tables.insert": context => context.documents.insertTable!(spec) } });
     const receipt = await runtime.invokeCommand("plugin.tables.insert") as AppliedPatchReceipt;

@@ -10,8 +10,8 @@ import { extractPlugin, parseCliArgs, PluginExtractionError, repositoryRoot } fr
 import { readZipEntryNames } from "./zip";
 import { sdkVersionFrom } from "./gates";
 
-it("extracts the literal 0.1.16 SDK version used by distribution gates", () => {
-  expect(sdkVersionFrom(repositoryRoot, message => new PluginExtractionError(message))).toBe("0.1.16");
+it("extracts the literal 0.1.17 SDK version used by distribution gates", () => {
+  expect(sdkVersionFrom(repositoryRoot, message => new PluginExtractionError(message))).toBe("0.1.17");
 });
 
 // Windows refuses file symlinks without Developer Mode or admin rights. The refusal under test can

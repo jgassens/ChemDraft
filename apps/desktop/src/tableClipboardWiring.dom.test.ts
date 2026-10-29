@@ -2,9 +2,10 @@
 import { readFileSync } from "node:fs";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { deserializeDocument, type ChemDraftDocument, type TableObject } from "@chemdraft/chem-core";
-import { smilesListCandidates } from "@chemdraft/clipboard-adapter";
+import { ensureOclResources } from "@chemdraft/ocl-adapter";
+import { installDomRdkitLoader } from "./testSupport/rdkitIdentity";
 import { exportTableClipboardPayloads } from "@chemdraft/export-engine";
 import { MainWindow } from "./MainWindow";
 import { CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, createPhase4Document, createSelectionClipboardPayload, insertNativeTextObject } from "./documentWorkflow";
@@ -14,6 +15,7 @@ import { DOM_COMMAND_EVENT } from "./window-manager";
 import { ZodError } from "zod";
 import * as tableClipboard from "./tableClipboardWiring";
 
+vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("./clipboard", async importOriginal => ({
   ...await importOriginal<typeof import("./clipboard")>(),
   readClipboardPayload: vi.fn(), writeClipboardTextItems: vi.fn()
@@ -28,6 +30,10 @@ vi.mock("./smilesListPaste", async importOriginal => ({
 describe("MainWindow table clipboard wiring", () => {
   let container: HTMLDivElement;
   let root: Root;
+  beforeAll(async () => {
+    installDomRdkitLoader();
+    await ensureOclResources();
+  }, 20_000);
   beforeEach(() => {
     window.history.replaceState(null, "", "/?agentBridge=1");
     vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => setTimeout(() => callback(performance.now()), 0));
@@ -225,21 +231,60 @@ describe("MainWindow table clipboard wiring", () => {
     expect(container.querySelector('[role="status"]')?.textContent).toContain("Merged cells were split");
   });
 
-  it("keeps a rectangular SMILES list as structures ahead of an HTML table", async () => {
+  it.each(["CCO", "[13CH4]"])("verifies plain-text %s as a molecule ahead of an HTML table", async text => {
+    await render();
+    vi.mocked(readClipboardPayload).mockResolvedValue(clipboard(
+      readFileSync("packages/fixtures/clipboard-tables/word-like.html", "utf8"), text));
+    await command("clipboard.paste");
+    await vi.waitFor(async () => {
+      await act(async () => { await Promise.resolve(); });
+      expect(container.querySelector('[role="status"]')?.textContent).toContain("Pasted SMILES structure");
+    }, { timeout: 15_000 });
+    const objects = snapshot().document.pages[0].objects;
+    expect(objects).toHaveLength(1);
+    expect(objects[0].type).toBe("molecule");
+    if (objects[0].type === "molecule" && text === "[13CH4]") {
+      expect(objects[0].atoms).toEqual([expect.objectContaining({ element: "C", isotope: 13 })]);
+    }
+  }, 20_000);
+
+  it("pastes a Word-shaped table containing CH2Cl2 and MW as a table", async () => {
+    await render();
+    const actual = await vi.importActual<typeof import("./smilesListPaste")>("./smilesListPaste");
+    vi.mocked(depictSmilesListForPaste).mockImplementation(actual.depictSmilesListForPaste);
+    vi.mocked(readClipboardPayload).mockResolvedValue(clipboard(
+      '<html xmlns:o="urn:schemas-microsoft-com:office:office"><body><table class="MsoTableGrid"><tr><td>Solvent</td><td>MW</td></tr><tr><td>CH2Cl2</td><td>84.93</td></tr></table></body></html>',
+      "Solvent\tMW\nCH2Cl2\t84.93"));
+    await command("clipboard.paste");
+    await vi.waitFor(async () => {
+      await act(async () => { await Promise.resolve(); });
+      expect(container.querySelector('[role="status"]')?.textContent).toBe("Pasted table");
+    }, { timeout: 15_000 });
+    const objects = snapshot().document.pages[0].objects;
+    expect(objects).toHaveLength(1);
+    expect(objects[0]).toMatchObject({ type: "table", rows: [
+      { cells: [{ text: "Solvent" }, { text: "MW" }] },
+      { cells: [{ text: "CH2Cl2" }, { text: "84.93" }] }
+    ] });
+  }, 20_000);
+
+  it("keeps a rectangular SMILES list as verified structures ahead of an HTML table", async () => {
     await render();
     const text = "CCO\tCCN\nCCC\tCCCC";
-    const candidates = smilesListCandidates(text);
-    vi.mocked(depictSmilesListForPaste).mockReturnValue(Promise.resolve({ entries: candidates.map(({ token }, i) => ({
-      smiles: token, depiction: { atoms: [{ element: "C", x: 0, y: 0, charge: 0 }, { element: i === 0 ? "O" : "N", x: 22, y: 0, charge: 0 }],
-        bonds: [{ from: 0, to: 1, order: "single", wedge: null }] }
-    })), skipped: 0, failures: [] }));
+    const actual = await vi.importActual<typeof import("./smilesListPaste")>("./smilesListPaste");
+    vi.mocked(depictSmilesListForPaste).mockImplementation(actual.depictSmilesListForPaste);
     vi.mocked(readClipboardPayload).mockResolvedValue(clipboard(readFileSync("packages/fixtures/clipboard-tables/word-like.html", "utf8"), text));
     await command("clipboard.paste");
     expect(depictSmilesListForPaste).toHaveBeenCalledOnce();
+    expect(vi.mocked(depictSmilesListForPaste).mock.calls[0][4]).toBeTypeOf("function");
+    await vi.waitFor(async () => {
+      await act(async () => { await Promise.resolve(); });
+      expect(snapshot().document.pages[0].objects).toHaveLength(4);
+    }, { timeout: 15_000 });
     const objects = snapshot().document.pages[0].objects;
     expect(objects.filter(object => object.type === "molecule")).toHaveLength(4);
     expect(objects.some(object => object.type === "table")).toBe(false);
-  });
+  }, 20_000);
 
   it("tries TSV when a prospective SMILES list fails to parse", async () => {
     await render();
