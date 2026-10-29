@@ -637,13 +637,16 @@ export function rdkitMethodContracts(
         engine: ENGINE,
         engineVersion,
         symbol: "JSMol::get_json",
-        parameters: { hillNotation: true, separateIsotopes: true }
+        parameters: { hillNotation: true, separateIsotopes: true, abbreviateHIsotopes: true }
       },
       defaultInterpretationId: "source",
       resultKind: "composition",
       conventions: [
-        "Hill notation: carbon, then hydrogen, then every other element alphabetically; with no carbon, all elements alphabetically",
-        "isotope-labelled atoms are written [13C] and listed before the natural-abundance atoms of the same element",
+        "Unlabelled Hill notation: carbon, then hydrogen, then other elements alphabetically; " +
+          "with no carbon, all elements alphabetically",
+        "Isotopes match RDKit CalcMolFormula(separateIsotopes=True, abbreviateHIsotopes=True): " +
+          "natural C then carbon isotopes by mass, H then hydrogen isotopes (D/T for 2/3), " +
+          "other natural elements alphabetically, then remaining isotope entries by mass and symbol",
         "implicit hydrogens are protium and never inherit their heavy atom's isotope label",
         "identical components collapse into a multiplicity, so N.N.Cl[Pt]Cl reads as 2 × H3N + Cl2Pt"
       ],
