@@ -2591,12 +2591,31 @@ export function MainWindow({
   const [openWarningsListOpen, setOpenWarningsListOpen] = useState(false);
   const [fileWarningsHovered, setFileWarningsHovered] = useState(false);
   const [fileWarningsFocused, setFileWarningsFocused] = useState(false);
+  const fileWarningsLeaveTimer = useRef<number | undefined>(undefined);
+  const warningReports = fileWarningReports(openWarningsReport, saveWarningsReport);
+  const fileWarningHelp = fileWarningsTooltip(warningReports);
+  const hasFileWarnings = warningReports.length > 0;
+  function cancelFileWarningsLeave() {
+    window.clearTimeout(fileWarningsLeaveTimer.current);
+    fileWarningsLeaveTimer.current = undefined;
+  }
+  function enterFileWarnings() {
+    cancelFileWarningsLeave();
+    setFileWarningsHovered(true);
+  }
+  function leaveFileWarnings() {
+    cancelFileWarningsLeave();
+    // Bridge the click-through gap between the content-sized text and the warnings button.
+    fileWarningsLeaveTimer.current = window.setTimeout(() => {
+      fileWarningsLeaveTimer.current = undefined;
+      setFileWarningsHovered(false);
+    }, 100);
+  }
   useEffect(() => {
     setFileWarningsHovered(false);
     setFileWarningsFocused(false);
-  }, [activeDocumentTabId]);
-  const warningReports = fileWarningReports(openWarningsReport, saveWarningsReport);
-  const fileWarningHelp = fileWarningsTooltip(warningReports);
+    return () => window.clearTimeout(fileWarningsLeaveTimer.current);
+  }, [activeDocumentTabId, hasFileWarnings]);
   // Like hoveredNativeWarning, file hover help temporarily replaces the status, without changing it.
   const visibleFileWarningHelp = fileWarningsHovered || fileWarningsFocused ? fileWarningHelp : undefined;
   const openWarnings: OpenWarningsReport | undefined = warningReports[0];
@@ -20978,8 +20997,11 @@ export function MainWindow({
             <span className="status-message-slot">
               <span data-status-message role="status" aria-live="polite" className="status-message"
                 data-file-warning-help={visibleFileWarningHelp ? true : undefined}
-                onMouseEnter={() => setFileWarningsHovered(true)}
-                onMouseLeave={() => setFileWarningsHovered(false)}
+                onMouseEnter={enterFileWarnings}
+                onMouseLeave={(event) => {
+                  if (event.relatedTarget instanceof Element && event.relatedTarget.closest("[data-open-warnings-button]")) return;
+                  leaveFileWarnings();
+                }}
                 title={fileWarningHelp}>
                 {visibleFileWarningHelp ?? (interactive3dWorkspace
                   ? [
@@ -21000,8 +21022,11 @@ export function MainWindow({
                 aria-expanded={openWarningsListShown}
                 aria-controls={openWarningsListShown ? OPEN_WARNINGS_LIST_ID : undefined}
                 title={`${openWarningsListShown ? "Hide" : "Show"} the warnings from ${warningReports.length > 1 ? "opening and saving" : openWarnings.operation === "save" ? "saving" : "opening"} this document`}
-                onMouseEnter={() => setFileWarningsHovered(true)}
-                onMouseLeave={() => setFileWarningsHovered(false)}
+                onMouseEnter={enterFileWarnings}
+                onMouseLeave={(event) => {
+                  if (event.relatedTarget instanceof Element && event.relatedTarget.closest("[data-status-message]")) return;
+                  leaveFileWarnings();
+                }}
                 onFocus={() => setFileWarningsFocused(true)}
                 onBlur={() => setFileWarningsFocused(false)}
                 // Keep keyboard focus where it was (the canvas), so tool shortcuts work straight after.

@@ -59,7 +59,7 @@ it("keeps empty status space click-through and only the truncated text interacti
   expect(rule(".status-row")).toContain("pointer-events: none;");
   expect(rule(".status-row")).toContain("align-items: baseline;");
   expect(rule(".status-row-main")).toContain("align-items: baseline;");
-  expect(rule(".status-row-main")).toContain("flex: 1 1 0;");
+  expect(rule(".status-row-main")).toContain("flex: 1 1 auto;");
   const slot = rule(".status-message-slot");
   expect(slot).toContain("pointer-events: none;");
   expect(slot).toContain("flex: 1 1 0;");
@@ -174,7 +174,10 @@ describe("save warnings in the existing file warnings list", () => {
       expect(getComputedStyle(status()).textOverflow).toBe("ellipsis");
       expect(status().parentElement).toBe(slot);
       expect(slot.nextElementSibling).toBe(button());
-      await act(async () => { target.dispatchEvent(new MouseEvent("mouseout", { bubbles: true })); });
+      await act(async () => {
+        target.dispatchEvent(new MouseEvent("mouseout", { bubbles: true }));
+        await new Promise(resolve => window.setTimeout(resolve, 120));
+      });
       expect(status().textContent).toBe(previousStatus);
       expect(status().hasAttribute("data-file-warning-help")).toBe(false);
     }
@@ -269,6 +272,85 @@ describe("save warnings in the existing file warnings list", () => {
     expect(status().getAttribute("title")).toBeNull();
     expect(button()).toBeNull();
     expect(list()).toBeNull();
+  });
+
+  it.each(["hover", "focus"])("clears %s help when a clean save removes the button, including for later reports", async interaction => {
+    await mount();
+    await command("document.save");
+    await act(async () => {
+      if (interaction === "focus") button()!.focus();
+      else button()!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    });
+    expect(status().hasAttribute("data-file-warning-help")).toBe(true);
+    await command("edit.selectAll");
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Backspace", bubbles: true, cancelable: true }));
+    });
+    await command("document.save");
+    expect(button()).toBeNull();
+    expect(status().hasAttribute("data-file-warning-help")).toBe(false);
+    expect(status().textContent).toMatch(/^Saved /);
+
+    await command("edit.undo");
+    await command("document.save");
+    expect(button()).not.toBeNull();
+    expect(status().title).toContain(warningFor(tableDocument()).message);
+    expect(status().hasAttribute("data-file-warning-help")).toBe(false);
+    expect(status().textContent).toMatch(/^Saved /);
+  });
+
+  it("resets hovered help when switching between tabs that both have warnings", async () => {
+    await mount();
+    await command("document.save");
+    await command("document.new");
+    await command(tableInsertCommandId(2, 2, 1));
+    await command("document.save");
+    await activate(0);
+    await act(async () => { button()!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })); });
+    expect(status().hasAttribute("data-file-warning-help")).toBe(true);
+    await activate(1);
+    expect(button()).not.toBeNull();
+    expect(status().hasAttribute("data-file-warning-help")).toBe(false);
+    await activate(0);
+    expect(status().hasAttribute("data-file-warning-help")).toBe(false);
+  });
+
+  it("keeps help visible while moving between the status text and warnings button", async () => {
+    await mount();
+    await command("document.save");
+    await act(async () => { status().dispatchEvent(new MouseEvent("mouseover", { bubbles: true })); });
+    const help = status().textContent;
+    const changes: string[] = [];
+    const observer = new MutationObserver(() => { changes.push(status().textContent!); });
+    observer.observe(status(), { childList: true, characterData: true, subtree: true });
+    try {
+      for (const [from, to] of [[status(), button()!], [button()!, status()]]) {
+        await act(async () => {
+          from!.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: to }));
+        });
+        expect(status().textContent).toBe(help);
+        expect(status().hasAttribute("data-file-warning-help")).toBe(true);
+      }
+      // Real pointer travel crosses the slot's empty space and the flex gap before reaching the button.
+      await act(async () => {
+        status().dispatchEvent(new MouseEvent("mouseout", { bubbles: true }));
+        await new Promise(resolve => window.setTimeout(resolve, 30));
+      });
+      expect(status().textContent).toBe(help);
+      await act(async () => {
+        button()!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+        await new Promise(resolve => window.setTimeout(resolve, 120));
+      });
+      expect(status().textContent).toBe(help);
+      expect(changes.every(text => text === help)).toBe(true);
+    } finally {
+      observer.disconnect();
+    }
+    await act(async () => {
+      button()!.dispatchEvent(new MouseEvent("mouseout", { bubbles: true }));
+      await new Promise(resolve => window.setTimeout(resolve, 120));
+    });
+    expect(status().hasAttribute("data-file-warning-help")).toBe(false);
   });
 
   it("clears an earlier save report and its open list when the next save has no warnings", async () => {
