@@ -61,8 +61,12 @@ into core — e.g. `import type { ChemDraftDocument, DocumentPatch } from "@chem
 ```
 
 `apiVersion` in your manifest declares the SDK contract you target (`PluginApiVersion`, currently
-`0.1.16`). API 0.1.16 adds command-scoped `documents.insertTable`; plugins using it should declare
-`^0.1.16`. API 0.1.15 adds command-scoped 3D embedding, minimization, and flattening; plugins using
+`0.1.16`). API 0.1.16 adds optional positive integer `isotope` mass numbers to native document atoms.
+Native molecule objects returned by `chemistry.structureFromSmiles` and passed through document
+patches also preserve isotope masses. Hydrogen-2 and hydrogen-3 use elements `D` and `T` without an
+`isotope` field; other labelled atoms (including hydrogen-1) carry the mass number in `isotope`.
+Plugins using isotope fields should declare `^0.1.16`.
+API 0.1.15 adds command-scoped 3D embedding, minimization, and flattening; plugins using
 any of those methods should declare `^0.1.15`. API 0.1.14 adds one-shot draft restoration to overlay content; plugins using it
 should declare `^0.1.14`. API 0.1.13 adds live prompt disabled state to overlay content; plugins using it
 should declare `^0.1.13`. API 0.1.12 adds overlay content and command-scoped opening; plugins that use either
@@ -73,11 +77,11 @@ API 0.1.7 adds host-owned `context.chemistry.structureToName`; plugins that use 
 use it should declare `^0.1.6`. API 0.1.5 added command-scoped `context.images.requestImage`, 0.1.4 added
 `context.documents.applyPatch`, and 0.1.3 added the host-owned `context.dialogs.promptText`
 capability. API 0.1.9 adds `context.assistant` for request-scoped tools and MCP sessions.
-Existing `^0.1.0` through `^0.1.16` packages remain compatible, each on a host at or above the version it declares.
+Existing `^0.1.0` through `^0.1.16` packages remain compatible, each on a host at or above the version
+it declares.
 
 | API version | Additive capability | Permission |
 | --- | --- | --- |
-| 0.1.16 | `documents.insertTable(spec)` | `document.write`, during the plugin's own command |
 | 0.1.15 | `chemistry.embed3d`, `minimize3d`, `flatten3d` | `chemistry.compute`, during the plugin's own command |
 
 ## Manifest + registration

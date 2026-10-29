@@ -287,7 +287,11 @@ importers:
 
   packages/chemistry-adapter: {}
 
-  packages/clipboard-adapter: {}
+  packages/clipboard-adapter:
+    dependencies:
+      '@chemdraft/chem-core':
+        specifier: workspace:*
+        version: link:../chem-core
 
   packages/document-workflow-core:
     dependencies:

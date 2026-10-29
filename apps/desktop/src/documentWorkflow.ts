@@ -67,6 +67,7 @@ import {
   clearChangedAtomHydrogenHints,
   drawnLabelBondSide,
   moleculeToMolfileV3000,
+  normalizeAtomIsotope,
   UnknownBondOrderError,
   PageSizePresets,
   pageMarginFromLayout,
@@ -4948,6 +4949,7 @@ export function createNativeMolfileMolecule(
   const atoms = scaleParsedMolfileAtoms(graph, point, page, bondLengthPx).map((atom) => ({
     id: atom.id,
     element: atom.element,
+    ...(atom.isotope === undefined ? {} : { isotope: atom.isotope }),
     x: atom.x,
     y: atom.y,
     formalCharge: atom.formalCharge
@@ -19326,6 +19328,7 @@ function nativeAtomWithElement(
     labelVisible: _labelVisible,
     labelLiteral: _labelLiteral,
     labelBondSide: _labelBondSide,
+    isotope: _isotope,
     warningSuppressed,
     ...baseAtom
   } = atom;
@@ -19341,6 +19344,8 @@ function nativeAtomWithElement(
   return {
     ...baseAtom,
     element,
+    ...(sameElement && element !== "D" && element !== "T" && atom.isotope !== undefined
+      ? { isotope: atom.isotope } : {}),
     ...(labelVisible ? { labelVisible: true } : {}),
     ...(labelLiteral ? { labelLiteral: true } : {}),
     ...(warningSuppressed === true && sameElement && sameRule ? { warningSuppressed: true } : {})
@@ -19653,7 +19658,9 @@ function parseV3000MoleculeGraph(
   molfile: string,
   previous: MoleculeObject
 ): (Pick<MoleculeObject, "atoms" | "bonds"> & { labelWarnings: EditorSaveLabelWarning[] }) | undefined {
-  const rawAtoms: Array<{ sourceId: string; element: string; x: number; y: number; formalCharge: number }> = [];
+  const rawAtoms: Array<{
+    sourceId: string; element: string; isotope?: number; x: number; y: number; formalCharge: number
+  }> = [];
   const rawBonds: Array<{ sourceId: string; fromSourceId: string; toSourceId: string; order: MoleculeBond["order"]; dative: boolean }> = [];
   let section: "atom" | "bond" | undefined;
 
@@ -19684,13 +19691,15 @@ function parseV3000MoleculeGraph(
         continue;
       }
 
-      rawAtoms.push({
+      const mass = line.match(/\bMASS=([^\s]+)/);
+      rawAtoms.push(normalizeAtomIsotope({
         sourceId,
         element,
+        ...(mass ? { isotope: Number(mass[1]) } : {}),
         x,
         y,
         formalCharge: formalChargeFromV3000AtomLine(line)
-      });
+      }));
       continue;
     }
 
@@ -19732,6 +19741,7 @@ function parseV3000MoleculeGraph(
       id,
       element: atom.element,
       x: placed[index]!.x,
+      ...(atom.isotope === undefined ? {} : { isotope: atom.isotope }),
       y: placed[index]!.y,
       formalCharge: atom.formalCharge
     } satisfies MoleculeAtom;

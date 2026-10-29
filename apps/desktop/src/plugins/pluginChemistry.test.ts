@@ -7,20 +7,40 @@ import { depictSmilesOffThread } from "../depiction2d/client";
 import * as ocl from "@chemdraft/ocl-adapter";
 import { createPhase4Document } from "../documentWorkflow";
 import { structureFromSmilesForPlugin } from "./pluginChemistry";
+import { createPasteIdentityInspector } from "../smilesPasteIdentity";
+import { IdentityWorkerUnavailableError } from "../depiction2d/identityWorkerClient";
+import { ensureRdkit } from "../../../../packages/rdkit-adapter/src/conformer";
+import { installRealRdkitModuleLoader } from "../../../../packages/rdkit-adapter/src/testing";
 
 vi.mock("../depiction2d/client", () => ({ depictSmilesOffThread: vi.fn() }));
 vi.mock("../rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("@chemdraft/rdkit-adapter", () => ({
-  generateSmiles2DMolfile: vi.fn().mockRejectedValue(new Error("WASM unavailable"))
+  generateSmiles2DMolfile: vi.fn().mockRejectedValue(new Error("WASM unavailable")),
+  ensureRdkit: () => ensureRdkit()
 }));
 
-beforeAll(async () => { await ocl.ensureOclResources(); });
+beforeAll(async () => { installRealRdkitModuleLoader(); await ocl.ensureOclResources(); });
 beforeEach(() => {
   vi.mocked(depictSmilesOffThread).mockImplementation((smiles) => depictInWorker(smiles, generateSmiles2DMolfile, () => {}));
 });
 afterEach(() => { vi.restoreAllMocks(); });
 
 describe("plugin chemistry SMILES failure reasons", () => {
+  it("reports an unavailable identity engine rather than a structure refusal", async () => {
+    vi.mocked(depictSmilesOffThread).mockResolvedValueOnce({
+      depiction: ocl.depictSmiles2D("CCO"), stereoCount: 0
+    });
+    const inspect = createPasteIdentityInspector(async () => {
+      throw new IdentityWorkerUnavailableError("test WASM unavailable");
+    });
+    const document = createPhase4Document();
+    const result = await structureFromSmilesForPlugin({ smiles: "CCO" }, () => document, undefined, inspect);
+    expect(result).toEqual({ available: false,
+      reason: "the structure could not be verified because the RDKit engine did not load: " +
+        "test WASM unavailable" });
+    expect(document.pages[0].objects).toHaveLength(0);
+  });
+
   it("keeps a depiction deadline warning in the built object's compatibility data", async () => {
     const warning = "2D depiction exceeded its 2000 ms layout deadline; used the standard layout.";
     vi.mocked(depictSmilesOffThread).mockResolvedValueOnce({ depiction: ocl.depictSmiles2D("CCO"), stereoCount: 0, warnings: [warning] });

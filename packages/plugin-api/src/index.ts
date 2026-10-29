@@ -28,6 +28,8 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * (including structured minimize3d clash/contact diagnostics and flatten3d clash refusal).
  * 0.1.16 adds command-scoped documents.insertTable with a validated native PluginTableSpec.
  *
+ * 0.1.16 adds optional isotope mass numbers to native document atoms.
+ *
  * The MINOR stays at 1 for both. For a 0.x release `isPluginApiVersionCompatible` treats the minor as
  * the compatibility boundary, so 0.2.0 would have made every plugin declaring `^0.1.0` — the NMR
  * predictor among them — refuse to install against this host, for purely additive methods. A plugin

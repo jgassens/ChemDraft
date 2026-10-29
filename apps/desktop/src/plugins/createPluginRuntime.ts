@@ -1,11 +1,11 @@
 import { PluginStructureToNameRequestSchema } from "@chemdraft/plugin-api";
+import { inspectStructureOffThread } from "../depiction2d/identityClient";
 import type { AssistantToolContext } from "../assistant/AssistantToolContext";
 import { AssistantToolsController, type AssistantToolsControllerOptions } from "../assistant/AssistantToolsController";
 import { TauriAssistantMcpEngine, UnsupportedAssistantMcpEngine, type AssistantMcpEngine } from "../assistant/assistantMcpEngine";
 import { getAssistantHistoryPort } from "../assistant/historyPort";
 import { buildPluginTablePatch } from "./buildPluginTablePatch";
 import { rasterizeSvgNative } from "../nativeRasterExport";
-import { loadRdkitWithAppLoader } from "./rdkitAppLoader";
 import { nameStructureForPlugin } from "./pluginStructureNaming";
 import { StructureNamingController } from "./StructureNamingController";
 import { TauriStructureNamingEngine, type StructureNamingEngine } from "./structureNamingEngine";
@@ -329,22 +329,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
         structureFromSmiles: request => options.buildStructureFromSmiles === null ?
           Promise.resolve({ available: false, reason: "Structure layout engine unavailable." }) :
           options.buildStructureFromSmiles ? options.buildStructureFromSmiles(request) : structureFromSmilesForPlugin(request, getDocument),
-        inspectStructure: async (_format, value) => {
-          const rdkit = await loadRdkitWithAppLoader(() => import("@chemdraft/rdkit-adapter"));
-          const module = await rdkit.ensureRdkit();
-          const molecule = module.get_mol(value, JSON.stringify({ removeHs: false }));
-          if (!molecule) return { valid: false, reason: "RDKit could not parse the structure." };
-          try {
-            const jsonMol = molecule as typeof molecule & { get_json?(): string };
-            const canonicalSmiles = molecule.get_smiles?.();
-            if (!jsonMol.get_json || !canonicalSmiles) throw new Error("RDKit structure inspection is unavailable.");
-            const graph = JSON.parse(jsonMol.get_json()) as Parameters<typeof rdkit.compositionFromRdkitJson>[0];
-            const composition = rdkit.compositionFromRdkitJson(graph);
-            return { valid: true, canonicalSmiles, formula: composition.formula, warnings: [],
-              heavyAtoms: graph.molecules.reduce((count, mol) => count + mol.atoms.filter(atom =>
-                (atom.z ?? graph.defaults?.atom?.z ?? 6) !== 1).length, 0) };
-          } finally { molecule.delete(); }
-        },
+        inspectStructure: inspectStructureOffThread,
         structureToName: async request => {
           const engine = options.structureNamingEngine ?? new TauriStructureNamingEngine();
           const status = await engine.status();
