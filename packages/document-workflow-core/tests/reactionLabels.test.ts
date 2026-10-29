@@ -67,9 +67,11 @@ function renderedInkEnvelope(line: ReturnType<typeof renderedLines>["lines"][num
     const shift = run.attrs["baseline-shift"];
     const size = typeof run.attrs["font-size"] === "string" && run.attrs["font-size"].endsWith("%")
       ? fontSize * parseFloat(run.attrs["font-size"]) / 100 : Number(run.attrs["font-size"] ?? fontSize);
-    // The renderer uses font-dependent SVG sub/super offsets; bound each by 0.6 script em.
-    const baseline = line.baseline + (shift === "sub" ? 0.6 * size : shift === "super" ? -0.6 * size : 0);
-    return { top: baseline - 0.716 * size, bottom: baseline + 0.21 * size };
+    // SVG emits font-dependent sub/super keywords; use the shared default-font metrics
+    // with the renderer's actual script size and line baselines.
+    const baseline = line.baseline + (shift === "sub" ? nativeTextMetrics.subscriptBaselineShiftEm * size
+      : shift === "super" ? -nativeTextMetrics.superscriptBaselineShiftEm * size : 0);
+    return { top: baseline - nativeTextMetrics.capHeightEm * size, bottom: baseline + nativeTextMetrics.descentEm * size };
   });
   return { top: Math.min(...bounds.map(bound => bound.top)), bottom: Math.max(...bounds.map(bound => bound.bottom)) };
 }
@@ -90,13 +92,79 @@ describe("reaction label policy", () => {
     const plain = labels({ above: ["1. heat", "2. stir"], below: [], textStyle: { fontSizePx: 14 } });
     const { lines } = renderedLines(result.above!);
     expect(Math.abs(lines[0]!.x + result.plan.above!.size.contentWidth / 2 - 200)).toBeLessThanOrEqual(0.5);
-    expect(result.above!.style.lineHeight).toBeGreaterThan(plain.above!.style.lineHeight as number);
+    if (next === "2. H3O+") {
+      expect(result.above!.style.lineHeight).toBeGreaterThan(plain.above!.style.lineHeight as number);
+    } else {
+      expect(result.above!.style.lineHeight).toBe(1.2);
+    }
     const firstInk = renderedInkEnvelope(lines[0]!, 14);
     const nextInk = renderedInkEnvelope(lines[1]!, 14);
     expect(nextInk.top - firstInk.bottom).toBeGreaterThanOrEqual(0.12 * 14 - 0.001);
+    if (next === "2. H3O+") {
+      // The required clearance determines the minimum advance, with no unused envelope.
+      expect((nextInk.top - firstInk.bottom) / 14).toBeCloseTo(0.12, 8);
+    }
     const style = nativeTextStyleFromObjectStyle(result.above!.style);
     expect(result.plan.above!.size.lineBoxHeight).toBeCloseTo(2 * 14 * style.lineHeight);
     expect(result.above!.height).toBeCloseTo(Math.round((2 * 14 * style.lineHeight + 4) * 100) / 100);
+  });
+
+  it("keeps the Sharpless above block compact with clearance between every rendered pair", () => {
+    const result = labels({ textStyle: { fontSizePx: 14 } });
+    expect(Math.abs(result.plan.above!.style.lineHeight - 1.2)).toBeLessThanOrEqual(0.02);
+    const { lines } = renderedLines(result.above!);
+    for (let index = 1; index < lines.length; index++) {
+      const previous = renderedInkEnvelope(lines[index - 1]!, 14);
+      const current = renderedInkEnvelope(lines[index]!, 14);
+      expect(current.top - previous.bottom).toBeGreaterThanOrEqual(0.12 * 14 - 0.001);
+    }
+  });
+
+  it("keeps a superscript above a subscript at the default advance", () => {
+    const result = labels({ above: ["Ca2+", "NaBH4"], below: [] });
+    expect(scripts(result.above!).map(span => span.script)).toEqual(["superscript", "subscript"]);
+    expect(result.plan.above!.style.lineHeight).toBe(1.2);
+    const { lines } = renderedLines(result.above!);
+    expect(renderedInkEnvelope(lines[1]!, 15).top - renderedInkEnvelope(lines[0]!, 15).bottom)
+      .toBeGreaterThanOrEqual(0.12 * 15 - 0.001);
+  });
+
+  it("considers only adjacent rendered lines, including after wrapping", () => {
+    const separated = labels({ above: ["NaBH4", "heat", "Ca2+"], below: [] });
+    expect(separated.plan.above!.style.lineHeight).toBe(1.2);
+    const wrapped = labels({ above: ["NaBH4 then stir", "H3O+"], below: [], bondLength: 4 });
+    expect(wrapped.above!.text.split("\n")).toEqual(["NaBH4", "then", "stir", "H3O+"]);
+    expect(wrapped.plan.above!.style.lineHeight).toBe(1.2);
+    const tightLastPair = labels({ above: ["heat", "NaBH4", "H3O+"], below: [] });
+    expect(tightLastPair.plan.above!.style.lineHeight).toBeGreaterThan(1.2);
+  });
+
+  it.each([0.28, 3])("counts %s px of authored paragraph spacing toward ink clearance", (paragraphSpacingPx) => {
+    const result = labels({ above: ["1. NaBH4, MeOH", "2. H3O+"], below: [],
+      textStyle: { fontSizePx: 14, lineHeight: 1, paragraphSpacingPx } });
+    const { lines } = renderedLines(result.above!);
+    const gapEm = (renderedInkEnvelope(lines[1]!, 14).top - renderedInkEnvelope(lines[0]!, 14).bottom) / 14;
+    expect(gapEm).toBeGreaterThanOrEqual(0.12 - 0.000001);
+    const style = result.plan.above!.style;
+    if (paragraphSpacingPx === 0.28) {
+      expect(style.lineHeight).toBeGreaterThan(1.2);
+      expect(gapEm).toBeCloseTo(0.12, 8);
+    } else {
+      expect(style.lineHeight).toBe(1.2);
+    }
+    expect(result.plan.above!.size.lineBoxHeight).toBeCloseTo(2 * 14 * style.lineHeight + paragraphSpacingPx);
+    expect(result.above!.height).toBeCloseTo(Math.round((result.plan.above!.size.lineBoxHeight + 4) * 100) / 100);
+  });
+
+  it.each([
+    { above: ["NaBH4"], lineHeight: 1.2 },
+    { above: ["heat", "stir"], lineHeight: 1.2 },
+    { above: ["NaBH4"], lineHeight: 1.8 },
+    { above: ["heat", "stir"], lineHeight: 1.8 },
+    { above: ["1. NaBH4, MeOH", "2. H3O+"], lineHeight: 1.8 }
+  ])("preserves authored spacing for $above at $lineHeight", ({ above, lineHeight }) => {
+    const result = labels({ above, below: [], textStyle: { lineHeight } });
+    expect(result.plan.above!.style.lineHeight).toBe(lineHeight);
   });
 
   it("merges adjacent runs without changing formula scripts or authored spaces", () => {

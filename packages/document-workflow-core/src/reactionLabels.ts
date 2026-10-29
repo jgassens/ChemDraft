@@ -87,15 +87,23 @@ function measureBlock(entries: readonly string[], style: NativeTextStyle, maxWid
   const spanLines = lines.map((line) => lineSpans(line, caption));
   const spans = spanLines.flatMap((line, index): TextSpan[] => index === 0
     ? line : [{ text: "\n", script: "normal", style: {} }, ...line]);
-  const { scriptFontScale, scriptBaselineShiftEm, descentEm, capHeightEm } = nativeTextMetrics;
-  // One advance per object: allow a subscript below one baseline followed by a superscript
-  // above the next. SVG sub/super offsets depend on the font; use the shared safe envelope.
-  const scriptedLineHeight = scriptFontScale * (2 * scriptBaselineShiftEm + descentEm + capHeightEm)
-    + scriptLineClearanceEm;
+  const { scriptFontScale, subscriptBaselineShiftEm, superscriptBaselineShiftEm, descentEm, capHeightEm } = nativeTextMetrics;
+  const ink = spanLines.map(line => ({
+    bottom: line.some(span => span.script === "subscript")
+      ? Math.max(descentEm, scriptFontScale * (subscriptBaselineShiftEm + descentEm)) : descentEm,
+    top: line.some(span => span.script === "superscript")
+      ? Math.max(capHeightEm, scriptFontScale * (superscriptBaselineShiftEm + capHeightEm)) : capHeightEm
+  }));
+  // One advance per object, sized for its tightest adjacent pair. Paragraph spacing
+  // contributes to that advance in the renderer and must not be reserved twice.
+  let lineHeight = Math.max(1.2, style.lineHeight);
+  for (let index = 1; index < ink.length; index++) {
+    lineHeight = Math.max(lineHeight, ink[index - 1]!.bottom + ink[index]!.top
+      + scriptLineClearanceEm - style.paragraphSpacingPx / style.fontSizePx);
+  }
   const blockStyle = {
     ...style,
-    lineHeight: spans.some(span => span.script !== "normal")
-      ? Math.max(style.lineHeight, scriptedLineHeight - style.paragraphSpacingPx / style.fontSizePx) : style.lineHeight,
+    lineHeight,
     textAlign: !caption && authoredLines.every((line) => /^\d+\.\s/.test(line)) ? "left" as const : "center" as const
   };
   return {

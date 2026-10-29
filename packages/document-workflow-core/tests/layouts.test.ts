@@ -156,7 +156,7 @@ describe("shared reaction and grid layout", () => {
     });
     expect(layout.above!.text).toBe("H2SO4, heat\nthen stir; wait");
     expect(layout.above!.spans.filter((span) => span.script === "subscript").map((span) => span.text)).toEqual(["2", "4"]);
-    expect(nativeTextStyleFromObjectStyle(layout.above!.style)).toMatchObject({ fontSizePx: 14, textAlign: "center" });
+    expect(nativeTextStyleFromObjectStyle(layout.above!.style)).toMatchObject({ fontSizePx: 14, textAlign: "center", lineHeight: 1.2 });
   });
 
   it("fits all blocks and a wrapped plain-prose caption with page padding, translating the scheme together", () => {
@@ -170,6 +170,10 @@ describe("shared reaction and grid layout", () => {
       anchor: { x: 0, y: 0 }, gutter: 24, bondLength: 22, pagePadding: 24
     });
     const page = layout.document.pages[0]!;
+    for (const block of [layout.above!, layout.below!]) {
+      expect(block.style.lineHeight).toBe(1.2);
+      expect(block.height).toBe(3 * 15 * 1.2 + 4);
+    }
     for (const object of page.objects) {
       expect(object.x).toBeGreaterThanOrEqual(24);
       expect(object.y).toBeGreaterThanOrEqual(24);
