@@ -2594,7 +2594,7 @@ export function MainWindow({
   const openWarningsListShown = openWarningsListOpen && openWarnings !== undefined;
   const tabWarningsRef = useRef(openWarningsReport);
   tabWarningsRef.current = openWarningsReport;
-  const tabSaveWarningsRef = useRef(saveWarningsReport);
+  const tabSaveWarningsRef = useRef<OpenWarningsReport | undefined>(saveWarningsReport);
   tabSaveWarningsRef.current = saveWarningsReport;
   const tabPageFitRef = useRef<ImportedPageFitPromptState | undefined>(undefined);
   const openWarningsRef = useRef(openWarnings);
