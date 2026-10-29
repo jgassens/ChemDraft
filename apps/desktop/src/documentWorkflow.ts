@@ -145,6 +145,7 @@ import {
   mechanismArrowGeometry,
   nativeBondOrderResolution,
   nativeGroupLabelDisplay,
+  representativeMoleculeBondLength,
   resolvePageAnchorPoint
 } from "@chemdraft/layout-engine";
 import {
@@ -3759,6 +3760,13 @@ function isNativeChairTemplate(templateId: NativeMoleculeTemplateId): boolean {
   return templateId === "chairCyclohexaneA" || templateId === "chairCyclohexaneB";
 }
 
+function nativeTemplateBondLength(molecule: MoleculeObject): number {
+  // Corner-handle resizing changes coordinates without changing the stored drawing style.
+  // Only a molecule without measurable bonds (such as a single atom) needs the style fallback.
+  return representativeMoleculeBondLength(molecule) ??
+    nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx;
+}
+
 function fuseNativeChairTemplateToBond(
   molecule: MoleculeObject,
   targetBond: MoleculeBond,
@@ -3774,7 +3782,7 @@ function fuseNativeChairTemplateToBond(
     return undefined;
   }
 
-  const basePoints = nativeChairCyclohexaneBasePoints(reflected);
+  const basePoints = nativeChairCyclohexaneBasePoints(reflected, nativeTemplateBondLength(molecule));
   const normal = { x: -dy / length, y: dx / length };
   const midpoint = { x: (fromAtom.x + toAtom.x) / 2, y: (fromAtom.y + toAtom.y) / 2 };
   const desiredSide = nativeTemplateSideForBond(molecule, fromAtom, toAtom, point, normal);
@@ -3871,7 +3879,7 @@ function attachNativeChairTemplateToAtom(
   point: PagePoint,
   reflected: boolean
 ): MoleculeObject | undefined {
-  const basePoints = nativeChairCyclohexaneBasePoints(reflected, nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx);
+  const basePoints = nativeChairCyclohexaneBasePoints(reflected, nativeTemplateBondLength(molecule));
   const desiredDirection = nativeTemplateDirectionForAtom(molecule, sharedAtom, point);
   const candidates = basePoints.map((basePoint, sharedIndex) => {
     const centerVector = { x: -basePoint.x, y: -basePoint.y };
@@ -3981,6 +3989,7 @@ function nativeChairTemplateCrowding(
   points: readonly PagePoint[],
   excludedAtomIds: ReadonlySet<string>
 ): number {
+  const nativeBondLength = nativeTemplateBondLength(molecule);
   return molecule.atoms
     .filter((atom) => !excludedAtomIds.has(atom.id))
     .reduce((score, atom) => (
@@ -4453,6 +4462,7 @@ function nativeTemplateRingCrowding(
   points: readonly PagePoint[],
   excludedAtomIds: ReadonlySet<string>
 ): number {
+  const nativeBondLength = nativeTemplateBondLength(molecule);
   return molecule.atoms
     .filter((atom) => !excludedAtomIds.has(atom.id))
     .reduce((score, atom) => score + points.reduce((sum, point) => {
@@ -4467,7 +4477,7 @@ function nativeRingVerticesForSharedAtom(
   point: PagePoint,
   size: number
 ): PagePoint[] | undefined {
-  const nativeBondLength = nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx;
+  const nativeBondLength = nativeTemplateBondLength(molecule);
   const radius = nativeBondLength / (2 * Math.sin(Math.PI / size));
   const centerDirection = nativeTemplateDirectionForAtom(molecule, sharedAtom, point);
   const center = {
@@ -4527,6 +4537,7 @@ function nativeTemplateDirectionForAtom(
   atom: MoleculeAtom,
   point: PagePoint
 ): number {
+  const nativeBondLength = nativeTemplateBondLength(molecule);
   const pointDistance = distance(atom, point);
   if (pointDistance > nativeBondLength * 0.35) {
     return Math.atan2(point.y - atom.y, point.x - atom.x);
@@ -4544,7 +4555,8 @@ function nativeTemplateSpiroCrowding(
   size: number,
   direction: 1 | -1
 ): number {
-  const radius = nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx / (2 * Math.sin(Math.PI / size));
+  const nativeBondLength = nativeTemplateBondLength(molecule);
+  const radius = nativeBondLength / (2 * Math.sin(Math.PI / size));
   const step = Math.PI * 2 / size;
   const candidatePoints = Array.from({ length: size - 1 }, (_, index) => ({
     x: center.x + Math.cos(sharedAngle + direction * step * (index + 1)) * radius,
@@ -7932,6 +7944,7 @@ export function nativeRingHotkeyAttachAtAtomTarget(
   const direction = (plan && !plan.targetAtomId ? plan.direction : undefined)
     ?? nativeBondGrowthPlanForAtom(molecule, target.atomId, page.width, page.height)?.direction
     ?? { x: 0, y: -1 };
+  const nativeBondLength = nativeTemplateBondLength(molecule);
   const orientationPoint = {
     x: sourceAtom.x + direction.x * nativeBondLength,
     y: sourceAtom.y + direction.y * nativeBondLength
@@ -8005,6 +8018,7 @@ export function nativeRingHotkeyFuseAtBondTarget(
   const outward = awayLength > 1e-3
     ? { x: away.x / awayLength, y: away.y / awayLength }
     : { x: normal.x / normalLength, y: normal.y / normalLength };
+  const nativeBondLength = nativeTemplateBondLength(molecule);
   const orientationPoint = {
     x: midpoint.x + outward.x * nativeBondLength,
     y: midpoint.y + outward.y * nativeBondLength

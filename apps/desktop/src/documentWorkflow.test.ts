@@ -3,7 +3,7 @@ import { hitToleranceForScale } from "./interaction/hitTest";
 import { rawMolfileFixture } from "@chemdraft/layout-engine/testing";
 import { describe, expect, it } from "vitest";
 import { projectGraphicObjectPoint } from "@chemdraft/art-engine";
-import { atomDisplayLabel, mechanismArrowGeometry, nativeMoleculeRings, resolvePageAnchorPoint } from "@chemdraft/layout-engine";
+import { atomDisplayLabel, mechanismArrowGeometry, nativeMoleculeRings, representativeMoleculeBondLength, resolvePageAnchorPoint } from "@chemdraft/layout-engine";
 import * as layoutEngine from "@chemdraft/layout-engine";
 import {
   aromaticFixtures,
@@ -17549,6 +17549,44 @@ describe("ring placement valence guard", () => {
 
 
 describe("document drawing defaults for native insertions", () => {
+  it.each(["cyclohexane", "benzene", "chairCyclohexaneA", "chairCyclohexaneB"] as const)(
+    "attaches and fuses %s at the actual bond length after a corner-handle resize", templateId => {
+      const document = createPhase4Document("Geometrically resized attachment");
+      document.styles.drawing = { bondLengthPx: 22 };
+      const inserted = insertNativeSingleBondMolecule(document, { x: 360, y: 320 });
+      const original = selectedMolecule(inserted);
+      const originalLength = representativeMoleculeBondLength(original)!;
+      // This is the MainWindow corner-handle path: coordinates scale, drawing style does not.
+      const resized = resizeNativeMoleculeObject(inserted, original.id, { x: 2.5, y: 2.5 });
+      const molecule = selectedMolecule(resized);
+      const measuredLength = representativeMoleculeBondLength(molecule)!;
+      expect(originalLength).toBeCloseTo(22, 2);
+      expect(measuredLength).toBeCloseTo(originalLength * 2.5, 6);
+      expect(measuredLength).toBeCloseTo(55, 1);
+      expect(molecule.style.bondLengthPx).toBe(22);
+      expect(molecule.style).toEqual(original.style);
+
+      const atomTarget = moleculeAtomTarget(molecule, "atom_001");
+      const bondTarget = moleculeBondTarget(molecule, "bond_001");
+      const results = [
+        applyNativeTemplateToolAtTarget(resized, atomTarget, moleculeAtom(molecule, "atom_001"), templateId),
+        applyNativeTemplateToolAtTarget(resized, bondTarget, moleculeBondMidpoint(molecule, "bond_001"), templateId),
+        applyNativeRingAttachAtAtomTarget(resized, atomTarget, templateId),
+        applyNativeRingFuseAtBondTarget(resized, bondTarget, templateId)
+      ];
+      for (const result of results) {
+        const attached = selectedMolecule(result);
+        const addedBonds = attached.bonds.filter(bond => !molecule.bonds.some(existing => existing.id === bond.id));
+        expect(attached.atoms).toHaveLength(molecule.atoms.length + (addedBonds.length === 6 ? 5 : 4));
+        expect(addedBonds.length).toBeGreaterThanOrEqual(5);
+        for (const bond of addedBonds) {
+          expect(Math.abs(bondLength(attached, bond.id) - measuredLength)).toBeLessThan(0.1);
+        }
+        expect(attached.style).toEqual(molecule.style);
+        expect(attached.atoms.slice(0, molecule.atoms.length)).toEqual(molecule.atoms);
+      }
+    }
+  );
   it("uses custom defaults for adapter fallback and chemical-text clipboard placeholders", () => {
     const document = insertionDocument(defaultCases[1]!);
     const existing = structuredClone(document.pages[0]!.objects);
