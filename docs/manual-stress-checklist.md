@@ -49,9 +49,10 @@ and click-away change no document/history, close, and return focus to the canvas
 from a floating toolbar and keyboard Tab/Shift+Tab within the popover.
 Right-click an open bond: “Mark E/Z as unspecified” is absent. On a non-stereogenic double bond it
 remains disabled with its reason. The inspector retains its previous behavior.
-Move the document between monitors at 100% and 150%/200% scaling (including negative monitor
-coordinates): the popover follows the badge on the destination monitor, never takes focus on a mouse
-open until clicked, has no taskbar entry on Windows, and closes when switching tabs/documents.
+Scroll, pan or zoom the canvas and move or resize the document between monitors at 100% and
+150%/200% scaling (including negative monitor coordinates): the popover closes. Reopen it at the
+badge; it never takes focus on a mouse open until clicked, has no taskbar entry on Windows, and
+closes when switching tabs/documents.
 Check print and SVG/PDF/CDXML again with the popover open: neither badge nor popover is included.
 Dismiss during the first cold open, then immediately reopen from a badge. Only the newest request
 may appear or act; an older create/reveal finishing late must not hide it. Change the selection or

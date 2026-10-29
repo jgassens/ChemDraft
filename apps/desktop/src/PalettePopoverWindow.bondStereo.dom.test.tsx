@@ -4,12 +4,24 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PalettePopoverWindow } from "./PalettePopoverWindow";
 import { sendBondStereoPopoverAction, sendPaletteCommand, type ToolsetPopoverContentPayload } from "./window-manager";
+import { useBondStereoPopover } from "./useBondStereoPopover";
+import type { ChemDraftDocument } from "@chemdraft/chem-core";
+import { closeToolsetPopoverWindow, openToolsetPopoverWindow } from "./window-manager";
 
 const native = vi.hoisted(() => ({
   content: undefined as undefined | ((payload: ToolsetPopoverContentPayload) => void),
   action: undefined as undefined | ((payload: { sessionId: string; action: string }) => void),
   dismiss: undefined as undefined | (() => void),
-  hide: vi.fn(async () => {}), focus: vi.fn(async () => {}), show: vi.fn(async () => {})
+  hide: vi.fn(async () => {}), focus: vi.fn(async () => {}), show: vi.fn(async () => {}),
+  events: {} as Record<string, () => void>
+}));
+vi.mock("./window-manager/tauriEvents", () => ({
+  listenCurrentWindowEvent: vi.fn(async (name: string, handler: () => void) => { native.events[name] = handler; return () => { delete native.events[name]; }; }),
+  listenTauriEvent: vi.fn(async () => () => {})
+}));
+vi.mock("./documentWorkflow", async importOriginal => ({
+  ...await importOriginal<typeof import("./documentWorkflow")>(),
+  nativeBondStereoAvailability: vi.fn(() => ({})), nativeBondStereoFlipDisabledReason: vi.fn(() => undefined)
 }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ hide: native.hide, setFocus: native.focus }) }));
 vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ setFocus: vi.fn(async () => {}) }) }));
@@ -23,6 +35,9 @@ vi.mock("./window-manager", async importOriginal => ({
   setCurrentWindowLogicalSize: vi.fn(async () => {}), setCurrentWindowLogicalPosition: vi.fn(async () => {}),
   showCurrentToolsetPopoverWindow: native.show,
   sendBondStereoPopoverAction: vi.fn(async () => {}), sendPaletteCommand: vi.fn(async () => {}),
+  currentWindowLogicalPosition: vi.fn(async () => ({ x: 100, y: 200 })),
+  openToolsetPopoverWindow: vi.fn(async () => {}), closeToolsetPopoverWindow: vi.fn(async () => {}),
+  setToolsetPopoverContent: vi.fn(async () => {}), listenForToolsetPopoverContentRequests: vi.fn(async () => () => {}),
   sendPaletteCommandCancel: vi.fn(async () => {})
 }));
 
@@ -31,6 +46,27 @@ beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   vi.clearAllMocks();
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
+});
+
+describe("document-owned bond stereo popover", () => {
+  const doc = { pages: [{ objects: [{ id: "m", type: "molecule", bonds: [{ id: "b", stereo: "either" }] }] }] } as unknown as ChemDraftDocument;
+  function Owner() {
+    const openPopover = useBondStereoPopover({ document: doc, targets: [{ objectId: "m", bondId: "b" }], reader: undefined,
+      select: () => {}, invoke: () => {}, focusCanvas: () => {} });
+    return <><div className="page-stage" /><button onClick={() => openPopover({ objectId: "m", bondId: "b", rect: { left: 30, bottom: 50 }, keyboard: false })}>Open</button></>;
+  }
+  it.each(["scroll", "viewport", "move", "resize", "scale"])("closes on %s", async trigger => {
+    await act(async () => root.render(<Owner />));
+    await act(async () => container.querySelector("button")!.click());
+    expect(openToolsetPopoverWindow).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      if (trigger === "scroll") container.querySelector(".page-stage")!.dispatchEvent(new Event("scroll"));
+      else if (trigger === "viewport") (container.querySelector(".page-stage") as HTMLElement).style.setProperty("--viewport-scale", "2");
+      else native.events[trigger === "scale" ? "tauri://scale-change" : `tauri://${trigger}`]?.();
+    });
+    expect(closeToolsetPopoverWindow).toHaveBeenCalledWith("core.bondStereo");
+    expect(sendBondStereoPopoverAction).toHaveBeenCalledWith(expect.objectContaining({ action: "close" }));
+  });
 });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); });
 async function open(keyboardOpen = false) {

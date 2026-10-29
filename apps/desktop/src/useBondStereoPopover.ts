@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
 import { createBondStereoActions, createFlippedBondStereoAction, moleculeBondStereoCommandId } from "./commands";
 import { nativeBondStereoAvailability, nativeBondStereoFlipDisabledReason } from "./documentWorkflow";
+import { listenCurrentWindowEvent } from "./window-manager/tauriEvents";
 import {
   closeToolsetPopoverWindow, currentWindowLogicalPosition, listenForBondStereoPopoverActions,
   listenForToolsetPopoverContentRequests, listenForToolsetPopoverDismiss, openToolsetPopoverWindow,
@@ -50,6 +51,9 @@ export function useBondStereoPopover(options: {
       if (id === BOND_STEREO_POPOVER_ID && session.current) void push(session.current);
     }));
     subscribe(listenForToolsetPopoverDismiss(close));
+    for (const event of ["tauri://move", "tauri://resize", "tauri://scale-change"]) {
+      subscribe(listenCurrentWindowEvent(event, close));
+    }
     subscribe(listenForBondStereoPopoverActions(payload => {
       const opened = session.current;
       if (!opened || payload.sessionId !== opened.id) return;
@@ -71,7 +75,16 @@ export function useBondStereoPopover(options: {
     };
     window.addEventListener("pointerdown", pointerAway, true);
     window.addEventListener("keydown", escape, true);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    // Pan and zoom update the page stage's viewport CSS variables without necessarily scrolling.
+    const stage = globalThis.document.querySelector(".page-stage");
+    const observer = stage ? new MutationObserver(() => close()) : undefined;
+    if (stage) observer?.observe(stage, { attributes: true, attributeFilter: ["style"] });
     return () => { disposed = true; cleanups.forEach(cleanup => cleanup()); session.current = undefined;
+      observer?.disconnect();
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
       window.removeEventListener("pointerdown", pointerAway, true);
       window.removeEventListener("keydown", escape, true);
       enqueue(() => closeToolsetPopoverWindow(BOND_STEREO_POPOVER_ID)); };
