@@ -1,7 +1,8 @@
 import { defaultCases, insertionDocument, expectDrawingDefaults } from "../drawingDefaults.testHelpers";
 import { describe, expect, it } from "vitest";
 import { DocumentObjectSchema, nativeTextStyleFromObjectStyle, type Anchor } from "@chemdraft/chem-core";
-import { documentDrawingDefaults } from "@chemdraft/document-workflow-core";
+import { documentDrawingDefaults, estimateNativeTextLineWidth } from "@chemdraft/document-workflow-core";
+import { reactionArrowHeadDepthPx } from "@chemdraft/layout-engine";
 import { callAssistantTool } from "./assistantTools";
 import { applyAssistantWrite, buildInsertStructures } from "./writeBuilder";
 import { testContext } from "./tools/testContext";
@@ -166,9 +167,16 @@ describe("assistant writes", () => {
     const objects = context.getDocument()!.pages[0]!.objects;
     const arrow = objects.find(object => object.type === "reaction-arrow")!;
     const above = objects.find(object => object.type === "text" && object.text === "reagent\ncatalyst")!;
+    const below = objects.find(object => object.type === "text" && object.text === "solvent\nheat")!;
+    if (arrow.type !== "reaction-arrow" || above.type !== "text" || below.type !== "text") throw new Error("reaction objects required");
     expect(above.x + above.width / 2).toBeCloseTo(arrow.x + arrow.width / 2);
-    expect(arrow.width).toBeLessThanOrEqual(above.width + 14.01);
-    expect(objects.some(object => object.type === "text" && object.text === "solvent\nheat")).toBe(true);
+    const textStyle = nativeTextStyleFromObjectStyle(above.style);
+    const widestLabel = Math.max(...[above, below].flatMap(label => label.text.split("\n")
+      .map(line => estimateNativeTextLineWidth(line, textStyle))));
+    // Reaction labels reserve each head's depth plus 0.25 em, with a 2.5-bond minimum.
+    const labelWithHeadRoom = widestLabel + 2 * (reactionArrowHeadDepthPx(arrow.arrowKind) + 0.25 * textStyle.fontSizePx);
+    const bondLength = documentDrawingDefaults(context.getDocument()!).bondLengthPx;
+    expect(arrow.width).toBeCloseTo(Math.max(2.5 * bondLength, labelWithHeadRoom), 2);
     expect(objects.some(object => object.type === "text" && object.text === "note")).toBe(true);
   });
   it("rejects a combined reaction label exceeding 2000 characters before chemistry", async () => {
