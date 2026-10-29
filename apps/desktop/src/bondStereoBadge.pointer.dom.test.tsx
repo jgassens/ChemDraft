@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 import { act } from "react";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MoleculeObject } from "@chemdraft/chem-core";
@@ -27,6 +29,7 @@ let container: HTMLDivElement, root: Root;
 const capture = vi.fn();
 const captureMethods = ["setPointerCapture", "releasePointerCapture", "hasPointerCapture"] as const;
 let captureDescriptors: (PropertyDescriptor | undefined)[];
+let overlayStyles: HTMLStyleElement;
 beforeAll(async () => { await ensureOclResources(); });
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -39,10 +42,17 @@ beforeEach(() => {
     Object.defineProperty(Element.prototype, name, { configurable: true, value: name === "hasPointerCapture" ? () => false : capture });
   }
   window.history.replaceState(null, "", "/");
+  // jsdom has no layout/hit testing. Use the production stacking rules, not
+  // invented z-indices, alongside the real MainWindow handle/badge element tree.
+  const css = readFileSync(resolve("apps/desktop/src/App.css"), "utf8");
+  overlayStyles = document.createElement("style");
+  overlayStyles.textContent = [...css.matchAll(/\.(?:document-object-chrome|native-molecule-overlay|native-bond-stereo-badge-layer|native-bond-stereo-marker|native-atom-invalid-marker|object-transform-frame|object-resize-handle)\s*\{[^}]*\}/g)]
+    .map(match => match[0]).join("\n");
+  document.head.append(overlayStyles);
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
 });
 afterEach(async () => {
-  await act(async () => root.unmount()); container.remove();
+  await act(async () => root.unmount()); container.remove(); overlayStyles.remove();
   captureDescriptors.forEach((descriptor, i) => {
     if (descriptor) Object.defineProperty(Element.prototype, captureMethods[i], descriptor);
     else Reflect.deleteProperty(Element.prototype, captureMethods[i]);
@@ -89,8 +99,7 @@ function badgePoint(molecule: MoleculeObject) {
   const badge = container.querySelector<SVGGElement>("[data-unspecified-bond-id]")!;
   const circle = badge.querySelector("circle")!;
   const point = { x: molecule.x + Number(circle.getAttribute("cx")), y: molecule.y + Number(circle.getAttribute("cy")) };
-  // jsdom has no SVG layout. Supply the rendered icon's bounds; deliberately send
-  // events to the browser's obstructing target, never directly to the badge.
+  // jsdom has no SVG layout. Supply the rendered icon's bounds.
   badge.getBoundingClientRect = () => rect(point.x - 6, point.y - 6, 12, 12);
   return point;
 }
@@ -124,7 +133,7 @@ async function click(target: Element, point: { x: number; y: number }) {
 }
 function expectOpenedOnce() {
   expect(openToolsetPopoverWindow).toHaveBeenCalledTimes(1);
-  expect(openToolsetPopoverWindow).toHaveBeenCalledWith("core.bondStereo", "flyout", expect.any(Number), expect.any(Number));
+  expect(openToolsetPopoverWindow).toHaveBeenCalledWith("core.bondStereo", "flyout", expect.any(Number), expect.any(Number), "preserve");
   expect(setToolsetPopoverContent).toHaveBeenCalledTimes(1);
   expect(vi.mocked(setToolsetPopoverContent).mock.calls[0][1]).toMatchObject({ kind: "flyout", flyout: { variant: "bondStereo" } });
 }
@@ -160,9 +169,27 @@ describe.each<ShortcutPlatform>(["macos", "windows"])("badge pointer priority (%
       y: Math.max(bounds.top + 0.5, Math.min(bounds.bottom - 0.5, center.y))
     } })).find(({ point }) => Math.hypot(point.x - center.x, point.y - center.y) < 6);
     expect(overlap, "fixture must have a real overlap between the badge circle and a handle").toBeDefined();
+    const badge = container.querySelector<SVGGElement>("[data-unspecified-bond-id]")!;
+    const layer = badge.closest("svg")!;
+    const frame = overlap!.handle.closest(".object-transform-frame")!;
+    // Both must be siblings in the same chrome stacking context. A z-index on
+    // the SVG <g> alone cannot escape the old lower overlay to beat the frame.
+    expect(layer.classList.contains("native-bond-stereo-badge-layer")).toBe(true);
+    expect(layer.parentElement).toBe(frame.parentElement);
+    expect(getComputedStyle(layer).position).toBe("absolute");
+    expect(getComputedStyle(frame).position).toBe("absolute");
+    const badgeZ = Number(getComputedStyle(layer).zIndex);
+    const frameZ = Number(getComputedStyle(frame).zIndex);
+    expect(badgeZ).toBeGreaterThan(frameZ);
+    expect(getComputedStyle(layer).pointerEvents).toBe("none");
+    expect(getComputedStyle(badge).pointerEvents).toBe("all");
+    expect(getComputedStyle(overlap!.handle).pointerEvents).toBe("all");
+    // The actual overlapping candidates, ordered as elementFromPoint would
+    // choose them. The old DOM/CSS chose the resize button and fails above.
+    const hit = badgeZ > frameZ ? badge.querySelector("circle")! : overlap!.handle;
     const before = currentDocument(), selected = selection(), previousStatus = status();
     capture.mockClear();
-    await click(overlap!.handle, overlap!.point);
+    await click(hit, overlap!.point);
     expectOpenedOnce();
     expect(capture).not.toHaveBeenCalled();
     expect(status()).toBe(previousStatus);

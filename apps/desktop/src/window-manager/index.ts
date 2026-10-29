@@ -210,6 +210,8 @@ export async function closeToolsetWindow(toolsetId: string): Promise<ToolsetWind
   return invokeToolsetWindow("close_toolset_window", toolsetId);
 }
 
+export type ToolsetPopoverFocusMode = "preserve" | "focus";
+
 /**
  * Opens (or repositions) a palette's popover in its own little floating window so it can
  * overflow the palette and float over the document — the native way (a webview can't paint
@@ -220,14 +222,15 @@ export async function openToolsetPopoverWindow(
   toolsetId: string,
   kind: string,
   x: number,
-  y: number
+  y: number,
+  focusMode: ToolsetPopoverFocusMode = "focus"
 ): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
 
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("open_toolset_popover", { toolsetId, kind, x, y });
+  await invoke("open_toolset_popover", { toolsetId, kind, x, y, focusMode });
 }
 
 /**
@@ -869,17 +872,18 @@ export async function setCurrentWindowLogicalSize(size: ToolsetWindowSize): Prom
  * Reveal the calling palette popover above the palette it belongs to. Rust shows it and then raises
  * it among the document's owned windows: the JS window `show()` alone left it underneath its palette
  * on Windows whenever the two overlapped. Falls back to that plain `show()` if the command is
- * unavailable, so a popover can never be left invisible.
+ * unavailable for focusable popovers. A preserve-focus open must never fall back to an activating show.
  */
-export async function showCurrentToolsetPopoverWindow(): Promise<void> {
+export async function showCurrentToolsetPopoverWindow(focusMode: ToolsetPopoverFocusMode = "focus"): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
 
   const { invoke } = await import("@tauri-apps/api/core");
   try {
-    await invoke("show_toolset_popover_window");
-  } catch {
+    await invoke("show_toolset_popover_window", { focusMode });
+  } catch (error) {
+    if (focusMode === "preserve") throw error;
     const { getCurrentWindow } = await import("@tauri-apps/api/window");
     await getCurrentWindow().show();
   }

@@ -119,7 +119,8 @@ export function useBondStereoPopover(options: {
       if (session.current !== opened) return;
       if (!position) { close(); return; }
       opened.anchor = { x: position.x + request.rect.left, y: position.y + request.rect.bottom + 4 };
-      await openToolsetPopoverWindow(BOND_STEREO_POPOVER_ID, "flyout", opened.anchor.x, opened.anchor.y);
+      await openToolsetPopoverWindow(BOND_STEREO_POPOVER_ID, "flyout", opened.anchor.x, opened.anchor.y,
+        request.keyboard ? "focus" : "preserve");
       if (session.current !== opened) return;
       await push(opened);
     }, () => { if (session.current === opened) close(); });

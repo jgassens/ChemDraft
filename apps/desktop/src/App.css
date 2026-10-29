@@ -5049,6 +5049,15 @@ textarea:focus-visible,
   pointer-events: none;
 }
 
+/* A sibling of the selection's transform frame (z-index: 3), not a child of
+   its lower SVG overlay. Only the badge itself accepts hits; the rest passes through. */
+.native-bond-stereo-badge-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+
 .native-bond-stereo-marker {
   cursor: pointer;
   pointer-events: all;

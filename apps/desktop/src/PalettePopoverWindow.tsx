@@ -244,7 +244,10 @@ export function PalettePopoverWindow({
         return;
       }
       try {
-        await showCurrentToolsetPopoverWindow();
+        // Only the button-only E/Z mouse open keeps the document's focus. Other
+        // popovers retain focusability, including the color picker's text inputs.
+        const preserveFocus = content.kind === "flyout" && content.flyout.variant === "bondStereo" && !content.flyout.keyboardOpen;
+        await showCurrentToolsetPopoverWindow(preserveFocus ? "preserve" : "focus");
         if (cancelled || dismissedRef.current) {
           // An older reveal may complete after a fresh open. Only hide the content
           // this chain belongs to; the new session owns the reused window now.

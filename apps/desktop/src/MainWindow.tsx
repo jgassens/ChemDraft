@@ -1630,7 +1630,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.28.16.00-codex";
+const CURRENT_BUILD_STAMP = "10.29.10.54-codex";
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -27265,7 +27265,6 @@ function DocumentObjectViewContent({
           >
             {selectionBlob}
             {selectedRingBlobs}
-            <BondStereoBadges molecule={object} onOpen={onBondStereoBadgeOpen} />
             {object.atoms
               .filter((atom) => invalidAtomIds.has(atom.id))
               .map((atom) => (
@@ -27343,6 +27342,13 @@ function DocumentObjectViewContent({
                   targetAtom={object.atoms.find((candidate) => candidate.id === freeformPreview?.targetAtomId)}
               />
             ))}
+          </svg>
+          <svg
+            className="native-molecule-overlay native-bond-stereo-badge-layer"
+            viewBox={`0 0 ${object.width} ${object.height}`}
+            style={spinning ? { opacity: 0.1 } : undefined}
+          >
+            <BondStereoBadges molecule={object} onOpen={onBondStereoBadgeOpen} />
           </svg>
           {moleculeGradientHandles}
           {transformFrame ? (

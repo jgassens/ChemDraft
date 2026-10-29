@@ -39,8 +39,11 @@ with the bond tool or hovered-bond shortcut: the (!) disappears and the bond bec
 Move atoms, rotate and restyle first: these keep the flag and badge. SVG, PDF, CDXML exports and
 browser/system print preview contain no badge or hover text.
 
-Click the (!) badge, then repeat with exactly one open bond selected: focus the canvas, Tab to the
-badge, and press Enter or Space. A small native popover anchors below it, showing “E/Z not specified”,
+With a real mouse, click the (!) badge with nothing selected, then with its bond selected and a
+resize handle overlapping the badge: the badge receives the click, no resize starts, and the
+popover stays open without a document/canvas blur. Repeat cold and warm opens. Focus the canvas,
+Tab to the badge, and press Enter or Space: this keyboard open focuses the first enabled action.
+A small native popover anchors below it, showing “E/Z not specified”,
 the geometry explanation, both geometry choices (correct E/Z labels), and Keep unspecified.
 Confirm and flip each record exactly one labelled Undo entry, retain bond selection, and Undo/Redo
 restore geometry and the badge. Flip moves only one end's substituents; test unequal CIP priorities,
@@ -51,8 +54,11 @@ Right-click an open bond: “Mark E/Z as unspecified” is absent. On a non-ster
 remains disabled with its reason. The inspector retains its previous behavior.
 Scroll, pan or zoom the canvas and move or resize the document between monitors at 100% and
 150%/200% scaling (including negative monitor coordinates): the popover closes. Reopen it at the
-badge; it never takes focus on a mouse open until clicked, has no taskbar entry on Windows, and
-closes when switching tabs/documents.
+badge; mouse opens and their action buttons preserve document focus, have no taskbar entry on
+Windows, and close when switching tabs/documents. Click elsewhere in the document or press Escape
+while the popover has never had focus: it must still close. Alternate keyboard and mouse opens to
+check that the reused window resets its focus mode. Open the Art color picker afterwards and type
+in its hex/RGB inputs: those shared-popover inputs still accept keyboard focus.
 Check print and SVG/PDF/CDXML again with the popover open: neither badge nor popover is included.
 Dismiss during the first cold open, then immediately reopen from a badge. Only the newest request
 may appear or act; an older create/reveal finishing late must not hide it. Change the selection or

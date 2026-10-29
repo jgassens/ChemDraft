@@ -235,7 +235,7 @@ describe.each<ShortcutPlatform>(["macos", "windows"])("native badge popover (%s)
       }
     });
     expect(currentWindowLogicalPosition).toHaveBeenCalledWith("inner");
-    expect(openToolsetPopoverWindow).toHaveBeenCalledWith("core.bondStereo", "flyout", 130, 254);
+    expect(openToolsetPopoverWindow).toHaveBeenCalledWith("core.bondStereo", "flyout", 130, 254, keyboard ? "focus" : "preserve");
     const content = vi.mocked(setToolsetPopoverContent).mock.calls.at(-1)![1];
     expect(setToolsetPopoverContent).toHaveBeenLastCalledWith("core.bondStereo", expect.anything(), { x: 130, y: 254 });
     if (content.kind !== "flyout") throw new Error("Expected flyout");

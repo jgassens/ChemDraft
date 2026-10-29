@@ -6,13 +6,15 @@ import { PalettePopoverWindow } from "./PalettePopoverWindow";
 import { sendBondStereoPopoverAction, sendPaletteCommand, type ToolsetPopoverContentPayload } from "./window-manager";
 import { useBondStereoPopover } from "./useBondStereoPopover";
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
-import { closeToolsetPopoverWindow, openToolsetPopoverWindow } from "./window-manager";
+import { closeToolsetPopoverWindow, openToolsetPopoverWindow, setToolsetPopoverContent } from "./window-manager";
 
 const native = vi.hoisted(() => ({
   content: undefined as undefined | ((payload: ToolsetPopoverContentPayload) => void),
   action: undefined as undefined | ((payload: { sessionId: string; action: string }) => void),
   dismiss: undefined as undefined | (() => void),
   hide: vi.fn(async () => {}), focus: vi.fn(async () => {}), show: vi.fn(async () => {}),
+  invoke: vi.fn(async (_command: string, _args?: Record<string, unknown>) => {}),
+  fallbackShow: vi.fn(async () => {}),
   events: {} as Record<string, () => void>
 }));
 vi.mock("./window-manager/tauriEvents", () => ({
@@ -23,7 +25,8 @@ vi.mock("./documentWorkflow", async importOriginal => ({
   ...await importOriginal<typeof import("./documentWorkflow")>(),
   nativeBondStereoAvailability: vi.fn(() => ({})), nativeBondStereoFlipDisabledReason: vi.fn(() => undefined)
 }));
-vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ hide: native.hide, setFocus: native.focus }) }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke }));
+vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ hide: native.hide, setFocus: native.focus, show: native.fallbackShow }) }));
 vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ setFocus: vi.fn(async () => {}) }) }));
 vi.mock("./window-manager", async importOriginal => ({
   ...await importOriginal<typeof import("./window-manager")>(),
@@ -50,22 +53,65 @@ beforeEach(() => {
 
 describe("document-owned bond stereo popover", () => {
   const doc = { pages: [{ objects: [{ id: "m", type: "molecule", bonds: [{ id: "b", stereo: "either" }] }] }] } as unknown as ChemDraftDocument;
-  function Owner() {
+  function Owner({ keyboard = false }: { keyboard?: boolean }) {
     const openPopover = useBondStereoPopover({ document: doc, targets: [{ objectId: "m", bondId: "b" }], reader: undefined,
       select: () => {}, invoke: () => {}, focusCanvas: () => {} });
-    return <><div className="page-stage" /><button onClick={() => openPopover({ objectId: "m", bondId: "b", rect: { left: 30, bottom: 50 }, keyboard: false })}>Open</button></>;
+    return <><div className="page-stage" /><button onClick={() => openPopover({ objectId: "m", bondId: "b", rect: { left: 30, bottom: 50 }, keyboard })}>Open</button></>;
   }
-  it.each(["scroll", "viewport", "move", "resize", "scale"])("closes on %s", async trigger => {
+  it.each([false, true])("sends the native creation and content focus mode for keyboard=%s", async keyboard => {
+    await act(async () => root.render(<Owner keyboard={keyboard} />));
+    await act(async () => container.querySelector("button")!.click());
+    expect(openToolsetPopoverWindow).toHaveBeenCalledWith("core.bondStereo", "flyout", 130, 254, keyboard ? "focus" : "preserve");
+    expect(setToolsetPopoverContent).toHaveBeenCalledWith("core.bondStereo", expect.objectContaining({
+      kind: "flyout", flyout: expect.objectContaining({ variant: "bondStereo", keyboardOpen: keyboard })
+    }), { x: 130, y: 254 });
+  });
+  it.each(["pointer-away", "escape", "scroll", "viewport", "move", "resize", "scale"])("closes a never-focused mouse open on %s", async trigger => {
     await act(async () => root.render(<Owner />));
     await act(async () => container.querySelector("button")!.click());
     expect(openToolsetPopoverWindow).toHaveBeenCalledTimes(1);
     await act(async () => {
-      if (trigger === "scroll") container.querySelector(".page-stage")!.dispatchEvent(new Event("scroll"));
+      if (trigger === "pointer-away") container.querySelector(".page-stage")!.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+      else if (trigger === "escape") window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", cancelable: true }));
+      else if (trigger === "scroll") container.querySelector(".page-stage")!.dispatchEvent(new Event("scroll"));
       else if (trigger === "viewport") (container.querySelector(".page-stage") as HTMLElement).style.setProperty("--viewport-scale", "2");
       else native.events[trigger === "scale" ? "tauri://scale-change" : `tauri://${trigger}`]?.();
     });
     expect(closeToolsetPopoverWindow).toHaveBeenCalledWith("core.bondStereo");
     expect(sendBondStereoPopoverAction).toHaveBeenCalledWith(expect.objectContaining({ action: "close" }));
+  });
+});
+describe("native popover focus transport", () => {
+  it("sends both focus modes through the real window manager and preserves the color-picker default", async () => {
+    const manager = await vi.importActual<typeof import("./window-manager")>("./window-manager");
+    const host = window as typeof window & { __TAURI__?: unknown };
+    host.__TAURI__ = {};
+    try {
+      for (const focusMode of ["preserve", "focus"] as const) {
+        await manager.openToolsetPopoverWindow("core.bondStereo", "flyout", 130, 254, focusMode);
+        expect(native.invoke).toHaveBeenLastCalledWith("open_toolset_popover", {
+          toolsetId: "core.bondStereo", kind: "flyout", x: 130, y: 254, focusMode
+        });
+        await manager.showCurrentToolsetPopoverWindow(focusMode);
+        expect(native.invoke).toHaveBeenLastCalledWith("show_toolset_popover_window", { focusMode });
+      }
+      await manager.openToolsetPopoverWindow("core.art", "artColor", 0, 0);
+      expect(native.invoke).toHaveBeenLastCalledWith("open_toolset_popover", {
+        toolsetId: "core.art", kind: "artColor", x: 0, y: 0, focusMode: "focus"
+      });
+      await manager.showCurrentToolsetPopoverWindow();
+      expect(native.invoke).toHaveBeenLastCalledWith("show_toolset_popover_window", { focusMode: "focus" });
+    } finally { delete host.__TAURI__; }
+  });
+  it("never falls back to an activating show after a preserve-focus reveal fails", async () => {
+    const manager = await vi.importActual<typeof import("./window-manager")>("./window-manager");
+    const host = window as typeof window & { __TAURI__?: unknown };
+    host.__TAURI__ = {};
+    try {
+      native.invoke.mockRejectedValueOnce(new Error("native reveal failed"));
+      await expect(manager.showCurrentToolsetPopoverWindow("preserve")).rejects.toThrow("native reveal failed");
+      expect(native.fallbackShow).not.toHaveBeenCalled();
+    } finally { delete host.__TAURI__; }
   });
 });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); });
@@ -79,12 +125,24 @@ async function open(keyboardOpen = false) {
         { id: "molecule.bondStereo:flipped", title: "Use the other geometry (E)", enabled: true, active: false }
       ] } }));
   expect(native.show).toHaveBeenCalledTimes(1);
+  expect(native.show).toHaveBeenCalledWith(keyboardOpen ? "focus" : "preserve");
   expect(container.querySelector('[role="dialog"]')?.getAttribute("aria-label")).toBe("E/Z not specified");
   expect(container.querySelector("p")?.textContent).toBe("This double bond's geometry wasn't given, so ChemDraft shows it as either E or Z.");
   return [...container.querySelectorAll("button")];
 }
 
 describe("open-bond native popover body", () => {
+  it("keeps the shared color picker reveal focusable and its text input editable", async () => {
+    await act(async () => root.render(<PalettePopoverWindow toolsetId="core.art" kind="artColor" prewarm />));
+    await act(async () => native.content?.({ toolsetId: "core.art", kind: "artColor" }));
+    expect(native.show).toHaveBeenCalledWith("focus");
+    const input = container.querySelector<HTMLInputElement>('input[type="text"]')!;
+    expect(input).not.toBeNull();
+    input.focus();
+    expect(document.activeElement).toBe(input);
+    expect(input.disabled).toBe(false);
+    expect(input.readOnly).toBe(false);
+  });
   it.each(["geometry", "flipped", "keep"] as const)("sends %s exactly once and hides", async action => {
     const buttons = await open();
     expect(native.focus).not.toHaveBeenCalled(); // Mouse opens never steal document focus.
