@@ -19,7 +19,7 @@ export interface ChemicalIdentityFacts {
 const withoutStereo = (smiles: string) => smiles.replace(/@(?:TH|AL|SP|TB|OH)\d*|@+|[\\/]/g, "");
 
 /** Inspect tags before RDKit's stereo cleanup can erase unsupported input stereo. */
-function unverifiableStereoReason(
+export function unverifiableStereoReason(
   module: Pick<RdkitMinimalModule, "get_mol">, value: string
 ): string | undefined {
   const raw = module.get_mol(value, JSON.stringify({
@@ -28,26 +28,51 @@ function unverifiableStereoReason(
   try {
     if (!raw?.get_json) throw new Error("RDKit could not inspect the input stereochemistry.");
     const graph = JSON.parse(raw.get_json()) as RdkitJson;
-    for (const molecule of graph.molecules) {
-      const doubles = molecule.bonds.filter(bond => (bond.bo ?? graph.defaults?.bond?.bo ?? 1) === 2);
-      const axial = molecule.atoms.some((atom, index) => {
-        const stereo = atom.stereo ?? graph.defaults?.atom?.stereo ?? "unspecified";
-        if (stereo === "unspecified") return false;
-        const attached = doubles.filter(bond => bond.atoms.includes(index));
-        if (attached.length !== 1) return false;
-        const bond = attached[0]!;
-        const center = bond.atoms.find(end => end !== index)!;
-        return doubles.some(other => other !== bond && other.atoms.includes(center));
-      });
-      if (axial) return "allene (axial) stereochemistry cannot be verified or drawn.";
+    // RDKit discards explicit allene classes even when stereo assignment is disabled.
+    if (/\[[^\]]*@AL\d*/.test(value)) {
+      return "allene (axial) stereochemistry cannot be verified or drawn.";
     }
-    // RDKit JSON omits non-tetrahedral tags; read them from RDKit's own parsed SMILES instead.
+    for (const molecule of graph.molecules) {
+      const neighbors = molecule.atoms.map<number[]>(() => []);
+      const doubles = molecule.atoms.map<number[]>(() => []);
+      for (const bond of molecule.bonds) {
+        const [a, b] = bond.atoms;
+        neighbors[a]!.push(b); neighbors[b]!.push(a);
+        if ((bond.bo ?? graph.defaults?.bond?.bo ?? 1) === 2) {
+          doubles[a]!.push(b); doubles[b]!.push(a);
+        }
+      }
+      for (const [start, attached] of doubles.entries()) {
+        if (attached.length !== 1) continue;
+        const chain = [start];
+        let previous = start, current = attached[0]!;
+        while (!chain.includes(current)) {
+          chain.push(current);
+          if (doubles[current]!.length !== 2 || neighbors[current]!.length !== 2) break;
+          const next = doubles[current]!.find(index => index !== previous)!;
+          previous = current; current = next;
+        }
+        if (chain.length < 3) continue;
+        if (chain.length >= 4 && /[\\/]/.test(value)) {
+          return "cumulene cis/trans stereochemistry cannot be verified or drawn.";
+        }
+        // An unsubstituted end (e.g. ketene oxygen) cannot define an axis. A degree-four
+        // tagged atom is tetrahedral, even when one bond leads into a cumulated chain.
+        const ends = [start, chain[chain.length - 1]!];
+        if (ends.some(index => neighbors[index]!.length === 1 &&
+          !(molecule.atoms[index]!.impHs ?? graph.defaults?.atom?.impHs ?? 0))) continue;
+        if (chain.some(index => neighbors[index]!.length < 4 &&
+          (molecule.atoms[index]!.stereo ?? graph.defaults?.atom?.stereo ?? "unspecified") !==
+            "unspecified")) return "allene (axial) stereochemistry cannot be verified or drawn.";
+      }
+    }
+    // RDKit JSON omits non-tetrahedral tags; retain both input and parsed SMILES evidence.
     const parsedSmiles = raw.get_smiles?.();
     if (!parsedSmiles) throw new Error("RDKit did not return a canonical SMILES.");
     const kinds = [
-      parsedSmiles.includes("@SP") ? "square-planar" : undefined,
-      parsedSmiles.includes("@TB") ? "trigonal-bipyramidal" : undefined,
-      parsedSmiles.includes("@OH") ? "octahedral" : undefined
+      /\[[^\]]*@SP\d*/.test(value) || parsedSmiles.includes("@SP") ? "square-planar" : undefined,
+      /\[[^\]]*@TB\d*/.test(value) || parsedSmiles.includes("@TB") ? "trigonal-bipyramidal" : undefined,
+      /\[[^\]]*@OH\d*/.test(value) || parsedSmiles.includes("@OH") ? "octahedral" : undefined
     ].filter(Boolean);
     return kinds.length ? `${kinds.join("/")} stereochemistry cannot be verified or drawn.` : undefined;
   } finally { raw?.delete(); }
@@ -79,7 +104,7 @@ export function inspectHydrogenNormalizedIdentity(
   const molecule = module.get_mol(value, JSON.stringify({ removeHs: true }));
   if (!molecule) return { valid: false, reason: "RDKit could not verify the structure." };
   try {
-    const refusal = unverifiableStereoReason(module, value);
+    const refusal = unverifiableStereoReason(module, stereoReference ?? value);
     if (refusal) return { valid: false, reason: refusal };
     const canonicalSmiles = molecule.get_smiles?.();
     if (!canonicalSmiles) throw new Error("RDKit did not return a canonical SMILES.");

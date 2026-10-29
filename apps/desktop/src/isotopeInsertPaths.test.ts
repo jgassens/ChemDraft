@@ -12,7 +12,7 @@ import {
   isotopeInsertSmiles, expectIsotopeGraph
 } from "../../../packages/document-workflow-core/test/isotopeInsertFixtures";
 import {
-  checkedSmilesPaste, checkedSmilesGridPaste, createPasteIdentityInspector
+  checkedSmilesPaste, checkedSmilesGridPaste, createPasteIdentityInspector, verifySmilesPasteInput
 } from "./smilesPasteIdentity";
 import { depictSmilesForPaste, depictSmilesListForPaste, smilesListFailureStatus } from "./smilesListPaste";
 import * as depictionClient from "./depiction2d/client";
@@ -82,6 +82,12 @@ describe("isotope insert paths", () => {
   it.each([
     ["F[C@](Cl)=C=C(Br)I", "FC(Cl)=C=C(Br)I", "allene (axial)"],
     ["F[C@@](Cl)=C=C(Br)I", "FC(Cl)=C=C(Br)I", "allene (axial)"],
+    ["OC(Cl)=[C@]=C(C)F", "OC(Cl)=[C@@]=C(C)F", "allene (axial)"],
+    ["OC(Cl)=[C@@]=C(C)F", "OC(Cl)=[C@]=C(C)F", "allene (axial)"],
+    ["OC(Cl)=[C@AL1]=C(C)F", "OC(Cl)=C=C(C)F", "allene (axial)"],
+    ["OC(Cl)=[C@AL2]=C(C)F", "OC(Cl)=C=C(C)F", "allene (axial)"],
+    ["F/C=C=C=C/F", "F/C=C=C=C\\F", "cumulene cis/trans"],
+    ["F/C=C=C=C\\F", "F/C=C=C=C/F", "cumulene cis/trans"],
     ["N[Pt@SP1](N)(Cl)Cl", "N[Pt](N)(Cl)Cl", "square-planar"]
   ])("refuses unverifiable input stereo in paste, grid and plugin: %s", async (smiles, plain, kind) => {
     const parsed = (await depictSmilesForPaste(plain))!;
@@ -100,12 +106,40 @@ describe("isotope insert paths", () => {
     expect(document.pages[0]!.objects).toEqual([]);
   });
 
+  it("refuses square-planar input before depiction and skips it in a two-item list", async () => {
+    const smiles = "N[Pt@SP1](N)(Cl)Cl";
+    const depict = vi.spyOn(depictionClient, "depictSmilesOffThread");
+    try {
+      await expect(verifySmilesPasteInput(smiles)).rejects.toThrow(
+        "square-planar stereochemistry cannot be verified or drawn");
+      expect(depict).not.toHaveBeenCalled();
+      const text = `${smiles}\nCCO`;
+      const parsed = await depictSmilesListForPaste(text, smilesListCandidates(text),
+        undefined, undefined, verifySmilesPasteInput);
+      expect(parsed?.entries.map(entry => entry.smiles)).toEqual(["CCO"]);
+      expect(parsed?.failures).toEqual([
+        { input: smiles, error: expect.stringContaining("square-planar stereochemistry") }
+      ]);
+      expect(parsed?.skipped).toBe(0);
+      expect(depict.mock.calls.map(([input]) => input)).toEqual(["CCO"]);
+      const result = await checkedSmilesGridPaste(createEmptyDocument(), point, parsed!.entries);
+      expect(result.objectIds).toHaveLength(1);
+      expect(result.failures).toEqual([]);
+      const molecule = result.document.pages[0]!.objects[0];
+      if (molecule?.type !== "molecule") throw new Error("Expected molecule");
+      await verify(molecule, "CCO");
+    } finally { depict.mockRestore(); }
+  });
+
   it.each([
     "CC=CC", "CC(C)=CCCC(C)=CC=O", "OC(=O)C=CC(=O)O", "CC=CC1CCCCC1",
     "[2H]C=Cc1ccccc1", "C/C=C/C", "[2H]/C=C/c1ccccc1",
     "[H]C([H])([H])O", "C[C@@H](O)CC", "[H]/C(C)=C(/[H])C", "[Na+].[O-]C(=O)c1ccccc1",
     "c1cc[nH]c1", "C[N+](C)(C)C", "[2H]C([2H])([2H])O", "N[C@@H](C)C(=O)O", "F/C=C/F",
-    "C1=CC=CC=C1", "C[C@H](C)C", "[C@H](F)(F)F"
+    "C1=CC=CC=C1", "C[C@H](C)C", "[C@H](F)(F)F", "O=C=[C@](F)Cl", "C[N@]=C=O",
+    "C[P@](CC)(c1ccccc1)=[N+]=P(c1ccccc1)(c1ccccc1)c1ccccc1",
+    "C[S@](=O)(=N)c1ccccc1", "C[S@](=O)(=NC)c1ccccc1",
+    "O=[S@@](=NC(C)=O)(C)c1ccccc1"
   ])("accepts real paste depiction without changing identity: %s", async smiles => {
     const parsed = await depictSmilesForPaste(smiles);
     expect(parsed).toBeDefined();

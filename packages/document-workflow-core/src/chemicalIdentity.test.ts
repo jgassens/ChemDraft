@@ -11,9 +11,39 @@ beforeAll(() => installRealRdkitModuleLoader());
 afterAll(() => resetRdkitForTesting());
 
 describe("unverifiable input stereo", () => {
-  it.each(["F[C@](Cl)=C=C(Br)I", "F[C@@](Cl)=C=C(Br)I"])("refuses axial stereo in %s", async input => {
+  it.each([
+    "F[C@](Cl)=C=C(Br)I", "F[C@@](Cl)=C=C(Br)I",
+    "OC(Cl)=[C@]=C(C)F", "OC(Cl)=[C@@]=C(C)F",
+    "OC(Cl)=[C@AL1]=C(C)F", "OC(Cl)=[C@AL2]=C(C)F",
+    "F[C@AL1](Cl)=C=C(Br)I", "F[C@AL2](Cl)=C=C(Br)I"
+  ])("refuses axial stereo in %s", async input => {
     expect(inspectHydrogenNormalizedIdentity(await ensureRdkit(), input)).toEqual({
       valid: false, reason: "allene (axial) stereochemistry cannot be verified or drawn."
+    });
+  });
+
+  it.each(["F/C=C=C=C/F", "F/C=C=C=C\\F"])("refuses cumulene cis/trans in %s", async input => {
+    expect(inspectHydrogenNormalizedIdentity(await ensureRdkit(), input)).toEqual({
+      valid: false, reason: "cumulene cis/trans stereochemistry cannot be verified or drawn."
+    });
+  });
+
+  it("checks unsupported stereo on the input reference before RDKit can erase it", async () => {
+    expect(inspectHydrogenNormalizedIdentity(await ensureRdkit(),
+      "OC(Cl)=[C@@]=C(C)F", "OC(Cl)=[C@]=C(C)F")).toEqual({
+      valid: false, reason: "allene (axial) stereochemistry cannot be verified or drawn."
+    });
+  });
+
+  it.each([
+    ["OC(Cl)=C=C(C)F", "OC(Cl)=[C@]=C(C)F"],
+    ["FC=C=C=CF", "F/C=C=C=C/F"]
+  ])("ignores output stereo where the input %s leaves it open", async (input, output) => {
+    const module = await ensureRdkit();
+    const source = inspectHydrogenNormalizedIdentity(module, input);
+    if (!source.valid) throw new Error(source.reason);
+    expect(inspectHydrogenNormalizedIdentity(module, output, source.canonicalSmiles)).toMatchObject({
+      valid: true, canonicalSmiles: source.canonicalSmiles
     });
   });
 
@@ -27,18 +57,23 @@ describe("unverifiable input stereo", () => {
     });
   });
 
-  it.each(["C[C@H](C)C", "[C@H](F)(F)F", "C[C@H](O)CC", "FC(Cl)=C=C(Br)I"])(
+  it.each([
+    "C[C@H](C)C", "[C@H](F)(F)F", "C[C@H](O)CC", "FC(Cl)=C=C(Br)I", "FC=C=C=CF",
+    "O=C=[C@](F)Cl", "O=C=[C@@](F)Cl", "C[N@]=C=O",
+    "C[P@](CC)(c1ccccc1)=[N+]=P(c1ccccc1)(c1ccccc1)c1ccccc1"
+  ])(
     "allows harmless chirality marks and supported or unspecified stereo: %s", async input => {
       expect(inspectHydrogenNormalizedIdentity(await ensureRdkit(), input).valid).toBe(true);
     });
 });
 
-describe("supported sulfur stereo", () => {
+describe("supported and harmless atom stereo", () => {
   it.each([
     "C[S@](=O)(=N)c1ccccc1",
     "C[S@](=O)(=NC)c1ccccc1",
     "O=[S@@](=NC(C)=O)(C)c1ccccc1",
-    "C[S@](=O)c1ccccc1"
+    "C[S@](=O)c1ccccc1", "C[C@H](C)C", "O=C=[C@](F)Cl", "C[N@]=C=O",
+    "C[P@](CC)(c1ccccc1)=[N+]=P(c1ccccc1)(c1ccccc1)c1ccccc1"
   ])("matches its own drawing: %s", async input => {
     const module = await ensureRdkit();
     const depiction = pastedStructureDepictionFromMolfile(await generateSmiles2DMolfile(input));

@@ -1,7 +1,7 @@
 import { createEmptyDocument, type ChemDraftDocument } from "@chemdraft/chem-core";
 import {
   assertMoleculeMatchesSmiles, ChemicalIdentityMismatchError,
-  inspectHydrogenNormalizedIdentity,
+  inspectHydrogenNormalizedIdentity, unverifiableStereoReason,
   type InspectChemicalIdentity,
   type PagePoint, type PastedStructureDepiction
 } from "@chemdraft/document-workflow-core";
@@ -18,18 +18,17 @@ export class SmilesIdentityEngineUnavailableError extends Error {
   }
 }
 
-export function createPasteIdentityInspector(
-  load: () => Promise<{ ensureRdkit(): Promise<RdkitMinimalModule> }> =
-    () => loadRdkitWithAppLoader(() => import("@chemdraft/rdkit-adapter"))
-): InspectChemicalIdentity {
-  return async (_format, value, stereoReference) => {
-    let module;
-    try { module = await (await load()).ensureRdkit(); }
-    catch (error) {
-      throw new SmilesIdentityEngineUnavailableError(error);
-    }
-    return inspectHydrogenNormalizedIdentity(module, value, stereoReference);
-  };
+const loadPasteIdentityEngine: () => Promise<{ ensureRdkit(): Promise<RdkitMinimalModule> }> =
+  () => loadRdkitWithAppLoader(() => import("@chemdraft/rdkit-adapter"));
+
+async function pasteIdentityModule(load = loadPasteIdentityEngine): Promise<RdkitMinimalModule> {
+  try { return await (await load()).ensureRdkit(); }
+  catch (error) { throw new SmilesIdentityEngineUnavailableError(error); }
+}
+
+export function createPasteIdentityInspector(load = loadPasteIdentityEngine): InspectChemicalIdentity {
+  return async (_format, value, stereoReference) =>
+    inspectHydrogenNormalizedIdentity(await pasteIdentityModule(load), value, stereoReference);
 }
 const inspectPasteIdentity = createPasteIdentityInspector();
 
@@ -42,6 +41,18 @@ export class SmilesPasteIdentityError extends Error {
       : `SMILES paste refused: chemical identity could not be verified for "${smiles}": ${detail}`);
     this.name = "SmilesPasteIdentityError";
   }
+}
+
+/** Refuse unsupported input stereo even when the depiction engines cannot parse or draw it. */
+export async function verifySmilesPasteInput(smiles: string): Promise<void> {
+  if (!/[@\\/]/.test(smiles)) return;
+  const module = await pasteIdentityModule();
+  const source = module.get_mol(smiles, JSON.stringify({ removeHs: true }));
+  if (!source) return;
+  try {
+    const reason = unverifiableStereoReason(module, smiles);
+    if (reason) throw new SmilesPasteIdentityError(smiles, new Error(reason));
+  } finally { source.delete(); }
 }
 
 /** Check a depiction without holding a document snapshot across an engine load. */

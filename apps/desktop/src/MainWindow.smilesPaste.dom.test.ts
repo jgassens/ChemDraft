@@ -85,6 +85,15 @@ describe("MainWindow SMILES paste failure notices", () => {
     expect(container.querySelectorAll(".text-object")).toHaveLength(1);
   });
 
+  it.each(["N[Pt@SP1](N)(Cl)Cl", "N[Pt@SP1](N)(Cl)Cl\nOC(Cl)=[C@]=C(C)F"])(
+    "keeps the text fallback when stereo inspection cannot load RDKit: %s", async text => {
+      vi.mocked(loadRdkitWithAppLoader).mockRejectedValue(new Error("test WASM unavailable"));
+      const status = await paste(text, "text/plain", "test WASM unavailable");
+      expect(status).toContain("pasted as text");
+      expect(container.querySelectorAll(".molecule-object")).toHaveLength(0);
+      expect(container.querySelectorAll(".text-object")).toHaveLength(1);
+    });
+
   it("inserts into the current document after an edit while identity verification waits", async () => {
     let release!: () => void;
     const wait = new Promise<void>(resolve => { release = resolve; });
@@ -122,6 +131,57 @@ describe("MainWindow SMILES paste failure notices", () => {
     });
     const status = await paste("[13CH3]c1ccccc1", "text/plain", "SMILES paste refused:");
     expect(status).toContain("isotope labels or their positions");
+    expect(container.querySelectorAll(".molecule-object")).toHaveLength(0);
+    expect(container.querySelectorAll(".text-object")).toHaveLength(0);
+  }, 20_000);
+
+  it.each([
+    ["OC(Cl)=[C@]=C(C)F", "allene (axial)"],
+    ["OC(Cl)=[C@@]=C(C)F", "allene (axial)"],
+    ["OC(Cl)=[C@AL1]=C(C)F", "allene (axial)"],
+    ["OC(Cl)=[C@AL2]=C(C)F", "allene (axial)"],
+    ["F/C=C=C=C/F", "cumulene cis/trans"],
+    ["F/C=C=C=C\\F", "cumulene cis/trans"],
+    ["N[Pt@SP1](N)(Cl)Cl", "square-planar"],
+    ["F[P@TB1](Cl)(Br)(N)I", "trigonal-bipyramidal"],
+    ["F[Co@OH1](Cl)(Br)(N)(O)I", "octahedral"]
+  ])("refuses %s before depiction without inserting structure or text", async (smiles, kind) => {
+    const depict = vi.spyOn(depictionClient, "depictSmilesOffThread")
+      .mockRejectedValue({ notSmiles: true });
+    const status = await paste(smiles, "text/plain", "SMILES paste refused:");
+    expect(status).toContain(`${kind} stereochemistry cannot be verified or drawn`);
+    expect(depict).not.toHaveBeenCalled();
+    expect(container.querySelectorAll(".molecule-object")).toHaveLength(0);
+    expect(container.querySelectorAll(".text-object")).toHaveLength(0);
+  }, 20_000);
+
+  it("refuses square-planar input from a SMILES clipboard format", async () => {
+    const status = await paste("N[Pt@SP1](N)(Cl)Cl", "chemical/x-daylight-smiles", "SMILES paste refused:");
+    expect(status).toContain("square-planar stereochemistry cannot be verified or drawn");
+    expect(container.querySelectorAll(".molecule-object")).toHaveLength(0);
+    expect(container.querySelectorAll(".text-object")).toHaveLength(0);
+  }, 20_000);
+
+  it.each([
+    ["OC(Cl)=[C@]=C(C)F", "allene (axial)"],
+    ["OC(Cl)=[C@AL1]=C(C)F", "allene (axial)"],
+    ["F/C=C=C=C/F", "cumulene cis/trans"],
+    ["N[Pt@SP1](N)(Cl)Cl", "square-planar"]
+  ])("skips only the unverifiable stereo entry in a two-item list: %s", async (smiles, kind) => {
+    const status = await paste(`${smiles}\nCCO`, "text/plain", "SMILES paste refused:");
+    expect(status).toContain(`1 item failed: ${smiles}`);
+    expect(status).toContain(`${kind} stereochemistry cannot be verified or drawn`);
+    expect(container.querySelectorAll(".molecule-object")).toHaveLength(1);
+    expect(container.querySelectorAll(".text-object")).toHaveLength(0);
+  }, 20_000);
+
+  it("refuses an all-unsupported stereo list without falling back to text", async () => {
+    const status = await paste("N[Pt@SP1](N)(Cl)Cl\nOC(Cl)=[C@]=C(C)F",
+      "text/plain", "No SMILES structures were pasted");
+    expect(status).toContain("2 items failed:");
+    expect(status).toContain("square-planar stereochemistry");
+    expect(status).toContain("allene (axial) stereochemistry");
+    expect(status).not.toContain("pasted as text");
     expect(container.querySelectorAll(".molecule-object")).toHaveLength(0);
     expect(container.querySelectorAll(".text-object")).toHaveLength(0);
   }, 20_000);

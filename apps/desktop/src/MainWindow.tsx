@@ -246,7 +246,7 @@ import { createRdkitAdapter } from "@chemdraft/rdkit-adapter/adapter";
 import { buildAnalysisReport, type AnalysisReport, type AnalysisRun } from "@chemdraft/analysis-core";
 import { analysisClient } from "./analysisClient";
 import { inspectClipboardPayload, looksLikeSmiles, smilesListCandidates, type ClipboardDetectedPayload } from "@chemdraft/clipboard-adapter";
-import { verifySmilesPaste, verifySmilesGridEntries } from "./smilesPasteIdentity";
+import { verifySmilesPaste, verifySmilesPasteInput, verifySmilesGridEntries } from "./smilesPasteIdentity";
 import {
   SmilesListPasteError, depictSmilesForPaste, depictSmilesListForPaste, smilesListFailureStatus
 } from "./smilesListPaste";
@@ -1620,7 +1620,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.29.08.38-codex";
+const CURRENT_BUILD_STAMP = "10.29.08.49-codex";
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -6613,6 +6613,7 @@ export function MainWindow({
   // on demand. Parser/chemistry refusals retain text fallback; worker failures reach status.
   const renderPastedSmiles = useCallback(async (smilesText: string): Promise<{ rendered: boolean; reason?: string; failed?: boolean }> => {
     try {
+      await verifySmilesPasteInput(smilesText);
       const parsed = await depictSmilesForPaste(smilesText);
       if (quitInteractionRef.current) return { rendered: false, reason: "Paste cancelled while quitting" };
       if (!parsed) return { rendered: false };
@@ -6692,7 +6693,7 @@ export function MainWindow({
       smilesListPasteAbortRef.current = listAbort;
       const pendingList = depictSmilesListForPaste(detectedPayload.text, candidates, (completed, total) => {
         setStatus(`Parsing SMILES list: ${completed} of ${total} tokens`);
-      }, listAbort.signal);
+      }, listAbort.signal, verifySmilesPasteInput);
       if (!pendingList) {
         pasteAsText();
         return;
