@@ -724,14 +724,17 @@ describe('nested Office pictures (synthetic)', () => {
     expect(inspectPath(root, undefined, { depth: 0, budget: { count: 2000 } })[0].error).toMatch(/path count exceeds 2000/);
   });
 
-  it('rejects a non-first header, second header, and 16-byte EOF', () => {
+  it('rejects non-first headers and accepts EMR_EOF lengths from 16 bytes', () => {
     const header = wrapped.subarray(0, 88), end = wrapped.subarray(-20);
     const other = Buffer.alloc(8); other.writeUInt32LE(2); other.writeUInt32LE(8, 4);
     for (const bytes of [Buffer.concat([other, header, end]), Buffer.concat([header, header, end])]) {
       expect(() => emfFindings(bytes)).toThrow(/Invalid EMF header/);
     }
-    const short = Buffer.from(end.subarray(0, 16)); short.writeUInt32LE(16, 4);
+    const short = Buffer.from(end.subarray(0, 12)); short.writeUInt32LE(12, 4);
     expect(() => emfFindings(Buffer.concat([header, short]))).toThrow(/Truncated EMF EOF/);
+    const word = Buffer.from(end.subarray(0, 16)); word.writeUInt32LE(16, 4);
+    expect(emfFindings(Buffer.concat([header, word])).notes).toContain('short EMR_EOF (16 bytes; MS-EMF says 20), as Word for Mac writes');
+    expect(emfFindings(wrapped).notes).toBeUndefined();
   });
 
   it('scans separate PDFs while retaining the last EOF of incremental updates', () => {

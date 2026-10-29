@@ -10,7 +10,7 @@ export function emfFindings(buf, nested = () => {}) {
     const type = buf.readUInt32LE(p), size = buf.readUInt32LE(p + 4);
     if (size < 8 || size % 4 || p + size > buf.length) throw new Error('Invalid or truncated EMF record size');
     if ((records === 1 && (type !== 1 || size < 88)) || (records > 1 && type === 1)) throw new Error('Invalid EMF header record');
-    if (type === 14 && size < 20) throw new Error('Truncated EMF EOF record');
+    if (type === 14 && size < 16) throw new Error('Truncated EMF EOF record');
     if (type === 70) {
       if (size < 12 || buf.readUInt32LE(p + 8) > size - 12) throw new Error('Truncated EMF GDI comment');
       const data = buf.subarray(p + 12, p + 12 + buf.readUInt32LE(p + 8));
@@ -49,7 +49,11 @@ export function emfFindings(buf, nested = () => {}) {
       }
     }
     p += size;
-    if (type === 14) { eof = true; break; }
+    if (type === 14) {
+      eof = true;
+      if (size < 20) found.notes = [...(found.notes ?? []), `short EMR_EOF (${size} bytes; MS-EMF says 20), as Word for Mac writes`];
+      break;
+    }
   }
   if (!eof || trailingNuls(buf.subarray(p)) !== buf.length - p) throw new Error('Missing EMF EOF or trailing bytes');
   if (p < buf.length) found.notes = paddingNotes(buf.length - p);
