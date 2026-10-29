@@ -2,7 +2,7 @@
 
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { MainWindow } from "./MainWindow";
 import {
   CHEMDRAFT_SELECTION_CLIPBOARD_TYPE,
@@ -14,6 +14,8 @@ import {
 import { depictSmilesForPaste } from "./smilesListPaste";
 import { saveKeybindingSettings } from "./keybindingSettings";
 import type { MoleculeObject } from "@chemdraft/chem-core";
+import { installDomRdkitLoader } from "./testSupport/rdkitIdentity";
+import { inspectStructureOffThread } from "./depiction2d/identityClient";
 
 // These cases exercise generic depiction; template identity/layout has its own real-engine tests.
 vi.mock("./structureTemplateInsertion", () => ({ templateMoleculeForSmiles: vi.fn().mockResolvedValue(undefined) }));
@@ -46,6 +48,11 @@ describe("canvas clipboard menu and copy guard", () => {
   let container: HTMLDivElement;
   let root: Root;
   let originalResizeObserver: typeof ResizeObserver | undefined;
+
+  beforeAll(async () => {
+    installDomRdkitLoader();
+    expect((await inspectStructureOffThread("smiles", "C")).valid).toBe(true);
+  }, 20_000);
 
   beforeEach(() => {
     vi.mocked(depictSmilesForPaste).mockReset();
@@ -154,12 +161,16 @@ describe("canvas clipboard menu and copy guard", () => {
       value: { types: ["text/plain"], getData: (type: string) => type === "text/plain" ? text : "" }
     });
     await act(async () => { window.dispatchEvent(event); });
+    await vi.waitFor(async () => {
+      await act(async () => { await Promise.resolve(); });
+      expect(container.querySelector('[role="status"]')?.textContent).toContain("Pasted SMILES structure");
+    }, { timeout: 15_000 });
     expect(depictSmilesForPaste).toHaveBeenCalledTimes(1);
     expect(vi.mocked(depictSmilesForPaste).mock.calls[0]![0]).toBe("CCO"); // Later arguments carry the template placement.
     expect(container.querySelector('[role="status"]')?.textContent).toContain("Pasted SMILES structure");
     expect(container.querySelectorAll(".text-object")).toHaveLength(0);
     expect(container.querySelectorAll(".molecule-object")).toHaveLength(1);
-  });
+  }, 20_000);
 
   it("copies and cuts both a caption and a marquee fragment in the same selection", async () => {
     const withRing = insertNativeTemplateMolecule(createPhase4Document("Mixed cut"), { x: 300, y: 300 }, "cyclohexane");

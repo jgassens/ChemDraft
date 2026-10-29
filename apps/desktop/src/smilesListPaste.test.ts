@@ -7,6 +7,8 @@ import { depictInWorker } from "./depiction2d/depict";
 import { depictSmilesOffThread } from "./depiction2d/client";
 import { registerRdkitWasmLoader } from "./rdkitWasmLoader";
 import { applyClipboardPastePayload, createPhase4Document, insertSmilesMoleculeGrid, insertSmilesMoleculeGridStatus } from "./documentWorkflow";
+import { SmilesPasteIdentityError, SmilesIdentityEngineUnavailableError } from "./smilesPasteIdentity";
+import { templateMoleculeForSmiles } from "./structureTemplateInsertion";
 
 // These cases exercise generic depiction; template identity/layout has its own real-engine tests.
 vi.mock("./structureTemplateInsertion", () => ({ templateMoleculeForSmiles: vi.fn().mockResolvedValue(undefined) }));
@@ -16,6 +18,7 @@ vi.mock("@chemdraft/rdkit-adapter", () => ({ generateSmiles2DMolfile: vi.fn() })
 
 beforeAll(async () => { await ocl.ensureOclResources(); });
 beforeEach(() => {
+  vi.mocked(templateMoleculeForSmiles).mockReset().mockResolvedValue(undefined);
   vi.mocked(generateSmiles2DMolfile).mockReset().mockRejectedValue(new Error("WASM unavailable"));
   vi.mocked(registerRdkitWasmLoader).mockClear();
   vi.mocked(depictSmilesOffThread).mockReset().mockImplementation((smiles) => depictInWorker(smiles, (input, options) => {
@@ -100,6 +103,63 @@ describe("depictSmilesForPaste", () => {
 });
 
 describe("depictSmilesListForPaste", () => {
+  it("inspects each input before template lookup and forwards placement and cancellation together", async () => {
+    const document = createPhase4Document("Template placement");
+    const centre = { x: 150, y: 180 };
+    const reservedObjectIds = new Set<string>(["reserved"]);
+    const controller = new AbortController();
+    const order: string[] = [];
+    const inspectInput = vi.fn(async (smiles: string, signal?: AbortSignal) => {
+      expect(signal).toBe(controller.signal);
+      order.push(`inspect:${smiles}`);
+    });
+    vi.mocked(templateMoleculeForSmiles).mockImplementation(async smiles => {
+      order.push(`template:${smiles}`);
+      return undefined;
+    });
+    const text = "CCO\nCCN";
+    const result = await depictSmilesListForPaste(text, smilesListCandidates(text), undefined, {
+      signal: controller.signal, inspectInput, templatePlacement: { document, centre, reservedObjectIds }
+    });
+    expect(result?.entries).toHaveLength(2);
+    expect(order).toEqual(["inspect:CCO", "template:CCO", "inspect:CCN", "template:CCN"]);
+    expect(templateMoleculeForSmiles).toHaveBeenNthCalledWith(1, "CCO", document, centre, reservedObjectIds);
+    expect(templateMoleculeForSmiles).toHaveBeenNthCalledWith(2, "CCN", document, centre, reservedObjectIds);
+  });
+
+  it("checks cancellation after input inspection and before template lookup", async () => {
+    const controller = new AbortController();
+    const text = "CCO\nCCN";
+    await expect(depictSmilesListForPaste(text, smilesListCandidates(text), undefined, {
+      signal: controller.signal, inspectInput: async () => { controller.abort(); }
+    })).rejects.toMatchObject({ name: "AbortError" });
+    expect(templateMoleculeForSmiles).not.toHaveBeenCalled();
+    expect(depictSmilesOffThread).not.toHaveBeenCalled();
+  });
+
+  it("records an empty depiction as an item failure and continues the list", async () => {
+    vi.mocked(depictSmilesOffThread).mockResolvedValueOnce({ depiction: { atoms: [], bonds: [] }, stereoCount: 0 });
+    const text = "CCO\nCCN\nCCC";
+    const result = await depictSmilesListForPaste(text, smilesListCandidates(text));
+    expect(result?.entries.map(entry => entry.smiles)).toEqual(["CCN", "CCC"]);
+    expect(result?.failures).toEqual([{ input: "CCO", error: "The 2D depiction engine returned no atoms." }]);
+    expect(result?.skipped).toBe(0);
+    expect(result?.skippedItems).toEqual([]);
+  });
+
+  it("keeps identity-engine refusals in the per-line report with their own reason", async () => {
+    const text = "CCO\nCCN";
+    const result = await depictSmilesListForPaste(text, smilesListCandidates(text), undefined, {
+      inspectInput: async smiles => {
+        if (smiles === "CCO") throw new SmilesIdentityEngineUnavailableError("test WASM unavailable");
+      }
+    });
+    expect(result?.entries.map(entry => entry.smiles)).toEqual(["CCN"]);
+    expect(result?.skippedItems).toEqual([{ line: 1, token: "CCO",
+      reason: "the structure could not be verified because the RDKit engine did not load: test WASM unavailable" }]);
+    expect(result?.skipped).toBe(result?.skippedItems.length);
+  });
+
   it.each([
     [["C1CC("], "; skipped line 2: 'C1CC(' (not valid SMILES)"],
     [["C1CC(", "C2CC(", "C3CC("], "; skipped line 2: 'C1CC(' (not valid SMILES); skipped line 3: 'C2CC(' (not valid SMILES); skipped line 4: 'C3CC(' (not valid SMILES)"],
@@ -125,6 +185,34 @@ describe("depictSmilesListForPaste", () => {
     ]);
   });
 
+  const refuseStereo = async (smiles: string) => {
+    if (smiles.includes("@SP")) throw new SmilesPasteIdentityError(smiles, "unsupported stereo");
+  };
+
+  it.each([
+    "Use CO with [Pt@SP1] please",
+    "Add the CO and CS to N[Pt@SP1](N)(Cl)Cl in DMSO then stir it for an hour at room temperature"
+  ])("declines prose containing a refused stereo token: %s", async text => {
+    expect(await depictSmilesListForPaste(text, smilesListCandidates(text),
+      undefined, { inspectInput: refuseStereo })).toBeUndefined();
+  });
+
+  it("recognises a two-line list of refused stereo entries", async () => {
+    const text = "N[Pt@SP1](N)(Cl)Cl\nN[Pt@SP2](N)(Cl)Cl";
+    const result = await depictSmilesListForPaste(text, smilesListCandidates(text),
+      undefined, { inspectInput: refuseStereo });
+    expect(result?.entries).toEqual([]);
+    expect(result?.failures.map(failure => failure.input)).toEqual(text.split("\n"));
+    expect(result?.skipped).toBe(2);
+    expect(result?.skippedItems).toEqual(text.split("\n").map((token, index) => ({
+      line: index + 1, token, reason: "unsupported stereo"
+    })));
+    const grid = insertSmilesMoleculeGrid(createPhase4Document("Refused stereo"), { x: 100, y: 100 }, result!.entries);
+    expect(insertSmilesMoleculeGridStatus(grid, result!.skipped, result!.skippedItems)).toContain(
+      "; skipped line 1: 'N[Pt@SP1](N)(Cl)Cl' (unsupported stereo)");
+    expect(depictSmilesOffThread).not.toHaveBeenCalled();
+  });
+
   it("retains deadline warnings for individual list entries", async () => {
     const warning = "2D depiction reached its layout deadline; retried the standard layout in a fresh worker.";
     vi.mocked(depictSmilesOffThread).mockResolvedValueOnce({ depiction: ocl.depictSmiles2D("CCO"), stereoCount: 0, warnings: [warning] });
@@ -139,7 +227,7 @@ describe("depictSmilesListForPaste", () => {
       return { depiction: ocl.depictSmiles2D("CCO"), stereoCount: 0 };
     });
     const text = "CCO\nCCN\nCCC\nCCCC";
-    await expect(depictSmilesListForPaste(text, smilesListCandidates(text), undefined, controller.signal))
+    await expect(depictSmilesListForPaste(text, smilesListCandidates(text), undefined, { signal: controller.signal }))
       .rejects.toMatchObject({ name: "AbortError" });
     expect(depictSmilesOffThread).toHaveBeenCalledOnce();
     expect(depictSmilesOffThread).toHaveBeenCalledWith("CCO", { signal: controller.signal, priority: "background" });

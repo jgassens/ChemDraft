@@ -253,7 +253,10 @@ import { createRdkitAdapter } from "@chemdraft/rdkit-adapter/adapter";
 import { buildAnalysisReport, type AnalysisReport, type AnalysisRun } from "@chemdraft/analysis-core";
 import { analysisClient } from "./analysisClient";
 import { inspectClipboardPayload, looksLikeSmiles, smilesListCandidates, type ClipboardDetectedPayload } from "@chemdraft/clipboard-adapter";
-import { SmilesListPasteError, depictSmilesForPaste, depictSmilesListForPaste } from "./smilesListPaste";
+import { verifySmilesPaste, verifySmilesPasteInput, verifySmilesGridEntries } from "./smilesPasteIdentity";
+import {
+  SmilesListPasteError, depictSmilesForPaste, depictSmilesListForPaste, smilesListFailureStatus
+} from "./smilesListPaste";
 import type { Generate3DConformerResult, StructureAnalysisResult } from "@chemdraft/chemistry-adapter";
 import {
   getExportFormatDescriptor,
@@ -548,9 +551,9 @@ import {
   nativeArtToolIsFreehand,
   nativeFreehandStrokeDocument,
   nativePolylinePathDocument,
+  insertSmilesMoleculeGridStatus,
   insertSmilesMolecule,
   insertSmilesMoleculeGrid,
-  insertSmilesMoleculeGridStatus,
   documentObjectProjectedPlaneTilt,
   nativeBondStyleForToolCommand,
   nativeChargeMarkMaxMagnitude,
@@ -1625,7 +1628,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.29.11.12-opus";
+const CURRENT_BUILD_STAMP = "10.29.11.40-codex";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -6634,14 +6637,19 @@ export function MainWindow({
   const renderPastedSmiles = useCallback(async (smilesText: string): Promise<{ rendered: boolean; reason?: string; failed?: boolean }> => {
     setStatus("Drawing the pasted SMILES…");
     try {
-      const pasteDocument = documentRef.current;
+      await verifySmilesPasteInput(smilesText);
+      const layoutDocument = documentRef.current;
       const point = pastePointForViewport();
       const parsed = await depictSmilesForPaste(smilesText, {}, {
-        document: pasteDocument, centre: point, reservedObjectIds: new Set<string>()
+        document: layoutDocument, centre: point, reservedObjectIds: new Set<string>()
       });
       if (quitInteractionRef.current) return { rendered: false, reason: "Paste cancelled while quitting" };
       if (!parsed) return { rendered: false };
       const { depiction } = parsed;
+      await verifySmilesPaste(depiction, smilesText);
+      if (quitInteractionRef.current) return { rendered: false, reason: "Paste cancelled while quitting" };
+      const pasteDocument = documentRef.current;
+      if (parsed.molecule && pasteDocument !== layoutDocument) throw new Error("The document changed while preparing SMILES paste; paste again.");
       // Reuse the template built with this document's defaults, placement and object IDs.
       const molecule = parsed.molecule;
       const inserted = molecule ? {
@@ -6653,10 +6661,7 @@ export function MainWindow({
       } : { document: insertSmilesMolecule(
         pasteDocument,
         point,
-        {
-          atoms: depiction.atoms,
-          bonds: depiction.bonds
-        },
+        depiction,
         smilesText
       ), status: undefined };
       const nextDocument = inserted.document;
@@ -6694,8 +6699,13 @@ export function MainWindow({
       return { rendered: true };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
+      if (reason.includes("the RDKit engine did not load:")) {
+        const detail = reason.slice(reason.indexOf("the structure could not be verified"));
+        return { rendered: false, reason: detail };
+      }
       if ((error as { smilesChemistryRefusal?: boolean })?.smilesChemistryRefusal) return { rendered: false, reason };
-      setStatus(`Clipboard SMILES could not be placed: ${reason}`);
+      setStatus(reason.startsWith("SMILES paste refused:")
+        ? reason : `Clipboard SMILES could not be placed: ${reason}`);
       return { rendered: false, failed: true, reason };
     }
   }, [commitDocumentChange, pastePointForViewport, resetPasteUiState]);
@@ -6708,7 +6718,11 @@ export function MainWindow({
         if (failed) return;
         if (!rendered) {
           applySyncClipboardPayload({ kind: "plain-text", text: detectedPayload.text, sourceType: detectedPayload.sourceType, warnings: [] });
-          if (reason) setStatus(`Clipboard SMILES could not be parsed: ${reason}; pasted as text`);
+          if (reason) {
+            setStatus(reason.startsWith("the structure could not be verified")
+              ? `SMILES pasted as text: ${reason}`
+              : `Clipboard SMILES could not be parsed: ${reason}; pasted as text`);
+          }
         }
       });
       return;
@@ -6724,11 +6738,14 @@ export function MainWindow({
       const trimmedText = detectedPayload.text.trim();
       if (looksLikeSmiles(trimmedText) && !/\s/.test(trimmedText)) {
         void renderPastedSmiles(trimmedText).then(({ rendered, reason, failed }) => {
+          if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
           if (failed) return;
           if (!rendered) {
             pasteAsText();
             if (reason) {
-              setStatus(`Clipboard SMILES could not be parsed: ${reason}; pasted as text`);
+              setStatus(reason.startsWith("the structure could not be verified")
+                ? `SMILES pasted as text: ${reason}`
+                : `Clipboard SMILES could not be parsed: ${reason}; pasted as text`);
             }
           }
         });
@@ -6739,38 +6756,56 @@ export function MainWindow({
       const pasteDocument = documentRef.current;
       const pendingList = depictSmilesListForPaste(detectedPayload.text, candidates, (completed, total) => {
         setStatus(`Parsing SMILES list: ${completed} of ${total} tokens`);
-      }, listAbort.signal, { document: pasteDocument, centre: pastePointForViewport() });
+      }, {
+        signal: listAbort.signal, inspectInput: verifySmilesPasteInput,
+        templatePlacement: { document: pasteDocument, centre: pastePointForViewport() }
+      });
       if (!pendingList) {
         pasteAsText();
         return;
       }
       void pendingList.then(async (parsed) => {
-        if (listAbort.signal.aborted) return;
         if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
+        if (listAbort.signal.aborted) return;
         if (!parsed) {
           pasteAsText();
           return;
         }
-        const entries = parsed.entries;
+        const verified = await verifySmilesGridEntries(parsed.entries, undefined, listAbort.signal);
+        const entries = parsed.entries.filter(entry => verified.entries.includes(entry));
         listAbort.signal.throwIfAborted();
         if (quitInteractionRef.current || documentRef.current !== pasteDocument) throw new Error("The document changed while preparing SMILES paste; paste again.");
-        const result = insertSmilesMoleculeGrid(pasteDocument, pastePointForViewport(), entries);
-        commitDocumentChange(result.document, "Paste SMILES list");
-        resetPasteUiState();
-        setPageFitPrompt(undefined);
-        const failure = parsed.failures[0];
-        const baseStatus = [insertSmilesMoleculeGridStatus(result, parsed.skipped, parsed.skippedItems), ...new Set(entries.flatMap(entry => entry.molecule ? [structureTemplateLayoutMessage(entry.molecule)!] : [])), ...(parsed.warnings ?? [])].join("; ");
-        setStatus(failure
-          ? `${baseStatus}; ${parsed.failures.length} item${parsed.failures.length === 1 ? "" : "s"} failed: ${failure.error}`
+        const result = insertSmilesMoleculeGrid(
+          pasteDocument, pastePointForViewport(), entries);
+        parsed.failures.push(...verified.failures);
+        const engineUnavailable = !result.objectIds.length && parsed.failures.some(failure =>
+          failure.error.includes("the RDKit engine did not load:"));
+        if (engineUnavailable) pasteAsText();
+        if (result.objectIds.length > 0) {
+          commitDocumentChange(result.document, "Paste SMILES list");
+          resetPasteUiState();
+          setPageFitPrompt(undefined);
+        }
+        const failures = smilesListFailureStatus(parsed.failures);
+        const placementStatus = result.objectIds.length
+          ? insertSmilesMoleculeGridStatus(result, parsed.skipped, parsed.skippedItems) : "No SMILES structures were pasted";
+        const baseStatus = [placementStatus, ...new Set(entries.flatMap(entry => entry.molecule ? [structureTemplateLayoutMessage(entry.molecule)!] : [])), ...(parsed.warnings ?? [])].join("; ");
+        const failureCount = parsed.failures.length;
+        setStatus(failures
+          ? `${baseStatus}; ${failureCount} item${failureCount === 1 ? "" : "s"} failed: ${failures}` +
+            (engineUnavailable ? "; pasted as text" : "")
           : baseStatus);
       }).catch((error: unknown) => {
-        if (listAbort.signal.aborted) return;
         if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
+        if (listAbort.signal.aborted) return;
         if (error instanceof SmilesListPasteError) pasteAsText();
         const failures = error instanceof SmilesListPasteError ? error.failures : [];
-        const firstReason = failures[0]?.error ?? (error instanceof Error ? error.message : String(error));
+        const firstReason = failures.length ? smilesListFailureStatus(failures)
+          : error instanceof Error ? error.message : String(error);
         const failureCount = failures.length || 1;
-        setStatus(`Clipboard SMILES list could not be placed; ${failureCount} item${failureCount === 1 ? "" : "s"} failed: ${firstReason}${error instanceof SmilesListPasteError ? "; pasted as text" : ""}`);
+        setStatus(`No SMILES structures were pasted; ` +
+          `${failureCount} item${failureCount === 1 ? "" : "s"} failed: ${firstReason}` +
+          (error instanceof SmilesListPasteError ? "; pasted as text" : ""));
       });
       return;
     }

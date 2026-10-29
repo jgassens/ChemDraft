@@ -243,7 +243,8 @@ journal figures, annotations, arrows and brackets. The workflow is
   Distinguish declined results from `not-requested` methods.
 - Keep estimates labelled estimates, including NMR multiplicities and J
   couplings. Predicted shifts are predictions, not measurements.
-- Refused radicals or isotopes remain refusals. Do not remove their SMILES
+- Isotopes and their positions are preserved, including D/T and labelled C, N and O.
+- Refused radicals remain refusals. Do not remove their SMILES
   notation to make a command succeed. `render`, `document` and `export`
   refuse a radical such as `C[CH2]`, while `analyze` keeps it and reports
   its composition (C2H5) and masses. Say which part was refused.

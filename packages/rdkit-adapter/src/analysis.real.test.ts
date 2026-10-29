@@ -154,7 +154,8 @@ describe("composition is source-preserving", { timeout: 60_000 }, () => {
     const labelled = await analyze("[13CH3]C(=O)O");
     const unlabelled = await analyze("CC(=O)O");
 
-    expect(composition(labelled).formula).toBe("[13C]CH4O2");
+    // This string is RDKit's own CalcMolFormula output with separate isotopes.
+    expect(composition(labelled).formula).toBe("C[13C]H4O2");
     expect(composition(labelled).hasExplicitIsotopes).toBe(true);
     expect(composition(unlabelled).formula).toBe("C2H4O2");
     expect(composition(unlabelled).hasExplicitIsotopes).toBe(false);

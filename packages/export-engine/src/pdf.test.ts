@@ -31,6 +31,34 @@ function filledRingFixture(): MoleculeObject {
 const timestamp = "2026-05-29T00:00:00.000Z";
 
 describe("exportDocumentToPdf", () => {
+  it("preserves the SVG isotope label runs and superscript geometry in PDF", async () => {
+    const molecule = filledRingFixture();
+    molecule.atoms[0]!.isotope = 13;
+    molecule.atoms.push(
+      { id: "d", element: "D", x: 70, y: 100, formalCharge: 0 },
+      { id: "t", element: "T", x: 210, y: 180, formalCharge: 0 }
+    );
+    molecule.bonds.push(
+      { id: "bd", fromAtomId: "a0", toAtomId: "d", order: "single" },
+      { id: "bt", fromAtomId: "a2", toAtomId: "t", order: "single" }
+    );
+    const document = applyPatch(createEmptyDocument({ now: timestamp }), {
+      op: "addObject", pageId: "page_001", object: molecule
+    });
+    const svg = exportDocumentToSvg(document).contents;
+    const result = await withPdfDom((domParser) => exportDocumentToPdf(document, {
+      domParser: { parseFromString(source: string, mime: DOMParserSupportedType) {
+        expect(source).toBe(svg);
+        const parsed = domParser.parseFromString(source, mime);
+        const runs = [...parsed.querySelectorAll('[data-atom-label="13CH"] [data-atom-label-run]')];
+        expect(runs.map((run) => run.textContent)).toEqual(["13", "CH"]);
+        expect(Number(runs[0]!.getAttribute("y"))).toBeLessThan(Number(runs[1]!.getAttribute("y")));
+        return parsed;
+      } } as DOMParser, compress: false
+    }));
+    expect(extractPdfTextRuns(result.bytes)).toEqual(expect.arrayContaining(["13", "CH", "D", "T"]));
+  });
+
   it.each(["left", "center", "right"] as const)("exports contiguous %s-aligned scripted formulas without whitespace runs", async (align) => {
     const fixture = scriptedTextDocument(align);
     const document = { ...fixture, pages: [{ ...fixture.pages[0], objects: fixture.pages[0].objects.slice(0, 2) }] };

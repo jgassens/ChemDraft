@@ -35,6 +35,8 @@ import {
 } from "@chemdraft/rdkit-adapter";
 import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
 import {
+  markV2000UnspecifiedDoubleBonds, markV3000UnspecifiedDoubleBonds, sourceBondSemantics,
+  type SourceBondSemantics,
   applyMoleculeTargetBondLength,
   applyDocumentStyle,
   assertMolfileHasKnownBondOrders,
@@ -167,7 +169,7 @@ interface RdkitCountJson {
   molecules?: Array<{ atoms?: Array<{ z?: number; nRad?: number; isotope?: number }> }>;
 }
 
-/** Check the input graph before an MDL intermediate can collapse radical/isotope labels. */
+/** Check the input graph before an MDL intermediate can collapse radical labels. */
 function rejectUnsupportedInputAtomLabels(parsed: RdkitCountJson): void {
   for (const [index, atom] of (parsed.molecules?.[0]?.atoms ?? []).entries()) {
     const radicals = atom.nRad ?? parsed.defaults?.atom?.nRad ?? 0;
@@ -176,9 +178,10 @@ function rejectUnsupportedInputAtomLabels(parsed: RdkitCountJson): void {
       ...(radicals > 0 ? [`${radicals} radical electron${radicals === 1 ? "" : "s"}`] : []),
       ...(isotope > 0 ? [`isotope ${isotope}`] : [])
     ];
-    if (properties.length > 0) {
+    if (radicals > 0) {
       throw new UnsupportedMolfileLabelError(
-        `Atom ${index + 1} carries ${properties.join(" and ")}; ChemDraft cannot yet draw this radical/isotope label without risking chemical identity.`
+        `Atom ${index + 1} carries ${properties.join(" and ")}; ` +
+          "ChemDraft cannot yet draw this radical without risking chemical identity."
       );
     }
   }
@@ -215,57 +218,6 @@ async function rejectOversizedSmiles(smiles: string): Promise<void> {
   } finally {
     molecule.delete();
   }
-}
-
-interface SourceBondSemantics {
-  unspecifiedDoubleBondIndices: number[];
-  dativeBondIndices: number[];
-}
-
-/** Read the bond semantics the desktop's structural depiction type cannot currently carry. */
-function sourceBondSemantics(molfile: string): SourceBondSemantics {
-  const unspecifiedDoubleBondIndices: number[] = [];
-  const dativeBondIndices: number[] = [];
-  const lines = molfile.split(/\r?\n/);
-  const v2000CountsIndex = lines.findIndex((line) => /\bV2000\b/.test(line));
-  if (v2000CountsIndex >= 0) {
-    const counts = lines[v2000CountsIndex] ?? "";
-    const atomCount = Number.parseInt(counts.slice(0, 3).trim(), 10);
-    const bondCount = Number.parseInt(counts.slice(3, 6).trim(), 10);
-    if (Number.isInteger(atomCount) && Number.isInteger(bondCount)) {
-      const bondStart = v2000CountsIndex + 1 + atomCount;
-      for (let index = 0; index < bondCount; index += 1) {
-        const line = lines[bondStart + index] ?? "";
-        const order = Number.parseInt(line.slice(6, 9).trim(), 10);
-        const stereo = Number.parseInt(line.slice(9, 12).trim(), 10);
-        if (order === 2 && stereo === 3) unspecifiedDoubleBondIndices.push(index);
-      }
-    }
-    return { unspecifiedDoubleBondIndices, dativeBondIndices };
-  }
-
-  let inBondSection = false;
-  let bondIndex = 0;
-  for (const line of lines) {
-    if (/^M\s+V30\s+BEGIN BOND\s*$/.test(line)) {
-      inBondSection = true;
-      continue;
-    }
-    if (/^M\s+V30\s+END BOND\s*$/.test(line)) {
-      inBondSection = false;
-      continue;
-    }
-    if (!inBondSection) continue;
-    const match = /^M\s+V30\s+\d+\s+(\d+)\s+\d+\s+\d+\b(.*)$/.exec(line);
-    if (!match) continue;
-    const type = Number(match[1]);
-    if (type === 9) dativeBondIndices.push(bondIndex);
-    if (type === 2 && /\bCFG=2\b/.test(match[2] ?? "")) {
-      unspecifiedDoubleBondIndices.push(bondIndex);
-    }
-    bondIndex += 1;
-  }
-  return { unspecifiedDoubleBondIndices, dativeBondIndices };
 }
 
 export async function canonicalSmiles(structure: string, label: string): Promise<string> {
@@ -360,53 +312,6 @@ function replaceMolecule(
       objects: page.objects.map((object) => object.id === molecule.id ? molecule : object)
     }))
   };
-}
-
-function markV2000UnspecifiedDoubleBonds(
-  molfile: string,
-  indices: ReadonlySet<number>
-): string {
-  if (indices.size === 0) return molfile;
-  const lines = molfile.split(/\r?\n/);
-  const countsIndex = lines.findIndex((line) => /\bV2000\b/.test(line));
-  if (countsIndex < 0) return molfile;
-  const atomCount = Number.parseInt((lines[countsIndex] ?? "").slice(0, 3).trim(), 10);
-  const bondCount = Number.parseInt((lines[countsIndex] ?? "").slice(3, 6).trim(), 10);
-  if (!Number.isInteger(atomCount) || !Number.isInteger(bondCount)) return molfile;
-  const bondStart = countsIndex + 1 + atomCount;
-  for (const index of indices) {
-    if (index < 0 || index >= bondCount) continue;
-    const lineIndex = bondStart + index;
-    const line = lines[lineIndex];
-    if (!line || Number.parseInt(line.slice(6, 9).trim(), 10) !== 2) continue;
-    lines[lineIndex] = `${line.slice(0, 9)}  3${line.slice(12)}`;
-  }
-  return lines.join(molfile.includes("\r\n") ? "\r\n" : "\n");
-}
-
-function markV3000UnspecifiedDoubleBonds(
-  molfile: string,
-  indices: ReadonlySet<number>
-): string {
-  if (indices.size === 0) return molfile;
-  const lines = molfile.split(/\r?\n/);
-  let inBondSection = false;
-  let bondIndex = 0;
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index] ?? "";
-    if (/^M\s+V30\s+BEGIN BOND\s*$/.test(line)) {
-      inBondSection = true;
-      continue;
-    }
-    if (/^M\s+V30\s+END BOND\s*$/.test(line)) {
-      inBondSection = false;
-      continue;
-    }
-    if (!inBondSection || !/^M\s+V30\s+\d+\s+\d+\s+\d+\s+\d+\b/.test(line)) continue;
-    if (indices.has(bondIndex) && !/\bCFG=/.test(line)) lines[index] = `${line} CFG=2`;
-    bondIndex += 1;
-  }
-  return lines.join(molfile.includes("\r\n") ? "\r\n" : "\n");
 }
 
 function identityMolfile(
@@ -532,9 +437,9 @@ export async function documentWithPhysicalStyle(document: ChemDraftDocument, war
 class UnsupportedMolfileLabelError extends Error {}
 
 function rejectUnsupportedMolfileLabels(molfile: string, smiles: string): void {
-  if (/^M  (?:RAD|ISO)\b/m.test(molfile)) {
+  if (/^M  RAD\b/m.test(molfile)) {
     throw new UnsupportedMolfileLabelError(
-      `SMILES contains a radical/isotope label that ChemDraft cannot yet draw: ${smiles}`
+      `SMILES contains a radical that ChemDraft cannot yet draw: ${smiles}`
     );
   }
 }

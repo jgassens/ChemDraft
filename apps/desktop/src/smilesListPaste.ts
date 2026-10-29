@@ -2,11 +2,18 @@ import { smilesListDecision, smilesListTokens, type SmilesListCandidate } from "
 import type { PastedStructureDepiction } from "./documentWorkflow";
 import { depictSmilesOffThread } from "./depiction2d/client";
 import type { DepictionRequestOptions } from "@chemdraft/rdkit-adapter";
+import { SmilesIdentityEngineUnavailableError, SmilesPasteIdentityError } from "./smilesPasteIdentity";
 import { createEmptyDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { pastedStructureDepictionFromMolfile, type StructureTemplateMoleculeOptions } from "@chemdraft/document-workflow-core";
 import { templateMoleculeForSmiles } from "./structureTemplateInsertion";
 
 type TemplatePastePlacement = Pick<StructureTemplateMoleculeOptions, "document" | "centre" | "reservedObjectIds">;
+
+export interface SmilesListPasteOptions {
+  signal?: AbortSignal;
+  inspectInput?: (smiles: string, signal?: AbortSignal) => Promise<void>;
+  templatePlacement?: TemplatePastePlacement;
+}
 
 /** A valid input with no drawable atoms is an item failure, not a worker failure. */
 class EmptySmilesDepictionError extends Error {}
@@ -61,6 +68,11 @@ export interface SmilesListPasteFailure {
   error: string;
 }
 
+export function smilesListFailureStatus(failures: readonly SmilesListPasteFailure[]): string {
+  const first = failures.slice(0, 3).map(failure => `${failure.input}: ${failure.error}`).join("; ");
+  return first + (failures.length > 3 ? `; and ${failures.length - 3} more` : "");
+}
+
 /** A rejected list preserves its individual chemistry refusals for the status surface. */
 export class SmilesListPasteError extends Error {
   readonly failures: readonly SmilesListPasteFailure[];
@@ -76,25 +88,24 @@ export function depictSmilesListForPaste(
   text: string,
   candidates: readonly SmilesListCandidate[],
   onProgress?: (completed: number, total: number) => void,
-  signal?: AbortSignal,
-  templatePlacement?: TemplatePastePlacement
+  options: SmilesListPasteOptions = {}
 ): Promise<SmilesListPasteResult | undefined> | undefined {
   // No promise or engine load for prose: the caller can insert its text synchronously.
   if (candidates.length < 2) return undefined;
-  return depictSmilesListCandidates(text, candidates, onProgress, signal, templatePlacement);
+  return depictSmilesListCandidates(text, candidates, onProgress, options);
 }
 
 async function depictSmilesListCandidates(
   text: string,
   candidates: readonly SmilesListCandidate[],
   onProgress?: (completed: number, total: number) => void,
-  signal?: AbortSignal,
-  templatePlacement: TemplatePastePlacement = { document: createEmptyDocument(), centre: { x: 0, y: 0 } }
+  { signal, inspectInput, templatePlacement = { document: createEmptyDocument(), centre: { x: 0, y: 0 } } }: SmilesListPasteOptions = {}
 ): Promise<SmilesListPasteResult | undefined> {
   const entries: SmilesListPasteResult["entries"] = [];
   const failures: SmilesListPasteResult["failures"] = [];
   const warnings: string[] = [];
   const handledTokens = new Set<string>();
+  const identityRefusalReasons = new Map<string, string>();
   const placement = { ...templatePlacement, reservedObjectIds: templatePlacement.reservedObjectIds ?? new Set<string>() };
   const tokens = smilesListTokens(text);
   const firstTokenColumns = new Map<number, number>();
@@ -102,13 +113,28 @@ async function depictSmilesListCandidates(
     if (!firstTokenColumns.has(token.line)) firstTokenColumns.set(token.line, token.column);
   }
   let parsedFirstTokenLines = 0;
+  let identityRefusals = 0;
   for (const [index, candidate] of candidates.entries()) {
     signal?.throwIfAborted();
     let parsed: Awaited<ReturnType<typeof depictSmilesForPaste>> = undefined;
+    let identityRefused = false;
     try {
+      await inspectInput?.(candidate.token, signal);
+      signal?.throwIfAborted();
       parsed = await depictSmilesForPaste(candidate.token, { signal, priority: "background" }, placement);
     } catch (error) {
-      if (!isSmilesChemistryRefusal(error) && !(error instanceof EmptySmilesDepictionError)) throw error;
+      if (error instanceof SmilesPasteIdentityError ||
+        error instanceof SmilesIdentityEngineUnavailableError) {
+        identityRefused = true;
+        identityRefusals += 1;
+        // The status renderer already names the token; retain the refusal's detail without
+        // repeating the whole input (which can be a large host molecule).
+        const prefix = `SMILES paste refused: chemical identity could not be verified for "${candidate.token}": `;
+        const detail = (error.message.startsWith(prefix) ? error.message.slice(prefix.length)
+          : error.message.replace(/^SMILES paste refused:\s*/, "")).replace(/\s+/g, " ").trim();
+        identityRefusalReasons.set(`${candidate.line}:${candidate.column}`,
+          detail.length > 160 ? `${detail.slice(0, 159)}…` : detail);
+      } else if (!isSmilesChemistryRefusal(error) && !(error instanceof EmptySmilesDepictionError)) throw error;
       failures.push({ input: candidate.token, error: error.message });
       handledTokens.add(`${candidate.line}:${candidate.column}`);
     }
@@ -116,7 +142,9 @@ async function depictSmilesListCandidates(
       handledTokens.add(`${candidate.line}:${candidate.column}`);
       entries.push({ smiles: candidate.token, depiction: parsed.depiction, ...(parsed.molecule ? { molecule: parsed.molecule } : {}) });
       warnings.push(...(parsed.warnings ?? []).map((warning) => `${candidate.token}: ${warning}`));
-      if (candidate.column === firstTokenColumns.get(candidate.line)) parsedFirstTokenLines += 1;
+    }
+    if ((parsed || identityRefused) && candidate.column === firstTokenColumns.get(candidate.line)) {
+      parsedFirstTokenLines += 1;
     }
     if (candidates.length > 20 && (index + 1) % 10 === 0) {
       onProgress?.(index + 1, candidates.length);
@@ -125,12 +153,17 @@ async function depictSmilesListCandidates(
     }
   }
   const lineCount = text.split(/\r\n|\r|\n/).filter((line) => line.trim().length > 0).length;
-  if (smilesListDecision({ candidates: tokens.length, parsed: entries.length, lineCount, parsedFirstTokenLines })) {
-    const skippedItems = tokens.filter(token => !handledTokens.has(`${token.line}:${token.column}`))
-      .map(({ line, token }) => ({ line, token, reason: "not valid SMILES" }));
+  // Unsupported stereo counts as a structure when deciding whether this is a list or prose.
+  if (smilesListDecision({
+    candidates: tokens.length, parsed: entries.length + identityRefusals, lineCount, parsedFirstTokenLines
+  })) {
+    const skippedItems = tokens.filter(token => !handledTokens.has(`${token.line}:${token.column}`)
+      || identityRefusalReasons.has(`${token.line}:${token.column}`))
+      .map(({ line, column, token }) => ({ line, token,
+        reason: identityRefusalReasons.get(`${line}:${column}`) ?? "not valid SMILES" }));
     return { entries, skipped: skippedItems.length, skippedItems, failures, ...(warnings.length ? { warnings } : {}) };
   }
   // Even a list with too few valid entries must retain the reasons it was refused.
-  if (failures.length > 0) throw new SmilesListPasteError(failures);
+  if (failures.length > identityRefusals) throw new SmilesListPasteError(failures);
   return undefined;
 }

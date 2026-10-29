@@ -1,8 +1,11 @@
 import { spawn } from "node:child_process";
-import { expect, it } from "vitest";
+import { beforeAll, expect, it } from "vitest";
 import { createDepictionWorkerClient } from "@chemdraft/rdkit-adapter";
 import { createNodeDepictionWorker } from "./depictionClient";
 import { buildSmilesDocument, currentMoleculeIdentityMolfile } from "./document";
+import { installIsotopeTestEngine } from "./isotopes.testUtils";
+
+beforeAll(installIsotopeTestEngine);
 
 it.each(["C1CCC2CCCCC2C1", "C[C@H](F)Cl", `C1${"C".repeat(99)}1`])(
   "depicts %s with identical molfile bytes through cold and warm workers", async (smiles) => {
