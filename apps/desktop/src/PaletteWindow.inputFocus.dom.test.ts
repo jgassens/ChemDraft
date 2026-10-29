@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -560,7 +561,7 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith(command);
     expect(hotkey.defaultPrevented).toBe(true);
     // jsdom does not hit-test CSS: assert the pass-through rule excludes buttons.
-    const css = readFileSync(fileURLToPath(new URL("./App.css", import.meta.url)), "utf8");
+    const css = readFileSync(resolve("apps/desktop/src/App.css"), "utf8");
     const disabledRules = css.split("/* Disabled native form controls")[1]!;
     expect(disabledRules).not.toContain("button");
     expect(disabledRules).toContain(":is(input, textarea, select):disabled");
