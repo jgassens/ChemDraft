@@ -196,9 +196,11 @@ export const TableCellEditor = forwardRef<TableCellEditorHandle, {
       if (index) widths.push(0);
       const size = span.script === "normal" && typeof span.style.fontSizePx === "number"
         ? span.style.fontSizePx : textStyle.fontSizePx;
-      const weight = headerBold ? Math.max(700, span.style.fontWeight ?? 700)
-        : span.style.fontWeight ?? textStyle.fontWeight;
-      const spacing = span.style.letterSpacingPx ?? textStyle.letterSpacingPx;
+      const spanWeight = typeof span.style.fontWeight === "number" ? span.style.fontWeight : undefined;
+      const weight = headerBold ? Math.max(700, spanWeight ?? 700)
+        : spanWeight ?? textStyle.fontWeight;
+      const spacing = typeof span.style.letterSpacingPx === "number"
+        ? span.style.letterSpacingPx : textStyle.letterSpacingPx;
       widths[widths.length - 1] += measureTextRun(text, { fontSizePx: size, fontWeight: weight, script: span.script })
         + [...text].length * spacing;
     });
