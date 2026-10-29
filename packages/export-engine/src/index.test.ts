@@ -13,6 +13,8 @@ import {
 } from "@chemdraft/chem-core";
 import { describe, expect, it } from "vitest";
 import { exportDocumentToSvg } from "./index";
+import { JSDOM } from "jsdom";
+import { scriptedTextDocument } from "./scriptedText.fixture";
 
 const timestamp = "2026-05-29T00:00:00.000Z";
 
@@ -340,12 +342,30 @@ describe("exportDocumentToSvg", () => {
 
     expect(result.warnings).toEqual([]);
     expect(result.contents).toContain('data-object-id="text_script_export_001"');
-    expect(result.contents).toContain('baseline-shift="sub"');
-    expect(result.contents).toContain('font-size="72%"');
+    expect(result.contents).toContain('font-size="14.4px"');
+    expect(result.contents).not.toContain('baseline-shift');
     expect(result.contents).toContain('fill="#1f5fbf"');
     expect(result.contents).toContain(">H</tspan>");
     expect(result.contents).toContain(">2</tspan>");
     expect(result.contents).toContain(">O</tspan>");
+  });
+
+  it("exports script sizes in px and restores each line's baseline after subscripts and superscripts", () => {
+    const svg = exportDocumentToSvg(scriptedTextDocument()).contents;
+    const dom = new JSDOM(svg, { contentType: "image/svg+xml" });
+    const spans = (id: string) => [...dom.window.document.querySelectorAll(`[data-object-id="${id}"] tspan`)]
+      .map(span => [span.textContent, span.getAttribute("font-size"), Number(span.getAttribute("y"))]);
+    expect(spans("water")).toEqual([["H", null, 120], ["2", "14.4px", 128], ["O", null, 120]]);
+    expect(spans("sulfate")).toEqual([["SO", null, 200], ["4", "14.4px", 208], ["2-", "14.4px", 192]]);
+    expect(spans("ammonium")).toEqual([["NH", null, 280], ["4", "14.4px", 288], ["+", "14.4px", 272]]);
+    expect(spans("isotope")).toEqual([["13", "14.4px", 352], ["C", null, 360]]);
+    expect(spans("override")).toEqual([["H", null, 440], ["2", "21.6px", 448], ["O", null, 440]]);
+    expect(spans("multiline")).toEqual([
+      ["H", null, 520], ["2", "14.4px", 528], ["O", null, 520], ["", null, 548],
+      ["SO", null, 576], ["4", "14.4px", 584], ["2-", "14.4px", 568], ["end", null, 604]
+    ]);
+    expect(svg).not.toMatch(/baseline-shift|font-size="[^"]*%"|\bdy=/);
+    dom.window.close();
   });
 
   it("exports condensed atom labels with numeric subscripts", () => {

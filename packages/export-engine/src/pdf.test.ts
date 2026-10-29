@@ -16,7 +16,8 @@ import { jsPDF } from "jspdf";
 import { describe, expect, it } from "vitest";
 import { exportDocumentToPdf } from "./pdf";
 import { exportDocumentToSvg } from "./svg";
-import { extractPdfTextRuns, pdfFontStreams, sfntName, sfntTable } from "./pdf.testUtils";
+import { extractPdfPositionedTextRuns, extractPdfTextRuns, pdfFontStreams, sfntName, sfntTable } from "./pdf.testUtils";
+import { scriptedTextDocument } from "./scriptedText.fixture";
 import { ringHaloDocument } from "../../layout-engine/src/ringFillHalos.fixture";
 import { nativeMoleculeRings } from "@chemdraft/layout-engine";
 
@@ -30,6 +31,44 @@ function filledRingFixture(): MoleculeObject {
 const timestamp = "2026-05-29T00:00:00.000Z";
 
 describe("exportDocumentToPdf", () => {
+  it.each([false, true])("draws scripted formula digits and charges with positive size, offset and advance (compression=%s)", async (compress) => {
+    const result = await withPdfDom(domParser => exportDocumentToPdf(scriptedTextDocument(), { domParser, compress }));
+    const runs = extractPdfPositionedTextRuns(result.bytes).filter(run => run.text.trim().length > 0);
+    expect(runs.map(run => run.text)).toEqual([
+      "H", "2", "O", "SO", "4", "2-", "NH", "4", "+", "13", "C", "H", "2", "O",
+      "H", "2", "O", "SO", "4", "2-", "end"
+    ]);
+    const [h, sub, o, so, four, charge, nh, nhFour, plus, isotope, c, bigH, bigSub, bigO] = runs;
+    const script = (parent: typeof h, child: typeof sub, offsetEm: number, sizeRatio = 0.72) => {
+      expect(parent.fontSize).toBeCloseTo(15, 6); // 20 document px at 72/96 pt/px
+      expect(child.fontSize).toBeGreaterThan(0);
+      expect(Math.abs(child.fontSize / parent.fontSize - sizeRatio)).toBeLessThan(sizeRatio * 0.01);
+      expect(child.y - parent.y).toBeCloseTo(offsetEm * parent.fontSize, 6);
+    };
+    script(h, sub, -0.4);
+    expect(o.y).toBeCloseTo(h.y, 6);
+    const metrics = new jsPDF({ unit: "pt" });
+    const positiveAdvance = (left: typeof sub, right: typeof o) => {
+      metrics.setFont("helvetica").setFontSize(left.fontSize);
+      const width = metrics.getTextWidth(left.text);
+      expect(width).toBeGreaterThan(0);
+      expect(right.x).toBeGreaterThan(left.x + width * 0.99);
+    };
+    positiveAdvance(sub, o);
+    script(so, four, -0.4);
+    script(so, charge, 0.4);
+    positiveAdvance(four, charge);
+    script(nh, nhFour, -0.4);
+    script(nh, plus, 0.4);
+    script(c, isotope, 0.4);
+    positiveAdvance(isotope, c);
+    script(bigH, bigSub, -0.4, 30 / 20 * 0.72);
+    expect(bigO.y).toBeCloseTo(bigH.y, 6);
+    expect(bigO.x).toBeGreaterThan(bigSub.x);
+    // Empty middle lines and a normal line after a superscript retain their original advance.
+    expect(runs[17].y - runs[14].y).toBeCloseTo(-56 * 0.75, 6);
+    expect(runs[20].y - runs[17].y).toBeCloseTo(-28 * 0.75, 6);
+  });
   it.each(["pyridinium", "blue-box", "oxathiazinane"] as const)("%s PNG has no white antialias fringe around glyph halos", (name) => {
     const { document, object } = ringHaloDocument(name, "solid");
     const source = exportDocumentToSvg(document).contents.replace(/viewBox="[^"]*"/,

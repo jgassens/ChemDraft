@@ -57,6 +57,49 @@ export function extractPdfTextRuns(bytes: Uint8Array): string[] {
   return result;
 }
 
+/** Positions and effective sizes in PDF page points (y increases upwards), after cm/Tm.
+ * This reads the real Tj operators, rather than trusting the input SVG's attributes.
+ */
+export function extractPdfPositionedTextRuns(bytes: Uint8Array): Array<{
+  text: string; x: number; y: number; fontSize: number;
+}> {
+  type Matrix = [number, number, number, number, number, number];
+  const identity = (): Matrix => [1, 0, 0, 1, 0, 0];
+  const multiply = (a: Matrix, b: Matrix): Matrix => [
+    a[0] * b[0] + a[2] * b[1], a[1] * b[0] + a[3] * b[1],
+    a[0] * b[2] + a[2] * b[3], a[1] * b[2] + a[3] * b[3],
+    a[0] * b[4] + a[2] * b[5] + a[4], a[1] * b[4] + a[3] * b[5] + a[5]
+  ];
+  const texts = extractPdfTextRuns(bytes);
+  const result: Array<{ text: string; x: number; y: number; fontSize: number }> = [];
+  for (const object of pdfObjects(bytes).values()) {
+    if (!object.includes("stream\n")) continue;
+    let matrix = identity(), textMatrix = identity(), fontSize = 0;
+    const stack: Array<{ matrix: Matrix; fontSize: number }> = [];
+    for (const line of stream(object).toString("latin1").split("\n")) {
+      const parts = line.trim().split(/\s+/), op = parts.pop();
+      const numbers = parts.map(Number);
+      if (op === "q") stack.push({ matrix: [...matrix], fontSize });
+      else if (op === "Q") {
+        const saved = stack.pop();
+        if (saved) { matrix = saved.matrix; fontSize = saved.fontSize; }
+      } else if (op === "cm") matrix = multiply(matrix, numbers as Matrix);
+      else if (op === "BT") textMatrix = identity();
+      else if (op === "Tf") fontSize = numbers[1]!;
+      else if (op === "Tm") textMatrix = numbers as Matrix;
+      else if (op === "Td") textMatrix = multiply(textMatrix, [1, 0, 0, 1, numbers[0]!, numbers[1]!]);
+      else if (op === "Tj") {
+        const effective = multiply(matrix, textMatrix);
+        const text = texts[result.length];
+        if (text === undefined) throw new Error("Missing decoded PDF text run");
+        result.push({ text, x: effective[4], y: effective[5],
+          fontSize: fontSize * Math.hypot(effective[2], effective[3]) });
+      }
+    }
+  }
+  return result;
+}
+
 export function pdfFontStreams(bytes: Uint8Array): Buffer[] {
   const objects = pdfObjects(bytes);
   return [...objects.values()].flatMap((object) => {
