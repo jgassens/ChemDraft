@@ -8870,9 +8870,10 @@ function preserveBondStereoSourceProperties(molecule: MoleculeObject, contents: 
   const originalAtoms = source.slice(sourceCounts + 1, sourceCounts + 1 + atomCount);
   const radicals = source.filter(line => line.startsWith("M  RAD"));
   const radicalAtoms = originalAtoms.flatMap((line, i) => Number(line.slice(36, 39)) === 4 ? [i + 1] : []);
+  // Only source properties need an index mapping; native isotopes (including D/T)
+  // are already in contents, even when label expansion changes the atom count.
   if (!source.some(line => line.startsWith("M  ISO")) && !radicals.length && !radicalAtoms.length &&
-    !originalAtoms.some(line => Number(line.slice(34, 36))) &&
-    !molecule.atoms.some(atom => atom.isotope !== undefined || atom.element === "D" || atom.element === "T")) return contents;
+    !originalAtoms.some(line => Number(line.slice(34, 36)))) return contents;
   const next = contents.split("\n");
   const counts = next.findIndex(line => line.includes("V2000"));
   if (counts < 0 || Number(next[counts].slice(0, 3)) !== atomCount) {
