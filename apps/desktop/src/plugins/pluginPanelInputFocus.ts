@@ -4,17 +4,16 @@ import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { detectDesktopShortcutPlatform } from "../keyboardShortcuts";
 import { isTextEditingElement } from "../editHistoryRouting";
 
-/** Only editable controls borrow the document's keyboard focus. Labels count as their control. */
-export function panelEditableControl(target: EventTarget | null, textEntryOnly = false): HTMLElement | undefined {
+/** Form controls borrow the keyboard; command buttons never do. Labels count as their control. */
+export function panelEditableControl(target: EventTarget | null): HTMLElement | undefined {
   let element = target instanceof Element ? target : target instanceof Node ? target.parentElement : null;
+  if (element?.closest("button")) return;
   const label = element?.closest("label");
-  // A numeric label also contains a range. Resolve the actual control before its label so
-  // clicking that range cannot acquire a text lease on behalf of the number field.
-  if ((!textEntryOnly || !element?.closest("input, textarea, select, [contenteditable]")) &&
+  // A numeric label contains both a number and a range: lease the clicked control itself.
+  if (!element?.closest("input, textarea, select, [contenteditable], button") &&
     label instanceof HTMLLabelElement && label.control) element = label.control;
   const control = element?.closest("input, textarea, select, [contenteditable]");
   if (!(control instanceof HTMLElement) || control.matches(":disabled")) return;
-  if (textEntryOnly && !isTextEditingElement(control)) return;
   if (control instanceof HTMLInputElement) {
     if (control.readOnly || ["hidden", "button", "submit", "reset", "image"].includes(control.type)) return;
     return control;
@@ -37,7 +36,7 @@ let pageToken: Promise<string> | undefined;
 const pendingPaletteShells = new WeakSet<HTMLElement>();
 export const PALETTE_INPUT_FOCUS_CANCEL_EVENT = "chemdraft:palette-input-focus-cancel";
 
-/** Includes the interval after native acquisition but before the JS reply restores the field. */
+/** Covers acquisition/refocus and transient control blur, when a key has no reliable DOM target. */
 export function isPaletteInputFocusPending(shell: HTMLElement | null): boolean {
   return !!shell && pendingPaletteShells.has(shell);
 }
@@ -61,7 +60,7 @@ async function listenNativePanelFocus(listener: (event: NativePanelFocusEvent) =
   return listenCurrentWindowEvent<NativePanelFocusEvent>("chemdraft://plugin-panel-focus", ({ payload }) => listener(payload));
 }
 
-/** Palettes also accept accessibility focus and release on control blur. Reports retain their
+/** Palettes also accept text accessibility focus and release after control focus settles. Reports retain their
  * pointer-intent policy and ignore transient WebView2 DOM blur during native activation. */
 export function installPaletteInputFocus(shell: HTMLElement): () => void {
   return installPluginPanelInputFocus(shell, undefined, undefined, undefined, true);
@@ -92,9 +91,10 @@ export function installPluginPanelInputFocus(
   const nativeGenerations = new Set<number>();
   let pending = Promise.resolve();
   let activationTimer: ReturnType<typeof setTimeout> | undefined;
+  let controlBlurTimer: ReturnType<typeof setTimeout> | undefined;
   let pointerActive = false;
   let disposed = false;
-  const editableControl = (target: EventTarget | null) => panelEditableControl(target, editableFocus);
+  const editableControl = panelEditableControl;
   const setEditing = (next: boolean, retry = false): void => {
     if (editing === next && !retry) return;
     if (editing !== next) {
@@ -139,6 +139,7 @@ export function installPluginPanelInputFocus(
     void pending.catch((error: unknown) => console.error("Could not change panel input focus:", error));
   };
   const finish = (cancelControl = false): void => {
+    clearTimeout(controlBlurTimer);
     setEditing(false);
     if (editableFocus && cancelControl) leasedControl?.dispatchEvent(new Event(PALETTE_INPUT_FOCUS_CANCEL_EVENT));
     leasedControl = undefined;
@@ -182,10 +183,14 @@ export function installPluginPanelInputFocus(
     selectionGesture = undefined;
     const control = editableControl(event.target);
     if (control && shell.contains(control)) {
+      clearTimeout(controlBlurTimer);
+      if (editableFocus && acquiredControlFocus) pendingPaletteShells.delete(shell);
       if (selectionLease) finish();
       leasedControl = control;
-      // Every trusted click gets a new generation, including retries after a rejected request.
-      setEditing(true, true);
+      // Palette multi-clicks reuse the held or pending lease. Reacquiring calls native focus
+      // again and can blur WebView2 mid-click. A rejected lease already finished, so it retries.
+      // Reports retain their existing per-click generation policy.
+      setEditing(true, !editableFocus);
     } else {
       if (editing) finish();
       if (reportText(event.target)) {
@@ -253,7 +258,12 @@ export function installPluginPanelInputFocus(
   };
   const focusIn = (event: FocusEvent): void => {
     const control = editableControl(event.target);
-    if (editableFocus && event.isTrusted && control && shell.contains(control)) {
+    if (control && shell.contains(control)) {
+      clearTimeout(controlBlurTimer);
+      if (editableFocus && acquiredControlFocus) pendingPaletteShells.delete(shell);
+    }
+    if (editableFocus && event.isTrusted && control && shell.contains(control) &&
+      (editing || isTextEditingElement(control))) {
       leasedControl = control;
       setEditing(true);
       // Until native acquisition succeeds, the document still owns the keyboard. Never show
@@ -277,7 +287,21 @@ export function installPluginPanelInputFocus(
     if (!editableFocus || suspendingControlFocus || !acquiredControlFocus || !editing) return;
     const next = editableControl(event.relatedTarget);
     if (next && shell.contains(next)) return;
-    if (editableControl(event.target)) finish();
+    if (!editableControl(event.target)) return;
+    if (event.relatedTarget instanceof Node) {
+      finish(); // A known destination outside the palette's controls is a real departure.
+      return;
+    }
+    // WebView2 can report focusout(null), window blur, then focusin on the same control
+    // during a multi-click. Handing back immediately brings the document in front and sends
+    // the next key to the drawing. Check the settled DOM focus; focusin cancels this check.
+    clearTimeout(controlBlurTimer);
+    pendingPaletteShells.add(shell);
+    controlBlurTimer = setTimeout(() => {
+      const active = editableControl(document.activeElement);
+      if (!disposed && editing && !(active && shell.contains(active))) finish();
+      else if (acquiredControlFocus) pendingPaletteShells.delete(shell);
+    }, 0);
   };
   const keyDown = (event: KeyboardEvent): void => {
     if (editableFocus && (!(event.target instanceof Node) || !shell.contains(event.target))) return;
@@ -301,13 +325,14 @@ export function installPluginPanelInputFocus(
       }
       finish();
     } else if (!control) return;
-    else if (event.key === "Enter" &&
+    else if (event.key === "Enter" && (!editableFocus || isTextEditingElement(control)) &&
       (control instanceof HTMLInputElement || control instanceof HTMLSelectElement)) {
       // Bubble after the control's commit handler; textarea/contenteditable keep multiline Enter.
       finish();
     } else if (event.key === "Tab" && !event.defaultPrevented) {
-      // Palettes use browser traversal, including non-text controls such as the adjacent
-      // slider. Its focusout releases the lease after the number's blur commits its draft.
+      // Palettes use browser traversal and keep the lease between all non-button controls.
+      // A checkbox/slider/select must take keys too: otherwise Delete reaches the drawing
+      // on both platforms. Text entry still commits on blur before traversing to the slider.
       if (editableFocus) return;
       const activeModal = control.closest<HTMLElement>('[aria-modal="true"]');
       const controls = [...shell.querySelectorAll<HTMLElement>("input, textarea, select, [contenteditable]")]
@@ -356,6 +381,7 @@ export function installPluginPanelInputFocus(
   return () => {
     disposed = true;
     clearTimeout(activationTimer);
+    clearTimeout(controlBlurTimer);
     unsubscribeFocus?.();
     observer.disconnect();
     shell.removeEventListener("pointerdown", pointerDown, true);

@@ -132,6 +132,44 @@ describe("palette numeric controls", () => {
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
 
+  it.each(["untouched", "Enter", "arrow", "spinner"])("follows undo while focused and undirty after %s", async (action) => {
+    if (action === "Enter") {
+      await input("42.5");
+      await key("Enter");
+    } else if (action === "arrow") {
+      await key("ArrowUp");
+    } else if (action === "spinner") {
+      await act(async () => field().dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })));
+      await input("22.5");
+      await act(async () => field().dispatchEvent(new MouseEvent("pointerup", { bubbles: true })));
+    }
+    if (action !== "untouched") {
+      model = inspectorModel(action === "Enter" ? 42.5 : 22.5);
+      await render(); // Commit acknowledgement arrives before undo.
+    }
+    const commits = onCommit.mock.calls.length;
+    model = inspectorModel(40);
+    await render();
+    expect(document.activeElement).toBe(field());
+    expect(field().value).toBe("40");
+    await act(async () => field().blur());
+    expect(onCommit).toHaveBeenCalledTimes(commits);
+  });
+
+  it("preserves text typed after the last commit while undo changes the model", async () => {
+    await input("42.5");
+    await key("Enter");
+    model = inspectorModel(42.5);
+    await render();
+    await input("43");
+    model = inspectorModel(22);
+    await render();
+    expect(document.activeElement).toBe(field());
+    expect(field().value).toBe("43");
+    await key("Enter");
+    expect(onCommit.mock.calls).toEqual([42.5, 43].map((value) => [moleculeStructureBondLengthCommandId(value)]));
+  });
+
   it("leaves an unedited Mixed field alone and allows a typed Mixed value to commit", async () => {
     model.structure.values.bondLengthPx = { value: null, mixed: true };
     await act(async () => field().blur());

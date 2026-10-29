@@ -18,15 +18,22 @@ focus and drawing shortcuts return after an action or dismissal.
 Palette field input (macOS and Windows): in Drawn Structure Settings, click Target bond length,
 type 30 and press Return; the value changes, the canvas does not, and no hotkey fires. Switch to
 another app and back, then click the field again; Customize gallery search still types.
+Double- and triple-click a number box, then type 3, Delete and Backspace: the box keeps focus and
+the drawing never changes. With another app in front, clicking a palette field does NOT bring
+ChemDraft forward or take its keys, by design: floating palettes never yank focus from another app.
+Click the drawing first, then the field to edit it.
 While typing 30, the field shows 30 and applies on Return; three list-pasted molecules show one Target bond length, not Mixed.
 Type 30 in Target bond length and Tab to its slider: exactly one edit applies 30, and releasing Tab
 or leaving the slider keeps 30. Tab out of an untouched Mixed field: no edit. The first spinner
 click on an unfocused field steps once; holding ArrowUp or the spinner increases each tick without
 duplicate undo entries, and blur adds no edit. Arrows/spinners leave Mixed alone until typing or
-moving its slider. Pointer drag/click on the slider applies changed values. Arrow keys apply only
-when the palette already has the keyboard; on macOS, clicking a non-text control does not acquire it.
-Click a checkbox, slider, select and colour swatch, then use a palette hotkey after each: shortcuts
-still reach the document. Open the colour popover, type a hex shorthand and press Enter: the colour
+moving its slider. Pointer drag/click on the slider applies changed values. Clicking a checkbox,
+slider or select takes the keyboard on both platforms; Delete, Backspace, arrows, Home/End and
+PageUp/PageDown never reach the drawing. Slider arrows apply each changed value once on release;
+select type-ahead without a shortcut does not change the style. Escape returns the keyboard to the
+document. Tool/command buttons never borrow it. Cmd/Ctrl+Z and tool hotkeys still reach the document
+from non-text controls. A focused number follows undo immediately unless it holds typed, uncommitted
+text. Open the colour popover, type a hex shorthand and press Enter: the colour
 commits once and shortcuts return. Keep two palettes open, edit a field in each in turn, and switch
 apps: their leases stay independent and the first palette can acquire focus again.
 Text commit clicks (macOS and Windows): edit a text object with Bond or Select restored, then click empty canvas or an existing atom; that click commits only, preserves bonds and selection, and focuses SECTION.canvas-region for shortcuts; the next click works normally. Repeat Enter/Escape/Tab, toolbar actions, double-click editing, and IME composition (no mid-composition commit).

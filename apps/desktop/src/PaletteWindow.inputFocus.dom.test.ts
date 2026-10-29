@@ -42,7 +42,9 @@ vi.mock("./keyboardShortcuts", async (original) => {
     ...actual,
     detectDesktopShortcutPlatform: () => native.platform,
     createDesktopShortcutRegistry: (...args: Parameters<typeof actual.createDesktopShortcutRegistry>) => {
-      const registry = actual.createDesktopShortcutRegistry(...args);
+      const registry = actual.createDesktopShortcutRegistry(args[0], {
+        ...(typeof args[1] === "object" ? args[1] : {}), platform: native.platform
+      });
       return { ...registry, resolve: (event: Parameters<typeof registry.resolve>[0]) => {
         native.resolved(event);
         return registry.resolve(event);
@@ -54,7 +56,10 @@ vi.mock("./keyboardShortcuts", async (original) => {
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 async function flush() {
-  await act(async () => { for (let i = 0; i < 50; i++) await Promise.resolve(); });
+  await act(async () => {
+    for (let i = 0; i < 50; i++) await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0)); // Settled control-focus check.
+  });
 }
 
 function selectedMolecule() {
@@ -75,7 +80,11 @@ function selectedMolecule() {
 describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platform) => {
   let container: HTMLDivElement;
   let root: Root;
+  let listeners: ReturnType<typeof vi.spyOn<EventTarget, "addEventListener">>;
+  let windowListeners: ReturnType<typeof vi.spyOn<Window, "addEventListener">>;
   beforeEach(() => {
+    listeners = vi.spyOn(EventTarget.prototype, "addEventListener");
+    windowListeners = vi.spyOn(window, "addEventListener");
     native.platform = platform;
     native.invoke.mockReset().mockImplementation(async (command: string, args?: { editing: boolean }) =>
       command === "register_plugin_panel_input_focus" ? "palette-page" : args?.editing);
@@ -91,13 +100,14 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     container.remove();
     await flush();
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   async function mountSettings() {
     await act(async () => root.render(createElement(PaletteWindow, { toolsetId: "core.drawnStructureSettings" })));
     await flush();
     // jsdom has no pointer capture implementation; support the shell's drag cleanup.
-    container.querySelector<HTMLElement>(".palette-window-shell")!.hasPointerCapture = () => false;
+    for (const element of container.querySelectorAll<HTMLElement>("*")) element.hasPointerCapture = () => false;
     const model = createMoleculeInspectorModel(selectedMolecule(), { selectedObjectIds: ["mol_input_focus"] });
     await act(async () => {
       await broadcastToolsetTextStyle(createToolsetTextStylePayload(DefaultNativeTextStyle, "normal", undefined, "fill", model));
@@ -118,16 +128,49 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     });
   }
 
-  it.each(["select", "range", "checkbox", "color"])("does not lease a %s and forwards its next palette hotkey", async (kind) => {
-    await mountSettings();
-    const control = container.querySelector<HTMLElement>(kind === "select" ? "select:not(:disabled)" : `input[type="${kind}"]`)!;
+  function pointer(target: HTMLElement, type: "pointerdown" | "pointerup" | "click", detail = 1) {
+    const owner = container.querySelector(".palette-window-shell")!;
+    const listener = type === "pointerup"
+      ? windowListeners.mock.calls.find(([name, , options]) => name === type && options === true)![1]
+      : listeners.mock.calls.find(([name, , options], i) =>
+        name === type && options === true && listeners.mock.contexts[i] === owner)![1];
+    // jsdom cannot manufacture isTrusted. Supply trust only at the installed native-intent
+    // listener, then dispatch the DOM event normally so React and control defaults also run.
+    (listener as EventListener)({
+      target, isTrusted: true, button: 0, pointerId: 1, clientX: 10, clientY: 10, detail
+    } as unknown as Event);
+    target.dispatchEvent(new MouseEvent(type, { button: 0, detail, bubbles: true, cancelable: true }));
+  }
+
+  async function clickControl(control: HTMLElement, detail = 1) {
     await act(async () => {
-      control.dispatchEvent(new MouseEvent("pointerdown", { button: 0, bubbles: true }));
-      control.focus();
-      control.click();
+      pointer(control, "pointerdown", detail);
+      control.dispatchEvent(new MouseEvent("mousedown", { button: 0, detail, bubbles: true }));
+      control.focus(); // Browser mousedown's focus default, absent in jsdom.
+      pointer(control, "pointerup", detail);
+      control.dispatchEvent(new MouseEvent("mouseup", { button: 0, detail, bubbles: true }));
+      pointer(control, "click", detail);
     });
     await flush();
-    expect(leases().filter(([, args]) => args.editing)).toEqual([]);
+  }
+
+  async function nonTextControl(kind: string) {
+    if (kind === "checkbox") {
+      await act(async () => container.querySelector<HTMLButtonElement>("#molecule-inspector-tab-atom-labels")!.click());
+      return container.querySelector<HTMLElement>('[aria-label="Terminal carbon labels"]')!;
+    }
+    return container.querySelector<HTMLElement>(kind === "select" ? '[aria-label="Bond spacing mode"]'
+      : kind === "range" ? '[aria-label="Target bond length slider"]'
+        : kind === "button" ? "button:not(:disabled)" : `input[type="${kind}"]`)!;
+  }
+
+  // Deliberately reverse the earlier text-only rule: otherwise Delete lands on the document.
+  it.each(["select", "range", "checkbox", "color"])("leases a clicked %s and forwards its next palette hotkey", async (kind) => {
+    await mountSettings();
+    const control = await nonTextControl(kind);
+    await clickControl(control);
+    expect(leases().map(([, args]) => args.editing)).toEqual([true]);
+    expect(document.activeElement).toBe(control);
     vi.mocked(sendPaletteCommand).mockClear();
     native.resolved.mockClear();
     const event = new KeyboardEvent("keydown", { key: "3", bubbles: true, cancelable: true });
@@ -153,28 +196,139 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     expect(document.activeElement).toBe(input);
   });
 
-  it.each(["checkbox", "select", "range", "color", "button"])("keeps activation and editing keys in a focused %s while still forwarding a tool hotkey", async (kind) => {
+  it.each(["checkbox", "select", "range", "color", "button"])("keeps activation and editing keys in a clicked %s while still forwarding shortcuts", async (kind) => {
     await mountSettings();
-    const control = container.querySelector<HTMLElement>(
-      kind === "select" ? "select:not(:disabled)" : kind === "button" ? "button:not(:disabled)" : `input[type="${kind}"]`
-    )!;
-    await act(async () => control.focus());
-    await flush();
+    const control = await nonTextControl(kind);
+    await clickControl(control);
     expect(document.activeElement).toBe(control);
+    expect(leases().filter(([, args]) => args.editing)).toHaveLength(kind === "button" ? 0 : 1);
     native.resolved.mockClear();
     vi.mocked(sendPaletteCommand).mockClear();
-    for (const key of ["Delete", "Backspace", " ", "Enter", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]) {
+    for (const key of ["Delete", "Backspace", " ", "Enter", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"]) {
       const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
       await act(async () => control.dispatchEvent(event));
       expect(native.resolved, key).not.toHaveBeenCalled();
       expect(sendPaletteCommand, key).not.toHaveBeenCalled();
       expect(event.defaultPrevented, key).toBe(false);
+      expect(document.activeElement, key).toBe(control);
     }
     const hotkey = new KeyboardEvent("keydown", { key: "k", bubbles: true, cancelable: true });
     await act(async () => control.dispatchEvent(hotkey));
     expect(native.resolved).toHaveBeenCalledOnce();
     expect(sendPaletteCommand).toHaveBeenCalledOnce();
     expect(hotkey.defaultPrevented).toBe(true);
+    vi.mocked(sendPaletteCommand).mockClear();
+    const undo = new KeyboardEvent("keydown", { key: "z", ctrlKey: platform === "windows", metaKey: platform === "macos", bubbles: true, cancelable: true });
+    await act(async () => control.dispatchEvent(undo));
+    expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith("edit.undo");
+    expect(undo.defaultPrevented).toBe(true);
+    if (kind !== "button") {
+      await act(async () => control.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+      await flush();
+      expect(leases().map(([, args]) => args.editing)).toEqual([true, false]);
+      expect(document.activeElement).not.toBe(control);
+    }
+  });
+
+  it("prevents select type-ahead that does not resolve to a shortcut", async () => {
+    await mountSettings();
+    const select = container.querySelector<HTMLSelectElement>("select:not(:disabled)")!;
+    await clickControl(select);
+    const registry = createDesktopShortcutRegistry(allShellCommands(createPhase4Document()), { includeDisabled: true });
+    const key = [..."abcdefghijklmnopqrstuvwxyz"].find((key) => !registry.resolve({ key }))!;
+    expect(key).toBeTruthy();
+    const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+    await act(async () => select.dispatchEvent(event));
+    expect(event.defaultPrevented).toBe(true);
+    expect(sendPaletteCommand).not.toHaveBeenCalled();
+  });
+
+  it.each([2, 3])("keeps a number's lease across a Windows-ordered %i-click and transient control blur", async (count) => {
+    const input = await mountSettings();
+    await clickControl(input);
+    for (let detail = 2; detail <= count; detail++) {
+      await act(async () => {
+        pointer(input, "pointerdown", detail);
+        input.dispatchEvent(new MouseEvent("mousedown", { button: 0, detail, bubbles: true }));
+        // WebView2 can emit focusout(null) before restoring focus during the next click.
+        // Use actual blur/focus: relatedTarget and document.activeElement must be real.
+        input.blur();
+        window.dispatchEvent(new Event("blur"));
+        input.focus();
+        window.dispatchEvent(new Event("focus"));
+        pointer(input, "pointerup", detail);
+        input.dispatchEvent(new MouseEvent("mouseup", { button: 0, detail, bubbles: true }));
+        pointer(input, "click", detail);
+        if (detail === 2) input.dispatchEvent(new MouseEvent("dblclick", { detail, bubbles: true }));
+      });
+      await flush();
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await flush();
+    expect(leases().map(([, args]) => args.editing)).toEqual([true]);
+    expect(document.activeElement).toBe(input);
+    for (const key of ["3", "Delete", "Backspace"]) {
+      await act(async () => input.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })));
+    }
+    await type(input, "33");
+    expect(input.value).toBe("33");
+    expect(sendPaletteCommand).not.toHaveBeenCalled();
+  });
+
+  it.each([2, 3])("requests only one lease for %i clicks while acquisition is pending", async (count) => {
+    const input = await mountSettings();
+    let settle!: (acquired: boolean) => void;
+    native.invoke.mockImplementationOnce(() => new Promise<boolean>((resolve) => { settle = resolve; }));
+    for (let detail = 1; detail <= count; detail++) await clickControl(input, detail);
+    expect(leases().map(([, args]) => args.editing)).toEqual([true]);
+    settle(true);
+    await flush();
+    expect(leases().map(([, args]) => args.editing)).toEqual([true]);
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("does not forward a key without a control target during transient text blur", async () => {
+    const input = await mountSettings();
+    await clickControl(input);
+    native.resolved.mockClear();
+    await act(async () => {
+      input.blur();
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "3", bubbles: true, cancelable: true }));
+      input.focus();
+    });
+    await flush();
+    expect(native.resolved).not.toHaveBeenCalled();
+    expect(sendPaletteCommand).not.toHaveBeenCalled();
+    expect(leases().map(([, args]) => args.editing)).toEqual([true]);
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("leases a clicked slider so its arrow default commits once per changed value", async () => {
+    await mountSettings();
+    const slider = container.querySelector<HTMLInputElement>('[aria-label="Target bond length slider"]')!;
+    await clickControl(slider);
+    expect(leases().map(([, args]) => args.editing)).toEqual([true]);
+    for (const value of [60.5, 61]) {
+      const down = new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true });
+      await act(async () => slider.dispatchEvent(down));
+      expect(down.defaultPrevented).toBe(false);
+      // jsdom omits range stepping. Execute that browser default after keydown, with input
+      // and change delivered before keyup, as WebView2/WebKit do for range controls.
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(slider, String(value));
+        slider.dispatchEvent(new Event("input", { bubbles: true }));
+        slider.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      await act(async () => slider.dispatchEvent(new KeyboardEvent("keyup", { key: "ArrowRight", bubbles: true })));
+    }
+    await act(async () => {
+      slider.dispatchEvent(new KeyboardEvent("keyup", { key: "Shift", bubbles: true }));
+      slider.blur();
+    });
+    await flush();
+    expect(sendPaletteCommandCommit).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(sendPaletteCommandCommit).mock.calls).toEqual([60.5, 61].map((value) => [moleculeStructureBondLengthCommandId(value)]));
+    expect(sendPaletteCommand).not.toHaveBeenCalled();
   });
 
   it("reverts a numeric draft after a failed lease and follows subsequent model updates", async () => {
@@ -230,7 +384,7 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     expect(document.activeElement).toBe(slider);
     await act(async () => slider.dispatchEvent(new KeyboardEvent("keyup", { key: "Tab", bubbles: true })));
     expect(sendPaletteCommandCommit).toHaveBeenCalledExactlyOnceWith(moleculeStructureBondLengthCommandId(30));
-    expect(leases().map(([, args]) => args.editing)).toEqual([true, false]);
+    expect(leases().map(([, args]) => args.editing)).toEqual([true]); // Slider retains the control lease.
   });
 
   it("acquires for real control focus and releases on real blur", async () => {
@@ -256,6 +410,7 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     expect(sendPaletteCommand).not.toHaveBeenCalled();
     expect(typing.defaultPrevented).toBe(false);
     await act(async () => input.blur());
+    await flush(); // Only a settled departure releases the lease and restores shortcuts.
     const outside = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
     await act(async () => container.querySelector(".palette-window-shell")!.dispatchEvent(outside));
     const command = createDesktopShortcutRegistry(allShellCommands(createPhase4Document()), { includeDisabled: true }).resolve({ key });

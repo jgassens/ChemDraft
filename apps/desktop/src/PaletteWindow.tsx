@@ -412,7 +412,8 @@ export function PaletteWindow({
     };
   }, [toolset.id]);
 
-  // Editable settings and gallery search borrow the keyboard only while editing.
+  // All non-button settings borrow the keyboard: otherwise Delete reaches the drawing
+  // after a checkbox/slider/select click. Command buttons keep the document's keyboard.
   useEffect(() => {
     const shell = shellRef.current;
     if (shell) return installPaletteInputFocus(shell);
@@ -669,7 +670,7 @@ export function PaletteWindow({
       // Activation, value and editing keys belong to every form control. In
       // particular, Delete/Backspace here must never delete document objects.
       if (target?.closest("input, textarea, select, button") &&
-        [" ", "Enter", "Backspace", "Delete", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
+        [" ", "Enter", "Backspace", "Delete", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"].includes(event.key)) return;
       // The shared registry conservatively ignores all form controls. Palette non-text
       // controls keep document shortcuts, so resolve from their surrounding surface.
       const commandId = shortcutRegistry.resolve({
@@ -682,6 +683,9 @@ export function PaletteWindow({
         target: target?.closest("input, select")?.parentElement ?? event.target
       });
       if (!commandId) {
+        // Select type-ahead must not change a style when a printable key has no command.
+        if (target?.closest("select") && event.key.length === 1 &&
+          !event.ctrlKey && !event.metaKey && !event.altKey) event.preventDefault();
         return;
       }
 

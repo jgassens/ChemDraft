@@ -813,7 +813,7 @@ function MoleculeInspectorNumericControl({
 }) {
   const effectiveValue = value ?? range.min;
   const modelText = mixed ? "" : formatInspectorNumber(effectiveValue);
-  // null follows the model; a focused draft survives incoming palette snapshots.
+  // Only typed, uncommitted text protects a draft. Focus alone must not hide undo updates.
   const [draft, setDraft] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const dirty = useRef(false);
@@ -822,6 +822,12 @@ function MoleculeInspectorNumericControl({
   const [sliderDraft, setSliderDraft] = useState<number | null>(null);
   const sliderChanged = useRef<number | undefined>(undefined);
   const sliderPreviewedValues = useRef(new Set<number>());
+  useEffect(() => {
+    if (!dirty.current) {
+      setDraft(null);
+      lastCommitted.current = undefined;
+    }
+  }, [modelText]);
   useEffect(() => {
     // Snapshots can acknowledge this gesture's previews late or out of order.
     // Keep the latest draft and pending commit until release in either case.
@@ -890,7 +896,6 @@ function MoleculeInspectorNumericControl({
         disabled={disabled}
         aria-label={label}
         data-palette-control="true"
-        onFocus={() => setDraft((current) => current ?? modelText)}
         onPointerDown={(event) => {
           event.stopPropagation();
           pointerStepping.current = true;
