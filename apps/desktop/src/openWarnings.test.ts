@@ -7,6 +7,8 @@ import { createPhase4Document } from "./documentWorkflow";
 import {
   activeOpenWarnings,
   describeOpenWarningTarget,
+  fileWarningReports,
+  fileWarningsTooltip,
   NO_OPEN_WARNINGS_REASON,
   openWarningsHeading,
   TOGGLE_OPEN_WARNINGS_COMMAND_ID,
@@ -67,6 +69,29 @@ describe("open warnings model", () => {
     expect(openWarningsHeading({ ...report, warnings: [...report.warnings, ...report.warnings] }))
       .toBe("Saved table.chemdraft: 2 warnings");
     expect(activeOpenWarnings({ ...report, warnings: [] })).toBeUndefined();
+  });
+
+  it("combines independent reports in open/save order and labels their tooltip messages", () => {
+    const open = Object.freeze({
+      displayName: "import.cdxml", sourceLabel: "external CDXML subset",
+      warnings: Object.freeze([{ code: "open", message: "Imported a supported subset." }])
+    });
+    const save = Object.freeze({
+      operation: "save" as const, displayName: "table.chemdraft", sourceLabel: "ChemDraft CDXML envelope",
+      warnings: Object.freeze([{ code: "save", message: "Table written as text and lines." }])
+    });
+    const reports = fileWarningReports(open, save);
+    expect(reports).toEqual([open, save]);
+    expect(reports[0]).toBe(open);
+    expect(reports[1]).toBe(save);
+    expect(fileWarningsTooltip(reports)).toBe(
+      "Opened import.cdxml as external CDXML subset: 1 warning\nImported a supported subset.\n\n" +
+      "Saved table.chemdraft: 1 warning\nTable written as text and lines."
+    );
+    expect(fileWarningReports(open, undefined)).toEqual([open]);
+    expect(fileWarningReports(open, { ...save, warnings: [] })).toEqual([open]);
+    expect(fileWarningReports(undefined, save)).toEqual([save]);
+    expect(fileWarningsTooltip(fileWarningReports(undefined, undefined))).toBeUndefined();
   });
 
   it("names the atom an unknown Element became, and selects it", () => {

@@ -19,7 +19,7 @@ export interface OpenWarning {
 }
 
 /**
- * What the last file open or save reported, kept so the status line can offer the list after its
+ * What one file open or save reported, kept separately so the status line can offer both after its
  * own text has moved on. It belongs to that document, so whatever replaces that document
  * (New, another open) drops it; document ids cannot tell them apart, as most documents are doc_001.
  */
@@ -62,6 +62,17 @@ export function openWarningsHeading(report: OpenWarningsReport): string {
 /** The report, when it has warnings to show. */
 export function activeOpenWarnings(report: OpenWarningsReport | undefined): OpenWarningsReport | undefined {
   return report && report.warnings.length > 0 ? report : undefined;
+}
+
+/** Independent reports in display order, without changing either converter's warnings. */
+export function fileWarningReports(open: OpenWarningsReport | undefined, save: OpenWarningsReport | undefined): OpenWarningsReport[] {
+  return [open, save].filter((report): report is OpenWarningsReport => activeOpenWarnings(report) !== undefined);
+}
+
+export function fileWarningsTooltip(reports: readonly OpenWarningsReport[]): string | undefined {
+  return reports.length > 0
+    ? reports.map((report) => [openWarningsHeading(report), ...report.warnings.map((warning) => warning.message)].join("\n")).join("\n\n")
+    : undefined;
 }
 
 export function describeOpenWarningTarget(document: ChemDraftDocument, warning: OpenWarning): OpenWarningTarget {

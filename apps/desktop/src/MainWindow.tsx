@@ -32,8 +32,12 @@ import {
 } from "./graphicHandleGeometry";
 import {
   activeOpenWarnings,
+  describeOpenWarningTarget,
+  fileWarningReports,
+  fileWarningsTooltip,
   NO_OPEN_WARNINGS_REASON,
   OPEN_WARNINGS_LIST_ID,
+  openWarningsHeading,
   TOGGLE_OPEN_WARNINGS_COMMAND_ID,
   warningCountLabel,
   type OpenWarningSelection,
@@ -1631,7 +1635,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.29.10.55-codex";
+const CURRENT_BUILD_STAMP = "10.29.11.49-codex";
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -2329,6 +2333,7 @@ export function MainWindow({
     assistantViewportRect?: import("./assistant/AssistantToolContext").AssistantRect;
     parts: NativeMoleculeSelectionPart[];
     warnings?: OpenWarningsReport;
+    saveWarnings?: OpenWarningsReport;
     status: string;
     pageFit?: ImportedPageFitPromptState;
   }>());
@@ -2575,14 +2580,19 @@ export function MainWindow({
     height: 0
   }));
   const [status, setStatus] = useState("Blank native document");
-  // What the last file open or save reported, so the status line can still list it after its own
-  // text has moved on. Replacing the document drops it (resetDocumentHistory).
+  // Keep import findings and the latest save findings independent for this tab.
+  // Replacing the document drops both (resetDocumentHistory).
   const [openWarningsReport, setOpenWarningsReport] = useState<OpenWarningsReport | undefined>();
+  const [saveWarningsReport, setSaveWarningsReport] = useState<OpenWarningsReport | undefined>();
   const [openWarningsListOpen, setOpenWarningsListOpen] = useState(false);
-  const openWarnings = activeOpenWarnings(openWarningsReport);
+  const warningReports = fileWarningReports(openWarningsReport, saveWarningsReport);
+  const openWarnings = warningReports[0];
+  const fileWarningCount = warningReports.reduce((count, report) => count + report.warnings.length, 0);
   const openWarningsListShown = openWarningsListOpen && openWarnings !== undefined;
   const tabWarningsRef = useRef(openWarningsReport);
   tabWarningsRef.current = openWarningsReport;
+  const tabSaveWarningsRef = useRef(saveWarningsReport);
+  tabSaveWarningsRef.current = saveWarningsReport;
   const tabPageFitRef = useRef<ImportedPageFitPromptState | undefined>(undefined);
   const openWarningsRef = useRef(openWarnings);
   openWarningsRef.current = openWarnings;
@@ -3285,7 +3295,10 @@ export function MainWindow({
     fileStateRef.current = nextFileState;
     setFileState(nextFileState);
     tabWarningsRef.current = undefined;
+    tabSaveWarningsRef.current = undefined;
+    openWarningsRef.current = undefined;
     setOpenWarningsReport(undefined);
+    setSaveWarningsReport(undefined);
     setOpenWarningsListOpen(false);
   }, [installDocumentHistory]);
   const replacePresentDocument = useCallback((
@@ -8613,7 +8626,8 @@ export function MainWindow({
       scrollLeft: canvas?.scrollLeft ?? 0, scrollTop: canvas?.scrollTop ?? 0,
       assistantViewportRect: assistantHistoryPort.getViewportRect?.(activeDocumentTabIdRef.current),
       parts: selectedNativeMoleculePartsRef.current,
-      warnings: tabWarningsRef.current, status: statusRef.current, pageFit: tabPageFitRef.current
+      warnings: tabWarningsRef.current, saveWarnings: tabSaveWarningsRef.current,
+      status: statusRef.current, pageFit: tabPageFitRef.current
     });
   }, [assistantHistoryPort]);
 
@@ -8637,8 +8651,10 @@ export function MainWindow({
     selectedNativeMoleculePartRef.current = snapshot.parts.at(-1);
     setSelectedNativeMoleculeParts(snapshot.parts);
     tabWarningsRef.current = snapshot.warnings;
-    openWarningsRef.current = activeOpenWarnings(snapshot.warnings);
+    tabSaveWarningsRef.current = snapshot.saveWarnings;
+    openWarningsRef.current = fileWarningReports(snapshot.warnings, snapshot.saveWarnings)[0];
     setOpenWarningsReport(snapshot.warnings);
+    setSaveWarningsReport(snapshot.saveWarnings);
     setOpenWarningsListOpen(false);
     tabPageFitRef.current = snapshot.pageFit;
     setPageFitPrompt(snapshot.pageFit);
@@ -9178,10 +9194,11 @@ export function MainWindow({
               history, file: restoredDocumentFileState(session),
               viewport: session.view?.viewport ?? createViewportState(),
               scrollLeft: session.view?.scrollLeft ?? 0, scrollTop: session.view?.scrollTop ?? 0, parts: [],
-              warnings: session.openWarnings ?? {
+              warnings: session.openWarnings?.operation === "save" ? undefined : session.openWarnings ?? {
                 displayName: session.displayName, sourceLabel: openSourceLabel(resolved.source, resolved.statusSourceLabel),
                 warnings: opened.warnings
               },
+              saveWarnings: session.openWarnings?.operation === "save" ? session.openWarnings : undefined,
               status: `${shellOpenFailure ? `${shellOpenFailure} — ` : ""}Restored last session — ${session.displayName}${session.dirty ? " (unsaved changes)" : ""}${restoreNotice}${savePathNotice ? `. ${savePathNotice}` : ""}`
             });
           }
@@ -9289,7 +9306,7 @@ export function MainWindow({
             snapshot.file.path ? nativePathBasename(snapshot.file.path) : tab.title, documentIsBlank(tabDocument)),
           pristine: !nonPristineTabsRef.current.has(tab.id),
           view: { viewport: snapshot.viewport, scrollLeft: snapshot.scrollLeft, scrollTop: snapshot.scrollTop },
-          openWarnings: snapshot.warnings
+          openWarnings: activeOpenWarnings(snapshot.warnings) ?? snapshot.saveWarnings ?? snapshot.warnings
         };
       });
       const envelope = buildDocumentTabsSession(tabs,
@@ -9315,7 +9332,7 @@ export function MainWindow({
       void writeDocumentSessionNow();
     }, DOCUMENT_SESSION_SAVE_DEBOUNCE_MS);
     return () => window.clearTimeout(handle);
-  }, [document, fileState, documentTabs, activeDocumentTabId, viewport, openWarningsReport, writeDocumentSessionNow]);
+  }, [document, fileState, documentTabs, activeDocumentTabId, viewport, openWarningsReport, saveWarningsReport, writeDocumentSessionNow]);
 
 
   // Menu Quit / Cmd+Q on macOS, or closing the document window / File ▸ Exit elsewhere: Rust asks
@@ -9647,15 +9664,15 @@ export function MainWindow({
       if (savingTabId === activeDocumentTabIdRef.current) {
         fileStateRef.current = nextFileState;
         setFileState(nextFileState);
-        tabWarningsRef.current = warningsReport;
-        openWarningsRef.current = warningsReport;
-        setOpenWarningsReport(warningsReport);
+        tabSaveWarningsRef.current = warningsReport;
+        openWarningsRef.current = activeOpenWarnings(tabWarningsRef.current) ?? warningsReport;
+        setSaveWarningsReport(warningsReport);
         setOpenWarningsListOpen(false);
         setStatus(formatSaveStatus(displayName, payload.warnings));
       } else {
         const snapshot = documentTabSnapshotsRef.current.get(savingTabId);
         if (snapshot) documentTabSnapshotsRef.current.set(savingTabId, {
-          ...snapshot, file: nextFileState, warnings: warningsReport,
+          ...snapshot, file: nextFileState, saveWarnings: warningsReport,
           status: formatSaveStatus(displayName, payload.warnings)
         });
       }
@@ -20904,7 +20921,7 @@ export function MainWindow({
         <div ref={statusRowRef} className="status-row" data-status-row>
           <div className="status-row-main">
             <span data-status-message role="status" aria-live="polite" className="status-message"
-              title={openWarnings?.warnings.map((warning) => warning.message).join("\n")}>
+              title={fileWarningsTooltip(warningReports)}>
               {interactive3dWorkspace
                 ? [
                     interactive3dWorkspace.status,
@@ -20922,14 +20939,14 @@ export function MainWindow({
                 aria-haspopup="dialog"
                 aria-expanded={openWarningsListShown}
                 aria-controls={openWarningsListShown ? OPEN_WARNINGS_LIST_ID : undefined}
-                title={`${openWarningsListShown ? "Hide" : "Show"} the warnings from ${openWarnings.operation === "save" ? "saving" : "opening"} this document`}
+                title={`${openWarningsListShown ? "Hide" : "Show"} the warnings from ${warningReports.length > 1 ? "opening and saving" : openWarnings.operation === "save" ? "saving" : "opening"} this document`}
                 // Keep keyboard focus where it was (the canvas), so tool shortcuts work straight after.
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => {
                   void invokeCommandRef.current(TOGGLE_OPEN_WARNINGS_COMMAND_ID);
                 }}
               >
-                {warningCountLabel(openWarnings.warnings.length)}
+                {warningCountLabel(fileWarningCount)}
               </button>
             ) : null}
             {statusModifierHint ? (
@@ -20941,8 +20958,8 @@ export function MainWindow({
           </div>
         </div>
         {openWarningsListShown && openWarnings ? (
-          <OpenWarningsList
-            report={openWarnings}
+          <FileWarningsList
+            reports={warningReports}
             document={document}
             onShow={showOpenWarningTarget}
             onClose={() => setOpenWarningsListOpen(false)}
@@ -31309,6 +31326,62 @@ function openBrowserUtilityWindow(windowKind: string): boolean {
     "popup,width=960,height=720"
   );
   return opened !== null;
+}
+
+/** One list and focus boundary, with import findings before the latest save findings. */
+function FileWarningsList({ reports, document, onShow, onClose }: {
+  reports: readonly OpenWarningsReport[];
+  document: ChemDraftDocument;
+  onShow: (selection: OpenWarningSelection, label: string) => void;
+  onClose: () => void;
+}) {
+  if (reports.length === 1) {
+    return <OpenWarningsList report={reports[0]!} document={document} onShow={onShow} onClose={onClose} />;
+  }
+  const heading = reports.map(openWarningsHeading).join("; ");
+  const keepFocus = (event: ReactMouseEvent) => event.preventDefault();
+  return (
+    <div id={OPEN_WARNINGS_LIST_ID} className="open-warnings-list" data-open-warnings-list role="dialog" aria-label={heading}>
+      <div className="open-warnings-header">
+        <h2 className="open-warnings-heading">Open and save warnings</h2>
+        <button type="button" className="open-warnings-close" aria-label="Close the warnings list" onMouseDown={keepFocus} onClick={onClose}>
+          ×
+        </button>
+      </div>
+      <div className="open-warnings-items">
+        {reports.map((report, reportIndex) => (
+          <section key={reportIndex} aria-label={openWarningsHeading(report)}>
+            <div className="open-warnings-header">
+              <h3 className="open-warnings-heading">{openWarningsHeading(report)}</h3>
+            </div>
+            <ol className="open-warnings-items">
+              {report.warnings.map((warning, index) => {
+                const target = describeOpenWarningTarget(document, warning);
+                const selection = target.selection;
+                return (
+                  <li key={index} className="open-warnings-item" data-open-warning-row data-warning-code={warning.code}>
+                    <p className="open-warnings-message">{warning.message}</p>
+                    <div className="open-warnings-meta">
+                      <span className={target.missing ? "open-warnings-target missing" : "open-warnings-target"} data-open-warning-target>
+                        {target.label}
+                      </span>
+                      <code className="open-warnings-code">{warning.code}</code>
+                      {selection ? (
+                        <button type="button" className="open-warnings-show" data-open-warning-show
+                          onMouseDown={keepFocus} onClick={() => onShow(selection, target.label)}>
+                          Show
+                        </button>
+                      ) : null}
+                    </div>
+                  </li>
+                );
+              })}
+            </ol>
+          </section>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function agentBridgeDocumentPayloadFromHash(): { contents: string; displayName: string; path?: string } | undefined {

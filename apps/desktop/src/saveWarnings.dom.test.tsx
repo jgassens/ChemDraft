@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MainWindow } from "./MainWindow";
 import { createNativeSavePayload, createPhase4Document } from "./documentWorkflow";
 import { saveKeybindingSettings } from "./keybindingSettings";
+import { tableInsertCommandId } from "./tableCommands";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -96,6 +97,24 @@ describe("save warnings in the existing file warnings list", () => {
     await click(container.querySelectorAll<HTMLButtonElement>('[role="tab"]')[index]!);
   }
 
+  async function openWithWarnings() {
+    const contents = readFileSync("packages/fixtures/cdxml/single-bond.cdxml", "utf8");
+    const hash = new URLSearchParams({ openDocumentText: contents, displayName: "import.cdxml" });
+    await act(async () => {
+      window.history.replaceState(null, "", `/?agentBridge=1#${hash}`);
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+      await bridge().waitForIdle();
+    });
+    expect(button()).not.toBeNull();
+    expect(status().title).toContain("Opened import.cdxml");
+    return status().title;
+  }
+
+  function saveTooltip(filename: string, warnings: readonly { message: string }[]) {
+    const count = warnings.length === 1 ? "1 warning" : `${warnings.length} warnings`;
+    return [`Saved ${filename}: ${count}`, ...warnings.map((warning) => warning.message)].join("\n");
+  }
+
   function warningFor(document: ChemDraftDocument) {
     const warning = createNativeSavePayload(document).warnings.find((warning) => warning.code === "cdxml.table_approximated");
     expect(warning).toBeDefined();
@@ -115,7 +134,7 @@ describe("save warnings in the existing file warnings list", () => {
 
     await command("document.save");
     expect(status().textContent).toBe(`Saved ${payload.filename} with ${payload.warnings.length} compatibility warning(s)`);
-    expect(status().title).toBe(payload.warnings.map((warning) => warning.message).join("\n"));
+    expect(status().title).toBe(saveTooltip(payload.filename, payload.warnings));
     expect(button()?.textContent).toBe(`${payload.warnings.length} warnings`);
     expect(button()?.title).toBe("Show the warnings from saving this document");
     expect(list()).toBeNull();
@@ -159,6 +178,102 @@ describe("save warnings in the existing file warnings list", () => {
     expect(status().getAttribute("title")).toBeNull();
   });
 
+  it("keeps the open report, button, list and tooltip after an unchanged clean save", async () => {
+    await mount(createPhase4Document());
+    const openTooltip = await openWithWarnings();
+    const count = button()!.textContent;
+    await click(button()!);
+    const openHeading = list()!.getAttribute("aria-label");
+    const messages = [...list()!.querySelectorAll(".open-warnings-message")].map((row) => row.textContent);
+    expect(createNativeSavePayload(bridge().snapshot().document).warnings).toHaveLength(0);
+
+    await command("document.save");
+    expect(status().textContent).toMatch(/^Saved .*\.chemdraft$/);
+    expect(status().title).toBe(openTooltip);
+    expect(button()?.textContent).toBe(count);
+    expect(button()?.title).toBe("Show the warnings from opening this document");
+    await click(button()!);
+    expect(list()?.getAttribute("aria-label")).toBe(openHeading);
+    expect([...list()!.querySelectorAll(".open-warnings-message")].map((row) => row.textContent)).toEqual(messages);
+  });
+
+  it("shows labelled open and save groups in order, replacing and clearing only save findings", async () => {
+    await mount(createPhase4Document());
+    const openTooltip = await openWithWarnings();
+    const openCount = Number(button()!.textContent!.split(" ")[0]);
+    await command(tableInsertCommandId(2, 2, 1));
+    const payload = createNativeSavePayload(bridge().snapshot().document);
+    expect(payload.warnings.length).toBeGreaterThan(0);
+    await command("document.save");
+    expect(status().title).toBe(`${openTooltip}\n\n${saveTooltip(payload.filename, payload.warnings)}`);
+    expect(button()?.textContent).toBe(`${openCount + payload.warnings.length} warnings`);
+    expect(button()?.title).toBe("Show the warnings from opening and saving this document");
+    await click(button()!);
+    const groups = list()!.querySelectorAll("section");
+    expect(groups).toHaveLength(2);
+    expect(groups[0]!.getAttribute("aria-label")).toMatch(/^Opened import.cdxml/);
+    expect(groups[1]!.getAttribute("aria-label")).toMatch(/^Saved /);
+    expect(groups[0]!.textContent).not.toContain("Table written");
+    for (const warning of payload.warnings) expect(groups[1]!.textContent).toContain(warning.message);
+    expect(button()?.getAttribute("aria-controls")).toBe(list()?.id);
+
+    // Repeating the save replaces its report, without duplicating findings or changing the open report.
+    await command("document.save");
+    expect(status().title).toBe(`${openTooltip}\n\n${saveTooltip(payload.filename, payload.warnings)}`);
+    await click(button()!);
+    await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    expect(list()).toBeNull();
+    expect(button()).not.toBeNull();
+
+    // Undo the inserted table, then a clean save leaves only the original open report.
+    await command("edit.undo");
+    expect(createNativeSavePayload(bridge().snapshot().document).warnings).toHaveLength(0);
+    await command("document.save");
+    expect(status().title).toBe(openTooltip);
+    await click(button()!);
+    expect(list()?.getAttribute("aria-label")).toMatch(/^Opened import.cdxml/);
+    expect(list()?.textContent).not.toContain("Saved ");
+  });
+
+  it("keeps both reports on tab A apart from saves on tab B and drops both on close", async () => {
+    await mount(createPhase4Document());
+    const openTooltip = await openWithWarnings();
+    await command(tableInsertCommandId(2, 2, 1));
+    await command("document.save");
+    const combinedTooltip = status().title;
+    expect(combinedTooltip).toContain(openTooltip);
+    await click(button()!);
+
+    await command("document.new");
+    expect(button()).toBeNull();
+    expect(list()).toBeNull();
+    await command("document.save");
+    expect(status().getAttribute("title")).toBeNull();
+    await activate(0);
+    expect(status().title).toBe(combinedTooltip);
+    expect(list()).toBeNull();
+    await click(button()!);
+    expect(list()!.querySelectorAll("section")).toHaveLength(2);
+
+    // Saving B with its own warnings must not show A's import findings there.
+    await activate(1);
+    await command(tableInsertCommandId(3, 2, 1));
+    await command("document.save");
+    expect(status().title).not.toContain(openTooltip);
+    await click(button()!);
+    expect(list()?.getAttribute("aria-label")).toMatch(/^Saved /);
+    expect(list()?.textContent).not.toContain("Opened import.cdxml");
+
+    await activate(0);
+    expect(status().title).toBe(combinedTooltip);
+    await command("document.closeTab");
+    expect(status().title).not.toContain(openTooltip);
+    await command("document.new");
+    expect(button()).toBeNull();
+    expect(list()).toBeNull();
+    expect(status().getAttribute("title")).toBeNull();
+  });
+
   it("keeps save warnings with their tab and clears the visible list on tab changes", async () => {
     await mount();
     await command("document.save");
@@ -175,7 +290,7 @@ describe("save warnings in the existing file warnings list", () => {
     expect(status().title).toBe(warningText);
     expect(list()).toBeNull();
     await click(button()!);
-    expect(list()?.textContent).toContain(warningText);
+    expect(list()?.textContent).toContain(warningFor(tableDocument()).message);
 
     await activate(1);
     expect(button()).toBeNull();
@@ -184,8 +299,13 @@ describe("save warnings in the existing file warnings list", () => {
     expect(status().getAttribute("title")).toBeNull();
   });
 
-  it("attaches warnings to the saved tab when a native write completes after switching tabs", async () => {
-    await mount();
+  it("preserves open warnings on the saved tab when a native write completes after switching tabs", async () => {
+    await mount(createPhase4Document());
+    const openTooltip = await openWithWarnings();
+    const openCount = Number(button()!.textContent!.split(" ")[0]);
+    await command(tableInsertCommandId(2, 2, 1));
+    const payload = createNativeSavePayload(bridge().snapshot().document);
+    expect(payload.warnings).toHaveLength(1);
     let finishWrite!: () => void;
     native.write.mockImplementationOnce(() => new Promise<void>((resolve) => { finishWrite = resolve; }));
     // Mount in browser mode; only the save boundary needs the native picker and write mocks.
@@ -203,10 +323,12 @@ describe("save warnings in the existing file warnings list", () => {
 
     await activate(0);
     expect(status().textContent).toBe("Saved table.chemdraft with 1 compatibility warning(s)");
-    expect(button()?.textContent).toBe("1 warning");
+    expect(button()?.textContent).toBe(`${openCount + payload.warnings.length} warnings`);
     await click(button()!);
-    expect(list()?.getAttribute("aria-label")).toBe("Saved table.chemdraft: 1 warning");
-    expect(list()?.textContent).toContain(warningFor(tableDocument()).message);
-    expect(status().title).toBe(warningFor(tableDocument()).message);
+    expect(list()?.getAttribute("aria-label")).toContain("Saved table.chemdraft: 1 warning");
+    expect(list()?.getAttribute("aria-label")).toContain("Opened import.cdxml");
+    expect(list()!.querySelectorAll("section")).toHaveLength(2);
+    expect(list()?.textContent).toContain(payload.warnings[0]!.message);
+    expect(status().title).toBe(`${openTooltip}\n\n${saveTooltip("table.chemdraft", payload.warnings)}`);
   });
 });
