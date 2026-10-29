@@ -1,7 +1,7 @@
 {
   "schema": "chemdraft.document.v1",
   "id": "doc_001",
-  "title": "Atom-mapped open (E)-but-2-ene",
+  "title": "Atom-mapped but-2-ene with open (either) double bond, drawn in trans coordinates",
   "createdAt": "2026-10-27T00:00:00.000Z",
   "updatedAt": "2026-10-27T00:00:00.000Z",
   "pages": [

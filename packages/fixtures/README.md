@@ -2,8 +2,9 @@
 
 Shared chemistry, compatibility, clipboard, and visual regression fixtures.
 
-`open-double-bonds/atom-mapped.chemdraft` is a synthetic open (E)-but-2-ene document
-with V2000 atom maps on all four carbons, for testing E/Z editing safeguards.
+`open-double-bonds/atom-mapped.chemdraft` is a synthetic but-2-ene document with an
+open (either) double bond drawn in trans coordinates and V2000 atom maps on all four carbons,
+for testing E/Z editing safeguards.
 
 `molfile/unsupported-bond-order.mol` is a synthetic V2000 C–C–O graph with CTfile bond type 5
 (single or double) on its first bond. The native model imports that unsupported order as `unknown`;
