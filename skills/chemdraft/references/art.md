@@ -169,6 +169,10 @@ Run it for both and require identical `summary.inchiKey` and
 - Give every added object a box (`x`, `y`, `width`, `height`) that covers
   what it draws: the PNG/SVG crop is computed from those boxes, and an
   object left at `0,0` with size 0 drags the crop to the page corner.
+- Reaction-label subscript ink ends at its **0.4 em** baseline offset unless the span contains
+  a descender (`g j p q y Q ( ) [ ] { } , ; | _`), which adds **0.72 × 0.21 em** descent.
+  Normal text keeps full descent and cap height. At 14 px, Sharpless above labels use line height
+  **1.236**; numbered `1. NaBH4, MeOH` / `2. H3O+` uses **1.43552**.
 - Moving atoms changes only the drawing, but check the chemistry again.
 
 ## Patterns

@@ -70,7 +70,9 @@ function renderedInkEnvelope(line: ReturnType<typeof renderedLines>["lines"][num
     const size = parseFloat(String(run.attrs["font-size"] ?? fontSize));
     // Read actual SVG coordinates and absolute sizes, with independent Arial ink estimates.
     const baseline = line.baselines[index]!;
-    return { top: baseline - 0.716 * size, bottom: baseline + 0.21 * size };
+    // Formula-generated subscript runs contain only digits, which end at their baseline.
+    return { top: baseline - 0.716 * size,
+      bottom: baseline + (size < fontSize && baseline > line.baseline ? 0 : 0.21 * size) };
   });
   return { top: Math.min(...bounds.map(bound => bound.top)), bottom: Math.max(...bounds.map(bound => bound.bottom)) };
 }
@@ -93,9 +95,9 @@ describe("reaction label policy", () => {
     expect(Math.abs(lines[0]!.x + result.plan.above!.size.contentWidth / 2 - 200)).toBeLessThanOrEqual(0.5);
     if (next === "2. H3O+") {
       expect(result.above!.style.lineHeight).toBeGreaterThan(plain.above!.style.lineHeight as number);
-      expect(result.above!.style.lineHeight).toBeCloseTo(1.58672, 8);
+      expect(result.above!.style.lineHeight).toBeCloseTo(1.43552, 8);
     } else {
-      expect(result.above!.style.lineHeight).toBeCloseTo(1.3872, 8);
+      expect(result.above!.style.lineHeight).toBeCloseTo(1.236, 8);
     }
     const firstInk = renderedInkEnvelope(lines[0]!, 14);
     const nextInk = renderedInkEnvelope(lines[1]!, 14);
@@ -103,7 +105,7 @@ describe("reaction label policy", () => {
     if (next === "2. H3O+") {
       // The required clearance determines the minimum advance, with no unused envelope.
       expect((nextInk.top - firstInk.bottom) / 14).toBeCloseTo(0.12, 8);
-      expect(lines[1]!.baseline - lines[0]!.baseline).toBeCloseTo(22.21408, 8);
+      expect(lines[1]!.baseline - lines[0]!.baseline).toBeCloseTo(20.09728, 8);
     }
     const style = nativeTextStyleFromObjectStyle(result.above!.style);
     expect(result.plan.above!.size.lineBoxHeight).toBeCloseTo(2 * 14 * style.lineHeight);
@@ -112,13 +114,13 @@ describe("reaction label policy", () => {
 
   it("sizes Sharpless for the subscript-to-cap pair with clearance between every rendered pair", () => {
     const result = labels({ textStyle: { fontSizePx: 14 } });
-    expect(result.plan.above!.style.lineHeight).toBeCloseTo(1.3872, 8);
+    expect(result.plan.above!.style.lineHeight).toBeCloseTo(1.236, 8);
     const { lines } = renderedLines(result.above!);
-    expect(lines[1]!.baseline - lines[0]!.baseline).toBeCloseTo(19.4208, 8);
+    expect(lines[1]!.baseline - lines[0]!.baseline).toBeCloseTo(17.304, 8);
     for (let index = 1; index < lines.length; index++) {
       const previous = renderedInkEnvelope(lines[index - 1]!, 14);
       const current = renderedInkEnvelope(lines[index]!, 14);
-      expect(current.top - previous.bottom).toBeCloseTo(index === 1 ? 1.68 : 6.4568, 8);
+      expect(current.top - previous.bottom).toBeCloseTo(index === 1 ? 1.68 : 4.34, 8);
     }
   });
 
@@ -134,10 +136,10 @@ describe("reaction label policy", () => {
 
   it("considers only adjacent rendered lines, including after wrapping", () => {
     const separated = labels({ above: ["NaBH4", "heat", "Ca2+"], below: [] });
-    expect(separated.plan.above!.style.lineHeight).toBeCloseTo(1.3872, 8);
+    expect(separated.plan.above!.style.lineHeight).toBeCloseTo(1.24552, 8);
     const wrapped = labels({ above: ["NaBH4 then stir", "H3O+"], below: [], bondLength: 4 });
     expect(wrapped.above!.text.split("\n")).toEqual(["NaBH4", "then", "stir", "H3O+"]);
-    expect(wrapped.plan.above!.style.lineHeight).toBeCloseTo(1.3872, 8);
+    expect(wrapped.plan.above!.style.lineHeight).toBeCloseTo(1.24552, 8);
     const tightLastPair = labels({ above: ["heat", "NaBH4", "H3O+"], below: [] });
     expect(tightLastPair.plan.above!.style.lineHeight).toBeGreaterThan(1.2);
   });
@@ -350,7 +352,7 @@ describe("reaction label policy", () => {
           expect(renderedInkEnvelope(firstBelow, fontSizePx).top - shaftBottom).toBeCloseTo(0.3 * fontSizePx, 8);
           // Frame adjustment must not move ink. These expectations use independent parent-em literals.
           expect(lastAbove.baseline).toBeCloseTo(shaftTop - fontSizePx * (0.3 +
-            (scripted ? 0.4 + 0.72 * 0.21 : 0.21)), 8);
+            (scripted ? 0.4 : 0.21)), 8);
           expect(firstBelow.baseline).toBeCloseTo(shaftBottom + fontSizePx * (0.3 +
             (scripted ? 0.4 + 0.72 * 0.716 : 0.716)), 8);
           const headRegions = [
@@ -404,7 +406,7 @@ describe("reaction label policy", () => {
     expect(estimateNativeTextSpanLineWidth(spans, style)).toBeLessThan(estimateNativeTextLineWidth("H2O", style));
     const result = labels({ above: ["H2O\nCH2Cl2"], textStyle: { fontSizePx: 15, lineHeight: 1.5, paragraphSpacingPx: 3 } });
     expect(result.above!.height).toBe(2 * 15 * 1.5 + 3 + 4);
-    expect(renderedLines(result.above!).lines.at(-1)!.baseline).toBeCloseTo(120 - 0.75 - (0.3 + 0.4 + 0.72 * 0.21) * 15);
+    expect(renderedLines(result.above!).lines.at(-1)!.baseline).toBeCloseTo(120 - 0.75 - (0.3 + 0.4) * 15);
   });
 
   it("wraps a caption to at least eight bonds even under a narrow scheme", () => {

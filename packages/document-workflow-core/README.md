@@ -110,11 +110,14 @@ would cross that band. The offset is in parent em and scales with the text.
 `layout-engine/src/textMetrics.ts` owns the shared width factors, **0.21 em** descent, **0.716 em**
 cap height and the renderer's script metrics: **0.72** font scale and an explicit **0.4 parent em**
 baseline offset down for subscripts or up for superscripts. A line's lowest ink is the greater of
-normal descent and, when present, **0.4 + 0.72 × descent**; its highest ink is the greater of cap
+normal descent and each subscript bottom: **0.4 em**, plus **0.72 × descent** only when the
+subscript span contains a descender (`g j p q y Q ( ) [ ] { } , ; | _`); its highest ink is the greater of cap
 height and, when present, **0.4 + 0.72 × cap height** above the baseline. Above blocks leave
 **0.3 em** between their last line's lowest ink and the shaft's top edge; below blocks leave
 **0.3 em** between their first line's highest ink and the shaft's bottom edge. Lines without the
-relevant script retain their existing text placement.
+relevant script retain their existing text placement. At 14 px, the Sharpless above block
+(`Ti(OiPr)4 (5 mol%)`, `(+)-DET (6 mol%)`, `t-BuOOH`) uses line height **1.236**; numbered
+`1. NaBH4, MeOH` / `2. H3O+` uses **1.43552**.
 `layout-engine/src/index.ts` derives shaft-only extents from `planReactionArrowGeometry`, including
 the existing default **1.5 px** shaft stroke shared with rendering; head/chevron space is reserved
 horizontally from the actual geometry (including the stroked retrosynthesis chevron), and parallel

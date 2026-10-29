@@ -7,7 +7,7 @@ import {
   type TextSpan
 } from "@chemdraft/chem-core";
 import {
-  nativeTextMetrics, nativeTextScriptFontScale, nativeTextSubscriptOffsetEm, nativeTextSuperscriptOffsetEm,
+  nativeTextMetrics, nativeTextScriptFontScale, nativeTextSubscriptBottomEm, nativeTextSuperscriptOffsetEm,
   reactionArrowHeadDepthPx, reactionArrowVerticalExtent
 } from "@chemdraft/layout-engine";
 import { formulaSpansForMixedText } from "./formulaText";
@@ -94,8 +94,8 @@ function measureBlock(entries: readonly string[], style: NativeTextStyle, maxWid
     ? line : [{ text: "\n", script: "normal", style: {} }, ...line]);
   const { descentEm, capHeightEm } = nativeTextMetrics;
   const ink = spanLines.map(line => ({
-    bottom: line.some(span => span.script === "subscript")
-      ? Math.max(descentEm, nativeTextSubscriptOffsetEm + nativeTextScriptFontScale * descentEm) : descentEm,
+    bottom: Math.max(descentEm, ...line.filter(span => span.script === "subscript")
+      .map(span => nativeTextSubscriptBottomEm(span.text))),
     top: line.some(span => span.script === "superscript")
       ? Math.max(capHeightEm, nativeTextSuperscriptOffsetEm + nativeTextScriptFontScale * capHeightEm) : capHeightEm
   }));

@@ -11,6 +11,13 @@ export const nativeTextMetrics = {
   capHeightEm: 0.716
 } as const;
 
+/** Subscript ink reaches its baseline unless the span contains a descender glyph. */
+export function nativeTextSubscriptBottomEm(text: string): number {
+  const hasDescender = /[gjpqyQ()[\]{},;|_]/.test(text);
+  return nativeTextSubscriptOffsetEm
+    + (hasDescender ? nativeTextScriptFontScale * nativeTextMetrics.descentEm : 0);
+}
+
 export function nativeTextCharacterWidthFactor(character: string): number {
   if (character === "\t") return 1.6;
   if (character.trim().length === 0) return 0.34;
