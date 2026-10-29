@@ -282,10 +282,18 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     expect(windows).toContain("return Ok(false)");
     expect(windows).not.toContain("target.set_focus()");
     expect(command).toContain("WindowsAndMessaging::GetForegroundWindow()");
-    const release = command.split("if was_focused {")[1]!.split('#[cfg(not(windows))]')[0]!;
-    expect(release).toContain("panel_window::return_focus_to_document(");
-    expect(release).not.toMatch(/focus_main_document_window_impl|main\.set_focus\(/);
+    // Release now delegates to the shared interaction helper. Guard both the command
+    // branch and the helper's Windows path against Tao's forced activation fallback.
+    const release = command.split("result.map(|_| held)")[1]!;
+    expect(release).toContain("panel_window::return_focus_after_interaction(&target, return_focus.unwrap_or(false))?");
+    expect(release).not.toMatch(/focus_main_document_window_impl|(?:main|document)\.set_focus\(/);
     const panel = readFileSync(join(nativePath, "panel_window.rs"), "utf8");
+    const interactionReturn = panel.split("pub(crate) fn return_focus_after_interaction<")[1]!
+      .split("pub(crate) fn reset_for_webview<")[0]!;
+    const windowsReturn = interactionReturn.split('#[cfg(target_os = "macos")]')[0]!;
+    expect(windowsReturn).toContain("focus_return::should_return(");
+    expect(windowsReturn).toContain("return_focus_to_document(");
+    expect(windowsReturn).not.toMatch(/focus_main_document_window_impl|(?:main|document)\.set_focus\(/);
     const focus = panel.split("pub(crate) fn focus_if_app_active(")[1]!.split('#[cfg(target_os')[0]!;
     expect(focus).toContain("GetForegroundWindow()");
     expect(focus).toContain("IsWindowVisible(hwnd) == 0");
@@ -379,14 +387,14 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     // Pointer acquisitions carry classification metadata; Escape has no pointer fallback.
     expect(tauriInvoke).toHaveBeenCalledWith("set_plugin_panel_input_focus", {
       editing: true, generation: expect.any(Number), pageToken: "page-token",
-      clickSequence: undefined, pointerBefore: expect.any(Number)
+      clickSequence: undefined, pointerBefore: expect.any(Number), returnFocus: false
     });
     await act(async () => {
       select.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
     });
     expect(tauriInvoke).toHaveBeenLastCalledWith("set_plugin_panel_input_focus", {
       editing: false, generation: expect.any(Number), pageToken: "page-token",
-      clickSequence: undefined, pointerBefore: undefined
+      clickSequence: undefined, pointerBefore: undefined, returnFocus: true
     });
     expect(container!.querySelector(".plugin-panel-shell")).not.toBeNull();
   });
