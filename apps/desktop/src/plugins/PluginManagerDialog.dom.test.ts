@@ -91,8 +91,8 @@ describe("naming engine catalog ownership", () => {
       document.querySelector<HTMLButtonElement>(`[data-action="install-official-plugin"][data-plugin-id="${official.id}"]`)!.click();
     });
     const review = document.querySelector('[data-testid="plugin-package-engine-disclosure"]');
-    expect(review?.textContent).toContain("100 MB");
-    expect(review?.textContent).toContain("uses about 0.3 GB once installed");
+    expect(review?.textContent).toContain("naming engine");
+    expect(review?.textContent).toContain("Needs about 1.0 GB free while installing");
     expect(review?.textContent).toMatch(/Needs about [\d.]+ GB free while installing/);
     expect(review?.textContent).toContain("GPL-2.0-with-Classpath-Exception");
     expect(engine.install).not.toHaveBeenCalled();
@@ -739,7 +739,7 @@ describe("PluginManagerDialog", () => {
       "Recognition engine: not installed"
     );
     expect(document.querySelector('[data-testid="molscribe-engine-install-note"]')?.textContent).toContain(
-      "Downloads about 2.5 GB and uses about 2.4 GB once installed. Needs about 2.0 GB free while installing. Free now: 8.0 GB. It runs entirely on this computer."
+      "Downloads the MolScribe model (about 1.1 GB) and its dependencies. Needs about 2.0 GB free while installing. Free now: 8.0 GB. It runs entirely on this computer."
     );
     const install = document.querySelector<HTMLButtonElement>('[data-action="install-recognition-engine"]')!;
     // A full-size button, never a small text link.
@@ -2050,7 +2050,7 @@ describe("PluginManagerDialog one-click engine install", () => {
     await reviewAndConfirmMolscribe();
     const disclosure = document.querySelector('[data-testid="plugin-package-engine-disclosure"]');
     expect(disclosure?.textContent).toContain("Also installs the local recognition engine");
-    expect(disclosure?.textContent).toContain("downloads about 2.5 GB and uses about 2.4 GB once installed");
+    expect(disclosure?.textContent).toContain("the MolScribe model (about 1.1 GB) and its dependencies");
     // 3,000,000,000 bytes is 3 GB, as every other size in the flow is stated (not 2.8 "GB" of 1024³).
     expect(disclosure?.textContent).toContain("Needs about 3.0 GB free while installing. Free now: 8.0 GB.");
     expect(fake.engine.install).not.toHaveBeenCalled();

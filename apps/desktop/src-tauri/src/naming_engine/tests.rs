@@ -38,6 +38,75 @@ fn raw() -> protocol::RawResult {
     }
 }
 
+/// These tests execute locally compiled fake interpreters/JVMs, never an installed engine. Choose
+/// their process/path convention explicitly, independently of the production asset-platform gate.
+fn fixture_process_platform() -> Box<dyn local_engine::platform::EnginePlatform> {
+    #[cfg(unix)]
+    return Box::new(MacPlatform::new(MacArchitecture::Aarch64));
+    #[cfg(not(unix))]
+    Box::new(WindowsPlatform)
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"))]
+#[test]
+fn production_naming_engine_selects_the_pinned_gnu_linux_runtime() {
+    let platform = install::current_platform().expect("GNU Linux x64 is supported");
+    assert_eq!(
+        platform.uv_asset(),
+        local_engine::pins::UV_X86_64_LINUX_ASSET
+    );
+    assert_eq!(
+        platform.venv_python(Path::new("engine")),
+        Path::new("engine/venv/bin/python")
+    );
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"))]
+#[test]
+#[ignore = "downloads and installs the real Linux naming engine; set CHEMDRAFT_REAL_ENGINE_TEST_ROOT"]
+fn linux_real_naming_install_downloads_verifies_relocates_and_probes() {
+    use crate::local_engine::{install as shared_install, EngineSpec};
+    let parent = PathBuf::from(
+        std::env::var_os("CHEMDRAFT_REAL_ENGINE_TEST_ROOT")
+            .expect("choose a disposable test directory explicitly"),
+    );
+    assert!(parent.is_absolute());
+    fs::create_dir_all(&parent).expect("test parent");
+    let root = parent.join(format!(
+        "naming-real-install-{}-{}",
+        std::process::id(),
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    ));
+    assert!(!root.exists());
+    fs::create_dir(&root).expect("fresh test root");
+    let _cleanup = TestRoot(root.clone());
+    let platform = install::current_platform().expect("Linux naming platform");
+    let paths = shared_install::InstallPaths {
+        app_data: root,
+        requirements: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join(install::NamingSpec::requirements().0),
+    };
+    let io = install::SystemInstallIo::new(Arc::default()).expect("production download client");
+    let receipt = shared_install::install::<install::NamingSpec>(
+        &paths,
+        platform.as_ref(),
+        &io,
+        &AtomicBool::new(false),
+        &|event: InstallProgress| eprintln!("Linux naming: {:?}: {}", event.phase, event.message),
+        local_engine::platform::free_disk_bytes(&paths.app_data).expect("free disk"),
+    )
+    .expect("real production installation");
+    let engine = paths.final_dir_for::<install::NamingSpec>();
+    assert!(receipt.matches_pins(platform.as_ref()));
+    install::NamingSpec::verify_layout(&engine, platform.as_ref()).expect("verified final layout");
+    assert!(!paths.partial_dir_for::<install::NamingSpec>().exists());
+    fs::write(
+        parent.join("naming-linux-install-receipt.json"),
+        serde_json::to_vec_pretty(&receipt).expect("receipt JSON"),
+    )
+    .expect("save evidence");
+}
+
 #[test]
 fn install_io_diagnostics_keep_naming_prefixes_and_paths() {
     use crate::local_engine::file_ops::{self, FileOps};
@@ -196,6 +265,18 @@ fn oversized_smiles_are_refused_before_encoding_or_spawning() {
 fn intel_mac_is_unsupported_before_install() {
     assert!(install::platform_supported(&MacPlatform::new(MacArchitecture::Aarch64)).is_ok());
     assert!(install::platform_supported(&WindowsPlatform).is_ok());
+    assert!(
+        install::platform_supported(&local_engine::platform::LinuxPlatform::new(
+            local_engine::platform::LinuxArchitecture::X86_64
+        ))
+        .is_ok()
+    );
+    assert!(
+        install::platform_supported(&local_engine::platform::LinuxPlatform::new(
+            local_engine::platform::LinuxArchitecture::Aarch64
+        ))
+        .is_err()
+    );
     let intel = MacPlatform::new(MacArchitecture::X86_64);
     assert!(install::platform_supported(&intel)
         .expect_err("unsupported")
@@ -390,7 +471,7 @@ fn raw_contract_preserves_all_metadata_and_read_back_failure_without_policy() {
     raw.tier = "unverified".into();
     raw.gate_outcome = "carveout:example".into();
     raw.stereo_unexpressed = true;
-    let platform = install::current_platform().expect("platform");
+    let platform = fixture_process_platform();
     let result = read_back(
         raw.clone(),
         &launch(&root.0),
@@ -497,7 +578,7 @@ fn shutdown_reaps_opsin_read_back_before_returning_without_worker_cooperation() 
         let (paused_send, paused_receive) = std::sync::mpsc::channel();
         let (resume_send, resume_receive) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
-            let platform = install::current_platform().expect("platform");
+            let platform = fixture_process_platform();
             let stopped = || {
                 if worker_pause.swap(false, Ordering::SeqCst) {
                     paused_send.send(()).expect("paused notification");
@@ -568,7 +649,7 @@ fn shutdown_between_initial_stop_check_and_child_registration_refuses_spawn() {
     let (checked_send, checked_receive) = std::sync::mpsc::channel();
     let (resume_send, resume_receive) = std::sync::mpsc::channel();
     let worker = std::thread::spawn(move || {
-        let platform = install::current_platform().expect("platform");
+        let platform = fixture_process_platform();
         let first_check = AtomicBool::new(true);
         read_back(
             raw(),
@@ -611,7 +692,7 @@ fn normal_opsin_read_back_completion_clears_registration_before_shutdown() {
     let mut launch = sleeping_read_back(&root);
     launch.opsin = root.0.join("fast.jar");
     let state = NamingEngineState::default();
-    let platform = install::current_platform().expect("platform");
+    let platform = fixture_process_platform();
     let result = read_back(
         raw(),
         &launch,
@@ -642,7 +723,7 @@ fn cancel_during_opsin_read_back_releases_the_request_gate_and_allows_retry() {
     let worker_launch = launch.clone();
     let (send, receive) = std::sync::mpsc::channel();
     let worker = std::thread::spawn(move || {
-        let platform = install::current_platform().expect("platform");
+        let platform = fixture_process_platform();
         let response = with_request(&worker_state, 0, 0, |stopped| {
             Ok(read_back(
                 raw(),
@@ -676,7 +757,7 @@ fn cancel_during_opsin_read_back_releases_the_request_gate_and_allows_retry() {
     worker.join().expect("request worker");
     assert!(at_cancel.elapsed() < Duration::from_secs(2));
     launch.opsin = root.0.join("fast.jar");
-    let platform = install::current_platform().expect("platform");
+    let platform = fixture_process_platform();
     let retry = with_request(&state.inner, 1, 0, |stopped| {
         Ok(read_back(
             raw(),
@@ -717,7 +798,7 @@ fn engine_operations_during_opsin_read_back_wait_and_refuse_a_raw_result() {
         let worker_state = state.inner.clone();
         let (send, receive) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
-            let platform = install::current_platform().expect("platform");
+            let platform = fixture_process_platform();
             let response = with_request(&worker_state, 0, 0, |stopped| {
                 Ok(read_back(
                     raw(),

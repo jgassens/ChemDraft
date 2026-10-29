@@ -94,8 +94,10 @@ waits for the sweep: all three take one staging lock before touching these direc
 
 ## Install transaction
 
-1. **Check disk.** At least 3.0 GB free on the app-data volume, or `insufficientDisk` before anything
-   is created.
+1. **Check disk.** At least 8.0 GB additional free on GNU Linux x86_64, or 3.0 GB on
+   macOS/Windows, on the app-data volume. Otherwise return `insufficientDisk` before
+   anything is created. An existing engine already occupies allocated space; the
+   swap renames it rather than creating another copy.
 2. **Stage.** A stale `ocsr-engine.partial/` is removed and a fresh one created. From here on, any
    failure or cancellation deletes it.
 3. **uv.** The platform's uv archive is streamed from the GitHub release, SHA-256 verified, and only
@@ -234,7 +236,66 @@ pins the torch, torchvision and numpy versions in `pins.rs`.
 | Python packages | `resources/ocsr/requirements.txt`: 109 exact pins with SHA-256 hashes (torch 2.14.0, torchvision 0.29.0, numpy 1.26.4, and the rest of MolScribe's dependency tree); the file itself is pinned by SHA-256 |
 | MolScribe | `thomas0809/MolScribe` archive at `7296a30413eb55436702011efdff78131f66d162`, 5,727,892 bytes, SHA-256 `8e323f47…e2d6` |
 | Model | `yujieq/MolScribe` revision `a0189776…`, `swin_base_char_aux_1m.pth`, 1,134,940,406 bytes, SHA-256 `6f0df56f…ea1d` |
-| Free disk | 3.0 GB |
+| Free disk | 8.0 GB additional free on GNU Linux x86_64; 3.0 GB on macOS/Windows |
+
+### GNU Linux x86_64 CPU runtime
+
+Linux uses `resources/ocsr/requirements-linux-x86_64.txt`, a separate 88-package
+hash lock. It retains the reviewed Python 3.10 / NumPy 1.26.4 / MolScribe inputs,
+selecting the official `torch==2.14.0+cpu` and `torchvision==0.29.0+cpu` builds.
+`uv pip install --require-hashes --torch-backend cpu` applies the PyTorch CPU
+index only to PyTorch packages; every downloaded distribution still has to match
+the committed SHA-256 lock. CUDA, NVIDIA and Triton packages are absent.
+The existing macOS/Windows lock is unchanged.
+
+The Linux lock SHA-256 (LF) is
+`381da6b0648e386311c87eed9c4dde0b79dbf68bf9ef6dbda1bd3e3e7173413f`.
+Re-lock from the repository root, then update the Linux pin deliberately:
+
+```bash
+uv pip compile apps/desktop/src-tauri/resources/ocsr/requirements.in \
+  --python-version 3.10 --python-platform x86_64-unknown-linux-gnu \
+  --generate-hashes --constraint apps/desktop/src-tauri/resources/ocsr/requirements.txt \
+  --override apps/desktop/src-tauri/resources/ocsr/requirements-linux-cpu.in \
+  --torch-backend cpu \
+  --output-file apps/desktop/src-tauri/resources/ocsr/requirements-linux-x86_64.txt
+```
+
+The platform bootstrap is uv 0.12.18, asset
+`uv-x86_64-unknown-linux-gnu.tar.gz`, SHA-256
+`89eadd7c76fc063887959510d5ba0ab1264dfd5f1143b925ddb73021a40acf16`.
+Its official release checksum and downloaded archive bytes were checked on
+2026-10-29. GNU Linux x86_64 is enabled; other Linux OCSR architectures remain
+unavailable until their complete dependency set and inference are verified.
+Shared uv support also has a verified aarch64 bootstrap, which does not by itself
+make OCSR or naming available on aarch64.
+
+The Linux environment uses about 3.1 GB installed (including the 1.135 GB model).
+The installer requires **8 GB additional free space** for package cache and staging
+while a previous engine remains installed. The previous tree is renamed during
+the swap, not copied; its already allocated bytes are excluded from the initial
+free-space query. This budget is deliberately larger than the macOS measurement.
+The model is still downloaded and SHA-256 checked by the host before
+use; no model or Python environment is bundled with the application.
+
+Linux verification on 2026-10-29 installed all 88 locked packages and the exact
+verified MolScribe source, imported the runtime, loaded the verified checkpoint,
+and recognized an original RDKit ethanol drawing as `CCO` with all nine scale
+reads agreeing. This is one synthetic smoke case, not an accuracy benchmark.
+The same real recognition also passed against the GNOME SDK runtime used for
+the Flatpak. Its elapsed time includes a user-requested process pause and is not
+a performance measurement.
+The opt-in Rust test
+`ocsr_engine::install::tests::linux_real_install_downloads_verifies_relocates_and_probes`
+additionally runs the production downloader, staging transaction and final probe.
+Set `CHEMDRAFT_REAL_ENGINE_TEST_ROOT` to an absolute disposable workspace directory
+and run that test explicitly with `--ignored --test-threads=1`. It cleans its large
+temporary engine and writes a receipt as evidence under that directory.
+This production-path test passed inside GNOME SDK 49 on 2026-10-29 in 66 seconds:
+all downloads and hashes, CPU package installation, final-tree relocation, imports
+and receipt verification passed. The final engine held 3,031,588,381 bytes. Evidence:
+`artifacts/linux-followup/ocsr-production-install.log` and
+`artifacts/linux-followup/real-engine-installs/ocsr-linux-install-receipt.json`.
 
 ### The requirements lock
 
@@ -539,6 +600,7 @@ the installer's junction relocation and venv launcher refresh are the other OS-s
 | macOS arm64 | `uv-aarch64-apple-darwin.tar.gz` | `venv/bin/python` | own process group | implemented |
 | macOS x86_64 | `uv-x86_64-apple-darwin.tar.gz` | `venv/bin/python` | own process group | seam implemented, disabled: `unsupported` status ("The recognition engine needs a Mac with Apple silicon."), install fails with `unsupported` before anything downloads — the hash-locked pins have no torch wheel for this target (see above) |
 | Windows x86_64 | `uv-x86_64-pc-windows-msvc.zip` | `venv/Scripts/python.exe` | `CREATE_NO_WINDOW \| CREATE_NEW_PROCESS_GROUP`; tree kill by `taskkill /T /F` | junction relocation and final-tree launcher refresh implemented; automated Windows validation pending |
+| GNU Linux x86_64 | `uv-x86_64-unknown-linux-gnu.tar.gz` | `venv/bin/python` | own process group; group kill and descendant sweep | CPU-only hash lock and real recognition verified; production transaction has an explicit opt-in integration test |
 | anything else | — | — | — | `unsupported` status; install fails with `unsupported` before creating anything |
 
 ## Adding Windows

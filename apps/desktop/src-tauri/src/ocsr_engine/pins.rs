@@ -4,6 +4,11 @@
 //! requirements file, the install receipt, NOTICE, and the dependency inventory in sync.
 
 pub const PROTOCOL_VERSION: u32 = 2;
+// Linux CPU wheels use about 3.1 GB installed. Allow additional free space for staging/cache;
+// an existing engine is already allocated and only renamed during replacement.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub const REQUIRED_DISK_BYTES: u64 = 8_000_000_000;
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 pub const REQUIRED_DISK_BYTES: u64 = 3_000_000_000;
 pub const PYTHON_VERSION: &str = "3.10";
 pub const MOLSCRIBE_COMMIT: &str = "7296a30413eb55436702011efdff78131f66d162";
@@ -16,14 +21,34 @@ pub const MOLSCRIBE_SOURCE_SHA256: &str =
     "8e323f473b96c80ff88112f2653a064a443fcfd918654a0d7e0f7866bd5ee2d6";
 pub const MOLSCRIBE_SOURCE_FILENAME: &str =
     "molscribe-7296a30413eb55436702011efdff78131f66d162.tar.gz";
-/// The versions `resources/ocsr/requirements.txt` locks (with hashes) for the three packages the
+/// The versions the platform-selected requirements file locks for the three packages the
 /// engine is reviewed against; a test asserts the lock agrees.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub const TORCH_VERSION: &str = "2.14.0+cpu";
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 pub const TORCH_VERSION: &str = "2.14.0";
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub const TORCHVISION_VERSION: &str = "0.29.0+cpu";
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 pub const TORCHVISION_VERSION: &str = "0.29.0";
 pub const NUMPY_VERSION: &str = "1.26.4";
-/// SHA-256 of the bundled, hash-locked `resources/ocsr/requirements.txt`, taken with line endings
+pub const REQUIREMENTS_RESOURCE: &str = if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+    "resources/ocsr/requirements-linux-x86_64.txt"
+} else {
+    "resources/ocsr/requirements.txt"
+};
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+pub const BUNDLED_REQUIREMENTS: &str =
+    include_str!("../../resources/ocsr/requirements-linux-x86_64.txt");
+#[cfg(all(test, not(all(target_os = "linux", target_arch = "x86_64"))))]
+pub const BUNDLED_REQUIREMENTS: &str = include_str!("../../resources/ocsr/requirements.txt");
+/// SHA-256 of the platform-selected requirements file, taken with line endings
 /// normalized to LF (a Windows checkout may write CRLF). The installer refuses a requirements file
 /// that differs, and a test fails until this is updated after a re-lock.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub const REQUIREMENTS_LOCK_SHA256: &str =
+    "381da6b0648e386311c87eed9c4dde0b79dbf68bf9ef6dbda1bd3e3e7173413f";
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 pub const REQUIREMENTS_LOCK_SHA256: &str =
     "6c71c47f1bf1ee6c419948121ab3923b50dff75488445e4dbd3c0a84b08d7383";
 pub const MODEL_REVISION: &str = "a0189776b7415b82795c7ee81eed311bf5c8724b";

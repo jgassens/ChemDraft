@@ -59,7 +59,9 @@ impl InstallReceipt {
     }
 }
 
-/// Tests inject this boundary; production always uses the operating system verifier.
+/// Tests inject this boundary. macOS/Windows use their OS signature verifiers. Linux has no
+/// equivalent mandatory executable signature; authenticity comes from the previously verified,
+/// pinned official archive SHA-256, followed by native ELF architecture validation here.
 pub trait SignatureChecker {
     fn verify(&self, binary: &Path) -> Result<(), String>;
 }
@@ -137,7 +139,45 @@ fn verify_signature(binary: &Path) -> Result<(), String> {
     }
 }
 
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(target_os = "linux")]
+fn verify_signature(binary: &Path) -> Result<(), String> {
+    use std::io::Read;
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut file = fs::File::open(binary).map_err(|error| error.to_string())?;
+    let metadata = file.metadata().map_err(|error| error.to_string())?;
+    if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
+        return Err("The verified Linux tool is not an executable regular file.".into());
+    }
+    let mut header = [0_u8; 64];
+    file.read_exact(&mut header)
+        .map_err(|_| "The verified Linux tool has a truncated ELF header.".to_owned())?;
+    validate_linux_elf_header(&header, std::env::consts::ARCH)
+}
+
+#[cfg(any(target_os = "linux", test))]
+pub(super) fn validate_linux_elf_header(header: &[u8], arch: &str) -> Result<(), String> {
+    let expected_machine = match arch {
+        "x86_64" => 62,
+        "aarch64" => 183,
+        _ => return Err(format!("Linux external tools are unsupported on {arch}.")),
+    };
+    if header.len() < 64
+        || &header[..4] != b"\x7fELF"
+        || header[4] != 2
+        || header[5] != 1
+        || header[6] != 1
+        || !matches!(u16::from_le_bytes([header[16], header[17]]), 2 | 3)
+        || u16::from_le_bytes([header[18], header[19]]) != expected_machine
+    {
+        return Err(format!(
+            "Expected a native 64-bit {arch} Linux ELF executable."
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
 fn verify_signature(_binary: &Path) -> Result<(), String> {
     Err("External tool signature verification is unsupported on this platform.".into())
 }
@@ -329,7 +369,7 @@ pub(super) fn install_with_download(
     check_cancel(cancel)?;
     report(
         ToolInstallPhase::Verifying,
-        "Verifying tool signature and version.",
+        "Verifying downloaded tool and version.",
         None,
         None,
     );
@@ -337,12 +377,12 @@ pub(super) fn install_with_download(
     match pin.archive {
         ArchiveKind::Raw => ops.rename(&archive, &binary).map_err(|e| ops.failed(e))?,
         ArchiveKind::TarGz if pin.tool == ToolId::Codex => {
-            let helper_name =
-                super::probe::codex_helper_name(if pin.platform == ToolPlatform::WindowsX64 {
-                    ProbePlatform::Windows
-                } else {
-                    ProbePlatform::MacOS
-                });
+            let platform = match pin.platform {
+                ToolPlatform::WindowsX64 => ProbePlatform::Windows,
+                ToolPlatform::LinuxX64 | ToolPlatform::LinuxArm64 => ProbePlatform::Linux,
+                ToolPlatform::DarwinArm64 | ToolPlatform::DarwinX64 => ProbePlatform::MacOS,
+            };
+            let helper_name = super::probe::codex_helper_name(platform);
             let helper = partial.join(helper_name);
             let helper_entry = format!("bin/{helper_name}");
             extract_tar_entries_with_ops(
@@ -351,15 +391,7 @@ pub(super) fn install_with_download(
                 ops,
             )?;
             make_executable_with_ops(&helper, ops)?;
-            super::probe::require_codex_helper(
-                &binary,
-                if pin.platform == ToolPlatform::WindowsX64 {
-                    ProbePlatform::Windows
-                } else {
-                    ProbePlatform::MacOS
-                },
-            )
-            .map_err(InstallError::failed)?;
+            super::probe::require_codex_helper(&binary, platform).map_err(InstallError::failed)?;
             check_cancel(cancel)?;
             signature.verify(&helper).map_err(|detail| {
                 InstallError::failed(format!(

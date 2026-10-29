@@ -9,9 +9,9 @@ use probe::{Candidate, ProbePlatform};
 use run::{OutputStream, RunStatus};
 use std::{process::Command, sync::OnceLock, thread, time::Instant};
 
-struct TempDir(PathBuf);
+pub(super) struct TempDir(pub(super) PathBuf);
 impl TempDir {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let dir = std::env::temp_dir().join(format!("chemdraft-tools-{}", nonce()));
         fs::create_dir_all(&dir).unwrap();
         test_support::register(&dir);
@@ -35,7 +35,11 @@ fn auth_json(at: &str, token: &str) -> String {
 
 fn auth_platforms() -> Vec<ProbePlatform> {
     if cfg!(unix) {
-        vec![ProbePlatform::MacOS, ProbePlatform::Windows]
+        vec![
+            ProbePlatform::MacOS,
+            ProbePlatform::Windows,
+            ProbePlatform::Linux,
+        ]
     } else {
         vec![ProbePlatform::Windows]
     }
@@ -125,7 +129,7 @@ fn codex_auth_reconciles_refresh_atomically_and_idempotently() {
                     .unwrap()
                     .file_type()
                     .is_symlink(),
-                platform == ProbePlatform::MacOS
+                matches!(platform, ProbePlatform::MacOS | ProbePlatform::Linux)
             );
             // In-place user writes remain visible through either restored link type.
             fs::write(&auth, &original).unwrap();
@@ -827,12 +831,7 @@ fn codex_real_home_respects_parent_and_platform() {
 #[test]
 fn codex_home_links_auth_keeps_sessions_and_refreshes_replaced_auth() {
     // A hard link is portable, so exercise the Windows behavior on every host too.
-    let platforms = if cfg!(unix) {
-        vec![ProbePlatform::MacOS, ProbePlatform::Windows]
-    } else {
-        vec![ProbePlatform::Windows]
-    };
-    for platform in platforms {
+    for platform in auth_platforms() {
         let temp = TempDir::new();
         let real = temp.0.join("user-codex");
         fs::create_dir(&real).unwrap();
@@ -856,7 +855,7 @@ fn codex_home_links_auth_keeps_sessions_and_refreshes_replaced_auth() {
                 .unwrap()
                 .file_type()
                 .is_symlink(),
-            platform == ProbePlatform::MacOS
+            matches!(platform, ProbePlatform::MacOS | ProbePlatform::Linux)
         );
         fs::write(
             real.join("auth.json"),
@@ -1575,7 +1574,7 @@ fn claude_init_restriction_assertions_reject_extra_capabilities() {
 
 #[test]
 fn pins_are_complete_and_valid() {
-    assert_eq!(pins::PINS.len(), 6);
+    assert_eq!(pins::PINS.len(), 10);
     for pin in &pins::PINS {
         assert_eq!(pin.sha256.len(), 64);
         assert!(pin.sha256.bytes().all(|b| b.is_ascii_hexdigit()));

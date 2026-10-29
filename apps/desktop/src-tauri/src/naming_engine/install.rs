@@ -14,29 +14,18 @@ pub type SystemInstallIo = local_engine::install::SystemInstallIo<NamingSpec>;
 
 pub fn platform_supported(platform: &dyn EnginePlatform) -> Result<(), String> {
     match platform.uv_asset() {
-        "uv-aarch64-apple-darwin.tar.gz" | "uv-x86_64-pc-windows-msvc.zip" => Ok(()),
+        "uv-aarch64-apple-darwin.tar.gz"
+        | "uv-x86_64-pc-windows-msvc.zip"
+        | "uv-x86_64-unknown-linux-gnu.tar.gz" => Ok(()),
         "uv-x86_64-apple-darwin.tar.gz" => Err("The naming engine needs a Mac with Apple silicon: RDKit 2026.3.5 has no Intel Mac wheel.".into()),
-        _ => Err("The naming engine supports macOS Apple silicon and Windows x64.".into()),
+        _ => Err("The naming engine supports macOS Apple silicon, Windows x64 and GNU Linux x64.".into()),
     }
 }
 
 pub fn current_platform() -> Result<Box<dyn EnginePlatform>, String> {
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    let platform: Box<dyn EnginePlatform> = Box::new(local_engine::platform::MacPlatform::new(
-        local_engine::platform::MacArchitecture::Aarch64,
-    ));
-    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    let platform: Box<dyn EnginePlatform> = Box::new(local_engine::platform::WindowsPlatform);
-    #[cfg(any(
-        all(target_os = "macos", target_arch = "aarch64"),
-        all(target_os = "windows", target_arch = "x86_64")
-    ))]
-    {
-        platform_supported(platform.as_ref())?;
-        Ok(platform)
-    }
-    #[cfg(not(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "windows", target_arch = "x86_64"))))]
-    Err(format!("The naming engine is unavailable for {}-{}; macOS requires Apple silicon (no Intel RDKit wheel).", std::env::consts::OS, std::env::consts::ARCH))
+    let platform = local_engine::platform::current()?;
+    platform_supported(platform.as_ref())?;
+    Ok(platform)
 }
 
 pub fn centres_path(root: &Path) -> std::path::PathBuf {

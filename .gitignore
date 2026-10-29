@@ -33,8 +33,15 @@ openclatura/
 # /Applications/ChemDraft.app is the stable build from main. See AGENTS.md §21.2.
 /app/
 
+# Local Linux Flatpak bundles, repository, test logs and screenshots.
+/artifacts/
+
 # Python bytecode from running the OCSR sidecar self-test in place.
 apps/desktop/src-tauri/resources/ocsr/__pycache__/
 
 # Cloudflare wrangler local state
 .wrangler/
+
+# Rebuildable Linux sign-in terminal.
+native/linux-terminal/_deps/
+native/linux-terminal/build/

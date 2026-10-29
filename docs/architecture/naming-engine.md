@@ -51,8 +51,28 @@ with a detail string. No receipt upgrade from another engine is attempted.
 | Free-space requirement | 1,000,000,000 bytes (800 MB update peak plus 25% margin) |
 
 The lock includes rdkit 2026.3.5, jpype1 1.7.1, lxml 6.1.3, numpy 2.5.4, pillow 13.0.0 and
-packaging 26.3. macOS Apple silicon and Windows x64 are implemented. Intel Mac is `unsupported`
+packaging 26.3. macOS Apple silicon, Windows x64 and GNU Linux x86_64 are implemented. Intel Mac is `unsupported`
 before any download: RDKit 2026.3.5 has no macOS x86_64 Python 3.12 wheel. Other targets are unsupported.
+
+GNU Linux x86_64 uses the unchanged seven-distribution requirements lock and the
+verified `uv-x86_64-unknown-linux-gnu.tar.gz` bootstrap from shared pins. Its private
+venv uses `venv/bin/python`; child processes have their own Unix process group and
+reuse the common cancellation, verified download and rollback paths. Linux arm64
+remains unavailable for this engine pending complete wheel/integration validation.
+
+On 2026-10-29 the real Linux lock installed and imported all seven packages. The
+unmodified naming sidecar loaded JPype against the bundled Linux JVM, verified
+the expected OPSIN/centres jars, named ethanol, abstained on iron and rejected
+invalid SMILES. The opt-in Rust test
+`naming_engine::tests::linux_real_naming_install_downloads_verifies_relocates_and_probes`
+checks the production install/relocation/probe transaction; set
+`CHEMDRAFT_REAL_ENGINE_TEST_ROOT` to an absolute disposable workspace directory and
+run it explicitly with `--ignored --test-threads=1`.
+That production-path test passed inside GNOME SDK 49 on 2026-10-29 in 12 seconds,
+including the real downloads, hash checks, licence copies, relocation, imports
+and receipt. Its temporary engine was removed after verification. Evidence:
+`artifacts/linux-followup/naming-production-install.log` and
+`artifacts/linux-followup/real-engine-installs/naming-linux-install-receipt.json`.
 
 ## Disk and download sizes
 

@@ -76,6 +76,11 @@ windows-sys = { version = "0.61", features = [
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# Already used by Tauri on Linux; native clipboard MIME formats and GTK window activation.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18.2"
+webkit2gtk = "2.0.2"
+
 # App updates on Windows (macOS keeps Sparkle; Linux has no release yet): signed manifest +
 # NSIS installer, see docs/releasing/windows-updates.md.
 [target.'cfg(windows)'.dependencies.tauri-plugin-updater]

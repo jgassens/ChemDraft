@@ -72,11 +72,15 @@ export interface ChemDraftOpenResult {
  *  visible layer is transposed back on import. Never written again. */
 export const CdxmlEnvelopeCodecVersionV1 = "chemdraft.cdxml.v1";
 
-/** Current codec: spec-order visible layer ("x y" points, "left top right bottom" rectangles). */
-export const CdxmlEnvelopeCodecVersion = "chemdraft.cdxml.v2";
+/** Spec-order visible layer with the older, locale-sensitive visible XML hash. Still read. */
+export const CdxmlEnvelopeCodecVersionV2 = "chemdraft.cdxml.v2";
+
+/** Spec-order visible layer and a locale-independent, UTF-16 attribute-name order for its hash. */
+export const CdxmlEnvelopeCodecVersion = "chemdraft.cdxml.v3";
 
 const SupportedCdxmlEnvelopeCodecVersions: ReadonlySet<string> = new Set([
   CdxmlEnvelopeCodecVersionV1,
+  CdxmlEnvelopeCodecVersionV2,
   CdxmlEnvelopeCodecVersion
 ]);
 export const ChemDraftObjectTagPrefix = "org.chemdraft/";
@@ -359,8 +363,7 @@ export function openChemDraftPayload(contents: string): ChemDraftOpenResult {
   }
 
   const expectedVisibleHash = tags[ChemDraftObjectTags.visibleCdxmlHash];
-  const actualVisibleHash = visibleHashForParsedTree(tree);
-  if (!expectedVisibleHash || expectedVisibleHash !== actualVisibleHash) {
+  if (!expectedVisibleHash || !visibleHashMatches(tree, expectedVisibleHash, codecVersion)) {
     const visibleImport = importVisibleCdxmlFromTree(tree);
     return {
       source: "external-cdxml",
@@ -3077,6 +3080,35 @@ function visibleHashForParsedTree(tree: OrderedXmlTree): string {
   return sha256Utf8Hex(canonicalizeXmlTree(stripChemDraftObjectTags(tree)));
 }
 
+type XmlAttributeNameOrder = (left: string, right: string) => number;
+
+const codeUnitAttributeNameOrder: XmlAttributeNameOrder = (left, right) =>
+  left < right ? -1 : left > right ? 1 : 0;
+
+let legacyAttributeNameOrders: readonly XmlAttributeNameOrder[] | undefined;
+
+function visibleHashMatches(tree: OrderedXmlTree, expected: string, codecVersion: string): boolean {
+  if (visibleHashForParsedTree(tree) === expected) {
+    return true;
+  }
+  // v3 hashes have exactly one canonical form. Older writers used the runtime's default
+  // collation: WebKit's POSIX locale orders "Width" before "id", while English orders it after.
+  // Verify the actual visible contents under those old orders rather than trusting stale native
+  // JSON or rewriting a file. The default-locale candidate also retains the old same-locale path.
+  if (codecVersion === CdxmlEnvelopeCodecVersion) {
+    return false;
+  }
+  legacyAttributeNameOrders ??= [
+    new Intl.Collator("en-US").compare,
+    new Intl.Collator("en-US-u-va-posix").compare,
+    new Intl.Collator().compare
+  ];
+  const visible = stripChemDraftObjectTags(tree);
+  return legacyAttributeNameOrders.some((order) =>
+    sha256Utf8Hex(canonicalizeXmlTree(visible, order)) === expected
+  );
+}
+
 function stripChemDraftObjectTags(tree: OrderedXmlTree): OrderedXmlTree {
   return tree.flatMap((node) => {
     const element = elementView(node);
@@ -3095,11 +3127,11 @@ function stripChemDraftObjectTags(tree: OrderedXmlTree): OrderedXmlTree {
   });
 }
 
-function canonicalizeXmlTree(tree: OrderedXmlTree): string {
-  return tree.map(canonicalizeNode).join("");
+function canonicalizeXmlTree(tree: OrderedXmlTree, attributeNameOrder = codeUnitAttributeNameOrder): string {
+  return tree.map((node) => canonicalizeNode(node, attributeNameOrder)).join("");
 }
 
-function canonicalizeNode(node: OrderedXmlNode): string {
+function canonicalizeNode(node: OrderedXmlNode, attributeNameOrder: XmlAttributeNameOrder): string {
   if (typeof node["#text"] === "string") {
     const text = node["#text"];
     return text.trim().length === 0 ? "" : escapeXmlText(text);
@@ -3115,10 +3147,10 @@ function canonicalizeNode(node: OrderedXmlNode): string {
   }
 
   const attributes = Object.entries(element.attributes)
-    .sort(([left], [right]) => left.localeCompare(right))
+    .sort(([left], [right]) => attributeNameOrder(left, right))
     .map(([name, value]) => ` ${name}="${escapeXmlAttribute(value)}"`)
     .join("");
-  const children = canonicalizeXmlTree(element.children);
+  const children = canonicalizeXmlTree(element.children, attributeNameOrder);
   return children.length === 0
     ? `<${element.name}${attributes}/>`
     : `<${element.name}${attributes}>${children}</${element.name}>`;
@@ -3519,7 +3551,7 @@ function elementFromCdxmlAtom(element: string | undefined): string | undefined {
 }
 
 /** Only ChemDraft's own codec-v1 files carry a y-first visible layer; every other producer (and our
- *  own v2 output) writes spec order and needs no correction. Keyed off the codec tag rather than
+ *  own v2/v3 output) writes spec order and needs no correction. Keyed off the codec tag rather than
  *  CreationProgram so a foreign file can never be transposed by accident. */
 function importTransformForTree(tree: OrderedXmlTree): CdxmlImportTransform {
   const tags = findChemDraftObjectTags(tree);

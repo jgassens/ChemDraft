@@ -280,6 +280,14 @@ impl ToolRun {
             .stderr(Stdio::piped())
             .without_console_window();
         // Apply AFTER WithoutConsoleWindow: Windows creation_flags replaces, rather than ORs.
+        // Generic supervision needs only a Unix process group on Linux, not an engine's uv asset
+        // pins. The external-tool install/status gates still reject unsupported Linux packages.
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        #[cfg(not(target_os = "linux"))]
         platform::current()?.configure_child(&mut command);
         // Contain the process before it can execute vendor code or create descendants.
         #[cfg(windows)]

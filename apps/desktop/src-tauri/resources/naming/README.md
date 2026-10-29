@@ -7,7 +7,7 @@ bundled; these files are the pinned inputs the app ships to drive it. Design:
 | File | Role |
 |---|---|
 | `requirements.in` | Human-edited pins: `orthonym==1.0.8` and its exact runtime pins `rdkit==2026.3.5`, `jpype1==1.7.1`, `lxml==6.1.3` |
-| `requirements.txt` | Hash-locked, universal (macOS arm64 and Windows x64), Python 3.12. Installed with `uv pip install --require-hashes` |
+| `requirements.txt` | Hash-locked, universal (macOS arm64, Windows x64 and GNU Linux x86_64), Python 3.12. Installed with `uv pip install --require-hashes` |
 | `orthonym_sidecar.py` | The JSON Lines worker (protocol 1). `python3 orthonym_sidecar.py --selftest` needs no Orthonym |
 | `licenses/` | Licence texts for the parts of the downloaded centres jar (LGPL, GPL with Classpath exception); see its README |
 
@@ -46,6 +46,12 @@ wheels actually install under `--require-hashes` on a Windows host is **unverifi
 macOS arm64 install was run.
 
 ## Verified so far
+
+- GNU Linux x86_64 (2026-10-29): all seven packages installed from this unchanged
+  lock under managed Python 3.12; imports, the bundled JVM and both verified jars
+  passed. The real sidecar named ethanol, abstained on iron, and rejected invalid
+  SMILES. Raw naming results still pass through the host's exact-structure OPSIN
+  policy before the app accepts them.
 
 - macOS arm64: `uv pip install --require-hashes --compile-bytecode -r requirements.txt` into a Python
   3.12 venv, then a real run of the sidecar with ChemDraft's bundled JRE and the vendored OPSIN 2.9.0 jar

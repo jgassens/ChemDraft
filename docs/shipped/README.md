@@ -1,5 +1,53 @@
 # Shipped slices
 
+## Linux installers and locale-independent CDXML (2026-10-29, local validation)
+
+Linux x86_64 adds explicit, checksum-verified Claude/Codex installation and local
+MolScribe/Orthonym engine installation. MolScribe uses a separate 88-package CPU
+hash lock and an 8 GB additional-free-space gate. The Flatpak includes the pinned
+`st` terminal for visible, manual sign-in inside the sandbox. Real production
+installer tests passed for all four tools/engines; the real Codex code-mode helper
+also completed an offline loopback MCP call in the SDK and installed runtime.
+No real provider login or external model call was used for those checks. Linux
+ARM64 CI also compiled the native app and exercised both real CLI contracts;
+ARM64 Flatpak GUI packaging is unverified and local engines remain unavailable.
+
+New CDXML envelopes use deterministic v3 attribute ordering. Verified v1/v2 reads
+remain compatible with the previous English/POSIX collation orders; native JSON
+integrity and visible-edit detection remain enforced. JavaScriptCore checks
+passed across English, German and POSIX locales, so the package no longer forces
+`LC_ALL` for file integrity. These changes supersede the installer and locale
+limitations in the initial prototype below. The final build
+`10.29.12.10-codex` passed installation/rendering checks on Ubuntu, Debian, Fedora
+and Arch, plus 36 real-event window/clipboard/focus checks across KWin, GNOME
+Shell, xfwm4 and Openbox (X11, plus KWin/GNOME Wayland using XWayland). The
+74,253,920-byte bundle, its SHA-256 and scope of verification are recorded in
+[the Linux build notes](../linux.md). Three CPUs remained reserved; only task
+images/model caches were removed after monitored tests.
+The builders now share an idempotent all-thread CPU reserve and a process-group
+disk guard, and all distro/native/WM harnesses and their original legacy fixture
+are tracked. A fresh complete JavaScript run passed 9,988 tests; Linux Cargo
+passed 577 tests, plus the opt-in display and CLI tests. Native cross-platform
+CI built production executables, ran Rust tests and checked real CLI contracts
+on Linux x86_64/ARM64, macOS ARM64 and Windows x86_64. The exact tested revision
+and the later CPU-only correction are recorded in [PR #242](https://github.com/jgassens/ChemDraft/pull/242).
+Its upstream workflow still needs first-contributor approval. This remains a local
+development artifact; physical macOS/Windows GUI verification and an official
+joint release are not claimed.
+
+## Local Linux development Flatpak (2026-10-29)
+
+An experimental x86_64 Linux build packages the existing editor against GNOME 49,
+including the host-built OPSIN runtime and real native UFF sidecar when available.
+Linux adds GTK clipboard formats, native WebKit menu editing, transient utility
+windows and window-state queries. Hidden tooltip click-through avoids an
+unrealized-window Tao crash. This initial package pinned its locale to match the
+then-current CDXML hash ordering, superseded by the v3 follow-up above.
+Ubuntu, Debian, Fedora and Arch container GUI checks passed; native
+Wayland, ARM64 and the optional Linux engine/tool installers remain unverified or
+unsupported as described in [the Linux build notes](../linux.md). This is a local,
+unsigned development artifact, not an official joint release.
+
 ## Agent skill: one document style for structures, and structure naming (2026-10-22)
 
 Fixed-scale `--style document` on `render`, `grid`, `reaction`, `render-document`, and

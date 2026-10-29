@@ -790,3 +790,52 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
   again. Repeat an Export that needs a picker. Close the source tab while the picker is open and
   confirm no closed or newly reopened Export receives focus. Switch to another app before the
   picker completes and confirm ChemDraft does not take foreground.
+
+## Linux desktop and optional installers (manual)
+
+These are checks to perform, not recorded passes. Keep the macOS/Windows checks above.
+Apply the same [provider consent and privacy checks](#external-tools-macos-and-windows),
+[Assistant write/undo rules](#chemdraft-assistant-tools-macos-and-windows) and
+[chemistry invariants](../AGENTS.md#7-chemistry-invariants). Record the package SHA-256,
+visible build stamp/worktree label, distribution, desktop, display protocol and result.
+
+- Run the labelled Flatpak in KDE/KWin, GNOME, Xfce/xfwm4 and Openbox. Distinguish X11
+  from XWayland on a Wayland desktop. Use real mouse/keyboard events: move and resize
+  the document and both palettes, switch focus to another app and back, and minimize/
+  restore the owner. Palettes must stay usable, return with the owner and preserve
+  their positions. Open/dismiss flyouts and tooltips repeatedly; underlying canvas
+  clicks must work without a crash or a hidden window stealing focus.
+- Through GTK clipboard and Edit-menu actions, round-trip Unicode text (`ä β →`),
+  a charged/stereo chemical selection, SVG and PNG. Repeat Ctrl+C/V/X and Undo/Redo
+  inside a text field and on the canvas: field edits stay local, chemistry stays
+  identical and a paste is one undo entry. Exchange text/images with another native
+  application; clipboard failure must not silently substitute different chemistry.
+- Install each Assistant CLI in an isolated test profile; cancel during download,
+  retry, and check its managed version/status. A checksum or archive failure must
+  report an error, preserve a previous working install and leave no active installer.
+  **Real account login is a manual check requiring the account holder.** Sign-in
+  opens the visible bundled terminal inside Flatpak; test Unicode paste with
+  Ctrl+Shift+V, successful/failed login, Enter after completion and closing the
+  terminal to abandon login. No hidden login process may remain. Installation alone
+  must not sign in or submit a provider request.
+- Decline provider consent, then explicitly allow a separate test request: only the
+  allowed request may leave the computer. Use Stop and quit during a request; the
+  CLI/process tree must stop and the loopback MCP listener close.
+- Install MolScribe and Orthonym from their dialogs. Check the free-space refusal
+  before staging (Linux x86_64: 8 GB for MolScribe, 1 GB for Orthonym) using a disposable
+  quota-limited volume, never by filling the system disk. Cancel during Python,
+  packages and model/jar download; no children or partial install may remain. Quit
+  mid-install and relaunch to verify stale staging cleanup. Complete each install,
+  then exercise a failed/cancelled reinstall and post-swap probe failure in the
+  disposable profile: restore the previous working engine and receipt. Remove each
+  engine and confirm that its install prompt returns. ARM64 must report these engines
+  unavailable before downloading.
+- Recognize an original test drawing: preserve the source image, require proposal
+  review and retain warnings. Name ethanol and a charged/stereo example; apply the
+  shared exact OPSIN read-back/decline policy. Compare atom/bond counts, charge and
+  stereochemistry before/after insertion, Undo/Redo and save/reopen. Inference/naming
+  must work locally without a provider connection after installation.
+- **Physical GPU, mixed-DPI/multiple-monitor behavior and native Wayland require
+  separate manual runs and are not established by container tests.** The current
+  Flatpak forces X11 and therefore tests XWayland, not a native Wayland client;
+  record native Wayland as unsupported/unverified rather than passed.

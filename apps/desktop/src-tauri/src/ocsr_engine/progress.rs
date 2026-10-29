@@ -7,11 +7,20 @@ use std::time::{Duration, Instant};
 use std::{fs, path::PathBuf};
 /// Expected growth of the uv cache and managed-Python directories during `uv python install`.
 /// Estimate: a real macOS arm64 install left about 70 MB in `python/`.
-pub const PYTHON_EXPECTED_GROWTH_BYTES: u64 = 75_000_000;
+pub const PYTHON_EXPECTED_GROWTH_BYTES: u64 = if cfg!(target_os = "linux") {
+    100_000_000
+} else {
+    75_000_000
+};
 
 /// Expected growth of the uv cache plus the venv during `uv pip install` of PyTorch, torchvision,
-/// numpy, MolScribe and their dependencies. Estimate: about 1.2 GB.
-pub const PACKAGES_EXPECTED_GROWTH_BYTES: u64 = 1_200_000_000;
+/// numpy, MolScribe and their dependencies. Estimates: about 3.6 GB for Linux CPU packages,
+/// 1.2 GB for the existing macOS/Windows package set.
+pub const PACKAGES_EXPECTED_GROWTH_BYTES: u64 = if cfg!(target_os = "linux") {
+    3_600_000_000
+} else {
+    1_200_000_000
+};
 
 /// The same limit for a recognition's progress. A new stage, and a change in how many readings are
 /// planned, always pass; readings within one plan pass at most once per `interval`. A skipped

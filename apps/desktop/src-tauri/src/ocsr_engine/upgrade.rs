@@ -714,8 +714,7 @@ pub(crate) mod tests {
     };
     use std::sync::Mutex;
 
-    pub(crate) const BUNDLED_REQUIREMENTS: &str =
-        include_str!("../../resources/ocsr/requirements.txt");
+    pub(crate) const BUNDLED_REQUIREMENTS: &str = pins::BUNDLED_REQUIREMENTS;
 
     /// The marker environment of the interpreter on an Apple-silicon Mac.
     pub(crate) fn mac_arm64_environment() -> HashMap<String, String> {
@@ -959,8 +958,8 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_bundled_lock_parses_and_selects_88_packages_on_an_apple_silicon_mac() {
-        let lock = parse_lock(BUNDLED_REQUIREMENTS).expect("lock");
+    fn the_universal_lock_preserves_platform_markers_and_linux_cpu_lock_omits_gpu_packages() {
+        let lock = parse_lock(include_str!("../../resources/ocsr/requirements.txt")).expect("lock");
         assert_eq!(lock.len(), 109);
         let applies = |environment: &HashMap<String, String>| {
             lock.iter()
@@ -979,6 +978,21 @@ pub(crate) mod tests {
         linux.insert("sys_platform".into(), "linux".into());
         linux.insert("platform_machine".into(), "x86_64".into());
         assert!(applies(&linux) > 88, "CUDA packages are Linux-only");
+
+        let cpu = parse_lock(include_str!(
+            "../../resources/ocsr/requirements-linux-x86_64.txt"
+        ))
+        .expect("Linux CPU lock");
+        assert_eq!(cpu.len(), 88);
+        assert!(!cpu
+            .iter()
+            .any(|package| package.name.starts_with("nvidia-") || package.name == "triton"));
+        assert!(cpu
+            .iter()
+            .any(|package| package.name == "torch" && package.version == "2.14.0+cpu"));
+        assert!(cpu
+            .iter()
+            .any(|package| package.name == "torchvision" && package.version == "0.29.0+cpu"));
     }
 
     #[test]
@@ -1077,7 +1091,8 @@ pub(crate) mod tests {
         let root = temp_root("package");
         let engine = fake_legacy_engine(&root);
         let site_packages = engine.join("venv/lib/python3.10/site-packages");
-        fs::remove_dir_all(site_packages.join("torch-2.14.0.dist-info")).expect("torch");
+        fs::remove_dir_all(site_packages.join(format!("torch-{}.dist-info", pins::TORCH_VERSION)))
+            .expect("torch");
         write_dist_info(&site_packages, "torch", "2.14.1");
         assert_refused(&engine, &FakeProbe::matching(), "torch is 2.14.1");
         let _ = fs::remove_dir_all(root);
