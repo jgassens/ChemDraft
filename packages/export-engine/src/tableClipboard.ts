@@ -166,11 +166,14 @@ function htmlTable(table: TableObject, layout: TableLayout, options: TableClipbo
   let html = layout.captionBox ? note(layout.captionBox.lines, true) : "";
   html += `<table border="0" cellspacing="0" cellpadding="0" width="${Math.round(layout.bodyBox.width)}"`
     + ` style="width:${numeric(layout.bodyBox.width * 0.75)}pt;border-collapse:collapse;border:none;`
-    + `mso-border-alt:none;mso-table-layout-alt:fixed;mso-padding-alt:${pad} ${pad}">`;
+    + `mso-border-alt:none;mso-table-layout-alt:fixed;mso-padding-alt:${pad} ${pad};`
+    + `background:transparent;mso-shading:transparent">`;
   for (let row = 0; row < table.rows.length; row++) {
     if (row === 0 && table.headerRowCount > 0) html += "<thead>";
     if (row === table.headerRowCount) html += "<tbody>";
-    html += row === 0 && table.headerRowCount > 0 ? '<tr style="mso-yfti-firstrow:yes">' : "<tr>";
+    html += row === 0 && table.headerRowCount > 0
+      ? '<tr style="mso-yfti-firstrow:yes;background:transparent;mso-shading:transparent">'
+      : '<tr style="background:transparent;mso-shading:transparent">';
     for (let column = 0; column < table.columns.length; column++) {
       const width = layout.columns[column].width;
       const borders = cellBorders(layout, row, column);

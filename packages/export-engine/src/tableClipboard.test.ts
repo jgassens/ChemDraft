@@ -90,6 +90,7 @@ describe("table clipboard payloads", () => {
     const element = document.querySelector("table")!;
     expect(element.getAttribute("width")).toBe(String(Math.round(layout.bodyBox.width)));
     expect(element.getAttribute("style")).toContain(`width:${layout.bodyBox.width * 0.75}pt`);
+    expect(element.getAttribute("style")).toContain("background:transparent;mso-shading:transparent");
     expect(element.getAttribute("style")).toContain("mso-padding-alt:1.5pt 4.5pt 1.5pt 4.5pt");
     for (const [index, cell] of [...document.querySelectorAll("td")].entries()) {
       const column = layout.columns[index % table.columns.length];
@@ -107,7 +108,12 @@ describe("table clipboard payloads", () => {
     const document = htmlDocument(payloads.html);
     const rows = [...document.querySelectorAll("tr")];
     expect(document.querySelectorAll("thead tr")).toHaveLength(1);
-    expect(rows[0].getAttribute("style")).toBe("mso-yfti-firstrow:yes");
+    for (const row of rows) {
+      expect(row.getAttribute("style")).toContain("background:transparent;mso-shading:transparent");
+    }
+    expect(rows[0].getAttribute("style")).toBe(
+      "mso-yfti-firstrow:yes;background:transparent;mso-shading:transparent"
+    );
     rows.forEach((row, index) => {
       for (const cell of row.querySelectorAll("td")) {
         expect(cell.getAttribute("valign")).toBe(index === 0 ? "bottom" : null);
