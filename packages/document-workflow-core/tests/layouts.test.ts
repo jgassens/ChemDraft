@@ -132,7 +132,7 @@ describe("shared reaction and grid layout", () => {
       nativeTextStyleFromObjectStyle(condition.style)) + 2 * (reactionArrowHeadLengthPx + 0.25 * DocumentTextStyle.fontSizePx));
     expect(layout.molecules[1]!.x - layout.molecules[0]!.x).toBeCloseTo(40 + 48 + plusSize.width);
     const conditionStyle = nativeTextStyleFromObjectStyle(condition.style);
-    expect(condition.y + (1 + Number(condition.style.textOffsetYEm ?? 0)) * conditionStyle.fontSizePx).toBeCloseTo(
+    expect(condition.y + conditionStyle.fontSizePx).toBeCloseTo(
       120 - 0.75 - (0.3 + 0.21) * conditionStyle.fontSizePx
     );
     const page = layout.document.pages[0]!;

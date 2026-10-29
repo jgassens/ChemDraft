@@ -3504,9 +3504,7 @@ function planTextObjectSvg(object: TextObject, layerIndex: number): PageSvgEleme
   const x = textStyle.textAlign === "center"
     ? object.x + object.width / 2
     : textStyle.textAlign === "right" ? object.x + object.width : object.x;
-  // Reaction labels can move their frame away from the shaft without moving their ink.
-  // An em offset scales with the text and frame in scalePageGeometry.
-  const y = object.y + textStyle.fontSizePx * (1 + (metadataNumber(object.style.textOffsetYEm) ?? 0));
+  const y = object.y + textStyle.fontSizePx;
   const lineAdvance = textStyle.fontSizePx * textStyle.lineHeight + textStyle.paragraphSpacingPx;
   // Preserve the established markup for wholly unscripted text. With scripts, reset each
   // line's baseline, then move relatively within it to keep one text-anchor chunk per line.

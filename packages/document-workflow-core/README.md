@@ -104,9 +104,8 @@ line's lowest ink to the next line's highest ink; authored paragraph spacing cou
 Measurement uses that same block style.
 `src/textObjects.ts` reuses the renderer's **72%** script font size and existing sizing conventions:
 **6 px** horizontal / **4 px** vertical padding, minimum box **36 × 24 px**, dimensions rounded to
-**0.01 px**. Label frames extend away from the shaft's stroke band plus **2 px**, with a
-`textOffsetYEm` style offset preserving the text's position when the minimum frame or padding
-would cross that band. The offset is in parent em and scales with the text.
+**0.01 px**. Padding follows the line box vertically, matching the renderer's baseline origin.
+At small font sizes a label's frame (minimum text-object height) can overlap the arrow's click area; the text itself keeps its clearance.
 `layout-engine/src/textMetrics.ts` owns the shared width factors, **0.21 em** descent, **0.716 em**
 cap height and the renderer's script metrics: **0.72** font scale and an explicit **0.4 parent em**
 baseline offset down for subscripts or up for superscripts. A line's lowest ink is the greater of

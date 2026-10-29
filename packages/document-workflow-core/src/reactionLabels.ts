@@ -43,7 +43,6 @@ const labelWidthInBonds = 10;
 const minimumArrowInBonds = 2.5;
 const arrowHeadClearanceEm = 0.25;
 const arrowClearanceEm = 0.3;
-const shaftHitPaddingPx = 2;
 const scriptLineClearanceEm = 0.12;
 const captionClearanceEm = 0.8;
 const minimumCaptionWidthInBonds = 8;
@@ -163,18 +162,6 @@ export function layoutReactionLabels(
   const below = plan.below ? object(plan.below, `${idPrefix}_below`, midpoint.x,
     midpoint.y + extent.bottom + clearance
       + (plan.below.ink[0]!.top - 1) * plan.below.style.fontSizePx) : undefined;
-  // Minimum-height frames and line-box padding must grow away from the shaft. Keep
-  // the rendered baseline fixed with a local em offset while translating only the frame.
-  const moveFrame = (label: TextObject, y: number, fontSizePx: number) => {
-    if (y !== label.y) {
-      label.style.textOffsetYEm = (label.y - y) / fontSizePx;
-      label.y = y;
-    }
-  };
-  if (above) moveFrame(above, Math.min(above.y,
-    midpoint.y + extent.top - shaftHitPaddingPx - above.height), plan.above!.style.fontSizePx);
-  if (below) moveFrame(below, Math.max(below.y,
-    midpoint.y + extent.bottom + shaftHitPaddingPx), plan.below!.style.fontSizePx);
   const minX = Math.min(schemeBounds.minX, above?.x ?? Infinity, below?.x ?? Infinity);
   const maxX = Math.max(schemeBounds.maxX, above ? above.x + above.width : -Infinity,
     below ? below.x + below.width : -Infinity);

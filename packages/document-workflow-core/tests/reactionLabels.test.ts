@@ -330,7 +330,7 @@ describe("reaction label policy", () => {
   });
 
   it.each(["forward", "equilibrium", "resonance", "retrosynthesis", "unknown"] as const)(
-    "keeps every line and label frame clear of %s shafts and heads at 8/10/14 px", (arrowKind) => {
+    "keeps text ink clear of %s shafts and heads at 8/10/14 px", (arrowKind) => {
       expect(reactionArrowHeadDepthPx(arrowKind)).toBe(arrowKind === "retrosynthesis" ? 10.75
         : arrowKind === "unknown" ? 0 : 9);
       for (const fontSizePx of [8, 10, 14]) {
@@ -344,13 +344,11 @@ describe("reaction label policy", () => {
           const shaftYs = geometry.lines.filter(line => line.start.y === line.end.y).map(line => line.start.y);
           const shaftTop = Math.min(...shaftYs) - 0.75;
           const shaftBottom = Math.max(...shaftYs) + 0.75;
-          expect(result.above!.y + result.above!.height).toBeLessThanOrEqual(shaftTop - 2 + 1e-8);
-          expect(result.below!.y).toBeGreaterThanOrEqual(shaftBottom + 2 - 1e-8);
           const lastAbove = renderedLines(result.above!).lines.at(-1)!;
           const firstBelow = renderedLines(result.below!).lines[0]!;
           expect(shaftTop - renderedInkEnvelope(lastAbove, fontSizePx).bottom).toBeCloseTo(0.3 * fontSizePx, 8);
           expect(renderedInkEnvelope(firstBelow, fontSizePx).top - shaftBottom).toBeCloseTo(0.3 * fontSizePx, 8);
-          // Frame adjustment must not move ink. These expectations use independent parent-em literals.
+          // Text placement uses independent parent-em literals.
           expect(lastAbove.baseline).toBeCloseTo(shaftTop - fontSizePx * (0.3 +
             (scripted ? 0.4 : 0.21)), 8);
           expect(firstBelow.baseline).toBeCloseTo(shaftBottom + fontSizePx * (0.3 +
@@ -363,7 +361,10 @@ describe("reaction label policy", () => {
               max: Math.max(line.start.x, line.end.x) + 0.75
             }))
           ];
-          for (const object of [result.above!, result.below!]) {
+          for (const [object, block] of [[result.above!, result.plan.above!], [result.below!, result.plan.below!]] as const) {
+            expect(object.width).toBe(block.size.width);
+            expect(object.height).toBe(block.size.height);
+            expect(Number(renderedLines(object).rendered.attrs.y)).toBeCloseTo(object.y + fontSizePx, 8);
             const style = nativeTextStyleFromObjectStyle(object.style);
             for (const line of renderedLines(object).lines) {
               const width = estimateNativeTextSpanLineWidth(line.runs.map((run): TextSpan => ({ text: content(run),
@@ -381,7 +382,7 @@ describe("reaction label policy", () => {
     }
   );
 
-  it("preserves frame offsets and rendered ink when a reaction page is scaled", () => {
+  it("scales frames and rendered ink together with the reaction page", () => {
     const result = labels({ above: ["heat"], below: ["CH2Cl2"], textStyle: { fontSizePx: 8 } });
     const page = { ...createEmptyDocument().pages[0]!, objects: [result.above!, result.below!] };
     const scaled = scalePageGeometry(page, 2);
