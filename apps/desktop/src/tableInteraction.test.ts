@@ -80,11 +80,16 @@ describe("table cell editing decisions (shared by macOS and Windows)", () => {
     expect(decide("Enter", 0, 1, "", 0, 0, { isComposing: true })).toEqual({ kind: "caret" });
     expect(decide("x")).toEqual({ kind: "caret" });
   });
-  it("hit-tests the layout's actual cells, including stored-frame rotation", () => {
-    const rotated = { ...table, rotation: 37 };
-    const box = planTableLayout(rotated).cells[3].box;
-    const point = transformPointForObject(rotated, { x: box.x + box.width / 2, y: box.y + box.height / 2 });
-    expect(tableCellAtPoint(rotated, point)).toEqual(cell(1, 1));
-    expect(tableCellAtPoint(table, { x: 0, y: 0 })).toBeUndefined();
+  it.each([0, 37, 90, -45])("hit-tests every empty cell with stored-frame rotation %s", rotation => {
+    const rotated = { ...table, rotation };
+    const layout = planTableLayout(rotated);
+    for (const { box, rowIndex, columnIndex } of layout.cells) {
+      const point = transformPointForObject(rotated, { x: box.x + box.width / 2, y: box.y + box.height / 2 });
+      expect(tableCellAtPoint(rotated, point)).toEqual(cell(rowIndex, columnIndex));
+    }
+    for (const point of [{ x: table.x - 1, y: table.y - 1 },
+      { x: table.x + layout.width + 1, y: table.y + layout.height + 1 }]) {
+      expect(tableCellAtPoint(rotated, transformPointForObject(rotated, point))).toBeUndefined();
+    }
   });
 });

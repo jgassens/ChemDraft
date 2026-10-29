@@ -101,6 +101,8 @@ describe("table commands", () => {
     expect(resolveActiveTableCell(table, { ...expected, rowId: "removed" })).toEqual(expected);
     const active = { ...expected, rowId: table.rows[2].id, columnId: table.columns[3].id };
     expect(resolveActiveTableCell(table, active)).toBe(active);
+    // Even shared row/column IDs must not carry a cell across tables (e.g. a note right-click).
+    expect(resolveActiveTableCell(table, { ...active, tableId: "another-table" })).toEqual(expected);
     expect(resolveActiveTableCell(undefined, active)).toBeUndefined();
   });
 

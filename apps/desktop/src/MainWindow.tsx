@@ -1,6 +1,6 @@
 import { applyTableCommand, applyTableFontCommand, applyTableObjectEdit, createTableCommands, createTableInsertAction, parseTableInsertCommandId, resolveActiveTableCell, selectedTable, tableInsertCommandId, tableInspectorSnapshot, type ActiveTableCell, type TableInsertDimensions } from "./tableCommands";
 import { TableCellEditor, TableColumnResizers, type TableCellEditorHandle } from "./tableCellEditor";
-import { tableEditingContent, tableTextAtPoint, type TableEditingAction } from "./tableInteraction";
+import { tableCellAtPoint, tableEditingContent, tableTextAtPoint, type TableEditingAction } from "./tableInteraction";
 import type { ActiveTableText } from "./tableCommands";
 import { tableValidationMessage } from "./tableCommands";
 import { tableCellElementId } from "@chemdraft/layout-engine";
@@ -1630,7 +1630,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.29.09.50-codex";
+const CURRENT_BUILD_STAMP = "10.29.10.30-codex";
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -2413,6 +2413,10 @@ export function MainWindow({
   const tableCellEditorRef = useRef<TableCellEditorHandle>(null);
   const [tableResizePreview, setTableResizePreview] = useState<TableObject>();
   const activeTableCell = resolveActiveTableCell(selectedTable(document), activeTableCellState);
+  // Context-menu commands can arrive before React renders the right-click's state update.
+  // Both native command dispatch and inline menu clicks read this synchronous target.
+  const activeTableCellRef = useRef(activeTableCell);
+  activeTableCellRef.current = activeTableCell;
   useEffect(() => {
     setActiveTableCell(current => current?.tableId === activeTableCell?.tableId &&
       current?.rowId === activeTableCell?.rowId && current?.columnId === activeTableCell?.columnId ? current : activeTableCell);
@@ -10120,7 +10124,7 @@ export function MainWindow({
           if (commit === false) return;
         }
         try {
-          const result = applyTableCommand(documentRef.current, action.id, activeTableCell,
+          const result = applyTableCommand(documentRef.current, action.id, activeTableCellRef.current,
             prefix => `${prefix}-${crypto.randomUUID()}`, editing);
           if (result) { commitDocumentChange(result.document, result.label); setStatus(result.label); }
         } catch (error) {
@@ -18893,6 +18897,20 @@ export function MainWindow({
 
     event.preventDefault();
     event.stopPropagation();
+    if (object.type === "table") {
+      // Commit before changing cells: contextmenu can also arrive without a pointerdown/blur.
+      const commit = tableCellEditorRef.current?.commit();
+      if (commit === "composing") {
+        setStatus("Finish typing in the table first.");
+        return;
+      }
+      if (commit === false) return;
+      // Notes/whitespace keep this table's active cell, or resolve its default body cell.
+      const cell = (point ? tableCellAtPoint(object, point) : undefined)
+        ?? resolveActiveTableCell(object, activeTableCellRef.current);
+      activeTableCellRef.current = cell;
+      setActiveTableCell(cell);
+    }
     if (!preserveMultiSelection && !preserveFragmentSelection) {
       replacePresentDocument((current) => selectDocumentObject(current, objectId));
     }
