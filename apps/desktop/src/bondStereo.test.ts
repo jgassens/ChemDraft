@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { Molecule } from "openchemlib";
 import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
 import { applyPatches, moleculeToMolfileV3000, type ElectronMarkObject } from "@chemdraft/chem-core";
@@ -7,7 +8,7 @@ import {
   applyMoleculeBondStereo, applyMoleculeDoubleBondPosition, applyNativeMoleculeBondOrderTarget,
   applyNativeMoleculeBondOrderValueTarget, createPhase4Document, getSelectedMolecule,
   insertNativeMolfileMolecule, moveNativeMoleculeParts, nativeBondStereoAvailability,
-  rotateDocumentObject, nativeBondStereoFlipDisabledReason, type NativeBondOrderTarget
+  rotateDocumentObject, nativeBondStereoFlipDisabledReason, openNativeDocument, type NativeBondOrderTarget
 } from "./documentWorkflow";
 import { createBondStereoActions, moleculeBondStereoCommandId, moleculeBondStereoForCommand } from "./commands";
 import { createMoleculeInspectorModel } from "./moleculeInspectorModel";
@@ -22,6 +23,32 @@ function drawing(smiles: string) {
 }
 
 describe("bond stereo commands", () => {
+  it("preserves atom maps on opening a native document and refuses E/Z edits", () => {
+    const opened = openNativeDocument(readFileSync(new URL(
+      "../../../packages/fixtures/open-double-bonds/atom-mapped.chemdraft", import.meta.url), "utf8"));
+    expect(opened.warnings).toEqual([]);
+    expect(opened.document).toBeDefined();
+    const document = opened.document!;
+    const molecule = document.pages[0].objects[0];
+    expect(molecule.type).toBe("molecule");
+    if (molecule.type !== "molecule") throw new Error("Expected molecule fixture");
+    const lines = molecule.structure.split("\n");
+    const start = lines.findIndex(line => line.includes("V2000")) + 1;
+    expect(lines.slice(start, start + 4).map(line => Number(line.slice(60, 63)))).toEqual([1, 2, 3, 4]);
+    const bond = molecule.bonds.find(b => b.order === "double")!;
+    expect(bond.stereo).toBe("either");
+    const target: NativeBondOrderTarget = { objectId: molecule.id, kind: "bond", bondId: bond.id,
+      fromAtomId: bond.fromAtomId, toAtomId: bond.toAtomId, distanceToPointer: 0 };
+    const reason = "Atom mapping must be removed before changing E/Z";
+    expect(nativeBondStereoAvailability(document, [target], perceiveDoubleBondStereoFromMolfile))
+      .toEqual({ eitherDisabledReason: reason, geometryDisabledReason: reason });
+    expect(nativeBondStereoFlipDisabledReason(document, [target], perceiveDoubleBondStereoFromMolfile)).toBe(reason);
+    const before = structuredClone(document);
+    for (const value of ["either", "geometry", "flipped"] as const) {
+      expect(applyMoleculeBondStereo(document, [target], value, perceiveDoubleBondStereoFromMolfile)).toBe(document);
+    }
+    expect(document).toEqual(before);
+  });
   it("has value-encoded factories and specific reasons for every disabled command", () => {
     for (const value of ["either", "geometry", "flipped"] as const) {
       expect(moleculeBondStereoForCommand(moleculeBondStereoCommandId(value))).toEqual({ value });

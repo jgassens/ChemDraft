@@ -9,7 +9,7 @@ import { MainWindow } from "./MainWindow";
 import { createPhase4Document, getSelectedMolecule, insertNativeMolfileMolecule, selectDocumentObjects } from "./documentWorkflow";
 import { getAssistantHistoryPort } from "./assistant/historyPort";
 import { MemoryStorage } from "./testSupport/memoryStorage";
-import { openToolsetPopoverWindow, setToolsetPopoverContent } from "./window-manager";
+import { closeToolsetPopoverWindow, currentWindowLogicalPosition, openToolsetPopoverWindow, setToolsetPopoverContent } from "./window-manager";
 
 vi.mock("./window-manager", async importOriginal => ({
   ...await importOriginal<typeof import("./window-manager")>(),
@@ -130,6 +130,27 @@ function expectOpenedOnce() {
 }
 
 describe.each<ShortcutPlatform>(["macos", "windows"])("badge pointer priority (%s)", platform => {
+  it.each([false, true])("keeps the queued badge open with bond selected: %s", async selectedBond => {
+    const molecule = await mount(platform);
+    if (selectedBond) await click(object(), bondPoint(molecule));
+    const before = currentDocument(), selected = selection();
+    const point = badgePoint(molecule);
+    const badge = container.querySelector<SVGGElement>("[data-unspecified-bond-id]")!;
+    let finishPosition!: (position: { x: number; y: number }) => void;
+    const pendingPosition = new Promise<{ x: number; y: number }>(resolve => { finishPosition = resolve; });
+    vi.mocked(currentWindowLogicalPosition).mockImplementationOnce(() => pendingPosition);
+    await click(badge, point);
+    // Hold the native open across the selection render, as with a slow OS window request.
+    await act(async () => {
+      finishPosition({ x: 100, y: 200 });
+      await pendingPosition;
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    expectOpenedOnce();
+    expect(closeToolsetPopoverWindow).not.toHaveBeenCalled();
+    expect(selection()).toEqual(selected);
+    expect(currentDocument()).toBe(before);
+  });
   it("opens over an overlapping selection handle without starting resize or changing selection", async () => {
     const molecule = await mount(platform);
     await click(object(), bondPoint(molecule));
