@@ -2589,7 +2589,7 @@ export function MainWindow({
   const [saveWarningsReport, setSaveWarningsReport] = useState<OpenWarningsReport | undefined>();
   const [openWarningsListOpen, setOpenWarningsListOpen] = useState(false);
   const warningReports = fileWarningReports(openWarningsReport, saveWarningsReport);
-  const openWarnings = warningReports[0];
+  const openWarnings: OpenWarningsReport | undefined = warningReports[0];
   const fileWarningCount = warningReports.reduce((count, report) => count + report.warnings.length, 0);
   const openWarningsListShown = openWarningsListOpen && openWarnings !== undefined;
   const tabWarningsRef = useRef(openWarningsReport);
@@ -2597,7 +2597,7 @@ export function MainWindow({
   const tabSaveWarningsRef = useRef<OpenWarningsReport | undefined>(saveWarningsReport);
   tabSaveWarningsRef.current = saveWarningsReport;
   const tabPageFitRef = useRef<ImportedPageFitPromptState | undefined>(undefined);
-  const openWarningsRef = useRef(openWarnings);
+  const openWarningsRef = useRef<OpenWarningsReport | undefined>(openWarnings);
   openWarningsRef.current = openWarnings;
   const [exportDialog, setExportDialog] = useState<ExportDialogState | undefined>();
   const [exportError, setExportError] = useState<string>();
