@@ -457,14 +457,6 @@
   },
   {
     "file": "lib.rs",
-    "name": "set_toolset_window_focusable",
-    "async": false,
-    "generics": "",
-    "parameters": "app: tauri::AppHandle, toolset_id: String, focusable: bool,",
-    "returnType": "Result<(), String>"
-  },
-  {
-    "file": "lib.rs",
     "name": "window_logical_position",
     "async": false,
     "generics": "",

@@ -16,6 +16,7 @@ import { SortableContext, rectSortingStrategy, useSortable } from "@dnd-kit/sort
 import { CSS } from "@dnd-kit/utilities";
 import type { ToolsetGridLayout } from "@chemdraft/toolset-registry";
 import type { CommandSpec } from "./commands";
+import { PALETTE_INPUT_FOCUS_CANCEL_EVENT } from "./plugins/pluginPanelInputFocus";
 import {
   ToolbarWidgetStateContext,
   TOOLBAR_WIDGET_IDS,
@@ -814,28 +815,60 @@ function MoleculeInspectorNumericControl({
   const modelText = mixed ? "" : formatInspectorNumber(effectiveValue);
   // null follows the model; a focused draft survives incoming palette snapshots.
   const [draft, setDraft] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   const dirty = useRef(false);
   const pointerStepping = useRef(false);
+  const lastCommitted = useRef<number | undefined>(undefined);
+  const [sliderDraft, setSliderDraft] = useState<number | null>(null);
+  const sliderChanged = useRef<number | undefined>(undefined);
   const revert = () => {
     dirty.current = false;
+    lastCommitted.current = undefined;
     setDraft(null);
   };
+  useEffect(() => {
+    const input = inputRef.current;
+    const cancel = () => {
+      dirty.current = false;
+      pointerStepping.current = false;
+      lastCommitted.current = undefined;
+      setDraft(null);
+    };
+    input?.addEventListener(PALETTE_INPUT_FOCUS_CANCEL_EVENT, cancel);
+    return () => input?.removeEventListener(PALETTE_INPUT_FOCUS_CANCEL_EVENT, cancel);
+  }, []);
   const commit = (rawValue: string) => {
-    revert();
+    dirty.current = false;
     if (rawValue.trim() === "") {
       // Clearing a field or leaving an unedited Mixed field must never apply 0.
+      revert();
       return;
     }
     const parsed = Number(rawValue);
     if (Number.isFinite(parsed)) {
-      onCommit(commandId(Math.max(range.min, Math.min(range.max, parsed))));
+      const next = Math.max(range.min, Math.min(range.max, parsed));
+      // Keep steps local until the document's asynchronous snapshot catches up. Reverting
+      // here makes a held arrow (or native spin button) start every tick at the old model.
+      setDraft(formatInspectorNumber(next));
+      if (next !== lastCommitted.current) {
+        lastCommitted.current = next;
+        onCommit(commandId(next));
+      }
+    } else {
+      revert();
     }
+  };
+  const commitSlider = () => {
+    const next = sliderChanged.current;
+    sliderChanged.current = undefined;
+    if (next !== undefined) onCommit(commandId(next));
   };
 
   return (
     <label className="molecule-inspector-field molecule-inspector-number-field">
       <span>{label}</span>
       <input
+        ref={inputRef}
         type="number"
         min={range.min}
         max={range.max}
@@ -845,7 +878,7 @@ function MoleculeInspectorNumericControl({
         disabled={disabled}
         aria-label={label}
         data-palette-control="true"
-        onFocus={() => setDraft(modelText)}
+        onFocus={() => setDraft((current) => current ?? modelText)}
         onPointerDown={(event) => {
           event.stopPropagation();
           pointerStepping.current = true;
@@ -856,6 +889,11 @@ function MoleculeInspectorNumericControl({
           // Native spin buttons emit input during a pointer press, without a text
           // inputType. Typing/paste carry an inputType (and keydown clears the flag).
           if (pointerStepping.current && !(event.nativeEvent as InputEvent).inputType) {
+            if (mixed && (draft ?? modelText) === "") {
+              // Native spin buttons step a blank field to min. Mixed has no starting value.
+              event.currentTarget.value = "";
+              return;
+            }
             commit(event.currentTarget.value);
             return;
           }
@@ -866,9 +904,8 @@ function MoleculeInspectorNumericControl({
           pointerStepping.current = false;
           if (dirty.current) {
             commit(event.currentTarget.value);
-          } else {
-            revert();
           }
+          revert();
         }}
         onKeyDown={(event) => {
           pointerStepping.current = false;
@@ -880,12 +917,14 @@ function MoleculeInspectorNumericControl({
             onCancel?.();
           } else if (event.key === "ArrowUp" || event.key === "ArrowDown") {
             event.preventDefault();
+            if (mixed && event.currentTarget.value === "") return;
+            const previous = event.currentTarget.value;
             if (event.key === "ArrowUp") {
               event.currentTarget.stepUp();
             } else {
               event.currentTarget.stepDown();
             }
-            commit(event.currentTarget.value);
+            if (event.currentTarget.value !== previous) commit(event.currentTarget.value);
           }
         }}
       />
@@ -894,17 +933,27 @@ function MoleculeInspectorNumericControl({
         min={range.min}
         max={range.max}
         step={range.step}
-        value={effectiveValue}
+        value={sliderDraft ?? effectiveValue}
         disabled={disabled}
         aria-label={`${label} slider`}
         data-palette-control="true"
         onPointerDown={(event) => event.stopPropagation()}
-        onChange={(event) => onPreview(commandId(Number(event.currentTarget.value)))}
+        onChange={(event) => {
+          const next = Number(event.currentTarget.value);
+          if (next === (sliderDraft ?? effectiveValue)) return;
+          sliderChanged.current = next;
+          setSliderDraft(next);
+          onPreview(commandId(next));
+        }}
         onPointerUp={(event) => {
           event.stopPropagation();
-          commit(event.currentTarget.value);
+          commitSlider();
         }}
-        onKeyUp={(event) => commit(event.currentTarget.value)}
+        onKeyUp={commitSlider}
+        onBlur={() => {
+          commitSlider();
+          setSliderDraft(null);
+        }}
       />
     </label>
   );
@@ -3060,12 +3109,14 @@ export function ColorPickerPopoverBody({
   const normalizedActiveColor = normalizeHexColor(activeColor ?? value) ?? normalizedValue;
   const [tab, setTab] = useState<ColorPickerTab>("color");
   const [hexInput, setHexInput] = useState(normalizedValue.toUpperCase());
+  const settledHex = useRef<string | undefined>(undefined);
   const draftRgb = useMemo(() => hexToRgbColor(normalizedValue) ?? { r: 17, g: 17, b: 17 }, [normalizedValue]);
   const draftCmyk = useMemo(() => rgbToCmykColor(draftRgb), [draftRgb]);
   const palettes = useMemo(() => colorPickerPaletteSets(), []);
 
   useEffect(() => {
     setHexInput(normalizedValue.toUpperCase());
+    settledHex.current = undefined;
   }, [normalizedValue]);
 
   const previewColor = (color: string) => {
@@ -3095,6 +3146,7 @@ export function ColorPickerPopoverBody({
     }
 
     setHexInput(normalized.toUpperCase());
+    settledHex.current = normalized;
     onPreviewColor(normalized);
     onCommitColor(normalized);
   };
@@ -3146,7 +3198,8 @@ export function ColorPickerPopoverBody({
       setHexInput(normalizedValue.toUpperCase());
       return;
     }
-    if (normalized !== normalizedValue) {
+    // Enter can release the input lease and blur before React publishes the new colour.
+    if (normalized !== normalizedValue && normalized !== settledHex.current) {
       applyAndCommitColor(normalized);
     } else {
       setHexInput(normalized.toUpperCase());

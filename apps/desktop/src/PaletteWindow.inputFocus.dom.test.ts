@@ -6,12 +6,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PaletteWindow } from "./PaletteWindow";
 import { PalettePopoverWindow } from "./PalettePopoverWindow";
 import { createMoleculeInspectorModel } from "./moleculeInspectorModel";
-import { allShellCommands } from "./commands";
+import { allShellCommands, moleculeStructureBondLengthCommandId, objectCustomColorCommandId } from "./commands";
 import { createPhase4Document } from "./documentWorkflow";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import {
   broadcastToolsetCustomizeMode, broadcastToolsetTextStyle, createToolsetTextStylePayload,
-  sendPaletteCommand, sendPaletteCommandCancel
+  sendPaletteCommand, sendPaletteCommandCancel, sendPaletteCommandCommit
 } from "./window-manager";
 import type { NativePanelFocusEvent } from "./plugins/pluginPanelInputFocus";
 
@@ -26,13 +26,14 @@ vi.mock("./window-manager", async (original) => ({
   ...await original<typeof import("./window-manager")>(),
   isDesktopRuntime: () => true,
   sendPaletteCommand: vi.fn(async () => undefined),
+  sendPaletteCommandCommit: vi.fn(async () => undefined),
   sendPaletteCommandCancel: vi.fn(async () => undefined)
 }));
 vi.mock("./window-manager/tauriEvents", async (original) => ({
   ...await original<typeof import("./window-manager/tauriEvents")>(),
-  listenCurrentWindowEvent: vi.fn(async (_name: string, listener: (event: { payload: NativePanelFocusEvent }) => void) => {
-    native.notify = listener;
-    return () => { native.notify = undefined; };
+  listenCurrentWindowEvent: vi.fn(async (name: string, listener: (event: { payload: NativePanelFocusEvent }) => void) => {
+    if (name === "chemdraft://plugin-panel-focus") native.notify = listener;
+    return () => { if (native.notify === listener) native.notify = undefined; };
   })
 }));
 vi.mock("./keyboardShortcuts", async (original) => {
@@ -80,6 +81,7 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
       command === "register_plugin_panel_input_focus" ? "palette-page" : args?.editing);
     vi.mocked(sendPaletteCommand).mockClear();
     vi.mocked(sendPaletteCommandCancel).mockClear();
+    vi.mocked(sendPaletteCommandCommit).mockClear();
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -88,11 +90,14 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     await act(async () => root.unmount());
     container.remove();
     await flush();
+    vi.unstubAllGlobals();
   });
 
   async function mountSettings() {
     await act(async () => root.render(createElement(PaletteWindow, { toolsetId: "core.drawnStructureSettings" })));
     await flush();
+    // jsdom has no pointer capture implementation; support the shell's drag cleanup.
+    container.querySelector<HTMLElement>(".palette-window-shell")!.hasPointerCapture = () => false;
     const model = createMoleculeInspectorModel(selectedMolecule(), { selectedObjectIds: ["mol_input_focus"] });
     await act(async () => {
       await broadcastToolsetTextStyle(createToolsetTextStylePayload(DefaultNativeTextStyle, "normal", undefined, "fill", model));
@@ -105,6 +110,104 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
   function leases() {
     return native.invoke.mock.calls.filter(([command]) => command === "set_plugin_panel_input_focus");
   }
+
+  async function type(input: HTMLInputElement, value: string) {
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+      input.dispatchEvent(new InputEvent("input", { inputType: "insertText", bubbles: true }));
+    });
+  }
+
+  it.each(["select", "range", "checkbox", "color"])("does not lease a %s and forwards its next palette hotkey", async (kind) => {
+    await mountSettings();
+    const control = container.querySelector<HTMLElement>(kind === "select" ? "select:not(:disabled)" : `input[type="${kind}"]`)!;
+    await act(async () => {
+      control.dispatchEvent(new MouseEvent("pointerdown", { button: 0, bubbles: true }));
+      control.focus();
+      control.click();
+    });
+    await flush();
+    expect(leases().filter(([, args]) => args.editing)).toEqual([]);
+    vi.mocked(sendPaletteCommand).mockClear();
+    native.resolved.mockClear();
+    const event = new KeyboardEvent("keydown", { key: "3", bubbles: true, cancelable: true });
+    await act(async () => control.dispatchEvent(event));
+    expect(native.resolved).toHaveBeenCalledOnce();
+    expect(sendPaletteCommand).toHaveBeenCalledOnce();
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it("does not forward a hotkey in the native acquisition/refocus gap", async () => {
+    const input = await mountSettings();
+    let settle!: (acquired: boolean) => void;
+    native.invoke.mockImplementationOnce(() => new Promise<boolean>((resolve) => { settle = resolve; }));
+    await act(async () => input.focus());
+    await flush();
+    expect(document.activeElement).not.toBe(input);
+    native.resolved.mockClear();
+    await act(async () => document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "3", bubbles: true, cancelable: true })));
+    expect(native.resolved).not.toHaveBeenCalled();
+    expect(sendPaletteCommand).not.toHaveBeenCalled();
+    settle(true);
+    await flush();
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("reverts a numeric draft after a failed lease and follows subsequent model updates", async () => {
+    const input = await mountSettings();
+    let settle!: (acquired: boolean) => void;
+    native.invoke.mockImplementationOnce(() => new Promise<boolean>((resolve) => { settle = resolve; }));
+    await act(async () => input.focus());
+    await flush();
+    await type(input, "30"); // Input already delivered while the native acquisition reply is pending.
+    settle(false);
+    await flush();
+    expect(document.activeElement).not.toBe(input);
+    expect(input.value).toBe("60");
+    const model = createMoleculeInspectorModel(selectedMolecule(), { selectedObjectIds: ["mol_input_focus"] });
+    model.structure.values.bondLengthPx.value = 40;
+    await act(async () => broadcastToolsetTextStyle(createToolsetTextStylePayload(DefaultNativeTextStyle, "normal", undefined, "fill", model)));
+    expect(input.value).toBe("40");
+    expect(sendPaletteCommandCommit).not.toHaveBeenCalled();
+  });
+
+  it("commits the first unfocused native spinner click once across asynchronous lease refocus", async () => {
+    const input = await mountSettings();
+    let settle!: (acquired: boolean) => void;
+    native.invoke.mockImplementationOnce(() => new Promise<boolean>((resolve) => { settle = resolve; }));
+    await act(async () => {
+      input.dispatchEvent(new MouseEvent("pointerdown", { button: 0, bubbles: true }));
+      input.focus();
+    });
+    await flush();
+    await act(async () => {
+      input.stepUp(); // jsdom has no spin-button hit target; run the native default explicitly.
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
+    });
+    settle(true);
+    await flush();
+    expect(input.value).toBe("60.5");
+    expect(sendPaletteCommandCommit).toHaveBeenCalledExactlyOnceWith(moleculeStructureBondLengthCommandId(60.5));
+    await act(async () => input.blur());
+    expect(sendPaletteCommandCommit).toHaveBeenCalledTimes(1);
+  });
+
+  it("Tabs from a typed number to its slider and commits only the typed value", async () => {
+    const input = await mountSettings();
+    await act(async () => input.focus());
+    await flush();
+    await type(input, "30");
+    const slider = container.querySelector<HTMLInputElement>('input[aria-label="Target bond length slider"]')!;
+    const tab = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+    await act(async () => input.dispatchEvent(tab));
+    if (!tab.defaultPrevented) await act(async () => slider.focus());
+    await flush();
+    expect(document.activeElement).toBe(slider);
+    await act(async () => slider.dispatchEvent(new KeyboardEvent("keyup", { key: "Tab", bubbles: true })));
+    expect(sendPaletteCommandCommit).toHaveBeenCalledExactlyOnceWith(moleculeStructureBondLengthCommandId(30));
+    expect(leases().map(([, args]) => args.editing)).toEqual([true, false]);
+  });
 
   it("acquires for real control focus and releases on real blur", async () => {
     const input = await mountSettings();
@@ -216,6 +319,60 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     await act(async () => input.blur());
     await flush();
     expect(leases().map(([, args]) => args.editing)).toEqual([true, false]);
+  });
+
+  it("commits the popover hex field once on Enter before releasing its lease", async () => {
+    await act(async () => root.render(createElement(PalettePopoverWindow, { prewarm: true })));
+    await flush();
+    const input = container.querySelector<HTMLInputElement>('.color-hex-field input')!;
+    await act(async () => input.focus());
+    await flush();
+    await type(input, "#abc");
+    await act(async () => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
+    await flush();
+    expect(sendPaletteCommandCommit).toHaveBeenCalledExactlyOnceWith(objectCustomColorCommandId("#aabbcc"));
+    expect(document.activeElement).not.toBe(input);
+    expect(leases().map(([, args]) => args.editing)).toEqual([true, false]);
+  });
+
+  it("keeps two open palettes' lease generations and native loss listeners independent", async () => {
+    const first = await mountSettings();
+    const firstNotify = native.notify!;
+    const secondContainer = document.createElement("div");
+    document.body.append(secondContainer);
+    const secondRoot = createRoot(secondContainer);
+    try {
+      await act(async () => secondRoot.render(createElement(PaletteWindow, { toolsetId: "core.main" })));
+      await flush();
+      const secondNotify = native.notify!;
+      await act(async () => broadcastToolsetCustomizeMode({ toolsetId: "core.main", active: true }));
+      const second = secondContainer.querySelector<HTMLInputElement>('[aria-label="Search toolbar items"]')!;
+      // Concurrent dynamic imports in the runner can reach Tauri's actual invoke wrapper.
+      // After mounting both windows, terminate that route at the same mocked native boundary.
+      vi.stubGlobal("__TAURI_INTERNALS__", { invoke: native.invoke });
+      await act(async () => first.focus());
+      await flush();
+      expect(document.activeElement === first, "first acquired").toBe(true);
+      const firstGeneration = leases().at(-1)![1].generation;
+      await act(async () => second.focus());
+      await act(async () => vi.waitFor(() => expect(document.activeElement === second, "second acquired").toBe(true)));
+      const secondGeneration = leases().at(-1)![1].generation;
+      expect(secondGeneration).not.toBe(firstGeneration);
+      await act(async () => firstNotify({ payload: { kind: "deactivated", generation: firstGeneration } }));
+      await flush();
+      expect(document.activeElement).toBe(second);
+      await act(async () => secondNotify({ payload: { kind: "deactivated", generation: secondGeneration } }));
+      await flush();
+      expect(document.activeElement).not.toBe(second);
+      await act(async () => first.focus());
+      await flush();
+      expect(document.activeElement).toBe(first);
+      expect(leases().map(([, args]) => args.editing)).toEqual([true, false, true, false, true]);
+    } finally {
+      await act(async () => secondRoot.unmount());
+      secondContainer.remove();
+      vi.unstubAllGlobals();
+    }
   });
 
   it("keeps the colour popover's Escape dismissal while releasing its input lease", async () => {

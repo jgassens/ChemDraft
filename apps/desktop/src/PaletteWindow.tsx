@@ -13,7 +13,8 @@ import { writeClipboardTextItems } from "./clipboard";
 import { allShellCommands, type CommandSpec } from "./commands";
 import { createPhase4Document } from "./documentWorkflow";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
-import { installPaletteInputFocus, panelEditableControl } from "./plugins/pluginPanelInputFocus";
+import { installPaletteInputFocus, isPaletteInputFocusPending } from "./plugins/pluginPanelInputFocus";
+import { isTextEditingElement } from "./editHistoryRouting";
 import { applyKeybindingSchemeToCommands } from "./keybindingScheme";
 import { isCompoundLayoutCommand } from "./compoundLayoutSettings";
 import { useCompoundLayoutTools } from "./useCompoundLayoutTools";
@@ -662,8 +663,20 @@ export function PaletteWindow({
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (panelEditableControl(event.target)) return;
-      const commandId = shortcutRegistry.resolve(event);
+      const target = event.target instanceof Element ? event.target : null;
+      if (event.defaultPrevented || isPaletteInputFocusPending(shellRef.current) ||
+        isTextEditingElement(target)) return;
+      // The shared registry conservatively ignores all form controls. Palette non-text
+      // controls keep document shortcuts, so resolve from their surrounding surface.
+      const commandId = shortcutRegistry.resolve({
+        key: event.key,
+        altKey: event.altKey,
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey,
+        shiftKey: event.shiftKey,
+        repeat: event.repeat,
+        target: target?.closest("input, select")?.parentElement ?? event.target
+      });
       if (!commandId) {
         return;
       }

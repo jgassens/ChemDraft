@@ -71,7 +71,6 @@ fn main() {
             "confirm_prompted_quit",
             "request_quit_after_close",
             "close_toolset_popover",
-            "set_toolset_window_focusable",
             "route_toolset_command",
             "sync_plugin_menu_items",
             "read_clipboard_payload",

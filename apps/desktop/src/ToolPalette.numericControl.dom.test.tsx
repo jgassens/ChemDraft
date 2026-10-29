@@ -93,7 +93,7 @@ describe("palette numeric controls", () => {
     expect(onInvoke).not.toHaveBeenCalled();
     await key("Enter");
     expect(onCommit).toHaveBeenCalledExactlyOnceWith(moleculeStructureBondLengthCommandId(30));
-    expect(field().value).toBe("22");
+    expect(field().value).toBe("30");
     model = inspectorModel(30);
     await render();
     expect(field().value).toBe("30");
@@ -179,5 +179,100 @@ describe("palette numeric controls", () => {
     expect(onCommit).toHaveBeenCalledExactlyOnceWith(moleculeStructureBondLengthCommandId(30));
     await act(async () => slider.blur());
     expect(onCommit).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([false, true])("Tab to the slider commits only a typed number (Mixed: %s)", async (mixed) => {
+    if (mixed) {
+      model.structure.values.bondLengthPx = { value: null, mixed: true };
+      await act(async () => field().blur());
+      await render();
+      await act(async () => field().focus());
+    } else {
+      await input("30");
+    }
+    const slider = container.querySelector<HTMLInputElement>('input[aria-label="Target bond length slider"]')!;
+    await key("Tab");
+    // jsdom does not implement Tab's default focus traversal. Perform that browser action,
+    // including its real blur/focus events, then deliver keyup to the newly focused slider.
+    await act(async () => slider.focus());
+    await act(async () => slider.dispatchEvent(new KeyboardEvent("keyup", { key: "Tab", bubbles: true })));
+    await act(async () => slider.blur());
+    expect(onCommit.mock.calls).toEqual(mixed ? [] : [[moleculeStructureBondLengthCommandId(30)]]);
+    expect(onPreview).not.toHaveBeenCalled();
+  });
+
+  it("commits the changed slider value on arrow release before a model snapshot arrives", async () => {
+    const slider = container.querySelector<HTMLInputElement>('input[aria-label="Target bond length slider"]')!;
+    await act(async () => slider.focus());
+    await key("ArrowUp", slider);
+    // Browser range stepping is a default action absent from jsdom.
+    await input("22.5", slider);
+    await act(async () => slider.dispatchEvent(new KeyboardEvent("keyup", { key: "ArrowUp", bubbles: true })));
+    expect(onPreview).toHaveBeenCalledExactlyOnceWith(moleculeStructureBondLengthCommandId(22.5));
+    expect(onCommit).toHaveBeenCalledExactlyOnceWith(moleculeStructureBondLengthCommandId(22.5));
+  });
+
+  it("steps from the current draft during held ArrowUp without duplicate commits", async () => {
+    for (let i = 0; i < 4; i++) {
+      await act(async () => field().dispatchEvent(new KeyboardEvent("keydown", {
+        key: "ArrowUp", repeat: i > 0, bubbles: true, cancelable: true
+      })));
+    }
+    expect(onCommit.mock.calls).toEqual([22.5, 23, 23.5, 24].map((value) => [moleculeStructureBondLengthCommandId(value)]));
+    await act(async () => field().blur());
+    expect(onCommit).toHaveBeenCalledTimes(4);
+  });
+
+  it("steps a held native spinner from each current value and stops committing at the limit", async () => {
+    await act(async () => field().dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })));
+    for (let i = 0; i < 4; i++) {
+      await act(async () => {
+        field().stepUp();
+        field().dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    }
+    expect(onCommit.mock.calls).toEqual([22.5, 23, 23.5, 24].map((value) => [moleculeStructureBondLengthCommandId(value)]));
+    await act(async () => field().dispatchEvent(new MouseEvent("pointerup", { bubbles: true })));
+    await input("120");
+    await key("Enter");
+    await key("ArrowUp");
+    await act(async () => field().blur());
+    expect(onCommit.mock.calls.at(-1)).toEqual([moleculeStructureBondLengthCommandId(120)]);
+    expect(onCommit).toHaveBeenCalledTimes(5);
+  });
+
+  it.each([false, true])("ignores unchanged slider clicks, keyups and blur (Mixed: %s)", async (mixed) => {
+    await act(async () => field().blur());
+    if (mixed) {
+      model.structure.values.bondLengthPx = { value: null, mixed: true };
+      await render();
+    }
+    const slider = container.querySelector<HTMLInputElement>('input[aria-label="Target bond length slider"]')!;
+    await act(async () => {
+      slider.focus();
+      slider.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+      slider.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
+      slider.dispatchEvent(new KeyboardEvent("keyup", { key: "Shift", bubbles: true }));
+      slider.blur();
+    });
+    expect(onCommit).not.toHaveBeenCalled();
+    expect(onPreview).not.toHaveBeenCalled();
+  });
+
+  it.each(["ArrowUp", "ArrowDown", "spinner"])("leaves Mixed unchanged on %s until text or slider input", async (action) => {
+    await act(async () => field().blur());
+    model.structure.values.bondLengthPx = { value: null, mixed: true };
+    await render();
+    await act(async () => field().focus());
+    if (action === "spinner") {
+      await act(async () => field().dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })));
+      await input("8"); // Chromium/WebKit's native spin default from a blank min=8 field.
+      await act(async () => field().dispatchEvent(new MouseEvent("pointerup", { bubbles: true })));
+    } else {
+      await key(action);
+    }
+    await act(async () => field().blur());
+    expect(onCommit).not.toHaveBeenCalled();
+    expect(field().value).toBe("");
   });
 });

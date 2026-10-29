@@ -2,14 +2,19 @@ import { isDesktopRuntime } from "../window-manager";
 import { listenCurrentWindowEvent } from "../window-manager/tauriEvents";
 import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { detectDesktopShortcutPlatform } from "../keyboardShortcuts";
+import { isTextEditingElement } from "../editHistoryRouting";
 
 /** Only editable controls borrow the document's keyboard focus. Labels count as their control. */
-export function panelEditableControl(target: EventTarget | null): HTMLElement | undefined {
+export function panelEditableControl(target: EventTarget | null, textEntryOnly = false): HTMLElement | undefined {
   let element = target instanceof Element ? target : target instanceof Node ? target.parentElement : null;
   const label = element?.closest("label");
-  if (label instanceof HTMLLabelElement && label.control) element = label.control;
+  // A numeric label also contains a range. Resolve the actual control before its label so
+  // clicking that range cannot acquire a text lease on behalf of the number field.
+  if ((!textEntryOnly || !element?.closest("input, textarea, select, [contenteditable]")) &&
+    label instanceof HTMLLabelElement && label.control) element = label.control;
   const control = element?.closest("input, textarea, select, [contenteditable]");
   if (!(control instanceof HTMLElement) || control.matches(":disabled")) return;
+  if (textEntryOnly && !isTextEditingElement(control)) return;
   if (control instanceof HTMLInputElement) {
     if (control.readOnly || ["hidden", "button", "submit", "reset", "image"].includes(control.type)) return;
     return control;
@@ -29,6 +34,13 @@ export interface NativePanelFocusEvent {
 // resets at PageLoadEvent::Started when a reload creates a fresh JS counter.
 let nextGeneration = 0;
 let pageToken: Promise<string> | undefined;
+const pendingPaletteShells = new WeakSet<HTMLElement>();
+export const PALETTE_INPUT_FOCUS_CANCEL_EVENT = "chemdraft:palette-input-focus-cancel";
+
+/** Includes the interval after native acquisition but before the JS reply restores the field. */
+export function isPaletteInputFocusPending(shell: HTMLElement | null): boolean {
+  return !!shell && pendingPaletteShells.has(shell);
+}
 
 function registerNativeInputFocus(): Promise<string> {
   // Register once per JS page, including across StrictMode effect reinstalls. Never
@@ -82,6 +94,7 @@ export function installPluginPanelInputFocus(
   let activationTimer: ReturnType<typeof setTimeout> | undefined;
   let pointerActive = false;
   let disposed = false;
+  const editableControl = (target: EventTarget | null) => panelEditableControl(target, editableFocus);
   const setEditing = (next: boolean, retry = false): void => {
     if (editing === next && !retry) return;
     if (editing !== next) {
@@ -90,6 +103,10 @@ export function installPluginPanelInputFocus(
       acquiredControlFocus = false;
     }
     editing = next;
+    if (editableFocus) {
+      if (next && !acquiredControlFocus) pendingPaletteShells.add(shell);
+      else pendingPaletteShells.delete(shell);
+    }
     const requestedChain = leaseChain;
     const requestedRevision = revision = ++nextGeneration;
     // Every request has a generation, including retries. Keep IPC serialized through native
@@ -103,31 +120,33 @@ export function installPluginPanelInputFocus(
         if (next) nativeGenerations.add(requestedRevision);
         const acquired = await requestFocus(next, requestedRevision);
         if (next && requestedChain === leaseChain) {
-          if (!acquired) finish();
+          if (!acquired) finish(true);
           else {
             // A settled successor supersedes old native events. Until it settles, loss of
             // its predecessor also cancels this retry and any clicks queued behind it.
             nativeGenerations.clear();
             nativeGenerations.add(requestedRevision);
             acquiredControlFocus = true;
+            if (editableFocus) pendingPaletteShells.delete(shell);
             if (editableFocus && leasedControl && shell.contains(leasedControl)) leasedControl.focus();
           }
         }
       } catch (error) {
-        if (next && requestedChain === leaseChain) finish();
+        if (next && requestedChain === leaseChain) finish(true);
         throw error;
       }
     });
     void pending.catch((error: unknown) => console.error("Could not change panel input focus:", error));
   };
-  const finish = (): void => {
+  const finish = (cancelControl = false): void => {
     setEditing(false);
+    if (editableFocus && cancelControl) leasedControl?.dispatchEvent(new Event(PALETTE_INPUT_FOCUS_CANCEL_EVENT));
     leasedControl = undefined;
     selectionGesture = undefined;
     if (selectionLease) document.getSelection()?.removeAllRanges();
     selectionLease = false;
     selectionNodes = [];
-    const active = panelEditableControl(document.activeElement);
+    const active = editableControl(document.activeElement);
     if (active && shell.contains(active)) active.blur();
   };
   const returnPointerFocus = (): void => {
@@ -137,6 +156,7 @@ export function installPluginPanelInputFocus(
     if (platform === "windows" && !editing) setEditing(false, true);
   };
   const reportText = (node: EventTarget | null): boolean => {
+    if (editableFocus) return false;
     const element = node instanceof Element ? node : node instanceof Node ? node.parentElement : null;
     return !!element && shell.contains(element) &&
       !!element.closest(".plugin-report, .plugin-panel-content") &&
@@ -160,7 +180,7 @@ export function installPluginPanelInputFocus(
     pointerActive = true;
     pointerClickTarget = event.target;
     selectionGesture = undefined;
-    const control = panelEditableControl(event.target);
+    const control = editableControl(event.target);
     if (control && shell.contains(control)) {
       if (selectionLease) finish();
       leasedControl = control;
@@ -232,13 +252,16 @@ export function installPluginPanelInputFocus(
     } else checkActivation();
   };
   const focusIn = (event: FocusEvent): void => {
-    const control = panelEditableControl(event.target);
+    const control = editableControl(event.target);
     if (editableFocus && event.isTrusted && control && shell.contains(control)) {
       leasedControl = control;
       setEditing(true);
       // Until native acquisition succeeds, the document still owns the keyboard. Never show
       // a caret in this window while typing would edit the document instead.
       if (!acquiredControlFocus) {
+        // This is a lease transition, not the start/end of a React edit. In particular,
+        // do not reset a spin-button press or create a draft before acquisition succeeds.
+        event.stopPropagation();
         suspendingControlFocus = true;
         control.blur();
         suspendingControlFocus = false;
@@ -247,15 +270,19 @@ export function installPluginPanelInputFocus(
     if (editing && !selectionLease && control) leasedControl = control;
   };
   const focusOut = (event: FocusEvent): void => {
+    if (editableFocus && suspendingControlFocus) {
+      event.stopPropagation();
+      return;
+    }
     if (!editableFocus || suspendingControlFocus || !acquiredControlFocus || !editing) return;
-    const next = panelEditableControl(event.relatedTarget);
+    const next = editableControl(event.relatedTarget);
     if (next && shell.contains(next)) return;
-    if (panelEditableControl(event.target)) finish();
+    if (editableControl(event.target)) finish();
   };
   const keyDown = (event: KeyboardEvent): void => {
     if (editableFocus && (!(event.target instanceof Node) || !shell.contains(event.target))) return;
     pointerClickTarget = undefined;
-    const control = panelEditableControl(event.target);
+    const control = editableControl(event.target);
     if (!editing || event.isComposing) return;
     if (event.key === "Escape" && !event.defaultPrevented) {
       event.preventDefault();
@@ -279,6 +306,9 @@ export function installPluginPanelInputFocus(
       // Bubble after the control's commit handler; textarea/contenteditable keep multiline Enter.
       finish();
     } else if (event.key === "Tab" && !event.defaultPrevented) {
+      // Palettes use browser traversal, including non-text controls such as the adjacent
+      // slider. Its focusout releases the lease after the number's blur commits its draft.
+      if (editableFocus) return;
       const activeModal = control.closest<HTMLElement>('[aria-modal="true"]');
       const controls = [...shell.querySelectorAll<HTMLElement>("input, textarea, select, [contenteditable]")]
         .filter((candidate) => panelEditableControl(candidate) === candidate &&
@@ -301,7 +331,7 @@ export function installPluginPanelInputFocus(
     if (selectionLease) {
       if (selectionNodes.some((node) => !shell.contains(node))) finish();
     } else if (editing && (!leasedControl || !shell.contains(leasedControl) ||
-      panelEditableControl(leasedControl) !== leasedControl)) finish();
+      editableControl(leasedControl) !== leasedControl)) finish();
   });
   observer.observe(shell, { childList: true, subtree: true, attributes: true,
     attributeFilter: ["disabled", "readonly", "contenteditable", "type"] });

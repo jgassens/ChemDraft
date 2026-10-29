@@ -1350,7 +1350,6 @@ pub fn run() {
             quit_prompt_showing,
             cancel_quit,
             close_toolset_popover,
-            set_toolset_window_focusable,
             route_toolset_command,
             sync_plugin_menu_items,
             read_clipboard_payload,
@@ -4297,22 +4296,6 @@ fn close_toolset_popover(app: tauri::AppHandle, toolset_id: String) -> Result<()
 
 fn toolset_popover_window_label(toolset_id: &str) -> String {
     format!("toolset-popover-{}", toolset_id.replace('.', "-"))
-}
-
-/// Legacy focusability command retained for IPC compatibility. Palette settings, Customize search
-/// and colour fields now use the guarded per-window input lease instead.
-#[tauri::command]
-fn set_toolset_window_focusable(
-    app: tauri::AppHandle,
-    toolset_id: String,
-    focusable: bool,
-) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window(&toolset_window_label(&toolset_id)) {
-        window
-            .set_focusable(focusable)
-            .map_err(|error| error.to_string())?;
-    }
-    Ok(())
 }
 
 #[derive(Clone, serde::Serialize)]
