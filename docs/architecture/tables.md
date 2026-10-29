@@ -62,16 +62,23 @@ size. Table rotation is not offered in the UI.
 The shared table clipboard writer produces four interoperable flavors: editable HTML, RTF, TSV/plain
 text, and ChemDraft's internal selection representation. The native writer places these through the
 same per-platform clipboard path used for other rich clipboard data. HTML and RTF use explicit cell
-borders only where the table has rules, no shading, zero paragraph margins, and fixed column widths.
-Decimal alignment follows the shared layout rule. HTML declares Excel number formats for canonical
-numbers and assigns number-like text a text number format so Excel preserves it as text. RTF omits
-per-cell left and top padding because Word interprets `\clpadl` as top padding; the layout inset is
-instead carried in the decimal tab stop. Paste recognizes tables in HTML and spreadsheet text,
-preserving text, basic emphasis, subscripts/superscripts, alignment and widths where provided. Excel
-fragment markers inside a `<table>` are handled by finding the containing table. A 1×1 HTML table is
-treated as text rather than pasted as a table. When more than one source flavor is present, structured
-ChemDraft selection takes precedence, then HTML table data, then tabular plain text; ordinary drawing
-selection copy remains a drawing even when it contains a table.
+borders only where the table has rules, transparent backgrounds, zero paragraph margins, and fixed
+column widths. Decimal alignment in HTML is per-cell right padding calculated from the layout's
+decimal block; it adds no characters, so Excel keeps numeric values numeric. HTML declares Excel
+number formats for canonical numbers and assigns number-like text a text number format so Excel
+preserves it as text. RTF uses row-level `\trpaddl`, `\trpaddr`, `\trpaddt` and `\trpaddb` with
+`fl3` flags, plus `\trgaph`; Word treats per-cell `\clpadl` as top padding. Cell boundary widths
+(`\cellx`) fit content plus padding, and explicit `\trwWidth`/`\clwWidth` are emitted. Rule-less
+sides use `\brdrnil` and cells use `\clshdng0`, so TextEdit draws no cell boxes. Paste recognizes
+tables in HTML and spreadsheet text, preserving text, basic emphasis, subscripts/superscripts,
+alignment and widths where provided. Excel fragment markers inside a `<table>` are handled by finding
+the containing table. A 1×1 HTML table is treated as text rather than pasted as a table. For Excel's
+narrow-column `#######` display text, a cell recovers its value from the same-grid plain-text flavor
+or `x:num` when present. Overflow caption and footnote rows marked `mso-ignore:colspan` become the
+caption and footnotes. A readable HTML table wins over a plain-text chemistry guess, while true
+chemical formats retain precedence. A pasted table is clamped onto the page. When more than one source
+flavor is present, structured ChemDraft selection takes precedence; ordinary drawing selection copy
+remains a drawing even when it contains a table.
 
 Paste fixtures are synthetic stand-ins for Excel, Word and Google Docs clipboard payloads. They test
 known HTML/CF_HTML and quoted TSV shapes, but are not captures from those applications.
@@ -91,5 +98,9 @@ insert through the document patch path, leaving the inserted table selected.
 
 ## Known limits
 
-Tables do not support merged cells or text wrapping within cells. Not verified yet: Word, Excel,
-PowerPoint, Pages and Google Docs pastes by hand.
+Tables do not support merged cells or text wrapping within cells. macOS Word default and HTML paste
+are verified with a real three-line table, subscripts, caption and footnote. Excel paste-out is
+verified with one numeric value per cell. Word RTF paste, TextEdit and PowerPoint were fixed after a
+real test and are pending a re-check. PowerPoint applies its own default table style to pasted tables
+and puts the caption and footnotes in one text box at the table's origin. Pages and Google Docs are
+unverified. Windows Office is unverified because the Windows test machine has no Office.
