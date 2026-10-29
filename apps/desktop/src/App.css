@@ -1323,11 +1323,15 @@ textarea:focus-visible,
   padding: 0 6px;
   justify-content: center;
   overflow: hidden;
-  font-size: 10px;
   line-height: 1;
   text-align: center;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.molecule-inspector-effect-row .toolbar-text-button,
+.table-inspector-controls .molecule-inspector-template-button {
+  font-size: 10px;
 }
 
 .molecule-inspector-none-button {
@@ -2294,8 +2298,6 @@ textarea:focus-visible,
 .table-inspector-controls .molecule-inspector-template-button {
   width: auto;
   padding: 0 10px;
-  font-family: inherit;
-  font-size: 11px;
 }
 
 .toolbar-metric-group .toolbar-text-button {
@@ -7790,6 +7792,16 @@ textarea:focus-visible,
 .cd-page-size-form h2 { font-size: 16px; margin: 0 0 12px; }
 .cd-page-size-form p { color: var(--cd-text-secondary); }
 .cd-insert-table-drawing { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Match the native window's 240px budget on both WebKit and WebView2. An empty
+   status paragraph must reserve the same two lines as a validation message. */
+.cd-insert-table-form { display: flex; flex-direction: column; min-height: max(240px, 100vh); }
+.cd-insert-table-form h2 { line-height: 19px; margin: 0 0 13px; }
+.cd-insert-table-form .cd-insert-table-drawing { line-height: 16px; margin: 0 0 13px; }
+.cd-insert-table-form .cd-page-size-fields label { line-height: 16px; }
+.cd-insert-table-form .cd-page-size-fields input,
+.cd-insert-table-form .cd-page-size-fields select,
+.cd-insert-table-form button { box-sizing: border-box; height: 30px; }
+.cd-insert-table-form [role="status"] { flex: 1; min-height: 32px; line-height: 16px; margin: 13px 0; }
 .cd-page-size-fields { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
 .cd-page-size-fields label { display: flex; flex-direction: column; gap: 4px; }
 .cd-page-size-fields input { width: 90px; }

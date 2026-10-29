@@ -204,7 +204,7 @@ describe("PaletteWindow table inspector", () => {
     expect(inspector.classList.contains("molecule-inspector-controls")).toBe(true);
     expect(getComputedStyle(inspector).width).toBe("520px");
     expect(inspector.querySelector('input[type="checkbox"]')).toBeNull();
-    const referenceControl = inspector.querySelector<HTMLElement>('[data-table-control="headerRows"] span')!;
+    const referenceControl = inspector.querySelector<HTMLButtonElement>('[data-table-control="headerBold"]')!;
 
     for (const button of inspector.querySelectorAll<HTMLButtonElement>("button")) {
       expect(button.classList.contains("toolbar-text-button")).toBe(true);

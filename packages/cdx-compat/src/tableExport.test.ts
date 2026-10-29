@@ -20,7 +20,7 @@ describe("CDXML table approximation", () => {
     const count = table.rows.flatMap(row => row.cells).filter(cell => cell.text.length > 0).length + 1 + table.footnotes.length;
     expect(texts).toHaveLength(count);
     expect(result.warnings).toContainEqual({ code: "cdxml.table_approximated", sourceObjectId: table.id,
-      message: `Table "${table.id}" was written as ${count} text objects and 3 lines, so other programs will not edit it as a table; ChemDraft reopens it exactly from the embedded ChemDraft payload.` });
+      message: `Table "Table 1. Sharpless epoxidation of allyl…" was written as ${count} text objects and 3 lines, so other programs will not edit it as a table; ChemDraft reopens it exactly from the embedded ChemDraft payload.` });
     const titanium = texts.find(text => text.textContent === "Ti(OiPr)4")!;
     const solvent = texts.find(text => text.textContent === "CH2Cl2")!;
     expect([...titanium.querySelectorAll("s")].find(run => run.textContent === "4")?.getAttribute("face")).toBe("32");
@@ -64,7 +64,29 @@ describe("CDXML table approximation", () => {
     table.rotation = 30;
     const result = exportDocumentToCdxml(document);
     expect(xml(result.contents).querySelectorAll("group graphic")).toHaveLength(table.rows.length + table.columns.length + 2);
-    expect(result.warnings.some(warning => warning.code === "cdxml.table_rotation_approximated" && warning.sourceObjectId === table.id)).toBe(true);
+    expect(result.warnings).toContainEqual({ code: "cdxml.table_rotation_approximated", sourceObjectId: table.id,
+      message: `Table "Table 1. Sharpless epoxidation of allyl…" was exported without its rotation.` });
+  });
+
+  it.each([
+    [undefined, "The table"],
+    ["   \n ", "The table"],
+    ["Short caption", 'Table "Short caption"'],
+    ["A\n caption with   whitespace", 'Table "A caption with whitespace"'],
+    ["x".repeat(40), `Table "${"x".repeat(40)}"`],
+    ["🧪".repeat(41), `Table "${"🧪".repeat(39)}…"`],
+  ])("names table warnings readably for caption %j", (caption, name) => {
+    const document = fixture();
+    const table = document.pages[0].objects[0] as TableObject;
+    table.caption = caption === undefined ? undefined : { ...table.caption!, text: caption };
+    table.rotation = 30;
+    const warnings = exportDocumentToCdxml(document).warnings.filter(warning => warning.code.startsWith("cdxml.table_"));
+    expect(warnings).toHaveLength(2);
+    for (const warning of warnings) {
+      expect(warning.message.startsWith(`${name} was `)).toBe(true);
+      expect(warning.message).not.toContain(table.id);
+      expect(warning.sourceObjectId).toBe(table.id);
+    }
   });
 
   it("combines bold, italic and script face bits", () => {

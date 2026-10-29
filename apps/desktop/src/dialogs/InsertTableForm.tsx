@@ -13,7 +13,7 @@ export function InsertTableForm({ title, initial, onSubmit, onCancel, busy = fal
   const composing = useRef(false);
   const options = { rows: Number(rows), columns: Number(columns), headerRows: Number(headerRows), preset };
   const valid = [rows, columns, headerRows].every(value => value.trim() !== "") && validInsertTableOptions(options);
-  return <form className="cd-page-size-form" aria-label="Insert Table" aria-busy={busy}
+  return <form className="cd-page-size-form cd-insert-table-form" aria-label="Insert Table" aria-busy={busy}
     onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }}
     onKeyDown={event => {
       if (composing.current || event.nativeEvent.isComposing || event.keyCode === 229) return;

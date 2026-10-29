@@ -822,14 +822,18 @@ function exportTableObject(
     width: rule.x2 - rule.x1, height: rule.y2 - rule.y1, rotation: 0,
     style: { strokeWidth: rule.widthPx, strokeColor: style.color }, data: {}
   }, allocator.next(), warnings));
+  const caption = [...(table.caption?.text ?? "").replace(/\s+/gu, " ").trim()];
+  const tableName = caption.length > 0
+    ? `Table "${caption.length > 40 ? `${caption.slice(0, 39).join("")}…` : caption.join("")}"`
+    : "The table";
   warnings.push({
     code: "cdxml.table_approximated",
-    message: `Table "${table.id}" was written as ${texts.length} text objects and ${lines.length} lines, so other programs will not edit it as a table; ChemDraft reopens it exactly from the embedded ChemDraft payload.`,
+    message: `${tableName} was written as ${texts.length} text objects and ${lines.length} lines, so other programs will not edit it as a table; ChemDraft reopens it exactly from the embedded ChemDraft payload.`,
     sourceObjectId: table.id
   });
   if (table.rotation !== 0) warnings.push({
     code: "cdxml.table_rotation_approximated",
-    message: `Table "${table.id}" was exported without its rotation.`,
+    message: `${tableName} was exported without its rotation.`,
     sourceObjectId: table.id
   });
   return `<group id="${idFor(ids, table.id, allocator)}">${texts.join("")}${lines.join("")}</group>`;
