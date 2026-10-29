@@ -8858,27 +8858,42 @@ function withStoredBondStereoMolfile(molecule: MoleculeObject): MoleculeObject {
   return { ...molecule, structureFormat: "molfile-v2000", structure: preserveBondStereoSourceProperties(molecule, molfile.contents) };
 }
 
-/** The native atom model has no mass field. Retain indexed V2000 isotope/radical data when
- * changing only geometry/stereo; never let rebuilding the molfile silently erase it. */
+class BondStereoAtomMappingError extends Error {}
+
+/** Isotopes are regenerated from native atoms (including D/T). Check normalized identities
+ * before retaining source-only radicals; never copy isotope records over the writer's output. */
 function preserveBondStereoSourceProperties(molecule: MoleculeObject, contents: string): string {
-  const source = molecule.structure.split(/\r?\n/);
+  const source = molecule.structure.split(/\r?\nM  END/)[0].split(/\r?\n/);
   const sourceCounts = source.findIndex(line => line.includes("V2000"));
   if (sourceCounts < 0) return contents;
   const atomCount = Number(source[sourceCounts].slice(0, 3));
   const originalAtoms = source.slice(sourceCounts + 1, sourceCounts + 1 + atomCount);
-  const isotopes = source.filter(line => line.startsWith("M  ISO"));
   const radicals = source.filter(line => line.startsWith("M  RAD"));
   const radicalAtoms = originalAtoms.flatMap((line, i) => Number(line.slice(36, 39)) === 4 ? [i + 1] : []);
-  if (!isotopes.length && !radicals.length && !radicalAtoms.length && !originalAtoms.some(line => Number(line.slice(34, 36)))) return contents;
+  if (!source.some(line => line.startsWith("M  ISO")) && !radicals.length && !radicalAtoms.length &&
+    !originalAtoms.some(line => Number(line.slice(34, 36))) &&
+    !molecule.atoms.some(atom => atom.isotope !== undefined || atom.element === "D" || atom.element === "T")) return contents;
   const next = contents.split("\n");
   const counts = next.findIndex(line => line.includes("V2000"));
-  if (counts < 0 || Number(next[counts].slice(0, 3)) !== atomCount || originalAtoms.some((line, i) =>
-    line.slice(31, 34) !== next[counts + 1 + i].slice(31, 34))) {
+  if (counts < 0 || Number(next[counts].slice(0, 3)) !== atomCount) {
     throw new Error("Cannot preserve isotope/radical atom mapping while changing double-bond geometry");
   }
-  originalAtoms.forEach((line, i) => {
-    const index = counts + 1 + i;
-    next[index] = next[index].slice(0, 34) + line.slice(34, 36) + next[index].slice(36);
+  // The shared MOL parser normalizes H + M ISO 2/3 to D/T and resolves atom-block
+  // mass differences. Raw element columns would mistake that normalization for a remap.
+  const original = parseMolfileGraph(molecule.structure);
+  const regenerated = parseMolfileGraph(contents);
+  if (original.warnings.some(warning => warning.code === "clipboard.isotope_default_mass_unknown")) {
+    throw new BondStereoAtomMappingError("Cannot preserve isotope/radical atom mapping: source isotope mass is unknown");
+  }
+  original.atoms.forEach((atom, i) => {
+    const generated = regenerated.atoms[i];
+    if (atom.element !== generated.element || atom.isotope !== generated.isotope) {
+      const identity = (value: { element: string; isotope?: number }) => `${value.isotope ?? ""}${value.element}`;
+      throw new BondStereoAtomMappingError(
+        `Cannot preserve isotope/radical atom mapping while changing double-bond geometry: atom ${i + 1} ` +
+        `is ${identity(atom)} in the source but ${identity(generated)} in the regenerated structure`
+      );
+    }
   });
   const sourceRadicals = new Map(radicalAtoms.map(index => [index, 2]));
   for (const line of radicals) {
@@ -8889,7 +8904,7 @@ function preserveBondStereoSourceProperties(molecule: MoleculeObject, contents: 
   // some other atom must not discard all the source-only radicals in the molecule.
   const retainedRadicals = [...sourceRadicals].filter(([index]) => molecule.atoms[index - 1]?.markRadicals === undefined)
     .map(([index, code]) => `M  RAD  1${String(index).padStart(4)}${String(code).padStart(4)}`);
-  next.splice(next.findIndex(line => line.startsWith("M  END")), 0, ...isotopes, ...retainedRadicals);
+  next.splice(next.findIndex(line => line.startsWith("M  END")), 0, ...retainedRadicals);
   return next.join("\n");
 }
 
@@ -8916,10 +8931,10 @@ export function nativeBondStereoAvailability(
   let geometryStructure: string;
   try {
     geometryStructure = withStoredBondStereoMolfile(unmarked).structure;
-  } catch {
+  } catch (error) {
     // Both choices rebuild this molfile. A source-only property without a safe
     // atom mapping must disable both, including clearing an existing open marker.
-    return disabled("Cannot preserve all stored properties while changing E/Z");
+    return disabled(error instanceof BondStereoAtomMappingError ? error.message : "Cannot preserve all stored properties while changing E/Z");
   }
   const state: BondStereoAvailability = { value: alreadyUnspecified ? "either" : "geometry", ...(alreadyUnspecified ? { eitherDisabledReason: "E/Z is already unspecified" } : {}) };
   if ([bond.fromAtomId, bond.toAtomId].some(id => molecule.atoms.find(a => a.id === id)?.element !== "C")) {
