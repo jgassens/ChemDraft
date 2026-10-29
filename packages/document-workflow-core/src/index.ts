@@ -1,3 +1,4 @@
+export * from "./chemicalIdentity";
 export * from "./formulaText";
 export * from "./atoms";
 export * from "./documentInventory";
@@ -19,8 +20,11 @@ export * from "./molecule";
 export * from "./moleculeSmiles";
 export * from "./reactionArrows";
 export * from "./reactionScheme";
+export * from "./reactionLabels";
 export * from "./shared";
 export * from "./smiles";
 export * from "./structureName";
 export * from "./textObjects";
 export * from "./documentStyle";
+export * from "./sourceBondSemantics";
+export * from "./drawingDefaults";

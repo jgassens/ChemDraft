@@ -119,19 +119,19 @@ function addTally(tallies: Map<string, ElementCount>, symbol: string, isotope: n
  * Hill notation: carbon first, hydrogen second, everything else alphabetically. With no carbon,
  * every element sorts alphabetically — hydrogen included.
  *
- * Isotope-labelled atoms are emitted as `[13C]` **before** the natural-abundance atoms of the same
- * element, ascending by mass number. That ordering is a convention, not a fact, so the composition
- * method contract names it; it matches what RDKit's own `CalcMolFormula(separateIsotopes=True)`
- * produces, which is the least surprising choice for anyone cross-checking against RDKit.
+ * With isotopes, match RDKit's CalcMolFormula(separateIsotopes=True, abbreviateHIsotopes=True):
+ * natural C then carbon isotopes, H then hydrogen isotopes (D/T for 2/3), other natural elements
+ * alphabetically, then other isotope entries by ascending mass number and symbol.
  */
 export function hillFormula(counts: readonly ElementCount[]): string {
   if (counts.length === 0) return "";
   const hasCarbon = counts.some((entry) => entry.symbol === "C");
+  const hasIsotopes = counts.some((entry) => entry.isotope !== undefined);
 
   const rank = (entry: ElementCount): [number, string, number] => {
-    if (hasCarbon && entry.symbol === "C") return [0, "", entry.isotope ?? Number.MAX_SAFE_INTEGER];
-    if (hasCarbon && entry.symbol === "H") return [1, "", entry.isotope ?? Number.MAX_SAFE_INTEGER];
-    return [2, entry.symbol, entry.isotope ?? Number.MAX_SAFE_INTEGER];
+    if ((hasCarbon || hasIsotopes) && entry.symbol === "C") return [0, "", entry.isotope ?? 0];
+    if ((hasCarbon || hasIsotopes) && entry.symbol === "H") return [1, "", entry.isotope ?? 0];
+    return [2, entry.symbol, entry.isotope ?? 0];
   };
 
   return [...counts]
@@ -147,11 +147,14 @@ export function hillFormula(counts: readonly ElementCount[]): string {
       // actually runs, where the collator follows the Apple language preference rather than LANG.
       // A formula is part of the method contract's stated convention, so it cannot depend on who is
       // reading it.
+      if (hasIsotopes && groupA === 2 && isotopeA !== isotopeB) return isotopeA - isotopeB;
       if (symbolA !== symbolB) return symbolA < symbolB ? -1 : 1;
       return isotopeA - isotopeB;
     })
     .map((entry) => {
-      const symbol = entry.isotope ? `[${entry.isotope}${entry.symbol}]` : entry.symbol;
+      const symbol = entry.symbol === "H" && entry.isotope === 2 ? "D"
+        : entry.symbol === "H" && entry.isotope === 3 ? "T"
+          : entry.isotope ? `[${entry.isotope}${entry.symbol}]` : entry.symbol;
       return entry.count === 1 ? symbol : `${symbol}${entry.count}`;
     })
     .join("");

@@ -92,7 +92,7 @@ Batch input is a JSON array of {"name":"aspirin","smiles":"CC(=O)Oc1ccccc1C(=O)O
 trimmed; blank/duplicate names, path separators, and names beginning with a dot are rejected.
 
 Options: --width <px> is the PNG width (16–4000, default 600); --background white|transparent
-defaults to white; --bond-length <px> defaults to 28 (the desktop paste value); --padding <px>
+defaults to white; --bond-length <px> defaults to 28 (the CLI figure default); --padding <px>
 defaults to 24; and --format png|svg|both normally infers the extension in single mode. One JSON
 line per structure is written to stdout and progress to stderr. stereoCenters counts specified
 centers; unspecifiedStereoCenters counts constitutional centers without a specified descriptor;
@@ -207,6 +207,10 @@ arguments.
 ## reaction
 
 Render a reaction scheme as PNG or SVG.
+
+Use repeated `--above` and `--below` for lines above and below the arrow, and `--caption` for a note beneath the scheme. Batch jobs accept `above` and `below` arrays and a `caption` string. Formula counts are subscripted automatically; `--conditions` still appends to the agent formula line.
+
+Reaction labels allow at most 6 `--above` and 6 `--below` entries, a non-empty `--caption` of at most 300 characters, and 2000 characters combined across above, below, caption and legacy `--conditions`; batch jobs use the same caps.
 
 ~~~bash
 pnpm -s chemdraft reaction --rxn 'CC(=O)O.OCC>OS(=O)(=O)O>CC(=O)OCC' --out ester.png
@@ -399,3 +403,7 @@ other format writes one file per structure into --out-dir, named <job name>.<ext
 --format cdxml|pdf|sdf|mol|smi selects the output format; in single mode it normally infers it from
 --out. One JSON line per structure is written to stdout and progress to stderr. Exit 0 is used when
 every structure succeeds, 1 when any export fails, and 2 for bad arguments.
+
+Isotope labels and their positions are preserved in native documents, rendering, reaction schemes,
+and MOL V2000/V3000, SDF, SMILES and CDXML exports. D/T represent hydrogen-2/3; other isotope
+masses are stored per atom. Radical inputs remain refused by drawing and export commands.

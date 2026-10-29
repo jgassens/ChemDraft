@@ -714,8 +714,10 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
 - Start the install and cancel partway: no `naming-engine.partial` remains and no python or java
   process is left running (Activity Monitor / Task Manager). Then run the full install to completion.
 - Name each of these and read the result: ethanol (a PIN), aspirin, L-alanine (the stereo warning is
-  shown), a sodium salt, TEMPO (a radical). Isotope-labelled structures cannot yet be drawn; their
-  exact-match handling is covered by the real-RDKit test (`pluginStructureNaming.rdkit.test.ts`).
+  shown), a sodium salt, TEMPO (a radical). Name an isotope-labelled structure, such as CD4 or CH3OD
+  pasted as SMILES `[2H]C([2H])([2H])[2H]` or `CO[2H]`: the name must reflect the isotope or the
+  structure is declined; a name for the unlabelled molecule is a FAIL. Exact-match handling is also
+  covered by the real-RDKit test (`pluginStructureNaming.rdkit.test.ts`).
   Glycine zwitterion is declined with no name;
   `[Fe]` is declined as an unsupported element. A declined structure never shows a guessed name.
 - Select several molecules: one row each, capped at 10. Copy puts exactly the name on the clipboard
@@ -834,3 +836,25 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
   again. Repeat an Export that needs a picker. Close the source tab while the picker is open and
   confirm no closed or newly reopened Export receives focus. Switch to another app before the
   picker completes and confirm ChemDraft does not take foreground.
+
+## Isotope insertion (macOS and Windows)
+
+- Paste single and list SMILES containing `[2H]`, `[3H]`, `[13CH3]c1ccccc1`,
+  `c1cc[15n]cc1` and `CC(=[18O])C`; verify isotope labels and attachment positions.
+- Type D and T as atom labels; each uses one hydrogen valence. Verify 13C displays a superscript mass.
+- Save/reopen, then export/import CDXML; isotope labels, bonds and attachment positions must survive.
+- Ask the assistant to insert `[O-][N+]#Cc1ccccc1` plus `[2H]/C=C/c1ccccc1` and product
+  `[2H]C1C(c2ccccc2)ON=C1c1ccccc1` (D at C4). Repeat with `[2H]C(=C)c1ccccc1` and
+  `[2H]C1(CC(=NO1)c1ccccc1)c1ccccc1` (D at C5), then with `[3H]` versions.
+- With a deliberately lossy depiction, single paste must insert nothing and name the identity loss;
+  list paste must skip that entry and report its SMILES and reason while retaining valid entries.
+
+## Inserted drawing defaults
+
+Draw a bond, then paste a SMILES and insert a structure through a plugin and through the
+assistant. All four must have the same bond length, line width and atom-label size. An assistant
+caption must use the atom-label size. Existing structures on the page must not change size.
+
+# Reaction labels
+
+- Ask the assistant for a two-step Sharpless-style scheme and run `pnpm -s chemdraft reaction` with `--above`, `--below`, and `--caption`. Check that reagents stack above and conditions below, close to and centred on the arrow, which is only as long as the widest line; CH2Cl2 and Ti(OiPr)4 show subscripts while step numbers, mol%, °C and h do not. Check the caption sits under the scheme and old single-string conditions still work.

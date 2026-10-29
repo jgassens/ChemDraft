@@ -1,10 +1,10 @@
 import {
-  applyPatch, ChemDraftSyntheticStylePreset, stylePresetToObjectStyle, DocumentObjectSchema, type Anchor, type ChemDraftDocument,
+  applyPatch, DocumentObjectSchema, type Anchor, type ChemDraftDocument,
   type DocumentObject, type DocumentPatch, type MoleculeObject, type NativeTextStyle
 } from "@chemdraft/chem-core";
 import {
-  createNativeTextObject, layoutReactionScheme, nextObjectId,
-  nativeTextObjectSizeForText, smilesPasteBondLengthPx, stereoPerceptionMolfile,
+  assertMoleculeMatchesSmiles, createNativeTextObject, layoutReactionScheme, nextObjectId,
+  nativeTextObjectSizeForText, documentDrawingDefaults, stereoPerceptionMolfile,
   nativeAtomLabelReading, nativeSingleBondGraphMetadata, nativeSingleBondGraphSmiles,
   normalizeNativeMoleculeGeometry, defaultNativeMoleculeTransform
 } from "@chemdraft/document-workflow-core";
@@ -16,7 +16,7 @@ import {
   type AssistantToolContext, type AssistantPageGrowth
 } from "./AssistantToolContext";
 import {
-  ASSISTANT_GAP, ASSISTANT_MARGIN, RELATIVE_GAP, choosePagePlacements, objectRect, pageContentRect, relativeRect, unionRects,
+  ASSISTANT_MARGIN, RELATIVE_GAP, choosePagePlacements, objectRect, pageContentRect, relativeRect, unionRects,
   type RelativeSide, type PagePlacements
 } from "./placement";
 import { toolSchemas, type ToolInput } from "./tools/schemas";
@@ -79,12 +79,15 @@ export async function inspectMolecule(context: AssistantToolContext, molecule: M
   if (!result.canonicalSmiles) throw new Error("RDKit did not return a canonical SMILES.");
   return { ...result, molfile };
 }
-async function assertCanonical(context: AssistantToolContext, molecule: MoleculeObject, input: string) {
-  const source = await inspectSmiles(context, input);
-  const output = await inspectMolecule(context, molecule);
-  if (source.canonicalSmiles !== output.canonicalSmiles) {
-    throw new Error(`Canonical SMILES mismatch for ${molecule.id}; refusing a change to chemical identity (including radical or isotope loss).`);
-  }
+export async function assertCanonical(
+  context: AssistantToolContext, molecule: MoleculeObject, input: string
+) {
+  await assertMoleculeMatchesSmiles(molecule, input, async (format, value, stereoReference) => {
+    const result = format === "smiles" ? await inspectSmiles(context, value)
+      : await context.chemistry.inspectStructure(format, value, stereoReference);
+    return result.valid
+      ? { valid: true, canonicalSmiles: result.identitySmiles, facts: result.identityFacts } : result;
+  });
 }
 async function buildMolecule(context: AssistantToolContext, smiles: string): Promise<MoleculeObject> {
   await inspectSmiles(context, smiles); // cap before expensive depiction
@@ -97,7 +100,7 @@ async function buildMolecule(context: AssistantToolContext, smiles: string): Pro
 }
 
 /** A typed native label, with the same literal-atom semantics and warnings as the canvas. */
-function buildGroup(label: string): MoleculeObject {
+function buildGroup(document: ChemDraftDocument, label: string): MoleculeObject {
   const reading = nativeAtomLabelReading(label, { bonded: false, typed: true });
   if (!["group", "spelled", "formula"].includes(reading.kind)) {
     throw new Error(`Unknown standalone group label "${label}". Use an abbreviation or condensed formula such as CH3, Me, Ph, Boc, OTs or OMe; placeholders and bare element symbols are not groups.`);
@@ -106,7 +109,7 @@ function buildGroup(label: string): MoleculeObject {
   return normalizeNativeMoleculeGeometry({
     id: "group", type: "molecule", x: 0, y: 0, width: 0, height: 0, rotation: 0,
     transform: { ...defaultNativeMoleculeTransform },
-    style: { ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset), source: "chemdraft-native-drawing" },
+    style: { ...documentDrawingDefaults(document).objectStyle, source: "chemdraft-native-drawing" },
     compatibility: { sourceFormat: "chemdraft-native", warnings: [], unknown: {} },
     structureFormat: "smiles", structure: nativeSingleBondGraphSmiles(atoms, []),
     chemistry: nativeSingleBondGraphMetadata(atoms, []), atoms, bonds: [], superatoms: [], rGroups: []
@@ -198,7 +201,7 @@ function freshObjects(document: ChemDraftDocument, objects: readonly DocumentObj
   });
 }
 function assistantText(document: ChemDraftDocument, text: string, style: Partial<NativeTextStyle> = {}) {
-  const object = createNativeTextObject(document, { x: 0, y: 0 }, text, style);
+  const object = createNativeTextObject(document, { x: 0, y: 0 }, text, { ...documentDrawingDefaults(document).textStyle, ...style });
   // Wrap captions at the content width, never at the outer paper edge. Only text boxes reflow;
   // molecule geometry and the document's bond length are untouched.
   const maxWidth = pageContentRect(document.pages[0]!).width;
@@ -242,7 +245,7 @@ export async function buildInsertStructures(context: AssistantToolContext, raw: 
   const sourceMolecules: MoleculeObject[] = [];
   for (const item of input.items) {
     if (item.kind === "molecule") sourceMolecules.push(await buildMolecule(context, item.smiles));
-    if (item.kind === "group") sourceMolecules.push(buildGroup(item.label));
+    if (item.kind === "group") sourceMolecules.push(buildGroup(document, item.label));
   }
   const columns = input.arrangement === "row" ? input.items.length : Math.ceil(Math.sqrt(input.items.length));
   let moleculeIndex = 0;
@@ -302,7 +305,7 @@ function arrangementCells(objects: DocumentObject[]): DocumentObject[][] {
 export async function buildInsertReaction(context: AssistantToolContext, raw: unknown): Promise<AssistantWrite> {
   const input = toolSchemas.insert_reaction.parse(raw);
   const document = requireDocument(context);
-  if ([...(input.reagents ?? []), ...(input.conditions ?? [])].join("; ").length > 2000) {
+  if ([...(input.above ?? []), ...(input.below ?? []), ...(input.reagents ?? []), ...(input.conditions ?? []), input.caption ?? ""].join("").length > 2000) {
     throw new Error("Combined reaction labels exceed the 2000 character text limit.");
   }
   const molecules: MoleculeObject[] = [];
@@ -310,19 +313,12 @@ export async function buildInsertReaction(context: AssistantToolContext, raw: un
   const components = molecules.map(molecule => { const rect = objectRect(molecule);
     return { molecule, bounds: { minX: rect.x, minY: rect.y, maxX: rect.x + rect.width, maxY: rect.y + rect.height } };
   });
+  const defaults = documentDrawingDefaults(document);
   const scheme = layoutReactionScheme({ reactants: components.slice(0, input.reactants.length), products: components.slice(input.reactants.length),
     arrowKind: input.arrowKind === "retrosynthetic" ? "retrosynthesis" : input.arrowKind,
-    conditionText: [...input.reagents ?? [], ...input.conditions ?? []].join("; "),
-    anchor: { x: ASSISTANT_MARGIN, y: 200 }, gutter: ASSISTANT_GAP, bondLength: smilesPasteBondLengthPx, pagePadding: ASSISTANT_MARGIN });
-  if (scheme.condition) {
-    // The shared arrow length budgets a 240px wrapping label. Keep its native text box at
-    // that same size even when the full reaction page is much wider.
-    const size = nativeTextObjectSizeForText(scheme.condition.text, { fontSizePx: 14, textAlign: "center" });
-    scheme.condition.width = size.width;
-    scheme.condition.height = size.height;
-    scheme.condition.x = (scheme.arrow.start.point!.x + scheme.arrow.end.point!.x - size.width) / 2;
-    scheme.condition.y = scheme.arrow.start.point!.y - size.height - ASSISTANT_GAP / 2;
-  }
+    above: [...input.above ?? [], ...input.reagents ?? []], below: [...input.below ?? [], ...input.conditions ?? []],
+    caption: input.caption, textStyle: defaults.textStyle,
+    anchor: { x: ASSISTANT_MARGIN, y: 200 }, gutter: defaults.bondLengthPx, bondLength: defaults.bondLengthPx, pagePadding: ASSISTANT_MARGIN });
   const fresh = freshObjects(document, scheme.document.pages[0]!.objects);
   const placed = placement(context, fresh);
   // Retrosynthesis swaps visual sides; retain each molecule's actual source identity.

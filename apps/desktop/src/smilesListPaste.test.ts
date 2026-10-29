@@ -7,6 +7,7 @@ import { depictInWorker } from "./depiction2d/depict";
 import { depictSmilesOffThread } from "./depiction2d/client";
 import { registerRdkitWasmLoader } from "./rdkitWasmLoader";
 import { applyClipboardPastePayload, createPhase4Document } from "./documentWorkflow";
+import { SmilesPasteIdentityError } from "./smilesPasteIdentity";
 
 vi.mock("./depiction2d/client", () => ({ depictSmilesOffThread: vi.fn() }));
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
@@ -90,6 +91,28 @@ describe("depictSmilesForPaste", () => {
 });
 
 describe("depictSmilesListForPaste", () => {
+  const refuseStereo = async (smiles: string) => {
+    if (smiles.includes("@SP")) throw new SmilesPasteIdentityError(smiles, "unsupported stereo");
+  };
+
+  it.each([
+    "Use CO with [Pt@SP1] please",
+    "Add the CO and CS to N[Pt@SP1](N)(Cl)Cl in DMSO then stir it for an hour at room temperature"
+  ])("declines prose containing a refused stereo token: %s", async text => {
+    expect(await depictSmilesListForPaste(text, smilesListCandidates(text),
+      undefined, undefined, refuseStereo)).toBeUndefined();
+  });
+
+  it("recognises a two-line list of refused stereo entries", async () => {
+    const text = "N[Pt@SP1](N)(Cl)Cl\nN[Pt@SP2](N)(Cl)Cl";
+    const result = await depictSmilesListForPaste(text, smilesListCandidates(text),
+      undefined, undefined, refuseStereo);
+    expect(result?.entries).toEqual([]);
+    expect(result?.failures.map(failure => failure.input)).toEqual(text.split("\n"));
+    expect(result?.skipped).toBe(0);
+    expect(depictSmilesOffThread).not.toHaveBeenCalled();
+  });
+
   it("retains deadline warnings for individual list entries", async () => {
     const warning = "2D depiction reached its layout deadline; retried the standard layout in a fresh worker.";
     vi.mocked(depictSmilesOffThread).mockResolvedValueOnce({ depiction: ocl.depictSmiles2D("CCO"), stereoCount: 0, warnings: [warning] });

@@ -4,7 +4,7 @@ Defines public plugin API types, Zod-backed manifest schemas, permission names, 
 
 This package must not contain app-specific implementation code or direct document mutation logic.
 
-API 0.1.16 adds optional `MoleculeBond.stereo: "either"` for E/Z-unspecified double bonds.
+API 0.1.17 adds optional `MoleculeBond.stereo: "either"` for E/Z-unspecified double bonds.
 Preserve it when copying bonds; it is valid only on double bonds.
 
 API 0.1.15 adds optional command-scoped `context.chemistry.embed3d`, `minimize3d`, and `flatten3d`
@@ -75,3 +75,6 @@ including `kind: "prompt"`; its command and optional select command must also be
 plugin. `context.overlays.setStatus({ overlayId, text })` requires `ui.canvas`, accepts at most
 120 characters, and clears the status with an empty string. Overlay commands receive
 `context.input.source = "overlay"` with the owned `overlayId`.
+
+API 0.1.16 adds optional positive integer isotope mass numbers to native document atoms.
+Native molecule objects and document patches preserve isotope masses; hydrogen-2/3 use D/T elements.

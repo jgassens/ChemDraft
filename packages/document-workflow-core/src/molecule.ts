@@ -10,9 +10,9 @@ import {
   type MoleculeBond,
   type MoleculeObject,
   moleculeToMolfileV2000,
+  normalizeAtomIsotope,
   UnknownBondOrderError,
-  type MoleculeTransformState,
-  stylePresetToObjectStyle
+  type MoleculeTransformState
 } from "@chemdraft/chem-core";
 import { type ParsedMolfileGraph, parseMolfileGraph } from "@chemdraft/clipboard-adapter";
 import { isDefaultCenteredDoubleBond, nativeBondOrderResolution, ringInteriorDoubleBondSides } from "@chemdraft/layout-engine";
@@ -25,6 +25,8 @@ import {
   type PagePoint,
   phase4Timestamp
 } from "./shared";
+
+import { documentDrawingDefaults, type DocumentDrawingDefaults } from "./drawingDefaults";
 
 export type NativeDoubleBondSide = NonNullable<MoleculeBond["display"]>["doubleBondSide"];
 
@@ -41,19 +43,13 @@ export const nativeSingleBondDimensions = {
 
 export const nativeBondLengthPx = ChemDraftSyntheticStylePreset.drawing.bondLengthPx;
 
-// Coordinate-free SMILES need a little more room than hand-drawn/native structures. At the
-// 22 px drawing default, a 15 px heteroatom label and a stereobond consume most of a fused-ring
-// bond. A 28 px target keeps the normal line/font weights while giving generated polycycles the
-// same open proportions users expect from a chemical depiction engine.
-export const smilesPasteBondLengthPx = 28;
-
 const nativeMoleculePadding = 8;
 
 /** A 2D depiction (atoms + wedge-aware bonds) produced from a SMILES by the OCL
  *  adapter's `depictSmiles2D`. Kept structural so this module never imports the
  *  engine (which stays behind a dynamic import to keep it out of the static graph). */
 export interface PastedStructureDepiction {
-  atoms: ReadonlyArray<{ element: string; x: number; y: number; charge: number }>;
+  atoms: ReadonlyArray<{ element: string; isotope?: number; x: number; y: number; charge: number }>;
   bonds: ReadonlyArray<{ from: number; to: number; order: MoleculeBond["order"]; stereo?: "either"; wedge: "wedge" | "hashed" | null }>;
 }
 
@@ -68,6 +64,7 @@ export function pastedStructureDepictionFromMolfile(molfile: string): PastedStru
   return {
     atoms: graph.atoms.map((atom) => ({
       element: atom.element,
+      ...(atom.isotope === undefined ? {} : { isotope: atom.isotope }),
       x: atom.x,
       y: atom.y,
       charge: atom.formalCharge
@@ -133,7 +130,9 @@ export const SMILES_PASTE_SOURCE: SmilesMoleculeSource = {
   warningMessage: "Generated an editable 2D structure from pasted SMILES."
 };
 
-export interface SmilesNativeOptions {
+export interface SmilesMoleculeOptions {
+  bondLengthPx?: number;
+  objectStyle?: DocumentDrawingDefaults["objectStyle"];
   /** Retain perceived, unassigned E/Z from the depiction. Desktop SMILES input enables this. */
   openUnspecifiedDoubleBonds?: boolean;
 }
@@ -156,18 +155,21 @@ export function createSmilesMolecule(
   depiction: PastedStructureDepiction,
   smilesText: string,
   source: SmilesMoleculeSource = SMILES_PASTE_SOURCE,
-  options: SmilesNativeOptions = {}
+  options: SmilesMoleculeOptions = {}
 ): DocumentObject {
   if (depiction.atoms.length === 0) {
     throw new Error("Cannot build a molecule: no atoms were generated.");
   }
   const page = firstPage(document);
 
+  const defaults = documentDrawingDefaults(document);
+  const bondLengthPx = options.bondLengthPx ?? defaults.bondLengthPx;
   const pseudoGraph: ParsedMolfileGraph = {
     format: "molfile-v2000",
-    atoms: depiction.atoms.map((atom, index) => ({
+    atoms: depiction.atoms.map((atom, index) => normalizeAtomIsotope({
       id: `a${index}`,
       element: atom.element,
+      ...(atom.isotope === undefined ? {} : { isotope: atom.isotope }),
       x: atom.x,
       y: atom.y,
       formalCharge: atom.charge
@@ -186,10 +188,11 @@ export function createSmilesMolecule(
     pseudoGraph,
     point,
     page,
-    smilesPasteBondLengthPx
+    bondLengthPx
   ).map((atom) => ({
     id: atom.id,
     element: atom.element,
+    ...(atom.isotope === undefined ? {} : { isotope: atom.isotope }),
     x: atom.x,
     y: atom.y,
     formalCharge: atom.formalCharge
@@ -252,8 +255,8 @@ export function createSmilesMolecule(
     rotation: 0,
     transform: defaultNativeMoleculeTransform,
     style: {
-      ...stylePresetToObjectStyle(ChemDraftSyntheticStylePreset),
-      bondLengthPx: smilesPasteBondLengthPx,
+      ...(options.objectStyle ?? defaults.objectStyle),
+      bondLengthPx,
       source: source.styleSource
     },
     compatibility: {
@@ -280,7 +283,7 @@ export function insertSmilesMolecule(
   point: PagePoint,
   depiction: PastedStructureDepiction,
   smilesText: string,
-  options: SmilesNativeOptions = {}
+  options: SmilesMoleculeOptions = {}
 ): ChemDraftDocument {
   const object = createSmilesMolecule(document, point, depiction, smilesText, SMILES_PASTE_SOURCE, options);
   const page = firstPage(document);

@@ -3,6 +3,47 @@ import type { TextSpan } from "@chemdraft/chem-core";
 import { formulaSpansForMixedText, formulaSpansFromText } from "./formulaText";
 
 describe("formula text", () => {
+  it.each(["SN1", "SN2", "SNi", "SNAr", "SN1'", "SN2'", "E1", "E2", "E1cB", "E1cb"])(
+    "leaves mechanism label %s plain alone and in text", (label) => {
+      for (const text of [label, `via an ${label} pathway`, `${label} elimination`, `${label},`]) {
+        expect(formulaSpansForMixedText(text), text).toBeUndefined();
+      }
+    }
+  );
+
+  it("still formats formulas resembling mechanism labels", () => {
+    for (const text of ["SnCl2", "NaBH4"]) {
+      expect(formulaSpansForMixedText(text)?.filter(span => span.script === "subscript").map(span => span.text)).toEqual([text === "SnCl2" ? "2" : "4"]);
+    }
+  });
+  it.each([
+    ["NH4⁺", ["NH:normal", "4:subscript", "⁺:normal"]],
+    ["SO4²⁻", ["SO:normal", "4:subscript", "²⁻:normal"]],
+    ["HSO4⁻", ["HSO:normal", "4:subscript", "⁻:normal"]]
+  ])("subscripts the body of %s while retaining its Unicode charge", (text, expected) => {
+    expect(formulaSpansForMixedText(text as string)?.map(span => `${span.text}:${span.script}`)).toEqual(expected);
+  });
+
+  it.each(["Na⁺", "Ca²⁺", "⁺"])("leaves %s unchanged", (text) => {
+    expect(formulaSpansForMixedText(text)).toBeUndefined();
+  });
+
+  it("classifies a long superscript digit run without a sign in linear time", () => {
+    const short = "²".repeat(100_000), long = "²".repeat(200_000);
+    const elapsed = (text: string) => {
+      const started = performance.now();
+      for (let index = 0; index < 20; index += 1) expect(formulaSpansForMixedText(text)).toBeUndefined();
+      return performance.now() - started;
+    };
+    elapsed(short); elapsed(long); // Warm both lengths before comparing scaling.
+    const shortTimes: number[] = [], longTimes: number[] = [];
+    for (let index = 0; index < 5; index += 1) {
+      shortTimes.push(elapsed(short)); longTimes.push(elapsed(long));
+    }
+    const median = (times: number[]) => times.sort((a, b) => a - b)[2];
+    expect(median(longTimes) / median(shortTimes)).toBeLessThan(3);
+  });
+
   it("leaves trailing punctuation plain after formulas", () => {
     for (const punctuation of [",", ";", ":", ".", "!", "?", "*", "†", "‡"]) {
       const spans = formulaSpansForMixedText(`NaBH4${punctuation}`);

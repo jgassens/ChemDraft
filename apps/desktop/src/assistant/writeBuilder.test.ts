@@ -1,5 +1,8 @@
+import { defaultCases, insertionDocument, expectDrawingDefaults } from "../drawingDefaults.testHelpers";
 import { describe, expect, it } from "vitest";
-import { DocumentObjectSchema, type Anchor } from "@chemdraft/chem-core";
+import { DocumentObjectSchema, nativeTextStyleFromObjectStyle, type Anchor } from "@chemdraft/chem-core";
+import { documentDrawingDefaults, estimateNativeTextLineWidth } from "@chemdraft/document-workflow-core";
+import { reactionArrowHeadDepthPx } from "@chemdraft/layout-engine";
 import { callAssistantTool } from "./assistantTools";
 import { applyAssistantWrite, buildInsertStructures } from "./writeBuilder";
 import { testContext } from "./tools/testContext";
@@ -157,14 +160,28 @@ describe("assistant writes", () => {
   });
   it("inserts reaction layouts with arrows, labels, and unique ids", async () => {
     const { context } = testContext(false);
-    const result = await callAssistantTool(context, "insert_reaction", { reactants: ["CC", "CC"], products: ["CC"], reagents: ["catalyst"], conditions: ["heat"] });
+    const result = await callAssistantTool(context, "insert_reaction", { reactants: ["CC", "CC"], products: ["CC"], above: ["reagent"], below: ["solvent"], reagents: ["catalyst"], conditions: ["heat"], caption: "note" });
     expect(result.isError).not.toBe(true);
     expect(context.write).toHaveBeenCalledTimes(1);
     expect(context.getDocument()!.pages[0]!.objects.some(object => object.type === "reaction-arrow")).toBe(true);
+    const objects = context.getDocument()!.pages[0]!.objects;
+    const arrow = objects.find(object => object.type === "reaction-arrow")!;
+    const above = objects.find(object => object.type === "text" && object.text === "reagent\ncatalyst")!;
+    const below = objects.find(object => object.type === "text" && object.text === "solvent\nheat")!;
+    if (arrow.type !== "reaction-arrow" || above.type !== "text" || below.type !== "text") throw new Error("reaction objects required");
+    expect(above.x + above.width / 2).toBeCloseTo(arrow.x + arrow.width / 2);
+    const textStyle = nativeTextStyleFromObjectStyle(above.style);
+    const widestLabel = Math.max(...[above, below].flatMap(label => label.text.split("\n")
+      .map(line => estimateNativeTextLineWidth(line, textStyle))));
+    // Reaction labels reserve each head's depth plus 0.25 em, with a 2.5-bond minimum.
+    const labelWithHeadRoom = widestLabel + 2 * (reactionArrowHeadDepthPx(arrow.arrowKind) + 0.25 * textStyle.fontSizePx);
+    const bondLength = documentDrawingDefaults(context.getDocument()!).bondLengthPx;
+    expect(arrow.width).toBeCloseTo(Math.max(2.5 * bondLength, labelWithHeadRoom), 2);
+    expect(objects.some(object => object.type === "text" && object.text === "note")).toBe(true);
   });
   it("rejects a combined reaction label exceeding 2000 characters before chemistry", async () => {
     const { context } = testContext();
-    const result = await callAssistantTool(context, "insert_reaction", { reactants: ["CC"], products: ["CC"], conditions: ["x".repeat(1500), "y".repeat(1500)] });
+    const result = await callAssistantTool(context, "insert_reaction", { reactants: ["CC"], products: ["CC"], above: ["x".repeat(1900)], caption: "y".repeat(101) });
     expect(result.isError).toBe(true);
     expect(context.chemistry.structureFromSmiles).not.toHaveBeenCalled();
     expect(context.write).not.toHaveBeenCalled();
@@ -219,5 +236,71 @@ describe("assistant writes", () => {
     await expect(applyAssistantWrite(context, { patch: { op: "batch", patches: [{ op: "removeObject", objectId: "missing" }] }, summary: "test", warnings: [] })).rejects.toThrow('object "missing" does not exist');
     await expect(applyAssistantWrite(context, { patch: { op: "batch", patches: Array.from({ length: 257 }, () => ({ op: "removeObject", objectId: "x" })) }, summary: "test", warnings: [] })).rejects.toThrow("1..256");
     expect(context.write).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("assistant document drawing defaults", () => {
+  it.each(defaultCases)("keeps every reaction molecule at the $bondLengthPx px document default", async style => {
+    const { context, replace } = testContext(false);
+    const document = insertionDocument(style);
+    document.styles.text = { fontSizePx: 18 };
+    const defaults = documentDrawingDefaults(document);
+    const existing = structuredClone(document.pages[0]!.objects);
+    replace(document);
+    const result = await callAssistantTool(context, "insert_reaction", {
+      reactants: ["CC", "CC"], products: ["CC"], conditions: ["heat"]
+    });
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    const objects = context.getDocument()!.pages[0]!.objects;
+    const molecules = objects.slice(existing.length).filter(object => object.type === "molecule");
+    expect(molecules).toHaveLength(3);
+    molecules.forEach(object => expectDrawingDefaults(object, style));
+    const arrow = objects.find(object => object.type === "reaction-arrow")!;
+    const left = objectRect(molecules[1]!);
+    const right = objectRect(molecules[2]!);
+    expect(arrow.start.point!.x - left.x - left.width).toBeCloseTo(defaults.bondLengthPx);
+    expect(right.x - arrow.end.point!.x).toBeCloseTo(defaults.bondLengthPx);
+    const plus = objects.find(object => object.type === "text" && object.text === "+");
+    if (!plus || plus.type !== "text") throw new Error("Expected a plus-sign text object.");
+    expect(nativeTextStyleFromObjectStyle(plus.style).fontSizePx).toBe(defaults.textStyle.fontSizePx);
+    expect(objects.slice(0, existing.length)).toEqual(existing);
+  });
+  it.each(defaultCases)("uses $bondLengthPx px defaults for structures and group labels", async style => {
+    const { context, replace } = testContext(false);
+    const document = insertionDocument(style);
+    replace(document);
+    const existing = structuredClone(document.pages[0]!.objects);
+    const result = await callAssistantTool(context, "insert_structures", { items: [
+      { kind: "molecule", smiles: "CC", label: "Name" }, { kind: "group", label: "Ph" },
+      { kind: "text", text: "Standalone" }, { kind: "text", text: "Explicit", style: { fontSizePx: 25 } }
+    ] });
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    const objects = context.getDocument()!.pages[0]!.objects;
+    expect(objects.slice(0, 2)).toEqual(existing);
+    expectDrawingDefaults(objects[2], style);
+    expectDrawingDefaults(objects[4], style); // Group labels have no bonds; style still carries their size.
+    expect(objects[3]).toMatchObject({ type: "text", style: { fontSizePx: style.atomLabelFontSizePx, fontFamily: style.atomLabelFontFamily } });
+    expect(objects[5]).toMatchObject({ type: "text", style: { fontSizePx: style.atomLabelFontSizePx } });
+    expect(objects[6]).toMatchObject({ type: "text", style: { fontSizePx: 25 } });
+    expect(document.pages[0]!.objects).toEqual(existing);
+  });
+  it("uses custom document text defaults for molecule captions and standalone text with explicit style on top", async () => {
+    const { context, replace } = testContext(false);
+    const document = insertionDocument(defaultCases[0]!);
+    document.styles.text = { fontFamily: "Times", fontSizePx: 21, color: "#123456", fontWeight: 600, fontStyle: "italic" };
+    replace(document);
+    const existing = structuredClone(document.pages[0]!.objects);
+    const result = await callAssistantTool(context, "insert_structures", { items: [
+      { kind: "molecule", smiles: "CC", label: "Caption" }, { kind: "text", text: "Standalone" }
+    ] });
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    for (const index of [3, 4]) expect(context.getDocument()!.pages[0]!.objects[index]).toMatchObject({ style: document.styles.text });
+    const explicit = await callAssistantTool(context, "insert_text", { text: "Override", style: { fontSizePx: 25, bold: false, italic: false } });
+    expect(explicit.isError, JSON.stringify(explicit)).not.toBe(true);
+    expect(context.getDocument()!.pages[0]!.objects.at(-1)).toMatchObject({ style: {
+      fontFamily: "Times", fontSizePx: 25, color: "#123456", fontWeight: 400, fontStyle: "normal"
+    } });
+    expect(context.getDocument()!.pages[0]!.objects.slice(0, 2)).toEqual(existing);
   });
 });

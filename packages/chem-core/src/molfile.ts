@@ -19,9 +19,8 @@
  * Field widths mirror `tools/rdkit-oracle/oracle.py` `_build_molblock`, which is
  * proven against RDKit in the Phase 1C/2 tests.
  *
- * Known limitations (the native model does not carry these, so they cannot be emitted):
- *   - Isotopes (`M  ISO`) are not represented in `MoleculeAtom` and are therefore not written.
- *     A round-trip through this writer loses them.
+ * Isotopes write as V2000 `M  ISO` / V3000 `MASS=`; D/T retain their element symbols.
+ * Known limitations:
  *   - `unknown` bond order is written as type 8 (any) in both formats, with a warning. Readers
  *     treat it as a query bond with no chemical order; chemistry and 3D engine callers must use
  *     `unknownBondOrders: "refuse"`. Geometry-only layout requires tested query-bond support.
@@ -586,6 +585,14 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
     lines.push(`M  CHG${i3(chunk.length)}${body}`);
   }
 
+  const isotopes = atoms.flatMap((atom, index) => atom.isotope === undefined
+    ? [] : [{ atomNumber: index + 1, mass: atom.isotope }]);
+  for (let i = 0; i < isotopes.length; i += 8) {
+    const chunk = isotopes.slice(i, i + 8);
+    const body = chunk.map((entry) => `${i4(entry.atomNumber)}${i4(entry.mass)}`).join("");
+    lines.push(`M  ISO${i3(chunk.length)}${body}`);
+  }
+
   // Radical property lines: same up-to-8-pairs-per-line shape as M CHG above.
   const radicals = atoms
     .map((atom, index) => ({ atomNumber: index + 1, radicalCode: mdlRadicalCode(atom.markRadicals, atom.id, options) }))
@@ -667,6 +674,7 @@ export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWrit
   const rgroupByAtomNumber = new Map(rgroups.map((entry) => [entry.atomNumber, entry.rgroup]));
   atoms.forEach((atom, index) => {
     const charge = atom.formalCharge !== 0 ? ` CHG=${atom.formalCharge}` : "";
+    const isotope = atom.isotope !== undefined ? ` MASS=${atom.isotope}` : "";
     const radicalCode = mdlRadicalCode(atom.markRadicals, atom.id, options);
     const radical = radicalCode !== 0 ? ` RAD=${radicalCode}` : "";
     const rgroup = rgroupByAtomNumber.get(index + 1);
@@ -674,7 +682,8 @@ export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWrit
     const valence = literalValences.get(atom.id);
     const valence30 = valence !== undefined ? ` VAL=${valence === 0 ? -1 : valence}` : "";
     lines.push(
-      `M  V30 ${index + 1} ${symbols[index]!} ${round4(atom.x)} ${round4(ySign * atom.y)} 0 0${charge}${radical}${rgroups30}${valence30}`
+      `M  V30 ${index + 1} ${symbols[index]!} ${round4(atom.x)} ${round4(ySign * atom.y)} 0 0` +
+      `${charge}${isotope}${radical}${rgroups30}${valence30}`
     );
   });
 

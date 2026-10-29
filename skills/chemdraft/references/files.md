@@ -96,7 +96,7 @@ Chemical exports check that canonical SMILES equals the input's. CDXML
 is reopened and checked; MOL/SDF/SMILES representations are checked through
 the engine. A mismatch fails the job. PDF is a visual export after source
 identity validation, not a chemical file that can be parsed back from a
-picture. Never claim a PDF chemical round trip. Refused radicals/isotopes
+picture. Never claim a PDF chemical round trip. Isotope labels and positions are preserved. Refused radicals
 must not be removed from the input to force success. `analyze` does accept
 radicals and keeps them in its composition and masses; report the export
 refusal and the computed numbers separately.

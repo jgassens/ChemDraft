@@ -1,3 +1,5 @@
+import { applyPatch } from "@chemdraft/chem-core";
+import { defaultCases, bondDepiction, insertionDocument, expectDrawingDefaults } from "../drawingDefaults.testHelpers";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { generateSmiles2DMolfile } from "@chemdraft/rdkit-adapter";
 import { depictInWorker } from "../depiction2d/depict";
@@ -5,20 +7,40 @@ import { depictSmilesOffThread } from "../depiction2d/client";
 import * as ocl from "@chemdraft/ocl-adapter";
 import { createPhase4Document } from "../documentWorkflow";
 import { structureFromSmilesForPlugin } from "./pluginChemistry";
+import { createPasteIdentityInspector } from "../smilesPasteIdentity";
+import { IdentityWorkerUnavailableError } from "../depiction2d/identityWorkerClient";
+import { ensureRdkit } from "../../../../packages/rdkit-adapter/src/conformer";
+import { installRealRdkitModuleLoader } from "../../../../packages/rdkit-adapter/src/testing";
 
 vi.mock("../depiction2d/client", () => ({ depictSmilesOffThread: vi.fn() }));
 vi.mock("../rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("@chemdraft/rdkit-adapter", () => ({
-  generateSmiles2DMolfile: vi.fn().mockRejectedValue(new Error("WASM unavailable"))
+  generateSmiles2DMolfile: vi.fn().mockRejectedValue(new Error("WASM unavailable")),
+  ensureRdkit: () => ensureRdkit()
 }));
 
-beforeAll(async () => { await ocl.ensureOclResources(); });
+beforeAll(async () => { installRealRdkitModuleLoader(); await ocl.ensureOclResources(); });
 beforeEach(() => {
   vi.mocked(depictSmilesOffThread).mockImplementation((smiles) => depictInWorker(smiles, generateSmiles2DMolfile, () => {}));
 });
 afterEach(() => { vi.restoreAllMocks(); });
 
 describe("plugin chemistry SMILES failure reasons", () => {
+  it("reports an unavailable identity engine rather than a structure refusal", async () => {
+    vi.mocked(depictSmilesOffThread).mockResolvedValueOnce({
+      depiction: ocl.depictSmiles2D("CCO"), stereoCount: 0
+    });
+    const inspect = createPasteIdentityInspector(async () => {
+      throw new IdentityWorkerUnavailableError("test WASM unavailable");
+    });
+    const document = createPhase4Document();
+    const result = await structureFromSmilesForPlugin({ smiles: "CCO" }, () => document, undefined, inspect);
+    expect(result).toEqual({ available: false,
+      reason: "the structure could not be verified because the RDKit engine did not load: " +
+        "test WASM unavailable" });
+    expect(document.pages[0].objects).toHaveLength(0);
+  });
+
   it("keeps a depiction deadline warning in the built object's compatibility data", async () => {
     const warning = "2D depiction exceeded its 2000 ms layout deadline; used the standard layout.";
     vi.mocked(depictSmilesOffThread).mockResolvedValueOnce({ depiction: ocl.depictSmiles2D("CCO"), stereoCount: 0, warnings: [warning] });
@@ -79,4 +101,18 @@ describe("plugin chemistry SMILES failure reasons", () => {
       reason: "No 2D structure could be generated for \"C1\": Class$S19: SmilesParser could not parse the input"
     });
   });
+});
+
+
+it.each(defaultCases)("plugin structures use $bondLengthPx px document defaults without changing existing objects", async style => {
+  const document = insertionDocument(style);
+  const existing = structuredClone(document.pages[0]!.objects);
+  vi.mocked(depictSmilesOffThread).mockResolvedValueOnce({ depiction: bondDepiction, stereoCount: 0, warnings: [] });
+  const result = await structureFromSmilesForPlugin({ smiles: "CO" }, () => document);
+  expect(result).toMatchObject({ available: true, built: true });
+  if (!result.available || !result.built) throw new Error("Structure was not built");
+  expectDrawingDefaults(result.object, style);
+  const next = applyPatch(document, { op: "addObject", pageId: document.pages[0]!.id, object: result.object });
+  expect(next.pages[0]!.objects.slice(0, 2)).toEqual(existing);
+  expect(document.pages[0]!.objects).toEqual(existing);
 });

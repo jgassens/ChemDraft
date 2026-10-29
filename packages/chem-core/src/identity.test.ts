@@ -113,8 +113,9 @@ describe("snapshotChemicalIdentity (graph layer)", () => {
     expect(snapshotChemicalIdentity(withBold).graph.stereoMarkers).toHaveLength(0);
   });
 
-  it("records isotope/radical from chemistry metadata with provenance", () => {
+  it("records native isotopes and metadata radicals with provenance", () => {
     const labeled = chiralCenter("wedge");
+    labeled.atoms[0]!.isotope = 13;
     labeled.chemistry = {
       isotopeLabels: ["13C"],
       stereochemistry: [],
@@ -270,10 +271,11 @@ describe("diffChemicalIdentity", () => {
     expect(diff.atomMultisetChanged).toBe(true);
   });
 
-  it("isotope / radical change → changed; preserved metadata → no delta", () => {
+  it("isotope / radical change → changed; preserved graph and metadata → no delta", () => {
     const base = chiralCenter("wedge");
     base.chemistry = { isotopeLabels: [], stereochemistry: [], radicalCount: 0, warnings: [] } as MoleculeObject["chemistry"];
     const labeled = chiralCenter("wedge");
+    labeled.atoms[0]!.isotope = 13;
     labeled.chemistry = { isotopeLabels: ["13C"], stereochemistry: [], radicalCount: 1, warnings: [] } as MoleculeObject["chemistry"];
 
     const changed = diffChemicalIdentity(

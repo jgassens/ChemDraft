@@ -6,6 +6,9 @@ import { testContext } from "../assistant/tools/testContext";
 import type { AssistantHistoryPort } from "../assistant/historyPort";
 import * as assistantTools from "../assistant/assistantTools";
 import * as depiction2d from "../depiction2d/client";
+import * as identityClient from "../depiction2d/identityClient";
+import { IdentityVerificationTimeoutError } from "../depiction2d/identityWorkerClient";
+import { buildInsertStructures } from "../assistant/writeBuilder";
 import { describe, expect, it, vi } from "vitest";
 
 import { createPhase4Document } from "../documentWorkflow";
@@ -307,6 +310,7 @@ describe("createPluginRuntime panel input", () => {
 
 describe("createPluginRuntime assistant integration", () => {
   it("builds structures through the retained chemistry context after the creating command ends", async () => {
+    const inspector = vi.spyOn(identityClient, "inspectStructureOffThread");
     const { context } = testContext();
     const transactions = new AssistantTransactions({
       read: context.getDocument, push: () => {}, amend: () => {}, select: () => {},
@@ -323,6 +327,14 @@ describe("createPluginRuntime assistant integration", () => {
     // Exercise the default chemistry service retained by the controller, without unrelated tool
     // validation or insertion. The depiction boundary still observes the actual runtime signal.
     const call = vi.spyOn(assistantTools, "callAssistantTool").mockImplementationOnce(async retained => {
+      expect(retained.chemistry.inspectStructure).toBe(identityClient.inspectStructureOffThread);
+      expect(await retained.chemistry.inspectStructure("smiles", "[13CH3]O"))
+        .toMatchObject({ valid: true, identitySmiles: "[13CH3]O" });
+      const before = structuredClone(retained.getDocument());
+      inspector.mockRejectedValueOnce(new IdentityVerificationTimeoutError(4_000));
+      await expect(buildInsertStructures(retained, { items: [{ kind: "molecule", smiles: "CCO" }] }))
+        .rejects.toThrow("within 4 s; nothing was inserted");
+      expect(retained.getDocument()).toEqual(before);
       const result = await retained.chemistry.structureFromSmiles({ smiles: "CCO" });
       return { content: [], structuredContent: { ...result } };
     });
@@ -341,9 +353,12 @@ describe("createPluginRuntime assistant integration", () => {
       expect(result.structuredContent).toMatchObject({ available: true, built: true, object: { type: "molecule" } });
       expect(call).toHaveBeenCalledOnce();
       expect(depict).toHaveBeenCalledOnce();
+      expect(inspector).toHaveBeenCalledWith("smiles", "[13CH3]O");
+      expect(inspector.mock.calls.some(([format, , reference]) =>
+        format === "molfile" && reference === "CCO")).toBe(true);
       await api.endRequest({ requestId });
     } finally {
-      call.mockRestore(); depict.mockRestore();
+      call.mockRestore(); depict.mockRestore(); inspector.mockRestore();
       runtime.unregisterPlugin(context.plugin.id); transactions.dispose();
     }
   });

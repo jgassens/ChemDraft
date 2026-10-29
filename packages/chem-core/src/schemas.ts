@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { normalizeAtomIsotope } from "./isotopes";
+import { atomicNumberForElementSymbol } from "./elements";
 import {
   PageOrientations,
   PageSizePresetIds,
@@ -302,6 +304,8 @@ export const MoleculeAtomSchema = z
   .object({
     id: IdSchema,
     element: z.string().min(1),
+    /** Explicit isotope mass number; absent means natural abundance. D/T use their own symbols. */
+    isotope: z.number().int().positive().max(999).optional(),
     x: z.number().finite(),
     y: z.number().finite(),
     z: z.number().finite().optional(),
@@ -355,7 +359,18 @@ export const MoleculeAtomSchema = z
     labelBondSide: z.object({ side: z.enum(["left", "right"]), atomId: z.string() }).strict().optional(),
     labelOffset: PointSchema.optional()
   })
-  .strict();
+  .strict()
+  .superRefine((atom, context) => {
+    if (atom.isotope === undefined) return;
+    const message = atom.element === "D" || atom.element === "T"
+      ? "D and T must not carry an isotope field."
+      : atomicNumberForElementSymbol(atom.element) === undefined
+        ? `Isotope mass number requires an element symbol; "${atom.element}" is a label.`
+        : undefined;
+    if (message) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["isotope"], message });
+    }
+  });
 
 export const MoleculeBondDisplaySchema = z
   .object({
@@ -440,7 +455,7 @@ export const MoleculeObjectSchema = BaseObjectSchema.extend({
   structureFormat: degradingEnum(["molfile-v3000", "molfile-v2000", "smiles", "unknown"]),
   structure: z.string(),
   chemistry: ChemicalMetadataSchema.optional(),
-  atoms: z.array(MoleculeAtomSchema).default([]),
+  atoms: z.array(MoleculeAtomSchema).transform((atoms) => atoms.map(normalizeAtomIsotope)).default([]),
   bonds: z.array(MoleculeBondSchema).default([]),
   transform: MoleculeTransformStateSchema.optional(),
   superatoms: z.array(SuperatomMetadataSchema).default([]),

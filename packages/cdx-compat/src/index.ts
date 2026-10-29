@@ -9,6 +9,7 @@ import {
   elementSymbolForAtomicNumber,
   isDativeBond,
   isEngineDocument,
+  normalizeAtomIsotope,
   parseDocument,
   type Anchor,
   type ArrowObject,
@@ -28,6 +29,7 @@ import {
   type TextObject
 } from "@chemdraft/chem-core";
 import { bondedElementLabelMeaning } from "@chemdraft/template-library";
+import { planMoleculeAtomLabels } from "@chemdraft/layout-engine";
 import { sha256Hex, utf8Bytes, utf8String } from "./sha256";
 
 export interface CompatibilityConversionWarning {
@@ -599,6 +601,11 @@ function exportMoleculeObject(
   const fragmentId = idFor(context.ids, molecule.id, allocator);
   const atomIds = new Map<string, string>();
   const bondedAtomIds = new Set(molecule.bonds.flatMap((bond) => [bond.fromAtomId, bond.toAtomId]));
+  const hasIsotopes = molecule.atoms.some((atom) =>
+    atom.isotope !== undefined || atom.element === "D" || atom.element === "T");
+  const labels = hasIsotopes
+    ? new Map(planMoleculeAtomLabels(molecule).map((plan) => [plan.atom.id, plan.layout.runs]))
+    : undefined;
   const atomLines = molecule.atoms.map((atom) => {
     const nodeId = idFor(atomIds, atom.id, allocator);
     // An element symbol chemists write on bonds — "Ar" (aryl), "Ac", "Pr", "Ts" — typed as a label is
@@ -609,13 +616,19 @@ function exportMoleculeObject(
     const bondedMeaning = bondedAtomIds.has(atom.id) && atom.labelLiteral === true
       ? bondedElementLabelMeaning(atom.element)
       : undefined;
-    const elementNumber = bondedMeaning === undefined ? atomicNumberForElement(atom.element) : undefined;
+    const heavyHydrogen = atom.element === "D" || atom.element === "T";
+    const isotope = atom.element === "D" ? 2 : atom.element === "T" ? 3 : atom.isotope;
+    const elementNumber = heavyHydrogen ? 1
+      : bondedMeaning === undefined ? atomicNumberForElement(atom.element) : undefined;
     const attributes = [
       `id="${nodeId}"`,
       `p="${formatPoint(atom)}"`
     ];
     if (elementNumber !== undefined && atom.element !== "C") {
       attributes.push(`Element="${elementNumber}"`);
+    }
+    if (isotope !== undefined) {
+      attributes.push(`Isotope="${isotope}"`);
     }
     if (elementNumber === undefined) {
       attributes.push(`Element="${escapeXmlAttribute(atom.element)}"`);
@@ -656,14 +669,23 @@ function exportMoleculeObject(
     if (atom.hydrogenCount !== undefined) {
       attributes.push(`NumHydrogens="${atom.hydrogenCount}"`);
     }
+    if (isotope !== undefined) {
+      const label = (labels?.get(atom.id) ?? []).map((run) => {
+        const face = run.script === "superscript" ? ' face="32"'
+          : run.script === "subscript" ? ' face="64"' : "";
+        return `<s${face}>${escapeXmlText(run.text)}</s>`;
+      }).join("");
+      return `<n ${attributes.join(" ")}><t>${label}</t></n>`;
+    }
     return `<n ${attributes.join(" ")}/>`;
   });
   const bondLines = molecule.bonds.map((bond) => exportBond(bond, molecule, atomIds, context, allocator, warnings));
 
-  if (molecule.chemistry?.isotopeLabels.length || molecule.chemistry?.radicalCount || molecule.chemistry?.stereochemistry.length) {
+  if (molecule.chemistry?.radicalCount || molecule.chemistry?.stereochemistry.length) {
     warnings.push({
       code: "cdxml.molecule_metadata_payload_only",
-      message: "Molecule isotope, radical, or stereochemistry aggregates remain in the native payload until per-atom schema support exists.",
+      message: "Molecule radical and stereochemistry aggregates remain in the native payload; " +
+        "isotopes are preserved on CDXML atoms and supported bond stereo is written visibly.",
       sourceObjectId: molecule.id
     });
   }
@@ -1459,19 +1481,26 @@ function importVisibleCdxmlFromTree(tree: OrderedXmlTree): { document?: ChemDraf
   const importTransform = importTransformForTree(tree);
   const colorTable = importCdxmlColorTable(tree);
   const base = createEmptyDocument({ title: "Imported CDXML.chemdraft", now: nativeImportTimestamp });
-  const importedPages = pageElements.map((pageElement, pageIndex) => {
-    const pageTemplate = base.pages[0];
-    const importedPage = applyImportTransformToPageObjects(
-      importPageObjects(pageElement, pageIndex, warnings, colorTable),
-      importTransform
-    );
+  let importedPages: DocumentPage[];
+  try {
+    importedPages = pageElements.map((pageElement, pageIndex) => {
+      const pageTemplate = base.pages[0];
+      const importedPage = applyImportTransformToPageObjects(
+        importPageObjects(pageElement, pageIndex, warnings, colorTable),
+        importTransform
+      );
+      return {
+        ...pageTemplate,
+        id: `page_${String(pageIndex + 1).padStart(3, "0")}`,
+        objects: importedPage.objects,
+        crossings: importedPage.crossings
+      };
+    });
+  } catch (error) {
     return {
-      ...pageTemplate,
-      id: `page_${String(pageIndex + 1).padStart(3, "0")}`,
-      objects: importedPage.objects,
-      crossings: importedPage.crossings
+      warnings: [warning("cdxml.values_out_of_range", `CDXML import failed: ${errorMessage(error)}`)]
     };
-  });
+  }
   const objectCount = importedPages.reduce((count, page) => count + page.objects.length, 0);
   if (objectCount === 0) {
     return {
@@ -1908,9 +1937,11 @@ function importFragment(
     const rawElement = atomElement.attributes.Element?.trim();
     const textLabel = rawElement !== undefined && rawElement.length > 0 && !Number.isInteger(Number(rawElement)) &&
       bondedElementLabelMeaning(element) !== undefined;
-    return {
+    return normalizeAtomIsotope({
       id: atomId,
       element: literalLabel ?? element,
+      ...(atomElement.attributes.Isotope === undefined ? {}
+        : { isotope: Number(atomElement.attributes.Isotope) }),
       x: point.x,
       y: point.y,
       formalCharge: parseInteger(atomElement.attributes.Charge) ?? 0,
@@ -1918,7 +1949,7 @@ function importFragment(
       // no implicit hydrogens are invented for a label like "SO3".
       ...(literalLabel || textLabel ? { labelLiteral: true } : {}),
       ...(labelPoint ? { labelOffset: { x: labelPoint.x - point.x, y: labelPoint.y - point.y } } : {})
-    };
+    });
   });
   // A bond drawn to an abbreviation now lands on the atom its connection point marked — the sulfur
   // of an expanded SO3, not the vanished node.

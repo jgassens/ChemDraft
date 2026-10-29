@@ -1,3 +1,5 @@
+export { normalizeAtomIsotope } from "./isotopes";
+
 export {
   AnchorSchema,
   AnnotationObjectSchema,
