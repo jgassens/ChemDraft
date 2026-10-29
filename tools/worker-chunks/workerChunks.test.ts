@@ -120,7 +120,7 @@ it("audits every desktop/package module-worker URL/?worker import and forbids ru
     visit(source);
   }
   expect([...entries].map(file => relative(resolve("apps/desktop/src"), file).replaceAll("\\", "/")).sort()).toEqual([
-    "analysisWorker.ts", "conformerWorker.ts", "depiction2d/worker.ts",
+    "analysisWorker.ts", "conformerWorker.ts", "depiction2d/identityWorker.ts", "depiction2d/worker.ts",
     "plugins/workers/massFragmentPluginWorker.ts", "plugins/workers/windowsMassFragmentPluginWorker.ts"
   ]);
   for (const entry of entries) {

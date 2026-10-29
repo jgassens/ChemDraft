@@ -830,6 +830,18 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
   confirm no closed or newly reopened Export receives focus. Switch to another app before the
   picker completes and confirm ChemDraft does not take foreground.
 
+## Isotope insertion (macOS and Windows)
+
+- Paste single and list SMILES containing `[2H]`, `[3H]`, `[13CH3]c1ccccc1`,
+  `c1cc[15n]cc1` and `CC(=[18O])C`; verify isotope labels and attachment positions.
+- Type D and T as atom labels; each uses one hydrogen valence. Verify 13C displays a superscript mass.
+- Save/reopen, then export/import CDXML; isotope labels, bonds and attachment positions must survive.
+- Ask the assistant to insert `[O-][N+]#Cc1ccccc1` plus `[2H]/C=C/c1ccccc1` and product
+  `[2H]C1C(c2ccccc2)ON=C1c1ccccc1` (D at C4). Repeat with `[2H]C(=C)c1ccccc1` and
+  `[2H]C1(CC(=NO1)c1ccccc1)c1ccccc1` (D at C5), then with `[3H]` versions.
+- With a deliberately lossy depiction, single paste must insert nothing and name the identity loss;
+  list paste must skip that entry and report its SMILES and reason while retaining valid entries.
+
 ## Inserted drawing defaults
 
 Draw a bond, then paste a SMILES and insert a structure through a plugin and through the

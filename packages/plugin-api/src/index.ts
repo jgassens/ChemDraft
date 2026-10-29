@@ -27,6 +27,8 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * 0.1.15 adds optional 3D chemistry: chemistry.embed3d, minimize3d, flatten3d
  * (including structured minimize3d clash/contact diagnostics and flatten3d clash refusal).
  *
+ * 0.1.16 adds optional isotope mass numbers to native document atoms.
+ *
  * The MINOR stays at 1 for both. For a 0.x release `isPluginApiVersionCompatible` treats the minor as
  * the compatibility boundary, so 0.2.0 would have made every plugin declaring `^0.1.0` — the NMR
  * predictor among them — refuse to install against this host, for purely additive methods. A plugin
@@ -35,7 +37,7 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * local structure recognition, `^0.1.7` for structure naming, `^0.1.8` for external tools), which this host satisfies and an
  * older one correctly does not.
  */
-export const PluginApiVersion = "0.1.15" as const;
+export const PluginApiVersion = "0.1.16" as const;
 
 export const pluginPermissions = [
   "document.read",
