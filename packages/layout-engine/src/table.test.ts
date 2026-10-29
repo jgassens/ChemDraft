@@ -232,7 +232,7 @@ describe("table layout and SVG", () => {
 
   it("draws every Sharpless formula subscript at the cell size with an explicit baseline offset", () => {
     const svg = planTableObjectSvg(table, 0);
-    const plainRow = table.rows.find(row => row.cells[0].text === "86")!;
+    const plainRow = table.rows.find(row => row.cells[0].text === "allyl alcohol")!;
     const plainId = tableCellElementId(table.id, plainRow.id, table.columns[0].id);
     const plainText = elementFragments(svg).find(element => element.attrs.id === `${plainId}-line-0-piece-0`)!;
     const plainSpans = plainText.children.filter(child => child.kind === "element");
