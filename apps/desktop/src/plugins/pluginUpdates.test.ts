@@ -319,7 +319,7 @@ describe("host-managed plugin update catalog", () => {
       {
         pluginId: "org.chemdraft.naming.orthonym",
         displayName: "Name from Structure (Orthonym)",
-        description: "Name the selected structure. Every name shown was read back by OPSIN as exactly the drawn structure. Installing it also downloads a local naming engine (about 100 MB).",
+        description: "Name the selected structure. Every name shown was read back by OPSIN as exactly the drawn structure. Installing it also downloads the local naming engine and its dependencies.",
         repository: "jgassens/ChemDraft-Orthonym-Plugin",
         assetStem: "orthonym-naming",
         requiresEngine: "structureNaming"
@@ -342,7 +342,7 @@ describe("host-managed plugin update catalog", () => {
         pluginId: "org.chemdraft.ocsr.molscribe",
         displayName: "Structure from Image (MolScribe)",
         description:
-          "Recognize a drawn structure from an image or screenshot. Installing it also downloads a local recognition engine (about 2.5 GB).",
+          "Recognize a drawn structure from an image or screenshot. Installing it also downloads the local MolScribe model and its dependencies.",
         repository: "jgassens/ChemDraft-MolScribe-Plugin",
         assetStem: "molscribe-ocsr",
         requiresEngine: "structureRecognition",

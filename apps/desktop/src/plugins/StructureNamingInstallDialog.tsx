@@ -7,7 +7,7 @@ import type { EngineInstallSnapshot } from "../dialogs/dialogProtocol";
 import { engineNetworkErrorMessage, installSpaceStatement } from "../dialogs/engineInstallText";
 import type { StructureNamingController, OpenStructureNamingInstall } from "./StructureNamingController";
 
-export const NAMING_ENGINE_DISCLOSURE = "Downloads about 100 MB and uses about 0.3 GB once installed. Runs only on this computer. Downloaded parts: Orthonym (MIT); the centres jar (BSD-2-Clause, with LGPL-2.1-or-later and GPL-2.0-with-Classpath-Exception parts).";
+export const NAMING_ENGINE_DISCLOSURE = "Downloads the local naming engine and its dependencies. Runs only on this computer. Downloaded parts: Orthonym (MIT); the centres jar (BSD-2-Clause, with LGPL-2.1-or-later and GPL-2.0-with-Classpath-Exception parts).";
 export const NAMING_INSTALL_PROFILE = {
   phases: {
     checkingDisk: { step: 1, name: "Checking free disk space", weightBytes: 0, typicalSeconds: 2 },

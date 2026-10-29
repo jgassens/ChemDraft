@@ -89,10 +89,15 @@ impl EngineSpec for MolScribeSpec {
         pins::REQUIRED_DISK_BYTES
     }
     fn requirements() -> (&'static str, &'static str) {
-        (
-            "resources/ocsr/requirements.txt",
-            pins::REQUIREMENTS_LOCK_SHA256,
-        )
+        (pins::REQUIREMENTS_RESOURCE, pins::REQUIREMENTS_LOCK_SHA256)
+    }
+    fn pip_install_args() -> Vec<OsString> {
+        // uv applies this index only to PyTorch ecosystem packages. The reviewed Linux lock
+        // contains exact +cpu versions and SHA-256 hashes; no CUDA runtime is installed.
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        return os_args(["--torch-backend", "cpu"]);
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+        Vec::new()
     }
     fn python_growth_bytes() -> u64 {
         progress::PYTHON_EXPECTED_GROWTH_BYTES
@@ -750,6 +755,20 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn killing_the_running_child_takes_down_its_whole_process_tree() {
+        assert_running_child_tree_is_killed(Box::new(MacPlatform::new(MacArchitecture::Aarch64)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linux_running_child_kill_takes_down_its_whole_process_tree() {
+        use crate::local_engine::platform::{LinuxArchitecture, LinuxPlatform};
+        assert_running_child_tree_is_killed(Box::new(LinuxPlatform::new(
+            LinuxArchitecture::X86_64,
+        )));
+    }
+
+    #[cfg(unix)]
+    fn assert_running_child_tree_is_killed(platform: Box<dyn EnginePlatform>) {
         let root = temp_root("kill-tree");
         let grandchild_file = root.join("grandchild.pid");
         let running = Arc::new(RunningChild::default());
@@ -759,7 +778,7 @@ mod tests {
         let started = Instant::now();
         let worker = std::thread::spawn(move || {
             io.run(
-                &MacPlatform::new(MacArchitecture::Aarch64),
+                platform.as_ref(),
                 RunStep::InstallPackages,
                 Path::new("/bin/sh"),
                 &[OsString::from("-c"), OsString::from(script)],
@@ -853,7 +872,60 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
-    const BUNDLED_REQUIREMENTS: &str = include_str!("../../resources/ocsr/requirements.txt");
+    const BUNDLED_REQUIREMENTS: &str = pins::BUNDLED_REQUIREMENTS;
+
+    /// Explicitly opt-in: exercises the production downloader, hash-locked package install,
+    /// staging relocation, probe and final receipt. The large model stays out of ordinary CI.
+    #[cfg(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"))]
+    #[test]
+    #[ignore = "downloads and installs the real Linux CPU engine; set CHEMDRAFT_REAL_ENGINE_TEST_ROOT"]
+    fn linux_real_install_downloads_verifies_relocates_and_probes() {
+        let parent = PathBuf::from(
+            std::env::var_os("CHEMDRAFT_REAL_ENGINE_TEST_ROOT")
+                .expect("choose a disposable test directory explicitly"),
+        );
+        assert!(parent.is_absolute());
+        fs::create_dir_all(&parent).expect("test parent");
+        let root = parent.join(format!(
+            "ocsr-real-install-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        assert!(!root.exists());
+        fs::create_dir(&root).expect("fresh test root");
+        struct RemoveTestRoot(PathBuf);
+        impl Drop for RemoveTestRoot {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = RemoveTestRoot(root.clone());
+        let platform = super::super::platform::current().expect("Linux CPU platform");
+        let paths = InstallPaths {
+            app_data: root,
+            requirements: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join(pins::REQUIREMENTS_RESOURCE),
+        };
+        let io = SystemInstallIo::new(Arc::default()).expect("production download client");
+        let receipt = install(
+            &paths,
+            platform.as_ref(),
+            &io,
+            &AtomicBool::new(false),
+            &|event: InstallProgress| eprintln!("Linux OCSR: {:?}: {}", event.phase, event.message),
+            super::super::platform::free_disk_bytes(&paths.app_data).expect("free disk"),
+        )
+        .expect("real production installation");
+        assert!(is_healthy(&paths.final_dir(), platform.as_ref()));
+        assert!(receipt.matches_pins(platform.as_ref()));
+        assert!(!paths.partial_dir().exists());
+        assert!(!paths.previous_dir().exists());
+        fs::write(
+            parent.join("ocsr-linux-install-receipt.json"),
+            serde_json::to_vec_pretty(&receipt).expect("receipt JSON"),
+        )
+        .expect("save evidence");
+    }
 
     #[test]
     fn packages_install_hash_locked_and_molscribe_from_the_verified_archive_alone() {
@@ -871,6 +943,10 @@ mod tests {
 
         let packages = io.args_of("packages");
         assert!(packages.iter().any(|arg| arg == "--require-hashes"));
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        assert!(packages
+            .windows(2)
+            .any(|args| args == ["--torch-backend", "cpu"]));
         let requirement = packages
             .iter()
             .position(|arg| arg == "--requirement")

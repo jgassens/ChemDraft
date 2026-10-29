@@ -19,11 +19,14 @@ use std::{
 pub enum ProbePlatform {
     MacOS,
     Windows,
+    Linux,
 }
 impl ProbePlatform {
     pub fn current() -> Self {
         if cfg!(windows) {
             Self::Windows
+        } else if cfg!(target_os = "linux") {
+            Self::Linux
         } else {
             Self::MacOS
         }
@@ -31,7 +34,7 @@ impl ProbePlatform {
 }
 fn join(platform: ProbePlatform, base: &str, child: &str) -> PathBuf {
     match platform {
-        ProbePlatform::MacOS => Path::new(base).join(child),
+        ProbePlatform::MacOS | ProbePlatform::Linux => Path::new(base).join(child),
         ProbePlatform::Windows => PathBuf::from(format!(
             "{}\\{}",
             base.trim_end_matches(['\\', '/']),
@@ -54,6 +57,13 @@ pub fn candidate_dirs(
             join(platform, &home, ".codex/bin"),
             join(platform, &home, ".npm-global/bin"),
         ],
+        ProbePlatform::Linux => vec![
+            join(platform, &home, ".local/bin"),
+            PathBuf::from("/usr/local/bin"),
+            PathBuf::from("/usr/bin"),
+            join(platform, &home, ".codex/bin"),
+            join(platform, &home, ".npm-global/bin"),
+        ],
         ProbePlatform::Windows => {
             let home = env::get(parent, "USERPROFILE").unwrap_or(&home);
             let mut dirs = vec![join(platform, home, ".local/bin")];
@@ -71,6 +81,7 @@ pub fn candidate_dirs(
     };
     let tail = match platform {
         ProbePlatform::MacOS => login_path,
+        ProbePlatform::Linux => login_path.or_else(|| env::get(parent, "PATH")),
         ProbePlatform::Windows => env::get(parent, "PATH"),
     };
     if let Some(tail) = tail {
@@ -100,7 +111,7 @@ pub fn candidate_paths(
 ) -> Vec<PathBuf> {
     let mut result = Vec::new();
     for dir in candidate_dirs(platform, home, parent, login_path) {
-        if platform == ProbePlatform::MacOS {
+        if platform != ProbePlatform::Windows {
             result.push(dir.join(tool.as_str()));
             continue;
         }
@@ -300,7 +311,7 @@ pub(super) fn probe_tool(
 
 pub(super) fn codex_helper_name(platform: ProbePlatform) -> &'static str {
     match platform {
-        ProbePlatform::MacOS => "codex-code-mode-host",
+        ProbePlatform::MacOS | ProbePlatform::Linux => "codex-code-mode-host",
         ProbePlatform::Windows => "codex-code-mode-host.exe",
     }
 }

@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[cfg(any(target_os = "macos", target_os = "linux", windows, test))]
 use super::pins;
 
 /// Shared process platform without the individual engines' package restrictions.
@@ -11,16 +12,78 @@ pub fn current() -> Result<Box<dyn EnginePlatform>, String> {
     return Ok(Box::new(MacPlatform::new(MacArchitecture::X86_64)));
     #[cfg(all(windows, target_arch = "x86_64"))]
     return Ok(Box::new(WindowsPlatform));
+    #[cfg(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"))]
+    return Ok(Box::new(LinuxPlatform::new(LinuxArchitecture::X86_64)));
+    #[cfg(all(target_os = "linux", target_env = "gnu", target_arch = "aarch64"))]
+    return Ok(Box::new(LinuxPlatform::new(LinuxArchitecture::Aarch64)));
     #[cfg(not(any(
         all(target_os = "macos", target_arch = "aarch64"),
         all(target_os = "macos", target_arch = "x86_64"),
-        all(windows, target_arch = "x86_64")
+        all(windows, target_arch = "x86_64"),
+        all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"),
+        all(target_os = "linux", target_env = "gnu", target_arch = "aarch64")
     )))]
     Err(format!(
         "Local tools are unsupported on {}-{}.",
         std::env::consts::OS,
         std::env::consts::ARCH
     ))
+}
+
+#[derive(Debug)]
+#[cfg(any(target_os = "linux", test))]
+pub struct LinuxPlatform {
+    architecture: LinuxArchitecture,
+}
+
+#[derive(Debug, Clone, Copy)]
+#[cfg(any(target_os = "linux", test))]
+#[allow(dead_code)] // One architecture is selected by each host; tests exercise both asset pins.
+pub enum LinuxArchitecture {
+    X86_64,
+    Aarch64,
+}
+
+#[cfg(any(target_os = "linux", test))]
+impl LinuxPlatform {
+    pub fn new(architecture: LinuxArchitecture) -> Self {
+        Self { architecture }
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+impl EnginePlatform for LinuxPlatform {
+    fn uv_asset(&self) -> &'static str {
+        match self.architecture {
+            LinuxArchitecture::X86_64 => pins::UV_X86_64_LINUX_ASSET,
+            LinuxArchitecture::Aarch64 => pins::UV_AARCH64_LINUX_ASSET,
+        }
+    }
+
+    fn uv_sha256(&self) -> &'static str {
+        match self.architecture {
+            LinuxArchitecture::X86_64 => pins::UV_X86_64_LINUX_SHA256,
+            LinuxArchitecture::Aarch64 => pins::UV_AARCH64_LINUX_SHA256,
+        }
+    }
+
+    fn uv_executable(&self, root: &Path) -> PathBuf {
+        root.join("uv")
+    }
+
+    fn venv_python(&self, root: &Path) -> PathBuf {
+        root.join("venv").join("bin").join("python")
+    }
+
+    fn configure_child(&self, command: &mut Command) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        #[cfg(not(unix))]
+        let _ = command;
+    }
 }
 
 /// Everything about a local engine that differs by operating system: which pinned uv archive to
@@ -239,7 +302,11 @@ pub fn free_disk_bytes(path: &Path) -> Result<u64, String> {
         }
         // SAFETY: statvfs returned success and initialized the structure.
         let stats = unsafe { stats.assume_init() };
-        Ok(u64::from(stats.f_bavail).saturating_mul(stats.f_frsize))
+        #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+        let available = stats.f_bavail;
+        #[cfg(not(all(target_os = "linux", target_pointer_width = "64")))]
+        let available = u64::from(stats.f_bavail);
+        Ok(available.saturating_mul(stats.f_frsize))
     }
     #[cfg(target_os = "windows")]
     {

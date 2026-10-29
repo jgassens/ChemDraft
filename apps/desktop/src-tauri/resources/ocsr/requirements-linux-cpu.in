@@ -1,0 +1,5 @@
+# Linux inference is CPU-only. Keep the reviewed base releases from requirements.in,
+# selecting their official PyTorch CPU builds so installation never pulls CUDA packages.
+# Used with uv pip compile --override ... --torch-backend cpu; see ocsr-engine.md.
+torch==2.14.0+cpu
+torchvision==0.29.0+cpu

@@ -80,6 +80,12 @@ pnpm --filter @chemdraft/desktop build --bundles nsis
 - Debug builds are large (~9 GB of `target/debug` with full debuginfo); on a small disk set
   `CARGO_PROFILE_DEV_DEBUG=0`.
 
+## Linux
+
+An experimental Linux desktop build can be packaged locally as a Flatpak using
+GNOME SDK/Platform 49. See [Linux build and installation](docs/linux.md) for the
+build command, installable artifact, optional engines and current limitations.
+
 ## Using ChemDraft from an AI assistant
 
 The [ChemDraft agent skill](skills/chemdraft/SKILL.md) guides local assistants through

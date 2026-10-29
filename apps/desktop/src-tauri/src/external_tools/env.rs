@@ -40,7 +40,7 @@ pub fn real_codex_home(platform: ProbePlatform, parent: &ParentEnv) -> Option<Pa
     }
     // Parameterized Windows paths must also be testable on a Unix host.
     Some(match platform {
-        ProbePlatform::MacOS => Path::new(home).join(".codex"),
+        ProbePlatform::MacOS | ProbePlatform::Linux => Path::new(home).join(".codex"),
         ProbePlatform::Windows => {
             PathBuf::from(format!("{}\\.codex", home.trim_end_matches(['\\', '/'])))
         }
@@ -111,6 +111,12 @@ pub fn child_env(
         "PROCESSOR_ARCHITECTURE",
         "OS",
     ];
+    let linux = [
+        "DISPLAY",
+        "WAYLAND_DISPLAY",
+        "XAUTHORITY",
+        "DBUS_SESSION_BUS_ADDRESS",
+    ];
     let mut result: ParentEnv = parent
         .iter()
         .filter(|(key, _)| {
@@ -118,6 +124,8 @@ pub fn child_env(
             common.iter().any(|k| key.eq_ignore_ascii_case(k))
                 || upper.starts_with("LC_")
                 || upper.starts_with("XDG_")
+                || (platform == ProbePlatform::Linux
+                    && linux.iter().any(|k| key.eq_ignore_ascii_case(k)))
                 || (platform == ProbePlatform::Windows
                     && windows.iter().any(|k| key.eq_ignore_ascii_case(k)))
         })
@@ -125,7 +133,7 @@ pub fn child_env(
         .collect();
     let binary = binary.to_string_lossy();
     let parent_dir = match platform {
-        ProbePlatform::MacOS => Path::new(binary.as_ref())
+        ProbePlatform::MacOS | ProbePlatform::Linux => Path::new(binary.as_ref())
             .parent()
             .unwrap_or(Path::new("/usr/bin"))
             .to_string_lossy()
@@ -136,7 +144,9 @@ pub fn child_env(
             .unwrap_or_else(|| r"C:\Windows\System32".into()),
     };
     let path = match platform {
-        ProbePlatform::MacOS => format!("{parent_dir}:/usr/bin:/bin:/usr/sbin:/sbin"),
+        ProbePlatform::MacOS | ProbePlatform::Linux => {
+            format!("{parent_dir}:/usr/bin:/bin:/usr/sbin:/sbin")
+        }
         ProbePlatform::Windows => {
             // Winsock needs SystemRoot even when the caller supplies an empty parent.
             let root = get(parent, "SystemRoot").unwrap_or(r"C:\Windows");

@@ -169,8 +169,17 @@ InChI (statically linked into the RDKit MinimalLib build above; not the copy in 
   dependency inventory and must be resolved, with the notice archived here, before
   any public redistribution.
 
+st 0.9.3 (Linux sign-in terminal, packaged as chemdraft-terminal)
+  MIT/X Consortium License. Copyright holders and full terms are recorded in
+  native/linux-terminal/LICENSE, shipped in the Linux application's licences.
+  Source: https://dl.suckless.org/st/st-0.9.3.tar.gz
+  SHA-256: 9ed9feabcded713d4ded38c8cebf36a3b08f0042ef7934a0e2b2409da56e649b
+  Built locally from the pinned source; configuration selects a monospace font
+  and xterm-256color. Used for explicit, user-visible CLI sign-in only.
+
 Avogadro libraries (avogadrolibs Core + Calc, statically linked into the
-avogadro3d-sidecar executable shipped beside the app on macOS and Windows)
+avogadro3d-sidecar executable shipped beside the app on macOS, Windows,
+and in local Linux Flatpak development builds)
   BSD-3-Clause. Copyright (c) 2011-2020, Kitware, Inc.
   Source: https://github.com/OpenChemistry/avogadrolibs, commit
   416651ddaef33a4e20392392e7c0b505d446491b. Built without Open Babel, GPL plugins,
@@ -190,8 +199,24 @@ Optional components downloaded only at the user's request
 --------------------------------------------------------------------------------
 
 The following components are not bundled with ChemDraft. After explicit confirmation,
-the OCSR installer downloads them into the user's application-data folder. Their upstream
-licences govern those separately installed copies.
+the optional tool/engine installers download them into the user's application-data
+folder. Their upstream licences govern those separately installed copies.
+
+Claude Code 2.1.308 (optional managed CLI)
+  Copyright Anthropic PBC; proprietary vendor terms, not ChemDraft's Apache-2.0
+  licence. Unmodified binaries are downloaded directly from downloads.claude.ai
+  only when the user chooses to install the tool. Authentication and use remain
+  subject to Anthropic's applicable account and service terms.
+  Upstream licence: https://github.com/anthropics/claude-code/blob/main/LICENSE.md
+  Terms overview: https://code.claude.com/docs/en/legal-and-compliance
+
+OpenAI Codex 0.163.0 (optional managed CLI and code-mode helper)
+  Apache-2.0 for the Codex source, Copyright 2025 OpenAI.
+  Source: https://github.com/openai/codex/tree/rust-v0.163.0
+  Licence: https://github.com/openai/codex/blob/rust-v0.163.0/LICENSE
+  Downloaded directly from the official GitHub release only when the user chooses
+  to install it; only bin/codex and bin/codex-code-mode-host (or their Windows
+  .exe equivalents) are extracted. Provider-account and service terms are separate.
 
 MolScribe source code
   MIT. Source: https://github.com/thomas0809/MolScribe,

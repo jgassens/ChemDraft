@@ -1487,7 +1487,7 @@ mod tests {
             serde_json::to_value(&status).expect("status"),
             serde_json::json!({
                 "state": "notInstalled",
-                "requiredDiskBytes": 3_000_000_000_u64,
+                "requiredDiskBytes": pins::REQUIRED_DISK_BYTES,
                 "freeDiskBytes": 7,
             })
         );
@@ -1779,7 +1779,7 @@ mod tests {
 
     #[test]
     fn bundled_requirements_are_the_reviewed_hash_lock() {
-        let requirements = include_str!("../../resources/ocsr/requirements.txt");
+        let requirements = pins::BUNDLED_REQUIREMENTS;
         assert_eq!(
             pins::text_sha256(requirements.as_bytes()),
             pins::REQUIREMENTS_LOCK_SHA256,

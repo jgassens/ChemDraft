@@ -148,7 +148,7 @@ export function renderPins({ claudeVersion, codexTag, codexVersion, pins }) {
     `pub const CLAUDE_VERSION: &str = "${claudeVersion}";`,
     `pub const CODEX_TAG: &str = "${codexTag}";`,
     `pub const CODEX_VERSION: &str = "${codexVersion}";`,
-    "pub const PINS: [ToolPin; 6] = [",
+    `pub const PINS: [ToolPin; ${pins.length}] = [`,
     ...pins.map(formatToolPin),
     "];"
   ].join("\n");
@@ -177,6 +177,21 @@ export function parseClaudeLatestVersion(text) {
   return version;
 }
 
+export function parsePinnedVersions(source) {
+  const constant = (name, pattern) => {
+    const declarations = source.match(new RegExp(`^pub const ${name}:[^\\r\\n]*$`, "gm")) ?? [];
+    const match = declarations.length === 1
+      ? new RegExp(`^pub const ${name}: &str = "([^"]+)";$`).exec(declarations[0]) : null;
+    if (!match || !pattern.test(match[1])) throw new Error(`Invalid or duplicate pinned ${name}.`);
+    return match[1];
+  };
+  const claudeVersion = constant("CLAUDE_VERSION", /^\d+\.\d+\.\d+$/);
+  const codexTag = constant("CODEX_TAG", /^rust-v\d+\.\d+\.\d+$/);
+  const codexVersion = constant("CODEX_VERSION", /^\d+\.\d+\.\d+$/);
+  if (codexTag !== `rust-v${codexVersion}`) throw new Error("Pinned CODEX_TAG and CODEX_VERSION disagree.");
+  return { claudeVersion, codexTag, codexVersion };
+}
+
 async function fetchClaudeLatestVersion(url) {
   const response = await fetch(url, { headers: { Accept: "text/plain", "User-Agent": "ChemDraft pin refresh" } });
   if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
@@ -193,32 +208,49 @@ async function download(url, destination) {
 
 function claudeManifestEntry(manifest, platform) {
   const entry = manifest.platforms?.[platform];
-  if (!entry || !Number.isSafeInteger(entry.size) || typeof entry.checksum !== "string") {
+  if (!entry || !Number.isSafeInteger(entry.size) || entry.size <= 0 || typeof entry.checksum !== "string" || !/^[a-f0-9]{64}$/.test(entry.checksum)) {
     throw new Error(`Claude manifest has no valid ${platform} size/checksum.`);
   }
   return entry;
 }
 
-async function buildPins(temp) {
-  const claudeVersion = await fetchClaudeLatestVersion(`${claudeBase}/latest`);
+async function buildPins(temp, pinnedVersions) {
+  const claudeVersion = pinnedVersions?.claudeVersion ?? await fetchClaudeLatestVersion(`${claudeBase}/latest`);
   const manifest = await fetchJson(`${claudeBase}/${claudeVersion}/manifest.json`);
   const claude = [
     ["darwin-arm64", "DarwinArm64", "claude", "claude"],
     ["darwin-x64", "DarwinX64", "claude", "claude"],
-    ["win32-x64", "WindowsX64", "claude.exe", "claude.exe"]
+    ["win32-x64", "WindowsX64", "claude.exe", "claude.exe"],
+    ["linux-x64", "LinuxX64", "claude", "claude"],
+    ["linux-arm64", "LinuxArm64", "claude", "claude"]
   ].map(([platform, rustPlatform, entry, binary]) => {
     const published = claudeManifestEntry(manifest, platform);
     return { tool: "Claude", platform: rustPlatform, version: "CLAUDE_VERSION", url: `${claudeBase}/${claudeVersion}/${platform}/${entry}`, size: published.size, sha256: published.checksum, archive: "Raw", entry, binary };
   });
+  if (pinnedVersions) {
+    // Verify every committed raw executable too, rather than checking only the manifest and host.
+    for (const pin of claude) {
+      const path = join(temp, `Claude-${pin.platform}.download`);
+      const downloaded = await download(pin.url, path);
+      if (downloaded.size !== pin.size || downloaded.sha256 !== pin.sha256) throw new Error(`Claude ${pin.platform}: download does not match the versioned manifest.`);
+      pin.downloadedPath = path;
+    }
+  }
 
-  const release = await fetchGitHubJson("https://api.github.com/repos/openai/codex/releases/latest");
+  const releaseUrl = pinnedVersions
+    ? `https://api.github.com/repos/openai/codex/releases/tags/${encodeURIComponent(pinnedVersions.codexTag)}`
+    : "https://api.github.com/repos/openai/codex/releases/latest";
+  const release = await fetchGitHubJson(releaseUrl);
   const codexTag = release.tag_name;
   const codexVersion = codexTag?.replace(/^rust-v/, "");
   if (typeof codexTag !== "string" || !/^rust-v\d+\.\d+\.\d+$/.test(codexTag) || !codexVersion) throw new Error("Invalid Codex release tag.");
+  if (pinnedVersions && codexTag !== pinnedVersions.codexTag) throw new Error("Codex release does not match the committed tag.");
   const assets = [
     ["codex-package-aarch64-apple-darwin.tar.gz", "DarwinArm64", "TarGz", "bin/codex", "codex"],
     ["codex-package-x86_64-apple-darwin.tar.gz", "DarwinX64", "TarGz", "bin/codex", "codex"],
-    ["codex-package-x86_64-pc-windows-msvc.tar.gz", "WindowsX64", "TarGz", "bin/codex.exe", "codex.exe"]
+    ["codex-package-x86_64-pc-windows-msvc.tar.gz", "WindowsX64", "TarGz", "bin/codex.exe", "codex.exe"],
+    ["codex-package-x86_64-unknown-linux-musl.tar.gz", "LinuxX64", "TarGz", "bin/codex", "codex"],
+    ["codex-package-aarch64-unknown-linux-musl.tar.gz", "LinuxArm64", "TarGz", "bin/codex", "codex"]
   ];
   const sumsAsset = release.assets?.find((asset) => asset.name === "codex-package_SHA256SUMS");
   if (!sumsAsset?.browser_download_url) throw new Error("Codex release has no codex-package_SHA256SUMS.");
@@ -238,17 +270,17 @@ async function buildPins(temp) {
 }
 
 export function hostToolPins(pins, platform = process.platform, arch = process.arch) {
-  const host = { "darwin-arm64": "DarwinArm64", "darwin-x64": "DarwinX64", "win32-x64": "WindowsX64" }[`${platform}-${arch}`];
+  const host = { "darwin-arm64": "DarwinArm64", "darwin-x64": "DarwinX64", "win32-x64": "WindowsX64", "linux-x64": "LinuxX64", "linux-arm64": "LinuxArm64" }[`${platform}-${arch}`];
   return pins.filter((pin) => host !== undefined && pin.platform === host);
 }
 
-export function parityPlatformMessage(platform = process.platform, arch = process.arch) {
-  const checkedPlatform = platform === "darwin" ? "macOS" : platform === "win32" ? "Windows" : null;
-  const notChecked = checkedPlatform === "macOS" ? "Windows" : checkedPlatform === "Windows" ? "macOS" : "macOS and Windows";
+export function parityPlatformMessage(platform = process.platform, arch = process.arch, mode = "--check") {
+  const checkedPlatform = { darwin: "macOS", win32: "Windows", linux: "Linux" }[platform] ?? null;
+  const notChecked = ["macOS", "Windows", "Linux"].filter((name) => name !== checkedPlatform).join(" and ");
   const host = checkedPlatform ? `${checkedPlatform} (${platform}-${arch})` : `${platform}-${arch} (no supported desktop platform)`;
   const rerun = notChecked;
   const hosts = rerun.includes(" and ") ? `${rerun} hosts` : `a ${rerun} host`;
-  return `Pinned CLI parity checked on host ${host}; NOT checked on ${notChecked}. Run --check on ${hosts} too.`;
+  return `Pinned CLI parity checked on host ${host}; NOT checked on ${notChecked}. Run ${mode} on ${hosts} too.`;
 }
 
 // Use argv and an explicit environment, never a shell string (Windows paths can contain spaces).
@@ -257,7 +289,8 @@ export function parityCommand(binaries, parentEnv = process.env) {
   for (const [tool, binary] of Object.entries(binaries)) env[`CHEMDRAFT_PINNED_${tool.toUpperCase()}`] = binary;
   return {
     command: "cargo",
-    args: ["test", "--manifest-path", "apps/desktop/src-tauri/Cargo.toml", "pinned_", "--", "--include-ignored", "--nocapture"],
+    // Restrict the opt-in run to CLI-contract fixtures, excluding archive installer tests.
+    args: ["test", "--manifest-path", "apps/desktop/src-tauri/Cargo.toml", "external_tools::tests::pinned_", "--", "--include-ignored", "--nocapture"],
     options: { cwd: repoRoot, env, stdio: "inherit", shell: false }
   };
 }
@@ -305,8 +338,8 @@ export async function prepareHostBinary(pin, temp) {
   return binary;
 }
 
-async function checkParity(pins, temp) {
-  console.log(parityPlatformMessage());
+async function checkParity(pins, temp, mode) {
+  console.log(parityPlatformMessage(process.platform, process.arch, mode));
   const selected = hostToolPins(pins);
   const binaries = {};
   for (const tool of ["Codex", "Claude"]) {
@@ -326,14 +359,24 @@ async function checkParity(pins, temp) {
 
 async function main() {
   if (process.argv.includes("--self-test")) return selfTest();
+  if (process.argv.includes("--help")) {
+    console.log("Usage: node scripts/pin-external-tools.mjs [--check | --check-pinned]\nWithout flags: print pins for vendor latest versions.\n--check: compare against vendor latest and run host CLI parity.\n--check-pinned: verify all committed versioned downloads, compare pins and run host CLI parity; never upgrade versions.");
+    return;
+  }
+  const checkPinned = process.argv.includes("--check-pinned");
+  const checkLatest = process.argv.includes("--check");
+  if (checkPinned && checkLatest) throw new Error("Choose --check or --check-pinned, not both.");
+  const existing = checkPinned || checkLatest ? await readFile(pinsPath, "utf8") : undefined;
+  const pinnedVersions = checkPinned ? parsePinnedVersions(existing) : undefined;
+  if (pinnedVersions) console.log(`Checking committed Claude ${pinnedVersions.claudeVersion} and Codex ${pinnedVersions.codexTag}; verifying every platform download before host CLI parity.`);
   const temp = await mkdtemp(join(tmpdir(), "chemdraft-external-tools-"));
   try {
-    const built = await buildPins(temp);
+    const built = await buildPins(temp, pinnedVersions);
     const generated = renderPins(built);
-    if (process.argv.includes("--check")) {
-      const difference = pinDiff(await readFile(pinsPath, "utf8"), generated);
+    if (checkPinned || checkLatest) {
+      const difference = pinDiff(existing, generated);
       if (difference) throw new Error(difference);
-      await checkParity(built.pins, temp);
+      await checkParity(built.pins, temp, checkPinned ? "--check-pinned" : "--check");
     } else {
       console.log(generated);
     }

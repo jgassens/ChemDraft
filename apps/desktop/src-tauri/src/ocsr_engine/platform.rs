@@ -29,10 +29,15 @@ pub fn current() -> Result<Box<dyn EnginePlatform>, String> {
     return mac_platform_or_unsupported(MacArchitecture::X86_64);
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     return Ok(Box::new(WindowsPlatform));
+    // The Linux lock deliberately selects the reviewed CPU-only x86_64 wheels. Other Linux
+    // architectures remain unavailable until their complete wheel set and inference are checked.
+    #[cfg(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"))]
+    return Ok(Box::new(LinuxPlatform::new(LinuxArchitecture::X86_64)));
     #[cfg(not(any(
         all(target_os = "macos", target_arch = "aarch64"),
         all(target_os = "macos", target_arch = "x86_64"),
-        all(target_os = "windows", target_arch = "x86_64")
+        all(target_os = "windows", target_arch = "x86_64"),
+        all(target_os = "linux", target_env = "gnu", target_arch = "x86_64")
     )))]
     Err(format!(
         "MolScribe is not available for {}-{}.",
@@ -84,6 +89,15 @@ mod tests {
             windows.venv_python(root),
             root.join("venv/Scripts/python.exe")
         );
+
+        let linux = LinuxPlatform::new(LinuxArchitecture::X86_64);
+        assert_eq!(linux.uv_asset(), pins::UV_X86_64_LINUX_ASSET);
+        assert_eq!(linux.uv_sha256(), pins::UV_X86_64_LINUX_SHA256);
+        assert_eq!(linux.uv_executable(root), root.join("uv"));
+        assert_eq!(linux.venv_python(root), root.join("venv/bin/python"));
+        let arm = LinuxPlatform::new(LinuxArchitecture::Aarch64);
+        assert_ne!(arm.uv_asset(), linux.uv_asset());
+        assert_eq!(arm.uv_sha256(), pins::UV_AARCH64_LINUX_SHA256);
     }
 
     #[test]
@@ -106,5 +120,16 @@ mod tests {
     fn disk_space_threshold_is_exact() {
         assert!(!has_required_disk(pins::REQUIRED_DISK_BYTES - 1));
         assert!(has_required_disk(pins::REQUIRED_DISK_BYTES));
+    }
+
+    #[cfg(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"))]
+    #[test]
+    fn linux_selects_the_verified_cpu_runtime_before_any_download() {
+        let platform = current().expect("GNU Linux x64 is supported");
+        assert_eq!(platform.uv_asset(), pins::UV_X86_64_LINUX_ASSET);
+        assert_eq!(pins::TORCH_VERSION, "2.14.0+cpu");
+        assert_eq!(pins::TORCHVISION_VERSION, "0.29.0+cpu");
+        assert!(!has_required_disk(7_999_999_999));
+        assert!(has_required_disk(8_000_000_000));
     }
 }

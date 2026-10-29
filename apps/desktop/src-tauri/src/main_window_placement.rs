@@ -195,7 +195,17 @@ pub(super) fn snapshot<R: tauri::Runtime>(window: &tauri::Window<R>) -> Result<S
     }
 }
 
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(target_os = "linux")]
+pub(super) fn snapshot<R: tauri::Runtime>(window: &tauri::Window<R>) -> Result<Snapshot, String> {
+    Ok(Snapshot {
+        fullscreen: window.is_fullscreen().map_err(|error| error.to_string())?,
+        minimized: window.is_minimized().map_err(|error| error.to_string())?,
+        maximized: Some(window.is_maximized().map_err(|error| error.to_string())?),
+        normal_frame: None,
+    })
+}
+
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
 pub(super) fn snapshot<R: tauri::Runtime>(_window: &tauri::Window<R>) -> Result<Snapshot, String> {
     Ok(Snapshot::default())
 }

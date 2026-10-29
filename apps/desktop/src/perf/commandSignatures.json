@@ -537,6 +537,14 @@
   },
   {
     "file": "lib.rs",
+    "name": "read_clipboard_payload",
+    "async": true,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle",
+    "returnType": "Result<ClipboardReadPayload, String>"
+  },
+  {
+    "file": "lib.rs",
     "name": "write_clipboard_text_items",
     "async": true,
     "generics": "",
@@ -547,6 +555,14 @@
     "file": "lib.rs",
     "name": "write_clipboard_text_items",
     "async": false,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, items: Vec<ClipboardWriteTextItem>,",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "write_clipboard_text_items",
+    "async": true,
     "generics": "",
     "parameters": "app: tauri::AppHandle, items: Vec<ClipboardWriteTextItem>,",
     "returnType": "Result<(), String>"
@@ -563,6 +579,14 @@
     "file": "lib.rs",
     "name": "write_clipboard_image",
     "async": false,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, png_bytes: Vec<u8>",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "write_clipboard_image",
+    "async": true,
     "generics": "",
     "parameters": "app: tauri::AppHandle, png_bytes: Vec<u8>",
     "returnType": "Result<(), String>"

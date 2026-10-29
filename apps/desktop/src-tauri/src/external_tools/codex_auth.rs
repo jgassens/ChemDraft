@@ -144,7 +144,7 @@ pub(super) fn prepare_codex_home_with_link(
         }
         let target_meta = metadata(&target)?;
         if let Some(meta) = target_meta.as_ref() {
-            let linked = if platform == ProbePlatform::MacOS && meta.file_type().is_symlink() {
+            let linked = if platform != ProbePlatform::Windows && meta.file_type().is_symlink() {
                 fs::read_link(&target).map_err(|e| io_reason("read Codex auth link", e))? == auth
             } else if platform == ProbePlatform::Windows
                 && meta.is_file()
@@ -403,7 +403,7 @@ fn private_file(path: &Path) -> io::Result<()> {
 fn link_auth(platform: ProbePlatform, source: &Path, target: &Path) -> io::Result<()> {
     match platform {
         ProbePlatform::Windows => fs::hard_link(source, target),
-        ProbePlatform::MacOS => {
+        ProbePlatform::MacOS | ProbePlatform::Linux => {
             #[cfg(unix)]
             {
                 std::os::unix::fs::symlink(source, target)

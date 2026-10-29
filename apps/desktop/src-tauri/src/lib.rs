@@ -1579,7 +1579,19 @@ fn foreground_belongs_to_app() -> bool {
         .is_some_and(|mtm| objc2_app_kit::NSApplication::sharedApplication(mtm).isActive())
 }
 
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(target_os = "linux")]
+fn foreground_belongs_to_app() -> bool {
+    use gtk::prelude::*;
+
+    // GTK's toplevel list is process-local and includes the document, palettes and native dialogs.
+    // Read actual activation on the main thread so delayed palette IPC cannot raise a background app.
+    gtk::Window::list_toplevels()
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::Window>().ok())
+        .any(|window| window.is_active())
+}
+
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
 fn foreground_belongs_to_app() -> bool {
     false
 }
@@ -3094,8 +3106,13 @@ async fn set_plugin_panel_input_focus(
                 }
                 #[cfg(not(any(target_os = "macos", windows)))]
                 {
+                    #[cfg(target_os = "linux")]
+                    if !foreground_belongs_to_app() {
+                        return Ok(false);
+                    }
+                    // GTK must allow focus before an input lease can focus the panel's webview.
                     target
-                        .set_focusable(false)
+                        .set_focusable(cfg!(target_os = "linux"))
                         .map_err(|error| error.to_string())?;
                     target.set_focus().map_err(|error| error.to_string())?;
                 }
@@ -4571,7 +4588,21 @@ fn build_toolset_tooltip_window(app: &tauri::AppHandle) -> Result<(), String> {
             }
         })?;
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        let target = window.clone();
+        run_on_main_thread_blocking(&window, move || {
+            use gtk::prelude::*;
+
+            let native = target.gtk_window().map_err(|error| error.to_string())?;
+            // A prewarmed hidden tooltip may not have a GdkWindow yet. Tao's cursor-ignore
+            // request unwraps that missing window; GTK stores the widget's input shape and
+            // applies it when the window is realized, without showing or focusing it.
+            native.input_shape_combine_region(Some(&gtk::cairo::Region::create()));
+            Ok::<(), String>(())
+        })??;
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     window
         .set_ignore_cursor_events(true)
         .map_err(|error| error.to_string())?;
@@ -4608,10 +4639,16 @@ async fn read_clipboard_payload() -> Result<ClipboardReadPayload, String> {
     read_clipboard_payload_impl()
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 #[tauri::command]
 fn read_clipboard_payload() -> Result<ClipboardReadPayload, String> {
     read_clipboard_payload_impl()
+}
+
+#[cfg(target_os = "linux")]
+#[tauri::command]
+async fn read_clipboard_payload(app: tauri::AppHandle) -> Result<ClipboardReadPayload, String> {
+    linux_clipboard_on_main_thread(&app, read_clipboard_payload_impl)
 }
 
 #[cfg(windows)]
@@ -4623,13 +4660,23 @@ async fn write_clipboard_text_items(
     write_clipboard_text_items_impl(&app, normalize_clipboard_write_text_items(items)?)
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 #[tauri::command]
 fn write_clipboard_text_items(
     app: tauri::AppHandle,
     items: Vec<ClipboardWriteTextItem>,
 ) -> Result<(), String> {
     write_clipboard_text_items_impl(&app, normalize_clipboard_write_text_items(items)?)
+}
+
+#[cfg(target_os = "linux")]
+#[tauri::command]
+async fn write_clipboard_text_items(
+    app: tauri::AppHandle,
+    items: Vec<ClipboardWriteTextItem>,
+) -> Result<(), String> {
+    let items = normalize_clipboard_write_text_items(items)?;
+    linux_clipboard_on_main_thread(&app, move || linux_write_clipboard_text_items(items))
 }
 
 /// Copy As ▸ PNG: put raster image bytes on the system pasteboard as `public.png`.
@@ -4640,10 +4687,19 @@ async fn write_clipboard_image(app: tauri::AppHandle, png_bytes: Vec<u8>) -> Res
 }
 
 /// Copy As ▸ PNG: put raster image bytes on the system pasteboard as `public.png`.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 #[tauri::command]
 fn write_clipboard_image(app: tauri::AppHandle, png_bytes: Vec<u8>) -> Result<(), String> {
     write_clipboard_image_checked(&app, &png_bytes)
+}
+
+#[cfg(target_os = "linux")]
+#[tauri::command]
+async fn write_clipboard_image(app: tauri::AppHandle, png_bytes: Vec<u8>) -> Result<(), String> {
+    let clipboard_app = app.clone();
+    linux_clipboard_on_main_thread(&app, move || {
+        write_clipboard_image_checked(&clipboard_app, &png_bytes)
+    })
 }
 
 fn write_clipboard_image_checked(app: &tauri::AppHandle, png_bytes: &[u8]) -> Result<(), String> {
@@ -4682,7 +4738,12 @@ fn write_clipboard_image_impl(app: &tauri::AppHandle, png_bytes: &[u8]) -> Resul
     windows_clipboard::native::write_png(clipboard_owner_window(app), png_bytes)
 }
 
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(target_os = "linux")]
+fn write_clipboard_image_impl(_app: &tauri::AppHandle, png_bytes: &[u8]) -> Result<(), String> {
+    linux_set_clipboard_data(vec![("image/png".into(), png_bytes.to_vec())])
+}
+
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
 fn write_clipboard_image_impl(_app: &tauri::AppHandle, _png_bytes: &[u8]) -> Result<(), String> {
     Err("Native clipboard image writes are only implemented for macOS and Windows.".to_string())
 }
@@ -4990,7 +5051,293 @@ fn write_clipboard_text_items_impl(
     windows_clipboard::native::write_text_items(clipboard_owner_window(app), &items)
 }
 
-#[cfg(not(any(target_os = "macos", windows)))]
+/// GTK owns clipboard selections on its main thread, including callbacks serving custom MIME data.
+/// These commands run on a worker so a clipboard transfer does not block the IPC dispatcher.
+#[cfg(target_os = "linux")]
+fn linux_clipboard_on_main_thread<T: Send + 'static>(
+    app: &tauri::AppHandle,
+    task: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    app.run_on_main_thread(move || {
+        let _ = sender.send(task());
+    })
+    .map_err(|error| error.to_string())?;
+    receiver
+        .recv()
+        .map_err(|_| "The main thread dropped a clipboard task.".to_string())?
+}
+
+#[cfg(target_os = "linux")]
+fn linux_clipboard() -> Result<gtk::Clipboard, String> {
+    let display = gtk::gdk::Display::default()
+        .ok_or_else(|| "No display is available for the clipboard.".to_string())?;
+    gtk::Clipboard::default(&display)
+        .ok_or_else(|| "The system clipboard is unavailable.".to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn linux_clipboard_target_is_text(target: &str) -> bool {
+    // X selection metadata, images, binary chemical containers and WebKit's private envelope must
+    // remain advertised types only. Interpreting their bytes as Unicode creates spurious text.
+    !is_opaque_clipboard_type(target)
+        && !matches!(
+            target,
+            "TARGETS" | "TIMESTAMP" | "MULTIPLE" | "SAVE_TARGETS"
+        )
+        && !target.to_ascii_lowercase().starts_with("image/")
+        && !matches!(
+            target.to_ascii_lowercase().as_str(),
+            "chemical/x-cdx" | "application/x-cdx" | "application/vnd.cambridgesoft.cdx"
+        )
+}
+
+#[cfg(target_os = "linux")]
+fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
+    let clipboard = linux_clipboard()?;
+    let targets = clipboard.wait_for_targets().unwrap_or_default();
+    let mut payload = ClipboardReadPayload {
+        types: targets
+            .iter()
+            .map(|target| target.name().to_string())
+            .collect(),
+        text_items: Vec::new(),
+    };
+    for target in targets {
+        let item_type = target.name().to_string();
+        if !linux_clipboard_target_is_text(&item_type) {
+            continue;
+        }
+        let Some(data) = clipboard.wait_for_contents(&target) else {
+            continue;
+        };
+        let text = if matches!(
+            item_type.as_str(),
+            "UTF8_STRING" | "STRING" | "TEXT" | "COMPOUND_TEXT"
+        ) {
+            data.text().map(|text| text.to_string())
+        } else {
+            decode_clipboard_text_bytes(&data.data())
+        };
+        if let Some(text) = text.filter(|text| !text.is_empty()) {
+            payload.text_items.push(ClipboardTextItem {
+                r#type: item_type,
+                text,
+            });
+        }
+    }
+    // GTK converts X11 STRING/COMPOUND_TEXT and charset-bearing MIME targets to UTF-8. Give the
+    // shared clipboard inspector its standard plain-text spelling, preserving all chemical types.
+    // A source may publish an escaped/legacy text/plain alongside a correct UTF8_STRING. GTK's
+    // preferred text conversion is authoritative for plain text, even when that MIME already exists.
+    if let Some(text) = clipboard.wait_for_text().filter(|text| !text.is_empty()) {
+        if !payload.types.iter().any(|item| item == "text/plain") {
+            payload.types.push("text/plain".into());
+        }
+        if let Some(item) = payload
+            .text_items
+            .iter_mut()
+            .find(|item| item.r#type == "text/plain")
+        {
+            item.text = text.to_string();
+        } else {
+            payload.text_items.push(ClipboardTextItem {
+                r#type: "text/plain".into(),
+                text: text.to_string(),
+            });
+        }
+    }
+    Ok(payload)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_clipboard_text_data(items: Vec<ClipboardWriteTextItem>) -> Vec<(String, Vec<u8>)> {
+    let mut data: Vec<_> = items
+        .into_iter()
+        .map(|item| (item.r#type, item.text.into_bytes()))
+        .collect();
+    if let Some((_, plain)) = data.iter().find(|(target, _)| target == "text/plain") {
+        let plain = plain.clone();
+        for target in [
+            "UTF8_STRING",
+            "TEXT",
+            "STRING",
+            "COMPOUND_TEXT",
+            "text/plain;charset=utf-8",
+        ] {
+            if !data.iter().any(|(existing, _)| existing == target) {
+                data.push((target.into(), plain.clone()));
+            }
+        }
+    }
+    data
+}
+
+#[cfg(target_os = "linux")]
+fn linux_write_clipboard_text_items(items: Vec<ClipboardWriteTextItem>) -> Result<(), String> {
+    linux_set_clipboard_data(linux_clipboard_text_data(items))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_set_clipboard_data(data: Vec<(String, Vec<u8>)>) -> Result<(), String> {
+    use gtk::glib::translate::ToGlibPtr;
+
+    let clipboard = linux_clipboard()?;
+    let targets: Vec<_> = data
+        .iter()
+        .enumerate()
+        .map(|(index, (target, _))| {
+            gtk::TargetEntry::new(target, gtk::TargetFlags::empty(), index as u32)
+        })
+        .collect();
+    if !clipboard.set_with_data(&targets, move |_, selection, index| {
+        let Some((target, bytes)) = data.get(index as usize) else {
+            return;
+        };
+        if matches!(
+            target.as_str(),
+            "UTF8_STRING" | "STRING" | "TEXT" | "COMPOUND_TEXT"
+        ) {
+            if let Ok(text) = std::str::from_utf8(bytes) {
+                selection.set_text(text);
+            }
+        } else {
+            selection.set(&selection.target(), 8, bytes);
+        }
+    }) {
+        return Err("Could not take ownership of the system clipboard.".into());
+    }
+    // gtk-rs omits this API. A null target array means all offered formats; the clipboard manager
+    // can then retain them after ChemDraft exits. Wayland compositors may retain them themselves.
+    // SAFETY: the live clipboard is a valid GtkClipboard, and the documented null/zero pair asks
+    // GTK to store all targets without borrowing any Rust array.
+    unsafe {
+        gtk::ffi::gtk_clipboard_set_can_store(clipboard.to_glib_none().0, std::ptr::null_mut(), 0);
+    }
+    clipboard.store();
+    Ok(())
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_clipboard_tests {
+    use super::*;
+
+    #[test]
+    fn text_targets_preserve_chemical_formats_and_add_native_plain_text_aliases() {
+        let data = linux_clipboard_text_data(vec![
+            ClipboardWriteTextItem {
+                r#type: "application/x-chemdraft-selection+json".into(),
+                text: "{\"atoms\":[]}".into(),
+            },
+            ClipboardWriteTextItem {
+                r#type: "chemical/x-cdxml".into(),
+                text: "<CDXML/>".into(),
+            },
+            ClipboardWriteTextItem {
+                r#type: "text/plain".into(),
+                text: "αβ CCO".into(),
+            },
+        ]);
+        assert_eq!(data[0].0, "application/x-chemdraft-selection+json");
+        assert_eq!(data[1], ("chemical/x-cdxml".into(), b"<CDXML/>".to_vec()));
+        for target in [
+            "UTF8_STRING",
+            "TEXT",
+            "STRING",
+            "COMPOUND_TEXT",
+            "text/plain;charset=utf-8",
+        ] {
+            assert_eq!(
+                data.iter().find(|(name, _)| name == target).unwrap().1,
+                "αβ CCO".as_bytes()
+            );
+        }
+    }
+
+    #[test]
+    fn images_binary_chemistry_and_private_envelopes_are_never_decoded_as_text() {
+        for target in [
+            "image/png",
+            "image/svg+xml",
+            "chemical/x-cdx",
+            "application/x-cdx",
+            "org.webkit.custom-pasteboard-data",
+            "TARGETS",
+            "TIMESTAMP",
+        ] {
+            assert!(!linux_clipboard_target_is_text(target), "{target}");
+        }
+        for target in [
+            "chemical/x-cdxml",
+            "chemical/x-mdl-molfile",
+            "chemical/x-daylight-smiles",
+            "application/x-chemdraft-selection+json",
+            "UTF8_STRING",
+            "text/plain",
+        ] {
+            assert!(linux_clipboard_target_is_text(target), "{target}");
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a disposable GTK display; run with xvfb-run and --ignored --test-threads=1"]
+    fn gtk_clipboard_round_trips_custom_chemistry_unicode_and_png() {
+        gtk::init().expect("GTK display");
+        linux_write_clipboard_text_items(vec![
+            ClipboardWriteTextItem {
+                r#type: "application/x-chemdraft-selection+json".into(),
+                text: "{\"atoms\":[]}".into(),
+            },
+            ClipboardWriteTextItem {
+                r#type: "chemical/x-cdxml".into(),
+                text: "<CDXML/>".into(),
+            },
+            ClipboardWriteTextItem {
+                r#type: "text/plain".into(),
+                text: "αβ CCO".into(),
+            },
+        ])
+        .expect("write chemical formats");
+        let payload = read_clipboard_payload_impl().expect("read chemical formats");
+        for (target, expected) in [
+            ("application/x-chemdraft-selection+json", "{\"atoms\":[]}"),
+            ("chemical/x-cdxml", "<CDXML/>"),
+            ("text/plain", "αβ CCO"),
+        ] {
+            assert!(payload
+                .text_items
+                .iter()
+                .any(|item| item.r#type == target && item.text == expected));
+        }
+        linux_set_clipboard_data(vec![
+            ("text/plain".into(), br"Gr\u00fc\u00dfe".to_vec()),
+            ("UTF8_STRING".into(), "Grüße".as_bytes().to_vec()),
+        ])
+        .expect("write conflicting legacy/plain and UTF-8 formats");
+        let payload = read_clipboard_payload_impl().expect("read preferred UTF-8 text");
+        assert!(payload
+            .text_items
+            .iter()
+            .any(|item| item.r#type == "text/plain" && item.text == "Grüße"));
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(2, 2)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .expect("PNG");
+        let png = png.into_inner();
+        linux_set_clipboard_data(vec![("image/png".into(), png.clone())]).expect("write PNG");
+        let bytes = linux_clipboard()
+            .unwrap()
+            .wait_for_contents(&gtk::gdk::Atom::intern("image/png"))
+            .unwrap()
+            .data();
+        assert_eq!(bytes, png);
+        let payload = read_clipboard_payload_impl().expect("read image types");
+        assert!(payload.types.iter().any(|target| target == "image/png"));
+        assert!(payload.text_items.is_empty());
+    }
+}
+
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
 fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
     Ok(ClipboardReadPayload {
         types: Vec::new(),
@@ -4998,7 +5345,7 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
     })
 }
 
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
 fn write_clipboard_text_items_impl(
     _app: &tauri::AppHandle,
     _items: Vec<ClipboardWriteTextItem>,
@@ -5780,8 +6127,16 @@ fn is_edit_history_command(command_id: &str) -> bool {
 /// history commands to the main window itself
 /// when it has no text field focused (`installSecondaryWindowEditHistory` in the webview).
 fn menu_command_target_label<'a>(command_id: &str, focused_label: Option<&'a str>) -> &'a str {
+    #[cfg(target_os = "linux")]
+    let is_clipboard_edit = linux_clipboard_edit_command(command_id).is_some();
+    #[cfg(not(target_os = "linux"))]
+    let is_clipboard_edit = false;
     match focused_label {
-        Some(label) if is_edit_history_command(command_id) || command_id == "edit.selectAll" => {
+        Some(label)
+            if is_edit_history_command(command_id)
+                || command_id == "edit.selectAll"
+                || is_clipboard_edit =>
+        {
             label
         }
         _ => MAIN_WINDOW_LABEL,
@@ -5798,6 +6153,22 @@ fn emit_menu_command<R: Runtime>(
         .find(|(_, window)| window.is_focused().unwrap_or(false))
         .map(|(label, _)| label);
     let target_label = menu_command_target_label(command_id, focused_label.as_deref());
+    #[cfg(target_os = "linux")]
+    if let Some(edit) = linux_clipboard_edit_command(command_id) {
+        use webkit2gtk::WebViewExt;
+
+        let target = app
+            .get_webview_window(target_label)
+            .ok_or_else(|| format!("Window {target_label} is not available."))?;
+        // GTK's predefined items require X11 key injection and otherwise do nothing. Native
+        // WebKit editing works on Wayland too: a focused field edits its text, while canvas
+        // copy/cut/paste reaches the existing DOM clipboard handlers exactly once.
+        return target
+            .with_webview(move |webview| {
+                webview.inner().execute_editing_command(edit);
+            })
+            .map_err(|error| error.to_string());
+    }
     if target_label == MAIN_WINDOW_LABEL {
         return emit_command_to_main(app, command_id);
     }
@@ -6406,8 +6777,14 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                     &edit_history_menu_item(app, &EDIT_HISTORY_MENU_ITEMS[0])?,
                     &edit_history_menu_item(app, &EDIT_HISTORY_MENU_ITEMS[1])?,
                     &PredefinedMenuItem::separator(app)?,
+                    #[cfg(not(target_os = "linux"))]
                     &PredefinedMenuItem::cut(app, None)?,
+                    #[cfg(target_os = "linux")]
+                    &MenuItem::with_id(app, "clipboard.cut", "Cut", true, Some("Ctrl+X"))?,
+                    #[cfg(not(target_os = "linux"))]
                     &PredefinedMenuItem::copy(app, None)?,
+                    #[cfg(target_os = "linux")]
+                    &MenuItem::with_id(app, "clipboard.copy", "Copy", true, Some("Ctrl+C"))?,
                     &Submenu::with_items(
                         app,
                         "Copy As",
@@ -6471,7 +6848,10 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                             )?,
                         ],
                     )?,
+                    #[cfg(not(target_os = "linux"))]
                     &PredefinedMenuItem::paste(app, None)?,
+                    #[cfg(target_os = "linux")]
+                    &MenuItem::with_id(app, "clipboard.paste", "Paste", true, Some("Ctrl+V"))?,
                     &MenuItem::with_id(
                         app,
                         "edit.selectAll",
@@ -7224,7 +7604,18 @@ fn utility_window_builder<'a, R: Runtime, M: Manager<R>>(
             None => builder,
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    {
+        let builder = builder.focused(false);
+        match app
+            .get_webview_window(MAIN_WINDOW_LABEL)
+            .and_then(|main| main.gtk_window().ok())
+        {
+            Some(owner) => builder.transient_for_raw(&owner),
+            None => builder,
+        }
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = app;
         builder
@@ -7290,9 +7681,23 @@ fn toolset_toggle_command_id(toolset_id: &str) -> String {
 }
 
 fn is_routed_menu_command(command_id: &str) -> bool {
+    #[cfg(target_os = "linux")]
+    if linux_clipboard_edit_command(command_id).is_some() {
+        return true;
+    }
     MENU_COMMAND_IDS.contains(&command_id)
         || command_id.starts_with(TOOLSET_TOGGLE_PREFIX)
         || command_id.starts_with(PLUGIN_COMMAND_PREFIX)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_clipboard_edit_command(command_id: &str) -> Option<&'static str> {
+    match command_id {
+        "clipboard.cut" => Some("Cut"),
+        "clipboard.copy" => Some("Copy"),
+        "clipboard.paste" => Some("Paste"),
+        _ => None,
+    }
 }
 
 /// How much of a palette must land on a monitor for the user to be able to grab and move it.
@@ -9237,10 +9642,35 @@ mod tests {
     }
 
     #[test]
-    fn clipboard_edit_menu_commands_are_system_owned() {
-        expect_false(is_routed_menu_command("clipboard.cut"));
-        expect_false(is_routed_menu_command("clipboard.copy"));
-        expect_false(is_routed_menu_command("clipboard.paste"));
+    fn clipboard_edit_menu_commands_route_to_native_webkit_only_on_linux() {
+        for command in ["clipboard.cut", "clipboard.copy", "clipboard.paste"] {
+            assert_eq!(is_routed_menu_command(command), cfg!(target_os = "linux"));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_clipboard_menu_follows_focused_text_editors_including_secondary_windows() {
+        for (command, edit) in [
+            ("clipboard.cut", "Cut"),
+            ("clipboard.copy", "Copy"),
+            ("clipboard.paste", "Paste"),
+        ] {
+            assert_eq!(linux_clipboard_edit_command(command), Some(edit));
+            for label in [
+                MAIN_WINDOW_LABEL,
+                "preferences",
+                "toolset-core-main",
+                "dialog-main-pageSize-12",
+            ] {
+                assert_eq!(menu_command_target_label(command, Some(label)), label);
+            }
+            assert_eq!(menu_command_target_label(command, None), MAIN_WINDOW_LABEL);
+        }
+        assert_eq!(
+            linux_clipboard_edit_command("clipboard.copyAs.smiles"),
+            None
+        );
     }
 
     #[test]

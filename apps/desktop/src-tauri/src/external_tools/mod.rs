@@ -429,12 +429,7 @@ fn base_dir<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
 }
 
 fn current_platform() -> Option<pins::ToolPlatform> {
-    match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("macos", "aarch64") => Some(pins::ToolPlatform::DarwinArm64),
-        ("macos", "x86_64") => Some(pins::ToolPlatform::DarwinX64),
-        ("windows", "x86_64") => Some(pins::ToolPlatform::WindowsX64),
-        _ => None,
-    }
+    pins::ToolPlatform::for_target(std::env::consts::OS, std::env::consts::ARCH)
 }
 
 fn status_impl(
@@ -514,7 +509,7 @@ fn status_prepared_impl(
         #[cfg(test)]
         let candidate = probe::resolve_candidates(&paths, |p| p.is_file());
         #[cfg(not(test))]
-        if probe_platform == probe::ProbePlatform::MacOS && !matches!(candidate, probe::Candidate::Runnable(_)) {
+        if probe_platform != probe::ProbePlatform::Windows && !matches!(candidate, probe::Candidate::Runnable(_)) {
             if let Some(shell) = env::get(parent, "SHELL") {
                 if let Ok(path) = state.probes.login_path.capture(Path::new(shell), parent, &run_dir) {
                     paths = probe::candidate_paths(tool, probe_platform, Path::new(home), parent, Some(&path));
@@ -1183,3 +1178,6 @@ pub fn setup<R: Runtime>(app: &tauri::AppHandle<R>) {
         }
     }
 }
+
+#[cfg(test)]
+mod linux_tests;

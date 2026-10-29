@@ -17,6 +17,17 @@ pub const UV_X86_64_WINDOWS_ASSET: &str = "uv-x86_64-pc-windows-msvc.zip";
 #[cfg(any(target_os = "windows", test))]
 pub const UV_X86_64_WINDOWS_SHA256: &str =
     "cae6a3bc25239f83dffb467a4b180508d9da23986c04639ebfa44e43e6a84bff";
+// Official release .sha256 files and downloaded archive bytes verified on 2026-10-29.
+#[cfg(any(target_os = "linux", test))]
+pub const UV_X86_64_LINUX_ASSET: &str = "uv-x86_64-unknown-linux-gnu.tar.gz";
+#[cfg(any(target_os = "linux", test))]
+pub const UV_X86_64_LINUX_SHA256: &str =
+    "89eadd7c76fc063887959510d5ba0ab1264dfd5f1143b925ddb73021a40acf16";
+#[cfg(any(target_os = "linux", test))]
+pub const UV_AARCH64_LINUX_ASSET: &str = "uv-aarch64-unknown-linux-gnu.tar.gz";
+#[cfg(any(target_os = "linux", test))]
+pub const UV_AARCH64_LINUX_SHA256: &str =
+    "afb6291f3f0a6b4521fc67b947822506c41dde5b60d2189dd8f3695b2ac8c9e7";
 
 pub fn uv_url(asset: &str) -> String {
     format!("https://github.com/astral-sh/uv/releases/download/{UV_VERSION}/{asset}")

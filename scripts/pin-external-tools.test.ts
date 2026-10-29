@@ -2,20 +2,22 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { crc32, deflateRawSync, gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
-import { formatToolPin, hostToolPins, parityCommand, parityPlatformMessage, parseClaudeLatestVersion, pinDiff, singleArchiveEntryName, validateArchiveEntry, zipArchiveEntryNames } from "./pin-external-tools.mjs";
+import { formatToolPin, hostToolPins, parityCommand, parityPlatformMessage, parseClaudeLatestVersion, parsePinnedVersions, pinDiff, singleArchiveEntryName, validateArchiveEntry, zipArchiveEntryNames } from "./pin-external-tools.mjs";
 
 describe("external tool pin script", () => {
   it("selects both host binaries on macOS and Windows and skips unsupported hosts", () => {
-    const pins = ["DarwinArm64", "DarwinX64", "WindowsX64"].flatMap((platform) =>
+    const pins = ["DarwinArm64", "DarwinX64", "WindowsX64", "LinuxX64", "LinuxArm64"].flatMap((platform) =>
       ["Claude", "Codex"].map((tool) => ({ tool, platform })));
     for (const [platform, arch, expected] of [
       ["darwin", "arm64", "DarwinArm64"],
       ["darwin", "x64", "DarwinX64"],
-      ["win32", "x64", "WindowsX64"]
+      ["win32", "x64", "WindowsX64"],
+      ["linux", "x64", "LinuxX64"],
+      ["linux", "arm64", "LinuxArm64"]
     ]) {
       expect(hostToolPins(pins, platform, arch)).toEqual(pins.filter((pin) => pin.platform === expected));
     }
-    expect(hostToolPins(pins, "linux", "x64")).toEqual([]);
+    expect(hostToolPins(pins, "linux", "ia32")).toEqual([]);
     expect(hostToolPins(pins, "win32", "arm64")).toEqual([]);
     expect(hostToolPins(pins.filter((pin) => pin.tool === "Codex"), "darwin", "arm64")).toEqual([{ tool: "Codex", platform: "DarwinArm64" }]);
   });
@@ -26,7 +28,10 @@ describe("external tool pin script", () => {
       CHEMDRAFT_PINNED_CLAUDE: "unverified", chemdraft_pinned_codex: "unverified"
     });
     expect(command.command).toBe("cargo");
-    expect(command.args).toEqual(["test", "--manifest-path", "apps/desktop/src-tauri/Cargo.toml", "pinned_", "--", "--include-ignored", "--nocapture"]);
+    expect(command.args).toEqual(["test", "--manifest-path", "apps/desktop/src-tauri/Cargo.toml", "external_tools::tests::pinned_", "--", "--include-ignored", "--nocapture"]);
+    const filter = command.args[3];
+    expect("external_tools::tests::pinned_codex_accepts_rendered_run").toContain(filter);
+    expect("external_tools::linux_tests::pinned_linux_vendor_archives_install").not.toContain(filter);
     expect(command.options).toMatchObject({ shell: false, stdio: "inherit", env: {
       HOME: "/real home", CLAUDE_CONFIG_DIR: "/real config", USERPROFILE: "C:\\Users\\Chemist", PATH: "cargo-path",
       CHEMDRAFT_PINNED_CLAUDE: "C:\\Temp Dir\\claude.exe", CHEMDRAFT_PINNED_CODEX: "C:\\Temp Dir\\codex.exe"
@@ -36,9 +41,10 @@ describe("external tool pin script", () => {
   });
 
   it("states which platform was checked and which still needs a parity run", () => {
-    expect(parityPlatformMessage("darwin", "arm64")).toBe("Pinned CLI parity checked on host macOS (darwin-arm64); NOT checked on Windows. Run --check on a Windows host too.");
-    expect(parityPlatformMessage("win32", "x64")).toBe("Pinned CLI parity checked on host Windows (win32-x64); NOT checked on macOS. Run --check on a macOS host too.");
-    expect(parityPlatformMessage("linux", "x64")).toBe("Pinned CLI parity checked on host linux-x64 (no supported desktop platform); NOT checked on macOS and Windows. Run --check on macOS and Windows hosts too.");
+    expect(parityPlatformMessage("darwin", "arm64")).toBe("Pinned CLI parity checked on host macOS (darwin-arm64); NOT checked on Windows and Linux. Run --check on Windows and Linux hosts too.");
+    expect(parityPlatformMessage("win32", "x64")).toBe("Pinned CLI parity checked on host Windows (win32-x64); NOT checked on macOS and Linux. Run --check on macOS and Linux hosts too.");
+    expect(parityPlatformMessage("linux", "x64")).toBe("Pinned CLI parity checked on host Linux (linux-x64); NOT checked on macOS and Windows. Run --check on macOS and Windows hosts too.");
+    expect(parityPlatformMessage("linux", "x64", "--check-pinned")).toBe("Pinned CLI parity checked on host Linux (linux-x64); NOT checked on macOS and Windows. Run --check-pinned on macOS and Windows hosts too.");
   });
 
   it("does not inherit a parity binary for a tool absent on the host", () => {
@@ -54,6 +60,16 @@ describe("external tool pin script", () => {
     expect(parseClaudeLatestVersion("2.1.308\n")).toBe("2.1.308");
     expect(() => parseClaudeLatestVersion('{"version":"2.1.308"}')).toThrow("Invalid Claude latest version.");
     expect(() => parseClaudeLatestVersion("2.1")).toThrow("Invalid Claude latest version.");
+  });
+
+  it("selects exact committed versions and rejects ambiguous or unsafe release constants", () => {
+    const source = 'pub const CLAUDE_VERSION: &str = "2.1.308";\npub const CODEX_TAG: &str = "rust-v0.163.0";\npub const CODEX_VERSION: &str = "0.163.0";';
+    expect(parsePinnedVersions(source)).toEqual({ claudeVersion: "2.1.308", codexTag: "rust-v0.163.0", codexVersion: "0.163.0" });
+    expect(() => parsePinnedVersions(source + '\npub const CLAUDE_VERSION: &str = "2.1.312";')).toThrow("duplicate pinned CLAUDE_VERSION");
+    expect(() => parsePinnedVersions(source.replace('"rust-v0.163.0"', '"../../latest"'))).toThrow("pinned CODEX_TAG");
+    expect(() => parsePinnedVersions(source.replace('"0.163.0"', '"0.165.0"'))).toThrow("disagree");
+    expect(() => parsePinnedVersions(source.replace('"2.1.308"', '"2.1.308\\n"'))).toThrow("pinned CLAUDE_VERSION");
+    expect(parsePinnedVersions(readFileSync(new URL("../apps/desktop/src-tauri/src/external_tools/pins.rs", import.meta.url), "utf8"))).toEqual({ claudeVersion: "2.1.308", codexTag: "rust-v0.163.0", codexVersion: "0.163.0" });
   });
 
   it("validates one-entry tar.gz and zip archives", () => {
@@ -98,7 +114,7 @@ describe("external tool pin script", () => {
     const block = pins.match(/pub const CLAUDE_VERSION:[\s\S]*?^\];$/m)?.[0];
     expect(block).toBeDefined();
 
-    const allowedLine = /^(?:pub const (?:CLAUDE_VERSION|CODEX_TAG|CODEX_VERSION): &str = ".*";|pub const PINS: \[ToolPin; 6\] = \[|ToolPin \{|tool: ToolId::(?:Claude|Codex),|platform: ToolPlatform::(?:DarwinArm64|DarwinX64|WindowsX64),|version: (?:CLAUDE_VERSION|CODEX_VERSION),|url: ".*",|size: \d+,|sha256: ".*",|archive: ArchiveKind::(?:Raw|TarGz|Zip|ZipTree),|entry: ".*",|binary: ".*",|\},|\];)$/;
+    const allowedLine = /^(?:pub const (?:CLAUDE_VERSION|CODEX_TAG|CODEX_VERSION): &str = ".*";|pub const PINS: \[ToolPin; 10\] = \[|ToolPin \{|tool: ToolId::(?:Claude|Codex),|platform: ToolPlatform::(?:DarwinArm64|DarwinX64|WindowsX64|LinuxX64|LinuxArm64),|version: (?:CLAUDE_VERSION|CODEX_VERSION),|url: ".*",|size: \d+,|sha256: ".*",|archive: ArchiveKind::(?:Raw|TarGz|Zip|ZipTree),|entry: ".*",|binary: ".*",|\},|\];)$/;
     const unexpectedLines = block!.split("\n").filter((line) => !allowedLine.test(line.trim()));
     expect(unexpectedLines).toEqual([]);
   });
