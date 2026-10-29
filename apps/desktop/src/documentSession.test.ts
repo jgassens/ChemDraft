@@ -2,6 +2,7 @@ import { createViewportState } from "@chemdraft/viewport-engine";
 import { describe, expect, it } from "vitest";
 import {
   DOCUMENT_SESSION_VERSION,
+  type DocumentSessionEnvelope,
   buildDocumentSessionEnvelope,
   buildDocumentTabsSession,
   documentIsBlank,
@@ -74,6 +75,31 @@ describe("parseDocumentSessionEnvelope", () => {
 
   it("round-trips a built envelope through JSON", () => {
     expect(parseDocumentSessionEnvelope(JSON.parse(JSON.stringify(valid)))).toEqual(valid);
+  });
+
+  const openWarnings = { displayName: "import.cdxml", sourceLabel: "CDXML",
+    warnings: [{ code: "import", message: "Imported a subset.", atomIds: ["a1"], bondIds: ["b1"] }] };
+  const saveWarnings = { ...openWarnings, operation: "save" as const, displayName: "drawing.chemdraft" };
+
+  it("round-trips both typed reports and a save-only envelope", () => {
+    for (const reports of [{ openWarnings, saveWarnings }, { saveWarnings }]) {
+      const envelope: DocumentSessionEnvelope = { ...valid, ...reports };
+      const parsed = parseDocumentSessionEnvelope(JSON.parse(JSON.stringify(envelope)), true)!;
+      expect(parsed).toEqual(envelope);
+      expect(parsed.saveWarnings).toEqual(saveWarnings);
+    }
+  });
+
+  it.each(["openWarnings", "saveWarnings"] as const)("drops malformed %s independently", field => {
+    const malformed = [null, [], { ...openWarnings, displayName: 42 },
+      { ...openWarnings, sourceLabel: null }, { ...openWarnings, warnings: "bad" },
+      { ...openWarnings, warnings: [null] },
+      ...[{ code: 42 }, { message: null }, { sourceObjectId: 42 }, { atomIds: [42] }, { bondIds: "b1" }]
+        .map(invalid => ({ ...openWarnings, warnings: [{ code: "x", message: "bad", ...invalid }] }))];
+    for (const report of malformed) {
+      const parsed = parseDocumentSessionEnvelope({ ...valid, openWarnings, saveWarnings, [field]: report }, true)!;
+      expect(parsed).toEqual({ ...valid, ...(field === "openWarnings" ? { saveWarnings } : { openWarnings }) });
+    }
   });
 
   it("rejects non-objects, wrong versions, and missing or mistyped fields", () => {

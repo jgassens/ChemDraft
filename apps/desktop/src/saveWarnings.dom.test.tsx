@@ -285,6 +285,29 @@ describe("save warnings in the existing file warnings list", () => {
     expect([...list()!.querySelectorAll("section")].map(section => section.getAttribute("aria-label"))).toEqual(headings);
   });
 
+  it("round-trips a save-only tab without inventing an open report", async () => {
+    native.desktop = true;
+    await mount();
+    await command("document.save");
+    const tooltip = status().title;
+    const count = button()!.textContent;
+    await act(async () => { await native.flush!(); });
+    const saved = native.session as { tabs: { openWarnings?: unknown; saveWarnings?: unknown }[] };
+    expect(saved.tabs[0]!.openWarnings).toBeUndefined();
+    expect(saved.tabs[0]!.saveWarnings).toMatchObject({ operation: "save" });
+
+    await remount();
+    expect(status().title).toBe(tooltip);
+    expect(button()?.textContent).toBe(count);
+    expect(button()?.title).toBe("Show the warnings from saving this document");
+    await click(button()!);
+    expect(list()?.getAttribute("aria-label")).toMatch(/^Saved table.chemdraft/);
+    expect(list()?.textContent).not.toContain("Opened ");
+    await act(async () => { await native.flush!(); });
+    expect((native.session as typeof saved).tabs[0]!.openWarnings).toBeUndefined();
+    expect((native.session as typeof saved).tabs[0]!.saveWarnings).toEqual(saved.tabs[0]!.saveWarnings);
+  });
+
   it.each([undefined, "open", "save"] as const)("restores a legacy single report with operation %s", async operation => {
     native.desktop = true;
     const report = {

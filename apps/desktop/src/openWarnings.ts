@@ -1,4 +1,5 @@
 import type { ChemDraftDocument, DocumentObject } from "@chemdraft/chem-core";
+import type { DocumentSessionEnvelope } from "./documentSession";
 
 /** Opens and closes the current document's file warning list. */
 export const TOGGLE_OPEN_WARNINGS_COMMAND_ID = "view.toggleOpenWarnings";
@@ -32,34 +33,16 @@ export interface OpenWarningsReport {
 }
 
 /** Independent optional session metadata: a malformed report must not discard its sibling or tab. */
-export function restoreSessionWarningReports(raw: unknown): {
+export function restoreSessionWarningReports(session: Pick<DocumentSessionEnvelope, "openWarnings" | "saveWarnings">): {
   warnings?: OpenWarningsReport;
   saveWarnings?: OpenWarningsReport;
 } {
-  if (!isRecord(raw)) return {};
-  const open = parseSessionWarningReport(raw.openWarnings);
-  const save = parseSessionWarningReport(raw.saveWarnings);
+  const open = session.openWarnings;
+  const save = session.saveWarnings;
   return {
     warnings: open?.operation === "save" ? undefined : open,
     saveWarnings: save ?? (open?.operation === "save" ? open : undefined)
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-function parseSessionWarningReport(raw: unknown): OpenWarningsReport | undefined {
-  const stringList = (value: unknown) => value === undefined ||
-    (Array.isArray(value) && value.every(entry => typeof entry === "string"));
-  if (!isRecord(raw) || typeof raw.displayName !== "string" || typeof raw.sourceLabel !== "string" ||
-      !Array.isArray(raw.warnings) || !raw.warnings.every(warning => isRecord(warning) &&
-        typeof warning.code === "string" && typeof warning.message === "string" &&
-        (warning.sourceObjectId === undefined || typeof warning.sourceObjectId === "string") &&
-        stringList(warning.atomIds) && stringList(warning.bondIds))) return undefined;
-  // Like legacy sessions, every operation other than "save" denotes an open report.
-  return { displayName: raw.displayName, sourceLabel: raw.sourceLabel, warnings: raw.warnings,
-    ...(raw.operation === "save" ? { operation: "save" } : {}) };
 }
 
 /** What a warning's Show button selects: an object, and the atoms or bonds of it the warning names. */

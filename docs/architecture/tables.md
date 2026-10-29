@@ -76,7 +76,7 @@ the containing table. A 1×1 HTML table is treated as text rather than pasted as
 narrow-column `#######` display text, a cell recovers its value from the same-grid plain-text flavor
 or `x:num` when present. Overflow caption and footnote rows marked `mso-ignore:colspan` become the
 caption and footnotes. Paste precedence is ChemDraft's own selection, then true chemical formats
-(molfile, CDXML and chemical MIME types). Plausible plain text for a single SMILES or a qualifying
+(molfile, RXN, CDXML, InChI plain text and chemical MIME types). Plausible plain text for a single SMILES or a qualifying
 SMILES list is parsed and identity-verified as chemistry before HTML is considered, so accompanying
 HTML does not override it. A readable table is the fallback when chemistry declines; prose-heavy
 Office tables with words such as MW, (+)-DET or CH2Cl2 that only look chemical skip the chemistry

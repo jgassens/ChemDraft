@@ -3,6 +3,7 @@ import type { ChemDraftDocument, MoleculeObject } from "@chemdraft/chem-core";
 import { openChemDraftPayload } from "@chemdraft/cdx-compat";
 import { describe, expect, it } from "vitest";
 import { allShellCommands, createOpenWarningsAction } from "./commands";
+import { buildDocumentSessionEnvelope, parseDocumentSessionEnvelope } from "./documentSession";
 import { createPhase4Document } from "./documentWorkflow";
 import {
   activeOpenWarnings,
@@ -11,7 +12,7 @@ import {
   fileWarningsTooltip,
   NO_OPEN_WARNINGS_REASON,
   openWarningsHeading,
-  restoreSessionWarningReports,
+  restoreSessionWarningReports as restoreParsedSessionWarningReports,
   TOGGLE_OPEN_WARNINGS_COMMAND_ID,
   warningCountLabel,
   type OpenWarning
@@ -40,6 +41,14 @@ function replaceMolecule(document: ChemDraftDocument, molecule: MoleculeObject):
   return { ...document, pages: document.pages.map((page) => ({ ...page, objects: page.objects.map((object) => (object.id === molecule.id ? molecule : object)) })) };
 }
 
+function restoreSessionWarningReports(metadata: unknown) {
+  const envelope = buildDocumentSessionEnvelope(
+    { contents: "document", payloadHash: "hash", filename: "drawing.chemdraft" },
+    { dirty: false }, "drawing.chemdraft", false
+  );
+  return restoreParsedSessionWarningReports(parseDocumentSessionEnvelope({ ...envelope, ...metadata as object }, true)!);
+}
+
 describe("open warnings model", () => {
   const sessionOpen = {
     displayName: "import.cdxml", sourceLabel: "external CDXML subset",
@@ -54,7 +63,7 @@ describe("open warnings model", () => {
       .toEqual({ warnings: undefined, saveWarnings: sessionSave });
     expect(restoreSessionWarningReports({ openWarnings: { ...sessionOpen, operation: "legacy-other" } }))
       .toEqual({ warnings: sessionOpen, saveWarnings: undefined });
-    expect(restoreSessionWarningReports(undefined)).toEqual({});
+    expect(restoreSessionWarningReports(undefined)).toEqual({ warnings: undefined, saveWarnings: undefined });
   });
 
   it.each([
