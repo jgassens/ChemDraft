@@ -7,30 +7,55 @@ import { pngFindings } from './png.mjs';
 import { svgFindings, isSvg } from './svg.mjs';
 import { pdfFindings } from './pdf.mjs';
 import { emfFindings } from './emf.mjs';
+import { rtfPictures } from './rtf.mjs';
+import { scanPictures } from './scan.mjs';
 
-export function inspectBlob(buf, container, entry = basename(container), expect) {
+export function inspectBlob(buf, container, entry = basename(container), expect, context = { depth: 0, budget: { count: 0, bytes: 0 } }) {
   let type = 'other', findings = [], image = null, error = null, notes = [];
+  const nestedEntries = [];
+  const nested = (bytes, label, metadata) => {
+    if (context.depth >= 4) throw new Error('Nested picture depth exceeds 4');
+    if (++context.budget.count > 2000) throw new Error('Nested entry count exceeds 2000');
+    if (context.budget.bytes + bytes.length > 200 * 1024 * 1024) throw new Error('Nested inspection bytes exceed 200 MB');
+    context.budget.bytes += bytes.length;
+    const row = inspectBlob(bytes, container, `${entry} > ${label}`, expect, {
+      depth: context.depth + 1, budget: context.budget, emfFormat: label.startsWith('EMF multiformat'),
+      scanAlso: /^wmetafile/.test(metadata?.kind ?? ''),
+    });
+    nestedEntries.push({ ...row, ...metadata });
+  };
   try {
+    if (buf.length > 200 * 1024 * 1024) throw new Error('Input exceeds 200 MB');
     if (buf.subarray(0, 8).toString('hex') === '89504e470d0a1a0a') type = 'png';
     else if (buf.subarray(0, 3).toString('hex') === 'ffd8ff') type = 'jpeg';
     else if (buf.subarray(0, 5).toString() === '%PDF-') type = 'pdf';
+    else if (buf.subarray(0, 5).toString() === '{\\rtf') type = 'rtf';
     else if (isSvg(buf)) type = 'svg';
     else if (buf.subarray(0, 3).toString() === 'GIF') type = 'gif';
     else if (['49492a00', '4d4d002a'].includes(buf.subarray(0, 4).toString('hex'))) type = 'tiff';
     else if (buf.length >= 44 && buf.readUInt32LE(0) === 1 && buf.toString('ascii', 40, 44) === ' EMF') type = 'emf';
     else if (buf.subarray(0, 4).toString('hex') === 'd7cdc69a' || (buf.length >= 18 && [1, 2].includes(buf.readUInt16LE(0)) && buf.readUInt16LE(2) === 9 && [0x100, 0x300].includes(buf.readUInt16LE(4)))) type = 'wmf';
+    if (context.emfFormat) entry += ` (${type.toUpperCase()})`;
     if (type === 'png') { const result = pngFindings(buf); findings = result.found; notes = result.notes; image = { width: result.width, height: result.height, dpi: result.dpi }; }
     if (type === 'svg') findings = svgFindings(buf);
     if (type === 'pdf') findings = pdfFindings(buf);
-    if (type === 'emf') findings = emfFindings(buf);
+    if (type === 'emf') findings = emfFindings(buf, nested);
+    if (type === 'rtf') rtfPictures(buf, nested);
     if (type === 'other' && (checkEnvelope(buf).ok || (/^\s*\{/.test(buf.toString('utf8', 0, 40)) && hasPayloadMarker(buf)))) findings = [{ carrier: 'private JSON', envelope: buf }];
-    else if (!['png', 'svg', 'pdf', 'emf'].includes(type) && hasPayloadMarker(buf)) findings = [{ carrier: 'raw marker', note: 'marker present, container not decoded' }];
+    else if (!['png', 'svg', 'pdf', 'emf', 'rtf'].includes(type) && hasPayloadMarker(buf)) findings = [{ carrier: 'raw marker', note: 'marker present, container not decoded' }];
+    // Office can label EMF bytes as wmetafile8. Preserve the magic-based parsed
+    // result, and also exercise the fallback for this unsupported RTF blip kind.
+    if (context.scanAlso || (!['png', 'svg', 'pdf', 'emf', 'rtf'].includes(type) && !findings.some(f => f.carrier === 'private JSON'))) scanPictures(buf, nested);
   } catch (e) { error = e.message; }
   notes = [...notes, ...(findings.notes ?? [])];
   return { container, entry, type, size: buf.length, sha256: sha256(buf), image, notes, findings: findings.map(({ envelope, ...item }) => {
     const checked = envelope ? checkEnvelope(envelope) : null;
     return { ...item, ...(checked ? { envelope: checked, matchesExpect: expect ? checked.ok && checked.sha256 === expect : null } : {}) };
-  }), error, ...(type === 'other' ? { firstBytes: buf.subarray(0, 16).toString('hex'), guess: buf.subarray(0, 8).toString('hex') === 'd0cf11e0a1b11ae1' ? 'OLE compound file (not a ZIP)' : /^\s*</.test(buf.toString('utf8', 0, 40)) ? 'XML/text (not a ZIP)' : 'unknown blob (not a ZIP)' } : {}) };
+  }), error, ...(nestedEntries.length ? { nestedEntries } : {}), ...(type === 'other' ? { firstBytes: buf.subarray(0, 16).toString('hex'), guess: buf.subarray(0, 8).toString('hex') === 'd0cf11e0a1b11ae1' ? 'OLE compound file (not a ZIP)' : /^\s*</.test(buf.toString('utf8', 0, 40)) ? 'XML/text (not a ZIP)' : 'unknown blob (not a ZIP)' } : {}) };
+}
+
+function flattenRows({ nestedEntries = [], ...row }) {
+  return [row, ...nestedEntries.flatMap(child => flattenRows({ ...child, references: row.references }))];
 }
 
 const xmlText = text => text.replace(/&(#x[\da-f]+|#\d+|amp|quot|apos|lt|gt);/gi, (_, entity) => {
@@ -56,24 +81,31 @@ function relationshipReferences(entries) {
   }
   return references;
 }
-export function inspectPath(path, expect) {
+export function inspectPath(path, expect, traversal = { depth: 0, budget: { count: 0 } }) {
+  const failure = error => [{ container: path, entry: basename(path), error }];
+  if (++traversal.budget.count > 2000) return failure('Input path count exceeds 2000');
   const stat = statSync(path);
-  if (stat.isDirectory()) return readdirSync(path).filter(name => name !== 'index.json' && name !== 'manifest.json').flatMap(name => inspectPath(join(path, name), expect));
-  if (stat.size > 200 * 1024 * 1024) throw new Error(`Input exceeds 200 MB: ${path}`);
+  if (stat.isDirectory()) {
+    if (traversal.depth >= 4) return failure('Input directory depth exceeds 4');
+    const names = readdirSync(path).filter(name => name !== 'index.json' && name !== 'manifest.json');
+    if (names.length > 2000 - traversal.budget.count) return failure('Input path count exceeds 2000');
+    return names.flatMap(name => inspectPath(join(path, name), expect, { depth: traversal.depth + 1, budget: traversal.budget }));
+  }
+  if (stat.size > 200 * 1024 * 1024) return failure('Input exceeds 200 MB');
   const buf = readFileSync(path);
   const signature = buf.subarray(0, 4).toString('hex');
   if (['504b0304', '504b0506', '504b0708'].includes(signature) || /\.(docx|pptx|xlsx|zip)$/i.test(path)) {
     try {
       const entries = readZip(buf), references = relationshipReferences(entries);
-      return entries.filter(x => /(?:^|\/)(media|embeddings)\//i.test(x.name) || /\.(png|jpe?g|pdf|svg|emf|wmf|tiff?|gif)$/i.test(x.name)).map(x => {
+      return entries.filter(x => /(?:^|\/)(media|embeddings)\//i.test(x.name) || /\.(png|jpe?g|pdf|svg|emf|wmf|tiff?|gif|rtf)$/i.test(x.name)).flatMap(x => {
         const row = inspectBlob(x.data, path, x.name, expect);
-        return { ...row, notes: [...row.notes, ...(entries.notes ?? [])], references: [...(references.get(x.name) ?? [])] };
+        return flattenRows({ ...row, references: [...(references.get(x.name) ?? [])] }).map(result => ({ ...result, notes: [...result.notes, ...(entries.notes ?? [])] }));
       });
     } catch (error) {
       return [{ ...inspectBlob(buf, path, basename(path), expect), error: error.message, firstBytes: buf.subarray(0, 16).toString('hex'), guess: signature.startsWith('504b') ? 'ZIP signature; invalid or unsupported archive' : 'not a ZIP' }];
     }
   }
-  return [inspectBlob(buf, path, basename(path), expect)];
+  return flattenRows(inspectBlob(buf, path, basename(path), expect));
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   const args = process.argv.slice(2), json = args.includes('--json');

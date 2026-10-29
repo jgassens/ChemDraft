@@ -25,7 +25,7 @@ function run(args) {
       if (at < 1 || at === spec.length - 1) throw new Error('Invalid type=file: ' + spec);
       const type = spec.slice(0, at), path = $(args[1]).stringByAppendingPathComponent(spec.slice(at + 1));
       const data = $.NSData.dataWithContentsOfFile(path);
-      if (!data) throw new Error('Cannot read ' + ObjC.unwrap(path));
+      if (!data || data.isNil()) throw new Error('Cannot read ' + ObjC.unwrap(path));
       if (!item.setDataForType(data, $(type))) throw new Error('Cannot set ' + type);
     }
     board.clearContents;
@@ -36,8 +36,10 @@ function run(args) {
     const dir = $(args[1]);
     if (!$.NSFileManager.defaultManager.createDirectoryAtPathWithIntermediateDirectoriesAttributesError(dir, true, $(), null)) throw new Error('Cannot create output directory');
     const records = [], items = board.pasteboardItems;
+    if (!items || items.isNil()) throw new Error('Cannot dump: pasteboardItems is nil');
     for (let i = 0; i < Number(items.count); i++) {
       const item = items.objectAtIndex(i), types = item.types;
+      if (!types || types.isNil()) throw new Error('Cannot dump: types is nil for pasteboard item ' + i);
       for (let j = 0; j < Number(types.count); j++) {
         const type = ObjC.unwrap(types.objectAtIndex(j));
         const data = item.dataForType($(type));

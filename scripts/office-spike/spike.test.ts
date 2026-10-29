@@ -4,6 +4,7 @@ import { join, resolve, posix } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { deflateRawSync } from 'node:zlib';
+import { runInNewContext } from 'node:vm';
 import { makeEnvelope, checkEnvelope, sha256, MAX_ENVELOPE } from './payload.mjs';
 import { chunks, chunk, makePng, pngFindings, crc32 } from './png.mjs';
 import { isSvg, makeSvg, svgFindings } from './svg.mjs';
@@ -12,6 +13,7 @@ import { makePdf, readPdf, pdfFindings } from './pdf.mjs';
 import { inspectBlob, inspectPath } from './inspect.mjs';
 import { makeCarriers } from './make-carriers.mjs';
 import { makeCfHtml } from './cf-html.mjs';
+import { MAX_PICTURE } from './rtf.mjs';
 
 const payload = '{"name":"caffeine"}';
 const envelope = makeEnvelope(payload);
@@ -478,6 +480,179 @@ it('detects EMF GDI comment envelopes, unknown marker encodings and corrupt reco
   }
   expect(inspectBlob(emf(envelope), 'json.emf').findings[0].envelope.ok).toBe(true);
   expect(inspectBlob(emf(envelope).subarray(0, -1), 'truncated.emf').error).toMatch(/truncated/);
+});
+
+// Synthetic MS-EMF multiformats; never copied from an Office document.
+function multiformat(pictures: Buffer[]) {
+  const table = Buffer.alloc(28 + pictures.length * 16);
+  table.write('GDIC'); table.writeUInt32LE(0x40000004, 4);
+  table.writeInt32LE(100, 16); table.writeInt32LE(100, 20);
+  table.writeUInt32LE(pictures.length, 24);
+  let offset = table.length;
+  pictures.forEach((bytes, i) => {
+    table.writeUInt32LE(0x50444620, 28 + i * 16); // Signature does not override the actual magic.
+    table.writeUInt32LE(0, 32 + i * 16);
+    table.writeUInt32LE(bytes.length, 36 + i * 16);
+    table.writeUInt32LE(offset, 40 + i * 16);
+    offset += bytes.length;
+  });
+  return emf(Buffer.concat([table, ...pictures]));
+}
+
+describe('nested Office pictures (synthetic)', () => {
+  const embedded = readFileSync(join(fixtureDir, 'carriers/pdf-embedded.pdf'));
+  const catalog = readFileSync(join(fixtureDir, 'carriers/pdf-catalog-key.pdf'));
+  const carrierPng = readFileSync(join(fixtureDir, 'carriers/png-ztxt.png'));
+  const expected = checkEnvelope(readFileSync(join(fixtureDir, 'sample-envelope.json'))).sha256!;
+  const wrapped = multiformat([embedded]);
+  const inspect = (name: string, bytes: Buffer, digest = expected): (ReturnType<typeof inspectBlob> & { foundBy?: string })[] => {
+    const path = join(temp, name); writeFileSync(path, bytes);
+    return inspectPath(path, digest);
+  };
+
+  it('reads multiformat PDF and PNG entries with paths, original hashes, references and expectations', () => {
+    const bytes = multiformat([embedded, catalog, carrierPng]);
+    const rows = inspect('nested.docx', zip([
+      { name: 'word/media/image1.emf', data: bytes },
+      { name: 'word/_rels/document.xml.rels', data: Buffer.from('<Relationships><Relationship Target="media/image1.emf"/></Relationships>') },
+    ]));
+    expect(rows).toHaveLength(4);
+    for (const [i, original] of [embedded, catalog, carrierPng].entries()) {
+      expect(rows[i + 1]).toMatchObject({
+        entry: `word/media/image1.emf > EMF multiformat[${i}] (${i === 2 ? 'PNG' : 'PDF'})`,
+        size: original.length, sha256: sha256(original), references: ['word/document.xml'], error: null,
+        signature: 0x50444620, version: 0, outputRect: [0, 0, 100, 100],
+        findings: [{ envelope: { ok: true, sha256: expected }, matchesExpect: true }],
+      });
+    }
+    expect(rows[1].findings[0].carrier).toBe('pdf embedded file');
+    expect(rows[2].findings[0].carrier).toBe('pdf catalog key');
+    expect(inspect('wrong-expect.emf', wrapped, '0'.repeat(64))[1].findings[0].matchesExpect).toBe(false);
+    const cli = spawnSync(process.execPath, ['scripts/office-spike/inspect.mjs', join(temp, 'nested.docx'), '--expect', expected], { encoding: 'utf8' });
+    expect(cli.status, cli.stderr).toBe(0);
+    expect(cli.stdout).toContain('EMF multiformat[0] (PDF)');
+    expect(cli.stdout).toContain('pdf embedded file: valid; expect=true');
+  });
+
+  it('reads RTF hex pictures, ignores property destinations, and records blips and dimensions', () => {
+    const rtf = Buffer.from('{\\rtf1{\\*\\shppict{\\pict{\\*\\picprop ignored{\\sp not hex}}\\emfblip\\picw100\\pich200\\picwgoal300\\pichgoal400\n' +
+      wrapped.toString('hex').match(/.{1,73}/g)!.join(' \r\n') + '}}{\\nonshppict{\\pict\\pngblip ' + carrierPng.toString('hex') + '}}}');
+    const rows = inspect('public.rtf', rtf);
+    expect(rows).toHaveLength(4);
+    expect(rows[0]).toMatchObject({ type: 'rtf', error: null });
+    expect(rows[1]).toMatchObject({ entry: 'public.rtf > pict[0] emfblip', type: 'emf', kind: 'emfblip', picw: 100, pich: 200, picwgoal: 300, pichgoal: 400, sha256: sha256(wrapped) });
+    expect(rows[2]).toMatchObject({ entry: 'public.rtf > pict[0] emfblip > EMF multiformat[0] (PDF)', findings: [{ matchesExpect: true }] });
+    expect(rows[3]).toMatchObject({ entry: 'public.rtf > pict[1] pngblip', findings: [{ matchesExpect: true }] });
+    expect(rows.every(row => !row.error)).toBe(true);
+  });
+
+  it('reads binary picture data without interpreting braces, backslashes or high bytes', () => {
+    const rtf = Buffer.concat([Buffer.from(`{\\rtf1{\\pict\\pngblip\\bin${carrierPng.length} `), carrierPng, Buffer.from('}}')]);
+    const rows = inspect('binary.rtf', rtf);
+    expect(rows[1]).toMatchObject({ sha256: sha256(carrierPng), findings: [{ matchesExpect: true }], error: null });
+    const special = Buffer.from([123, 125, 92, 255]);
+    expect(inspect('special.rtf', Buffer.concat([Buffer.from('{\\rtf1{\\pict\\macpict\\bin4 '), special, Buffer.from('}}')]))[1]).toMatchObject({ kind: 'macpict', sha256: sha256(special), error: null });
+  });
+
+  it('labels WMF fallback finds and scans wmetafile8 even when Office labels EMF bytes as WMF', () => {
+    const blob = Buffer.concat([Buffer.from('d7cdc69a', 'hex'), Buffer.alloc(20), embedded, Buffer.from('opaque suffix')]);
+    const rows = inspect('synthetic.wmf', blob);
+    expect(rows[0].type).toBe('wmf');
+    expect(rows[1]).toMatchObject({ entry: 'synthetic.wmf > byte scan at 24 (PDF; found by byte scan)', foundBy: 'byte scan', findings: [{ matchesExpect: true }] });
+    const rtf = Buffer.from('{\\rtf1{\\pict\\wmetafile8 ' + wrapped.toString('hex') + '}}');
+    const fromRtf = inspect('wmf.rtf', rtf);
+    expect(fromRtf.some(row => row.entry.includes('pict[0] wmetafile8 > byte scan') && row.foundBy === 'byte scan' && row.findings[0]?.matchesExpect)).toBe(true);
+  });
+
+  it.each(['ole', 'rtfd', 'webarchive', 'unknown'])('scans %s blobs for bounded PNG and SVG pictures', kind => {
+    const prefix = kind === 'ole' ? Buffer.from('d0cf11e0a1b11ae1', 'hex') : Buffer.from(kind);
+    const carrierSvg = makeSvg(svg, envelope, 'metadata');
+    const rows = inspect(`scan-${kind}.bin`, Buffer.concat([prefix, carrierPng, Buffer.from('gap'), carrierSvg]));
+    expect(rows.slice(1).map(row => row.type).sort()).toEqual(['png', 'svg']);
+    expect(rows.slice(1).every(row => row.foundBy === 'byte scan' && row.entry.includes('found by byte scan') && row.findings[0].envelope.ok)).toBe(true);
+  });
+
+  it('reports malformed EMF records, format counts and offsets through inspectPath', () => {
+    const cases: [string, number, number, RegExp][] = [
+      ['record-end', 92, wrapped.length, /record size/],
+      ['record-zero', 92, 0, /record size/],
+      ['format-offset', 140, 0xffffffff, /offData\/sizeData/],
+      ['format-in-table', 140, 28, /offData\/sizeData/],
+      ['format-size', 136, 0xffffffff, /offData\/sizeData/],
+      ['format-count', 124, 0xffffffff, /countFormats/],
+    ];
+    for (const [name, at, value, pattern] of cases) {
+      const bytes = Buffer.from(wrapped); bytes.writeUInt32LE(value, at);
+      expect(inspect(`${name}.emf`, bytes)[0].error).toMatch(pattern);
+    }
+    const shortTable = multiformat([Buffer.alloc(1)]); shortTable.writeUInt32LE(2, 124);
+    expect(inspect('format-table.emf', shortTable)[0].error).toMatch(/EmrFormat table/);
+    const records = Buffer.alloc(8 * 100000);
+    for (let i = 0; i < records.length; i += 8) { records.writeUInt32LE(2, i); records.writeUInt32LE(8, i + 4); }
+    expect(inspect('records.emf', Buffer.concat([wrapped.subarray(0, 88), records, wrapped.subarray(-20)]))[0].error).toMatch(/record count/);
+  });
+
+  it.each([
+    ['odd-hex', '{\\rtf1{\\pict\\pngblip 123}}', /odd-length hex/],
+    ['bad-hex', '{\\rtf1{\\pict\\pngblip zz}}', /Invalid RTF pict hex/],
+    ['short-bin', '{\\rtf1{\\pict\\bin999 x}}', /bin length/],
+    ['negative-bin', '{\\rtf1{\\pict\\bin-1 }}', /bin length/],
+    ['huge-bin', '{\\rtf1{\\pict\\bin999999999999999 }}', /parameter/],
+    ['truncated', '{\\rtf1{\\pict\\pngblip 00}', /Truncated RTF/],
+    ['groups', '{\\rtf1' + '{'.repeat(256), /group nesting/],
+    ['picture-count', '{\\rtf1' + '{\\pict\\macpict 00}'.repeat(257) + '}', /picture count/],
+  ])('reports hostile RTF %s without throwing', (name, text, pattern) => {
+    expect(inspect(`${name}.rtf`, Buffer.from(text)).some(row => pattern.test(row.error ?? ''))).toBe(true);
+  });
+
+  it('checks decoded hex and binary caps before allocating the picture', () => {
+    const binary = Buffer.concat([Buffer.from(`{\\rtf1{\\pict\\bin${MAX_PICTURE + 1} `), Buffer.alloc(MAX_PICTURE + 1), Buffer.from('}}')]);
+    const hex = Buffer.from('{\\rtf1{\\pict\\pngblip ' + '00'.repeat(MAX_PICTURE + 1) + '}}');
+    const alloc = vi.spyOn(Buffer, 'alloc');
+    try {
+      for (const [i, bytes] of [binary, hex].entries()) expect(inspect(`cap-${i}.rtf`, bytes)[0].error).toMatch(/decoded picture exceeds 20 MB/);
+      expect(alloc.mock.calls.some(([length]) => length > MAX_PICTURE)).toBe(false);
+    } finally { alloc.mockRestore(); }
+  });
+
+  it('accepts four nested levels and reports a fifth without recursion escaping inspectPath', () => {
+    let bytes = embedded;
+    for (let i = 0; i < 4; i++) bytes = multiformat([bytes]);
+    const allowed = inspect('depth4.emf', bytes);
+    expect(allowed).toHaveLength(5);
+    expect(allowed.at(-1)!.findings[0].matchesExpect).toBe(true);
+    const denied = inspect('depth5.emf', multiformat([bytes]));
+    expect(denied.some(row => /depth exceeds 4/.test(row.error ?? ''))).toBe(true);
+    expect(denied.some(row => row.findings.some(f => f.envelope?.ok))).toBe(false);
+  });
+
+  it('reports unterminated scan candidates and caps candidate counts', () => {
+    expect(inspect('short-scan.bin', Buffer.from('blob%PDF-no end'))[0].error).toMatch(/missing terminator within 20 MB/);
+    const tinySvg = Buffer.from('<svg></svg>');
+    expect(inspect('many-scans.bin', Buffer.concat([Buffer.from('blob'), ...Array(129).fill(tinySvg)]))[0].error).toMatch(/candidate count exceeds 128/);
+  });
+
+  it('scans separate PDFs while retaining the last EOF of incremental updates', () => {
+    const rows = inspect('two-pdfs.bin', Buffer.concat([Buffer.from('blob'), embedded, Buffer.from('gap'), catalog]));
+    expect(rows).toHaveLength(3);
+    expect(rows.slice(1).map(row => row.findings[0].carrier)).toEqual(['pdf embedded file', 'pdf catalog key']);
+    expect(rows.slice(1).every(row => row.findings[0].matchesExpect && !row.error)).toBe(true);
+  });
+});
+
+it.each(['file', 'items', 'types'])('reports JXA nil %s clearly using mocked Foundation objects', which => {
+  const nil = { isNil: () => true };
+  const path = { stringByAppendingPathComponent: () => 'missing' };
+  const board = { pasteboardItems: which === 'items' ? nil : { isNil: () => false, count: 1, objectAtIndex: () => ({ types: nil }) } };
+  const dollar = Object.assign(() => path, {
+    NSPasteboard: { generalPasteboard: board }, NSPasteboardItem: { alloc: { init: {} } },
+    NSData: { dataWithContentsOfFile: () => nil },
+    NSFileManager: { defaultManager: { createDirectoryAtPathWithIntermediateDirectoriesAttributesError: () => true } },
+  });
+  const context = { $: dollar, ObjC: { import: () => {}, unwrap: (value: unknown) => value } };
+  runInNewContext(readFileSync('scripts/office-spike/mac-pasteboard.js', 'utf8'), context);
+  const run = (context as typeof context & { run: (args: string[]) => void }).run;
+  expect(() => run(which === 'file' ? ['write', '.', 'public.png=missing'] : ['dump', '.'])).toThrow(which === 'file' ? /Cannot read/ : which === 'items' ? /pasteboardItems is nil/ : /types is nil for pasteboard item 0/);
 });
 
 function pngText(type: string, data: Buffer) {
