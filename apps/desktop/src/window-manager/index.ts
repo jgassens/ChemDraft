@@ -847,6 +847,57 @@ export async function setCurrentWindowLogicalSize(size: ToolsetWindowSize): Prom
   await getCurrentWindow().setSize(new LogicalSize(size.width, size.height));
 }
 
+/** Use the destination monitor's work area and scale, including taskbar/Dock exclusions.
+ * Never use this webview's height: content-fit windows would shrink their own cap on every resize. */
+export async function currentWindowLogicalWorkArea(): Promise<MonitorLogicalBounds> {
+  if (isDesktopRuntime()) {
+    const { currentMonitor } = await import("@tauri-apps/api/window");
+    const monitor = await currentMonitor().catch(() => null);
+    if (monitor) {
+      const scale = monitor.scaleFactor > 0 ? monitor.scaleFactor : 1;
+      const area = monitor.workArea;
+      const left = area.position.x / scale;
+      const top = area.position.y / scale;
+      return { left, top, right: left + area.size.width / scale, bottom: top + area.size.height / scale };
+    }
+  }
+  const screen = window.screen as Screen & { availLeft?: number; availTop?: number };
+  const left = screen.availLeft ?? 0;
+  const top = screen.availTop ?? 0;
+  return { left, top, right: left + (screen.availWidth || 1024), bottom: top + (screen.availHeight || 768) };
+}
+
+/** Re-evaluate the cap after moving to another display or changing display scale/resolution. */
+export async function listenForCurrentWindowWorkAreaChanges(handler: () => void): Promise<Unlisten> {
+  window.addEventListener("resize", handler);
+  const listeners = await Promise.allSettled([
+    listenCurrentWindowEvent("tauri://move", handler),
+    listenCurrentWindowEvent("tauri://scale-change", handler)
+  ]);
+  return () => {
+    window.removeEventListener("resize", handler);
+    for (const listener of listeners) {
+      if (listener.status === "fulfilled") listener.value();
+    }
+  };
+}
+
+/** Preserve the top-left across macOS content resizes, then keep the whole palette on its monitor. */
+export async function fitCurrentPaletteWindow(size: ToolsetWindowSize, area: MonitorLogicalBounds): Promise<void> {
+  const position = await currentWindowLogicalPosition();
+  const height = Math.min(size.height, area.bottom - area.top);
+  await setCurrentWindowLogicalSize({ width: size.width, height });
+  if (!position) return;
+  const target = {
+    x: Math.max(area.left, Math.min(position.x, area.right - size.width)),
+    y: Math.max(area.top, Math.min(position.y, area.bottom - height))
+  };
+  const resizedPosition = await currentWindowLogicalPosition();
+  if (resizedPosition?.x !== target.x || resizedPosition?.y !== target.y) {
+    await setCurrentWindowLogicalPosition(target);
+  }
+}
+
 /**
  * Reveal the calling palette popover above the palette it belongs to. Rust shows it and then raises
  * it among the document's owned windows: the JS window `show()` alone left it underneath its palette

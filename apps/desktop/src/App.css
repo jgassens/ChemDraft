@@ -1278,6 +1278,23 @@ textarea:focus-visible,
   justify-content: center;
   padding: 0 10px;
   font-size: 11px;
+  white-space: nowrap;
+}
+
+/* Table settings use the same fields, effect toggles and action buttons as molecule settings.
+   Only their single-column layout differs; the palette body owns scrolling for the whole window. */
+.table-inspector-controls {
+  box-sizing: border-box;
+  grid-column: auto;
+  grid-template-columns: minmax(0, 1fr);
+  width: 520px;
+  max-height: none;
+  padding: 8px;
+}
+
+.table-inspector-controls .molecule-inspector-field > span:first-child {
+  overflow-wrap: normal;
+  white-space: nowrap;
 }
 
 .molecule-inspector-checkbox-field {
@@ -2393,6 +2410,14 @@ textarea:focus-visible,
 
 .palette-window-shell:active {
   cursor: grabbing;
+}
+
+.palette-window-content {
+  min-height: 0;
+  /* Initial safety cap until PaletteWindow reads the monitor's work area. This must be independent
+     of the webview viewport: the shell's measured content drives the native window size. */
+  max-height: 746px;
+  overflow-y: auto;
 }
 
 .palette-title {

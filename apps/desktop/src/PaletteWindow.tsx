@@ -41,12 +41,15 @@ import {
   closeToolsetWindow,
   closeToolsetPopoverWindow,
   currentWindowLogicalPosition,
+  currentWindowLogicalWorkArea,
+  fitCurrentPaletteWindow,
   dismissToolsetPopovers,
   hidePaletteFloatingTooltip,
   openToolsetPopoverWindow,
   prewarmToolsetPopoverWindow,
   prewarmToolsetTooltipWindow,
   listenForPalettePointer,
+  listenForCurrentWindowWorkAreaChanges,
   listenForPalettePointerLeave,
   listenForKeybindingSettings,
   listenForToolsetActiveTool,
@@ -71,7 +74,6 @@ import {
   sendPaletteCommandCommit,
   sendPaletteCommandPreview,
   showPaletteFloatingTooltip,
-  setCurrentWindowLogicalSize,
   setToolsetWindowFocusable,
   startPaletteWindowDrag,
   toolsetCommandSpecsSignature,
@@ -128,6 +130,7 @@ export function PaletteWindow({
 }) {
   const dragRef = useRef<PaletteWindowDrag | null>(null);
   const shellRef = useRef<HTMLElement | null>(null);
+  const bodyRef = useRef<HTMLDivElement | null>(null);
   const lastLoggedSizeRef = useRef<string>("");
   const sizeAnimationFrameRef = useRef<number | undefined>(undefined);
   const compoundLayoutsEnabled = useCompoundLayoutTools();
@@ -432,48 +435,80 @@ export function PaletteWindow({
     }
 
     const shell = shellRef.current;
-    const applySize = () => {
-      // Fit the window to the palette's own content in BOTH dimensions. The shell is
-      // width/height:max-content (see CSS), so its measured box is the natural content size:
-      // the window shrinks when the manifest size is too big (blank gaps) and grows when
-      // content is larger (crowded rows). colorPickerOpen reserves room for the open swatch.
-      const rect = shell?.getBoundingClientRect();
-      const contentWidth = rect ? Math.ceil(rect.width) : 0;
-      const contentHeight = rect ? Math.ceil(rect.height) : 0;
-      const width = contentWidth > 0 ? contentWidth : preferredSize.width;
-      const height = Math.max(colorPickerOpen ? 292 : 0, contentHeight > 0 ? contentHeight : preferredSize.height);
-      // Dev-only size probe: open the palette window's devtools console to read exact
-      // content-vs-window numbers for any palette that still looks wrong.
-      if (import.meta.env.DEV) {
-        const key = `${contentWidth}x${contentHeight}->${width}x${height}`;
-        if (lastLoggedSizeRef.current !== key) {
-          lastLoggedSizeRef.current = key;
-          console.log(`[palette-size] ${toolset.id}: content ${contentWidth}x${contentHeight} -> window ${width}x${height}`);
+    let disposed = false;
+    let sizing = false;
+    let pending = false;
+    let lastSize = "";
+    const applySize = async () => {
+      if (disposed) return;
+      if (sizing) {
+        pending = true;
+        return;
+      }
+      sizing = true;
+      try {
+        const area = await currentWindowLogicalWorkArea();
+        if (disposed) return;
+        // Cap the shared body, not individual inspector sections. Keep the title outside the scroll
+        // area and measure only after applying the monitor-based cap (never a vh feedback loop).
+        const availableHeight = Math.floor(area.bottom - area.top);
+        if (bodyRef.current) bodyRef.current.style.maxHeight = `${Math.max(0, availableHeight - 22)}px`;
+        // Fit the window to the palette's own content in BOTH dimensions. The shell is
+        // width/height:max-content (see CSS), so its measured box is the natural content size:
+        // the window shrinks when the manifest size is too big (blank gaps) and grows when
+        // content is larger (crowded rows). colorPickerOpen reserves room for the open swatch.
+        const rect = shell?.getBoundingClientRect();
+        const contentWidth = rect ? Math.ceil(rect.width) : 0;
+        const contentHeight = rect ? Math.ceil(rect.height) : 0;
+        const width = contentWidth > 0 ? contentWidth : preferredSize.width;
+        const height = Math.min(availableHeight,
+          Math.max(colorPickerOpen ? 292 : 0, contentHeight > 0 ? contentHeight : preferredSize.height));
+        // Dev-only size probe: open the palette window's devtools console to read exact
+        // content-vs-window numbers for any palette that still looks wrong.
+        if (import.meta.env.DEV) {
+          const key = `${contentWidth}x${contentHeight}->${width}x${height}`;
+          if (lastLoggedSizeRef.current !== key) {
+            lastLoggedSizeRef.current = key;
+            console.log(`[palette-size] ${toolset.id}: content ${contentWidth}x${contentHeight} -> window ${width}x${height}`);
+          }
+        }
+        const sizeKey = `${width}x${height}`;
+        if (sizeKey !== lastSize) {
+          lastSize = sizeKey;
+          await fitCurrentPaletteWindow({ width, height }, area);
+        }
+      } finally {
+        sizing = false;
+        if (pending && !disposed) {
+          pending = false;
+          void applySize().catch(() => undefined);
         }
       }
-      void setCurrentWindowLogicalSize({ width, height }).catch(() => undefined);
     };
 
-    applySize();
-
-    if (!shell || typeof ResizeObserver === "undefined") {
-      return;
-    }
-
-    const observer = new ResizeObserver(() => {
+    const scheduleSize = () => {
       if (sizeAnimationFrameRef.current !== undefined) {
         return;
       }
 
       sizeAnimationFrameRef.current = window.requestAnimationFrame(() => {
         sizeAnimationFrameRef.current = undefined;
-        applySize();
+        void applySize().catch(() => undefined);
       });
+    };
+    void applySize().catch(() => undefined);
+    const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(scheduleSize);
+    if (shell) observer?.observe(shell);
+    let unlisten: (() => void) | undefined;
+    void listenForCurrentWindowWorkAreaChanges(scheduleSize).then((cleanup) => {
+      if (disposed) cleanup();
+      else unlisten = cleanup;
     });
-    observer.observe(shell);
 
     return () => {
-      observer.disconnect();
+      disposed = true;
+      observer?.disconnect();
+      unlisten?.();
       if (sizeAnimationFrameRef.current !== undefined) {
         window.cancelAnimationFrame(sizeAnimationFrameRef.current);
         sizeAnimationFrameRef.current = undefined;
@@ -847,6 +882,10 @@ export function PaletteWindow({
       return;
     }
 
+    // The scroll container itself receives presses on its scrollbar. Leave those to the webview;
+    // descendants such as the existing content drag grip can still start a palette drag.
+    if (event.target === bodyRef.current) return;
+
     if ((event.target as HTMLElement).closest("button, select, input, textarea, [data-palette-control]")) {
       return;
     }
@@ -860,6 +899,8 @@ export function PaletteWindow({
     if (event.button !== 0 || customizeThisPaletteRef.current || dragRef.current?.pointerId !== undefined) {
       return;
     }
+
+    if (event.target === bodyRef.current) return;
 
     if ((event.target as HTMLElement).closest("button, select, input, textarea, [data-palette-control]")) {
       return;
@@ -986,6 +1027,11 @@ export function PaletteWindow({
   const tableInspector = toolsetId === drawnStructureSettingsToolsetId
     ? createTableInspectorModel(currentTable, (commandId) => commandOverrides.get(commandId))
     : undefined;
+  // Older broadcasts can omit the selection classification. A table snapshot with no molecule
+  // targets still suffices to avoid a stack of disabled molecule settings above the Table section.
+  const tableOnly = tableInspector && (currentSelection
+    ? currentSelection.objectTypes.length === 1 && currentSelection.objectTypes[0] === "table"
+    : !currentMoleculeInspector?.targets.moleculeObjectIds.length);
 
   return (
     <main
@@ -1023,31 +1069,33 @@ export function PaletteWindow({
         </button>
         <span className="palette-title-label">{toolset.title.replace(/ Toolbar$/, "")}</span>
       </div>
-      {customizeThisPalette ? (
-        <ToolbarCustomizeController
-          toolsetId={toolset.id}
-          groups={paletteGroups}
-          onEdit={(edit) => sendToolsetLayoutEdit({ toolsetId: toolset.id, edit })}
-        >
-          {(effectiveGroups) => (
-            <>
-              {renderPalette(effectiveGroups)}
-              <CustomizeBar
-                onDone={() => void sendToolsetLayoutEdit({ toolsetId: toolset.id, edit: { kind: "exitCustomize" } }).catch(() => undefined)}
-                onRestoreDefaults={() => void sendToolsetLayoutEdit({ toolsetId: toolset.id, edit: { kind: "resetToolset" } }).catch(() => undefined)}
-              />
-              <GalleryTray
-                commands={galleryCommands}
-                widgets={galleryWidgets}
-                presentItemIds={new Set(effectiveGroups.flatMap((group) => group.items.map((item) => item.id)))}
-              />
-            </>
-          )}
-        </ToolbarCustomizeController>
-      ) : (
-        renderPalette(paletteGroups)
-      )}
-      {tableInspector ? <TableInspectorSections model={tableInspector} onInvoke={invokeCommand} /> : null}
+      <div className="palette-window-content" ref={bodyRef}>
+        {customizeThisPalette ? (
+          <ToolbarCustomizeController
+            toolsetId={toolset.id}
+            groups={paletteGroups}
+            onEdit={(edit) => sendToolsetLayoutEdit({ toolsetId: toolset.id, edit })}
+          >
+            {(effectiveGroups) => (
+              <>
+                {renderPalette(effectiveGroups)}
+                <CustomizeBar
+                  onDone={() => void sendToolsetLayoutEdit({ toolsetId: toolset.id, edit: { kind: "exitCustomize" } }).catch(() => undefined)}
+                  onRestoreDefaults={() => void sendToolsetLayoutEdit({ toolsetId: toolset.id, edit: { kind: "resetToolset" } }).catch(() => undefined)}
+                />
+                <GalleryTray
+                  commands={galleryCommands}
+                  widgets={galleryWidgets}
+                  presentItemIds={new Set(effectiveGroups.flatMap((group) => group.items.map((item) => item.id)))}
+                />
+              </>
+            )}
+          </ToolbarCustomizeController>
+        ) : (
+          tableOnly ? null : renderPalette(paletteGroups)
+        )}
+        {tableInspector ? <TableInspectorSections model={tableInspector} onInvoke={invokeCommand} /> : null}
+      </div>
     </main>
   );
 }
@@ -1065,66 +1113,57 @@ function TableInspectorSections({ model, onInvoke }: { model: TableInspectorMode
           </div>
         );
       case "toggle":
-        return (
-          <button
-            type="button"
-            key={control.id}
-            className={["toolbar-text-button", control.pressed ? "active" : ""].filter(Boolean).join(" ")}
-            aria-pressed={control.pressed}
-            disabled={control.disabledReason !== undefined}
-            title={control.disabledReason}
-            data-command-id={control.commandId}
-            data-table-control={control.id}
-            data-palette-control="true"
-            onPointerDown={blockPointer}
-            onClick={() => onInvoke(control.commandId)}
-          >
-            {control.label}
-          </button>
-        );
       case "button":
         return (
-          <button
-            type="button"
-            key={control.id}
-            className="toolbar-text-button"
-            disabled={control.disabledReason !== undefined}
-            title={control.disabledReason}
-            data-command-id={control.commandId}
-            data-table-control={control.id}
-            data-palette-control="true"
-            onPointerDown={blockPointer}
-            onClick={() => onInvoke(control.commandId)}
-          >
-            {control.label}
-          </button>
+          <div className={control.kind === "toggle" ? "molecule-inspector-effect-row" : "molecule-inspector-template-actions"} key={control.id}>
+            <button
+              type="button"
+              className={[
+                "toolbar-text-button",
+                control.kind === "button" ? "molecule-inspector-template-button" : "",
+                control.kind === "toggle" && control.pressed ? "active" : ""
+              ].filter(Boolean).join(" ")}
+              aria-pressed={control.kind === "toggle" ? control.pressed : undefined}
+              disabled={control.disabledReason !== undefined}
+              title={control.disabledReason}
+              data-command-id={control.commandId}
+              data-table-control={control.id}
+              data-palette-control="true"
+              onPointerDown={blockPointer}
+              onClick={() => onInvoke(control.commandId)}
+            >
+              {control.label}
+            </button>
+          </div>
         );
       case "segmented":
         return (
-          <div className="molecule-inspector-effect-row" role="group" aria-label={control.label} key={control.id} data-table-control={control.id}>
+          <div className="molecule-inspector-field" role="group" aria-label={control.label} key={control.id} data-table-control={control.id}>
             <span>{control.label}</span>
-            {control.choices.map((choice) => (
-              <button
-                type="button"
-                key={choice.id}
-                className={["toolbar-text-button", choice.selected ? "active" : ""].filter(Boolean).join(" ")}
-                aria-pressed={choice.selected}
-                disabled={choice.disabledReason !== undefined}
-                title={choice.disabledReason}
-                data-command-id={choice.commandId}
-                data-palette-control="true"
-                onPointerDown={blockPointer}
-                onClick={() => onInvoke(choice.commandId)}
-              >
-                {choice.label}
-              </button>
-            ))}
+            <div className="molecule-inspector-effect-row">
+              {control.choices.map((choice) => (
+                <button
+                  type="button"
+                  key={choice.id}
+                  className={["toolbar-text-button", choice.selected ? "active" : ""].filter(Boolean).join(" ")}
+                  aria-pressed={choice.selected}
+                  disabled={choice.disabledReason !== undefined}
+                  title={choice.disabledReason}
+                  data-command-id={choice.commandId}
+                  data-palette-control="true"
+                  onPointerDown={blockPointer}
+                  onClick={() => onInvoke(choice.commandId)}
+                >
+                  {choice.label}
+                </button>
+              ))}
+            </div>
           </div>
         );
     }
   };
   return (
-    <div role="group" aria-label="Table" data-table-inspector={model.tableId}>
+    <div className="molecule-inspector-controls table-inspector-controls" role="group" aria-label="Table" data-table-inspector={model.tableId}>
       {model.sections.map((section) => (
         <div className="molecule-inspector-section" key={section.id} data-table-inspector-section={section.id}>
           <span className="molecule-inspector-target-label">{section.title}</span>
