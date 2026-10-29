@@ -92,17 +92,19 @@ function htmlLines(lines: Lines, style: NativeTextStyle): string {
   return lines.map(line => lineRuns(line, style).map(run => htmlRun(run, style)).join("")).join("<br>");
 }
 
-function htmlCellAlignment(table: TableObject, layout: TableLayout, row: number, column: number) {
+function cellAlignment(table: TableObject, layout: TableLayout, row: number, column: number, line?: Lines[number]) {
   const align = table.columns[column].align;
   if (align !== "decimal") return { align: align === "unknown" ? "left" : align };
   if (row < table.headerRowCount) return { align: "center" as const };
   const block = layout.columns[column].decimalBlock!;
+  const runs = line?.pieces.flatMap(piece => piece.runs);
+  const cell = runs ? { text: runs.map(run => run.text).join(""), spans: runs } : table.rows[row].cells[column];
   // Ask the shared layout for this cell's post-point width, including rich-text metrics.
   // No point (integers, dashes, empty cells) means a zero-width post-point piece.
   const cellLayout = planTableLayout({
     ...table, caption: undefined, footnotes: [], headerRowCount: 0,
     columns: [table.columns[column]],
-    rows: [{ ...table.rows[row], cells: [table.rows[row].cells[column]] }]
+    rows: [{ ...table.rows[row], cells: [cell] }]
   });
   const postWidth = cellLayout.columns[0].decimalBlock!.postWidth;
   return { align: "right" as const, insetRight: block.insetRight + block.postWidth - postWidth };
@@ -156,7 +158,7 @@ function htmlTable(table: TableObject, layout: TableLayout, options: TableClipbo
     for (let column = 0; column < table.columns.length; column++) {
       const width = layout.columns[column].width;
       const borders = cellBorders(layout, row, column);
-      const alignment = htmlCellAlignment(table, layout, row, column);
+      const alignment = cellAlignment(table, layout, row, column);
       const header = row < table.headerRowCount;
       const text = table.rows[row].cells[column].text;
       let cellStyle = `width:${numeric(width * 0.75)}pt;padding:${pad} ${pad}`
@@ -295,7 +297,7 @@ function rtfTable(table: TableObject, layout: TableLayout, options: TableClipboa
       if (row < table.headerRowCount) result += "\\clvertalb";
       // Match the passing HTML path: right alignment plus a per-cell right inset
       // preserves decimal anchors without Word's wrapping decimal-tab paragraphs.
-      const alignment = htmlCellAlignment(table, layout, row, column);
+      const alignment = cellAlignment(table, layout, row, column);
       if (alignment.insetRight !== undefined) {
         result += `\\clpadr${Math.round((table.tableStyle.cellPaddingPx.x + alignment.insetRight) * 15)}`
           + "\\clpadfr3";
@@ -306,10 +308,18 @@ function rtfTable(table: TableObject, layout: TableLayout, options: TableClipboa
       result += `\\cellx${Math.round((planned.x + planned.width - layout.bodyBox.x) * 15)}`;
     }
     for (let column = 0; column < table.columns.length; column++) {
-      const alignment = htmlCellAlignment(table, layout, row, column);
-      result += `\\pard\\plain\\intbl\\q${alignment.align[0]}\\sa0\\sb0\\sl240\\slmult1`;
+      const alignment = cellAlignment(table, layout, row, column);
+      const paragraph = `\\pard\\plain\\intbl\\q${alignment.align[0]}\\sa0\\sb0\\sl240\\slmult1`;
       const cell = layout.cells[row * table.columns.length + column];
-      result += `${font()} ${linesText(cell.lines)}\\cell`;
+      if (alignment.insetRight !== undefined && cell.lines.length > 1) {
+        // Cell padding reserves the widest decimal suffix. Each line needs its own
+        // remaining inset; paragraph indents cannot vary across soft line breaks.
+        const cellRight = Math.round((padding.x + alignment.insetRight) * 15);
+        result += cell.lines.map(line => {
+          const lineRight = Math.round((padding.x + cellAlignment(table, layout, row, column, line).insetRight!) * 15);
+          return `${paragraph}\\ri${lineRight - cellRight}${font()} ${linesText([line])}`;
+        }).join("\\par\n") + "\\cell";
+      } else result += `${paragraph}${font()} ${linesText(cell.lines)}\\cell`;
     }
     result += "\\row\n";
   }

@@ -256,10 +256,13 @@ describe("table clipboard payloads", () => {
     expect(payloads.rtf).toContain("\\pard\\plain\\sa0\\sb80\\f0\\fs24");
   });
 
-  it.each(["left", "decimal"] as const)("fits %s content and both paddings in narrow RTF columns", align => {
+  it.each([
+    ["left", 6.03], ["decimal", 6.03], ["left", 6.04], ["decimal", 6.04]
+  ] as const)("fits %s content and both %s px paddings in narrow RTF columns", (align, padding) => {
     const input = smallTable(["1.00", "12345.6", "—", "0.1234"], align);
     input.columns[0].width = { mode: "fixed", px: 12 };
-    input.tableStyle.cellPaddingPx = { x: 6.04, y: 2.07 };
+    // 6.04 px rounds each margin UP to 91 twips, exercising separate reservation of both margins.
+    input.tableStyle.cellPaddingPx = { x: padding, y: 2.07 };
     const font = nativeTextStyleFromObjectStyle(input.style);
     const measure = (text: string) => measureTextRun(text, { ...font, script: "normal" });
     const widest = align === "decimal" ? measure("12345") + measure(".1234") : measure("12345.6");
@@ -521,7 +524,40 @@ describe("table clipboard payloads", () => {
     const html = htmlDocument(exportTableToHtml(decimal));
     expect(html.querySelectorAll("td span")).toHaveLength(0);
     expect(html.querySelector("td p")?.textContent).toBe("1.23.45");
-    expect(exportTableToRtf(decimal)).toContain("1.2\\line 3.45");
+    // Different decimal suffix widths need separate paragraphs to carry per-line indents.
+    const rtf = exportTableToRtf(decimal);
+    expect(rtf).toMatch(/ 1\.2\\par\n\\pard\\plain\\intbl\\qr.* 3\.45\\cell/);
+    expect(rtf).not.toContain("\\line");
+  });
+
+  it.each([12, 180])("fits multiline decimal content and aligns each point at width %s", px => {
+    const input = smallTable(["123.4\n5.6789", "42\n0.12"], "decimal");
+    input.columns[0].width = { mode: "fixed", px };
+    input.tableStyle.cellPaddingPx.x = 6.04;
+    const font = nativeTextStyleFromObjectStyle(input.style);
+    const measure = (text: string) => measureTextRun(text, { ...font, script: "normal" });
+    const rtf = exportTableToRtf(input);
+    balancedRtf(rtf);
+    const rows = rtf.split("\\trowd").slice(1);
+    const width = Number(/\\clwWidth(\d+)/.exec(rows[0])![1]);
+    const exported = planTableLayout({ ...input, columns: [{ ...input.columns[0], width: { mode: "fixed", px: width / 15 } }] });
+    const anchor = exported.columns[0].decimalAnchorX! - input.x;
+    rows.forEach((row, index) => {
+      const right = Number(/\\clpadr(\d+)/.exec(row)![1]);
+      const paragraphs = row.split("\\pard\\plain\\intbl").slice(1);
+      expect(paragraphs).toHaveLength(2);
+      expect(row).toContain(`\\cellx${width}`);
+      expect(row).not.toMatch(/\\line|\\tqdec|\\tab /);
+      paragraphs.forEach((paragraph, lineIndex) => {
+        const text = input.rows[index].cells[0].text.split("\n")[lineIndex];
+        const post = text.includes(".") ? text.slice(text.indexOf(".")) : "";
+        const indent = Number(/\\ri(\d+)/.exec(paragraph)![1]);
+        expect(paragraph).toMatch(/^\\qr/);
+        expect(paragraph).toContain(` ${text}`);
+        expect((width - right - indent) / 15 - measure(post)).toBeCloseTo(anchor, 1);
+        expect(Math.round(6.04 * 15) + Math.ceil(measure(text) * 15) + right + indent).toBeLessThanOrEqual(width);
+      });
+    });
   });
 
   it("warns for unrotated copying and natural-width overflow without mutating its input", () => {

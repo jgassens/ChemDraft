@@ -239,7 +239,9 @@ describe("Excel overflow recovery", () => {
     const html = fixture("excel-overflow-notes.html");
     for (const modified of [
       html.replace('xmlns:x="urn:schemas-microsoft-com:office:excel"', "").replace("Excel.Sheet", "Other"),
-      html.replace("class=xl22 width=90 style='width:67pt'", "class=xl22 width=90 style='width:67pt;border-top:none'")
+      // Header inference follows the separator below every cell; removing it
+      // from one cell must defeat the class rule, even if the top border remains.
+      html.replace("class=xl22 width=90 style='width:67pt'", "class=xl22 width=90 style='width:67pt;border-bottom:none'")
     ]) {
       expect(expectOk(readHtml(modified)).spec.headerRows).toBeUndefined();
     }
@@ -253,13 +255,17 @@ describe("Excel overflow recovery", () => {
     expect(expectOk(readHtml(html)).spec.headerRows).toBeUndefined();
   });
 
-  it("recognizes tab-padded notes in standalone TSV, retaining the heading as data", () => {
+  it("keeps tab-padded Excel notes as rows without HTML confirmation", () => {
     const result = expectOk(readClipboardTsvTable(fixture("excel-overflow-notes.tsv")));
-    expect(result.spec.caption).toBe("Table S2. Sharpless reagent plan (synthetic).");
-    expect(result.spec.footnotes).toEqual(["a TBHP stock solution; synthetic example."]);
+    // A TSV label followed by empty cells is ambiguous: only the matching HTML
+    // colspan confirms a note. Standalone TSV must preserve those cells as rows.
+    expect(result.spec.caption).toBeUndefined();
+    expect(result.spec.footnotes).toBeUndefined();
     expect(result.spec.headerRows).toBeUndefined();
-    expect(result.spec.rows).toHaveLength(6);
-    expect(result.spec.rows[0]).toEqual(excelHeaders);
+    expect(result.spec.rows).toHaveLength(8);
+    expect(result.spec.rows[0]).toEqual(["Table S2. Sharpless reagent plan (synthetic).", "", "", "", "", "", ""]);
+    expect(result.spec.rows[1]).toEqual(excelHeaders);
+    expect(result.spec.rows[7]).toEqual(["a TBHP stock solution; synthetic example.", "", "", "", "", "", ""]);
     expect(result.warnings).toEqual([]);
     expect(TableSpecSchema.parse(result.spec)).toEqual(result.spec);
   });
@@ -268,10 +274,12 @@ describe("Excel overflow recovery", () => {
     const result = expectOk(readClipboardTsvTable(
       "Caption\t\t\na\t\t1.00\ninterior label\t\t\n\t\t\nb\t2.00\t\nFootnote\t\t"
     ));
-    expect(result.spec.caption).toBe("Caption");
-    expect(result.spec.footnotes).toEqual(["Footnote"]);
+    // Tab-padded boundary labels have the same data-row contract as interior labels.
+    expect(result.spec.caption).toBeUndefined();
+    expect(result.spec.footnotes).toBeUndefined();
     expect(result.spec.rows).toEqual([
-      ["a", "", "1.00"], ["interior label", "", ""], ["", "", ""], ["b", "2.00", ""]
+      ["Caption", "", ""], ["a", "", "1.00"], ["interior label", "", ""],
+      ["", "", ""], ["b", "2.00", ""], ["Footnote", "", ""]
     ]);
     expect(result.warnings).toEqual([]);
     expect(expectOk(readClipboardTsvTable("a\t\t1.00\nb\t2.00\t")).spec).toMatchObject({
@@ -279,11 +287,53 @@ describe("Excel overflow recovery", () => {
     });
   });
 
-  it("keeps refusals and note limits for tab-padded TSV boundaries", () => {
+  it("keeps refusals and cell limits for tab-padded TSV boundaries", () => {
     expectRefusal(readClipboardTsvTable("Caption\t\nA\tB\nC\tD\tE\nFootnote\t"), /different numbers of columns/);
     expectRefusal(readClipboardTsvTable("A\tB\nseparator\nC\tD\nFootnote\t"), /separated tab-separated blocks/);
-    expectRefusal(readClipboardTsvTable(`${"x".repeat(2001)}\t\nA\tB\nC\tD`), /caption paragraph 1 has 2001 characters/);
-    expectRefusal(readClipboardTsvTable(`A\tB\nC\tD\n${"Footnote\t\n".repeat(51)}`), /51 footnotes/);
+    // These are data cells now, so the cell cap applies and the footnote cap does not.
+    expectRefusal(readClipboardTsvTable(`${"x".repeat(2001)}\t\nA\tB\nC\tD`), /row 1, column 1 has 2001 characters/);
+    expect(expectOk(readClipboardTsvTable(`A\tB\nC\tD\n${"Footnote\t\n".repeat(51)}`)).spec.rows).toHaveLength(53);
+  });
+
+  it.each(["tsv", "html"])("keeps sparse boundary labels and Total as data in %s", source => {
+    const rows = [["Label", "", "", ""], ["a", "1", "2", "3"], ["Total", "", "", ""]];
+    const result = expectOk(source === "tsv" ? readClipboardTsvTable(rows.map(row => row.join("\t")).join("\n"))
+      : readHtmlAndTsv(table(rows.map(row => `<tr>${row.map(text => `<td>${text}</td>`).join("")}</tr>`).join("")),
+        rows.map(row => row.join("\t")).join("\n")));
+    expect(result.spec.rows).toEqual(rows);
+    expect(result.spec.caption).toBeUndefined();
+    expect(result.spec.footnotes).toBeUndefined();
+    expect(result.warnings).toEqual([]);
+  });
+
+  it.each(["tsv", "html"])("parses a two-column %s table with empty second cells", source => {
+    const rows = [["first", ""], ["second", ""]];
+    const result = expectOk(source === "tsv" ? readClipboardTsvTable("first\t\nsecond\t")
+      : readHtml(table("<tr><td>first</td><td></td></tr><tr><td>second</td><td></td></tr>")));
+    expect(result.spec.rows).toEqual(rows);
+    expect(result.spec.columns).toHaveLength(2);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it.each([false, true])("does not promote bordered numeric data rows (Excel: %s)", excel => {
+    const border = 'style="border-top-style:solid;border-top-width:1pt;border-bottom-style:solid;border-bottom-width:1pt"';
+    const html = `<html${excel ? ' xmlns:x="urn:schemas-microsoft-com:office:excel"' : ""}><body><table>`
+      + `<tr><td ${border}>a</td><td ${border}>1.00</td></tr>`
+      + '<tr><td>b</td><td>2.00</td></tr></table></body></html>';
+    const result = expectOk(readHtml(html));
+    expect(result.spec.headerRows).toBeUndefined();
+    expect(result.spec.rows).toEqual([["a", "1.00"], ["b", "2.00"]]);
+  });
+
+  it("infers only contiguous Excel headings whose next row has no bottom borders", () => {
+    const border = 'style="border-bottom-style:solid;border-bottom-width:1pt"';
+    const heading = `<tr><td ${border}>Material</td><td ${border}>Value</td></tr>`;
+    const data = '<tr><td>a</td><td>1.00</td></tr>';
+    const excel = (rows: string) => `<html xmlns:x="urn:schemas-microsoft-com:office:excel"><body><table>${rows}</table></body></html>`;
+    expect(expectOk(readHtml(excel(heading + heading + data))).spec.headerRows).toHaveLength(2);
+    expect(expectOk(readHtml(excel(data + heading + data))).spec.headerRows).toBeUndefined();
+    expect(expectOk(readHtml(excel(heading + `<tr><td ${border}>a</td><td>1.00</td></tr>`))).spec.headerRows).toBeUndefined();
+    expect(expectOk(readHtml(table(heading + data))).spec.headerRows).toBeUndefined();
   });
 
   it.each(["caption", "footnote", "body", "dimensions"])("does not recover Excel values when the full TSV %s differs", part => {

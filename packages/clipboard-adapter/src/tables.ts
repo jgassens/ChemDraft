@@ -492,10 +492,10 @@ function cellsOf(row: Element): Element[] {
   return Array.from(row.children).filter((child) => tagOf(child) === "td" || tagOf(child) === "th");
 }
 
-/** Excel uses td cells with class-based top and bottom rules for a heading, not th/thead.
- * Read only its simple class rules; never load stylesheets or infer headers from cell contents.
+/** Excel uses td cells with class-based rules for a heading, not th/thead.
+ * Read only its simple class rules; never load stylesheets.
  */
-function excelHeaderTest(table: Element): (row: Element) => boolean {
+function excelBottomBorderTest(table: Element): (cell: Element) => boolean {
   const document = table.ownerDocument;
   const excel = document.documentElement.getAttribute("xmlns:x") === "urn:schemas-microsoft-com:office:excel"
     || Array.from(document.querySelectorAll("meta")).some(meta =>
@@ -508,19 +508,23 @@ function excelHeaderTest(table: Element): (row: Element) => boolean {
       }
     }
   }
-  const border = (cell: Element, name: string): boolean => {
-    let value: string | undefined;
-    for (const rule of rules) {
-      if (cell.classList.contains(rule.className)) value = declarationProperty(rule.declarations, name) ?? value;
+  return cell => {
+    if (!excel) return false;
+    let borderStyle = "none", borderWidth = "medium";
+    const declarations = rules.filter(rule => cell.classList.contains(rule.className)).map(rule => rule.declarations);
+    declarations.push(cell.getAttribute("style") ?? "");
+    for (const declaration of declarations) {
+      for (const part of declaration.toLowerCase().split(";")) {
+        const [name, value = ""] = part.split(":").map(value => value.trim());
+        if (name === "border" || name === "border-bottom") {
+          borderStyle = /\b(solid|double|dashed|dotted|none|hidden)\b/.exec(value)?.[0] ?? "none";
+          borderWidth = /^(?:\d*\.)?\d+(?:[a-z]+)?\b/.exec(value)?.[0] ?? "medium";
+        } else if (name === "border-bottom-style") borderStyle = value;
+        else if (name === "border-bottom-width") borderWidth = value;
+      }
     }
-    value = styleProperty(cell, name) ?? value;
-    return value !== undefined && /\b(solid|double|dashed|dotted)\b/.test(value)
-      && !/^0(?:[a-z]+)?(?:\s|$)/.test(value);
-  };
-  return row => {
-    const cells = cellsOf(row);
-    return excel && cells.length > 1 && cells.every(cell =>
-      border(cell, "border-top") && border(cell, "border-bottom"));
+    return /^(solid|double|dashed|dotted)$/.test(borderStyle)
+      && !/^0*(?:\.0+)?(?:[a-z]+)?$/.test(borderWidth);
   };
 }
 
@@ -710,7 +714,7 @@ function convertTable(
   if (hasOverflow && !nested && dense.every((row, r) => r < start || r >= end || row.every((entry) => !entry.filler))) {
     for (const item of payload.textItems) {
       if (!isTextLikeType(item.type)) continue;
-      const tsv = readTsvTable(item.text, 1, true);
+      const tsv = readTsvTable(item.text, 1);
       if (tsv?.ok && tsv.spec.columns.length === width && tsv.spec.rows.length === dense.length
         && dense.every((row, r) => row.every((entry, c) => entry.overflow || normalizedText(entry.input) === normalizedText(tsv.spec.rows[r][c])))) {
         matchingRows = tsv.spec.rows;
@@ -750,9 +754,21 @@ function convertTable(
     while (start + headerCount < end && headerFlags[start + headerCount]) {
       headerCount += 1;
     }
-    if (headerCount === 0 && body.length > 1 && !mergedRows.has(start) && !rowspanRows.has(start)) {
-      const isExcelHeader = excelHeaderTest(table);
-      if (isExcelHeader(rows[start].element) && !isExcelHeader(rows[start + 1].element)) headerCount = 1;
+    if (headerCount === 0 && body.length > 1) {
+      const hasBottomBorder = excelBottomBorderTest(table);
+      let candidate = start;
+      // Only a contiguous heading at the top may be inferred. A numeric data row
+      // is a hard boundary, even if it has the same rules as a heading.
+      while (candidate < end - 1 && !mergedRows.has(candidate) && !rowspanRows.has(candidate)
+        && !dense[candidate].some(entry => {
+          const text = cellText(entry.input).trim();
+          return NUMBER_PATTERNS.some(pattern => pattern.test(text)) || EXCEL_NUMBER_PATTERN.test(text);
+        })
+        && cellsOf(rows[candidate].element).length > 1
+        && cellsOf(rows[candidate].element).every(hasBottomBorder)) candidate += 1;
+      if (candidate > start && !cellsOf(rows[candidate].element).some(hasBottomBorder)) {
+        headerCount = candidate - start;
+      }
     }
   }
   if (headerCount >= body.length) {
@@ -898,7 +914,7 @@ function parseTsvRecords(text: string): string[][] | undefined {
 /**
  * Reads a table from plain text copied out of a spreadsheet: at least two lines, each with the same
  * number of tab-separated fields (two or more), optionally surrounded by caption/footnote lines
- * with no populated fields after the first. There are no header rows; the user decides those.
+ * without tabs. There are no header rows; the user decides those.
  * Ambiguous blocks are refused.
  */
 export function readClipboardTsvTable(text: string): ClipboardTableResult | undefined {
@@ -906,7 +922,7 @@ export function readClipboardTsvTable(text: string): ClipboardTableResult | unde
 }
 
 /** HTML recovery already established a table, so its matching TSV may have just one row. */
-function readTsvTable(text: string, minRows: number, preserveBoundaryRows = false): ClipboardTableResult | undefined {
+function readTsvTable(text: string, minRows: number): ClipboardTableResult | undefined {
   const records = parseTsvRecords(text);
   if (!records) {
     return text.includes("\t") ? fail("The tab-separated table has a malformed quoted field.") : undefined;
@@ -915,10 +931,9 @@ function readTsvTable(text: string, minRows: number, preserveBoundaryRows = fals
   if (last && last.length === 1 && last[0] === "") {
     records.pop();
   }
-  // Excel pads caption/footnote lines with tabs. Only strip these at the boundaries;
-  // a sparse row inside the rectangle is still data. HTML recovery needs the full grid.
-  const isNote = (record: string[]): boolean => record.length === 1
-    || (!preserveBoundaryRows && record[0].trim() !== "" && record.slice(1).every(field => field === ""));
+  // Tabs establish a data row, even if only its first cell is populated. Only HTML
+  // can confirm that a tab-padded boundary label represents a caption or footnote.
+  const isNote = (record: string[]): boolean => record.length === 1;
   const start = records.findIndex((record) => !isNote(record));
   if (start < 0) return undefined;
   let end = start;
@@ -926,7 +941,6 @@ function readTsvTable(text: string, minRows: number, preserveBoundaryRows = fals
   if (records.slice(end).some((record) => !isNote(record))) {
     return fail("The clipboard contains separated tab-separated blocks; copy one rectangular table at a time.");
   }
-  while (end > start && isNote(records[end - 1])) end -= 1;
   const grid = records.slice(start, end);
   const width = grid[0].length;
   if (grid.length < minRows) {

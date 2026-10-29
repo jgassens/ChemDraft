@@ -169,11 +169,15 @@ describe("MainWindow table clipboard wiring", () => {
     expect(table.type).toBe("table");
     expect(table.columns).toHaveLength(7);
     expect(table.rows).toHaveLength(6);
-    expect(table.headerRowCount).toBe(name === "word-office-notes" ? 1 : 0);
-    expect(table.caption?.text).toBe("Table S1. Sharpless reagent quantities (synthetic).");
+    // The real-structure Excel fixture has bordered td headers and colspan notes;
+    // unlike the old fixture, it yields one header row and the Table S2 caption.
+    expect(table.headerRowCount).toBe(1);
+    expect(table.caption?.text).toBe(name === "word-office-notes"
+      ? "Table S1. Sharpless reagent quantities (synthetic)." : "Table S2. Sharpless reagent plan (synthetic).");
     expect(table.footnotes.map(note => note.text)).toEqual(["a TBHP stock solution; synthetic example."]);
     expect(table.rows[1].cells[2].text).toBe("0.854");
     expect(table.rows[3].cells[2].text).toBe("1.204");
+    expect(table.rows.map(row => row.cells[2].text)).toEqual(["Density (g/mL)", "0.854", "0.96", "1.204", "—", "1.33"]);
     expect(snapshot().selection.objectIds).toEqual([table.id]);
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Pasted table");
     await command("edit.undo");
