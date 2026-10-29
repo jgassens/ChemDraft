@@ -34,7 +34,7 @@ function run(args) {
   }
   if (mode === 'dump' && args.length === 2) {
     const dir = $(args[1]);
-    if (!$.NSFileManager.defaultManager.createDirectoryAtPathWithIntermediateDirectoriesAttributesError(dir, true, null, null)) throw new Error('Cannot create output directory');
+    if (!$.NSFileManager.defaultManager.createDirectoryAtPathWithIntermediateDirectoriesAttributesError(dir, true, $(), null)) throw new Error('Cannot create output directory');
     const records = [], items = board.pasteboardItems;
     for (let i = 0; i < Number(items.count); i++) {
       const item = items.objectAtIndex(i), types = item.types;
