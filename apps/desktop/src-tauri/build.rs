@@ -75,6 +75,7 @@ fn main() {
             "route_toolset_command",
             "sync_plugin_menu_items",
             "read_clipboard_payload",
+            "write_clipboard_items",
             "write_clipboard_text_items",
             "write_clipboard_image",
             "open_tool_palette",

@@ -537,6 +537,22 @@
   },
   {
     "file": "lib.rs",
+    "name": "write_clipboard_items",
+    "async": true,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, items: Vec<ClipboardWriteItem>,",
+    "returnType": "Result<ClipboardWriteResult, String>"
+  },
+  {
+    "file": "lib.rs",
+    "name": "write_clipboard_items",
+    "async": false,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, items: Vec<ClipboardWriteItem>,",
+    "returnType": "Result<ClipboardWriteResult, String>"
+  },
+  {
+    "file": "lib.rs",
     "name": "write_clipboard_text_items",
     "async": true,
     "generics": "",
