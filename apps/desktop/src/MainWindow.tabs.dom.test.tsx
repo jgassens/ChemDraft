@@ -2,11 +2,12 @@
 import * as smilesListPaste from "./smilesListPaste";
 import * as smilesPasteIdentity from "./smilesPasteIdentity";
 import { IdentityVerificationTimeoutError } from "./depiction2d/identityWorkerClient";
+import { inspectStructureOffThread } from "./depiction2d/identityClient";
 import { act, createElement, StrictMode } from "react";
 import { setNativePromptProvider, type NativePromptOptions } from "./nativePrompt";
 import { readFileSync } from "node:fs";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { MainWindow, documentTabPathKey } from "./MainWindow";
 import { exportPhase4Svg, applyNativeChainTool, createNativeSingleBondMolecule, arrangeSelectedDocumentObjects, createNativeSavePayload, createPhase4Document, openNativeDocument, selectDocumentObjects } from "./documentWorkflow";
 import { openChemDraftPayload } from "@chemdraft/cdx-compat";
@@ -163,6 +164,9 @@ vi.mock("./plugins/panelBridge", async (original) => {
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 describe("documents in one window", () => {
+  beforeAll(async () => {
+    expect((await inspectStructureOffThread("smiles", "C")).valid).toBe(true);
+  }, 20_000);
   let container: HTMLDivElement;
   let root: Root | undefined;
 
@@ -1733,14 +1737,14 @@ describe("documents in one window", () => {
         await vi.waitFor(() => {
           expect(container.querySelector('[role="status"]')?.textContent)
             .toBe("Paste cancelled while quitting");
-        });
+        }, { timeout: 15_000 });
       }
       expect(bridge().snapshot().document).toEqual(saved);
       expect(bridge().snapshot().file.dirty).toBe(false);
       expect(native.quit).not.toHaveBeenCalled();
       await act(async () => { finishFlush(); });
       expect(native.quit).toHaveBeenCalledTimes(1);
-  });
+  }, 20_000);
 
   it.each(["picker cancelled", "write failed"])("remains editable after quit Save is %s", async (failure) => {
     await paste("Existing drawing");

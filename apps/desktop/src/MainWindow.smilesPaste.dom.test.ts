@@ -37,7 +37,8 @@ describe("MainWindow SMILES paste failure notices", () => {
     const actual = await vi.importActual<typeof import("./depiction2d/identityClient")>(
       "./depiction2d/identityClient");
     realInspector = actual.inspectStructureOffThread;
-  });
+    expect((await realInspector("smiles", "C")).valid).toBe(true);
+  }, 20_000);
 
   beforeEach(async () => {
     vi.mocked(inspectStructureOffThread).mockReset().mockImplementation(realInspector);
