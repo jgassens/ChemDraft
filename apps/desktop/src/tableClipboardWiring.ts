@@ -11,7 +11,7 @@ import { buildTableObject } from "@chemdraft/document-workflow-core";
 import { exportTableClipboardPayloads } from "@chemdraft/export-engine";
 import type { ClipboardWriteTextItem } from "./clipboard";
 import {
-  CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, parseSelectionClipboardPayload, serializeSelectionClipboardPayload,
+  CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, moveDocumentObject, parseSelectionClipboardPayload, serializeSelectionClipboardPayload,
   type ChemDraftSelectionClipboardPayload
 } from "./documentWorkflow";
 
@@ -119,12 +119,15 @@ export function pasteTableIntoDocument(
     id: newId("table"), x: 0, y: 0, newId, style: textStyleToObjectStyle(textStyle)
   });
   const page = document.pages[0];
-  const centered = { ...object, x: center.x - object.width / 2, y: center.y - object.height / 2 };
+  const position = object.width > page.width || object.height > page.height
+    ? { x: 0, y: 0 }
+    : { x: center.x - object.width / 2, y: center.y - object.height / 2 };
+  const inserted = applyPatches(document, [
+    { op: "addObject", pageId: page.id, object },
+    { op: "setSelection", pageId: page.id, objectIds: [object.id] }
+  ]);
   return {
-    document: applyPatches(document, [
-      { op: "addObject", pageId: page.id, object: centered },
-      { op: "setSelection", pageId: page.id, objectIds: [centered.id] }
-    ]),
+    document: moveDocumentObject(inserted, object.id, position),
     warnings: [...parsed.warnings]
   };
 }

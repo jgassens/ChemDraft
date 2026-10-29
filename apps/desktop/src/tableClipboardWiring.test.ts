@@ -89,18 +89,43 @@ describe("table-only copy", () => {
 });
 
 describe("paste precedence and table building", () => {
+  it("centers tables when possible and keeps them within page edges", () => {
+    const parsed = readTableClipboardPaste(htmlPayload("excel-like.html"), parseHtml);
+    if (!parsed?.ok) throw new Error("Expected parsed table");
+    const document = createPhase4Document();
+    const page = document.pages[0];
+    const wide = { ...parsed, spec: { ...parsed.spec, columns: parsed.spec.columns.map(column => ({ ...column, widthPx: 90 })) } };
+    const paste = (center: { x: number; y: number }) =>
+      pasteTableIntoDocument(document, wide, center, {}, ids()).document.pages[0].objects[0] as TableObject;
+    const left = paste({ x: 0, y: page.height / 2 });
+    expect(left.width).toBeLessThanOrEqual(page.width);
+    expect(left.x).toBe(0);
+    expect(left.x + left.width).toBeLessThanOrEqual(page.width);
+    const bottomRight = paste({ x: page.width, y: page.height });
+    expect(bottomRight.x + bottomRight.width).toBeCloseTo(page.width);
+    expect(bottomRight.y + bottomRight.height).toBeCloseTo(page.height);
+    const middle = paste({ x: page.width / 2, y: page.height / 2 });
+    expect(middle.x + middle.width / 2).toBeCloseTo(page.width / 2);
+    expect(middle.y + middle.height / 2).toBeCloseTo(page.height / 2);
+    const oversized = { ...wide, spec: { ...wide.spec, columns: wide.spec.columns.map(column => ({ ...column, widthPx: 500 })) } };
+    const large = pasteTableIntoDocument(document, oversized, { x: page.width / 2, y: page.height / 2 }, {}, ids())
+      .document.pages[0].objects[0] as TableObject;
+    expect(large.width).toBeGreaterThan(page.width);
+    expect({ x: large.x, y: large.y }).toEqual({ x: 0, y: 0 });
+  });
+
   it.each(["word-like.html", "excel-like.html", "google-docs-like.html", "google-sheets-like.html", "word-like.cfhtml.txt"])("pastes the lone table in %s before artwork/text", name => {
     const result = tableClipboardPasteDecision(payload(...htmlPayload(name).textItems,
       { type: "text/plain", text: "fallback text" }, { type: "image/svg+xml", text: "<svg/>" }), parseHtml);
     expect(result.kind).toBe("table");
     if (result.kind !== "table" || !result.result.ok) throw new Error("Expected parsed table");
     expect(result.result.source).toBe("html");
-    const built = pasteTableIntoDocument(createPhase4Document(), result.result, { x: 250, y: 300 },
+    const built = pasteTableIntoDocument(createPhase4Document(), result.result, { x: 408, y: 528 },
       { fontFamily: "Georgia", fontSizePx: 18, fontWeight: 700, color: "#123456" }, ids());
     const table = built.document.pages[0].objects[0] as TableObject;
     expect(table.type).toBe("table");
-    expect(table.x + table.width / 2).toBeCloseTo(250);
-    expect(table.y + table.height / 2).toBeCloseTo(300);
+    expect(table.x + table.width / 2).toBeCloseTo(408);
+    expect(table.y + table.height / 2).toBeCloseTo(528);
     expect(table.style).toEqual(textStyleToObjectStyle({ fontFamily: "Georgia", fontSizePx: 18, fontWeight: 700, color: "#123456" }));
     expect(built.document.selection.objectIds).toEqual([table.id]);
     expect(built.warnings).toEqual(result.result.warnings);
