@@ -496,7 +496,12 @@ export function createChemDraftMcpServer(
       reactants: z.array(z.string().min(1)).min(1).optional(),
       agents: z.array(z.string().min(1)).optional(),
       products: z.array(z.string().min(1)).min(1).optional(),
-      conditions: z.string().optional(),
+      conditions: z.string().max(2000, "conditions exceeds the 2000 character combined limit.").optional(),
+      above: z.array(z.string().max(2000, "above exceeds the 2000 character combined limit.")).max(6, "above exceeds the 6 entry limit.").optional(),
+      below: z.array(z.string().max(2000, "below exceeds the 2000 character combined limit.")).max(6, "below exceeds the 6 entry limit.").optional(),
+      caption: z.string().min(1, "caption must be non-empty (1–300 characters).")
+        .max(300, "caption exceeds the 300 character limit.")
+        .refine((value) => value.trim().length > 0, "caption must be non-empty (1–300 characters).").optional(),
       arrow: z.enum(["forward", "equilibrium", "resonance", "retrosynthesis"]).optional(),
       width: z.number().positive().optional(),
       background: z.enum(["white", "transparent"]).optional(),
@@ -511,12 +516,17 @@ export function createChemDraftMcpServer(
     agents,
     products,
     conditions,
+    above, below, caption,
     arrow,
     width,
     background,
     format = "png",
     outDir
   }) => runTool(async () => {
+    const text = [...above ?? [], ...below ?? [], caption ?? "", conditions ?? ""];
+    if (text.reduce((total, value) => total + value.length, 0) > 2000) {
+      return errorResult("above + below + caption + conditions exceeds the 2000 character combined limit.");
+    }
     const hasArrays = reactants !== undefined || agents !== undefined || products !== undefined;
     if ((reactionSmiles === undefined) === !hasArrays) {
       return errorResult("Provide exactly one of reactionSmiles or reactants/agents/products arrays.");
@@ -536,6 +546,9 @@ export function createChemDraftMcpServer(
           "--out", output
         ];
     if (conditions !== undefined) argv.push("--conditions", conditions);
+    for (const line of above ?? []) argv.push("--above", line);
+    for (const line of below ?? []) argv.push("--below", line);
+    if (caption !== undefined) argv.push("--caption", caption);
     if (arrow !== undefined) argv.push("--arrow", arrow);
     if (width !== undefined) argv.push("--width", String(width));
     if (background !== undefined) argv.push("--background", background);

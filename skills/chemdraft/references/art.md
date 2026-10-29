@@ -161,12 +161,16 @@ Run it for both and require identical `summary.inchiKey` and
 
 - Coordinates are page pixels; y grows downward. Atom `x`/`y` and ring
   `center` are in the same space.
-- A `text` object draws its baseline at `y + fontSizePx`; with
+- A `text` object draws its baseline at `y + fontSizePx`. With
   `textAlign: "center"` its centre is `x + width / 2`. To centre a capital
   letter on a point `(cx, cy)`: `x = cx - w/2`, `y = cy - 0.64 * fontSizePx`.
 - Give every added object a box (`x`, `y`, `width`, `height`) that covers
   what it draws: the PNG/SVG crop is computed from those boxes, and an
   object left at `0,0` with size 0 drags the crop to the page corner.
+- Reaction-label subscript ink ends at its **0.4 em** baseline offset unless the span contains
+  a descender (`g j p q y Q ( ) [ ] { } , ; | _`), which adds **0.72 × 0.21 em** descent.
+  Normal text keeps full descent and cap height. At 14 px, Sharpless above labels use line height
+  **1.236**; numbered `1. NaBH4, MeOH` / `2. H3O+` uses **1.43552**.
 - Moving atoms changes only the drawing, but check the chemistry again.
 
 ## Patterns
