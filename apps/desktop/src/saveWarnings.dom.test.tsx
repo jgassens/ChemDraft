@@ -60,12 +60,6 @@ it("keeps empty status space click-through and only the truncated text interacti
   expect(rule(".status-row")).toContain("align-items: baseline;");
   expect(rule(".status-row-main")).toContain("align-items: baseline;");
   expect(rule(".status-row-main")).toContain("flex: 1 1 auto;");
-  const slot = rule(".status-message-slot");
-  expect(slot).toContain("contain: inline-size;");
-  expect(slot).toContain("pointer-events: none;");
-  expect(slot).toContain("flex: 1 1 0;");
-  expect(slot).toContain("min-width: 0;");
-  expect(slot).toContain("display: flex;");
   const text = rule(".status-message,\n.status-modifier-hint");
   expect(text).toContain("flex: 0 1 auto;");
   expect(text).toContain("min-width: 0;");
@@ -76,6 +70,10 @@ it("keeps empty status space click-through and only the truncated text interacti
   expect(interactive).toContain("pointer-events: auto;");
   expect(interactive).not.toMatch(/flex(?:-grow)?:/);
   expect(css).not.toContain(".status-message[data-file-warning-help]");
+  expect(css).not.toContain(".status-message-slot");
+  for (const selector of [".status-row", ".status-row-main", ".status-message,\n.status-modifier-hint", ".status-message"]) {
+    expect(rule(selector)).not.toMatch(/\bcontain(?:-[\w-]+)?\s*:/);
+  }
   expect(rule(".open-warnings-button")).toContain("flex: 0 0 auto;");
   expect(rule(".open-warnings-message")).not.toMatch(/(?:display|color|white-space):/);
 });
@@ -158,34 +156,16 @@ describe("save warnings in the existing file warnings list", () => {
     await act(async () => { target.click(); });
   }
 
-  async function expectHoverHelp(messages: readonly string[]) {
-    const previousStatus = status().textContent;
-    const slot = status().parentElement!;
-    expect(slot.className).toBe("status-message-slot");
-    expect(getComputedStyle(slot).pointerEvents).toBe("none");
-    expect(getComputedStyle(container.querySelector(".status-row-main")!).pointerEvents).toBe("none");
-    for (const target of [status(), button()!]) {
-      // React's mouse-enter/leave handlers are reached through real bubbling DOM events.
-      expect(getComputedStyle(target).pointerEvents).toBe("auto");
-      await act(async () => { target.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })); });
-      for (const message of messages) expect(status().textContent).toContain(message);
-      expect(status().hasAttribute("data-file-warning-help")).toBe(true);
-      expect(getComputedStyle(status()).whiteSpace).toBe("nowrap");
-      expect(getComputedStyle(status()).flexGrow).toBe("0");
-      expect(getComputedStyle(status()).textOverflow).toBe("ellipsis");
-      expect(status().parentElement).toBe(slot);
-      expect(slot.nextElementSibling).toBe(button());
-      await act(async () => {
-        target.dispatchEvent(new MouseEvent("mouseout", { bubbles: true }));
-        await new Promise(resolve => window.setTimeout(resolve, 120));
-      });
-      expect(status().textContent).toBe(previousStatus);
-      expect(status().hasAttribute("data-file-warning-help")).toBe(false);
-    }
-    await act(async () => { button()!.focus(); });
-    for (const message of messages) expect(status().textContent).toContain(message);
-    await act(async () => { button()!.blur(); });
-    expect(status().textContent).toBe(previousStatus);
+  function expectStatusTooltip(messages: readonly string[]) {
+    for (const message of messages) expect(status().title).toContain(message);
+    expect(status().parentElement?.className).toBe("status-row-main");
+    expect(status().nextElementSibling).toBe(button());
+    expect(getComputedStyle(container.querySelector(".status-row")!).pointerEvents).toBe("none");
+    expect(getComputedStyle(status().parentElement!).pointerEvents).toBe("none");
+    expect(getComputedStyle(status()).pointerEvents).toBe("auto");
+    expect(getComputedStyle(status()).flexGrow).toBe("0");
+    expect(getComputedStyle(status()).whiteSpace).toBe("nowrap");
+    expect(getComputedStyle(status()).textOverflow).toBe("ellipsis");
   }
 
   function expectReadableMessages(scope: Element, messages: readonly string[]) {
@@ -224,7 +204,7 @@ describe("save warnings in the existing file warnings list", () => {
     return warning!;
   }
 
-  it("shows every save warning in status hover help and as readable text in the list", async () => {
+  it("puts every save warning in the status title on the content-sized pointer target and in the list", async () => {
     const document = tableDocument();
     // Also prove the tooltip retains multiple full messages, rather than only the first warning.
     const table = document.pages[0]!.objects[0]!;
@@ -241,7 +221,7 @@ describe("save warnings in the existing file warnings list", () => {
     expect(button()?.textContent).toBe(`${payload.warnings.length} warnings`);
     expect(button()?.title).toBe("Show the warnings from saving this document");
     expect(list()).toBeNull();
-    await expectHoverHelp(payload.warnings.map(warning => warning.message));
+    expectStatusTooltip(payload.warnings.map(warning => warning.message));
 
     await click(button()!);
     expect(list()?.getAttribute("aria-label")).toBe(`Saved ${payload.filename}: ${payload.warnings.length} warnings`);
@@ -275,85 +255,6 @@ describe("save warnings in the existing file warnings list", () => {
     expect(list()).toBeNull();
   });
 
-  it.each(["hover", "focus"])("clears %s help when a clean save removes the button, including for later reports", async interaction => {
-    await mount();
-    await command("document.save");
-    await act(async () => {
-      if (interaction === "focus") button()!.focus();
-      else button()!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
-    });
-    expect(status().hasAttribute("data-file-warning-help")).toBe(true);
-    await command("edit.selectAll");
-    await act(async () => {
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Backspace", bubbles: true, cancelable: true }));
-    });
-    await command("document.save");
-    expect(button()).toBeNull();
-    expect(status().hasAttribute("data-file-warning-help")).toBe(false);
-    expect(status().textContent).toMatch(/^Saved /);
-
-    await command("edit.undo");
-    await command("document.save");
-    expect(button()).not.toBeNull();
-    expect(status().title).toContain(warningFor(tableDocument()).message);
-    expect(status().hasAttribute("data-file-warning-help")).toBe(false);
-    expect(status().textContent).toMatch(/^Saved /);
-  });
-
-  it("resets hovered help when switching between tabs that both have warnings", async () => {
-    await mount();
-    await command("document.save");
-    await command("document.new");
-    await command(tableInsertCommandId(2, 2, 1));
-    await command("document.save");
-    await activate(0);
-    await act(async () => { button()!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })); });
-    expect(status().hasAttribute("data-file-warning-help")).toBe(true);
-    await activate(1);
-    expect(button()).not.toBeNull();
-    expect(status().hasAttribute("data-file-warning-help")).toBe(false);
-    await activate(0);
-    expect(status().hasAttribute("data-file-warning-help")).toBe(false);
-  });
-
-  it("keeps help visible while moving between the status text and warnings button", async () => {
-    await mount();
-    await command("document.save");
-    await act(async () => { status().dispatchEvent(new MouseEvent("mouseover", { bubbles: true })); });
-    const help = status().textContent;
-    const changes: string[] = [];
-    const observer = new MutationObserver(() => { changes.push(status().textContent!); });
-    observer.observe(status(), { childList: true, characterData: true, subtree: true });
-    try {
-      for (const [from, to] of [[status(), button()!], [button()!, status()]]) {
-        await act(async () => {
-          from!.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: to }));
-        });
-        expect(status().textContent).toBe(help);
-        expect(status().hasAttribute("data-file-warning-help")).toBe(true);
-      }
-      // Real pointer travel crosses the slot's empty space and the flex gap before reaching the button.
-      await act(async () => {
-        status().dispatchEvent(new MouseEvent("mouseout", { bubbles: true }));
-        await new Promise(resolve => window.setTimeout(resolve, 30));
-      });
-      expect(status().textContent).toBe(help);
-      await act(async () => {
-        button()!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
-        await new Promise(resolve => window.setTimeout(resolve, 120));
-      });
-      expect(status().textContent).toBe(help);
-      expect(changes.every(text => text === help)).toBe(true);
-    } finally {
-      observer.disconnect();
-    }
-    await act(async () => {
-      button()!.dispatchEvent(new MouseEvent("mouseout", { bubbles: true }));
-      await new Promise(resolve => window.setTimeout(resolve, 120));
-    });
-    expect(status().hasAttribute("data-file-warning-help")).toBe(false);
-  });
-
   it("clears an earlier save report and its open list when the next save has no warnings", async () => {
     await mount();
     await command("document.save");
@@ -377,7 +278,7 @@ describe("save warnings in the existing file warnings list", () => {
     const openHeading = list()!.getAttribute("aria-label");
     const messages = [...list()!.querySelectorAll(".open-warnings-message")].map((row) => row.textContent!);
     expectReadableMessages(list()!, messages);
-    await expectHoverHelp(messages);
+    expectStatusTooltip(messages);
     expect(createNativeSavePayload(bridge().snapshot().document).warnings).toHaveLength(0);
 
     await command("document.save");
@@ -409,7 +310,7 @@ describe("save warnings in the existing file warnings list", () => {
     expect(groups[0]!.textContent).not.toContain("Table written");
     for (const warning of payload.warnings) expect(groups[1]!.textContent).toContain(warning.message);
     const allMessages = [...list()!.querySelectorAll(".open-warnings-message")].map(row => row.textContent!);
-    await expectHoverHelp(allMessages);
+    expectStatusTooltip(allMessages);
     expectReadableMessages(list()!, allMessages);
     expect(button()?.getAttribute("aria-controls")).toBe(list()?.id);
 
