@@ -19,11 +19,12 @@ export class SmilesIdentityEngineUnavailableError extends Error {
 }
 
 export function createPasteIdentityInspector(
-  inspect: StructureInspector = inspectStructureOffThread
+  inspect: StructureInspector = inspectStructureOffThread, signal?: AbortSignal
 ): InspectChemicalIdentity {
   return async (format, value, stereoReference) => {
     try {
-      const result = await inspect(format, value, stereoReference);
+      signal?.throwIfAborted();
+      const result = await inspect(format, value, stereoReference, signal);
       return result.valid
         ? { valid: true, canonicalSmiles: result.identitySmiles, facts: result.identityFacts } : result;
     } catch (error) {
@@ -48,14 +49,18 @@ export class SmilesPasteIdentityError extends Error {
 }
 
 /** Refuse unsupported input stereo even when the depiction engines cannot parse or draw it. */
-export async function verifySmilesPasteInput(smiles: string): Promise<void> {
+export async function verifySmilesPasteInput(smiles: string, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
   if (!/[@\\/]/.test(smiles)) return;
   try {
-    const source = await inspectPasteIdentity("smiles", smiles);
+    const source = await createPasteIdentityInspector(undefined, signal)("smiles", smiles);
     if (!source.valid && source.reason !== "RDKit could not verify the structure.") {
       throw new Error(source.reason);
     }
-  } catch (error) { throw new SmilesPasteIdentityError(smiles, error); }
+  } catch (error) {
+    signal?.throwIfAborted();
+    throw new SmilesPasteIdentityError(smiles, error);
+  }
 }
 
 /** Check a depiction without holding a document snapshot across an engine load. */
@@ -107,15 +112,19 @@ export async function checkedSmilesGridPaste(
 
 export async function verifySmilesGridEntries(
   entries: readonly { smiles: string; depiction: PastedStructureDepiction }[],
-  inspect: InspectChemicalIdentity = inspectPasteIdentity
+  inspect?: InspectChemicalIdentity, signal?: AbortSignal
 ) {
+  const inspector = inspect ?? createPasteIdentityInspector(undefined, signal);
   const accepted: typeof entries[number][] = [];
   const failures: SmilesListPasteFailure[] = [];
   for (const entry of entries) {
+    signal?.throwIfAborted();
     try {
-      await verifySmilesPaste(entry.depiction, entry.smiles, inspect);
+      await verifySmilesPaste(entry.depiction, entry.smiles, inspector);
+      signal?.throwIfAborted();
       accepted.push(entry);
     } catch (error) {
+      signal?.throwIfAborted();
       failures.push({ input: entry.smiles, error: error instanceof Error ? error.message : String(error) });
     }
   }

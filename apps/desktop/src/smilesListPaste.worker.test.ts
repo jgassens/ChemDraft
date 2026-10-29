@@ -3,7 +3,7 @@ import { depictSmilesOffThread } from "./depiction2d/client";
 import { createEmptyDocument, moleculeToMolfileV2000 } from "@chemdraft/chem-core";
 import { createSmilesMolecule } from "@chemdraft/document-workflow-core";
 import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
-import { installRealRdkitModuleLoader } from "@chemdraft/rdkit-adapter/testing";
+import { installRealRdkitModuleLoader } from "../../../packages/rdkit-adapter/src/testing";
 import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
 
 it("depicts SMILES off-thread in the Node host", async () => {

@@ -18,6 +18,40 @@ export interface ChemicalIdentityFacts {
 
 const withoutStereo = (smiles: string) => smiles.replace(/@(?:TH|AL|SP|TB|OH)\d*|@+|[\\/]/g, "");
 
+/** RDKit preserves SMILES atom parse order, including branches, ring closures and fragments. */
+function smilesDirectionBonds(value: string): Set<string> {
+  const bonds = new Set<string>();
+  // Molfile names and properties are not SMILES tokens.
+  if (/[\r\n]/.test(value)) return bonds;
+  const branches: (number | undefined)[] = [];
+  const rings = new Map<string, { atom: number; directed: boolean }>();
+  let current: number | undefined, nextAtom = 0, directed = false;
+  const add = (a: number, b: number) => bonds.add(`${Math.min(a, b)}:${Math.max(a, b)}`);
+  const tokens = value.matchAll(/\[[^\]]+\]|Cl|Br|se|as|[BCNOPSFIbcnops*]|%\(\d+\)|%\d{2}|\d|[()./\\=#:~-]/g);
+  for (const [token] of tokens) {
+    if (token === "(") branches.push(current);
+    else if (token === ")") current = branches.pop();
+    else if (token === ".") { current = undefined; directed = false; }
+    else if (token === "/" || token === "\\") directed = true;
+    else if (/^[=#:~-]$/.test(token)) directed = false;
+    else if (/^(?:\d|%)/.test(token)) {
+      if (current === undefined) continue;
+      const ring = rings.get(token);
+      if (ring) {
+        if (directed || ring.directed) add(current, ring.atom);
+        rings.delete(token);
+      } else rings.set(token, { atom: current, directed });
+      directed = false;
+    } else {
+      const atom = nextAtom++;
+      if (current !== undefined && directed) add(current, atom);
+      current = atom;
+      directed = false;
+    }
+  }
+  return bonds;
+}
+
 /** Inspect tags before RDKit's stereo cleanup can erase unsupported input stereo. */
 export function unverifiableStereoReason(
   module: Pick<RdkitMinimalModule, "get_mol">, value: string
@@ -32,6 +66,8 @@ export function unverifiableStereoReason(
     if (/\[[^\]]*@AL\d*/.test(value)) {
       return "allene (axial) stereochemistry cannot be verified or drawn.";
     }
+    const directionBonds = smilesDirectionBonds(value);
+    let atomOffset = 0;
     for (const molecule of graph.molecules) {
       const neighbors = molecule.atoms.map<number[]>(() => []);
       const doubles = molecule.atoms.map<number[]>(() => []);
@@ -53,18 +89,21 @@ export function unverifiableStereoReason(
           previous = current; current = next;
         }
         if (chain.length < 3) continue;
-        if (chain.length >= 4 && /[\\/]/.test(value)) {
+        const ends = [start, chain[chain.length - 1]!];
+        if (chain.length >= 4 && ends.every(end => neighbors[end]!.some(neighbor =>
+          !chain.includes(neighbor) && directionBonds.has(
+            `${atomOffset + Math.min(end, neighbor)}:${atomOffset + Math.max(end, neighbor)}`)))) {
           return "cumulene cis/trans stereochemistry cannot be verified or drawn.";
         }
         // An unsubstituted end (e.g. ketene oxygen) cannot define an axis. A degree-four
         // tagged atom is tetrahedral, even when one bond leads into a cumulated chain.
-        const ends = [start, chain[chain.length - 1]!];
         if (ends.some(index => neighbors[index]!.length === 1 &&
           !(molecule.atoms[index]!.impHs ?? graph.defaults?.atom?.impHs ?? 0))) continue;
         if (chain.some(index => neighbors[index]!.length < 4 &&
           (molecule.atoms[index]!.stereo ?? graph.defaults?.atom?.stereo ?? "unspecified") !==
             "unspecified")) return "allene (axial) stereochemistry cannot be verified or drawn.";
       }
+      atomOffset += molecule.atoms.length;
     }
     // RDKit JSON omits non-tetrahedral tags; retain both input and parsed SMILES evidence.
     const parsedSmiles = raw.get_smiles?.();

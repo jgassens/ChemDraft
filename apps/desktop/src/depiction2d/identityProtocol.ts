@@ -1,7 +1,7 @@
 import type { AssistantStructureInspection } from "../assistant/AssistantToolContext";
 
 export type StructureInspector = (
-  format: "smiles" | "molfile", value: string, stereoReference?: string
+  format: "smiles" | "molfile", value: string, stereoReference?: string, signal?: AbortSignal
 ) => Promise<AssistantStructureInspection>;
 
 export interface IdentityRequest {
@@ -13,6 +13,7 @@ export interface IdentityRequest {
 
 export type IdentityReply =
   | { id: 0; stage: "ready" }
+  | { id: 0; stage: "unavailable"; message: string }
   | { id: number; stage: "result"; result: AssistantStructureInspection }
   | { id: number; stage: "error"; message: string };
 

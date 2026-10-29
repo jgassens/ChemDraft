@@ -74,7 +74,8 @@ describe("native isotope chemistry", () => {
         get_json: () => molecule.get_json!(),
         delete: () => molecule.delete(), generate_3d_embed: () => "", optimize_3d_conformer: () => "" };
     } };
-    expect(() => inspectHydrogenNormalizedIdentity(limited, "C/C=C/C", "CC=CC"))
+    // The reference must specify stereo to exercise correspondence rather than the plain-graph fast path.
+    expect(() => inspectHydrogenNormalizedIdentity(limited, "C/C=C/C", "C/C=C\\C"))
       .toThrow("could not establish atom/bond correspondence");
   });
 

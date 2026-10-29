@@ -22,10 +22,32 @@ describe("unverifiable input stereo", () => {
     });
   });
 
-  it.each(["F/C=C=C=C/F", "F/C=C=C=C\\F"])("refuses cumulene cis/trans in %s", async input => {
+  it.each([
+    "F/C=C=C=C/F", "F/C=C=C=C\\F", "[2H]/C=C=C=C/[2H]", "C(/F)=C=C=C/F",
+    "C/1=C=C=C/CCC1", "CC.F/C=C=C=C/F"
+  ])("refuses cumulene cis/trans in %s", async input => {
     expect(inspectHydrogenNormalizedIdentity(await ensureRdkit(), input)).toEqual({
       valid: false, reason: "cumulene cis/trans stereochemistry cannot be verified or drawn."
     });
+  });
+
+  it.each(["F/C=C/C=C=C=C", "CC=C=C=CCC/C=C/C", "CC=C=C=CC.C/C=C/C"])(
+    "verifies ordinary alkene E/Z beside an unspecified cumulene: %s", async input => {
+      const module = await ensureRdkit();
+      const source = inspectHydrogenNormalizedIdentity(module, input);
+      if (!source.valid) throw new Error(source.reason);
+      expect(source.canonicalSmiles).toMatch(/[\\/]/);
+      const output = await generateSmiles2DMolfile(input);
+      expect(inspectHydrogenNormalizedIdentity(module, output, source.canonicalSmiles)).toMatchObject({
+        valid: true, canonicalSmiles: source.canonicalSmiles
+      });
+    });
+
+  it("does not interpret direction marks in a molfile header as SMILES bonds", async () => {
+    const module = await ensureRdkit();
+    const molfile = (await generateSmiles2DMolfile("FC=C=C=CF"))
+      .replace(/^[^\r\n]*/, "F/C=C=C=C/F");
+    expect(inspectHydrogenNormalizedIdentity(module, molfile).valid).toBe(true);
   });
 
   it("checks unsupported stereo on the input reference before RDKit can erase it", async () => {

@@ -38,59 +38,74 @@ export function createIdentityWorkerClient(
     ready = false;
   };
 
-  return (format, value, stereoReference) => {
-    const run = (): Promise<AssistantStructureInspection> => new Promise((resolve, reject) => {
-      clearTimeout(idleTimer);
-      const id = ++nextId;
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      let done = false;
-      const finish = (result?: AssistantStructureInspection, error?: Error, kill = false): void => {
-        if (done) return;
-        done = true;
-        clearTimeout(timer);
-        if (kill) stop();
-        else if (worker) {
-          worker.onmessage = null;
-          worker.onerror = stop;
-          worker.onmessageerror = stop;
-          worker.unref?.();
-          idleTimer = setTimeout(stop, IDENTITY_WORKER_IDLE_MS);
-          if (typeof idleTimer === "object") idleTimer.unref?.();
-        }
-        if (result) resolve(result);
-        else reject(error);
-      };
-      const inspect = (): void => {
-        clearTimeout(timer);
-        timer = setTimeout(() => finish(undefined,
-          new IdentityVerificationTimeoutError(budgetMs), true), budgetMs);
-        worker?.postMessage({ id, format, value, stereoReference });
-      };
-      try {
-        worker ??= factory();
-        worker.ref?.();
-        worker.onmessage = ({ data }) => {
-          if (data.stage === "ready") {
-            if (!ready) { ready = true; inspect(); }
-          } else if (data.id === id) {
-            if (data.stage === "result") finish(data.result);
-            else finish(undefined, new Error(data.message));
+  return (format, value, stereoReference, signal) => {
+    let cancel: (() => void) | undefined;
+    const run = (): Promise<AssistantStructureInspection> => {
+      signal?.throwIfAborted();
+      return new Promise((resolve, reject) => {
+        clearTimeout(idleTimer);
+        const id = ++nextId;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        let done = false;
+        const finish = (result?: AssistantStructureInspection, error?: unknown, kill = false): void => {
+          if (done) return;
+          done = true;
+          cancel = undefined;
+          clearTimeout(timer);
+          if (kill) stop();
+          else if (worker) {
+            worker.onmessage = null;
+            worker.onerror = stop;
+            worker.onmessageerror = stop;
+            worker.unref?.();
+            idleTimer = setTimeout(stop, IDENTITY_WORKER_IDLE_MS);
+            if (typeof idleTimer === "object") idleTimer.unref?.();
           }
+          if (result) resolve(result);
+          else reject(error);
         };
-        worker.onerror = ({ message }) => finish(undefined, ready
-          ? new Error(`The chemical identity worker stopped: ${message}`)
-          : new IdentityWorkerUnavailableError(message), true);
-        worker.onmessageerror = () => finish(undefined,
-          new Error("The chemical identity worker returned an unreadable message."), true);
-        if (ready) inspect();
-        else timer = setTimeout(() => finish(undefined, new IdentityWorkerUnavailableError(
-          `The chemical identity engine did not initialize within ${startupMs / 1000} s.`), true), startupMs);
-      } catch (error) {
-        finish(undefined, error instanceof Error ? error : new Error(String(error)), true);
-      }
-    });
+        cancel = () => finish(undefined, signal?.reason, true);
+        const inspect = (): void => {
+          clearTimeout(timer);
+          timer = setTimeout(() => finish(undefined,
+            new IdentityVerificationTimeoutError(budgetMs), true), budgetMs);
+          worker?.postMessage({ id, format, value, stereoReference });
+        };
+        try {
+          worker ??= factory();
+          worker.ref?.();
+          worker.onmessage = ({ data }) => {
+            if (data.stage === "unavailable") {
+              finish(undefined, new IdentityWorkerUnavailableError(data.message), true);
+            } else if (data.stage === "ready") {
+              if (!ready) { ready = true; inspect(); }
+            } else if (data.id === id) {
+              if (data.stage === "result") finish(data.result);
+              else finish(undefined, new Error(data.message));
+            }
+          };
+          worker.onerror = ({ message }) => finish(undefined, ready
+            ? new Error(`The chemical identity worker stopped: ${message}`)
+            : new IdentityWorkerUnavailableError(message), true);
+          worker.onmessageerror = () => finish(undefined,
+            new Error("The chemical identity worker returned an unreadable message."), true);
+          if (ready) inspect();
+          else timer = setTimeout(() => finish(undefined, new IdentityWorkerUnavailableError(
+            `The chemical identity engine did not initialize within ${startupMs / 1000} s.`
+          ), true), startupMs);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          finish(undefined, ready ? new Error(message) : new IdentityWorkerUnavailableError(message), true);
+        }
+      });
+    };
     const result = tail.then(run);
     tail = result.catch(() => {});
-    return result;
+    return new Promise((resolve, reject) => {
+      const abort = (): void => { cancel?.(); reject(signal?.reason); };
+      signal?.addEventListener("abort", abort, { once: true });
+      if (signal?.aborted) abort();
+      void result.then(resolve, reject).finally(() => signal?.removeEventListener("abort", abort));
+    });
   };
 }

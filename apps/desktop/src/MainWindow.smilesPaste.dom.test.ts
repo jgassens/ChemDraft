@@ -9,13 +9,14 @@ import {
 import { MainWindow } from "./MainWindow";
 import { createPhase4Document, pastedStructureDepictionFromMolfile } from "./documentWorkflow";
 import * as depictionClient from "./depiction2d/client";
-import { ensureRdkit } from "../../../packages/rdkit-adapter/src/conformer";
 import { installDomRdkitLoader } from "./testSupport/rdkitIdentity";
-import { loadRdkitWithAppLoader } from "./plugins/rdkitAppLoader";
+import { inspectStructureOffThread } from "./depiction2d/identityClient";
+import { IdentityWorkerUnavailableError } from "./depiction2d/identityWorkerClient";
+import type { StructureInspector } from "./depiction2d/identityProtocol";
 
 // Exercise the OCL depiction fallback with a real RDKit identity inspector.
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
-vi.mock("./plugins/rdkitAppLoader", () => ({ loadRdkitWithAppLoader: vi.fn(async () => ({ ensureRdkit })) }));
+vi.mock("./depiction2d/identityClient", () => ({ inspectStructureOffThread: vi.fn() }));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -28,11 +29,18 @@ class TestResizeObserver {
 describe("MainWindow SMILES paste failure notices", () => {
   let container: HTMLDivElement;
   let root: Root;
+  let realInspector: StructureInspector;
 
-  beforeAll(async () => { installDomRdkitLoader(); await ensureOclResources(); });
+  beforeAll(async () => {
+    installDomRdkitLoader();
+    await ensureOclResources();
+    const actual = await vi.importActual<typeof import("./depiction2d/identityClient")>(
+      "./depiction2d/identityClient");
+    realInspector = actual.inspectStructureOffThread;
+  });
 
   beforeEach(async () => {
-    vi.mocked(loadRdkitWithAppLoader).mockClear().mockResolvedValue({ ensureRdkit });
+    vi.mocked(inspectStructureOffThread).mockReset().mockImplementation(realInspector);
     vi.stubGlobal("ResizeObserver", TestResizeObserver);
     container = document.createElement("div");
     document.body.append(container);
@@ -66,19 +74,21 @@ describe("MainWindow SMILES paste failure notices", () => {
   }
 
   async function paste(
-    text: string, type = "text/plain", statusNeedle = new UnrequestedSmilesRadicalError("n1cccc1").message
+    text: string, type = "text/plain", statusNeedle = new UnrequestedSmilesRadicalError("n1cccc1").message,
+    timeout = 15_000
   ) {
     await act(async () => { dispatchPaste(text, type); });
     await vi.waitFor(async () => {
       await act(async () => { await Promise.resolve(); });
       expect(container.querySelector('[role="status"]')?.textContent).toContain(statusNeedle);
-    }, { timeout: 15_000, interval: 50 });
+    }, { timeout, interval: 50 });
     return container.querySelector('[role="status"]')?.textContent;
   }
 
-  it.each(["CCO", "CCO\n"])("pastes %j as text when the injected RDKit loader fails", async text => {
-    vi.mocked(loadRdkitWithAppLoader).mockRejectedValueOnce(new Error("test WASM unavailable"));
-    const status = await paste(text, "text/plain", "SMILES pasted as text:");
+  it.each(["CCO", "CCO\n"])("pastes %j as text promptly when worker RDKit cannot load", async text => {
+    vi.mocked(inspectStructureOffThread).mockRejectedValueOnce(
+      new IdentityWorkerUnavailableError("test WASM unavailable"));
+    const status = await paste(text, "text/plain", "SMILES pasted as text:", 2_000);
     expect(status).toBe("SMILES pasted as text: the structure could not be verified because " +
       "the RDKit engine did not load: test WASM unavailable");
     expect(container.querySelectorAll(".molecule-object")).toHaveLength(0);
@@ -87,8 +97,9 @@ describe("MainWindow SMILES paste failure notices", () => {
 
   it.each(["N[Pt@SP1](N)(Cl)Cl", "N[Pt@SP1](N)(Cl)Cl\nOC(Cl)=[C@]=C(C)F"])(
     "keeps the text fallback when stereo inspection cannot load RDKit: %s", async text => {
-      vi.mocked(loadRdkitWithAppLoader).mockRejectedValue(new Error("test WASM unavailable"));
-      const status = await paste(text, "text/plain", "test WASM unavailable");
+      vi.mocked(inspectStructureOffThread).mockRejectedValue(
+        new IdentityWorkerUnavailableError("test WASM unavailable"));
+      const status = await paste(text, "text/plain", "test WASM unavailable", 2_000);
       expect(status).toContain("pasted as text");
       expect(container.querySelectorAll(".molecule-object")).toHaveLength(0);
       expect(container.querySelectorAll(".text-object")).toHaveLength(1);
@@ -97,21 +108,21 @@ describe("MainWindow SMILES paste failure notices", () => {
   it("inserts into the current document after an edit while identity verification waits", async () => {
     let release!: () => void;
     const wait = new Promise<void>(resolve => { release = resolve; });
-    const load = vi.mocked(loadRdkitWithAppLoader);
-    const original = load.getMockImplementation()!;
-    load.mockImplementationOnce(async loader => { await wait; return original(loader); });
+    const inspect = vi.mocked(inspectStructureOffThread);
+    inspect.mockImplementationOnce(async (...args) => { await wait; return realInspector(...args); });
     await act(async () => { dispatchPaste("CCO"); });
-    await vi.waitFor(() => { expect(load).toHaveBeenCalled(); });
+    await vi.waitFor(() => { expect(inspect).toHaveBeenCalled(); });
     await paste("a caption added while waiting", "text/plain", "Pasted editable text");
     const noteId = container.querySelector<HTMLElement>(".text-object")!.dataset.objectId;
     await act(async () => { release(); await wait; });
-    await vi.waitFor(() => {
+    await vi.waitFor(async () => {
+      await act(async () => { await Promise.resolve(); });
       expect(container.querySelector('[role="status"]')?.textContent).toContain("Pasted SMILES structure");
-    });
+    }, { timeout: 15_000, interval: 50 });
     expect(container.querySelectorAll(".molecule-object")).toHaveLength(1);
     expect(container.querySelectorAll(".text-object")).toHaveLength(1);
     expect(container.querySelector<HTMLElement>(".text-object")!.dataset.objectId).toBe(noteId);
-  });
+  }, 20_000);
 
   it("caps all-failed list reasons and avoids a zero-sized grid success message", async () => {
     vi.spyOn(depictionClient, "depictSmilesOffThread").mockResolvedValue({
@@ -255,6 +266,17 @@ describe("MainWindow SMILES paste failure notices", () => {
     expect(status).not.toContain("failed");
     expect(container.querySelectorAll(".molecule-object")).toHaveLength(0);
     expect(container.querySelectorAll(".text-object")).toHaveLength(1);
+  }, 20_000);
+
+  it.each([
+    "Use CO with [Pt@SP1] please",
+    "Add the CO and CS to N[Pt@SP1](N)(Cl)Cl in DMSO then stir it for an hour at room temperature"
+  ])("pastes prose containing refused stereo as editable text: %s", async text => {
+    const status = await paste(text, "text/plain", "Pasted editable text");
+    expect(status).toBe("Pasted editable text");
+    expect(container.querySelectorAll(".molecule-object")).toHaveLength(0);
+    expect(container.querySelectorAll(".text-object")).toHaveLength(1);
+    expect(container.querySelector(".text-object-content")?.textContent).toContain(text);
   }, 20_000);
 
   it("reports both failures and the first reason when the whole list falls back to text", async () => {

@@ -2,7 +2,7 @@ import { Worker } from "node:worker_threads";
 import { createIdentityWorkerClient } from "../depiction2d/identityWorkerClient.ts";
 
 export function createNodeIdentityInspector(options = {}) {
-  const { onTerminate, budgetMs, ...workerOptions } = options;
+  const { onTerminate, budgetMs, startupMs = 60_000, ...workerOptions } = options;
   return createIdentityWorkerClient(() => {
     const entry = "./identityNodeWorker.mjs";
     const worker = new Worker(new URL(entry, import.meta.url), { execArgv: [], workerData: workerOptions });
@@ -18,7 +18,7 @@ export function createNodeIdentityInspector(options = {}) {
     worker.on("messageerror", () => port.onmessageerror?.());
     worker.unref();
     return port;
-  }, budgetMs);
+  }, budgetMs, startupMs);
 }
 
 export const inspectStructureOffThread = createNodeIdentityInspector();

@@ -12,7 +12,8 @@ import {
   isotopeInsertSmiles, expectIsotopeGraph
 } from "../../../packages/document-workflow-core/test/isotopeInsertFixtures";
 import {
-  checkedSmilesPaste, checkedSmilesGridPaste, createPasteIdentityInspector, verifySmilesPasteInput
+  checkedSmilesPaste, checkedSmilesGridPaste, createPasteIdentityInspector, verifySmilesPasteInput,
+  verifySmilesGridEntries
 } from "./smilesPasteIdentity";
 import { depictSmilesForPaste, depictSmilesListForPaste, smilesListFailureStatus } from "./smilesListPaste";
 import * as depictionClient from "./depiction2d/client";
@@ -36,6 +37,24 @@ async function verify(molecule: MoleculeObject, smiles: string) {
 }
 
 describe("isotope insert paths", () => {
+  it("stops grid identity verification between entries when the list is aborted", async () => {
+    const controller = new AbortController();
+    const inspect = vi.fn<InspectChemicalIdentity>(async () => {
+      controller.abort();
+      return { valid: true, canonicalSmiles: "C" };
+    });
+    const entry = { smiles: "C", depiction: {
+      atoms: [{ element: "C", x: 0, y: 0, charge: 0 }], bonds: []
+    } };
+    await expect(verifySmilesGridEntries([entry, entry], inspect, controller.signal))
+      .rejects.toMatchObject({ name: "AbortError" });
+    expect(inspect).toHaveBeenCalledTimes(2);
+    inspect.mockClear();
+    await expect(verifySmilesGridEntries([entry], inspect, controller.signal))
+      .rejects.toMatchObject({ name: "AbortError" });
+    expect(inspect).not.toHaveBeenCalled();
+  });
+
   it.each([["F/C=C/F", "F/C=C\\F"], ["[13CH3]O", "CO"]])(
     "returns a typed plugin failure when depiction changes the identity of %s", async (smiles, changed) => {
       const depiction = (await depictSmilesForPaste(changed))!;

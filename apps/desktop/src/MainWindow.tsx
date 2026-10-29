@@ -1620,7 +1620,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.29.08.57-codex";
+const CURRENT_BUILD_STAMP = "10.29.09.45-codex";
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -6705,7 +6705,7 @@ export function MainWindow({
           pasteAsText();
           return;
         }
-        const verified = await verifySmilesGridEntries(parsed.entries);
+        const verified = await verifySmilesGridEntries(parsed.entries, undefined, listAbort.signal);
         if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
         if (listAbort.signal.aborted) return;
         const result = insertSmilesMoleculeGrid(

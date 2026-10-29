@@ -57,7 +57,7 @@ export function depictSmilesListForPaste(
   candidates: readonly SmilesListCandidate[],
   onProgress?: (completed: number, total: number) => void,
   signal?: AbortSignal,
-  inspectInput?: (smiles: string) => Promise<void>
+  inspectInput?: (smiles: string, signal?: AbortSignal) => Promise<void>
 ): Promise<SmilesListPasteResult | undefined> | undefined {
   // No promise or engine load for prose: the caller can insert its text synchronously.
   if (candidates.length < 2) return undefined;
@@ -69,7 +69,7 @@ async function depictSmilesListCandidates(
   candidates: readonly SmilesListCandidate[],
   onProgress?: (completed: number, total: number) => void,
   signal?: AbortSignal,
-  inspectInput?: (smiles: string) => Promise<void>
+  inspectInput?: (smiles: string, signal?: AbortSignal) => Promise<void>
 ): Promise<SmilesListPasteResult | undefined> {
   const entries: { smiles: string; depiction: PastedStructureDepiction }[] = [];
   const failures: SmilesListPasteResult["failures"] = [];
@@ -80,25 +80,29 @@ async function depictSmilesListCandidates(
     if (!firstTokenColumns.has(token.line)) firstTokenColumns.set(token.line, token.column);
   }
   let parsedFirstTokenLines = 0;
-  let identityRefused = false;
+  let identityRefusals = 0;
   for (const [index, candidate] of candidates.entries()) {
     signal?.throwIfAborted();
     let parsed: Awaited<ReturnType<typeof depictSmilesForPaste>> = undefined;
+    let identityRefused = false;
     try {
-      await inspectInput?.(candidate.token);
+      await inspectInput?.(candidate.token, signal);
       signal?.throwIfAborted();
       parsed = await depictSmilesForPaste(candidate.token, { signal, priority: "background" });
     } catch (error) {
       if (error instanceof SmilesPasteIdentityError ||
         error instanceof SmilesIdentityEngineUnavailableError) {
         identityRefused = true;
+        identityRefusals += 1;
       } else if (!isSmilesChemistryRefusal(error)) throw error;
       failures.push({ input: candidate.token, error: error.message });
     }
     if (parsed) {
       entries.push({ smiles: candidate.token, depiction: parsed.depiction });
       warnings.push(...(parsed.warnings ?? []).map((warning) => `${candidate.token}: ${warning}`));
-      if (candidate.column === firstTokenColumns.get(candidate.line)) parsedFirstTokenLines += 1;
+    }
+    if ((parsed || identityRefused) && candidate.column === firstTokenColumns.get(candidate.line)) {
+      parsedFirstTokenLines += 1;
     }
     if (candidates.length > 20 && (index + 1) % 10 === 0) {
       onProgress?.(index + 1, candidates.length);
@@ -107,13 +111,13 @@ async function depictSmilesListCandidates(
     }
   }
   const lineCount = text.split(/\r\n|\r|\n/).filter((line) => line.trim().length > 0).length;
-  // Identity failures keep their refusal even when too few entries remain to form a grid.
-  if (identityRefused || smilesListDecision({
-    candidates: tokens.length, parsed: entries.length, lineCount, parsedFirstTokenLines
+  // Unsupported stereo counts as a structure when deciding whether this is a list or prose.
+  if (smilesListDecision({
+    candidates: tokens.length, parsed: entries.length + identityRefusals, lineCount, parsedFirstTokenLines
   })) {
     return { entries, skipped: tokens.length - entries.length - failures.length, failures, ...(warnings.length ? { warnings } : {}) };
   }
   // Even a list with too few valid entries must retain the reasons it was refused.
-  if (failures.length > 0) throw new SmilesListPasteError(failures);
+  if (failures.length > identityRefusals) throw new SmilesListPasteError(failures);
   return undefined;
 }
