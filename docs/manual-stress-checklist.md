@@ -45,8 +45,9 @@ Redo with Cmd+Shift+Z on macOS and Ctrl+Shift+Z / Ctrl+Y on Windows, and repeat 
 clicks. An untouched number
 also forwards history. Type an uncommitted value: keyboard and menu undo/redo now edit only its
 text. Retype an exactly equal model value and Tab or Enter: no undo entry; type a different value:
-exactly one entry. A uniform selection with a numeric value beyond the displayed precision must
-still commit when its rounded display value is typed. Step to 22.5, start typing 22.5, and change
+exactly one entry. With molecules selected, typing the value already shown adds no undo entry, even when the selected
+molecules differ by less than 0.01 px (they show one value); type a different value to set them all.
+Step to 22.5, start typing 22.5, and change
 the document's value elsewhere to 40: committing the draft must apply 22.5 once again.
 Click Bond color, Label color, Atom label background color, Custom ring fill color and Ring
 effect color: each opens its native picker on both platforms (the Windows palette may activate
