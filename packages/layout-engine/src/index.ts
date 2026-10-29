@@ -1,5 +1,6 @@
 export { DocumentStyleScale, documentStylePointBounds, FigureStyles, type FigureStyle } from "./documentStyle";
 export { medianLength, representativeMoleculeBondLength, scalePageGeometry } from "./pageScale";
+export { nativeTextMetrics, nativeTextCharacterWidthFactor } from "./textMetrics";
 
 import {
   DefaultNativeDrawingStyle,
@@ -69,6 +70,7 @@ import {
   type NativeElementSymbol
 } from "./valence";
 import { formatNumber } from "./formatNumber";
+import { nativeTextMetrics } from "./textMetrics";
 import { nativeGroupLabelDisplay, type AtomLabelAnchor } from "./labelGrammar";
 import { moleculeSketchTickPath, type MoleculeSketchTick } from "./sketchTicks";
 
@@ -3540,7 +3542,7 @@ function textSpanLineFragments(
       x: spanIndex === 0 ? x : undefined,
       dy: spanIndex === 0 && lineIndex > 0 ? lineAdvancePx : undefined,
       "baseline-shift": span.script === "normal" ? undefined : span.script === "superscript" ? "super" : "sub",
-      "font-size": span.script === "normal" ? metadataNumber(span.style.fontSizePx) : "72%",
+      "font-size": span.script === "normal" ? metadataNumber(span.style.fontSizePx) : `${nativeTextMetrics.scriptFontScale * 100}%`,
       fill: metadataString(span.style.color),
       "font-family": metadataString(span.style.fontFamily),
       "font-weight": metadataNumber(span.style.fontWeight),
@@ -4771,26 +4773,28 @@ export interface ReactionArrowGeometry {
   heads: Array<{ points: readonly LayoutPoint[]; filled: boolean }>;
 }
 
-const reactionArrowHeadLengthPx = 9;
+export const reactionArrowHeadLengthPx = 9;
 const reactionArrowHeadHalfWidthPx = 4.5;
 const equilibriumShaftOffsetPx = 3;
 const retroShaftOffsetPx = 2.5;
 const defaultReactionArrowStrokeWidth = 1.5;
 
-/** Visible vertical bounds for a horizontal reaction arrow, including its rendered stroke. */
+/** Visible vertical bounds for a horizontal reaction arrow, including its rendered stroke.
+ * Shaft-only bounds exclude heads/chevrons: labels reserve their space horizontally instead. */
 export function reactionArrowVerticalExtent(
   arrowKind: ArrowObject["arrowKind"],
-  length: number
+  length: number,
+  part: "all" | "shafts" = "all"
 ): { top: number; bottom: number } {
   const geometry = planReactionArrowGeometry(arrowKind, { x: 0, y: 0 }, { x: length, y: 0 });
   // Keep the default shared with reactionArrowFragment's round-capped shafts.
   const strokeRadius = defaultReactionArrowStrokeWidth / 2;
   const ranges = [
-    ...geometry.lines.map(({ start, end }) => ({
+    ...geometry.lines.filter(({ start, end }) => part === "all" || start.y === end.y).map(({ start, end }) => ({
       top: Math.min(start.y, end.y) - strokeRadius,
       bottom: Math.max(start.y, end.y) + strokeRadius
     })),
-    ...geometry.heads.map((head) => ({
+    ...(part === "shafts" ? [] : geometry.heads).map((head) => ({
       top: Math.min(...head.points.map((point) => point.y)) - (head.filled ? 0 : strokeRadius),
       bottom: Math.max(...head.points.map((point) => point.y)) + (head.filled ? 0 : strokeRadius)
     }))

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { DocumentTextStyle, nativeTextStyleFromObjectStyle, type MoleculeObject } from "@chemdraft/chem-core";
-import { reactionArrowVerticalExtent } from "@chemdraft/layout-engine";
+import { nativeTextMetrics, reactionArrowHeadLengthPx } from "@chemdraft/layout-engine";
 
-import { layoutGrid, layoutReactionScheme, nativeTextObjectSizeForText, type LayoutBounds } from "../src/index";
+import { estimateNativeTextLineWidth, layoutGrid, layoutReactionScheme, nativeTextObjectSizeForText, type LayoutBounds } from "../src/index";
 
 function molecule(id: string, width = 40, height = 20): MoleculeObject {
   return {
@@ -128,11 +128,12 @@ describe("shared reaction and grid layout", () => {
     expect(nativeTextStyleFromObjectStyle(condition.style)).toMatchObject(DocumentTextStyle);
     expect(nativeTextStyleFromObjectStyle(plus.style)).toMatchObject(DocumentTextStyle);
     expect(condition).toMatchObject({ width: conditionSize.width, height: conditionSize.height });
-    expect(layout.arrow.width).toBeCloseTo(conditionSize.width + 11);
+    expect(layout.arrow.width).toBeCloseTo(estimateNativeTextLineWidth(options.conditionText,
+      nativeTextStyleFromObjectStyle(condition.style)) + 2 * (reactionArrowHeadLengthPx + 0.25 * DocumentTextStyle.fontSizePx));
     expect(layout.molecules[1]!.x - layout.molecules[0]!.x).toBeCloseTo(40 + 48 + plusSize.width);
     const conditionStyle = nativeTextStyleFromObjectStyle(condition.style);
-    expect(condition.y + conditionStyle.fontSizePx * conditionStyle.lineHeight).toBeCloseTo(
-      120 + reactionArrowVerticalExtent("forward", layout.arrow.width).top - 0.35 * conditionStyle.fontSizePx
+    expect(condition.y + conditionStyle.fontSizePx).toBeCloseTo(
+      120 - 0.75 - (0.3 + nativeTextMetrics.descentEm) * conditionStyle.fontSizePx
     );
     const page = layout.document.pages[0]!;
     expect(page.width).toBe(layout.molecules[2]!.x + 40 + 24);

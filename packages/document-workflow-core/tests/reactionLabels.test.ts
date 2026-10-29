@@ -3,7 +3,7 @@ import {
   createEmptyDocument, nativeTextStyleFromObjectStyle, type TextObject, type TextSpan
 } from "@chemdraft/chem-core";
 import {
-  planPageSvgRender, planReactionArrowGeometry, reactionArrowVerticalExtent,
+  nativeTextMetrics, planPageSvgRender, planReactionArrowGeometry, reactionArrowHeadLengthPx, reactionArrowVerticalExtent,
   type PageSvgElementFragment, type PageSvgFragment
 } from "@chemdraft/layout-engine";
 import {
@@ -46,7 +46,59 @@ function content(fragment: PageSvgFragment): string {
   return fragment.kind === "text" ? fragment.text : fragment.children.map(content).join("");
 }
 
+function renderedLines(object: TextObject) {
+  const rendered = planPageSvgRender({ ...createEmptyDocument().pages[0]!, objects: [object] })
+    .fragments.flatMap(elements).find(fragment => fragment.key === `object-${object.id}`)!;
+  let baseline = Number(rendered.attrs.y);
+  const lines: Array<{ x: number; baseline: number; runs: PageSvgElementFragment[] }> = [];
+  for (const run of rendered.children) {
+    if (run.kind !== "element") continue;
+    if (run.attrs.x !== undefined) {
+      baseline += Number(run.attrs.dy ?? 0);
+      lines.push({ x: Number(run.attrs.x), baseline, runs: [] });
+    }
+    lines.at(-1)!.runs.push(run);
+  }
+  return { rendered, lines };
+}
+
+function renderedInkEnvelope(line: ReturnType<typeof renderedLines>["lines"][number], fontSize: number) {
+  const bounds = line.runs.map(run => {
+    const shift = run.attrs["baseline-shift"];
+    const size = typeof run.attrs["font-size"] === "string" && run.attrs["font-size"].endsWith("%")
+      ? fontSize * parseFloat(run.attrs["font-size"]) / 100 : Number(run.attrs["font-size"] ?? fontSize);
+    // The renderer uses font-dependent SVG sub/super offsets; bound each by 0.6 script em.
+    const baseline = line.baseline + (shift === "sub" ? 0.6 * size : shift === "super" ? -0.6 * size : 0);
+    return { top: baseline - 0.716 * size, bottom: baseline + 0.21 * size };
+  });
+  return { top: Math.min(...bounds.map(bound => bound.top)), bottom: Math.max(...bounds.map(bound => bound.bottom)) };
+}
+
 describe("reaction label policy", () => {
+  it("places Sharpless ink against the shaft and reserves both arrowheads at 14 px", () => {
+    const result = labels({ textStyle: { fontSizePx: 14 }, bondLength: 28 });
+    const lastAbove = renderedLines(result.above!).lines.at(-1)!.baseline;
+    const firstBelow = renderedLines(result.below!).lines[0]!.baseline;
+    expect(Math.abs((120 - lastAbove) - (0.75 + 0.3 * 14 + 0.21 * 14))).toBeLessThanOrEqual(0.5);
+    expect(Math.abs((firstBelow - 0.716 * 14 - 120) - (0.75 + 0.3 * 14))).toBeLessThanOrEqual(0.5);
+    expect(result.plan.arrowLength).toBeCloseTo(Math.max(70,
+      Math.max(result.plan.above!.size.contentWidth, result.plan.below!.size.contentWidth) + 2 * (9 + 0.25 * 14)));
+  });
+
+  it.each(["2. H3O+", "2. heat"])("centres numbered script content and clears the next line %s", (next) => {
+    const result = labels({ above: ["1. NaBH4, MeOH", next], below: [], textStyle: { fontSizePx: 14 } });
+    const plain = labels({ above: ["1. heat", "2. stir"], below: [], textStyle: { fontSizePx: 14 } });
+    const { lines } = renderedLines(result.above!);
+    expect(Math.abs(lines[0]!.x + result.plan.above!.size.contentWidth / 2 - 200)).toBeLessThanOrEqual(0.5);
+    expect(result.above!.style.lineHeight).toBeGreaterThan(plain.above!.style.lineHeight as number);
+    const firstInk = renderedInkEnvelope(lines[0]!, 14);
+    const nextInk = renderedInkEnvelope(lines[1]!, 14);
+    expect(nextInk.top - firstInk.bottom).toBeGreaterThanOrEqual(0.12 * 14 - 0.001);
+    const style = nativeTextStyleFromObjectStyle(result.above!.style);
+    expect(result.plan.above!.size.lineBoxHeight).toBeCloseTo(2 * 14 * style.lineHeight);
+    expect(result.above!.height).toBeCloseTo(Math.round((2 * 14 * style.lineHeight + 4) * 100) / 100);
+  });
+
   it("merges adjacent runs without changing formula scripts or authored spaces", () => {
     const result = labels();
     expect(result.below!.spans).toEqual([
@@ -94,16 +146,17 @@ describe("reaction label policy", () => {
       expect(nativeTextStyleFromObjectStyle(object.style).textAlign).toBe("center");
       expect(object.x + object.width / 2).toBeCloseTo(200);
     }
-    expect(result.plan.arrowLength).toBeCloseTo(Math.max(55, Math.max(result.above!.width, result.below!.width) + 11));
-    const extent = reactionArrowVerticalExtent("forward", result.plan.arrowLength);
-    expect(result.above!.y + 3 * 1.2 * 15).toBeCloseTo(120 + extent.top - 0.35 * 15);
-    expect(result.below!.y).toBeCloseTo(120 + extent.bottom + 0.35 * 15);
+    expect(result.plan.arrowLength).toBeCloseTo(Math.max(55,
+      Math.max(result.plan.above!.size.contentWidth, result.plan.below!.size.contentWidth)
+        + 2 * (reactionArrowHeadLengthPx + 0.25 * 15)));
+    expect(renderedLines(result.above!).lines.at(-1)!.baseline).toBeCloseTo(120 - 0.75 - (0.3 + 0.21) * 15);
+    expect(renderedLines(result.below!).lines[0]!.baseline - 0.716 * 15).toBeCloseTo(120 + 0.75 + 0.3 * 15);
     expect(result.caption!.y).toBeCloseTo(Math.max(150, result.below!.y + result.below!.height) + 0.8 * 15);
   });
 
-  it.each([{ lines: [] }, { lines: ["heat"] }])("keeps the 2.5-bond arrow minimum for $lines", ({ lines }) => {
+  it.each([{ lines: [], length: 55 }, { lines: ["heat"], length: 57.9 }])("uses the minimum or head-padded arrow for $lines", ({ lines, length }) => {
     const result = labels({ above: lines, below: [], caption: undefined });
-    expect(result.plan.arrowLength).toBe(55);
+    expect(result.plan.arrowLength).toBeCloseTo(length);
     expect(result.below).toBeUndefined();
     expect(result.caption).toBeUndefined();
     if (!lines.length) expect(result.above).toBeUndefined();
@@ -171,10 +224,10 @@ describe("reaction label policy", () => {
       expect(estimateNativeTextSpanLineWidth(spans, style)).toBeLessThanOrEqual(220);
     }
     expect(result.above!.width).toBeGreaterThan(240);
-    expect(result.plan.arrowLength).toBeCloseTo(result.above!.width + 11);
+    expect(result.plan.arrowLength).toBeCloseTo(result.plan.above!.size.contentWidth + 2 * (reactionArrowHeadLengthPx + 0.25 * 15));
   });
 
-  it.each(["forward", "equilibrium", "resonance", "retrosynthesis"] as const)("clears the visible %s arrow geometry", (arrowKind) => {
+  it.each(["forward", "equilibrium", "resonance", "retrosynthesis", "unknown"] as const)("clears the visible %s arrow geometry", (arrowKind) => {
     const result = labels({ arrowKind });
     const geometry = planReactionArrowGeometry(arrowKind, { x: 0, y: 0 }, { x: result.plan.arrowLength, y: 0 });
     const ys = [...geometry.lines.flatMap((line) => [line.start.y, line.end.y]),
@@ -182,8 +235,19 @@ describe("reaction label policy", () => {
     const extent = reactionArrowVerticalExtent(arrowKind, result.plan.arrowLength);
     expect(extent.top).toBeLessThanOrEqual(Math.min(...ys));
     expect(extent.bottom).toBeGreaterThanOrEqual(Math.max(...ys));
-    expect(result.above!.y + 54).toBeCloseTo(120 + extent.top - 5.25);
-    expect(result.below!.y).toBeCloseTo(120 + extent.bottom + 5.25);
+    const shaftYs = geometry.lines.filter(line => line.start.y === line.end.y)
+      .flatMap(line => [line.start.y, line.end.y]);
+    const lastBaseline = renderedLines(result.above!).lines.at(-1)!.baseline;
+    const firstCapTop = renderedLines(result.below!).lines[0]!.baseline - 0.716 * 15;
+    expect(lastBaseline + 0.21 * 15).toBeCloseTo(120 + Math.min(...shaftYs) - 0.75 - 0.3 * 15);
+    expect(firstCapTop).toBeCloseTo(120 + Math.max(...shaftYs) + 0.75 + 0.3 * 15);
+    // All text lies inside the head-free horizontal interval, even for the retro chevron.
+    const headXs = [...geometry.heads.flatMap(head => head.points.map(point => point.x)),
+      ...geometry.lines.filter(line => line.start.y !== line.end.y).flatMap(line => [line.start.x, line.end.x])];
+    const widest = Math.max(result.plan.above!.size.contentWidth, result.plan.below!.size.contentWidth);
+    const left = (result.plan.arrowLength - widest) / 2;
+    expect(left).toBeGreaterThanOrEqual(reactionArrowHeadLengthPx + 0.25 * 15);
+    expect(headXs.every(x => x < left || x > left + widest)).toBe(true);
   });
 
   it("uses 72% script sizes with continuous letter spacing and explicit-line height", () => {
@@ -197,7 +261,7 @@ describe("reaction label policy", () => {
     expect(estimateNativeTextSpanLineWidth(spans, style)).toBeLessThan(estimateNativeTextLineWidth("H2O", style));
     const result = labels({ above: ["H2O\nCH2Cl2"], textStyle: { fontSizePx: 15, lineHeight: 1.5, paragraphSpacingPx: 3 } });
     expect(result.above!.height).toBe(2 * 15 * 1.5 + 3 + 4);
-    expect(result.above!.y + 48).toBeCloseTo(120 - 4.5 - 5.25);
+    expect(renderedLines(result.above!).lines.at(-1)!.baseline).toBeCloseTo(120 - 0.75 - (0.3 + nativeTextMetrics.descentEm) * 15);
   });
 
   it("wraps a caption to at least eight bonds even under a narrow scheme", () => {

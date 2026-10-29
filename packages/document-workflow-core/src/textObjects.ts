@@ -10,6 +10,7 @@ import {
   type TextSpan,
   textStyleToObjectStyle
 } from "@chemdraft/chem-core";
+import { nativeTextCharacterWidthFactor, nativeTextMetrics } from "@chemdraft/layout-engine";
 import { clamp, firstPage, nextObjectId, type PagePoint, phase4Timestamp } from "./shared";
 
 export const nativeTextObjectDimensions = {
@@ -142,7 +143,7 @@ export function estimateNativeTextSpanLineWidth(spans: readonly TextSpan[], styl
   for (const span of spans) {
     const fontSize = span.script === "normal"
       ? (typeof span.style.fontSizePx === "number" ? span.style.fontSizePx : style.fontSizePx)
-      : style.fontSizePx * 0.72;
+      : style.fontSizePx * nativeTextMetrics.scriptFontScale;
     const letterSpacing = typeof span.style.letterSpacingPx === "number"
       ? span.style.letterSpacingPx : style.letterSpacingPx;
     for (const character of span.text) {
@@ -173,30 +174,6 @@ export function nativeTextObjectSizeForSpanLines(
 function wrappedNativeTextLineCount(line: string, style: NativeTextStyle, contentWidth: number): number {
   const safeContentWidth = Math.max(1, contentWidth);
   return Math.max(1, Math.ceil(estimateNativeTextLineWidth(line, style) / safeContentWidth));
-}
-
-function nativeTextCharacterWidthFactor(character: string): number {
-  if (character === "\t") {
-    return 1.6;
-  }
-
-  if (character.trim().length === 0) {
-    return 0.34;
-  }
-
-  if ("ilI.,:;!|".includes(character)) {
-    return 0.28;
-  }
-
-  if ("mwMW@#%&".includes(character)) {
-    return 0.82;
-  }
-
-  if (/[A-Z0-9]/.test(character)) {
-    return 0.62;
-  }
-
-  return 0.54;
 }
 
 function roundToTextBoxPixel(value: number): number {

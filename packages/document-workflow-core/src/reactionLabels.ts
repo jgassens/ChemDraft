@@ -6,7 +6,7 @@ import {
   type TextObject,
   type TextSpan
 } from "@chemdraft/chem-core";
-import { reactionArrowVerticalExtent } from "@chemdraft/layout-engine";
+import { nativeTextMetrics, reactionArrowHeadLengthPx, reactionArrowVerticalExtent } from "@chemdraft/layout-engine";
 import { formulaSpansForMixedText } from "./formulaText";
 import { estimateNativeTextSpanLineWidth, nativeTextObjectSizeForSpanLines } from "./textObjects";
 
@@ -37,8 +37,9 @@ export interface ReactionLabelsPlan {
 // Journal-scheme policy, in bond lengths or em so it follows the caller's drawing scale.
 const labelWidthInBonds = 10;
 const minimumArrowInBonds = 2.5;
-const arrowTextPaddingInBonds = 0.5;
-const arrowClearanceEm = 0.35;
+const arrowHeadClearanceEm = 0.25;
+const arrowClearanceEm = 0.3;
+const scriptLineClearanceEm = 0.12;
 const captionClearanceEm = 0.8;
 const minimumCaptionWidthInBonds = 8;
 const defaultLabelStyle: Partial<NativeTextStyle> = { fontSizePx: 14, textAlign: "center" };
@@ -86,11 +87,22 @@ function measureBlock(entries: readonly string[], style: NativeTextStyle, maxWid
   const spanLines = lines.map((line) => lineSpans(line, caption));
   const spans = spanLines.flatMap((line, index): TextSpan[] => index === 0
     ? line : [{ text: "\n", script: "normal", style: {} }, ...line]);
+  const { scriptFontScale, scriptBaselineShiftEm, descentEm, capHeightEm } = nativeTextMetrics;
+  // One advance per object: allow a subscript below one baseline followed by a superscript
+  // above the next. SVG sub/super offsets depend on the font; use the shared safe envelope.
+  const scriptedLineHeight = scriptFontScale * (2 * scriptBaselineShiftEm + descentEm + capHeightEm)
+    + scriptLineClearanceEm;
+  const blockStyle = {
+    ...style,
+    lineHeight: spans.some(span => span.script !== "normal")
+      ? Math.max(style.lineHeight, scriptedLineHeight - style.paragraphSpacingPx / style.fontSizePx) : style.lineHeight,
+    textAlign: !caption && authoredLines.every((line) => /^\d+\.\s/.test(line)) ? "left" as const : "center" as const
+  };
   return {
     text: lines.join("\n"),
     spans,
-    style: { ...style, textAlign: !caption && authoredLines.every((line) => /^\d+\.\s/.test(line)) ? "left" : "center" },
-    size: nativeTextObjectSizeForSpanLines(spanLines, style)
+    style: blockStyle,
+    size: nativeTextObjectSizeForSpanLines(spanLines, blockStyle)
   };
 }
 
@@ -103,7 +115,8 @@ export function planReactionLabels(options: ReactionLabelsOptions): ReactionLabe
   return {
     options, textStyle, above, below,
     arrowLength: Math.max(minimumArrowInBonds * options.bondLength,
-      Math.max(above?.size.width ?? 0, below?.size.width ?? 0) + arrowTextPaddingInBonds * options.bondLength)
+      Math.max(above?.size.contentWidth ?? 0, below?.size.contentWidth ?? 0)
+        + 2 * (reactionArrowHeadLengthPx + arrowHeadClearanceEm * textStyle.fontSizePx))
   };
 }
 
@@ -118,7 +131,7 @@ export function layoutReactionLabels(
   }
 ): { above?: TextObject; below?: TextObject; caption?: TextObject } {
   const { arrowMidpoint: midpoint, schemeBounds, idPrefix } = placement;
-  const extent = reactionArrowVerticalExtent(plan.options.arrowKind, plan.arrowLength);
+  const extent = reactionArrowVerticalExtent(plan.options.arrowKind, plan.arrowLength, "shafts");
   const clearance = arrowClearanceEm * plan.textStyle.fontSizePx;
   const object = (block: LabelBlock, id: string, center: number, y: number): TextObject => ({
     // Left-aligned text starts at object.x; the box's trailing padding is not visible text.
@@ -128,10 +141,15 @@ export function layoutReactionLabels(
     compatibility: { sourceFormat: "chemdraft-native", warnings: [], unknown: {} },
     text: block.text, spans: block.spans
   });
+  // Renderer baselines start one font size below object.y. Subtract all advances before
+  // the last above baseline; below, place the first cap top rather than the line box.
   const above = plan.above ? object(plan.above, `${idPrefix}_above`, midpoint.x,
-    midpoint.y + extent.top - clearance - plan.above.size.lineBoxHeight) : undefined;
+    midpoint.y + extent.top - clearance - nativeTextMetrics.descentEm * plan.above.style.fontSizePx
+      - plan.above.style.fontSizePx - (plan.above.size.lineBoxHeight
+        - plan.above.style.fontSizePx * plan.above.style.lineHeight)) : undefined;
   const below = plan.below ? object(plan.below, `${idPrefix}_below`, midpoint.x,
-    midpoint.y + extent.bottom + clearance) : undefined;
+    midpoint.y + extent.bottom + clearance
+      + (nativeTextMetrics.capHeightEm - 1) * plan.below.style.fontSizePx) : undefined;
   const minX = Math.min(schemeBounds.minX, above?.x ?? Infinity, below?.x ?? Infinity);
   const maxX = Math.max(schemeBounds.maxX, above ? above.x + above.width : -Infinity,
     below ? below.x + below.width : -Infinity);
