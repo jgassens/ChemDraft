@@ -10,10 +10,11 @@ import { allShellCommands, moleculeStructureBondLengthCommandId, objectCustomCol
 import { createPhase4Document } from "./documentWorkflow";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import {
-  broadcastToolsetCustomizeMode, broadcastToolsetTextStyle, createToolsetTextStylePayload,
+  DOM_COMMAND_EVENT, broadcastToolsetCustomizeMode, broadcastToolsetTextStyle, createToolsetTextStylePayload,
   sendPaletteCommand, sendPaletteCommandCancel, sendPaletteCommandCommit
 } from "./window-manager";
 import type { NativePanelFocusEvent } from "./plugins/pluginPanelInputFocus";
+import { forceDocumentHistoryCommandId, installSecondaryWindowEditHistory } from "./editHistoryRouting";
 
 const native = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -191,11 +192,59 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
       // jsdom has no native text history default; reproduce it only if the browser may run it.
       if (!event.defaultPrevented) await browserInput(input, input.value, chord.inputType);
       expect(event.defaultPrevented).toBe(true);
-      expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith(chord.command);
+      expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith(forceDocumentHistoryCommandId(chord.command));
       expect(historyInput).not.toHaveBeenCalled();
       await snapshot(chord.value);
       expect(document.activeElement).toBe(input);
       expect(input.value).toBe(String(chord.value));
+    }
+  });
+
+  it.each(["arrow", "spinner"])("menu undo/redo forwards once from a clean %s number and refreshes it", async (gesture) => {
+    const input = await steppedNumber(gesture);
+    const execCommand = vi.fn(() => true);
+    Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
+    const uninstall = installSecondaryWindowEditHistory({ forwardToMain: sendPaletteCommand });
+    try {
+      for (const [commandId, value] of [["edit.undo", 23], ["edit.redo", 23.5]] as const) {
+        vi.mocked(sendPaletteCommand).mockClear();
+        await act(async () => window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId } })));
+        expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith(forceDocumentHistoryCommandId(commandId));
+        expect(execCommand).not.toHaveBeenCalled();
+        await snapshot(value); // The document's undo/redo acknowledgement.
+        expect(document.activeElement).toBe(input);
+        expect(input.value).toBe(String(value));
+      }
+      expect(sendPaletteCommandCommit).toHaveBeenCalledTimes(3);
+    } finally {
+      uninstall();
+      Reflect.deleteProperty(document, "execCommand");
+    }
+  });
+
+  it("menu undo/redo edits a typed draft natively without forwarding or committing", async () => {
+    const input = await steppedNumber();
+    await type(input, "30");
+    const execCommand = vi.fn((direction: string) => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, direction === "undo" ? "23.5" : "30");
+      input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: direction === "undo" ? "historyUndo" : "historyRedo" }));
+      return true;
+    });
+    Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
+    const uninstall = installSecondaryWindowEditHistory({ forwardToMain: sendPaletteCommand });
+    try {
+      for (const [commandId, value] of [["edit.undo", "23.5"], ["edit.redo", "30"]]) {
+        await act(async () => window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId } })));
+        expect(input.value).toBe(value);
+        expect(input.dataset.paletteNumberDraft).toBe("true");
+        expect(document.activeElement).toBe(input);
+      }
+      expect(execCommand.mock.calls).toEqual([["undo"], ["redo"]]);
+      expect(sendPaletteCommand).not.toHaveBeenCalled();
+      expect(sendPaletteCommandCommit).toHaveBeenCalledTimes(3);
+    } finally {
+      uninstall();
+      Reflect.deleteProperty(document, "execCommand");
     }
   });
 
@@ -317,7 +366,7 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
       await act(async () => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", {
         key: "z", ctrlKey: platform === "windows", metaKey: platform === "macos", bubbles: true, cancelable: true
       })));
-      expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith("edit.undo");
+      expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith(forceDocumentHistoryCommandId("edit.undo"));
     }
   });
 
@@ -331,7 +380,7 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     await act(async () => document.body.dispatchEvent(new KeyboardEvent("keydown", {
       key: "z", ctrlKey: platform === "windows", metaKey: platform === "macos", bubbles: true, cancelable: true
     })));
-    expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith("edit.undo");
+    expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith(forceDocumentHistoryCommandId("edit.undo"));
   });
 
   it.each(["Bond color", "Label color", "Atom label background color", "Custom ring fill color", "Ring effect color"])(
@@ -461,7 +510,7 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     vi.mocked(sendPaletteCommand).mockClear();
     const undo = new KeyboardEvent("keydown", { key: "z", ctrlKey: platform === "windows", metaKey: platform === "macos", bubbles: true, cancelable: true });
     await act(async () => control.dispatchEvent(undo));
-    expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith("edit.undo");
+    expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith(forceDocumentHistoryCommandId("edit.undo"));
     expect(undo.defaultPrevented).toBe(true);
     if (kind !== "button") {
       await act(async () => control.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));

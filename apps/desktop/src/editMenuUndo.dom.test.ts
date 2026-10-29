@@ -92,6 +92,23 @@ describe("edit history routing", () => {
     expect(isTextEditingElement(null)).toBe(false);
   });
 
+  it("routes clean palette number history to the document while keeping draft and ordinary numbers native", () => {
+    const field = document.createElement("input");
+    field.type = "number";
+    for (const draft of [undefined, "true", "false"]) {
+      if (draft === undefined) delete field.dataset.paletteNumberDraft;
+      else field.dataset.paletteNumberDraft = draft;
+      // It remains an editor for Select All and all other text operations.
+      expect(isTextEditingElement(field)).toBe(true);
+      for (const direction of ["undo", "redo"] as const) {
+        expect(resolveEditHistoryRoute(direction, { activeElement: field, canUndo: true, canRedo: true }))
+          .toBe(draft === "false" ? "document" : "text");
+        expect(resolveEditHistoryRoute(direction, { activeElement: field, canUndo: false, canRedo: false }))
+          .toBe(draft === "false" ? "nothing" : "text");
+      }
+    }
+  });
+
   it("sends canvas undo to the document, or reports nothing to undo", () => {
     const button = document.createElement("button");
     expect(resolveEditHistoryRoute("undo", { activeElement: document.body, canUndo: true, canRedo: false })).toBe("document");

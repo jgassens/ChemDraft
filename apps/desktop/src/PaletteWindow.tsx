@@ -14,7 +14,7 @@ import { allShellCommands, type CommandSpec } from "./commands";
 import { createPhase4Document } from "./documentWorkflow";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import { installPaletteInputFocus, isPaletteInputFocusPending, paletteInputFocusControl } from "./plugins/pluginPanelInputFocus";
-import { isTextEditingElement } from "./editHistoryRouting";
+import { editHistoryDirection, forceDocumentHistoryCommandId, isCleanPaletteNumberInput, isTextEditingElement } from "./editHistoryRouting";
 import { applyKeybindingSchemeToCommands } from "./keybindingScheme";
 import { isCompoundLayoutCommand } from "./compoundLayoutSettings";
 import { useCompoundLayoutTools } from "./useCompoundLayoutTools";
@@ -670,7 +670,7 @@ export function PaletteWindow({
         ? event.target : paletteInputFocusControl(shellRef.current) ?? null;
       // Only clean inspector numbers delegate history to the document. Other text keys
       // and every uncommitted typed draft retain the browser's editing behavior.
-      const numberHistory = target?.matches('input[type="number"][data-palette-number-draft="false"]') &&
+      const numberHistory = isCleanPaletteNumberInput(target) &&
         !event.isComposing && (event.ctrlKey || event.metaKey) && ["z", "y"].includes(event.key.toLowerCase());
       if (event.defaultPrevented || isPaletteInputFocusPending(shellRef.current) ||
         (isTextEditingElement(target) && !numberHistory)) return;
@@ -698,7 +698,7 @@ export function PaletteWindow({
       }
 
       event.preventDefault();
-      void sendPaletteCommand(commandId).catch(() => undefined);
+      void sendPaletteCommand(editHistoryDirection(commandId) ? forceDocumentHistoryCommandId(commandId) : commandId).catch(() => undefined);
     };
 
     window.addEventListener("keydown", handleKeyDown);

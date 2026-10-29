@@ -11,7 +11,7 @@ import { getToolsetItemGroups } from "./toolsets";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-function inspectorModel(length: number) {
+function inspectorModel(length: number, secondLength?: number) {
   const doc = createEmptyDocument({ id: "doc_numeric", pageId: "page_numeric", title: "Numeric controls" });
   const molecule: MoleculeObject = {
     id: "mol_numeric", type: "molecule", x: 0, y: 0, width: length, height: 20,
@@ -23,9 +23,17 @@ function inspectorModel(length: number) {
     bonds: [{ id: "ab", fromAtomId: "a", toAtomId: "b", order: "single" }],
     superatoms: [], rGroups: []
   };
+  const molecules = [molecule];
+  if (secondLength !== undefined) {
+    const second = structuredClone(molecule);
+    second.id = "mol_numeric_second";
+    second.width = secondLength;
+    second.atoms[1]!.x = secondLength;
+    molecules.push(second);
+  }
   return createMoleculeInspectorModel(
-    applyPatches(doc, [{ op: "addObject", pageId: doc.pages[0].id, object: molecule }]),
-    { selectedObjectIds: [molecule.id] }
+    applyPatches(doc, molecules.map((object) => ({ op: "addObject" as const, pageId: doc.pages[0].id, object }))),
+    { selectedObjectIds: molecules.map((object) => object.id) }
   );
 }
 
@@ -170,8 +178,55 @@ describe("palette numeric controls", () => {
     expect(onCommit.mock.calls).toEqual([42.5, 43].map((value) => [moleculeStructureBondLengthCommandId(value)]));
   });
 
-  it("leaves an unedited Mixed field alone and allows a typed Mixed value to commit", async () => {
-    model.structure.values.bondLengthPx = { value: null, mixed: true };
+  it.each([false, true])("commits an earlier step after an outside change during typing (echo acknowledged: %s)", async (acknowledged) => {
+    await key("ArrowUp");
+    if (acknowledged) {
+      model = inspectorModel(22.5);
+      await render();
+    }
+    await input("22.5");
+    model = inspectorModel(40);
+    await render();
+    expect(field().value).toBe("22.5");
+    await key("Enter");
+    await act(async () => field().blur());
+    expect(onCommit.mock.calls).toEqual([22.5, 22.5].map((value) => [moleculeStructureBondLengthCommandId(value)]));
+  });
+
+  it("does not repeat a typed commit equal to an outstanding own step", async () => {
+    await key("ArrowUp");
+    await input("22.5");
+    await key("Enter");
+    expect(onCommit).toHaveBeenCalledExactlyOnceWith(moleculeStructureBondLengthCommandId(22.5));
+  });
+
+  it("uses the current exact model even when an outside change keeps the same display text", async () => {
+    await key("ArrowUp");
+    model = inspectorModel(22.5);
+    await render();
+    await input("22.5");
+    model.structure.values.bondLengthPx = { value: 22.5001, mixed: false };
+    await render();
+    await key("Enter");
+    expect(onCommit.mock.calls).toEqual([22.5, 22.5].map((value) => [moleculeStructureBondLengthCommandId(value)]));
+  });
+
+  it("normalizes a uniform selection's non-exact numeric value when its shown value is typed", async () => {
+    model = inspectorModel(22.0001, 22.0002);
+    expect(model.targets.moleculeObjectIds).toHaveLength(2);
+    expect(model.structure.values.bondLengthPx.mixed).toBe(false);
+    // Exercise the control's raw numeric prop contract, independently of the builder's rounding.
+    model.structure.values.bondLengthPx = { value: 22.0001, mixed: false };
+    await render();
+    expect(field().value).toBe("22");
+    await input(field().value);
+    await key("Enter");
+    await act(async () => field().blur());
+    expect(onCommit).toHaveBeenCalledExactlyOnceWith(moleculeStructureBondLengthCommandId(22));
+  });
+
+  it.each([null, 30])("leaves an unedited Mixed field alone and commits a typed value (model value: %s)", async (value) => {
+    model.structure.values.bondLengthPx = { value, mixed: true };
     await act(async () => field().blur());
     await render();
     onCommit.mockClear();

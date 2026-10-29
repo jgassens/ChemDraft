@@ -823,23 +823,21 @@ function MoleculeInspectorNumericControl({
     // commits whose formatted text is unchanged and therefore cause no render.
     if (inputRef.current) inputRef.current.dataset.paletteNumberDraft = String(typed);
   };
-  const lastCommitted = useRef<number | undefined>(undefined);
-  const committedValues = useRef(new Set<string>());
+  const pendingCommit = useRef<number | undefined>(undefined);
+  const committedValues = useRef(new Set<number>());
   const [sliderDraft, setSliderDraft] = useState<number | null>(null);
   const sliderChanged = useRef<number | undefined>(undefined);
   const sliderPreviewedValues = useRef(new Set<number>());
   useEffect(() => {
     // Ignore only outstanding own echoes, which can arrive late/out of order during a hold.
     // Once the latest commit is acknowledged, earlier values must follow undo/redo again.
-    const ownEcho = committedValues.current.delete(modelText);
-    if (ownEcho && lastCommitted.current !== undefined &&
-      modelText === formatInspectorNumber(lastCommitted.current)) committedValues.current.clear();
-    if (!dirty.current && !ownEcho) {
-      setDraft(null);
-      lastCommitted.current = undefined;
+    const ownEcho = !mixed && value != null && committedValues.current.delete(value);
+    if (!ownEcho || value === pendingCommit.current) {
+      pendingCommit.current = undefined;
       committedValues.current.clear();
     }
-  }, [modelText]);
+    if (!dirty.current && !ownEcho) setDraft(null);
+  }, [value, mixed]);
   useEffect(() => {
     // Snapshots can acknowledge this gesture's previews late or out of order.
     // Keep the latest draft and pending commit until release in either case.
@@ -851,7 +849,7 @@ function MoleculeInspectorNumericControl({
   }, [value, mixed]);
   const revert = () => {
     setTypedDraft(false);
-    lastCommitted.current = undefined;
+    pendingCommit.current = undefined;
     committedValues.current.clear();
     setDraft(null);
   };
@@ -859,7 +857,7 @@ function MoleculeInspectorNumericControl({
     const input = inputRef.current;
     const cancel = () => {
       setTypedDraft(false);
-      lastCommitted.current = undefined;
+      pendingCommit.current = undefined;
       committedValues.current.clear();
       setDraft(null);
     };
@@ -879,11 +877,11 @@ function MoleculeInspectorNumericControl({
       // Keep steps local until the document's asynchronous snapshot catches up. Reverting
       // here makes a held arrow (or native spin button) start every tick at the old model.
       setDraft(formatInspectorNumber(next));
-      // Compare at the displayed precision. A pending step is the current local value;
-      // otherwise retyping the model must not add an identical document history entry.
-      if (next !== (lastCommitted.current ?? (mixed ? undefined : Number(modelText)))) {
-        committedValues.current.add(formatInspectorNumber(next));
-        lastCommitted.current = next;
+      // Only an outstanding own commit supersedes the model. Display rounding must not
+      // hide a normalization edit, and an outside change invalidates earlier commits.
+      if (next !== (pendingCommit.current ?? (mixed ? undefined : value))) {
+        committedValues.current.add(next);
+        pendingCommit.current = next;
         onCommit(commandId(next));
       }
     } else {

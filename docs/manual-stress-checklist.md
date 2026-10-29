@@ -38,11 +38,16 @@ Select type-ahead without a shortcut does not change the style. Escape returns t
 document. Tool/command buttons never borrow it. Cmd/Ctrl+Z and tool hotkeys still reach the document
 from non-text controls. A focused number follows undo immediately unless it holds typed, uncommitted
 text. Focus Target bond length at 22, step ArrowUp three times to 23.5, then press real Cmd/Ctrl+Z
-inside the box: the document undoes once and the focused box shows 23. Undo again to 22.5 using
-the app command: the box refreshes immediately, and Tab adds no edit. Redo with Cmd+Shift+Z on
-macOS and Ctrl+Shift+Z / Ctrl+Y on Windows, and repeat after spinner clicks. An untouched number
-also forwards history. Type an uncommitted value: undo/redo now edits only its text. Retype the
-displayed model value and Tab or Enter: no undo entry; type a different value: exactly one entry.
+inside the box: the document undoes once and the focused box shows 23. Choose Edit > Undo from
+the menu to reach 22.5, then Edit > Redo to return to 23: the box refreshes immediately, and Tab
+adds no edit. Repeat with a main-window text input left focused before activating the palette.
+Redo with Cmd+Shift+Z on macOS and Ctrl+Shift+Z / Ctrl+Y on Windows, and repeat after spinner
+clicks. An untouched number
+also forwards history. Type an uncommitted value: keyboard and menu undo/redo now edit only its
+text. Retype an exactly equal model value and Tab or Enter: no undo entry; type a different value:
+exactly one entry. A uniform selection with a numeric value beyond the displayed precision must
+still commit when its rounded display value is typed. Step to 22.5, start typing 22.5, and change
+the document's value elsewhere to 40: committing the draft must apply 22.5 once again.
 Click Bond color, Label color, Atom label background color, Custom ring fill color and Ring
 effect color: each opens its native picker on both platforms (the Windows palette may activate
 for it). Leave it open through palette snapshots; clicking the canvas dismisses it without
