@@ -1,16 +1,29 @@
 // @vitest-environment jsdom
 
 import { act, createElement } from "react";
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { resolve } from "node:path";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ensureOclResources, UnrequestedSmilesHydrogenError, UnrequestedSmilesRadicalError } from "@chemdraft/ocl-adapter";
+import * as ocl from "@chemdraft/ocl-adapter";
+import * as workflow from "@chemdraft/document-workflow-core";
+import { generateSmiles2DMolfile } from "@chemdraft/rdkit-adapter";
+import { setRdkitModuleLoader } from "../../../packages/rdkit-adapter/src/conformer";
+import * as depictionClient from "./depiction2d/client";
+import { getAssistantHistoryPort } from "./assistant/historyPort";
 import { MainWindow } from "./MainWindow";
 import { createPhase4Document } from "./documentWorkflow";
 
 // Exercise the real paste helper and OCL refusal, with RDKit's unavailable-engine fallback.
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
-vi.mock("@chemdraft/rdkit-adapter", () => ({
+vi.mock("@chemdraft/rdkit-adapter", async original => ({
+  ...await original<typeof import("@chemdraft/rdkit-adapter")>(),
   generateSmiles2DMolfile: vi.fn().mockRejectedValue(new Error("WASM unavailable"))
+}));
+vi.mock("@chemdraft/document-workflow-core", async original => ({
+  ...await original<typeof import("@chemdraft/document-workflow-core")>()
 }));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -21,22 +34,32 @@ class TestResizeObserver {
   disconnect() {}
 }
 
-describe("MainWindow SMILES paste failure notices", () => {
+describe("MainWindow SMILES paste", () => {
   let container: HTMLDivElement;
   let root: Root;
 
-  beforeAll(async () => { await ensureOclResources(); });
+  beforeAll(async () => {
+    await ensureOclResources();
+    const glue = resolve("packages/rdkit-adapter/vendor/RDKit_minimal.js");
+    const factory = new Function("require", "__dirname", `${readFileSync(glue, "utf8")}\n;return initRDKitModule;`)(
+      createRequire(glue), resolve("packages/rdkit-adapter/vendor"));
+    setRdkitModuleLoader(() => factory({
+      wasmBinary: new Uint8Array(readFileSync(resolve("packages/rdkit-adapter/vendor/RDKit_minimal.wasm")))
+    }));
+  });
 
   beforeEach(async () => {
     vi.stubGlobal("ResizeObserver", TestResizeObserver);
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
+    const drawing = createPhase4Document("SMILES paste");
+    drawing.styles.drawing = { ...drawing.styles.drawing, bondLengthPx: 34, bondStrokeWidthPx: 2.4 };
     await act(async () => {
       root.render(createElement(MainWindow, {
         initialActiveToolCommandId: "tool.select",
         initialCrosshairsVisible: false,
-        initialDocument: createPhase4Document("SMILES paste errors"),
+        initialDocument: drawing,
         initialPaletteMode: "hidden",
         initialRulersVisible: false,
         nativePalette: true
@@ -47,6 +70,7 @@ describe("MainWindow SMILES paste failure notices", () => {
   afterEach(() => {
     act(() => { root.unmount(); });
     container.remove();
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 
@@ -63,6 +87,40 @@ describe("MainWindow SMILES paste failure notices", () => {
     }, { timeout: 15_000, interval: 50 });
     return container.querySelector('[role="status"]')?.textContent;
   }
+
+  it("pastes beta-cyclodextrin once with the active document's style and bond length without coordinate generation", async () => {
+    const template = workflow.resolveStructureTemplateName("beta-cyclodextrin")!;
+    const before = getAssistantHistoryPort().read("initial")!;
+    const defaults = workflow.documentDrawingDefaults(before);
+    expect(defaults.bondLengthPx).toBe(34);
+    expect(defaults.objectStyle.bondStrokeWidthPx).toBe(2.4);
+    const construction = vi.spyOn(workflow, "structureTemplateMolecule");
+    const unavailable = () => { throw new Error("Template paste must not generate coordinates"); };
+    const oclDepiction = vi.spyOn(ocl, "depictSmiles2D").mockImplementation(unavailable);
+    const workerDepiction = vi.spyOn(depictionClient, "depictSmilesOffThread").mockImplementation(unavailable);
+    vi.mocked(generateSmiles2DMolfile).mockClear();
+
+    await paste(template.smiles, "text/plain", "Used the β-Cyclodextrin template layout");
+
+    const after = getAssistantHistoryPort().read("initial")!;
+    expect(after.pages[0]!.objects).toHaveLength(1);
+    const molecule = after.pages[0]!.objects[0]!;
+    if (molecule.type !== "molecule") throw new Error("Expected template molecule");
+    expect(molecule.style).toMatchObject(defaults.objectStyle);
+    expect(molecule.style.source).toBe(`structure-template:${template.id}`);
+    const atoms = new Map(molecule.atoms.map(atom => [atom.id, atom]));
+    const lengths = molecule.bonds.map(bond => {
+      const a = atoms.get(bond.fromAtomId)!, b = atoms.get(bond.toAtomId)!;
+      return Math.hypot(a.x - b.x, a.y - b.y);
+    });
+    expect(lengths.reduce((sum, length) => sum + length, 0) / lengths.length).toBeCloseTo(defaults.bondLengthPx, 6);
+    expect(after.selection.objectIds).toEqual([molecule.id]);
+    expect(construction).toHaveBeenCalledOnce();
+    expect(construction.mock.calls[0]![1].document).toBe(before);
+    expect(oclDepiction).not.toHaveBeenCalled();
+    expect(workerDepiction).not.toHaveBeenCalled();
+    expect(generateSmiles2DMolfile).not.toHaveBeenCalled();
+  }, 20_000);
 
   it.each(["text/plain", "chemical/x-daylight-smiles"])(
     "shows the specific n1cccc1 refusal pasted as %s, while preserving the input as text",

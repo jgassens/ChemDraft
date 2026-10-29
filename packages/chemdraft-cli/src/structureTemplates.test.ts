@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { DocumentStylePreset } from "@chemdraft/chem-core";
 import { resolveStructureTemplateName } from "@chemdraft/document-workflow-core";
 import { buildSmilesDocument } from "./document";
 import { runRenderCommand } from "./commands/render";
@@ -22,8 +21,8 @@ describe("headless template layout substitution", () => {
       const a = atoms.get(bond.fromAtomId)!, b = atoms.get(bond.toAtomId)!;
       return Math.hypot(a.x - b.x, a.y - b.y);
     });
-    expect(lengths.reduce((a, b) => a + b, 0) / lengths.length)
-      .toBeCloseTo(DocumentStylePreset.drawing.bondLengthPx, 6);
+    // Templates use CLI_DEFAULT_BOND_LENGTH_PX (28 px), matching ordinary CLI SMILES.
+    expect(lengths.reduce((a, b) => a + b, 0) / lengths.length).toBeCloseTo(28, 6);
   }, 60_000);
   it.each([
     ["stereo-different", template.smiles.replace("@@", "@")],

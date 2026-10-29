@@ -1,12 +1,11 @@
 import {
-  DocumentStylePreset,
   nativeDrawingStyleFromObjectStyle,
-  stylePresetToObjectStyle,
   type ChemDraftDocument,
   type MoleculeObject
 } from "@chemdraft/chem-core";
 import { structureTemplates, type StructureTemplate } from "@chemdraft/template-library";
 import { createSmilesMolecule } from "./molecule";
+import { documentDrawingDefaults } from "./drawingDefaults";
 import type { PagePoint } from "./shared";
 import type { StructureNameDeps } from "./structureName";
 
@@ -69,7 +68,7 @@ export async function structureTemplateForSmiles(
 export interface StructureTemplateMoleculeOptions {
   document: ChemDraftDocument;
   centre: PagePoint;
-  /** Target drawing style; defaults to the fixed document preset (22 native units per bond). */
+  /** Overrides the document's drawing style, including its target bond length. */
   style?: Record<string, unknown>;
   reservedObjectIds?: Set<string>;
 }
@@ -83,7 +82,10 @@ export function structureTemplateMolecule(
   if (!Number.isFinite(centre.x) || !Number.isFinite(centre.y)) {
     throw new Error("Cannot place a structure template: centre must be finite.");
   }
-  const style = { ...stylePresetToObjectStyle(DocumentStylePreset), ...options.style };
+  const defaults = documentDrawingDefaults(document);
+  const style = { ...defaults.objectStyle, ...options.style };
+  const bondLengthPx = options.style
+    ? nativeDrawingStyleFromObjectStyle(style).bondLengthPx : defaults.bondLengthPx;
   return createSmilesMolecule(document, centre, {
     atoms: template.layout.atoms.map((atom) => ({ ...atom, charge: atom.charge ?? 0 })),
     bonds: template.layout.bonds.map(([from, to, order, display]) => ({
@@ -97,7 +99,7 @@ export function structureTemplateMolecule(
     warningMessage: `Inserted ${template.name} using its original ChemDraft layout.${template.note ? ` ${template.note}` : ""}`,
     reservedObjectIds
   }, {
-    bondLengthPx: nativeDrawingStyleFromObjectStyle(style).bondLengthPx,
+    bondLengthPx,
     objectStyle: style,
     constrainToPage: false
   });

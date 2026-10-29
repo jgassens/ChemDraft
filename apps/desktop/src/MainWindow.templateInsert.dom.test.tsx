@@ -3,13 +3,14 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEmptyDocument, type MoleculeObject } from "@chemdraft/chem-core";
-import { resolveStructureTemplateName } from "@chemdraft/document-workflow-core";
+import { createSmilesMolecule, resolveStructureTemplateName } from "@chemdraft/document-workflow-core";
 import * as atomLabelDraft from "./atomLabelDraft";
 import { getAssistantHistoryPort } from "./assistant/historyPort";
 import { applyNativeChainTool, insertNativeSingleBondMolecule } from "./documentWorkflow";
 import { MainWindow } from "./MainWindow";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 import { DOM_COMMAND_EVENT } from "./window-manager";
+import { bondDepiction, defaultCases, expectDrawingDefaults } from "./drawingDefaults.testHelpers";
 
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("@scena/react-ruler", () => ({ default: () => <canvas /> }));
@@ -38,6 +39,27 @@ describe("template insertion during an atom-label edit", () => {
       window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId } }));
     });
   }
+
+  it.each(defaultCases)("inserts a template with the document's $bondLengthPx px drawing defaults", async style => {
+    const initial = createEmptyDocument();
+    if (style.bondLengthPx !== 22) initial.styles.drawing = { ...style };
+    const ordinary = createSmilesMolecule(initial, { x: 200, y: 200 }, bondDepiction, "CO");
+    initial.pages[0]!.objects = [ordinary];
+    await act(async () => root.render(<MainWindow initialDocument={initial} initialActiveToolCommandId="tool.select"
+      initialPaletteMode="hidden" initialRulersVisible={false} nativePalette={false} />));
+    const template = resolveStructureTemplateName("18-crown-6")!;
+    await command(`template.insert.${template.id}`);
+    const current = getAssistantHistoryPort().read("initial")!;
+    const inserted = current.pages[0]!.objects[1] as MoleculeObject;
+    expectDrawingDefaults(inserted, style);
+    const { source, ...templateStyle } = inserted.style;
+    const { source: ordinarySource, ...ordinaryStyle } = ordinary.style;
+    expect(source).toBe(`structure-template:${template.id}`);
+    expect(ordinarySource).toBe("clipboard-smiles");
+    expect(templateStyle).toEqual(ordinaryStyle);
+    expect(current.pages[0]!.objects[0]).toEqual(ordinary);
+    expect(current.selection.objectIds).toEqual([inserted.id]);
+  });
 
   it("commits and closes the label once before inserting, retaining selection and separate undo labels", async () => {
     const initial = insertNativeSingleBondMolecule(createEmptyDocument(), { x: 200, y: 200 });

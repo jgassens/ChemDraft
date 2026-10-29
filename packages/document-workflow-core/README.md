@@ -96,8 +96,9 @@ stereo and charge distinctions. The caller owns engine loading.
 `structureTemplateMolecule(template, { document, centre, style?, reservedObjectIds? })` builds through
 the shared depiction path, using authored coordinates without depiction or cleanup. It flips y,
 preserves directed wedges/hashes and charges, and scales the **mean** bond length to the target
-drawing style. `style` defaults to `DocumentStylePreset` (22 native units per bond); callers with a
-different active drawing style pass its object style. The requested atom-bounds centre is retained,
+drawing style. Style and size default to `documentDrawingDefaults(document)`, matching new native
+and SMILES molecules in that document; explicit `style` fields override those defaults, including
+bond length. The requested atom-bounds centre is retained,
 including near page edges. The function returns a molecule without mutating the document or template;
 callers insert it through their normal patch/undo path. Provenance uses existing style/source and
 compatibility metadata.

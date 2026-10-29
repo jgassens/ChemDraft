@@ -6634,22 +6634,20 @@ export function MainWindow({
     setStatus("Drawing the pasted SMILES…");
     try {
       const pasteDocument = documentRef.current;
-      const parsed = await depictSmilesForPaste(smilesText);
+      const point = pastePointForViewport();
+      const parsed = await depictSmilesForPaste(smilesText, {}, {
+        document: pasteDocument, centre: point, reservedObjectIds: new Set<string>()
+      });
       if (quitInteractionRef.current) return { rendered: false, reason: "Paste cancelled while quitting" };
       if (!parsed) return { rendered: false };
       const { depiction } = parsed;
-      const point = pastePointForViewport();
-      // Parsing is document-independent. Allocate the ID and place its authored geometry
-      // against this drawing only once the result is ready, without rebuilding the template.
-      const molecule = parsed.molecule ? { ...parsed.molecule, id: nextObjectId(pasteDocument, "mol_template") } : undefined;
+      // Reuse the template built with this document's defaults, placement and object IDs.
+      const molecule = parsed.molecule;
       const inserted = molecule ? {
-        document: moveDocumentObject(applyPatches(pasteDocument, [
+        document: applyPatches(pasteDocument, [
           { op: "addObject", pageId: pasteDocument.pages[0]!.id, object: molecule },
           { op: "setSelection", pageId: pasteDocument.pages[0]!.id, objectIds: [molecule.id] }
-        ]), molecule.id, {
-          x: point.x - molecule.width / 2,
-          y: point.y - molecule.height / 2
-        }, { clampToPage: false }),
+        ]),
         status: structureTemplateLayoutMessage(molecule)
       } : { document: insertSmilesMolecule(
         pasteDocument,

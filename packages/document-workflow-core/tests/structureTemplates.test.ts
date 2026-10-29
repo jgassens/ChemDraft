@@ -1,10 +1,12 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { installNodeRdkitModuleLoader } from "@chemdraft/rdkit-adapter/node";
+import { createEmptyDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { createSmilesMolecule } from "../src/molecule";
 // These packages have no bare-package Vitest alias. Relative test imports keep the registry and
 // RDKit singleton in this worktree when node_modules is shared with another checkout.
 import { compositionFromRdkitJson, ensureRdkit, type RdkitJson } from "../../rdkit-adapter/src/index";
 import { structureTemplates, type StructureTemplate, type StructureTemplateAtom } from "../../template-library/src/index";
-import { normalizeStructureTemplateName } from "../src/structureTemplates";
+import { normalizeStructureTemplateName, structureTemplateMolecule } from "../src/structureTemplates";
 
 interface RdkitMol {
   get_smiles(): string;
@@ -129,6 +131,47 @@ function assertBondClearance(entry: StructureTemplate) {
 }
 
 const normalise = normalizeStructureTemplateName;
+
+function meanBondLength(molecule: MoleculeObject): number {
+  const atoms = new Map(molecule.atoms.map(atom => [atom.id, atom]));
+  return molecule.bonds.reduce((sum, bond) =>
+    sum + distance(atoms.get(bond.fromAtomId)!, atoms.get(bond.toAtomId)!), 0) / molecule.bonds.length;
+}
+
+describe("structure template drawing defaults", () => {
+  it.each([undefined, {
+    bondLengthPx: 30, bondStrokeWidthPx: 1.2, atomLabelFontSizePx: 12,
+    atomLabelFontFamily: "Times", bondLineCap: "round", stylePresetId: "custom"
+  }])("matches ordinary SMILES style and mean bond length with drawing style %j", drawing => {
+    const document = createEmptyDocument();
+    if (drawing) document.styles.drawing = drawing;
+    const ordinary = createSmilesMolecule(document, { x: 200, y: 200 }, {
+      atoms: [{ element: "C", x: 0, y: 0, charge: 0 }, { element: "O", x: 1.5, y: 0, charge: 0 }],
+      bonds: [{ from: 0, to: 1, order: "single", wedge: null }]
+    }, "CO");
+    const { source: ordinarySource, ...ordinaryStyle } = ordinary.style;
+    expect(ordinarySource).toBe("clipboard-smiles");
+    expect(meanBondLength(ordinary)).toBeCloseTo(drawing?.bondLengthPx ?? 22, 9);
+    // Include nonuniform authored layouts: the target is the mean, never the median.
+    for (const template of structureTemplates) {
+      const molecule = structureTemplateMolecule(template, { document, centre: { x: 200, y: 200 } });
+      const { source, ...style } = molecule.style;
+      expect(source).toBe(`structure-template:${template.id}`);
+      expect(style).toEqual(ordinaryStyle);
+      expect(Math.abs(meanBondLength(molecule) - meanBondLength(ordinary))).toBeLessThan(1e-9);
+    }
+  });
+
+  it("lets explicit style fields override document defaults while retaining unspecified fields", () => {
+    const document = createEmptyDocument();
+    document.styles.drawing = { bondLengthPx: 30, bondStrokeWidthPx: 1.2, atomLabelFontSizePx: 12 };
+    const molecule = structureTemplateMolecule(structureTemplates[0]!, {
+      document, centre: { x: 200, y: 200 }, style: { bondLengthPx: 36, bondStrokeWidthPx: 3 }
+    });
+    expect(molecule.style).toMatchObject({ bondLengthPx: 36, bondStrokeWidthPx: 3, atomLabelFontSizePx: 12 });
+    expect(Math.abs(meanBondLength(molecule) - 36)).toBeLessThan(1e-9);
+  });
+});
 
 describe("structure template identities", () => {
   it("has unique stable ids, names and normalised synonyms, with no names shared by different templates", () => {
