@@ -5172,7 +5172,8 @@ describe("ChemDraft desktop shell", () => {
     );
 
     expect(markup).toContain('data-object-type="text"');
-    expect(markup).toContain('baseline-shift="super"');
+    expect(markup).toContain('font-size="12.96px"');
+    expect(markup).not.toContain('baseline-shift="super"');
     expect(markup).toContain('fill="#b3261e"');
   });
 

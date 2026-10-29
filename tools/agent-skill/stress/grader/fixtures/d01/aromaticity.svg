@@ -238,9 +238,7 @@ M  END
 
 
 
-  <text data-object-id="text_002" data-layer-index="1" data-object-type="text" x="59.744" y="125.487" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="400" font-style="normal" text-decoration="none" letter-spacing="0" text-anchor="start" fill="#111111">
-    <tspan x="59.744">A</tspan>
-  </text>
+  <text data-object-id="text_002" data-layer-index="1" data-object-type="text" x="59.744" y="125.487" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="400" font-style="normal" text-decoration="none" letter-spacing="0" text-anchor="start" fill="#111111"><tspan x="59.744">A</tspan></text>
 
   <g data-object-id="mol_grid_002" data-layer-index="2" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-structure="
   ChemDraft
@@ -482,9 +480,7 @@ M  END
 
 
 
-  <text data-object-id="text_004" data-layer-index="3" data-object-type="text" x="167.231" y="125.487" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="400" font-style="normal" text-decoration="none" letter-spacing="0" text-anchor="start" fill="#111111">
-    <tspan x="167.231">B</tspan>
-  </text>
+  <text data-object-id="text_004" data-layer-index="3" data-object-type="text" x="167.231" y="125.487" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="400" font-style="normal" text-decoration="none" letter-spacing="0" text-anchor="start" fill="#111111"><tspan x="167.231">B</tspan></text>
 
   <g data-object-id="mol_grid_003" data-layer-index="4" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-structure="
   ChemDraft
@@ -666,9 +662,7 @@ M  END
 
 
 
-  <text data-object-id="text_006" data-layer-index="5" data-object-type="text" x="274.718" y="125.487" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="400" font-style="normal" text-decoration="none" letter-spacing="0" text-anchor="start" fill="#111111">
-    <tspan x="274.718">C</tspan>
-  </text>
+  <text data-object-id="text_006" data-layer-index="5" data-object-type="text" x="274.718" y="125.487" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="400" font-style="normal" text-decoration="none" letter-spacing="0" text-anchor="start" fill="#111111"><tspan x="274.718">C</tspan></text>
 
   <g data-object-id="mol_grid_004" data-layer-index="6" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-structure="
   ChemDraft
@@ -850,9 +844,7 @@ M  END
 
 
 
-  <text data-object-id="text_008" data-layer-index="7" data-object-type="text" x="59.744" y="266.574" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="400" font-style="normal" text-decoration="none" letter-spacing="0" text-anchor="start" fill="#111111">
-    <tspan x="59.744">D</tspan>
-  </text>
+  <text data-object-id="text_008" data-layer-index="7" data-object-type="text" x="59.744" y="266.574" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="400" font-style="normal" text-decoration="none" letter-spacing="0" text-anchor="start" fill="#111111"><tspan x="59.744">D</tspan></text>
 
   <g data-object-id="mol_grid_005" data-layer-index="8" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-structure="
   ChemDraft
@@ -1234,9 +1226,7 @@ M  END
 
 
 
-  <text data-object-id="text_010" data-layer-index="9" data-object-type="text" x="167.231" y="266.574" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="400" font-style="normal" text-decoration="none" letter-spacing="0" text-anchor="start" fill="#111111">
-    <tspan x="167.231">E</tspan>
-  </text>
+  <text data-object-id="text_010" data-layer-index="9" data-object-type="text" x="167.231" y="266.574" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="400" font-style="normal" text-decoration="none" letter-spacing="0" text-anchor="start" fill="#111111"><tspan x="167.231">E</tspan></text>
 
   <g data-object-id="mol_grid_006" data-layer-index="10" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-structure="
   ChemDraft
@@ -1430,7 +1420,5 @@ M  END
 
 
 
-  <text data-object-id="text_012" data-layer-index="11" data-object-type="text" x="274.718" y="266.574" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="400" font-style="normal" text-decoration="none" letter-spacing="0" text-anchor="start" fill="#111111">
-    <tspan x="274.718">F</tspan>
-  </text>
+  <text data-object-id="text_012" data-layer-index="11" data-object-type="text" x="274.718" y="266.574" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="400" font-style="normal" text-decoration="none" letter-spacing="0" text-anchor="start" fill="#111111"><tspan x="274.718">F</tspan></text>
 </svg>
