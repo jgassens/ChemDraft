@@ -802,3 +802,9 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
   `[2H]C1(CC(=NO1)c1ccccc1)c1ccccc1` (D at C5), then with `[3H]` versions.
 - With a deliberately lossy depiction, single paste must insert nothing and name the identity loss;
   list paste must skip that entry and report its SMILES and reason while retaining valid entries.
+
+## Inserted drawing defaults
+
+Draw a bond, then paste a SMILES and insert a structure through a plugin and through the
+assistant. All four must have the same bond length, line width and atom-label size. An assistant
+caption must use the atom-label size. Existing structures on the page must not change size.

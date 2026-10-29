@@ -92,7 +92,7 @@ Batch input is a JSON array of {"name":"aspirin","smiles":"CC(=O)Oc1ccccc1C(=O)O
 trimmed; blank/duplicate names, path separators, and names beginning with a dot are rejected.
 
 Options: --width <px> is the PNG width (16–4000, default 600); --background white|transparent
-defaults to white; --bond-length <px> defaults to 28 (the desktop paste value); --padding <px>
+defaults to white; --bond-length <px> defaults to 28 (the CLI figure default); --padding <px>
 defaults to 24; and --format png|svg|both normally infers the extension in single mode. One JSON
 line per structure is written to stdout and progress to stderr. stereoCenters counts specified
 centers; unspecifiedStereoCenters counts constitutional centers without a specified descriptor;

@@ -1,4 +1,5 @@
 mod assistant_mcp;
+mod clipboard_formats;
 mod dialog_windows;
 mod document_session;
 mod download_diagnosis;
@@ -31,6 +32,10 @@ mod webview_context_menus;
 mod webview_context_menus_tests;
 mod window_drag;
 mod windows_clipboard;
+
+use clipboard_formats::{
+    validate_clipboard_items, ClipboardWriteItem, ClipboardWriteResult, ValidatedClipboardItem,
+};
 
 use std::{
     collections::HashMap,
@@ -1346,6 +1351,7 @@ pub fn run() {
             route_toolset_command,
             sync_plugin_menu_items,
             read_clipboard_payload,
+            write_clipboard_items,
             write_clipboard_text_items,
             write_clipboard_image,
             toggle_spin3d_debugger_window,
@@ -4616,11 +4622,40 @@ fn read_clipboard_payload() -> Result<ClipboardReadPayload, String> {
 
 #[cfg(windows)]
 #[tauri::command]
+async fn write_clipboard_items(
+    app: tauri::AppHandle,
+    items: Vec<ClipboardWriteItem>,
+) -> Result<ClipboardWriteResult, String> {
+    write_clipboard_items_checked(&app, items)
+}
+
+#[cfg(not(windows))]
+#[tauri::command]
+fn write_clipboard_items(
+    app: tauri::AppHandle,
+    items: Vec<ClipboardWriteItem>,
+) -> Result<ClipboardWriteResult, String> {
+    write_clipboard_items_checked(&app, items)
+}
+
+fn write_clipboard_items_checked(
+    app: &tauri::AppHandle,
+    items: Vec<ClipboardWriteItem>,
+) -> Result<ClipboardWriteResult, String> {
+    let items = validate_clipboard_items(items)?;
+    write_clipboard_items_impl(app, &items)
+}
+
+// Retain the legacy IPC signatures pinned by the command-separation test and used by the ignored
+// native pasteboard test. All writes, including these compatibility shims, use the one writer.
+#[cfg(windows)]
+#[tauri::command]
 async fn write_clipboard_text_items(
     app: tauri::AppHandle,
     items: Vec<ClipboardWriteTextItem>,
 ) -> Result<(), String> {
-    write_clipboard_text_items_impl(&app, normalize_clipboard_write_text_items(items)?)
+    let items = normalize_clipboard_write_text_items(items)?;
+    clipboard_write_succeeded(write_clipboard_items_impl(&app, &items)?)
 }
 
 #[cfg(not(windows))]
@@ -4629,17 +4664,16 @@ fn write_clipboard_text_items(
     app: tauri::AppHandle,
     items: Vec<ClipboardWriteTextItem>,
 ) -> Result<(), String> {
-    write_clipboard_text_items_impl(&app, normalize_clipboard_write_text_items(items)?)
+    let items = normalize_clipboard_write_text_items(items)?;
+    clipboard_write_succeeded(write_clipboard_items_impl(&app, &items)?)
 }
 
-/// Copy As ▸ PNG: put raster image bytes on the system pasteboard as `public.png`.
 #[cfg(windows)]
 #[tauri::command]
 async fn write_clipboard_image(app: tauri::AppHandle, png_bytes: Vec<u8>) -> Result<(), String> {
     write_clipboard_image_checked(&app, &png_bytes)
 }
 
-/// Copy As ▸ PNG: put raster image bytes on the system pasteboard as `public.png`.
 #[cfg(not(windows))]
 #[tauri::command]
 fn write_clipboard_image(app: tauri::AppHandle, png_bytes: Vec<u8>) -> Result<(), String> {
@@ -4647,10 +4681,30 @@ fn write_clipboard_image(app: tauri::AppHandle, png_bytes: Vec<u8>) -> Result<()
 }
 
 fn write_clipboard_image_checked(app: &tauri::AppHandle, png_bytes: &[u8]) -> Result<(), String> {
-    if png_bytes.is_empty() {
-        return Err("Empty PNG payload.".to_string());
+    use base64::{engine::general_purpose::STANDARD, Engine};
+
+    clipboard_write_succeeded(write_clipboard_items_checked(
+        app,
+        vec![ClipboardWriteItem {
+            r#type: "image/png".to_string(),
+            text: None,
+            bytes_base64: Some(STANDARD.encode(png_bytes)),
+            required: true,
+        }],
+    )?)
+}
+
+fn clipboard_write_succeeded(result: ClipboardWriteResult) -> Result<(), String> {
+    if result.ok {
+        Ok(())
+    } else {
+        Err(result
+            .failed
+            .into_iter()
+            .map(|failure| format!("{}: {}", failure.r#type, failure.reason))
+            .collect::<Vec<_>>()
+            .join("; "))
     }
-    write_clipboard_image_impl(app, png_bytes)
 }
 
 /// The window that owns clipboard writes on Windows. EmptyClipboard with no owner leaves the
@@ -4663,54 +4717,20 @@ fn clipboard_owner_window(app: &tauri::AppHandle) -> windows_sys::Win32::Foundat
         .unwrap_or(std::ptr::null_mut())
 }
 
-#[cfg(target_os = "macos")]
-fn write_clipboard_image_impl(_app: &tauri::AppHandle, png_bytes: &[u8]) -> Result<(), String> {
-    use objc2_foundation::NSData;
-
-    let pasteboard = NSPasteboard::generalPasteboard();
-    pasteboard.clearContents();
-    let png_type = NSString::from_str("public.png");
-    if pasteboard.setData_forType(Some(&NSData::with_bytes(png_bytes)), &png_type) {
-        Ok(())
-    } else {
-        Err("Could not write PNG data to the clipboard.".to_string())
-    }
-}
-
-#[cfg(windows)]
-fn write_clipboard_image_impl(app: &tauri::AppHandle, png_bytes: &[u8]) -> Result<(), String> {
-    windows_clipboard::native::write_png(clipboard_owner_window(app), png_bytes)
-}
-
-#[cfg(not(any(target_os = "macos", windows)))]
-fn write_clipboard_image_impl(_app: &tauri::AppHandle, _png_bytes: &[u8]) -> Result<(), String> {
-    Err("Native clipboard image writes are only implemented for macOS and Windows.".to_string())
-}
-
 fn normalize_clipboard_write_text_items(
     items: Vec<ClipboardWriteTextItem>,
-) -> Result<Vec<ClipboardWriteTextItem>, String> {
-    let mut seen_types = Vec::<String>::new();
-    let mut normalized_items = Vec::<ClipboardWriteTextItem>::new();
-
-    for item in items {
-        let item_type = item.r#type.trim().to_string();
-        if item_type.is_empty() || item.text.is_empty() || seen_types.contains(&item_type) {
-            continue;
-        }
-
-        seen_types.push(item_type.clone());
-        normalized_items.push(ClipboardWriteTextItem {
-            r#type: item_type,
-            text: item.text,
-        });
-    }
-
-    if normalized_items.is_empty() {
-        return Err("Clipboard write requires at least one text item.".to_string());
-    }
-
-    Ok(normalized_items)
+) -> Result<Vec<ValidatedClipboardItem>, String> {
+    validate_clipboard_items(
+        items
+            .into_iter()
+            .map(|item| ClipboardWriteItem {
+                r#type: item.r#type,
+                text: Some(item.text),
+                bytes_base64: None,
+                required: true,
+            })
+            .collect(),
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -4748,48 +4768,55 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
 }
 
 #[cfg(target_os = "macos")]
-fn write_clipboard_text_items_impl(
+fn write_clipboard_items_impl(
     _app: &tauri::AppHandle,
-    items: Vec<ClipboardWriteTextItem>,
-) -> Result<(), String> {
-    write_native_clipboard_text_items(items)
+    items: &[ValidatedClipboardItem],
+) -> Result<ClipboardWriteResult, String> {
+    Ok(write_native_clipboard_items(items))
 }
 
 #[cfg(target_os = "macos")]
-fn write_native_clipboard_text_items(items: Vec<ClipboardWriteTextItem>) -> Result<(), String> {
+fn write_native_clipboard_items(items: &[ValidatedClipboardItem]) -> ClipboardWriteResult {
+    use clipboard_formats::{macos_type_for_payload_type, ClipboardWriteData};
+    use objc2_foundation::NSData;
+
     let pasteboard = NSPasteboard::generalPasteboard();
     pasteboard.clearContents();
-
-    let failed_types = items
-        .iter()
-        .filter_map(|item| {
-            if set_clipboard_text_item(&pasteboard, item) {
-                None
-            } else {
-                Some(item.r#type.clone())
+    let mut result = ClipboardWriteResult::new();
+    for item in items {
+        let pasteboard_type = NSString::from_str(macos_type_for_payload_type(&item.r#type));
+        let written = match &item.data {
+            ClipboardWriteData::Text(text) => {
+                let text = NSString::from_str(text);
+                if item.r#type == "text/plain" {
+                    pasteboard.setString_forType(&text, unsafe { NSPasteboardTypeString })
+                } else {
+                    pasteboard.setString_forType(&text, &pasteboard_type)
+                }
             }
-        })
-        .collect::<Vec<_>>();
-
-    if failed_types.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
-            "Could not write clipboard text for type(s): {}",
-            failed_types.join(", ")
-        ))
+            ClipboardWriteData::Binary(bytes) => {
+                pasteboard.setData_forType(Some(&NSData::with_bytes(bytes)), &pasteboard_type)
+            }
+        };
+        result.record(
+            item,
+            if written {
+                Ok(())
+            } else {
+                Err(format!(
+                    "Could not write clipboard data for type {}.",
+                    item.r#type
+                ))
+            },
+        );
     }
+    result
 }
 
-#[cfg(target_os = "macos")]
-fn set_clipboard_text_item(pasteboard: &NSPasteboard, item: &ClipboardWriteTextItem) -> bool {
-    let text = NSString::from_str(&item.text);
-    if item.r#type == "text/plain" {
-        return pasteboard.setString_forType(&text, unsafe { NSPasteboardTypeString });
-    }
-
-    let pasteboard_type = NSString::from_str(&item.r#type);
-    pasteboard.setString_forType(&text, &pasteboard_type)
+#[cfg(all(test, target_os = "macos"))]
+fn write_native_clipboard_text_items(items: Vec<ClipboardWriteTextItem>) -> Result<(), String> {
+    let items = normalize_clipboard_write_text_items(items)?;
+    clipboard_write_succeeded(write_native_clipboard_items(&items))
 }
 
 /// Pasteboard flavors whose bytes are private containers, never directly pasteable text.
@@ -4983,11 +5010,11 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
 }
 
 #[cfg(windows)]
-fn write_clipboard_text_items_impl(
+fn write_clipboard_items_impl(
     app: &tauri::AppHandle,
-    items: Vec<ClipboardWriteTextItem>,
-) -> Result<(), String> {
-    windows_clipboard::native::write_text_items(clipboard_owner_window(app), &items)
+    items: &[ValidatedClipboardItem],
+) -> Result<ClipboardWriteResult, String> {
+    windows_clipboard::native::write_items(clipboard_owner_window(app), items)
 }
 
 #[cfg(not(any(target_os = "macos", windows)))]
@@ -4999,10 +5026,10 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
 }
 
 #[cfg(not(any(target_os = "macos", windows)))]
-fn write_clipboard_text_items_impl(
+fn write_clipboard_items_impl(
     _app: &tauri::AppHandle,
-    _items: Vec<ClipboardWriteTextItem>,
-) -> Result<(), String> {
+    _items: &[ValidatedClipboardItem],
+) -> Result<ClipboardWriteResult, String> {
     Err("Native clipboard writes are only implemented for macOS and Windows.".to_string())
 }
 
@@ -9913,6 +9940,53 @@ mod tests {
         ));
         expect_false(is_opaque_clipboard_type("com.mdli.molfile"));
         expect_false(is_opaque_clipboard_type("text/plain"));
+    }
+
+    // This stomps the user's clipboard. Run alone on macOS with:
+    // cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml native_macos_multiformat_round_trip -- --ignored --test-threads=1
+    #[test]
+    #[ignore = "overwrites the user's native clipboard"]
+    #[cfg(target_os = "macos")]
+    fn native_macos_multiformat_round_trip() {
+        use clipboard_formats::{macos_type_for_payload_type, native_test_data as fixture};
+
+        let (items, png) = fixture::items();
+        let items = validate_clipboard_items(items).expect("valid multi-format request");
+        // The native transaction used by write_clipboard_items, without creating a Tauri runtime.
+        let result = write_native_clipboard_items(&items);
+        assert!(result.ok, "{:?}", result.failed);
+        assert!(result.failed.is_empty());
+        assert!(result.warnings.is_empty());
+        assert_eq!(result.written.len(), 5);
+
+        let payload = read_clipboard_payload_impl().expect("read native clipboard");
+        for (kind, expected) in [
+            (fixture::PRIVATE_TYPE, fixture::JSON),
+            ("text/plain", fixture::TEXT),
+            ("text/html", fixture::HTML),
+            ("text/rtf", fixture::RTF),
+        ] {
+            let native_type = macos_type_for_payload_type(kind);
+            assert!(payload.types.iter().any(|kind| kind == native_type));
+            assert_eq!(
+                payload
+                    .text_items
+                    .iter()
+                    .find(|item| item.r#type == native_type)
+                    .expect("text flavour reads back")
+                    .text,
+                expected
+            );
+        }
+        assert!(payload.types.iter().any(|kind| kind == "public.png"));
+        let pasteboard = NSPasteboard::generalPasteboard();
+        assert_eq!(
+            pasteboard
+                .dataForType(&NSString::from_str("public.png"))
+                .expect("PNG reads back")
+                .to_vec(),
+            png
+        );
     }
 
     /// Round-trips the real NSPasteboard, so it stomps the user's clipboard — run explicitly

@@ -1,3 +1,5 @@
+import { applyPatch } from "@chemdraft/chem-core";
+import { defaultCases, bondDepiction, insertionDocument, expectDrawingDefaults } from "../drawingDefaults.testHelpers";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { generateSmiles2DMolfile } from "@chemdraft/rdkit-adapter";
 import { depictInWorker } from "../depiction2d/depict";
@@ -99,4 +101,18 @@ describe("plugin chemistry SMILES failure reasons", () => {
       reason: "No 2D structure could be generated for \"C1\": Class$S19: SmilesParser could not parse the input"
     });
   });
+});
+
+
+it.each(defaultCases)("plugin structures use $bondLengthPx px document defaults without changing existing objects", async style => {
+  const document = insertionDocument(style);
+  const existing = structuredClone(document.pages[0]!.objects);
+  vi.mocked(depictSmilesOffThread).mockResolvedValueOnce({ depiction: bondDepiction, stereoCount: 0, warnings: [] });
+  const result = await structureFromSmilesForPlugin({ smiles: "CO" }, () => document);
+  expect(result).toMatchObject({ available: true, built: true });
+  if (!result.available || !result.built) throw new Error("Structure was not built");
+  expectDrawingDefaults(result.object, style);
+  const next = applyPatch(document, { op: "addObject", pageId: document.pages[0]!.id, object: result.object });
+  expect(next.pages[0]!.objects.slice(0, 2)).toEqual(existing);
+  expect(document.pages[0]!.objects).toEqual(existing);
 });
