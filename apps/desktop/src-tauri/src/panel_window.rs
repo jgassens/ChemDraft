@@ -199,17 +199,24 @@ pub(crate) fn macos_style(
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
+pub(crate) fn install_input_focus<R: tauri::Runtime>(
     window: &tauri::WebviewWindow<R>,
 ) -> Result<(), String> {
     macos::observe(window)
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
-pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
+pub(crate) fn install_input_focus<R: tauri::Runtime>(
     _window: &tauri::WebviewWindow<R>,
 ) -> Result<(), String> {
     Ok(())
+}
+
+#[cfg(not(windows))]
+pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+) -> Result<(), String> {
+    install_input_focus(window)
 }
 
 #[cfg(windows)]
@@ -221,21 +228,90 @@ fn extended_style(style: isize) -> isize {
     (style | (WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW) as isize) & !(WS_EX_APPWINDOW as isize)
 }
 
+/// Focus observation is shared by resizable reports, tool palettes and colour popovers.
+/// It must not depend on a resize overlay (popovers do not have one).
+#[cfg(windows)]
+pub(crate) fn install_input_focus<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+) -> Result<(), String> {
+    use windows_sys::Win32::UI::{
+        Shell::SetWindowSubclass,
+        WindowsAndMessaging::{GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE},
+    };
+    let hwnd = window.hwnd().map_err(|error| error.to_string())?.0;
+    let target = window.clone();
+    let data = Box::into_raw(Box::new(FocusObserver {
+        activation: std::rc::Rc::new(move |active| activation(&target, active)),
+    }));
+    unsafe {
+        SetWindowLongPtrW(
+            hwnd,
+            GWL_EXSTYLE,
+            extended_style(GetWindowLongPtrW(hwnd, GWL_EXSTYLE)),
+        );
+        if SetWindowSubclass(hwnd, Some(focus_subclass), 2, data as usize) == 0 {
+            drop(Box::from_raw(data));
+            return Err(format!(
+                "Could not observe utility window focus: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+struct FocusObserver {
+    activation: std::rc::Rc<dyn Fn(bool)>,
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn focus_subclass(
+    hwnd: windows_sys::Win32::Foundation::HWND,
+    message: u32,
+    wparam: usize,
+    lparam: isize,
+    id: usize,
+    data: usize,
+) -> isize {
+    use windows_sys::Win32::UI::{
+        Shell::{DefSubclassProc, RemoveWindowSubclass},
+        WindowsAndMessaging::{
+            MA_NOACTIVATE, WA_INACTIVE, WM_ACTIVATE, WM_ACTIVATEAPP, WM_MOUSEACTIVATE, WM_NCDESTROY,
+        },
+    };
+    if message == WM_MOUSEACTIVATE {
+        // Keep NOACTIVATE throughout a lease; still deliver the click to WebView2.
+        return MA_NOACTIVATE as isize;
+    }
+    // Observe genuine top-level loss synchronously, including during acquisition.
+    // WebView2 child focus transitions are not lease boundaries.
+    if message == WM_ACTIVATE || (message == WM_ACTIVATEAPP && wparam == 0) {
+        let active = message == WM_ACTIVATE && (wparam & 0xffff) != WA_INACTIVE as usize;
+        let notify = (*(data as *const FocusObserver)).activation.clone();
+        notify(active);
+    }
+    if message == WM_NCDESTROY {
+        RemoveWindowSubclass(hwnd, Some(focus_subclass), id);
+        let result = DefSubclassProc(hwnd, message, wparam, lparam);
+        drop(Box::from_raw(data as *mut FocusObserver));
+        return result;
+    }
+    DefSubclassProc(hwnd, message, wparam, lparam)
+}
+
 #[cfg(windows)]
 pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
     window: &tauri::WebviewWindow<R>,
 ) -> Result<(), String> {
-    use windows_sys::Win32::UI::{
-        Shell::{RemoveWindowSubclass, SetWindowSubclass},
-        WindowsAndMessaging::{GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE},
-    };
+    use windows_sys::Win32::UI::Shell::{RemoveWindowSubclass, SetWindowSubclass};
+    install_input_focus(window)?;
     let hwnd = window.hwnd().map_err(|error| error.to_string())?.0;
     let document = window
         .app_handle()
         .get_webview_window(super::MAIN_WINDOW_LABEL)
         .ok_or_else(|| "Main document window is not available.".to_string())?;
     let parent = hwnd as usize;
-    let panel = window.clone();
     let lease_panel = window.clone();
     let data = Box::into_raw(Box::new(PanelSubclass {
         return_focus: std::rc::Rc::new(move || {
@@ -244,14 +320,8 @@ pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
                 eprintln!("Could not return panel keyboard focus: {error}");
             }
         }),
-        activation: std::rc::Rc::new(move |active| activation(&panel, active)),
     }));
     unsafe {
-        SetWindowLongPtrW(
-            hwnd,
-            GWL_EXSTYLE,
-            extended_style(GetWindowLongPtrW(hwnd, GWL_EXSTYLE)),
-        );
         if SetWindowSubclass(hwnd, Some(resize_subclass), 1, data as usize) == 0 {
             drop(Box::from_raw(data));
             return Err(format!(
@@ -281,7 +351,6 @@ pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
 #[cfg(windows)]
 struct PanelSubclass {
     return_focus: std::rc::Rc<dyn Fn()>,
-    activation: std::rc::Rc<dyn Fn(bool)>,
 }
 
 #[cfg(windows)]
@@ -390,9 +459,9 @@ unsafe extern "system" fn resize_subclass(
     use windows_sys::Win32::UI::{
         Shell::{DefSubclassProc, RemoveWindowSubclass},
         WindowsAndMessaging::{
-            HTCLIENT, MA_NOACTIVATE, WA_INACTIVE, WM_ACTIVATE, WM_ACTIVATEAPP, WM_DPICHANGED,
-            WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_NCHITTEST,
-            WM_NCLBUTTONDOWN, WM_NCMBUTTONDOWN, WM_NCRBUTTONDOWN, WM_SETTINGCHANGE, WM_SIZE,
+            HTCLIENT, MA_NOACTIVATE, WM_DPICHANGED, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE,
+            WM_MOUSEACTIVATE, WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_NCMBUTTONDOWN,
+            WM_NCRBUTTONDOWN, WM_SETTINGCHANGE, WM_SIZE,
         },
     };
     if message == WM_MOUSEACTIVATE {
@@ -415,13 +484,6 @@ unsafe extern "system" fn resize_subclass(
         if let Some(return_focus) = &return_focus {
             return_focus();
         }
-    }
-    // A top-level deactivation is genuine even during acquisition. WebView2's
-    // transient child blur is not WM_ACTIVATE, and must never release a lease.
-    if message == WM_ACTIVATE || (message == WM_ACTIVATEAPP && wparam == 0) {
-        let active = message == WM_ACTIVATE && (wparam & 0xffff) != WA_INACTIVE as usize;
-        let notify = (*(data as *const PanelSubclass)).activation.clone();
-        notify(active);
     }
     if message == WM_NCDESTROY {
         RemoveWindowSubclass(hwnd, Some(resize_subclass), id);

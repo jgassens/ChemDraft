@@ -15,6 +15,9 @@ selection after tab switching/closing.
 Canvas context menus (macOS and Windows): open the page and object menus with the mouse and keyboard;
 use arrows, Home/End, Arrange and Copy As submenus, Enter, Space, Escape and Tab, then verify canvas
 focus and drawing shortcuts return after an action or dismissal.
+Palette field input (macOS and Windows): in Drawn Structure Settings, click Target bond length,
+type 30 and press Return; the value changes, the canvas does not, and no hotkey fires. Switch to
+another app and back, then click the field again; Customize gallery search still types.
 Text commit clicks (macOS and Windows): edit a text object with Bond or Select restored, then click empty canvas or an existing atom; that click commits only, preserves bonds and selection, and focuses SECTION.canvas-region for shortcuts; the next click works normally. Repeat Enter/Escape/Tab, toolbar actions, double-click editing, and IME composition (no mid-composition commit).
 With nothing focused, press Shift+F10: the app menu opens, never the browser menu, and mouse and keyboard input keep working.
 On Windows, right-click and press Shift+F10 in text fields (including textareas) in the document,

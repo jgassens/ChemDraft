@@ -340,7 +340,7 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     const nativePath = join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src");
     const source = readFileSync(join(nativePath, "lib.rs"), "utf8");
     const pageLoad = source.split(".on_page_load(")[1]!.split(".on_menu_event(")[0]!;
-    expect(pageLoad).toContain("is_plugin_panel_window_label(webview.label())");
+    expect(pageLoad).toContain("is_input_focus_window_label(webview.label())");
     expect(pageLoad).toContain("PageLoadEvent::Started");
     expect(pageLoad).toContain("panel_window::reset_for_webview(&webview.window())");
     const panel = readFileSync(join(nativePath, "panel_window.rs"), "utf8");

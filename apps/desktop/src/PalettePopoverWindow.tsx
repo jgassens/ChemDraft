@@ -4,6 +4,7 @@ import { ColorPickerPopoverBody, symbolToolGlyph, toolbarCommandFlyoutGridStyle 
 import { Icon, type IconName } from "./icons";
 import { toolbarAsset, type ToolbarAssetName } from "./toolbarAssets";
 import { normalizeHexColor, objectCustomColorCommandId } from "./commands";
+import { installPaletteInputFocus } from "./plugins/pluginPanelInputFocus";
 import {
   listenForToolsetPopoverContent,
   listenForToolsetPopoverDismiss,
@@ -80,6 +81,11 @@ export function PalettePopoverWindow({
     : artStyle?.values.strokeColor.value;
   const currentColor = normalizeHexColor(activeColor ?? fallbackColor) ?? "#111111";
   const value = draft ?? currentColor;
+
+  useEffect(() => {
+    const shell = shellRef.current;
+    if (shell) return installPaletteInputFocus(shell);
+  }, []);
 
   useEffect(() => {
     document.documentElement.classList.add("palette-popover-window-html");

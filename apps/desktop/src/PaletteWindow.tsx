@@ -13,6 +13,7 @@ import { writeClipboardTextItems } from "./clipboard";
 import { allShellCommands, type CommandSpec } from "./commands";
 import { createPhase4Document } from "./documentWorkflow";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
+import { installPaletteInputFocus, panelEditableControl } from "./plugins/pluginPanelInputFocus";
 import { applyKeybindingSchemeToCommands } from "./keybindingScheme";
 import { isCompoundLayoutCommand } from "./compoundLayoutSettings";
 import { useCompoundLayoutTools } from "./useCompoundLayoutTools";
@@ -71,7 +72,6 @@ import {
   sendPaletteCommandPreview,
   showPaletteFloatingTooltip,
   setCurrentWindowLogicalSize,
-  setToolsetWindowFocusable,
   startPaletteWindowDrag,
   toolsetCommandSpecsSignature,
   type ToolsetArtPaintTarget,
@@ -411,17 +411,11 @@ export function PaletteWindow({
     };
   }, [toolset.id]);
 
-  // Palettes ship non-focusable; the gallery's search field needs keystrokes, so flip focusability on
-  // while customizing this palette and back off on exit (restoring the never-steal-key default).
+  // Editable settings and gallery search borrow the keyboard only while editing.
   useEffect(() => {
-    if (!customizeThisPalette) {
-      return;
-    }
-    void setToolsetWindowFocusable(toolset.id, true).catch(() => undefined);
-    return () => {
-      void setToolsetWindowFocusable(toolset.id, false).catch(() => undefined);
-    };
-  }, [customizeThisPalette, toolset.id]);
+    const shell = shellRef.current;
+    if (shell) return installPaletteInputFocus(shell);
+  }, []);
 
   useEffect(() => {
     const preferredSize = toolset.preferredWindowSize ?? gridWindowSize;
@@ -668,6 +662,7 @@ export function PaletteWindow({
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (panelEditableControl(event.target)) return;
       const commandId = shortcutRegistry.resolve(event);
       if (!commandId) {
         return;

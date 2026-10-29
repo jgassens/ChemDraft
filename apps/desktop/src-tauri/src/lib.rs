@@ -964,7 +964,7 @@ pub fn run() {
 
     builder
         .on_page_load(|webview, payload| {
-            if is_plugin_panel_window_label(webview.label())
+            if is_input_focus_window_label(webview.label())
                 && matches!(payload.event(), PageLoadEvent::Started)
             {
                 // Reset before the new page can install its focus listener or acquire a lease.
@@ -1099,6 +1099,14 @@ pub fn run() {
                     .closed(window.label());
             }
 
+            // Focused is queued by Tao and may describe an older activation by delivery.
+            // Lease ownership is observed synchronously at the OS boundary instead.
+            if is_input_focus_window_label(window.label())
+                && matches!(event, WindowEvent::Destroyed)
+            {
+                panel_window::forget(window);
+            }
+
             // A report or analysis window closed natively (Window > Close Window, Cmd+W) must take
             // the same path as its own close control: hidden, not destroyed, and the main document
             // told, so a plugin gets its close signal (AGENTS.md §8a) and a later report re-shows the
@@ -1126,11 +1134,6 @@ pub fn run() {
                         window.app_handle(),
                         MainWindowFocusMode::OnlyIfAppActive,
                     );
-                }
-                // Focused is queued by Tao and may describe an older activation by delivery.
-                // Lease ownership is observed synchronously at the OS boundary instead.
-                if matches!(event, WindowEvent::Destroyed) {
-                    panel_window::forget(window);
                 }
                 if let WindowEvent::CloseRequested { api, .. } = event {
                     if APP_QUITTING.load(Ordering::SeqCst) {
@@ -3033,11 +3036,19 @@ fn plugin_panel_event_forward(
 
 /// The IPC injects the calling window; it never accepts a caller-selected target label.
 fn validate_plugin_panel_focus_caller(label: &str) -> Result<(), String> {
-    if is_plugin_panel_window_label(label) {
+    if is_input_focus_window_label(label) {
         Ok(())
     } else {
-        Err("Only a ChemDraft panel window may request panel input focus.".into())
+        Err("Only a ChemDraft panel or tool palette window may request input focus.".into())
     }
+}
+
+fn is_input_focus_window_label(label: &str) -> bool {
+    is_plugin_panel_window_label(label)
+        || label.strip_prefix("toolset-").is_some_and(|suffix| {
+            // Popovers share a window between command flyouts and editable colour fields.
+            !suffix.is_empty() && suffix != "tooltip" && suffix != "popover" && suffix != "popover-"
+        })
 }
 
 #[tauri::command]
@@ -3410,10 +3421,27 @@ mod plugin_panel_label_tests {
     }
 
     #[test]
-    fn input_focus_command_accepts_only_its_injected_panel_caller() {
+    fn input_focus_command_accepts_only_its_injected_panel_or_palette_caller() {
         use super::validate_plugin_panel_focus_caller;
         assert!(validate_plugin_panel_focus_caller(&plugin_panel_window_label("panel.a")).is_ok());
-        for label in ["main", "toolset-core-main", "preferences", "plugin-panel-"] {
+        for label in [
+            "toolset-core-main",
+            "toolset-core-drawnStructureSettings",
+            "toolset-popover-core-art",
+        ] {
+            assert!(validate_plugin_panel_focus_caller(label).is_ok(), "{label}");
+        }
+        for label in [
+            "",
+            "main",
+            "dialog-main-export-1",
+            "preferences",
+            "plugin-panel-",
+            "toolset-",
+            "toolset-tooltip",
+            "toolset-popover",
+            "toolset-popover-",
+        ] {
             assert!(
                 validate_plugin_panel_focus_caller(label).is_err(),
                 "{label}"
@@ -4227,10 +4255,8 @@ fn build_toolset_popover_window(
     .inner_size(320.0, 300.0)
     .min_inner_size(96.0, 56.0)
     .accept_first_mouse(true)
-    // Unlike the button-only palettes, the color picker has hex/RGB text inputs, so its window
-    // must be able to take keyboard focus. It stays a NonactivatingPanel (see below), so
-    // becoming key doesn't yank the app's activation away from the document.
-    .focusable(true)
+    // Hex/RGB fields borrow the keyboard through the same input lease as palettes.
+    .focusable(false)
     .resizable(false)
     .decorations(false)
     .skip_taskbar(true)
@@ -4244,6 +4270,7 @@ fn build_toolset_popover_window(
 
     disable_default_context_menus(&window);
     configure_toolset_popover_window(&window, false)?;
+    install_toolset_input_focus(&window)?;
     // Re-assert the anchor as the FINAL step, mirroring the warm path: panel configuration
     // can nudge the frame, and builder-time positioning has proven less trustworthy than an
     // explicit post-build LogicalPosition set (first opens landed away from the anchor).
@@ -4252,18 +4279,12 @@ fn build_toolset_popover_window(
     Ok(())
 }
 
-/// Same floating NonactivatingPanel treatment as the palettes, but focusable so the color
-/// picker's text inputs work. `configure_toolset_utility_window` force-sets focusable(false),
-/// so re-assert focusable(true) afterwards.
+/// Colour fields acquire focus through the guarded input lease, like palette settings.
 fn configure_toolset_popover_window<R: Runtime>(
     window: &tauri::WebviewWindow<R>,
     order_front: bool,
 ) -> Result<(), String> {
-    configure_toolset_utility_window(window, order_front)?;
-    window
-        .set_focusable(true)
-        .map_err(|error| error.to_string())?;
-    Ok(())
+    configure_toolset_utility_window(window, order_front)
 }
 
 #[tauri::command]
@@ -4278,11 +4299,8 @@ fn toolset_popover_window_label(toolset_id: &str) -> String {
     format!("toolset-popover-{}", toolset_id.replace('.', "-"))
 }
 
-/// Toggle a palette window's focusability. Palettes ship `focusable(false)` (they never steal key
-/// status — see `toolset_window_focusable`), but the in-place customize gallery's search field needs
-/// keyboard focus. Mirrors the popover precedent: `configure_toolset_popover_window` re-asserts
-/// `set_focusable(true)` on a NonactivatingPanel and the color-picker hex input proves a text field
-/// then receives input without the panel activating the app. The palette re-asserts `false` on exit.
+/// Legacy focusability command retained for IPC compatibility. Palette settings, Customize search
+/// and colour fields now use the guarded per-window input lease instead.
 #[tauri::command]
 fn set_toolset_window_focusable(
     app: tauri::AppHandle,
@@ -6971,7 +6989,20 @@ fn ensure_toolset_window<R: Runtime>(
 
     disable_default_context_menus(&window);
     configure_toolset_utility_window(&window, true)?;
+    install_toolset_input_focus(&window)?;
     Ok(())
+}
+
+/// Install once at construction, including native focus-loss delivery for every input lease.
+fn install_toolset_input_focus<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
+    let target = window.clone();
+    let installed = run_on_main_thread_blocking(window, move || {
+        panel_window::install_input_focus(&target)
+    })
+    .and_then(|result| result);
+    panel_window::finish_installation(installed, || {
+        window.destroy().map_err(|error| error.to_string())
+    })
 }
 
 /// Run `task` on the main thread and wait for its result. AppKit is main-thread-only, and the
