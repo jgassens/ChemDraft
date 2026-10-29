@@ -100,7 +100,7 @@ function equalDecimalPlaces(table: TableObject, column: number): boolean {
     && new Set(values.map(text => (text.split(".")[1] ?? "").length)).size === 1;
 }
 
-function cellAlignment(table: TableObject, layout: TableLayout, row: number, column: number) {
+function rtfCellAlignment(table: TableObject, layout: TableLayout, row: number, column: number) {
   const align = table.columns[column].align;
   if (align !== "decimal") return { align: align === "unknown" ? "left" : align };
   if (row < table.headerRowCount) return { align: "center" as const };
@@ -111,6 +111,22 @@ function cellAlignment(table: TableObject, layout: TableLayout, row: number, col
     insetLeft: block.insetLeft,
     decimalOffset: block.preWidth
   };
+}
+
+function htmlCellAlignment(table: TableObject, layout: TableLayout, row: number, column: number) {
+  const align = table.columns[column].align;
+  if (align !== "decimal") return { align: align === "unknown" ? "left" : align };
+  if (row < table.headerRowCount) return { align: "center" as const };
+  const block = layout.columns[column].decimalBlock!;
+  // Ask the shared layout for this cell's post-point width, including rich-text metrics.
+  // No point (integers, dashes, empty cells) means a zero-width post-point piece.
+  const cellLayout = planTableLayout({
+    ...table, caption: undefined, footnotes: [], headerRowCount: 0,
+    columns: [table.columns[column]],
+    rows: [{ ...table.rows[row], cells: [table.rows[row].cells[column]] }]
+  });
+  const postWidth = cellLayout.columns[0].decimalBlock!.postWidth;
+  return { align: "right" as const, insetRight: block.insetRight + block.postWidth - postWidth };
 }
 
 function cellBorders(layout: TableLayout, row: number, column: number): Record<Side, number> {
@@ -158,15 +174,13 @@ function htmlTable(table: TableObject, layout: TableLayout, options: TableClipbo
     for (let column = 0; column < table.columns.length; column++) {
       const width = layout.columns[column].width;
       const borders = cellBorders(layout, row, column);
-      const alignment = cellAlignment(table, layout, row, column);
+      const alignment = htmlCellAlignment(table, layout, row, column);
       const header = row < table.headerRowCount;
       const text = table.rows[row].cells[column].text;
-      let cellStyle = `width:${numeric(width * 0.75)}pt;padding:${pad} ${pad}`;
+      let cellStyle = `width:${numeric(width * 0.75)}pt;padding:${pad} ${pad}`
+        + ";background:transparent;mso-shading:transparent";
       if (alignment.insetRight !== undefined) {
         cellStyle += `;padding-right:${numeric((padding.x + alignment.insetRight) * 0.75)}pt`;
-      }
-      if (alignment.insetLeft !== undefined) {
-        cellStyle += `;padding-left:${numeric((padding.x + alignment.insetLeft) * 0.75)}pt`;
       }
       for (const side of sides) {
         const border = borders[side];
@@ -182,11 +196,9 @@ function htmlTable(table: TableObject, layout: TableLayout, options: TableClipbo
           cellStyle += ';mso-number-format:&quot;\\@&quot;';
         }
       }
-      const tab = alignment.decimalOffset;
-      const tabStyle = tab === undefined ? "" : `;tab-stops:decimal ${numeric(tab * 0.75)}pt`;
       const cell = layout.cells[row * table.columns.length + column];
       html += `<td width="${Math.round(width)}"${header ? ' valign="bottom"' : ""} style="${cellStyle}">`
-        + `<p style="margin:0;line-height:normal;text-align:${alignment.align}${tabStyle}`
+        + `<p style="margin:0;line-height:normal;text-align:${alignment.align}`
         + `${htmlFont(style, options)}">`
         + htmlLines(cell.lines, style) + "</p></td>";
     }
@@ -220,6 +232,19 @@ function rtfEscape(value: string): string {
 }
 
 function rtfTable(table: TableObject, layout: TableLayout, options: TableClipboardOptions): string {
+  // RTF readers wrap text in undersized cells. Expand fixed columns to their natural content
+  // width (which includes both paddings), then round each width up to a whole twip. Replan so
+  // decimal insets and tabs still describe the interior of the exported cells.
+  const natural = planTableLayout({
+    ...table, columns: table.columns.map(column => ({ ...column, width: { mode: "auto" as const } }))
+  });
+  const widths = layout.columns.map((column, index) =>
+    Math.ceil(Math.max(column.width, natural.columns[index].width) * 15));
+  layout = planTableLayout({
+    ...table, columns: table.columns.map((column, index) => ({
+      ...column, width: { mode: "fixed" as const, px: widths[index] / 15 }
+    }))
+  });
   const style = nativeTextStyleFromObjectStyle(table.style);
   const { family, serif } = fontInfo(style);
   const colors: string[] = [];
@@ -267,28 +292,31 @@ function rtfTable(table: TableObject, layout: TableLayout, options: TableClipboa
   const padx = Math.round(table.tableStyle.cellPaddingPx.x * 15);
   const pady = Math.round(table.tableStyle.cellPaddingPx.y * 15);
   for (let row = 0; row < table.rows.length; row++) {
-    result += `\\trowd\\trgaph${padx}\\trleft0\\trpaddl${padx}\\trpaddr${padx}`
-      + `\\trpaddt${pady}\\trpaddb${pady}\\trpaddfl3\\trpaddfr3\\trpaddft3\\trpaddfb3`;
+    result += `\\trowd\\trgaph${padx}\\trleft0\\trpaddl${padx}\\trpaddfl3\\trpaddr${padx}\\trpaddfr3`
+      + `\\trpaddt${pady}\\trpaddft3\\trpaddb${pady}\\trpaddfb3`
+      + `\\trftsWidth3\\trwWidth${widths.reduce((sum, width) => sum + width, 0)}`;
     if (row < table.headerRowCount) result += "\\trhdr";
     if (row === table.rows.length - 1) result += "\\lastrow";
     for (let column = 0; column < table.columns.length; column++) {
       const borders = cellBorders(layout, row, column);
       for (const side of sides) {
-        if (borders[side] > 0) result += `\\clbrdr${rtfSides[side]}\\brdrs`
-          + `\\brdrw${Math.round(borders[side] * 20)}\\brdrcf0`;
+        result += `\\clbrdr${rtfSides[side]}` + (borders[side] > 0
+          ? `\\brdrs\\brdrw${Math.round(borders[side] * 20)}\\brdrcf0` : "\\brdrnil");
       }
+      result += `\\clshdng0\\clftsWidth3\\clwWidth${widths[column]}`;
       if (row < table.headerRowCount) result += "\\clvertalb";
-      const alignment = cellAlignment(table, layout, row, column);
+      const alignment = rtfCellAlignment(table, layout, row, column);
       if (alignment.insetRight !== undefined) {
         result += `\\clpadr${Math.round((table.tableStyle.cellPaddingPx.x + alignment.insetRight) * 15)}`
           + "\\clpadfr3";
       }
-      // Word swaps per-cell left and top padding, so encode the left inset in the tab stop instead.
+      // Word swaps per-cell left and top padding. Row padding supplies the text margin;
+      // only the decimal block's extra inset belongs in the tab stop relative to that margin.
       const planned = layout.columns[column];
       result += `\\cellx${Math.round((planned.x + planned.width - layout.bodyBox.x) * 15)}`;
     }
     for (let column = 0; column < table.columns.length; column++) {
-      const alignment = cellAlignment(table, layout, row, column);
+      const alignment = rtfCellAlignment(table, layout, row, column);
       const tab = alignment.decimalOffset;
       result += `\\pard\\plain\\intbl\\q${alignment.align[0]}\\sa0\\sb0\\sl240\\slmult1`;
       if (tab !== undefined) result += `\\tqdec\\tx${Math.round((tab + (alignment.insetLeft ?? 0)) * 15)}`;

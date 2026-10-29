@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { JSDOM } from "jsdom";
 import { describe, expect, it } from "vitest";
 import { nativeTextStyleFromObjectStyle, parseDocument, type TableObject } from "@chemdraft/chem-core";
-import { planTableLayout } from "@chemdraft/layout-engine";
+import { measureTextRun, planTableLayout } from "@chemdraft/layout-engine";
 import {
   exportTableClipboardPayloads,
   exportTableToHtml,
@@ -13,6 +13,12 @@ import {
 const fixtureUrl = new URL("../../fixtures/tables/sharpless-reagent-table.json", import.meta.url);
 const table = parseDocument(JSON.parse(readFileSync(fixtureUrl, "utf8"))).pages[0].objects[0] as TableObject;
 const layout = planTableLayout(table);
+const rtfWidths = layout.columns.map(column => Math.ceil(column.width * 15));
+const rtfLayout = planTableLayout({
+  ...table, columns: table.columns.map((column, index) => ({
+    ...column, width: { mode: "fixed", px: rtfWidths[index] / 15 }
+  }))
+});
 const payloads = exportTableClipboardPayloads(table);
 const inheritHtml = exportTableToHtml(table, { font: "inherit" });
 const sides = ["top", "bottom", "left", "right"] as const;
@@ -79,7 +85,7 @@ describe("table clipboard payloads", () => {
   });
 
   it("sets finite layout-derived widths and all four border sides without shading", () => {
-    expect(payloads.html).not.toMatch(/width:100%|background|mso-shading/i);
+    expect(payloads.html).not.toMatch(/width:100%/i);
     const document = htmlDocument(payloads.html);
     const element = document.querySelector("table")!;
     expect(element.getAttribute("width")).toBe(String(Math.round(layout.bodyBox.width)));
@@ -92,6 +98,8 @@ describe("table clipboard payloads", () => {
       expect(cell.children).toHaveLength(1);
       expect(cell.firstElementChild?.tagName).toBe("P");
       for (const side of sides) expect(cell.getAttribute("style")).toContain(`border-${side}:`);
+      expect(cell.getAttribute("style")).toContain("background:transparent;mso-shading:transparent");
+      expect(cell.getAttribute("style")).toContain("border-left:none;border-right:none");
     }
   });
 
@@ -115,62 +123,80 @@ describe("table clipboard payloads", () => {
     });
     const rowsRtf = payloads.rtf.split("\\trowd").slice(1);
     rowsRtf.forEach((row, index) => {
-      expect([...row.matchAll(/\\clbrdrt\b/g)]).toHaveLength(index === 0 ? 7 : 0);
-      expect([...row.matchAll(/\\clbrdrb\b/g)]).toHaveLength(index === 0 || index === 5 ? 7 : 0);
-      expect(row).not.toMatch(/\\clbrdr[lr]\b/);
-    });
-  });
-
-  it("uses the block insets and precision to reproduce layout placement in HTML and RTF", () => {
-    const rows = [...htmlDocument(payloads.html).querySelectorAll("tr")];
-    const rtfRows = payloads.rtf.split("\\trowd").slice(1);
-    rows.forEach((row, index) => {
-      const cells = [...row.querySelectorAll("td")];
-      const rtfDefinitions = rtfRows[index].split("\\pard")[0].split(/\\cellx\d+/);
-      const rtfCells = rtfRows[index].split("\\pard\\plain\\intbl").slice(1);
-      for (let column = 1; column < cells.length; column++) {
-        const paragraph = cells[column].querySelector("p")!;
-        const style = paragraph.getAttribute("style")!;
-        const cellStyle = cells[column].getAttribute("style")!;
-        const block = layout.columns[column].decimalBlock!;
-        if (index === 0) {
-          expect(style).toContain("text-align:center");
-          expect(style).not.toContain("tab-stops");
-          expect(cellStyle).not.toMatch(/padding-(left|right)/);
-          expect(rtfDefinitions[column]).not.toContain("\\clpad");
-          expect(rtfCells[column]).toMatch(/^\\qc/);
-        }
-        else if (column === 1) {
-          const padding = table.tableStyle.cellPaddingPx.x + block.insetRight;
-          expect(style).toContain("text-align:right");
-          expect(style).not.toContain("tab-stops");
-          expect(cellStyle).toContain(`padding-right:${Number((padding * 0.75).toFixed(4))}pt`);
-          expect(cellStyle).not.toContain("padding-left");
-          expect(rtfDefinitions[column]).toContain(`\\clpadr${Math.round(padding * 15)}\\clpadfr3`);
-          expect(rtfCells[column]).toMatch(/^\\qr/);
-          expect(rtfCells[column]).not.toContain("\\tqdec");
-          expect(rtfCells[column]).not.toContain("\\tab ");
-        } else {
-          const padding = table.tableStyle.cellPaddingPx.x + block.insetLeft;
-          const offsetPt = Number((block.preWidth * 0.75).toFixed(4));
-          expect(style).toContain(`text-align:left;tab-stops:decimal ${offsetPt}pt`);
-          expect(cellStyle).toContain(`padding-left:${Number((padding * 0.75).toFixed(4))}pt`);
-          expect(cellStyle).not.toContain("padding-right");
-          expect(rtfDefinitions[column]).not.toMatch(/\\clpad[lt]/);
-          expect(rtfCells[column]).toMatch(/^\\ql/);
-          const tabTwips = Math.round((block.insetLeft + block.preWidth) * 15);
-          expect(rtfCells[column]).toContain(`\\tqdec\\tx${tabTwips}`);
-          expect(rtfCells[column].match(/\\tab /g)).toHaveLength(1);
-        }
-        expect(paragraph.textContent).toBe(table.rows[index].cells[column].text);
+      const definitions = row.split("\\pard")[0].split(/\\cellx\d+/).slice(0, -1);
+      for (const definition of definitions) {
+        expect(definition).toContain(index === 0 ? "\\clbrdrt\\brdrs\\brdrw20\\brdrcf0"
+          : "\\clbrdrt\\brdrnil");
+        expect(definition).toContain(index === 0 ? "\\clbrdrb\\brdrs\\brdrw10\\brdrcf0"
+          : index === 5 ? "\\clbrdrb\\brdrs\\brdrw20\\brdrcf0" : "\\clbrdrb\\brdrnil");
+        expect(definition).toContain("\\clbrdrl\\brdrnil\\clbrdrr\\brdrnil");
+        expect(definition).toContain("\\clshdng0");
       }
     });
-    expect(rows[1].children[1].getAttribute("style")).toContain("mso-number-format:'0\\.00'");
-    expect(rows[5].children[6].getAttribute("style")).toContain("mso-number-format:'0'");
-    expect(rows[4].children[2].getAttribute("style")).not.toContain("mso-number-format");
+    expect(payloads.rtf).not.toMatch(/\\cl(?:cbpat|cfpat)\b/);
+  });
+
+  it("right-aligns every HTML decimal column with per-cell padding at the canvas decimal anchor", () => {
+    const font = nativeTextStyleFromObjectStyle(table.style);
     for (const html of [payloads.html, inheritHtml]) {
-      expect(html).not.toMatch(/mso-tab-count|&#9;|\t/);
+      const rows = [...htmlDocument(html).querySelectorAll("tr")];
+      rows.forEach((row, index) => {
+        const cells = [...row.querySelectorAll("td")];
+        for (let column = 1; column < cells.length; column++) {
+          const paragraph = cells[column].querySelector("p")!;
+          const style = paragraph.getAttribute("style")!;
+          const cellStyle = cells[column].getAttribute("style")!;
+          const block = layout.columns[column].decimalBlock!;
+          if (index === 0) {
+            expect(style).toContain("text-align:center");
+            expect(cellStyle).not.toMatch(/padding-(left|right)/);
+          } else {
+            const text = table.rows[index].cells[column].text;
+            const post = text.includes(".") ? text.slice(text.indexOf(".")) : "";
+            const postWidth = measureTextRun(post, { ...font, script: "normal" });
+            const padding = table.tableStyle.cellPaddingPx.x + block.insetRight + block.postWidth - postWidth;
+            expect(style).toContain("text-align:right");
+            expect(cellStyle).toContain(`padding-right:${Number((padding * 0.75).toFixed(4))}pt`);
+            expect(cellStyle).not.toContain("padding-left");
+            const actualPadding = Number(/padding-right:([\d.]+)pt/.exec(cellStyle)![1]) / 0.75;
+            const anchor = layout.columns[column].x + layout.columns[column].width - actualPadding - postWidth;
+            expect(anchor).toBeCloseTo(layout.columns[column].decimalAnchorX!, 3);
+            expect(anchor - layout.columns[column].x - table.tableStyle.cellPaddingPx.x)
+              .toBeCloseTo(block.insetLeft + block.preWidth, 3);
+          }
+          expect(paragraph.textContent).toBe(table.rows[index].cells[column].text);
+        }
+      });
+      expect(rows[1].children[1].getAttribute("style")).toContain("mso-number-format:'0\\.00'");
+      expect(rows[5].children[6].getAttribute("style")).toContain("mso-number-format:'0'");
+      expect(rows[4].children[2].getAttribute("style")).not.toContain("mso-number-format");
+      expect(html).not.toMatch(/tab-stops|mso-tab-count|&#9;|\t/);
     }
+  });
+
+  it("keeps RTF decimal tabs relative to the row-padded text margin", () => {
+    payloads.rtf.split("\\trowd").slice(1).forEach((row, index) => {
+      const definitions = row.split("\\pard")[0].split(/\\cellx\d+/);
+      const cells = row.split("\\pard\\plain\\intbl").slice(1);
+      for (let column = 1; column < table.columns.length; column++) {
+        const block = rtfLayout.columns[column].decimalBlock!;
+        expect(definitions[column]).not.toMatch(/\\clpad[lt]/);
+        if (index === 0) {
+          expect(definitions[column]).not.toContain("\\clpad");
+          expect(cells[column]).toMatch(/^\\qc/);
+        } else if (column === 1) {
+          const padding = table.tableStyle.cellPaddingPx.x + block.insetRight;
+          expect(definitions[column]).toContain(`\\clpadr${Math.round(padding * 15)}\\clpadfr3`);
+          expect(cells[column]).toMatch(/^\\qr/);
+          expect(cells[column]).not.toMatch(/\\tqdec|\\tab /);
+        } else {
+          const tabTwips = Math.round((block.insetLeft + block.preWidth) * 15);
+          expect(cells[column]).toMatch(/^\\ql/);
+          expect(cells[column]).toContain(`\\tqdec\\tx${tabTwips}`);
+          expect(cells[column].match(/\\tab /g)).toHaveLength(1);
+        }
+      }
+    });
   });
 
   it("preserves scripts in cells and footnotes", () => {
@@ -192,16 +218,48 @@ describe("table clipboard payloads", () => {
     expect(payloads.rtf).toContain("\\u8212\\'97");
     expect([...payloads.rtf.matchAll(/\\row\b/g)]).toHaveLength(table.rows.length);
     expect([...payloads.rtf.matchAll(/\\lastrow\b/g)]).toHaveLength(1);
-    const expected = layout.columns.map(column =>
-      Math.round((column.x + column.width - layout.bodyBox.x) * 15));
+    const expected = rtfWidths.map((_, index) => rtfWidths.slice(0, index + 1).reduce((a, b) => a + b, 0));
     for (const row of payloads.rtf.split("\\trowd").slice(1)) {
       const edges = [...row.matchAll(/\\cellx(\d+)/g)].map(match => Number(match[1]));
       expect(edges).toEqual(expected);
       expect(edges.every((edge, index) => edge > (edges[index - 1] ?? 0))).toBe(true);
-      expect(row).toContain("\\trgaph90\\trleft0\\trpaddl90\\trpaddr90\\trpaddt30\\trpaddb30");
+      expect(row).toContain("\\trgaph90\\trleft0\\trpaddl90\\trpaddfl3\\trpaddr90\\trpaddfr3"
+        + "\\trpaddt30\\trpaddft3\\trpaddb30\\trpaddfb3");
+      expect(row).toContain(`\\trftsWidth3\\trwWidth${expected[expected.length - 1]}`);
+      expect([...row.matchAll(/\\clftsWidth3\\clwWidth(\d+)/g)].map(match => Number(match[1])))
+        .toEqual(rtfWidths);
     }
     expect(payloads.rtf).toContain("\\pard\\plain\\sa80\\sb0\\f0\\fs24");
     expect(payloads.rtf).toContain("\\pard\\plain\\sa0\\sb80\\f0\\fs24");
+  });
+
+  it.each(["left", "decimal"] as const)("fits %s content and both paddings in narrow RTF columns", align => {
+    const input = smallTable(["1.00", "12345.6", "—", "0.1234"], align);
+    input.columns[0].width = { mode: "fixed", px: 12 };
+    input.tableStyle.cellPaddingPx = { x: 6.03, y: 2.07 };
+    const font = nativeTextStyleFromObjectStyle(input.style);
+    const measure = (text: string) => measureTextRun(text, { ...font, script: "normal" });
+    const widest = align === "decimal" ? measure("12345") + measure(".1234") : measure("12345.6");
+    const padx = Math.round(input.tableStyle.cellPaddingPx.x * 15);
+    const pady = Math.round(input.tableStyle.cellPaddingPx.y * 15);
+    for (const row of exportTableToRtf(input).split("\\trowd").slice(1)) {
+      const width = Number(/\\clwWidth(\d+)/.exec(row)![1]);
+      expect(width).toBeGreaterThanOrEqual(Math.ceil(widest * 15) + 2 * padx);
+      expect(row).toContain(`\\cellx${width}`);
+      expect(row).toContain(`\\trftsWidth3\\trwWidth${width}`);
+      expect(row).toContain(`\\trgaph${padx}\\trleft0\\trpaddl${padx}\\trpaddfl3`);
+      expect(row).toContain(`\\trpaddr${padx}\\trpaddfr3`);
+      expect(row).toContain(`\\trpaddt${pady}\\trpaddft3\\trpaddb${pady}\\trpaddfb3`);
+      if (align === "decimal") {
+        const tab = Number(/\\tqdec\\tx(\d+)/.exec(row)![1]);
+        expect(tab).toBeGreaterThanOrEqual(Math.ceil(measure("12345") * 15));
+        expect(padx + tab + measure(".1234") * 15 + padx).toBeLessThanOrEqual(width);
+        const exported = planTableLayout({
+          ...input, columns: [{ ...input.columns[0], width: { mode: "fixed", px: width / 15 } }]
+        });
+        expect(padx + tab).toBeCloseTo((exported.columns[0].decimalAnchorX! - input.x) * 15, 0);
+      }
+    }
   });
 
   it("escapes RTF controls, cp1252 fallbacks and each UTF-16 surrogate without losing HTML text", () => {
@@ -240,7 +298,7 @@ describe("table clipboard payloads", () => {
       expect([...rtf.matchAll(new RegExp(`\\\\clbrdr${side}\\b`, "g"))]).toHaveLength(42);
     }
     expect(rtf).toContain("\\brdrw10\\brdrcf0");
-    expect(html).not.toMatch(/background|mso-shading/);
+    expect(html).toContain("background:transparent;mso-shading:transparent");
   });
 
   it("uses no borders for zero-width rules and treats unknown presets as three-line", () => {
@@ -251,7 +309,11 @@ describe("table clipboard payloads", () => {
       ...table,
       tableStyle: { ...table.tableStyle, topRulePt: 0, headerRulePt: 0, bottomRulePt: 0 }
     };
-    expect(exportTableToRtf(input)).not.toContain("\\clbrdr");
+    for (const side of ["t", "b", "l", "r"]) {
+      expect(exportTableToRtf(input).match(new RegExp(`\\\\clbrdr${side}\\\\brdrnil`, "g")))
+        .toHaveLength(table.rows.length * table.columns.length);
+    }
+    expect(exportTableToRtf(input)).not.toContain("\\brdrs");
     expect(exportTableToHtml(input)).not.toContain("solid windowtext");
   });
 
@@ -311,21 +373,21 @@ describe("table clipboard payloads", () => {
       const input = smallTable(texts, "decimal");
       input.columns[0].width = { mode: "fixed", px: 200 };
       const block = planTableLayout(input).columns[0].decimalBlock!;
-      const rightAligned = texts.length === 2;
-      const side = rightAligned ? "right" : "left";
-      const inset = rightAligned ? block.insetRight : block.insetLeft;
-      const padding = table.tableStyle.cellPaddingPx.x + inset;
-      expect(inset).toBeGreaterThan(0);
+      const padding = table.tableStyle.cellPaddingPx.x + block.insetRight;
+      expect(block.insetRight).toBeGreaterThan(0);
       const html = htmlDocument(exportTableToHtml(input));
-      for (const cell of html.querySelectorAll("td")) {
+      for (const [index, cell] of [...html.querySelectorAll("td")].entries()) {
+        const post = texts[index].includes(".") ? texts[index].slice(texts[index].indexOf(".")) : "";
+        const postWidth = measureTextRun(post, { ...nativeTextStyleFromObjectStyle(input.style), script: "normal" });
+        const cellPadding = padding + block.postWidth - postWidth;
         expect(cell.getAttribute("style"))
-          .toContain(`padding-${side}:${Number((padding * 0.75).toFixed(4))}pt`);
-        expect(cell.querySelector("p")?.getAttribute("style")).toContain(`text-align:${side}`);
+          .toContain(`padding-right:${Number((cellPadding * 0.75).toFixed(4))}pt`);
+        expect(cell.querySelector("p")?.getAttribute("style")).toContain("text-align:right");
       }
       const rtf = exportTableToRtf(input);
       expect(rtf).not.toMatch(/\\clpad[lt]|\\clpadf[lt]/);
       for (const row of rtf.split("\\trowd").slice(1)) {
-        if (rightAligned) expect(row).toContain(`\\clpadr${Math.round(padding * 15)}\\clpadfr3`);
+        if (texts.length === 2) expect(row).toContain(`\\clpadr${Math.round(padding * 15)}\\clpadfr3`);
         else expect(row).toContain(`\\tqdec\\tx${Math.round((block.insetLeft + block.preWidth) * 15)}`);
       }
     }
@@ -344,6 +406,30 @@ describe("table clipboard payloads", () => {
     expect(exportTableToTsv(input)).toBe(texts.join("\n"));
     expect(exportTableToRtf(input)).not.toContain("mso-number-format");
     expect(exportTableToHtml(smallTable(texts))).not.toContain("mso-number-format");
+  });
+
+  it("uses rich-text post-point widths for HTML padding without adding text", () => {
+    const input = smallTable(["1.00", "2.0", "—", ""], "decimal");
+    input.rows[1].cells[0].spans = [
+      { text: "2.", script: "normal", style: {} },
+      { text: "0", script: "superscript", style: { fontWeight: 700 } }
+    ];
+    const font = nativeTextStyleFromObjectStyle(input.style);
+    const block = planTableLayout(input).columns[0].decimalBlock!;
+    const postWidths = [
+      measureTextRun(".00", { ...font, script: "normal" }),
+      measureTextRun(".", { ...font, script: "normal" })
+        + measureTextRun("0", { ...font, fontWeight: 700, script: "superscript" }),
+      0, 0
+    ];
+    const cells = [...htmlDocument(exportTableToHtml(input)).querySelectorAll("td")];
+    cells.forEach((cell, index) => {
+      const padding = input.tableStyle.cellPaddingPx.x + block.insetRight + block.postWidth - postWidths[index];
+      expect(cell.getAttribute("style")).toContain(`padding-right:${Number((padding * 0.75).toFixed(4))}pt`);
+      expect(cell.textContent).toBe(input.rows[index].cells[0].text);
+      expect(cell.querySelector("p")?.getAttribute("style")).toContain("text-align:right");
+    });
+    expect(cells[1].querySelector("sup b")?.textContent).toBe("0");
   });
 
   it("omits all font families and sizes in inherit mode while preserving layout and rich text", () => {
