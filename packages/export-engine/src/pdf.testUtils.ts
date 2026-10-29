@@ -1,4 +1,12 @@
 import { inflateSync } from "node:zlib";
+import { jsPDF } from "jspdf";
+
+/** Deterministic Helvetica advances for the headless ASCII alignment tests (SVG px in/out). */
+export function standardFontTextWidth(text: string, fontSizePx: number): number {
+  const metrics = new jsPDF({ unit: "pt" });
+  metrics.setFont("helvetica").setFontSize(fontSizePx);
+  return metrics.getTextWidth(text);
+}
 
 // Decode actual jsPDF objects and streams, including compressed content and CMaps.
 function pdfObjects(bytes: Uint8Array): Map<number, string> {

@@ -3490,7 +3490,7 @@ function projectionDistanceAlongSegment(
   };
 }
 
-const nativeTextScriptFontScale = 0.72;
+export const nativeTextScriptFontScale = 0.72;
 // WebKit/Chromium shift SVG sub/super by half the script font's height (ascent + descent).
 // At 72% size Arial's 2288/2048-em height gives 0.4021875 parent em; use 0.4 for
 // both directions to retain that placement without depending on host font metrics.
@@ -3512,8 +3512,8 @@ function planTextObjectSvg(object: TextObject, layerIndex: number): PageSvgEleme
     : textStyle.textAlign === "right" ? object.x + object.width : object.x;
   const y = object.y + textStyle.fontSizePx;
   const lineAdvance = textStyle.fontSizePx * textStyle.lineHeight + textStyle.paragraphSpacingPx;
-  // Preserve the established markup for wholly unscripted text. Once a script occurs, every
-  // span (including empty lines) needs an absolute baseline so neither scripts nor dy accumulate.
+  // Preserve the established markup for wholly unscripted text. With scripts, reset each
+  // line's baseline, then move relatively within it to keep one text-anchor chunk per line.
   const hasScripts = lines.some(line => line.some(span => span.script !== "normal"));
   const lineFragments = lines.length > 0
     ? lines.flatMap((line, lineIndex) => textSpanLineFragments(
@@ -3554,16 +3554,22 @@ function textSpanLineFragments(
     ];
   }
 
+  let previousScriptOffsetPx = 0;
   return line.map((span, spanIndex) => {
     const fontSizePx = metadataNumber(span.style.fontSizePx);
     const scriptOffsetEm = span.script === "subscript" ? nativeTextSubscriptOffsetEm
       : span.script === "superscript" ? -nativeTextSuperscriptOffsetEm : 0;
+    const scriptOffsetPx = parentFontSizePx * scriptOffsetEm;
+    const relativeScriptOffsetPx = scriptOffsetPx - previousScriptOffsetPx;
+    previousScriptOffsetPx = scriptOffsetPx;
     return elementFragment("tspan", `text-line-${lineIndex}-${spanIndex}-${span.text}`, {
       x: spanIndex === 0 ? x : undefined,
-      ...(baselineY === undefined ? {} : { y: baselineY + parentFontSizePx * scriptOffsetEm }),
-      dy: baselineY === undefined && spanIndex === 0 && lineIndex > 0 ? lineAdvancePx : undefined,
+      ...(baselineY === undefined || spanIndex > 0 ? {} : { y: baselineY + scriptOffsetPx }),
+      dy: baselineY === undefined
+        ? (spanIndex === 0 && lineIndex > 0 ? lineAdvancePx : undefined)
+        : (spanIndex === 0 ? undefined : relativeScriptOffsetPx),
       "font-size": span.script === "normal" ? fontSizePx
-        : `${Number(((fontSizePx ?? parentFontSizePx) * nativeTextScriptFontScale).toFixed(6))}px`,
+        : `${Number((parentFontSizePx * nativeTextScriptFontScale).toFixed(6))}px`,
       fill: metadataString(span.style.color),
       "font-family": metadataString(span.style.fontFamily),
       "font-weight": metadataNumber(span.style.fontWeight),

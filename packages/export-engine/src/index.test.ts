@@ -350,21 +350,55 @@ describe("exportDocumentToSvg", () => {
     expect(result.contents).toContain(">O</tspan>");
   });
 
+  it.each(["left", "center", "right"] as const)("keeps each %s-aligned scripted SVG line in one text chunk", (alignment) => {
+    const document = scriptedTextDocument(alignment);
+    const dom = new JSDOM(exportDocumentToSvg(document).contents, { contentType: "image/svg+xml" });
+    const anchor = { left: "start", center: "middle", right: "end" }[alignment];
+    for (const id of ["water", "sulfate"]) {
+      const text = dom.window.document.querySelector(`text[data-object-id="${id}"]`)!;
+      expect(text.getAttribute("text-anchor")).toBe(anchor);
+      const spans = [...text.querySelectorAll("tspan")];
+      expect(spans.filter(span => span.hasAttribute("x")).length).toBe(1);
+      expect(spans.filter(span => span.hasAttribute("y")).length).toBe(1);
+      expect(spans[0]!.hasAttribute("x")).toBe(true);
+      expect(spans[0]!.hasAttribute("y")).toBe(true);
+      expect(spans[0]!.hasAttribute("dy")).toBe(false);
+      expect(spans.slice(1).map(span => span.getAttribute("dy"))).toEqual(id === "water" ? ["8", "-8"] : ["8", "-16"]);
+      const finalOffset = spans.slice(1).reduce((sum, span) => sum + Number(span.getAttribute("dy")), 0);
+      expect(finalOffset).toBe(id === "water" ? 0 : -8);
+    }
+    dom.window.close();
+
+    const sulfate = document.pages[0].objects[1] as TextObject;
+    const continued: TextObject = { ...sulfate, text: `${sulfate.text} end`, spans: [
+      ...sulfate.spans, { text: " end", script: "normal", style: {} }
+    ] };
+    const continuation = new JSDOM(exportDocumentToSvg({ ...document, pages: [
+      { ...document.pages[0], objects: [continued] }
+    ] }).contents, { contentType: "image/svg+xml" });
+    const shifts = [...continuation.window.document.querySelectorAll("tspan")].slice(1)
+      .map(span => Number(span.getAttribute("dy")));
+    expect(shifts).toEqual([8, -16, 8]);
+    expect(shifts.reduce((sum, shift) => sum + shift, 0)).toBe(0);
+    continuation.window.close();
+  });
+
   it("exports script sizes in px and restores each line's baseline after subscripts and superscripts", () => {
     const svg = exportDocumentToSvg(scriptedTextDocument()).contents;
     const dom = new JSDOM(svg, { contentType: "image/svg+xml" });
     const spans = (id: string) => [...dom.window.document.querySelectorAll(`[data-object-id="${id}"] tspan`)]
-      .map(span => [span.textContent, span.getAttribute("font-size"), Number(span.getAttribute("y"))]);
-    expect(spans("water")).toEqual([["H", null, 120], ["2", "14.4px", 128], ["O", null, 120]]);
-    expect(spans("sulfate")).toEqual([["SO", null, 200], ["4", "14.4px", 208], ["2-", "14.4px", 192]]);
-    expect(spans("ammonium")).toEqual([["NH", null, 280], ["4", "14.4px", 288], ["+", "14.4px", 272]]);
-    expect(spans("isotope")).toEqual([["13", "14.4px", 352], ["C", null, 360]]);
-    expect(spans("override")).toEqual([["H", null, 440], ["2", "21.6px", 448], ["O", null, 440]]);
+      .map(span => [span.textContent, span.getAttribute("font-size"), span.getAttribute("y"), span.getAttribute("dy")]);
+    expect(spans("water")).toEqual([["H", null, "120", null], ["2", "14.4px", null, "8"], ["O", null, null, "-8"]]);
+    expect(spans("sulfate")).toEqual([["SO", null, "200", null], ["4", "14.4px", null, "8"], ["2-", "14.4px", null, "-16"]]);
+    expect(spans("ammonium")).toEqual([["NH", null, "280", null], ["4", "14.4px", null, "8"], ["+", "14.4px", null, "-16"]]);
+    expect(spans("isotope")).toEqual([["13", "14.4px", "352", null], ["C", null, null, "8"]]);
+    // Like the old 72%, script size resolves against the text object, ignoring its span's 30 px override.
+    expect(spans("override")).toEqual([["H", null, "440", null], ["2", "14.4px", null, "8"], ["O", null, null, "-8"]]);
     expect(spans("multiline")).toEqual([
-      ["H", null, 520], ["2", "14.4px", 528], ["O", null, 520], ["", null, 548],
-      ["SO", null, 576], ["4", "14.4px", 584], ["2-", "14.4px", 568], ["end", null, 604]
+      ["H", null, "520", null], ["2", "14.4px", null, "8"], ["O", null, null, "-8"], ["", null, "548", null],
+      ["SO", null, "576", null], ["4", "14.4px", null, "8"], ["2-", "14.4px", null, "-16"], ["end", null, "604", null]
     ]);
-    expect(svg).not.toMatch(/baseline-shift|font-size="[^"]*%"|\bdy=/);
+    expect(svg).not.toMatch(/baseline-shift|font-size="[^"]*%"/);
     dom.window.close();
   });
 

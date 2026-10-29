@@ -2,7 +2,7 @@ import { applyPatch, createEmptyDocument, type TextObject } from "@chemdraft/che
 import { formulaSpansFromText } from "@chemdraft/document-workflow-core";
 
 /** Shared SVG/PDF/canvas regression input; plain digits are authored script spans, not Unicode. */
-export function scriptedTextDocument() {
+export function scriptedTextDocument(textAlign: "left" | "center" | "right" = "left") {
   let document = createEmptyDocument({ now: "2026-10-29T00:00:00.000Z" });
   const texts: Pick<TextObject, "id" | "text" | "spans">[] = [
     { id: "water", text: "H2O", spans: formulaSpansFromText("H2O") },
@@ -25,8 +25,19 @@ export function scriptedTextDocument() {
     document = applyPatch(document, { op: "addObject", pageId: "page_001", object: {
       ...text, type: "text", x: 100, y: 100 + index * 80, width: 400, height: 120,
       rotation: 0, style: { fontFamily: "Arial, Helvetica, sans-serif", fontSizePx: 20,
-        lineHeight: 1.2, paragraphSpacingPx: 4 }
+        lineHeight: 1.2, paragraphSpacingPx: 4, textAlign }
     } }, { now: "2026-10-29T00:00:00.000Z" });
   });
   return document;
+}
+
+/** A plain first line and a scripted second line must each form their own anchored chunk. */
+export function multilineScriptedTextDocument(textAlign: "left" | "center" | "right") {
+  const document = scriptedTextDocument(textAlign);
+  const water = document.pages[0].objects[0] as TextObject;
+  return { ...document, pages: [{ ...document.pages[0], objects: [
+    { ...water, text: "plain\nH2O", spans: [
+      { text: "plain\n", script: "normal" as const, style: {} }, ...formulaSpansFromText("H2O")
+    ] }
+  ] }] };
 }
