@@ -2,7 +2,8 @@
 
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { depictSmiles2D, ensureOclResources } from "@chemdraft/ocl-adapter";
 import type { TextObject } from "@chemdraft/chem-core";
 import type { ClipboardReadPayload } from "@chemdraft/clipboard-adapter";
 import { invoke } from "@tauri-apps/api/core";
@@ -12,9 +13,22 @@ import {
   createPhase4Document,
   createSelectionClipboardPayload,
   insertNativeTextObject,
+  pastedStructureDepictionFromMolfile,
   serializeSelectionClipboardPayload
 } from "./documentWorkflow";
 import { depictSmilesForPaste } from "./smilesListPaste";
+import { installDomRdkitLoader } from "./testSupport/rdkitIdentity";
+import { inspectStructureOffThread } from "./depiction2d/identityClient";
+
+vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
+vi.mock("./depiction2d/identityClient", () => ({ inspectStructureOffThread: vi.fn() }));
+
+beforeAll(async () => {
+  installDomRdkitLoader();
+  await ensureOclResources();
+  const actual = await vi.importActual<typeof import("./depiction2d/identityClient")>("./depiction2d/identityClient");
+  vi.mocked(inspectStructureOffThread).mockImplementation(actual.inspectStructureOffThread);
+}, 20_000);
 
 const runtime = vi.hoisted(() => ({ desktop: true }));
 vi.mock("./window-manager", async original => ({
@@ -222,22 +236,17 @@ describe.each(["macos", "windows"] as const)("text paste formatting (%s)", platf
 
   it("pastes external SMILES through the native reader as a structure", async () => {
     vi.mocked(depictSmilesForPaste).mockResolvedValue({
-      depiction: {
-        atoms: Array.from({ length: 7 }, (_, index) => ({
-          element: index === 6 ? "O" : "C", x: index * 1.5, y: 0, charge: 0
-        })),
-        bonds: Array.from({ length: 7 }, (_, index) => ({
-          from: index === 6 ? 0 : index, to: index === 5 ? 0 : index === 6 ? 6 : index + 1,
-          order: index < 6 && index % 2 === 0 ? "double" as const : "single" as const, wedge: null
-        }))
-      },
+      depiction: pastedStructureDepictionFromMolfile(depictSmiles2D("c1ccccc1O").molfile),
       stereoCount: 0
     });
     await mount(nativeClipboard("c1ccccc1O"));
     expect((await paste({ "text/plain": "c1ccccc1O" })).defaultPrevented).toBe(true);
     expect(nativeReads()).toHaveLength(1);
     expect(depictSmilesForPaste).toHaveBeenCalledExactlyOnceWith("c1ccccc1O");
-    expect(objects()).toHaveLength(1);
+    await vi.waitFor(async () => {
+      await act(async () => { await Promise.resolve(); });
+      expect(objects()).toHaveLength(1);
+    }, { timeout: 15_000, interval: 50 });
     expect(objects()[0]).toMatchObject({ type: "molecule", atoms: expect.any(Array) });
     expect(status()).toContain("Pasted SMILES structure");
   });
