@@ -170,7 +170,9 @@ and sign-in are explicit actions. In Flatpak, sign-in opens the bundled
 permission. Sign-in remains interactive, and installation does not sign in for
 you. Use Ctrl+Shift+V to paste; press Enter after the CLI finishes to close the
 terminal. A native build outside Flatpak searches the supported terminal emulators.
-ARM64 download integrity was checked, but ARM64 execution was not tested here.
+Linux ARM64 CI builds the application, runs its Rust tests and executes both
+pinned CLI contracts. ARM64 Flatpak GUI/terminal packaging is still unverified;
+the local recognition/naming engines remain disabled there.
 
 **MolScribe recognition and Orthonym structure-to-name:** the optional local
 engine installers support GNU Linux x86_64. Both use private uv-managed Python
@@ -242,30 +244,49 @@ Evidence: `artifacts/linux-followup/{ai,ocsr,naming}-production-install.log`,
 `artifacts/linux-codex-code-mode-{sdk,runtime}.json` and
 `artifacts/linux-terminal-pty.json`.
 
-The final x86_64 package shows build stamp `10.29.10.50-codex`, is 74,246,288
+The final x86_64 package shows build stamp `10.29.12.10-codex`, is 74,253,920
 bytes and has SHA-256
-`622cb3b01f5292f345b0e4c5657ebb32f38d1b946d5abac390a0c4e22e391c80`.
+`dda8317982b81d14be80d19a1c4c722909e81778420caace242c22c23c8382e2`.
 Its local OSTree commit is
-`c469dec5cd60b608410510a8850e1e1d3e28c8016ab7750018738aa42a225888`.
+`d273f0a1015571483ba0be241112f5698980f255919109b7544505a68cdb5a2d`.
 The package contains the Linux terminal and its licence, the OPSIN runtime and
 the native UFF sidecar. It sets `GDK_BACKEND=x11` and does not set `LC_ALL`.
 
-Final code checks passed: TypeScript, production web/native builds, Rustfmt,
-release Clippy with `--all-targets -- -D warnings`, and 576 Rust tests (10
-tests ignored). The three actual production-installer tests
-were run separately as recorded above. The full JavaScript run reported 9,979
-passes, 38 skips, two timeouts and one worker-RPC timeout during the requested
-meeting pause; both affected files passed on retry (83 tests). The final
-installer/catalog UI checks passed 116 tests, and the CDXML package passed all
-138 tests. No remaining failing test case was identified.
+Final code checks passed: TypeScript, production web/native/Flatpak builds,
+Rustfmt, Clippy with `--all-targets -- -D warnings`, and 577 Rust tests (10
+ignored). The ignored native GTK clipboard/display test passed separately under
+Xvfb. Both real pinned Linux CLI contract tests also passed separately.
+`node scripts/pin-external-tools.mjs --check-pinned` verified all ten committed
+platform downloads before testing the host binaries. Unlike `--check`, this
+validates the selected versions rather than requiring them to equal a moving
+vendor Latest release; no tool version was upgraded during PR validation.
+The three actual production-installer tests were run earlier as recorded above.
+
+The complete JavaScript suite passed with the repository's CI timeouts:
+9,988 passed, 38 skipped; 485 test files passed and 10 were skipped. It used
+Node 24, two workers and `CI=1` (the configured 20-second case deadline).
+An initial local five-second run had two resource timeouts and one resulting
+cleanup failure; both affected files passed unchanged on retry, then the entire
+CI-mode suite passed. The CDXML package now has 139 passing tests, including the
+tracked legacy desktop fixture. The resource guard's five tests include actual
+termination of its own process tree while an unrelated process stays alive,
+nested CPU reservations and offline CPUs. No failing test case remains.
+
+The first debug Rust run was disturbed by a concurrent pin-check recompilation
+replacing its executable during a self-spawn test. After sequencing those
+operations, the full Cargo test run passed. The original diagnostics remain in
+`artifacts/pr-readiness/{vitest-local-5s,rust-gauntlet}.log`; the final successful
+runs are `vitest.log` and `rust-tests.log` in the same directory.
 
 Eight native WebDriver checks passed for this final build under `C.UTF-8`:
 opening the legacy two-molecule file, chemical/Unicode MIME clipboard transfer,
 real Ctrl+C/V/X text editing, PNG clipboard, actual OPSIN ethanol conversion,
 packaged 3D sidecar discovery, supported Linux installer status/free-space gates
 and responsiveness after native tooltip/palette prewarming. Evidence:
-`artifacts/linux-native-smoke.json`, `artifacts/linux-followup/package.json` and
-the corresponding logs in `artifacts/linux-followup/`.
+`artifacts/pr-readiness/native/linux-native-smoke.json`,
+`artifacts/pr-readiness/package.json` and the logs in `artifacts/pr-readiness/`.
+All three real native UFF sidecar smoke tests (43-atom drag, hold-steady and
+anneal-energy) also passed inside GNOME SDK 49.
 
 The exact final bundle passed installation and rendered-editor checks on all
 four container distributions:
@@ -277,10 +298,12 @@ four container distributions:
 | Fedora 44 | 1.18.4 | Passed |
 | Arch rolling | 1.18.4 | Passed |
 
-Each showed the final build stamp, native editor and both palettes. Ubuntu and
-Fedora screenshots were independently inspected; Debian and Arch screenshots
-were byte-identical to Ubuntu. Exact package hash, installed commit, window
-state and image identity are recorded in
+Each passed four checks: exact bundle installation, visible editor/palettes
+after 30 seconds, actual clipboard export of the legacy fixture, and rendered
+screenshots. Every copied native object matched the committed fixture including
+atoms, bonds, coordinates, styles and chemistry metadata. Screenshots were
+independently inspected and all four matched pixel for pixel. Exact package
+hash, installed commit, window state and image identity are recorded in
 `artifacts/container-portability/{results,acceptance-summary}.json`.
 
 To repeat the distribution checks, use an x86_64 Linux host with Docker, a
@@ -335,13 +358,29 @@ deployment until it is restarted; it was left open to preserve ongoing work.
 During follow-up tests CPU affinity excluded cores 9–11, Cargo used at most three
 jobs and Vitest at most two workers. A separate disk monitor retained a 20 GiB
 home/Docker reserve and 10 GiB root reserve; neither threshold was reached.
-The lowest observed free space was 81.78 GiB on home/Docker and 18.45 GiB on
+The lowest observed free space was 78.35 GiB on home/Docker and 18.40 GiB on
 root. Task-only desktop/distribution images and large model/download test
 caches were removed after verification; unrelated images and containers were
 left intact. Logs and final resource totals are in
-`artifacts/linux-followup/disk-monitor.jsonl` and
-`artifacts/linux-followup/resource-summary.json`.
-macOS and Windows native checks remain unverified in this workspace.
+`artifacts/pr-readiness/disk-monitor.jsonl` and
+`artifacts/pr-readiness/resource-summary.json`.
+The portable CI now runs native Rust checks and production executable builds
+on Linux x86_64, Linux ARM64, macOS and Windows, plus committed vendor-pin and
+host-CLI contract checks. It requires no signing or provider credentials and
+does not publish installers. The exact automated results are linked from
+[PR #242](https://github.com/jgassens/ChemDraft/pull/242); the upstream workflow
+requires maintainer approval for a first-time contributor. Physical macOS and
+Windows menu/clipboard/window-focus checks remain manual, as listed in the
+shared stress checklist.
+
+The native CI source revision is `cd67bb13e1b3aeb5cc6c0c3fa2c32893fd25b705`;
+the [workflow run](https://github.com/robertexternbrink/ChemDraft/actions/runs/40865174960)
+records the exact jobs. Its application, native-source, package, pin-script and
+workflow trees are unchanged by the subsequent online-CPU-mask correction and
+documentation closeout. The mask correction passed the five resource tests
+separately. This correspondence is recorded in
+`artifacts/pr-readiness/source-equivalence.json`; it does not replace the
+upstream repository's required final-head CI approval.
 
 ## Initial prototype verification (2026-10-29)
 

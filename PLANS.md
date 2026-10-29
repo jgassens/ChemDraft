@@ -8,22 +8,6 @@ in progress rather than a changelog.
 
 # In flight
 
-## Linux port PR validation (linux-port)
-
-Requested on 2026-10-29 after the locally verified Linux builds:
-
-- Complete a fresh full JavaScript run and the native Rust gauntlet, including
-  the pinned CLI contract checks, without the earlier meeting interruption.
-- Review macOS/Windows compatibility and run the existing secrets-free native
-  CI jobs; add Linux Rust coverage and a manual CI entry point. No release,
-  signing, installer publication or provider-account authentication is involved.
-- Make the Linux builders and desktop tests reproducible from tracked sources,
-  including the example drawing, CPU reserve and disk-space guard.
-- Prepare the branch, reviewable commits and a draft PR, with precise automated
-  results and any remaining physical-desktop/manual verification stated.
-- Keep three local logical CPUs free, Cargo at most three jobs, Vitest at most
-  two workers, and monitor disk usage. Remove only task-owned scratch data.
-
 # ChemDraft Assistant plugin (active, branches claude/assistant-*)
 
 ## Objective
