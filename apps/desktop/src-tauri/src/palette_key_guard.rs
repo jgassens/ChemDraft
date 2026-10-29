@@ -3,9 +3,13 @@
 
 use std::{
     sync::{Mutex, OnceLock},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::Instant,
 };
-use tauri::{Emitter, Listener, Manager};
+#[cfg(any(target_os = "macos", windows))]
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tauri::{Emitter, Listener};
+#[cfg(any(target_os = "macos", windows))]
+use tauri::Manager;
 
 #[path = "palette_key_guard_state.rs"]
 mod state;
@@ -20,13 +24,14 @@ fn now() -> u64 {
     START.get_or_init(Instant::now).elapsed().as_millis() as u64
 }
 
-fn publish<R: tauri::Runtime>(app: &tauri::AppHandle<R>, label: &str, event: Option<state::Event>) {
-    if let Some(event) = event {
+fn publish<R: tauri::Runtime>(app: &tauri::AppHandle<R>, event: Option<(String, state::Event)>) {
+    if let Some((label, event)) = event {
         // The page echoes the click sequence with its classification/release. Main
         // drops only editing keydowns until this sequence is cleared or expires.
+        // A clear carries the pending owner's label, even when main/app loss ended it.
         let _ = app.emit_to(super::super::MAIN_WINDOW_LABEL, EVENT, event);
         if !label.is_empty() && label != super::super::MAIN_WINDOW_LABEL {
-            let _ = app.emit_to(label, EVENT, event);
+            let _ = app.emit_to(label.as_str(), EVENT, event);
         }
     }
 }
@@ -39,7 +44,7 @@ pub(super) fn end<R: tauri::Runtime>(
     before: u64,
 ) {
     let event = GUARD.lock().unwrap().end(label, why, sequence, before);
-    publish(app, label, event);
+    publish(app, event);
 }
 
 /// The active document's WebView2 child may receive clicks without sending
@@ -88,13 +93,12 @@ pub(super) fn pointer<R: tauri::Runtime>(app: &tauri::AppHandle<R>, label: Optio
         .unwrap_or_default()
         .as_millis() as u64;
     let event = GUARD.lock().unwrap().pointer(label, now(), wall_time);
-    publish(app, label, Some(event));
+    publish(app, Some((label.to_owned(), event)));
     let app = app.clone();
-    let label = label.to_owned();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_millis(state::TIMEOUT_MS)).await;
         let expired = GUARD.lock().unwrap().timeout(event.sequence, now());
-        publish(&app, &label, expired);
+        publish(&app, expired);
     });
 }
 

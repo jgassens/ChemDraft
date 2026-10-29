@@ -376,11 +376,18 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
       pointer?.({ target: select, isTrusted: true, button: 0 } as unknown as Event);
       select.focus();
     });
-    expect(tauriInvoke).toHaveBeenCalledWith("set_plugin_panel_input_focus", { editing: true, generation: expect.any(Number), pageToken: "page-token" });
+    // Pointer acquisitions carry classification metadata; Escape has no pointer fallback.
+    expect(tauriInvoke).toHaveBeenCalledWith("set_plugin_panel_input_focus", {
+      editing: true, generation: expect.any(Number), pageToken: "page-token",
+      clickSequence: undefined, pointerBefore: expect.any(Number)
+    });
     await act(async () => {
       select.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
     });
-    expect(tauriInvoke).toHaveBeenLastCalledWith("set_plugin_panel_input_focus", { editing: false, generation: expect.any(Number), pageToken: "page-token" });
+    expect(tauriInvoke).toHaveBeenLastCalledWith("set_plugin_panel_input_focus", {
+      editing: false, generation: expect.any(Number), pageToken: "page-token",
+      clickSequence: undefined, pointerBefore: undefined
+    });
     expect(container!.querySelector(".plugin-panel-shell")).not.toBeNull();
   });
 

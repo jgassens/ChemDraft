@@ -33,13 +33,17 @@ it("registers once per page and sends its token with acquisitions and releases a
     expect(invoke).toHaveBeenCalledTimes(1); // No request may precede registration.
     register("opaque-page-token");
     await flush();
+    // Round-2 IPC includes click metadata. Only pointer classification supplies
+    // pointerBefore; a keyboard release must not timestamp-clear a newer click.
     expect(invoke).toHaveBeenLastCalledWith("set_plugin_panel_input_focus", {
-      editing: true, generation: expect.any(Number), pageToken: "opaque-page-token"
+      editing: true, generation: expect.any(Number), pageToken: "opaque-page-token",
+      clickSequence: undefined, pointerBefore: expect.any(Number)
     });
     shell.querySelector("input")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     await flush();
     expect(invoke).toHaveBeenLastCalledWith("set_plugin_panel_input_focus", {
-      editing: false, generation: expect.any(Number), pageToken: "opaque-page-token"
+      editing: false, generation: expect.any(Number), pageToken: "opaque-page-token",
+      clickSequence: undefined, pointerBefore: undefined
     });
     cleanup();
     cleanup = installPluginPanelInputFocus(shell, undefined, "windows", subscribe);
@@ -47,7 +51,8 @@ it("registers once per page and sends its token with acquisitions and releases a
     await flush();
     expect(invoke.mock.calls.filter(([command]) => command === "register_plugin_panel_input_focus")).toHaveLength(1);
     expect(invoke).toHaveBeenLastCalledWith("set_plugin_panel_input_focus", {
-      editing: true, generation: expect.any(Number), pageToken: "opaque-page-token"
+      editing: true, generation: expect.any(Number), pageToken: "opaque-page-token",
+      clickSequence: undefined, pointerBefore: expect.any(Number)
     });
   } finally {
     cleanup();

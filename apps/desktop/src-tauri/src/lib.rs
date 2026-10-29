@@ -1506,9 +1506,13 @@ fn ensure_main_window_visible<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(
     };
 
     let target = window.clone();
-    run_on_main_thread_blocking(&window, move || {
+    if let Err(error) = run_on_main_thread_blocking(&window, move || {
         panel_window::install_pointer_guard(&target)
-    })??;
+    })
+    .and_then(|result| result)
+    {
+        eprintln!("Could not observe window pointer intent: {error}");
+    }
     let already_on_screen = window.is_visible().unwrap_or(false);
     main_window_placement::reveal_after_preparation(
         |errors| {

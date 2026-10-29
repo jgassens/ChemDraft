@@ -1405,7 +1405,8 @@ function MoleculeInspectorControls({ ringOnly = false }: { ringOnly?: boolean })
       {numericControl("Margin width", structure?.values.bondMarginWidthPx.value, structure?.values.bondMarginWidthPx.mixed, moleculeStructureNumberRanges.bondMarginWidthPx, moleculeStructureBondMarginWidthCommandId, structureDisabled)}
       {numericControl("Hash spacing", structure?.values.bondHashSpacingPx.value, structure?.values.bondHashSpacingPx.mixed, moleculeStructureNumberRanges.bondHashSpacingPx, moleculeStructureBondHashSpacingCommandId, structureDisabled)}
       {numericControl("Double-bond inset", structure?.values.doubleBondInsetPx.value, structure?.values.doubleBondInsetPx.mixed, moleculeStructureNumberRanges.doubleBondInsetPx, moleculeStructureDoubleBondInsetCommandId, structureDisabled)}
-      <label className="molecule-inspector-field molecule-inspector-select-field">
+      <label className="molecule-inspector-field molecule-inspector-select-field"
+        title={structure?.doubleBondDisabledReason ?? (structure ? undefined : "Select a double bond")}>
         <span>Double-bond position</span>
         <select
           aria-label="Double-bond position"
@@ -1955,7 +1956,8 @@ function ArtToolbarStyleControls() {
       ? `${label} applies to ${supportedCount} of ${selectedCount} selected graphics`
       : label;
   const strokeWidthControl = supportsStrokeWidth ? (
-    <label className="toolbar-control-label art-stroke-width-control art-stroke-control">
+    <label className="toolbar-control-label art-stroke-width-control art-stroke-control"
+      title={supportTitle("Stroke width", strokeSupportedCount, supportsStrokeAll)}>
       <select
         className="toolbar-select"
         value={strokeWidthCommandId}
@@ -1975,7 +1977,8 @@ function ArtToolbarStyleControls() {
     </label>
   ) : null;
   const strokeDashControl = supportsDash && effectiveArtStyleTarget === "stroke" ? (
-    <label className="toolbar-control-label art-stroke-dash-control art-stroke-control">
+    <label className="toolbar-control-label art-stroke-dash-control art-stroke-control"
+      title={supportTitle("Dash pattern", dashSupportedCount, supportsDashAll)}>
       <select
         className="toolbar-select"
         value={strokeDashCommandId}
@@ -2275,7 +2278,8 @@ function ArtToolbarStyleControls() {
       applySliderPercent(nextPercent, true);
     };
     return (
-      <label className="art-inspector-slider" data-art-inspector-slider={sliderKey}>
+      <label className="art-inspector-slider" data-art-inspector-slider={sliderKey}
+        title={`${supportTitle(label, supportedCount)}: ${percent}%`}>
         <span className="art-inspector-slider-header">
           <span className="art-inspector-slider-label">{shortLabel}</span>
           <span className="art-inspector-slider-value">{percent}%</span>
@@ -2822,7 +2826,8 @@ function ArtToolbarStyleControls() {
       {showAdvancedStrokeControls && (supportsLineEnds || supportsCorners) ? (
       <div className="art-inspector-row art-inspector-stroke-row">
         {showAdvancedStrokeControls && supportsLineEnds ? (
-        <label className="toolbar-control-label art-stroke-cap-control art-stroke-control">
+        <label className="toolbar-control-label art-stroke-cap-control art-stroke-control"
+          title={supportTitle("Line ends", lineEndsSupportedCount, supportsLineEndsAll)}>
           <span className="art-stroke-control-label">Line ends</span>
           <select
             className="toolbar-select"
@@ -2843,7 +2848,8 @@ function ArtToolbarStyleControls() {
         </label>
         ) : null}
         {showAdvancedStrokeControls && supportsCorners ? (
-        <label className="toolbar-control-label art-stroke-join-control art-stroke-control">
+        <label className="toolbar-control-label art-stroke-join-control art-stroke-control"
+          title={supportTitle("Corners", cornersSupportedCount, supportsCornersAll)}>
           <span className="art-stroke-control-label">Corners</span>
           <select
             className="toolbar-select"

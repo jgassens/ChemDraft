@@ -29,9 +29,9 @@ export function panelEditableControl(target: EventTarget | null, includeDisabled
 export function disabledControlAtPointer(
   shell: HTMLElement, event: Pick<PointerEvent, "target" | "clientX" | "clientY">
 ): HTMLElement | undefined {
-  const selector = "input:disabled, textarea:disabled, select:disabled, button:disabled";
+  const selector = "input:disabled, textarea:disabled, select:disabled";
   const target = event.target instanceof Element ? event.target : null;
-  if (!target || !shell.contains(target)) return;
+  if (!target || !shell.contains(target) || target.closest("button")) return;
   const direct = target.closest<HTMLElement>(selector);
   if (direct) return direct;
   // Prefer geometry when a label wraps more than one field (number plus slider).
@@ -47,7 +47,7 @@ export function disabledControlAtPointer(
   const label = target.closest("label");
   if (label && shell.contains(label)) return label.querySelector<HTMLElement>(selector) ?? undefined;
   if (target === shell) return;
-  const children = [...target.children].filter((child) => child.matches("input, textarea, select, button"));
+  const children = [...target.children].filter((child) => child.matches("input, textarea, select"));
   const child = children.length === 1 ? children[0] : undefined;
   return child instanceof HTMLElement && child.matches(selector) ? child : undefined;
 }
@@ -149,6 +149,7 @@ export function installPluginPanelInputFocus(
   let pointerFocusTimer: ReturnType<typeof setTimeout> | undefined;
   let pointerControl: HTMLElement | undefined;
   let pointerActive = false;
+  let pointerClassificationBefore: number | undefined;
   let disposed = false;
   const focusLeasedControl = (): void => {
     if (editableFocus && acquiredControlFocus && leasedControl && shell.contains(leasedControl)) {
@@ -156,7 +157,7 @@ export function installPluginPanelInputFocus(
       if (document.activeElement !== destination) destination.focus({ preventScroll: true });
     }
   };
-  const setEditing = (next: boolean, retry = false): void => {
+  const setEditing = (next: boolean, retry = false, pointerBefore?: number): void => {
     if (editing === next && !retry) return;
     if (editing !== next) {
       leaseChain++;
@@ -172,7 +173,8 @@ export function installPluginPanelInputFocus(
     }
     // Capture before queueing IPC, never when the queued release eventually runs.
     const requestedClick = clickSequence;
-    const pointerBefore = Date.now();
+    // Only pointer classification supplies a timestamp fallback. Escape, blur and
+    // observer cleanup must not acknowledge a click whose sequence is still in flight.
     const requestedChain = leaseChain;
     const requestedRevision = revision = ++nextGeneration;
     // Every request has a generation, including retries. Keep IPC serialized through native
@@ -182,7 +184,7 @@ export function installPluginPanelInputFocus(
       try {
         // Subscribe before acquiring: a native loss can precede the acquisition reply.
         await subscribed;
-        await pointerSubscribed;
+        await pointerSubscribed.catch(() => undefined);
         if (requestedRevision !== revision) return;
         if (next) nativeGenerations.add(requestedRevision);
         const acquired = await (requestFocus === requestNativeInputFocus
@@ -211,13 +213,13 @@ export function installPluginPanelInputFocus(
     });
     void pending.catch((error: unknown) => console.error("Could not change panel input focus:", error));
   };
-  const finish = (cancelControl = false, preserveNativeChooser = false): void => {
+  const finish = (cancelControl = false, preserveNativeChooser = false, pointerBefore?: number): void => {
     clearTimeout(controlBlurTimer);
     clearTimeout(pointerFocusTimer);
     pointerFocusTimer = undefined;
     pointerControl = undefined;
     paletteControls.delete(shell);
-    setEditing(false);
+    setEditing(false, false, pointerBefore);
     if (editableFocus && cancelControl) leasedControl?.dispatchEvent(new Event(PALETTE_INPUT_FOCUS_CANCEL_EVENT));
     leasedControl = undefined;
     selectionGesture = undefined;
@@ -231,11 +233,11 @@ export function installPluginPanelInputFocus(
       (active instanceof HTMLInputElement && active.type === "color");
     if (active && shell.contains(active) && !(preserveNativeChooser && nativeChooser)) active.blur();
   };
-  const returnPointerFocus = (): void => {
+  const returnPointerFocus = (pointerBefore?: number): void => {
     // WebView2 can activate its parent despite NOACTIVATE/WM_MOUSEACTIVATE. Like the
     // toolbar command route, explicitly hand back after an ordinary interaction, even
     // when there was no lease to finish. The native command checks foreground ownership.
-    if ((platform === "windows" || editableFocus) && !editing) setEditing(false, true);
+    if ((platform === "windows" || editableFocus) && !editing) setEditing(false, true, pointerBefore);
   };
   const reportText = (node: EventTarget | null): boolean => {
     if (editableFocus) return false;
@@ -262,13 +264,14 @@ export function installPluginPanelInputFocus(
     clearTimeout(pointerFocusTimer);
     pointerFocusTimer = undefined;
     pointerActive = true;
+    pointerClassificationBefore = Date.now();
     pointerClickTarget = event.target;
     selectionGesture = undefined;
     const control = (editableFocus ? disabledControlAtPointer(shell, event) : undefined) ?? editableControl(event.target);
     if (control && shell.contains(control)) {
       clearTimeout(controlBlurTimer);
       if (editableFocus && acquiredControlFocus) pendingPaletteShells.delete(shell);
-      if (selectionLease) finish();
+      if (selectionLease) finish(false, false, pointerClassificationBefore);
       leasedControl = control;
       if (editableFocus) {
         pointerControl = control;
@@ -277,10 +280,10 @@ export function installPluginPanelInputFocus(
       // Palette multi-clicks reuse the held or pending lease. Reacquiring calls native focus
       // again and can blur WebView2 mid-click. A rejected lease already finished, so it retries.
       // Reports retain their existing per-click generation policy.
-      setEditing(true, !editableFocus);
+      setEditing(true, !editableFocus, pointerClassificationBefore);
     } else {
-      if (editing) finish();
-      else if (editableFocus) returnPointerFocus(); // Classification already says non-editing.
+      if (editing) finish(false, false, pointerClassificationBefore);
+      else if (editableFocus) returnPointerFocus(pointerClassificationBefore); // Classification already says non-editing.
       if (reportText(event.target)) {
         selectionGesture = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, dragged: false };
       }
@@ -305,7 +308,7 @@ export function installPluginPanelInputFocus(
       }
     }
     // Decide selection first. Returning focus during a report-text drag can interrupt it.
-    returnPointerFocus();
+    returnPointerFocus(pointerClassificationBefore);
     // Keep the gesture through click: double/triple clicks select text without pointer movement.
   };
   const click = (event: MouseEvent): void => {
@@ -328,7 +331,8 @@ export function installPluginPanelInputFocus(
     if (selectionGesture && event.detail >= 2) leaseSelection();
     selectionGesture = undefined;
     // Covers activation performed by WebView2's default click handling after pointerup.
-    returnPointerFocus();
+    returnPointerFocus(fromPointer ? pointerClassificationBefore : undefined);
+    pointerClassificationBefore = undefined;
   };
   const cancelSelectionGesture = (event: PointerEvent): void => {
     if (!event.isTrusted) return;
@@ -336,7 +340,8 @@ export function installPluginPanelInputFocus(
     pointerClickTarget = undefined;
     pointerControl = undefined;
     selectionGesture = undefined;
-    returnPointerFocus();
+    returnPointerFocus(pointerClassificationBefore);
+    pointerClassificationBefore = undefined;
   };
   const checkActivation = (): void => {
     if (platform !== "windows" || editing) return;

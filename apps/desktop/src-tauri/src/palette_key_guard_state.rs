@@ -13,6 +13,7 @@ struct Pending {
 
 #[derive(Default)]
 pub(super) struct Guard {
+    #[cfg(any(target_os = "macos", windows, test))]
     sequence: u64,
     pending: Option<Pending>,
 }
@@ -40,11 +41,13 @@ pub(crate) enum End {
 impl Guard {
     pub const fn new() -> Self {
         Self {
+            #[cfg(any(target_os = "macos", windows, test))]
             sequence: 0,
             pending: None,
         }
     }
 
+    #[cfg(any(target_os = "macos", windows, test))]
     pub fn pointer(&mut self, label: &str, now: u64, wall_time: u64) -> Event {
         self.sequence += 1;
         self.pending = Some(Pending {
@@ -66,13 +69,16 @@ impl Guard {
             .is_some_and(|p| now.saturating_sub(p.started) < TIMEOUT_MS)
     }
 
-    fn clear(&mut self) -> Option<Event> {
+    fn clear(&mut self) -> Option<(String, Event)> {
         let pending = self.pending.take()?;
-        Some(Event {
-            sequence: pending.sequence,
-            pending: false,
-            expires_at: 0,
-        })
+        Some((
+            pending.label,
+            Event {
+                sequence: pending.sequence,
+                pending: false,
+                expires_at: 0,
+            },
+        ))
     }
 
     pub fn end(
@@ -81,7 +87,7 @@ impl Guard {
         why: End,
         sequence: Option<u64>,
         before: u64,
-    ) -> Option<Event> {
+    ) -> Option<(String, Event)> {
         let pending = self.pending.as_ref()?;
         if matches!(why, End::Outside) || (matches!(why, End::Deactivated) && label.is_empty()) {
             return self.clear();
@@ -91,12 +97,14 @@ impl Guard {
         }
         // The page captures both values BEFORE queuing IPC. An old release must
         // never clear a later click, even in the same palette. A strict timestamp
-        // comparison is a conservative fallback if the native event is still in
-        // flight; an ambiguous same-millisecond click expires on the native timer.
+        // comparison is a conservative fallback only for pointer classification
+        // (before == 0 means no pointerdown). Escape, blur and observer cleanup
+        // without a sequence cannot clear a pending click. An ambiguous
+        // same-millisecond click expires on the native timer.
         if matches!(why, End::Released | End::Refused)
             && !match sequence {
                 Some(sequence) => sequence == pending.sequence,
-                None => pending.wall_time < before,
+                None => before != 0 && pending.wall_time < before,
             }
         {
             return None;
@@ -106,7 +114,8 @@ impl Guard {
         self.clear()
     }
 
-    pub fn timeout(&mut self, sequence: u64, now: u64) -> Option<Event> {
+    #[cfg(any(target_os = "macos", windows, test))]
+    pub fn timeout(&mut self, sequence: u64, now: u64) -> Option<(String, Event)> {
         if self
             .pending
             .as_ref()
@@ -186,6 +195,7 @@ mod tests {
                 !guard
                     .end("toolset-a", why, Some(event.sequence), 100)
                     .unwrap()
+                    .1
                     .pending
             );
             assert!(!guard.blocks(11));
@@ -209,7 +219,7 @@ mod tests {
         assert!(guard.end("toolset-b", End::Hide, None, 0).is_none());
         assert!(guard.timeout(second.sequence, 1_009).is_none());
         assert!(!guard.blocks(1_010)); // Native monitor's clock needs no timer delivery.
-        assert!(!guard.timeout(second.sequence, 1_010).unwrap().pending);
+        assert!(!guard.timeout(second.sequence, 1_010).unwrap().1.pending);
     }
 
     #[test]
@@ -220,6 +230,38 @@ mod tests {
         guard.pointer("toolset-a", 0, 100);
         assert!(guard.end("toolset-a", End::Acquired, None, 0).is_some());
         assert!(!guard.blocks(1));
+    }
+
+    #[test]
+    fn external_clears_notify_the_palette_that_owned_the_click() {
+        for why in [End::Outside, End::Deactivated, End::Released] {
+            let mut guard = Guard::new();
+            let click = guard.pointer("toolset-a", 0, 100);
+            // Document-page and app-wide notifications have no palette label.
+            let (label, cleared) = guard.end("", why, None, 101).unwrap();
+            assert_eq!(label, "toolset-a");
+            assert_eq!(cleared.sequence, click.sequence);
+            assert!(!cleared.pending);
+            assert!(!guard.blocks(1));
+        }
+    }
+
+    #[test]
+    fn sequence_less_non_pointer_finishes_cannot_clear_a_new_click() {
+        for why in [End::Released, End::Refused] {
+            let mut guard = Guard::new();
+            guard.pointer("toolset-a", 0, 100);
+            let newer = guard.pointer("toolset-a", 10, 110);
+            // Escape, blur and MutationObserver finishes omit pointerBefore; IPC
+            // maps that absence to zero, even if they run after the newer click.
+            assert!(guard.end("toolset-a", why, None, 0).is_none());
+            assert!(guard.blocks(11));
+            // A classification from pointerdown can use the timestamp fallback.
+            let (label, cleared) = guard.end("toolset-a", why, None, 111).unwrap();
+            assert_eq!(label, "toolset-a");
+            assert_eq!(cleared.sequence, newer.sequence);
+            assert!(!cleared.pending);
+        }
     }
 
     #[test]

@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { applyPatches, createEmptyDocument, DefaultNativeTextStyle, type MoleculeObject } from "@chemdraft/chem-core";
@@ -11,11 +13,11 @@ import { createPhase4Document } from "./documentWorkflow";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import {
   DOM_COMMAND_EVENT, broadcastToolsetCustomizeMode, broadcastToolsetTextStyle, createToolsetTextStylePayload,
-  sendPaletteCommand, sendPaletteCommandCancel, sendPaletteCommandCommit
+  sendPaletteCommand, sendPaletteCommandCancel, sendPaletteCommandCommit, type ToolsetPopoverContentPayload
 } from "./window-manager";
 import type { NativePanelFocusEvent } from "./plugins/pluginPanelInputFocus";
 import {
-  installMainWindowPalettePendingKeys, PALETTE_CLICK_PENDING_EVENT,
+  installMainWindowPalettePendingKeys, isPendingPaletteEditingKey, PALETTE_CLICK_PENDING_EVENT,
   PALETTE_CLICK_TIMEOUT_MS, type PaletteClickPendingEvent
 } from "./palettePendingKeys";
 import { forceDocumentHistoryCommandId, installSecondaryWindowEditHistory } from "./editHistoryRouting";
@@ -23,6 +25,8 @@ import { forceDocumentHistoryCommandId, installSecondaryWindowEditHistory } from
 const native = vi.hoisted(() => ({
   invoke: vi.fn(),
   resolved: vi.fn(),
+  failPointerSubscription: false,
+  popoverContent: undefined as ((payload: ToolsetPopoverContentPayload) => void) | undefined,
   platform: "macos" as "macos" | "windows",
   pointerNotify: undefined as ((event: { payload: PaletteClickPendingEvent }) => void) | undefined,
   notify: undefined as ((event: { payload: NativePanelFocusEvent }) => void) | undefined
@@ -33,13 +37,18 @@ vi.mock("./window-manager", async (original) => ({
   isDesktopRuntime: () => true,
   sendPaletteCommand: vi.fn(async () => undefined),
   sendPaletteCommandCommit: vi.fn(async () => undefined),
-  sendPaletteCommandCancel: vi.fn(async () => undefined)
+  sendPaletteCommandCancel: vi.fn(async () => undefined),
+  listenForToolsetPopoverContent: vi.fn(async (listener: (payload: ToolsetPopoverContentPayload) => void) => {
+    native.popoverContent = listener;
+    return () => { native.popoverContent = undefined; };
+  })
 }));
 vi.mock("./window-manager/tauriEvents", async (original) => ({
   ...await original<typeof import("./window-manager/tauriEvents")>(),
   listenCurrentWindowEvent: vi.fn(async (name: string, listener: (event: { payload: NativePanelFocusEvent }) => void) => {
     if (name === "chemdraft://plugin-panel-focus") native.notify = listener;
     if (name === PALETTE_CLICK_PENDING_EVENT) {
+      if (native.failPointerSubscription) throw new Error("Pointer listen failed");
       native.pointerNotify = listener as unknown as typeof native.pointerNotify;
     }
     return () => { if (native.notify === listener) native.notify = undefined; };
@@ -86,6 +95,37 @@ function selectedMolecule() {
   return applyPatches(doc, [{ op: "addObject", pageId: doc.pages[0].id, object: molecule }]);
 }
 
+it("keeps native and page pending editing-key lists in agreement", () => {
+  const read = (path: string) => readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf8");
+  const rust = read("../src-tauri/src/palette_key_guard_state.rs")
+    .split("fn editing_key(")[1]!.split("#[cfg(test)]")[0]!;
+  const page = read("./palettePendingKeys.ts").split("function isPendingPaletteEditingKey(")[1]!
+    .split("/** Disabled controls")[0]!;
+  const nativeChords = [...rust.split("key.to_ascii_lowercase().as_str(),")[1]!
+    .split(");")[0]!.matchAll(/"([^"]+)"/g)].map((match) => match[1]!).sort();
+  const pageChordList = [...page.split("return !event.altKey && [")[1]!
+    .split("]")[0]!.matchAll(/"([^"]+)"/g)].map((match) => match[1]!).sort();
+  expect(nativeChords.length).toBeGreaterThan(0);
+  expect(pageChordList).toEqual(nativeChords);
+  for (const modifier of ["metaKey", "ctrlKey"] as const) {
+    const pageChords = [..."abcdefghijklmnopqrstuvwxyz"].filter((key) =>
+      isPendingPaletteEditingKey({ key, metaKey: false, ctrlKey: false, altKey: false, [modifier]: true }));
+    expect(pageChords).toEqual(nativeChords.filter((key) => /^[a-z]$/.test(key)));
+    for (const key of nativeChords) {
+      expect(isPendingPaletteEditingKey({ key: key.toUpperCase(), metaKey: false, ctrlKey: false, altKey: false, [modifier]: true })).toBe(true);
+      expect(isPendingPaletteEditingKey({ key, metaKey: false, ctrlKey: false, altKey: true, [modifier]: true })).toBe(false);
+    }
+  }
+  // AppKit encodes these browser key names as control/private-use characters.
+  const nativeNames: Record<string, string> = { "\\u{8}": "Backspace", "\\u{7f}": "Backspace", "\\u{f728}": "Delete" };
+  const nativeDeletes = [...rust.split("if matches!(key,")[1]!.split(")")[0]!
+    .matchAll(/"([^"]+)"/g)].map((match) => nativeNames[match[1]!]);
+  expect(nativeDeletes).not.toContain(undefined);
+  const pageDeletes = [...page.split("if (event.metaKey")[0]!
+    .matchAll(/event.key === "([^"]+)"/g)].map((match) => match[1]!);
+  expect([...new Set(nativeDeletes)].sort()).toEqual(pageDeletes.sort());
+});
+
 describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platform) => {
   let container: HTMLDivElement;
   let root: Root;
@@ -95,6 +135,7 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     listeners = vi.spyOn(EventTarget.prototype, "addEventListener");
     windowListeners = vi.spyOn(window, "addEventListener");
     native.platform = platform;
+    native.failPointerSubscription = false;
     native.invoke.mockReset().mockImplementation(async (command: string, args?: { editing: boolean }) =>
       command === "register_plugin_panel_input_focus" ? "palette-page" : args?.editing);
     vi.mocked(sendPaletteCommand).mockClear();
@@ -303,7 +344,7 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
   });
 
   function pointer(target: HTMLElement, type: "pointerdown" | "pointerup" | "click", detail = 1) {
-    const owner = container.querySelector(".palette-window-shell")!;
+    const owner = container.querySelector(".palette-window-shell, .palette-popover-shell")!;
     const listener = type === "pointerup"
       ? windowListeners.mock.calls.find(([name, , options]) => name === type && options === true)![1]
       : listeners.mock.calls.find(([name, , options], i) =>
@@ -464,6 +505,98 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     });
     await flush();
   }
+
+  it("still acquires a field lease when the pending-click listener fails", async () => {
+    native.failPointerSubscription = true;
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const input = await mountSettings();
+    await clickControl(input);
+    expect(error).toHaveBeenCalledWith("Could not observe palette clicks:", expect.any(Error));
+    expect(leases().map(([, args]) => args.editing)).toEqual([true]);
+    expect(document.activeElement).toBe(input);
+  });
+
+  it.each(["Escape", "blur", "removal"])("omits the pointer fallback for a sequence-less %s release", async (cause) => {
+    const input = await mountSettings();
+    const parent = input.parentElement!;
+    const nextSibling = input.nextSibling;
+    await clickControl(input);
+    expect(leases()[0]![1]).toMatchObject({ clickSequence: undefined, pointerBefore: expect.any(Number) });
+    await act(async () => {
+      if (cause === "Escape") input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      else if (cause === "blur") input.blur();
+      else input.remove();
+    });
+    await flush();
+    expect(leases().at(-1)![1]).toMatchObject({ editing: false, clickSequence: undefined, pointerBefore: undefined });
+    // Restore React's node before unmount; removing it above exercises MutationObserver.
+    if (cause === "removal") parent.insertBefore(input, nextSibling);
+  });
+
+  it("forgets a cleared click sequence before the next pointer classification", async () => {
+    const input = await mountSettings();
+    native.pointerNotify!({ payload: { sequence: 91, pending: true, expiresAt: Date.now() + 1_000 } });
+    native.pointerNotify!({ payload: { sequence: 91, pending: false, expiresAt: 0 } });
+    await clickControl(input);
+    expect(leases()[0]![1]).toMatchObject({ clickSequence: undefined, pointerBefore: expect.any(Number) });
+  });
+
+  it("does not lease a disabled command button and still forwards the next tool hotkey", async () => {
+    await mountSettings();
+    await act(async () => {
+      await broadcastToolsetTextStyle(createToolsetTextStylePayload(
+        DefaultNativeTextStyle, "normal", undefined, "fill", createMoleculeInspectorModel(selectedMolecule(), { selectedObjectIds: [] })
+      ));
+      container.querySelector<HTMLButtonElement>("#molecule-inspector-tab-templates")!.click();
+    });
+    const button = container.querySelector<HTMLButtonElement>("button:disabled")!;
+    expect(button).not.toBeNull();
+    await clickControl(button);
+    expect(leases().filter(([, args]) => args.editing)).toHaveLength(0);
+    const shell = container.querySelector<HTMLElement>(".palette-window-shell")!;
+    const hotkey = await press(shell, "3");
+    const command = createDesktopShortcutRegistry(allShellCommands(createPhase4Document()), { includeDisabled: true }).resolve({ key: "3" });
+    expect(command).toBeTruthy();
+    expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith(command);
+    expect(hotkey.defaultPrevented).toBe(true);
+    // jsdom does not hit-test CSS: assert the pass-through rule excludes buttons.
+    const css = readFileSync(fileURLToPath(new URL("./App.css", import.meta.url)), "utf8");
+    const disabledRules = css.split("/* Disabled native form controls")[1]!;
+    expect(disabledRules).not.toContain("button");
+    expect(disabledRules).toContain(":is(input, textarea, select):disabled");
+    expect(disabledRules).toContain("cursor: not-allowed");
+  });
+
+  it("keeps disabled native flyout items out of the lease path with their reason intact", async () => {
+    await act(async () => root.render(createElement(PalettePopoverWindow, { kind: "flyout", prewarm: true })));
+    await flush();
+    await act(async () => native.popoverContent!({
+      toolsetId: "core.art", kind: "flyout",
+      flyout: { flyoutId: "align", title: "Align", commands: [{
+        id: "layout.alignLeft", title: "Align left", enabled: false, active: false,
+        disabledReason: "Select two objects"
+      }] }
+    }));
+    const button = container.querySelector<HTMLButtonElement>('button[role="menuitem"]')!;
+    expect(button.disabled).toBe(true);
+    expect(button.title).toBe("Align left: Select two objects");
+    await clickControl(button);
+    expect(leases().filter(([, args]) => args.editing)).toHaveLength(0);
+    expect(sendPaletteCommand).not.toHaveBeenCalled();
+  });
+
+  it("keeps a disabled select's reason on the wrapper receiving hover", async () => {
+    await mountSettings();
+    const select = container.querySelector<HTMLSelectElement>('[aria-label="Double-bond position"]')!;
+    expect(select.disabled).toBe(true);
+    expect(select.title).not.toBe("");
+    const hovered = select.parentElement!;
+    hovered.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    expect(hovered.title).toBe(select.title);
+    await clickControl(hovered);
+    expect(leases().map(([, args]) => args.editing)).toEqual([true]);
+    expect(document.activeElement).toBe(container.querySelector(".palette-window-shell"));
+  });
 
   it.each(["Enter", "ArrowUp"])("keeps number editing keys local after a %s commit and its snapshot", async (key) => {
     const input = await mountSettings("core.drawnStructureSettings", lengthModel(22));
