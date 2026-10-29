@@ -154,7 +154,8 @@ describe("canvas clipboard menu and copy guard", () => {
       value: { types: ["text/plain"], getData: (type: string) => type === "text/plain" ? text : "" }
     });
     await act(async () => { window.dispatchEvent(event); });
-    expect(depictSmilesForPaste).toHaveBeenCalledExactlyOnceWith("CCO");
+    expect(depictSmilesForPaste).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(depictSmilesForPaste).mock.calls[0]![0]).toBe("CCO"); // Later arguments carry the template placement.
     expect(container.querySelector('[role="status"]')?.textContent).toContain("Pasted SMILES structure");
     expect(container.querySelectorAll(".text-object")).toHaveLength(0);
     expect(container.querySelectorAll(".molecule-object")).toHaveLength(1);

@@ -54,7 +54,7 @@ describe("MainWindow SMILES paste", () => {
     document.body.append(container);
     root = createRoot(container);
     const drawing = createPhase4Document("SMILES paste");
-    drawing.styles.drawing = { ...drawing.styles.drawing, bondLengthPx: 34, bondStrokeWidthPx: 2.4 };
+    drawing.styles.drawing = { ...workflow.documentDrawingDefaults(drawing).drawing, bondLengthPx: 34, bondStrokeWidthPx: 2.4 };
     await act(async () => {
       root.render(createElement(MainWindow, {
         initialActiveToolCommandId: "tool.select",
