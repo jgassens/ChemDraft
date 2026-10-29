@@ -165,6 +165,38 @@ describe("HTML table fixtures", () => {
 });
 
 describe("Excel overflow recovery", () => {
+  it("extracts overflowing Excel boundary notes and recovers Density from the full CR-only TSV grid", () => {
+    const html = fixture("excel-overflow-notes.html");
+    const tsv = fixture("excel-overflow-notes.tsv");
+    expect(html).not.toContain("x:num");
+    expect(tsv).toContain("\t\t\t\t\t\t\r");
+    expect(tsv).not.toContain("\n");
+    const result = expectOk(readHtmlAndTsv(html, tsv));
+    expect(result.spec.columns).toHaveLength(7);
+    expect(result.spec.rows).toHaveLength(6);
+    expect(result.spec.rows[1][2]).toBe("0.854");
+    expect(result.spec.rows[3][2]).toBe("1.204");
+    expect(result.spec.caption).toBe("Table S1. Sharpless reagent quantities (synthetic).");
+    expect(result.spec.footnotes).toEqual([{ text: "a TBHP stock solution; synthetic example.", spans: [
+      { text: "a", script: "superscript" }, { text: " TBHP stock solution; synthetic example." }
+    ] }]);
+    expect(result.warnings).toEqual([]);
+    expect(TableSpecSchema.parse(result.spec)).toEqual(result.spec);
+  });
+
+  it.each(["caption", "footnote", "body", "dimensions"])("does not recover Excel values when the full TSV %s differs", part => {
+    let tsv = fixture("excel-overflow-notes.tsv");
+    if (part === "caption") tsv = tsv.replace("Table S1.", "Different caption.");
+    if (part === "footnote") tsv = tsv.replace("TBHP stock solution", "Unrelated stock solution");
+    if (part === "body") tsv = tsv.replace("allyl alcohol", "Unrelated reagent");
+    if (part === "dimensions") tsv += "Extra\trow\t\t\t\t\t\r";
+    const result = expectOk(readHtmlAndTsv(fixture("excel-overflow-notes.html"), tsv));
+    expect(result.spec.rows[1][2]).toBe("#######");
+    expect(result.spec.rows[3][2]).toBe("#######");
+    expect(result.warnings).toHaveLength(2);
+    expect(result.warnings.every(warning => warning.includes("overflow"))).toBe(true);
+  });
+
   const overflow = `<table><tr><td>Material</td><td>Density</td></tr>`
     + `<tr><td>allyl alcohol</td><td x:num>#######</td></tr></table>`;
 
@@ -262,6 +294,21 @@ describe("Excel overflow recovery", () => {
 });
 
 describe("Word-like captions and footnotes", () => {
+  it("reads the Office-shaped Word table with one header row and formatted surrounding notes", () => {
+    const result = expectOk(readHtmlAndTsv(fixture("word-office-notes.html"), fixture("word-office-notes.tsv")));
+    expect(result.spec.columns).toHaveLength(7);
+    expect(result.spec.headerRows).toHaveLength(1);
+    expect(result.spec.rows).toHaveLength(5);
+    expect(result.spec.caption).toEqual({ text: "Table S1. Sharpless reagent quantities (synthetic).", spans: [
+      { text: "Table S1.", bold: true }, { text: " Sharpless reagent quantities (synthetic)." }
+    ] });
+    expect(result.spec.footnotes).toHaveLength(1);
+    expect(result.spec.rows[0][2]).toBe("0.854");
+    expect(result.spec.rows[2][2]).toBe("1.204");
+    expect(result.warnings).toEqual([]);
+    expect(TableSpecSchema.parse(result.spec)).toEqual(result.spec);
+  });
+
   it.each([false, true])("reads one HTML table among paragraphs (CF_HTML: %s)", (wrapped) => {
     const html = fixture("word-like-notes.html");
     const result = expectOk(readHtml(wrapped ? cfHtml(html) : html, wrapped ? "HTML Format" : "text/html"));
@@ -436,6 +483,51 @@ describe("CF_HTML header", () => {
 });
 
 describe("table structure", () => {
+  const body = "<tr><th>Material</th><th>MW</th><th>Density</th><th>Equiv.</th></tr>"
+    + "<tr><td>allyl alcohol</td><td>58.08</td><td>0.854</td><td>1.00</td></tr>";
+  const noteRow = (text: string, attributes = "colspan=2") =>
+    `<tr><td ${attributes}>${text}</td><td></td><td></td></tr>`;
+
+  it.each(["colspan=2", 'colspan=2 style="mso-ignore:colspan"', 'style="mso-ignore:colspan"'])(
+    "extracts single-label boundary rows (%s) before finding headers", attributes => {
+      const result = expectOk(readHtml(table(noteRow("Caption", attributes) + body + noteRow("Footnote", attributes))));
+      expect(result.spec.caption).toBe("Caption");
+      expect(result.spec.footnotes).toEqual(["Footnote"]);
+      expect(result.spec.headerRows).toEqual([["Material", "MW", "Density", "Equiv."]]);
+      expect(result.spec.rows).toEqual([["allyl alcohol", "58.08", "0.854", "1.00"]]);
+      expect(result.warnings).toEqual([]);
+    }
+  );
+
+  it("keeps interior wide labels, unspanned boundary labels and vertical merges in the grid", () => {
+    const result = expectOk(readHtml(table(body + noteRow("Interior") + body)));
+    expect(result.spec.headerRows).toHaveLength(1);
+    expect(result.spec.rows).toHaveLength(4);
+    expect(result.spec.rows[1]).toEqual(["Interior", "", "", ""]);
+    expect(result.spec.caption).toBeUndefined();
+    expect(result.spec.footnotes).toBeUndefined();
+    expect(result.warnings).toEqual(["Merged cells were split into separate cells."]);
+    expect(expectOk(readHtml(table(noteRow("Label", "") + body))).spec.caption).toBeUndefined();
+    const vertical = expectOk(readHtml(table(noteRow("Vertical", "colspan=2 rowspan=2") + body)));
+    expect(vertical.spec.caption).toBeUndefined();
+    expect(vertical.warnings).toContain("Merged cells were split into separate cells.");
+  });
+
+  it("checks text, span, footnote, dimension and total caps before extracting boundary notes", () => {
+    expectRefusal(readHtml(table(noteRow("x".repeat(2001)) + body)), /2001 characters/);
+    const runs = Array.from({ length: 201 }, (_, i) => i % 2 ? "<i>x</i>" : "<b>x</b>").join("");
+    expectRefusal(readHtml(table(body + noteRow(runs))), /201 spans/);
+    expectOk(readHtml(table(body + noteRow("Footnote").repeat(50))));
+    expectRefusal(readHtml(table(body + noteRow("Footnote").repeat(51))), /51 footnotes.*at most 50/);
+    expectRefusal(readHtml(table(body + noteRow("Footnote").repeat(499))), /501 rows.*at most 500/);
+    expectRefusal(readHtml(table(noteRow("Caption", "colspan=65") + body)), /67 columns.*at most 64/);
+    const bigRow = `<tr><td>${"x".repeat(1000)}</td><td>${"y".repeat(1000)}</td></tr>`;
+    const notes = noteRow("c".repeat(1000), "colspan=2") + bigRow.repeat(99) + noteRow("f".repeat(1000), "colspan=2");
+    expectOk(readHtml(table(notes)));
+    expectRefusal(readHtml(table(notes.replace("<td colspan=2>c", "<td colspan=2>cc"))), /200,001 characters/);
+    expect(readHtml(table("<tr><td>one</td></tr>"))).toBeUndefined();
+  });
+
   it("expands colspan and rowspan into empty cells with a warning", () => {
     const result = expectOk(
       readHtml(

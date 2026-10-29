@@ -89,6 +89,30 @@ describe("table-only copy", () => {
 });
 
 describe("paste precedence and table building", () => {
+  it.each(["word-office-notes", "excel-overflow-notes"])("recognizes the %s table despite incidental SMILES candidates", name => {
+    const raw = payload(
+      { type: "public.utf8-plain-text", text: fixture(`${name}.tsv`) },
+      { type: "public.html", text: fixture(`${name}.html`) }
+    );
+    const parsed = readTableClipboardPaste(raw, parseHtml);
+    expect(tableClipboardPasteDecision(raw, parseHtml)).toEqual({ kind: "table", result: parsed });
+    if (!parsed?.ok) throw new Error("Expected Office-shaped table");
+    expect(parsed.source).toBe("html");
+    expect(parsed.spec.columns).toHaveLength(7);
+    expect(parsed.spec.rows.length + (parsed.spec.headerRows?.length ?? 0)).toBe(6);
+    expect(parsed.spec.caption).toBeDefined();
+    expect(parsed.spec.footnotes).toHaveLength(1);
+    expect(parsed.warnings).toEqual([]);
+    if (name === "word-office-notes") expect(parsed.spec.headerRows).toHaveLength(1);
+    const built = pasteTableIntoDocument(createPhase4Document(), parsed, { x: 408, y: 528 }, {}, ids());
+    const table = built.document.pages[0].objects[0] as TableObject;
+    expect(table.rows).toHaveLength(6);
+    expect(table.caption?.text).toBe("Table S1. Sharpless reagent quantities (synthetic).");
+    expect(table.footnotes.map(note => note.text)).toEqual(["a TBHP stock solution; synthetic example."]);
+    expect(table.rows[1].cells[2].text).toBe("0.854");
+    expect(table.rows[3].cells[2].text).toBe("1.204");
+  });
+
   it("centers tables when possible and keeps them within page edges", () => {
     const parsed = readTableClipboardPaste(htmlPayload("excel-like.html"), parseHtml);
     if (!parsed?.ok) throw new Error("Expected parsed table");
@@ -169,7 +193,7 @@ describe("paste precedence and table building", () => {
     expect(tableClipboardPasteDecision(raw, parseHtml)).toMatchObject({ kind: "existing", payload: { kind: "cdx" } });
   });
 
-  it.each(["CCO", "CCO\nCCN", "CCO\tCCN\nCCC\tCCCC", "CCO\tethanol\nCCN\tethylamine"])("sends SMILES/list %j to today's structure parser first", text => {
+  it.each(["CCO", "CCO\nCCN", "CCO\tCCN\nCCC\tCCCC", "CCO\tethanol\nCCN\tethylamine", "CCO\tethanol sample\nCCN\tethylamine sample"])("sends SMILES/list %j to today's structure parser first", text => {
     expect(tableClipboardPasteDecision(payload(...htmlPayload().textItems, { type: "text/plain", text }), parseHtml))
       .toMatchObject({ kind: "existing", payload: { kind: "plain-text", text } });
   });
@@ -180,12 +204,13 @@ describe("paste precedence and table building", () => {
     expect(readTableClipboardPaste(raw, parseHtml)).toMatchObject({ ok: true, source: "tsv" });
   });
 
-  it("declines multiple HTML tables and unrelated prose, and falls back to rectangular TSV", () => {
+  it("refuses multiple HTML tables without falling through to TSV, and declines unrelated prose", () => {
     const multiple = { type: "text/html", text: "<table><tr><td>one</td></tr></table><table><tr><td>two</td></tr></table>" };
-    expect(tableClipboardPasteDecision(payload(multiple), parseHtml)).toMatchObject({ kind: "existing" });
+    expect(tableClipboardPasteDecision(payload(multiple), parseHtml))
+      .toMatchObject({ kind: "table", result: { ok: false, reason: expect.stringContaining("multiple HTML tables") } });
     expect(readTableClipboardPaste(payload(multiple, { type: "text/plain", text: fixture("excel-quoted.tsv") }), parseHtml))
-      .toMatchObject({ source: "tsv" });
-    for (const text of ["ordinary prose", "a\tb", "a\tb\nc", "one\ntwo"]) {
+      .toMatchObject({ ok: false, reason: expect.stringContaining("multiple HTML tables") });
+    for (const text of ["ordinary prose", "a\tb", "one\ntwo"]) {
       expect(tableClipboardPasteDecision(payload({ type: "text/plain", text }), parseHtml).kind).toBe("existing");
     }
   });
@@ -198,5 +223,11 @@ describe("paste precedence and table building", () => {
       .toMatchObject({ kind: "table", result: { ok: false, reason: expect.stringContaining("2001 characters") } });
     expect(tableClipboardPasteDecision(payload({ type: "text/plain", text: Array.from({ length: 501 }, () => "1\t2").join("\n") }), parseHtml))
       .toMatchObject({ kind: "table", result: { ok: false, reason: expect.stringContaining("501 rows") } });
+    const office = fixture("word-office-notes.html").replace("allyl alcohol", "x".repeat(2001));
+    expect(tableClipboardPasteDecision(payload({ type: "public.html", text: office },
+      { type: "public.utf8-plain-text", text: fixture("word-office-notes.tsv") }), parseHtml))
+      .toMatchObject({ kind: "table", result: { ok: false, reason: expect.stringContaining("2001 characters") } });
+    expect(tableClipboardPasteDecision(payload({ type: "text/plain", text: "a\tb\nc" }), parseHtml))
+      .toMatchObject({ kind: "table", result: { ok: false, reason: expect.stringContaining("at least two rows") } });
   });
 });

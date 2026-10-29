@@ -134,6 +134,46 @@ describe("MainWindow table clipboard wiring", () => {
     expect(snapshot().document.pages[0].objects[1]).toEqual(table);
   });
 
+  it.each([
+    ["word-office-notes", "menu"], ["word-office-notes", "event"],
+    ["excel-overflow-notes", "menu"], ["excel-overflow-notes", "event"]
+  ])("pastes %s through %s as a table with notes and Density values", async (name, route) => {
+    await render();
+    const html = readFileSync(`packages/fixtures/clipboard-tables/${name}.html`, "utf8");
+    const text = readFileSync(`packages/fixtures/clipboard-tables/${name}.tsv`, "utf8");
+    if (route === "menu") {
+      vi.mocked(readClipboardPayload).mockResolvedValue({ types: ["public.utf8-plain-text", "public.html"], textItems: [
+        { type: "public.utf8-plain-text", text }, { type: "public.html", text: html }
+      ] });
+      await command("clipboard.paste");
+    } else {
+      const event = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "clipboardData", { value: {
+        types: ["text/html", "text/plain"], getData: (type: string) => type === "text/html" ? html : type === "text/plain" ? text : ""
+      } });
+      await act(async () => { window.dispatchEvent(event); });
+      expect(event.defaultPrevented).toBe(true);
+    }
+    expect(depictSmilesListForPaste).not.toHaveBeenCalled();
+    const objects = snapshot().document.pages[0].objects;
+    expect(objects).toHaveLength(1);
+    const table = objects[0] as TableObject;
+    expect(table.type).toBe("table");
+    expect(table.columns).toHaveLength(7);
+    expect(table.rows).toHaveLength(6);
+    expect(table.headerRowCount).toBe(name === "word-office-notes" ? 1 : 0);
+    expect(table.caption?.text).toBe("Table S1. Sharpless reagent quantities (synthetic).");
+    expect(table.footnotes.map(note => note.text)).toEqual(["a TBHP stock solution; synthetic example."]);
+    expect(table.rows[1].cells[2].text).toBe("0.854");
+    expect(table.rows[3].cells[2].text).toBe("1.204");
+    expect(snapshot().selection.objectIds).toEqual([table.id]);
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Pasted table");
+    await command("edit.undo");
+    expect(snapshot().document.pages[0].objects).toHaveLength(0);
+    await command("edit.redo");
+    expect(snapshot().document.pages[0].objects).toEqual([table]);
+  });
+
   it("shows a table parser refusal and pastes nothing", async () => {
     await render();
     // A single copied cell pastes as text, so use two cells to exercise table refusal.

@@ -1,6 +1,6 @@
 import {
   inspectClipboardPayload, isTextLikeType, looksLikeSmiles, readClipboardHtmlTable,
-  readClipboardTsvTable, smilesListCandidates,
+  readClipboardTsvTable, smilesListCandidates, smilesListDecision, smilesListTokens,
   type ClipboardDetectedPayload, type ClipboardReadPayload, type ClipboardTableResult
 } from "@chemdraft/clipboard-adapter";
 import {
@@ -97,8 +97,27 @@ export function tableClipboardPasteDecision(payload: ClipboardReadPayload, parse
   const selection = payload.textItems.map(item => parseSelectionClipboardPayload(item.text)).find(Boolean);
   if (selection) return { kind: "selection", payload: selection };
   const detected = inspectClipboardPayload(payload);
+  // A few reagent names/header words can resemble SMILES in a prose-heavy Office table.
+  // Only defer to chemistry if even the best case (every candidate parses) can qualify
+  // under the same list policy used by the chemical parser.
+  let possibleList = false;
+  if (detected.kind === "plain-text") {
+    const candidates = smilesListCandidates(detected.text);
+    if (candidates.length >= 2) {
+      const tokens = smilesListTokens(detected.text);
+      const firstColumns = new Map<number, number>();
+      for (const token of tokens) {
+        if (!firstColumns.has(token.line)) firstColumns.set(token.line, token.column);
+      }
+      possibleList = smilesListDecision({
+        candidates: tokens.length, parsed: candidates.length,
+        lineCount: detected.text.split(/\r\n|\r|\n/).filter(line => line.trim() !== "").length,
+        parsedFirstTokenLines: candidates.filter(token => token.column === firstColumns.get(token.line)).length
+      });
+    }
+  }
   const textNeedsChemistry = detected.kind === "plain-text" && (
-    looksLikeSmiles(detected.text.trim()) || smilesListCandidates(detected.text).length >= 2
+    looksLikeSmiles(detected.text.trim()) || possibleList
   );
   if (!["plain-text", "empty", "vector-only"].includes(detected.kind) || textNeedsChemistry) {
     return { kind: "existing", payload: detected };

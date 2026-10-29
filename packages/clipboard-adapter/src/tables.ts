@@ -548,7 +548,9 @@ function specFromGrid(
   };
 }
 
-function convertTable(table: Element, payload: ClipboardReadPayload): ClipboardTableResult | undefined {
+function convertTable(
+  table: Element, payload: ClipboardReadPayload, notes: ReturnType<typeof tableNotes>
+): ClipboardTableResult | undefined {
   const { rows, headCount } = collectRows(table);
   if (rows.length === 0) {
     return fail("The HTML table has no readable rows.");
@@ -570,6 +572,8 @@ function convertTable(table: Element, payload: ClipboardReadPayload): ClipboardT
   }
 
   const warnings = new Set<string>();
+  const mergedRows = new Set<number>();
+  const rowspanRows = new Set<number>();
   const grid: Array<Array<CellEntry | undefined>> = rows.map(() => []);
   const headerFlags: boolean[] = [];
   let nested = false;
@@ -589,7 +593,10 @@ function convertTable(table: Element, payload: ClipboardReadPayload): ClipboardT
         return tooManyColumns(c + colspan);
       }
       if (colspan > 1 || rowspan > 1) {
-        warnings.add(WARN_MERGED);
+        mergedRows.add(r);
+      }
+      if (rowspan > 1) {
+        for (let dr = 0; dr < rowspan; dr += 1) rowspanRows.add(r + dr);
       }
       const collector = new CellCollector();
       for (const child of Array.from(cell.childNodes)) {
@@ -631,17 +638,36 @@ function convertTable(table: Element, payload: ClipboardReadPayload): ClipboardT
   if (width > LIMITS.maxColumns) {
     return tooManyColumns(width);
   }
-  if (grid.some((row) => row.length < width)) {
-    warnings.add(WARN_RAGGED);
-  }
   const dense = grid.map((row) =>
     Array.from({ length: width }, (_, column) => row[column] ?? { input: "", filler: true })
   );
+  // Excel encodes text overflowing across empty cells as colspan + mso-ignore:colspan.
+  // A wide single-label boundary row can also represent a caption/footnote in other HTML.
+  // Never reinterpret a body row, a vertical merge, or an unresolved numeric overflow.
+  const isNoteRow = (r: number): boolean => {
+    const first = cellsOf(rows[r].element)[0];
+    if (!first || rowspanRows.has(r) || dense[r][0].filler) return false;
+    const span = spanAttribute(first, "colspan", 1, MAX_COLSPAN);
+    const ignore = styleProperty(first, "mso-ignore")?.split(/\s+/).includes("colspan");
+    return width > 1 && (ignore === true || (span > 1 && span >= width / 2))
+      && cellText(dense[r][0].input).trim() !== "" && !dense[r][0].overflow
+      && dense[r].slice(1).every(entry => cellText(entry.input).trim() === "");
+  };
+  let start = 0, end = dense.length;
+  while (start < end && isNoteRow(start)) start += 1;
+  while (end > start && isNoteRow(end - 1)) end -= 1;
+  // A range containing only wide labels has no distinct table to attach notes to.
+  if (start === end) { start = 0; end = dense.length; }
+  if ((end - start) * width < 2) return undefined;
+  if (Array.from(mergedRows).some(r => r >= start && r < end)) warnings.add(WARN_MERGED);
+  if (grid.slice(start, end).some(row => row.length < width)) warnings.add(WARN_RAGGED);
   const originalRefusal = tableCharacterRefusal(originalCharacters);
   if (originalRefusal) return originalRefusal;
-  // Expanded/padded/nested HTML grids do not have a reliable one-to-one TSV cell mapping.
+  // Expanded/padded/nested body grids do not have a reliable one-to-one TSV cell mapping.
+  // Boundary notes may have fillers: their positions and empty cells are still checked
+  // against the entire untrimmed TSV grid before any overflow value is recovered.
   const hasOverflow = dense.some((row) => row.some((entry) => OVERFLOW_PATTERN.test(cellText(entry.input))));
-  const plain = hasOverflow && !nested && dense.every((row) => row.every((entry) => !entry.filler))
+  const plain = hasOverflow && !nested && dense.every((row, r) => r < start || r >= end || row.every((entry) => !entry.filler))
     ? payload.textItems.find((item) => isTextLikeType(item.type)) : undefined;
   const tsv = plain ? readTsvTable(plain.text, 1) : undefined;
   const normalizedText = (cell: ClipboardTableCell): string => cellText(cell).replace(/\s+/g, " ").trim();
@@ -675,25 +701,27 @@ function convertTable(table: Element, payload: ClipboardReadPayload): ClipboardT
     warnings.add(WARN_IMAGES);
   }
 
-  let headerCount = headCount;
+  const body = dense.slice(start, end);
+  let headerCount = Math.max(0, Math.min(headCount, end) - start);
   if (headerCount === 0) {
-    while (headerCount < headerFlags.length && headerFlags[headerCount]) {
+    while (start + headerCount < end && headerFlags[start + headerCount]) {
       headerCount += 1;
     }
   }
-  if (headerCount >= dense.length) {
+  if (headerCount >= body.length) {
     headerCount = 0;
   }
   const order = [WARN_MERGED, WARN_RAGGED, WARN_NESTED, WARN_IMAGES];
-  return {
+  return addTableNotes({
     ok: true,
-    spec: specFromGrid(dense, headerCount, width),
+    spec: specFromGrid(body, headerCount, width),
     warnings: [
       ...order.filter((warning) => warnings.has(warning)),
       ...Array.from(warnings).filter((warning) => !order.includes(warning))
     ],
     source: "html"
-  };
+  }, [...notes.leading, ...dense.slice(0, start).map(row => row[0].input)],
+  [...dense.slice(end).map(row => row[0].input), ...notes.trailing]);
 }
 
 /**
@@ -745,13 +773,13 @@ export function readClipboardHtmlTable(
   if (tables.length > 1) {
     return fail("The clipboard contains multiple HTML tables; copy one table at a time.");
   }
-  const result = convertTable(tables[0], payload);
-  if (!result?.ok) return result;
   const notes = tableNotes(root, tables[0]);
+  const result = convertTable(tables[0], payload, notes);
+  if (!result?.ok) return result;
   if (notes.unsafe) {
     return fail("The content around the HTML table cannot be read safely as caption and footnote paragraphs; copy just the table and its paragraphs.");
   }
-  return addTableNotes(result, notes.leading, notes.trailing);
+  return result;
 }
 
 // ---------------------------------------------------------------------------------------------------
