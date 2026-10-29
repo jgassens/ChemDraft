@@ -42,8 +42,12 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             maximizable: false,
             resizable: true,
             title: "Insert Table",
-            size: (480.0, 300.0),
-            min_size: (420.0, 260.0),
+            // App.css, 13px form font (normal line heights rounded up): 36 padding
+            // + 19 heading + 13 collapsed heading/drawing margin + 16 drawing
+            // + 13 margin + (16 label + 4 gap + 30 control) + (26 margins + 32 status)
+            // + 30 buttons = 235px; 5px font-metric margin. Ready carries no size.
+            size: (480.0, 240.0),
+            min_size: (420.0, 240.0),
         }),
         "export" => Ok(DialogKindSpec {
             maximizable: false,
@@ -2744,8 +2748,8 @@ mod tests {
         let spec = kind_spec("insertTable").unwrap();
         assert!(!spec.maximizable);
         assert!(spec.resizable);
-        assert_eq!(spec.size, (480.0, 300.0));
-        assert_eq!(spec.min_size, (420.0, 260.0));
+        assert_eq!(spec.size, (480.0, 240.0));
+        assert_eq!(spec.min_size, (420.0, 240.0));
         assert_eq!(
             native_window_title("insertTable", spec.title, "Drawing"),
             "Insert Table — Drawing"
