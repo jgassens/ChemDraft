@@ -10,17 +10,29 @@ import { createNativeSavePayload, createPhase4Document } from "./documentWorkflo
 import { saveKeybindingSettings } from "./keybindingSettings";
 import { tableInsertCommandId } from "./tableCommands";
 import { MemoryStorage } from "./testSupport/memoryStorage";
+import { buildDocumentSessionEnvelope } from "./documentSession";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const native = vi.hoisted(() => ({
   desktop: false,
+  session: undefined as unknown,
+  flush: undefined as (() => Promise<void>) | undefined,
+  loadSession: vi.fn<() => Promise<unknown>>(),
+  saveSession: vi.fn<(value: unknown) => Promise<void>>(),
   save: vi.fn<() => Promise<string | null>>(),
   write: vi.fn<() => Promise<void>>()
 }));
 vi.mock("./window-manager", async (original) => ({
   ...await original<typeof import("./window-manager")>(),
-  isDesktopRuntime: () => native.desktop
+  isDesktopRuntime: () => native.desktop,
+  loadDocumentSession: native.loadSession,
+  saveDocumentSession: native.saveSession,
+  listenForQuitFlushRequest: async (handler: () => Promise<void>) => {
+    native.flush = handler;
+    return () => { if (native.flush === handler) native.flush = undefined; };
+  },
+  confirmQuitAfterFlush: vi.fn()
 }));
 vi.mock("./nativeFileDialog", () => ({ save: native.save, prewarmNativeFileDialogs: vi.fn() }));
 vi.mock("@tauri-apps/plugin-fs", async (original) => ({
@@ -42,6 +54,12 @@ describe("save warnings in the existing file warnings list", () => {
 
   beforeEach(() => {
     native.desktop = false;
+    native.session = undefined;
+    native.flush = undefined;
+    native.loadSession.mockReset().mockImplementation(async () => native.session);
+    native.saveSession.mockReset().mockImplementation(async (value) => {
+      native.session = JSON.parse(JSON.stringify(value));
+    });
     native.save.mockReset().mockResolvedValue("/tmp/table.chemdraft");
     native.write.mockReset().mockResolvedValue(undefined);
     vi.stubGlobal("localStorage", new MemoryStorage());
@@ -78,6 +96,12 @@ describe("save warnings in the existing file warnings list", () => {
         nativePalette: false
       }));
     });
+  }
+
+  async function remount() {
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await mount(createPhase4Document());
   }
 
   const bridge = () => window.__CHEMDRAFT_AGENT__!;
@@ -233,6 +257,77 @@ describe("save warnings in the existing file warnings list", () => {
     await click(button()!);
     expect(list()?.getAttribute("aria-label")).toMatch(/^Opened import.cdxml/);
     expect(list()?.textContent).not.toContain("Saved ");
+  });
+
+  it("serializes and restores separate open and save reports, including an inactive tab", async () => {
+    native.desktop = true;
+    await mount(createPhase4Document());
+    const openTooltip = await openWithWarnings();
+    await command(tableInsertCommandId(2, 2, 1));
+    await command("document.save");
+    const combinedTooltip = status().title;
+    expect(combinedTooltip).toContain(openTooltip);
+    expect(combinedTooltip).toContain("Saved table.chemdraft");
+    await click(button()!);
+    const headings = [...list()!.querySelectorAll("section")].map(section => section.getAttribute("aria-label"));
+    expect(headings).toHaveLength(2);
+
+    await command("document.new");
+    await act(async () => { await native.flush!(); });
+    const saved = native.session as { tabs: { openWarnings: unknown; saveWarnings: unknown }[] };
+    expect(saved.tabs[0]!.openWarnings).toMatchObject({ displayName: "import.cdxml" });
+    expect(saved.tabs[0]!.saveWarnings).toMatchObject({ operation: "save", displayName: "table.chemdraft" });
+    await remount();
+    expect(button()).toBeNull();
+    await activate(0);
+    expect(status().title).toBe(combinedTooltip);
+    await click(button()!);
+    expect([...list()!.querySelectorAll("section")].map(section => section.getAttribute("aria-label"))).toEqual(headings);
+  });
+
+  it.each([undefined, "open", "save"] as const)("restores a legacy single report with operation %s", async operation => {
+    native.desktop = true;
+    const report = {
+      ...(operation ? { operation } : {}),
+      displayName: "legacy.chemdraft", sourceLabel: "ChemDraft CDXML envelope",
+      warnings: [{ code: "legacy", message: "Kept legacy warning." }]
+    };
+    native.session = {
+      ...buildDocumentSessionEnvelope(createNativeSavePayload(tableDocument()),
+        { dirty: false }, "legacy.chemdraft", false),
+      openWarnings: report
+    };
+    await mount(createPhase4Document());
+    await click(button()!);
+    expect(list()?.getAttribute("aria-label")).toMatch(operation === "save" ? /^Saved legacy/ : /^Opened legacy/);
+    expect(list()?.textContent).toContain("Kept legacy warning.");
+    // A clean save clears only save findings, proving legacy reports landed in the right slot.
+    await command("edit.selectAll");
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Backspace", bubbles: true, cancelable: true }));
+    });
+    await command("document.save");
+    if (operation === "save") expect(button()).toBeNull();
+    else expect(status().title).toContain("Kept legacy warning.");
+  });
+
+  it.each(["openWarnings", "saveWarnings"])("drops malformed %s without losing the other report or document", async field => {
+    native.desktop = true;
+    const report = { displayName: "kept.chemdraft", sourceLabel: "ChemDraft CDXML envelope",
+      warnings: [{ code: "kept", message: "Kept valid report." }] };
+    native.session = {
+      ...buildDocumentSessionEnvelope(createNativeSavePayload(tableDocument()),
+        { dirty: false }, "kept.chemdraft", false),
+      openWarnings: report,
+      saveWarnings: { ...report, operation: "save" },
+      [field]: { ...report, warnings: [{ code: "bad", message: "Malformed report.", atomIds: [42] }] }
+    };
+    await mount(createPhase4Document());
+    expect(bridge().snapshot().document.pages[0]!.objects[0]!.type).toBe("table");
+    await click(button()!);
+    expect(list()?.getAttribute("aria-label")).toMatch(field === "openWarnings" ? /^Saved kept/ : /^Opened kept/);
+    expect(list()?.textContent).toContain("Kept valid report.");
+    expect(list()?.textContent).not.toContain("Malformed report.");
   });
 
   it("keeps both reports on tab A apart from saves on tab B and drops both on close", async () => {

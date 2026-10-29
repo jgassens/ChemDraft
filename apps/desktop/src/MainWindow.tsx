@@ -38,6 +38,7 @@ import {
   NO_OPEN_WARNINGS_REASON,
   OPEN_WARNINGS_LIST_ID,
   openWarningsHeading,
+  restoreSessionWarningReports,
   TOGGLE_OPEN_WARNINGS_COMMAND_ID,
   warningCountLabel,
   type OpenWarningSelection,
@@ -1638,7 +1639,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.29.12.15-codex";
+const CURRENT_BUILD_STAMP = "10.29.12.16-codex";
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -6813,7 +6814,7 @@ export function MainWindow({
         parsed.failures.push(...verified.failures);
         const engineUnavailable = !result.objectIds.length && parsed.failures.some(failure =>
           failure.error.includes("the RDKit engine did not load:"));
-        if (engineUnavailable) pasteAsText();
+        if (engineUnavailable && pasteAsText()) return;
         if (result.objectIds.length > 0) {
           commitDocumentChange(result.document);
           resetPasteUiState();
@@ -9186,7 +9187,10 @@ export function MainWindow({
               const resolved = await resolveOpenResultDocument(opened);
               if (!resolved) throw new Error(formatOpenFailure(opened.warnings));
               const history = createDocumentHistory(normalizeCommittedDocument(admitParsedDocument(resolved.document)));
-              restored.push({ session, opened, resolved, history, candidateIndex, id: crypto.randomUUID() });
+              // The envelope parser retains raw tabs for additive metadata and recovery. Read
+              // both reports at that boundary so its optional-field filtering cannot lose one.
+              const reports = restoreSessionWarningReports(rawTab);
+              restored.push({ session, opened, resolved, history, reports, candidateIndex, id: crypto.randomUUID() });
             } catch {
               skipped.push(rawTab);
             }
@@ -9213,18 +9217,18 @@ export function MainWindow({
             documentTabSnapshotsRef.current.clear();
             nonPristineTabsRef.current.clear();
           }
-          for (const { id, session, resolved, opened, history } of restored) {
+          for (const { id, session, resolved, opened, history, reports } of restored) {
             if (session.pristine !== true || session.path || session.dirty || !session.blank) nonPristineTabsRef.current.add(id);
             const savePathNotice = restoredSavePathNotice(session);
             documentTabSnapshotsRef.current.set(id, {
               history, file: restoredDocumentFileState(session),
               viewport: session.view?.viewport ?? createViewportState(),
               scrollLeft: session.view?.scrollLeft ?? 0, scrollTop: session.view?.scrollTop ?? 0, parts: [],
-              warnings: session.openWarnings?.operation === "save" ? undefined : session.openWarnings ?? {
+              warnings: session.openWarnings?.operation === "save" ? undefined : reports.warnings ?? {
                 displayName: session.displayName, sourceLabel: openSourceLabel(resolved.source, resolved.statusSourceLabel),
                 warnings: opened.warnings
               },
-              saveWarnings: session.openWarnings?.operation === "save" ? session.openWarnings : undefined,
+              saveWarnings: reports.saveWarnings,
               status: `${shellOpenFailure ? `${shellOpenFailure} — ` : ""}Restored last session — ${session.displayName}${session.dirty ? " (unsaved changes)" : ""}${restoreNotice}${savePathNotice ? `. ${savePathNotice}` : ""}`
             });
           }
@@ -9332,7 +9336,8 @@ export function MainWindow({
             snapshot.file.path ? nativePathBasename(snapshot.file.path) : tab.title, documentIsBlank(tabDocument)),
           pristine: !nonPristineTabsRef.current.has(tab.id),
           view: { viewport: snapshot.viewport, scrollLeft: snapshot.scrollLeft, scrollTop: snapshot.scrollTop },
-          openWarnings: activeOpenWarnings(snapshot.warnings) ?? snapshot.saveWarnings ?? snapshot.warnings
+          openWarnings: snapshot.warnings,
+          saveWarnings: snapshot.saveWarnings
         };
       });
       const envelope = buildDocumentTabsSession(tabs,

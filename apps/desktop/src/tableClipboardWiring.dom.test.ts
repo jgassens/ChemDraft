@@ -14,6 +14,8 @@ import { depictSmilesListForPaste } from "./smilesListPaste";
 import { DOM_COMMAND_EVENT } from "./window-manager";
 import { ZodError } from "zod";
 import * as tableClipboard from "./tableClipboardWiring";
+import * as identityClient from "./depiction2d/identityClient";
+import { IdentityWorkerUnavailableError } from "./depiction2d/identityWorkerClient";
 
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("./clipboard", async importOriginal => ({
@@ -284,6 +286,27 @@ describe("MainWindow table clipboard wiring", () => {
     const objects = snapshot().document.pages[0].objects;
     expect(objects.filter(object => object.type === "molecule")).toHaveLength(4);
     expect(objects.some(object => object.type === "table")).toBe(false);
+  }, 20_000);
+
+  it("keeps the table status and conversion warnings when RDKit cannot verify a SMILES list", async () => {
+    await render();
+    const actual = await vi.importActual<typeof import("./smilesListPaste")>("./smilesListPaste");
+    vi.mocked(depictSmilesListForPaste).mockImplementation(actual.depictSmilesListForPaste);
+    const inspect = vi.spyOn(identityClient, "inspectStructureOffThread")
+      .mockRejectedValue(new IdentityWorkerUnavailableError("RDKit unavailable in test"));
+    vi.mocked(readClipboardPayload).mockResolvedValue(clipboard(
+      readFileSync("packages/fixtures/clipboard-tables/google-docs-like.html", "utf8"),
+      "CCO\tCCN\nCCC\tCCCC"));
+
+    await command("clipboard.paste");
+    await vi.waitFor(async () => {
+      await act(async () => { await Promise.resolve(); });
+      expect(snapshot().document.pages[0].objects).toHaveLength(1);
+      expect(snapshot().document.pages[0].objects[0].type).toBe("table");
+    }, { timeout: 15_000 });
+    expect(inspect).toHaveBeenCalled();
+    expect(container.querySelector('[data-status-message]')?.textContent)
+      .toMatch(/^Pasted table; .*Merged cells were split/);
   }, 20_000);
 
   it("tries TSV when a prospective SMILES list fails to parse", async () => {

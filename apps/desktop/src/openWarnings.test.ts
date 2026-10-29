@@ -11,6 +11,7 @@ import {
   fileWarningsTooltip,
   NO_OPEN_WARNINGS_REASON,
   openWarningsHeading,
+  restoreSessionWarningReports,
   TOGGLE_OPEN_WARNINGS_COMMAND_ID,
   warningCountLabel,
   type OpenWarning
@@ -40,6 +41,34 @@ function replaceMolecule(document: ChemDraftDocument, molecule: MoleculeObject):
 }
 
 describe("open warnings model", () => {
+  const sessionOpen = {
+    displayName: "import.cdxml", sourceLabel: "external CDXML subset",
+    warnings: [{ code: "import", message: "Imported a subset.", sourceObjectId: "m1", atomIds: ["a1"], bondIds: ["b1"] }]
+  };
+  const sessionSave = { ...sessionOpen, operation: "save" as const, displayName: "drawing.chemdraft" };
+
+  it("restores session reports independently and routes a legacy save report to its own slot", () => {
+    expect(restoreSessionWarningReports({ openWarnings: sessionOpen, saveWarnings: sessionSave }))
+      .toEqual({ warnings: sessionOpen, saveWarnings: sessionSave });
+    expect(restoreSessionWarningReports({ openWarnings: sessionSave }))
+      .toEqual({ warnings: undefined, saveWarnings: sessionSave });
+    expect(restoreSessionWarningReports({ openWarnings: { ...sessionOpen, operation: "legacy-other" } }))
+      .toEqual({ warnings: sessionOpen, saveWarnings: undefined });
+    expect(restoreSessionWarningReports(undefined)).toEqual({});
+  });
+
+  it.each([
+    null, [], { ...sessionOpen, displayName: 42 }, { ...sessionOpen, sourceLabel: null },
+    { ...sessionOpen, warnings: "bad" }, { ...sessionOpen, warnings: [null] },
+    ...[{ code: 42 }, { message: null }, { sourceObjectId: 42 }, { atomIds: [42] }, { bondIds: "b1" }]
+      .map(invalid => ({ ...sessionOpen, warnings: [{ code: "x", message: "bad", ...invalid }] }))
+  ])("drops only the malformed session warning report (%j)", malformed => {
+    expect(restoreSessionWarningReports({ openWarnings: malformed, saveWarnings: sessionSave }))
+      .toEqual({ warnings: undefined, saveWarnings: sessionSave });
+    expect(restoreSessionWarningReports({ openWarnings: sessionOpen, saveWarnings: malformed }))
+      .toEqual({ warnings: sessionOpen, saveWarnings: undefined });
+  });
+
   it("counts warnings in words, never \"1 warnings\"", () => {
     expect(warningCountLabel(1)).toBe("1 warning");
     expect(warningCountLabel(2)).toBe("2 warnings");
