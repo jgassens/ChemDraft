@@ -3149,6 +3149,7 @@ async fn set_plugin_panel_input_focus(
             }
             result.map(|_| held)
         } else {
+            panel_window::release_pointer_guard(target.label());
             // Tao tracks focus on the parent HWND; WebView2 moves it into a child HWND.
             // The foreground top-level window remains the authoritative Windows lease owner.
             #[cfg(windows)]
@@ -4594,7 +4595,11 @@ fn build_toolset_tooltip_window(app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn route_toolset_command(app: tauri::AppHandle, command_id: String) -> Result<(), String> {
+fn route_toolset_command(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    command_id: String,
+) -> Result<(), String> {
     if utility_windows_suspended() {
         return Ok(());
     }
@@ -4604,6 +4609,11 @@ fn route_toolset_command(app: tauri::AppHandle, command_id: String) -> Result<()
     }
 
     emit_command_to_main(&app, command_id)?;
+    // Select changes and clean-number undo update the document while the control
+    // keeps the keyboard. Button/background clicks release the lease themselves.
+    if window.label().starts_with("toolset-") && panel_window::holds_input_focus(&window) {
+        return Ok(());
+    }
     if let Err(error) = focus_main_document_window_impl(&app, MainWindowFocusMode::Force) {
         eprintln!(
             "Could not refocus ChemDraft document after toolbar command {command_id}: {error}"
@@ -5835,6 +5845,9 @@ fn emit_menu_command<R: Runtime>(
         .map(|(label, _)| label);
     let target_label = menu_command_target_label(command_id, focused_label.as_deref());
     if target_label == MAIN_WINDOW_LABEL {
+        if panel_window::palette_blocks_document_keys() {
+            return Ok(());
+        }
         return emit_command_to_main(app, command_id);
     }
     let target = app

@@ -10,6 +10,10 @@ pub(super) struct Lease {
 }
 
 impl Lease {
+    pub fn is_held(&self) -> bool {
+        self.held
+    }
+
     /// A new webview starts its JS counter over. Invalidate queued native work as well:
     /// its generation may equal a request from the new page.
     pub fn reset(&mut self) {

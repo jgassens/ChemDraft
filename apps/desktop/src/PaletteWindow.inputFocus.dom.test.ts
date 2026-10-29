@@ -322,6 +322,102 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     await flush();
   }
 
+  it.each(["Enter", "ArrowUp"])("keeps number editing keys local after a %s commit and its snapshot", async (key) => {
+    const input = await mountSettings("core.drawnStructureSettings", lengthModel(22));
+    await clickControl(input);
+    if (key === "Enter") await type(input, "26");
+    await press(input, key);
+    await snapshot(key === "Enter" ? 26 : 22.5);
+    expect(document.activeElement).toBe(input);
+    expect(leases().map(([, args]) => args.editing)).toEqual([true]);
+    expect(sendPaletteCommandCommit).toHaveBeenCalledExactlyOnceWith(moleculeStructureBondLengthCommandId(key === "Enter" ? 26 : 22.5));
+    for (const next of ["Delete", "Backspace", "a", "2", "6"]) {
+      const event = await press(document.activeElement as HTMLInputElement, next, {
+        ctrlKey: next === "a" && platform === "windows", metaKey: next === "a" && platform === "macos"
+      });
+      expect(event.defaultPrevented, next).toBe(false);
+      expect(document.activeElement).toBe(input);
+    }
+    expect(sendPaletteCommand).not.toHaveBeenCalled();
+    await press(input, "z", { ctrlKey: platform === "windows", metaKey: platform === "macos" });
+    expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith(forceDocumentHistoryCommandId("edit.undo"));
+  });
+
+  it("drops editing keys and menu Select All while the native lease is pending", async () => {
+    const input = await mountSettings();
+    let settle!: (acquired: boolean) => void;
+    native.invoke.mockImplementationOnce(() => new Promise<boolean>((resolve) => { settle = resolve; }));
+    const uninstall = installSecondaryWindowEditHistory({ forwardToMain: sendPaletteCommand });
+    try {
+      await clickControl(input);
+      expect(document.activeElement).toBe(document.body); // The caret is suspended.
+      for (const key of ["a", "Delete", "Backspace", "2", "7"]) {
+        const event = new KeyboardEvent("keydown", {
+          key, bubbles: true, cancelable: true,
+          ctrlKey: key === "a" && platform === "windows", metaKey: key === "a" && platform === "macos"
+        });
+        await act(async () => document.activeElement!.dispatchEvent(event));
+        expect(event.defaultPrevented, key).toBe(true);
+      }
+      await act(async () => window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "edit.selectAll" } })));
+      expect(sendPaletteCommand).not.toHaveBeenCalled();
+    } finally {
+      settle(true);
+      await flush();
+      uninstall();
+    }
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("keeps keys off the document after clicking a disabled number until Escape", async () => {
+    await mountSettings();
+    await act(async () => broadcastToolsetTextStyle(createToolsetTextStylePayload(
+      DefaultNativeTextStyle, "normal", undefined, "fill", createMoleculeInspectorModel(selectedMolecule(), { selectedObjectIds: [] })
+    )));
+    const disabled = container.querySelector<HTMLInputElement>('[aria-label="Chain angle"]')!;
+    expect(disabled.disabled).toBe(true);
+    await clickControl(disabled);
+    expect(leases().map(([, args]) => args.editing)).toEqual([true]);
+    for (const key of ["2", "9", "Delete", "Backspace", "a"]) {
+      const event = new KeyboardEvent("keydown", {
+        key, bubbles: true, cancelable: true,
+        ctrlKey: key === "a" && platform === "windows", metaKey: key === "a" && platform === "macos"
+      });
+      await act(async () => document.activeElement!.dispatchEvent(event));
+      expect(event.defaultPrevented, key).toBe(true);
+    }
+    const uninstall = installSecondaryWindowEditHistory({ forwardToMain: sendPaletteCommand });
+    await act(async () => window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "edit.selectAll" } })));
+    uninstall();
+    expect(sendPaletteCommand).not.toHaveBeenCalled();
+    await act(async () => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+    await flush();
+    expect(leases().map(([, args]) => args.editing)).toEqual([true, false]);
+  });
+
+  it("leaves Text size type-ahead, arrows and Escape to the select without forwarding Select All", async () => {
+    await mountSettings("core.text");
+    const select = container.querySelector<HTMLSelectElement>('[aria-label="Text size"]')!;
+    expect(select).not.toBeNull();
+    await clickControl(select);
+    const uninstall = installSecondaryWindowEditHistory({ forwardToMain: sendPaletteCommand });
+    try {
+      for (const key of ["1", "8", "Delete", "Backspace", "a", "ArrowDown", "Escape"]) {
+        const event = new KeyboardEvent("keydown", {
+          key, bubbles: true, cancelable: true,
+          ctrlKey: key === "a" && platform === "windows", metaKey: key === "a" && platform === "macos"
+        });
+        await act(async () => document.activeElement!.dispatchEvent(event));
+        expect(event.defaultPrevented, key).toBe(false);
+        expect(document.activeElement).toBe(select);
+      }
+      await act(async () => window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "edit.selectAll" } })));
+      expect(sendPaletteCommand).not.toHaveBeenCalled();
+    } finally {
+      uninstall();
+    }
+  });
+
   async function nonTextControl(kind: string) {
     if (kind === "checkbox") {
       await act(async () => container.querySelector<HTMLButtonElement>("#molecule-inspector-tab-atom-labels")!.click());
@@ -455,7 +551,7 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
   );
 
   // Deliberately reverse the earlier text-only rule: otherwise Delete lands on the document.
-  it.each(["select", "range", "checkbox", "color"])("leases a clicked %s and forwards its next palette hotkey", async (kind) => {
+  it.each(["select", "range", "checkbox", "color"])("leases a clicked %s and preserves select type-ahead or forwards its palette hotkey", async (kind) => {
     await mountSettings();
     const control = await nonTextControl(kind);
     await clickControl(control);
@@ -465,9 +561,9 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     native.resolved.mockClear();
     const event = new KeyboardEvent("keydown", { key: "3", bubbles: true, cancelable: true });
     await act(async () => control.dispatchEvent(event));
-    expect(native.resolved).toHaveBeenCalledOnce();
-    expect(sendPaletteCommand).toHaveBeenCalledOnce();
-    expect(event.defaultPrevented).toBe(true);
+    expect(native.resolved).toHaveBeenCalledTimes(kind === "select" ? 0 : 1);
+    expect(sendPaletteCommand).toHaveBeenCalledTimes(kind === "select" ? 0 : 1);
+    expect(event.defaultPrevented).toBe(kind !== "select");
   });
 
   it("does not forward a hotkey in the native acquisition/refocus gap", async () => {
@@ -504,9 +600,9 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     }
     const hotkey = new KeyboardEvent("keydown", { key: "k", bubbles: true, cancelable: true });
     await act(async () => control.dispatchEvent(hotkey));
-    expect(native.resolved).toHaveBeenCalledOnce();
-    expect(sendPaletteCommand).toHaveBeenCalledOnce();
-    expect(hotkey.defaultPrevented).toBe(true);
+    expect(native.resolved).toHaveBeenCalledTimes(kind === "select" ? 0 : 1);
+    expect(sendPaletteCommand).toHaveBeenCalledTimes(kind === "select" ? 0 : 1);
+    expect(hotkey.defaultPrevented).toBe(kind !== "select");
     vi.mocked(sendPaletteCommand).mockClear();
     const undo = new KeyboardEvent("keydown", { key: "z", ctrlKey: platform === "windows", metaKey: platform === "macos", bubbles: true, cancelable: true });
     await act(async () => control.dispatchEvent(undo));
@@ -515,12 +611,19 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     if (kind !== "button") {
       await act(async () => control.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
       await flush();
+      if (kind === "select") {
+        // Escape dismisses the native select; leaving the control ends its lease.
+        expect(document.activeElement).toBe(control);
+        expect(leases().map(([, args]) => args.editing)).toEqual([true]);
+        await act(async () => control.blur());
+        await flush();
+      }
       expect(leases().map(([, args]) => args.editing)).toEqual([true, false]);
       expect(document.activeElement).not.toBe(control);
     }
   });
 
-  it("prevents select type-ahead that does not resolve to a shortcut", async () => {
+  it("preserves select type-ahead that does not resolve to a shortcut", async () => {
     await mountSettings();
     const select = container.querySelector<HTMLSelectElement>("select:not(:disabled)")!;
     await clickControl(select);
@@ -529,7 +632,7 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     expect(key).toBeTruthy();
     const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
     await act(async () => select.dispatchEvent(event));
-    expect(event.defaultPrevented).toBe(true);
+    expect(event.defaultPrevented).toBe(false);
     expect(sendPaletteCommand).not.toHaveBeenCalled();
   });
 

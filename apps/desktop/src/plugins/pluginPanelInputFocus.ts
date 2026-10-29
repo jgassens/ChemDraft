@@ -5,7 +5,7 @@ import { detectDesktopShortcutPlatform } from "../keyboardShortcuts";
 import { isTextEditingElement } from "../editHistoryRouting";
 
 /** Form controls borrow the keyboard; command buttons never do. Labels count as their control. */
-export function panelEditableControl(target: EventTarget | null): HTMLElement | undefined {
+export function panelEditableControl(target: EventTarget | null, includeDisabled = false): HTMLElement | undefined {
   let element = target instanceof Element ? target : target instanceof Node ? target.parentElement : null;
   if (element?.closest("button")) return;
   const label = element?.closest("label");
@@ -13,7 +13,7 @@ export function panelEditableControl(target: EventTarget | null): HTMLElement | 
   if (!element?.closest("input, textarea, select, [contenteditable]") &&
     label instanceof HTMLLabelElement && label.control) element = label.control;
   const control = element?.closest("input, textarea, select, [contenteditable]");
-  if (!(control instanceof HTMLElement) || control.matches(":disabled")) return;
+  if (!(control instanceof HTMLElement) || (!includeDisabled && control.matches(":disabled"))) return;
   if (control instanceof HTMLInputElement) {
     if (control.readOnly || ["hidden", "button", "submit", "reset", "image"].includes(control.type)) return;
     return control;
@@ -81,6 +81,10 @@ export function installPluginPanelInputFocus(
   subscribeFocus: (listener: (event: NativePanelFocusEvent) => void) => Promise<() => void> = listenNativePanelFocus,
   editableFocus = false
 ): () => void {
+  const editableControl = (target: EventTarget | null) => panelEditableControl(target, editableFocus);
+  // Disabled controls cannot take DOM focus. Their palette is a keyboard sink instead.
+  const originalTabIndex = shell.getAttribute("tabindex");
+  if (editableFocus && originalTabIndex === null) shell.tabIndex = -1;
   if (requestFocus === requestNativeInputFocus && isDesktopRuntime()) {
     void registerNativeInputFocus().catch((error: unknown) =>
       console.error("Could not register panel input focus:", error));
@@ -104,8 +108,10 @@ export function installPluginPanelInputFocus(
   let pointerActive = false;
   let disposed = false;
   const focusLeasedControl = (): void => {
-    if (editableFocus && acquiredControlFocus && leasedControl && shell.contains(leasedControl) &&
-      document.activeElement !== leasedControl) leasedControl.focus({ preventScroll: true });
+    if (editableFocus && acquiredControlFocus && leasedControl && shell.contains(leasedControl)) {
+      const destination = leasedControl.matches(":disabled") ? shell : leasedControl;
+      if (document.activeElement !== destination) destination.focus({ preventScroll: true });
+    }
   };
   const setEditing = (next: boolean, retry = false): void => {
     if (editing === next && !retry) return;
@@ -118,6 +124,8 @@ export function installPluginPanelInputFocus(
     if (editableFocus) {
       if (next && !acquiredControlFocus) pendingPaletteShells.add(shell);
       else pendingPaletteShells.delete(shell);
+      if (next) shell.dataset.paletteInputFocus = acquiredControlFocus ? "held" : "pending";
+      else delete shell.dataset.paletteInputFocus;
     }
     const requestedChain = leaseChain;
     const requestedRevision = revision = ++nextGeneration;
@@ -139,7 +147,10 @@ export function installPluginPanelInputFocus(
             nativeGenerations.clear();
             nativeGenerations.add(requestedRevision);
             acquiredControlFocus = true;
-            if (editableFocus) pendingPaletteShells.delete(shell);
+            if (editableFocus) {
+              pendingPaletteShells.delete(shell);
+              shell.dataset.paletteInputFocus = "held";
+            }
             focusLeasedControl();
             if (!pointerActive && !pointerClickTarget && pointerFocusTimer === undefined) pointerControl = undefined;
           }
@@ -175,7 +186,7 @@ export function installPluginPanelInputFocus(
     // WebView2 can activate its parent despite NOACTIVATE/WM_MOUSEACTIVATE. Like the
     // toolbar command route, explicitly hand back after an ordinary interaction, even
     // when there was no lease to finish. The native command checks foreground ownership.
-    if (platform === "windows" && !editing) setEditing(false, true);
+    if ((platform === "windows" || editableFocus) && !editing) setEditing(false, true);
   };
   const reportText = (node: EventTarget | null): boolean => {
     if (editableFocus) return false;
@@ -204,7 +215,7 @@ export function installPluginPanelInputFocus(
     pointerActive = true;
     pointerClickTarget = event.target;
     selectionGesture = undefined;
-    const control = panelEditableControl(event.target);
+    const control = editableControl(event.target);
     if (control && shell.contains(control)) {
       clearTimeout(controlBlurTimer);
       if (editableFocus && acquiredControlFocus) pendingPaletteShells.delete(shell);
@@ -297,7 +308,7 @@ export function installPluginPanelInputFocus(
     } else checkActivation();
   };
   const focusIn = (event: FocusEvent): void => {
-    const control = panelEditableControl(event.target);
+    const control = editableControl(event.target);
     if (control && shell.contains(control)) {
       clearTimeout(controlBlurTimer);
       if (editableFocus && acquiredControlFocus) pendingPaletteShells.delete(shell);
@@ -328,9 +339,10 @@ export function installPluginPanelInputFocus(
       return;
     }
     if (!editableFocus || suspendingControlFocus || !acquiredControlFocus || !editing) return;
-    const next = panelEditableControl(event.relatedTarget);
+    if (event.relatedTarget === shell && leasedControl?.matches(":disabled")) return;
+    const next = editableControl(event.relatedTarget);
     if (next && shell.contains(next)) return;
-    if (!panelEditableControl(event.target)) return;
+    if (!editableControl(event.target) && event.target !== shell) return;
     if (event.relatedTarget instanceof Node) {
       finish(); // A known destination outside the palette's controls is a real departure.
       return;
@@ -341,7 +353,8 @@ export function installPluginPanelInputFocus(
     clearTimeout(controlBlurTimer);
     pendingPaletteShells.add(shell);
     controlBlurTimer = setTimeout(() => {
-      const active = panelEditableControl(document.activeElement);
+      const active = document.activeElement === shell && leasedControl?.matches(":disabled")
+        ? leasedControl : editableControl(document.activeElement);
       if (!disposed && editing && pointerControl === leasedControl && pointerControl &&
         !isTextEditingElement(pointerControl) && shell.contains(pointerControl) && document.activeElement === document.body) {
         // A held WebKit click can blur to body before mouseup/click. Its explicitly leased
@@ -352,12 +365,26 @@ export function installPluginPanelInputFocus(
       else if (acquiredControlFocus) pendingPaletteShells.delete(shell);
     }, 0);
   };
+  const protectPendingKeys = (event: KeyboardEvent): void => {
+    if (!editableFocus || !editing || (event.target !== document.body &&
+      (!(event.target instanceof Node) || !shell.contains(event.target)))) return;
+    if (event.key === "Escape" || event.key === "Tab") return;
+    if (!acquiredControlFocus || leasedControl?.matches(":disabled")) {
+      // The native guard covers keys still addressed to the document. Drop those
+      // already delivered to this webview while its caret has no destination yet.
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+  };
   const keyDown = (event: KeyboardEvent): void => {
-    if (editableFocus && (!(event.target instanceof Node) || !shell.contains(event.target))) return;
+    if (editableFocus && event.target !== document.body &&
+      (!(event.target instanceof Node) || !shell.contains(event.target))) return;
     pointerClickTarget = undefined;
-    const control = panelEditableControl(event.target);
+    const control = editableControl(event.target) ?? (editableFocus ? leasedControl : undefined);
     if (!editing || event.isComposing) return;
     if (event.key === "Escape" && !event.defaultPrevented) {
+      // A native select owns Escape (dismiss its popup without blurring its owner).
+      if (editableFocus && control instanceof HTMLSelectElement && !control.disabled) return;
       event.preventDefault();
       event.stopPropagation(); // Escape finishes editing; it must not close the report window.
       finish();
@@ -375,6 +402,7 @@ export function installPluginPanelInputFocus(
       finish();
     } else if (!control) return;
     else if (event.key === "Enter" && (!editableFocus || isTextEditingElement(control)) &&
+      !(editableFocus && control instanceof HTMLInputElement && control.type === "number") &&
       (control instanceof HTMLInputElement || control instanceof HTMLSelectElement)) {
       // Bubble after the control's commit handler; textarea/contenteditable keep multiline Enter.
       finish();
@@ -405,7 +433,7 @@ export function installPluginPanelInputFocus(
     if (selectionLease) {
       if (selectionNodes.some((node) => !shell.contains(node))) finish();
     } else if (editing && (!leasedControl || !shell.contains(leasedControl) ||
-      panelEditableControl(leasedControl) !== leasedControl)) finish();
+      editableControl(leasedControl) !== leasedControl)) finish();
   });
   observer.observe(shell, { childList: true, subtree: true, attributes: true,
     attributeFilter: ["disabled", "readonly", "contenteditable", "type"] });
@@ -418,7 +446,10 @@ export function installPluginPanelInputFocus(
   shell.addEventListener("focusout", focusOut);
   // Palette controls commit/cancel through React's delegated handlers at the root above shell.
   // Finish their leases afterwards, so Escape cannot swallow the control's cancel handler.
-  if (editableFocus) window.addEventListener("keydown", keyDown);
+  if (editableFocus) {
+    window.addEventListener("keydown", protectPendingKeys, true);
+    window.addEventListener("keydown", keyDown);
+  }
   else shell.addEventListener("keydown", keyDown);
   document.addEventListener("selectionchange", selectionChange);
   let unsubscribeFocus: (() => void) | undefined;
@@ -441,9 +472,13 @@ export function installPluginPanelInputFocus(
     shell.removeEventListener("click", click, true);
     shell.removeEventListener("focusin", focusIn);
     shell.removeEventListener("focusout", focusOut);
-    if (editableFocus) window.removeEventListener("keydown", keyDown);
+    if (editableFocus) {
+      window.removeEventListener("keydown", protectPendingKeys, true);
+      window.removeEventListener("keydown", keyDown);
+    }
     else shell.removeEventListener("keydown", keyDown);
     document.removeEventListener("selectionchange", selectionChange);
     finish();
+    if (editableFocus && originalTabIndex === null) shell.removeAttribute("tabindex");
   };
 }

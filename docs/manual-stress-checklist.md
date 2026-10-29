@@ -18,6 +18,18 @@ focus and drawing shortcuts return after an action or dismissal.
 Palette field input (macOS and Windows): in Drawn Structure Settings, click Target bond length,
 type 30 and press Return; the value changes, the canvas does not, and no hotkey fires. Switch to
 another app and back, then click the field again; Customize gallery search still types.
+After clicking or double-clicking Target bond length, select its text, type 26 and press Return.
+Immediately press Delete/Backspace, Cmd/Ctrl+A and digits: all edit the same focused box, with no
+document deletion, selection change or hotkey. Repeat after an ArrowUp/ArrowDown commit and its
+canvas update; clean-number Cmd/Ctrl+Z still undoes the document without leaving the box.
+With the document initially key (also immediately after leaving a previous palette edit), click
+the number and immediately press Cmd/Ctrl+A, digits and Delete/Backspace before acquisition can
+settle. Keys either reach the box or are dropped; the document must never Select All or change.
+With “No molecule”, click the disabled Chain angle box and type digits, Delete/Backspace and
+Cmd/Ctrl+A: the palette ignores them until Escape or a click elsewhere. In the Text toolbar,
+click the size dropdown and repeat: type-ahead and arrows belong to the select, Escape dismisses
+its popup, and Select All never selects canvas objects. Choosing a size keeps keys in the select.
+After each case, click a palette tool button or its background and verify tool hotkeys work again.
 Double- and triple-click a number box, then type 3, Delete and Backspace: the box keeps focus and
 the drawing never changes. With another app in front, clicking a palette field does NOT bring
 ChemDraft forward or take its keys, by design: floating palettes never yank focus from another app.
@@ -34,9 +46,10 @@ PageUp/PageDown never reach the drawing. Slider arrows apply each changed value 
 Repeat a checkbox click, click checkbox A then B, and click a number then its slider:
 each clicked control keeps focus and Delete/Backspace stay off the drawing, even when WebKit's
 click default briefly leaves focus on the page body.
-Select type-ahead without a shortcut does not change the style. Escape returns the keyboard to the
-document. Tool/command buttons never borrow it. Cmd/Ctrl+Z and tool hotkeys still reach the document
-from non-text controls. A focused number follows undo immediately unless it holds typed, uncommitted
+Selects retain native type-ahead and Escape dismissal; leaving the control returns the keyboard.
+Escape in other controls returns the keyboard to the document. Tool/command buttons never borrow it.
+Cmd/Ctrl+Z still reaches document history from non-text controls; tool hotkeys still work from
+checkboxes, sliders and colour controls. A focused number follows undo immediately unless it holds typed, uncommitted
 text. Focus Target bond length at 22, step ArrowUp three times to 23.5, then press real Cmd/Ctrl+Z
 inside the box: the document undoes once and the focused box shows 23. Choose Edit > Undo from
 the menu to reach 22.5, then Edit > Redo to return to 23: the box refreshes immediately, and Tab

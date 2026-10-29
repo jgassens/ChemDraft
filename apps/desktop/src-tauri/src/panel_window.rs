@@ -7,7 +7,10 @@ use tauri::{Emitter, Manager};
 mod focus_lease;
 #[path = "panel_window_installation.rs"]
 mod installation;
+#[path = "palette_key_guard.rs"]
+mod key_guard;
 pub(crate) use installation::finish_installation;
+pub(crate) use key_guard::blocks_document as palette_blocks_document_keys;
 #[cfg(target_os = "macos")]
 #[path = "panel_focus_macos.rs"]
 mod macos;
@@ -15,7 +18,22 @@ mod macos;
 #[derive(Default)]
 pub(crate) struct PanelFocusState(Mutex<HashMap<String, focus_lease::Lease>>);
 
+pub(crate) fn release_pointer_guard(label: &str) {
+    key_guard::release(label);
+}
+
+pub(crate) fn holds_input_focus<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> bool {
+    window
+        .state::<PanelFocusState>()
+        .0
+        .lock()
+        .unwrap()
+        .get(window.label())
+        .is_some_and(focus_lease::Lease::is_held)
+}
+
 pub(crate) fn reset_for_webview<R: tauri::Runtime>(window: &tauri::Window<R>) {
+    key_guard::release(window.label());
     window
         .state::<PanelFocusState>()
         .0
@@ -93,6 +111,9 @@ pub(crate) fn is_current<R: tauri::Runtime>(
 // Called synchronously from WM_ACTIVATE/WM_ACTIVATEAPP or AppKit key notifications,
 // never from WebView2 child focus messages or delayed Tauri Focused events.
 pub(crate) fn activation<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>, active: bool) {
+    if !active {
+        key_guard::release(window.label());
+    }
     let generation = {
         let state = window.state::<PanelFocusState>();
         let mut leases = state.0.lock().unwrap();
@@ -119,6 +140,7 @@ pub(crate) fn activation<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>, ac
 }
 
 pub(crate) fn forget<R: tauri::Runtime>(window: &tauri::Window<R>) {
+    key_guard::release(window.label());
     window
         .state::<PanelFocusState>()
         .0
@@ -202,14 +224,15 @@ pub(crate) fn macos_style(
 pub(crate) fn install_input_focus<R: tauri::Runtime>(
     window: &tauri::WebviewWindow<R>,
 ) -> Result<(), String> {
+    key_guard::install(window)?;
     macos::observe(window)
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
 pub(crate) fn install_input_focus<R: tauri::Runtime>(
-    _window: &tauri::WebviewWindow<R>,
+    window: &tauri::WebviewWindow<R>,
 ) -> Result<(), String> {
-    Ok(())
+    key_guard::install(window)
 }
 
 #[cfg(not(windows))]
@@ -238,10 +261,17 @@ pub(crate) fn install_input_focus<R: tauri::Runtime>(
         Shell::SetWindowSubclass,
         WindowsAndMessaging::{GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE},
     };
+    key_guard::install(window)?;
     let hwnd = window.hwnd().map_err(|error| error.to_string())?.0;
     let target = window.clone();
+    let label = window.label().to_string();
     let data = Box::into_raw(Box::new(FocusObserver {
         activation: std::rc::Rc::new(move |active| activation(&target, active)),
+        pointer: std::rc::Rc::new(move || {
+            if key_guard::is_palette(&label) {
+                key_guard::pointer(Some(&label));
+            }
+        }),
     }));
     unsafe {
         SetWindowLongPtrW(
@@ -263,6 +293,7 @@ pub(crate) fn install_input_focus<R: tauri::Runtime>(
 #[cfg(windows)]
 struct FocusObserver {
     activation: std::rc::Rc<dyn Fn(bool)>,
+    pointer: std::rc::Rc<dyn Fn()>,
 }
 
 #[cfg(windows)]
@@ -276,8 +307,15 @@ unsafe extern "system" fn focus_subclass(
 ) -> isize {
     use windows_sys::Win32::UI::{
         Shell::{DefSubclassProc, RemoveWindowSubclass},
-        WindowsAndMessaging::{WA_INACTIVE, WM_ACTIVATE, WM_ACTIVATEAPP, WM_NCDESTROY},
+        WindowsAndMessaging::{
+            WA_INACTIVE, WM_ACTIVATE, WM_ACTIVATEAPP, WM_LBUTTONDOWN, WM_MOUSEACTIVATE,
+            WM_NCDESTROY,
+        },
     };
+    if message == WM_MOUSEACTIVATE && ((lparam >> 16) & 0xffff) == WM_LBUTTONDOWN as isize {
+        let pointer = (*(data as *const FocusObserver)).pointer.clone();
+        pointer();
+    }
     // Observe focus without overriding mouse activation. Palettes keep WS_EX_NOACTIVATE,
     // but WebView2 must be allowed to activate them for a native colour picker. Forcing
     // MA_NOACTIVATE here (newly installed on palettes) prevents that popup from opening.

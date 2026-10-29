@@ -146,8 +146,13 @@ export function installSecondaryWindowEditHistory(options: {
     if (typeof commandId !== "string") {
       return;
     }
+    const doc = target.document;
+    // Native menu accelerators may arrive after the palette becomes key but before
+    // its acquisition reply restores the caret. No command belongs to the drawing then.
+    if (doc.querySelector('[data-palette-input-focus="pending"]')) return;
     if (commandId === "edit.selectAll") {
-      if (!performFocusedFieldSelectAll(target.document)) {
+      if (!performFocusedFieldSelectAll(doc) && !doc.querySelector("[data-palette-input-focus]") &&
+        !(doc.activeElement instanceof HTMLSelectElement)) {
         void Promise.resolve(options.forwardToMain(forceDocumentHistoryCommandId(commandId)))
           .catch((error: unknown) => console.error("Could not forward Select All to the document window.", error));
       }
@@ -157,7 +162,6 @@ export function installSecondaryWindowEditHistory(options: {
     if (!direction) {
       return;
     }
-    const doc = target.document;
     if (resolveEditHistoryRoute(direction, { activeElement: doc.activeElement, canUndo: true, canRedo: true }) === "text") {
       performTextFieldHistory(direction, doc);
       return;

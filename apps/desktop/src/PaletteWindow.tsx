@@ -665,15 +665,16 @@ export function PaletteWindow({
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       // WebKit/WebView2 can temporarily target body during a control click. The leased
-      // destination still owns editing keys, and non-text controls still forward shortcuts.
+      // destination still owns editing keys; a disabled control uses the shell as its sink.
       const target = event.target instanceof Element && event.target !== document.body
-        ? event.target : paletteInputFocusControl(shellRef.current) ?? null;
-      // Only clean inspector numbers delegate history to the document. Other text keys
-      // and every uncommitted typed draft retain the browser's editing behavior.
-      const numberHistory = isCleanPaletteNumberInput(target) &&
+        && event.target !== shellRef.current ? event.target : paletteInputFocusControl(shellRef.current) ?? null;
+      // Clean inspector numbers and non-text controls delegate history to the document.
+      // Select type-ahead and every uncommitted typed draft retain native behavior.
+      const controlHistory = (isCleanPaletteNumberInput(target) || !!target?.closest("select")) &&
         !event.isComposing && (event.ctrlKey || event.metaKey) && ["z", "y"].includes(event.key.toLowerCase());
       if (event.defaultPrevented || isPaletteInputFocusPending(shellRef.current) ||
-        (isTextEditingElement(target) && !numberHistory)) return;
+        target?.matches(":disabled") || (target?.closest("select") && !controlHistory) ||
+        (isTextEditingElement(target) && !controlHistory)) return;
       // Activation, value and editing keys belong to every form control. In
       // particular, Delete/Backspace here must never delete document objects.
       if (target?.closest("input, textarea, select, button") &&
@@ -689,13 +690,8 @@ export function PaletteWindow({
         repeat: event.repeat,
         target: target?.closest("input, select")?.parentElement ?? event.target
       });
-      if (numberHistory && commandId !== "edit.undo" && commandId !== "edit.redo") return;
-      if (!commandId) {
-        // Select type-ahead must not change a style when a printable key has no command.
-        if (target?.closest("select") && event.key.length === 1 &&
-          !event.ctrlKey && !event.metaKey && !event.altKey) event.preventDefault();
-        return;
-      }
+      if (controlHistory && commandId !== "edit.undo" && commandId !== "edit.redo") return;
+      if (!commandId) return;
 
       event.preventDefault();
       void sendPaletteCommand(editHistoryDirection(commandId) ? forceDocumentHistoryCommandId(commandId) : commandId).catch(() => undefined);
