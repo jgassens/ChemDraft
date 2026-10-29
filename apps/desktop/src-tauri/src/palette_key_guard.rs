@@ -1,15 +1,15 @@
 //! Native pointer observation and a bounded guard while the palette page classifies
 //! a click. Webview key delivery is guarded in MainWindow on BOTH platforms.
 
+#[cfg(any(target_os = "macos", windows))]
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{
     sync::{Mutex, OnceLock},
     time::Instant,
 };
 #[cfg(any(target_os = "macos", windows))]
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tauri::{Emitter, Listener};
-#[cfg(any(target_os = "macos", windows))]
 use tauri::Manager;
+use tauri::{Emitter, Listener};
 
 #[path = "palette_key_guard_state.rs"]
 mod state;
