@@ -108,6 +108,11 @@ optional registered controls; whether Office accepts them must be measured.
 node scripts/office-spike/inspect.mjs C:\temp\office-dump --json
 ```
 
+Run `node scripts/office-spike/blank-docs.mjs <outdir>` (Node 22 or newer) to create
+`blank.docx` and `blank.pptx`, overwriting only those two files. Open the existing blank file
+in Word or PowerPoint before pasting (for example, `open -a "Microsoft Word" <outdir>/blank.docx`
+on macOS), so Cmd/Ctrl+S saves in place without opening a Save dialog the test driver cannot use.
+
 Both clipboard scripts require platform testing before relying on their output.
 
 For each of the four PNGs, two SVGs and two PDFs first advertise that picture flavor alone,

@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { readFileSync, mkdtempSync, writeFileSync, rmSync, readdirSync, statSync, symlinkSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join, resolve, posix } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { deflateRawSync } from 'node:zlib';
@@ -21,6 +21,132 @@ const fixtureDir = 'packages/fixtures/office';
 const pdf = readFileSync(join(fixtureDir, 'sample.pdf'));
 const temp = mkdtempSync(join(tmpdir(), 'office-spike-'));
 afterAll(() => rmSync(temp, { recursive: true, force: true }));
+
+const blankParts = {
+  docx: [
+    '[Content_Types].xml', '_rels/.rels', 'word/document.xml', 'word/_rels/document.xml.rels',
+    'word/styles.xml', 'word/settings.xml', 'docProps/core.xml', 'docProps/app.xml',
+  ],
+  pptx: [
+    '[Content_Types].xml', '_rels/.rels', 'ppt/presentation.xml', 'ppt/_rels/presentation.xml.rels',
+    'ppt/presProps.xml', 'ppt/viewProps.xml', 'ppt/tableStyles.xml',
+    'ppt/slideMasters/slideMaster1.xml', 'ppt/slideMasters/_rels/slideMaster1.xml.rels',
+    'ppt/slideLayouts/slideLayout1.xml', 'ppt/slideLayouts/_rels/slideLayout1.xml.rels',
+    'ppt/slides/slide1.xml', 'ppt/slides/_rels/slide1.xml.rels', 'ppt/theme/theme1.xml',
+    'docProps/core.xml', 'docProps/app.xml',
+  ],
+};
+
+// Sufficient for these generated XML parts: balanced tags, one root, declared prefixes.
+function checkBlankXml(text: string) {
+  expect(text).toMatch(/^<\?xml version="1\.0" encoding="UTF-8" standalone="yes"\?>/);
+  const stack: string[] = [];
+  const prefixes = new Set([...text.matchAll(/xmlns:([\w]+)="[^"]+"/g)].map(m => m[1]));
+  let roots = 0;
+  for (const match of text.matchAll(/<([^>]+)>/g)) {
+    const tag = match[1];
+    if (tag.startsWith('?')) continue;
+    const name = /^\/?([\w:]+)/.exec(tag)![1];
+    if (name.includes(':')) expect(prefixes.has(name.split(':')[0]), name).toBe(true);
+    if (tag.startsWith('/')) expect(stack.pop()).toBe(name);
+    else {
+      if (stack.length === 0) roots++;
+      if (!tag.endsWith('/')) stack.push(name);
+    }
+  }
+  expect(stack).toEqual([]);
+  expect(roots).toBe(1);
+}
+
+describe('blank Office documents', () => {
+  it.each(['docx', 'pptx'] as const)('writes a complete, deterministic %s package and overwrites only its output files', extension => {
+    const out = join(temp, `blank-${extension}`, 'nested output');
+    const run = () => spawnSync(process.execPath, ['scripts/office-spike/blank-docs.mjs', out], { encoding: 'utf8' });
+    const firstRun = run();
+    expect(firstRun.status, firstRun.stderr).toBe(0);
+    expect(firstRun.stdout.trim().split(/\r?\n/)).toEqual([join(out, 'blank.docx'), join(out, 'blank.pptx')]);
+    const first = readFileSync(join(out, `blank.${extension}`));
+    const otherExtension = extension === 'docx' ? 'pptx' : 'docx';
+    const otherFirst = readFileSync(join(out, `blank.${otherExtension}`));
+    writeFileSync(join(out, 'keep.txt'), 'leave this alone');
+    writeFileSync(join(out, 'blank.docx'), 'replace this');
+    writeFileSync(join(out, 'blank.pptx'), 'replace this too');
+    expect(run().status).toBe(0);
+    expect(readFileSync(join(out, `blank.${extension}`)).equals(first)).toBe(true);
+    expect(readFileSync(join(out, `blank.${otherExtension}`)).equals(otherFirst)).toBe(true);
+    expect(readFileSync(join(out, 'keep.txt'), 'utf8')).toBe('leave this alone');
+    expect(readdirSync(out).sort()).toEqual(['blank.docx', 'blank.pptx', 'keep.txt']);
+
+    const entries = readZip(first);
+    expect(entries.map(entry => entry.name)).toEqual(blankParts[extension]);
+    expect(entries[0].name).toBe('[Content_Types].xml');
+    // Check the physical first entry too, independently of central-directory order.
+    expect(first.toString('utf8', 30, 30 + first.readUInt16LE(26))).toBe('[Content_Types].xml');
+    expect(first.readUInt16LE(10)).toBe(0);
+    expect(first.readUInt16LE(12)).toBe(0x21);
+    const parts = new Map<string, string>(entries.map(entry => [entry.name, entry.data.toString('utf8')]));
+    const types = parts.get('[Content_Types].xml')!;
+    const defaults = new Map([...types.matchAll(/<Default Extension="([^"]+)" ContentType="([^"]+)"/g)].map(m => [m[1], m[2]]));
+    const overrides = new Map([...types.matchAll(/<Override PartName="\/([^"]+)" ContentType="([^"]+)"/g)].map(m => [m[1], m[2]]));
+    for (const name of overrides.keys()) expect(parts.has(name), name).toBe(true);
+    for (const [name, text] of parts) {
+      checkBlankXml(text);
+      // The content-type stream describes parts; it is not itself an OPC part.
+      if (name !== '[Content_Types].xml') {
+        expect(overrides.get(name) ?? defaults.get(name.split('.').at(-1)!), name).toBeTruthy();
+      }
+      if (!name.endsWith('.rels')) continue;
+      const sourceDirectory = name === '_rels/.rels' ? '' : name.slice(0, name.lastIndexOf('/_rels/'));
+      const ids = new Set<string>();
+      for (const rel of text.matchAll(/<Relationship\s+([^>]+)\/>/g)) {
+        const attrs = Object.fromEntries([...rel[1].matchAll(/(\w+)="([^"]*)"/g)].map(m => [m[1], m[2]]));
+        expect(ids.has(attrs.Id)).toBe(false);
+        ids.add(attrs.Id);
+        expect(attrs.Type).toMatch(/^http:\/\/schemas\.openxmlformats\.org\//);
+        expect(attrs.TargetMode).toBeUndefined();
+        const target = posix.normalize(posix.join(sourceDirectory, attrs.Target));
+        expect(parts.has(target), `${name} -> ${target}`).toBe(true);
+      }
+    }
+    if (extension === 'docx') {
+      expect(parts.get('word/settings.xml')).toContain('w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="15"');
+      const doc = parts.get('word/document.xml')!;
+      expect(doc.match(/<w:p\s*\/>/g)).toHaveLength(1);
+      expect(doc).toContain('<w:pgSz w:w="12240" w:h="15840"/>');
+      expect(doc).toContain('w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"');
+      expect(parts.get('word/styles.xml')).toContain('w:styleId="Normal"');
+    } else {
+      const presentation = parts.get('ppt/presentation.xml')!;
+      expect(presentation.match(/<p:sldId /g)).toHaveLength(1);
+      expect(presentation).toContain('<p:sldMasterId id="2147483648" r:id="rId1"/>');
+      expect(presentation).toContain('<p:sldId id="256" r:id="rId2"/>');
+      expect(presentation).toContain('<p:sldSz cx="12192000" cy="6858000"/>');
+      expect(presentation).toContain('<p:notesSz cx="6858000" cy="9144000"/>');
+      expect(parts.get('ppt/slideLayouts/slideLayout1.xml')).toContain('type="blank"');
+      expect(parts.get('ppt/slideLayouts/slideLayout1.xml')).toContain('name="Blank"');
+      for (const name of ['ppt/slides/slide1.xml', 'ppt/slideLayouts/slideLayout1.xml', 'ppt/slideMasters/slideMaster1.xml']) {
+        expect(parts.get(name)).not.toMatch(/<p:(?:ph|sp|pic|graphicFrame|cxnSp)\b/);
+        expect(parts.get(name)).toContain('<p:nvGrpSpPr>');
+        expect(parts.get(name)).toContain('<p:grpSpPr>');
+      }
+      const theme = parts.get('ppt/theme/theme1.xml')!;
+      for (const [list, item] of [['fillStyleLst', 'solidFill'], ['lnStyleLst', 'ln'], ['effectStyleLst', 'effectStyle'], ['bgFillStyleLst', 'solidFill']]) {
+        const contents = new RegExp(`<a:${list}>(.*?)</a:${list}>`).exec(theme)![1];
+        expect(contents.match(new RegExp(`<a:${item}(?: |>)`, 'g'))).toHaveLength(3);
+      }
+      for (const colour of ['dk1', 'lt1', 'dk2', 'lt2', 'accent1', 'accent2', 'accent3', 'accent4', 'accent5', 'accent6', 'hlink', 'folHlink']) {
+        expect(theme).toContain(`<a:${colour}>`);
+      }
+    }
+  });
+
+  it.each([[], ['one', 'two'], ['--force']])('exits 2 on invalid arguments: %j', (...args) => {
+    const run = spawnSync(process.execPath, ['scripts/office-spike/blank-docs.mjs', ...args], { encoding: 'utf8' });
+    expect(run.status).toBe(2);
+    expect(run.stderr).toContain('Usage:');
+    expect(run.stdout).toBe('');
+  });
+});
 
 describe('office spike primitives', () => {
   it('checks envelope integrity and size', () => {
