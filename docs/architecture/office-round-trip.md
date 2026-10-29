@@ -50,8 +50,9 @@ Cmd+C in Word; in PowerPoint it used Cmd+A on the slide, then Cmd+C. The clipboa
 `com.adobe.pdf` was the original PDF byte-identical, with a valid carrier.
 `com.microsoft.Art--GVML-ClipFormat` was a GVML zip (Office's own zip-based clipboard format for
 drawings) whose `clipboard/media/image1.emf` wrapped the same PDF. `public.png`, `public.tiff` and
-`public.jpeg` were fresh renders without carriers. Word also advertised
-`com.microsoft.image-svg-xml` but supplied no data. Word's copy-back had `public.png`, `public.tiff` and `public.jpeg`; PowerPoint's had only `public.tiff`. None carried the hidden drawing.
+`public.jpeg`; Word also advertised `com.microsoft.image-svg-xml` but supplied no data. Word's
+copy-back had `public.png`, `public.tiff` and `public.jpeg`; PowerPoint's had only `public.tiff`.
+None carried the hidden drawing.
 
 Copying a whole unsaved Word document with Cmd+A, Cmd+C gave a re-rendered `com.adobe.pdf` without
 a carrier. Its `public.rtf` (7.9 MB) held `\emfblip` and `\wmetafile8` picture groups, each
