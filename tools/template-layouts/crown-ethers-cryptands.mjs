@@ -1,4 +1,4 @@
-import { equalBondArc, finishLayout, fuseBenzeneOnEdge, regularPolygon } from "./geometry.mjs";
+import { finishLayout, fuseBenzeneOnEdge, regularPolygon, rotate } from "./geometry.mjs";
 import { runFamilyIfMain } from "./generate.mjs";
 
 // Identity metadata is the vetted PubChem input. Coordinates below are our own geometric designs.
@@ -47,57 +47,104 @@ const crowns = [
 
 const cryptands = [
   {
-    id: "2-2-2-cryptand", name: "[2.2.2]Cryptand", bridges: [2, 2, 2], span: 6,
+    id: "2-2-2-cryptand", name: "[2.2.2]Cryptand", bridges: [2, 2, 2],
     synonyms: ["cryptand 222", "cryptand[2.2.2]", "2.2.2-cryptand", "222 cryptand", "[2.2.2] cryptand"],
     cid: 72801, formula: "C18H36N2O6", smiles: "C1COCCOCCN2CCOCCOCCN1CCOCCOCC2"
   },
   {
-    id: "2-2-1-cryptand", name: "[2.2.1]Cryptand", bridges: [2, 1, 2], span: 5.5,
+    id: "2-2-1-cryptand", name: "[2.2.1]Cryptand", bridges: [2, 1, 2],
     synonyms: ["cryptand 221", "cryptand[2.2.1]", "2.2.1-cryptand", "221 cryptand", "[2.2.1] cryptand"],
     cid: 123438, formula: "C16H32N2O5", smiles: "C1COCCN2CCOCCOCCN1CCOCCOCC2"
   },
   {
-    id: "2-1-1-cryptand", name: "[2.1.1]Cryptand", bridges: [2, 1, 1], span: 5,
+    id: "2-1-1-cryptand", name: "[2.1.1]Cryptand", bridges: [2, 1, 1],
     synonyms: ["cryptand 211", "cryptand[2.1.1]", "2.1.1-cryptand", "211 cryptand", "[2.1.1] cryptand"],
     cid: 169276, formula: "C14H28N2O4", smiles: "C1COCCN2CCOCCN1CCOCCOCC2"
   }
 ];
 
+/**
+ * Three unit bonds between donor stations: two carbon corners bow away from the
+ * cavity. A donor separation of 2 gives 120-degree carbon angles and a lobe
+ * height of sqrt(3)/2. The right-hand side is outside a counterclockwise crown;
+ * upper cryptand paths instead use the left-hand side. No reference coordinates.
+ */
+function ethyleneBridge(from, to, side = 1) {
+  const span = Math.hypot(to.x - from.x, to.y - from.y);
+  if (span <= 1 || span >= 3) throw new Error("A three-bond lobe needs a donor span between 1 and 3.");
+  const ux = (to.x - from.x) / span, uy = (to.y - from.y) / span;
+  const along = (span - 1) / 2, height = Math.sqrt(1 - along * along);
+  const dx = side * height * uy, dy = -side * height * ux;
+  return [
+    from,
+    { x: from.x + along * ux + dx, y: from.y + along * uy + dy },
+    { x: to.x - along * ux + dx, y: to.y - along * uy + dy },
+    to
+  ];
+}
+
 function crownLayout({ ringSize, fusedEdges = [] }) {
-  // Orient the first fused edge vertically on the left; a second is diametrically opposite.
-  const rotation = fusedEdges.length ? Math.PI - (2 * fusedEdges[0] + 1) * Math.PI / ringSize : Math.PI / 2;
-  const atoms = regularPolygon(ringSize, rotation).map((point, index) => ({
-    element: index % 3 === 2 ? "O" : "C", ...point
-  }));
+  const donorCount = ringSize / 3;
+  // Four/eight donors straddle the vertical axis; five/six/seven put an O on it.
+  // For benzo crowns, put the rigid ortho edge on the left. Opposite fused edges
+  // then give opposed regular hexagons with balanced upper/lower flexible chains.
+  const rotation = fusedEdges.length
+    ? Math.PI - Math.PI / donorCount - 2 * Math.PI * (fusedEdges[0] / 3) / donorCount
+    : Math.PI / 2 + (donorCount % 4 === 0 ? Math.PI / donorCount : 0);
+  const donors = regularPolygon(donorCount, rotation).map(({ x, y }) => ({ x: 2 * x, y: 2 * y }));
+  // Keep the existing C-C-O atom indexing and fused-edge identities.
+  const atoms = donors.flatMap((donor, index) => {
+    const [, a, b, oxygen] = ethyleneBridge(donor, donors[(index + 1) % donorCount]);
+    return [{ element: "C", ...a }, { element: "C", ...b }, { element: "O", ...oxygen }];
+  });
   const bonds = atoms.map((_, index) => [index, (index + 1) % ringSize, 1]);
   const layout = { atoms, bonds };
   for (const edge of fusedEdges) fuseBenzeneOnEdge(layout, edge, (edge + 1) % ringSize);
   return finishLayout(layout);
 }
 
-function middleBridge(bondCount, span) {
-  // Horizontal terminal N-C bonds keep all three bridge exits well separated.
-  // Inside: unit diagonals alternating with a horizontal central bond for odd contours.
-  const diagonals = bondCount - 2 - (bondCount % 2);
-  const dx = (span - 2 - (bondCount % 2)) / diagonals;
-  const dy = Math.sqrt(1 - dx * dx);
-  const points = [{ x: -span / 2, y: 0 }, { x: -span / 2 + 1, y: 0 }];
-  for (let step = 0; step < diagonals; step += 1) {
-    if (bondCount % 2 && step === diagonals / 2) {
-      points.push({ x: points.at(-1).x + 1, y: points.at(-1).y });
-    }
-    points.push({ x: points.at(-1).x + dx, y: step % 2 === 0 ? dy : 0 });
+function middleBridge(oxygenCount, angle) {
+  // A continuous equal-bond zigzag exposes every carbon, including beside N.
+  // Rotate the odd-bond chain as a rigid unit to level its bridgeheads; its two
+  // oxygens then sit on opposite sides of the centre line, without stereobonds.
+  const bondCount = 3 * oxygenCount + 3;
+  const points = [{ x: 0, y: 0 }];
+  for (let step = 0; step < bondCount; step += 1) {
+    points.push({ x: (step + 1) * Math.cos(angle), y: step % 2 === 0 ? Math.sin(angle) : 0 });
   }
-  points.push({ x: span / 2, y: 0 });
-  return points;
+  const end = points.at(-1);
+  const span = Math.hypot(end.x, end.y);
+  return rotate(points, -Math.atan2(end.y, end.x)).map(({ x, y }) => ({ x: x - span / 2, y }));
 }
 
-function cryptandLayout({ bridges, span }) {
+function outerBridge(oxygenCount, span, donorSpan, side) {
+  // Donor stations describe the cage envelope; the carbon corners, not circular
+  // arc interpolation, supply the chain's outward bends. Longer stations in the
+  // wide [2.2.2] projection leave room for its nine-bond central zigzag.
+  const offset = oxygenCount === 2 ? donorSpan / 2 : 0;
+  const height = Math.sqrt(donorSpan * donorSpan - (span / 2 - offset) ** 2);
+  if (!Number.isFinite(height)) throw new Error("Cryptand donor stations cannot reach the bridgeheads.");
+  const stations = [
+    { x: -span / 2, y: 0 },
+    ...(oxygenCount === 2 ? [{ x: -offset, y: side * height }, { x: offset, y: side * height }]
+      : [{ x: 0, y: side * height }]),
+    { x: span / 2, y: 0 }
+  ];
+  return stations.flatMap((station, index) => index === stations.length - 1 ? [station]
+    : ethyleneBridge(station, stations[index + 1], -side).slice(0, -1));
+}
+
+function cryptandLayout({ bridges }) {
+  const middleOxygens = bridges[1];
+  const shortOuterArm = bridges[2] === 1;
+  const angle = (middleOxygens === 2 ? 45 : shortOuterArm ? 40 : 30) * Math.PI / 180;
+  const middle = middleBridge(middleOxygens, angle);
+  const span = middle.at(-1).x - middle[0].x;
   const atoms = [{ element: "N", x: -span / 2, y: 0 }, { element: "N", x: span / 2, y: 0 }];
   const bonds = [];
   bridges.forEach((oxygenCount, bridge) => {
-    const bondCount = 3 * oxygenCount + 3;
-    const points = bridge === 1 ? middleBridge(bondCount, span) : equalBondArc(bondCount, span, bridge === 0 ? 1 : -1);
+    const donorSpan = middleOxygens === 2 || oxygenCount === 1 ? 2.5 : 2;
+    const points = bridge === 1 ? middle : outerBridge(oxygenCount, span, donorSpan, bridge === 0 ? 1 : -1);
     let previous = 0;
     points.slice(1, -1).forEach((point, index) => {
       const next = atoms.length;

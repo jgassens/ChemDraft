@@ -82,9 +82,31 @@ in the generator only when a family's 2D projection requires crossings.
 
 **Coordinates are original ChemDraft designs constructed from geometry.** PubChem CIDs identify the
 molecules; no database or depiction program supplies their coordinates. The first family contains
-five polygonal crown ethers (12-, 15-, 18-, 21-, and 24-membered rings), benzo-15-crown-5 and two
+five donor-organized crown ethers (12-, 15-, 18-, 21-, and 24-membered rings), benzo-15-crown-5 and two
 dibenzo crowns with outward regular fused hexagons, and three cryptands drawn with left/right
-bridgehead nitrogens and three distinct bridges (upper arc, central zigzag, lower arc).
+bridgehead nitrogens and three distinct zigzag bridges (upper, central and lower).
+
+### Depiction conventions
+
+Crown ethers are organized around their oxygen donors: four donors form a square, five a pentagon,
+six a hexagon, and seven or eight a rounded polygonal outline. The default orientations have a
+vertical mirror axis. Each neighboring donor pair is joined by an outward-bowed O–CH2–CH2–O span
+with three equal bonds and two explicit skeletal carbon corners at 120 degrees. The oxygen labels
+occupy inward notches, leaving a clear central opening and a countable polyether repeat.
+
+Benzo crowns place regular benzene hexagons outside the opening. Their adjacent aryloxy bonds
+continue the macrocycle at normal trigonal angles; the flexible ethylene bridges bend outward
+around the donor stations. A single benzo panel sits on the left, while dibenzo panels face one
+another across the opening, with balanced upper and lower chains.
+
+Cryptands place neutral tertiary nitrogen bridgeheads at left and right, joined by three separated
+zigzag paths. The outer paths bow around the cavity, and the central path has enough amplitude to
+show every carbon corner and ether oxygen. The shorter bridge is central in [2.2.1]; [2.1.1] also
+has a shorter lower path. All bonds have the same length before coordinate rounding. These are
+connectivity projections in the classical crown-ether and cryptand drawing tradition, not claims
+of a particular solution conformation; plain bonds add no stereochemical assignments.
+
+### Generating and checking layouts
 
 All seven family files in `src/structureTemplates/` are generated. Their identity metadata and
 layout construction live in the corresponding Node ESM script under `tools/template-layouts/`.
