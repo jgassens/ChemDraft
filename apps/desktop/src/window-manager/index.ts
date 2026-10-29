@@ -711,6 +711,9 @@ export async function sendPaletteCommandCancel(commandId: string): Promise<void>
 // on the event bus with their previews and cancels.
 let paletteCommandQueue: Promise<void> = Promise.resolve();
 const pendingPaletteEvents = new Set<Promise<void>>();
+// Only bounds a stuck event-plugin emit. Normal ordering is preserved because emit
+// resolves after Tauri enqueues the destination eval, before the subsequent invoke.
+export const PALETTE_EVENT_SETTLE_TIMEOUT_MS = 500;
 export function routeToolsetCommand(
   commandId: string, options?: { preserveInputFocus?: boolean; commit?: boolean }
 ): Promise<void> {
@@ -724,7 +727,17 @@ export function routeToolsetCommand(
   // after enqueueing the destination eval; the subsequent route cannot pass that eval.
   const earlierEvents = options?.commit ? [...pendingPaletteEvents] : [];
   const next = paletteCommandQueue.then(async () => {
-    if (options?.commit) await Promise.all(earlierEvents);
+    if (options?.commit && earlierEvents.length > 0) {
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          Promise.allSettled(earlierEvents),
+          new Promise<void>((resolve) => { timeout = setTimeout(resolve, PALETTE_EVENT_SETTLE_TIMEOUT_MS); })
+        ]);
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("route_toolset_command", { ...payload, ...options });
   });

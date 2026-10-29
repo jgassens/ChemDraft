@@ -31,6 +31,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: tauriEventBus.listen
 }));
 import {
+  PALETTE_EVENT_SETTLE_TIMEOUT_MS,
   broadcastToolsetCommandSpecs,
   broadcastToolsetCustomizeMode,
   listenForPaletteCommandCancels,
@@ -170,6 +171,74 @@ describe("window-manager palette preview transport", () => {
     release();
     await Promise.all([earlier, settle, forward]);
     expect(observed).toEqual([event, "settle", "shortcut"]);
+  });
+
+  it.each(["preview", "commit"] as const)("still settles and forwards after an earlier slider %s rejects", async (event) => {
+    (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+    // Warm both dynamic imports sequentially, independently of test order.
+    await sendPaletteCommandPreview("molecule.structure.bondLength:20");
+    await sendPaletteCommand("document.save");
+    native.invoke.mockClear();
+    let reject!: (error: Error) => void;
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const blocked = new Promise<void>((_resolve, rejectPromise) => { reject = rejectPromise; });
+    tauriEventBus.emit.mockImplementationOnce(async () => {
+      entered();
+      await blocked;
+    });
+    const earlier = (event === "preview" ? sendPaletteCommandPreview : sendPaletteCommandCommit)("molecule.structure.bondLength:25");
+    const rejection = expect(earlier).rejects.toThrow("Event delivery failed");
+    await started;
+    const settle = sendPaletteCommandCommit("molecule.structure.bondLength:31", { settleBeforeForward: true });
+    const forward = sendPaletteCommand("document.nextTab");
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    expect(native.invoke).not.toHaveBeenCalled();
+    reject(new Error("Event delivery failed"));
+    await Promise.all([rejection, settle, forward]);
+    expect(native.invoke.mock.calls).toEqual([
+      ["route_toolset_command", { commandId: "molecule.structure.bondLength:31", commit: true }],
+      ["route_toolset_command", { commandId: "document.nextTab" }]
+    ]);
+  });
+
+  it.each(["preview", "commit"] as const)("bounds a stuck slider %s so settle, shortcut and later commands proceed", async (event) => {
+    (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+    // Warm both dynamic imports sequentially, independently of test order.
+    await sendPaletteCommandPreview("molecule.structure.bondLength:20");
+    await sendPaletteCommand("document.save");
+    native.invoke.mockClear();
+    vi.useFakeTimers();
+    let release!: () => void;
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    tauriEventBus.emit.mockImplementationOnce(async () => {
+      entered();
+      await blocked;
+    });
+    const earlier = (event === "preview" ? sendPaletteCommandPreview : sendPaletteCommandCommit)("molecule.structure.bondLength:25");
+    try {
+      await started;
+      const settle = sendPaletteCommandCommit("molecule.structure.bondLength:31", { settleBeforeForward: true });
+      const forward = sendPaletteCommand("document.nextTab");
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(PALETTE_EVENT_SETTLE_TIMEOUT_MS - 1);
+      expect(native.invoke).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await Promise.all([settle, forward]);
+      await sendPaletteCommand("document.save");
+      expect(native.invoke.mock.calls).toEqual([
+        ["route_toolset_command", { commandId: "molecule.structure.bondLength:31", commit: true }],
+        ["route_toolset_command", { commandId: "document.nextTab" }],
+        ["route_toolset_command", { commandId: "document.save" }]
+      ]);
+    } finally {
+      // The emit stays unresolved through every assertion; release only for test isolation.
+      release();
+      await earlier;
+      vi.useRealTimers();
+    }
   });
 
   it("does not forward a queued app command when its preceding commit fails", async () => {
