@@ -3230,7 +3230,11 @@ async fn set_plugin_panel_input_focus(
             // Hand back before disabling key eligibility: AppKit can resign a panel as
             // that flag changes. The helper checks the actual key/foreground window,
             // current lease and app activation; native loss/cleanup never request it.
-            panel_window::return_focus_after_interaction(&target, return_focus.unwrap_or(false))?;
+            if let Err(error) =
+                panel_window::return_focus_after_interaction(&target, return_focus.unwrap_or(false))
+            {
+                eprintln!("Could not return panel keyboard focus after release: {error}");
+            }
             target
                 .set_focusable(false)
                 .map_err(|error| error.to_string())?;
@@ -4664,6 +4668,7 @@ fn route_toolset_command(
     window: tauri::WebviewWindow,
     command_id: String,
     preserve_input_focus: Option<bool>,
+    commit: Option<bool>,
 ) -> Result<(), String> {
     if utility_windows_suspended() {
         return Ok(());
@@ -4673,6 +4678,20 @@ fn route_toolset_command(
         return Err("Toolset command id cannot be empty.".to_string());
     }
 
+    if commit.unwrap_or(false) {
+        let main = app
+            .get_webview_window(MAIN_WINDOW_LABEL)
+            .ok_or_else(|| "Main document window is not available.".to_string())?;
+        // Commits share the ordered command transport but retain their old no-focus side
+        // effect: a blur commit may be ending a lease to start a native window drag.
+        return dispatch_dom_toolset_event(
+            &main,
+            &ToolsetCommandPayload {
+                command_id: command_id.to_string(),
+            },
+            "chemdraft://palette-command-commit",
+        );
+    }
     emit_command_to_main(&app, command_id)?;
     // Select changes and clean-number undo update the document while the control
     // keeps the keyboard. Button/background clicks release the lease themselves.
@@ -5950,8 +5969,16 @@ fn dispatch_dom_command_event<R: Runtime>(
     main: &tauri::WebviewWindow<R>,
     payload: &ToolsetCommandPayload,
 ) -> Result<(), String> {
+    dispatch_dom_toolset_event(main, payload, DOM_COMMAND_EVENT)
+}
+
+fn dispatch_dom_toolset_event<R: Runtime>(
+    main: &tauri::WebviewWindow<R>,
+    payload: &ToolsetCommandPayload,
+    event_name: &str,
+) -> Result<(), String> {
     let payload_json = serde_json::to_string(payload).map_err(|error| error.to_string())?;
-    let event_json = serde_json::to_string(DOM_COMMAND_EVENT).map_err(|error| error.to_string())?;
+    let event_json = serde_json::to_string(event_name).map_err(|error| error.to_string())?;
     main.eval(format!(
         "window.dispatchEvent(new CustomEvent({event_json}, {{ detail: {payload_json} }}));"
     ))

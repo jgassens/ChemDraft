@@ -699,6 +699,7 @@ export async function sendPaletteCommandPreview(commandId: string): Promise<void
 }
 
 export async function sendPaletteCommandCommit(commandId: string): Promise<void> {
+  if (isDesktopRuntime()) return routeToolsetCommand(commandId, { commit: true });
   return emitToolsetCommandEvent(PALETTE_COMMAND_COMMIT_EVENT, commandId);
 }
 
@@ -706,14 +707,25 @@ export async function sendPaletteCommandCancel(commandId: string): Promise<void>
   return emitToolsetCommandEvent(PALETTE_COMMAND_CANCEL_EVENT, commandId);
 }
 
-export async function routeToolsetCommand(commandId: string, options?: { preserveInputFocus: boolean }): Promise<void> {
+// Commits and app shortcuts must arrive in order in the same destination webview. A separate
+// event-bus commit can be overtaken by a tab switch or Save routed through native-command.
+let paletteCommandQueue: Promise<void> = Promise.resolve();
+export function routeToolsetCommand(
+  commandId: string, options?: { preserveInputFocus?: boolean; commit?: boolean }
+): Promise<void> {
   // Single delivery: the invoke routes through Rust `route_toolset_command`, which dispatches the
   // native-command DOM event into the main window (the one listener in `listenForToolsetCommands`).
   // No client-side `emit` — that used to also fan out over the tauri event bus, so every command
   // arrived several times and needed `dedupeAdjacentCommands` to collapse it.
   const payload = createToolsetCommandPayload(commandId);
-  const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("route_toolset_command", { ...payload, ...options });
+  const next = paletteCommandQueue.then(async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("route_toolset_command", { ...payload, ...options });
+  });
+  paletteCommandQueue = next;
+  // A failed commit also rejects its already-queued command. Fresh gestures may retry.
+  void next.catch(() => { if (paletteCommandQueue === next) paletteCommandQueue = Promise.resolve(); });
+  return next;
 }
 
 async function emitToolsetCommandEvent(eventName: string, commandId: string): Promise<void> {

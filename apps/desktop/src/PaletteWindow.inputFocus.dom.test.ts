@@ -14,7 +14,7 @@ import { createPhase4Document } from "./documentWorkflow";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import {
   DOM_COMMAND_EVENT, broadcastToolsetCustomizeMode, broadcastToolsetTextStyle, createToolsetTextStylePayload,
-  sendPaletteCommand, sendPaletteCommandCancel, sendPaletteCommandCommit, type ToolsetPopoverContentPayload
+  sendPaletteCommand, sendPaletteCommandCancel, sendPaletteCommandCommit, startPaletteWindowDrag, type ToolsetPopoverContentPayload
 } from "./window-manager";
 import type { NativePanelFocusEvent } from "./plugins/pluginPanelInputFocus";
 import {
@@ -39,6 +39,7 @@ vi.mock("./window-manager", async (original) => ({
   sendPaletteCommand: vi.fn(async () => undefined),
   sendPaletteCommandCommit: vi.fn(async () => undefined),
   sendPaletteCommandCancel: vi.fn(async () => undefined),
+  startPaletteWindowDrag: vi.fn(async () => undefined),
   listenForToolsetPopoverContent: vi.fn(async (listener: (payload: ToolsetPopoverContentPayload) => void) => {
     native.popoverContent = listener;
     return () => { native.popoverContent = undefined; };
@@ -142,6 +143,7 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     vi.mocked(sendPaletteCommand).mockClear();
     vi.mocked(sendPaletteCommandCancel).mockClear();
     vi.mocked(sendPaletteCommandCommit).mockClear();
+    vi.mocked(startPaletteWindowDrag).mockClear();
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -158,7 +160,10 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     await act(async () => root.render(createElement(PaletteWindow, { toolsetId, platform })));
     await flush();
     // jsdom has no pointer capture implementation; support the shell's drag cleanup.
-    for (const element of container.querySelectorAll<HTMLElement>("*")) element.hasPointerCapture = () => false;
+    for (const element of container.querySelectorAll<HTMLElement>("*")) {
+      element.hasPointerCapture = () => false;
+      element.setPointerCapture = () => undefined;
+    }
     await act(async () => {
       await broadcastToolsetTextStyle(createToolsetTextStylePayload(DefaultNativeTextStyle, "normal", undefined, "fill", model));
     });
@@ -444,7 +449,7 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     expect(leases().map(([, args]) => args.editing)).toEqual([true]);
   });
 
-  it("forwards registered app chords but leaves text-editing chords in a numeric draft", async () => {
+  it("commits a typed draft before forwarding app chords, while editing chords remain native", async () => {
     const input = await mountSettings();
     await clickControl(input);
     await type(input, "31");
@@ -452,21 +457,102 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     for (const key of ["a", "c", "v", "x", "z", "y", "Delete", "Backspace"]) {
       await press(input, key, modifier);
       expect(sendPaletteCommand, key).not.toHaveBeenCalled();
+      expect(sendPaletteCommandCommit, key).not.toHaveBeenCalled();
     }
     for (const [key, shiftKey, command] of [
-      ["s", true, "document.saveAs"], ["o", false, "document.open"],
+      ["s", false, "document.save"], ["s", true, "document.saveAs"], ["o", false, "document.open"],
       ["n", false, "document.new"], ["w", false, "document.closeTab"],
       ["e", true, "export.open"], [",", false, "view.togglePreferences"],
       ["-", false, "view.zoomOut"], ["r", false, "view.toggleRulers"]
     ] as const) {
+      // A new draft for each command; an acknowledged prior value must not mask this edit.
+      await snapshot(31);
+      await snapshot(20);
+      await type(input, "31");
       vi.mocked(sendPaletteCommand).mockClear();
+      vi.mocked(sendPaletteCommandCommit).mockClear();
       const event = await press(input, key, { ...modifier, shiftKey });
-      expect(event.defaultPrevented, command).toBe(platform === "windows");
-      if (platform === "windows") {
-        expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith(command, { preserveInputFocus: true });
-      } else expect(sendPaletteCommand).not.toHaveBeenCalled();
+      expect(event.defaultPrevented, command).toBe(true);
+      expect(sendPaletteCommandCommit).toHaveBeenCalledExactlyOnceWith(moleculeStructureBondLengthCommandId(31));
+      expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith(command, { preserveInputFocus: true });
+      expect(vi.mocked(sendPaletteCommandCommit).mock.invocationCallOrder[0])
+        .toBeLessThan(vi.mocked(sendPaletteCommand).mock.invocationCallOrder[0]!);
+      expect(input.dataset.paletteNumberDraft).toBe("false");
       expect(document.activeElement).toBe(input);
     }
+  });
+
+  it("commits to the original document before Ctrl+Tab, leaving no draft to apply in the next tab", async () => {
+    const input = await mountSettings();
+    await clickControl(input);
+    await type(input, "31");
+    let activeDocument = "A";
+    const commits: Array<{ document: string; command: string }> = [];
+    vi.mocked(sendPaletteCommandCommit).mockImplementationOnce(async (command) => {
+      commits.push({ document: activeDocument, command });
+    });
+    vi.mocked(sendPaletteCommand).mockImplementationOnce(async (command) => {
+      expect(command).toBe("document.nextTab");
+      activeDocument = "B";
+    });
+    const event = await press(input, "Tab", { ctrlKey: true });
+    expect(event.defaultPrevented).toBe(true);
+    expect(activeDocument).toBe("B");
+    expect(commits).toEqual([{ document: "A", command: moleculeStructureBondLengthCommandId(31) }]);
+    await snapshot(40); // The destination document's selected molecule.
+    await act(async () => input.blur());
+    expect(sendPaletteCommandCommit).toHaveBeenCalledOnce();
+    expect(input.value).toBe("40");
+  });
+
+  it.each(["checkbox", "range"])("forwards non-menu app chords from a held %s on both platforms", async (kind) => {
+    await mountSettings();
+    const control = await nonTextControl(kind);
+    await clickControl(control);
+    for (const [key, modifiers, command] of [
+      ["=", { metaKey: platform === "macos", ctrlKey: platform === "windows" }, "view.zoomIn"],
+      ["Tab", { ctrlKey: true }, "document.nextTab"],
+      ["Tab", { ctrlKey: true, shiftKey: true }, "document.previousTab"],
+      ["w", { metaKey: platform === "macos", ctrlKey: platform === "windows" }, "document.closeTab"]
+    ] as const) {
+      vi.mocked(sendPaletteCommand).mockClear();
+      const event = await press(control, key, modifiers);
+      expect(event.defaultPrevented).toBe(true);
+      expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith(command, { preserveInputFocus: true });
+    }
+    vi.mocked(sendPaletteCommand).mockClear();
+    const save = await press(control, "s", { metaKey: platform === "macos", ctrlKey: platform === "windows" });
+    expect(save.defaultPrevented).toBe(platform === "windows");
+    if (platform === "macos") expect(sendPaletteCommand).not.toHaveBeenCalled();
+    else expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith("document.save", { preserveInputFocus: true });
+  });
+
+  it("forwards without preserveInputFocus when no lease exists", async () => {
+    await mountSettings();
+    const event = await press(document.body, "=", { metaKey: platform === "macos", ctrlKey: platform === "windows" });
+    expect(event.defaultPrevented).toBe(true);
+    expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith("view.zoomIn");
+  });
+
+  it.each(["title", "background"])("ends a lease on a %s drag press without returning foreground at pointerdown", async (surface) => {
+    const input = await mountSettings();
+    await clickControl(input);
+    const target = container.querySelector<HTMLElement>(surface === "title" ? ".palette-title" : ".palette-window-shell")!;
+    await act(async () => pointer(target, "pointerdown"));
+    await flush();
+    expect(leases().map(([, args]) => args.editing)).toEqual([true, false]);
+    expect(leases().at(-1)![1]).toMatchObject({ returnFocus: false });
+    expect(document.activeElement).not.toBe(input);
+    expect(startPaletteWindowDrag).toHaveBeenCalledExactlyOnceWith(expect.any(Number), expect.any(Number));
+  });
+
+  it("does not return foreground on an unleased background drag press", async () => {
+    await mountSettings();
+    const shell = container.querySelector<HTMLElement>(".palette-window-shell")!;
+    await act(async () => pointer(shell, "pointerdown"));
+    await flush();
+    expect(leases()).toHaveLength(1);
+    expect(leases()[0]![1]).toMatchObject({ editing: false, returnFocus: false });
   });
 
   it("uses the document capture guard during a pending palette click, allowing Save and keyup", async () => {

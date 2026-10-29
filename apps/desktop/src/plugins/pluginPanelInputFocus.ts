@@ -52,6 +52,17 @@ export function disabledControlAtPointer(
   return child instanceof HTMLElement && child.matches(selector) ? child : undefined;
 }
 
+/** Match the palette's native drag surfaces, including customize mode and disabled fields. */
+export function isPaletteWindowDragPress(
+  shell: HTMLElement, event: Pick<PointerEvent, "target" | "clientX" | "clientY" | "button" | "isPrimary">
+): boolean {
+  const target = event.target instanceof Element ? event.target : null;
+  return event.button === 0 && event.isPrimary !== false && !!target && shell.contains(target) &&
+    !target.closest("button, select, input, textarea, [data-palette-control]") &&
+    !disabledControlAtPointer(shell, event) &&
+    !!target.closest('[data-palette-title-drag-surface="true"], [data-palette-drag-surface="true"]');
+}
+
 export interface NativePanelFocusEvent {
   kind: "activated" | "deactivated";
   generation: number;
@@ -63,6 +74,7 @@ let nextGeneration = 0;
 let pageToken: Promise<string> | undefined;
 const pendingPaletteShells = new WeakSet<HTMLElement>();
 const paletteControls = new WeakMap<HTMLElement, HTMLElement>();
+export const PALETTE_INPUT_FOCUS_COMMIT_EVENT = "chemdraft:palette-input-focus-commit";
 export const PALETTE_INPUT_FOCUS_CANCEL_EVENT = "chemdraft:palette-input-focus-cancel";
 
 /** Covers acquisition/refocus and transient control blur, when a key has no reliable DOM target. */
@@ -286,8 +298,12 @@ export function installPluginPanelInputFocus(
       // Reports retain their existing per-click generation policy.
       setEditing(true, !editableFocus, pointerClassificationBefore);
     } else {
-      if (editing) finish(false, false, pointerClassificationBefore);
-      else if (editableFocus) returnPointerFocus(pointerClassificationBefore); // Classification already says non-editing.
+      // A native drag runs Tao's modal move loop. Release the lease now, but let
+      // WM_EXITSIZEMOVE return foreground after the drag, never at pointerdown.
+      const startsDrag = editableFocus && isPaletteWindowDragPress(shell, event);
+      if (editing) finish(false, false, pointerClassificationBefore, !startsDrag);
+      else if (startsDrag) setEditing(false, true, pointerClassificationBefore, false);
+      else if (editableFocus) returnPointerFocus(pointerClassificationBefore);
       if (reportText(event.target)) {
         selectionGesture = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, dragged: false };
       }

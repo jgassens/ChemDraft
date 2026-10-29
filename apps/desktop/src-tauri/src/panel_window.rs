@@ -388,8 +388,8 @@ pub(crate) fn install_input_focus<R: tauri::Runtime>(
     let data = Box::into_raw(Box::new(FocusObserver {
         activation: std::rc::Rc::new(move |active| activation(&target, active)),
         drag_finished: std::rc::Rc::new(move || {
-            // Palettes have this observer but no report resize subclass. Keep any live
-            // control lease, and never reclaim focus from another palette/app/chooser.
+            // The palette's title/background press ended its lease without returning focus.
+            // Hand back only after Tao's drag loop; guard any newer lease or foreground owner.
             if drag_target.label().starts_with("toolset-") {
                 if let Err(error) = return_focus_after_interaction(&drag_target, true) {
                     eprintln!("Could not return palette keyboard focus after drag: {error}");

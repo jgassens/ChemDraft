@@ -2,6 +2,9 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+const native = vi.hoisted(() => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke }));
+
 const tauriEventBus = vi.hoisted(() => {
   const listeners = new Map<string, Set<(event: { payload: unknown }) => void>>();
   return {
@@ -37,6 +40,7 @@ import {
   listenForToolsetCommandSpecsRequests,
   listenForToolsetLayoutEdits,
   requestToolsetCommandSpecs,
+  sendPaletteCommand,
   sendPaletteCommandCancel,
   sendPaletteCommandCommit,
   sendPaletteCommandPreview,
@@ -52,6 +56,7 @@ afterEach(() => {
   delete tauriGlobal.__TAURI__;
   delete tauriGlobal.__TAURI_INTERNALS__;
   tauriEventBus.listeners.clear();
+  native.invoke.mockReset();
   tauriEventBus.emit.mockClear();
   tauriEventBus.listen.mockClear();
 });
@@ -85,6 +90,55 @@ describe("window-manager palette preview transport", () => {
     unlistenPreview();
     unlistenCommit();
     unlistenCancel();
+  });
+
+  it.each(["document.save", "document.saveAs", "export.open", "document.nextTab"])(
+    "delivers a delayed native draft commit before %s over the same IPC route", async (command) => {
+      (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+      let release!: () => void;
+      let entered!: () => void;
+      const started = new Promise<void>((resolve) => { entered = resolve; });
+      const blocked = new Promise<void>((resolve) => { release = resolve; });
+      let activeDocument = "A";
+      const values: Record<string, string> = { A: "20", B: "40" };
+      const observed: string[] = [];
+      native.invoke.mockImplementation(async (route, args) => {
+        expect(route).toBe("route_toolset_command");
+        if (args.commit) {
+          entered();
+          await blocked;
+          values[activeDocument] = "31";
+          observed.push(`commit:${activeDocument}`);
+        } else {
+          observed.push(`${args.commandId}:${values[activeDocument]}`);
+          if (args.commandId === "document.nextTab") activeDocument = "B";
+        }
+      });
+      const commit = sendPaletteCommandCommit("molecule.structure.bondLength:31");
+      const forward = sendPaletteCommand(command, { preserveInputFocus: true });
+      await started;
+      expect(native.invoke).toHaveBeenCalledExactlyOnceWith("route_toolset_command", {
+        commandId: "molecule.structure.bondLength:31", commit: true
+      });
+      release();
+      await Promise.all([commit, forward]);
+      expect(observed).toEqual(["commit:A", `${command}:31`]);
+      expect(values).toEqual({ A: "31", B: "40" });
+      expect(tauriEventBus.emit).not.toHaveBeenCalled();
+    }
+  );
+
+  it("does not forward a queued app command when its preceding commit fails", async () => {
+    (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+    native.invoke.mockRejectedValueOnce(new Error("Commit delivery failed"));
+    const commit = sendPaletteCommandCommit("molecule.structure.bondLength:31");
+    const forward = sendPaletteCommand("document.nextTab");
+    await expect(commit).rejects.toThrow("Commit delivery failed");
+    await expect(forward).rejects.toThrow("Commit delivery failed");
+    expect(native.invoke).toHaveBeenCalledOnce();
+    native.invoke.mockResolvedValueOnce(undefined);
+    await sendPaletteCommand("document.save");
+    expect(native.invoke).toHaveBeenCalledTimes(2);
   });
 
   it("round-trips a customize layout edit over DOM events (palette → main)", async () => {

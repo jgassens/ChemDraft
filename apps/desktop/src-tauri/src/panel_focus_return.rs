@@ -26,7 +26,7 @@ mod tests {
     }
 
     #[test]
-    fn drag_keeps_a_keyboard_lease_and_stale_release_cannot_take_it() {
+    fn stale_drag_completion_or_release_cannot_take_a_new_keyboard_lease() {
         assert!(!should_return(true, true, true, true));
     }
 

@@ -508,7 +508,7 @@
     "name": "route_toolset_command",
     "async": false,
     "generics": "",
-    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, command_id: String, preserve_input_focus: Option<bool>,",
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, command_id: String, preserve_input_focus: Option<bool>, commit: Option<bool>,",
     "returnType": "Result<(), String>"
   },
   {

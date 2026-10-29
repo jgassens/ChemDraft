@@ -61,7 +61,7 @@ it("allows Windows palette colour popups to activate without a second WebView2 f
   expect(windows).toContain("if already_active {\n                        return Ok(true);");
 });
 
-it("hands Windows palette drags back after Tao finishes, retaining leases and foreground guards", () => {
+it("hands Windows palette drags back after Tao finishes, guarding newer leases and foreground owners", () => {
   const panel = readNative("src/panel_window.rs");
   const observer = panel.split('unsafe extern "system" fn focus_subclass(')[1]!.split("\n#[cfg(windows)]")[0]!;
   expect(observer).toContain("message == WM_EXITSIZEMOVE");

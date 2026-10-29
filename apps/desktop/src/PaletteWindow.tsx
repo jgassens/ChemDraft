@@ -14,8 +14,8 @@ import { allShellCommands, type CommandSpec } from "./commands";
 import { createPhase4Document } from "./documentWorkflow";
 import { createDesktopShortcutRegistry, detectDesktopShortcutPlatform } from "./keyboardShortcuts";
 import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
-import { paletteMenuShortcut } from "./paletteMenuShortcuts";
-import { disabledControlAtPointer, installPaletteInputFocus, isPaletteInputFocusPending, paletteInputFocusControl } from "./plugins/pluginPanelInputFocus";
+import { NATIVE_MENU_COMMAND_IDS, paletteMenuShortcut } from "./paletteMenuShortcuts";
+import { disabledControlAtPointer, installPaletteInputFocus, isPaletteInputFocusPending, paletteInputFocusControl, PALETTE_INPUT_FOCUS_COMMIT_EVENT } from "./plugins/pluginPanelInputFocus";
 import { editHistoryDirection, forceDocumentHistoryCommandId, isCleanPaletteNumberInput, isTextEditingElement } from "./editHistoryRouting";
 import { applyKeybindingSchemeToCommands } from "./keybindingScheme";
 import { isCompoundLayoutCommand } from "./compoundLayoutSettings";
@@ -673,12 +673,15 @@ export function PaletteWindow({
     const handleKeyDown = (event: KeyboardEvent) => {
       const menuCommand = paletteMenuShortcut(event, shortcutRegistry);
       if (menuCommand) {
-        // Windows palettes have no menu. Keep the control (even a pending lease) focused
-        // while the document executes the command. AppKit already routes its app-wide menu.
-        if (platform === "windows") {
-          event.preventDefault();
-          void sendPaletteCommand(menuCommand, { preserveInputFocus: true }).catch(() => undefined);
-        }
+        const drafts = shellRef.current?.querySelectorAll<HTMLElement>('[data-palette-number-draft="true"]');
+        // Settle into the original document before Save/Export or a tab change. Commits
+        // and commands share ordered IPC; suppress AppKit's menu when settling a draft.
+        if (platform === "macos" && NATIVE_MENU_COMMAND_IDS.has(menuCommand) && !drafts?.length) return;
+        event.preventDefault();
+        drafts?.forEach((control) => control.dispatchEvent(new Event(PALETTE_INPUT_FOCUS_COMMIT_EVENT)));
+        const leased = isPaletteInputFocusPending(shellRef.current) || !!paletteInputFocusControl(shellRef.current);
+        void (leased ? sendPaletteCommand(menuCommand, { preserveInputFocus: true })
+          : sendPaletteCommand(menuCommand)).catch(() => undefined);
         return;
       }
       // WebKit/WebView2 can temporarily target body during a control click. The leased
@@ -1023,7 +1026,7 @@ export function PaletteWindow({
       className="palette-window-shell"
       aria-label={`ChemDraft floating ${toolset.title}`}
       data-toolset-id={toolset.id}
-      data-palette-drag-surface="true"
+      data-palette-drag-surface={customizeThisPalette ? undefined : "true"}
       onPointerDown={startDragFromPaletteSurface}
       onPointerUp={stopPaletteWindowDrag}
       onPointerCancel={stopPaletteWindowDrag}

@@ -40,7 +40,10 @@ the disabled Chain angle sink, and immediately after mouse-down while acquisitio
 the control/sink keeps focus (a Save As chooser may take it). Repeat Save As, Open, New, Close,
 Export, Preferences and zoom/view shortcuts. Ctrl+A/C/V/X and draft Undo/Redo stay in the field;
 clean-number history keeps its existing document route. On macOS Cmd+S uses the native menu
-exactly once, with no second save from the palette page. Hover the disabled number box itself:
+exactly once with a clean field; a dirty typed draft commits first and the page saves exactly once.
+With a dirty draft, Save As/Export include the value and Ctrl+Tab commits to the original tab
+before switching. From a held checkbox/slider on macOS, Cmd+= zooms, Ctrl+Tab switches tabs,
+and Cmd+W closes the document tab. Hover the disabled number box itself:
 its real wrapper shows not-allowed, even before the palette becomes key; no title means no tooltip.
 Foreground after editing: type ahead in the Text size select, dismiss its popup, then press
 Escape again with the select closed. Press M immediately: the document must receive it. Repeat
@@ -49,8 +52,9 @@ Tab/click between palette controls keeps their keyboard lease. Switching apps, c
 palette, or opening a native colour/select chooser must never pull focus back to the document.
 Foreground after dragging: on Windows drag the Text toolbar by its title and background, release,
 then immediately press M. The document receives it and the toolbar stays where dropped. Repeat
-a press with no movement, a drag while a keyboard lease is held (retain that lease), and switching
-apps during the gesture (no focus theft). On macOS verify dragging still leaves the document key.
+a press with no movement and a drag while a keyboard lease is held: dragging ends any lease,
+and the document has the keyboard afterwards. Switching apps during the gesture must not steal
+focus. On macOS verify dragging still leaves the document key.
 Drag the palette background (including a press without movement), close it on pointerdown, switch
 apps, and click the canvas or another window: no guard may remain. With a loading/unresponsive
 palette page, editing hotkeys must recover after about one second. Rapidly click a button then a

@@ -16,7 +16,7 @@ import { SortableContext, rectSortingStrategy, useSortable } from "@dnd-kit/sort
 import { CSS } from "@dnd-kit/utilities";
 import type { ToolsetGridLayout } from "@chemdraft/toolset-registry";
 import type { CommandSpec } from "./commands";
-import { PALETTE_INPUT_FOCUS_CANCEL_EVENT } from "./plugins/pluginPanelInputFocus";
+import { PALETTE_INPUT_FOCUS_CANCEL_EVENT, PALETTE_INPUT_FOCUS_COMMIT_EVENT } from "./plugins/pluginPanelInputFocus";
 import {
   ToolbarWidgetStateContext,
   TOOLBAR_WIDGET_IDS,
@@ -888,6 +888,13 @@ function MoleculeInspectorNumericControl({
       revert();
     }
   };
+  useEffect(() => {
+    const input = inputRef.current;
+    // App shortcuts settle the same draft as blur, without surrendering the control lease.
+    const settle = () => { if (input && dirty.current) commit(input.value); };
+    input?.addEventListener(PALETTE_INPUT_FOCUS_COMMIT_EVENT, settle);
+    return () => input?.removeEventListener(PALETTE_INPUT_FOCUS_COMMIT_EVENT, settle);
+  });
   const commitSlider = () => {
     const next = sliderChanged.current;
     sliderChanged.current = undefined;
