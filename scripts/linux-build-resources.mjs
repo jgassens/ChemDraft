@@ -14,8 +14,8 @@ function expandCpuMask(mask) {
 }
 
 export function linuxBuildCpuList(allowedMask, onlineMask) {
-  const cpus = expandCpuMask(allowedMask);
   const online = expandCpuMask(onlineMask);
+  const cpus = expandCpuMask(allowedMask).filter((cpu) => online.includes(cpu));
   const outside = online.filter((cpu) => !cpus.includes(cpu)).length;
   // Parent taskset restrictions already leave CPUs unused by this build. Count them so a
   // nested terminal build does not cut three more CPUs and fail on a four-core machine.

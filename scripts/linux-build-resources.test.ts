@@ -19,6 +19,7 @@ describe("Linux build disk reserve", () => {
   it("reserves three CPUs once, including nested builds on the minimum four-core host", () => {
     expect(linuxBuildCpuList("0-11", "0-11")).toBe("0,1,2,3,4,5,6,7,8");
     expect(linuxBuildCpuList("0-8", "0-11")).toBe("0,1,2,3,4,5,6,7,8");
+    expect(linuxBuildCpuList("0-11", "0-7")).toBe("0,1,2,3,4");
     expect(linuxBuildCpuList("0-3", "0-3")).toBe("0");
     expect(linuxBuildCpuList("0", "0-3")).toBe("0");
     expect(linuxBuildCpuList("4-7,10", "0-11")).toBe("4,5,6,7,10");
