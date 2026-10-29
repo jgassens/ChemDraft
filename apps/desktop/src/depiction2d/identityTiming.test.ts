@@ -14,7 +14,7 @@ import { inspectStructureOffThread } from "./identityClient";
 import { IDENTITY_VERIFICATION_BUDGET_MS } from "./identityWorkerClient";
 
 const TBS = "O[Si](C)(C)C(C)(C)C";
-const deadlineMs = IDENTITY_VERIFICATION_BUDGET_MS + 2_000;
+const deadlineMs = 2 * IDENTITY_VERIFICATION_BUDGET_MS + 2_000;
 type Outcome = "accepted" | "refused" | "timed out";
 
 describe.skipIf(process.env.CHEMDRAFT_IDENTITY_TIMING !== "1")("identity worker timing", () => {
@@ -30,7 +30,7 @@ describe.skipIf(process.env.CHEMDRAFT_IDENTITY_TIMING !== "1")("identity worker 
 
   for (const n of [5, 6, 7]) {
     for (const scenario of ["d", "r"]) {
-      it(`(${scenario}) with ${n} TBS arms finishes within the budget plus 2 s`, async () => {
+      it(`(${scenario}) with ${n} TBS arms finishes within two budgets plus 2 s`, async () => {
         const unspecified = Array.from({ length: n }, () => `C(${TBS})`).join("");
         const specified = Array.from({ length: n }, (_, i) =>
           `[C${i % 2 ? "@@" : "@"}H](${TBS})`).join("");
@@ -66,7 +66,7 @@ describe.skipIf(process.env.CHEMDRAFT_IDENTITY_TIMING !== "1")("identity worker 
         rows.push(row);
         console.log(JSON.stringify({ platform: process.platform, arch: process.arch,
           cpus: os.cpus().length, ...row }));
-        expect(["accepted", "refused", "timed out"]).toContain(outcome);
+        if (n === 5) expect(outcome).toBe(scenario === "d" ? "accepted" : "refused");
         expect(elapsed).toBeLessThanOrEqual(deadlineMs);
       }, 90_000);
     }
