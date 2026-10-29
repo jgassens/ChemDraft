@@ -552,6 +552,7 @@ import {
   nativePolylinePathDocument,
   insertSmilesMoleculeGridStatus,
   insertSmilesMolecule,
+  SMILES_PASTE_OPTIONS,
   insertSmilesMoleculeGrid,
   documentObjectProjectedPlaneTilt,
   nativeBondStyleForToolCommand,
@@ -1635,7 +1636,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.29.12.50-opus";
+const CURRENT_BUILD_STAMP = "10.29.13.00-codex";
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -6651,7 +6652,7 @@ export function MainWindow({
       await verifySmilesPaste(depiction, smilesText);
       if (quitInteractionRef.current) return { rendered: false, reason: "Paste cancelled while quitting" };
       const nextDocument = insertSmilesMolecule(
-        documentRef.current, pastePointForViewport(), depiction, smilesText, { openUnspecifiedDoubleBonds: true });
+        documentRef.current, pastePointForViewport(), depiction, smilesText, SMILES_PASTE_OPTIONS);
       commitDocumentChange(nextDocument);
       resetPasteUiState();
       // A pasted structure can be larger than the current page (e.g. a long peptide). Offer

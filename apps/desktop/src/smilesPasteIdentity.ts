@@ -4,7 +4,7 @@ import {
   type InspectChemicalIdentity,
   type PagePoint, type PastedStructureDepiction
 } from "@chemdraft/document-workflow-core";
-import { insertSmilesMolecule, insertSmilesMoleculeGrid } from "./documentWorkflow";
+import { insertSmilesMolecule, insertSmilesMoleculeGrid, SMILES_PASTE_OPTIONS } from "./documentWorkflow";
 import type { SmilesListPasteFailure } from "./smilesListPaste";
 import { inspectStructureOffThread } from "./depiction2d/identityClient";
 import { IdentityWorkerUnavailableError } from "./depiction2d/identityWorkerClient";
@@ -78,7 +78,7 @@ export async function checkedSmilesPaste(
   document: ChemDraftDocument, point: PagePoint, depiction: PastedStructureDepiction, smiles: string,
   inspect: InspectChemicalIdentity = inspectPasteIdentity
 ): Promise<ChemDraftDocument> {
-  const next = insertSmilesMolecule(document, point, depiction, smiles);
+  const next = insertSmilesMolecule(document, point, depiction, smiles, SMILES_PASTE_OPTIONS);
   const molecule = next.pages.flatMap(page => page.objects).find(object =>
     next.selection.objectIds.includes(object.id) && object.type === "molecule");
   if (!molecule || molecule.type !== "molecule") throw new Error("SMILES paste produced no molecule.");

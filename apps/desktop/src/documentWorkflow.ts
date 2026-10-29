@@ -5004,6 +5004,9 @@ export function createNativeMolfileMolecule(
   });
 }
 
+/** Single and grid paste must verify the same open-E/Z graph they commit. */
+export const SMILES_PASTE_OPTIONS = { openUnspecifiedDoubleBonds: true } as const;
+
 export function insertSmilesMoleculeGrid(
   document: ChemDraftDocument,
   origin: PagePoint,
@@ -5024,7 +5027,7 @@ export function insertSmilesMoleculeGrid(
     const molecule = createSmilesMolecule(document, { x: margin, y: margin }, entry.depiction, entry.smiles, {
       ...SMILES_PASTE_SOURCE,
       reservedObjectIds
-    }, { openUnspecifiedDoubleBonds: true });
+    }, SMILES_PASTE_OPTIONS);
     reservedObjectIds.add(molecule.id);
     return molecule;
   });
