@@ -23,7 +23,7 @@ import {
 const point = { x: 200, y: 200 };
 
 describe.each([false, true])("isotope relabelling (typed=%s)", (literal) => {
-  it.each(["N", "Cl", "D", "T", "C", "CH3"])("clears carbon-13 when relabelled to %s", (element) => {
+  it.each(["N", "Cl", "D", "T", "C", "CH3"])("updates carbon-13 when relabelled to %s", (element) => {
     const document = createEmptyDocument();
     const molecule = createSmilesMolecule(document, point, {
       atoms: [{ element: "C", isotope: 13, x: 0, y: 0, charge: 0 }], bonds: []
@@ -40,12 +40,18 @@ describe.each([false, true])("isotope relabelling (typed=%s)", (literal) => {
     const result = literal
       ? applyNativeAtomLabelDraft(inserted, target, element, { element: "C", literal: true })
       : applyNativeAtomElementTarget(inserted, target, element);
-    const relabelled = result.pages[0]!.objects[0] as MoleculeObject;
+    const relabelled = result.pages[0]!.objects[0];
+    if (relabelled?.type !== "molecule") throw new Error("Expected a molecule");
     expect(relabelled.atoms[0]!.element).toBe(element);
-    expect(relabelled.atoms[0]).not.toHaveProperty("isotope");
+    if (element === "C") {
+      expect(result).toBe(inserted);
+      expect(relabelled.atoms[0]!.isotope).toBe(13);
+    } else {
+      expect(relabelled.atoms[0]).not.toHaveProperty("isotope");
+    }
     expect(relabelled.atoms[0]!.labelLiteral === true).toBe(literal);
     expect(relabelled.chemistry?.isotopeLabels).toEqual(
-      element === "D" ? ["2H"] : element === "T" ? ["3H"] : []
+      element === "C" ? ["13C"] : element === "D" ? ["2H"] : element === "T" ? ["3H"] : []
     );
   });
 });

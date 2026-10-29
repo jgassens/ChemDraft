@@ -9033,7 +9033,6 @@ export function applyNativeAtomElementTarget(
   const restoredSide = options.labelBondSide;
   if (
     atom.element === normalizedElement &&
-    atom.isotope === undefined &&
     (atom.labelVisible === true) === labelVisible &&
     (atom.labelLiteral === true) === literal &&
     (restoredSide === undefined || sameLabelBondSide(atom.labelBondSide, restoredSide))
@@ -19308,6 +19307,8 @@ function nativeAtomWithElement(
   return {
     ...baseAtom,
     element,
+    ...(sameElement && element !== "D" && element !== "T" && atom.isotope !== undefined
+      ? { isotope: atom.isotope } : {}),
     ...(labelVisible ? { labelVisible: true } : {}),
     ...(labelLiteral ? { labelLiteral: true } : {}),
     ...(warningSuppressed === true && sameElement && sameRule ? { warningSuppressed: true } : {})
