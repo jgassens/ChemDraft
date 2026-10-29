@@ -128,13 +128,15 @@ describe("paste precedence and table building", () => {
       const parsed = readTableClipboardPaste(payload(...items), parseHtml);
       expect(parsed).toMatchObject({ ok: true, source: "tsv", warnings: [] });
       if (!parsed?.ok) throw new Error("Expected TSV table");
-      expect(parsed.spec.caption).toBe("Table S2. Sharpless reagent plan (synthetic).");
+      expect(parsed.spec.caption).toBeUndefined();
       expect(parsed.spec.columns).toHaveLength(7);
-      // Standalone TSV keeps the heading as data.
-      expect(parsed.spec.rows).toHaveLength(6);
-      expect(parsed.spec.rows[1][2]).toBe("0.854");
-      expect(parsed.spec.rows[3][2]).toBe("1.204");
-      expect(parsed.spec.footnotes).toEqual(["a TBHP stock solution; synthetic example."]);
+      // Tab-padded boundary lines remain rows because they may contain empty data cells.
+      expect(parsed.spec.rows).toHaveLength(8);
+      expect(parsed.spec.rows[0][0]).toBe("Table S2. Sharpless reagent plan (synthetic).");
+      expect(parsed.spec.rows[2][2]).toBe("0.854");
+      expect(parsed.spec.rows[4][2]).toBe("1.204");
+      expect(parsed.spec.rows[7][0]).toBe("a TBHP stock solution; synthetic example.");
+      expect(parsed.spec.footnotes).toBeUndefined();
     }
   });
 
