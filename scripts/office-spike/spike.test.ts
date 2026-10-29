@@ -734,6 +734,10 @@ describe('nested Office pictures (synthetic)', () => {
     expect(() => emfFindings(Buffer.concat([header, short]))).toThrow(/Truncated EMF EOF/);
     const word = Buffer.from(end.subarray(0, 16)); word.writeUInt32LE(16, 4);
     expect(emfFindings(Buffer.concat([header, word])).notes).toContain('short EMR_EOF (16 bytes; MS-EMF says 20), as Word for Mac writes');
+    expect(emfFindings(Buffer.concat([header, word, Buffer.alloc(8)])).notes).toEqual([
+      'short EMR_EOF (16 bytes; MS-EMF says 20), as Word for Mac writes',
+      'Trailing NUL padding: 8 bytes',
+    ]);
     expect(emfFindings(wrapped).notes).toBeUndefined();
   });
 

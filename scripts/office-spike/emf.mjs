@@ -56,6 +56,6 @@ export function emfFindings(buf, nested = () => {}) {
     }
   }
   if (!eof || trailingNuls(buf.subarray(p)) !== buf.length - p) throw new Error('Missing EMF EOF or trailing bytes');
-  if (p < buf.length) found.notes = paddingNotes(buf.length - p);
+  if (p < buf.length) found.notes = [...(found.notes ?? []), ...paddingNotes(buf.length - p)];
   return found;
 }
