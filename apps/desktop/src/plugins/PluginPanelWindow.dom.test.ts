@@ -301,10 +301,24 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     expect(focus).toContain("GetWindowThreadProcessId");
     expect(focus).toContain("with_owned_foreground");
     expect(focus).toContain("SetActiveWindow(hwnd)");
-    expect(panel).not.toMatch(/SetForegroundWindow\(|SendInput\(/);
+    // SetForegroundWindow is allowed only to move the foreground from ChemDraft's own palette to its own document window while ChemDraft owns the foreground;
+    // it must never be used to take the foreground from another app, and synthetic input is never allowed.
+    expect(panel).not.toMatch(/SendInput\(/);
+    const handBackStart = panel.indexOf("pub(crate) fn return_focus_to_document<");
+    expect(handBackStart).toBeGreaterThanOrEqual(0);
+    const handBackEnd = panel.indexOf("\n}\n", handBackStart) + 2;
+    const handBackBody = panel.slice(handBackStart, handBackEnd);
+    expect(panel.replace(handBackBody, "")).not.toMatch(/SetForegroundWindow\(/);
+    expect(handBackBody.match(/SetForegroundWindow\(owner\)/g)).toHaveLength(1);
+    const setForegroundIndex = handBackBody.indexOf("SetForegroundWindow(owner)");
+    const appForegroundGuardIndex = handBackBody.indexOf("super::foreground_belongs_to_app()");
+    expect(appForegroundGuardIndex).toBeGreaterThanOrEqual(0);
+    expect(appForegroundGuardIndex).toBeLessThan(setForegroundIndex);
+    const foregroundWindowGuardIndex = handBackBody.indexOf("GetForegroundWindow() == foreground");
+    expect(foregroundWindowGuardIndex).toBeGreaterThanOrEqual(0);
+    expect(foregroundWindowGuardIndex).toBeLessThan(setForegroundIndex);
     const handBack = panel.split("pub(crate) fn return_focus_to_document<")[1]!.split('#[cfg(target_os')[0]!;
     expect(handBack).toContain("foreground_can_return_to_document");
-    expect(handBack).toContain("if focus_if_app_active(owner)");
     expect(handBack).toContain("webview.set_focus()");
     expect(panel).toContain("WM_NCLBUTTONDOWN | WM_NCMBUTTONDOWN | WM_NCRBUTTONDOWN");
     expect(panel).toContain("WM_ENTERSIZEMOVE | WM_EXITSIZEMOVE");
