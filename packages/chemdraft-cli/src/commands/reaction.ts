@@ -1,14 +1,11 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 
-import { DocumentTextStyle, type ArrowObject, type ChemDraftDocument, type NativeTextStyle } from "@chemdraft/chem-core";
+import { type ArrowObject, type ChemDraftDocument } from "@chemdraft/chem-core";
 import { exportDocumentToSvg } from "@chemdraft/export-engine";
 import { type FigureStyle } from "@chemdraft/layout-engine";
 import { analyzeStructureDetailed } from "@chemdraft/rdkit-adapter";
-import {
-  layoutReactionScheme,
-  nativeTextObjectSizeForText
-} from "@chemdraft/document-workflow-core";
+import { layoutReactionScheme } from "@chemdraft/document-workflow-core";
 
 import { numericOption, parseOptions, repeatedOption, stringOption } from "../args";
 import { figureStyleHelp, figureStyleOptions, figureStyleResult, parseFigureStyle, validateFigureDpi, type FigureStyleOptions } from "../figureStyle";
@@ -51,6 +48,9 @@ interface ReactionJob extends FigureStyleOptions {
   rxn?: string;
   out: string;
   conditions: string;
+  above: readonly string[];
+  below: readonly string[];
+  caption?: string;
   arrow: ReactionArrowKind;
   width: number;
   background: RenderBackground;
@@ -65,6 +65,9 @@ interface BatchReactionJob {
   out?: string;
   format?: ReactionOutputFormat;
   conditions?: string;
+  above?: readonly string[];
+  below?: readonly string[];
+  caption?: string;
   arrow?: ReactionArrowKind;
   width?: number;
   background?: RenderBackground;
@@ -77,6 +80,9 @@ interface ParsedArguments extends FigureStyleOptions {
   format?: ReactionOutputFormat;
   job?: ReactionJob;
   conditions: string;
+  above: readonly string[];
+  below: readonly string[];
+  caption?: string;
   arrow: ReactionArrowKind;
   width: number;
   background: RenderBackground;
@@ -100,7 +106,6 @@ export interface ReactionAgentText {
 }
 
 const REACTION_GUTTER = renderDefaults.padding;
-const CONDITIONS_STYLE: Partial<NativeTextStyle> = { fontSizePx: 14, textAlign: "center" };
 const ARROW_KINDS = new Set<ReactionArrowKind>([
   "forward",
   "equilibrium",
@@ -135,6 +140,9 @@ Batch input is a JSON array of named jobs containing either "rxn" or the arrays 
 Options:
 ${figureStyleHelp}
   --conditions <text>             Additional conditions shown above the arrow
+  --above <text>                  Label above the arrow (repeatable)
+  --below <text>                  Label below the arrow (repeatable)
+  --caption <text>                Note beneath the scheme
   --arrow <kind>                  forward|equilibrium|resonance|retrosynthesis (default: forward)
   --width <px>                    PNG width (default: ${DEFAULT_REACTION_WIDTH})
   --background <kind>             white|transparent (default: white)
@@ -159,6 +167,9 @@ const reactionOptions = {
   "--out-dir": { kind: "value" },
   "--format": { kind: "value" },
   "--conditions": { kind: "value" },
+  "--above": { kind: "value", repeated: true },
+  "--below": { kind: "value", repeated: true },
+  "--caption": { kind: "value" },
   "--arrow": { kind: "value" },
   "--width": { kind: "value" },
   "--background": { kind: "value" },
@@ -250,6 +261,25 @@ function repeatedReactionComponents(
   };
 }
 
+function validateReactionLabels(
+  labels: { above?: readonly string[]; below?: readonly string[]; caption?: string; conditions?: string },
+  fieldName: (field: string) => string = (field) => `--${field}`
+): void {
+  for (const field of ["above", "below"] as const) {
+    if ((labels[field]?.length ?? 0) > 6) {
+      throw new CliUsageError(`${fieldName(field)} exceeds the 6 entry limit.`);
+    }
+  }
+  if (labels.caption !== undefined) {
+    if (!labels.caption.trim()) throw new CliUsageError(`${fieldName("caption")} must be non-empty (1–300 characters).`);
+    if (labels.caption.length > 300) throw new CliUsageError(`${fieldName("caption")} exceeds the 300 character limit.`);
+  }
+  const text = [...labels.above ?? [], ...labels.below ?? [], labels.caption ?? "", labels.conditions ?? ""];
+  if (text.reduce((total, value) => total + value.length, 0) > 2000) {
+    throw new CliUsageError(`${["above", "below", "caption", "conditions"].map(fieldName).join(" + ")} exceeds the 2000 character combined limit.`);
+  }
+}
+
 function parseArguments(argv: readonly string[]): ParsedArguments | { help: true } {
   if (argv.includes("--help")) return { help: true };
   const parsed = parseOptions(argv, reactionOptions);
@@ -270,7 +300,11 @@ function parseArguments(argv: readonly string[]): ParsedArguments | { help: true
   const jobsFile = stringOption(parsed, "--batch");
   const outDir = stringOption(parsed, "--out-dir");
   const requestedFormat = stringOption(parsed, "--format");
-  const conditions = stringOption(parsed, "--conditions")?.trim() ?? "";
+  const conditions = stringOption(parsed, "--conditions") ?? "";
+  const above = repeatedOption(parsed, "--above");
+  const below = repeatedOption(parsed, "--below");
+  const caption = stringOption(parsed, "--caption");
+  validateReactionLabels({ above, below, caption, conditions });
   const requestedArrow = stringOption(parsed, "--arrow");
   const arrow = requestedArrow === undefined ? "forward" : reactionArrow(requestedArrow);
   const requestedWidth = stringOption(parsed, "--width");
@@ -287,7 +321,7 @@ function parseArguments(argv: readonly string[]): ParsedArguments | { help: true
       );
     }
     const format = requestedFormat === undefined ? undefined : reactionFormat(requestedFormat);
-    return { mode: "batch", ...figure, jobsFile, outDir, format, conditions, arrow, width, background };
+    return { mode: "batch", ...figure, jobsFile, outDir, format, conditions, above, below, caption, arrow, width, background };
   }
 
   if (!out) throw new CliUsageError("Single-reaction mode requires --out.");
@@ -308,6 +342,7 @@ function parseArguments(argv: readonly string[]): ParsedArguments | { help: true
     mode: "single",
     ...figure,
     conditions,
+    above, below, caption,
     arrow,
     width,
     background,
@@ -318,6 +353,7 @@ function parseArguments(argv: readonly string[]): ParsedArguments | { help: true
       ...(rxn !== undefined ? { rxn } : {}),
       out,
       conditions,
+      above, below, caption,
       arrow,
       width,
       background
@@ -336,7 +372,7 @@ function parseBatchJob(candidate: unknown, index: number): BatchReactionJob {
   if (raw.rxn !== undefined && typeof raw.rxn !== "string") {
     throw new CliUsageError(`Batch job ${index + 1} "rxn" must be a string.`);
   }
-  for (const field of ["reactants", "agents", "products"] as const) {
+  for (const field of ["reactants", "agents", "products", "above", "below"] as const) {
     if (raw[field] !== undefined && (
       !Array.isArray(raw[field]) || !(raw[field] as unknown[]).every((entry) => typeof entry === "string")
     )) {
@@ -349,7 +385,10 @@ function parseBatchJob(candidate: unknown, index: number): BatchReactionJob {
   if (raw.conditions !== undefined && typeof raw.conditions !== "string") {
     throw new CliUsageError(`Batch job ${index + 1} "conditions" must be a string.`);
   }
-  return {
+  if (raw.caption !== undefined && typeof raw.caption !== "string") {
+    throw new CliUsageError(`Batch job ${index + 1} "caption" must be a string.`);
+  }
+  const job: BatchReactionJob = {
     name: raw.name as string,
     rxn: raw.rxn as string | undefined,
     reactants: raw.reactants as string[] | undefined,
@@ -358,16 +397,25 @@ function parseBatchJob(candidate: unknown, index: number): BatchReactionJob {
     out: raw.out as string | undefined,
     format: raw.format === undefined ? undefined : reactionFormat(raw.format, `Batch job ${index + 1} format`),
     conditions: raw.conditions as string | undefined,
+    above: raw.above as string[] | undefined,
+    below: raw.below as string[] | undefined,
+    caption: raw.caption as string | undefined,
     arrow: raw.arrow === undefined ? undefined : reactionArrow(raw.arrow, `Batch job ${index + 1} arrow`),
     width: raw.width === undefined ? undefined : positiveWidth(raw.width, `Batch job ${index + 1} width`),
     background: raw.background === undefined
       ? undefined
       : reactionBackground(raw.background, `Batch job ${index + 1} background`)
   };
+  validateReactionLabels(job, (field) => `Batch job ${index + 1} "${field}"`);
+  return job;
 }
 
 async function readReactionJobs(args: ParsedArguments): Promise<ReactionJob[]> {
   const jobs = await readBatchFile(args.jobsFile!, parseBatchJob, (job) => {
+    validateReactionLabels({
+      above: job.above ?? args.above, below: job.below ?? args.below,
+      caption: job.caption ?? args.caption, conditions: job.conditions ?? args.conditions
+    }, (field) => `Batch job "${job.name}" ${field}`);
     if (args.style === "document" && job.width !== undefined) throw new CliUsageError(`Batch job "${job.name}" width conflicts with --style document.`);
     const hasArrays = job.reactants !== undefined || job.agents !== undefined || job.products !== undefined;
     if ((job.rxn === undefined) === !hasArrays) {
@@ -399,7 +447,10 @@ async function readReactionJobs(args: ParsedArguments): Promise<ReactionJob[]> {
       input,
       ...(job.rxn !== undefined ? { rxn: job.rxn } : {}),
       out: job.out ?? join(args.outDir!, `${job.name}.${format}`),
-      conditions: job.conditions?.trim() ?? args.conditions,
+      conditions: job.conditions ?? args.conditions,
+      above: job.above ?? args.above,
+      below: job.below ?? args.below,
+      caption: job.caption ?? args.caption,
       arrow: job.arrow ?? args.arrow,
       width: job.width ?? args.width,
       background: job.background ?? args.background
@@ -608,10 +659,13 @@ export async function renderReactionScheme(
     style?: FigureStyle;
     arrow?: ReactionArrowKind;
     conditions?: string;
+    above?: readonly string[];
+    below?: readonly string[];
+    caption?: string;
     background?: RenderBackground;
   } = {}
 ): Promise<RenderedReactionScheme> {
-  const conditionsStyle = options.style === "document" ? { ...CONDITIONS_STYLE, ...DocumentTextStyle } : CONDITIONS_STYLE;
+  validateReactionLabels(options);
   const parsed = typeof input === "string" ? parseReactionSmiles(input) : input;
   const arrow = options.arrow ?? "forward";
   if (!ARROW_KINDS.has(arrow)) reactionArrow(arrow);
@@ -635,9 +689,6 @@ export async function renderReactionScheme(
   const visible = [...reactants, ...products];
   const conditionText = [...agentTexts.map((agent) => agent.text), ...(options.conditions?.trim() ? [options.conditions.trim()] : [])]
     .join(", ");
-  const conditionSize = conditionText
-    ? nativeTextObjectSizeForText(conditionText, conditionsStyle)
-    : { width: 0, height: 0 };
   const boundsByComponent = new Map(visible.map((component) => {
     const bounds = documentVisualBounds(component.document);
     return [component, {
@@ -646,15 +697,6 @@ export async function renderReactionScheme(
       height: bounds.maxY - bounds.minY
     }] as const;
   }));
-  const maximumMoleculeHeight = Math.max(
-    renderDefaults.bondLength,
-    ...visible.map((component) => boundsByComponent.get(component)!.height)
-  );
-  const aboveCenter = Math.max(
-    maximumMoleculeHeight / 2,
-    conditionText ? conditionSize.height + REACTION_GUTTER / 2 : 0
-  );
-  const centerY = renderDefaults.padding + aboveCenter;
   const componentFor = (component: BuiltSmilesDocument) => ({
     molecule: component.molecule,
     bounds: boundsByComponent.get(component)!
@@ -665,7 +707,10 @@ export async function renderReactionScheme(
     products: products.map(componentFor),
     arrowKind: arrow,
     conditionText,
-    anchor: { x: renderDefaults.padding, y: centerY },
+    above: options.above,
+    below: options.below,
+    caption: options.caption,
+    anchor: { x: renderDefaults.padding, y: renderDefaults.padding },
     gutter: REACTION_GUTTER,
     bondLength: renderDefaults.bondLength,
     pagePadding: renderDefaults.padding
@@ -706,6 +751,9 @@ async function renderReactionJob(job: ReactionJob, io: CliIo): Promise<boolean> 
       style: job.style,
       arrow: job.arrow,
       conditions: job.conditions,
+      above: job.above,
+      below: job.below,
+      caption: job.caption,
       background: job.background
     });
     await mkdir(dirname(job.out), { recursive: true });
