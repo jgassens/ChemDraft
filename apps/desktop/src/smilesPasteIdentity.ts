@@ -68,7 +68,8 @@ export async function verifySmilesPaste(
   depiction: PastedStructureDepiction, smiles: string,
   inspect: InspectChemicalIdentity = inspectPasteIdentity
 ): Promise<void> {
-  // Normalization of the isolated insert is the same as the final insert into the live document.
+  // Verify the normalized insert at the empty document's default bond length. The live document's
+  // bond length uniformly rescales the depiction, which cannot change atoms, isotopes, charges or stereo.
   await checkedSmilesPaste(createEmptyDocument(), { x: 200, y: 200 }, depiction, smiles, inspect);
 }
 

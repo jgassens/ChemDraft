@@ -13,8 +13,9 @@ import {
 } from "../../../packages/document-workflow-core/test/isotopeInsertFixtures";
 import {
   checkedSmilesPaste, checkedSmilesGridPaste, createPasteIdentityInspector, verifySmilesPasteInput,
-  verifySmilesGridEntries
+  verifySmilesGridEntries, verifySmilesPaste
 } from "./smilesPasteIdentity";
+import { insertSmilesMolecule } from "./documentWorkflow";
 import { depictSmilesForPaste, depictSmilesListForPaste, smilesListFailureStatus } from "./smilesListPaste";
 import * as depictionClient from "./depiction2d/client";
 import type { StructureInspector } from "./depiction2d/identityProtocol";
@@ -37,6 +38,21 @@ async function verify(molecule: MoleculeObject, smiles: string) {
 }
 
 describe("isotope insert paths", () => {
+  it("preserves isotope and stereo identity when pasted at a non-default bond length", async () => {
+    const document = createEmptyDocument();
+    document.styles.drawing = { bondLengthPx: 60 };
+    for (const smiles of ["[2H]/C=C/c1ccccc1", "C[C@H](O)CC"]) {
+      const parsed = await depictSmilesForPaste(smiles);
+      if (!parsed) throw new Error("Expected a SMILES depiction");
+      await verifySmilesPaste(parsed.depiction, smiles, inspect);
+      const pasted = insertSmilesMolecule(document, point, parsed.depiction, smiles);
+      const molecule = pasted.pages[0]!.objects[0];
+      if (!molecule || molecule.type !== "molecule") throw new Error("Expected molecule");
+      expect(molecule.style.bondLengthPx).toBe(60);
+      await verify(molecule, smiles);
+    }
+  });
+
   it("stops grid identity verification between entries when the list is aborted", async () => {
     const controller = new AbortController();
     const inspect = vi.fn<InspectChemicalIdentity>(async () => {
