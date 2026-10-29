@@ -16,7 +16,8 @@ import { jsPDF } from "jspdf";
 import { describe, expect, it } from "vitest";
 import { exportDocumentToPdf } from "./pdf";
 import { exportDocumentToSvg } from "./svg";
-import { extractPdfTextRuns, pdfFontStreams, sfntName, sfntTable } from "./pdf.testUtils";
+import { extractPdfPositionedTextRuns, extractPdfTextRuns, pdfFontStreams, sfntName, sfntTable, standardFontTextWidth } from "./pdf.testUtils";
+import { multilineScriptedTextDocument, scriptedTextDocument } from "./scriptedText.fixture";
 import { ringHaloDocument } from "../../layout-engine/src/ringFillHalos.fixture";
 import { nativeMoleculeRings } from "@chemdraft/layout-engine";
 
@@ -30,6 +31,141 @@ function filledRingFixture(): MoleculeObject {
 const timestamp = "2026-05-29T00:00:00.000Z";
 
 describe("exportDocumentToPdf", () => {
+  it.each(["left", "center", "right"] as const)("exports contiguous %s-aligned scripted formulas without whitespace runs", async (align) => {
+    const fixture = scriptedTextDocument(align);
+    const document = { ...fixture, pages: [{ ...fixture.pages[0], objects: fixture.pages[0].objects.slice(0, 2) }] };
+    const result = await withPdfDom(domParser => exportDocumentToPdf(document, { domParser }), true);
+    const runs = extractPdfPositionedTextRuns(result.bytes);
+    for (const run of runs) {
+      expect(run.text.trim().length).toBeGreaterThan(0);
+      expect(run.text).toBe(run.text.trim());
+    }
+    expect(runs.map(run => run.text)).toEqual(["H", "2", "O", "SO", "4", "2-"]);
+    const [h, two, o, so, four, charge] = runs;
+    for (const [first, second, size] of [
+      [h, two, h.fontSize], [two, o, h.fontSize * 0.72],
+      [so, four, so.fontSize], [four, charge, so.fontSize * 0.72]
+    ] as const) {
+      expect(Math.abs(second.x - first.x - standardFontTextWidth(first.text, size))).toBeLessThan(0.5);
+    }
+  });
+
+  it("keeps scripted text spacing identical across left, centre and right alignment", async () => {
+    const aligned = [];
+    for (const align of ["left", "center", "right"] as const) {
+      const result = await withPdfDom(domParser => exportDocumentToPdf(scriptedTextDocument(align), { domParser }), true);
+      aligned.push(extractPdfPositionedTextRuns(result.bytes).filter(run => run.text.trim().length > 0));
+    }
+    const left = aligned[0]!;
+    for (const runs of aligned.slice(1)) {
+      // H2O and SO4 followed immediately by a superscript charge share one anchor per line.
+      for (const start of [0, 3]) {
+        const shift = runs[start]!.x - left[start]!.x;
+        expect(shift).toBeGreaterThan(0);
+        for (let i = start; i < start + 3; i++) {
+          expect(Math.abs(runs[i]!.x - left[i]!.x - shift)).toBeLessThan(0.5);
+          if (i > start) {
+            expect(Math.abs((runs[i]!.x - runs[i - 1]!.x) - (left[i]!.x - left[i - 1]!.x))).toBeLessThan(0.5);
+          }
+        }
+      }
+    }
+  });
+
+  it("centres each line independently when only the second line has scripts", async () => {
+    const aligned = [];
+    for (const align of ["left", "center", "right"] as const) {
+      const result = await withPdfDom(domParser => exportDocumentToPdf(multilineScriptedTextDocument(align), { domParser }), true);
+      const positioned = extractPdfPositionedTextRuns(result.bytes);
+      if (align === "center") {
+        const secondLine = positioned.findIndex(run => run.text === "H");
+        // Anchoring measures the whole chunk, including inter-line SVG whitespace.
+        for (const line of [positioned.slice(0, secondLine), positioned.slice(secondLine)]) {
+          const last = line.at(-1)!;
+          const rightEdge = last.x + standardFontTextWidth(last.text, last.fontSize);
+          expect(Math.abs((line[0]!.x + rightEdge) / 2 - 225)).toBeLessThan(0.5);
+        }
+      }
+      aligned.push(positioned.filter(run => run.text.trim().length > 0));
+    }
+    const [left, center, right] = aligned;
+    expect(left!.map(run => run.text)).toEqual(["plain", "H", "2", "O"]);
+    for (const [start, end] of [[0, 1], [1, 4]]) {
+      const shift = center![start]!.x - left![start]!.x;
+      for (let i = start; i < end; i++) {
+        expect(Math.abs(center![i]!.x - left![i]!.x - shift)).toBeLessThan(0.5);
+        expect(Math.abs(right![i]!.x - left![i]!.x - 2 * shift)).toBeLessThan(0.5);
+      }
+    }
+    // Different line widths require different anchor offsets, with their baselines unchanged.
+    expect(center![0]!.x - left![0]!.x).not.toBeCloseTo(center![1]!.x - left![1]!.x, 1);
+    expect(center![1]!.y - center![0]!.y).toBeCloseTo(-28 * 0.75, 6);
+    expect(center![3]!.y).toBeCloseTo(center![1]!.y, 6);
+  });
+
+  it.each([false, true])("draws scripted formula digits and charges with positive size, offset and advance (compression=%s)", async (compress) => {
+    const result = await withPdfDom(domParser => exportDocumentToPdf(scriptedTextDocument(), { domParser, compress }));
+    const runs = extractPdfPositionedTextRuns(result.bytes).filter(run => run.text.trim().length > 0);
+    expect(runs.map(run => run.text)).toEqual([
+      "H", "2", "O", "SO", "4", "2-", "NH", "4", "+", "13", "C", "H", "2", "O",
+      "H", "2", "O", "SO", "4", "2-", "end"
+    ]);
+    const [h, sub, o, so, four, charge, nh, nhFour, plus, isotope, c, bigH, bigSub, bigO] = runs;
+    const script = (parent: typeof h, child: typeof sub, offsetEm: number, sizeRatio = 0.72) => {
+      expect(parent.fontSize).toBeCloseTo(15, 6); // 20 document px at 72/96 pt/px
+      expect(child.fontSize).toBeGreaterThan(0);
+      expect(Math.abs(child.fontSize / parent.fontSize - sizeRatio)).toBeLessThan(sizeRatio * 0.01);
+      expect(child.y - parent.y).toBeCloseTo(offsetEm * parent.fontSize, 6);
+    };
+    script(h, sub, -0.4);
+    expect(o.y).toBeCloseTo(h.y, 6);
+    const metrics = new jsPDF({ unit: "pt" });
+    const positiveAdvance = (left: typeof sub, right: typeof o) => {
+      metrics.setFont("helvetica").setFontSize(left.fontSize);
+      const width = metrics.getTextWidth(left.text);
+      expect(width).toBeGreaterThan(0);
+      expect(right.x).toBeGreaterThan(left.x + width * 0.99);
+    };
+    positiveAdvance(sub, o);
+    script(so, four, -0.4);
+    script(so, charge, 0.4);
+    positiveAdvance(four, charge);
+    script(nh, nhFour, -0.4);
+    script(nh, plus, 0.4);
+    script(c, isotope, 0.4);
+    positiveAdvance(isotope, c);
+    // A span's own 30 px size must not enlarge the script relative to its 20 px text object.
+    script(bigH, bigSub, -0.4);
+    expect(bigO.y).toBeCloseTo(bigH.y, 6);
+    expect(bigO.x).toBeGreaterThan(bigSub.x);
+    // Empty middle lines and a normal line after a superscript retain their original advance.
+    expect(runs[17].y - runs[14].y).toBeCloseTo(-56 * 0.75, 6);
+    expect(runs[20].y - runs[17].y).toBeCloseTo(-28 * 0.75, 6);
+  });
+
+  it("applies relative script shifts once across embedded-font fallback segments", async () => {
+    const document = applyPatch(createEmptyDocument({ now: timestamp }), {
+      op: "addObject", pageId: "page_001", object: {
+        id: "mixed_font_scripts", type: "text", x: 100, y: 100, width: 400, height: 80,
+        rotation: 0, style: { fontSizePx: 20, textAlign: "center" }, text: "H2⇌3+⇌−O", spans: [
+          { text: "H", script: "normal", style: {} },
+          { text: "2⇌3", script: "subscript", style: {} },
+          { text: "+⇌−", script: "superscript", style: {} },
+          { text: "O", script: "normal", style: {} }
+        ]
+      }
+    }, { now: timestamp });
+    const result = await withPdfDom(domParser => exportDocumentToPdf(document, { domParser }));
+    const runs = extractPdfPositionedTextRuns(result.bytes).filter(run => run.text.trim().length > 0);
+    expect(runs.map(run => run.text)).toEqual(["H", "2", "⇌", "3", "+", "⇌", "−", "O"]);
+    const parent = runs[0]!;
+    runs.slice(1, 7).forEach((run, index) => {
+      expect(run.y - parent.y).toBeCloseTo(index < 3 ? -6 : 6, 6);
+      expect(run.fontSize / parent.fontSize).toBeCloseTo(0.72, 6);
+    });
+    expect(runs[7]!.y).toBeCloseTo(parent.y, 6);
+    runs.slice(1).forEach((run, index) => expect(run.x).toBeGreaterThan(runs[index]!.x));
+  });
   it.each(["pyridinium", "blue-box", "oxathiazinane"] as const)("%s PNG has no white antialias fringe around glyph halos", (name) => {
     const { document, object } = ringHaloDocument(name, "solid");
     const source = exportDocumentToSvg(document).contents.replace(/viewBox="[^"]*"/,
@@ -494,7 +630,7 @@ function documentWithText(text: string, style: TextObject["style"] = {}) {
   }, { now: timestamp });
 }
 
-async function withPdfDom<T>(callback: (domParser: DOMParser) => Promise<T>): Promise<T> {
+async function withPdfDom<T>(callback: (domParser: DOMParser) => Promise<T>, useStandardTextMetrics = false): Promise<T> {
   const dom = new JSDOM("<!doctype html><html><body></body></html>", {
     pretendToBeVisual: true
   });
@@ -529,7 +665,11 @@ async function withPdfDom<T>(callback: (domParser: DOMParser) => Promise<T>): Pr
   defineTestGlobal(writableGlobal, "navigator", dom.window.navigator);
   Object.defineProperty(dom.window.SVGElement.prototype, "getBBox", {
     configurable: true,
-    value: () => ({ x: 0, y: 0, width: 80, height: 16 })
+    value: function (this: Element) {
+      return { x: 0, y: 0, width: useStandardTextMetrics && this.tagName === "text"
+        ? standardFontTextWidth(this.textContent ?? "", parseFloat(this.getAttribute("font-size") ?? "16"))
+        : 80, height: 16 };
+    }
   });
   Object.defineProperty(dom.window.HTMLCanvasElement.prototype, "getContext", {
     configurable: true,
