@@ -6996,10 +6996,9 @@ fn ensure_toolset_window<R: Runtime>(
 /// Install once at construction, including native focus-loss delivery for every input lease.
 fn install_toolset_input_focus<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
     let target = window.clone();
-    let installed = run_on_main_thread_blocking(window, move || {
-        panel_window::install_input_focus(&target)
-    })
-    .and_then(|result| result);
+    let installed =
+        run_on_main_thread_blocking(window, move || panel_window::install_input_focus(&target))
+            .and_then(|result| result);
     panel_window::finish_installation(installed, || {
         window.destroy().map_err(|error| error.to_string())
     })
