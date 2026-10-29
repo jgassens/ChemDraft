@@ -55,6 +55,20 @@ describe("open warnings model", () => {
     expect(activeOpenWarnings(warned)).toBe(warned);
   });
 
+  it("labels save reports distinctly while keeping older open reports compatible", () => {
+    const report = {
+      operation: "save" as const,
+      displayName: "table.chemdraft",
+      sourceLabel: "ChemDraft CDXML envelope",
+      warnings: [{ code: "cdxml.table_approximated", message: "Table written as text and lines." }]
+    };
+    expect(activeOpenWarnings(report)).toBe(report);
+    expect(openWarningsHeading(report)).toBe("Saved table.chemdraft: 1 warning");
+    expect(openWarningsHeading({ ...report, warnings: [...report.warnings, ...report.warnings] }))
+      .toBe("Saved table.chemdraft: 2 warnings");
+    expect(activeOpenWarnings({ ...report, warnings: [] })).toBeUndefined();
+  });
+
   it("names the atom an unknown Element became, and selects it", () => {
     const { document, warnings } = openFixture("invalid-element.cdxml");
     const molecule = onlyMolecule(document);
@@ -124,7 +138,7 @@ describe("open warnings model", () => {
     });
   });
 
-  it("is a view command, disabled with a reason when the document opened without warnings", () => {
+  it("is a view command, disabled with a reason when the document has no warnings", () => {
     expect(createOpenWarningsAction()).toMatchObject({
       id: TOGGLE_OPEN_WARNINGS_COMMAND_ID,
       title: "Show Open Warnings",

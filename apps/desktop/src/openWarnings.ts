@@ -1,14 +1,14 @@
 import type { ChemDraftDocument, DocumentObject } from "@chemdraft/chem-core";
 
-/** Opens and closes the list of warnings the open document was opened with. */
+/** Opens and closes the current document's file warning list. */
 export const TOGGLE_OPEN_WARNINGS_COMMAND_ID = "view.toggleOpenWarnings";
 
-export const NO_OPEN_WARNINGS_REASON = "This document opened without warnings";
+export const NO_OPEN_WARNINGS_REASON = "This document has no open or save warnings";
 
 /** The list's element id, for the status-line button's aria-controls. */
 export const OPEN_WARNINGS_LIST_ID = "open-warnings-list";
 
-/** One warning from opening a file, as the importer reported it. */
+/** One warning from opening or saving a file, as the converter reported it. */
 export interface OpenWarning {
   code: string;
   message: string;
@@ -19,11 +19,13 @@ export interface OpenWarning {
 }
 
 /**
- * What a file open reported, kept so the status line can offer the list after its own text has
- * moved on. It belongs to the document that open produced, so whatever replaces that document
+ * What the last file open or save reported, kept so the status line can offer the list after its
+ * own text has moved on. It belongs to that document, so whatever replaces that document
  * (New, another open) drops it; document ids cannot tell them apart, as most documents are doc_001.
  */
 export interface OpenWarningsReport {
+  /** Absent on older reports, which always describe a file open. */
+  operation?: "open" | "save";
   displayName: string;
   sourceLabel: string;
   warnings: readonly OpenWarning[];
@@ -51,6 +53,9 @@ export function warningCountLabel(count: number): string {
 }
 
 export function openWarningsHeading(report: OpenWarningsReport): string {
+  if (report.operation === "save") {
+    return `Saved ${report.displayName}: ${warningCountLabel(report.warnings.length)}`;
+  }
   return `Opened ${report.displayName} as ${report.sourceLabel}: ${warningCountLabel(report.warnings.length)}`;
 }
 

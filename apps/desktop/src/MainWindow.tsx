@@ -1630,7 +1630,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.29.10.31-codex";
+const CURRENT_BUILD_STAMP = "10.29.10.55-codex";
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -2574,8 +2574,8 @@ export function MainWindow({
     height: 0
   }));
   const [status, setStatus] = useState("Blank native document");
-  // What the last file open reported, so the status line can still list it after its own text has
-  // moved on. Replacing the document drops it (resetDocumentHistory); an open sets it again.
+  // What the last file open or save reported, so the status line can still list it after its own
+  // text has moved on. Replacing the document drops it (resetDocumentHistory).
   const [openWarningsReport, setOpenWarningsReport] = useState<OpenWarningsReport | undefined>();
   const [openWarningsListOpen, setOpenWarningsListOpen] = useState(false);
   const openWarnings = activeOpenWarnings(openWarningsReport);
@@ -9639,15 +9639,23 @@ export function MainWindow({
       const currentDocument = savingTabId === activeDocumentTabIdRef.current ? documentRef.current :
         documentTabSnapshotsRef.current.get(savingTabId)?.history.present;
       const nextFileState = { path: path ?? savingFileState.path, dirty: currentDocument !== savingDocument };
+      const displayName = path ? nativePathBasename(path) : payload.filename;
+      const warningsReport: OpenWarningsReport | undefined = payload.warnings.length > 0 ? {
+        operation: "save", displayName, sourceLabel: "ChemDraft CDXML envelope", warnings: payload.warnings
+      } : undefined;
       if (savingTabId === activeDocumentTabIdRef.current) {
         fileStateRef.current = nextFileState;
         setFileState(nextFileState);
-        setStatus(formatSaveStatus(path ? nativePathBasename(path) : payload.filename, payload.warnings));
+        tabWarningsRef.current = warningsReport;
+        openWarningsRef.current = warningsReport;
+        setOpenWarningsReport(warningsReport);
+        setOpenWarningsListOpen(false);
+        setStatus(formatSaveStatus(displayName, payload.warnings));
       } else {
         const snapshot = documentTabSnapshotsRef.current.get(savingTabId);
         if (snapshot) documentTabSnapshotsRef.current.set(savingTabId, {
-          ...snapshot, file: nextFileState,
-          status: formatSaveStatus(path ? nativePathBasename(path) : payload.filename, payload.warnings)
+          ...snapshot, file: nextFileState, warnings: warningsReport,
+          status: formatSaveStatus(displayName, payload.warnings)
         });
       }
       const tabs = documentTabsRef.current.map((tab) => tab.id === savingTabId
@@ -20894,7 +20902,8 @@ export function MainWindow({
             Positioned apart, a long status or a branch build's long stamp ran one into the other. */}
         <div ref={statusRowRef} className="status-row" data-status-row>
           <div className="status-row-main">
-            <span data-status-message role="status" aria-live="polite" className="status-message">
+            <span data-status-message role="status" aria-live="polite" className="status-message"
+              title={openWarnings?.warnings.map((warning) => warning.message).join("\n")}>
               {interactive3dWorkspace
                 ? [
                     interactive3dWorkspace.status,
@@ -20912,7 +20921,7 @@ export function MainWindow({
                 aria-haspopup="dialog"
                 aria-expanded={openWarningsListShown}
                 aria-controls={openWarningsListShown ? OPEN_WARNINGS_LIST_ID : undefined}
-                title={openWarningsListShown ? "Hide the warnings from opening this document" : "Show the warnings from opening this document"}
+                title={`${openWarningsListShown ? "Hide" : "Show"} the warnings from ${openWarnings.operation === "save" ? "saving" : "opening"} this document`}
                 // Keep keyboard focus where it was (the canvas), so tool shortcuts work straight after.
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => {
