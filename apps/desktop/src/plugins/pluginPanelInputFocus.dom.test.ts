@@ -853,6 +853,46 @@ describe("panel input keyboard focus", () => {
 });
 
 describe.each(["macos", "windows"] as const)("palette control focus settling (%s)", (platform) => {
+  it.each(["color", "select"])("releases native focus without blurring a %s chooser and accepts its later change", async (kind) => {
+    const { shell, request, deactivate } = mount(kind === "color"
+      ? '<input type="color" value="#112233">'
+      : '<select><option value="one">One</option><option value="two">Two</option></select>',
+    platform, Promise.resolve(), true);
+    const control = shell.firstElementChild as HTMLInputElement | HTMLSelectElement;
+    const blur = vi.spyOn(control, "blur");
+    const commits = vi.fn();
+    control.addEventListener("change", () => commits(control.value));
+    pointerDown(control);
+    control.focus();
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true]);
+    deactivate(); // The native chooser can be the window that took keyboard focus.
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+    expect(blur).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(control);
+    control.value = kind === "color" ? "#abcdef" : "two";
+    control.dispatchEvent(new Event("input", { bubbles: true }));
+    control.dispatchEvent(new Event("change", { bubbles: true }));
+    await flush();
+    expect(commits).toHaveBeenCalledExactlyOnceWith(kind === "color" ? "#abcdef" : "two");
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+  });
+
+  it("still blurs text entry when native focus is lost", async () => {
+    const { shell, request, deactivate } = mount('<input type="text">', platform, Promise.resolve(), true);
+    const input = shell.querySelector("input")!;
+    pointerDown(input);
+    input.focus();
+    await flush();
+    const blur = vi.spyOn(input, "blur");
+    deactivate();
+    await flush();
+    expect(blur).toHaveBeenCalledExactlyOnceWith();
+    expect(document.activeElement).not.toBe(input);
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+  });
+
   it("restores a non-text click default that blurs after the native reply", async () => {
     vi.useFakeTimers();
     const { shell, request } = mount('<input type="range">', platform, Promise.resolve(), true);

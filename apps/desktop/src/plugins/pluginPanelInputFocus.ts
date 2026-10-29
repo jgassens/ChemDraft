@@ -151,7 +151,7 @@ export function installPluginPanelInputFocus(
     });
     void pending.catch((error: unknown) => console.error("Could not change panel input focus:", error));
   };
-  const finish = (cancelControl = false): void => {
+  const finish = (cancelControl = false, preserveNativeChooser = false): void => {
     clearTimeout(controlBlurTimer);
     clearTimeout(pointerFocusTimer);
     pointerFocusTimer = undefined;
@@ -165,7 +165,11 @@ export function installPluginPanelInputFocus(
     selectionLease = false;
     selectionNodes = [];
     const active = panelEditableControl(document.activeElement);
-    if (active && shell.contains(active)) active.blur();
+    // A colour/select chooser may itself have taken native focus. Blurring its owner can
+    // dismiss it before the pick arrives; text entry still blurs so no inactive caret remains.
+    const nativeChooser = active instanceof HTMLSelectElement ||
+      (active instanceof HTMLInputElement && active.type === "color");
+    if (active && shell.contains(active) && !(preserveNativeChooser && nativeChooser)) active.blur();
   };
   const returnPointerFocus = (): void => {
     // WebView2 can activate its parent despite NOACTIVATE/WM_MOUSEACTIVATE. Like the
@@ -289,7 +293,7 @@ export function installPluginPanelInputFocus(
     if (disposed) return;
     if (event.kind === "deactivated") {
       // Loss is terminal even if a delayed acquisition reply says it acquired focus.
-      if (editing && nativeGenerations.has(event.generation)) finish();
+      if (editing && nativeGenerations.has(event.generation)) finish(false, true);
     } else checkActivation();
   };
   const focusIn = (event: FocusEvent): void => {
@@ -327,7 +331,7 @@ export function installPluginPanelInputFocus(
     const next = panelEditableControl(event.relatedTarget);
     if (next && shell.contains(next)) return;
     if (!panelEditableControl(event.target)) return;
-    if (event.relatedTarget instanceof Node && !(pointerControl && event.relatedTarget === document.body)) {
+    if (event.relatedTarget instanceof Node) {
       finish(); // A known destination outside the palette's controls is a real departure.
       return;
     }

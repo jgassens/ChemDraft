@@ -374,7 +374,8 @@ describe("palette numeric controls", () => {
     await tick(23);
     await tick(23.5);
     let latest = 23.5;
-    for (const acknowledgement of [23, 22.5, 23.5, 24, 23]) {
+    // Every echo is still outstanding; replaying an already consumed value is an outside edit.
+    for (const acknowledgement of [23, 22.5, 23.5, 24, 24.5]) {
       model = inspectorModel(acknowledgement);
       await render();
       expect(field().value).toBe(String(latest));
@@ -396,6 +397,58 @@ describe("palette numeric controls", () => {
       field().blur();
     });
     expect(onCommit).toHaveBeenCalledTimes(9);
+  });
+
+  it.each([
+    { echoes: [23, 22.5, 23.5], historyValue: 23, history: "undo" },
+    { echoes: [23, 23.5], historyValue: 22.5, history: "undo after the latest echo supersedes an older one" },
+    { echoes: [23.5, 23, 22.5], historyValue: 23, history: "undo with the latest echo arriving first" }
+  ])("follows $history while focused, then steps and redoes previously sent values", async ({ echoes, historyValue }) => {
+    for (let tick = 0; tick < 3; tick++) {
+      await act(async () => field().dispatchEvent(new KeyboardEvent("keydown", {
+        key: "ArrowUp", repeat: tick > 0, bubbles: true, cancelable: true
+      })));
+    }
+    expect(field().value).toBe("23.5");
+    for (const echo of echoes) {
+      model = inspectorModel(echo);
+      await render();
+    }
+    model = inspectorModel(historyValue);
+    await render();
+    expect(document.activeElement).toBe(field());
+    expect(field().value).toBe(String(historyValue));
+    expect(onCommit).toHaveBeenCalledTimes(3);
+    await key("ArrowUp");
+    expect(field().value).toBe(String(historyValue + 0.5));
+    expect(onCommit.mock.calls.at(-1)).toEqual([moleculeStructureBondLengthCommandId(historyValue + 0.5)]);
+    // Acknowledge the new step, then redo to a value sent during the original hold.
+    model = inspectorModel(historyValue + 0.5);
+    await render();
+    model = inspectorModel(23.5);
+    await render();
+    expect(document.activeElement).toBe(field());
+    expect(field().value).toBe("23.5");
+    await key("ArrowUp");
+    expect(field().value).toBe("24");
+    expect(onCommit.mock.calls).toEqual([22.5, 23, 23.5, historyValue + 0.5, 24]
+      .map((value) => [moleculeStructureBondLengthCommandId(value)]));
+  });
+
+  it("accepts an already acknowledged value as an outside edit while newer echoes remain outstanding", async () => {
+    for (let tick = 0; tick < 3; tick++) await key("ArrowUp");
+    for (const snapshot of [23, 22.5]) {
+      model = inspectorModel(snapshot);
+      await render();
+      expect(field().value).toBe("23.5");
+    }
+    model = inspectorModel(23); // Its own echo was consumed; this is an undo/outside edit.
+    await render();
+    expect(document.activeElement).toBe(field());
+    expect(field().value).toBe("23");
+    await key("ArrowUp");
+    expect(onCommit.mock.calls).toEqual([22.5, 23, 23.5, 23.5]
+      .map((value) => [moleculeStructureBondLengthCommandId(value)]));
   });
 
   it("steps a held native spinner from each current value and stops committing at the limit", async () => {

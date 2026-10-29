@@ -2,7 +2,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { applyPatches, createEmptyDocument, DefaultNativeTextStyle, type MoleculeObject } from "@chemdraft/chem-core";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { PaletteWindow } from "./PaletteWindow";
 import { PalettePopoverWindow } from "./PalettePopoverWindow";
 import { createMoleculeInspectorModel } from "./moleculeInspectorModel";
@@ -80,8 +80,8 @@ function selectedMolecule() {
 describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platform) => {
   let container: HTMLDivElement;
   let root: Root;
-  let listeners: ReturnType<typeof vi.spyOn<EventTarget, "addEventListener">>;
-  let windowListeners: ReturnType<typeof vi.spyOn<Window, "addEventListener">>;
+  let listeners: MockInstance<EventTarget["addEventListener"]>;
+  let windowListeners: MockInstance<Window["addEventListener"]>;
   beforeEach(() => {
     listeners = vi.spyOn(EventTarget.prototype, "addEventListener");
     windowListeners = vi.spyOn(window, "addEventListener");

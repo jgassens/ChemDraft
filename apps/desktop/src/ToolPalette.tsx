@@ -824,9 +824,12 @@ function MoleculeInspectorNumericControl({
   const sliderChanged = useRef<number | undefined>(undefined);
   const sliderPreviewedValues = useRef(new Set<number>());
   useEffect(() => {
-    // Own acknowledgements can arrive late/out of order during a held arrow or spinner.
-    // Retain the latest step and its dedupe until an external value (including undo) arrives.
-    if (!dirty.current && !committedValues.current.has(modelText)) {
+    // Ignore only outstanding own echoes, which can arrive late/out of order during a hold.
+    // Once the latest commit is acknowledged, earlier values must follow undo/redo again.
+    const ownEcho = committedValues.current.delete(modelText);
+    if (ownEcho && lastCommitted.current !== undefined &&
+      modelText === formatInspectorNumber(lastCommitted.current)) committedValues.current.clear();
+    if (!dirty.current && !ownEcho) {
       setDraft(null);
       lastCommitted.current = undefined;
       committedValues.current.clear();
