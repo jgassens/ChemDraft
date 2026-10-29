@@ -9,6 +9,7 @@ import { DialogWindow } from "./DialogWindow";
 const snapshot: DialogSnapshot = { protocolVersion: 1, ownerWindowId: "main", documentTabId: "source-tab", dialogKind: "structureTemplates", sessionId: "session", requestId: "request", snapshotRevision: 1, type: "snapshot", data: { title: "Drawing A", templateIds: ["beta-cyclodextrin"] } };
 let root: Root, container: HTMLDivElement;
 beforeEach(() => {
+  vi.stubGlobal("IntersectionObserver", class { observe() {} disconnect() {} });
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true); vi.clearAllMocks(); host.send.mockResolvedValue(undefined);
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
 });
@@ -20,6 +21,8 @@ it("uses the generic host route and permits another insert only after the comple
   expect(tile()).not.toBeNull();
   expect(document.activeElement).toBe(container.querySelector("input"));
   expect(host.send.mock.calls.map(call => call[1] as DialogMessage).filter(message => message.type === "ready")).toHaveLength(1);
+  // The owner may reveal the interactive picker while all thumbnail work is still deferred.
+  expect(container.querySelectorAll("img[src]")).toHaveLength(0);
   const inserts = () => host.send.mock.calls.map(call => call[1] as DialogMessage).filter(message => message.type === "action" && message.data.action === "insert");
   await act(async () => { tile().click(); tile().click(); });
   expect(inserts()).toHaveLength(1);

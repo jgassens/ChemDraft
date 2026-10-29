@@ -1,9 +1,41 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { structureTemplateFamilyNames } from "@chemdraft/template-library";
+import { structureTemplateFamilyNames, type StructureTemplate } from "@chemdraft/template-library";
 import { detectDialogPlatform, type DialogPlatform, type StructureTemplatesSnapshot } from "./dialogProtocol";
 import { structureTemplatePickerFamilies } from "./structureTemplatePickerModel";
-import { structureTemplateThumbnail } from "./structureTemplateThumbnail";
 import "./StructureTemplatePicker.css";
+
+/** Commit the searchable picker before loading rendering code or generating any SVGs. */
+function TemplateThumbnail({ template }: { template: StructureTemplate }) {
+  const image = useRef<HTMLImageElement>(null);
+  const [src, setSrc] = useState<string>();
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const load = () => {
+      observer?.disconnect();
+      // A task per visible thumbnail yields to input and to the host's ready/reveal exchange.
+      timer = setTimeout(() => {
+        void import("./structureTemplateThumbnail").then(({ structureTemplateThumbnail }) => {
+          if (cancelled) return;
+          // Even when several tiles await the same module, give each SVG its own task.
+          timer = setTimeout(() => {
+            if (!cancelled) setSrc(structureTemplateThumbnail(template));
+          }, 0);
+        }).catch(error => {
+          console.warn(`Could not load thumbnail for template ${template.id}`, error);
+          // The named, accessible tile remains usable without its preview.
+        });
+      }, 0);
+    };
+    const observer = typeof IntersectionObserver === "undefined" ? undefined : new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) load();
+    }, { root: image.current?.closest(".cd-template-families") ?? null, rootMargin: "140px" });
+    if (observer && image.current) observer.observe(image.current);
+    else load();
+    return () => { cancelled = true; clearTimeout(timer); observer?.disconnect(); };
+  }, [template]);
+  return <img ref={image} src={src} alt="" draggable={false} />;
+}
 
 /** Native dialog body and browser fallback. Insertion is a typed owner action, never a document write. */
 export function StructureTemplatePicker({ title, templateIds, onInsert, onClose, onReady, busy = false, error,
@@ -80,7 +112,7 @@ export function StructureTemplatePicker({ title, templateIds, onInsert, onClose,
               tabIndex={template.id === tabStopId ? 0 : -1} ref={element => { if (element) tiles.current.set(template.id, element); else tiles.current.delete(template.id); }}
               onFocus={() => setFocusedId(template.id)} onKeyDown={event => tileKeyDown(event, template.id)}
               onClick={() => { if (!busy && !composing.current) onInsert(template.id); }}>
-              <img src={structureTemplateThumbnail(template)} alt="" draggable={false} />
+              <TemplateThumbnail template={template} />
               <span>{template.name}</span><span className="cd-template-description" id={`template-description-${template.id}`}>{description}</span>
             </button>;
           })}

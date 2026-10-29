@@ -1738,12 +1738,29 @@ fn place_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), Stri
     let destination = saved
         .and_then(|s| monitors.iter().find(|m| m.id == s.monitor))
         .unwrap_or(&work);
+    let template_placement = (kind == "structureTemplates").then_some(TemplatePlacement {
+        saved,
+        owner_rect: (
+            f64::from(position.x) / destination.scale,
+            f64::from(position.y) / destination.scale,
+            f64::from(owner_size.width) / destination.scale,
+            f64::from(owner_size.height) / destination.scale,
+        ),
+    });
+    if template_placement.is_some() {
+        // The picker must also fit work areas smaller than its normal minimum. Restore a
+        // bounded minimum after measuring the destination monitor's actual decorations.
+        window
+            .set_min_size(Some(tauri::LogicalSize::new(1.0, 1.0)))
+            .map_err(|e| e.to_string())?;
+    }
     // WM_DPICHANGED runs when moving between Windows monitors. Move first, set the desired
     // client size at the destination DPI, then clamp using the measured final outer frame.
     finish_placement(
         (x, y, destination_scale),
         spec.size,
         destination,
+        template_placement,
         |x, y| {
             window
                 .set_position(tauri::PhysicalPosition::new(x as i32, y as i32))
@@ -1755,34 +1772,91 @@ fn place_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), Stri
                 .map_err(|e| e.to_string())
         },
         || {
-            window
-                .outer_size()
-                .map(|s| (s.width, s.height))
-                .map_err(|e| e.to_string())
+            let outer = window.outer_size().map_err(|e| e.to_string())?;
+            let client = window.inner_size().map_err(|e| e.to_string())?;
+            Ok(DialogFrame {
+                outer: (outer.width, outer.height),
+                client: (client.width, client.height),
+            })
         },
     )?;
+    if kind == "structureTemplates" {
+        let client = window.inner_size().map_err(|e| e.to_string())?;
+        window
+            // Keep constraints logical so Windows rescales them on later DPI changes.
+            .set_min_size(Some(tauri::LogicalSize::new(
+                (f64::from(client.width) / destination.scale).min(spec.min_size.0),
+                (f64::from(client.height) / destination.scale).min(spec.min_size.1),
+            )))
+            .map_err(|e| e.to_string())?;
+    }
     mark_transient(window.label());
     Ok(())
+}
+struct TemplatePlacement<'a> {
+    saved: Option<&'a SavedPosition>,
+    owner_rect: (f64, f64, f64, f64),
+}
+struct DialogFrame {
+    outer: (u32, u32),
+    client: (u32, u32),
+}
+// All arguments/results are physical pixels. Decoration sizes are measured after the move,
+// since Windows may replace them during WM_DPICHANGED.
+fn fitted_template_client(client: (u32, u32), frame: (u32, u32), work: &WorkArea) -> (u32, u32) {
+    let available_width = (work.width * work.scale) as u32;
+    let available_height = (work.height * work.scale) as u32;
+    (
+        client
+            .0
+            .min(available_width.saturating_sub(frame.0.saturating_sub(client.0)))
+            .max(1),
+        client
+            .1
+            .min(available_height.saturating_sub(frame.1.saturating_sub(client.1)))
+            .max(1),
+    )
 }
 fn finish_placement(
     (x, y, scale): (f64, f64, f64),
     (client_width, client_height): (f64, f64),
     work: &WorkArea,
+    template: Option<TemplatePlacement<'_>>,
     mut move_to: impl FnMut(f64, f64) -> Result<(), String>,
     mut resize: impl FnMut(u32, u32) -> Result<(), String>,
-    mut measure: impl FnMut() -> Result<(u32, u32), String>,
+    mut measure: impl FnMut() -> Result<DialogFrame, String>,
 ) -> Result<(), String> {
     move_to(x, y)?;
     resize(
         (client_width * scale) as u32,
         (client_height * scale) as u32,
     )?;
-    let (width, height) = measure()?;
+    let mut frame = measure()?;
+    if let Some(template) = template {
+        let fitted = fitted_template_client(frame.client, frame.outer, work);
+        if fitted != frame.client {
+            resize(fitted.0, fitted.1)?;
+            frame = measure()?;
+        }
+        // Re-centre using the final outer frame, rather than the initial monitor's frame.
+        // A saved position still uses the shared per-kind destination/offset policy.
+        let (x, y, _) = position_for(
+            template.saved,
+            std::slice::from_ref(work),
+            work,
+            template.owner_rect,
+            (
+                f64::from(frame.outer.0) / scale,
+                f64::from(frame.outer.1) / scale,
+            ),
+        );
+        return move_to(x, y);
+    }
     let (x, y) = work.clamp(
         x / scale,
         y / scale,
-        f64::from(width) / scale,
-        f64::from(height) / scale,
+        f64::from(frame.outer.0) / scale,
+        f64::from(frame.outer.1) / scale,
     );
     move_to(x * scale, y * scale)
 }
@@ -2542,6 +2616,129 @@ mod tests {
         assert!(reserve_action(session, &action).unwrap());
     }
     #[test]
+    fn template_placement_fits_oversized_frames_at_destination_dpi_and_negative_origins() {
+        use std::cell::RefCell;
+        // Physical monitor origin, scale, work area in logical units. The first case is
+        // smaller than both the picker's default size and its normal minimum height.
+        for (origin, scale, area, expected_client, expected_position) in [
+            ((0.0, 24.0), 1.0, (500.0, 300.0), (484, 260), (0.0, 24.0)),
+            (
+                (2880.0, 0.0),
+                1.5,
+                (1000.0, 900.0),
+                (930, 1050),
+                (3037.0, 10.0),
+            ),
+            (
+                (-1600.0, -900.0),
+                2.0,
+                (800.0, 700.0),
+                (1240, 1360),
+                (-1388.0, -900.0),
+            ),
+        ] {
+            let work = WorkArea {
+                id: "destination".into(),
+                x: origin.0 / scale,
+                y: origin.1 / scale,
+                width: area.0,
+                height: area.1,
+                scale,
+            };
+            let owner_rect = (work.x + 20.0, work.y + 20.0, 800.0, 700.0);
+            let client = RefCell::new((0, 0));
+            let position = RefCell::new((0.0, 0.0));
+            finish_placement(
+                (origin.0, origin.1, scale),
+                kind_spec("structureTemplates").unwrap().size,
+                &work,
+                Some(TemplatePlacement {
+                    saved: None,
+                    owner_rect,
+                }),
+                |x, y| {
+                    *position.borrow_mut() = (x, y);
+                    Ok(())
+                },
+                |w, h| {
+                    *client.borrow_mut() = (w, h);
+                    Ok(())
+                },
+                || {
+                    let (w, h) = *client.borrow();
+                    Ok(DialogFrame {
+                        outer: (w + 16, h + 40),
+                        client: (w, h),
+                    })
+                },
+            )
+            .unwrap();
+            assert_eq!(*client.borrow(), expected_client);
+            assert!((position.borrow().0 - expected_position.0).abs() < 0.001);
+            assert!((position.borrow().1 - expected_position.1).abs() < 0.001);
+            let (x, y) = *position.borrow();
+            let (w, h) = *client.borrow();
+            assert!(x >= origin.0 && y >= origin.1);
+            assert!(x + f64::from(w + 16) <= origin.0 + area.0 * scale);
+            assert!(y + f64::from(h + 40) <= origin.1 + area.1 * scale);
+        }
+    }
+    #[test]
+    fn template_placement_restores_saved_offsets_or_centres_when_monitor_is_gone() {
+        use std::cell::RefCell;
+        let work = WorkArea {
+            id: "secondary".into(),
+            x: -800.0,
+            y: 0.0,
+            width: 800.0,
+            height: 600.0,
+            scale: 2.0,
+        };
+        for (monitor, expected_position) in [
+            ("secondary", (-1256.0, 0.0)),
+            ("disconnected", (-1488.0, 0.0)),
+        ] {
+            let saved = SavedPosition {
+                monitor: monitor.into(),
+                x: 9999.0,
+                y: 9999.0,
+                offset_x: 1.0,
+                offset_y: 0.5,
+            };
+            let client = RefCell::new((0, 0));
+            let moves = RefCell::new(Vec::new());
+            let sizes = RefCell::new(Vec::new());
+            finish_placement(
+                (-1600.0, 0.0, work.scale),
+                kind_spec("structureTemplates").unwrap().size,
+                &work,
+                Some(TemplatePlacement {
+                    saved: Some(&saved),
+                    owner_rect: (-780.0, 20.0, 700.0, 500.0),
+                }),
+                |x, y| {
+                    moves.borrow_mut().push((x, y));
+                    Ok(())
+                },
+                |w, h| {
+                    *client.borrow_mut() = (w, h);
+                    sizes.borrow_mut().push((w, h));
+                    Ok(())
+                },
+                || {
+                    let (w, h) = *client.borrow();
+                    Ok(DialogFrame {
+                        outer: (w + 16, h + 40),
+                        client: (w, h),
+                    })
+                },
+            )
+            .unwrap();
+            assert_eq!(*sizes.borrow(), [(1240, 1400), (1240, 1160)]);
+            assert_eq!(*moves.borrow(), [(-1600.0, 0.0), expected_position]);
+        }
+    }
+    #[test]
     fn placement_moves_before_destination_resize_and_clamps_the_measured_outer_frame() {
         use std::cell::RefCell;
         let calls = RefCell::new(Vec::new());
@@ -2558,6 +2755,7 @@ mod tests {
             (3000.0, 1000.0, 2.0),
             (420.0, 300.0),
             &work,
+            None,
             |x, y| {
                 calls.borrow_mut().push(format!("move:{x},{y}"));
                 if calls.borrow().len() == 1 {
@@ -2574,7 +2772,11 @@ mod tests {
             },
             || {
                 calls.borrow_mut().push("measure".into());
-                Ok(*frame.borrow())
+                let (w, h) = *frame.borrow();
+                Ok(DialogFrame {
+                    outer: (w, h),
+                    client: (w - 32, h - 80),
+                })
             },
         )
         .unwrap();
@@ -3088,12 +3290,18 @@ mod tests {
             (0.0, 0.0, 1.5),
             kind_spec("export").unwrap().size,
             &work,
+            None,
             |_, _| Ok(()),
             |w, h| {
                 sizes.borrow_mut().push((w, h));
                 Ok(())
             },
-            || Ok((780, 960)),
+            || {
+                Ok(DialogFrame {
+                    outer: (780, 960),
+                    client: (780, 930),
+                })
+            },
         )
         .unwrap();
         assert_eq!(*sizes.borrow(), [(780, 930)]);
