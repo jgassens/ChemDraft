@@ -23,7 +23,8 @@ Type 30 in Target bond length and Tab to its slider: exactly one edit applies 30
 or leaving the slider keeps 30. Tab out of an untouched Mixed field: no edit. The first spinner
 click on an unfocused field steps once; holding ArrowUp or the spinner increases each tick without
 duplicate undo entries, and blur adds no edit. Arrows/spinners leave Mixed alone until typing or
-moving its slider. Drag the slider and use its arrow keys: both still apply their changed values.
+moving its slider. Pointer drag/click on the slider applies changed values. Arrow keys apply only
+when the palette already has the keyboard; on macOS, clicking a non-text control does not acquire it.
 Click a checkbox, slider, select and colour swatch, then use a palette hotkey after each: shortcuts
 still reach the document. Open the colour popover, type a hex shorthand and press Enter: the colour
 commits once and shortcuts return. Keep two palettes open, edit a field in each in turn, and switch

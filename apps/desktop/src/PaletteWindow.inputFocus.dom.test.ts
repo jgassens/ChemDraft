@@ -153,6 +153,30 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     expect(document.activeElement).toBe(input);
   });
 
+  it.each(["checkbox", "select", "range", "color", "button"])("keeps activation and editing keys in a focused %s while still forwarding a tool hotkey", async (kind) => {
+    await mountSettings();
+    const control = container.querySelector<HTMLElement>(
+      kind === "select" ? "select:not(:disabled)" : kind === "button" ? "button:not(:disabled)" : `input[type="${kind}"]`
+    )!;
+    await act(async () => control.focus());
+    await flush();
+    expect(document.activeElement).toBe(control);
+    native.resolved.mockClear();
+    vi.mocked(sendPaletteCommand).mockClear();
+    for (const key of ["Delete", "Backspace", " ", "Enter", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]) {
+      const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+      await act(async () => control.dispatchEvent(event));
+      expect(native.resolved, key).not.toHaveBeenCalled();
+      expect(sendPaletteCommand, key).not.toHaveBeenCalled();
+      expect(event.defaultPrevented, key).toBe(false);
+    }
+    const hotkey = new KeyboardEvent("keydown", { key: "k", bubbles: true, cancelable: true });
+    await act(async () => control.dispatchEvent(hotkey));
+    expect(native.resolved).toHaveBeenCalledOnce();
+    expect(sendPaletteCommand).toHaveBeenCalledOnce();
+    expect(hotkey.defaultPrevented).toBe(true);
+  });
+
   it("reverts a numeric draft after a failed lease and follows subsequent model updates", async () => {
     const input = await mountSettings();
     let settle!: (acquired: boolean) => void;

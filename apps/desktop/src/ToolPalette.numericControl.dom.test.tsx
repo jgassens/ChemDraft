@@ -201,6 +201,50 @@ describe("palette numeric controls", () => {
     expect(onPreview).not.toHaveBeenCalled();
   });
 
+  it("clears a committed slider draft without blur", async () => {
+    const slider = container.querySelector<HTMLInputElement>('input[aria-label="Target bond length slider"]')!;
+    await act(async () => slider.focus());
+    await input("30", slider);
+    await act(async () => slider.dispatchEvent(new MouseEvent("pointerup", { bubbles: true })));
+    expect(onCommit).toHaveBeenCalledExactlyOnceWith(moleculeStructureBondLengthCommandId(30));
+    expect(slider.value).toBe("22"); // Follow the model while the commit snapshot is pending.
+    await act(async () => {
+      slider.dispatchEvent(new KeyboardEvent("keyup", { key: "Shift", bubbles: true }));
+      slider.blur();
+      slider.focus();
+    });
+    expect(onCommit).toHaveBeenCalledTimes(1);
+    model = inspectorModel(40);
+    await render();
+    expect(slider.value).toBe("40");
+    await act(async () => slider.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })));
+    await input("30", slider);
+    await act(async () => slider.dispatchEvent(new MouseEvent("pointerup", { bubbles: true })));
+    expect(onCommit.mock.calls).toEqual([
+      [moleculeStructureBondLengthCommandId(30)], [moleculeStructureBondLengthCommandId(30)]
+    ]);
+  });
+
+  it.each(["value", "Mixed"])("discards a slider draft after an external %s change and commits a click to its old value once", async (change) => {
+    const slider = container.querySelector<HTMLInputElement>('input[aria-label="Target bond length slider"]')!;
+    await act(async () => slider.focus());
+    await input("30", slider);
+    // A new selection/undo can arrive while the slider still has DOM focus.
+    model = inspectorModel(change === "value" ? 40 : 22);
+    if (change === "Mixed") model.structure.values.bondLengthPx.mixed = true;
+    await render();
+    expect(document.activeElement).toBe(slider);
+    expect(slider.value).toBe(change === "value" ? "40" : "22");
+    await act(async () => slider.dispatchEvent(new KeyboardEvent("keyup", { key: "Shift", bubbles: true })));
+    expect(onCommit).not.toHaveBeenCalled();
+    await act(async () => slider.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true })));
+    await input("30", slider);
+    await act(async () => slider.dispatchEvent(new MouseEvent("pointerup", { bubbles: true })));
+    expect(onCommit).toHaveBeenCalledExactlyOnceWith(moleculeStructureBondLengthCommandId(30));
+    await act(async () => slider.blur());
+    expect(onCommit).toHaveBeenCalledTimes(1);
+  });
+
   it("commits the changed slider value on arrow release before a model snapshot arrives", async () => {
     const slider = container.querySelector<HTMLInputElement>('input[aria-label="Target bond length slider"]')!;
     await act(async () => slider.focus());

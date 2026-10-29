@@ -140,9 +140,9 @@ Tauri emit) so the browser build and jsdom tests exercise the identical path.
 
 The gallery tray lives **inside** the Main palette window (a webview can't paint outside its window),
 so the window grows to fit it via the shell `ResizeObserver`; the tray is width-capped and scrolls at
-a fixed px height. Because palettes ship non-focusable, entering customize mode flips the window
-focusable (`set_toolset_window_focusable`) so the gallery's search field can take keystrokes, and back
-off on exit. To avoid a flash of the old layout during the op round-trip, `ToolbarCustomizeController`
+a fixed px height. The gallery's search field borrows keyboard focus through the palette input-focus
+lease while editing and releases it on blur, commit or cancel. To avoid a flash of the old layout
+during the op round-trip, `ToolbarCustomizeController`
 previews reorder/remove locally (optimistic display) and drops the preview once the authoritative
 broadcast lands. Additions made here also appear in the list-style Customize Toolbars dialog, which
 merges a core toolset's `itemAdditions` into its rows.

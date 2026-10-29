@@ -821,6 +821,12 @@ function MoleculeInspectorNumericControl({
   const lastCommitted = useRef<number | undefined>(undefined);
   const [sliderDraft, setSliderDraft] = useState<number | null>(null);
   const sliderChanged = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    setSliderDraft(null);
+    // A matching snapshot can be our own preview; its release must still commit.
+    // A different value or Mixed state supersedes the pending gesture.
+    if (mixed || sliderChanged.current !== value) sliderChanged.current = undefined;
+  }, [value, mixed]);
   const revert = () => {
     dirty.current = false;
     lastCommitted.current = undefined;
@@ -861,6 +867,7 @@ function MoleculeInspectorNumericControl({
   const commitSlider = () => {
     const next = sliderChanged.current;
     sliderChanged.current = undefined;
+    setSliderDraft(null);
     if (next !== undefined) onCommit(commandId(next));
   };
 

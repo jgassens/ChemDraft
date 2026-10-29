@@ -666,6 +666,10 @@ export function PaletteWindow({
       const target = event.target instanceof Element ? event.target : null;
       if (event.defaultPrevented || isPaletteInputFocusPending(shellRef.current) ||
         isTextEditingElement(target)) return;
+      // Activation, value and editing keys belong to every form control. In
+      // particular, Delete/Backspace here must never delete document objects.
+      if (target?.closest("input, textarea, select, button") &&
+        [" ", "Enter", "Backspace", "Delete", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
       // The shared registry conservatively ignores all form controls. Palette non-text
       // controls keep document shortcuts, so resolve from their surrounding surface.
       const commandId = shortcutRegistry.resolve({
