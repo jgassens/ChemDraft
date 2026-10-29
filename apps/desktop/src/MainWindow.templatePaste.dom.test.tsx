@@ -57,9 +57,10 @@ describe("template SMILES paste", () => {
       getData: (type: string) => type === sourceType ? text : "" } });
     await act(async () => {
       window.dispatchEvent(event);
+      // Paste now includes identity verification.
       await vi.waitFor(() => {
         expect(port.read("initial")!.pages[0]!.objects).toMatchObject([{ type: "text", text }]);
-      });
+      }, { timeout: 5_000 });
     });
     expect(container.querySelector("[role=status]")?.textContent).toBe("Pasted editable text");
   });
@@ -80,7 +81,7 @@ describe("template SMILES paste", () => {
           { type: "molecule", compatibility: { unknown: { smiles: "CCO" } } },
           { type: "molecule", compatibility: { unknown: { smiles: "CCC" } } }
         ]);
-      });
+      }, { timeout: 5_000 });
     });
     // Keep the reported reason tied to the failed input in the standard input: reason format.
     expect(container.querySelector("[role=status]")?.textContent)
@@ -125,7 +126,7 @@ describe("template SMILES paste", () => {
       getData: (type: string) => type === "text/plain" ? smiles : "" } });
     await act(async () => {
       window.dispatchEvent(event);
-      await vi.waitFor(() => expect(port.read("initial")!.pages[0]!.objects).toHaveLength(1));
+      await vi.waitFor(() => expect(port.read("initial")!.pages[0]!.objects).toHaveLength(1), { timeout: 5_000 });
     });
     expect(container.querySelector("[role=status]")?.textContent).toContain(`Pasted SMILES structure — ${expected}`);
   });
@@ -137,7 +138,7 @@ describe("template SMILES paste", () => {
       getData: (type: string) => type === "text/plain" ? text : "" } });
     await act(async () => {
       window.dispatchEvent(event);
-      await vi.waitFor(() => expect(port.read("initial")!.pages[0]!.objects).toHaveLength(2));
+      await vi.waitFor(() => expect(port.read("initial")!.pages[0]!.objects).toHaveLength(2), { timeout: 5_000 });
     });
     expect(container.querySelector("[role=status]")?.textContent)
       .toContain("grid; skipped line 2: 'C1CC(' (not valid SMILES)");
@@ -170,7 +171,7 @@ describe("template SMILES paste", () => {
       await act(async () => {});
       expect(container.querySelector("[role=status]")?.textContent)
         .toContain("Clipboard SMILES could not be placed: The 2D depiction engine returned no atoms.");
-    });
+    }, { timeout: 5_000 });
   });
   it.each([false, true])("reports native clipboard %s failure/empty content", async empty => {
     await mount(createEmptyDocument());
@@ -198,7 +199,7 @@ describe("template SMILES paste", () => {
         getData: (type: string) => type === "text/plain" ? template.smiles : "" } });
       await act(async () => {
         window.dispatchEvent(event);
-        await vi.waitFor(() => expect(port.read("initial")!.pages[0]!.objects).toHaveLength(count));
+        await vi.waitFor(() => expect(port.read("initial")!.pages[0]!.objects).toHaveLength(count), { timeout: 5_000 });
       });
     }
     const after = port.read("initial")!;
