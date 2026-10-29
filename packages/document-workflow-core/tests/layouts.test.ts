@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DocumentTextStyle, nativeTextStyleFromObjectStyle, type MoleculeObject } from "@chemdraft/chem-core";
-import { nativeTextMetrics, reactionArrowHeadLengthPx } from "@chemdraft/layout-engine";
+import { reactionArrowHeadLengthPx } from "@chemdraft/layout-engine";
 
 import { estimateNativeTextLineWidth, layoutGrid, layoutReactionScheme, nativeTextObjectSizeForText, type LayoutBounds } from "../src/index";
 
@@ -132,8 +132,8 @@ describe("shared reaction and grid layout", () => {
       nativeTextStyleFromObjectStyle(condition.style)) + 2 * (reactionArrowHeadLengthPx + 0.25 * DocumentTextStyle.fontSizePx));
     expect(layout.molecules[1]!.x - layout.molecules[0]!.x).toBeCloseTo(40 + 48 + plusSize.width);
     const conditionStyle = nativeTextStyleFromObjectStyle(condition.style);
-    expect(condition.y + conditionStyle.fontSizePx).toBeCloseTo(
-      120 - 0.75 - (0.3 + nativeTextMetrics.descentEm) * conditionStyle.fontSizePx
+    expect(condition.y + (1 + Number(condition.style.textOffsetYEm ?? 0)) * conditionStyle.fontSizePx).toBeCloseTo(
+      120 - 0.75 - (0.3 + 0.21) * conditionStyle.fontSizePx
     );
     const page = layout.document.pages[0]!;
     expect(page.width).toBe(layout.molecules[2]!.x + 40 + 24);
@@ -156,7 +156,7 @@ describe("shared reaction and grid layout", () => {
     });
     expect(layout.above!.text).toBe("H2SO4, heat\nthen stir; wait");
     expect(layout.above!.spans.filter((span) => span.script === "subscript").map((span) => span.text)).toEqual(["2", "4"]);
-    expect(nativeTextStyleFromObjectStyle(layout.above!.style)).toMatchObject({ fontSizePx: 14, textAlign: "center", lineHeight: 1.2 });
+    expect(nativeTextStyleFromObjectStyle(layout.above!.style)).toMatchObject({ fontSizePx: 14, textAlign: "center", lineHeight: 1.3872 });
   });
 
   it("fits all blocks and a wrapped plain-prose caption with page padding, translating the scheme together", () => {
@@ -171,8 +171,8 @@ describe("shared reaction and grid layout", () => {
     });
     const page = layout.document.pages[0]!;
     for (const block of [layout.above!, layout.below!]) {
-      expect(block.style.lineHeight).toBe(1.2);
-      expect(block.height).toBe(3 * 15 * 1.2 + 4);
+      expect(block.style.lineHeight).toBe(1.3872);
+      expect(block.height).toBe(66.42);
     }
     for (const object of page.objects) {
       expect(object.x).toBeGreaterThanOrEqual(24);

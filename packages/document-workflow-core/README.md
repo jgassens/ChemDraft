@@ -94,23 +94,31 @@ align left with their visible text centred on the arrow, including wrapped steps
 
 Reaction-label design numbers live together in `src/reactionLabels.ts`: line wrap at **10 bond
 lengths**, minimum arrow **2.5 bond lengths**, arrow padding beyond the widest estimated content
-width **2 × (head length + 0.25 em)**, label ink clearance from the outer shaft stroke **0.3 em**, caption top clearance
+width **2 × (actual head/chevron depth + 0.25 em)**, label ink clearance from the outer shaft stroke **0.3 em**, caption top clearance
 **0.8 em**, caption wrap width at least **8 bond lengths**, and default label font **14 px** centred.
 Spaces and tabs are the only wrap points; NBSP/narrow NBSP and oversized tokens stay whole. Captions wrap to the greater of
 scheme width and that minimum. A line box includes authored paragraph spacing to match rendering.
-Scripted blocks increase their line advance as needed to leave **0.12 em** between a subscript
-bottom and the next superscript or cap top; plain blocks keep their authored line height.
+Every block has a **1.2** line-height floor and keeps a larger authored line height. Each adjacent
+pair raises that block-wide line height as needed to leave at least **0.12 em** from the earlier
+line's lowest ink to the next line's highest ink; authored paragraph spacing counts toward the gap.
 Measurement uses that same block style.
 `src/textObjects.ts` reuses the renderer's **72%** script font size and existing sizing conventions:
 **6 px** horizontal / **4 px** vertical padding, minimum box **36 × 24 px**, dimensions rounded to
-**0.01 px**. Padding follows the line box vertically, matching the renderer's baseline origin.
+**0.01 px**. Label frames extend away from the shaft's stroke band plus **2 px**, with a
+`textOffsetYEm` style offset preserving the text's position when the minimum frame or padding
+would cross that band. The offset is in parent em and scales with the text.
 `layout-engine/src/textMetrics.ts` owns the shared width factors, **0.21 em** descent, **0.716 em**
-cap height and script size/envelope. SVG `sub`/`super` shifts depend on the font; line spacing
-conservatively reserves **0.6 script em** for either shift. Above labels place their last baseline
-one descent plus clearance above the shaft; below labels place their first cap top after clearance.
+cap height and the renderer's script metrics: **0.72** font scale and an explicit **0.4 parent em**
+baseline offset down for subscripts or up for superscripts. A line's lowest ink is the greater of
+normal descent and, when present, **0.4 + 0.72 × descent**; its highest ink is the greater of cap
+height and, when present, **0.4 + 0.72 × cap height** above the baseline. Above blocks leave
+**0.3 em** between their last line's lowest ink and the shaft's top edge; below blocks leave
+**0.3 em** between their first line's highest ink and the shaft's bottom edge. Lines without the
+relevant script retain their existing text placement.
 `layout-engine/src/index.ts` derives shaft-only extents from `planReactionArrowGeometry`, including
 the existing default **1.5 px** shaft stroke shared with rendering; head/chevron space is reserved
-horizontally, and parallel arrows use their outer shafts.
+horizontally from the actual geometry (including the stroked retrosynthesis chevron), and parallel
+arrows use their outer shafts.
 
 `documentDrawingDefaults(document)` resolves `document.styles.drawing` and `document.styles.text`
 without changing existing objects. New native and SMILES molecules share its geometry and style;

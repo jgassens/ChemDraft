@@ -167,9 +167,9 @@ describe("chemdraft reaction", () => {
     // Formula counts are split into subscript tspans, while the text object retains the input.
     const label = objects.find(object => object.type === "text" && object.text === "H2SO4, heat")!;
     expect(label.type === "text" && label.spans.map(span => [span.text, span.script])).toEqual([
-      ["H", "normal"], ["2", "subscript"], ["SO", "normal"], ["4", "subscript"], [",", "normal"], [" ", "normal"], ["heat", "normal"]
+      ["H", "normal"], ["2", "subscript"], ["SO", "normal"], ["4", "subscript"], [", heat", "normal"]
     ]);
-    expect([...rendered.svg.matchAll(/<tspan\b[^>]*baseline-shift="sub"[^>]*>([^<]*)<\/tspan>/g)].map(match => match[1])).toEqual(["2", "4"]);
+    expect([...rendered.svg.matchAll(/<tspan\b[^>]*dy="5\.6"[^>]*font-size="10\.08px"[^>]*>([^<]*)<\/tspan>/g)].map(match => match[1])).toEqual(["2", "4"]);
     expect(rendered.agentTexts).toEqual([{
       smiles: "OS(=O)(=O)O",
       text: "H2SO4",
@@ -212,7 +212,7 @@ describe("chemdraft reaction", () => {
       { text: "4", script: "subscript", offset: label.text.indexOf("SO4²⁻") + 2 },
       { text: "3", script: "subscript", offset: label.text.indexOf("NH3") + 2 }
     ]);
-    expect([...rendered.svg.matchAll(/<tspan\b[^>]*baseline-shift="sub"[^>]*>([^<]*)<\/tspan>/g)].map(match => match[1])).toEqual(["4", "4", "4", "3"]);
+    expect([...rendered.svg.matchAll(/<tspan\b[^>]*dy="5\.6"[^>]*font-size="10\.08px"[^>]*>([^<]*)<\/tspan>/g)].map(match => match[1])).toEqual(["4", "4", "4", "3"]);
   }, 60_000);
 
   it("labels the reviewer's bisulfate and HCl agents with charge and H-first order", async () => {

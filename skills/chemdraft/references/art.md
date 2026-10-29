@@ -161,7 +161,9 @@ Run it for both and require identical `summary.inchiKey` and
 
 - Coordinates are page pixels; y grows downward. Atom `x`/`y` and ring
   `center` are in the same space.
-- A `text` object draws its baseline at `y + fontSizePx`; with
+- A `text` object normally draws its baseline at `y + fontSizePx`. Reaction-label frames can
+  carry `style.textOffsetYEm` to keep their boxes off the arrow without moving their text;
+  their baseline is `y + fontSizePx * (1 + textOffsetYEm)`. With
   `textAlign: "center"` its centre is `x + width / 2`. To centre a capital
   letter on a point `(cx, cy)`: `x = cx - w/2`, `y = cy - 0.64 * fontSizePx`.
 - Give every added object a box (`x`, `y`, `width`, `height`) that covers

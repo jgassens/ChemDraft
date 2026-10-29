@@ -6,7 +6,10 @@ import {
   type TextObject,
   type TextSpan
 } from "@chemdraft/chem-core";
-import { nativeTextMetrics, reactionArrowHeadLengthPx, reactionArrowVerticalExtent } from "@chemdraft/layout-engine";
+import {
+  nativeTextMetrics, nativeTextScriptFontScale, nativeTextSubscriptOffsetEm, nativeTextSuperscriptOffsetEm,
+  reactionArrowHeadDepthPx, reactionArrowVerticalExtent
+} from "@chemdraft/layout-engine";
 import { formulaSpansForMixedText } from "./formulaText";
 import { estimateNativeTextSpanLineWidth, nativeTextObjectSizeForSpanLines } from "./textObjects";
 
@@ -24,6 +27,7 @@ interface LabelBlock {
   spans: TextSpan[];
   style: NativeTextStyle;
   size: ReturnType<typeof nativeTextObjectSizeForSpanLines>;
+  ink: Array<{ top: number; bottom: number }>;
 }
 
 export interface ReactionLabelsPlan {
@@ -39,6 +43,7 @@ const labelWidthInBonds = 10;
 const minimumArrowInBonds = 2.5;
 const arrowHeadClearanceEm = 0.25;
 const arrowClearanceEm = 0.3;
+const shaftHitPaddingPx = 2;
 const scriptLineClearanceEm = 0.12;
 const captionClearanceEm = 0.8;
 const minimumCaptionWidthInBonds = 8;
@@ -87,12 +92,12 @@ function measureBlock(entries: readonly string[], style: NativeTextStyle, maxWid
   const spanLines = lines.map((line) => lineSpans(line, caption));
   const spans = spanLines.flatMap((line, index): TextSpan[] => index === 0
     ? line : [{ text: "\n", script: "normal", style: {} }, ...line]);
-  const { scriptFontScale, subscriptBaselineShiftEm, superscriptBaselineShiftEm, descentEm, capHeightEm } = nativeTextMetrics;
+  const { descentEm, capHeightEm } = nativeTextMetrics;
   const ink = spanLines.map(line => ({
     bottom: line.some(span => span.script === "subscript")
-      ? Math.max(descentEm, scriptFontScale * (subscriptBaselineShiftEm + descentEm)) : descentEm,
+      ? Math.max(descentEm, nativeTextSubscriptOffsetEm + nativeTextScriptFontScale * descentEm) : descentEm,
     top: line.some(span => span.script === "superscript")
-      ? Math.max(capHeightEm, scriptFontScale * (superscriptBaselineShiftEm + capHeightEm)) : capHeightEm
+      ? Math.max(capHeightEm, nativeTextSuperscriptOffsetEm + nativeTextScriptFontScale * capHeightEm) : capHeightEm
   }));
   // One advance per object, sized for its tightest adjacent pair. Paragraph spacing
   // contributes to that advance in the renderer and must not be reserved twice.
@@ -109,6 +114,7 @@ function measureBlock(entries: readonly string[], style: NativeTextStyle, maxWid
   return {
     text: lines.join("\n"),
     spans,
+    ink,
     style: blockStyle,
     size: nativeTextObjectSizeForSpanLines(spanLines, blockStyle)
   };
@@ -124,7 +130,7 @@ export function planReactionLabels(options: ReactionLabelsOptions): ReactionLabe
     options, textStyle, above, below,
     arrowLength: Math.max(minimumArrowInBonds * options.bondLength,
       Math.max(above?.size.contentWidth ?? 0, below?.size.contentWidth ?? 0)
-        + 2 * (reactionArrowHeadLengthPx + arrowHeadClearanceEm * textStyle.fontSizePx))
+        + 2 * (reactionArrowHeadDepthPx(options.arrowKind) + arrowHeadClearanceEm * textStyle.fontSizePx))
   };
 }
 
@@ -149,15 +155,26 @@ export function layoutReactionLabels(
     compatibility: { sourceFormat: "chemdraft-native", warnings: [], unknown: {} },
     text: block.text, spans: block.spans
   });
-  // Renderer baselines start one font size below object.y. Subtract all advances before
-  // the last above baseline; below, place the first cap top rather than the line box.
+  // Subtract all advances before the last above baseline; below, place the first ink top.
   const above = plan.above ? object(plan.above, `${idPrefix}_above`, midpoint.x,
-    midpoint.y + extent.top - clearance - nativeTextMetrics.descentEm * plan.above.style.fontSizePx
+    midpoint.y + extent.top - clearance - plan.above.ink.at(-1)!.bottom * plan.above.style.fontSizePx
       - plan.above.style.fontSizePx - (plan.above.size.lineBoxHeight
         - plan.above.style.fontSizePx * plan.above.style.lineHeight)) : undefined;
   const below = plan.below ? object(plan.below, `${idPrefix}_below`, midpoint.x,
     midpoint.y + extent.bottom + clearance
-      + (nativeTextMetrics.capHeightEm - 1) * plan.below.style.fontSizePx) : undefined;
+      + (plan.below.ink[0]!.top - 1) * plan.below.style.fontSizePx) : undefined;
+  // Minimum-height frames and line-box padding must grow away from the shaft. Keep
+  // the rendered baseline fixed with a local em offset while translating only the frame.
+  const moveFrame = (label: TextObject, y: number, fontSizePx: number) => {
+    if (y !== label.y) {
+      label.style.textOffsetYEm = (label.y - y) / fontSizePx;
+      label.y = y;
+    }
+  };
+  if (above) moveFrame(above, Math.min(above.y,
+    midpoint.y + extent.top - shaftHitPaddingPx - above.height), plan.above!.style.fontSizePx);
+  if (below) moveFrame(below, Math.max(below.y,
+    midpoint.y + extent.bottom + shaftHitPaddingPx), plan.below!.style.fontSizePx);
   const minX = Math.min(schemeBounds.minX, above?.x ?? Infinity, below?.x ?? Infinity);
   const maxX = Math.max(schemeBounds.maxX, above ? above.x + above.width : -Infinity,
     below ? below.x + below.width : -Infinity);

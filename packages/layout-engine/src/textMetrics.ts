@@ -1,12 +1,14 @@
-/** Native text estimates for the default Arial/Helvetica stack. Ink metrics are em fractions.
- * SVG sub/super shifts use the font's offsets at the script size: Arial's OS/2
- * ySubscriptYOffset/ySuperscriptYOffset are 283/977 with 2048 units per em. */
+/** Explicit SVG script metrics. Offsets are in PARENT em, independent of script size.
+ * WebKit/Chromium's historical sub/super placement was approximately this offset;
+ * explicit sizes and coordinates also work in svg2pdf without host font metrics. */
+export const nativeTextScriptFontScale = 0.72;
+export const nativeTextSubscriptOffsetEm = 0.4;
+export const nativeTextSuperscriptOffsetEm = nativeTextSubscriptOffsetEm;
+
+/** Native text estimates for the default Arial/Helvetica stack. Ink metrics are em fractions. */
 export const nativeTextMetrics = {
   descentEm: 0.21,
-  capHeightEm: 0.716,
-  scriptFontScale: 0.72,
-  subscriptBaselineShiftEm: 283 / 2048,
-  superscriptBaselineShiftEm: 977 / 2048
+  capHeightEm: 0.716
 } as const;
 
 export function nativeTextCharacterWidthFactor(character: string): number {

@@ -10,7 +10,7 @@ import {
   type TextSpan,
   textStyleToObjectStyle
 } from "@chemdraft/chem-core";
-import { nativeTextCharacterWidthFactor, nativeTextMetrics } from "@chemdraft/layout-engine";
+import { nativeTextCharacterWidthFactor, nativeTextScriptFontScale } from "@chemdraft/layout-engine";
 import { clamp, firstPage, nextObjectId, type PagePoint, phase4Timestamp } from "./shared";
 
 export const nativeTextObjectDimensions = {
@@ -143,7 +143,7 @@ export function estimateNativeTextSpanLineWidth(spans: readonly TextSpan[], styl
   for (const span of spans) {
     const fontSize = span.script === "normal"
       ? (typeof span.style.fontSizePx === "number" ? span.style.fontSizePx : style.fontSizePx)
-      : style.fontSizePx * nativeTextMetrics.scriptFontScale;
+      : style.fontSizePx * nativeTextScriptFontScale;
     const letterSpacing = typeof span.style.letterSpacingPx === "number"
       ? span.style.letterSpacingPx : style.letterSpacingPx;
     for (const character of span.text) {

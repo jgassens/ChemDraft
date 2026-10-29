@@ -1,6 +1,9 @@
 export { DocumentStyleScale, documentStylePointBounds, FigureStyles, type FigureStyle } from "./documentStyle";
 export { medianLength, representativeMoleculeBondLength, scalePageGeometry } from "./pageScale";
-export { nativeTextMetrics, nativeTextCharacterWidthFactor } from "./textMetrics";
+export {
+  nativeTextMetrics, nativeTextCharacterWidthFactor,
+  nativeTextScriptFontScale, nativeTextSubscriptOffsetEm, nativeTextSuperscriptOffsetEm
+} from "./textMetrics";
 
 import {
   DefaultNativeDrawingStyle,
@@ -70,7 +73,7 @@ import {
   type NativeElementSymbol
 } from "./valence";
 import { formatNumber } from "./formatNumber";
-import { nativeTextMetrics } from "./textMetrics";
+import { nativeTextScriptFontScale, nativeTextSubscriptOffsetEm, nativeTextSuperscriptOffsetEm } from "./textMetrics";
 import { nativeGroupLabelDisplay, type AtomLabelAnchor } from "./labelGrammar";
 import { moleculeSketchTickPath, type MoleculeSketchTick } from "./sketchTicks";
 
@@ -3492,17 +3495,6 @@ function projectionDistanceAlongSegment(
   };
 }
 
-export const nativeTextScriptFontScale = 0.72;
-// WebKit/Chromium shift SVG sub/super by half the script font's height (ascent + descent).
-// At 72% size Arial's 2288/2048-em height gives 0.4021875 parent em; use 0.4 for
-// both directions to retain that placement without depending on host font metrics.
-// https://github.com/WebKit/WebKit/blob/main/Source/WebCore/rendering/svg/SVGTextLayoutEngineBaseline.cpp
-// https://github.com/chromium/chromium/blob/main/third_party/blink/renderer/core/layout/inline/inline_box_state.cc
-// Keep the offset independent of a span's own size: changing its size must not move the line.
-// Explicit coordinates also work in svg2pdf, which ignores baseline-shift and percentage sizes.
-const nativeTextSubscriptOffsetEm = 0.4;
-const nativeTextSuperscriptOffsetEm = 0.4;
-
 function planTextObjectSvg(object: TextObject, layerIndex: number): PageSvgElementFragment {
   const textStyle = nativeTextStyleFromObjectStyle(object.style);
   const lines = textObjectSpanLines(object);
@@ -3512,7 +3504,9 @@ function planTextObjectSvg(object: TextObject, layerIndex: number): PageSvgEleme
   const x = textStyle.textAlign === "center"
     ? object.x + object.width / 2
     : textStyle.textAlign === "right" ? object.x + object.width : object.x;
-  const y = object.y + textStyle.fontSizePx;
+  // Reaction labels can move their frame away from the shaft without moving their ink.
+  // An em offset scales with the text and frame in scalePageGeometry.
+  const y = object.y + textStyle.fontSizePx * (1 + (metadataNumber(object.style.textOffsetYEm) ?? 0));
   const lineAdvance = textStyle.fontSizePx * textStyle.lineHeight + textStyle.paragraphSpacingPx;
   // Preserve the established markup for wholly unscripted text. With scripts, reset each
   // line's baseline, then move relatively within it to keep one text-anchor chunk per line.
@@ -4808,6 +4802,19 @@ const equilibriumShaftOffsetPx = 3;
 const retroShaftOffsetPx = 2.5;
 const defaultReactionArrowStrokeWidth = 1.5;
 
+/** Inward depth of the actual heads/chevron, including any stroked outline.
+ * Labels reserve this depth at both ends so their centre stays on the arrow midpoint. */
+export function reactionArrowHeadDepthPx(arrowKind: ArrowObject["arrowKind"]): number {
+  const length = 4 * reactionArrowHeadLengthPx;
+  const geometry = planReactionArrowGeometry(arrowKind, { x: 0, y: 0 }, { x: length, y: 0 });
+  const inwardDepth = (point: LayoutPoint, strokeRadius: number) => Math.min(point.x, length - point.x) + strokeRadius;
+  return Math.max(0,
+    ...geometry.heads.flatMap(head => head.points.map(point =>
+      inwardDepth(point, head.filled ? 0 : defaultReactionArrowStrokeWidth / 2))),
+    ...geometry.lines.filter(line => line.start.y !== line.end.y).flatMap(line =>
+      [line.start, line.end].map(point => inwardDepth(point, defaultReactionArrowStrokeWidth / 2))));
+}
+
 /** Visible vertical bounds for a horizontal reaction arrow, including its rendered stroke.
  * Shaft-only bounds exclude heads/chevrons: labels reserve their space horizontally instead. */
 export function reactionArrowVerticalExtent(
@@ -5855,7 +5862,7 @@ export function atomLabelRunFontSize(script: AtomLabelScript, drawingStyle: Nati
     return undefined;
   }
 
-  return drawingStyle.atomLabelFontSizePx * (script === "superscript" ? 0.88 : 0.72);
+  return drawingStyle.atomLabelFontSizePx * (script === "superscript" ? 0.88 : nativeTextScriptFontScale);
 }
 
 /**
