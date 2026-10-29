@@ -232,6 +232,11 @@ describe("table layout and SVG", () => {
 
   it("draws every Sharpless formula subscript at the cell size with an explicit baseline offset", () => {
     const svg = planTableObjectSvg(table, 0);
+    const plainRow = table.rows.find(row => row.cells[0].text === "86")!;
+    const plainId = tableCellElementId(table.id, plainRow.id, table.columns[0].id);
+    const plainText = elementFragments(svg).find(element => element.attrs.id === `${plainId}-line-0-piece-0`)!;
+    const plainSpans = plainText.children.filter(child => child.kind === "element");
+    expect(plainSpans.every(span => span.attrs.y === undefined && span.attrs.dy === undefined)).toBe(true);
     for (const [formula, digits] of [["CH2Cl2", ["2", "2"]], ["Ti(OiPr)4", ["4"]]] as const) {
       const row = table.rows.find(row => row.cells[0].text === formula)!;
       const id = tableCellElementId(table.id, row.id, table.columns[0].id);

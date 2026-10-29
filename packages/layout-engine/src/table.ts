@@ -203,7 +203,9 @@ export function planTableObjectSvg(table: TableObject, layerIndex: number): Page
   const textElements = (lines: TableLine[], id: string, fontSizePx: number) => lines.flatMap((line, lineIndex) =>
     line.pieces.map((piece, pieceIndex) => {
       const key = `${id}-line-${lineIndex}-piece-${pieceIndex}`;
-      const spans = textSpanLineFragments(piece.runs, 0, piece.x, 0, fontSizePx, line.baselineY).map((span, index) => ({
+      const hasScripts = piece.runs.some(run => run.script !== "normal");
+      const spans = textSpanLineFragments(piece.runs, 0, piece.x, 0, fontSizePx,
+        hasScripts ? line.baselineY : undefined).map((span, index) => ({
         ...span, key: `${key}-span-${index}`, attrs: { ...span.attrs, id: `${key}-span-${index}` },
         children: span.children.map((child, childIndex) => ({ ...child, key: `${key}-span-${index}-${childIndex}` }))
       }));
