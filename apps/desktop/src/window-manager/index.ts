@@ -288,26 +288,37 @@ export const TOOLSET_POPOVER_WINDOW_KIND = "toolsetPopover";
 /** Broadcast that any open palette popover (e.g. the colour picker) should dismiss itself. */
 export const TOOLSET_POPOVER_DISMISS_EVENT = "chemdraft://dismiss-toolset-popovers";
 
+/** Epoch-based monotonic time, comparable between the document and utility webviews. */
+export function toolsetPopoverTimestamp(): number {
+  return performance.timeOrigin + performance.now();
+}
+
+export interface ToolsetPopoverDismissPayload {
+  /** Captured synchronously at the originating press, before any asynchronous IPC. */
+  requestedAt: number;
+}
+
 /**
  * Ask any open palette popover window to close. The document window and the palettes fire this on
  * a pointer-down anywhere that isn't the popover itself (a popover lives in its own window, so its
  * own clicks never reach these emitters) — giving the popover "stays while you click inside it,
  * closes when you click anything else" behaviour without depending on macOS key-window semantics.
+ * Pass the press timestamp before starting IPC; omit it for an unconditional dismissal.
  */
-export async function dismissToolsetPopovers(): Promise<void> {
+export async function dismissToolsetPopovers(requestedAt?: number): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
 
   const { emit } = await import("@tauri-apps/api/event");
-  await emit(TOOLSET_POPOVER_DISMISS_EVENT).catch(() => undefined);
+  await emit(TOOLSET_POPOVER_DISMISS_EVENT, requestedAt === undefined ? undefined : { requestedAt }).catch(() => undefined);
 }
 
-export async function listenForToolsetPopoverDismiss(handler: () => void): Promise<Unlisten> {
+export async function listenForToolsetPopoverDismiss(handler: (payload?: ToolsetPopoverDismissPayload) => void): Promise<Unlisten> {
   if (!isDesktopRuntime()) {
     return () => undefined;
   }
-  return listenTauriEvent(TOOLSET_POPOVER_DISMISS_EVENT, () => handler());
+  return listenTauriEvent<ToolsetPopoverDismissPayload | undefined>(TOOLSET_POPOVER_DISMISS_EVENT, event => handler(event.payload));
 }
 
 /** One command in a flyout dropdown, snapshotted at open time so the popover window can render it. */

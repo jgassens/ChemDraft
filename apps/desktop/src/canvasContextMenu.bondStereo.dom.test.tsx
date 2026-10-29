@@ -14,14 +14,18 @@ import { createBondStereoActions, moleculeBondStereoCommandId } from "./commands
 import { applyMoleculeBondStereo, createPhase4Document, getSelectedMolecule, insertNativeMolfileMolecule, selectDocumentObjects, exportPhase4Svg, exportPhase4Pdf, exportPhase4Cdxml } from "./documentWorkflow";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 import { DOM_COMMAND_EVENT, openToolsetPopoverWindow, setToolsetPopoverContent, closeToolsetPopoverWindow,
-  currentWindowLogicalPosition, type BondStereoPopoverAction } from "./window-manager";
+  currentWindowLogicalPosition, dismissToolsetPopovers, type ToolsetPopoverDismissPayload, type BondStereoPopoverAction } from "./window-manager";
 const nativePopover = vi.hoisted(() => ({
   action: undefined as undefined | ((payload: BondStereoPopoverAction) => void),
   request: undefined as undefined | ((id: string) => void),
-  dismiss: undefined as undefined | (() => void)
+  dismiss: undefined as undefined | ((payload?: ToolsetPopoverDismissPayload) => void),
+  pendingDismisses: [] as (ToolsetPopoverDismissPayload | undefined)[]
 }));
 vi.mock("./window-manager", async importOriginal => ({
   ...await importOriginal<typeof import("./window-manager")>(),
+  dismissToolsetPopovers: vi.fn(async (requestedAt?: number) => {
+    nativePopover.pendingDismisses.push(requestedAt === undefined ? undefined : { requestedAt });
+  }),
   currentWindowLogicalPosition: vi.fn(async () => ({ x: 100, y: 200 })),
   openToolsetPopoverWindow: vi.fn(async () => {}),
   closeToolsetPopoverWindow: vi.fn(async () => {}),
@@ -43,6 +47,7 @@ beforeAll(async () => { await ensureOclResources(); });
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   vi.clearAllMocks();
+  nativePopover.pendingDismisses.length = 0;
   vi.stubGlobal("localStorage", new MemoryStorage());
   vi.stubGlobal("ResizeObserver", TestResizeObserver);
   vi.stubGlobal("CSS", { escape: (value: string) => value });
@@ -70,10 +75,10 @@ function drawing(smiles: string, open = false) {
     depictSmiles2D(smiles, { openUnspecifiedDoubleBonds: open }).molfile, "molfile-v2000");
   return { doc: selectDocumentObjects(doc, doc.pages[0].id, []), mol: getSelectedMolecule(doc)! };
 }
-async function mount(doc: ChemDraftDocument, platform: ShortcutPlatform) {
+async function mount(doc: ChemDraftDocument, platform: ShortcutPlatform, nativePalette = false) {
   await act(async () => root.render(<MainWindow initialDocument={doc} initialActiveToolCommandId="tool.select"
     initialPaletteMode="hidden" initialCrosshairsVisible={false} initialRulersVisible={false}
-    nativePalette={false} shortcutPlatform={platform} />));
+    nativePalette={nativePalette} shortcutPlatform={platform} />));
   const rect = { x: 0, y: 0, left: 0, top: 0, right: 792, bottom: 612, width: 792, height: 612, toJSON: () => ({}) } as DOMRect;
   for (const element of container.querySelectorAll<HTMLElement>(".page, .canvas-region")) element.getBoundingClientRect = () => rect;
   canvas = container.querySelector<HTMLElement>(".canvas-region")!;
@@ -245,6 +250,41 @@ describe.each<ShortcutPlatform>(["macos", "windows"])("native badge popover (%s)
     expect(vi.mocked(setToolsetPopoverContent).mock.calls.at(-1)![1]).toEqual(content);
     return { original: molecule(), bond, content };
   }
+  it("survives the opening press's delayed broadcast, but closes on a later press", async () => {
+    const { doc } = drawing("CC=CC", true);
+    // Use MainWindow's real window-capture listener, queuing its asynchronous
+    // broadcast separately from the badge's React capture/click handlers.
+    await mount(doc, platform, true);
+    const now = vi.spyOn(performance, "now").mockReturnValue(100);
+    const badge = container.querySelector<SVGGElement>("[data-unspecified-bond-id]")!;
+    badge.getBoundingClientRect = () => ({ left: 30, bottom: 50 }) as DOMRect;
+    await act(async () => badge.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true, button: 0 })));
+    expect(dismissToolsetPopovers).toHaveBeenCalledTimes(1);
+    expect(openToolsetPopoverWindow).not.toHaveBeenCalled();
+    now.mockReturnValue(200);
+    await act(async () => {
+      badge.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, button: 0 }));
+      badge.dispatchEvent(new MouseEvent("click", { bubbles: true, button: 0 }));
+    });
+    expect(openToolsetPopoverWindow).toHaveBeenCalledTimes(1);
+    expect(setToolsetPopoverContent).toHaveBeenCalledTimes(1);
+    const originalContent = vi.mocked(setToolsetPopoverContent).mock.calls[0][1];
+    await act(async () => nativePopover.dismiss?.(nativePopover.pendingDismisses.shift()));
+    expect(closeToolsetPopoverWindow).not.toHaveBeenCalled();
+    // A live session must still answer startup content requests after the stale event.
+    await act(async () => nativePopover.request?.("core.bondStereo"));
+    expect(setToolsetPopoverContent).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(setToolsetPopoverContent).mock.calls[1][1]).toEqual(originalContent);
+    expect(dismissToolsetPopovers).toHaveBeenCalledWith(performance.timeOrigin + 100);
+
+    now.mockReturnValue(300);
+    // A later press in another palette reaches this window only via its broadcast.
+    await dismissToolsetPopovers(performance.timeOrigin + performance.now());
+    await act(async () => nativePopover.dismiss?.(nativePopover.pendingDismisses.shift()));
+    expect(closeToolsetPopoverWindow).toHaveBeenCalledWith("core.bondStereo");
+    await act(async () => nativePopover.request?.("core.bondStereo"));
+    expect(setToolsetPopoverContent).toHaveBeenCalledTimes(2);
+  });
   it.each(["geometry", "flipped"] as const)("%s invokes once, selects the bond and records exactly one labelled undo step", async action => {
     const { original, bond, content } = await openBadge();
     const invoke = vi.spyOn(CommandRegistry.prototype, "invoke");

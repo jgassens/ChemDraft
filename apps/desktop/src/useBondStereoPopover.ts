@@ -6,14 +6,14 @@ import { listenCurrentWindowEvent } from "./window-manager/tauriEvents";
 import {
   closeToolsetPopoverWindow, currentWindowLogicalPosition, listenForBondStereoPopoverActions,
   listenForToolsetPopoverContentRequests, listenForToolsetPopoverDismiss, openToolsetPopoverWindow,
-  sendBondStereoPopoverAction, setToolsetPopoverContent, type ToolsetPopoverAnchor, type ToolsetPopoverContent
+  sendBondStereoPopoverAction, setToolsetPopoverContent, toolsetPopoverTimestamp, type ToolsetPopoverAnchor, type ToolsetPopoverContent
 } from "./window-manager";
 
 export const BOND_STEREO_POPOVER_ID = "core.bondStereo";
 export type BondStereoBadgeRequest = { objectId: string; bondId: string; rect: Pick<DOMRect, "left" | "bottom">; keyboard: boolean };
 type Target = { objectId: string; bondId: string };
 type Reader = Parameters<typeof nativeBondStereoAvailability>[2];
-type Session = { id: string; document: ChemDraftDocument; target: Target; content: ToolsetPopoverContent; anchor?: ToolsetPopoverAnchor };
+type Session = { id: string; openedAt: number; document: ChemDraftDocument; target: Target; content: ToolsetPopoverContent; anchor?: ToolsetPopoverAnchor };
 
 /** The document owns the snapshot and command authority; the native window receives UI data only. */
 export function useBondStereoPopover(options: {
@@ -50,7 +50,12 @@ export function useBondStereoPopover(options: {
     subscribe(listenForToolsetPopoverContentRequests(id => {
       if (id === BOND_STEREO_POPOVER_ID && session.current) void push(session.current);
     }));
-    subscribe(listenForToolsetPopoverDismiss(close));
+    subscribe(listenForToolsetPopoverDismiss(payload => {
+      // The opening press broadcasts before click, but its IPC may arrive after
+      // this session opens. Only a press at or after this open may dismiss it.
+      if (session.current && payload?.requestedAt !== undefined && payload.requestedAt < session.current.openedAt) return;
+      close();
+    }));
     for (const event of ["tauri://move", "tauri://resize", "tauri://scale-change"]) {
       subscribe(listenCurrentWindowEvent(event, close));
     }
@@ -97,6 +102,7 @@ export function useBondStereoPopover(options: {
   }, [options.document, options.targets]);
 
   return (request: BondStereoBadgeRequest) => {
+    const openedAt = toolsetPopoverTimestamp();
     close();
     const { document, reader } = latest.current;
     const target = { objectId: request.objectId, bondId: request.bondId };
@@ -107,7 +113,7 @@ export function useBondStereoPopover(options: {
     const actions = [createBondStereoActions(state)[1], createFlippedBondStereoAction(state,
       nativeBondStereoFlipDisabledReason(document, [target], reader))];
     const id = `bond-stereo-${Date.now()}-${++serial.current}`;
-    const opened: Session = { id, document, target, content: { kind: "flyout", flyout: {
+    const opened: Session = { id, openedAt, document, target, content: { kind: "flyout", flyout: {
       id, flyoutId: BOND_STEREO_POPOVER_ID, title: "E/Z not specified", variant: "bondStereo", keyboardOpen: request.keyboard,
       commands: actions.map(action => ({ id: action.id, title: action.title, enabled: action.enabled !== false,
         active: false, disabledReason: action.disabledReason }))

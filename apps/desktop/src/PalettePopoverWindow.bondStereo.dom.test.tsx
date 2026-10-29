@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PalettePopoverWindow } from "./PalettePopoverWindow";
-import { sendBondStereoPopoverAction, sendPaletteCommand, type ToolsetPopoverContentPayload } from "./window-manager";
+import { sendBondStereoPopoverAction, sendPaletteCommand, type ToolsetPopoverDismissPayload, type ToolsetPopoverContentPayload } from "./window-manager";
 import { useBondStereoPopover } from "./useBondStereoPopover";
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
 import { closeToolsetPopoverWindow, openToolsetPopoverWindow, setToolsetPopoverContent } from "./window-manager";
@@ -11,7 +11,7 @@ import { closeToolsetPopoverWindow, openToolsetPopoverWindow, setToolsetPopoverC
 const native = vi.hoisted(() => ({
   content: undefined as undefined | ((payload: ToolsetPopoverContentPayload) => void),
   action: undefined as undefined | ((payload: { sessionId: string; action: string }) => void),
-  dismiss: undefined as undefined | (() => void),
+  dismiss: undefined as undefined | ((payload?: ToolsetPopoverDismissPayload) => void),
   hide: vi.fn(async () => {}), focus: vi.fn(async () => {}), show: vi.fn(async () => {}),
   invoke: vi.fn(async (_command: string, _args?: Record<string, unknown>) => {}),
   fallbackShow: vi.fn(async () => {}),
@@ -114,7 +114,7 @@ describe("native popover focus transport", () => {
     } finally { delete host.__TAURI__; }
   });
 });
-afterEach(async () => { await act(async () => root.unmount()); container.remove(); });
+afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.restoreAllMocks(); });
 async function open(keyboardOpen = false) {
   await act(async () => root.render(<PalettePopoverWindow toolsetId="core.bondStereo" kind="flyout" prewarm />));
   expect(native.show).not.toHaveBeenCalled();
@@ -142,6 +142,32 @@ describe("open-bond native popover body", () => {
     expect(document.activeElement).toBe(input);
     expect(input.disabled).toBe(false);
     expect(input.readOnly).toBe(false);
+  });
+  it.each(["bondStereo", "artColor", "menu"] as const)("ignores a stale dismiss for fresh %s content and honors a later press", async variant => {
+    const now = vi.spyOn(performance, "now").mockReturnValue(200);
+    if (variant === "bondStereo") await open();
+    else {
+      await act(async () => root.render(<PalettePopoverWindow toolsetId="core.art" kind={variant === "artColor" ? "artColor" : "flyout"} prewarm />));
+      await act(async () => native.content?.(variant === "artColor" ? { toolsetId: "core.art", kind: "artColor" } : {
+        toolsetId: "core.art", kind: "flyout", flyout: { flyoutId: "shapes", title: "Shapes", commands: [
+          { id: "tool.rectangle", title: "Rectangle", enabled: true, active: false }
+        ] }
+      }));
+    }
+    expect(native.show).toHaveBeenCalledTimes(1);
+    now.mockReturnValue(400); // Delivery time must not replace the original press time.
+    await act(async () => native.dismiss?.({ requestedAt: performance.timeOrigin + 100 }));
+    expect(native.hide).not.toHaveBeenCalled();
+    expect(sendBondStereoPopoverAction).not.toHaveBeenCalled();
+    await act(async () => native.dismiss?.({ requestedAt: performance.timeOrigin + 300 }));
+    expect(native.hide).toHaveBeenCalledTimes(1);
+    if (variant === "bondStereo") expect(sendBondStereoPopoverAction).toHaveBeenCalledWith({ sessionId: "session-1", action: "close" });
+  });
+  it("keeps unstamped colour-picker click-away dismissal unconditional", async () => {
+    await act(async () => root.render(<PalettePopoverWindow toolsetId="core.art" kind="artColor" prewarm />));
+    await act(async () => native.content?.({ toolsetId: "core.art", kind: "artColor" }));
+    await act(async () => native.dismiss?.());
+    expect(native.hide).toHaveBeenCalledTimes(1);
   });
   it.each(["geometry", "flipped", "keep"] as const)("sends %s exactly once and hides", async action => {
     const buttons = await open();

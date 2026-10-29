@@ -19,6 +19,7 @@ import {
   setCurrentWindowLogicalPosition,
   setCurrentWindowLogicalSize,
   showCurrentToolsetPopoverWindow,
+  toolsetPopoverTimestamp,
   type ToolsetArtPaintTarget,
   type ToolsetArtStylePayload,
   type ToolsetFlyoutCommandSnapshot,
@@ -58,6 +59,7 @@ export function PalettePopoverWindow({
   // Whether the owning palette has pushed content at least once. A prewarmed window must not reveal
   // (or answer its own mount content-request) before then — its initial state is a placeholder.
   const contentPushedRef = useRef(false);
+  const contentOpenedAt = useRef(0);
   const perfShownRef = useRef<ReturnType<NonNullable<typeof perfProbe>["surfaceStarted"]>>(undefined);
   // Set the moment this popover is dismissed (Escape, click-away, a chosen flyout command) so an
   // in-flight reveal chain cannot show it again after the user has closed it.
@@ -122,6 +124,7 @@ export function PalettePopoverWindow({
       perfShownRef.current = perfHook(() => perfProbe?.surfaceStarted("palette-popover", undefined, payload.kind === "flyout" ? payload.flyout.flyoutId : "artColor"));
       contentPushedRef.current = true;
       // A fresh push is a fresh open — it may follow a dismissal.
+      contentOpenedAt.current = toolsetPopoverTimestamp();
       dismissedRef.current = false;
       if (payload.anchor && typeof payload.anchor.x === "number" && typeof payload.anchor.y === "number") {
         anchorRef.current = payload.anchor;
@@ -337,7 +340,10 @@ export function PalettePopoverWindow({
   // that isn't this popover. Hide on that signal, so a popover persists only while you use it.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
-    void listenForToolsetPopoverDismiss(() => {
+    void listenForToolsetPopoverDismiss(payload => {
+      // Broadcast delivery can lag behind the click that replaces this window's
+      // content. A press before that content was set must not hide the new open.
+      if (payload?.requestedAt !== undefined && payload.requestedAt < contentOpenedAt.current) return;
       dismissedRef.current = true;
       notifyBondStereoClose();
       hidePopoverWindow();

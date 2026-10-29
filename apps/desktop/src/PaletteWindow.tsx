@@ -41,6 +41,7 @@ import {
   closeToolsetPopoverWindow,
   currentWindowLogicalPosition,
   dismissToolsetPopovers,
+  toolsetPopoverTimestamp,
   hidePaletteFloatingTooltip,
   openToolsetPopoverWindow,
   prewarmToolsetPopoverWindow,
@@ -827,7 +828,7 @@ export function PaletteWindow({
       if (target instanceof Element && target.closest(".toolbar-color-trigger, .command-flyout-button, .distribute-mode-button")) {
         return;
       }
-      void dismissToolsetPopovers().catch(() => undefined);
+      void dismissToolsetPopovers(toolsetPopoverTimestamp()).catch(() => undefined);
     };
     window.addEventListener("pointerdown", handlePointerDown, true);
     return () => window.removeEventListener("pointerdown", handlePointerDown, true);
