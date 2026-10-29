@@ -189,7 +189,7 @@ export const TableCellEditor = forwardRef<TableCellEditorHandle, {
   const baseWeight = headerBold ? Math.max(700, textStyle.fontWeight) : textStyle.fontWeight;
   const lines = draft.text.split(/\r?\n/);
   const widths = [0];
-  const spans = draft.spans.map(span => span.text).join("") === draft.text && draft.spans.length
+  const spans: TextSpan[] = draft.spans.map(span => span.text).join("") === draft.text && draft.spans.length
     ? draft.spans : [{ text: draft.text, script: "normal" as const, style: {} }];
   for (const span of spans) {
     span.text.split(/\r?\n/).forEach((text, index) => {
