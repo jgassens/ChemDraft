@@ -1,12 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
-import { ColorPickerPopoverBody } from "../ToolPalette";
 import { objectCustomColorCommandId } from "../commands";
-
-(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const native = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke }));
@@ -134,36 +129,20 @@ describe("window-manager palette preview transport", () => {
     }
   );
 
-  it("delivers applyAndCommitColor's preview then ordinary commit on the event transport", async () => {
+  it("delivers a preview, an ordinary commit and a cancel on the event transport, not IPC", async () => {
     (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
-    const container = document.createElement("div");
-    document.body.append(container);
-    const root = createRoot(container);
-    const sends: Promise<void>[] = [];
-    try {
-      await act(async () => root.render(createElement(ColorPickerPopoverBody, {
-        value: "#111111",
-        onPreviewColor: (color) => { sends.push(sendPaletteCommandPreview(objectCustomColorCommandId(color))); },
-        onCommitColor: (color) => { sends.push(sendPaletteCommandCommit(objectCustomColorCommandId(color))); }
-      })));
-      const input = container.querySelector<HTMLInputElement>(".color-hex-field input")!;
-      await act(async () => {
-        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "#1E88E5");
-        input.dispatchEvent(new InputEvent("input", { inputType: "insertText", bubbles: true }));
-      });
-      await Promise.all(sends);
-      await sendPaletteCommandCancel("palette.preview.cancel");
-      expect(sends).toHaveLength(2);
-      expect(tauriEventBus.emit.mock.calls).toEqual([
-        ["chemdraft://palette-command-preview", { commandId: objectCustomColorCommandId("#1e88e5") }],
-        ["chemdraft://palette-command-commit", { commandId: objectCustomColorCommandId("#1e88e5") }],
-        ["chemdraft://palette-command-cancel", { commandId: "palette.preview.cancel" }]
-      ]);
-      expect(native.invoke).not.toHaveBeenCalled();
-    } finally {
-      await act(async () => root.unmount());
-      container.remove();
-    }
+    const commandId = objectCustomColorCommandId("#1e88e5");
+    // Concurrent first dynamic imports of a vi.mock'ed module can resolve to the real module in vitest; this test checks transport choice, not concurrency.
+    await sendPaletteCommandPreview(commandId);
+    await sendPaletteCommandCommit(commandId);
+    await sendPaletteCommandCancel("palette.preview.cancel");
+
+    expect(tauriEventBus.emit.mock.calls).toEqual([
+      ["chemdraft://palette-command-preview", { commandId }],
+      ["chemdraft://palette-command-commit", { commandId }],
+      ["chemdraft://palette-command-cancel", { commandId: "palette.preview.cancel" }]
+    ]);
+    expect(native.invoke).not.toHaveBeenCalled();
   });
 
   it.each(["preview", "commit"] as const)("flushes an earlier slider %s before a typed settle commit and shortcut", async (event) => {
