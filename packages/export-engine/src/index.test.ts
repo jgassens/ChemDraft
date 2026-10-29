@@ -14,7 +14,6 @@ import {
 import { describe, expect, it } from "vitest";
 import { JSDOM } from "jsdom";
 import { exportDocumentToSvg } from "./index";
-import { JSDOM } from "jsdom";
 import { scriptedTextDocument } from "./scriptedText.fixture";
 
 const timestamp = "2026-05-29T00:00:00.000Z";

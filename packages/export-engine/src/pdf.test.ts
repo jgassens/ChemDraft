@@ -31,6 +31,25 @@ function filledRingFixture(): MoleculeObject {
 const timestamp = "2026-05-29T00:00:00.000Z";
 
 describe("exportDocumentToPdf", () => {
+  it.each(["left", "center", "right"] as const)("exports contiguous %s-aligned scripted formulas without whitespace runs", async (align) => {
+    const fixture = scriptedTextDocument(align);
+    const document = { ...fixture, pages: [{ ...fixture.pages[0], objects: fixture.pages[0].objects.slice(0, 2) }] };
+    const result = await withPdfDom(domParser => exportDocumentToPdf(document, { domParser }), true);
+    const runs = extractPdfPositionedTextRuns(result.bytes);
+    for (const run of runs) {
+      expect(run.text.trim().length).toBeGreaterThan(0);
+      expect(run.text).toBe(run.text.trim());
+    }
+    expect(runs.map(run => run.text)).toEqual(["H", "2", "O", "SO", "4", "2-"]);
+    const [h, two, o, so, four, charge] = runs;
+    for (const [first, second, size] of [
+      [h, two, h.fontSize], [two, o, h.fontSize * 0.72],
+      [so, four, so.fontSize], [four, charge, so.fontSize * 0.72]
+    ] as const) {
+      expect(Math.abs(second.x - first.x - standardFontTextWidth(first.text, size))).toBeLessThan(0.5);
+    }
+  });
+
   it("keeps scripted text spacing identical across left, centre and right alignment", async () => {
     const aligned = [];
     for (const align of ["left", "center", "right"] as const) {
