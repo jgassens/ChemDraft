@@ -202,8 +202,13 @@ describe("table layout and SVG", () => {
     expect(new Set(elements.map(element => element.key)).size).toBe(elements.length);
     expect(new Set(elements.map(element => element.attrs.id)).size).toBe(elements.length);
     expect(elements.filter(element => element.tag === "line").every(element => element.attrs.fill === "none")).toBe(true);
-    expect(elements.some(element => element.attrs["baseline-shift"] === "sub" && element.attrs["font-size"] === "72%")).toBe(true);
-    expect(elements.some(element => element.attrs["baseline-shift"] === "super" && element.attrs["font-size"] === "72%")).toBe(true);
+    expect(elements.some(element => element.attrs.dy === style.fontSizePx * 0.4 &&
+      element.attrs["font-size"] === `${Number((style.fontSizePx * 0.72).toFixed(6))}px`)).toBe(true);
+    expect(elements.some(element => element.attrs.dy === -style.fontSizePx * 0.4 &&
+      element.attrs["font-size"] === `${Number((style.fontSizePx * 0.72).toFixed(6))}px`)).toBe(true);
+    for (const element of elements) for (const value of Object.values(element.attrs)) {
+      expect(String(value)).not.toContain("NaN");
+    }
     for (const element of elements) {
       for (const key of ["x", "x1", "x2"]) if (typeof element.attrs[key] === "number") {
         expect(element.attrs[key]).toBeGreaterThanOrEqual(table.x);
@@ -223,6 +228,49 @@ describe("table layout and SVG", () => {
       expect(left + width).toBeLessThanOrEqual(table.x + layout.width);
     }
     expect(planTableObjectSvg(structuredClone(table), 0)).toEqual(svg);
+  });
+
+  it("draws every Sharpless formula subscript at the cell size with an explicit baseline offset", () => {
+    const svg = planTableObjectSvg(table, 0);
+    for (const [formula, digits] of [["CH2Cl2", ["2", "2"]], ["Ti(OiPr)4", ["4"]]] as const) {
+      const row = table.rows.find(row => row.cells[0].text === formula)!;
+      const id = tableCellElementId(table.id, row.id, table.columns[0].id);
+      const text = elementFragments(svg).find(element => element.attrs.id === `${id}-line-0-piece-0`)!;
+      const spans = text.children.filter(child => child.kind === "element");
+      const scripts = spans.filter(span => span.attrs["font-size"] !== undefined);
+      expect(scripts.map(span => span.children[0])).toEqual(digits.map(text => expect.objectContaining({ text })));
+      for (const script of scripts) {
+        expect(script.attrs["font-size"]).toBe(`${Number((style.fontSizePx * 0.72).toFixed(6))}px`);
+        expect(script.attrs.dy).toBeCloseTo(style.fontSizePx * 0.4);
+      }
+      expect(spans[0].attrs.y).toBe(text.attrs.y);
+    }
+  });
+
+  it("uses parent sizes and line baselines for bold headers, captions and footnotes", () => {
+    const rich = { text: "2H\n2H", spans: [
+      { text: "2", script: "subscript" as const, style: { fontSizePx: 30 } },
+      { text: "H\n", script: "normal" as const, style: {} },
+      { text: "2", script: "superscript" as const, style: { fontSizePx: 30 } },
+      { text: "H", script: "normal" as const, style: {} }
+    ] };
+    const input = smallTable("left", [rich.text]);
+    input.headerRowCount = 1;
+    input.tableStyle = { ...input.tableStyle, headerBold: true };
+    input.rows[0].cells[0] = rich;
+    input.caption = rich;
+    input.footnotes = [rich];
+    const texts = elementFragments(planTableObjectSvg(input, 0)).filter(element => element.tag === "text");
+    expect(texts).toHaveLength(6);
+    for (const text of texts) {
+      const parentSize = Number(text.attrs["font-size"]);
+      const [script, normal] = text.children.filter(child => child.kind === "element");
+      const offset = String(text.attrs.id).includes("line-0") ? 0.4 : -0.4;
+      expect(script.attrs["font-size"]).toBe(`${Number((parentSize * 0.72).toFixed(6))}px`);
+      expect(script.attrs.y).toBeCloseTo(Number(text.attrs.y) + parentSize * offset);
+      expect(normal.attrs.dy).toBeCloseTo(-parentSize * offset);
+      if (String(text.attrs.id).startsWith("table-cell-")) expect(script.attrs["font-weight"]).toBe(700);
+    }
   });
 
   it("preserves table and span styling and keeps element ids unique for ambiguous row/column names", () => {
