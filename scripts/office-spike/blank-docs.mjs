@@ -68,7 +68,7 @@ function wordParts() {
     ['word/_rels/document.xml.rels', rels([['rId1', 'styles', 'styles.xml'], ['rId2', 'settings', 'settings.xml']])],
     ['word/styles.xml', xml(`<w:styles xmlns:w="${w}"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:eastAsia="Calibri" w:cs="Calibri"/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr/></w:pPrDefault></w:docDefaults><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style></w:styles>`)],
     ['word/settings.xml', xml(`<w:settings xmlns:w="${w}"><w:compat><w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="15"/></w:compat></w:settings>`)],
-    ['docProps/core.xml', core], ['docProps/app.xml', app('Microsoft Office Word')],
+    ['docProps/core.xml', core], ['docProps/app.xml', app('ChemDraft Office spike')],
   ];
 }
 
@@ -103,11 +103,12 @@ function powerpointParts() {
     ['ppt/_rels/presentation.xml.rels', rels([
       ['rId1', 'slideMaster', 'slideMasters/slideMaster1.xml'], ['rId2', 'slide', 'slides/slide1.xml'],
       ['rId3', 'presProps', 'presProps.xml'], ['rId4', 'viewProps', 'viewProps.xml'], ['rId5', 'tableStyles', 'tableStyles.xml'],
+      ['rId6', 'theme', 'theme/theme1.xml'],
     ])],
     ['ppt/presProps.xml', xml(`<p:presentationPr ${pNamespaces}/>`)],
     ['ppt/viewProps.xml', xml(`<p:viewPr ${pNamespaces}/>`)],
     ['ppt/tableStyles.xml', xml(`<a:tblStyleLst xmlns:a="${a}" def="{5C22544A-7EE6-4342-B048-85BDC9FD1C3A}"/>`)],
-    ['ppt/slideMasters/slideMaster1.xml', xml(`<p:sldMaster ${pNamespaces}><p:cSld>${spTree}</p:cSld><p:clrMap bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/><p:sldLayoutIdLst><p:sldLayoutId id="2147483649" r:id="rId1"/></p:sldLayoutIdLst><p:txStyles><p:titleStyle><a:lvl1pPr><a:defRPr sz="4400"/></a:lvl1pPr></p:titleStyle><p:bodyStyle><a:lvl1pPr><a:defRPr sz="2800"/></a:lvl1pPr></p:bodyStyle><p:otherStyle><a:defPPr><a:defRPr lang="en-US"/></a:defPPr></p:otherStyle></p:txStyles></p:sldMaster>`)],
+    ['ppt/slideMasters/slideMaster1.xml', xml(`<p:sldMaster ${pNamespaces}><p:cSld><p:bg><p:bgRef idx="1001"><a:schemeClr val="bg1"/></p:bgRef></p:bg>${spTree}</p:cSld><p:clrMap bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/><p:sldLayoutIdLst><p:sldLayoutId id="2147483649" r:id="rId1"/></p:sldLayoutIdLst><p:txStyles><p:titleStyle><a:lvl1pPr><a:defRPr sz="4400"/></a:lvl1pPr></p:titleStyle><p:bodyStyle><a:lvl1pPr><a:defRPr sz="2800"/></a:lvl1pPr></p:bodyStyle><p:otherStyle><a:defPPr><a:defRPr lang="en-US"/></a:defPPr></p:otherStyle></p:txStyles></p:sldMaster>`)],
     ['ppt/slideMasters/_rels/slideMaster1.xml.rels', rels([['rId1', 'slideLayout', '../slideLayouts/slideLayout1.xml'], ['rId2', 'theme', '../theme/theme1.xml']])],
     ['ppt/slideLayouts/slideLayout1.xml', xml(`<p:sldLayout ${pNamespaces} type="blank" preserve="1"><p:cSld name="Blank">${spTree}</p:cSld>${clrMapOvr}</p:sldLayout>`)],
     ['ppt/slideLayouts/_rels/slideLayout1.xml.rels', rels([['rId1', 'slideMaster', '../slideMasters/slideMaster1.xml']])],
@@ -115,7 +116,7 @@ function powerpointParts() {
     ['ppt/slides/_rels/slide1.xml.rels', rels([['rId1', 'slideLayout', '../slideLayouts/slideLayout1.xml']])],
     ['ppt/theme/theme1.xml', theme()],
     ['docProps/core.xml', core],
-    ['docProps/app.xml', app('Microsoft Office PowerPoint', '<PresentationFormat>On-screen Show (16:9)</PresentationFormat><Slides>1</Slides><Notes>0</Notes><HiddenSlides>0</HiddenSlides>')],
+    ['docProps/app.xml', app('ChemDraft Office spike', '<PresentationFormat>On-screen Show (16:9)</PresentationFormat><Slides>1</Slides><Notes>0</Notes><HiddenSlides>0</HiddenSlides>')],
   ];
 }
 

@@ -108,8 +108,11 @@ optional registered controls; whether Office accepts them must be measured.
 node scripts/office-spike/inspect.mjs C:\temp\office-dump --json
 ```
 
-Run `node scripts/office-spike/blank-docs.mjs <outdir>` (Node 22 or newer) to create
-`blank.docx` and `blank.pptx`, overwriting only those two files. Open the existing blank file
+Run `node scripts/office-spike/blank-docs.mjs <outdir>` (Node 22.2 or newer, for `zlib.crc32`) to create
+`blank.docx` and `blank.pptx`, overwriting only those two files. Output is byte-identical only
+within one Node/zlib build. Generate the files on the test machine itself; do not copy them from
+a download, mail or network share. A copied file can open in Protected View, where Cmd/Ctrl+S
+does not save in place. Open the existing blank file
 in Word or PowerPoint before pasting (for example, `open -a "Microsoft Word" <outdir>/blank.docx`
 on macOS), so Cmd/Ctrl+S saves in place without opening a Save dialog the test driver cannot use.
 

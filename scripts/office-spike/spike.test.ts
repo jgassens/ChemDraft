@@ -37,8 +37,81 @@ const blankParts = {
   ],
 };
 
-// Sufficient for these generated XML parts: balanced tags, one root, declared prefixes.
-function checkBlankXml(text: string) {
+const blankContentTypes = {
+  docx: {
+    defaults: {
+      rels: 'application/vnd.openxmlformats-package.relationships+xml',
+      xml: 'application/xml',
+    },
+    overrides: {
+      '/word/document.xml': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml',
+      '/word/styles.xml': 'application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml',
+      '/word/settings.xml': 'application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml',
+      '/docProps/core.xml': 'application/vnd.openxmlformats-package.core-properties+xml',
+      '/docProps/app.xml': 'application/vnd.openxmlformats-officedocument.extended-properties+xml',
+    },
+  },
+  pptx: {
+    defaults: {
+      rels: 'application/vnd.openxmlformats-package.relationships+xml',
+      xml: 'application/xml',
+    },
+    overrides: {
+      '/ppt/presentation.xml': 'application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml',
+      '/ppt/presProps.xml': 'application/vnd.openxmlformats-officedocument.presentationml.presProps+xml',
+      '/ppt/viewProps.xml': 'application/vnd.openxmlformats-officedocument.presentationml.viewProps+xml',
+      '/ppt/tableStyles.xml': 'application/vnd.openxmlformats-officedocument.presentationml.tableStyles+xml',
+      '/ppt/slideMasters/slideMaster1.xml': 'application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml',
+      '/ppt/slideLayouts/slideLayout1.xml': 'application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml',
+      '/ppt/slides/slide1.xml': 'application/vnd.openxmlformats-officedocument.presentationml.slide+xml',
+      '/ppt/theme/theme1.xml': 'application/vnd.openxmlformats-officedocument.theme+xml',
+      '/docProps/core.xml': 'application/vnd.openxmlformats-package.core-properties+xml',
+      '/docProps/app.xml': 'application/vnd.openxmlformats-officedocument.extended-properties+xml',
+    },
+  },
+};
+
+const blankRelationships: Record<'docx' | 'pptx', Record<string, string[][]>> = {
+  docx: {
+    '_rels/.rels': [
+      ['rId1', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument', 'word/document.xml'],
+      ['rId2', 'http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties', 'docProps/core.xml'],
+      ['rId3', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties', 'docProps/app.xml'],
+    ],
+    'word/_rels/document.xml.rels': [
+      ['rId1', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles', 'styles.xml'],
+      ['rId2', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings', 'settings.xml'],
+    ],
+  },
+  pptx: {
+    '_rels/.rels': [
+      ['rId1', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument', 'ppt/presentation.xml'],
+      ['rId2', 'http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties', 'docProps/core.xml'],
+      ['rId3', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties', 'docProps/app.xml'],
+    ],
+    'ppt/_rels/presentation.xml.rels': [
+      ['rId1', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster', 'slideMasters/slideMaster1.xml'],
+      ['rId2', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide', 'slides/slide1.xml'],
+      ['rId3', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/presProps', 'presProps.xml'],
+      ['rId4', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/viewProps', 'viewProps.xml'],
+      ['rId5', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/tableStyles', 'tableStyles.xml'],
+      ['rId6', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme', 'theme/theme1.xml'],
+    ],
+    'ppt/slideMasters/_rels/slideMaster1.xml.rels': [
+      ['rId1', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout', '../slideLayouts/slideLayout1.xml'],
+      ['rId2', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme', '../theme/theme1.xml'],
+    ],
+    'ppt/slideLayouts/_rels/slideLayout1.xml.rels': [
+      ['rId1', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster', '../slideMasters/slideMaster1.xml'],
+    ],
+    'ppt/slides/_rels/slide1.xml.rels': [
+      ['rId1', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout', '../slideLayouts/slideLayout1.xml'],
+    ],
+  },
+};
+
+// Checks well-formedness of these generated parts (tag balance, one root, declared prefixes), not schema order.
+function checkBlankXmlWellFormedness(text: string) {
   expect(text).toMatch(/^<\?xml version="1\.0" encoding="UTF-8" standalone="yes"\?>/);
   const stack: string[] = [];
   const prefixes = new Set([...text.matchAll(/xmlns:([\w]+)="[^"]+"/g)].map(m => m[1]));
@@ -87,27 +160,33 @@ describe('blank Office documents', () => {
     const parts = new Map<string, string>(entries.map(entry => [entry.name, entry.data.toString('utf8')]));
     const types = parts.get('[Content_Types].xml')!;
     const defaults = new Map([...types.matchAll(/<Default Extension="([^"]+)" ContentType="([^"]+)"/g)].map(m => [m[1], m[2]]));
-    const overrides = new Map([...types.matchAll(/<Override PartName="\/([^"]+)" ContentType="([^"]+)"/g)].map(m => [m[1], m[2]]));
-    for (const name of overrides.keys()) expect(parts.has(name), name).toBe(true);
+    const overrides = new Map([...types.matchAll(/<Override PartName="([^"]+)" ContentType="([^"]+)"/g)].map(m => [m[1], m[2]]));
+    expect(Object.fromEntries(defaults)).toEqual(blankContentTypes[extension].defaults);
+    expect(Object.fromEntries(overrides)).toEqual(blankContentTypes[extension].overrides);
+    for (const name of overrides.keys()) expect(parts.has(name.slice(1)), name).toBe(true);
+    const relationships: Record<string, string[][]> = {};
     for (const [name, text] of parts) {
-      checkBlankXml(text);
+      checkBlankXmlWellFormedness(text);
       // The content-type stream describes parts; it is not itself an OPC part.
       if (name !== '[Content_Types].xml') {
-        expect(overrides.get(name) ?? defaults.get(name.split('.').at(-1)!), name).toBeTruthy();
+        expect(overrides.get(`/${name}`) ?? defaults.get(name.split('.').at(-1)!), name).toBeTruthy();
       }
       if (!name.endsWith('.rels')) continue;
       const sourceDirectory = name === '_rels/.rels' ? '' : name.slice(0, name.lastIndexOf('/_rels/'));
       const ids = new Set<string>();
+      relationships[name] = [];
       for (const rel of text.matchAll(/<Relationship\s+([^>]+)\/>/g)) {
         const attrs = Object.fromEntries([...rel[1].matchAll(/(\w+)="([^"]*)"/g)].map(m => [m[1], m[2]]));
         expect(ids.has(attrs.Id)).toBe(false);
         ids.add(attrs.Id);
-        expect(attrs.Type).toMatch(/^http:\/\/schemas\.openxmlformats\.org\//);
+        relationships[name].push([attrs.Id, attrs.Type, attrs.Target]);
         expect(attrs.TargetMode).toBeUndefined();
         const target = posix.normalize(posix.join(sourceDirectory, attrs.Target));
         expect(parts.has(target), `${name} -> ${target}`).toBe(true);
       }
     }
+    expect(relationships).toEqual(blankRelationships[extension]);
+    expect(parts.get('docProps/app.xml')).toContain('<Application>ChemDraft Office spike</Application>');
     if (extension === 'docx') {
       expect(parts.get('word/settings.xml')).toContain('w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="15"');
       const doc = parts.get('word/document.xml')!;
@@ -124,6 +203,7 @@ describe('blank Office documents', () => {
       expect(presentation).toContain('<p:notesSz cx="6858000" cy="9144000"/>');
       expect(parts.get('ppt/slideLayouts/slideLayout1.xml')).toContain('type="blank"');
       expect(parts.get('ppt/slideLayouts/slideLayout1.xml')).toContain('name="Blank"');
+      expect(parts.get('ppt/slideMasters/slideMaster1.xml')).toContain('<p:cSld><p:bg><p:bgRef idx="1001"><a:schemeClr val="bg1"/></p:bgRef></p:bg><p:spTree>');
       for (const name of ['ppt/slides/slide1.xml', 'ppt/slideLayouts/slideLayout1.xml', 'ppt/slideMasters/slideMaster1.xml']) {
         expect(parts.get(name)).not.toMatch(/<p:(?:ph|sp|pic|graphicFrame|cxnSp)\b/);
         expect(parts.get(name)).toContain('<p:nvGrpSpPr>');
