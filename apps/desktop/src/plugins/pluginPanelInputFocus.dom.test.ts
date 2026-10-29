@@ -853,6 +853,25 @@ describe("panel input keyboard focus", () => {
 });
 
 describe.each(["macos", "windows"] as const)("palette control focus settling (%s)", (platform) => {
+  it("keeps the lease for Tab to another control, then ends it when Tab leaves the palette", async () => {
+    vi.useFakeTimers();
+    const { shell, request } = mount('<input><select><option>One</option></select>', platform, Promise.resolve(), true);
+    const input = shell.querySelector("input")!;
+    const select = shell.querySelector("select")!;
+    pointerDown(input); input.focus();
+    await flush();
+    expect(key(input, "Tab").defaultPrevented).toBe(false);
+    select.focus(); // Browser Tab default (jsdom does not traverse).
+    await vi.runAllTimersAsync();
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true]);
+    expect(key(select, "Tab").defaultPrevented).toBe(false);
+    select.blur(); // No destination remains inside this palette.
+    await vi.runAllTimersAsync();
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+  });
+
   it.each(["color", "select"])("releases native focus without blurring a %s chooser and accepts its later change", async (kind) => {
     const { shell, request, deactivate } = mount(kind === "color"
       ? '<input type="color" value="#112233">'

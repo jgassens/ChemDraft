@@ -7757,8 +7757,9 @@ textarea:focus-visible,
   pointer-events: none;
 }
 
-/* The wrapper receives hover while the disabled field passes pointer events through. */
-.palette-window-shell :has(> :is(input, textarea, select):disabled):hover,
-.palette-popover-shell :has(> :is(input, textarea, select):disabled):hover {
+/* The real hit target is the immediate wrapper (including the number-field label).
+   Non-key utility windows need the cursor even when the OS does not supply :hover. */
+.palette-window-shell :has(> :is(input, textarea, select):disabled),
+.palette-popover-shell :has(> :is(input, textarea, select):disabled) {
   cursor: not-allowed;
 }

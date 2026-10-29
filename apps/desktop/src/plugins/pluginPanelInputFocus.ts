@@ -84,12 +84,12 @@ function registerNativeInputFocus(): Promise<string> {
 }
 
 async function requestNativeInputFocus(
-  editing: boolean, generation: number, clickSequence?: number, pointerBefore?: number
+  editing: boolean, generation: number, clickSequence?: number, pointerBefore?: number, returnFocus = false
 ): Promise<boolean> {
   if (!isDesktopRuntime()) return editing;
   const token = await registerNativeInputFocus();
   const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<boolean>("set_plugin_panel_input_focus", { editing, generation, pageToken: token, clickSequence, pointerBefore });
+  return invoke<boolean>("set_plugin_panel_input_focus", { editing, generation, pageToken: token, clickSequence, pointerBefore, returnFocus });
 }
 
 async function listenNativePanelFocus(listener: (event: NativePanelFocusEvent) => void): Promise<() => void> {
@@ -99,8 +99,11 @@ async function listenNativePanelFocus(listener: (event: NativePanelFocusEvent) =
 
 /** Palettes also accept text accessibility focus and release after control focus settles. Reports retain their
  * pointer-intent policy and ignore transient WebView2 DOM blur during native activation. */
-export function installPaletteInputFocus(shell: HTMLElement): () => void {
-  return installPluginPanelInputFocus(shell, undefined, undefined, undefined, true);
+export function installPaletteInputFocus(
+  shell: HTMLElement, platform: ShortcutPlatform = detectDesktopShortcutPlatform(),
+  menuShortcut: (event: KeyboardEvent) => boolean = () => false
+): () => void {
+  return installPluginPanelInputFocus(shell, undefined, platform, undefined, true, menuShortcut);
 }
 
 /** A trusted input click or deliberate report-text selection borrows the keyboard for a lease. */
@@ -109,7 +112,8 @@ export function installPluginPanelInputFocus(
   requestFocus: (editing: boolean, generation: number) => Promise<boolean> = requestNativeInputFocus,
   platform: ShortcutPlatform = detectDesktopShortcutPlatform(),
   subscribeFocus: (listener: (event: NativePanelFocusEvent) => void) => Promise<() => void> = listenNativePanelFocus,
-  editableFocus = false
+  editableFocus = false,
+  menuShortcut: (event: KeyboardEvent) => boolean = () => false
 ): () => void {
   const editableControl = (target: EventTarget | null) => panelEditableControl(target, editableFocus);
   // Disabled controls cannot take DOM focus. Their palette is a keyboard sink instead.
@@ -157,7 +161,7 @@ export function installPluginPanelInputFocus(
       if (document.activeElement !== destination) destination.focus({ preventScroll: true });
     }
   };
-  const setEditing = (next: boolean, retry = false, pointerBefore?: number): void => {
+  const setEditing = (next: boolean, retry = false, pointerBefore?: number, returnFocus = false): void => {
     if (editing === next && !retry) return;
     if (editing !== next) {
       leaseChain++;
@@ -188,10 +192,10 @@ export function installPluginPanelInputFocus(
         if (requestedRevision !== revision) return;
         if (next) nativeGenerations.add(requestedRevision);
         const acquired = await (requestFocus === requestNativeInputFocus
-          ? requestNativeInputFocus(next, requestedRevision, requestedClick, pointerBefore)
+          ? requestNativeInputFocus(next, requestedRevision, requestedClick, pointerBefore, returnFocus)
           : requestFocus(next, requestedRevision));
         if (next && requestedChain === leaseChain) {
-          if (!acquired) finish(true);
+          if (!acquired) finish(true, false, undefined, false);
           else {
             // A settled successor supersedes old native events. Until it settles, loss of
             // its predecessor also cancels this retry and any clicks queued behind it.
@@ -207,19 +211,19 @@ export function installPluginPanelInputFocus(
           }
         }
       } catch (error) {
-        if (next && requestedChain === leaseChain) finish(true);
+        if (next && requestedChain === leaseChain) finish(true, false, undefined, false);
         throw error;
       }
     });
     void pending.catch((error: unknown) => console.error("Could not change panel input focus:", error));
   };
-  const finish = (cancelControl = false, preserveNativeChooser = false, pointerBefore?: number): void => {
+  const finish = (cancelControl = false, preserveNativeChooser = false, pointerBefore?: number, returnFocus = true): void => {
     clearTimeout(controlBlurTimer);
     clearTimeout(pointerFocusTimer);
     pointerFocusTimer = undefined;
     pointerControl = undefined;
     paletteControls.delete(shell);
-    setEditing(false, false, pointerBefore);
+    setEditing(false, false, pointerBefore, returnFocus);
     if (editableFocus && cancelControl) leasedControl?.dispatchEvent(new Event(PALETTE_INPUT_FOCUS_CANCEL_EVENT));
     leasedControl = undefined;
     selectionGesture = undefined;
@@ -237,7 +241,7 @@ export function installPluginPanelInputFocus(
     // WebView2 can activate its parent despite NOACTIVATE/WM_MOUSEACTIVATE. Like the
     // toolbar command route, explicitly hand back after an ordinary interaction, even
     // when there was no lease to finish. The native command checks foreground ownership.
-    if ((platform === "windows" || editableFocus) && !editing) setEditing(false, true, pointerBefore);
+    if ((platform === "windows" || editableFocus) && !editing) setEditing(false, true, pointerBefore, true);
   };
   const reportText = (node: EventTarget | null): boolean => {
     if (editableFocus) return false;
@@ -359,7 +363,7 @@ export function installPluginPanelInputFocus(
     if (disposed) return;
     if (event.kind === "deactivated") {
       // Loss is terminal even if a delayed acquisition reply says it acquired focus.
-      if (editing && nativeGenerations.has(event.generation)) finish(false, true);
+      if (editing && nativeGenerations.has(event.generation)) finish(false, true, undefined, false);
     } else checkActivation();
   };
   const focusIn = (event: FocusEvent): void => {
@@ -399,7 +403,8 @@ export function installPluginPanelInputFocus(
     if (next && shell.contains(next)) return;
     if (!editableControl(event.target) && event.target !== shell) return;
     if (event.relatedTarget instanceof Node) {
-      finish(); // A known destination outside the palette's controls is a real departure.
+      // Another palette's control is a destination, not an invitation to activate the drawing.
+      finish(false, false, undefined, !next);
       return;
     }
     // WebView2 can report focusout(null), window blur, then focusin on the same control
@@ -424,11 +429,13 @@ export function installPluginPanelInputFocus(
     if (!editableFocus || !editing || (event.target !== document.body &&
       (!(event.target instanceof Node) || !shell.contains(event.target)))) return;
     if (event.key === "Escape" || event.key === "Tab") return;
+    // Let the registry-backed app route run even during acquisition or in a disabled sink.
+    if (menuShortcut(event)) return;
     const drop = leasedControl?.matches(":disabled")
       ? isDisabledPaletteTypingKey(event)
       : !acquiredControlFocus && isPendingPaletteEditingKey(event);
     if (drop) {
-      // App menu shortcuts keep their default, even during acquisition or in a sink.
+      // Only editing/typing is dropped. App menu shortcuts were admitted above.
       event.preventDefault();
       event.stopImmediatePropagation();
     }
@@ -536,7 +543,7 @@ export function installPluginPanelInputFocus(
     }
     else shell.removeEventListener("keydown", keyDown);
     document.removeEventListener("selectionchange", selectionChange);
-    finish();
+    finish(false, false, undefined, false);
     if (editableFocus && originalTabIndex === null) shell.removeAttribute("tabindex");
   };
 }

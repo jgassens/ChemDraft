@@ -3106,6 +3106,7 @@ async fn set_plugin_panel_input_focus(
     generation: u64,
     click_sequence: Option<u64>,
     pointer_before: Option<u64>,
+    return_focus: Option<bool>,
 ) -> Result<bool, String> {
     validate_plugin_panel_focus_caller(window.label())?;
     let before = pointer_before.unwrap_or(0);
@@ -3226,33 +3227,13 @@ async fn set_plugin_panel_input_focus(
                 click_sequence,
                 before,
             );
-            // Tao tracks focus on the parent HWND; WebView2 moves it into a child HWND.
-            // The foreground top-level window remains the authoritative Windows lease owner.
-            #[cfg(windows)]
-            let was_focused = unsafe {
-                windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow()
-                    == target.hwnd().map_err(|error| error.to_string())?.0
-            };
-            #[cfg(not(windows))]
-            let was_focused = target.is_focused().unwrap_or(false);
+            // Hand back before disabling key eligibility: AppKit can resign a panel as
+            // that flag changes. The helper checks the actual key/foreground window,
+            // current lease and app activation; native loss/cleanup never request it.
+            panel_window::return_focus_after_interaction(&target, return_focus.unwrap_or(false))?;
             target
                 .set_focusable(false)
                 .map_err(|error| error.to_string())?;
-            // A blur caused by clicking the document/another app must not raise or activate it.
-            if was_focused {
-                #[cfg(windows)]
-                if let Some(main) = target.app_handle().get_webview_window(MAIN_WINDOW_LABEL) {
-                    panel_window::return_focus_to_document(
-                        target.hwnd().map_err(|error| error.to_string())?.0,
-                        &main,
-                    )?;
-                }
-                #[cfg(not(windows))]
-                focus_main_document_window_impl(
-                    target.app_handle(),
-                    MainWindowFocusMode::OnlyIfAppActive,
-                )?;
-            }
             Ok(false)
         }
     })?
@@ -4682,6 +4663,7 @@ fn route_toolset_command(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
     command_id: String,
+    preserve_input_focus: Option<bool>,
 ) -> Result<(), String> {
     if utility_windows_suspended() {
         return Ok(());
@@ -4694,7 +4676,10 @@ fn route_toolset_command(
     emit_command_to_main(&app, command_id)?;
     // Select changes and clean-number undo update the document while the control
     // keeps the keyboard. Button/background clicks release the lease themselves.
-    if panel_window::keeps_palette_focus(window.label(), panel_window::holds_input_focus(&window)) {
+    if panel_window::keeps_palette_focus(
+        window.label(),
+        panel_window::holds_input_focus(&window) || preserve_input_focus.unwrap_or(false),
+    ) {
         return Ok(());
     }
     if let Err(error) = focus_main_document_window_impl(&app, MainWindowFocusMode::Force) {

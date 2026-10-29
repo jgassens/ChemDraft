@@ -60,3 +60,30 @@ it("allows Windows palette colour popups to activate without a second WebView2 f
   expect(windows).toContain("panel_window::focus_if_app_active(hwnd)");
   expect(windows).toContain("if already_active {\n                        return Ok(true);");
 });
+
+it("hands Windows palette drags back after Tao finishes, retaining leases and foreground guards", () => {
+  const panel = readNative("src/panel_window.rs");
+  const observer = panel.split('unsafe extern "system" fn focus_subclass(')[1]!.split("\n#[cfg(windows)]")[0]!;
+  expect(observer).toContain("message == WM_EXITSIZEMOVE");
+  expect(observer.indexOf("drag_finished();")).toBeGreaterThan(observer.lastIndexOf("DefSubclassProc(hwnd, message, wparam, lparam)"));
+  expect(panel).toContain("return_focus_after_interaction(&drag_target, true)");
+  const handback = panel.split("fn return_focus_after_interaction")[1]!.split("pub(crate) fn reset_for_webview")[0]!;
+  expect(handback).toContain("holds_input_focus(window)");
+  expect(handback).toContain("focus_return::should_return");
+  expect(handback).toContain("panel.isKeyWindow()");
+  const windows = panel.split("fn return_focus_to_document")[1]!.split('#[cfg(target_os = "macos")]')[0]!;
+  expect(windows).toContain("foreground_can_return_to_document");
+  expect(windows).toContain("foreground_belongs_to_app()");
+  expect(windows).toContain("SetForegroundWindow(owner)");
+  expect(windows).not.toContain("force_window_active");
+});
+
+it("retains a pending palette control on forwarded app commands and requires explicit release intent", () => {
+  const source = readNative("src/lib.rs");
+  const route = source.split("fn route_toolset_command(")[1]!.split("// On Windows the clipboard")[0]!;
+  expect(route).toContain("preserve_input_focus: Option<bool>");
+  expect(route).toContain("panel_window::holds_input_focus(&window) || preserve_input_focus.unwrap_or(false)");
+  const release = source.split("async fn set_plugin_panel_input_focus(")[1]!.split("/// Sent to the main window")[0]!;
+  expect(release).toContain("return_focus: Option<bool>");
+  expect(release).toContain("return_focus_after_interaction(&target, return_focus.unwrap_or(false))");
+});

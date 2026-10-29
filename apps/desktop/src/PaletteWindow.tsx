@@ -12,7 +12,9 @@ import {
 import { writeClipboardTextItems } from "./clipboard";
 import { allShellCommands, type CommandSpec } from "./commands";
 import { createPhase4Document } from "./documentWorkflow";
-import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
+import { createDesktopShortcutRegistry, detectDesktopShortcutPlatform } from "./keyboardShortcuts";
+import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
+import { paletteMenuShortcut } from "./paletteMenuShortcuts";
 import { disabledControlAtPointer, installPaletteInputFocus, isPaletteInputFocusPending, paletteInputFocusControl } from "./plugins/pluginPanelInputFocus";
 import { editHistoryDirection, forceDocumentHistoryCommandId, isCleanPaletteNumberInput, isTextEditingElement } from "./editHistoryRouting";
 import { applyKeybindingSchemeToCommands } from "./keybindingScheme";
@@ -121,10 +123,12 @@ export function PaletteWindow({
   toolsetId = "core.main",
   // Interim seam so tests (and, until Phase 4's definition-push, callers) can supply a
   // registry that already includes plugin toolsets. Defaults to the core registry.
-  initialRegistry
+  initialRegistry,
+  platform = detectDesktopShortcutPlatform()
 }: {
   toolsetId?: string;
   initialRegistry?: DesktopToolsetRegistry;
+  platform?: ShortcutPlatform;
 }) {
   const dragRef = useRef<PaletteWindowDrag | null>(null);
   const shellRef = useRef<HTMLElement | null>(null);
@@ -218,9 +222,11 @@ export function PaletteWindow({
     );
   }, [allCommands, compoundLayoutsEnabled]);
   const shortcutRegistry = useMemo(
-    () => createDesktopShortcutRegistry(allCommands, { includeDisabled: true }),
-    [allCommands]
+    () => createDesktopShortcutRegistry(allCommands, { includeDisabled: true, platform }),
+    [allCommands, platform]
   );
+  const shortcutRegistryRef = useRef(shortcutRegistry);
+  shortcutRegistryRef.current = shortcutRegistry;
   // Every append-mode section widget the gallery can offer (Style Controls, Text Style) — present ones
   // gray out, removed ones (e.g. Style Controls after a drag-out) show as restorable tiles.
   const galleryWidgets = APPENDABLE_TOOLBAR_WIDGETS;
@@ -416,8 +422,9 @@ export function PaletteWindow({
   // after a checkbox/slider/select click. Command buttons keep the document's keyboard.
   useEffect(() => {
     const shell = shellRef.current;
-    if (shell) return installPaletteInputFocus(shell);
-  }, []);
+    if (shell) return installPaletteInputFocus(shell, platform,
+      (event) => !!paletteMenuShortcut(event, shortcutRegistryRef.current));
+  }, [platform]);
 
   useEffect(() => {
     const preferredSize = toolset.preferredWindowSize ?? gridWindowSize;
@@ -664,6 +671,16 @@ export function PaletteWindow({
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      const menuCommand = paletteMenuShortcut(event, shortcutRegistry);
+      if (menuCommand) {
+        // Windows palettes have no menu. Keep the control (even a pending lease) focused
+        // while the document executes the command. AppKit already routes its app-wide menu.
+        if (platform === "windows") {
+          event.preventDefault();
+          void sendPaletteCommand(menuCommand, { preserveInputFocus: true }).catch(() => undefined);
+        }
+        return;
+      }
       // WebKit/WebView2 can temporarily target body during a control click. The leased
       // destination still owns editing keys; a disabled control uses the shell as its sink.
       const target = event.target instanceof Element && event.target !== document.body
@@ -701,7 +718,7 @@ export function PaletteWindow({
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [shortcutRegistry]);
+  }, [shortcutRegistry, platform]);
 
   const invokeCommand = (commandId: string) => {
     void sendPaletteCommand(commandId).catch(() => undefined);

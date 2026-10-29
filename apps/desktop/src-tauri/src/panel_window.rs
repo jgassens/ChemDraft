@@ -5,6 +5,8 @@ use tauri::{Emitter, Manager};
 
 #[path = "panel_focus_lease.rs"]
 mod focus_lease;
+#[path = "panel_focus_return.rs"]
+mod focus_return;
 #[path = "panel_window_installation.rs"]
 mod installation;
 #[path = "palette_key_guard.rs"]
@@ -49,6 +51,74 @@ pub(crate) fn holds_input_focus<R: tauri::Runtime>(window: &tauri::WebviewWindow
         .unwrap()
         .get(window.label())
         .is_some_and(focus_lease::Lease::is_held)
+}
+
+/// A release is explicit: native deactivation, teardown and rejected acquisitions do not
+/// ask for focus. Recheck the lease and native destination when queued work actually runs.
+pub(crate) fn return_focus_after_interaction<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    requested: bool,
+) -> Result<(), String> {
+    let held = holds_input_focus(window);
+    #[cfg(windows)]
+    {
+        if let Some(document) = window
+            .app_handle()
+            .get_webview_window(super::MAIN_WINDOW_LABEL)
+        {
+            if focus_return::should_return(
+                requested,
+                held,
+                super::foreground_belongs_to_app(),
+                true,
+            ) {
+                // The HWND pair is rechecked inside, including native chooser ownership.
+                return_focus_to_document(
+                    window.hwnd().map_err(|error| error.to_string())?.0,
+                    &document,
+                )?;
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::{NSApplication, NSWindow};
+        let marker =
+            objc2::MainThreadMarker::new().ok_or("Panel focus requires the main thread.")?;
+        let pointer = window.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
+        let panel = unsafe { pointer.as_ref() }.ok_or("Could not access native panel window.")?;
+        if focus_return::should_return(
+            requested,
+            held,
+            NSApplication::sharedApplication(marker).isActive(),
+            panel.isKeyWindow(),
+        ) {
+            if let Some(document) = window
+                .app_handle()
+                .get_webview_window(super::MAIN_WINDOW_LABEL)
+            {
+                // makeKeyWindow resigns the palette without activating a background app.
+                super::focus_native_document_window(&document)?;
+                let webview: &tauri::Webview<R> = document.as_ref();
+                webview.set_focus().map_err(|error| error.to_string())?;
+            }
+        }
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        if focus_return::should_return(
+            requested,
+            held,
+            super::foreground_belongs_to_app(),
+            window.is_focused().unwrap_or(false),
+        ) {
+            super::focus_main_document_window_impl(
+                window.app_handle(),
+                super::MainWindowFocusMode::OnlyIfAppActive,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn reset_for_webview<R: tauri::Runtime>(window: &tauri::Window<R>) {
@@ -232,7 +302,9 @@ pub(crate) fn return_focus_to_document<R: tauri::Runtime>(
     panel: windows_sys::Win32::Foundation::HWND,
     document: &tauri::WebviewWindow<R>,
 ) -> Result<(), String> {
-    use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, IsIconic, IsWindowVisible, SetForegroundWindow,
+    };
     let owner = document.hwnd().map_err(|error| error.to_string())?.0;
     let foreground = unsafe { GetForegroundWindow() };
     // Do not take focus from another ChemDraft panel/dialog either.
@@ -243,7 +315,18 @@ pub(crate) fn return_focus_to_document<R: tauri::Runtime>(
     ) {
         return Ok(());
     }
-    if focus_if_app_active(owner) {
+    // SetActiveWindow alone can leave the palette as the foreground window after a
+    // WebView2 select or Tao drag. Transfer foreground explicitly, only from our exact
+    // source/document pair. Do not use Tao's force activation/synthetic Alt fallback.
+    let returned = unsafe {
+        super::foreground_belongs_to_app()
+            && GetForegroundWindow() == foreground
+            && IsWindowVisible(owner) != 0
+            && IsIconic(owner) == 0
+            && (foreground == owner || SetForegroundWindow(owner) != 0)
+            && GetForegroundWindow() == owner
+    };
+    if returned {
         let webview: &tauri::Webview<R> = document.as_ref();
         webview.set_focus().map_err(|error| error.to_string())?;
     }
@@ -301,8 +384,18 @@ pub(crate) fn install_input_focus<R: tauri::Runtime>(
     key_guard::install(window)?;
     let hwnd = window.hwnd().map_err(|error| error.to_string())?.0;
     let target = window.clone();
+    let drag_target = window.clone();
     let data = Box::into_raw(Box::new(FocusObserver {
         activation: std::rc::Rc::new(move |active| activation(&target, active)),
+        drag_finished: std::rc::Rc::new(move || {
+            // Palettes have this observer but no report resize subclass. Keep any live
+            // control lease, and never reclaim focus from another palette/app/chooser.
+            if drag_target.label().starts_with("toolset-") {
+                if let Err(error) = return_focus_after_interaction(&drag_target, true) {
+                    eprintln!("Could not return palette keyboard focus after drag: {error}");
+                }
+            }
+        }),
     }));
     unsafe {
         SetWindowLongPtrW(
@@ -324,6 +417,7 @@ pub(crate) fn install_input_focus<R: tauri::Runtime>(
 #[cfg(windows)]
 struct FocusObserver {
     activation: std::rc::Rc<dyn Fn(bool)>,
+    drag_finished: std::rc::Rc<dyn Fn()>,
 }
 
 #[cfg(windows)]
@@ -337,7 +431,9 @@ unsafe extern "system" fn focus_subclass(
 ) -> isize {
     use windows_sys::Win32::UI::{
         Shell::{DefSubclassProc, RemoveWindowSubclass},
-        WindowsAndMessaging::{WA_INACTIVE, WM_ACTIVATE, WM_ACTIVATEAPP, WM_NCDESTROY},
+        WindowsAndMessaging::{
+            WA_INACTIVE, WM_ACTIVATE, WM_ACTIVATEAPP, WM_EXITSIZEMOVE, WM_NCDESTROY,
+        },
     };
     // Observe focus without overriding mouse activation. Palettes keep WS_EX_NOACTIVATE,
     // but WebView2 must be allowed to activate them for a native colour picker. Forcing
@@ -356,7 +452,14 @@ unsafe extern "system" fn focus_subclass(
         drop(Box::from_raw(data as *mut FocusObserver));
         return result;
     }
-    DefSubclassProc(hwnd, message, wparam, lparam)
+    // Clone before invoking Tao: nested message handling can destroy the observer.
+    let drag_finished = (message == WM_EXITSIZEMOVE)
+        .then(|| (*(data as *const FocusObserver)).drag_finished.clone());
+    let result = DefSubclassProc(hwnd, message, wparam, lparam);
+    if let Some(drag_finished) = drag_finished {
+        drag_finished();
+    }
+    result
 }
 
 #[cfg(windows)]

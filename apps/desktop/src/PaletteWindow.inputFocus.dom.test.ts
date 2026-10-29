@@ -155,7 +155,7 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
   });
 
   async function mountSettings(toolsetId = "core.drawnStructureSettings", model = createMoleculeInspectorModel(selectedMolecule(), { selectedObjectIds: ["mol_input_focus"] })) {
-    await act(async () => root.render(createElement(PaletteWindow, { toolsetId })));
+    await act(async () => root.render(createElement(PaletteWindow, { toolsetId, platform })));
     await flush();
     // jsdom has no pointer capture implementation; support the shell's drag cleanup.
     for (const element of container.querySelectorAll<HTMLElement>("*")) element.hasPointerCapture = () => false;
@@ -382,8 +382,7 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
       await type(input, "26");
       await press(input, "Enter");
     }
-    // Model the app menu's shortcut default. Native emit_menu_command's decision
-    // is independently exercised by the pure Rust test with document.save.
+    // Only macOS has an app-wide menu. A Windows palette must route its own key once.
     let notify!: (event: PaletteClickPendingEvent) => void;
     const stopGuard = installMainWindowPalettePendingKeys(async (listener) => {
       notify = listener;
@@ -393,20 +392,80 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     notify({ sequence: 1, pending: false, expiresAt: 0 }); // Native acquisition completed.
     const save = vi.fn();
     const menuDefault = (event: KeyboardEvent) => {
-      if (!event.defaultPrevented && event.key === "s" && (event.metaKey || event.ctrlKey)) save();
+      if (platform === "macos" && !event.defaultPrevented && event.key === "s" && event.metaKey) save();
     };
     window.addEventListener("keydown", menuDefault);
     try {
       const event = new KeyboardEvent("keydown", { key: "s", bubbles: true, cancelable: true,
         ctrlKey: platform === "windows", metaKey: platform === "macos" });
       await act(async () => control.dispatchEvent(event));
-      expect(event.defaultPrevented).toBe(false);
-      expect(save).toHaveBeenCalledOnce();
+      expect(event.defaultPrevented).toBe(platform === "windows");
+      if (platform === "windows") {
+        expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith("document.save", { preserveInputFocus: true });
+        expect(save).not.toHaveBeenCalled();
+      } else {
+        expect(sendPaletteCommand).not.toHaveBeenCalled();
+        expect(save).toHaveBeenCalledOnce();
+      }
       expect(document.activeElement).toBe(control);
       expect(leases().map(([, args]) => args.editing)).toEqual([true]);
     } finally {
       window.removeEventListener("keydown", menuDefault);
       stopGuard();
+    }
+  });
+
+  it.each(["pending", "disabled sink"])("routes Save once from a %s and keeps its destination", async (kind) => {
+    const input = await mountSettings();
+    let settle: ((acquired: boolean) => void) | undefined;
+    if (kind === "pending") {
+      native.invoke.mockImplementationOnce(() => new Promise<boolean>((resolve) => { settle = resolve; }));
+      await clickControl(input);
+    } else {
+      await act(async () => broadcastToolsetTextStyle(createToolsetTextStylePayload(
+        DefaultNativeTextStyle, "normal", undefined, "fill", createMoleculeInspectorModel(selectedMolecule(), { selectedObjectIds: [] })
+      )));
+      const disabled = container.querySelector<HTMLInputElement>('[aria-label="Chain angle"]')!;
+      await clickControl(disabled.parentElement!);
+    }
+    try {
+      const event = await press(document.activeElement as HTMLElement, "s", {
+        ctrlKey: platform === "windows", metaKey: platform === "macos"
+      });
+      expect(event.defaultPrevented).toBe(platform === "windows");
+      if (platform === "windows") {
+        expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith("document.save", { preserveInputFocus: true });
+      } else expect(sendPaletteCommand).not.toHaveBeenCalled();
+    } finally {
+      settle?.(true);
+      await flush();
+    }
+    expect(document.activeElement).toBe(kind === "pending" ? input : container.querySelector(".palette-window-shell"));
+    expect(leases().map(([, args]) => args.editing)).toEqual([true]);
+  });
+
+  it("forwards registered app chords but leaves text-editing chords in a numeric draft", async () => {
+    const input = await mountSettings();
+    await clickControl(input);
+    await type(input, "31");
+    const modifier = { ctrlKey: platform === "windows", metaKey: platform === "macos" };
+    for (const key of ["a", "c", "v", "x", "z", "y", "Delete", "Backspace"]) {
+      await press(input, key, modifier);
+      expect(sendPaletteCommand, key).not.toHaveBeenCalled();
+    }
+    for (const [key, shiftKey, command] of [
+      ["s", true, "document.saveAs"], ["o", false, "document.open"],
+      ["n", false, "document.new"], ["w", false, "document.closeTab"],
+      ["e", true, "export.open"], [",", false, "view.togglePreferences"],
+      ["-", false, "view.zoomOut"], ["r", false, "view.toggleRulers"]
+    ] as const) {
+      vi.mocked(sendPaletteCommand).mockClear();
+      const event = await press(input, key, { ...modifier, shiftKey });
+      expect(event.defaultPrevented, command).toBe(platform === "windows");
+      if (platform === "windows") {
+        expect(sendPaletteCommand).toHaveBeenCalledExactlyOnceWith(command, { preserveInputFocus: true });
+      } else expect(sendPaletteCommand).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(input);
     }
   });
 
@@ -529,7 +588,7 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
       else input.remove();
     });
     await flush();
-    expect(leases().at(-1)![1]).toMatchObject({ editing: false, clickSequence: undefined, pointerBefore: undefined });
+    expect(leases().at(-1)![1]).toMatchObject({ editing: false, clickSequence: undefined, pointerBefore: undefined, returnFocus: true });
     // Restore React's node before unmount; removing it above exercises MutationObserver.
     if (cause === "removal") parent.insertBefore(input, nextSibling);
   });
@@ -653,6 +712,13 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     )));
     const disabled = container.querySelector<HTMLInputElement>('[aria-label="Chain angle"]')!;
     expect(disabled.disabled).toBe(true);
+    const css = readFileSync(resolve("apps/desktop/src/App.css"), "utf8");
+    const cursorRule = css.slice(css.indexOf("/* The real hit target"));
+    const selector = cursorRule.slice(cursorRule.indexOf(".palette-window-shell"), cursorRule.indexOf("{")).trim();
+    // The wrapper is the browser's hit target with pointer-events:none on the field.
+    // This must match before :hover is available on a non-key native window.
+    expect(disabled.parentElement!.matches(selector)).toBe(true);
+    expect(cursorRule).toContain("cursor: not-allowed");
     // WebKit may dispatch nothing at all on a disabled input. CSS makes its
     // wrapper the pointer target; never inject a trusted event on the input.
     await clickControl(disabled.parentElement!);
@@ -1149,10 +1215,38 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     await flush();
     expect(document.activeElement).not.toBe(input);
     expect(leases().map(([, args]) => args.editing)).toEqual([true, false]);
+    expect(leases().at(-1)![1]).toMatchObject({ returnFocus: false });
     await act(async () => input.focus());
     await flush();
     expect(document.activeElement).toBe(input);
     expect(leases().map(([, args]) => args.editing)).toEqual([true, false, true]);
+  });
+
+  it.each(["Escape", "Tab"])("requests document foreground when a closed select ends via %s", async (key) => {
+    await mountSettings();
+    const select = await nonTextControl("select");
+    await clickControl(select);
+    await press(select, "n"); // Native type-ahead keeps the lease.
+    const event = await press(select, key);
+    if (key === "Tab") {
+      expect(event.defaultPrevented).toBe(false);
+      await act(async () => select.blur()); // Browser's traversal out of the palette.
+    }
+    await flush();
+    expect(leases().map(([, args]) => args.editing)).toEqual([true, false]);
+    expect(leases().at(-1)![1]).toMatchObject({ returnFocus: true });
+    expect(document.activeElement).not.toBe(select);
+  });
+
+  it.each(["select", "color"])("does not request foreground when a native %s chooser takes focus", async (kind) => {
+    await mountSettings();
+    const control = await nonTextControl(kind);
+    await clickControl(control);
+    const generation = leases().at(-1)![1].generation;
+    await act(async () => native.notify!({ payload: { kind: "deactivated", generation } }));
+    await flush();
+    expect(leases().at(-1)![1]).toMatchObject({ editing: false, returnFocus: false });
+    expect(document.activeElement).toBe(control);
   });
 
   it("lets the settings control cancel its preview before Escape releases focus", async () => {

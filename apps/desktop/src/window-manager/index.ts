@@ -690,8 +690,8 @@ export async function setMenuChecked(commandId: string, checked: boolean): Promi
   await invoke("set_menu_checked", { commandId, checked }).catch(() => undefined);
 }
 
-export async function sendPaletteCommand(commandId: string): Promise<void> {
-  return routeToolsetCommand(commandId);
+export async function sendPaletteCommand(commandId: string, options?: { preserveInputFocus: boolean }): Promise<void> {
+  return routeToolsetCommand(commandId, options);
 }
 
 export async function sendPaletteCommandPreview(commandId: string): Promise<void> {
@@ -706,14 +706,14 @@ export async function sendPaletteCommandCancel(commandId: string): Promise<void>
   return emitToolsetCommandEvent(PALETTE_COMMAND_CANCEL_EVENT, commandId);
 }
 
-export async function routeToolsetCommand(commandId: string): Promise<void> {
+export async function routeToolsetCommand(commandId: string, options?: { preserveInputFocus: boolean }): Promise<void> {
   // Single delivery: the invoke routes through Rust `route_toolset_command`, which dispatches the
   // native-command DOM event into the main window (the one listener in `listenForToolsetCommands`).
   // No client-side `emit` — that used to also fan out over the tauri event bus, so every command
   // arrived several times and needed `dedupeAdjacentCommands` to collapse it.
   const payload = createToolsetCommandPayload(commandId);
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("route_toolset_command", payload as unknown as Record<string, unknown>);
+  await invoke("route_toolset_command", { ...payload, ...options });
 }
 
 async function emitToolsetCommandEvent(eventName: string, commandId: string): Promise<void> {
