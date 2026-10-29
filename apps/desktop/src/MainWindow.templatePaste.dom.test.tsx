@@ -12,7 +12,8 @@ import * as rdkit from "@chemdraft/rdkit-adapter";
 import * as depictionClient from "./depiction2d/client";
 import * as clipboard from "./clipboard";
 import { resolveStructureTemplateName } from "@chemdraft/document-workflow-core";
-import { setRdkitModuleLoader } from "../../../packages/rdkit-adapter/src/conformer";
+// Configure the same adapter instance used by template lookup, including with shared node_modules.
+import { setRdkitModuleLoader } from "@chemdraft/rdkit-adapter";
 import { getAssistantHistoryPort } from "./assistant/historyPort";
 import { MainWindow } from "./MainWindow";
 import { MemoryStorage } from "./testSupport/memoryStorage";
