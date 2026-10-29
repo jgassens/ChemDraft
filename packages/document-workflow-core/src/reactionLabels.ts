@@ -44,7 +44,16 @@ const minimumCaptionWidthInBonds = 8;
 const defaultLabelStyle: Partial<NativeTextStyle> = { fontSizePx: 14, textAlign: "center" };
 
 function lineSpans(text: string, caption = false): TextSpan[] {
-  return (!caption && formulaSpansForMixedText(text)) || [{ text, script: "normal", style: {} }];
+  const spans = (!caption && formulaSpansForMixedText(text)) || [{ text, script: "normal", style: {} }];
+  return spans.reduce<TextSpan[]>((runs, span) => {
+    const previous = runs.at(-1);
+    if (previous && previous.script === span.script &&
+      Object.keys(previous.style).length === Object.keys(span.style).length &&
+      Object.entries(previous.style).every(([key, value]) => value === span.style[key])) {
+      previous.text += span.text;
+    } else runs.push({ ...span });
+    return runs;
+  }, []);
 }
 
 function explicitLines(entries: readonly string[]): string[] {

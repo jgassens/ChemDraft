@@ -47,6 +47,26 @@ function content(fragment: PageSvgFragment): string {
 }
 
 describe("reaction label policy", () => {
+  it("merges adjacent runs without changing formula scripts or authored spaces", () => {
+    const result = labels();
+    expect(result.below!.spans).toEqual([
+      { text: "CH", script: "normal", style: {} },
+      { text: "2", script: "subscript", style: {} },
+      { text: "Cl", script: "normal", style: {} },
+      { text: "2", script: "subscript", style: {} },
+      { text: ", −20 °C, 4 h", script: "normal", style: {} }
+    ]);
+    expect(result.below!.spans.map(span => span.text).join("")).toBe(below[0]);
+    expect(labels({ above: ["1. NaBH4", "2. H3O+"], below: [] }).above!.spans).toEqual([
+      { text: "1. NaBH", script: "normal", style: {} },
+      { text: "4", script: "subscript", style: {} },
+      { text: "\n", script: "normal", style: {} },
+      { text: "2. H", script: "normal", style: {} },
+      { text: "3", script: "subscript", style: {} },
+      { text: "O", script: "normal", style: {} },
+      { text: "+", script: "superscript", style: {} }
+    ]);
+  });
   it("keeps captions plain while formatting above-arrow formulas", () => {
     const captionText = "SN2 pathway; H2 uptake; C2-symmetric ligand; CH2Cl2 used";
     const result = labels({ above: ["CH2Cl2"], below: [], caption: captionText, bondLength: 100 });

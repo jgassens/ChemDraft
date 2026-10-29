@@ -12,6 +12,7 @@ import {
   type TextObject
 } from "@chemdraft/chem-core";
 import { describe, expect, it } from "vitest";
+import { JSDOM } from "jsdom";
 import { exportDocumentToSvg } from "./index";
 
 const timestamp = "2026-05-29T00:00:00.000Z";
@@ -346,6 +347,15 @@ describe("exportDocumentToSvg", () => {
     expect(result.contents).toContain(">H</tspan>");
     expect(result.contents).toContain(">2</tspan>");
     expect(result.contents).toContain(">O</tspan>");
+    const markup = result.contents.match(/<text\b[^>]*data-object-id="text_script_export_001"[^>]*>([\s\S]*?)<\/text>/)![1]!;
+    expect(markup).not.toMatch(/<\/tspan>\s+<tspan/);
+    const dom = new JSDOM(result.contents, { contentType: "image/svg+xml" });
+    const text = dom.window.document.querySelector('text[data-object-id="text_script_export_001"]')!;
+    expect(text.textContent).toBe(textObject.text);
+    expect([...text.querySelectorAll("tspan")].map(span => span.textContent).join("")).toBe(textObject.text);
+    expect([...text.childNodes].every(node => node.nodeType === 1)).toBe(true);
+    dom.window.close();
+    expect(result.contents).not.toContain("\r");
   });
 
   it("exports condensed atom labels with numeric subscripts", () => {
