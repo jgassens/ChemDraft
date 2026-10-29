@@ -17,6 +17,7 @@ export interface SmilesListPasteOptions {
 
 /** A valid input with no drawable atoms is an item failure, not a worker failure. */
 class EmptySmilesDepictionError extends Error {}
+const EMPTY_DEPICTION_MESSAGE = "The 2D depiction engine returned no atoms.";
 
 /** Only unparseable text returns undefined; engine failures and chemistry refusals throw. */
 export async function depictSmilesForPaste(
@@ -41,7 +42,7 @@ export async function depictSmilesForPaste(
         .filter(centre => centre.isStereoCenter && centre.descriptor !== "unspecified").length };
     }
     const result = await depictSmilesOffThread(smiles, { priority: "interactive", ...options });
-    if (result.depiction.atoms.length === 0) throw new EmptySmilesDepictionError("The 2D depiction engine returned no atoms.");
+    if (result.depiction.atoms.length === 0) throw new EmptySmilesDepictionError(EMPTY_DEPICTION_MESSAGE);
     return result;
   } catch (error) {
     if ((error as { notSmiles?: boolean })?.notSmiles === true) return undefined;

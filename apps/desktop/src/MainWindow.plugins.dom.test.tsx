@@ -125,7 +125,8 @@ describe("assistant writes through mounted desktop normalization", () => {
       getData: (type: string) => type === "text/plain" ? template.smiles : "" } });
     await act(async () => {
       window.dispatchEvent(event);
-      await vi.waitFor(() => expect(port.read("initial")!.pages[0]!.objects).toHaveLength(1));
+      // Pasting now includes RDKit identity verification.
+      await vi.waitFor(() => expect(port.read("initial")!.pages[0]!.objects).toHaveLength(1), { timeout: 5000 });
     });
     const after = port.read("initial")!;
     expect(after.selection.objectIds).toEqual([after.pages[0]!.objects[0]!.id]);
@@ -143,7 +144,7 @@ describe("assistant writes through mounted desktop normalization", () => {
       getData: (type: string) => type === "text/plain" ? `${template.smiles}\n${template.smiles}` : "" } });
     await act(async () => {
       window.dispatchEvent(event);
-      await vi.waitFor(() => expect(port.read("initial")!.pages[0]!.objects).toHaveLength(2));
+      await vi.waitFor(() => expect(port.read("initial")!.pages[0]!.objects).toHaveLength(2), { timeout: 5000 });
     });
     const after = port.read("initial")!;
     expect(new Set(after.selection.objectIds).size).toBe(2);

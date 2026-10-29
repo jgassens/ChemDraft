@@ -82,8 +82,9 @@ describe("template SMILES paste", () => {
         ]);
       });
     });
+    // Keep the reported reason tied to the failed input in the standard input: reason format.
     expect(container.querySelector("[role=status]")?.textContent)
-      .toContain("1 item failed: The 2D depiction engine returned no atoms.");
+      .toContain("1 item failed: CCN: The 2D depiction engine returned no atoms.");
     expect(depiction.mock.calls.map(([smiles]) => smiles)).toEqual(["CCO", "CCN", "CCC"]);
     await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "edit.undo" } })); });
     expect(port.read("initial")!.pages[0]!.objects).toHaveLength(0);
