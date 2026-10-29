@@ -2,7 +2,7 @@ import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, us
   type CSSProperties, type ReactNode } from "react";
 import { TABLE_LIMITS, nativeTextStyleFromObjectStyle,
   type ChemDraftDocument, type TableObject, type TableRichText, type TextObject, type TextSpan } from "@chemdraft/chem-core";
-import { planTableLayout } from "@chemdraft/layout-engine";
+import { measureTextRun, planTableLayout } from "@chemdraft/layout-engine";
 import { setTableColumnWidth } from "@chemdraft/document-workflow-core";
 import { textScriptForCommand, textStylePatchForCommand } from "./commands";
 import { symbolGlyphForToolCommand, updateNativeTextObjectText,
@@ -185,17 +185,39 @@ export const TableCellEditor = forwardRef<TableCellEditorHandle, {
 
   const textStyle = nativeTextStyleFromObjectStyle(draft.style);
   const padding = isNote ? { x: 0, y: 0 } : table.tableStyle.cellPaddingPx;
+  const headerBold = !isNote && row < table.headerRowCount && table.tableStyle.headerBold;
+  const baseWeight = headerBold ? Math.max(700, textStyle.fontWeight) : textStyle.fontWeight;
+  const lines = draft.text.split(/\r?\n/);
+  const widths = [0];
+  const spans = draft.spans.map(span => span.text).join("") === draft.text && draft.spans.length
+    ? draft.spans : [{ text: draft.text, script: "normal" as const, style: {} }];
+  for (const span of spans) {
+    span.text.split(/\r?\n/).forEach((text, index) => {
+      if (index) widths.push(0);
+      const size = span.script === "normal" && typeof span.style.fontSizePx === "number"
+        ? span.style.fontSizePx : textStyle.fontSizePx;
+      const weight = headerBold ? Math.max(700, span.style.fontWeight ?? 700)
+        : span.style.fontWeight ?? textStyle.fontWeight;
+      const spacing = span.style.letterSpacingPx ?? textStyle.letterSpacingPx;
+      widths[widths.length - 1] += measureTextRun(text, { fontSizePx: size, fontWeight: weight, script: span.script })
+        + [...text].length * spacing;
+    });
+  }
+  // The textarea's unformatted text also needs room for its caret and native selection.
+  const plainWidths = lines.map(line => measureTextRun(line, { fontSizePx: textStyle.fontSizePx, fontWeight: baseWeight })
+    + [...line].length * textStyle.letterSpacingPx);
+  const width = Math.max(box.width, Math.max(0, ...widths, ...plainWidths) + 2 * padding.x + (draft.text ? 1 : 0));
+  const height = Math.max(box.height, lines.length * textStyle.fontSizePx * textStyle.lineHeight + 2 * padding.y);
   const textCss: CSSProperties = { fontFamily: textStyle.fontFamily, fontSize: textStyle.fontSizePx * scale,
-    fontWeight: !isNote && row < table.headerRowCount && table.tableStyle.headerBold
-      ? Math.max(700, textStyle.fontWeight) : textStyle.fontWeight,
+    fontWeight: baseWeight,
     fontStyle: textStyle.fontStyle, color: textStyle.color, lineHeight: textStyle.lineHeight,
     textDecoration: textStyle.textDecoration, letterSpacing: textStyle.letterSpacingPx * scale,
     textAlign: isNote ? "left" : table.columns[column].align === "right" ? "right"
       : ["center", "decimal"].includes(table.columns[column].align) ? "center" : "left" };
   return <div data-table-cell-editor={table.id} data-row-id={isNote ? undefined : cell.rowId}
     data-column-id={isNote ? undefined : cell.columnId}
-    style={{ position: "absolute", left: box.x * scale, top: box.y * scale, width: box.width * scale,
-      height: box.height * scale, transform: `rotate(${table.rotation}deg)`,
+    style={{ position: "absolute", left: box.x * scale, top: box.y * scale, width: width * scale,
+      height: height * scale, transform: `rotate(${table.rotation}deg)`,
       transformOrigin: `${(table.x + table.width / 2 - box.x) * scale}px ${(table.y + table.height / 2 - box.y) * scale}px`,
       pointerEvents: "auto", zIndex: 4, background: "var(--cd-bg-page, white)", ...textCss }}
     onPointerDown={event => event.stopPropagation()} onDoubleClick={event => event.stopPropagation()}>

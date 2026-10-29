@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyPatches, type TableObject } from "@chemdraft/chem-core";
 import { buildTableObject } from "@chemdraft/document-workflow-core";
 import {
-  planTableLayout, tableCellElementId, transformPointForObject
+  measureTextRun, planTableLayout, tableCellElementId, transformPointForObject
 } from "@chemdraft/layout-engine";
 import { MainWindow } from "./MainWindow";
 import { createPhase4Document, insertNativeTextObject } from "./documentWorkflow";
@@ -46,9 +46,9 @@ describe.each(["macos", "windows"] as const)("table real DOM editing (%s)", plat
     window.history.replaceState(null, "", "/"); delete window.__CHEMDRAFT_AGENT__;
   });
   async function mount(options: { rows?: string[][]; formula?: "auto" | "off";
-    cellFormula?: "auto" | "off"; rotation?: number; mixedSelection?: boolean } = {}) {
+    cellFormula?: "auto" | "off"; rotation?: number; mixedSelection?: boolean; narrow?: boolean } = {}) {
     let id = 0;
-    const table = buildTableObject({ columns: [{ widthPx: 100, formula: options.formula }, { widthPx: 110, formula: options.formula }],
+    const table = buildTableObject({ columns: [{ widthPx: options.narrow ? 12 : 100, formula: options.formula }, { widthPx: 110, formula: options.formula }],
       rows: options.rows ?? [["", ""], ["", ""]], style: { fontFamily: "Georgia", fontSizePx: 18 } },
     { id: "table-test", x: 80, y: 90, newId: prefix => `${prefix}-${++id}` }).object;
     table.rotation = options.rotation ?? 0;
@@ -363,6 +363,22 @@ describe.each(["macos", "windows"] as const)("table real DOM editing (%s)", plat
     await key("Enter"); expect(cell().text).toBe("first\nsecond");
     expect(editor()!.parentElement!.dataset.rowId).toBe(currentTable().rows[1].id);
     await type("last"); await key("Enter"); expect(editor()).toBeNull(); expect(cell(1).text).toBe("last");
+  });
+
+  it("sizes an empty editor to its cell and grows for text and new lines", async () => {
+    await mount({ narrow: true, formula: "off" }); await open();
+    const box = planTableLayout(currentTable()).cells[0].box;
+    const size = () => ({ width: parseFloat(editor()!.parentElement!.style.width),
+      height: parseFloat(editor()!.parentElement!.style.height) });
+    expect(size().width).toBeCloseTo(box.width * scale());
+    expect(size().height).toBeCloseTo(box.height * scale());
+    await type("CH2Cl2");
+    expect(size().width).toBeGreaterThanOrEqual(measureTextRun("CH2Cl2", { fontSizePx: 18 }) * scale());
+    expect(size().width).toBeGreaterThan(12 * scale());
+    const height = size().height;
+    await key("Enter", { shiftKey: true });
+    expect(size().height).toBeGreaterThan(height);
+    expect(editor()!.selectionStart).toBe(7);
   });
 
   it("Tab at the last cell inserts one row, while Shift+Tab crosses back to the previous row", async () => {
