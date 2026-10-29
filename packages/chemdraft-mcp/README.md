@@ -53,12 +53,14 @@ details](../chemdraft-cli/README.md#fixed-scale-document-figures).
   are inline text, and PDFs are embedded resources. Inline input and files have a 5 MB input
   limit; the CLI's object/atom limits also apply.
 - `render_grid` — render named SMILES structures in a PNG or SVG grid.
-- `render_reaction` — render reaction SMILES, or role arrays that keep dot-joined salts together, as a PNG or SVG scheme; agent display text is recorded.
+- `render_reaction` — render reaction SMILES, or role arrays that keep dot-joined salts together, as a PNG or SVG scheme; agent display text is recorded. Optional `above` and `below` string arrays place lines around the arrow, and `caption` adds a note under the scheme. `conditions` remains supported.
 - `analyze_structure` — run the property and prediction suite with status-bearing summary values.
 - `name_to_structure` — check ChemDraft built-in structure templates before OPSIN, optionally rendering it (no Java needed for template names).
 - `check_stereo` — inspect tetrahedral R/S centres and E/Z double bonds with 0-based indices.
 - `predict_nmr` — predict 1H/13C shifts and optional spectra. It loads the separately checked-out NMR predictor plugin, which must be listed in `~/.config/chemdraft/trusted-plugins.json`; `CHEMDRAFT_NMR_PLUGIN_DIR` alone never makes an unlisted directory load (see the CLI README, "Plugin trust file").
 - `export_structure` — write CDXML, PDF, SDF, MOL, or SMILES.
+
+Reaction labels allow at most 6 `above` and 6 `below` entries, a non-empty `caption` of at most 300 characters, and 2000 characters combined across above, below, caption and legacy `conditions`.
 
 Radicals are refused rather than silently changed. Isotope labels and their positions are preserved.
 Analysis values retain their method contracts and reported pKa intervals; NMR J values and

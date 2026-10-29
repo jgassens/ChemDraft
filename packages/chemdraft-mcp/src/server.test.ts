@@ -184,6 +184,10 @@ describe("ChemDraft MCP server", () => {
         reactants: expect.any(Object),
         agents: expect.any(Object),
         products: expect.any(Object),
+        above: expect.objectContaining({ maxItems: 6, items: expect.objectContaining({ maxLength: 2000 }) }),
+        below: expect.objectContaining({ maxItems: 6, items: expect.objectContaining({ maxLength: 2000 }) }),
+        caption: expect.objectContaining({ minLength: 1, maxLength: 300 }),
+        conditions: expect.objectContaining({ maxLength: 2000 }),
         format: expect.any(Object),
         background: expect.any(Object)
       }
@@ -215,6 +219,40 @@ describe("ChemDraft MCP server", () => {
       .toContain("not-requested");
     expect(result.tools.find((tool) => tool.name === "check_stereo")!.description)
       .toContain("E/Z");
+  });
+
+  it.each([
+    { labels: { above: Array(7).fill("x") }, field: "above", limit: "6 entry limit" },
+    { labels: { below: Array(7).fill("x") }, field: "below", limit: "6 entry limit" },
+    { labels: { caption: "x".repeat(301) }, field: "caption", limit: "300 character limit" },
+    { labels: { caption: "" }, field: "caption", limit: "non-empty" },
+    { labels: { caption: " \t" }, field: "caption", limit: "non-empty" },
+    { labels: { conditions: "x".repeat(2001) }, field: "conditions", limit: "2000 character combined limit" },
+    { labels: { above: ["x".repeat(2001)] }, field: "above", limit: "2000 character combined limit" },
+    { labels: { below: ["x".repeat(2001)] }, field: "below", limit: "2000 character combined limit" },
+    { labels: { above: ["x".repeat(900)], below: ["x".repeat(900)], caption: "x".repeat(100), conditions: "x".repeat(101) }, field: "above + below + caption + conditions", limit: "2000 character combined limit" }
+  ])("rejects reaction labels exceeding $field $limit before invoking the CLI", async ({ labels, field, limit }) => {
+    let called = false;
+    const client = await connect({ commands: { reaction: async () => { called = true; return 0; } } });
+    const result = await client.callTool({ name: "render_reaction", arguments: { reactionSmiles: "CCO>>CCO", ...labels } });
+    expect(result.isError).toBe(true);
+    const error = textBlocks(result.content).join("\n");
+    expect(error).toContain(field);
+    expect(error).toContain(limit);
+    expect(called).toBe(false);
+  });
+
+  it("accepts reaction labels at the count, caption and combined length limits", async () => {
+    let called = false;
+    const client = await connect({ commands: { reaction: async (_argv, io) => {
+      called = true; io.stdout(JSON.stringify({ name: "reaction", ok: true })); return 0;
+    } } });
+    const result = await client.callTool({ name: "render_reaction", arguments: {
+      reactionSmiles: "CCO>>CCO", above: Array(6).fill("x".repeat(100)), below: Array(6).fill("x".repeat(100)),
+      caption: "x".repeat(300), conditions: "x".repeat(500)
+    } });
+    expect(result.isError).not.toBe(true);
+    expect(called).toBe(true);
   });
 
   it("builds inline native JSON and renders inline/path inputs with isolated output directories", async () => {
@@ -306,6 +344,7 @@ describe("ChemDraft MCP server", () => {
         reactants: ["CCO"],
         agents: [],
         products: ["CC=O"],
+        above: ["catalyst", "reagent"], below: ["CH2Cl2"], caption: "note",
         format: "svg",
         background: "transparent"
       }
@@ -324,7 +363,8 @@ describe("ChemDraft MCP server", () => {
       "--padding", "7", "--gutter", "11", "--background", "transparent"
     ]));
     expect(calls.grid?.find((value) => value.endsWith(".svg"))).toBeDefined();
-    expect(calls.reaction).toEqual(expect.arrayContaining(["--background", "transparent"]));
+    expect(calls.reaction).toEqual(expect.arrayContaining(["--background", "transparent", "--above", "catalyst", "reagent", "--below", "CH2Cl2", "--caption", "note"]));
+    expect(calls.reaction?.slice(calls.reaction.indexOf("--above"), calls.reaction.indexOf("--above") + 4)).toEqual(["--above", "catalyst", "--above", "reagent"]);
     expect(calls.reaction?.find((value) => value.endsWith(".svg"))).toBeDefined();
     expect(calls.nmr).toEqual(expect.arrayContaining(["--statistic", "mean", "--ignore-labile"]));
     expect(calls.name).toContain("--allow-ambiguous");

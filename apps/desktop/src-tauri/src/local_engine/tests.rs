@@ -33,27 +33,8 @@ fn redirected_download_honours_proxy_exclusion_and_names_failing_destination() {
     let closed = TcpListener::bind("127.0.0.1:0").unwrap();
     let proxy_address = closed.local_addr().unwrap();
     drop(closed);
-    let server = std::thread::spawn(move || {
-        // A nonblocking, bounded accept also fails promptly if NO_PROXY is ignored.
-        direct.set_nonblocking(true).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        for _ in 0..2 {
-            loop {
-                match direct.accept() {
-                    Ok((stream, _)) => {
-                        crate::network_test_http::reply(stream, format!("HTTP/1.1 302 Found\r\nLocation: https://localhost:{}/asset?sig=secret-signature\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", proxy_address.port()).as_bytes());
-                        break;
-                    }
-                    Err(error)
-                        if error.kind() == std::io::ErrorKind::WouldBlock
-                            && Instant::now() < deadline =>
-                    {
-                        std::thread::sleep(Duration::from_millis(10));
-                    }
-                    Err(error) => panic!("initial request did not bypass proxy: {error}"),
-                }
-            }
-        }
+    let server = crate::network_test_http::LoopbackServer::spawn(direct, 2, move |stream| {
+        crate::network_test_http::reply(stream, format!("HTTP/1.1 302 Found\r\nLocation: https://localhost:{}/asset?sig=secret-signature\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", proxy_address.port()).as_bytes());
     });
     // The same matcher used for NO_PROXY, without mutating process-global environment in tests.
     let builder = || {
@@ -81,7 +62,12 @@ fn redirected_download_honours_proxy_exclusion_and_names_failing_destination() {
             &|_: InstallProgress| {},
         )
         .unwrap_err();
-    server.join().unwrap();
+    // Stop after both client calls, so ignoring NO_PROXY fails promptly without an accept deadline.
+    assert_eq!(
+        server.join_served_count().unwrap(),
+        2,
+        "initial request did not bypass proxy: expected two direct connections"
+    );
     assert_eq!(error.code, InstallErrorCode::Network);
     assert_eq!(
         error.message,
