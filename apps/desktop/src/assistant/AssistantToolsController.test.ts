@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { applyPatch, createCustomPageLayout, DocumentObjectSchema, toEngineDocument, undo, redo } from "@chemdraft/chem-core";
+import { applyPatch, createCustomPageLayout, DocumentObjectSchema, nativeDrawingStyleFromObjectStyle, toEngineDocument, undo, redo } from "@chemdraft/chem-core";
 import { AssistantCapabilityPermissions, type PluginCommandContext } from "@chemdraft/plugin-api";
 import { PluginHost } from "@chemdraft/plugin-host";
 import { AssistantToolsController } from "./AssistantToolsController";
@@ -521,7 +521,10 @@ describe("assistant requests and MCP bridge", () => {
       const pending = s.controller.callTool(s.plugin, { name: "move_objects", input });
       await vi.waitFor(() => expect(s.gate.pending()).toBe(1));
       const before = s.context.getDocument()!;
-      const withMark = applyChargeToolAtPoint(before, 1, { x: atom.x - 30, y: atom.y });
+      // The queued patch is already placed; this later mark cannot trigger replanning.
+      // Just outside one bond length, but inside the 1.15-bond association radius.
+      const markOffset = nativeDrawingStyleFromObjectStyle(moved.style).bondLengthPx * 1.1;
+      const withMark = applyChargeToolAtPoint(before, 1, { x: atom.x - markOffset, y: atom.y });
       s.port.push(s.context.tabId, before, withMark, "Draw charge");
       s.userEdits.forEach(listener => listener(s.context.tabId));
       s.gesture.active = false;

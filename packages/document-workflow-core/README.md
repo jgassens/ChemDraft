@@ -14,6 +14,7 @@ desktop importers did not change.
 
 | File | Holds |
 |---|---|
+| `drawingDefaults.ts` | Field-by-field document drawing/text defaults for newly inserted objects, falling back to the hand-drawing preset |
 | `molecule.ts` | SMILES/molfile depiction → native molecule, target bond length, double-bond sides |
 | `documentStyle.ts` | Scale the whole first page uniformly using layout-engine geometry, including pixel style overrides; preserve colours and appearance toggles and apply fixed molecule size keys |
 | `documentInventory.ts` | Native atom/bond ids and page geometry, with rings from layout-engine |
@@ -80,3 +81,8 @@ condition width sets the minimum arrow length and plus-sign width sets component
 Callers supply pre-depicted molecules at the intended bond length and a reaction anchor with enough
 room above its centre for the conditions. These layout functions translate molecules without
 rescaling them; CLI option parsing, cropping, physical SVG units and PNG DPI stay with the caller.
+
+`documentDrawingDefaults(document)` resolves `document.styles.drawing` and `document.styles.text`
+without changing existing objects. New native and SMILES molecules share its geometry and style;
+captions default to the atom-label font (15 px Arial). Explicit sizing callers such as the CLI can
+override `createSmilesMolecule`/`insertSmilesMolecule` options without changing canvas defaults.
