@@ -1,8 +1,7 @@
 // @vitest-environment jsdom
 import * as smilesListPaste from "./smilesListPaste";
 import * as smilesPasteIdentity from "./smilesPasteIdentity";
-import { ensureRdkit } from "../../../packages/rdkit-adapter/src/conformer";
-import { installDomRdkitLoader } from "./testSupport/rdkitIdentity";
+import { IdentityVerificationTimeoutError } from "./depiction2d/identityWorkerClient";
 import { act, createElement, StrictMode } from "react";
 import { setNativePromptProvider, type NativePromptOptions } from "./nativePrompt";
 import { readFileSync } from "node:fs";
@@ -381,6 +380,18 @@ describe("documents in one window", () => {
     .filter((object) => object.type === "text").map((object) => object.text).join("\n");
   const tabs = () => Array.from(container.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
   const active = () => tabs().findIndex((tab) => tab.getAttribute("aria-selected") === "true");
+  it("refuses a timed-out SMILES check without inserting a molecule or fallback text", async () => {
+    const before = structuredClone(bridge().snapshot().document);
+    vi.spyOn(smilesListPaste, "depictSmilesForPaste").mockResolvedValueOnce({
+      depiction: { atoms: [{ element: "C", x: 0, y: 0, charge: 0 }], bonds: [] }, stereoCount: 0
+    });
+    vi.spyOn(smilesPasteIdentity, "verifySmilesPaste").mockRejectedValueOnce(
+      new smilesPasteIdentity.SmilesPasteIdentityError("CC", new IdentityVerificationTimeoutError(4_000)));
+    await paste("CC");
+    expect(bridge().snapshot().document).toEqual(before);
+    expect(container.querySelector('[role="status"]')?.textContent)
+      .toContain("within 4 s; nothing was inserted");
+  });
   async function command(commandId: string) {
     await act(async () => { window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId } })); });
   }
@@ -1681,8 +1692,7 @@ describe("documents in one window", () => {
         const parsed = await smilesListPaste.depictSmilesForPaste("CC");
         expect(parsed).toBeDefined();
         if (kind.includes("identity")) {
-          installDomRdkitLoader();
-          const inspect = smilesPasteIdentity.createPasteIdentityInspector(async () => ({ ensureRdkit }));
+          const inspect = smilesPasteIdentity.createPasteIdentityInspector();
           const wait = new Promise<void>(resolve => { finishPaste = resolve; });
           if (kind === "list identity") {
             const original = smilesPasteIdentity.verifySmilesGridEntries;

@@ -1,14 +1,14 @@
 import { createEmptyDocument, type ChemDraftDocument } from "@chemdraft/chem-core";
 import {
   assertMoleculeMatchesSmiles, ChemicalIdentityMismatchError,
-  inspectHydrogenNormalizedIdentity, unverifiableStereoReason,
   type InspectChemicalIdentity,
   type PagePoint, type PastedStructureDepiction
 } from "@chemdraft/document-workflow-core";
 import { insertSmilesMolecule, insertSmilesMoleculeGrid } from "./documentWorkflow";
-import { loadRdkitWithAppLoader } from "./plugins/rdkitAppLoader";
 import type { SmilesListPasteFailure } from "./smilesListPaste";
-import type { RdkitMinimalModule } from "@chemdraft/rdkit-adapter";
+import { inspectStructureOffThread } from "./depiction2d/identityClient";
+import { IdentityWorkerUnavailableError } from "./depiction2d/identityWorkerClient";
+import type { StructureInspector } from "./depiction2d/identityProtocol";
 
 export class SmilesIdentityEngineUnavailableError extends Error {
   constructor(cause: unknown) {
@@ -18,17 +18,21 @@ export class SmilesIdentityEngineUnavailableError extends Error {
   }
 }
 
-const loadPasteIdentityEngine: () => Promise<{ ensureRdkit(): Promise<RdkitMinimalModule> }> =
-  () => loadRdkitWithAppLoader(() => import("@chemdraft/rdkit-adapter"));
-
-async function pasteIdentityModule(load = loadPasteIdentityEngine): Promise<RdkitMinimalModule> {
-  try { return await (await load()).ensureRdkit(); }
-  catch (error) { throw new SmilesIdentityEngineUnavailableError(error); }
-}
-
-export function createPasteIdentityInspector(load = loadPasteIdentityEngine): InspectChemicalIdentity {
-  return async (_format, value, stereoReference) =>
-    inspectHydrogenNormalizedIdentity(await pasteIdentityModule(load), value, stereoReference);
+export function createPasteIdentityInspector(
+  inspect: StructureInspector = inspectStructureOffThread
+): InspectChemicalIdentity {
+  return async (format, value, stereoReference) => {
+    try {
+      const result = await inspect(format, value, stereoReference);
+      return result.valid
+        ? { valid: true, canonicalSmiles: result.identitySmiles, facts: result.identityFacts } : result;
+    } catch (error) {
+      if (error instanceof IdentityWorkerUnavailableError) {
+        throw new SmilesIdentityEngineUnavailableError(error);
+      }
+      throw error;
+    }
+  };
 }
 const inspectPasteIdentity = createPasteIdentityInspector();
 
@@ -46,13 +50,12 @@ export class SmilesPasteIdentityError extends Error {
 /** Refuse unsupported input stereo even when the depiction engines cannot parse or draw it. */
 export async function verifySmilesPasteInput(smiles: string): Promise<void> {
   if (!/[@\\/]/.test(smiles)) return;
-  const module = await pasteIdentityModule();
-  const source = module.get_mol(smiles, JSON.stringify({ removeHs: true }));
-  if (!source) return;
   try {
-    const reason = unverifiableStereoReason(module, smiles);
-    if (reason) throw new SmilesPasteIdentityError(smiles, new Error(reason));
-  } finally { source.delete(); }
+    const source = await inspectPasteIdentity("smiles", smiles);
+    if (!source.valid && source.reason !== "RDKit could not verify the structure.") {
+      throw new Error(source.reason);
+    }
+  } catch (error) { throw new SmilesPasteIdentityError(smiles, error); }
 }
 
 /** Check a depiction without holding a document snapshot across an engine load. */

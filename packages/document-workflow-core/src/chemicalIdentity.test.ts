@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "../../../node_modules/vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "../../../node_modules/vitest";
 import { createEmptyDocument } from "@chemdraft/chem-core";
 import { ensureRdkit, generateSmiles2DMolfile, resetRdkitForTesting } from "../../rdkit-adapter/src/conformer";
 import { installRealRdkitModuleLoader } from "../../rdkit-adapter/src/testing";
@@ -97,6 +97,26 @@ describe("supported and harmless atom stereo", () => {
 });
 
 describe("chemical identity mismatch classification", () => {
+  it("uses plain canonical identity without substructure search when the input has no stereo", async () => {
+    const real = await ensureRdkit();
+    const get_mol = vi.fn((value: string, options?: string) => {
+      const mol = real.get_mol(value, options);
+      if (!mol) return mol;
+      return {
+        generate_3d_embed: (details: string) => mol.generate_3d_embed(details),
+        optimize_3d_conformer: (details: string) => mol.optimize_3d_conformer(details),
+        get_json: () => mol.get_json!(), get_smiles: () => mol.get_smiles!(), delete: () => mol.delete(),
+        get_substruct_matches: () => { throw new Error("Unnecessary symmetry search"); }
+      };
+    });
+    const input = "CCC(O[Si](C)(C)C(C)(C)C)C";
+    const source = inspectHydrogenNormalizedIdentity({ get_mol }, input);
+    if (!source.valid) throw new Error(source.reason);
+    const result = inspectHydrogenNormalizedIdentity({ get_mol },
+      "CC[C@H](O[Si](C)(C)C(C)(C)C)C", source.canonicalSmiles);
+    expect(result).toMatchObject({ valid: true, canonicalSmiles: source.canonicalSmiles });
+  });
+
   it.each([
     ["C[C@H](O)[C@@H](N)C", "C[C@@H](O)[C@H](N)C", "stereochemistry"],
     ["c1ccccc1-c1ccccc1", "c1ccccc1", "chemical identity"],

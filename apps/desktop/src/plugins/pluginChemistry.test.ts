@@ -6,6 +6,7 @@ import * as ocl from "@chemdraft/ocl-adapter";
 import { createPhase4Document } from "../documentWorkflow";
 import { structureFromSmilesForPlugin } from "./pluginChemistry";
 import { createPasteIdentityInspector } from "../smilesPasteIdentity";
+import { IdentityWorkerUnavailableError } from "../depiction2d/identityWorkerClient";
 import { ensureRdkit } from "../../../../packages/rdkit-adapter/src/conformer";
 import { installRealRdkitModuleLoader } from "../../../../packages/rdkit-adapter/src/testing";
 
@@ -27,7 +28,9 @@ describe("plugin chemistry SMILES failure reasons", () => {
     vi.mocked(depictSmilesOffThread).mockResolvedValueOnce({
       depiction: ocl.depictSmiles2D("CCO"), stereoCount: 0
     });
-    const inspect = createPasteIdentityInspector(async () => { throw new Error("test WASM unavailable"); });
+    const inspect = createPasteIdentityInspector(async () => {
+      throw new IdentityWorkerUnavailableError("test WASM unavailable");
+    });
     const document = createPhase4Document();
     const result = await structureFromSmilesForPlugin({ smiles: "CCO" }, () => document, undefined, inspect);
     expect(result).toEqual({ available: false,

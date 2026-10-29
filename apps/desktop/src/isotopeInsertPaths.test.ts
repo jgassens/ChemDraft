@@ -16,14 +16,13 @@ import {
 } from "./smilesPasteIdentity";
 import { depictSmilesForPaste, depictSmilesListForPaste, smilesListFailureStatus } from "./smilesListPaste";
 import * as depictionClient from "./depiction2d/client";
+import type { StructureInspector } from "./depiction2d/identityProtocol";
+import { IdentityWorkerUnavailableError } from "./depiction2d/identityWorkerClient";
 import { structureFromSmilesForPlugin } from "./plugins/pluginChemistry";
 import { applyAssistantWrite, buildInsertStructures } from "./assistant/writeBuilder";
 import { verifyNormalizedAssistantWrite } from "./assistant/normalizedWrite";
 import { testContext } from "./assistant/tools/testContext";
 
-vi.mock("./plugins/rdkitAppLoader", () => ({
-  loadRdkitWithAppLoader: async () => ({ ensureRdkit })
-}));
 const point = { x: 200, y: 200 };
 const inspect: InspectChemicalIdentity = async (_format, value, stereoReference) =>
   inspectHydrogenNormalizedIdentity(await ensureRdkit(), value, stereoReference);
@@ -67,10 +66,53 @@ describe("isotope insert paths", () => {
   it("names a failing identity engine without inserting an unverified structure", async () => {
     const document = createEmptyDocument();
     const parsed = (await depictSmilesForPaste("CCO"))!;
-    const inspect = createPasteIdentityInspector(async () => { throw new Error("test WASM unavailable"); });
+    const inspect = createPasteIdentityInspector(async () => {
+      throw new IdentityWorkerUnavailableError("test WASM unavailable");
+    });
     await expect(checkedSmilesPaste(document, point, parsed.depiction, "CCO", inspect))
       .rejects.toThrow("the RDKit engine did not load: test WASM unavailable");
     expect(document.pages[0]!.objects).toEqual([]);
+  });
+
+  it("terminates a stuck identity check, refuses insertion, and pastes the next list entry", async () => {
+    const nodeEntry = "./test/identityNodeClient.mjs";
+    const node: { createNodeIdentityInspector(options: {
+      budgetMs: number; slowStereoReference: string; onTerminate(): void
+    }): StructureInspector } = await import(/* @vite-ignore */ nodeEntry);
+    const terminated = vi.fn();
+    const worker = node.createNodeIdentityInspector({
+      budgetMs: 50, slowStereoReference: "CCO", onTerminate: terminated
+    });
+    const inspect = createPasteIdentityInspector(worker);
+    const document = createEmptyDocument();
+    const before = structuredClone(document);
+    const slow = (await depictSmilesForPaste("CCO"))!;
+    const next = (await depictSmilesForPaste("C"))!;
+    let responsive = false;
+    const heartbeat = setTimeout(() => { responsive = true; }, 5);
+    try {
+      await expect(checkedSmilesPaste(document, point, slow.depiction, "CCO", inspect))
+        .rejects.toThrow("within 0.05 s; nothing was inserted");
+      expect(responsive).toBe(true);
+      expect(terminated).toHaveBeenCalledOnce();
+      expect(document).toEqual(before);
+      const pasted = await checkedSmilesPaste(document, point, next.depiction, "C", inspect);
+      expect(pasted.pages[0]!.objects).toHaveLength(1);
+      const grid = await checkedSmilesGridPaste(document, point, [
+        { smiles: "CCO", depiction: slow.depiction }, { smiles: "C", depiction: next.depiction }
+      ], inspect);
+      expect(grid.failures).toEqual([
+        { input: "CCO", error: expect.stringContaining("nothing was inserted") }
+      ]);
+      expect(grid.objectIds).toHaveLength(1);
+      expect(terminated).toHaveBeenCalledTimes(2);
+      expect(document).toEqual(before);
+      const plugin = await structureFromSmilesForPlugin({ smiles: "CCO" }, () => document,
+        undefined, inspect);
+      expect(plugin).toMatchObject({ available: true, built: false,
+        reason: expect.stringContaining("nothing was inserted") });
+      expect(terminated).toHaveBeenCalledTimes(3);
+    } finally { clearTimeout(heartbeat); }
   });
 
   it("limits named list failures to three and reports the remainder", () => {

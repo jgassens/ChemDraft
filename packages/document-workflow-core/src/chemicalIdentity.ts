@@ -130,6 +130,9 @@ function identityOnSpecifiedStereo(
     const sourceIdentity = sourcePlain.get_smiles?.(), outputIdentity = outputPlain.get_smiles?.();
     if (!sourceIdentity || !outputIdentity) throw new Error("RDKit did not return a canonical SMILES.");
     if (sourceIdentity !== outputIdentity) return actual;
+    // With no source stereo, the canonical plain graphs already prove everything requested.
+    // Avoid the symmetry-heavy substructure search (e.g. repeated silyl protecting groups).
+    if (!/[@\\/]/.test(reference)) return reference;
     const matcher = output as RdkitJsMol & {
       get_substruct_matches?(query: RdkitJsMol, options: string): string;
     };
