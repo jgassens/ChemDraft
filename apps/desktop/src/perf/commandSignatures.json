@@ -468,7 +468,7 @@
     "name": "window_logical_position",
     "async": false,
     "generics": "",
-    "parameters": "window: tauri::WebviewWindow",
+    "parameters": "window: tauri::WebviewWindow, content_origin: Option<bool>,",
     "returnType": "Result<WindowLogicalPosition, String>"
   },
   {
