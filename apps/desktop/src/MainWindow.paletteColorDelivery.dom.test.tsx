@@ -12,6 +12,11 @@ import { getToolsetItemGroups } from "./toolsets";
 import { PALETTE_COMMAND_COMMIT_EVENT, PALETTE_COMMAND_PREVIEW_EVENT } from "./window-manager";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 
+const diagnosticInvoke = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tauri-apps/api/core")>()),
+  invoke: diagnosticInvoke
+}));
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("@scena/react-ruler", () => ({ default: () => <canvas /> }));
 class TestResizeObserver { observe() {} unobserve() {} disconnect() {} }
@@ -28,6 +33,7 @@ describe.each(["macos", "windows"] as const)("detached palette colour delivery (
   });
 
   async function exercise(target: "molecule" | "art", control: "chooser" | "grid") {
+    diagnosticInvoke.mockClear();
     vi.stubGlobal("localStorage", new MemoryStorage());
     vi.stubGlobal("ResizeObserver", TestResizeObserver);
     vi.stubGlobal("CSS", { escape: (value: string) => value });
@@ -104,6 +110,16 @@ describe.each(["macos", "windows"] as const)("detached palette colour delivery (
         expect(messages).toHaveLength(0);
       }
       expect(color()).toBe(picked);
+      await vi.waitFor(() => {
+        const lines = diagnosticInvoke.mock.calls.filter(([name]) => name === "palette_focus_diagnostic")
+          .map(([, payload]) => (payload as { line: string }).line);
+        expect(lines).toContain(`preview command=${commandId(picked)} targets=${JSON.stringify([object.id])} before=none outcome=changed reason=applied preview`);
+        expect(lines).toContain(`commit command=${commandId(picked)} targets=${JSON.stringify([object.id])} before=open: ${commandId(picked).slice(0, commandId(picked).lastIndexOf(":") >= 0 ? commandId(picked).lastIndexOf(":") : commandId(picked).lastIndexOf("."))} outcome=changed reason=committed value`);
+        if (control === "chooser") {
+          expect(lines).toContain(`chooser input value=${picked} prop=#000000 retainedOverride=false`);
+          expect(lines).toContain(`chooser change value=${picked} prop=#000000 retainedOverride=true`);
+        }
+      });
       expect(main.querySelector("main")?.getAttribute("data-can-undo")).toBe("true");
       if (before.type === "molecule") {
         const after = selected();

@@ -601,6 +601,14 @@
   },
   {
     "file": "lib.rs",
+    "name": "palette_focus_diagnostic",
+    "async": false,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, line: String",
+    "returnType": "Result<(), String>"
+  },
+  {
+    "file": "lib.rs",
     "name": "engine3d_sidecar_status",
     "async": false,
     "generics": "",

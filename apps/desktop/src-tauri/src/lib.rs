@@ -1380,6 +1380,7 @@ pub fn run() {
             toggle_preferences_window,
             window_logical_position,
             agent_bridge_status,
+            palette_focus_diagnostic,
             perf_log::perf_log_clock,
             perf_log::perf_log_append,
             perf_log::perf_log_complete,
@@ -5470,7 +5471,25 @@ fn agent_bridge_status() -> AgentBridgeStatus {
     agent_bridge_status_from(env_value.as_deref(), std::env::args())
 }
 
-// Diagnostics share the existing bridge gate; no separate flag or page logging.
+#[tauri::command]
+fn palette_focus_diagnostic(window: tauri::WebviewWindow, line: String) -> Result<(), String> {
+    if !agent_bridge_status().enabled {
+        return Ok(());
+    }
+    let label = window.label();
+    if label != "main" && !(label.starts_with("toolset-") && is_input_focus_window_label(label)) {
+        return Err("Palette diagnostics require a document or tool palette window.".into());
+    }
+    let line: String = line
+        .chars()
+        .take(500)
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    palette_focus_log(format_args!("{line}"));
+    Ok(())
+}
+
+// Diagnostics share the existing bridge gate; no separate flag.
 fn palette_focus_log(message: std::fmt::Arguments<'_>) {
     if agent_bridge_status().enabled {
         eprintln!("[palette-focus] {message}");
@@ -9205,7 +9224,8 @@ mod tests {
     fn registered_commands_have_permissions_and_capability_grants() {
         let lib_source = include_str!("lib.rs");
         let capability = format!(
-            "{}{}{}{}{}{}{}",
+            "{}{}{}{}{}{}{}{}",
+            include_str!("../capabilities/palette-focus-diagnostic.json"),
             include_str!("../capabilities/window-drag.json"),
             include_str!("../capabilities/default.json"),
             include_str!("../capabilities/document-dialogs.json"),

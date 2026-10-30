@@ -1,3 +1,4 @@
+import { paletteFocusDiagnostic } from "./paletteFocusDiagnostic";
 import {
   Fragment,
   useCallback,
@@ -1075,7 +1076,10 @@ function PaletteColorInput({ value, contextKey: explicitContextKey, onPreviewCol
   };
   useEffect(() => {
     const input = inputRef.current!;
-    const change = () => commit(input.value);
+    const change = () => {
+      paletteFocusDiagnostic(`chooser change value=${input.value} prop=${value} retainedOverride=${awaitingColorEcho.current !== undefined && awaitingColorEcho.current !== value}`);
+      commit(input.value);
+    };
     // The lease handler may blur before the popover sees Escape, including when
     // the key targets body. Discard first so the blur fallback cannot commit.
     const discard = followModel;
@@ -1095,7 +1099,10 @@ function PaletteColorInput({ value, contextKey: explicitContextKey, onPreviewCol
     }}
     onChange={(event) => {
       // A native change is handled at the target, before React's delegated event.
-      if (event.nativeEvent.type === "input") preview(event.currentTarget.value);
+      if (event.nativeEvent.type === "input") {
+        paletteFocusDiagnostic(`chooser input value=${event.currentTarget.value} prop=${value} retainedOverride=${awaitingColorEcho.current !== undefined && awaitingColorEcho.current !== value}`);
+        preview(event.currentTarget.value);
+      }
     }}
     onBlur={(event) => { if (pendingColor.current !== undefined) commit(event.currentTarget.value); }}
   />;

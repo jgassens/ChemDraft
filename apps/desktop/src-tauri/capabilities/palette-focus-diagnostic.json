@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "palette-focus-diagnostic",
+  "description": "Bridge-gated bounded palette payload diagnostics. Native caller validation excludes tooltip and empty toolset labels.",
+  "windows": ["main", "toolset-*"],
+  "permissions": ["allow-palette-focus-diagnostic"]
+}

@@ -1,3 +1,4 @@
+import { paletteFocusDiagnostic } from "./paletteFocusDiagnostic";
 import { installMainWindowPalettePendingKeys } from "./palettePendingKeys";
 import { isEditableTarget } from "./editableTarget";
 import { ORPHANED_COMPOSITION_IDLE_MS } from "./imeComposition";
@@ -2146,9 +2147,10 @@ export function MainWindow({
   const objectResizeReadoutTimeoutRef = useRef<number | undefined>(undefined);
   const groupTransformDragRef = useRef<GroupTransformDragState | null>(null);
   const textResizeRef = useRef<TextResizeState | null>(null);
-  const artStylePreviewRef = useRef<{ startDocument: ChemDraftDocument; undoLabel: string; commandKey: string } | null>(null);
-  const moleculeInspectorPreviewRef = useRef<{ startDocument: ChemDraftDocument; undoLabel: string; commandKey: string } | null>(null);
-  const settlePalettePreviewRef = useRef<() => void>(() => undefined);
+  const artStylePreviewRef = useRef<{ startDocument: ChemDraftDocument; undoLabel: string; commandKey: string; commandId: string } | null>(null);
+  const moleculeInspectorPreviewRef = useRef<{ startDocument: ChemDraftDocument; undoLabel: string; commandKey: string; commandId: string } | null>(null);
+  const settlePalettePreviewRef = useRef<(reason: string) => void>(() => undefined);
+  const palettePreviewSettlingRef = useRef(false);
   const palettePreviewHandlersRef = useRef<{
     preview: (commandId: string) => void;
     commit: (commandId: string) => void;
@@ -3242,7 +3244,7 @@ export function MainWindow({
     if (!palettePreview) {
       const assistantWriting = assistantHistoryWritingRef.current;
       assistantHistoryWritingRef.current = false;
-      try { settlePalettePreviewRef.current(); } finally { assistantHistoryWritingRef.current = assistantWriting; }
+      try { settlePalettePreviewRef.current("history edit"); } finally { assistantHistoryWritingRef.current = assistantWriting; }
     }
     const previous = documentHistoryRef.current;
     const history = typeof update === "function" ? update(previous) : update;
@@ -3365,9 +3367,11 @@ export function MainWindow({
     });
     return true;
   }, [atomLabelHistorySnapshot, installDocumentHistory, prepareDocumentCommit]);
-  settlePalettePreviewRef.current = () => {
+  settlePalettePreviewRef.current = (reason) => {
     const session = artStylePreviewRef.current ?? moleculeInspectorPreviewRef.current;
     if (!session) return;
+    paletteFocusDiagnostic(`settle command=${session.commandId} targets=${JSON.stringify(documentRef.current.selection.objectIds)} before=open: ${session.commandKey} outcome=${documentHistoryRef.current.present === session.startDocument ? "unchanged" : "changed"} reason=${reason}`);
+    palettePreviewSettlingRef.current = true;
     // Clear ownership before installing history: recursive installs and late chooser
     // commit/cancel notifications must never restore this obsolete startDocument.
     artStylePreviewRef.current = null;
@@ -3385,10 +3389,11 @@ export function MainWindow({
     const nextFileState = { ...fileStateRef.current, dirty: true };
     fileStateRef.current = nextFileState;
     setFileState(nextFileState);
+    palettePreviewSettlingRef.current = false;
   };
   const settleOtherPalettePreview = useCallback((commandId: string) => {
     const session = artStylePreviewRef.current ?? moleculeInspectorPreviewRef.current;
-    if (session && session.commandKey !== palettePreviewCommandKey(commandId)) settlePalettePreviewRef.current();
+    if (session && session.commandKey !== palettePreviewCommandKey(commandId)) settlePalettePreviewRef.current("other command");
   }, []);
   const assistantHistoryPort = useMemo<AssistantHistoryPort>(() => {
     const readHistory = (tabId: string): DocumentHistory | undefined => {
@@ -7742,7 +7747,7 @@ export function MainWindow({
       return;
     }
 
-    artStylePreviewRef.current = { startDocument, undoLabel: result.message, commandKey: palettePreviewCommandKey(commandId) };
+    artStylePreviewRef.current = { startDocument, undoLabel: result.message, commandKey: palettePreviewCommandKey(commandId), commandId };
     // Keep previews in the model: an edit computed from documentRef must include
     // the visible colour before it interrupts this transaction.
     replacePresentDocument(result.document, true);
@@ -8247,7 +8252,7 @@ export function MainWindow({
       return;
     }
 
-    moleculeInspectorPreviewRef.current = { startDocument, undoLabel: result.message, commandKey: palettePreviewCommandKey(commandId) };
+    moleculeInspectorPreviewRef.current = { startDocument, undoLabel: result.message, commandKey: palettePreviewCommandKey(commandId), commandId };
     replacePresentDocument(result.document, true);
   }, [applyMoleculeInspectorCommandToDocument, replacePresentDocument, settleOtherPalettePreview]);
 
@@ -8403,19 +8408,37 @@ export function MainWindow({
   ]);
 
   useEffect(() => {
+    const diagnose = (event: "preview" | "commit" | "cancel", commandId: string | undefined, run: () => void) => {
+      const session = artStylePreviewRef.current ?? moleculeInspectorPreviewRef.current;
+      const before = palettePreviewSettlingRef.current ? "settling" : session ? `open: ${session.commandKey}` : "none";
+      const present = documentHistoryRef.current.present;
+      const history = documentHistoryRef.current;
+      const targets = [...documentRef.current.selection.objectIds];
+      run();
+      const nextSession = artStylePreviewRef.current ?? moleculeInspectorPreviewRef.current;
+      const changed = present !== documentHistoryRef.current.present || history !== documentHistoryRef.current;
+      const reason = session && commandId && session.commandKey !== palettePreviewCommandKey(commandId)
+        ? "settled other preview"
+        : event === "cancel" ? session ? "restored preview start" : "no preview"
+        : changed ? event === "commit" ? "committed value" : "applied preview"
+        : targets.length === 0 ? "no target"
+        : event === "preview" && !nextSession ? "no applicable target or unhandled command"
+        : "same as present";
+      paletteFocusDiagnostic(`${event} command=${commandId ?? session?.commandId ?? "none"} targets=${JSON.stringify(targets)} before=${before} outcome=${changed ? "changed" : "unchanged"} reason=${reason}`);
+    };
     palettePreviewHandlersRef.current = {
-      preview: (commandId) => {
+      preview: (commandId) => diagnose("preview", commandId, () => {
         previewObjectStyleCommand(commandId);
         previewMoleculeInspectorCommand(commandId);
-      },
-      commit: (commandId) => {
+      }),
+      commit: (commandId) => diagnose("commit", commandId, () => {
         commitObjectStylePreview(commandId);
         commitMoleculeInspectorPreview(commandId);
-      },
-      cancel: () => {
+      }),
+      cancel: () => diagnose("cancel", undefined, () => {
         cancelObjectStylePreview();
         cancelMoleculeInspectorPreview();
-      }
+      })
     };
   }, [
     cancelMoleculeInspectorPreview,
@@ -8482,7 +8505,7 @@ export function MainWindow({
   const cancelDocumentTabSessions = useCallback(() => {
     // Settle chooser edits before choosing a rollback snapshot. Otherwise the
     // history boundary commits the colour, then restores its captured old document.
-    settlePalettePreviewRef.current();
+    settlePalettePreviewRef.current("tab cleanup");
     smilesListPasteAbortRef.current?.abort();
     clearObjectTransformPreview();
     // Roll back snapshot-based previews while their source document is still installed.
@@ -8696,7 +8719,7 @@ export function MainWindow({
   }, [installDocumentTab, newDocumentTab, snapshotDocumentTab]);
 
   const requestCloseDocumentTab = useCallback((id = activeDocumentTabIdRef.current) => {
-    settlePalettePreviewRef.current();
+    settlePalettePreviewRef.current("close");
     if (closeTabPrompt) return;
     if (!documentTabsRef.current.some((tab) => tab.id === id)) return;
     if (id !== activeDocumentTabIdRef.current && !documentTabSnapshotsRef.current.get(id)?.file.dirty) {
