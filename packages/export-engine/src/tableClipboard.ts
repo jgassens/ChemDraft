@@ -219,16 +219,23 @@ function rtfTable(table: TableObject, layout: TableLayout, options: TableClipboa
   const padding = table.tableStyle.cellPaddingPx;
   const padx = Math.round(padding.x * 15);
   const pady = Math.round(padding.y * 15);
-  // RTF readers wrap text in undersized cells. Expand fixed columns to their natural content
-  // width, rounding the interior up separately from the two serialized margins so neither
-  // padding is lost to twip rounding. Replan decimal insets inside those exported widths;
-  // they consume the existing interior space, rather than being added to the width again.
+  // Cocoa ignores trpadd and trgaph and supplies 100-twip horizontal cell margins.
+  // Word uses the row margins below. Reserve the larger pair in either reader.
+  const margin = Math.max(padx, 100);
   const natural = planTableLayout({
     ...table, columns: table.columns.map(column => ({ ...column, width: { mode: "auto" as const } }))
   });
-  const widths = layout.columns.map((column, index) =>
-    Math.max(Math.ceil(column.width * 15),
-      Math.ceil((natural.columns[index].width - 2 * padding.x) * 15) + 2 * padx));
+  const widths = layout.columns.map((column, index) => {
+    const planned = natural.columns[index];
+    const block = planned.decimalBlock;
+    // For a centred decimal block B in width W, the widest text plus its
+    // right indent is (W + B) / 2 - padding.x. Solve for W with both margins;
+    // one extra twip covers rounding the paragraph indent separately.
+    const decimalWidth = block ? Math.ceil((block.preWidth + block.postWidth) * 15)
+      + 4 * margin - 2 * padx + 1 : 0;
+    return Math.max(Math.ceil(column.width * 15), decimalWidth,
+      Math.ceil((planned.width - 2 * padding.x) * 15) + 2 * margin);
+  });
   layout = planTableLayout({
     ...table, columns: table.columns.map((column, index) => ({
       ...column, width: { mode: "fixed" as const, px: widths[index] / 15 }
@@ -275,13 +282,24 @@ function rtfTable(table: TableObject, layout: TableLayout, options: TableClipboa
   };
   const linesText = (lines: Lines) => lines.map(line =>
     lineRuns(line, style).map(runText).join("")).join("\\line ");
+  const alignmentForLine = (row: number, column: number, line: Lines[number]) => {
+    if (table.columns[column].align === "decimal" && row >= table.headerRowCount) {
+      const text = line.pieces.flatMap(piece => piece.runs).map(run => run.text).join("").trim();
+      // A missing value is not a zero-width decimal suffix. Centre it without
+      // consuming the large suffix allowance of the numeric decimal block.
+      if (!/^[+\-−]?(?:\d[\d,]*(?:\.\d*)?|\.\d+)$/.test(text)) return { align: "center" as const };
+    }
+    return cellAlignment(table, layout, row, column, line);
+  };
   if (layout.captionBox) {
     result += `\\pard\\plain\\sa80\\sb0${font(0.9)} ${linesText(layout.captionBox.lines)}\\par\n`;
   }
   for (let row = 0; row < table.rows.length; row++) {
     result += `\\trowd\\trgaph${padx}\\trleft0\\trpaddl${padx}\\trpaddfl3\\trpaddr${padx}\\trpaddfr3`
-      + `\\trpaddt${pady}\\trpaddft3\\trpaddb${pady}\\trpaddfb3`
-      + `\\trftsWidth3\\trwWidth${widths.reduce((sum, width) => sum + width, 0)}`;
+      + `\\trpaddt${pady}\\trpaddft3\\trpaddb${pady}\\trpaddfb3`;
+    // Cocoa treats clwWidth as a content width, with its margins outside it.
+    // Forcing trwWidth to the sum of Word's outer widths makes Cocoa compress
+    // every row to fit. Let each reader size the table from the same cell widths.
     if (row < table.headerRowCount) result += "\\trhdr";
     if (row === table.rows.length - 1) result += "\\lastrow";
     for (let column = 0; column < table.columns.length; column++) {
@@ -295,31 +313,25 @@ function rtfTable(table: TableObject, layout: TableLayout, options: TableClipboa
       }
       result += `\\clshdng0\\clftsWidth3\\clwWidth${widths[column]}`;
       if (row < table.headerRowCount) result += "\\clvertalb";
-      // Match the passing HTML path: right alignment plus a per-cell right inset
-      // preserves decimal anchors without Word's wrapping decimal-tab paragraphs.
-      const alignment = cellAlignment(table, layout, row, column);
-      if (alignment.insetRight !== undefined) {
-        result += `\\clpadr${Math.round((table.tableStyle.cellPaddingPx.x + alignment.insetRight) * 15)}`
-          + "\\clpadfr3";
-      }
-      // Word swaps per-cell left and top padding. Keep those margins on the row;
-      // clpadr replaces the row's right margin and already includes its base padding.
+      // Keep cell margins constant across rows. Cocoa adds clpadr outside its
+      // preferred content width; variable padding makes its column edges drift.
       const planned = layout.columns[column];
       result += `\\cellx${Math.round((planned.x + planned.width - layout.bodyBox.x) * 15)}`;
     }
     for (let column = 0; column < table.columns.length; column++) {
-      const alignment = cellAlignment(table, layout, row, column);
-      const paragraph = `\\pard\\plain\\intbl\\q${alignment.align[0]}\\sa0\\sb0\\sl240\\slmult1`;
       const cell = layout.cells[row * table.columns.length + column];
-      if (alignment.insetRight !== undefined && cell.lines.length > 1) {
-        // Cell padding reserves the widest decimal suffix. Each line needs its own
-        // remaining inset; paragraph indents cannot vary across soft line breaks.
-        const cellRight = Math.round((padding.x + alignment.insetRight) * 15);
+      const paragraph = (line: Lines[number]) => {
+        const alignment = alignmentForLine(row, column, line);
+        const indent = alignment.insetRight === undefined ? "" : `\\ri${Math.round(alignment.insetRight * 15)}`;
+        return `\\pard\\plain\\intbl\\q${alignment.align[0]}\\sa0\\sb0\\sl240\\slmult1${indent}${font()} `;
+      };
+      if (table.columns[column].align === "decimal" && row >= table.headerRowCount) {
+        // Word honours ri inside right-aligned cells, including Density. Each
+        // decimal line needs its own paragraph because soft breaks share ri.
         result += cell.lines.map(line => {
-          const lineRight = Math.round((padding.x + cellAlignment(table, layout, row, column, line).insetRight!) * 15);
-          return `${paragraph}\\ri${lineRight - cellRight}${font()} ${linesText([line])}`;
+          return paragraph(line) + linesText([line]);
         }).join("\\par\n") + "\\cell";
-      } else result += `${paragraph}${font()} ${linesText(cell.lines)}\\cell`;
+      } else result += `${paragraph(cell.lines[0])}${linesText(cell.lines)}\\cell`;
     }
     result += "\\row\n";
   }

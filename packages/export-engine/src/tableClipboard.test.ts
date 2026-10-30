@@ -1,4 +1,5 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { JSDOM } from "jsdom";
 import { describe, expect, it } from "vitest";
 import { nativeTextStyleFromObjectStyle, parseDocument, type TableObject } from "@chemdraft/chem-core";
@@ -13,13 +14,13 @@ import {
 const fixtureUrl = new URL("../../fixtures/tables/sharpless-reagent-table.json", import.meta.url);
 const table = parseDocument(JSON.parse(readFileSync(fixtureUrl, "utf8"))).pages[0].objects[0] as TableObject;
 const layout = planTableLayout(table);
-const rtfWidths = layout.columns.map(column => Math.ceil(column.width * 15));
+const payloads = exportTableClipboardPayloads(table);
+const rtfWidths = [...payloads.rtf.split("\\trowd")[1].matchAll(/\\clwWidth(\d+)/g)].map(match => Number(match[1]));
 const rtfLayout = planTableLayout({
   ...table, columns: table.columns.map((column, index) => ({
     ...column, width: { mode: "fixed", px: rtfWidths[index] / 15 }
   }))
 });
-const payloads = exportTableClipboardPayloads(table);
 const inheritHtml = exportTableToHtml(table, { font: "inherit" });
 const sides = ["top", "bottom", "left", "right"] as const;
 
@@ -183,44 +184,105 @@ describe("table clipboard payloads", () => {
     }
   });
 
-  it("uses padded right alignment instead of Word's wrapping decimal tabs in RTF", () => {
+  it("fits every Sharpless cell with both readers margins and per-line decimal indents", () => {
     const font = nativeTextStyleFromObjectStyle(table.style);
     const measure = (text: string) => measureTextRun(text, { ...font, script: "normal" });
     payloads.rtf.split("\\trowd").slice(1).forEach((row, index) => {
-      const definitions = row.split("\\pard")[0].split(/\\cellx\d+/);
+      expect(row).not.toMatch(/\\clpad|\\tqdec|\\tx\d|\\tab /);
       const cells = row.split("\\pard\\plain\\intbl").slice(1);
-      for (let column = 1; column < table.columns.length; column++) {
-        const block = rtfLayout.columns[column].decimalBlock!;
-        expect(definitions[column]).not.toMatch(/\\clpad[lt]/);
-        if (index === 0) {
-          expect(definitions[column]).not.toContain("\\clpad");
+      const edges = [...row.matchAll(/\\cellx(\d+)/g)].map(match => Number(match[1]));
+      for (let column = 0; column < table.columns.length; column++) {
+        const text = table.rows[index].cells[column].text;
+        const indent = Number(/\\ri(\d+)/.exec(cells[column])?.[1] ?? 0);
+        const width = edges[column] - (edges[column - 1] ?? 0);
+        // Cocoa supplies 100 twips on each side; Word uses the declared 90.
+        expect(Math.ceil(measure(text) * 15) + indent + 200).toBeLessThanOrEqual(width);
+        expect(width).toBe(rtfWidths[column]);
+        if (column === 0) continue;
+        if (index === 0 || text === "—") {
           expect(cells[column]).toMatch(/^\\qc/);
+          expect(indent).toBe(0);
         } else {
-          const text = table.rows[index].cells[column].text;
+          const block = rtfLayout.columns[column].decimalBlock!;
           const post = text.includes(".") ? text.slice(text.indexOf(".")) : "";
-          const padding = table.tableStyle.cellPaddingPx.x + block.insetRight + block.postWidth - measure(post);
-          const rightTwips = Math.round(padding * 15);
-          expect(definitions[column]).toContain(`\\clpadr${rightTwips}\\clpadfr3`);
           expect(cells[column]).toMatch(/^\\qr/);
-          // clpadr replaces the row's right margin. It must fit with the full
-          // number and left padding inside BOTH the preferred width and cellx.
-          const required = 90 + Math.ceil(measure(text) * 15) + rightTwips;
-          const width = Number(/\\clwWidth(\d+)/.exec(definitions[column])![1]);
-          expect(width).toBeGreaterThanOrEqual(required);
-          const edges = [...row.matchAll(/\\cellx(\d+)/g)].map(match => Number(match[1]));
-          expect(edges[column] - edges[column - 1]).toBeGreaterThanOrEqual(required);
-          const anchor = (width - rightTwips) / 15 - measure(post);
+          expect(indent).toBe(Math.round((block.insetRight + block.postWidth - measure(post)) * 15));
+          const anchor = (width - 90 - indent) / 15 - measure(post);
           expect(anchor).toBeCloseTo(block.insetLeft + table.tableStyle.cellPaddingPx.x + block.preWidth, 1);
         }
       }
-      expect(row).not.toMatch(/\\tqdec|\\tx\d|\\tab /);
     });
-    // The two failing Word cells now use the passing HTML paste's margins;
-    // their existing widths (2010 and 1275 twips) already include that padding.
-    const firstBody = payloads.rtf.split("\\trowd")[2].split("\\pard")[0].split(/\\cellx\d+/);
-    expect(firstBody[2]).toContain("\\clwWidth2010\\clpadr607\\clpadfr3");
-    expect(firstBody[5]).toContain("\\clwWidth1275\\clpadr390\\clpadfr3");
+    // The longest density suffix needs the least indent, not the most.
+    const rows = payloads.rtf.split("\\trowd").slice(1).map(row => row.split("\\pard\\plain\\intbl").slice(1));
+    expect(Number(/\\ri(\d+)/.exec(rows[1][2])![1]))
+      .toBeLessThan(Number(/\\ri(\d+)/.exec(rows[2][2])![1]));
+    expect(rows[4][4]).toContain(" 34.44\\cell");
   });
+
+  it.skipIf(!existsSync("/usr/bin/textutil"))("round-trips every cell through Cocoa's RTF reader without changing column geometry", () => {
+    const convert = (input: string, format: string) => execFileSync("/usr/bin/textutil",
+      ["-stdin", "-format", "rtf", "-convert", format, "-stdout"], { input, encoding: "utf8" });
+    const roundTrip = convert(payloads.rtf, "rtf");
+    expect([...roundTrip.matchAll(/\\ri(\d+)/g)].map(match => match[1]))
+      .toEqual([...payloads.rtf.matchAll(/\\ri(\d+)/g)].map(match => match[1]));
+    for (const rtf of [payloads.rtf, roundTrip]) {
+      const document = htmlDocument(convert(rtf, "html"));
+      const rows = [...document.querySelectorAll("tr")];
+      expect(rows).toHaveLength(table.rows.length);
+      const style = document.querySelector("style")!.textContent!;
+      const geometry: string[][] = [];
+      rows.forEach((row, index) => {
+        const cells = [...row.querySelectorAll("td")];
+        expect(cells.map(cell => cell.textContent!.trim())).toEqual(table.rows[index].cells.map(cell => cell.text));
+        expect(row.querySelectorAll("br")).toHaveLength(0);
+        geometry.push(cells.map(cell => {
+          const css = new RegExp(`td\\.${cell.className} \\{([^}]+)`).exec(style)![1];
+          return css.match(/width:[^;]+/)![0] + css.match(/padding:[^;]+/)![0];
+        }));
+      });
+      geometry.forEach(row => expect(row).toEqual(geometry[0]));
+    }
+  });
+
+  it.skipIf(!existsSync("/usr/bin/textutil") || !existsSync("/usr/bin/osascript"))(
+    "lays out every Sharpless cell on one line at the same column start in AppKit", () => {
+      // textutil's HTML preserves text even when TextEdit would wrap it. Ask the
+      // actual Cocoa layout manager for line fragments as well as round-tripping.
+      const script = String.raw`
+        ObjC.import("AppKit");
+        var data = $.NSFileHandle.fileHandleWithStandardInput.readDataToEndOfFile;
+        var attributed = $.NSAttributedString.alloc.initWithRTFDocumentAttributes(data, null);
+        var storage = $.NSTextStorage.alloc.init;
+        storage.setAttributedString(attributed);
+        var manager = $.NSLayoutManager.alloc.init;
+        var container = $.NSTextContainer.alloc.initWithContainerSize($.NSMakeSize(1000, 10000));
+        storage.addLayoutManager(manager);
+        manager.addTextContainer(container);
+        manager.ensureLayoutForTextContainer(container);
+        var lines = [];
+        for (var glyph = 0; glyph < manager.numberOfGlyphs; glyph++) {
+          var character = manager.characterIndexForGlyphAtIndex(glyph);
+          var rect = manager.lineFragmentRectForGlyphAtIndexEffectiveRange(glyph, null);
+          var key = JSON.stringify(rect);
+          if (!lines.length || lines[lines.length - 1].key !== key) {
+            lines.push({ key: key, x: rect.origin.x, width: rect.size.width, text: "" });
+          }
+          lines[lines.length - 1].text += ObjC.unwrap(attributed.string.substringWithRange($.NSMakeRange(character, 1)));
+        }
+        JSON.stringify(lines);
+      `;
+      const lines = JSON.parse(execFileSync("/usr/bin/osascript", ["-l", "JavaScript", "-e", script], {
+        input: exportTableToRtf({ ...table, caption: undefined, footnotes: [] }),
+        encoding: "utf8", timeout: 15000, stdio: ["pipe", "pipe", "pipe"]
+      })) as { text: string; x: number; width: number }[];
+      expect(lines.map(line => line.text.trim())).toEqual(table.rows.flatMap(row => row.cells.map(cell => cell.text)));
+      lines.forEach((line, index) => {
+        const header = lines[index % table.columns.length];
+        expect(line.x).toBeCloseTo(header.x, 3);
+        expect(line.width).toBeCloseTo(header.width, 3);
+      });
+    }
+  );
 
   it("preserves scripts in cells and footnotes", () => {
     const document = htmlDocument(payloads.html);
@@ -248,7 +310,7 @@ describe("table clipboard payloads", () => {
       expect(edges.every((edge, index) => edge > (edges[index - 1] ?? 0))).toBe(true);
       expect(row).toContain("\\trgaph90\\trleft0\\trpaddl90\\trpaddfl3\\trpaddr90\\trpaddfr3"
         + "\\trpaddt30\\trpaddft3\\trpaddb30\\trpaddfb3");
-      expect(row).toContain(`\\trftsWidth3\\trwWidth${expected[expected.length - 1]}`);
+      expect(row).not.toMatch(/\\trwWidth/);
       expect([...row.matchAll(/\\clftsWidth3\\clwWidth(\d+)/g)].map(match => Number(match[1])))
         .toEqual(rtfWidths);
     }
@@ -277,20 +339,24 @@ describe("table clipboard payloads", () => {
       expect(width).toBeGreaterThanOrEqual(interiorTwips + 2 * padx);
       expect(width).toBeGreaterThanOrEqual(Math.ceil(widest * 15) + 2 * padx);
       expect(row).toContain(`\\cellx${width}`);
-      expect(row).toContain(`\\trftsWidth3\\trwWidth${width}`);
+      expect(row).not.toMatch(/\\trwWidth/);
       expect(row).toContain(`\\trgaph${padx}\\trleft0\\trpaddl${padx}\\trpaddfl3`);
       expect(row).toContain(`\\trpaddr${padx}\\trpaddfr3`);
       expect(row).toContain(`\\trpaddt${pady}\\trpaddft3\\trpaddb${pady}\\trpaddfb3`);
       if (align === "decimal") {
-        const right = Number(/\\clpadr(\d+)/.exec(row)![1]);
+        const indent = Number(/\\ri(\d+)/.exec(row)?.[1] ?? 0);
         const text = input.rows[index].cells[0].text;
-        expect(padx + Math.ceil(measure(text) * 15) + right).toBeLessThanOrEqual(width);
+        expect(2 * Math.max(padx, 100) + Math.ceil(measure(text) * 15) + indent).toBeLessThanOrEqual(width);
         const exported = planTableLayout({
           ...input, columns: [{ ...input.columns[0], width: { mode: "fixed", px: width / 15 } }]
         });
         const post = text.includes(".") ? text.slice(text.indexOf(".")) : "";
-        expect((width - right) / 15 - measure(post))
-          .toBeCloseTo(exported.columns[0].decimalAnchorX! - input.x, 1);
+        if (text === "—") expect(indent).toBe(0);
+        else {
+          const anchor = (width - padx - indent) / 15 - measure(post);
+          // The margin and paragraph indent each round independently to twips.
+          expect(Math.abs(anchor - (exported.columns[0].decimalAnchorX! - input.x))).toBeLessThanOrEqual(1 / 15);
+        }
         expect(row).not.toMatch(/\\tqdec|\\tab /);
       }
     }
@@ -425,9 +491,13 @@ describe("table clipboard payloads", () => {
         const text = texts[index];
         const post = text.includes(".") ? text.slice(text.indexOf(".")) : "";
         const postWidth = measureTextRun(post, { ...nativeTextStyleFromObjectStyle(input.style), script: "normal" });
-        const cellPadding = padding + block.postWidth - postWidth;
-        expect(row).toContain(`\\clpadr${Math.round(cellPadding * 15)}\\clpadfr3`);
-        expect(row).toContain("\\intbl\\qr");
+        const indent = block.insetRight + block.postWidth - postWidth;
+        expect(row).not.toContain("\\clpad");
+        if (text === "—") expect(row).toContain("\\intbl\\qc");
+        else {
+          expect(row).toContain(`\\ri${Math.round(indent * 15)}`);
+          expect(row).toContain("\\intbl\\qr");
+        }
         expect(row).not.toMatch(/\\tqdec|\\tab /);
       });
     }
@@ -471,9 +541,16 @@ describe("table clipboard payloads", () => {
     });
     expect(cells[1].querySelector("sup b")?.textContent).toBe("0");
     exportTableToRtf(input).split("\\trowd").slice(1).forEach((row, index) => {
-      const padding = input.tableStyle.cellPaddingPx.x + block.insetRight + block.postWidth - postWidths[index];
-      expect(row).toContain(`\\clpadr${Math.round(padding * 15)}\\clpadfr3`);
-      expect(row).toContain("\\intbl\\qr");
+      const width = Number(/\\clwWidth(\d+)/.exec(row)![1]);
+      const exported = planTableLayout({ ...input, columns: [{ ...input.columns[0], width: { mode: "fixed", px: width / 15 } }] });
+      const block = exported.columns[0].decimalBlock!;
+      const indent = block.insetRight + block.postWidth - postWidths[index];
+      expect(row).not.toContain("\\clpad");
+      if (index >= 2) expect(row).toContain("\\intbl\\qc");
+      else {
+        expect(row).toContain(`\\ri${Math.round(indent * 15)}`);
+        expect(row).toContain("\\intbl\\qr");
+      }
       expect(row).not.toMatch(/\\tqdec|\\tab /);
     });
   });
@@ -543,7 +620,7 @@ describe("table clipboard payloads", () => {
     const exported = planTableLayout({ ...input, columns: [{ ...input.columns[0], width: { mode: "fixed", px: width / 15 } }] });
     const anchor = exported.columns[0].decimalAnchorX! - input.x;
     rows.forEach((row, index) => {
-      const right = Number(/\\clpadr(\d+)/.exec(row)![1]);
+      const right = Math.round(input.tableStyle.cellPaddingPx.x * 15);
       const paragraphs = row.split("\\pard\\plain\\intbl").slice(1);
       expect(paragraphs).toHaveLength(2);
       expect(row).toContain(`\\cellx${width}`);
