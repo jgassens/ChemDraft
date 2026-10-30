@@ -7,7 +7,13 @@ pub(super) fn should_return(
     app_active: bool,
     source_or_document_focused: bool,
 ) -> bool {
-    skip_reason(requested, lease_held, app_active, source_or_document_focused).is_none()
+    skip_reason(
+        requested,
+        lease_held,
+        app_active,
+        source_or_document_focused,
+    )
+    .is_none()
 }
 
 pub(super) fn skip_reason(

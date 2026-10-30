@@ -105,7 +105,8 @@ pub(crate) fn return_focus_after_interaction<R: tauri::Runtime>(
     #[cfg(target_os = "macos")]
     {
         use objc2_app_kit::{NSApplication, NSWindow};
-        let marker = objc2::MainThreadMarker::new().ok_or("Panel focus requires the main thread.")?;
+        let marker =
+            objc2::MainThreadMarker::new().ok_or("Panel focus requires the main thread.")?;
         let pointer = window.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
         let panel = unsafe { pointer.as_ref() }.ok_or("Could not access native panel window.")?;
         if focus_return::should_return(
@@ -579,7 +580,8 @@ pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
     let data = Box::into_raw(Box::new(PanelSubclass {
         return_focus: std::rc::Rc::new(move || {
             activation(&lease_panel, false);
-            if let Err(error) = return_focus_to_document(parent as _, &document, lease_panel.label())
+            if let Err(error) =
+                return_focus_to_document(parent as _, &document, lease_panel.label())
             {
                 eprintln!("Could not return panel keyboard focus: {error}");
             }

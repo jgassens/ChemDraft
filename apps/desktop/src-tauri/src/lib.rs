@@ -3157,7 +3157,8 @@ async fn set_plugin_panel_input_focus(
                     #[cfg(target_os = "macos")]
                     {
                         // makeKeyWindow must not lend a background app a persistent lease.
-                        let marker = MainThreadMarker::new().ok_or("Panel focus requires the main thread.")?;
+                        let marker = MainThreadMarker::new()
+                            .ok_or("Panel focus requires the main thread.")?;
                         if !objc2_app_kit::NSApplication::sharedApplication(marker).isActive() {
                             return Ok(false);
                         }
@@ -3180,7 +3181,8 @@ async fn set_plugin_panel_input_focus(
                         // Keep NOACTIVATE throughout the lease and drop delayed background requests.
                         let hwnd = target.hwnd().map_err(|error| error.to_string())?.0;
                         let already_active = unsafe {
-                            windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() == hwnd
+                            windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow()
+                                == hwnd
                         };
                         if !panel_window::focus_if_app_active(hwnd) {
                             return Ok(false);
@@ -3245,9 +3247,10 @@ async fn set_plugin_panel_input_focus(
                 // Hand back before disabling key eligibility: AppKit can resign a panel as
                 // that flag changes. The helper checks the actual key/foreground window,
                 // current lease and app activation; native loss/cleanup never request it.
-                if let Err(error) =
-                    panel_window::return_focus_after_interaction(&target, return_focus.unwrap_or(false))
-                {
+                if let Err(error) = panel_window::return_focus_after_interaction(
+                    &target,
+                    return_focus.unwrap_or(false),
+                ) {
                     palette_focus_log(format_args!(
                         "hand-back label={} result=skipped reason=error error={error}",
                         target.label()
