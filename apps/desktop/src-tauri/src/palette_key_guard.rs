@@ -26,6 +26,10 @@ fn now() -> u64 {
 
 fn publish<R: tauri::Runtime>(app: &tauri::AppHandle<R>, event: Option<(String, state::Event)>) {
     if let Some((label, event)) = event {
+        super::super::palette_focus_log(format_args!(
+            "palette_key_guard label={label} pending={} sequence={}",
+            event.pending, event.sequence
+        ));
         // The page echoes the click sequence with its classification/release. Main
         // drops only editing keydowns until this sequence is cleared or expires.
         // A clear carries the pending owner's label, even when main/app loss ended it.
@@ -159,8 +163,16 @@ pub(super) fn install<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> Re
                     return std::ptr::null_mut();
                 }
             } else if native.r#type() == NSEventType::LeftMouseDown {
+                // Unknown windows include AppKit's own popup; they are not a
+                // document/palette click-away. App loss is observed separately.
+                if label.is_some() {
+                    super::end_select_interactions(&app, label.as_deref(), "outside");
+                }
                 pointer(&app, label.as_deref());
             } else {
+                if label.is_some() {
+                    super::end_select_interactions(&app, None, "outside");
+                }
                 end(&app, "", End::Outside, None, 0);
             }
             event.as_ptr()
@@ -178,6 +190,7 @@ pub(super) fn install<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> Re
         *monitor.borrow_mut() = Some(token);
         let app = window.app_handle().clone();
         let resigned = block2::RcBlock::new(move |_: NonNull<NSNotification>| {
+            super::end_select_interactions(&app, None, "app");
             end(&app, "", End::Deactivated, None, 0);
         });
         DEACTIVATION.with(|observer| {

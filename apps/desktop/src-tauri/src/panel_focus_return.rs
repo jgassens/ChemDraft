@@ -7,7 +7,26 @@ pub(super) fn should_return(
     app_active: bool,
     source_or_document_focused: bool,
 ) -> bool {
-    requested && !lease_held && app_active && source_or_document_focused
+    skip_reason(requested, lease_held, app_active, source_or_document_focused).is_none()
+}
+
+pub(super) fn skip_reason(
+    requested: bool,
+    lease_held: bool,
+    app_active: bool,
+    source_or_document_focused: bool,
+) -> Option<&'static str> {
+    if !requested {
+        Some("not-requested")
+    } else if lease_held {
+        Some("lease-held")
+    } else if !app_active {
+        Some("app-inactive")
+    } else if !source_or_document_focused {
+        Some("another-window-focused")
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]

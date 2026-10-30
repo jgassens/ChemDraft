@@ -60,6 +60,14 @@ pub(crate) fn return_focus_after_interaction<R: tauri::Runtime>(
     requested: bool,
 ) -> Result<(), String> {
     let held = holds_input_focus(window);
+    let log_skip = |app_active, source_focused| {
+        let reason = focus_return::skip_reason(requested, held, app_active, source_focused)
+            .unwrap_or("document-unavailable");
+        super::palette_focus_log(format_args!(
+            "hand-back label={} result=skipped reason={reason}",
+            window.label()
+        ));
+    };
     #[cfg(windows)]
     {
         if let Some(document) = window
@@ -76,8 +84,13 @@ pub(crate) fn return_focus_after_interaction<R: tauri::Runtime>(
                 return_focus_to_document(
                     window.hwnd().map_err(|error| error.to_string())?.0,
                     &document,
+                    window.label(),
                 )?;
+            } else {
+                log_skip(super::foreground_belongs_to_app(), true);
             }
+        } else {
+            log_skip(super::foreground_belongs_to_app(), true);
         }
     }
     #[cfg(target_os = "macos")]
@@ -101,7 +114,18 @@ pub(crate) fn return_focus_after_interaction<R: tauri::Runtime>(
                 super::focus_native_document_window(&document)?;
                 let webview: &tauri::Webview<R> = document.as_ref();
                 webview.set_focus().map_err(|error| error.to_string())?;
+                super::palette_focus_log(format_args!(
+                    "hand-back label={} result=returned reason=explicit-release",
+                    window.label()
+                ));
+            } else {
+                log_skip(true, true);
             }
+        } else {
+            log_skip(
+                NSApplication::sharedApplication(marker).isActive(),
+                panel.isKeyWindow(),
+            );
         }
     }
     #[cfg(not(any(windows, target_os = "macos")))]
@@ -116,6 +140,15 @@ pub(crate) fn return_focus_after_interaction<R: tauri::Runtime>(
                 window.app_handle(),
                 super::MainWindowFocusMode::OnlyIfAppActive,
             )?;
+            super::palette_focus_log(format_args!(
+                "hand-back label={} result=returned reason=explicit-release",
+                window.label()
+            ));
+        } else {
+            log_skip(
+                super::foreground_belongs_to_app(),
+                window.is_focused().unwrap_or(false),
+            );
         }
     }
     Ok(())
@@ -144,6 +177,7 @@ pub(crate) fn reset_for_webview<R: tauri::Runtime>(window: &tauri::Window<R>) {
 struct FocusEvent {
     kind: &'static str,
     generation: u64,
+    reason: &'static str,
 }
 
 // Read synchronously during page registration, before any asynchronous focus IPC.
@@ -165,12 +199,17 @@ pub(crate) fn request<R: tauri::Runtime>(
     generation: u64,
     page_token: &str,
     editing: bool,
+    select_interaction: bool,
 ) -> Option<u64> {
     let state = window.state::<PanelFocusState>();
     let mut leases = state.0.lock().unwrap();
     let lease = leases.entry(window.label().to_string()).or_default();
     let epoch = page_token.parse().ok()?;
-    lease.request(generation, epoch, editing).then_some(epoch)
+    if !lease.request(generation, epoch, editing) {
+        return None;
+    }
+    lease.select_interaction = cfg!(target_os = "macos") && editing && select_interaction;
+    Some(epoch)
 }
 
 pub(crate) fn acquired<R: tauri::Runtime>(
@@ -206,6 +245,18 @@ pub(crate) fn is_current<R: tauri::Runtime>(
 // Called synchronously from WM_ACTIVATE/WM_ACTIVATEAPP or AppKit key notifications,
 // never from WebView2 child focus messages or delayed Tauri Focused events.
 pub(crate) fn activation<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>, active: bool) {
+    activation_with_reason(window, active, "window");
+}
+
+fn activation_with_reason<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    active: bool,
+    reason: &'static str,
+) {
+    super::palette_focus_log(format_args!(
+        "activation label={} active={active} reason={reason}",
+        window.label()
+    ));
     if !active {
         key_guard::end(
             window.app_handle(),
@@ -215,27 +266,56 @@ pub(crate) fn activation<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>, ac
             0,
         );
     }
-    let generation = {
+    let (generation, preserve_select) = {
         let state = window.state::<PanelFocusState>();
         let mut leases = state.0.lock().unwrap();
         let lease = leases.entry(window.label().to_string()).or_default();
-        if active {
+        let preserve_select = !active && reason == "window" && lease.suspend_select();
+        let generation = if active || preserve_select {
             Some(lease.generation)
         } else {
             lease.deactivate()
-        }
+        };
+        (generation, preserve_select)
     };
     if let Some(generation) = generation {
-        if !active {
+        if !active && !preserve_select {
             let _ = window.set_focusable(false);
         }
         let event = FocusEvent {
             kind: if active { "activated" } else { "deactivated" },
             generation,
+            reason,
         };
         if let Err(error) = window.emit_to(window.label(), "chemdraft://plugin-panel-focus", event)
         {
             eprintln!("Could not notify panel focus: {error}");
+        }
+    }
+}
+
+// Key resignation alone cannot distinguish an AppKit popup from leaving the
+// palette. The native pointer monitor and app notification supply those explicit
+// terminal transitions, including when the select has already lost key status.
+#[cfg(target_os = "macos")]
+pub(super) fn end_select_interactions<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    except: Option<&str>,
+    reason: &'static str,
+) {
+    for (label, window) in app.webview_windows() {
+        if except == Some(label.as_str()) {
+            continue;
+        }
+        let select = app
+            .state::<PanelFocusState>()
+            .0
+            .lock()
+            .unwrap()
+            .get(&label)
+            .is_some_and(|lease| lease.select_interaction);
+        if select {
+            activation_with_reason(&window, false, reason);
         }
     }
 }
@@ -301,6 +381,7 @@ pub(crate) fn focus_if_app_active(hwnd: windows_sys::Win32::Foundation::HWND) ->
 pub(crate) fn return_focus_to_document<R: tauri::Runtime>(
     panel: windows_sys::Win32::Foundation::HWND,
     document: &tauri::WebviewWindow<R>,
+    label: &str,
 ) -> Result<(), String> {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GetForegroundWindow, IsIconic, IsWindowVisible, SetForegroundWindow,
@@ -313,6 +394,9 @@ pub(crate) fn return_focus_to_document<R: tauri::Runtime>(
         panel as usize,
         owner as usize,
     ) {
+        super::palette_focus_log(format_args!(
+            "hand-back label={label} result=skipped reason=another-window-focused"
+        ));
         return Ok(());
     }
     // SetActiveWindow alone can leave the palette as the foreground window after a
@@ -330,6 +414,15 @@ pub(crate) fn return_focus_to_document<R: tauri::Runtime>(
         let webview: &tauri::Webview<R> = document.as_ref();
         webview.set_focus().map_err(|error| error.to_string())?;
     }
+    super::palette_focus_log(format_args!(
+        "hand-back label={label} result={} reason={}",
+        if returned { "returned" } else { "skipped" },
+        if returned {
+            "explicit-release"
+        } else {
+            "foreground-changed-or-document-unavailable"
+        }
+    ));
     Ok(())
 }
 
@@ -478,7 +571,8 @@ pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
     let data = Box::into_raw(Box::new(PanelSubclass {
         return_focus: std::rc::Rc::new(move || {
             activation(&lease_panel, false);
-            if let Err(error) = return_focus_to_document(parent as _, &document) {
+            if let Err(error) = return_focus_to_document(parent as _, &document, lease_panel.label())
+            {
                 eprintln!("Could not return panel keyboard focus: {error}");
             }
         }),

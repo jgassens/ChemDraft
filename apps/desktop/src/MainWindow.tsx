@@ -7738,13 +7738,14 @@ export function MainWindow({
 
     const result = applyObjectStyleCommandToDocument(session.startDocument, commandId, effectiveArtPaintTarget);
     artStylePreviewRef.current = null;
-    replacePresentDocument(session.startDocument);
     if (!result.handled || !result.targeted) {
+      replacePresentDocument(session.startDocument, true);
       setStatus("Select a graphic before changing object style");
       return;
     }
 
     if (result.needsRingOverrideChoice) {
+      replacePresentDocument(session.startDocument, true);
       setMoleculeStyleOverridePrompt({
         commandId,
         target: effectiveArtPaintTarget,
@@ -7755,10 +7756,14 @@ export function MainWindow({
       return;
     }
 
-    const changed = commitDocumentChange(result.document);
+    // The present is already the preview. Install the final value and its original
+    // undo snapshot together; never roll back then compare against a live present.
+    const changed = result.document !== session.startDocument;
+    if (changed) commitDocumentHistoryFrom(session.startDocument, result.document, result.message);
+    else replacePresentDocument(session.startDocument, true);
     setActiveEditorObjectId(undefined);
     setStatus(changed ? result.message : "Selected object style unchanged");
-  }, [applyObjectStyleCommand, applyObjectStyleCommandToDocument, commitDocumentChange, effectiveArtPaintTarget, replacePresentDocument, settleOtherPalettePreview]);
+  }, [applyObjectStyleCommand, applyObjectStyleCommandToDocument, commitDocumentHistoryFrom, effectiveArtPaintTarget, replacePresentDocument, settleOtherPalettePreview]);
 
   const cancelObjectStylePreview = useCallback(() => {
     const session = artStylePreviewRef.current;
@@ -8236,16 +8241,18 @@ export function MainWindow({
 
     const result = applyMoleculeInspectorCommandToDocument(session.startDocument, commandId);
     moleculeInspectorPreviewRef.current = null;
-    replacePresentDocument(session.startDocument);
     if (!result.handled || !result.targeted) {
+      replacePresentDocument(session.startDocument, true);
       setStatus("Select a molecule before changing Drawn Structure Settings style");
       return;
     }
 
-    const changed = commitDocumentChange(result.document, moleculeDoubleBondPositionForCommand(commandId) ? result.message : undefined);
+    const changed = result.document !== session.startDocument;
+    if (changed) commitDocumentHistoryFrom(session.startDocument, result.document, result.message);
+    else replacePresentDocument(session.startDocument, true);
     setActiveEditorObjectId(undefined);
     setStatus(changed ? result.message : "Selected molecule style unchanged");
-  }, [applyMoleculeInspectorCommand, applyMoleculeInspectorCommandToDocument, commitDocumentChange, replacePresentDocument, settleOtherPalettePreview]);
+  }, [applyMoleculeInspectorCommand, applyMoleculeInspectorCommandToDocument, commitDocumentHistoryFrom, replacePresentDocument, settleOtherPalettePreview]);
 
   const cancelMoleculeInspectorPreview = useCallback(() => {
     const session = moleculeInspectorPreviewRef.current;

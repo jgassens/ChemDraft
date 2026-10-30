@@ -1139,7 +1139,8 @@ pub fn run() {
                         window.hwnd(),
                         window.app_handle().get_webview_window(MAIN_WINDOW_LABEL),
                     ) {
-                        let _ = panel_window::return_focus_to_document(panel.0, &main);
+                        let _ =
+                            panel_window::return_focus_to_document(panel.0, &main, window.label());
                     }
                     #[cfg(not(windows))]
                     let _ = focus_main_document_window_impl(
@@ -3098,6 +3099,8 @@ fn register_plugin_panel_input_focus(window: tauri::WebviewWindow) -> Result<Str
     Ok(panel_window::page_token(&window))
 }
 
+// Keep the existing flat IPC payload compatible.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn set_plugin_panel_input_focus(
     window: tauri::WebviewWindow,
@@ -3107,140 +3110,173 @@ async fn set_plugin_panel_input_focus(
     click_sequence: Option<u64>,
     pointer_before: Option<u64>,
     return_focus: Option<bool>,
+    select_interaction: Option<bool>,
 ) -> Result<bool, String> {
-    validate_plugin_panel_focus_caller(window.label())?;
-    let before = pointer_before.unwrap_or(0);
-    // Register the pending generation BEFORE marshalling acquisition to the UI thread.
-    // A native loss while that operation is queued must cancel it, not be forgotten.
-    let Some(epoch) = panel_window::request(&window, generation, &page_token, editing) else {
-        panel_window::end_pointer_guard(
-            window.app_handle(),
-            window.label(),
-            panel_window::PointerGuardEnd::Refused,
-            click_sequence,
-            before,
-        );
-        return Ok(false);
-    };
-    let target = window.clone();
-    run_on_main_thread_blocking(&window, move || {
-        if !panel_window::is_current(&target, generation, epoch)
-            || (editing && !panel_window::acquired(&target, generation, epoch, true))
-        {
+    let result: Result<bool, String> = (|| {
+        validate_plugin_panel_focus_caller(window.label())?;
+        let before = pointer_before.unwrap_or(0);
+        // Register the pending generation BEFORE marshalling acquisition to the UI thread.
+        // A native loss while that operation is queued must cancel it, not be forgotten.
+        let Some(epoch) = panel_window::request(
+            &window,
+            generation,
+            &page_token,
+            editing,
+            select_interaction.unwrap_or(false),
+        ) else {
+            if !editing {
+                palette_focus_log(format_args!(
+                    "hand-back label={} result=skipped reason=stale-page-or-generation",
+                    window.label()
+                ));
+            }
             panel_window::end_pointer_guard(
-                target.app_handle(),
-                target.label(),
+                window.app_handle(),
+                window.label(),
                 panel_window::PointerGuardEnd::Refused,
                 click_sequence,
                 before,
             );
             return Ok(false);
-        }
-        if editing {
-            let result = (|| -> Result<bool, String> {
-                #[cfg(target_os = "macos")]
-                {
-                    // makeKeyWindow must not lend a background app a persistent lease.
-                    let marker =
-                        MainThreadMarker::new().ok_or("Panel focus requires the main thread.")?;
-                    if !objc2_app_kit::NSApplication::sharedApplication(marker).isActive() {
-                        return Ok(false);
-                    }
-                    target
-                        .set_focusable(true)
-                        .map_err(|error| error.to_string())?;
-                    let pointer =
-                        target.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
-                    let panel = unsafe { pointer.as_ref() }.ok_or_else(|| {
-                        "Could not access native ChemDraft panel window.".to_string()
-                    })?;
-                    // Tao's set_focus activates NSApplication even for a NonactivatingPanel.
-                    // Only make this panel key: an exposed input click or delayed IPC must never
-                    // activate ChemDraft after the user has switched to another application.
-                    panel.makeKeyWindow();
-                }
-                #[cfg(windows)]
-                {
-                    // Never use Tao's force_window_active (including its synthetic Alt fallback).
-                    // Keep NOACTIVATE throughout the lease and drop delayed background requests.
-                    let hwnd = target.hwnd().map_err(|error| error.to_string())?.0;
-                    let already_active = unsafe {
-                        windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() == hwnd
-                    };
-                    if !panel_window::focus_if_app_active(hwnd) {
-                        return Ok(false);
-                    }
-                    // A native colour popup may have opened during the click default before
-                    // this IPC runs. Refocusing its WebView2 owner would dismiss the popup.
-                    if already_active {
-                        return Ok(true);
-                    }
-                }
-                #[cfg(not(any(target_os = "macos", windows)))]
-                {
-                    target
-                        .set_focusable(false)
-                        .map_err(|error| error.to_string())?;
-                    target.set_focus().map_err(|error| error.to_string())?;
-                }
-                let webview: &tauri::Webview = target.as_ref();
-                webview.set_focus().map_err(|error| error.to_string())?;
-                #[cfg(windows)]
-                return Ok(unsafe {
-                    windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow()
-                        == target.hwnd().map_err(|error| error.to_string())?.0
-                });
-                #[cfg(target_os = "macos")]
-                return Ok(unsafe {
-                    &*(target.ns_window().map_err(|error| error.to_string())? as *mut NSWindow)
-                }
-                .isKeyWindow());
-                #[cfg(not(any(target_os = "macos", windows)))]
-                target.is_focused().map_err(|error| error.to_string())
-            })();
-            let held = panel_window::acquired(
-                &target,
-                generation,
-                epoch,
-                result.as_ref().copied().unwrap_or(false),
-            );
-            panel_window::end_pointer_guard(
-                target.app_handle(),
-                target.label(),
-                if held {
-                    panel_window::PointerGuardEnd::Acquired
-                } else {
-                    panel_window::PointerGuardEnd::Refused
-                },
-                click_sequence,
-                before,
-            );
-            if !held && panel_window::is_current(&target, generation, epoch) {
-                let _ = target.set_focusable(false);
-            }
-            result.map(|_| held)
-        } else {
-            panel_window::end_pointer_guard(
-                target.app_handle(),
-                target.label(),
-                panel_window::PointerGuardEnd::Released,
-                click_sequence,
-                before,
-            );
-            // Hand back before disabling key eligibility: AppKit can resign a panel as
-            // that flag changes. The helper checks the actual key/foreground window,
-            // current lease and app activation; native loss/cleanup never request it.
-            if let Err(error) =
-                panel_window::return_focus_after_interaction(&target, return_focus.unwrap_or(false))
+        };
+        let target = window.clone();
+        run_on_main_thread_blocking(&window, move || {
+            if !panel_window::is_current(&target, generation, epoch)
+                || (editing && !panel_window::acquired(&target, generation, epoch, true))
             {
-                eprintln!("Could not return panel keyboard focus after release: {error}");
+                if !editing {
+                    palette_focus_log(format_args!(
+                        "hand-back label={} result=skipped reason=stale-or-deactivated-lease",
+                        target.label()
+                    ));
+                }
+                panel_window::end_pointer_guard(
+                    target.app_handle(),
+                    target.label(),
+                    panel_window::PointerGuardEnd::Refused,
+                    click_sequence,
+                    before,
+                );
+                return Ok(false);
             }
-            target
-                .set_focusable(false)
-                .map_err(|error| error.to_string())?;
-            Ok(false)
-        }
-    })?
+            if editing {
+                let result = (|| -> Result<bool, String> {
+                    #[cfg(target_os = "macos")]
+                    {
+                        // makeKeyWindow must not lend a background app a persistent lease.
+                        let marker =
+                            MainThreadMarker::new().ok_or("Panel focus requires the main thread.")?;
+                        if !objc2_app_kit::NSApplication::sharedApplication(marker).isActive() {
+                            return Ok(false);
+                        }
+                        target
+                            .set_focusable(true)
+                            .map_err(|error| error.to_string())?;
+                        let pointer =
+                            target.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
+                        let panel = unsafe { pointer.as_ref() }.ok_or_else(|| {
+                            "Could not access native ChemDraft panel window.".to_string()
+                        })?;
+                        // Tao's set_focus activates NSApplication even for a NonactivatingPanel.
+                        // Only make this panel key: an exposed input click or delayed IPC must never
+                        // activate ChemDraft after the user has switched to another application.
+                        panel.makeKeyWindow();
+                    }
+                    #[cfg(windows)]
+                    {
+                        // Never use Tao's force_window_active (including its synthetic Alt fallback).
+                        // Keep NOACTIVATE throughout the lease and drop delayed background requests.
+                        let hwnd = target.hwnd().map_err(|error| error.to_string())?.0;
+                        let already_active = unsafe {
+                            windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() == hwnd
+                        };
+                        if !panel_window::focus_if_app_active(hwnd) {
+                            return Ok(false);
+                        }
+                        // A native colour popup may have opened during the click default before
+                        // this IPC runs. Refocusing its WebView2 owner would dismiss the popup.
+                        if already_active {
+                            return Ok(true);
+                        }
+                    }
+                    #[cfg(not(any(target_os = "macos", windows)))]
+                    {
+                        target
+                            .set_focusable(false)
+                            .map_err(|error| error.to_string())?;
+                        target.set_focus().map_err(|error| error.to_string())?;
+                    }
+                    let webview: &tauri::Webview = target.as_ref();
+                    webview.set_focus().map_err(|error| error.to_string())?;
+                    #[cfg(windows)]
+                    return Ok(unsafe {
+                        windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow()
+                            == target.hwnd().map_err(|error| error.to_string())?.0
+                    });
+                    #[cfg(target_os = "macos")]
+                    return Ok(unsafe {
+                        &*(target.ns_window().map_err(|error| error.to_string())? as *mut NSWindow)
+                    }
+                    .isKeyWindow());
+                    #[cfg(not(any(target_os = "macos", windows)))]
+                    target.is_focused().map_err(|error| error.to_string())
+                })();
+                let held = panel_window::acquired(
+                    &target,
+                    generation,
+                    epoch,
+                    result.as_ref().copied().unwrap_or(false),
+                );
+                panel_window::end_pointer_guard(
+                    target.app_handle(),
+                    target.label(),
+                    if held {
+                        panel_window::PointerGuardEnd::Acquired
+                    } else {
+                        panel_window::PointerGuardEnd::Refused
+                    },
+                    click_sequence,
+                    before,
+                );
+                if !held && panel_window::is_current(&target, generation, epoch) {
+                    let _ = target.set_focusable(false);
+                }
+                result.map(|_| held)
+            } else {
+                panel_window::end_pointer_guard(
+                    target.app_handle(),
+                    target.label(),
+                    panel_window::PointerGuardEnd::Released,
+                    click_sequence,
+                    before,
+                );
+                // Hand back before disabling key eligibility: AppKit can resign a panel as
+                // that flag changes. The helper checks the actual key/foreground window,
+                // current lease and app activation; native loss/cleanup never request it.
+                if let Err(error) =
+                    panel_window::return_focus_after_interaction(&target, return_focus.unwrap_or(false))
+                {
+                    palette_focus_log(format_args!(
+                        "hand-back label={} result=skipped reason=error error={error}",
+                        target.label()
+                    ));
+                    eprintln!("Could not return panel keyboard focus after release: {error}");
+                }
+                target
+                    .set_focusable(false)
+                    .map_err(|error| error.to_string())?;
+                Ok(false)
+            }
+        })?
+    })();
+    palette_focus_log(format_args!(
+        "set_plugin_panel_input_focus label={} editing={editing} returnFocus={} clickSequencePresent={} selectInteraction={} result={result:?}",
+        window.label(),
+        return_focus.unwrap_or(false),
+        click_sequence.is_some(),
+        select_interaction.unwrap_or(false)
+    ));
+    result
 }
 /// Sent to the main window with the closed window's label; `listenForNativePanelWindowCloses` in
 /// panelBridge.ts decodes it back to the panel.
@@ -5447,6 +5483,13 @@ fn ensure_preferences_window<R: Runtime>(
 fn agent_bridge_status() -> AgentBridgeStatus {
     let env_value = std::env::var(AGENT_BRIDGE_ENV_VAR).ok();
     agent_bridge_status_from(env_value.as_deref(), std::env::args())
+}
+
+// Diagnostics share the existing bridge gate; no separate flag or page logging.
+fn palette_focus_log(message: std::fmt::Arguments<'_>) {
+    if agent_bridge_status().enabled {
+        eprintln!("[palette-focus] {message}");
+    }
 }
 
 fn agent_bridge_status_from<I, S>(env_value: Option<&str>, args: I) -> AgentBridgeStatus

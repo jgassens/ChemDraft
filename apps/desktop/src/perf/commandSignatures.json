@@ -412,7 +412,7 @@
     "name": "set_plugin_panel_input_focus",
     "async": true,
     "generics": "",
-    "parameters": "window: tauri::WebviewWindow, page_token: String, editing: bool, generation: u64, click_sequence: Option<u64>, pointer_before: Option<u64>, return_focus: Option<bool>,",
+    "parameters": "window: tauri::WebviewWindow, page_token: String, editing: bool, generation: u64, click_sequence: Option<u64>, pointer_before: Option<u64>, return_focus: Option<bool>, select_interaction: Option<bool>,",
     "returnType": "Result<bool, String>"
   },
   {

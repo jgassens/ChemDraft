@@ -1122,11 +1122,12 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
       expect((select as HTMLSelectElement).value).toBe(value);
       expect(change).not.toHaveBeenCalled();
       expect(document.activeElement).toBe(select);
-      expect(leases().map(([, args]) => args.editing)).toEqual([true]);
+      const acquisitions = platform === "macos" && opening === "keyboard" ? [true, true] : [true];
+      expect(leases().map(([, args]) => args.editing)).toEqual(acquisitions);
       expect((await press(select, "Escape")).defaultPrevented).toBe(true);
       await flush();
       expect(document.activeElement).not.toBe(select);
-      expect(leases().map(([, args]) => args.editing)).toEqual([true, false]);
+      expect(leases().map(([, args]) => args.editing)).toEqual([...acquisitions, false]);
       expect(leases().at(-1)![1]).toMatchObject({ returnFocus: true });
     });
   });
@@ -1142,7 +1143,7 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
       await act(async () => { number.focus(); select.focus(); });
     } else {
       const generation = leases().at(-1)![1].generation;
-      await act(async () => native.notify!({ payload: { kind: "deactivated", generation } }));
+      await act(async () => native.notify!({ payload: { kind: "deactivated", generation, reason: "outside" } }));
       await flush();
       // Reacquire through another field, then Tab back without opening the list.
       await act(async () => number.focus());
@@ -1411,7 +1412,7 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     const generation = leases().at(-1)![1].generation;
     await act(async () => native.notify!({ payload: { kind: "deactivated", generation } }));
     await flush();
-    expect(leases().at(-1)![1]).toMatchObject({ editing: false, returnFocus: false });
+    expect(leases().at(-1)![1]).toMatchObject({ editing: platform === "macos" && kind === "select", returnFocus: false });
     expect(document.activeElement).toBe(control);
   });
 

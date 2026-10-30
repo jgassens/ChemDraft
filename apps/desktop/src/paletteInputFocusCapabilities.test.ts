@@ -58,7 +58,35 @@ it("allows Windows palette colour popups to activate without a second WebView2 f
   const command = readNative("src/lib.rs").split("async fn set_plugin_panel_input_focus(")[1]!.split("/// Sent to the main window")[0]!;
   const windows = command.split("#[cfg(windows)]")[1]!.split("#[cfg(not(any")[0]!;
   expect(windows).toContain("panel_window::focus_if_app_active(hwnd)");
-  expect(windows).toContain("if already_active {\n                        return Ok(true);");
+  expect(windows).toMatch(/if already_active \{\s+return Ok\(true\);/);
+});
+
+it("gates every palette-focus diagnostic on the existing native agent bridge switch", () => {
+  const source = readNative("src/lib.rs");
+  const logger = source.split("fn palette_focus_log(")[1]!.split("\nfn ")[0]!;
+  expect(logger).toContain("if agent_bridge_status().enabled");
+  expect(logger).toContain('eprintln!("[palette-focus] {message}")');
+  const gate = source.split("fn agent_bridge_status()")[1]!.split("\n}")[0]!;
+  expect(gate).toContain("std::env::var(AGENT_BRIDGE_ENV_VAR)");
+  expect(gate).toContain("agent_bridge_status_from(env_value.as_deref(), std::env::args())");
+  const request = source.split("async fn set_plugin_panel_input_focus(")[1]!.split("/// Sent to the main window")[0]!;
+  for (const field of ["editing=", "returnFocus=", "clickSequencePresent=", "result="]) expect(request).toContain(field);
+  expect(readNative("src/panel_window.rs")).toContain("activation label=");
+  expect(readNative("src/panel_window.rs")).toContain("hand-back label=");
+  expect(readNative("src/palette_key_guard.rs")).toContain("palette_key_guard label=");
+  for (const file of ["src/panel_window.rs", "src/palette_key_guard.rs"]) {
+    expect(readNative(file)).not.toContain('eprintln!("[palette-focus]');
+  }
+});
+
+it("retains only explicitly leased macOS selects across key loss and ends them on outside/app loss", () => {
+  const panel = readNative("src/panel_window.rs");
+  expect(panel).toContain('cfg!(target_os = "macos") && editing && select_interaction');
+  expect(panel).toContain('reason == "window" && lease.suspend_select()');
+  expect(panel).toContain("!active && !preserve_select");
+  const pointer = readNative("src/palette_key_guard.rs");
+  expect(pointer).toContain('end_select_interactions(&app, label.as_deref(), "outside")');
+  expect(pointer).toContain('end_select_interactions(&app, None, "app")');
 });
 
 it("hands Windows palette drags back after Tao finishes, guarding newer leases and foreground owners", () => {

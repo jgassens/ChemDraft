@@ -1011,15 +1011,31 @@ function PaletteColorInput({ value, onPreviewColor, onCommitColor, onKeyDownCapt
   const inputRef = useRef<HTMLInputElement>(null);
   const pendingColor = useRef<string | undefined>(undefined);
   const settledColor = useRef(value);
+  const awaitingColorEcho = useRef<string | undefined>(undefined);
+  // Detached palettes receive the model echo later over IPC. Keep the browser's
+  // live value locally: rendering the old prop here resets the native input before
+  // WebKit's subsequent change/blur and commits the old colour back to the drawing.
+  const [localColor, setLocalColor] = useState(value);
   useEffect(() => {
-    if (pendingColor.current === undefined) settledColor.current = value;
+    if (awaitingColorEcho.current !== undefined) {
+      if (value !== awaitingColorEcho.current) return;
+      awaitingColorEcho.current = undefined;
+    }
+    if (pendingColor.current === undefined) {
+      settledColor.current = value;
+      setLocalColor(value);
+    }
   }, [value]);
   const preview = (color: string) => {
+    setLocalColor(color);
+    awaitingColorEcho.current = color === value ? undefined : color;
     if (color === (pendingColor.current ?? settledColor.current)) return;
     pendingColor.current = color;
     onPreviewColor(color);
   };
   const commit = (color: string) => {
+    setLocalColor(color);
+    awaitingColorEcho.current = color === value ? undefined : color;
     if (pendingColor.current === undefined && color === settledColor.current) return;
     // Some choosers send change without a preceding input notification.
     if (pendingColor.current !== color) onPreviewColor(color);
@@ -1032,7 +1048,11 @@ function PaletteColorInput({ value, onPreviewColor, onCommitColor, onKeyDownCapt
     const change = () => commit(input.value);
     // The lease handler may blur before the popover sees Escape, including when
     // the key targets body. Discard first so the blur fallback cannot commit.
-    const discard = () => { pendingColor.current = undefined; };
+    const discard = () => {
+      pendingColor.current = undefined;
+      awaitingColorEcho.current = undefined;
+      setLocalColor(value);
+    };
     input.addEventListener("change", change);
     input.addEventListener(PALETTE_INPUT_FOCUS_CANCEL_EVENT, discard);
     return () => {
@@ -1040,9 +1060,13 @@ function PaletteColorInput({ value, onPreviewColor, onCommitColor, onKeyDownCapt
       input.removeEventListener(PALETTE_INPUT_FOCUS_CANCEL_EVENT, discard);
     };
   });
-  return <input {...props} ref={inputRef} type="color" value={value}
+  return <input {...props} ref={inputRef} type="color" value={localColor}
     onKeyDownCapture={(event) => {
-      if (event.key === "Escape") pendingColor.current = undefined;
+      if (event.key === "Escape") {
+        pendingColor.current = undefined;
+        awaitingColorEcho.current = undefined;
+        setLocalColor(value);
+      }
       onKeyDownCapture?.(event);
     }}
     onChange={(event) => {

@@ -110,6 +110,23 @@ Repeat with Label color, Atom label background color, Custom ring fill color, Ri
 and the colour popover's system picker. A pick commits when the chooser sends change, even without
 input blur; moving focus afterwards adds no duplicate undo step. If the chooser stays open during
 a canvas edit, that edit must end the earlier preview, so a later commit/cancel cannot erase it.
+Use real mouse/keyboard events for the native chooser and its colour grid, and separately for
+the application's colour-grid popover (synthetic input/change pairs do not cover WebKit's event
+order). Select Blueberry in macOS Colors: the drawing and well must agree before and after closing
+the panel. Repeat for an art object's fill/stroke. A grid swatch must apply on its first click.
+One Undo restores the previous colour; the next Undo removes the preceding drawing edit, never
+a second colour entry. Repeat on Windows with its actual native chooser and both grids.
+For a focus trace, directly launch this worktree's binary from a terminal using the existing
+`--chemdraft-agent-bridge` switch (or `CHEMDRAFT_AGENT_BRIDGE=1`). Save stderr's `[palette-focus]`
+lines while opening Text size by pointer, pressing Escape, typing 18, then pressing Escape again.
+The first Escape must leave type-ahead/arrows in the select; the second returns tool keys to the
+document. Repeat with Tab, a click elsewhere, and switching apps while the list is open: those
+must end the select interaction without pulling focus from the destination. The trace includes
+window activation/deactivation, lease requests/results, pending-click set/clear and hand-back
+decisions. A release with `returnFocus=true` immediately after the first Escape identifies page
+handling; an earlier `activation ... active=false reason=window` identifies native key loss.
+Repeat without the bridge switch/environment setting and confirm there are no `[palette-focus]`
+lines. Neither diagnostic mode nor synthetic bridge events replace the real-event pass.
 Text commit clicks (macOS and Windows): edit a text object with Bond or Select restored, then click empty canvas or an existing atom; that click commits only, preserves bonds and selection, and focuses SECTION.canvas-region for shortcuts; the next click works normally. Repeat Enter/Escape/Tab, toolbar actions, double-click editing, and IME composition (no mid-composition commit).
 With nothing focused, press Shift+F10: the app menu opens, never the browser menu, and mouse and keyboard input keep working.
 On Windows, right-click and press Shift+F10 in text fields (including textareas) in the document,

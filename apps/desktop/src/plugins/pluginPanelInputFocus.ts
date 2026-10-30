@@ -66,6 +66,7 @@ export function isPaletteWindowDragPress(
 export interface NativePanelFocusEvent {
   kind: "activated" | "deactivated";
   generation: number;
+  reason?: "window" | "outside" | "app";
 }
 
 // Survives effect teardown/reinstall (including React StrictMode). Native bookkeeping
@@ -96,12 +97,16 @@ function registerNativeInputFocus(): Promise<string> {
 }
 
 async function requestNativeInputFocus(
-  editing: boolean, generation: number, clickSequence?: number, pointerBefore?: number, returnFocus = false
+  editing: boolean, generation: number, clickSequence?: number, pointerBefore?: number, returnFocus = false,
+  selectInteraction = false
 ): Promise<boolean> {
   if (!isDesktopRuntime()) return editing;
   const token = await registerNativeInputFocus();
   const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<boolean>("set_plugin_panel_input_focus", { editing, generation, pageToken: token, clickSequence, pointerBefore, returnFocus });
+  return invoke<boolean>("set_plugin_panel_input_focus", {
+    editing, generation, pageToken: token, clickSequence, pointerBefore, returnFocus,
+    ...(selectInteraction ? { selectInteraction: true } : {})
+  });
 }
 
 async function listenNativePanelFocus(listener: (event: NativePanelFocusEvent) => void): Promise<() => void> {
@@ -156,6 +161,8 @@ export function installPluginPanelInputFocus(
   let suspendingControlFocus = false;
   let leasedControl: HTMLElement | undefined;
   let openSelect: HTMLSelectElement | undefined;
+  let selectSuspended = false;
+  let nativeSelectInteraction = false;
   let selectionLease = false;
   let selectionNodes: Node[] = [];
   let selectionGesture: { pointerId: number; x: number; y: number; dragged: boolean } | undefined;
@@ -172,13 +179,18 @@ export function installPluginPanelInputFocus(
   let pointerClassificationBefore: number | undefined;
   let disposed = false;
   const focusLeasedControl = (): void => {
+    if (selectSuspended && openSelect) return; // Do not dismiss an AppKit tracking menu.
     if (editableFocus && acquiredControlFocus && leasedControl && shell.contains(leasedControl)) {
       const destination = leasedControl.matches(":disabled") ? shell : leasedControl;
       if (document.activeElement !== destination) destination.focus({ preventScroll: true });
     }
   };
   const setEditing = (next: boolean, retry = false, pointerBefore?: number, returnFocus = false): void => {
+    const selectInteraction = next && editableFocus && platform === "macos" &&
+      leasedControl instanceof HTMLSelectElement && !leasedControl.disabled;
+    retry ||= selectInteraction !== nativeSelectInteraction;
     if (editing === next && !retry) return;
+    nativeSelectInteraction = selectInteraction;
     if (editing !== next) {
       leaseChain++;
       nativeGenerations.clear();
@@ -208,7 +220,7 @@ export function installPluginPanelInputFocus(
         if (requestedRevision !== revision) return;
         if (next) nativeGenerations.add(requestedRevision);
         const acquired = await (requestFocus === requestNativeInputFocus
-          ? requestNativeInputFocus(next, requestedRevision, requestedClick, pointerBefore, returnFocus)
+          ? requestNativeInputFocus(next, requestedRevision, requestedClick, pointerBefore, returnFocus, selectInteraction)
           : requestFocus(next, requestedRevision));
         if (next && requestedChain === leaseChain) {
           if (!acquired) finish(true, false, undefined, false);
@@ -235,6 +247,7 @@ export function installPluginPanelInputFocus(
   };
   const finish = (cancelControl = false, preserveNativeChooser = false, pointerBefore?: number, returnFocus = true): void => {
     openSelect = undefined;
+    selectSuspended = false;
     clearTimeout(controlBlurTimer);
     clearTimeout(pointerFocusTimer);
     pointerFocusTimer = undefined;
@@ -293,8 +306,8 @@ export function installPluginPanelInputFocus(
     selectionGesture = undefined;
     const control = (editableFocus ? disabledControlAtPointer(shell, event) : undefined) ?? editableControl(event.target);
     if (control && shell.contains(control)) {
-      // WebKit delivers the Escape that dismisses its NSMenu to the page. WebView2
-      // consumes it inside the popup, so its next page Escape already means hand-back.
+      // WebKit may deliver the list-closing Escape to the page. Retain this
+      // intent through popup blur/key loss too; WebView2 consumes it in its popup.
       openSelect = platform === "macos" && control instanceof HTMLSelectElement && !control.disabled ? control : undefined;
       clearTimeout(controlBlurTimer);
       if (editableFocus && acquiredControlFocus) pendingPaletteShells.delete(shell);
@@ -389,8 +402,19 @@ export function installPluginPanelInputFocus(
   const nativeFocus = (event: NativePanelFocusEvent): void => {
     if (disposed) return;
     if (event.kind === "deactivated") {
+      if (editing && nativeGenerations.has(event.generation) && nativeSelectInteraction &&
+        event.reason !== "outside" && event.reason !== "app") {
+        // Losing key status to AppKit's popup is not a click away. Native code
+        // keeps this select eligible to regain key status when tracking ends.
+        selectSuspended = true;
+        clearTimeout(controlBlurTimer);
+        return;
+      }
       // Loss is terminal even if a delayed acquisition reply says it acquired focus.
       if (editing && nativeGenerations.has(event.generation)) finish(false, true, undefined, false);
+    } else if (selectSuspended && editing) {
+      selectSuspended = false;
+      focusLeasedControl();
     } else checkActivation();
   };
   const focusIn = (event: FocusEvent): void => {
@@ -421,6 +445,10 @@ export function installPluginPanelInputFocus(
     if (editableFocus && editing && control) paletteControls.set(shell, control);
   };
   const focusOut = (event: FocusEvent): void => {
+    // Popup tracking can blur the select to body before the native notification.
+    // An actual destination or Tab still ends this protection below.
+    if (nativeSelectInteraction && event.target === leasedControl && !event.relatedTarget &&
+      (openSelect || selectSuspended)) return;
     if (event.target === openSelect) openSelect = undefined;
     if (editableFocus && suspendingControlFocus) {
       event.stopPropagation();
@@ -487,6 +515,11 @@ export function installPluginPanelInputFocus(
       event.stopPropagation(); // Escape finishes editing; it must not close the report window.
       if (control === openSelect && openSelect) {
         openSelect = undefined;
+        if (selectSuspended) {
+          selectSuspended = false;
+          setEditing(true, true);
+        }
+        focusLeasedControl();
         return;
       }
       finish(true);
@@ -509,6 +542,8 @@ export function installPluginPanelInputFocus(
       // Bubble after the control's commit handler; textarea/contenteditable keep multiline Enter.
       finish();
     } else if (event.key === "Tab" && !event.defaultPrevented) {
+      openSelect = undefined;
+      selectSuspended = false;
       // Palettes use browser traversal and keep the lease between all non-button controls.
       // A checkbox/slider/select must take keys too: otherwise Delete reaches the drawing
       // on both platforms. Text entry still commits on blur before traversing to the slider.
@@ -531,7 +566,14 @@ export function installPluginPanelInputFocus(
     if (selectionLease && !hasReportSelection()) finish();
   };
   const selectChange = (event: Event): void => {
-    if (event.target === openSelect) openSelect = undefined;
+    if (event.target === openSelect) {
+      openSelect = undefined;
+      if (selectSuspended) {
+        selectSuspended = false;
+        setEditing(true, true);
+      }
+      focusLeasedControl();
+    }
   };
   // Removing a focused node need not emit focusout (including a replaced report or closed portal).
   const observer = new MutationObserver(() => {
