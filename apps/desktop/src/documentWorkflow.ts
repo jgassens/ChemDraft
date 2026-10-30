@@ -3,6 +3,9 @@ import { planObjectArrangement, moleculeAnchorForArrangement, moleculeVisualBoun
 import { snapRotationDegrees } from "./rotationSnap";
 import { snapPlacementDegrees } from "./placementSnap";
 import { projectedDoubleBondSides } from "./interaction/projectedDoubleBondSides";
+import { doubleBondStereoState, perceivedSpecifiedDoubleBondIds } from "./interaction/doubleBondStereo";
+import type { storedCoordinatesMatchStereo } from "@chemdraft/ocl-adapter";
+import type { DoubleBondStereoReader } from "./interaction/doubleBondStereo";
 import {
   GRAPHIC_CORNER_RADIUS_HANDLE_SIZE_PX,
   OBJECT_RESIZE_HANDLE_OFFSET_PX,
@@ -4376,8 +4379,9 @@ function nativeBondWithOrderAndDoubleSide(
     delete display.doubleBondSide;
   }
 
+  const { stereo: _stereo, ...bondWithoutStereo } = bond;
   return {
-    ...bond,
+    ...(order === "double" ? bond : bondWithoutStereo),
     order,
     display: Object.keys(display).length > 0 ? display : undefined
   };
@@ -4959,6 +4963,7 @@ export function createNativeMolfileMolecule(
       fromAtomId: bond.fromAtomId,
       toAtomId: bond.toAtomId,
       order: bond.order,
+      ...(bond.stereo ? { stereo: bond.stereo } : {}),
       // Preserve wedge/hash stereo markers from the pasted molfile (V2000 bond stereo /
       // V3000 CFG) instead of silently dropping them (AGENTS.md §5.7).
       ...(bond.bondStyle ? { display: { bondStyle: bond.bondStyle } } : {})
@@ -4999,6 +5004,9 @@ export function createNativeMolfileMolecule(
   });
 }
 
+/** Single and grid paste must verify the same open-E/Z graph they commit. */
+export const SMILES_PASTE_OPTIONS = { openUnspecifiedDoubleBonds: true } as const;
+
 export function insertSmilesMoleculeGrid(
   document: ChemDraftDocument,
   origin: PagePoint,
@@ -5019,7 +5027,7 @@ export function insertSmilesMoleculeGrid(
     const molecule = createSmilesMolecule(document, { x: margin, y: margin }, entry.depiction, entry.smiles, {
       ...SMILES_PASTE_SOURCE,
       reservedObjectIds
-    });
+    }, SMILES_PASTE_OPTIONS);
     reservedObjectIds.add(molecule.id);
     return molecule;
   });
@@ -8788,20 +8796,250 @@ export function applyNativeMoleculeBondOrderValueTarget(
     return document;
   }
 
-  if (order === bond.order || !canSetNativeBondOrder(molecule, bond, order)) {
+  if ((order === bond.order && bond.stereo !== "either") || !canSetNativeBondOrder(molecule, bond, order)) {
     return document;
   }
 
   const bonds = molecule.bonds.map((candidate) =>
-    candidate.id === bond.id ? nativeBondWithOrderAndDisplay(molecule, candidate, order) : candidate
+    candidate.id === bond.id ? nativeBondWithOrderAndDisplay(molecule, withoutDoubleBondStereo(candidate), order) : candidate
   );
-  const nextMolecule = refreshNativeSingleBondGraph(molecule, molecule.atoms, bonds);
+  const refreshed = refreshNativeSingleBondGraph(molecule, molecule.atoms, bonds);
+  const nextMolecule = bond.stereo === "either" ? withStoredBondStereoMolfile(refreshed) : refreshed;
 
   return applyPatch(
     document,
     { op: "updateObject", objectId: molecule.id, changes: nextMolecule },
     { now: phase4Timestamp }
   );
+}
+
+export type BondStereoValue = "either" | "geometry" | "flipped";
+export interface BondStereoAvailability {
+  eitherDisabledReason?: string;
+  geometryDisabledReason?: string;
+  descriptor?: "E" | "Z";
+  value?: BondStereoValue;
+}
+
+function withoutDoubleBondStereo(bond: MoleculeBond): MoleculeBond {
+  const { stereo: _stereo, ...rest } = bond;
+  return rest;
+}
+
+const atomMappedBondStereoDisabledReason = "Atom mapping must be removed before changing E/Z";
+
+/** Atom maps exist only in the source structure, not in the native atom model. */
+function bondStereoSourceHasAtomMapping(molecule: MoleculeObject): boolean {
+  if (molecule.structureFormat === "smiles") return /\[[^\]]*:\d+\]/.test(molecule.structure);
+  if (molecule.structureFormat === "molfile-v3000") {
+    if (/\bAAMAP\s*=\s*[1-9]\d*\b/.test(molecule.structure)) return true;
+    // Standard V3000 also has a positional atom-map field after x/y/z.
+    const atomBlock = molecule.structure.split("M  V30 BEGIN ATOM")[1]?.split("M  V30 END ATOM")[0];
+    return atomBlock?.split(/\r?\n/).some(line => {
+      const fields = line.trim().split(/\s+/);
+      return fields[0] === "M" && fields[1] === "V30" && Number(fields[7]) > 0;
+    }) ?? false;
+  }
+  const source = molecule.structure.split(/\r?\n/);
+  const counts = source.findIndex(line => line.includes("V2000"));
+  return counts >= 0 && source.slice(counts + 1, counts + 1 + Number(source[counts].slice(0, 3)))
+    .some(line => Number(line.slice(60, 63)) > 0);
+}
+
+function withStoredBondStereoMolfile(molecule: MoleculeObject): MoleculeObject {
+  if (bondStereoSourceHasAtomMapping(molecule)) throw new Error(atomMappedBondStereoDisabledReason);
+  const { molecule: expanded, expansions, placeholderAtoms } = expandNativeMoleculeLabelGroups(molecule);
+  const molfile = moleculeToMolfileV2000(expanded, {
+    fromDocFrame: true, unknownBondOrders: "refuse",
+    abbreviations: "rgroup", superatomGroups: expansions, placeholderAtoms,
+    kekuleBondOrders: nativeBondOrderResolution(expanded.atoms, expanded.bonds).kekuleOrders
+  });
+  if (molfile.warnings.length) throw new Error(`Cannot preserve chemistry while changing E/Z: ${molfile.warnings.join("; ")}`);
+  return { ...molecule, structureFormat: "molfile-v2000", structure: preserveBondStereoSourceProperties(molecule, molfile.contents) };
+}
+
+class BondStereoAtomMappingError extends Error {}
+
+/** Isotopes are regenerated from native atoms (including D/T). Check normalized identities
+ * before retaining source-only radicals; never copy isotope records over the writer's output. */
+function preserveBondStereoSourceProperties(molecule: MoleculeObject, contents: string): string {
+  const source = molecule.structure.split(/\r?\nM  END/)[0].split(/\r?\n/);
+  const sourceCounts = source.findIndex(line => line.includes("V2000"));
+  if (sourceCounts < 0) return contents;
+  const atomCount = Number(source[sourceCounts].slice(0, 3));
+  const originalAtoms = source.slice(sourceCounts + 1, sourceCounts + 1 + atomCount);
+  const radicals = source.filter(line => line.startsWith("M  RAD"));
+  const radicalAtoms = originalAtoms.flatMap((line, i) => Number(line.slice(36, 39)) === 4 ? [i + 1] : []);
+  // Only source properties need an index mapping; native isotopes (including D/T)
+  // are already in contents, even when label expansion changes the atom count.
+  if (!source.some(line => line.startsWith("M  ISO")) && !radicals.length && !radicalAtoms.length &&
+    !originalAtoms.some(line => Number(line.slice(34, 36)))) return contents;
+  const next = contents.split("\n");
+  const counts = next.findIndex(line => line.includes("V2000"));
+  if (counts < 0 || Number(next[counts].slice(0, 3)) !== atomCount) {
+    throw new Error("Cannot preserve isotope/radical atom mapping while changing double-bond geometry");
+  }
+  // The shared MOL parser normalizes H + M ISO 2/3 to D/T and resolves atom-block
+  // mass differences. Raw element columns would mistake that normalization for a remap.
+  const original = parseMolfileGraph(molecule.structure);
+  const regenerated = parseMolfileGraph(contents);
+  if (original.warnings.some(warning => warning.code === "clipboard.isotope_default_mass_unknown")) {
+    throw new BondStereoAtomMappingError("Cannot preserve isotope/radical atom mapping: source isotope mass is unknown");
+  }
+  original.atoms.forEach((atom, i) => {
+    const generated = regenerated.atoms[i];
+    if (atom.element !== generated.element || atom.isotope !== generated.isotope) {
+      const identity = (value: { element: string; isotope?: number }) => `${value.isotope ?? ""}${value.element}`;
+      throw new BondStereoAtomMappingError(
+        `Cannot preserve isotope/radical atom mapping while changing double-bond geometry: atom ${i + 1} ` +
+        `is ${identity(atom)} in the source but ${identity(generated)} in the regenerated structure`
+      );
+    }
+  });
+  const sourceRadicals = new Map(radicalAtoms.map(index => [index, 2]));
+  for (const line of radicals) {
+    const fields = line.trim().split(/\s+/).slice(3).map(Number);
+    for (let i = 0; i < fields.length; i += 2) sourceRadicals.set(fields[i], fields[i + 1]);
+  }
+  // A native radical annotation wins for that atom. A generated M RAD line for
+  // some other atom must not discard all the source-only radicals in the molecule.
+  const retainedRadicals = [...sourceRadicals].filter(([index]) => molecule.atoms[index - 1]?.markRadicals === undefined)
+    .map(([index, code]) => `M  RAD  1${String(index).padStart(4)}${String(code).padStart(4)}`);
+  next.splice(next.findIndex(line => line.startsWith("M  END")), 0, ...retainedRadicals);
+  return next.join("\n");
+}
+
+/** Engine perception is injected; clearing the open marker asks OCL about drawn geometry. */
+export function nativeBondStereoAvailability(
+  document: ChemDraftDocument, targets: readonly { objectId: string; bondId: string }[],
+  reader?: DoubleBondStereoReader
+): BondStereoAvailability {
+  const disabled = (reason: string): BondStereoAvailability => ({ eitherDisabledReason: reason, geometryDisabledReason: reason });
+  if (targets.length !== 1) return disabled("Select one double bond");
+  const target = targets[0];
+  const molecule = firstPage(document).objects.find((o): o is MoleculeObject => o.type === "molecule" && o.id === target.objectId);
+  const bond = molecule?.bonds.find(b => b.id === target.bondId);
+  if (!molecule || !bond || bond.order !== "double") return disabled("E/Z requires a double bond");
+  if (bondStereoSourceHasAtomMapping(molecule)) return disabled(atomMappedBondStereoDisabledReason);
+  if ((molecule.structureFormat === "smiles" && /\[\d+/.test(molecule.structure)) ||
+    (molecule.structureFormat === "molfile-v3000" && /\b(?:MASS|RAD)=/.test(molecule.structure))) {
+    return disabled("Retained isotope/radical data requires a V2000 molfile before changing E/Z");
+  }
+  const alreadyUnspecified = bond.stereo === "either";
+  const eitherReason = (reason: string) => alreadyUnspecified ? "E/Z is already unspecified" : reason;
+  if (molecule.bonds.some(b => b.order === "unknown")) return { ...disabled("Resolve unknown bond orders before changing E/Z"), eitherDisabledReason: eitherReason("Resolve unknown bond orders before changing E/Z") };
+  const unmarked = { ...molecule, bonds: molecule.bonds.map(b => b.id === bond.id ? withoutDoubleBondStereo(b) : b) };
+  let geometryStructure: string;
+  try {
+    geometryStructure = withStoredBondStereoMolfile(unmarked).structure;
+  } catch (error) {
+    // Both choices rebuild this molfile. A source-only property without a safe
+    // atom mapping must disable both, including clearing an existing open marker.
+    return disabled(error instanceof BondStereoAtomMappingError ? error.message : "Cannot preserve all stored properties while changing E/Z");
+  }
+  const state: BondStereoAvailability = { value: alreadyUnspecified ? "either" : "geometry", ...(alreadyUnspecified ? { eitherDisabledReason: "E/Z is already unspecified" } : {}) };
+  if ([bond.fromAtomId, bond.toAtomId].some(id => molecule.atoms.find(a => a.id === id)?.element !== "C")) {
+    return { ...state, eitherDisabledReason: eitherReason("E/Z unspecified requires a stereogenic carbon–carbon double bond") };
+  }
+  if (nativeMoleculeRings(molecule).some(ring => ring.atomIds.length < 8 && ring.bondIds.includes(bond.id))) {
+    return { ...state, eitherDisabledReason: eitherReason("This double bond is not stereogenic (small ring)") };
+  }
+  if (!reader) return { ...state, eitherDisabledReason: eitherReason("E/Z perception is still loading") };
+  try {
+    const from = molecule.atoms.findIndex(a => a.id === bond.fromAtomId);
+    const to = molecule.atoms.findIndex(a => a.id === bond.toAtomId);
+    // Expand real label groups before CIP perception: Me and a drawn methyl are equivalent.
+    // The shared builder appends expansion atoms, retaining the drawn endpoint indices.
+    const perceived = reader(geometryStructure).find(b =>
+      (b.from === from && b.to === to) || (b.from === to && b.to === from));
+    return perceived ? { ...state, descriptor: perceived.descriptor === "unspecified" ? undefined : perceived.descriptor }
+      : { ...state, eitherDisabledReason: eitherReason("This double bond is not stereogenic (equivalent substituents or a small ring)") };
+  } catch {
+    return { ...state, eitherDisabledReason: eitherReason("E/Z could not be perceived for this structure") };
+  }
+}
+
+/** Atoms on one end of an acyclic bond. Ring bonds cannot be reflected independently. */
+function doubleBondReflectionEnd(molecule: MoleculeObject, bond: MoleculeBond): Set<string> | undefined {
+  const component = (start: string) => {
+    const ids = new Set([start]);
+    for (const id of ids) for (const edge of molecule.bonds) {
+      if (edge.id === bond.id) continue;
+      if (edge.fromAtomId === id) ids.add(edge.toAtomId);
+      if (edge.toAtomId === id) ids.add(edge.fromAtomId);
+    }
+    return ids;
+  };
+  const from = component(bond.fromAtomId);
+  if (from.has(bond.toAtomId)) return undefined;
+  const to = component(bond.toAtomId);
+  return from.size < to.size ? from : to;
+}
+
+export function nativeBondStereoFlipDisabledReason(
+  document: ChemDraftDocument, targets: readonly { objectId: string; bondId: string }[], reader?: DoubleBondStereoReader
+): string | undefined {
+  const state = nativeBondStereoAvailability(document, targets, reader);
+  if (state.geometryDisabledReason) return state.geometryDisabledReason;
+  if (!state.descriptor) return "A stereogenic double bond with drawn E/Z geometry is required";
+  const molecule = firstPage(document).objects.find((o): o is MoleculeObject => o.type === "molecule" && o.id === targets[0].objectId)!;
+  const bond = molecule.bonds.find(b => b.id === targets[0].bondId)!;
+  if (!doubleBondReflectionEnd(molecule, bond)) return "Ring geometry cannot be flipped independently";
+  const from = molecule.atoms.find(a => a.id === bond.fromAtomId)!;
+  const to = molecule.atoms.find(a => a.id === bond.toAtomId)!;
+  if (Math.hypot(to.x - from.x, to.y - from.y) < 0.001) return "Draw a nonzero double bond before flipping geometry";
+  return undefined;
+}
+
+function applyFlippedMoleculeBondStereo(
+  document: ChemDraftDocument, targets: readonly { objectId: string; bondId: string }[], reader?: DoubleBondStereoReader
+): ChemDraftDocument {
+  if (nativeBondStereoFlipDisabledReason(document, targets, reader)) return document;
+  const target = targets[0];
+  const page = firstPage(document);
+  const molecule = page.objects.find((o): o is MoleculeObject => o.type === "molecule" && o.id === target.objectId)!;
+  const bond = molecule.bonds.find(b => b.id === target.bondId)!;
+  const end = doubleBondReflectionEnd(molecule, bond)!;
+  const from = molecule.atoms.find(a => a.id === bond.fromAtomId)!;
+  const to = molecule.atoms.find(a => a.id === bond.toAtomId)!;
+  const dx = to.x - from.x, dy = to.y - from.y, squared = dx * dx + dy * dy;
+  const reflect = (point: PagePoint): PagePoint => {
+    const projection = ((point.x - from.x) * dx + (point.y - from.y) * dy) / squared;
+    return { x: 2 * (from.x + projection * dx) - point.x, y: 2 * (from.y + projection * dy) - point.y };
+  };
+  const atoms = molecule.atoms.map(atom => end.has(atom.id) ? { ...atom, ...reflect(atom) } : atom);
+  const bonds = molecule.bonds.map(edge => {
+    if (edge.id === bond.id) return withoutDoubleBondStereo(edge);
+    // Reflection reverses the drawing plane: swap wedges/hashes on the reflected end
+    // to retain tetrahedral stereo. Other double bonds have both ends reflected.
+    const style = edge.display?.bondStyle;
+    return end.has(edge.fromAtomId) && end.has(edge.toAtomId) && (style === "wedge" || style === "hashed")
+      ? { ...edge, display: { ...edge.display, bondStyle: style === "wedge" ? "hashed" as const : "wedge" as const } } : edge;
+  });
+  const changes = withStoredBondStereoMolfile(normalizeNativeMoleculeGeometry({ ...molecule, atoms, bonds }));
+  return applyPatches(document, [
+    { op: "updateObject", objectId: molecule.id, changes },
+    ...anchoredElectronMarkTransformPatches(page.objects, molecule.id, end, reflect, {
+      reflectionAxisDegrees: radiansToDegrees(Math.atan2(dy, dx))
+    })
+  ], { now: phase4Timestamp });
+}
+
+/** One graph patch; callers record one labelled history entry and retain their part selection. */
+export function applyMoleculeBondStereo(
+  document: ChemDraftDocument, targets: readonly { objectId: string; bondId: string }[],
+  value: BondStereoValue, reader?: DoubleBondStereoReader
+): ChemDraftDocument {
+  if (value === "flipped") return applyFlippedMoleculeBondStereo(document, targets, reader);
+  const state = nativeBondStereoAvailability(document, targets, reader);
+  if (value === "either" ? state.eitherDisabledReason : state.geometryDisabledReason) return document;
+  const target = targets[0];
+  const molecule = firstPage(document).objects.find((o): o is MoleculeObject => o.type === "molecule" && o.id === target.objectId)!;
+  const bond = molecule.bonds.find(b => b.id === target.bondId)!;
+  if ((bond.stereo === "either") === (value === "either")) return document;
+  const bonds = molecule.bonds.map(b => b.id === bond.id ? value === "either" ? { ...b, stereo: "either" as const } : withoutDoubleBondStereo(b) : b);
+  const changes = withStoredBondStereoMolfile({ ...molecule, bonds });
+  return applyPatch(document, { op: "updateObject", objectId: molecule.id, changes }, { now: phase4Timestamp });
 }
 
 /** Display-only edit: retain chemistry, coordinates, and the current selection. */
@@ -13268,7 +13506,7 @@ function anchoredElectronMarkTransformPatches(
   moleculeId: string,
   atomIds: ReadonlySet<string>,
   transformPoint: (point: PagePoint) => PagePoint,
-  frame: { rotationDeltaDegrees?: number; scaleX?: number; scaleY?: number; flipAxis?: DocumentFlipAxis } = {}
+  frame: { rotationDeltaDegrees?: number; scaleX?: number; scaleY?: number; flipAxis?: DocumentFlipAxis; reflectionAxisDegrees?: number } = {}
 ): DocumentPatch[] {
   const scaleX = frame.scaleX ?? 1;
   const scaleY = frame.scaleY ?? 1;
@@ -13284,7 +13522,11 @@ function anchoredElectronMarkTransformPatches(
       changes.width = nextWidth;
       changes.height = nextHeight;
     }
-    if (frame.flipAxis !== undefined) {
+    if (frame.reflectionAxisDegrees !== undefined) {
+      // Angles run clockwise in the y-down canvas: reflection about α maps θ to 2α−θ.
+      // A horizontal flip reverses x (α=90°); a vertical flip reverses y (α=0°).
+      changes.rotation = normalizeDegrees(2 * frame.reflectionAxisDegrees - mark.rotation);
+    } else if (frame.flipAxis !== undefined) {
       // The mirror of a glyph at angle θ sits at 180−θ (horizontal axis) or −θ (vertical) — the
       // same rule flipOtherObjectAroundPointPatches applies to a directly-flipped mark.
       changes.rotation = normalizeDegrees(frame.flipAxis === "horizontal" ? 180 - mark.rotation : -mark.rotation);
@@ -16507,7 +16749,7 @@ export interface FlattenSpunOutcome {
 // permissive `compatibility.unknown` record (NOT a strict schema field) using a
 // versioned, namespaced key — so it survives save/reload while older builds can
 // still open new files (the key is simply ignored there). Validated on read; a
-// stale model (graph edited since it was written) is ignored via the
+// stale model (graph or drawn stereo edited since it was written) is ignored via the
 // graph-signature gate, so we never have to proactively clear it.
 // ---------------------------------------------------------------------------
 export const SPIN3D_MODEL_KEY = "chemdraft.spin3d.model.v1";
@@ -16534,14 +16776,63 @@ export interface Spin3dDocumentModelV1 {
   updatedAt: string;
 }
 
-// Deliberately position-independent: dragging or flattening a molecule (which only
-// moves its 2D x/y) keeps the signature stable, so a stored spin model survives those.
-// Editing the graph (add/remove atom, change element/charge/bond order) changes it,
-// invalidating a stale model.
-export function conformerGraphSignature(molecule: MoleculeObject): string {
+/** Exact pre-stereo signature (373f5111), used only to recognize saved legacy models. */
+export function legacyConformerGraphSignature(molecule: MoleculeObject): string {
   const atoms = molecule.atoms.map((atom) => `${atom.id}:${atom.element}:${atom.formalCharge}`).join(",");
   const bonds = molecule.bonds.map((bond) => `${bond.fromAtomId}>${bond.toAtomId}:${bond.order}`).join(",");
   return `${atoms}|${bonds}`;
+}
+
+// Fingerprint drawing stereo intent without an engine or conformer geometry. Double-bond
+// relative sides and wedged-centre neighbour turns are conservative drawing checks, not perception.
+export function conformerGraphSignature(molecule: MoleculeObject): string {
+  const atoms = molecule.atoms.map((atom) => `${atom.id}:${atom.element}:${atom.formalCharge}`).join(",");
+  const doubleStereo = doubleBondStereoState(molecule);
+  const bonds = molecule.bonds.map((bond) => `${bond.fromAtomId}>${bond.toAtomId}:${bond.order}` +
+    (doubleStereo.has(bond.id) ? `:${doubleStereo.get(bond.id)}` : "") +
+    (["wedge", "hashed"].includes(bond.display?.bondStyle ?? "") ? `:${bond.display!.bondStyle}` : "")).join(",");
+  const atomsById = new Map(molecule.atoms.map(atom => [atom.id, atom]));
+  const neighbors = new Map<string, string[]>();
+  const wedgedCenters = new Set<string>();
+  for (const bond of molecule.bonds) {
+    for (const [a, b] of [[bond.fromAtomId, bond.toAtomId], [bond.toAtomId, bond.fromAtomId]]) {
+      const adjacent = neighbors.get(a) ?? [];
+      adjacent.push(b);
+      neighbors.set(a, adjacent);
+    }
+    if (["wedge", "hashed"].includes(bond.display?.bondStyle ?? "")) wedgedCenters.add(bond.fromAtomId);
+  }
+  // Bond styles above record which ligands point towards/away. Signed turns of every
+  // id-ordered neighbour pair record ligand-order changes. Neighbour-triangle turns
+  // also catch inversion with four explicit ligands when one moves across the other
+  // ligands' line without changing its direction from the centre.
+  // Translation and in-plane rotation preserve them; reflection reverses them. This may
+  // invalidate a harmless geometry edit too, which is safer than reusing the wrong enantiomer.
+  const parity = [...wedgedCenters].sort().map(id => {
+    const center = atomsById.get(id);
+    const adjacent = [...new Set(neighbors.get(id))].sort();
+    const turns: number[] = [];
+    for (let i = 0; i < adjacent.length; i++) {
+      for (let j = i + 1; j < adjacent.length; j++) {
+        const a = atomsById.get(adjacent[i]), b = atomsById.get(adjacent[j]);
+        if (!center || !a || !b) { turns.push(0); continue; }
+        const ax = a.x - center.x, ay = a.y - center.y;
+        const bx = b.x - center.x, by = b.y - center.y;
+        const cross = (ax * by - ay * bx) / (Math.hypot(ax, ay) * Math.hypot(bx, by));
+        turns.push(!Number.isFinite(cross) || Math.abs(cross) < 1e-8 ? 0 : Math.sign(cross));
+        for (let k = j + 1; k < adjacent.length; k++) {
+          const c = atomsById.get(adjacent[k]);
+          if (!c) { turns.push(0); continue; }
+          const abx = b.x - a.x, aby = b.y - a.y;
+          const acx = c.x - a.x, acy = c.y - a.y;
+          const triangle = (abx * acy - aby * acx) / (Math.hypot(abx, aby) * Math.hypot(acx, acy));
+          turns.push(!Number.isFinite(triangle) || Math.abs(triangle) < 1e-8 ? 0 : Math.sign(triangle));
+        }
+      }
+    }
+    return `${id}:${adjacent.join(",")}:${turns.join(",")}`;
+  });
+  return `${atoms}|${bonds}${parity.length ? `|wedge-turns:${parity.join(";")}` : ""}`;
 }
 
 function isFiniteNumber(value: unknown): value is number {
@@ -16572,13 +16863,38 @@ export function readSpin3dModel(molecule: MoleculeObject): Spin3dDocumentModelV1
   return model as Spin3dDocumentModelV1;
 }
 
-/** The persisted model only if it matches a graph with fully known bond orders. */
-export function validSpin3dModelFor(molecule: MoleculeObject): Spin3dDocumentModelV1 | undefined {
+/** The persisted model only if it matches a graph with fully known bond orders.
+ * Legacy signatures require an injected stereo read-back; without one, regenerate. */
+export function validSpin3dModelFor(molecule: MoleculeObject, reader?: typeof storedCoordinatesMatchStereo): Spin3dDocumentModelV1 | undefined {
   // Older releases could persist a conformer built on guessed unknown bond orders.
   // Even a matching signature cannot make that model chemically valid.
   if (molecule.bonds.some((bond) => bond.order === "unknown")) return undefined;
-  const model = readSpin3dModel(molecule);
-  return model && model.graphSignature === conformerGraphSignature(molecule) ? model : undefined;
+  try {
+    const model = readSpin3dModel(molecule);
+    if (!model) return undefined;
+    if (model.graphSignature === conformerGraphSignature(molecule)) return model;
+    if (model.graphSignature !== legacyConformerGraphSignature(molecule)) return undefined;
+    return reader && legacySpin3dStereoMatches(molecule, model, reader) ? model : undefined;
+  } catch {
+    // An unverifiable legacy conformer must be regenerated, never trusted on a failed read-back.
+    return undefined;
+  }
+}
+
+/** Read the actual coordinates with the same OCL perception used by the flatten guard.
+ * No projection/reconciliation here: repairing a depiction could conceal a wrong conformer. */
+function legacySpin3dStereoMatches(
+  molecule: MoleculeObject, model: Spin3dDocumentModelV1, reader: typeof storedCoordinatesMatchStereo
+): boolean {
+  const coords = spin3dModelCoordsForMolecule(model, molecule);
+  if (!coords) return false;
+  const hasWedges = molecule.bonds.some(bond => ["wedge", "hashed"].includes(bond.display?.bondStyle ?? ""));
+  if (hasWedges && new Set(molecule.atoms.map(atom => atom.element)
+    .filter(label => nativeElementFromAtomLabel(label) === undefined)).size > stereoPerceptionDistinctLabelLimit) return false;
+
+  return reader(stereoPerceptionMolfile(molecule), stereoPerceptionMolfile({
+    ...molecule, bonds: molecule.bonds.map(bond => ({ ...bond, display: undefined }))
+  }), coords);
 }
 
 /** coords3d reordered from the model's atomIds order into the molecule's current atom order. */
@@ -16702,8 +17018,8 @@ function atomsCentroid(atoms: readonly { x: number; y: number }[]): { x: number;
 
 /**
  * Reads a 2D depiction's molfile and reports, per atom (index-aligned), whether it is a true
- * stereocenter and its CIP descriptor. Injected (not imported) so this module stays independent of
- * the chemistry engine and the reconcile logic is unit-testable with a fake reader.
+ * stereocenter and its CIP descriptor. The flatten/reconcile paths accept an injected reader so
+ * their logic is unit-testable with a fake reader.
  */
 export type StereoPerceiver = (
   molfile: string
@@ -17171,7 +17487,8 @@ export function flattenSpunMolecule(
   objectId: string,
   coords3d: ArrayLike<number>,
   viewMatrix: ViewMatrix,
-  options: { placement?: ScreenPlacement; stereoCenterAtomIds?: ReadonlySet<string>; perceiveStereo?: StereoPerceiver } = {}
+  options: { placement?: ScreenPlacement; stereoCenterAtomIds?: ReadonlySet<string>; perceiveStereo?: StereoPerceiver;
+    perceiveDoubleBondStereo?: DoubleBondStereoReader; specifiedDoubleBondIds?: ReadonlySet<string> } = {}
 ): FlattenSpunOutcome {
   let pageId: string | undefined;
   let molecule: MoleculeObject | undefined;
@@ -17220,11 +17537,22 @@ export interface FlattenNative3DOutcome extends Omit<FlattenSpunOutcome, "docume
   crossings?: ReturnType<typeof flattenPerspectiveFrom3D>["crossings"];
 }
 
+/** Snapshot perceived E/Z once for repeated projections. Undefined keeps the conservative
+ * drawn-geometry guard when the caller has no reader or the drawing cannot be perceived. */
+export function specifiedDoubleBondIdsForFlatten(
+  molecule: MoleculeObject, reader?: DoubleBondStereoReader
+): ReadonlySet<string> | undefined {
+  if (!reader || skipUnknownBondStereoGuard(molecule)) return undefined;
+  if (!molecule.bonds.some(bond => bond.order === "double" && bond.stereo !== "either")) return new Set<string>();
+  return perceivedSpecifiedDoubleBondIds(molecule, stereoPerceptionMolfile(molecule), reader);
+}
+
 export function flattenNativeMolecule3d(
   molecule: MoleculeObject,
   coords3d: ArrayLike<number>,
   viewMatrix: ViewMatrix,
   options: { placement?: ScreenPlacement; stereoCenterAtomIds?: ReadonlySet<string>; perceiveStereo?: StereoPerceiver;
+    perceiveDoubleBondStereo?: DoubleBondStereoReader; specifiedDoubleBondIds?: ReadonlySet<string>;
     bounds?: { width: number; height: number }; onTiming?: (stage: string, ms: number) => void } = {}
 ): FlattenNative3DOutcome {
   let stageStarted = options.onTiming ? performance.now() : 0;
@@ -17262,6 +17590,13 @@ export function flattenNativeMolecule3d(
     };
   }
 
+  const structureWarnings: string[] = [];
+  const perceive = !skipUnknownBondStereoGuard(molecule) ? options.perceiveStereo : undefined;
+  const referenceStereo = perceive?.(stereoPerceptionMolfile(molecule, structureWarnings));
+  const specifiedCenterIds = options.stereoCenterAtomIds ?? (referenceStereo
+    ? new Set(molecule.atoms.flatMap((atom, i) =>
+      referenceStereo[i]?.descriptor === "R" || referenceStereo[i]?.descriptor === "S" ? [atom.id] : []))
+    : undefined);
   // Frame recipe IN: document (y-down) → math (y-up), styles untouched.
   const mathMol: MoleculeObject = {
     ...molecule,
@@ -17269,7 +17604,7 @@ export function flattenNativeMolecule3d(
   };
   const result = flattenPerspectiveFrom3D(mathMol, coords3d, viewMatrix, {
     objectId,
-    stereoCenterAtomIds: options.stereoCenterAtomIds
+    stereoCenterAtomIds: specifiedCenterIds
   });
   mark("flatten.projection+crossings");
   if (result.status !== "committed" || !result.mol2dProjected) {
@@ -17394,11 +17729,8 @@ export function flattenNativeMolecule3d(
   // perceiver (injected) what the drawing actually says and flip any center that reads the wrong
   // hand; if the depiction can't be made to read back as the original stereochemistry, refuse the
   // view (document untouched) instead of silently committing a different stereoisomer.
-  const structureWarnings: string[] = [];
   let committedBonds = nextBonds;
-  if (options.perceiveStereo && !skipUnknownBondStereoGuard(molecule)) {
-    const perceive = options.perceiveStereo;
-    const referenceStereo = perceive(stereoPerceptionMolfile(molecule, structureWarnings));
+  if (perceive && referenceStereo) {
     const reference = new Map<number, "R" | "S">();
     molecule.atoms.forEach((_, index) => {
       const entry = referenceStereo[index];
@@ -17432,6 +17764,15 @@ export function flattenNativeMolecule3d(
       };
     }
     committedBonds = reconciled.bonds;
+    // Reconciliation validates assigned centres. Also read every originally open atom:
+    // a neighbouring wedge must never introduce a new assignment there.
+    const actual = perceive(stereoPerceptionMolfile({ ...molecule, atoms: nextAtoms, bonds: committedBonds }, structureWarnings));
+    const gained = molecule.atoms.filter((_, i) => referenceStereo[i]?.descriptor === "unspecified" &&
+      (actual[i]?.descriptor === "R" || actual[i]?.descriptor === "S"));
+    if (gained.length) return {
+      status: "refused", warnings: result.warnings, stereoCenters: result.stereoCenters,
+      refusalReasons: [`flatten would specify ${gained.length} open tetrahedral center(s); re-orient and try again`]
+    };
   }
   mark("flatten.reconcile-stereo");
 
@@ -17441,6 +17782,20 @@ export function flattenNativeMolecule3d(
     bonds: committedBonds,
     ...geometry
   };
+  // An injected engine reader can exclude non-stereogenic bonds (equivalent ligands).
+  // Without perception or explicit ids, conservatively guard every non-zero drawn state.
+  // Either markers are always checked, independently of perceived stereogenicity.
+  const specifiedDoubleBondIds = options.specifiedDoubleBondIds ??
+    specifiedDoubleBondIdsForFlatten(molecule, options.perceiveDoubleBondStereo);
+  const actualDoubleStereo = doubleBondStereoState(stagedMolecule);
+  for (const [id, expected] of doubleBondStereoState(molecule)) {
+    if (expected !== "either" && specifiedDoubleBondIds && !specifiedDoubleBondIds.has(id)) continue;
+    if (expected === 0 || actualDoubleStereo.get(id) === expected) continue;
+    return {
+      status: "refused", warnings: result.warnings, stereoCenters: result.stereoCenters,
+      refusalReasons: [`flatten would change ${expected === "either" ? "unspecified" : "specified E/Z"} stereo at bond ${id}; re-orient and try again`]
+    };
+  }
   // Stored-structure spelling (dummy "*" for an abbreviated label), not the perception one —
   // see the note where a new molecule's structure is first written. Aromatic bonds pass their Kekulé
   // orders so a literal atom keeps its valence, and anything the writer could not keep is reported
@@ -19377,7 +19732,7 @@ function nativeBondWithOrderAndDisplay(
     };
   }
 
-  const { display: _display, ...bondWithoutDisplay } = bond;
+  const { display: _display, stereo: _stereo, ...bondWithoutDisplay } = bond;
   return {
     ...bondWithoutDisplay,
     order,
@@ -19654,7 +20009,7 @@ function parseV3000MoleculeGraph(
   const rawAtoms: Array<{
     sourceId: string; element: string; isotope?: number; x: number; y: number; formalCharge: number
   }> = [];
-  const rawBonds: Array<{ sourceId: string; fromSourceId: string; toSourceId: string; order: MoleculeBond["order"]; dative: boolean }> = [];
+  const rawBonds: Array<{ sourceId: string; fromSourceId: string; toSourceId: string; order: MoleculeBond["order"]; stereo?: "either"; dative: boolean }> = [];
   let section: "atom" | "bond" | undefined;
 
   for (const rawLine of molfile.split(/\r?\n/)) {
@@ -19706,6 +20061,7 @@ function parseV3000MoleculeGraph(
       fromSourceId,
       toSourceId,
       order: bondOrderFromV3000(rawOrder),
+      ...(rawOrder === "2" && /\bCFG=2\b/.test(line) ? { stereo: "either" as const } : {}),
       // V3000 bond type 9 is the coordination (dative) bond — restore the dashed display style.
       dative: rawOrder === "9"
     });
@@ -19751,6 +20107,7 @@ function parseV3000MoleculeGraph(
       fromAtomId,
       toAtomId,
       order: bond.order,
+      ...(bond.stereo ? { stereo: bond.stereo } : {}),
       ...(bond.dative ? { display: { bondStyle: "dashed" as const } } : {})
     } satisfies MoleculeBond];
   });

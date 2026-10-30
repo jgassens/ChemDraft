@@ -484,7 +484,8 @@ function i4(value: number): string {
   return String(value).padStart(4);
 }
 
-function wedgeStereoFlag(bond: MoleculeBond): number {
+function bondStereoFlag(bond: MoleculeBond): number {
+  if (bond.order === "double" && bond.stereo === "either") return 3;
   const style = bond.display?.bondStyle;
   if (style === "wedge") return 1; // up (narrow end at fromAtomId)
   if (style === "hashed") return 6; // down
@@ -538,7 +539,7 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
     );
   }
 
-  const hasStereo = writableBonds.some((bond) => wedgeStereoFlag(bond) !== 0);
+  const hasStereo = writableBonds.some((bond) => [1, 6].includes(bondStereoFlag(bond)));
   const chiralFlag = hasStereo ? 1 : 0;
 
   const dativeBondCount = writableBonds.filter(isDativeBond).length;
@@ -571,7 +572,7 @@ export function moleculeToMolfileV2000(mol: MoleculeObject, options: MolfileWrit
   for (const bond of writableBonds) {
     const from = atomIndex.get(bond.fromAtomId)!;
     const to = atomIndex.get(bond.toAtomId)!;
-    lines.push(`${i3(from)}${i3(to)}${i3(resolvedMolfileBondCode(bond, options))}${i3(wedgeStereoFlag(bond))}  0  0  0`);
+    lines.push(`${i3(from)}${i3(to)}${i3(resolvedMolfileBondCode(bond, options))}${i3(bondStereoFlag(bond))}  0  0  0`);
   }
 
   // Charge property lines: up to 8 (atom, charge) pairs per "M  CHG" line.
@@ -651,7 +652,7 @@ export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWrit
   const writableBonds = mol.bonds.filter(
     (bond) => atomIndex.has(bond.fromAtomId) && atomIndex.has(bond.toAtomId)
   );
-  const hasStereo = writableBonds.some((bond) => wedgeStereoFlag(bond) !== 0);
+  const hasStereo = writableBonds.some((bond) => [1, 6].includes(bondStereoFlag(bond)));
   warnUnsupportedDashedBondStyles(writableBonds, options);
   warnUnresolvedAromaticBonds(atoms, writableBonds, options);
   const sgroups = superatomSgroups(atoms, writableBonds, options);
@@ -689,8 +690,8 @@ export function moleculeToMolfileV3000(mol: MoleculeObject, options: MolfileWrit
   lines.push("M  V30 END ATOM", "M  V30 BEGIN BOND");
   writableBonds.forEach((bond, index) => {
     const [from, to] = v3000BondAtomIds(bond, atomById);
-    const stereo = wedgeStereoFlag(bond);
-    const config = stereo === 1 ? " CFG=1" : stereo === 6 ? " CFG=3" : "";
+    const stereo = bondStereoFlag(bond);
+    const config = stereo === 1 ? " CFG=1" : stereo === 6 ? " CFG=3" : stereo === 3 ? " CFG=2" : "";
     lines.push(
       `M  V30 ${index + 1} ${isDativeBond(bond) ? 9 : resolvedMolfileBondCode(bond, options)} ${atomIndex.get(from)!} ${atomIndex.get(to)!}${config}`
     );

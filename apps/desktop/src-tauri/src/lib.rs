@@ -4130,6 +4130,16 @@ fn observe_hide_for_document_key_restore<R: Runtime>(app: tauri::AppHandle<R>) {
     }
 }
 
+/// Preserve document focus for E/Z mouse opens; permit an explicit focus lease for keyboard
+/// opens and the shared color picker's text fields.
+#[derive(Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum ToolsetPopoverFocusMode {
+    Preserve,
+    #[default]
+    Focus,
+}
+
 /// Opens (or repositions + reshows) a small floating popover window for a palette — e.g. the
 /// Art color picker. A webview can't paint outside its own window, so palette popovers that are
 /// taller/wider than the little palette window clip at its edge; giving the popover its OWN
@@ -4145,7 +4155,9 @@ async fn open_toolset_popover(
     kind: String,
     x: f64,
     y: f64,
+    focus_mode: Option<ToolsetPopoverFocusMode>,
 ) -> Result<(), String> {
+    let focus_mode = focus_mode.unwrap_or_default();
     let label = toolset_popover_window_label(&toolset_id);
     let _creation = lock_window_creation()?;
     if utility_windows_suspended() {
@@ -4162,12 +4174,12 @@ async fn open_toolset_popover(
         // can nudge an NSWindow's frame, and the first open after a prewarm used to land the
         // popover away from its anchor. An explicit LogicalPosition set is the final word in
         // both the warm and cold paths.
-        configure_toolset_popover_window(&window, false)?;
+        configure_toolset_popover_window(&window, focus_mode)?;
         set_window_global_logical_position(&window, x, y)?;
         return Ok(());
     }
 
-    build_toolset_popover_window(&app, &label, &toolset_id, &kind, false, x, y)
+    build_toolset_popover_window(&app, &label, &toolset_id, &kind, false, (x, y), focus_mode)
 }
 
 /// Builds a palette's popover window hidden, before any flyout/color press needs it. The cold build
@@ -4184,7 +4196,15 @@ async fn prewarm_toolset_popover(app: tauri::AppHandle, toolset_id: String) -> R
         return Ok(());
     }
 
-    build_toolset_popover_window(&app, &label, &toolset_id, "artColor", true, 0.0, 0.0)
+    build_toolset_popover_window(
+        &app,
+        &label,
+        &toolset_id,
+        "artColor",
+        true,
+        (0.0, 0.0),
+        ToolsetPopoverFocusMode::Focus,
+    )
 }
 
 /// Builds the shared tooltip window hidden, once a palette has painted. It used to be built in
@@ -4198,72 +4218,124 @@ async fn prewarm_toolset_tooltip(app: tauri::AppHandle) -> Result<(), String> {
     build_toolset_tooltip_window(&app)
 }
 
+/// The actual builder configuration is also the test seam for native creation.
+/// `parent` is an owner on Windows (not a child HWND). Keep macOS popovers unparented:
+/// AppKit child windows can reveal hidden/prewarmed windows and alter their level/Spaces behavior.
+fn toolset_popover_window_config(
+    label: &str,
+    toolset_id: &str,
+    kind: &str,
+    prewarm: bool,
+    focus_mode: ToolsetPopoverFocusMode,
+) -> tauri::utils::config::WindowConfig {
+    let prewarm_param = if prewarm { "&prewarm=1" } else { "" };
+    tauri::utils::config::WindowConfig {
+        label: label.into(),
+        url: WebviewUrl::App(
+            format!("/?window=toolsetPopover&toolsetId={toolset_id}&kind={kind}{prewarm_param}")
+                .into(),
+        ),
+        title: if toolset_id == "core.bondStereo" {
+            "E/Z not specified"
+        } else {
+            "ChemDraft color picker"
+        }
+        .into(),
+        #[cfg(windows)]
+        parent: Some(MAIN_WINDOW_LABEL.into()),
+        #[cfg(not(windows))]
+        parent: None,
+        width: 320.0,
+        height: 300.0,
+        min_width: Some(96.0),
+        min_height: Some(56.0),
+        accept_first_mouse: true,
+        // Tao creates WS_EX_NOACTIVATE when focusable is false. Keyboard opens
+        // and the color picker's text fields still explicitly permit focus.
+        focusable: focus_mode == ToolsetPopoverFocusMode::Focus,
+        // Also selects SW_SHOWNOACTIVATE for Tao's Windows show path.
+        focus: false,
+        resizable: false,
+        decorations: false,
+        skip_taskbar: true,
+        // Both cold and prewarmed windows reveal only after their content is ready.
+        visible: false,
+        ..Default::default()
+    }
+}
+
 fn build_toolset_popover_window(
     app: &tauri::AppHandle,
     label: &str,
     toolset_id: &str,
     kind: &str,
     prewarm: bool,
-    x: f64,
-    y: f64,
+    position: (f64, f64),
+    focus_mode: ToolsetPopoverFocusMode,
 ) -> Result<(), String> {
-    let prewarm_param = if prewarm { "&prewarm=1" } else { "" };
-    let window = utility_window_builder(
-        WebviewWindowBuilder::new(
-            app,
-            label,
-            WebviewUrl::App(
-                format!(
-                    "/?window=toolsetPopover&toolsetId={toolset_id}&kind={kind}{prewarm_param}"
-                )
-                .into(),
-            ),
-        ),
-        app,
-    )
-    .title("ChemDraft color picker")
-    // The JS side sizes this to the popover content (setCurrentWindowLogicalSize); start with a
-    // sensible color-picker footprint so the first paint isn't jarringly wrong.
-    .inner_size(320.0, 300.0)
-    .min_inner_size(96.0, 56.0)
-    .accept_first_mouse(true)
-    // Unlike the button-only palettes, the color picker has hex/RGB text inputs, so its window
-    // must be able to take keyboard focus. It stays a NonactivatingPanel (see below), so
-    // becoming key doesn't yank the app's activation away from the document.
-    .focusable(true)
-    .resizable(false)
-    .decorations(false)
-    .skip_taskbar(true)
-    // Build hidden on the FIRST open so the cold webview doesn't flash a blank 320x300 window while
-    // it loads. The popover reveals itself (getCurrentWindow().show()) once it has painted its real
-    // content at the right size — see PalettePopoverWindow.
-    .visible(false)
-    .position(x, y)
-    .build()
-    .map_err(|error| error.to_string())?;
+    let config = toolset_popover_window_config(label, toolset_id, kind, prewarm, focus_mode);
+    let window = WebviewWindowBuilder::from_config(app, &config)
+        .map_err(|error| error.to_string())?
+        .position(position.0, position.1)
+        .build()
+        .map_err(|error| error.to_string())?;
 
     disable_default_context_menus(&window);
-    configure_toolset_popover_window(&window, false)?;
+    configure_toolset_popover_window(&window, focus_mode)?;
     // Re-assert the anchor as the FINAL step, mirroring the warm path: panel configuration
     // can nudge the frame, and builder-time positioning has proven less trustworthy than an
     // explicit post-build LogicalPosition set (first opens landed away from the anchor).
     // Prewarm builds pass (0, 0), where this is harmless — the warm open repositions.
-    set_window_global_logical_position(&window, x, y)?;
+    set_window_global_logical_position(&window, position.0, position.1)?;
     Ok(())
 }
 
-/// Same floating NonactivatingPanel treatment as the palettes, but focusable so the color
-/// picker's text inputs work. `configure_toolset_utility_window` force-sets focusable(false),
-/// so re-assert focusable(true) afterwards.
+/// Reapply the requested focus policy on every reuse, including keyboard → mouse.
+/// Only E/Z mouse opens use Preserve; color inputs keep the existing focusable behavior.
 fn configure_toolset_popover_window<R: Runtime>(
     window: &tauri::WebviewWindow<R>,
-    order_front: bool,
+    focus_mode: ToolsetPopoverFocusMode,
 ) -> Result<(), String> {
-    configure_toolset_utility_window(window, order_front)?;
-    window
-        .set_focusable(true)
-        .map_err(|error| error.to_string())?;
-    Ok(())
+    let target = window.clone();
+    run_on_main_thread_blocking(window, move || {
+        configure_toolset_utility_window(&target, false)?;
+        target
+            .set_focusable(focus_mode == ToolsetPopoverFocusMode::Focus)
+            .map_err(|error| error.to_string())?;
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE,
+            };
+            let hwnd = target.hwnd().map_err(|error| error.to_string())?.0;
+            // SAFETY: this is a live owned window, on its UI thread, after Tao's
+            // focusability update. Preserve unrelated styles; never remove ownership.
+            unsafe {
+                SetWindowLongPtrW(
+                    hwnd,
+                    GWL_EXSTYLE,
+                    toolset_popover_extended_style(
+                        GetWindowLongPtrW(hwnd, GWL_EXSTYLE),
+                        focus_mode,
+                    ),
+                );
+            }
+        }
+        Ok(())
+    })?
+}
+
+#[cfg(windows)]
+fn toolset_popover_extended_style(style: isize, focus_mode: ToolsetPopoverFocusMode) -> isize {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    };
+    let style = (style | WS_EX_TOOLWINDOW as isize) & !(WS_EX_APPWINDOW as isize);
+    if focus_mode == ToolsetPopoverFocusMode::Preserve {
+        style | WS_EX_NOACTIVATE as isize
+    } else {
+        style & !(WS_EX_NOACTIVATE as isize)
+    }
 }
 
 #[tauri::command]
@@ -4281,7 +4353,7 @@ fn toolset_popover_window_label(toolset_id: &str) -> String {
 /// Toggle a palette window's focusability. Palettes ship `focusable(false)` (they never steal key
 /// status — see `toolset_window_focusable`), but the in-place customize gallery's search field needs
 /// keyboard focus. Mirrors the popover precedent: `configure_toolset_popover_window` re-asserts
-/// `set_focusable(true)` on a NonactivatingPanel and the color-picker hex input proves a text field
+/// `set_focusable(true)` for a focusable popover and the color-picker hex input proves a text field
 /// then receives input without the panel activating the app. The palette re-asserts `false` on exit.
 #[tauri::command]
 fn set_toolset_window_focusable(
@@ -4309,12 +4381,18 @@ struct WindowLogicalPosition {
 /// palette-local offset, as if the palette sat at the origin — and every later call
 /// was fine. Native reads have no warm-up; the window server is the source of truth.
 #[tauri::command]
-fn window_logical_position(window: tauri::WebviewWindow) -> Result<WindowLogicalPosition, String> {
+fn window_logical_position(
+    window: tauri::WebviewWindow,
+    content_origin: Option<bool>,
+) -> Result<WindowLogicalPosition, String> {
     let scale = window.scale_factor().map_err(|error| error.to_string())?;
-    let position = window
-        .outer_position()
-        .map_err(|error| error.to_string())?
-        .to_logical::<f64>(scale);
+    let position = if content_origin.unwrap_or(false) {
+        window.inner_position()
+    } else {
+        window.outer_position()
+    }
+    .map_err(|error| error.to_string())?
+    .to_logical::<f64>(scale);
     Ok(WindowLogicalPosition {
         x: position.x,
         y: position.y,
@@ -4398,15 +4476,31 @@ fn raise_among_owned_windows<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Re
 }
 
 /// Reveal the calling palette popover once it has painted its content at the right size, and put it
-/// above the palette it belongs to. The popover used to reveal itself with the JS window `show()`,
-/// which on Windows left it underneath its palette whenever the two overlapped (the Art toolbar's
-/// colour picker opens over the toolbar's own lower rows). `show()` here is the same call that JS
-/// made, so macOS behaves exactly as before.
+/// above the palette it belongs to. A mouse-opened E/Z popover must not become key/active.
 #[tauri::command]
-fn show_toolset_popover_window(window: tauri::WebviewWindow) -> Result<(), String> {
+fn show_toolset_popover_window(
+    window: tauri::WebviewWindow,
+    focus_mode: Option<ToolsetPopoverFocusMode>,
+) -> Result<(), String> {
     if utility_windows_suspended() {
         return Ok(());
     }
+    let focus_mode = focus_mode.unwrap_or_default();
+    configure_toolset_popover_window(&window, focus_mode)?;
+    #[cfg(target_os = "macos")]
+    if focus_mode == ToolsetPopoverFocusMode::Preserve {
+        // Tao's show() calls makeKeyAndOrderFront. Order this NonactivatingPanel
+        // front without making it key, even when the real mouse granted activation.
+        let target = window.clone();
+        run_on_main_thread_blocking(&window, move || {
+            configure_toolset_utility_window_on_main_thread(&target, true)
+        })??;
+    } else {
+        window.show().map_err(|error| error.to_string())?;
+    }
+    #[cfg(not(target_os = "macos"))]
+    // `focus: false` at creation makes Tao use SW_SHOWNOACTIVATE on Windows.
+    // Keep its visibility state in sync (a raw ShowWindow alone breaks later hide()).
     window.show().map_err(|error| error.to_string())?;
     raise_among_owned_windows(&window)
 }
@@ -9063,6 +9157,75 @@ mod tests {
     #[test]
     fn toolset_windows_do_not_take_focus_from_document_window() {
         expect_false(toolset_window_focusable());
+    }
+
+    fn assert_bond_stereo_mouse_creation() {
+        let config = toolset_popover_window_config(
+            "toolset-popover-core-bondStereo",
+            "core.bondStereo",
+            "flyout",
+            false,
+            ToolsetPopoverFocusMode::Preserve,
+        );
+        // These are passed directly to WebviewWindowBuilder::from_config.
+        #[cfg(windows)]
+        assert_eq!(config.parent.as_deref(), Some(MAIN_WINDOW_LABEL));
+        #[cfg(not(windows))]
+        assert_eq!(config.parent, None);
+        assert!(!config.focusable);
+        assert!(!config.focus); // Tao's Windows SW_SHOWNOACTIVATE path.
+        assert!(!config.visible);
+        assert!(config.skip_taskbar);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn bond_stereo_mouse_popover_is_owned_and_nonactivating() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+        };
+        assert_bond_stereo_mouse_creation();
+        let style = toolset_popover_extended_style(
+            WS_EX_APPWINDOW as isize,
+            ToolsetPopoverFocusMode::Preserve,
+        );
+        assert_ne!(style & WS_EX_NOACTIVATE as isize, 0);
+        assert_ne!(style & WS_EX_TOOLWINDOW as isize, 0);
+        assert_eq!(style & WS_EX_APPWINDOW as isize, 0);
+        // Reusing the same window for an explicit keyboard focus lease must work.
+        let focused = toolset_popover_extended_style(style, ToolsetPopoverFocusMode::Focus);
+        assert_eq!(focused & WS_EX_NOACTIVATE as isize, 0);
+        assert_ne!(focused & WS_EX_TOOLWINDOW as isize, 0);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn bond_stereo_mouse_popover_is_unparented_and_nonactivating() {
+        assert_bond_stereo_mouse_creation();
+    }
+
+    #[test]
+    fn keyboard_popovers_and_color_picker_inputs_remain_focusable() {
+        for (toolset, kind, prewarm) in [
+            ("core.bondStereo", "flyout", false),
+            ("core.art", "artColor", false),
+            ("core.art", "artColor", true),
+        ] {
+            let config = toolset_popover_window_config(
+                "popover",
+                toolset,
+                kind,
+                prewarm,
+                ToolsetPopoverFocusMode::Focus,
+            );
+            assert!(config.focusable);
+            assert!(!config.focus);
+            assert!(!config.visible);
+            #[cfg(windows)]
+            assert_eq!(config.parent.as_deref(), Some(MAIN_WINDOW_LABEL));
+            #[cfg(not(windows))]
+            assert_eq!(config.parent, None);
+        }
     }
 
     #[cfg(target_os = "macos")]

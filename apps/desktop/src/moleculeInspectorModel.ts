@@ -25,7 +25,8 @@ import type {
   ArtInspectorEffectValue,
   ArtInspectorMixedValue
 } from "./artInspectorModel";
-import { normalizeNativeAtomElementLabel } from "./documentWorkflow";
+import { nativeBondStereoAvailability, normalizeNativeAtomElementLabel, type BondStereoAvailability } from "./documentWorkflow";
+import type { DoubleBondStereoReader } from "./interaction/doubleBondStereo";
 
 export type MoleculeInspectorTabId = "structure" | "atom-labels" | "templates";
 export type MoleculeInspectorContext = "none" | "molecule" | "ring" | "bond" | "atom";
@@ -74,6 +75,7 @@ export interface MoleculeInspectorRingsModel {
 
 export interface MoleculeInspectorStructureModel {
   enabled: boolean;
+  bondStereo?: BondStereoAvailability;
   doubleBondPosition: ArtInspectorMixedValue<"left" | "center" | "right" | "automatic">;
   doubleBondTargetCount: number;
   doubleBondTargets: readonly MoleculeInspectorBondTarget[];
@@ -163,7 +165,8 @@ type MoleculeInspectorRingEntry = {
 
 export function createMoleculeInspectorModel(
   document: ChemDraftDocument,
-  selection: MoleculeInspectorSelectionInput = { selectedObjectIds: [] }
+  selection: MoleculeInspectorSelectionInput = { selectedObjectIds: [] },
+  perceiveDoubleBondStereo?: DoubleBondStereoReader
 ): MoleculeInspectorModel {
   const targets = resolveMoleculeInspectorTargets(document, selection);
   const targetObjects = moleculeObjectsForTargets(document, targets.moleculeObjectIds);
@@ -183,7 +186,10 @@ export function createMoleculeInspectorModel(
     targets,
     suggestedTab: suggestedTabForContext(targets.context),
     rings: createRingsModel(targetObjects, targets.ringTargets),
-    structure: createStructureModel(targetObjects, targets.atomTargets, targets.bondTargets, doubleBondTargets),
+    structure: {
+      ...createStructureModel(targetObjects, targets.atomTargets, targets.bondTargets, doubleBondTargets),
+      bondStereo: nativeBondStereoAvailability(document, targets.bondTargets, perceiveDoubleBondStereo)
+    },
     atomLabels: createAtomLabelsModel(targetObjects, targets.atomLabelTargets)
   };
 }
