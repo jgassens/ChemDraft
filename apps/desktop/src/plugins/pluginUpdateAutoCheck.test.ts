@@ -250,6 +250,36 @@ describe("daily official-plugin checks", () => {
     expect(deps.setStatus).not.toHaveBeenCalled();
   });
 
+  it("runs manual B after queued automatic B is cancelled while catalog A is still running", async () => {
+    const { checker, deps } = setup();
+    let resolveA!: (results: readonly PluginUpdateCheckResult[]) => void;
+    let resolveB!: (results: readonly PluginUpdateCheckResult[]) => void;
+    deps.check.mockImplementationOnce(() => new Promise(done => { resolveA = done; }));
+    deps.check.mockImplementationOnce(() => new Promise(done => { resolveB = done; }));
+    const catalogA = [{ ...installed[0]!, record: { ...installed[0]!.record, version: "0.0.1" } }];
+    const manualA = checker.check(catalogA);
+    await Promise.resolve();
+    let enabled = true;
+    const automaticB = checker.automatic(context, () => enabled);
+    enabled = false;
+    const manualB = checker.check(installed);
+    expect(deps.check).toHaveBeenCalledOnce();
+    resolveA([]);
+    await manualA;
+    await automaticB;
+    expect(deps.storage.getItem(LAST_PLUGIN_CHECK_KEY)).toBeNull();
+    expect(deps.onResults).toHaveBeenCalledOnce();
+    expect(deps.onResults).toHaveBeenCalledWith({ catalogKey: installedPluginCatalogKey(catalogA), results: [] });
+    expect(deps.setStatus).not.toHaveBeenCalled();
+    expect(deps.check).toHaveBeenCalledTimes(2);
+    expect(deps.check).toHaveBeenLastCalledWith(installed);
+    resolveB([available]);
+    await expect(manualB).resolves.toEqual([available]);
+    expect(deps.storage.getItem(LAST_PLUGIN_CHECK_KEY)).toBe(String(deps.now()));
+    expect(deps.onResults).toHaveBeenCalledTimes(2);
+    expect(deps.onResults).toHaveBeenLastCalledWith({ catalogKey: installedPluginCatalogKey(installed), results: [available] });
+  });
+
   it("remembers each plugin@version across launches and announces a newer version again", async () => {
     const { checker, deps, advance } = setup();
     await checker.automatic(context);

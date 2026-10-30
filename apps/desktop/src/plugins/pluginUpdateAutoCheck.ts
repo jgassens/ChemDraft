@@ -63,19 +63,33 @@ export function createPluginUpdateChecker(deps: PluginUpdateCheckerDeps) {
   const log = deps.log ?? console.warn;
   const announced = readAnnouncements(deps.storage);
   let lastAttempt: number | undefined;
-  let running: { catalogKey: string; promise: Promise<readonly PluginUpdateCheckResult[]> } | undefined;
+  interface RunningCheck {
+    catalogKey: string;
+    promise: Promise<readonly PluginUpdateCheckResult[]>;
+    manualPromise?: Promise<readonly PluginUpdateCheckResult[]>;
+    cancelled: boolean;
+  }
+  let running: RunningCheck | undefined;
 
   const check = (
     installed: readonly InstalledPluginCatalogEntry[], isEligible?: () => boolean
   ): Promise<readonly PluginUpdateCheckResult[]> => {
     const catalogKey = installedPluginCatalogKey(installed);
     if (running) {
-      if (running.catalogKey === catalogKey) return running.promise;
+      if (running.catalogKey === catalogKey) {
+        if (isEligible) return running.promise;
+        const entry = running;
+        // A manual caller may share results, but cancellation is not an answer.
+        return entry.manualPromise ??= entry.promise.then(results => entry.cancelled ? check(installed) : results);
+      }
       return running.promise.catch(() => undefined).then(() => check(installed, isEligible));
     }
     const promise = Promise.resolve().then(async () => {
       // Queued automatic work must still be eligible at the network boundary.
-      if (isEligible && !isEligible()) return [];
+      if (isEligible && !isEligible()) {
+        entry.cancelled = true;
+        return [];
+      }
       const results = await deps.check(installed);
       // A failed/unsupported source is not an answer. Manual successful checks count too.
       if (results.some(result => result.status === "available" || result.status === "upToDate")) {
@@ -86,7 +100,9 @@ export function createPluginUpdateChecker(deps: PluginUpdateCheckerDeps) {
       deps.onResults({ catalogKey, results: results.filter(result => result.status !== "failed") });
       return results;
     }).finally(() => { running = undefined; });
-    running = { catalogKey, promise };
+    const entry: RunningCheck = { catalogKey, promise, cancelled: false };
+    if (!isEligible) entry.manualPromise = promise;
+    running = entry;
     return promise;
   };
 
