@@ -1,0 +1,79 @@
+[
+  {
+    "type": "com.microsoft.PowerPoint-12.0-Internal-Shapes",
+    "itemIndex": 0,
+    "file": "0-0-com.microsoft.PowerPoint-12.0-Internal-Shapes",
+    "size": 8,
+    "sha256": "5c9abf1bc759ab98621fa4e4af7efd7e53812fd04c3402fe591cf82d173cc3f7"
+  },
+  {
+    "type": "com.microsoft.Object-Descriptor",
+    "itemIndex": 0,
+    "file": "0-1-com.microsoft.Object-Descriptor",
+    "size": 306,
+    "sha256": "aa23655f9b225209058ad7af96108d69e38b355d126949f5776848cf6d45d73e"
+  },
+  {
+    "type": "com.microsoft.PowerPoint-12.0-Internal-Theme",
+    "itemIndex": 0,
+    "file": "0-2-com.microsoft.PowerPoint-12.0-Internal-Theme",
+    "size": 8,
+    "sha256": "67c26c168a7bbe33f7546c4337c1ee5cc2056db7d55c8090557191fee7d7a255"
+  },
+  {
+    "type": "com.microsoft.PowerPoint-12.0-Internal-Color-Scheme",
+    "itemIndex": 0,
+    "file": "0-3-com.microsoft.PowerPoint-12.0-Internal-Color-Scheme",
+    "size": 8,
+    "sha256": "dee85f780da4b9c68aca3829d987354ec3cb88d89d806c8ac8cf0b4965245840"
+  },
+  {
+    "type": "com.microsoft.Art--GVML-ClipFormat",
+    "itemIndex": 0,
+    "file": "0-4-com.microsoft.Art--GVML-ClipFormat",
+    "size": 22495,
+    "sha256": "4b11cb1487cb359f50ab3e3e59504abc9f1a033acaa7eb9c9ca3431b0e20bbd1"
+  },
+  {
+    "type": "public.png",
+    "itemIndex": 0,
+    "file": "0-5-public.png",
+    "size": 63620,
+    "sha256": "c1f8e947f59b971c8c80a1354416d665a9abd3832fef34fb306ec60ee0af5244"
+  },
+  {
+    "type": "com.adobe.pdf",
+    "itemIndex": 0,
+    "file": "0-6-com.adobe.pdf",
+    "size": 18940,
+    "sha256": "612bc4603a43188da7f4bfa55cd6b826175de5590f8c5005de5ae6ced8bfda61"
+  },
+  {
+    "type": "public.tiff",
+    "itemIndex": 0,
+    "file": "0-7-public.tiff",
+    "size": 3632430,
+    "sha256": "bfeda7adb2f0008692e60e3f48a0bcde9509844b74073e74318293a26cbaa232"
+  },
+  {
+    "type": "com.microsoft.ole.source.845.0xbc2cfff80",
+    "itemIndex": 0,
+    "file": "0-8-com.microsoft.ole.source.845.0xbc2cfff80",
+    "size": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "type": "com.microsoft.DataObject",
+    "itemIndex": 0,
+    "file": "0-9-com.microsoft.DataObject",
+    "size": 16,
+    "sha256": "4012e851652fc807ee618b2b975031309274c9adb75158c8bc625beed210fc23"
+  },
+  {
+    "type": "com.microsoft.appbundleid",
+    "itemIndex": 0,
+    "file": "0-10-com.microsoft.appbundleid",
+    "size": 24,
+    "sha256": "4c8b30d2f007e2943c328ac1d9af583831f55924d14a868fbc7ca4c72d1ea514"
+  }
+]

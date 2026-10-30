@@ -1,0 +1,10 @@
+Container	Entry	Type	Bytes	SHA-256	Pixels / DPI	References	Carriers / errors / blob guess	Notes
+dumps/MW-copyback/0-0-com.microsoft.Art--GVML-ClipFormat	clipboard/media/image1.png	png	19783	6f1bb356d480f559f966227d8e92b8dd19e81c239a28b8ede265015ced85198e	600x671 / unspecified	clipboard/drawings/drawing1.xml	png zTXt: valid; expect=true	
+dumps/MW-copyback/0-1-public.png	0-1-public.png	png	63448	f5a071dd54891e534efb1e487291e19727e9d907e8a94288cafb76a261cf2a7d	900x1008 / 143.99259999999998x143.99259999999998		 	
+dumps/MW-copyback/0-2-com.adobe.pdf	0-2-com.adobe.pdf	pdf	18940	5e8af5b2b5bd457a9a49a43e6086394d7371ce9d96d843ad0adb1a01733ca1b8			 	
+dumps/MW-copyback/0-3-public.tiff	0-3-public.tiff	tiff	3632430	72a67c841a4ac3cb22b150a1d853331fef94e9df90ef5827c5e41a69a801de69			 	
+dumps/MW-copyback/0-4-public.jpeg	0-4-public.jpeg	jpeg	36521	5d64653e3f48c2bb1806569aa271b6041a01925e2274d5b8660e7770535ed4e1			 	
+dumps/MW-copyback/0-5-com.microsoft.Object-Descriptor	0-5-com.microsoft.Object-Descriptor	other	148	cdbf4fde7aaa5f8fdede4ae444e8b4230bf6930591f7b816a270cbcad9565fd9			unknown blob (not a ZIP) 940000009b4c75f4f564404b8af46797	
+dumps/MW-copyback/0-7-com.microsoft.ole.source.827.0x1054b0d60	0-7-com.microsoft.ole.source.827.0x1054b0d60	other	0	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855			unknown blob (not a ZIP) 	
+dumps/MW-copyback/0-8-com.microsoft.DataObject	0-8-com.microsoft.DataObject	other	16	cd757884336328623c851a46974980c56bd974e73302a00fab5e8069b5a0a9b3			unknown blob (not a ZIP) 3b03000001000000600d4b0501000000	
+dumps/MW-copyback/0-9-com.microsoft.appbundleid	0-9-com.microsoft.appbundleid	other	18	cb8284ff71cb553d4eec07645ad4dd096336c180407ff0087739374bb00ffdfb			unknown blob (not a ZIP) 636f6d2e6d6963726f736f66742e576f	

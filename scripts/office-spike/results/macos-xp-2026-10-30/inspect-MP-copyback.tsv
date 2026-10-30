@@ -1,0 +1,12 @@
+Container	Entry	Type	Bytes	SHA-256	Pixels / DPI	References	Carriers / errors / blob guess	Notes
+dumps/MP-copyback/0-0-com.microsoft.PowerPoint-12.0-Internal-Shapes	0-0-com.microsoft.PowerPoint-12.0-Internal-Shapes	other	8	5c9abf1bc759ab98621fa4e4af7efd7e53812fd04c3402fe591cf82d173cc3f7			unknown blob (not a ZIP) c82131ca0b000000	
+dumps/MP-copyback/0-1-com.microsoft.Object-Descriptor	0-1-com.microsoft.Object-Descriptor	other	306	aa23655f9b225209058ad7af96108d69e38b355d126949f5776848cf6d45d73e			unknown blob (not a ZIP) 32010000000000000000000000000000	
+dumps/MP-copyback/0-10-com.microsoft.appbundleid	0-10-com.microsoft.appbundleid	other	24	4c8b30d2f007e2943c328ac1d9af583831f55924d14a868fbc7ca4c72d1ea514			unknown blob (not a ZIP) 636f6d2e6d6963726f736f66742e506f	
+dumps/MP-copyback/0-2-com.microsoft.PowerPoint-12.0-Internal-Theme	0-2-com.microsoft.PowerPoint-12.0-Internal-Theme	other	8	67c26c168a7bbe33f7546c4337c1ee5cc2056db7d55c8090557191fee7d7a255			unknown blob (not a ZIP) 2846a5c60b000000	
+dumps/MP-copyback/0-3-com.microsoft.PowerPoint-12.0-Internal-Color-Scheme	0-3-com.microsoft.PowerPoint-12.0-Internal-Color-Scheme	other	8	dee85f780da4b9c68aca3829d987354ec3cb88d89d806c8ac8cf0b4965245840			unknown blob (not a ZIP) 3046a5c60b000000	
+dumps/MP-copyback/0-4-com.microsoft.Art--GVML-ClipFormat	clipboard/media/image1.png	png	19783	6f1bb356d480f559f966227d8e92b8dd19e81c239a28b8ede265015ced85198e	600x671 / unspecified	clipboard/drawings/drawing1.xml	png zTXt: valid; expect=true	
+dumps/MP-copyback/0-5-public.png	0-5-public.png	png	63620	c1f8e947f59b971c8c80a1354416d665a9abd3832fef34fb306ec60ee0af5244	900x1008 / 143.99259999999998x143.99259999999998		 	
+dumps/MP-copyback/0-6-com.adobe.pdf	0-6-com.adobe.pdf	pdf	18940	612bc4603a43188da7f4bfa55cd6b826175de5590f8c5005de5ae6ced8bfda61			 	
+dumps/MP-copyback/0-7-public.tiff	0-7-public.tiff	tiff	3632430	bfeda7adb2f0008692e60e3f48a0bcde9509844b74073e74318293a26cbaa232			 	
+dumps/MP-copyback/0-8-com.microsoft.ole.source.845.0xbc2cfff80	0-8-com.microsoft.ole.source.845.0xbc2cfff80	other	0	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855			unknown blob (not a ZIP) 	
+dumps/MP-copyback/0-9-com.microsoft.DataObject	0-9-com.microsoft.DataObject	other	16	4012e851652fc807ee618b2b975031309274c9adb75158c8bc625beed210fc23			unknown blob (not a ZIP) 4d0300000000000080ffcfc20b000000	

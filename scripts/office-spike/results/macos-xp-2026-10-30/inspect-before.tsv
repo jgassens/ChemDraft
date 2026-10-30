@@ -1,0 +1,3 @@
+Container	Entry	Type	Bytes	SHA-256	Pixels / DPI	References	Carriers / errors / blob guess	Notes
+files/XP-win.pptx	ppt/media/image1.png	png	19783	6f1bb356d480f559f966227d8e92b8dd19e81c239a28b8ede265015ced85198e	600x671 / unspecified	ppt/slides/slide1.xml	png zTXt: valid; expect=true	
+files/XW-win.docx	word/media/image1.png	png	19783	6f1bb356d480f559f966227d8e92b8dd19e81c239a28b8ede265015ced85198e	600x671 / unspecified	word/document.xml	png zTXt: valid; expect=true	
