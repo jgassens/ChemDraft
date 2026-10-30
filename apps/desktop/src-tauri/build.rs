@@ -107,6 +107,7 @@ fn main() {
             "retain_recognition_screen_capture",
             "reveal_recognition_screen_captures",
             "agent_bridge_status",
+            "palette_focus_diagnostic",
             "perf_log_clock",
             "perf_log_append",
             "perf_log_complete",

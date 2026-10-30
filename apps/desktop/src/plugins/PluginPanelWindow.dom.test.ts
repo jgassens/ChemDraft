@@ -285,14 +285,15 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     // Release now delegates to the shared interaction helper. Guard both the command
     // branch and the helper's Windows path against Tao's forced activation fallback.
     const release = command.split("result.map(|_| held)")[1]!;
-    const returnFocusCall = "panel_window::return_focus_after_interaction(&target, return_focus.unwrap_or(false))";
-    expect(release).toContain(returnFocusCall);
-    const returnFocusIndex = release.indexOf(returnFocusCall);
-    const nonFocusableIndex = release.indexOf(".set_focusable(false)");
+    const compactRelease = release.replace(/\s+/g, "");
+    const returnFocusCall = "panel_window::return_focus_after_interaction(&target, return_focus.unwrap_or(false)".replace(/\s+/g, "");
+    expect(compactRelease).toContain(returnFocusCall);
+    const returnFocusIndex = compactRelease.indexOf(returnFocusCall);
+    const nonFocusableIndex = compactRelease.indexOf(".set_focusable(false)");
     expect(returnFocusIndex).toBeGreaterThanOrEqual(0);
     expect(nonFocusableIndex).toBeGreaterThan(returnFocusIndex);
     // A hand-back error must not skip making the palette non-focusable.
-    expect(release.slice(returnFocusIndex + returnFocusCall.length, nonFocusableIndex)).not.toMatch(/\?|return Err/);
+    expect(compactRelease.slice(returnFocusIndex + returnFocusCall.length, nonFocusableIndex)).not.toMatch(/\?|returnErr/);
     expect(release).not.toMatch(/focus_main_document_window_impl|(?:main|document)\.set_focus\(/);
     const panel = readFileSync(join(nativePath, "panel_window.rs"), "utf8");
     const interactionReturn = panel.split("pub(crate) fn return_focus_after_interaction<")[1]!

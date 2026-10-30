@@ -1,25 +1,90 @@
 import { readFileSync, readdirSync } from "node:fs";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { paletteFocusDiagnostic } from "./paletteFocusDiagnostic";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ permission: vi.fn(), invoke: vi.fn() }));
-vi.mock("./agentBridge", () => ({ resolveAgentBridgePermission: mocks.permission }));
+const mocks = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
-afterEach(() => vi.resetAllMocks());
+beforeEach(() => {
+  vi.resetModules();
+  vi.stubGlobal("__TAURI_INTERNALS__", {});
+});
+afterEach(() => {
+  vi.resetAllMocks();
+  vi.unstubAllGlobals();
+});
 
 describe("palette focus diagnostics", () => {
-  it("sends nothing when the page bridge is disabled", async () => {
-    mocks.permission.mockResolvedValue({ enabled: false });
-    paletteFocusDiagnostic("preview command=object.color.#123456");
-    await new Promise(resolve => setTimeout(resolve, 0));
+  it("keeps the test override when startup permission resolves and restores the cached result", async () => {
+    let resolveStatus!: (status: { enabled: boolean }) => void;
+    mocks.invoke.mockReturnValueOnce(new Promise(resolve => { resolveStatus = resolve; }));
+    const {
+      paletteFocusDiagnostic, paletteFocusDiagnosticsReady,
+      setPaletteFocusDiagnosticsEnabledForTests, waitForPaletteFocusDiagnosticsForTests
+    } = await import("./paletteFocusDiagnostic");
+    setPaletteFocusDiagnosticsEnabledForTests(true);
+    try {
+      await vi.waitFor(() => expect(mocks.invoke.mock.calls).toEqual([["agent_bridge_status"]]));
+      resolveStatus({ enabled: false });
+      await paletteFocusDiagnosticsReady;
+      mocks.invoke.mockClear();
+      paletteFocusDiagnostic("enabled by test");
+      await vi.waitFor(() => expect(mocks.invoke.mock.calls).toEqual([["palette_focus_diagnostic", { line: "enabled by test" }]]));
+      await waitForPaletteFocusDiagnosticsForTests();
+      mocks.invoke.mockClear();
+      setPaletteFocusDiagnosticsEnabledForTests(undefined);
+      paletteFocusDiagnostic("disabled by cached permission");
+      await waitForPaletteFocusDiagnosticsForTests();
+      expect(mocks.invoke).not.toHaveBeenCalled();
+    } finally {
+      setPaletteFocusDiagnosticsEnabledForTests(undefined);
+    }
+  });
+
+  it("resolves permission at startup and sends no per-event IPC when disabled", async () => {
+    mocks.invoke.mockResolvedValue({ enabled: false });
+    const {
+      paletteFocusDiagnostic, paletteFocusDiagnosticsReady, waitForPaletteFocusDiagnosticsForTests
+    } = await import("./paletteFocusDiagnostic");
+    await paletteFocusDiagnosticsReady;
+    await vi.waitFor(() => expect(mocks.invoke.mock.calls).toEqual([["agent_bridge_status"]]));
+    mocks.invoke.mockClear();
+    for (const event of ["input", "change", "preview", "commit"]) {
+      expect(paletteFocusDiagnostic(`${event} command=object.color.#123456`)).toBeUndefined();
+    }
+    await waitForPaletteFocusDiagnosticsForTests();
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+
+  it("drops pending diagnostics without IPC or replay after permission arrives", async () => {
+    let resolveStatus!: (status: { enabled: boolean }) => void;
+    mocks.invoke.mockReturnValue(new Promise(resolve => { resolveStatus = resolve; }));
+    const {
+      paletteFocusDiagnostic, paletteFocusDiagnosticsReady, waitForPaletteFocusDiagnosticsForTests
+    } = await import("./paletteFocusDiagnostic");
+    await vi.waitFor(() => expect(mocks.invoke.mock.calls).toEqual([["agent_bridge_status"]]));
+    mocks.invoke.mockClear();
+    paletteFocusDiagnostic("input while pending");
+    paletteFocusDiagnostic("change while pending");
+    await waitForPaletteFocusDiagnosticsForTests();
+    expect(mocks.invoke).not.toHaveBeenCalled();
+    resolveStatus({ enabled: true });
+    await paletteFocusDiagnosticsReady;
+    await waitForPaletteFocusDiagnosticsForTests();
     expect(mocks.invoke).not.toHaveBeenCalled();
   });
 
   it("bounds enabled payloads and swallows transport failures", async () => {
-    mocks.permission.mockResolvedValue({ enabled: true });
+    mocks.invoke.mockResolvedValueOnce({ enabled: true });
+    const {
+      paletteFocusDiagnostic, paletteFocusDiagnosticsReady, waitForPaletteFocusDiagnosticsForTests
+    } = await import("./paletteFocusDiagnostic");
+    await paletteFocusDiagnosticsReady;
+    await vi.waitFor(() => expect(mocks.invoke.mock.calls).toEqual([["agent_bridge_status"]]));
+    mocks.invoke.mockClear();
     mocks.invoke.mockRejectedValue(new Error("closed"));
     expect(() => paletteFocusDiagnostic("x".repeat(600))).not.toThrow();
     await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith("palette_focus_diagnostic", { line: "x".repeat(500) }));
+    await waitForPaletteFocusDiagnosticsForTests();
+    expect(mocks.invoke).toHaveBeenCalledTimes(1);
   });
 
   it("returns before logging or caller validation when the native bridge is off", () => {

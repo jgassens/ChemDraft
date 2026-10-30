@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyPatches } from "@chemdraft/chem-core";
 import { MainWindow } from "./MainWindow";
 import { ColorPickerPopoverBody, ToolPalette } from "./ToolPalette";
@@ -11,6 +11,7 @@ import { moleculeStructureBondColorCommandId, objectCustomColorCommandId } from 
 import { getToolsetItemGroups } from "./toolsets";
 import { PALETTE_COMMAND_COMMIT_EVENT, PALETTE_COMMAND_PREVIEW_EVENT } from "./window-manager";
 import { MemoryStorage } from "./testSupport/memoryStorage";
+import { setPaletteFocusDiagnosticsEnabledForTests } from "./paletteFocusDiagnostic";
 
 const diagnosticInvoke = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
@@ -22,7 +23,12 @@ vi.mock("@scena/react-ruler", () => ({ default: () => <canvas /> }));
 class TestResizeObserver { observe() {} unobserve() {} disconnect() {} }
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+beforeEach(() => { setPaletteFocusDiagnosticsEnabledForTests(true); });
+afterEach(() => {
+  setPaletteFocusDiagnosticsEnabledForTests(undefined);
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 describe.each(["macos", "windows"] as const)("detached palette colour delivery (%s)", platform => {
   it.each(["molecule", "art"] as const)("keeps %s chooser values across delayed model echoes and records one undo", async target => {
