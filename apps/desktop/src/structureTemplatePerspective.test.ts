@@ -4,8 +4,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEmptyDocument, moleculeToMolfileV2000, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { canonicalVisibleCdxml, exportDocumentToCdxml, openChemDraftPayload } from "@chemdraft/cdx-compat";
-import { compositionFromRdkitJson, ensureRdkit, type RdkitJson } from "../../../packages/rdkit-adapter/src/index";
-import { structureTemplates } from "../../../packages/template-library/src/index";
+import { compositionFromRdkitJson, ensureRdkit, type RdkitJson } from "@chemdraft/rdkit-adapter";
+import { structureTemplates } from "@chemdraft/template-library";
 import { nativeBondOrderResolution, nativeMoleculeBondDrawingStyle, representativeMoleculeBondLength } from "@chemdraft/layout-engine";
 import { insertStructureTemplate } from "./structureTemplateInsertion";
 import { applyMoleculeBaseStylePatch, applySingleBondToolAtNativeAtom, applyNativeRingAttachAtAtomTarget } from "./documentWorkflow";
@@ -15,8 +15,6 @@ import { MemoryStorage } from "./testSupport/memoryStorage";
 import { installDomRdkitLoader } from "./testSupport/rdkitIdentity";
 import { DOM_COMMAND_EVENT } from "./window-manager";
 
-// Resolve the template registry in THIS checkout even with shared node_modules.
-vi.mock("@chemdraft/template-library", () => import("../../../packages/template-library/src/index"));
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("@scena/react-ruler", () => ({ default: () => createElement("canvas") }));
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
