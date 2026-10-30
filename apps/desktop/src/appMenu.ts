@@ -51,6 +51,8 @@ export interface AppMenuCommand {
    * drift comparison and dispatched through the plugin host instead of the core registry.
    */
   pluginContributed?: boolean;
+  /** Core command synced through the dynamic native menu, dispatched through the core registry. */
+  coreRouted?: boolean;
 }
 
 export interface AppMenuSubmenu {
@@ -114,8 +116,8 @@ export const TOOLSET_TOGGLE_COMMAND_PREFIX = "view.toolset.toggle.";
 
 /** Opens the core-owned manager for the bundled plugins available to this desktop build. */
 export const PLUGIN_MANAGER_COMMAND_ID = "plugins.manage";
-/** Registered core alias; the plugin prefix permits routing through the dynamic native menu. */
-export const PLUGIN_UPDATES_COMMAND_ID = "plugin.runtime.showUpdates";
+/** Core command opening the manager's cached update results. */
+export const PLUGIN_UPDATES_COMMAND_ID = "plugins.showUpdates";
 
 export function pluginUpdatesAvailableMenuItem(count: number): PluginAppMenuItem[] {
   if (!Number.isInteger(count) || count <= 0) return [];
@@ -123,7 +125,7 @@ export function pluginUpdatesAvailableMenuItem(count: number): PluginAppMenuItem
     location: "plugins",
     command: {
       kind: "command", id: PLUGIN_UPDATES_COMMAND_ID, commandId: PLUGIN_UPDATES_COMMAND_ID,
-      label: `Plugin Updates Available (${count})…`, enabled: true, pluginContributed: true
+      label: `Plugin Updates Available (${count})…`, enabled: true, coreRouted: true
     }
   }];
 }
@@ -387,12 +389,12 @@ function appendPluginMenuItems(sections: AppMenuSection[], items: readonly Plugi
     }
 
     const alreadyHasPluginItem = section.items.some(
-      (item) => item.kind === "command" && item.pluginContributed
+      (item) => item.kind === "command" && (item.pluginContributed || item.coreRouted)
     );
     if (section.items.length > 0 && !alreadyHasPluginItem) {
       section.items.push(separator());
     }
-    section.items.push({ ...pluginCommand, pluginContributed: true });
+    section.items.push(pluginCommand.coreRouted ? pluginCommand : { ...pluginCommand, pluginContributed: true });
   }
 }
 
@@ -423,6 +425,7 @@ export function nativeRoutedCommandIds(sections: readonly AppMenuSection[]): str
       (item) =>
         !item.nativePredefined &&
         !item.pluginContributed &&
+        !item.coreRouted &&
         !item.commandId.startsWith(TOOLSET_TOGGLE_COMMAND_PREFIX)
     )
     .map((item) => item.commandId);

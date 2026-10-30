@@ -6,7 +6,7 @@ import type { InstalledPluginCatalogEntry } from "./installPluginPackage";
 import type { PluginUpdateCheckResult, PluginUpdateOffer } from "./pluginUpdates";
 import {
   ANNOUNCED_PLUGIN_VERSIONS_KEY, LAST_PLUGIN_CHECK_KEY, createPluginUpdateChecker,
-  installedPluginCatalogKey, schedulePluginUpdateAutoCheck
+  installedPluginCatalogKey, nextPluginUpdateAutoCheckDelay, schedulePluginUpdateAutoCheck
 } from "./pluginUpdateAutoCheck";
 
 const pluginId = "org.chemdraft.nmr.predictor";
@@ -54,7 +54,7 @@ describe("daily official-plugin checks", () => {
   it.each(["macos", "windows"])("delays the desktop check on %s by 15 seconds and checks again daily", async () => {
     vi.useFakeTimers();
     const { checker, deps, advance } = setup();
-    const stop = schedulePluginUpdateAutoCheck(() => checker.automatic(context));
+    const stop = schedulePluginUpdateAutoCheck(() => checker.automatic(context), checker.nextAutomaticCheckDelay);
     await vi.advanceTimersByTimeAsync(AUTO_CHECK_DELAY_MS - 1);
     expect(deps.check).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
@@ -70,9 +70,78 @@ describe("daily official-plugin checks", () => {
   it("cancels the launch request when disabled or unmounted before the delay", async () => {
     vi.useFakeTimers();
     const run = vi.fn(async () => {});
-    schedulePluginUpdateAutoCheck(run)();
+    schedulePluginUpdateAutoCheck(run, () => AUTO_CHECK_DELAY_MS)();
     await vi.advanceTimersByTimeAsync(AUTO_CHECK_DELAY_MS);
     expect(run).not.toHaveBeenCalled();
+  });
+
+  it("schedules a recent persisted success at its due time after a skipped launch attempt", async () => {
+    vi.useFakeTimers();
+    const { checker, deps, advance } = setup();
+    const remaining = 60 * 60 * 1000;
+    deps.storage.setItem(LAST_PLUGIN_CHECK_KEY, String(deps.now() - AUTO_CHECK_INTERVAL_MS + remaining));
+    await checker.automatic(context);
+    expect(deps.check).not.toHaveBeenCalled();
+    const stop = schedulePluginUpdateAutoCheck(() => checker.automatic(context), checker.nextAutomaticCheckDelay);
+    advance(remaining - 1);
+    await vi.advanceTimersByTimeAsync(remaining - 1);
+    expect(deps.check).not.toHaveBeenCalled();
+    advance(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(deps.check).toHaveBeenCalledOnce();
+    stop();
+  });
+
+  it("does not postpone the due time when the effect reschedules", async () => {
+    vi.useFakeTimers();
+    const { checker, deps, advance } = setup();
+    const remaining = 60 * 60 * 1000;
+    deps.storage.setItem(LAST_PLUGIN_CHECK_KEY, String(deps.now() - AUTO_CHECK_INTERVAL_MS + remaining));
+    const schedule = () => schedulePluginUpdateAutoCheck(() => checker.automatic(context), checker.nextAutomaticCheckDelay);
+    const stop = schedule();
+    advance(remaining / 2);
+    await vi.advanceTimersByTimeAsync(remaining / 2);
+    stop();
+    const stopAgain = schedule();
+    advance(remaining / 2);
+    await vi.advanceTimersByTimeAsync(remaining / 2);
+    expect(deps.check).toHaveBeenCalledOnce();
+    stopAgain();
+  });
+
+  it("recomputes the deadline after a skipped timer attempt", async () => {
+    vi.useFakeTimers();
+    const { checker, deps, advance } = setup();
+    const stop = schedulePluginUpdateAutoCheck(() => checker.automatic(context), checker.nextAutomaticCheckDelay);
+    // Another successful check changes the deadline while the launch timer is pending.
+    deps.storage.setItem(LAST_PLUGIN_CHECK_KEY, String(deps.now()));
+    advance(AUTO_CHECK_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(AUTO_CHECK_DELAY_MS);
+    expect(deps.check).not.toHaveBeenCalled();
+    advance(AUTO_CHECK_INTERVAL_MS - AUTO_CHECK_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(AUTO_CHECK_INTERVAL_MS - AUTO_CHECK_DELAY_MS);
+    expect(deps.check).toHaveBeenCalledOnce();
+    stop();
+  });
+
+  it("bounds the next delay by both the last success and the in-session attempt", () => {
+    const now = 1_000_000_000;
+    expect(nextPluginUpdateAutoCheckDelay(now, now - 1000, now - 500)).toBe(AUTO_CHECK_INTERVAL_MS - 500);
+    for (const invalid of [undefined, NaN, now + 1, now - AUTO_CHECK_INTERVAL_MS]) {
+      expect(nextPluginUpdateAutoCheckDelay(now, invalid, undefined)).toBe(AUTO_CHECK_DELAY_MS);
+    }
+  });
+
+  it("does not rearm the timer when unmounted during a request", async () => {
+    vi.useFakeTimers();
+    let finish!: () => void;
+    const run = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
+    const stop = schedulePluginUpdateAutoCheck(run, () => AUTO_CHECK_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(AUTO_CHECK_DELAY_MS);
+    stop();
+    finish();
+    await vi.advanceTimersByTimeAsync(AUTO_CHECK_INTERVAL_MS);
+    expect(run).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -160,6 +229,25 @@ describe("daily official-plugin checks", () => {
     await expect(manual).resolves.toEqual([available, failed]);
     expect(deps.onResults).toHaveBeenCalledOnce();
     expect(deps.onResults).toHaveBeenCalledWith({ catalogKey: installedPluginCatalogKey(installed), results: [available] });
+  });
+
+  it("makes no automatic request after opting out while queued behind a different-catalog manual check", async () => {
+    const { checker, deps } = setup();
+    let resolve!: (results: readonly PluginUpdateCheckResult[]) => void;
+    deps.check.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    const otherCatalog = [{ ...installed[0]!, record: { ...installed[0]!.record, version: "0.0.1" } }];
+    const manual = checker.check(otherCatalog);
+    await Promise.resolve();
+    let enabled = true;
+    const automatic = checker.automatic(context, () => enabled);
+    enabled = false;
+    resolve([upToDate]);
+    await manual;
+    await automatic;
+    expect(deps.check).toHaveBeenCalledOnce();
+    expect(deps.check).toHaveBeenCalledWith(otherCatalog);
+    expect(deps.onResults).toHaveBeenCalledOnce();
+    expect(deps.setStatus).not.toHaveBeenCalled();
   });
 
   it("remembers each plugin@version across launches and announces a newer version again", async () => {

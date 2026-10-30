@@ -112,6 +112,8 @@ type PluginManagerBusyOperation =
 
 interface CatalogBoundUpdateResults {
   catalogKey: string;
+  /** Each shared cache publication has a new array identity, including a manual check's cache. */
+  cacheAtCheck: readonly PluginUpdateCheckResult[] | undefined;
   results: ReadonlyMap<string, PluginUpdateCheckResult>;
 }
 
@@ -197,12 +199,16 @@ export function PluginManagerDialog({
   const installedCatalogKey = installedPluginCatalogKey(installedPlugins);
   const pendingUpdate =
     pendingUpdateState?.catalogKey === installedCatalogKey ? pendingUpdateState.prepared : undefined;
-  const updateResults =
-    updateResultsState?.catalogKey === installedCatalogKey
-      ? updateResultsState.results
-      : cachedPluginUpdateResults
-        ? new Map(cachedPluginUpdateResults.map(result => [result.pluginId, result]))
-        : NO_PLUGIN_UPDATE_RESULTS;
+  const manualResults = updateResultsState?.catalogKey === installedCatalogKey ? updateResultsState : undefined;
+  const updateResults = new Map(
+    manualResults && manualResults.cacheAtCheck === cachedPluginUpdateResults
+      ? manualResults.results
+      : [
+          // Automatic failures are filtered from the shared cache. Keep manual-only failure rows.
+          ...[...(manualResults?.results ?? NO_PLUGIN_UPDATE_RESULTS)].filter(([, result]) => result.status === "failed"),
+          ...(cachedPluginUpdateResults ?? []).map(result => [result.pluginId, result] as const)
+        ]
+  );
   const notice =
     noticeState &&
     (noticeState.catalogKey === undefined || noticeState.catalogKey === installedCatalogKey)
@@ -451,6 +457,7 @@ export function PluginManagerDialog({
       const results = await onCheckPluginUpdates!();
       setUpdateResultsState({
         catalogKey: installedCatalogKey,
+        cacheAtCheck: cachedPluginUpdateResults,
         results: new Map(results.map((result) => [result.pluginId, result]))
       });
       setNoticeState({

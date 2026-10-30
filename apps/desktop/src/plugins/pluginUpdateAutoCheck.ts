@@ -32,6 +32,15 @@ export function readLastPluginCheck(storage: UpdateStorage | undefined): number 
   } catch { return undefined; }
 }
 
+/** Keep deadlines anchored to actual checks across launches and effect rescheduling. */
+export function nextPluginUpdateAutoCheckDelay(
+  now: number, lastSuccess: number | undefined, lastAttempt: number | undefined
+): number {
+  const remaining = (at: number | undefined) =>
+    autoCheckDue(at, now) ? 0 : at! + AUTO_CHECK_INTERVAL_MS - now;
+  return Math.max(AUTO_CHECK_DELAY_MS, remaining(lastSuccess), remaining(lastAttempt));
+}
+
 function readAnnouncements(storage: UpdateStorage | undefined): Set<string> {
   try {
     const value: unknown = JSON.parse(storage?.getItem(ANNOUNCED_PLUGIN_VERSIONS_KEY) ?? "[]");
@@ -56,13 +65,18 @@ export function createPluginUpdateChecker(deps: PluginUpdateCheckerDeps) {
   let lastAttempt: number | undefined;
   let running: { catalogKey: string; promise: Promise<readonly PluginUpdateCheckResult[]> } | undefined;
 
-  const check = (installed: readonly InstalledPluginCatalogEntry[]): Promise<readonly PluginUpdateCheckResult[]> => {
+  const check = (
+    installed: readonly InstalledPluginCatalogEntry[], isEligible?: () => boolean
+  ): Promise<readonly PluginUpdateCheckResult[]> => {
     const catalogKey = installedPluginCatalogKey(installed);
     if (running) {
       if (running.catalogKey === catalogKey) return running.promise;
-      return running.promise.catch(() => undefined).then(() => check(installed));
+      return running.promise.catch(() => undefined).then(() => check(installed, isEligible));
     }
-    const promise = Promise.resolve().then(() => deps.check(installed)).then(results => {
+    const promise = Promise.resolve().then(async () => {
+      // Queued automatic work must still be eligible at the network boundary.
+      if (isEligible && !isEligible()) return [];
+      const results = await deps.check(installed);
       // A failed/unsupported source is not an answer. Manual successful checks count too.
       if (results.some(result => result.status === "available" || result.status === "upToDate")) {
         try { deps.storage?.setItem(LAST_PLUGIN_CHECK_KEY, String(now())); }
@@ -81,14 +95,18 @@ export function createPluginUpdateChecker(deps: PluginUpdateCheckerDeps) {
     enabled: boolean;
     catalogReady: boolean;
     installed: readonly InstalledPluginCatalogEntry[];
-  }): Promise<void> => {
+  }, isEligible: () => boolean = () => true): Promise<void> => {
     if (!context.isDesktop || !context.enabled || !context.catalogReady || !hasOfficialInstalledPlugin(context.installed)) return;
     const at = now();
     if (!autoCheckDue(readLastPluginCheck(deps.storage), at) || !autoCheckDue(lastAttempt, at)) return;
     // Also bound retries in this session if all sources fail or persistence is unavailable.
     lastAttempt = at;
     try {
-      const results = await check(context.installed);
+      const results = await check(context.installed, () => {
+        if (!isEligible()) return false;
+        lastAttempt = now();
+        return true;
+      });
       const messages: string[] = [];
       for (const result of results) {
         if (result.status === "failed") log(`Automatic plugin update check failed (${result.pluginId}):`, result.message);
@@ -108,15 +126,23 @@ export function createPluginUpdateChecker(deps: PluginUpdateCheckerDeps) {
     }
   };
 
-  return { check, automatic };
+  return {
+    check, automatic,
+    nextAutomaticCheckDelay: () => nextPluginUpdateAutoCheckDelay(now(), readLastPluginCheck(deps.storage), lastAttempt)
+  };
 }
 
-/** Start after catalog readiness; long-running sessions also check daily. Cleanup cancels both timers. */
-export function schedulePluginUpdateAutoCheck(run: () => Promise<void>): () => void {
-  let daily: ReturnType<typeof setInterval> | undefined;
-  const launch = setTimeout(() => {
-    void run();
-    daily = setInterval(() => { void run(); }, AUTO_CHECK_INTERVAL_MS);
-  }, AUTO_CHECK_DELAY_MS);
-  return () => { clearTimeout(launch); clearInterval(daily); };
+/** Recompute after each completed or skipped attempt; cleanup also prevents rearming in flight. */
+export function schedulePluginUpdateAutoCheck(
+  run: () => Promise<void>, nextDelay: () => number
+): () => void {
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout>;
+  const schedule = () => {
+    timer = setTimeout(() => {
+      void run().finally(() => { if (!stopped) schedule(); });
+    }, nextDelay());
+  };
+  schedule();
+  return () => { stopped = true; clearTimeout(timer); };
 }

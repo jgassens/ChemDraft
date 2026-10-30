@@ -403,6 +403,8 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     });
   }
   const updateChecker = updateCheckerRef.current;
+  const automaticUpdateContextRef = useRef({ automaticUpdates, installedPluginCatalogReady, installedPlugins, stagingFs });
+  automaticUpdateContextRef.current = { automaticUpdates, installedPluginCatalogReady, installedPlugins, stagingFs };
   useEffect(() => {
     let stopped = false;
     let unlisten: (() => void) | undefined;
@@ -424,7 +426,12 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
       enabled: automaticUpdates && loadAutomaticPluginUpdates(),
       catalogReady: installedPluginCatalogReady,
       installed: installedPlugins
-    }));
+    }, () => {
+      const current = automaticUpdateContextRef.current;
+      return isTauriHost() && !!current.stagingFs && current.automaticUpdates && loadAutomaticPluginUpdates() &&
+        current.installedPluginCatalogReady &&
+        installedPluginCatalogKey(current.installedPlugins) === installedPluginCatalogKey(installedPlugins);
+    }), updateChecker.nextAutomaticCheckDelay);
   }, [automaticUpdates, installedPluginCatalogReady, installedPlugins, stagingFs, updateChecker]);
 
   const cachedPluginUpdateResults = useMemo(() =>

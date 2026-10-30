@@ -1448,14 +1448,23 @@ describe("PluginManagerDialog", () => {
     expect(list).toHaveBeenCalledTimes(2);
   });
 
-  it("shows cached automatic results immediately, without a check or download, and receives later results", async () => {
+  it("shows cached results immediately and receives later automatic results after a manual result, keeping manual-only failures", async () => {
     const runtime = createRuntime();
     const offer = updateOffer();
-    const check = vi.fn(async () => []);
+    const failedPluginId = "org.chemdraft.test.failed";
+    const check = vi.fn(async (): Promise<readonly PluginUpdateCheckResult[]> => [{
+      status: "available", pluginId: installedPluginId, installedVersion: installedManifest.version,
+      latestVersion: offer.version, offer
+    }, {
+      status: "failed", pluginId: failedPluginId, installedVersion: installedManifest.version,
+      message: "Manual source is offline"
+    }]);
     const prepare = vi.fn(async () => preparedUpdate());
     const renderDialog = (cachedPluginUpdateResults: readonly PluginUpdateCheckResult[]) =>
       createElement(Harness, {
-        runtime, onClose: vi.fn(), onPluginsChanged: vi.fn(), installedPlugins: [installedEntry()],
+        runtime, onClose: vi.fn(), onPluginsChanged: vi.fn(), installedPlugins: [
+          installedEntry(), installedEntry({ ...installedManifest, id: failedPluginId, name: "Failed Test Plugin" })
+        ],
         cachedPluginUpdateResults, onCheckPluginUpdates: check,
         onPreparePluginUpdate: prepare, onUpdatePlugin: vi.fn(async () => {})
       });
@@ -1469,6 +1478,12 @@ describe("PluginManagerDialog", () => {
     expect(check).not.toHaveBeenCalled();
     expect(prepare).not.toHaveBeenCalled();
     await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-action="check-plugin-updates"]')!.click();
+    });
+    expect(check).toHaveBeenCalledOnce();
+    expect(document.querySelector('[data-update-status="available"]')).not.toBeNull();
+    expect(document.querySelector('[data-update-status="failed"]')?.textContent).toContain("Manual source is offline");
+    await act(async () => {
       root!.render(renderDialog([{
         status: "upToDate", pluginId: installedPluginId, installedVersion: installedManifest.version,
         latestVersion: installedManifest.version
@@ -1476,7 +1491,8 @@ describe("PluginManagerDialog", () => {
     });
     expect(document.querySelector('[data-update-status="available"]')).toBeNull();
     expect(document.querySelector('[data-update-status="up-to-date"]')?.textContent).toContain("Up to date");
-    expect(check).not.toHaveBeenCalled();
+    expect(document.querySelector('[data-update-status="failed"]')?.textContent).toContain("Manual source is offline");
+    expect(check).toHaveBeenCalledOnce();
   });
 
   it("waits for the installed-plugin catalog before enabling package and update actions", async () => {

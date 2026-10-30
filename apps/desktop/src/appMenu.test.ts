@@ -67,12 +67,28 @@ describe("app menu model", () => {
       const model = buildAppMenuModel({ ...EMPTY_CONTEXT, availablePluginUpdateCount: 2 });
       const plugins = model.find(section => section.id === "plugins")!;
       const notice = flattenAppMenuCommands([plugins]).filter(item => item.commandId === PLUGIN_UPDATES_COMMAND_ID);
-      expect(notice).toEqual([expect.objectContaining({ label: "Plugin Updates Available (2)…", enabled: true })]);
+      expect(PLUGIN_UPDATES_COMMAND_ID).toBe("plugins.showUpdates");
+      expect(notice).toEqual([expect.objectContaining({ label: "Plugin Updates Available (2)…", enabled: true, coreRouted: true })]);
+      expect(notice[0]?.pluginContributed).not.toBe(true);
       expect(nativeRoutedCommandIds(model)).not.toContain(PLUGIN_UPDATES_COMMAND_ID);
       expect(pluginItemsForNativeMenu(pluginUpdatesAvailableMenuItem(2))).toEqual([{
-        id: PLUGIN_UPDATES_COMMAND_ID, label: "Plugin Updates Available (2)…", enabled: true, location: "plugins"
+        id: PLUGIN_UPDATES_COMMAND_ID, coreRouted: true,
+        label: "Plugin Updates Available (2)…", enabled: true, location: "plugins"
       }]);
     } finally { vi.unstubAllGlobals(); }
+  });
+
+  it("dispatches explicitly core-routed dynamic native items to the core command on both platforms", () => {
+    const source = readFileSync("apps/desktop/src-tauri/src/lib.rs", "utf8");
+    expect(source).toContain("#[serde(default)]\n    core_routed: bool");
+    const routing = source.split("fn is_core_routed_dynamic_menu_command")[1]?.split("fn plugin_menu_items_in")[0];
+    expect(routing).toContain("item.core_routed && item.id == command_id");
+    const click = source.split(".on_menu_event(")[1]?.split(".on_window_event(")[0];
+    expect(click).toContain("is_core_routed_dynamic_menu_command(command_id, &current_plugin_menu_items(app))");
+    expect(click).toContain("emit_menu_command(app, command_id)");
+    const main = readFileSync("apps/desktop/src/MainWindow.tsx", "utf8");
+    expect(main).toContain("for (const commandId of [PLUGIN_MANAGER_COMMAND_ID, PLUGIN_UPDATES_COMMAND_ID]) register(");
+    expect(main).not.toContain("plugin.runtime.showUpdates");
   });
 
   it("routes synced plugin items by section in the shared native builder for both platforms", () => {

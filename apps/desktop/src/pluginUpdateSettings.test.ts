@@ -62,4 +62,20 @@ describe("automatic plugin update preference", () => {
     stop();
     expect(stopNative).toHaveBeenCalledOnce();
   });
+
+  it("silently retains the DOM listener when the native listener is unavailable", async () => {
+    native.desktop = true;
+    native.listen.mockRejectedValue(new Error("Tauri internals unavailable"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const handler = vi.fn();
+      const stop = await listenForPluginUpdateSettings(handler);
+      window.dispatchEvent(new CustomEvent("chemdraft://plugin-update-settings", { detail: false }));
+      expect(handler).toHaveBeenCalledWith(false);
+      expect(warn).not.toHaveBeenCalled();
+      stop();
+      window.dispatchEvent(new CustomEvent("chemdraft://plugin-update-settings", { detail: true }));
+      expect(handler).toHaveBeenCalledOnce();
+    } finally { warn.mockRestore(); }
+  });
 });

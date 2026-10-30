@@ -35,8 +35,8 @@ export async function listenForPluginUpdateSettings(handler: (enabled: boolean) 
       if (typeof event.payload === "boolean") handler(event.payload);
     });
     return () => { stopDom(); stopNative(); };
-  } catch (error) {
-    stopDom();
-    throw error;
+  } catch {
+    // Tests and hosts without Tauri internals still receive same-window preference changes.
+    return stopDom;
   }
 }
