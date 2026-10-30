@@ -73,6 +73,24 @@ check that all three fragments open apart in their drawn arrangement, stay spati
 rotating, and remain apart after flatten, save/reopen and Spin again; Copy As SMILES and formula
 must stay unchanged.
 
+## Automatic plugin update notices (macOS and Windows)
+
+On both platforms, launch with an installed official plugin and a check due (no successful plugin
+check within 24 hours). After the catalog is ready, wait 15 seconds: startup and drawing stay usable;
+no modal opens. With an update available, Plugins gains exactly one **Plugin Updates Available (N)…**
+item. Open it: the existing Plugin Manager shows cached versions and Update buttons without another
+Check. Close/reopen it, change tools, and open floating palettes and panels: menus remain usable;
+Windows attaches the menu only to the document window and never crashes during the menu change.
+Update must still download for review and require explicit confirmation; checking alone installs nothing.
+
+Restart within the day: no automatic request or repeated status notice. At the next due check,
+the same version stays quiet; a new version gets one status-line notice. Disable **Check for plugin
+updates automatically** in Preferences before the delay expires: no automatic request occurs, while
+manual Check works. Re-enable it and verify the daily limit. Repeat offline: automatic failures
+produce logs without alerts or status errors, do not advance the successful-check timestamp, and a
+manual Check still reports failures. Also launch without official plugins and use the web preview:
+neither makes an automatic request. Include a long-running session across the daily interval.
+
 ## Plugin 3D chemistry (macOS and Windows)
 
 With a plugin that declares `chemistry.compute`, embed a two-component complex, arrange and minimize

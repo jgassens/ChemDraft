@@ -266,6 +266,7 @@ function Harness({ runtime, onClose, onPluginsChanged, ...installProps }: {
   onInstallPackage?: (inspection: PluginPackageInspection) => Promise<void>;
   onPrepareOfficialPluginInstall?: (pluginId: string) => Promise<PreparedOfficialPluginInstall>;
   onUninstallPlugin?: (pluginId: string) => Promise<void>;
+  cachedPluginUpdateResults?: readonly PluginUpdateCheckResult[];
   onCheckPluginUpdates?: () => Promise<readonly PluginUpdateCheckResult[]>;
   onPreparePluginUpdate?: (offer: PluginUpdateOffer) => Promise<PreparedPluginUpdate>;
   onUpdatePlugin?: (prepared: PreparedPluginUpdate) => Promise<void>;
@@ -1445,6 +1446,37 @@ describe("PluginManagerDialog", () => {
     await vi.waitFor(() => expect(revoke).toHaveBeenCalledWith("claude", installedPluginId));
     await vi.waitFor(() => expect(document.querySelector('[data-testid="plugin-external-tool-access"]')).toBeNull());
     expect(list).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows cached automatic results immediately, without a check or download, and receives later results", async () => {
+    const runtime = createRuntime();
+    const offer = updateOffer();
+    const check = vi.fn(async () => []);
+    const prepare = vi.fn(async () => preparedUpdate());
+    const renderDialog = (cachedPluginUpdateResults: readonly PluginUpdateCheckResult[]) =>
+      createElement(Harness, {
+        runtime, onClose: vi.fn(), onPluginsChanged: vi.fn(), installedPlugins: [installedEntry()],
+        cachedPluginUpdateResults, onCheckPluginUpdates: check,
+        onPreparePluginUpdate: prepare, onUpdatePlugin: vi.fn(async () => {})
+      });
+    mount(renderDialog([{
+      status: "available", pluginId: installedPluginId, installedVersion: installedManifest.version,
+      latestVersion: offer.version, offer
+    }]));
+    await act(async () => {});
+    expect(document.querySelector('[data-update-status="available"]')?.textContent).toContain("Version 2.1.0 is available.");
+    expect(document.querySelector<HTMLButtonElement>('[data-action="review-plugin-update"]')?.disabled).toBe(false);
+    expect(check).not.toHaveBeenCalled();
+    expect(prepare).not.toHaveBeenCalled();
+    await act(async () => {
+      root!.render(renderDialog([{
+        status: "upToDate", pluginId: installedPluginId, installedVersion: installedManifest.version,
+        latestVersion: installedManifest.version
+      }]));
+    });
+    expect(document.querySelector('[data-update-status="available"]')).toBeNull();
+    expect(document.querySelector('[data-update-status="up-to-date"]')?.textContent).toContain("Up to date");
+    expect(check).not.toHaveBeenCalled();
   });
 
   it("waits for the installed-plugin catalog before enabling package and update actions", async () => {

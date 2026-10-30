@@ -88,6 +88,8 @@ export interface PluginAppMenuItem {
 }
 
 export interface AppMenuContext {
+  /** Number of installed plugins with a cached update offer. */
+  availablePluginUpdateCount?: number;
   rulersVisible: boolean;
   crosshairsVisible: boolean;
   canUndo: boolean;
@@ -112,6 +114,19 @@ export const TOOLSET_TOGGLE_COMMAND_PREFIX = "view.toolset.toggle.";
 
 /** Opens the core-owned manager for the bundled plugins available to this desktop build. */
 export const PLUGIN_MANAGER_COMMAND_ID = "plugins.manage";
+/** Registered core alias; the plugin prefix permits routing through the dynamic native menu. */
+export const PLUGIN_UPDATES_COMMAND_ID = "plugin.runtime.showUpdates";
+
+export function pluginUpdatesAvailableMenuItem(count: number): PluginAppMenuItem[] {
+  if (!Number.isInteger(count) || count <= 0) return [];
+  return [{
+    location: "plugins",
+    command: {
+      kind: "command", id: PLUGIN_UPDATES_COMMAND_ID, commandId: PLUGIN_UPDATES_COMMAND_ID,
+      label: `Plugin Updates Available (${count})…`, enabled: true, pluginContributed: true
+    }
+  }];
+}
 
 /**
  * Format a canonical accelerator ("Shift+Cmd+S") as mac glyphs ("⇧⌘S"). Authoring order should
@@ -335,7 +350,10 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
     }
   ];
 
-  appendPluginMenuItems(sections, context.pluginMenuItems ?? []);
+  appendPluginMenuItems(sections, [
+    ...pluginUpdatesAvailableMenuItem(context.availablePluginUpdateCount ?? 0),
+    ...(context.pluginMenuItems ?? [])
+  ]);
 
   return sections;
 }

@@ -29,6 +29,7 @@ import type {
   PreparedPluginUpdate
 } from "./pluginUpdates";
 import { EXPERIMENTAL_PLUGIN_NOTICE, isNetworkDownloadFailure, isOfficialPluginExperimental, OFFICIAL_PLUGIN_CATALOG } from "./pluginUpdates";
+import { installedPluginCatalogKey } from "./pluginUpdateAutoCheck";
 import { installSpaceStatement } from "../dialogs/engineInstallText";
 import { RecognitionInstallProgress } from "./RecognitionInstallProgress";
 import { applyEnabledPlugins, type BundledPluginDescriptor } from "./registerBundledPlugins";
@@ -77,6 +78,8 @@ export interface PluginManagerDialogProps {
   /** Download and inspect one entry from the host-owned official catalog. */
   onPrepareOfficialPluginInstall?: (pluginId: string) => Promise<PreparedOfficialPluginInstall>;
   onUninstallPlugin?: (pluginId: string) => Promise<void>;
+  /** Successful cached checks appear without starting another request. */
+  cachedPluginUpdateResults?: readonly PluginUpdateCheckResult[];
   /** Host-owned update operations. All are absent outside the Tauri desktop. */
   onCheckPluginUpdates?: () => Promise<readonly PluginUpdateCheckResult[]>;
   onPreparePluginUpdate?: (offer: PluginUpdateOffer) => Promise<PreparedPluginUpdate>;
@@ -151,6 +154,7 @@ export function PluginManagerDialog({
   onPrepareOfficialPluginInstall,
   onUninstallPlugin,
   onCheckPluginUpdates,
+  cachedPluginUpdateResults,
   onPreparePluginUpdate,
   onUpdatePlugin,
   recognitionEngineStatus,
@@ -196,7 +200,9 @@ export function PluginManagerDialog({
   const updateResults =
     updateResultsState?.catalogKey === installedCatalogKey
       ? updateResultsState.results
-      : NO_PLUGIN_UPDATE_RESULTS;
+      : cachedPluginUpdateResults
+        ? new Map(cachedPluginUpdateResults.map(result => [result.pluginId, result]))
+        : NO_PLUGIN_UPDATE_RESULTS;
   const notice =
     noticeState &&
     (noticeState.catalogKey === undefined || noticeState.catalogKey === installedCatalogKey)
@@ -1234,20 +1240,6 @@ function NetworkPackageHelp({ message }: { message: string }) {
   return isNetworkDownloadFailure(message)
     ? <span style={{ display: "block" }}>You can also download the package and use Add plugin from package…</span>
     : null;
-}
-
-function installedPluginCatalogKey(installedPlugins: readonly InstalledPluginCatalogEntry[]): string {
-  return JSON.stringify(
-    [...installedPlugins]
-      .map(({ record }) => ({
-        id: record.id,
-        version: record.version,
-        sourceChecksum: record.sourceChecksum,
-        stagedPath: record.stagedPath,
-        installedAt: record.installedAt
-      }))
-      .sort((left, right) => left.id.localeCompare(right.id))
-  );
 }
 
 function pluginUpdateCheckSummary(

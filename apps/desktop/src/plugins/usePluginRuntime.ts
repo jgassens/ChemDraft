@@ -12,6 +12,12 @@ import type { RegisteredCanvasOverlay } from "./types";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 
 import type { PluginAppMenuItem } from "../appMenu";
+import { safeLocalStorage } from "../appUpdates";
+import { loadAutomaticPluginUpdates, listenForPluginUpdateSettings } from "../pluginUpdateSettings";
+import {
+  createPluginUpdateChecker, hasOfficialInstalledPlugin, installedPluginCatalogKey,
+  schedulePluginUpdateAutoCheck, type CachedPluginUpdateResults
+} from "./pluginUpdateAutoCheck";
 import { createPluginRuntime, type DesktopPluginRuntime, type ProposalDocumentTab } from "./createPluginRuntime";
 import {
   PluginInstallError,
@@ -83,6 +89,8 @@ export interface PluginRuntimeProviders {
   commandRegistry?: CommandRegistry;
   /** Storage backend factory (the desktop passes the disk-backed one); defaults to in-memory. */
   createStorage?: (pluginId: string) => PluginStorage;
+  /** Quiet update notices use the document window status line. */
+  onPluginUpdateStatus?: (text: string) => void;
   /** Fired whenever the proposed-patch queue changes (new, accepted, rejected). */
   onProposedPatchesChanged?: () => void;
   /** Commits a command-scoped `document.write` patch through the desktop document/history path. */
@@ -105,6 +113,7 @@ export interface PluginRuntimeView {
   installPackage: ((inspection: PluginPackageInspection) => Promise<void>) | undefined;
   prepareOfficialPluginInstall: ((pluginId: string) => Promise<PreparedOfficialPluginInstall>) | undefined;
   uninstallInstalledPlugin: ((pluginId: string) => Promise<void>) | undefined;
+  cachedPluginUpdateResults: readonly PluginUpdateCheckResult[];
   checkInstalledPluginUpdates: (() => Promise<readonly PluginUpdateCheckResult[]>) | undefined;
   prepareInstalledPluginUpdate: ((offer: PluginUpdateOffer) => Promise<PreparedPluginUpdate>) | undefined;
   updateInstalledPlugin: ((prepared: PreparedPluginUpdate) => Promise<void>) | undefined;
@@ -382,9 +391,48 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     [bundledPlugins, installedPlugins, runtime, stagingFs]
   );
 
+  const [updateCache, setUpdateCache] = useState<CachedPluginUpdateResults>();
+  const [automaticUpdates, setAutomaticUpdates] = useState(loadAutomaticPluginUpdates);
+  const updateCheckerRef = useRef<ReturnType<typeof createPluginUpdateChecker> | null>(null);
+  if (!updateCheckerRef.current) {
+    updateCheckerRef.current = createPluginUpdateChecker({
+      check: checkForPluginUpdates,
+      storage: safeLocalStorage(),
+      onResults: setUpdateCache,
+      setStatus: text => providersRef.current.onPluginUpdateStatus?.(text)
+    });
+  }
+  const updateChecker = updateCheckerRef.current;
+  useEffect(() => {
+    let stopped = false;
+    let unlisten: (() => void) | undefined;
+    void listenForPluginUpdateSettings(enabled => {
+      if (!stopped) setAutomaticUpdates(enabled);
+    }).then(stop => {
+      if (stopped) stop();
+      else unlisten = stop;
+    }).catch(error => console.warn("Could not listen for plugin update preferences:", error));
+    return () => { stopped = true; unlisten?.(); };
+  }, []);
+
+  useEffect(() => {
+    if (!isTauriHost() || !stagingFs || !installedPluginCatalogReady || !automaticUpdates ||
+        !hasOfficialInstalledPlugin(installedPlugins)) return;
+    return schedulePluginUpdateAutoCheck(() => updateChecker.automatic({
+      isDesktop: isTauriHost(),
+      // Read again at the request boundary, including when the preference event is still in transit.
+      enabled: automaticUpdates && loadAutomaticPluginUpdates(),
+      catalogReady: installedPluginCatalogReady,
+      installed: installedPlugins
+    }));
+  }, [automaticUpdates, installedPluginCatalogReady, installedPlugins, stagingFs, updateChecker]);
+
+  const cachedPluginUpdateResults = useMemo(() =>
+    updateCache?.catalogKey === installedPluginCatalogKey(installedPlugins) ? updateCache.results : [],
+    [installedPlugins, updateCache]);
   const checkInstalledPluginUpdates = useCallback(
-    (): Promise<readonly PluginUpdateCheckResult[]> => checkForPluginUpdates(installedPlugins),
-    [installedPlugins]
+    (): Promise<readonly PluginUpdateCheckResult[]> => updateChecker.check(installedPlugins),
+    [installedPlugins, updateChecker]
   );
 
   const prepareInstalledPluginUpdate = useCallback(
@@ -527,6 +575,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     prepareOfficialPluginInstall:
       stagingFs && installedPluginCatalogReady ? prepareCatalogPluginInstall : undefined,
     uninstallInstalledPlugin: stagingFs ? uninstallInstalledPlugin : undefined,
+    cachedPluginUpdateResults,
     checkInstalledPluginUpdates:
       stagingFs && installedPluginCatalogReady ? checkInstalledPluginUpdates : undefined,
     prepareInstalledPluginUpdate:

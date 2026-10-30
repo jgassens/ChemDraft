@@ -805,7 +805,15 @@ manual package installs and updates. Before either an official install or an upd
 ordinary package-review screen discloses permissions and provenance. The plugin worker remains under
 its same-origin-only CSP and receives no network or filesystem capability for this workflow.
 
-Update checks and installs are user-initiated. ChemDraft first shows an available version, then
+On macOS and Windows, ChemDraft automatically checks installed official plugins daily, starting
+15 seconds after the installed catalog is ready. **Check for plugin updates automatically** in
+Preferences is on by default; turning it off leaves the Plugin Manager's manual **Check** available.
+Checks fetch release metadata only. Available updates appear in **Plugins ▸ Plugin Updates
+Available (N)…** and in each Plugin Manager row. A status-line notice appears once per new
+plugin version; automatic failures are logged quietly. No check runs in the web preview or when
+no official plugin is installed. A daily timestamp is saved only when at least one source answers.
+
+Installs remain user-initiated. ChemDraft first shows an available version, then
 downloads and inspects the package for a second review screen; only an explicit **Update** action
 starts the replacement transaction. The active package stays intact until the candidate has passed
 its worker handshake and the new install record commits.

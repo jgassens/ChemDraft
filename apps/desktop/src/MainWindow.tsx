@@ -770,7 +770,7 @@ import {
   type ToolbarPaletteGroupModel
 } from "./toolsets";
 import { MenuBar } from "./MenuBar";
-import { buildAppMenuModel, PLUGIN_MANAGER_COMMAND_ID } from "./appMenu";
+import { buildAppMenuModel, pluginUpdatesAvailableMenuItem, PLUGIN_MANAGER_COMMAND_ID, PLUGIN_UPDATES_COMMAND_ID } from "./appMenu";
 import {
   editHistoryDirection,
   forceDocumentHistoryCommandId,
@@ -1636,7 +1636,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.29.13.15-opus";
+const CURRENT_BUILD_STAMP = "10.30.09.06-codex";
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -9981,9 +9981,9 @@ export function MainWindow({
       register(action, () => { applyMoleculeInspectorCommand(action.id); });
     });
 
-    register(
+    for (const commandId of [PLUGIN_MANAGER_COMMAND_ID, PLUGIN_UPDATES_COMMAND_ID]) register(
       {
-        id: PLUGIN_MANAGER_COMMAND_ID,
+        id: commandId,
         title: "Add or Remove Plugins…",
         icon: "plugin",
         source: "core",
@@ -10816,6 +10816,7 @@ export function MainWindow({
   // storage is disk-backed, and the proposed-patch queue feeds the review tray. Document/selection
   // reach the host through refs, so it is never rebuilt when they change (see usePluginRuntime).
   const pluginRuntime = usePluginRuntime({
+    onPluginUpdateStatus: setStatus,
     getActiveDocument: () => documentRef.current,
     getActiveDocumentKey: () => String(documentIdentityRef.current),
     getActiveDocumentTab: () => ({ id: activeDocumentTabIdRef.current }),
@@ -10872,12 +10873,17 @@ export function MainWindow({
   canvasOverlaysPresentRef.current = pluginRuntime.canvasOverlays.length > 0;
   pluginRuntimeRef.current = pluginRuntime.runtime;
 
-  // Mirror the plugin runtime's Analyze menu items into the native macOS menu so they are invokable
-  // from the OS menu bar, not only the in-window (web) bar (ADR-0016). No-op on the web build.
+  const availablePluginUpdateCount = pluginRuntime.cachedPluginUpdateResults.filter(result => result.status === "available").length;
+  // One complete menu snapshot per result change. The existing native installer attaches menus only
+  // to the document window on Windows and deduplicates unchanged snapshots on both platforms.
+  const nativePluginMenuItems = useMemo(() => [
+    ...pluginUpdatesAvailableMenuItem(availablePluginUpdateCount),
+    ...pluginRuntime.pluginMenuItems
+  ], [availablePluginUpdateCount, pluginRuntime.pluginMenuItems]);
   useEffect(() => {
     if (!isTauriHost()) return;
-    void syncPluginNativeMenuItems(pluginRuntime.pluginMenuItems);
-  }, [pluginRuntime.pluginMenuItems]);
+    void syncPluginNativeMenuItems(nativePluginMenuItems);
+  }, [nativePluginMenuItems]);
 
   // Staleness (D-09): an open panel's report carries the source fingerprint it was computed against;
   // if the live molecule no longer matches (edited or removed), flag the panel as out of date.
@@ -19680,6 +19686,7 @@ export function MainWindow({
         canConvertTextToAtomLabel: quickActions.find((action) => action.id === convertTextToAtomLabelCommandId)?.enabled === true,
         toolbars: getToolbarsMenuModel(visibleToolsetIds, toolsetRegistry),
         pluginMenuItems: pluginRuntime.pluginMenuItems,
+        availablePluginUpdateCount,
         keybindingScheme
       }),
     [
@@ -19693,7 +19700,8 @@ export function MainWindow({
       selectedMolecule,
       visibleToolsetIds,
       toolsetRegistry,
-      pluginRuntime.pluginMenuItems
+      pluginRuntime.pluginMenuItems,
+      availablePluginUpdateCount
     ]
   );
 
@@ -19928,6 +19936,7 @@ export function MainWindow({
           onPrepareOfficialPluginInstall={pluginRuntime.prepareOfficialPluginInstall}
           onUninstallPlugin={pluginRuntime.uninstallInstalledPlugin}
           installedPluginCatalogReady={pluginRuntime.installedPluginCatalogReady}
+          cachedPluginUpdateResults={pluginRuntime.cachedPluginUpdateResults}
           onCheckPluginUpdates={pluginRuntime.checkInstalledPluginUpdates}
           onPreparePluginUpdate={pluginRuntime.prepareInstalledPluginUpdate}
           onUpdatePlugin={pluginRuntime.updateInstalledPlugin}

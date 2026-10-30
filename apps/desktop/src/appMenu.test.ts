@@ -9,9 +9,12 @@ import {
   formatMenuShortcut,
   nativeRoutedCommandIds,
   PLUGIN_MANAGER_COMMAND_ID,
+  PLUGIN_UPDATES_COMMAND_ID,
+  pluginUpdatesAvailableMenuItem,
   type AppMenuCommand,
   type AppMenuContext
 } from "./appMenu";
+import { pluginItemsForNativeMenu } from "./plugins/nativePluginMenu";
 
 const EMPTY_CONTEXT: AppMenuContext = {
   rulersVisible: true,
@@ -54,6 +57,24 @@ function parseNativeMenuCommandIds(): string[] {
 }
 
 describe("app menu model", () => {
+  it.each(["MacIntel", "Win32"])("shows the counted plugin update notice only for available offers on %s", platform => {
+    vi.stubGlobal("navigator", { platform });
+    try {
+      for (const count of [undefined, 0, -1]) {
+        const model = buildAppMenuModel({ ...EMPTY_CONTEXT, availablePluginUpdateCount: count });
+        expect(flattenAppMenuCommands(model).some(item => item.commandId === PLUGIN_UPDATES_COMMAND_ID)).toBe(false);
+      }
+      const model = buildAppMenuModel({ ...EMPTY_CONTEXT, availablePluginUpdateCount: 2 });
+      const plugins = model.find(section => section.id === "plugins")!;
+      const notice = flattenAppMenuCommands([plugins]).filter(item => item.commandId === PLUGIN_UPDATES_COMMAND_ID);
+      expect(notice).toEqual([expect.objectContaining({ label: "Plugin Updates Available (2)…", enabled: true })]);
+      expect(nativeRoutedCommandIds(model)).not.toContain(PLUGIN_UPDATES_COMMAND_ID);
+      expect(pluginItemsForNativeMenu(pluginUpdatesAvailableMenuItem(2))).toEqual([{
+        id: PLUGIN_UPDATES_COMMAND_ID, label: "Plugin Updates Available (2)…", enabled: true, location: "plugins"
+      }]);
+    } finally { vi.unstubAllGlobals(); }
+  });
+
   it("routes synced plugin items by section in the shared native builder for both platforms", () => {
     const source = readFileSync("apps/desktop/src-tauri/src/lib.rs", "utf8");
     const builder = source.split("fn create_app_menu_for_toolsets<R: Runtime>")[1]?.split("/// Close Window")[0];
