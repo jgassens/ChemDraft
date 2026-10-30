@@ -538,23 +538,184 @@ it('reports a non-ZIP GVML blob with first bytes and a guess and inspects raw du
   expect(inspectPath(raw)[0].findings[0].envelope.ok).toBe(true);
 });
 
-function emf(comment: Buffer) {
+function emf(...comments: Buffer[]) {
   const header = Buffer.alloc(88); header.writeUInt32LE(1); header.writeUInt32LE(88, 4); header.write(' EMF', 40);
-  const record = Buffer.alloc(Math.ceil((12 + comment.length) / 4) * 4);
-  record.writeUInt32LE(70); record.writeUInt32LE(record.length, 4); record.writeUInt32LE(comment.length, 8); comment.copy(record, 12);
+  const records = comments.map(comment => {
+    const record = Buffer.alloc(Math.ceil((12 + comment.length) / 4) * 4);
+    record.writeUInt32LE(70); record.writeUInt32LE(record.length, 4); record.writeUInt32LE(comment.length, 8); comment.copy(record, 12);
+    return record;
+  });
   const end = Buffer.alloc(20); end.writeUInt32LE(14); end.writeUInt32LE(20, 4);
-  return Buffer.concat([header, record, end]);
+  return Buffer.concat([header, ...records, end]);
 }
 it('detects EMF GDI comment envelopes, unknown marker encodings and corrupt records', () => {
   for (const data of [Buffer.concat([Buffer.from('chemdraft\0'), envelope]), Buffer.from('chemdraft:' + deflateRawSync(envelope).toString('base64'))]) {
     expect(inspectBlob(emf(data), 'sample.emf').findings[0]).toMatchObject({ carrier: 'emf GDI comment', envelope: { ok: true } });
   }
   expect(inspectBlob(emf(Buffer.from('chemdraft:\u0001unknown')), 'unknown.emf').findings[0].error).toMatch(/unknown/);
+  expect(inspectBlob(emf(Buffer.concat([Buffer.from('chemdraft:'), envelope])), 'wrong-encoding.emf').findings[0].error).toMatch(/unknown envelope encoding/);
   for (const creator of ['Created by ChemDraft', 'chemdraft is the creator']) {
     expect(inspectBlob(emf(Buffer.from(creator)), 'creator.emf')).toMatchObject({ error: null, findings: [] });
   }
   expect(inspectBlob(emf(envelope), 'json.emf').findings[0].envelope.ok).toBe(true);
   expect(inspectBlob(emf(envelope).subarray(0, -1), 'truncated.emf').error).toMatch(/truncated/);
+});
+
+// Synthetic MS-EMFPLUS records and Image objects; no Office document bytes.
+function emfPlusRecord(data: Buffer, flags = 0x0507, type = 0x4008) {
+  const record = Buffer.alloc(Math.ceil((12 + data.length) / 4) * 4);
+  record.writeUInt16LE(type); record.writeUInt16LE(flags, 2);
+  record.writeUInt32LE(record.length, 4); record.writeUInt32LE(data.length, 8);
+  data.copy(record, 12);
+  return record;
+}
+const emfPlusComment = (...records: Buffer[]) => Buffer.concat([Buffer.from('EMF+'), ...records]);
+function emfPlusBitmap(bytes: Buffer, bitmapType = 1) {
+  const header = Buffer.alloc(28);
+  header.writeUInt32LE(0xdbc01002); header.writeUInt32LE(1, 4);
+  header.writeInt32LE(100, 8); header.writeInt32LE(-200, 12);
+  header.writeInt32LE(400, 16); header.writeUInt32LE(0x26200a, 20); header.writeUInt32LE(bitmapType, 24);
+  return Buffer.concat([header, bytes]);
+}
+function emfPlusChunk(bytes: Buffer, total: number, id = 7) {
+  const header = Buffer.alloc(4); header.writeUInt32LE(total);
+  return emfPlusRecord(Buffer.concat([header, bytes]), 0x8500 | id);
+}
+
+describe('EMF comment prefixes and EMF+ pictures (synthetic)', () => {
+  const carrierPng = makePng(png, envelope, 'zTXt');
+  const expected = sha256(payload);
+  const bitmap = emfPlusBitmap(carrierPng);
+
+  it('ignores markers in the middle of plain comments, including a PNG zTXt keyword', () => {
+    for (const data of [Buffer.concat([Buffer.from('opaque bytes'), carrierPng]),
+      Buffer.from('prefix chemdraft:'), Buffer.from('prefix chemdraft-spike'),
+      Buffer.concat([Buffer.from('prefix '), envelope]),
+      Buffer.concat([Buffer.from('GDIC'), Buffer.from('chemdraft\0'), envelope])]) {
+      expect(emfFindings(emf(data))).toEqual([]);
+      expect(inspectBlob(emf(data), 'plain.emf')).toMatchObject({ error: null, findings: [] });
+    }
+  });
+
+  it('keeps the own-comment envelope size cap', () => {
+    const data = Buffer.alloc(MAX_ENVELOPE + 1); data.write('chemdraft\0');
+    expect(inspectBlob(emf(data), 'large.emf').findings).toEqual([
+      { carrier: 'emf GDI comment', error: 'EMF envelope exceeds 20 MB' },
+    ]);
+  });
+
+  it('extracts one compressed bitmap with a valid PNG carrier and no byte-scan duplicate through the CLI', () => {
+    const bytes = emf(emfPlusComment(emfPlusRecord(bitmap)));
+    const path = join(temp, 'emfplus.png.emf'); writeFileSync(path, bytes);
+    const rows = inspectPath(path, expected);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ error: null, findings: [] });
+    expect(rows[1]).toMatchObject({ entry: 'emfplus.png.emf > EMF+ image object[7]', type: 'png',
+      error: null, size: carrierPng.length, sha256: sha256(carrierPng), objectId: 7,
+      width: 100, height: -200, stride: 400, pixelFormat: 0x26200a,
+      findings: [{ carrier: 'png zTXt', envelope: { ok: true }, matchesExpect: true }] });
+    expect(rows.some(row => row.foundBy === 'byte scan')).toBe(false);
+    const cli = spawnSync(process.execPath, ['scripts/office-spike/inspect.mjs', path, '--json', '--expect', expected], { encoding: 'utf8' });
+    expect(cli.status, cli.stderr).toBe(0);
+    expect(JSON.parse(cli.stdout)).toEqual(rows);
+  });
+
+  it.each([false, true])('reassembles continued images across comments (clear final flag: %s) with the original PNG hash', clearFinal => {
+    // Split inside the PNG, not just its Image header, and use three chunks.
+    const split = 28 + Math.floor(carrierPng.length / 2);
+    const first = emfPlusChunk(bitmap.subarray(0, 31), bitmap.length);
+    const middle = emfPlusChunk(bitmap.subarray(31, split), bitmap.length);
+    const last = clearFinal ? emfPlusRecord(bitmap.subarray(split)) : emfPlusChunk(bitmap.subarray(split), bitmap.length);
+    const row = inspectBlob(emf(emfPlusComment(first), emfPlusComment(middle, last)), 'split.emf', 'split.emf', expected);
+    expect(row).toMatchObject({ error: null, findings: [], nestedEntries: [
+      { type: 'png', sha256: sha256(carrierPng), size: carrierPng.length, error: null,
+        findings: [{ envelope: { ok: true }, matchesExpect: true }] },
+    ] });
+    expect(row.nestedEntries).toHaveLength(1);
+  });
+
+  it('reassembles a continued image around an EmfPlusSave record with the original PNG hash', () => {
+    const split = 28 + Math.floor(carrierPng.length / 2);
+    const row = inspectBlob(emf(emfPlusComment(
+      emfPlusChunk(bitmap.subarray(0, split), bitmap.length),
+      emfPlusRecord(Buffer.alloc(4), 0, 0x4025),
+      emfPlusChunk(bitmap.subarray(split), bitmap.length),
+    )), 'save.emf', 'save.emf', expected);
+    expect(row).toMatchObject({ error: null, findings: [], nestedEntries: [
+      { type: 'png', sha256: sha256(carrierPng), size: carrierPng.length, error: null,
+        findings: [{ envelope: { ok: true }, matchesExpect: true }] },
+    ] });
+    expect(row.nestedEntries).toHaveLength(1);
+  });
+
+  it('extracts Metafile bytes by magic and follows nested EMF pictures', () => {
+    const inner = emf(emfPlusComment(emfPlusRecord(bitmap)));
+    const header = Buffer.alloc(16);
+    header.writeUInt32LE(0xdbc01002); header.writeUInt32LE(2, 4);
+    header.writeUInt32LE(3, 8); header.writeUInt32LE(inner.length, 12);
+    const row = inspectBlob(emf(emfPlusComment(emfPlusRecord(Buffer.concat([header, inner]), 0x0509))), 'metafile.emf', 'metafile.emf', expected);
+    expect(row.error).toBeNull();
+    expect(row.nestedEntries).toHaveLength(1);
+    expect(row.nestedEntries[0]).toMatchObject({ type: 'emf', metafileType: 3, objectId: 9,
+      sha256: sha256(inner), error: null, nestedEntries: [{ sha256: sha256(carrierPng), findings: [{ matchesExpect: true }] }] });
+  });
+
+  it.each([['JPEG', Buffer.from('ffd8ff00', 'hex'), 'jpeg'], ['GIF', Buffer.from('GIF89a'), 'gif']])('sniffs %s compressed images by magic', (_name, bytes, type) => {
+    const row = inspectBlob(emf(emfPlusComment(emfPlusRecord(emfPlusBitmap(bytes as Buffer)))), 'magic.emf');
+    expect(row.error).toBeNull();
+    expect(row.nestedEntries).toHaveLength(1);
+    expect(row.nestedEntries[0]).toMatchObject({ type, sha256: sha256(bytes), error: null });
+  });
+
+  it('skips pixel bitmaps and non-Image object payloads without assembling them', () => {
+    const nested = vi.fn();
+    expect(emfFindings(emf(emfPlusComment(emfPlusRecord(emfPlusBitmap(Buffer.alloc(4), 0)),
+      emfPlusRecord(Buffer.alloc(1), 0x8407))), nested)).toEqual([]);
+    expect(nested).not.toHaveBeenCalled();
+  });
+
+  const badDataSize = emfPlusRecord(Buffer.alloc(0)); badDataSize.writeUInt32LE(1, 8);
+  const shortSize = emfPlusRecord(Buffer.alloc(0)); shortSize.writeUInt32LE(8, 4);
+  const unalignedSize = emfPlusRecord(Buffer.alloc(4)); unalignedSize.writeUInt32LE(15, 4);
+  it.each([
+    ['truncated header', [emfPlusComment(Buffer.alloc(11))], /Truncated EMF\+ record header/],
+    ['truncated record', [emfPlusComment(emfPlusRecord(bitmap).subarray(0, -1))], /truncated EMF\+ record size/],
+    ['short record size', [emfPlusComment(shortSize)], /EMF\+ record size/],
+    ['unaligned record size', [emfPlusComment(unalignedSize)], /EMF\+ record size/],
+    ['DataSize too big', [emfPlusComment(badDataSize)], /DataSize/],
+    ['chunk overrun', [emfPlusComment(emfPlusChunk(bitmap, bitmap.length - 1))], /overruns/],
+    ['wrong total', [emfPlusComment(emfPlusChunk(bitmap.subarray(0, 32), bitmap.length)),
+      emfPlusComment(emfPlusChunk(bitmap.subarray(32), bitmap.length + 1))], /mismatched TotalObjectSize/],
+    ['unfinished object', [emfPlusComment(emfPlusChunk(bitmap.subarray(0, 32), bitmap.length))], /Unfinished.*EOF/],
+    ['oversized total', [emfPlusComment(emfPlusChunk(Buffer.alloc(0), 200 * 1024 * 1024 + 1))], /TotalObjectSize exceeds 200 MB/],
+    ['missing total', [emfPlusComment(emfPlusRecord(Buffer.alloc(3), 0x8507))], /Truncated.*TotalObjectSize/],
+    ['different object ID', [emfPlusComment(emfPlusChunk(bitmap.subarray(0, 32), bitmap.length),
+      emfPlusChunk(bitmap.subarray(32), bitmap.length, 8))], /interleaving/],
+    ['different object type', [emfPlusComment(emfPlusChunk(bitmap.subarray(0, 32), bitmap.length),
+      emfPlusRecord(Buffer.alloc(0), 0x0407))], /interleaving/],
+    ['unfinished object after EmfPlusEndOfFile', [emfPlusComment(emfPlusChunk(bitmap.subarray(0, 32), bitmap.length),
+      emfPlusRecord(Buffer.alloc(0), 0, 0x4002))], /Unfinished.*EOF/],
+    ['short final chunk', [emfPlusComment(emfPlusChunk(bitmap.subarray(0, 32), bitmap.length),
+      emfPlusRecord(Buffer.alloc(0)))], /final chunk.*TotalObjectSize/],
+    ['short image header', [emfPlusComment(emfPlusRecord(Buffer.alloc(7)))], /Truncated.*Image header/],
+    ['short bitmap header', [emfPlusComment(emfPlusRecord(bitmap.subarray(0, 27)))], /Truncated.*Bitmap header/],
+    ['short metafile header', [emfPlusComment(emfPlusRecord(Buffer.from('0210c0db02000000', 'hex')))], /Truncated.*Metafile header/],
+    ['invalid metafile size', [emfPlusComment(emfPlusRecord(Buffer.from('0210c0db020000000300000001000000', 'hex')))], /MetafileDataSize/],
+  ] as const)('reports malformed EMF+ %s without allocating an assembled object', (_name, comments, pattern) => {
+    const bytes = emf(...comments);
+    const concat = vi.spyOn(Buffer, 'concat');
+    try {
+      const row = inspectBlob(bytes, 'bad.emf');
+      expect(row.error).toMatch(pattern);
+      expect(concat).not.toHaveBeenCalled();
+    } finally { concat.mockRestore(); }
+  });
+
+  it('caps EMF+ records across comments', () => {
+    const record = emfPlusRecord(Buffer.alloc(0), 0, 0x4002);
+    const comment = emfPlusComment(...Array.from({ length: 50000 }, () => record));
+    expect(inspectBlob(emf(comment, comment, emfPlusComment(record)), 'many.emf').error).toMatch(/EMF\+ record count exceeds 100000/);
+  });
 });
 
 // Synthetic MS-EMF multiformats; never copied from an Office document.
