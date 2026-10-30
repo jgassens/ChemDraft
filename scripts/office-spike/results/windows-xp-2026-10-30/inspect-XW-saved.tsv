@@ -1,0 +1,3 @@
+Container	Entry	Type	Bytes	SHA-256	Pixels / DPI	References	Carriers / errors / blob guess	Notes
+C:/dev/office-xp/files/XW-mac.docx	word/media/image1.emf	emf	1948032	91042a4ecad7f0284ed196038f1116ee0ac224bf041cfc674627609d3d01f9eb		word/document.xml	 	short EMR_EOF (16 bytes; MS-EMF says 20), as Word for Mac writes
+C:/dev/office-xp/files/XW-mac.docx	word/media/image1.emf > EMF multiformat[0] (PDF)	pdf	8807	e71aaa73cb78871a1bb198dbbed852ff7c2d3e5ac21b18219b11a7392e66ff68		word/document.xml	pdf embedded file: valid; expect=true	

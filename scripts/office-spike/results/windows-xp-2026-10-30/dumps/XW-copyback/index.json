@@ -1,0 +1,89 @@
+[
+    {
+        "id":  49161,
+        "name":  "DataObject",
+        "file":  "49161-DataObject.bin",
+        "size":  8,
+        "sha256":  "4eb300e99260e39e0a22438018c6d8796fc9d93d7bcc826cc125417b479bbbac"
+    },
+    {
+        "id":  49812,
+        "name":  "Art::GVML ClipFormat",
+        "file":  "49812-Art__GVML_ClipFormat.bin",
+        "size":  25904,
+        "sha256":  "4a554e6953a39bb2e6eec21aaf06a1a76eb68731f7e5f38a39fdccdd67ce7c0c"
+    },
+    {
+        "id":  14,
+        "name":  "CF_ENHMETAFILE",
+        "file":  "14-CF_ENHMETAFILE.bin",
+        "size":  4324748,
+        "sha256":  "7bcd329a56b3fce80c1187acb235425bbc3c9e33258a90bc00be541609d5f1f3"
+    },
+    {
+        "id":  49277,
+        "name":  "GIF",
+        "file":  "49277-GIF.bin",
+        "size":  4681,
+        "sha256":  "5878210e9cea133a19457eb4b7a5b795185e0c3ec56da95757359ddeaf3ef6e7"
+    },
+    {
+        "id":  3,
+        "name":  "CF_METAFILEPICT",
+        "note":  "Handle-based format, not HGLOBAL"
+    },
+    {
+        "id":  2,
+        "name":  "CF_BITMAP",
+        "note":  "Handle-based format, not HGLOBAL"
+    },
+    {
+        "id":  49279,
+        "name":  "PNG",
+        "file":  "49279-PNG.bin",
+        "size":  26139,
+        "sha256":  "36e27585f5b81ff2052e4f20238b8aff9c09e14a6f4daf8cf29067b47a4b89ad"
+    },
+    {
+        "id":  49278,
+        "name":  "JFIF",
+        "file":  "49278-JFIF.bin",
+        "size":  18213,
+        "sha256":  "5f00e0a9b6fd1c0e9062c6eb84d1c7cb5509ec9f3f0fae29efbd7fb2eae759bc"
+    },
+    {
+        "id":  49166,
+        "name":  "Object Descriptor",
+        "file":  "49166-Object_Descriptor.bin",
+        "size":  148,
+        "sha256":  "cdbf4fde7aaa5f8fdede4ae444e8b4230bf6930591f7b816a270cbcad9565fd9"
+    },
+    {
+        "id":  49491,
+        "name":  "image/svg+xml",
+        "file":  "49491-image_svg_xml.bin",
+        "size":  16903,
+        "sha256":  "952a88b8e6ae9726de091fd99fa7ef1388a5a396a2233f2bf502a10cf061d823"
+    },
+    {
+        "id":  49171,
+        "name":  "Ole Private Data",
+        "file":  "49171-Ole_Private_Data.bin",
+        "size":  504,
+        "sha256":  "0c6cf5932ed0ae3e06273eab238211f916c7e03b1d34c4b974c5fe02bc18b08b"
+    },
+    {
+        "id":  8,
+        "name":  "CF_DIB",
+        "file":  "8-CF_DIB.bin",
+        "size":  2016820,
+        "sha256":  "e6ac99d7290c65ad6c146af75ad8103a225928f2bdd951acc84ec2a2eadf3511"
+    },
+    {
+        "id":  17,
+        "name":  "CF_DIBV5",
+        "file":  "17-CF_DIBV5.bin",
+        "size":  2016904,
+        "sha256":  "de19116e28d31e3b5a31a92d8d983af143036f44e44cdef0fc04ec0075fe8955"
+    }
+]

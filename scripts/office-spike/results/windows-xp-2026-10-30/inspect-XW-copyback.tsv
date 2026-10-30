@@ -1,0 +1,14 @@
+Container	Entry	Type	Bytes	SHA-256	Pixels / DPI	References	Carriers / errors / blob guess	Notes
+C:\dev\office-xp\dumps\XW-copyback\14-CF_ENHMETAFILE.bin	14-CF_ENHMETAFILE.bin	emf	4324748	7bcd329a56b3fce80c1187acb235425bbc3c9e33258a90bc00be541609d5f1f3			 	
+C:\dev\office-xp\dumps\XW-copyback\14-CF_ENHMETAFILE.bin	14-CF_ENHMETAFILE.bin > EMF+ image object[0]	png	40544	85448195922335fa3ab5c6fe8d38599ebec88fec994ccdf97e444c731ea1bec8	1248x1615 / 191.99859999999998x191.99859999999998		 	
+C:\dev\office-xp\dumps\XW-copyback\17-CF_DIBV5.bin	17-CF_DIBV5.bin	other	2016904	de19116e28d31e3b5a31a92d8d983af143036f44e44cdef0fc04ec0075fe8955			unknown blob (not a ZIP) 7c000000700200002803000001002000	
+C:\dev\office-xp\dumps\XW-copyback\49161-DataObject.bin	49161-DataObject.bin	other	8	4eb300e99260e39e0a22438018c6d8796fc9d93d7bcc826cc125417b479bbbac			unknown blob (not a ZIP) 96003f0000000000	
+C:\dev\office-xp\dumps\XW-copyback\49166-Object_Descriptor.bin	49166-Object_Descriptor.bin	other	148	cdbf4fde7aaa5f8fdede4ae444e8b4230bf6930591f7b816a270cbcad9565fd9			unknown blob (not a ZIP) 940000009b4c75f4f564404b8af46797	
+C:\dev\office-xp\dumps\XW-copyback\49171-Ole_Private_Data.bin	49171-Ole_Private_Data.bin	other	504	0c6cf5932ed0ae3e06273eab238211f916c7e03b1d34c4b974c5fe02bc18b08b			unknown blob (not a ZIP) 00000000f80100000100000009000000	
+C:\dev\office-xp\dumps\XW-copyback\49277-GIF.bin	49277-GIF.bin	gif	4681	5878210e9cea133a19457eb4b7a5b795185e0c3ec56da95757359ddeaf3ef6e7			 	
+C:\dev\office-xp\dumps\XW-copyback\49278-JFIF.bin	49278-JFIF.bin	jpeg	18213	5f00e0a9b6fd1c0e9062c6eb84d1c7cb5509ec9f3f0fae29efbd7fb2eae759bc			 	
+C:\dev\office-xp\dumps\XW-copyback\49279-PNG.bin	49279-PNG.bin	png	26139	36e27585f5b81ff2052e4f20238b8aff9c09e14a6f4daf8cf29067b47a4b89ad	975x1262 / 149.987x149.987		 	
+C:\dev\office-xp\dumps\XW-copyback\49491-image_svg_xml.bin	49491-image_svg_xml.bin	svg	16903	952a88b8e6ae9726de091fd99fa7ef1388a5a396a2233f2bf502a10cf061d823			 	
+C:\dev\office-xp\dumps\XW-copyback\49812-Art__GVML_ClipFormat.bin	clipboard/media/image1.emf	emf	1948032	91042a4ecad7f0284ed196038f1116ee0ac224bf041cfc674627609d3d01f9eb		clipboard/drawings/drawing1.xml	 	short EMR_EOF (16 bytes; MS-EMF says 20), as Word for Mac writes
+C:\dev\office-xp\dumps\XW-copyback\49812-Art__GVML_ClipFormat.bin	clipboard/media/image1.emf > EMF multiformat[0] (PDF)	pdf	8807	e71aaa73cb78871a1bb198dbbed852ff7c2d3e5ac21b18219b11a7392e66ff68		clipboard/drawings/drawing1.xml	pdf embedded file: valid; expect=true	
+C:\dev\office-xp\dumps\XW-copyback\8-CF_DIB.bin	8-CF_DIB.bin	other	2016820	e6ac99d7290c65ad6c146af75ad8103a225928f2bdd951acc84ec2a2eadf3511			unknown blob (not a ZIP) 28000000700200002803000001002000	
