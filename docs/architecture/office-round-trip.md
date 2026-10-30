@@ -35,6 +35,11 @@ The Windows test session followed `scripts/office-spike/RUNBOOK-windows.md` at
 `scripts/office-spike/results/windows-2026-10-30/` on branch
 `review/office-phase0-windows-results`, commit `c2083844`.
 
+The cross-platform run used the same Windows and Office versions. Its inputs, `W1.docx` and
+`P1b.pptx`, came from the macOS run on branch `review/office-crossplatform-mac-files`, commit
+`014b653d`. Raw results are in `scripts/office-spike/results/windows-xp-2026-10-30/` on branch
+`review/office-xp-windows-results`, commit `6f8de679`.
+
 ## Results
 
 On macOS, both apps kept the tested PNG and PDF carriers in saved files; neither pasted SVG alone.
@@ -93,6 +98,31 @@ normally.
 Word and PowerPoint for Mac write EMF files with a final `EMR_EOF` record of 16 bytes, although
 MS-EMF specifies 20 bytes. Readers must accept that.
 
+### Documents moved from macOS to Windows
+
+Each macOS file held one 1,948,032-byte EMF wrapping the original PDF carrier from the macOS
+COMBINED result. Both apps showed the structure on Windows. After an edit (a new line with one
+character in Word, a new slide in PowerPoint) and Ctrl+S in place, both saved files still held the
+byte-identical EMF with a valid carrier.
+
+With the picture selected and copied on Windows, the carrier survived only inside the
+`Art::GVML ClipFormat` zip in both apps: `clipboard/media/image1.emf` was the original EMF with a
+valid carrier. PowerPoint's `ppt/shapes` web format zip also held that original EMF with a valid
+carrier. No top-level format carried it. Word's top-level EMF was a fresh render holding a
+1248×1615 PNG at 192 dpi in an EMF+ image object. PowerPoint's top-level EMF held a re-encoded
+1,939,168-byte EMF without the PDF.
+
+PowerPoint's top-level PNG was blank: 870×1125 pixels in 278 bytes, a 1-bit image of a single
+colour. Its 792-byte SVG wrapped the same blank image. An app pasting either would show an empty
+picture. Word's PNG and SVG were normal (975×1262 pixels and 26 KB for PNG; 17 KB for SVG). The
+cause of the PowerPoint result was not investigated.
+
+The macOS EMF has no ordinary drawing records. It holds two comments: an EMF+ comment with an
+uncompressed 612×792-pixel bitmap, and the GDIC comment with the PDF. Windows cannot draw the PDF,
+so it shows the bitmap. The test PDF's page is 612×792 points, making the bitmap 72 pixels per inch
+in the one file measured. A picture pasted on macOS therefore appears on Windows as a 72 dpi
+bitmap in this measurement, and will look soft when zoomed or printed.
+
 ## Decisions supported by the measurements
 
 macOS:
@@ -113,10 +143,15 @@ Windows (proposed; pending the owner's decision):
 2. Windows Office ignores PDF and `image/png`.
 3. For paste-back, check each source in order: GVML zip media, EMF+ image objects in
    `CF_ENHMETAFILE`, then the top-level PNG. Validate the carrier found and fall through when it is
-   missing or invalid. PowerPoint's `ppt/shapes` web format also contains a zip holding the original
-   PNG with a valid carrier. Whether Office on the web or the add-in can read it is not yet measured.
+   missing or invalid. GVML zip media can be either the PNG (a picture pasted on Windows) or the
+   macOS EMF wrapping the PDF (a picture pasted on macOS), so the reader must handle both.
+   PowerPoint's `ppt/shapes` web format holds the same media as GVML with a valid carrier in both
+   tests. Whether Office on the web or the add-in can read it is not yet measured.
 4. Use the planned add-in to replace a picture, as on macOS.
 5. Windows gets a bitmap, not a vector picture, until an EMF carrier is measured.
+6. A picture pasted on macOS retains its recoverable carrier on Windows but displays there as
+   Office for Mac's 72 dpi fallback bitmap in the one file measured. If documents travel between
+   platforms, this belongs in the owner's choice of formats.
 
 ## Not yet measured
 
@@ -125,7 +160,11 @@ The following remain unmeasured:
 - Compress Pictures and Paste Special.
 - Cropped, rotated or grouped pictures.
 - Copy-back of a picture pasted as PNG on macOS.
-- Documents moved between macOS and Windows, and copy-back there.
+- Windows-made documents opened, copied from and saved on macOS; the macOS-to-Windows direction is
+  measured above.
+- Why PowerPoint for Windows produces a blank top-level PNG and an SVG wrapping it when copying the
+  macOS picture back.
+- Whether Office for Mac's fallback bitmap is always 72 dpi; one file was measured.
 - Whole-document copy on Windows.
 - Pictures large enough that the EMF+ image object is split across records; only a 19,783-byte PNG
   was measured.
