@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type InputHTMLAttributes,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode
@@ -1002,6 +1003,45 @@ function MoleculeInspectorNumericControl({
   );
 }
 
+/** React's color onChange is a live input notification. Only the native change
+ * ends a chooser pick; WebKit's Colors panel need not blur its owning input. */
+function PaletteColorInput({ value, onPreviewColor, onCommitColor, ...props }: Omit<
+  InputHTMLAttributes<HTMLInputElement>, "type" | "value" | "onChange" | "onBlur"
+> & { value: string; onPreviewColor: (color: string) => void; onCommitColor: (color: string) => void }) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const pendingColor = useRef<string | undefined>(undefined);
+  const settledColor = useRef(value);
+  useEffect(() => {
+    if (pendingColor.current === undefined) settledColor.current = value;
+  }, [value]);
+  const preview = (color: string) => {
+    if (color === (pendingColor.current ?? settledColor.current)) return;
+    pendingColor.current = color;
+    onPreviewColor(color);
+  };
+  const commit = (color: string) => {
+    if (pendingColor.current === undefined && color === settledColor.current) return;
+    // Some choosers send change without a preceding input notification.
+    if (pendingColor.current !== color) onPreviewColor(color);
+    pendingColor.current = undefined;
+    settledColor.current = color;
+    onCommitColor(color);
+  };
+  useEffect(() => {
+    const input = inputRef.current!;
+    const change = () => commit(input.value);
+    input.addEventListener("change", change);
+    return () => input.removeEventListener("change", change);
+  });
+  return <input {...props} ref={inputRef} type="color" value={value}
+    onChange={(event) => {
+      // A native change is handled at the target, before React's delegated event.
+      if (event.nativeEvent.type === "input") preview(event.currentTarget.value);
+    }}
+    onBlur={(event) => { if (pendingColor.current !== undefined) commit(event.currentTarget.value); }}
+  />;
+}
+
 function MoleculeInspectorControls({ ringOnly = false }: { ringOnly?: boolean }) {
   const {
     currentMoleculeInspector,
@@ -1218,15 +1258,14 @@ function MoleculeInspectorControls({ ringOnly = false }: { ringOnly?: boolean })
         <span>{label}</span>
         <span className="molecule-inspector-color-input">
           <span className="toolbar-color-trigger-swatch" style={{ "--current-color": mixed ? "#8a949e" : color } as CSSProperties} />
-          <input
-            type="color"
+          <PaletteColorInput
             value={color}
             disabled={disabled}
             aria-label={label}
             data-palette-control="true"
             onPointerDown={(event) => event.stopPropagation()}
-            onChange={(event) => previewCommand(commandId(event.currentTarget.value))}
-            onBlur={(event) => invokeOrCommit(commandId(event.currentTarget.value))}
+            onPreviewColor={(color) => previewCommand(commandId(color))}
+            onCommitColor={(color) => invokeOrCommit(commandId(color))}
           />
         </span>
       </label>
@@ -1286,15 +1325,14 @@ function MoleculeInspectorControls({ ringOnly = false }: { ringOnly?: boolean })
           </button>
           <label className="molecule-inspector-color-input" title="Custom ring fill color">
             <span className="toolbar-color-trigger-swatch" style={{ "--current-color": currentColor } as CSSProperties} />
-            <input
-              type="color"
+            <PaletteColorInput
               value={currentColor}
               disabled={!selected}
               aria-label="Custom ring fill color"
               data-palette-control="true"
               onPointerDown={(event) => event.stopPropagation()}
-              onChange={(event) => applyColor(event.currentTarget.value, false)}
-              onBlur={(event) => applyColor(event.currentTarget.value, true)}
+              onPreviewColor={(color) => applyColor(color, false)}
+              onCommitColor={(color) => applyColor(color, true)}
             />
           </label>
         </div>
@@ -1334,15 +1372,14 @@ function MoleculeInspectorControls({ ringOnly = false }: { ringOnly?: boolean })
           <div className="molecule-inspector-effect-controls" data-visible-effect-kind={visibleEffectKind}>
             <label className="molecule-inspector-color-input" title="Ring effect color">
               <span className="toolbar-color-trigger-swatch" style={{ "--current-color": currentEffectColor } as CSSProperties} />
-              <input
-                type="color"
+              <PaletteColorInput
                 value={currentEffectColor}
                 disabled={!selected}
                 aria-label="Ring effect color"
                 data-palette-control="true"
                 onPointerDown={(event) => event.stopPropagation()}
-                onChange={(event) => applyEffectColor(event.currentTarget.value, false)}
-                onBlur={(event) => applyEffectColor(event.currentTarget.value, true)}
+                onPreviewColor={(color) => applyEffectColor(color, false)}
+                onCommitColor={(color) => applyEffectColor(color, true)}
               />
             </label>
             {slider("Effect", effectOpacity, (value) => moleculeRingEffectOpacityCommandId(ringKey, visibleEffectKind, value))}
@@ -1630,15 +1667,14 @@ function MoleculeInspectorControls({ ringOnly = false }: { ringOnly?: boolean })
                   "--current-color": normalizeHexColor(atomLabels?.values.backgroundColor.value ?? "#ffffff") ?? "#ffffff"
                 } as CSSProperties}
               />
-              <input
-                type="color"
+              <PaletteColorInput
                 value={normalizeHexColor(atomLabels?.values.backgroundColor.value ?? "#ffffff") ?? "#ffffff"}
                 disabled={atomLabelsDisabled}
                 aria-label="Atom label background color"
                 data-palette-control="true"
                 onPointerDown={(event) => event.stopPropagation()}
-                onChange={(event) => previewCommand(moleculeAtomLabelBackgroundColorCommandId(event.currentTarget.value))}
-                onBlur={(event) => invokeOrCommit(moleculeAtomLabelBackgroundColorCommandId(event.currentTarget.value))}
+                onPreviewColor={(color) => previewCommand(moleculeAtomLabelBackgroundColorCommandId(color))}
+                onCommitColor={(color) => invokeOrCommit(moleculeAtomLabelBackgroundColorCommandId(color))}
               />
             </span>
           : null}
@@ -3296,12 +3332,12 @@ export function ColorPickerPopoverBody({
             />
             <label className="color-wheel-control">
               <span className="visually-hidden">System color wheel</span>
-              <input
+              <PaletteColorInput
                 className="color-wheel-input"
-                type="color"
                 value={normalizedValue}
                 aria-label="System color wheel"
-                onChange={(event) => applyAndCommitColor(event.currentTarget.value)}
+                onPreviewColor={previewColor}
+                onCommitColor={commitColor}
               />
               <span className="color-wheel-face" aria-hidden="true">
                 <span className="color-wheel-current" style={{ "--picker-color": normalizedValue } as CSSProperties} />

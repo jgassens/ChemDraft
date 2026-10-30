@@ -152,6 +152,7 @@ export function installPluginPanelInputFocus(
   let acquiredControlFocus = false;
   let suspendingControlFocus = false;
   let leasedControl: HTMLElement | undefined;
+  let openSelect: HTMLSelectElement | undefined;
   let selectionLease = false;
   let selectionNodes: Node[] = [];
   let selectionGesture: { pointerId: number; x: number; y: number; dragged: boolean } | undefined;
@@ -230,6 +231,7 @@ export function installPluginPanelInputFocus(
     void pending.catch((error: unknown) => console.error("Could not change panel input focus:", error));
   };
   const finish = (cancelControl = false, preserveNativeChooser = false, pointerBefore?: number, returnFocus = true): void => {
+    openSelect = undefined;
     clearTimeout(controlBlurTimer);
     clearTimeout(pointerFocusTimer);
     pointerFocusTimer = undefined;
@@ -285,6 +287,9 @@ export function installPluginPanelInputFocus(
     selectionGesture = undefined;
     const control = (editableFocus ? disabledControlAtPointer(shell, event) : undefined) ?? editableControl(event.target);
     if (control && shell.contains(control)) {
+      // WebKit delivers the Escape that dismisses its NSMenu to the page. WebView2
+      // consumes it inside the popup, so its next page Escape already means hand-back.
+      openSelect = platform === "macos" && control instanceof HTMLSelectElement && !control.disabled ? control : undefined;
       clearTimeout(controlBlurTimer);
       if (editableFocus && acquiredControlFocus) pendingPaletteShells.delete(shell);
       if (selectionLease) finish(false, false, pointerClassificationBefore);
@@ -384,6 +389,7 @@ export function installPluginPanelInputFocus(
   };
   const focusIn = (event: FocusEvent): void => {
     const control = editableControl(event.target);
+    if (control !== openSelect) openSelect = undefined;
     if (control && shell.contains(control)) {
       clearTimeout(controlBlurTimer);
       if (editableFocus && acquiredControlFocus) pendingPaletteShells.delete(shell);
@@ -462,11 +468,15 @@ export function installPluginPanelInputFocus(
     pointerClickTarget = undefined;
     const control = editableControl(event.target) ?? (editableFocus ? leasedControl : undefined);
     if (!editing || event.isComposing) return;
+    if (platform === "macos" && control instanceof HTMLSelectElement && !control.disabled &&
+      (event.key === " " || (event.altKey && event.key === "ArrowDown"))) openSelect = control;
     if (event.key === "Escape" && !event.defaultPrevented) {
-      // An open native select popup consumes its own Escape. Escape delivered to
-      // this page means the popup is closed and ends the lease like any control.
       event.preventDefault();
       event.stopPropagation(); // Escape finishes editing; it must not close the report window.
+      if (control === openSelect && openSelect) {
+        openSelect = undefined;
+        return;
+      }
       finish();
     } else if (selectionLease && event.isTrusted && event.key !== "Escape") {
       const copyOrSelectAll = (event.ctrlKey || event.metaKey) && !event.altKey &&
@@ -508,6 +518,9 @@ export function installPluginPanelInputFocus(
   const selectionChange = (): void => {
     if (selectionLease && !hasReportSelection()) finish();
   };
+  const selectChange = (event: Event): void => {
+    if (event.target === openSelect) openSelect = undefined;
+  };
   // Removing a focused node need not emit focusout (including a replaced report or closed portal).
   const observer = new MutationObserver(() => {
     if (selectionLease) {
@@ -524,6 +537,7 @@ export function installPluginPanelInputFocus(
   shell.addEventListener("click", click, true);
   shell.addEventListener("focusin", focusIn);
   shell.addEventListener("focusout", focusOut);
+  shell.addEventListener("change", selectChange);
   // Palette controls commit/cancel through React's delegated handlers at the root above shell.
   // Finish their leases afterwards, so Escape cannot swallow the control's cancel handler.
   if (editableFocus) {
@@ -553,6 +567,7 @@ export function installPluginPanelInputFocus(
     shell.removeEventListener("click", click, true);
     shell.removeEventListener("focusin", focusIn);
     shell.removeEventListener("focusout", focusOut);
+    shell.removeEventListener("change", selectChange);
     if (editableFocus) {
       window.removeEventListener("keydown", protectPendingKeys, true);
       window.removeEventListener("keydown", keyDown);

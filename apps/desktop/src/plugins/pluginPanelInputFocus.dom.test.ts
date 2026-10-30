@@ -853,6 +853,46 @@ describe("panel input keyboard focus", () => {
 });
 
 describe.each(["macos", "windows"] as const)("palette control focus settling (%s)", (platform) => {
+  it.each(["pointer", "Space", "Alt+Down"])("keeps select keys after dismissing a list opened by %s, then hands back on the next Escape", async (opening) => {
+    const { shell, request } = mount('<input><select><option value="14">14 pt</option><option value="18">18 pt</option></select>', platform, Promise.resolve(), true);
+    const select = shell.querySelector("select")!;
+    const input = shell.querySelector("input")!;
+    pointerDown(opening === "pointer" ? select : input);
+    (opening === "pointer" ? select : input).focus();
+    await flush();
+    pointerUp(opening === "pointer" ? select : input, false);
+    click(opening === "pointer" ? select : input);
+    if (opening !== "pointer") {
+      select.focus(); // Tab's browser default.
+      select.dispatchEvent(new KeyboardEvent("keydown", { key: opening === "Space" ? " " : "ArrowDown",
+        altKey: opening === "Alt+Down", bubbles: true, cancelable: true }));
+    }
+    // WebKit bubbles the NSMenu dismissal Escape. WebView2 consumes that key in
+    // its popup: model that native boundary with an event that does not bubble.
+    select.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: platform === "macos", cancelable: true }));
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true]);
+    expect(document.activeElement).toBe(select);
+    for (const value of ["1", "8", "ArrowDown"]) expect(key(select, value).defaultPrevented).toBe(false);
+    expect(shell.dataset.paletteInputFocus).toBe("held");
+    key(select, "Escape");
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+    expect(document.activeElement).not.toBe(select);
+  });
+
+  it("does not retain a popup-dismissal Escape after a completed select pick", async () => {
+    const { shell, request } = mount('<select><option>14 pt</option><option>18 pt</option></select>', platform, Promise.resolve(), true);
+    const select = shell.querySelector("select")!;
+    pointerDown(select); select.focus();
+    await flush();
+    select.selectedIndex = 1;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    key(select, "Escape");
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+  });
+
   it("keeps the lease for Tab to another control, then ends it when Tab leaves the palette", async () => {
     vi.useFakeTimers();
     const { shell, request } = mount('<input><select><option>One</option></select>', platform, Promise.resolve(), true);

@@ -47,6 +47,9 @@ and Cmd+W closes the document tab. Hover the disabled number box itself:
 its real wrapper shows not-allowed, even before the palette becomes key; no title means no tooltip.
 Foreground after editing: type ahead in the Text size select, dismiss its popup, then press
 Escape again with the select closed. Press M immediately: the document must receive it. Repeat
+on macOS and Windows by opening the list with a pointer, and with Space/Alt+Down where supported:
+the first Escape only dismisses the list, typing 18 and Arrow Down still act on the select,
+and a further Escape hands the keyboard back to the document.
 Tab out of the palette and a control finishing with no palette destination, on both platforms.
 Tab/click between palette controls keeps their keyboard lease. Switching apps, clicking another
 palette, or opening a native colour/select chooser must never pull focus back to the document.
@@ -99,6 +102,14 @@ for it). Leave it open through palette snapshots; clicking the canvas dismisses 
 changing the drawing. Open the colour popover, type a hex shorthand and press Enter: the colour
 commits once and shortcuts return. Keep two palettes open, edit a field in each in turn, and switch
 apps: their leases stay independent and the first palette can acquire focus again.
+Colour transaction regression (macOS and Windows): select a molecule, pick blue in Bond color's
+native chooser and close it, draw a new bond, then pick green and close the chooser again. The
+bond must remain and the new colour must apply to the current target. Undo green, then the bond,
+then blue as separate steps; cancelling the green pick must also preserve the bond and blue.
+Repeat with Label color, Atom label background color, Custom ring fill color, Ring effect color,
+and the colour popover's system picker. A pick commits when the chooser sends change, even without
+input blur; moving focus afterwards adds no duplicate undo step. If the chooser stays open during
+a canvas edit, that edit must end the earlier preview, so a later commit/cancel cannot erase it.
 Text commit clicks (macOS and Windows): edit a text object with Bond or Select restored, then click empty canvas or an existing atom; that click commits only, preserves bonds and selection, and focuses SECTION.canvas-region for shortcuts; the next click works normally. Repeat Enter/Escape/Tab, toolbar actions, double-click editing, and IME composition (no mid-composition commit).
 With nothing focused, press Shift+F10: the app menu opens, never the browser menu, and mouse and keyboard input keep working.
 On Windows, right-click and press Shift+F10 in text fields (including textareas) in the document,
