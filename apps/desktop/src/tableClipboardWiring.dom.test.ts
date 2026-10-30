@@ -128,6 +128,7 @@ describe("MainWindow table clipboard wiring", () => {
     expect(objects).toHaveLength(2);
     const table = objects[1] as TableObject;
     expect(table.type).toBe("table");
+    expect(table.headerRowCount).toBe(1);
     expect(table.rows.map(row => row.cells.map(cell => cell.text))).toEqual([
       ["Material", "MW (g/mol)", "Density (g/mL)"], ["allyl alcohol", "58.08", "0.854"],
       ["Ti(OiPr)4", "284.22", "0.96"], ["TBHPa", "90.12", "—"]
@@ -169,8 +170,7 @@ describe("MainWindow table clipboard wiring", () => {
     expect(table.type).toBe("table");
     expect(table.columns).toHaveLength(7);
     expect(table.rows).toHaveLength(6);
-    // The real-structure Excel fixture has bordered td headers and colspan notes;
-    // unlike the old fixture, it yields one header row and the Table S2 caption.
+    // Both existing Office-shaped fixtures retain their one header row and notes.
     expect(table.headerRowCount).toBe(1);
     expect(table.caption?.text).toBe(name === "word-office-notes"
       ? "Table S1. Sharpless reagent quantities (synthetic)." : "Table S2. Sharpless reagent plan (synthetic).");

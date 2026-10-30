@@ -78,14 +78,25 @@ describe("limits", () => {
 });
 
 describe("HTML table fixtures", () => {
-  it("reads the Excel-like table: plain cells, explicit alignment, no header rows", () => {
+  it.each(["windows-word.html", "windows-excel.html"])("detects one header in Windows CF_HTML (%s)", name => {
+    const result = expectOk(readHtml(cfHtml(fixture(name)), "HTML Format"));
+    expect(result.spec.headerRows).toEqual([[
+      "Material", "MW (g/mol)", "Density (g/mL)", "Equiv.", "mmol", "Mass (g)", "Volume (mL)"
+    ]]);
+    expect(result.spec.rows).toHaveLength(2);
+    let id = 0;
+    expect(buildTableObject(result.spec, { id: "table", x: 0, y: 0, newId: () => `win-${++id}` }).object.headerRowCount).toBe(1);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("reads the Excel-like table: plain cells, inferred header and decimal body columns", () => {
     const result = expectOk(readHtml(fixture("excel-like.html")));
     expect(result.source).toBe("html");
     expect(result.warnings).toEqual([]);
     expect(result.spec).toEqual({
-      columns: [left, right, right, right, right, left, right],
+      columns: [left, ...Array.from({ length: 6 }, () => ({ align: "decimal" }))],
+      headerRows: [["Material", "MW (g/mol)", "Density (g/mL)", "Equiv.", "mmol", "Mass (g)", "Volume (mL)"]],
       rows: [
-        ["Material", "MW (g/mol)", "Density (g/mL)", "Equiv.", "mmol", "Mass (g)", "Volume (mL)"],
         ["allyl alcohol", "58.08", "0.854", "1.00", "17.22", "1.00", "1.17"],
         ["Ti(OiPr)4", "284.22", "0.96", "0.05", "0.861", "0.245", "0.255"],
         ["(+)-DET", "206.19", "1.204", "0.06", "1.033", "0.213", "0.177"],
@@ -102,9 +113,9 @@ describe("HTML table fixtures", () => {
   });
 
   const wordSpec = {
-    columns: [left, right, right],
+    columns: [left, { align: "decimal" }, { align: "decimal" }],
+    headerRows: [[bold("Material"), bold("MW (g/mol)"), bold("Density (g/mL)")]],
     rows: [
-      [bold("Material"), bold("MW (g/mol)"), bold("Density (g/mL)")],
       ["allyl alcohol", "58.08", "0.854"],
       [
         { text: "Ti(OiPr)4", spans: [{ text: "Ti(OiPr)" }, { text: "4", script: "subscript" }] },
@@ -154,9 +165,9 @@ describe("HTML table fixtures", () => {
     const result = expectOk(readHtml(fixture("google-sheets-like.html")));
     expect(result.warnings).toEqual([]);
     expect(result.spec).toEqual({
-      columns: [left, right, left],
+      columns: [left, { align: "decimal" }, { align: "decimal" }],
+      headerRows: [["Material", "MW (g/mol)", "mmol"]],
       rows: [
-        ["Material", "MW (g/mol)", "mmol"],
         ["allyl alcohol", "58.08", "17.22"],
         ["TBHP", "90.12", "34.44"],
         ["CH2Cl2", "84.93", ""]
@@ -235,15 +246,14 @@ describe("Excel overflow recovery", () => {
     expect(result.warnings).toEqual([]);
   });
 
-  it("does not infer headers from non-Excel borders or an inline override removing a header border", () => {
+  it("recognizes text above numeric columns even without Excel header borders", () => {
     const html = fixture("excel-overflow-notes.html");
     for (const modified of [
       html.replace('xmlns:x="urn:schemas-microsoft-com:office:excel"', "").replace("Excel.Sheet", "Other"),
-      // Header inference follows the separator below every cell; removing it
-      // from one cell must defeat the class rule, even if the top border remains.
+      // This defeats the border rule, but content still establishes a single header.
       html.replace("class=xl22 width=90 style='width:67pt'", "class=xl22 width=90 style='width:67pt;border-bottom:none'")
     ]) {
-      expect(expectOk(readHtml(modified)).spec.headerRows).toBeUndefined();
+      expect(expectOk(readHtml(modified)).spec.headerRows).toEqual([excelHeaders]);
     }
   });
 
@@ -253,6 +263,18 @@ describe("Excel overflow recovery", () => {
       + '<tr><td class=xl1>a</td><td class=xl1>1.00</td></tr>'
       + '<tr><td class=xl1>b</td><td class=xl1>2.00</td></tr></table></body></html>';
     expect(expectOk(readHtml(html)).spec.headerRows).toBeUndefined();
+  });
+
+  it("keeps border-only inference restricted to Excel and respects inline border overrides", () => {
+    const html = '<html xmlns:x="urn:schemas-microsoft-com:office:excel"><head><style>'
+      + '.xl1 { border-bottom:1pt solid black; }</style></head><body><table>'
+      + '<tr><td class=xl1>Material</td><td class=xl1>State</td></tr>'
+      + '<tr><td>allyl alcohol</td><td>liquid</td></tr></table></body></html>';
+    expect(expectOk(readHtml(html)).spec.headerRows).toEqual([["Material", "State"]]);
+    expect(expectOk(readHtml(html.replace('xmlns:x="urn:schemas-microsoft-com:office:excel"', "")))
+      .spec.headerRows).toBeUndefined();
+    expect(expectOk(readHtml(html.replace('class=xl1>State', 'class=xl1 style="border-bottom:none">State')))
+      .spec.headerRows).toBeUndefined();
   });
 
   it("keeps tab-padded Excel notes as rows without HTML confirmation", () => {
@@ -332,8 +354,8 @@ describe("Excel overflow recovery", () => {
     const excel = (rows: string) => `<html xmlns:x="urn:schemas-microsoft-com:office:excel"><body><table>${rows}</table></body></html>`;
     expect(expectOk(readHtml(excel(heading + heading + data))).spec.headerRows).toHaveLength(2);
     expect(expectOk(readHtml(excel(data + heading + data))).spec.headerRows).toBeUndefined();
-    expect(expectOk(readHtml(excel(heading + `<tr><td ${border}>a</td><td>1.00</td></tr>`))).spec.headerRows).toBeUndefined();
-    expect(expectOk(readHtml(table(heading + data))).spec.headerRows).toBeUndefined();
+    expect(expectOk(readHtml(excel(heading + `<tr><td ${border}>a</td><td>1.00</td></tr>`))).spec.headerRows).toHaveLength(1);
+    expect(expectOk(readHtml(table(heading + data))).spec.headerRows).toHaveLength(1);
   });
 
   it.each(["caption", "footnote", "body", "dimensions"])("does not recover Excel values when the full TSV %s differs", part => {
@@ -392,8 +414,8 @@ describe("Excel overflow recovery", () => {
 
   it("recovers both synthetic Density cells from x:num without plain text", () => {
     const result = expectOk(readHtml(fixture("excel-like.html")));
-    expect(result.spec.rows[1][2]).toBe("0.854");
-    expect(result.spec.rows[3][2]).toBe("1.204");
+    expect(result.spec.rows[0][2]).toBe("0.854");
+    expect(result.spec.rows[2][2]).toBe("1.204");
     expect(result.warnings).toEqual([]);
   });
 
@@ -406,7 +428,7 @@ describe("Excel overflow recovery", () => {
 
   it.each(["", '="not a number"', '="1e999"'])("uses TSV for empty or invalid x:num (%s)", (value) => {
     const result = expectOk(readHtmlAndTsv(overflow.replace("x:num", `x:num${value}`), "Material\tDensity\nallyl alcohol\t0.854"));
-    expect(result.spec.rows[1][1]).toBe("0.854");
+    expect(result.spec.rows[0][1]).toBe("0.854");
     expect(result.warnings).toEqual([]);
   });
 
@@ -502,8 +524,9 @@ describe("Word-like captions and footnotes", () => {
       { text: "a Synthetic reagent data.", spans: [{ text: "a", script: "superscript" }, { text: " Synthetic reagent data." }] },
       "Densities are in g/mL."
     ]);
+    expect(result.spec.headerRows).toEqual([["Material", "Density (g/mL)"]]);
     expect(result.spec.rows).toEqual([
-      ["Material", "Density (g/mL)"], ["allyl alcohol", "0.854"],
+      ["allyl alcohol", "0.854"],
       [{ text: "Ti(OiPr)4", spans: [{ text: "Ti(OiPr)" }, { text: "4", script: "subscript" }] }, "0.96"]
     ]);
     let id = 0;
@@ -665,6 +688,40 @@ describe("CF_HTML header", () => {
 });
 
 describe("table structure", () => {
+  it.each([
+    '<tr><td>allyl alcohol</td><td>58.08</td></tr><tr><td>Ti(OiPr)4</td><td>284.22</td></tr>',
+    '<tr><td>Material</td><td>State</td></tr><tr><td>allyl alcohol</td><td>liquid</td></tr>',
+    '<tr><td>Material</td><td>MW</td></tr><tr><td>allyl alcohol</td><td>58.08</td></tr>'
+      + '<tr><td>Ti(OiPr)4</td><td>unknown</td></tr>',
+    '<tr><td>Material</td><td></td></tr><tr><td>allyl alcohol</td><td>58.08</td></tr>',
+    '<tr><td>Material</td><td>1e2</td></tr><tr><td>allyl alcohol</td><td>58.08</td></tr>',
+    '<tr style="mso-yfti-irow:0;mso-yfti-firstrow:yes"><td>allyl alcohol</td><td>58.08</td></tr>'
+      + '<tr><td>Ti(OiPr)4</td><td>284.22</td></tr>'
+  ])("does not infer a header without text labels above a numeric majority (%s)", rows => {
+    expect(expectOk(readHtml(table(rows))).spec.headerRows).toBeUndefined();
+  });
+
+  it("infers only the first row, even with another text row above numbers", () => {
+    const result = expectOk(readHtml(table('<tr><td>Material</td><td>MW</td></tr>'
+      + '<tr><td>Reagent</td><td>g/mol</td></tr><tr><td>allyl alcohol</td><td>58.08</td></tr>'
+      + '<tr><td>Ti(OiPr)4</td><td>284.22</td></tr>')));
+    expect(result.spec.headerRows).toEqual([["Material", "MW"]]);
+    expect(result.spec.rows).toHaveLength(3);
+  });
+
+  it.each(['<w:tblHeader/>', '<!--[if supportMisalignedColumns]><w:tblHeader/><![endif]-->'])(
+    "recognizes Word repeat-header markers independently of numeric content (%s)", marker => {
+      const result = expectOk(readHtml(table(`<tr><td>${marker}Material</td><td>State</td></tr>`
+        + '<tr><td>allyl alcohol</td><td>liquid</td></tr>')));
+      expect(result.spec.headerRows).toEqual([["Material", "State"]]);
+    }
+  );
+
+  it("respects a disabled Word repeat-header marker", () => {
+    expect(expectOk(readHtml(table('<tr><td><w:tblHeader w:val="0"/>Material</td><td>State</td></tr>'
+      + '<tr><td>allyl alcohol</td><td>liquid</td></tr>'))).spec.headerRows).toBeUndefined();
+  });
+
   const body = "<tr><th>Material</th><th>MW</th><th>Density</th><th>Equiv.</th></tr>"
     + "<tr><td>allyl alcohol</td><td>58.08</td><td>0.854</td><td>1.00</td></tr>";
   const noteRow = (text: string, attributes = "colspan=2") =>

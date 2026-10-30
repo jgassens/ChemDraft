@@ -1654,7 +1654,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.30.08.00-codex";
+const CURRENT_BUILD_STAMP = "10.30.09.00-codex";
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -6686,9 +6686,9 @@ export function MainWindow({
     setStatus(selectToolStatusLabel());
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange, switchToSelectTool]);
 
-  const resetPasteUiState = useCallback((editTextObjectId?: string) => {
+  const resetPasteUiState = useCallback(() => {
     setActiveEditorObjectId(undefined);
-    setActiveTextEditObjectId(editTextObjectId);
+    setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
     setHoveredNativeAtom(undefined);
     setSelectedNativeMoleculePart(undefined);
@@ -6707,7 +6707,10 @@ export function MainWindow({
     if (result.document !== documentRef.current) {
       commitDocumentChange(result.document);
     }
-    resetPasteUiState(result.editTextObjectId);
+    // Keep the inserted object selected, like other canvas pastes. Auto-focusing
+    // its textarea routes the first Undo to an empty browser text history instead
+    // of the document entry we just recorded. Double-click still opens the editor.
+    resetPasteUiState();
     setStatus(result.status);
   }, [commitDocumentChange, pastePointForViewport, resetPasteUiState, textStyleDefaults]);
 

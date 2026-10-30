@@ -181,8 +181,8 @@ function htmlTable(table: TableObject, layout: TableLayout, options: TableClipbo
         }
       }
       const cell = layout.cells[row * table.columns.length + column];
-      html += `<td width="${Math.round(width)}"${header ? ' valign="bottom"' : ""} style="${cellStyle}">`
-        + `<p style="margin:0;line-height:normal;text-align:${alignment.align}`
+      html += `<td width="${Math.round(width)}"${header ? ' valign="bottom"' : ""} align="${alignment.align}" style="${cellStyle}">`
+        + `<p align="${alignment.align}" style="margin:0;line-height:normal;text-align:${alignment.align}`
         + `${htmlFont(style, options)}">`
         + htmlLines(cell.lines, style) + "</p></td>";
     }

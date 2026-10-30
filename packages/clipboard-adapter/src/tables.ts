@@ -492,6 +492,39 @@ function cellsOf(row: Element): Element[] {
   return Array.from(row.children).filter((child) => tagOf(child) === "td" || tagOf(child) === "th");
 }
 
+/** Word's repeat-header flag can survive as an Office element or conditional comment. */
+function wordRepeatHeader(row: Element): boolean {
+  const marker = /<w:tblHeader\b(?![^>]*\bw:val\s*=\s*["']?(?:0|false|off)\b)[^>]*>/i;
+  if (Array.from(row.querySelectorAll("*")).some(element =>
+    tagOf(element) === "w:tblheader" && !/^(0|false|off)$/i.test(element.getAttribute("w:val") ?? ""))) return true;
+  const comments = row.ownerDocument.createTreeWalker(row, 128 /* SHOW_COMMENT */);
+  for (let node = comments.nextNode(); node; node = comments.nextNode()) {
+    if (marker.test(node.nodeValue ?? "")) return true;
+  }
+  return false;
+}
+
+function numericCell(text: string): boolean {
+  return NUMBER_PATTERNS.some(pattern => pattern.test(text)) || EXCEL_NUMBER_PATTERN.test(text);
+}
+
+/** Infer just the first row: text labels above predominantly numeric body columns. */
+function contentHeader(grid: CellEntry[][]): boolean {
+  if (grid.length < 2) return false;
+  const first = grid[0].map(entry => cellText(entry.input).trim());
+  // Number-like values with units are data too; punctuation/dashes alone are not labels.
+  if (!first.some(Boolean) || first.some(text => text !== "" &&
+    (numericCell(text) || /^[+\-−]?(?:\d|[.,]\d)/.test(text) || !/\p{L}/u.test(text)))) return false;
+  let majorityNumeric = false;
+  for (let column = 0; column < first.length; column += 1) {
+    const count = grid.slice(1).filter(row => numericCell(cellText(row[column].input).trim())).length;
+    // A blank label above numbers is insufficient evidence of a header.
+    if (count > 0 && first[column] === "") return false;
+    majorityNumeric ||= count > (grid.length - 1) / 2;
+  }
+  return majorityNumeric;
+}
+
 /** Excel uses td cells with class-based rules for a heading, not th/thead.
  * Read only its simple class rules; never load stylesheets.
  */
@@ -620,7 +653,10 @@ function convertTable(
   let originalCharacters = 0;
   for (let r = 0; r < rows.length; r += 1) {
     const cells = cellsOf(rows[r].element);
-    headerFlags.push(cells.length > 0 && cells.every((cell) => tagOf(cell) === "th"));
+    // mso-yfti-firstrow:yes / mso-yfti-irow:0 locate the first row, but do not
+    // mean "repeat as header". Unmarked Word rows use the content rule below.
+    headerFlags.push(cells.length > 0 && (cells.every((cell) => tagOf(cell) === "th")
+      || wordRepeatHeader(rows[r].element)));
     let c = 0;
     for (const cell of cells) {
       while (grid[r][c] !== undefined) {
@@ -769,6 +805,9 @@ function convertTable(
       if (candidate > start && !cellsOf(rows[candidate].element).some(hasBottomBorder)) {
         headerCount = candidate - start;
       }
+    }
+    if (headerCount === 0 && !mergedRows.has(start) && !rowspanRows.has(start) && contentHeader(body)) {
+      headerCount = 1;
     }
   }
   if (headerCount >= body.length) {

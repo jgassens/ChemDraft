@@ -9,6 +9,11 @@ produces it on macOS or Windows.
 
 The table content is the Sharpless reagent table in `../tables/sharpless-reagent-table.json`.
 
+`windows-word.html` and `windows-excel.html` model Windows Office 16 CF_HTML fragments,
+with our own Sharpless content. Word uses Calibri paragraphs and positional `mso-yfti` markers
+without semantic header cells. Excel uses class-based bold/border styles, with fragment markers
+inside the table. Tests wrap these hand-written documents in a CF_HTML envelope; neither is a capture.
+
 `excel-markers-inside-table.html` is a second synthetic Excel fixture. It models Excel's fragment
 marker placement inside `<table>`, after the `<col>` elements and before the first `<tr>`, without
 a CF_HTML envelope. It is still hand-written, not a capture from Excel.

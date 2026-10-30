@@ -156,6 +156,8 @@ describe("table clipboard payloads", () => {
           const paragraph = cells[column].querySelector("p")!;
           const style = paragraph.getAttribute("style")!;
           const cellStyle = cells[column].getAttribute("style")!;
+          expect(cells[column].getAttribute("align")).toBe(index === 0 ? "center" : "right");
+          expect(paragraph.getAttribute("align")).toBe(index === 0 ? "center" : "right");
           const block = layout.columns[column].decimalBlock!;
           if (index === 0) {
             expect(style).toContain("text-align:center");
@@ -182,6 +184,13 @@ describe("table clipboard payloads", () => {
       expect(rows[4].children[2].getAttribute("style")).not.toContain("mso-number-format");
       expect(html).not.toMatch(/tab-stops|mso-tab-count|&#9;|\t/);
     }
+  });
+
+  it.each(["left", "center", "right"] as const)("keeps %s alignment attributes when a destination drops CSS", align => {
+    const document = htmlDocument(exportTableToHtml(smallTable(["Example"], align)));
+    for (const element of document.querySelectorAll("[style]")) element.removeAttribute("style");
+    expect(document.querySelector("td")!.getAttribute("align")).toBe(align);
+    expect(document.querySelector("td p")!.getAttribute("align")).toBe(align);
   });
 
   it("fits every Sharpless cell with both readers margins and per-line decimal indents", () => {
