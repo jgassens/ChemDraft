@@ -421,6 +421,7 @@ export function installPluginPanelInputFocus(
     if (editableFocus && editing && control) paletteControls.set(shell, control);
   };
   const focusOut = (event: FocusEvent): void => {
+    if (event.target === openSelect) openSelect = undefined;
     if (editableFocus && suspendingControlFocus) {
       event.stopPropagation();
       return;
@@ -474,8 +475,13 @@ export function installPluginPanelInputFocus(
     pointerClickTarget = undefined;
     const control = editableControl(event.target) ?? (editableFocus ? leasedControl : undefined);
     if (!editing || event.isComposing) return;
-    if (platform === "macos" && control instanceof HTMLSelectElement && !control.disabled &&
-      (event.key === " " || (event.altKey && event.key === "ArrowDown"))) openSelect = control;
+    if (platform === "macos" && control instanceof HTMLSelectElement && !control.disabled) {
+      // Accepting the current option need not fire change. Space opens a closed
+      // list, but accepts one already open; Enter/Return also end that list session.
+      if (event.key === "Enter" || event.key === "Return" || (event.key === " " && control === openSelect)) {
+        openSelect = undefined;
+      } else if (event.key === " " || (event.altKey && event.key === "ArrowDown")) openSelect = control;
+    }
     if (event.key === "Escape" && !event.defaultPrevented) {
       event.preventDefault();
       event.stopPropagation(); // Escape finishes editing; it must not close the report window.
@@ -483,7 +489,7 @@ export function installPluginPanelInputFocus(
         openSelect = undefined;
         return;
       }
-      finish();
+      finish(true);
     } else if (selectionLease && event.isTrusted && event.key !== "Escape") {
       const copyOrSelectAll = (event.ctrlKey || event.metaKey) && !event.altKey &&
         ["c", "a"].includes(event.key.toLowerCase());

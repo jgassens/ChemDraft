@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyPatches, type MoleculeObject } from "@chemdraft/chem-core";
 import { MainWindow } from "./MainWindow";
-import { createNativeSingleBondMolecule, createPhase4Document, selectDocumentObjects } from "./documentWorkflow";
+import { createNativeSavePayload, createNativeSingleBondMolecule, createPhase4Document, selectDocumentObjects } from "./documentWorkflow";
 import { representativeMoleculeBondLengthPx } from "./moleculeInspectorModel";
 import { moleculeStructureBondColorCommandId, moleculeStructureBondLengthCommandId } from "./commands";
 import { PALETTE_COMMAND_CANCEL_EVENT, PALETTE_COMMAND_COMMIT_EVENT, PALETTE_COMMAND_PREVIEW_EVENT } from "./window-manager";
@@ -113,6 +113,44 @@ describe.each(["macos", "windows"] as const)("palette preview interruption (%s)"
     await palette(PALETTE_COMMAND_CANCEL_EVENT);
     expect(original().style.bondColor).toBe("#00ff00");
     await command("edit.undo");
+    expect(original().style.bondColor).toBe("#0000ff");
+  });
+
+  it.each(["tab switch", "new", "open", "close"])("settles an uncommitted colour before %s cleanup chooses its rollback snapshot", async navigation => {
+    const tabs = () => [...container.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+    if (navigation === "tab switch") {
+      await command("document.new");
+      await act(async () => tabs()[0]!.click());
+    }
+    const before = structuredClone(snapshot().pages[0].objects);
+    await palette(PALETTE_COMMAND_PREVIEW_EVENT); // No native change or blur.
+    if (navigation === "tab switch") {
+      await act(async () => tabs()[1]!.click());
+    } else if (navigation === "new") {
+      await command("document.new");
+    } else if (navigation === "open") {
+      const fileInput = container.querySelector<HTMLInputElement>('[aria-label="Open native ChemDraft document"]')!;
+      Object.defineProperty(fileInput, "files", { configurable: true, value: [{
+        name: "Another.chemdraft", text: async () => createNativeSavePayload(createPhase4Document("Another")).contents
+      }] });
+      await act(async () => fileInput.dispatchEvent(new Event("change", { bubbles: true })));
+    } else {
+      await command("document.closeTab");
+      const dialog = container.querySelector('[role="dialog"][aria-label="Save changes before closing?"]')!;
+      expect(dialog).not.toBeNull();
+      await act(async () => [...dialog.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Cancel")!.click());
+    }
+    if (navigation !== "close") {
+      expect(tabs()).toHaveLength(2);
+      await act(async () => tabs()[0]!.click());
+    }
+    expect(original().style.bondColor).toBe("#0000ff");
+    await palette(PALETTE_COMMAND_CANCEL_EVENT); // Late chooser dismissal cannot undo settlement.
+    expect(original().style.bondColor).toBe("#0000ff");
+    await command("edit.undo");
+    expect(snapshot().pages[0].objects).toEqual(before);
+    expect(container.querySelector("main")?.getAttribute("data-can-undo")).toBe("false");
+    await command("edit.redo");
     expect(original().style.bondColor).toBe("#0000ff");
   });
 

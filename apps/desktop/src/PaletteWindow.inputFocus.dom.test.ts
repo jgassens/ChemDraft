@@ -14,7 +14,7 @@ import { createPhase4Document } from "./documentWorkflow";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import {
   DOM_COMMAND_EVENT, broadcastToolsetCustomizeMode, broadcastToolsetTextStyle, createToolsetTextStylePayload,
-  sendPaletteCommand, sendPaletteCommandCancel, sendPaletteCommandCommit, startPaletteWindowDrag, type ToolsetPopoverContentPayload
+  sendPaletteCommand, sendPaletteCommandCancel, sendPaletteCommandCommit, sendPaletteCommandPreview, startPaletteWindowDrag, type ToolsetPopoverContentPayload
 } from "./window-manager";
 import type { NativePanelFocusEvent } from "./plugins/pluginPanelInputFocus";
 import {
@@ -39,6 +39,7 @@ vi.mock("./window-manager", async (original) => ({
   sendPaletteCommand: vi.fn(async () => undefined),
   sendPaletteCommandCommit: vi.fn(async () => undefined),
   sendPaletteCommandCancel: vi.fn(async () => undefined),
+  sendPaletteCommandPreview: vi.fn(async () => undefined),
   startPaletteWindowDrag: vi.fn(async () => undefined),
   listenForToolsetPopoverContent: vi.fn(async (listener: (payload: ToolsetPopoverContentPayload) => void) => {
     native.popoverContent = listener;
@@ -143,6 +144,7 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     vi.mocked(sendPaletteCommand).mockClear();
     vi.mocked(sendPaletteCommandCancel).mockClear();
     vi.mocked(sendPaletteCommandCommit).mockClear();
+    vi.mocked(sendPaletteCommandPreview).mockClear();
     vi.mocked(startPaletteWindowDrag).mockClear();
     container = document.createElement("div");
     document.body.append(container);
@@ -1092,17 +1094,66 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     if (kind !== "button") {
       await act(async () => control.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
       await flush();
-      if (platform === "macos" && kind === "select") {
-        // The pointer/Space opened the native list. Its first Escape only closes it.
-        expect(leases().map(([, args]) => args.editing)).toEqual([true]);
-        expect(document.activeElement).toBe(control);
-        expect((await press(control, "Escape")).defaultPrevented).toBe(true);
-        await flush();
-      }
+      // Enter in the key sequence accepted the list, even without a change event.
       expect(leases().map(([, args]) => args.editing)).toEqual([true, false]);
       expect(document.activeElement).not.toBe(control);
       expect(leases().at(-1)![1]).toMatchObject({ returnFocus: true });
     }
+  });
+
+  describe.each(["pointer", "keyboard"])("select list opened by %s", opening => {
+    it.each(["Enter", "Return", " "])("accepts the unchanged value with %s, then releases on the first Escape", async key => {
+      const number = await mountSettings();
+      const select = await nonTextControl("select");
+      const change = vi.fn();
+      select.addEventListener("change", change);
+      if (opening === "pointer") await clickControl(select);
+      else {
+        await act(async () => number.focus());
+        await flush();
+        await press(number, "Tab");
+        // jsdom does not perform the browser's Tab traversal.
+        await act(async () => select.focus());
+        await flush();
+        expect((await press(select, " ")).defaultPrevented).toBe(false);
+      }
+      const value = (select as HTMLSelectElement).value;
+      expect((await press(select, key)).defaultPrevented).toBe(false);
+      expect((select as HTMLSelectElement).value).toBe(value);
+      expect(change).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(select);
+      expect(leases().map(([, args]) => args.editing)).toEqual([true]);
+      expect((await press(select, "Escape")).defaultPrevented).toBe(true);
+      await flush();
+      expect(document.activeElement).not.toBe(select);
+      expect(leases().map(([, args]) => args.editing)).toEqual([true, false]);
+      expect(leases().at(-1)![1]).toMatchObject({ returnFocus: true });
+    });
+  });
+
+  it.each(["change", "blur", "lease end"])("clears a select's opened list state on %s", async ending => {
+    const number = await mountSettings();
+    const select = await nonTextControl("select");
+    await clickControl(select);
+    if (ending === "change") {
+      await act(async () => select.dispatchEvent(new Event("change", { bubbles: true })));
+    } else if (ending === "blur") {
+      // Retain the same lease while focus leaves and returns to the select.
+      await act(async () => { number.focus(); select.focus(); });
+    } else {
+      const generation = leases().at(-1)![1].generation;
+      await act(async () => native.notify!({ payload: { kind: "deactivated", generation } }));
+      await flush();
+      // Reacquire through another field, then Tab back without opening the list.
+      await act(async () => number.focus());
+      await flush();
+      await act(async () => select.focus());
+    }
+    await flush();
+    expect((await press(select, "Escape")).defaultPrevented).toBe(true);
+    await flush();
+    expect(document.activeElement).not.toBe(select);
+    expect(leases().at(-1)![1]).toMatchObject({ editing: false, returnFocus: true });
   });
 
   it("preserves select type-ahead that does not resolve to a shortcut", async () => {
@@ -1476,5 +1527,31 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     await flush();
     expect(sendPaletteCommandCancel).toHaveBeenCalledExactlyOnceWith("palette.preview.cancel");
     expect(leases().map(([, args]) => args.editing)).toEqual([true, false]);
+  });
+
+  describe.each(["control", "body"])("colour popover Escape targeting %s", target => {
+    it.each(["preview only", "native change", "native change then preview"])("discards pending colour before lease blur (%s)", async pick => {
+      await act(async () => root.render(createElement(PalettePopoverWindow, { prewarm: true })));
+      await flush();
+      const color = container.querySelector<HTMLInputElement>('[aria-label="System color wheel"]')!;
+      await clickControl(color);
+      await browserInput(color, "#0000ff");
+      expect(sendPaletteCommandPreview).toHaveBeenLastCalledWith(objectCustomColorCommandId("#0000ff"));
+      expect(sendPaletteCommandCommit).not.toHaveBeenCalled();
+      if (pick !== "preview only") {
+        await act(async () => color.dispatchEvent(new Event("change", { bubbles: true })));
+        expect(sendPaletteCommandCommit).toHaveBeenCalledExactlyOnceWith(objectCustomColorCommandId("#0000ff"));
+      }
+      if (pick === "native change then preview") await browserInput(color, "#00ff00");
+      const blur = vi.spyOn(color, "blur");
+      expect((await press(target === "control" ? color : document.body, "Escape")).defaultPrevented).toBe(true);
+      await flush();
+      expect(blur).toHaveBeenCalledTimes(1);
+      expect(document.activeElement).not.toBe(color);
+      expect(sendPaletteCommandCancel).toHaveBeenCalledExactlyOnceWith("palette.preview.cancel");
+      if (pick === "preview only") expect(sendPaletteCommandCommit).not.toHaveBeenCalled();
+      else expect(sendPaletteCommandCommit).toHaveBeenCalledExactlyOnceWith(objectCustomColorCommandId("#0000ff"));
+      expect(leases().map(([, args]) => args.editing)).toEqual([true, false]);
+    });
   });
 });

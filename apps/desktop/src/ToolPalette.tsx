@@ -1005,7 +1005,7 @@ function MoleculeInspectorNumericControl({
 
 /** React's color onChange is a live input notification. Only the native change
  * ends a chooser pick; WebKit's Colors panel need not blur its owning input. */
-function PaletteColorInput({ value, onPreviewColor, onCommitColor, ...props }: Omit<
+function PaletteColorInput({ value, onPreviewColor, onCommitColor, onKeyDownCapture, ...props }: Omit<
   InputHTMLAttributes<HTMLInputElement>, "type" | "value" | "onChange" | "onBlur"
 > & { value: string; onPreviewColor: (color: string) => void; onCommitColor: (color: string) => void }) {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -1030,10 +1030,21 @@ function PaletteColorInput({ value, onPreviewColor, onCommitColor, ...props }: O
   useEffect(() => {
     const input = inputRef.current!;
     const change = () => commit(input.value);
+    // The lease handler may blur before the popover sees Escape, including when
+    // the key targets body. Discard first so the blur fallback cannot commit.
+    const discard = () => { pendingColor.current = undefined; };
     input.addEventListener("change", change);
-    return () => input.removeEventListener("change", change);
+    input.addEventListener(PALETTE_INPUT_FOCUS_CANCEL_EVENT, discard);
+    return () => {
+      input.removeEventListener("change", change);
+      input.removeEventListener(PALETTE_INPUT_FOCUS_CANCEL_EVENT, discard);
+    };
   });
   return <input {...props} ref={inputRef} type="color" value={value}
+    onKeyDownCapture={(event) => {
+      if (event.key === "Escape") pendingColor.current = undefined;
+      onKeyDownCapture?.(event);
+    }}
     onChange={(event) => {
       // A native change is handled at the target, before React's delegated event.
       if (event.nativeEvent.type === "input") preview(event.currentTarget.value);

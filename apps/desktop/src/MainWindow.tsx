@@ -8454,6 +8454,9 @@ export function MainWindow({
   }, [assignHoveredNativeDeleteTarget, atomLabelHistorySnapshot, cancelSpin3dSession, installDocumentHistory]);
 
   const cancelDocumentTabSessions = useCallback(() => {
+    // Settle chooser edits before choosing a rollback snapshot. Otherwise the
+    // history boundary commits the colour, then restores its captured old document.
+    settlePalettePreviewRef.current();
     smilesListPasteAbortRef.current?.abort();
     clearObjectTransformPreview();
     // Roll back snapshot-based previews while their source document is still installed.
