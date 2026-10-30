@@ -3,7 +3,7 @@ import { applyPatch, createEmptyDocument, type MoleculeObject } from "@chemdraft
 import { smilesListCandidates } from "@chemdraft/clipboard-adapter";
 import {
   assertMoleculeMatchesSmiles, createSmilesMolecule, inspectHydrogenNormalizedIdentity,
-  pastedStructureDepictionFromMolfile,
+  pastedStructureDepictionFromMolfile, stereoPerceptionMolfile,
   type InspectChemicalIdentity
 } from "@chemdraft/document-workflow-core";
 import { ensureRdkit, generateSmiles2DMolfile } from "../../../packages/rdkit-adapter/src/conformer";
@@ -15,7 +15,7 @@ import {
   checkedSmilesPaste, checkedSmilesGridPaste, createPasteIdentityInspector, verifySmilesPasteInput,
   verifySmilesGridEntries, verifySmilesPaste
 } from "./smilesPasteIdentity";
-import { insertSmilesMolecule } from "./documentWorkflow";
+import { insertSmilesMolecule, insertSmilesMoleculeGrid, SMILES_PASTE_OPTIONS } from "./documentWorkflow";
 import { depictSmilesForPaste, depictSmilesListForPaste, smilesListFailureStatus } from "./smilesListPaste";
 import * as depictionClient from "./depiction2d/client";
 import type { StructureInspector } from "./depiction2d/identityProtocol";
@@ -38,6 +38,68 @@ async function verify(molecule: MoleculeObject, smiles: string) {
 }
 
 describe("isotope insert paths", () => {
+  it.each(["CC=CC", "CC=CC/C=C/C"])(
+    "verifies the exact open-E/Z molecule committed by single paste: %s", async smiles => {
+      const document = createEmptyDocument();
+      await verifySmilesPasteInput(smiles);
+      const parsed = (await depictSmilesForPaste(smiles))!;
+      const inspector = vi.fn(inspect);
+      // Match renderPastedSmiles: verify without retaining the live document, then insert.
+      await verifySmilesPaste(parsed.depiction, smiles, inspector);
+      const committed = insertSmilesMolecule(document, point, parsed.depiction, smiles, SMILES_PASTE_OPTIONS);
+      const molecule = committed.pages[0]!.objects[0] as MoleculeObject;
+      expect(inspector.mock.calls.find(([format]) => format === "molfile")?.[1])
+        .toBe(stereoPerceptionMolfile(molecule));
+      const checked = await checkedSmilesPaste(document, point, parsed.depiction, smiles, inspect);
+      expect(checked.pages[0]!.objects).toEqual(committed.pages[0]!.objects);
+      expect(molecule.bonds.filter(bond => bond.order === "double").map(bond => bond.stereo))
+        .toEqual(smiles === "CC=CC" ? ["either"] : ["either", undefined]);
+      await verify(molecule, smiles);
+    });
+
+  it("verifies and commits the same open-E/Z molecules in a two-line SMILES list", async () => {
+    const smiles = ["CC=CC", "CC=CC/C=C/C"];
+    const text = smiles.join("\n");
+    const parsed = (await depictSmilesListForPaste(text, smilesListCandidates(text),
+      undefined, undefined, verifySmilesPasteInput))!;
+    const document = createEmptyDocument();
+    const inspector = vi.fn(inspect);
+    // Match MainWindow's list path, including per-entry verification before grid placement.
+    const verified = await verifySmilesGridEntries(parsed.entries, inspector);
+    expect(verified.failures).toEqual([]);
+    expect(verified.entries).toHaveLength(2);
+    const committed = insertSmilesMoleculeGrid(document, point, verified.entries);
+    const checked = await checkedSmilesGridPaste(document, point, parsed.entries, inspect);
+    expect(checked.failures).toEqual([]);
+    expect(checked.document.pages[0]!.objects).toEqual(committed.document.pages[0]!.objects);
+    const inspectedMolfiles = inspector.mock.calls.filter(([format]) => format === "molfile");
+    expect(inspectedMolfiles).toHaveLength(2);
+    for (const [index, object] of committed.document.pages[0]!.objects.entries()) {
+      const molecule = object as MoleculeObject;
+      // Grid placement only translates the graph. Compare the complete molfile after undoing
+      // that translation; this includes coordinates, atom properties and every stereo marker.
+      const single = insertSmilesMolecule(document, point, parsed.entries[index]!.depiction,
+        smiles[index]!, SMILES_PASTE_OPTIONS).pages[0]!.objects[0] as MoleculeObject;
+      const dx = single.atoms[0]!.x - molecule.atoms[0]!.x;
+      const dy = single.atoms[0]!.y - molecule.atoms[0]!.y;
+      const inspected = stereoPerceptionMolfile({ ...molecule, atoms: molecule.atoms.map(atom =>
+        ({ ...atom, x: atom.x + dx, y: atom.y + dy })) });
+      expect(inspectedMolfiles[index]![1]).toBe(inspected);
+      expect(molecule.bonds.filter(bond => bond.order === "double").map(bond => bond.stereo))
+        .toEqual(index === 0 ? ["either"] : ["either", undefined]);
+      await verify(molecule, smiles[index]!);
+    }
+  });
+
+  it.each(["[H]C(C)=CC/C=C/C", "[H][C@](F)(Cl)C=CC", "[H]C([2H])=CC"])(
+    "folds ordinary H while preserving open E/Z, isotopes and assigned stereo: %s", async smiles => {
+      const parsed = (await depictSmilesForPaste(smiles))!;
+      const document = await checkedSmilesPaste(createEmptyDocument(), point, parsed.depiction, smiles, inspect);
+      const molecule = document.pages[0]!.objects[0] as MoleculeObject;
+      expect(molecule.bonds.some(bond => bond.stereo === "either")).toBe(true);
+      await verify(molecule, smiles);
+    });
+
   it("preserves isotope and stereo identity when pasted at a non-default bond length", async () => {
     const document = createEmptyDocument();
     document.styles.drawing = { bondLengthPx: 60 };

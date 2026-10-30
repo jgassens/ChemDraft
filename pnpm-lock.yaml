@@ -251,6 +251,9 @@ importers:
       '@chemdraft/chem-core':
         specifier: workspace:*
         version: link:../chem-core
+      '@chemdraft/clipboard-adapter':
+        specifier: workspace:*
+        version: link:../clipboard-adapter
       '@chemdraft/document-workflow-core':
         specifier: workspace:*
         version: link:../document-workflow-core

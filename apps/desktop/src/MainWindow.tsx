@@ -57,7 +57,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode
 } from "react";
-import { createPortal } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 import {
   graphicObjectIntersectsPolygon,
   graphicObjectIntersectsRect,
@@ -274,6 +274,9 @@ import {
   createLayerActions,
   createQuickActions,
   createDoubleBondPositionActions,
+  createBondStereoActions,
+  createFlippedBondStereoAction,
+  moleculeBondStereoForCommand,
   moleculeDoubleBondPositionForCommand,
   convertTextToAtomLabelCommandId,
   distributeModeCommandIds,
@@ -444,6 +447,8 @@ import {
   nativeRingHotkeyFuseAtBondTarget,
   applyNativeDoubleBondSideTarget,
   applyMoleculeDoubleBondPosition,
+  applyMoleculeBondStereo,
+  nativeBondStereoFlipDisabledReason,
   applyNativeMoleculeBondOrderTarget,
   applyNativeMoleculeBondOrderValueTarget,
   applyNativeMoleculeDeleteTarget,
@@ -554,12 +559,14 @@ import {
   insertSmilesMoleculeGridStatus,
   visibleSkippedItems,
   insertSmilesMolecule,
+  SMILES_PASTE_OPTIONS,
   insertSmilesMoleculeGrid,
   documentObjectProjectedPlaneTilt,
   nativeBondStyleForToolCommand,
   nativeChargeMarkMaxMagnitude,
   nativeChargeStackRefusal,
   stereoPerceptionMolfile,
+  specifiedDoubleBondIdsForFlatten,
   nativeElementFromKeyboardKey,
   nativeHotkeyElementFromSymbol,
   nativeMoleculeInvalidAtomStates,
@@ -708,6 +715,7 @@ import {
   broadcastToolsetTextStyle,
   createToolsetTextStylePayload,
   dismissToolsetPopovers,
+  toolsetPopoverTimestamp,
   focusCurrentWindowAndWebview,
   isDesktopRuntime,
   listToolsetWindowStates,
@@ -890,6 +898,8 @@ import {
 } from "./interaction/hitTest";
 import { createArtInspectorModel, selectedVisualObjectsForArtInspector } from "./artInspectorModel";
 import { createMoleculeInspectorModel, representativeMoleculeBondLengthPx } from "./moleculeInspectorModel";
+import { BondStereoBadges, bondStereoBadgeAtPointer } from "./BondStereoBadges";
+import { useBondStereoPopover, type BondStereoBadgeRequest } from "./useBondStereoPopover";
 import {
   moleculeInspectorTemplateFilename,
   moleculeInspectorTemplateMimeType,
@@ -1135,6 +1145,8 @@ type Spin3dRotateSnapshot = {
   coords3d: Float64Array;
   /** Fixed visual placement shared by every preview frame in this drag. */
   placement: ScreenPlacement;
+  /** E/Z perception runs once at pointer-down; undefined retains the conservative guard. */
+  specifiedDoubleBondIds?: ReadonlySet<string>;
   atomIds: string[];
   engine?: Spin3dEngineProvenance;
 };
@@ -1614,6 +1626,9 @@ function interactive3dPostOpenPollingComplete(session: Engine3dWorkspaceSessionS
     session.errors.length > 0;
 }
 
+// Filled only by the existing lazy imports; synchronous spin paths never load an engine.
+let cachedOclAdapter: typeof import("@chemdraft/ocl-adapter") | undefined;
+
 const RULER_THICKNESS = 32;
 const INTERACTIVE_3D_DRAG_UPDATE_INTERVAL_MS = 33;
 const INTERACTIVE_3D_POST_OPEN_POLL_COUNT = 8;
@@ -1629,7 +1644,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.29.13.15-opus";
+const CURRENT_BUILD_STAMP = "10.30.08.00-opus";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -2874,13 +2889,15 @@ export function MainWindow({
     paletteInspectorHandlersRef.current = { changeInterpretation: recomputeAnalysisFor };
   }, [recomputeAnalysisFor]);
 
+  const [bondStereoReader, setBondStereoReader] = useState<NonNullable<typeof cachedOclAdapter>["perceiveDoubleBondStereoFromMolfile"] | undefined>(
+      () => cachedOclAdapter?.perceiveDoubleBondStereoFromMolfile);
   const currentMoleculeInspector = useMemo(
     () => createMoleculeInspectorModel(document, {
       selectedObjectIds: document.selection.objectIds,
       selectedPart: selectedNativeMoleculePart,
       selectedParts: selectedNativeMoleculeParts
-    }),
-    [document, document.selection.objectIds, selectedNativeMoleculePart, selectedNativeMoleculeParts]
+    }, bondStereoReader),
+    [document, document.selection.objectIds, selectedNativeMoleculePart, selectedNativeMoleculeParts, bondStereoReader]
   );
   const currentArtStyle = useMemo(() => {
     const model = createArtInspectorModel({
@@ -4525,7 +4542,7 @@ export function MainWindow({
     setStatus(`Cleaning up selected ${targetLabel}…`);
     void (async () => {
       try {
-        const { relayoutMolfile2D, perceiveStereoCentersFromMolfile } = await import("@chemdraft/ocl-adapter");
+        const { relayoutMolfile2D, perceiveStereoCentersFromMolfile } = cachedOclAdapter = await import("@chemdraft/ocl-adapter");
         const warnings: string[] = [];
         const changed = commitDocumentChange((current) =>
           engineTargetIds.reduce((next, objectId) => {
@@ -4646,7 +4663,7 @@ export function MainWindow({
         const warnings: string[] = [];
         const molfile = stereoPerceptionMolfile(flattenTarget, warnings);
         if (warnings.length) setStatus(warnings.join(" "));
-        const { perceiveStereoCentersFromMolfile, perceiveUnrepresentableStereo } = await import("@chemdraft/ocl-adapter");
+        const { perceiveStereoCentersFromMolfile, perceiveUnrepresentableStereo } = cachedOclAdapter = await import("@chemdraft/ocl-adapter");
         perceiveStereo = perceiveStereoCentersFromMolfile;
         const perAtom = perceiveStereoCentersFromMolfile(molfile);
         if (perAtom.length === flattenTarget.atoms.length) {
@@ -4679,7 +4696,8 @@ export function MainWindow({
       outcome = flattenSpunMolecule(documentRef.current, state.objectId, state.coords3d, viewMatrix, {
         placement: state.placement,
         stereoCenterAtomIds,
-        perceiveStereo
+        perceiveStereo,
+        perceiveDoubleBondStereo: cachedOclAdapter?.perceiveDoubleBondStereoFromMolfile
       });
     } catch (error) {
       // A flatten guard (e.g. a stale atom reference) throws rather than silently committing
@@ -4746,6 +4764,8 @@ export function MainWindow({
     let cancelled = false;
     void import("@chemdraft/ocl-adapter")
       .then((module) => {
+        cachedOclAdapter = module;
+        if (!cancelled) setBondStereoReader(() => module.perceiveDoubleBondStereoFromMolfile);
         if (!cancelled) spin3dStereoPerceiverRef.current = module.perceiveStereoCentersFromMolfile;
       })
       .catch(() => {
@@ -4765,12 +4785,16 @@ export function MainWindow({
     sourceDocument: ChemDraftDocument,
     objectId: string,
     warnings: string[]
-  ): { stereoCenterAtomIds?: ReadonlySet<string>; perceiveStereo?: StereoPerceiver } => {
+  ): { stereoCenterAtomIds?: ReadonlySet<string>; perceiveStereo?: StereoPerceiver;
+    perceiveDoubleBondStereo?: NonNullable<typeof cachedOclAdapter>["perceiveDoubleBondStereoFromMolfile"] } => {
     const perceive = spin3dStereoPerceiverRef.current;
     const molecule = findDocumentObject(sourceDocument, objectId);
     if (molecule?.type !== "molecule" || !isNativeMoleculeGraph(molecule)) return {};
     // Perception spelling (abbreviated labels as R-groups): a "Ph" must not read as a carbon.
-    return buildSpin3dFlattenStereoOptions(molecule, perceive, () => stereoPerceptionMolfile(molecule, warnings));
+    return {
+      ...buildSpin3dFlattenStereoOptions(molecule, perceive, () => stereoPerceptionMolfile(molecule, warnings)),
+      perceiveDoubleBondStereo: cachedOclAdapter?.perceiveDoubleBondStereoFromMolfile
+    };
   }, []);
 
   // Monotonic token: stale conformer results (from a superseded spin click) are ignored.
@@ -4780,7 +4804,7 @@ export function MainWindow({
   // desired one-time reposition). After that we remember the exact conformer + committed
   // orientation, so re-spinning reopens the overlay landing on the current drawing instead
   // of re-snapping to a fresh embed's readable angle — letting the user fine-tune position.
-  // Self-invalidating: the stored signature keys on graph identity, so editing the molecule
+  // Self-invalidating: the stored signature keys on graph identity and drawn stereo, so editing the molecule
   // forces a fresh embed (treated as first-time again). Not persisted across reload.
   const spin3dModelCacheRef = useRef<Map<string, { signature: string; coords3d: Float64Array; quat: Quaternion; engine?: Spin3dEngineProvenance }>>(
     new Map()
@@ -4941,7 +4965,7 @@ export function MainWindow({
     let reopen: { coords3d: Float64Array; quat: Quaternion; engine?: Spin3dEngineProvenance } | undefined =
       memoHit ? { coords3d: memoHit.coords3d, quat: memoHit.quat, engine: memoHit.engine } : undefined;
     if (!reopen) {
-      const documentModel = validSpin3dModelFor(molecule);
+      const documentModel = validSpin3dModelFor(molecule, cachedOclAdapter?.storedCoordinatesMatchStereo);
       const coords3d = documentModel ? spin3dModelCoordsForMolecule(documentModel, molecule) : undefined;
       if (documentModel && coords3d) {
         reopen = { coords3d, quat: documentModel.orientation, engine: documentModel.engine };
@@ -5130,7 +5154,7 @@ export function MainWindow({
           stage: "fallback.import",
           path
         }, emitTrace);
-        const ocl = await import("@chemdraft/ocl-adapter");
+        const ocl = cachedOclAdapter = await import("@chemdraft/ocl-adapter");
         const { oclResourcesUrl } = await import("./oclResources");
         ocl.setOclResourcesUrl(oclResourcesUrl);
         importSpan.complete();
@@ -5502,7 +5526,7 @@ export function MainWindow({
     // Engine lazy-loads (same pattern as Spin 3D): the whole re-layout is pure once the module is in.
     void (async () => {
       try {
-        const { relayoutMolfile2D, perceiveStereoCentersFromMolfile } = await import("@chemdraft/ocl-adapter");
+        const { relayoutMolfile2D, perceiveStereoCentersFromMolfile } = cachedOclAdapter = await import("@chemdraft/ocl-adapter");
         const warnings: string[] = [];
         const changed = commitDocumentChange((current) =>
           applyNativeMoleculeEngineRelayout(current, objectId, relayoutMolfile2D, {
@@ -6663,7 +6687,8 @@ export function MainWindow({
         pasteDocument,
         point,
         depiction,
-        smilesText
+        smilesText,
+        SMILES_PASTE_OPTIONS
       ), status: undefined };
       const nextDocument = inserted.document;
       let stereoStatus = "";
@@ -7968,6 +7993,17 @@ export function MainWindow({
       return baseStyleResult(patch, field);
     };
     const bondTargets = currentMoleculeInspector.targets.bondTargets;
+    const stereo = moleculeBondStereoForCommand(commandId);
+    if (stereo) {
+      const state = currentMoleculeInspector.structure.bondStereo!;
+      const reason = stereo.value === "flipped" ? nativeBondStereoFlipDisabledReason(currentDocument, bondTargets, bondStereoReader)
+        : stereo.value === "either" ? state.eitherDisabledReason : state.geometryDisabledReason;
+      return {
+        document: applyMoleculeBondStereo(currentDocument, bondTargets, stereo.value, bondStereoReader),
+        handled: true, targeted: true,
+        message: reason ?? (stereo.value === "either" ? "E/Z unspecified" : stereo.value === "flipped" ? "Use the other geometry" : "Use drawn geometry")
+      };
+    }
     const position = moleculeDoubleBondPositionForCommand(commandId);
     if (position) {
       return {
@@ -8171,6 +8207,7 @@ export function MainWindow({
 
     return { document: currentDocument, handled: false, targeted: false, message: "" };
   }, [
+    bondStereoReader,
     currentMoleculeInspector.targets.atomTargets,
     currentMoleculeInspector.targets.atomLabelTargets,
     currentMoleculeInspector.targets.bondTargets,
@@ -8191,7 +8228,7 @@ export function MainWindow({
       return true;
     }
 
-    const changed = commitDocumentChange(result.document, moleculeDoubleBondPositionForCommand(commandId) ? result.message : undefined);
+    const changed = commitDocumentChange(result.document, moleculeDoubleBondPositionForCommand(commandId) || moleculeBondStereoForCommand(commandId) ? result.message : undefined);
     setActiveEditorObjectId(undefined);
     setStatus(changed ? result.message : "Selected molecule style unchanged");
     return true;
@@ -10080,6 +10117,12 @@ export function MainWindow({
     createDoubleBondPositionActions(currentMoleculeInspector.structure.doubleBondTargetCount).forEach((action) => {
       register(action, () => { applyMoleculeInspectorCommand(action.id); });
     });
+    [ ...createBondStereoActions(currentMoleculeInspector.structure.bondStereo!),
+      createFlippedBondStereoAction(currentMoleculeInspector.structure.bondStereo!,
+        nativeBondStereoFlipDisabledReason(document, currentMoleculeInspector.targets.bondTargets, bondStereoReader))
+    ].forEach((action) => {
+      register(action, () => { applyMoleculeInspectorCommand(action.id); });
+    });
 
     register(
       {
@@ -11491,7 +11534,9 @@ export function MainWindow({
       return;
     }
 
-    if (applyMoleculeInspectorCommand(commandId)) {
+    // Stereo actions are registered core commands; let the shared dispatcher enforce their
+    // availability for both the inspector and canvas context menu.
+    if (!moleculeBondStereoForCommand(commandId) && applyMoleculeInspectorCommand(commandId)) {
       return;
     }
 
@@ -13156,7 +13201,7 @@ export function MainWindow({
       return;
     }
     const handlePointerDown = () => {
-      void dismissToolsetPopovers().catch(() => undefined);
+      void dismissToolsetPopovers(toolsetPopoverTimestamp()).catch(() => undefined);
     };
     window.addEventListener("pointerdown", handlePointerDown, true);
     return () => window.removeEventListener("pointerdown", handlePointerDown, true);
@@ -14436,15 +14481,22 @@ export function MainWindow({
   // Returns undefined unless a valid (graph-matching) model is present and its conformer
   // maps cleanly onto the current atoms — callers then fall back to the legacy 2.5D tilt.
   const spin3dRotateSnapshotFor = useCallback((molecule: MoleculeObject): Spin3dRotateSnapshot | undefined => {
-    const model = validSpin3dModelFor(molecule);
+    const model = validSpin3dModelFor(molecule, cachedOclAdapter?.storedCoordinatesMatchStereo);
     if (!model) return undefined;
     const coords3d = spin3dModelCoordsForMolecule(model, molecule);
     if (!coords3d) return undefined;
     const { placement } = spinPlacementFor(molecule, coords3d, model.orientation);
+    let specifiedDoubleBondIds: ReadonlySet<string> | undefined;
+    try {
+      specifiedDoubleBondIds = specifiedDoubleBondIdsForFlatten(molecule, cachedOclAdapter?.perceiveDoubleBondStereoFromMolfile);
+    } catch {
+      // Leave this undefined so flattening uses its conservative fail-closed guard.
+    }
     return {
       startOrientation: model.orientation,
       coords3d,
       placement,
+      specifiedDoubleBondIds,
       atomIds: molecule.atoms.map((atom) => atom.id),
       engine: model.engine
     };
@@ -14496,7 +14548,8 @@ export function MainWindow({
       let changed = document !== drag.startDocument;
       try {
         const outcome = flattenSpunMolecule(drag.startDocument, drag.objectId, model.coords3d, quatToViewMatrix(nextQuat), {
-          placement: model.placement
+          placement: model.placement,
+          specifiedDoubleBondIds: model.specifiedDoubleBondIds
         });
         if (outcome.status === "committed" && outcome.document !== drag.startDocument) {
           drag.lastValidPreviewDocument = outcome.document;
@@ -14816,7 +14869,7 @@ export function MainWindow({
             )
         : rotateDocumentObject(input.startDocument, input.objectId, manualRotationDeltaDegrees(object.rotation, zDegrees));
       if (!input.target && object.type === "molecule" && isNativeMoleculeGraph(object)) {
-        const model = validSpin3dModelFor(object);
+        const model = validSpin3dModelFor(object, cachedOclAdapter?.storedCoordinatesMatchStereo);
         const coords3d = model ? spin3dModelCoordsForMolecule(model, object) : undefined;
         if (model && coords3d) {
           const deltaDegrees = manualRotationDeltaDegrees(nativeMoleculeTransformState(object).rotationDegrees, zDegrees);
@@ -14866,7 +14919,7 @@ export function MainWindow({
     }
 
     if (!input.target) {
-      const model = validSpin3dModelFor(object);
+      const model = validSpin3dModelFor(object, cachedOclAdapter?.storedCoordinatesMatchStereo);
       const coords3d = model ? spin3dModelCoordsForMolecule(model, object) : undefined;
       if (model && coords3d) {
         const xRad = degreesToRadians(xDegrees);
@@ -18087,7 +18140,7 @@ export function MainWindow({
       : object.type === "molecule" ? "selected molecule" : "selected art object";
     const modeledRotationEntry = !selectedFragmentTarget && object.type === "molecule"
       ? (() => {
-          const model = validSpin3dModelFor(object);
+          const model = validSpin3dModelFor(object, cachedOclAdapter?.storedCoordinatesMatchStereo);
           return model !== undefined && spin3dModelCoordsForMolecule(model, object) !== undefined;
         })()
       : false;
@@ -19800,6 +19853,34 @@ export function MainWindow({
     ]
   );
 
+  // Opening status chrome is read-only. Keep the popover's command target separate
+  // from selection until the user chooses a geometry command.
+  const [bondStereoPopoverTarget, setBondStereoPopoverTarget] = useState<{
+    target: { objectId: string; bondId: string };
+    document: ChemDraftDocument;
+    parts: NativeMoleculeSelectionPart[];
+  }>();
+  const badgePressRef = useRef<{ badge: SVGGElement; pointerId: number } | undefined>(undefined);
+  const openBondStereoPopover = useBondStereoPopover({
+    document, targets: bondStereoPopoverTarget?.document === document && bondStereoPopoverTarget.parts === selectedNativeMoleculeParts
+      ? [bondStereoPopoverTarget.target] : currentMoleculeInspector.targets.bondTargets, reader: bondStereoReader,
+    select: target => {
+      setBondStereoPopoverTarget({ target, document, parts: selectedNativeMoleculeParts });
+      setObjectContextMenu(undefined);
+    },
+    invoke: commandId => {
+      if (!bondStereoPopoverTarget) return;
+      // Registry availability and handlers read the rendered inspector selection.
+      // Publish the chosen target before invoking the existing registered command.
+      flushSync(() => setSelectedNativeMoleculePart({ ...bondStereoPopoverTarget.target, kind: "bond" }));
+      return invokeCommandRef.current(commandId);
+    },
+    focusCanvas: () => {
+      canvasRegionRef.current?.focus({ preventScroll: true });
+      void focusCurrentWindowAndWebview({ onlyIfAppActive: true }).catch(() => undefined);
+    }
+  });
+
   // Handlers every object view receives. Most of them close over the document, so their identities
   // change on every edit, which forced all of a page's object views to re-render: 5,000 molecules
   // cost ~450 ms per single-object edit. Routed through stable wrappers, `DocumentObjectView`'s memo
@@ -19835,6 +19916,7 @@ export function MainWindow({
     onObjectResizeInputHome: handleObjectResizeInputHome,
     onObjectResizeInputCancel: handleObjectResizeInputCancel,
     onContextMenu: handleObjectContextMenu,
+    onBondStereoBadgeOpen: openBondStereoPopover,
     onTextChange: updateTextObjectContent,
     onTextEditFinish: finishActiveNativeTextEdit,
     onTextSelectionChange: recordTextSelection,
@@ -20251,12 +20333,31 @@ export function MainWindow({
           className={["canvas-region", rulersVisible ? "rulers-visible" : ""].filter(Boolean).join(" ")}
           aria-label="Document workspace"
           onKeyDown={(event) => {
+            if (event.target === event.currentTarget && event.key === "Tab" && !event.shiftKey) {
+              const targets = currentMoleculeInspector.targets.bondTargets;
+              if (targets.length === 1) {
+                const badge = event.currentTarget.querySelector<SVGGElement>(
+                  `[data-object-controls="${targets[0].objectId}"] [data-unspecified-bond-id="${targets[0].bondId}"]`);
+                if (badge) { event.preventDefault(); event.stopPropagation(); badge.focus(); return; }
+              }
+            }
             if (event.target !== event.currentTarget || (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10"))) return;
             event.preventDefault(); event.stopPropagation();
             openCanvasKeyboardContextMenu();
           }}
           onPointerDownCapture={(event) => {
             const canvas = event.currentTarget;
+            if (event.button === 0 && event.isPrimary !== false) {
+              badgePressRef.current = undefined;
+              const badge = bondStereoBadgeAtPointer(canvas, event);
+              if (badge) {
+                // Handles can be the browser's topmost target. Claim the badge by
+                // coordinates before any resize, selection, move or marquee handler.
+                event.preventDefault(); event.stopPropagation();
+                badgePressRef.current = { badge, pointerId: event.pointerId };
+                return;
+              }
+            }
             const textEditId = activeTextEditObjectIdRef.current;
             const target = event.target instanceof Element ? event.target : null;
             // Capture before page/object tools can clear the edit and start a gesture.
@@ -20295,6 +20396,43 @@ export function MainWindow({
               && !isEditableTarget(event.target) && !isBlockedByModalDialog(event.target)) {
               // Page tools cancel default focus. Restore it only when no control owns it.
               canvas.focus({ preventScroll: true });
+            }
+          }}
+          onPointerMoveCapture={event => {
+            if (badgePressRef.current && badgePressRef.current.pointerId === event.pointerId) event.stopPropagation();
+          }}
+          onPointerUpCapture={event => {
+            if (badgePressRef.current && badgePressRef.current.pointerId === event.pointerId) {
+              event.preventDefault(); event.stopPropagation();
+            }
+          }}
+          onPointerCancelCapture={event => {
+            if (badgePressRef.current && badgePressRef.current.pointerId === event.pointerId) {
+              badgePressRef.current = undefined;
+              event.stopPropagation();
+            }
+          }}
+          onMouseDownCapture={event => {
+            if (badgePressRef.current && event.button === 0) { event.preventDefault(); event.stopPropagation(); }
+          }}
+          onMouseUpCapture={event => {
+            if (badgePressRef.current && event.button === 0) { event.preventDefault(); event.stopPropagation(); }
+          }}
+          onClickCapture={event => {
+            const press = badgePressRef.current;
+            if (!press || event.button !== 0) return;
+            badgePressRef.current = undefined;
+            event.preventDefault(); event.stopPropagation();
+            if (bondStereoBadgeAtPointer(event.currentTarget, event) !== press.badge) return;
+            const objectId = press.badge.closest("[data-object-controls], [data-object-id]");
+            const ownerId = objectId?.getAttribute("data-object-controls") ?? objectId?.getAttribute("data-object-id");
+            const bondId = press.badge.getAttribute("data-unspecified-bond-id");
+            if (ownerId && bondId) openBondStereoPopover({ objectId: ownerId, bondId,
+              rect: press.badge.getBoundingClientRect(), keyboard: false });
+          }}
+          onDoubleClickCapture={event => {
+            if (event.button === 0 && bondStereoBadgeAtPointer(event.currentTarget, event)) {
+              event.preventDefault(); event.stopPropagation();
             }
           }}
           onDragOver={(event) => {
@@ -20848,6 +20986,15 @@ export function MainWindow({
       {objectContextMenu ? (
         <ObjectLayerContextMenu
           layoutActions={compoundLayoutsEnabled ? layerActions.filter(action => isCompoundLayoutCommand(action.id)) : []}
+          bondStereoActions={(() => {
+            const targets = currentMoleculeInspector.targets.bondTargets;
+            if (targets.length !== 1 || targets[0].objectId !== objectContextMenu.objectId) return [];
+            const molecule = findDocumentObject(document, targets[0].objectId);
+            const bond = molecule?.type === "molecule" ? molecule.bonds.find(b => b.id === targets[0].bondId) : undefined;
+            if (bond?.order !== "double") return [];
+            return createBondStereoActions(currentMoleculeInspector.structure.bondStereo!)
+              .filter(action => moleculeBondStereoForCommand(action.id)?.value === (bond.stereo === "either" ? "geometry" : "either"));
+          })()}
           objectId={objectContextMenu.objectId}
           objectIndex={activePage.objects.findIndex((object) => object.id === objectContextMenu.objectId)}
           objectCount={activePage.objects.length}
@@ -24093,6 +24240,7 @@ function ArtStyleQaLayer({
 
 export function ObjectLayerContextMenu({
   layoutActions = [],
+  bondStereoActions = [],
   objectId,
   objectIndex,
   objectCount,
@@ -24106,6 +24254,7 @@ export function ObjectLayerContextMenu({
   onDismiss = () => {}
 }: {
   layoutActions?: readonly CommandSpec[];
+  bondStereoActions?: readonly CommandSpec[];
   objectId: string;
   objectIndex: number;
   objectCount: number;
@@ -24306,6 +24455,18 @@ export function ObjectLayerContextMenu({
           >
             Set as Default Arrow Style
           </button>
+          <div className="object-context-menu-separator" role="separator" />
+        </>
+      ) : null}
+      {bondStereoActions.length > 0 ? (
+        <>
+          {bondStereoActions.map(action => (
+            <button type="button" role="menuitem" className="object-context-menu-item" key={action.id}
+              data-command-id={action.id} disabled={!action.enabled} title={action.disabledReason}
+              onClick={() => onInvoke(action.id)}>
+              {action.title}
+            </button>
+          ))}
           <div className="object-context-menu-separator" role="separator" />
         </>
       ) : null}
@@ -26715,8 +26876,10 @@ function DocumentObjectViewContent({
   onTextResizeStart,
   onAtomLabelChange,
   onAtomLabelCancel,
-  onAtomLabelFinish
+  onAtomLabelFinish,
+  onBondStereoBadgeOpen
 }: {
+  onBondStereoBadgeOpen(request: BondStereoBadgeRequest): void;
   object: DocumentObject;
   layerIndex: number;
   interactionLayer: HTMLDivElement | null;
@@ -27302,7 +27465,6 @@ function DocumentObjectViewContent({
           <svg
             className="native-molecule-overlay native-molecule-interaction-overlay"
             viewBox={`0 0 ${object.width} ${object.height}`}
-            aria-hidden="true"
             style={spinning ? { opacity: 0.1 } : undefined}
           >
             {selectionBlob}
@@ -27385,6 +27547,13 @@ function DocumentObjectViewContent({
               />
             ))}
           </svg>
+          <svg
+            className="native-molecule-overlay native-bond-stereo-badge-layer"
+            viewBox={`0 0 ${object.width} ${object.height}`}
+            style={spinning ? { opacity: 0.1 } : undefined}
+          >
+            <BondStereoBadges molecule={object} onOpen={onBondStereoBadgeOpen} />
+          </svg>
           {moleculeGradientHandles}
           {transformFrame ? (
             <div
@@ -27439,6 +27608,14 @@ function DocumentObjectViewContent({
                   ) : null}
                 </button>
               ) : null}
+            </div>
+          ) : null}
+          {transformFrame && (rotationInput || resizeInput) ? (
+            <div
+              className="object-transform-input-layer"
+              data-has-tilt3d={canProjectedPlaneTilt ? "true" : undefined}
+              style={transformFrameStyle}
+            >
               {rotationInput ? (
                 <RotationInputPopover
                   input={rotationInput}

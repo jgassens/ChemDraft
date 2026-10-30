@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
+<CDXML CreationProgram="ChemDraft">
+  <colortable>
+    <color r="1" g="1" b="1"/>
+    <color r="0" g="0" b="0"/>
+    <color r="1" g="0" b="0"/>
+    <color r="1" g="1" b="0"/>
+    <color r="0" g="1" b="0"/>
+    <color r="0" g="1" b="1"/>
+    <color r="0" g="0" b="1"/>
+    <color r="1" g="0" b="1"/>
+  </colortable>
+  <page id="page_001" BoundingBox="0 0 612 792">
+    <fragment id="1" BoundingBox="69.7499 73.2203 155.2501 151.7797">
+      <n id="2" p="75.7499 139.7797"/>
+      <n id="3" p="86.25 121.5923"/>
+      <n id="4" p="107.25 121.5923"/>
+      <n id="5" p="117.75 103.4063"/>
+      <n id="6" p="138.75 103.4063"/>
+      <n id="7" p="149.2501 85.2203"/>
+      <b id="8" B="2" E="3" Order="1"/>
+      <b id="9" B="3" E="4" Order="2" DoublePosition="Left"/>
+      <b id="10" B="4" E="5" Order="1"/>
+      <b id="11" B="5" E="6" Order="2" DoublePosition="Left"/>
+      <b id="12" B="6" E="7" Order="1"/>
+    </fragment>
+  </page>
+</CDXML>

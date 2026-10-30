@@ -2,7 +2,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import * as ocl from "@chemdraft/ocl-adapter";
 import { generateSmiles2DMolfile } from "@chemdraft/rdkit-adapter";
 import { smilesListCandidates } from "@chemdraft/clipboard-adapter";
-import { SmilesListPasteError, depictSmilesForPaste, depictSmilesListForPaste } from "./smilesListPaste";
+import { SmilesListPasteError, depictSmilesForPaste, depictSmilesListForPaste, unspecifiedDoubleBondNotice } from "./smilesListPaste";
 import { depictInWorker } from "./depiction2d/depict";
 import { depictSmilesOffThread } from "./depiction2d/client";
 import { registerRdkitWasmLoader } from "./rdkitWasmLoader";
@@ -220,6 +220,26 @@ describe("depictSmilesListForPaste", () => {
     const result = await depictSmilesListForPaste(text, smilesListCandidates(text));
     expect(result?.warnings).toEqual([`CCO: ${warning}`]);
   });
+
+  it("totals unspecified E/Z while keeping identity refusals and invalid lines in skipped items", async () => {
+    const text = "CC=CC\nN[Pt@SP1](N)(Cl)Cl\nC1CC(\nC/C=C/C\nCC=CC";
+    const parsed = await depictSmilesListForPaste(text, smilesListCandidates(text), undefined, { inspectInput: refuseStereo });
+    expect(parsed?.entries.map(entry => entry.smiles)).toEqual(["CC=CC", "C/C=C/C", "CC=CC"]);
+    expect(parsed?.failures).toEqual([{ input: "N[Pt@SP1](N)(Cl)Cl", error: expect.stringContaining("unsupported stereo") }]);
+    expect(parsed?.skipped).toBe(2);
+    expect(parsed?.skippedItems).toEqual([
+      { line: 2, token: "N[Pt@SP1](N)(Cl)Cl", reason: "unsupported stereo" },
+      { line: 3, token: "C1CC(", reason: "not valid SMILES" }
+    ]);
+    expect(parsed?.warnings).toEqual([unspecifiedDoubleBondNotice(2)]);
+    const grid = insertSmilesMoleculeGrid(createPhase4Document(), { x: 100, y: 100 }, parsed!.entries);
+    expect(grid.document.pages[0]!.objects.flatMap(object => object.type === "molecule"
+      ? object.bonds.filter(bond => bond.stereo === "either") : [])).toHaveLength(2);
+    const status = insertSmilesMoleculeGridStatus(grid, parsed!.skipped, parsed!.skippedItems);
+    expect(status).toContain("skipped line 2: 'N[Pt@SP1](N)(Cl)Cl' (unsupported stereo)");
+    expect(status).toContain("skipped line 3: 'C1CC(' (not valid SMILES)");
+  });
+
   it("cancels a long list before submitting later entries", async () => {
     const controller = new AbortController();
     vi.mocked(depictSmilesOffThread).mockImplementationOnce(async () => {

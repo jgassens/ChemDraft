@@ -14,7 +14,8 @@ import { dirname, join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, describe, expect, it } from "vitest";
-import { createEmptyDocument, serializeDocument } from "@chemdraft/chem-core";
+import { createEmptyDocument, serializeDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
 import { metalHydrogenLossCases, preservedRadicalExportCases, radicalExportCases, readAtomStates } from "../../document-workflow-core/test/radicalExportFixtures";
 import { chargeSeparationCases } from "../../document-workflow-core/test/chargeSeparationFixtures";
 
@@ -220,6 +221,33 @@ describe("ChemDraft MCP server", () => {
     expect(result.tools.find((tool) => tool.name === "check_stereo")!.description)
       .toContain("E/Z");
   });
+
+  it.each([
+    { smiles: "CC=CC", expected: [1] },
+    { smiles: "C/C=C/C", expected: [] },
+    { smiles: "CC=CC/C=C/C", expected: [1] }
+  ])("build_document preserves input E/Z through default render/export: $smiles", async ({ smiles, expected }) => {
+    const client = await connect();
+    const result = await client.callTool({ name: "build_document", arguments: { smiles } });
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    const nativeJson = textBlocks(result.content)[1]!;
+    const molecule = JSON.parse(nativeJson).pages[0].objects[0] as MoleculeObject;
+    const eitherIndices = (bonds: readonly { stereo?: string }[]) =>
+      bonds.flatMap((bond, index) => bond.stereo === "either" ? [index] : []);
+    expect(eitherIndices(molecule.bonds)).toEqual(expected);
+    expect(eitherIndices(parseMolfileGraph(molecule.structure).bonds)).toEqual(expected);
+    expect(molecule.structure).toContain(`  2  3  2  ${expected.length ? 3 : 0}`);
+    const rendered = await client.callTool({ name: "render_document", arguments: {
+      documentJson: nativeJson, format: "svg"
+    } });
+    expect(rendered.isError, JSON.stringify(rendered)).not.toBe(true);
+    expect(jsonPayload(rendered.content).molecules).toEqual([
+      expect.objectContaining({ canonicalSmiles: smiles, unspecifiedDoubleBonds: expected.length })
+    ]);
+    const exported = await client.callTool({ name: "export_structure", arguments: { smiles, format: "smi" } });
+    expect(exported.isError, JSON.stringify(exported)).not.toBe(true);
+    expect(textBlocks(exported.content)[1]!.split("\t")[0]).toBe(smiles);
+  }, 60_000);
 
   it.each([
     { labels: { above: Array(7).fill("x") }, field: "above", limit: "6 entry limit" },

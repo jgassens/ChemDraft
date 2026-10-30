@@ -117,6 +117,11 @@ Batch jobs use the usual `{ "name": "decalin", "smiles": "C1CCC2CCCCC2C1" }` sha
 Coordinates and ring centers are in page pixels. Ring keys are sorted bond ids joined by `|`;
 use the reported keys instead of guessing them. Atom and bond ids are local to their molecule.
 
+Unspecified stereogenic double bonds stay unspecified by default: `CC=CC` keeps native
+`stereo: "either"` and matching stored MOL markers (V2000 stereo 3 / V3000 `CFG=2`).
+`render-document` and SMILES exports retain that open E/Z; specified `C/C=C/C` stays E.
+The `E/Z unspecified for N double bond(s)` warning counts only the input's open bonds.
+
 `inputAtomIndex` is the 0-based atom token index in the supplied SMILES, including separately
 written H tokens. It is verified against RDKit's parse order and the depicted graph; unavailable
 mappings (including OCL fallbacks) are `null` with a warning. Existing depiction removes ordinary

@@ -19,6 +19,10 @@ export interface SmilesListPasteOptions {
 class EmptySmilesDepictionError extends Error {}
 const EMPTY_DEPICTION_MESSAGE = "The 2D depiction engine returned no atoms.";
 
+export function unspecifiedDoubleBondNotice(count: number): string {
+  return `E/Z was not specified for ${count} double bond(s) in the pasted structure. Confirm the geometry.`;
+}
+
 /** Only unparseable text returns undefined; engine failures and chemistry refusals throw. */
 export async function depictSmilesForPaste(
   smiles: string,
@@ -43,7 +47,8 @@ export async function depictSmilesForPaste(
     }
     const result = await depictSmilesOffThread(smiles, { priority: "interactive", ...options });
     if (result.depiction.atoms.length === 0) throw new EmptySmilesDepictionError(EMPTY_DEPICTION_MESSAGE);
-    return result;
+    const count = result.depiction.bonds.filter(bond => bond.stereo === "either").length;
+    return count ? { ...result, warnings: [...(result.warnings ?? []), unspecifiedDoubleBondNotice(count)] } : result;
   } catch (error) {
     if ((error as { notSmiles?: boolean })?.notSmiles === true) return undefined;
     throw error;
@@ -114,6 +119,7 @@ async function depictSmilesListCandidates(
     if (!firstTokenColumns.has(token.line)) firstTokenColumns.set(token.line, token.column);
   }
   let parsedFirstTokenLines = 0;
+  let openDoubleBonds = 0;
   let identityRefusals = 0;
   for (const [index, candidate] of candidates.entries()) {
     signal?.throwIfAborted();
@@ -142,7 +148,10 @@ async function depictSmilesListCandidates(
     if (parsed) {
       handledTokens.add(`${candidate.line}:${candidate.column}`);
       entries.push({ smiles: candidate.token, depiction: parsed.depiction, ...(parsed.molecule ? { molecule: parsed.molecule } : {}) });
-      warnings.push(...(parsed.warnings ?? []).map((warning) => `${candidate.token}: ${warning}`));
+      const count = parsed.depiction.bonds.filter(bond => bond.stereo === "either").length;
+      openDoubleBonds += count;
+      warnings.push(...(parsed.warnings ?? []).filter(warning => warning !== unspecifiedDoubleBondNotice(count))
+        .map((warning) => `${candidate.token}: ${warning}`));
     }
     if ((parsed || identityRefused) && candidate.column === firstTokenColumns.get(candidate.line)) {
       parsedFirstTokenLines += 1;
@@ -158,6 +167,7 @@ async function depictSmilesListCandidates(
   if (smilesListDecision({
     candidates: tokens.length, parsed: entries.length + identityRefusals, lineCount, parsedFirstTokenLines
   })) {
+    if (openDoubleBonds) warnings.push(unspecifiedDoubleBondNotice(openDoubleBonds));
     const skippedItems = tokens.filter(token => !handledTokens.has(`${token.line}:${token.column}`)
       || identityRefusalReasons.has(`${token.line}:${token.column}`))
       .map(({ line, column, token }) => ({ line, token,

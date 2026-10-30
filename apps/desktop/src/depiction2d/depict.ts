@@ -28,8 +28,22 @@ export async function depictInWorker(
   });
   try {
     if (options.rdkitLoadFailure !== undefined) throw new Error(`RDKit failed to load: ${options.rdkitLoadFailure}`);
-    return fromMolfile(await generateMolfile(smiles, {
+    // Open-E/Z perception parses with removeHs:false to keep its atom/bond correspondence.
+    // Fold ordinary explicit H first, as the default SMILES depiction does. RDKit decides
+    // which H can be folded and retains isotope-labelled H and specified stereochemistry.
+    let input = smiles;
+    if (/\[H\b/.test(smiles)) {
+      const { ensureRdkit } = await import("@chemdraft/rdkit-adapter");
+      const molecule = (await ensureRdkit()).get_mol(smiles, JSON.stringify({ removeHs: true }));
+      try {
+        const normalized = molecule?.get_smiles?.(JSON.stringify({ canonical: false }));
+        if (!normalized) throw new Error("RDKit could not normalize explicit hydrogens for SMILES paste.");
+        input = normalized;
+      } finally { molecule?.delete(); }
+    }
+    return fromMolfile(await generateMolfile(input, {
       ...options,
+      openUnspecifiedDoubleBonds: true,
       onStandardMolfile: (molfile) => onStandard(fromMolfile(molfile))
     }));
   } catch (error) {
@@ -37,7 +51,7 @@ export async function depictInWorker(
     if (options.rdkitLoadFailure !== undefined) warnings.push(`RDKit failed to load: ${options.rdkitLoadFailure}; used OpenChemLib fallback.`);
     // Preserve the existing complete local fallback, including its chemistry refusal errors.
     let fallback: ReturnType<NonNullable<typeof ocl>["depictSmiles2D"]>;
-    try { fallback = ocl.depictSmiles2D(smiles); }
+    try { fallback = ocl.depictSmiles2D(smiles, { openUnspecifiedDoubleBonds: true }); }
     catch (error) {
       // Only an explicit parser failure is ordinary text. Layout and transport failures must surface.
       if (error instanceof Error && /SmilesParser:/.test(error.message)) {
@@ -51,7 +65,7 @@ export async function depictInWorker(
       // Large OCL coordinates can overflow V2000. Keep the existing structured fallback.
       const depiction: PastedStructureDepiction = {
         atoms: fallback.atoms.map(({ element, x, y, charge }) => ({ element, x, y, charge })),
-        bonds: fallback.bonds.map(({ from, to, order, wedge }) => ({ from, to, order, wedge }))
+        bonds: fallback.bonds.map(({ from, to, order, wedge, stereo }) => ({ from, to, order, wedge, ...(stereo ? { stereo } : {}) }))
       };
       let stereoCount: number;
       try {

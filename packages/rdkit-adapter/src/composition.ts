@@ -32,6 +32,9 @@ export interface RdkitAtomJson {
 export interface RdkitBondJson {
   atoms: [number, number];
   bo?: number;
+  /** MinimalLib JSON's STEREOANY marker; never assign E/Z from coordinates for this bond. */
+  stereo?: "unspecified" | "either" | "cis" | "trans";
+  stereoAtoms?: number[];
 }
 
 export interface RdkitMoleculeJson {

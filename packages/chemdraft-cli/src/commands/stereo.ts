@@ -21,6 +21,7 @@ import {
   perceiveStereoCentersFromMolfile,
   perceiveUnrepresentableStereo
 } from "@chemdraft/ocl-adapter";
+import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
 
 export interface StereoJob {
   name: string;
@@ -81,11 +82,12 @@ interface OclMoleculeLike {
   getBondOrder(index: number): number;
   getBondParity(index: number): number;
   getBondCIPParity(index: number): number;
+  getBond(atom1: number, atom2: number): number;
 }
 
 interface OpenChemLibLike {
   Molecule: {
-    fromMolfile(molfile: string): OclMoleculeLike;
+    fromMolfileWithAtomMap(molfile: string): { molecule: OclMoleculeLike; map: number[] };
     cHelperCIP: number;
     cBondParityUnknown: number;
     cBondCIPParityEorP: number;
@@ -114,15 +116,22 @@ export interface DoubleBondStereo {
   descriptor: "E" | "Z" | "unspecified";
 }
 
-export async function perceiveDoubleBondStereo(molfile: string): Promise<DoubleBondStereo[]> {
+export async function perceiveDoubleBondStereo(molfile: string, warnings: string[] = []): Promise<DoubleBondStereo[]> {
   const OCL = await loadOpenChemLib();
-  const molecule = OCL.Molecule.fromMolfile(molfile);
+  const graph = parseMolfileGraph(molfile);
+  const parsed = OCL.Molecule.fromMolfileWithAtomMap(molfile);
+  const molecule = parsed.molecule;
   molecule.ensureHelperArrays(OCL.Molecule.cHelperCIP);
+  // OCL compacts explicit H atoms, changing engine bond indices. Report input molfile
+  // indices and match perceived bonds by the parser's atom map.
+  const atomIndices = new Map(graph.atoms.map((atom, index) => [atom.id, parsed.map[index]!]));
   const doubleBonds: DoubleBondStereo[] = [];
-  for (let bondIndex = 0; bondIndex < molecule.getAllBonds(); bondIndex += 1) {
-    if (molecule.getBondOrder(bondIndex) !== 2) continue;
-    const cip = molecule.getBondCIPParity(bondIndex);
-    const parity = molecule.getBondParity(bondIndex);
+  for (const [bondIndex, bond] of graph.bonds.entries()) {
+    if (bond.order !== "double") continue;
+    const engineBond = molecule.getBond(atomIndices.get(bond.fromAtomId)!, atomIndices.get(bond.toAtomId)!);
+    if (engineBond < 0) throw new Error(`OpenChemLib could not map molfile double bond ${bondIndex + 1}.`);
+    const cip = molecule.getBondCIPParity(engineBond);
+    const parity = molecule.getBondParity(engineBond);
     const descriptor = cip === OCL.Molecule.cBondCIPParityEorP
       ? "E"
       : cip === OCL.Molecule.cBondCIPParityZorM
@@ -130,7 +139,10 @@ export async function perceiveDoubleBondStereo(molfile: string): Promise<DoubleB
         : parity === OCL.Molecule.cBondParityUnknown
           ? "unspecified"
           : undefined;
-    if (descriptor) doubleBonds.push({ bondIndex, descriptor });
+    if (descriptor) doubleBonds.push({ bondIndex, descriptor: bond.stereo === "either" ? "unspecified" : descriptor });
+    else if (bond.stereo === "either") {
+      warnings.push(`Double bond ${bondIndex + 1} carries an either marker but is not stereogenic.`);
+    }
   }
   return doubleBonds;
 }
@@ -143,13 +155,13 @@ async function inspectJob(job: StereoJob, io: CliIo): Promise<boolean> {
     const stereoCenters = perceived.flatMap((center, atomIndex) => center.isStereoCenter
       ? [{ atomIndex, element: depicted.depiction.atoms[atomIndex]?.element ?? "?", descriptor: center.descriptor }]
       : []);
-    const doubleBonds = await perceiveDoubleBondStereo(depicted.molfile);
+    const warnings = [...depicted.warnings];
+    const doubleBonds = await perceiveDoubleBondStereo(depicted.molfile, warnings);
     const specifiedCount = stereoCenters.filter((center) => center.descriptor !== "unspecified").length +
       doubleBonds.filter((bond) => bond.descriptor !== "unspecified").length;
     const tetrahedralUnspecified = stereoCenters.filter((center) => center.descriptor === "unspecified").length;
     const doubleBondUnspecified = doubleBonds.filter((bond) => bond.descriptor === "unspecified").length;
     const unspecifiedCount = tetrahedralUnspecified + doubleBondUnspecified;
-    const warnings = [...depicted.warnings];
     if (tetrahedralUnspecified > 0) {
       warnings.push(`${tetrahedralUnspecified} stereocentre(s) left unspecified`);
     }

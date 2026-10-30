@@ -4,6 +4,9 @@ Owns plugin manifest handling, command registration, permission enforcement, plu
 
 This package validates trusted manifests, registers command-backed plugin contributions, enforces declared permissions, scopes plugin storage, queues proposed document patches for host/user approval, and forwards `document.write` patches only from the owning plugin's active command invocation. Image acquisition is similarly limited to an `image.read` plugin's active command and enforces the 25 MB / 8192-pixel host limits before bytes reach plugin code.
 
+API 0.1.17 adds optional `MoleculeBond.stereo: "either"` for E/Z-unspecified double bonds.
+Preserve it when copying bonds; it is valid only on double bonds.
+
 API 0.1.15 exposes optional `chemistry.embed3d`, `chemistry.minimize3d`, and `chemistry.flatten3d`
 only to an active command from a plugin that declares `chemistry.compute`. The host runs them in its
 in-process RDKit WASM worker, validates component and timeout limits, signs each model's atoms and

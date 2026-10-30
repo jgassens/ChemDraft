@@ -4,7 +4,8 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ensureRdkit } from "@chemdraft/rdkit-adapter";
-import { ensureOclResources, perceiveStereoCentersFromMolfile } from "@chemdraft/ocl-adapter";
+import { ensureOclResources, perceiveDoubleBondStereoFromMolfile, perceiveStereoCentersFromMolfile } from "@chemdraft/ocl-adapter";
+import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
 import { resolveStructureTemplateName } from "@chemdraft/document-workflow-core";
 import type { MoleculeObject } from "@chemdraft/chem-core";
 import { MainWindow } from "./MainWindow";
@@ -91,6 +92,27 @@ describe("template SMILES paste with chemical identity verification", () => {
     try { return molecule.get_smiles!(); }
     finally { molecule.delete(); }
   }
+
+  it.each([
+    ["CC=CC", "unspecified"],
+    ["C/C=C/C", "E"],
+    ["C/C=C\\C", "Z"]
+  ] as const)("pastes %s through real identity verification and retains %s E/Z", async (smiles, descriptor) => {
+    const { status, molecule } = await paste(smiles);
+    const openCount = descriptor === "unspecified" ? 1 : 0;
+    expect(status).toContain("Pasted SMILES structure");
+    expect(status).not.toContain("refused");
+    expect(molecule).toBeDefined();
+    expect(molecule!.bonds.filter(bond => bond.stereo === "either")).toHaveLength(openCount);
+    expect(parseMolfileGraph(molecule!.structure).bonds.filter(bond => bond.stereo === "either")).toHaveLength(openCount);
+    // This API returns only specified parities; an open bond must have no E/Z assignment.
+    expect(perceiveDoubleBondStereoFromMolfile(molecule!.structure).map(bond => bond.descriptor))
+      .toEqual(descriptor === "unspecified" ? [] : [descriptor]);
+    const input = await canonicalSmiles(smiles);
+    expect(await canonicalSmiles(molecule!.structure)).toBe(input);
+    expect(inspectStructureOffThread).toHaveBeenCalledWith("molfile", expect.any(String), input, undefined);
+    expect(status.includes("E/Z was not specified for 1 double bond(s)")).toBe(openCount === 1);
+  }, 40_000);
 
   it("pastes stereo-free beta-CD without a stereo template, invented stereo or refusal", async () => {
     const smiles = template.smiles.replaceAll("@", "");

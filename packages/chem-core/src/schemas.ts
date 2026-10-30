@@ -388,9 +388,19 @@ export const MoleculeBondSchema = z
     fromAtomId: IdSchema,
     toAtomId: IdSchema,
     order: degradingEnum(["single", "double", "triple", "aromatic", "unknown"]).default("single"),
+    /** Explicitly unspecified E/Z; absence retains geometry-defined interpretation. */
+    stereo: z.literal("either").optional(),
     display: MoleculeBondDisplaySchema.optional()
   })
-  .strict();
+  .strict()
+  .refine((bond) => bond.stereo === undefined || bond.order === "double", {
+    path: ["stereo"],
+    message: 'Bond stereo "either" is valid only for a double bond.'
+  })
+  .transform((bond) => {
+    if (bond.stereo === undefined) delete bond.stereo;
+    return bond;
+  });
 
 export const BondRefSchema = z
   .object({
