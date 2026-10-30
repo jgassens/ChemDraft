@@ -107,10 +107,9 @@ function hostLayout(entry, variant) {
   const pillar = kind === "pillar", ctv = kind === "ctv";
   // Solve the polygon radius from the bridge-endpoint chord, then intersect unit
   // circles to close each CH2 bridge. Near-straight bridges open the smaller
-  // calixarene and pillararene apertures without stretching any bonds. Use the
+  // pillararene apertures without stretching any bonds. Use the
   // same construction for hydroxy and methoxy pillararenes.
-  const wideLowerRim = kind === "calix" && n <= 5;
-  const chord = pillar || wideLowerRim ? 1.995 : ctv ? Math.sqrt(3) : 1.9;
+  const chord = pillar ? 1.995 : ctv ? Math.sqrt(3) : 1.9;
   const radialInset = pillar ? 0 : ctv ? Math.sqrt(3) / 2 : 0.5;
   const tangentReach = pillar ? 1 : ctv ? 0.5 : Math.sqrt(3) / 2;
   const radius = radialInset + (chord + 2 * tangentReach * Math.cos(halfSector)) / (2 * Math.sin(halfSector));
@@ -134,22 +133,16 @@ function hostLayout(entry, variant) {
       bonds.push([ring[vertex], ring[(vertex + 1) % 6], vertex % 2 === 0 ? 2 : 1]);
     }
     rings.push(ring);
-    const oxygenVertices = pillar ? [1, 4] : ctv ? [3, 4] : kind === "resorcin" ? [2, 4] : [0];
+    const oxygenVertices = pillar ? [1, 4] : ctv ? [3, 4] : [2, 4];
     for (const vertex of oxygenVertices) {
       // Fan the inner labels into the aperture, clear of the neighbouring ring.
       // Parent and dimethoxy pillararenes use exactly the same oxygen positions.
-      const turn = kind === "calix" ? Math.PI / 4 : pillar ? Math.PI / 9 : 0;
+      const turn = pillar ? Math.PI / 9 : 0;
       const angle = orientation + vertex * Math.PI / 3 + turn;
       const oxygen = branch(ring[vertex], "O", angle);
       // Unit O-Me bonds preserve the parent's unit-bond skeleton under mean
       // normalization; adding methyls changes only bounding-box centring.
       if (entry.methoxy) branch(oxygen, "C", angle + Math.PI / 3);
-    }
-    if (entry.tertButyl) {
-      const angle = orientation + Math.PI;
-      const carbon = branch(ring[3], "C", angle);
-      // Three explicit methyl branches, without abbreviation atoms.
-      for (const turn of [-Math.PI / 2, 0, Math.PI / 2]) branch(carbon, "C", angle + turn);
     }
   }
   for (let unit = 0; unit < n; unit += 1) {
