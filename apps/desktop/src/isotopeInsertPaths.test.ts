@@ -61,7 +61,7 @@ describe("isotope insert paths", () => {
     const smiles = ["CC=CC", "CC=CC/C=C/C"];
     const text = smiles.join("\n");
     const parsed = (await depictSmilesListForPaste(text, smilesListCandidates(text),
-      undefined, undefined, verifySmilesPasteInput))!;
+      undefined, { inspectInput: verifySmilesPasteInput }))!;
     const document = createEmptyDocument();
     const inspector = vi.fn(inspect);
     // Match MainWindow's list path, including per-entry verification before grid placement.
