@@ -40,6 +40,11 @@ The cross-platform run used the same Windows and Office versions. Its inputs, `W
 `014b653d`. Raw results are in `scripts/office-spike/results/windows-xp-2026-10-30/` on branch
 `review/office-xp-windows-results`, commit `6f8de679`.
 
+The reverse cross-platform run was made on 2026-10-30 on the macOS test machine with Word and
+PowerPoint for Mac and office-spike at `91261035`. Its inputs came from the Windows run at commit
+`c2083844`. Office for Mac versions were not re-recorded; raw results are kept with the project's
+private runbooks and are not yet in git.
+
 ## Results
 
 On macOS, both apps kept the tested PNG and PDF carriers in saved files; neither pasted SVG alone.
@@ -123,6 +128,27 @@ so it shows the bitmap. The test PDF's page is 612×792 points, making the bitma
 in the one file measured. A picture pasted on macOS therefore appears on Windows as a 72 dpi
 bitmap in this measurement, and will look soft when zoomed or printed.
 
+### Documents moved from Windows to macOS
+
+The inputs were the Windows run's `W-S1.docx` and `P-S1.pptx` from branch
+`review/office-phase0-windows-results`, commit `c2083844`. Each held the original 19,783-byte PNG
+with a valid zTXt carrier, pasted as PNG on Windows. Both apps showed the structure sharply on macOS;
+in Word it was about two-thirds of the page width. No prompts or save sheets appeared.
+
+After an edit (a new line with one character in Word, a new slide in PowerPoint) and Cmd+S in place,
+both saved files still held the 19,783-byte PNG byte-identical with a valid carrier.
+
+With the picture selected and copied on macOS, and the pasteboard dumped, the carrier was only in
+the `com.microsoft.Art--GVML-ClipFormat` zip in both apps. Its `clipboard/media/image1.png` was the
+original PNG, with the same SHA-256 as the test file and a valid carrier. The other picture formats
+were fresh renders without a carrier: `public.png` (900×1008 at 144 dpi), `com.adobe.pdf`,
+`public.tiff`, and in Word also `public.jpeg`. Pasting that copy back into ChemDraft was not tested;
+it needs ChemDraft to read the GVML format.
+
+In the tested versions, the Windows-pasted PNG carrier survived opening, editing and saving on macOS,
+and copying back to the macOS clipboard. The macOS-to-Windows trial preserved the PDF carrier inside
+EMF.
+
 ## Decisions
 
 On 2026-10-30, the owner decided that ChemDraft will give Office a high-DPI PNG with a zTXt or iTXt
@@ -140,7 +166,9 @@ macOS:
 4. For paste-back, check each source in this order: `com.adobe.pdf`, then GVML zip media, then RTF
    picture data, then PNG. Validate the carrier found, and fall through to the next source when a
    carrier is missing or fails validation. GVML media can be a PNG or an EMF wrapping a PDF, so the
-   reader must handle both; documents made with the earlier PDF route still need reading.
+   reader must handle both; documents made with the earlier PDF route still need reading. For the
+   tested Windows-pasted PNG opened on macOS, `com.adobe.pdf` on copy-back was a fresh render without
+   a carrier, so the reader falls through to the GVML media.
 5. Use the planned Office add-in to replace a picture with an edited version; paste-over adds a picture
    in both apps.
 
@@ -167,10 +195,9 @@ The following remain unmeasured:
 
 - Compress Pictures and Paste Special.
 - Cropped, rotated or grouped pictures.
-- Copy-back of a picture pasted as PNG on macOS.
+- Copy-back of a PNG pasted on macOS itself; a Windows-pasted PNG opened on macOS was measured.
 - Whether Office for Mac takes the PNG when PNG and SVG are offered without PDF.
-- Windows-made documents opened, copied from and saved on macOS; the macOS-to-Windows direction is
-  measured above.
+- Pasting a GVML copy-back into ChemDraft (needs ChemDraft to read GVML on both platforms).
 - Why PowerPoint for Windows produces a blank top-level PNG and an SVG wrapping it when copying the
   macOS picture back.
 - Whether Office for Mac's fallback bitmap is always 72 dpi; one file was measured.
