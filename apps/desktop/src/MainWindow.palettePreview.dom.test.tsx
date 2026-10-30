@@ -119,7 +119,8 @@ describe.each(["macos", "windows"] as const)("palette preview interruption (%s)"
 
   it.each(["tab switch", "new", "open", "close"])("settles an uncommitted colour before %s cleanup chooses its rollback snapshot", async navigation => {
     const tabs = () => [...container.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
-    if (navigation === "tab switch") {
+    // Close Document Tab is disabled while only one document is open, so the close case needs a second tab, like the tab switch.
+    if (navigation === "tab switch" || navigation === "close") {
       await command("document.new");
       await act(async () => tabs()[0]!.click());
     }
