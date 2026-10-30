@@ -45,6 +45,9 @@ details](../chemdraft-cli/README.md#fixed-scale-document-figures).
 - `build_document` — build editable native JSON from `smiles`, returning it inline and as a host
   file with atom/bond ids, input atom indices, ring keys and ring centers. Optional `bondLength`
   and `outDir` match the CLI document builder.
+  Unspecified stereogenic double bonds stay open by default, with native `stereo: "either"`
+  and matching stored MOL markers. `CC=CC` remains `CC=CC` through `render_document` and
+  SMILES export; specified `C/C=C/C` stays E. The E/Z warning counts only open bonds.
 - `render_document` — render a native JSON document or `.chemdraft` envelope supplied through
   exactly one of `documentPath` (host file) or `documentJson` (inline JSON text). Optional `format`
   is `svg|png|pdf|chemdraft|both` (default PNG); `width`, `background`, `padding` and `outDir`

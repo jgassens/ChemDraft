@@ -95,6 +95,7 @@ import {
   moleculeStructureMultipleBondGapCommandId,
   moleculeStructureDoubleBondInsetCommandId,
   moleculeDoubleBondPositionCommandId,
+  createBondStereoActions,
   type DoubleBondPosition,
   moleculeStructureBondMarginWidthCommandId,
   moleculeStructureBondHashSpacingCommandId,
@@ -1433,6 +1434,15 @@ function MoleculeInspectorControls({ ringOnly = false }: { ringOnly?: boolean })
           <option value="right">Right</option>
         </select>
       </label>
+      <div className="molecule-inspector-bond-stereo-actions" role="group" aria-label="Double-bond stereochemistry">
+        {createBondStereoActions(structure?.bondStereo ?? {
+          eitherDisabledReason: "Select one double bond", geometryDisabledReason: "Select one double bond"
+        }).map(action => <button key={action.id} type="button" data-palette-control="true"
+          disabled={!action.enabled} title={action.disabledReason} aria-label={action.title}
+          aria-pressed={structure?.bondStereo?.value === (action.id.endsWith(":either") ? "either" : "geometry")}
+          onPointerDown={event => event.stopPropagation()}
+          onClick={() => invokeOrCommit(action.id)}>{action.title}</button>)}
+      </div>
       {numericControl("Overlap clearance", structure?.values.bondOverlapClearancePx.value, structure?.values.bondOverlapClearancePx.mixed, moleculeStructureNumberRanges.bondOverlapClearancePx, moleculeStructureOverlapClearanceCommandId, structureDisabled)}
       <label className="molecule-inspector-field molecule-inspector-select-field">
         <span>Line cap</span>

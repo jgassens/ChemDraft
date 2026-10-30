@@ -428,7 +428,7 @@
     "name": "open_toolset_popover",
     "async": true,
     "generics": "",
-    "parameters": "app: tauri::AppHandle, toolset_id: String, kind: String, x: f64, y: f64,",
+    "parameters": "app: tauri::AppHandle, toolset_id: String, kind: String, x: f64, y: f64, focus_mode: Option<ToolsetPopoverFocusMode>,",
     "returnType": "Result<(), String>"
   },
   {
@@ -460,7 +460,7 @@
     "name": "window_logical_position",
     "async": false,
     "generics": "",
-    "parameters": "window: tauri::WebviewWindow",
+    "parameters": "window: tauri::WebviewWindow, content_origin: Option<bool>,",
     "returnType": "Result<WindowLogicalPosition, String>"
   },
   {
@@ -484,7 +484,7 @@
     "name": "show_toolset_popover_window",
     "async": false,
     "generics": "",
-    "parameters": "window: tauri::WebviewWindow",
+    "parameters": "window: tauri::WebviewWindow, focus_mode: Option<ToolsetPopoverFocusMode>,",
     "returnType": "Result<(), String>"
   },
   {

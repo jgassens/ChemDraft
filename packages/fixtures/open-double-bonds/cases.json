@@ -1,0 +1,200 @@
+[
+  {
+    "id": "open",
+    "smiles": "CC=CC",
+    "canonical": "CC=CC",
+    "formula": "C4H8",
+    "charge": 0,
+    "atomCount": 4,
+    "bondCount": 3,
+    "eitherBondIndices": [
+      1
+    ],
+    "stereo": [
+      "unspecified",
+      "unspecified",
+      "unspecified",
+      "unspecified"
+    ]
+  },
+  {
+    "id": "e",
+    "smiles": "C/C=C/C",
+    "canonical": "C/C=C/C",
+    "formula": "C4H8",
+    "charge": 0,
+    "atomCount": 4,
+    "bondCount": 3,
+    "eitherBondIndices": [],
+    "stereo": [
+      "unspecified",
+      "unspecified",
+      "unspecified",
+      "unspecified"
+    ]
+  },
+  {
+    "id": "z",
+    "smiles": "C/C=C\\C",
+    "canonical": "C/C=C\\C",
+    "formula": "C4H8",
+    "charge": 0,
+    "atomCount": 4,
+    "bondCount": 3,
+    "eitherBondIndices": [],
+    "stereo": [
+      "unspecified",
+      "unspecified",
+      "unspecified",
+      "unspecified"
+    ]
+  },
+  {
+    "id": "mixed-diene",
+    "smiles": "CC=CC/C=C/C",
+    "canonical": "CC=CC/C=C/C",
+    "formula": "C7H12",
+    "charge": 0,
+    "atomCount": 7,
+    "bondCount": 6,
+    "eitherBondIndices": [
+      1
+    ],
+    "stereo": [
+      "unspecified",
+      "unspecified",
+      "unspecified",
+      "unspecified",
+      "unspecified",
+      "unspecified",
+      "unspecified"
+    ]
+  },
+  {
+    "id": "conjugated-diene",
+    "smiles": "CC=C/C=C/C",
+    "canonical": "CC=C/C=C/C",
+    "formula": "C6H10",
+    "charge": 0,
+    "atomCount": 6,
+    "bondCount": 5,
+    "eitherBondIndices": [
+      1
+    ],
+    "stereo": [
+      "unspecified",
+      "unspecified",
+      "unspecified",
+      "unspecified",
+      "unspecified",
+      "unspecified"
+    ]
+  },
+  {
+    "id": "explicit-h",
+    "smiles": "[H]C(C)=C([H])C",
+    "canonical": "[H]C(C)=C([H])C",
+    "formula": "C4H8",
+    "charge": 0,
+    "atomCount": 6,
+    "bondCount": 5,
+    "eitherBondIndices": [
+      2
+    ],
+    "stereo": [
+      "unspecified",
+      "unspecified",
+      "unspecified",
+      "unspecified",
+      "unspecified",
+      "unspecified"
+    ]
+  },
+  {
+    "id": "ring-closure",
+    "smiles": "C1CCCCC1C=CC",
+    "canonical": "CC=CC1CCCCC1",
+    "formula": "C9H16",
+    "charge": 0,
+    "atomCount": 9,
+    "bondCount": 9,
+    "eitherBondIndices": [
+      6
+    ],
+    "stereo": [
+      "unspecified",
+      "unspecified",
+      "unspecified",
+      "unspecified",
+      "unspecified",
+      "unspecified",
+      "unspecified",
+      "unspecified",
+      "unspecified"
+    ]
+  },
+  {
+    "id": "ring-closure-reindexed",
+    "smiles": "CC=CC1CCCCC1",
+    "canonical": "CC=CC1CCCCC1",
+    "formula": "C9H16",
+    "charge": 0,
+    "atomCount": 9,
+    "bondCount": 9,
+    "eitherBondIndices": [
+      1
+    ],
+    "stereo": [
+      "unspecified",
+      "unspecified",
+      "unspecified",
+      "unspecified",
+      "unspecified",
+      "unspecified",
+      "unspecified",
+      "unspecified",
+      "unspecified"
+    ]
+  },
+  {
+    "id": "neighboring-centers",
+    "smiles": "CC=CC(O)[C@H](F)Cl",
+    "canonical": "CC=CC(O)[C@H](F)Cl",
+    "formula": "C5H8ClFO",
+    "charge": 0,
+    "atomCount": 8,
+    "bondCount": 7,
+    "eitherBondIndices": [
+      1
+    ],
+    "stereo": [
+      "unspecified",
+      "unspecified",
+      "unspecified",
+      "unspecified",
+      "unspecified",
+      "ccw",
+      "unspecified",
+      "unspecified"
+    ]
+  },
+  {
+    "id": "charged",
+    "smiles": "[NH3+]CC=CC",
+    "canonical": "CC=CC[NH3+]",
+    "formula": "C4H10N",
+    "charge": 1,
+    "atomCount": 5,
+    "bondCount": 4,
+    "eitherBondIndices": [
+      2
+    ],
+    "stereo": [
+      "unspecified",
+      "unspecified",
+      "unspecified",
+      "unspecified",
+      "unspecified"
+    ]
+  }
+]

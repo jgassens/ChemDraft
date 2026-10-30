@@ -361,6 +361,7 @@ export interface DepictionBond2D {
   from: number;
   to: number;
   order: DepictionBondOrder;
+  stereo?: "either";
   /** Drawn stereo at the bond's narrow end (`from`): wedge (up), hashed (down), or none. */
   wedge: "wedge" | "hashed" | null;
 }
@@ -405,7 +406,8 @@ function depictionOrder(mol: OclMolecule, bond: number): DepictionBondOrder {
  *  atom table stable; `inputOrder` restores the caller's pre-compaction molfile indices. */
 function inventDepiction2D(
   mol: OclMolecule,
-  inputOrder?: Pick<InputOrderedOclMolecule, "originalToEngineAtom" | "engineToOriginalAtom">
+  inputOrder: Pick<InputOrderedOclMolecule, "originalToEngineAtom" | "engineToOriginalAtom"> | undefined,
+  openUnspecifiedDoubleBonds: boolean
 ): Depiction2D {
   // Ordinary explicit H atoms are real ChemDraft atoms. OCL removes them by default during
   // coordinate invention, so keeping them is required for both atom identity and index mapping.
@@ -436,6 +438,9 @@ function inventDepiction2D(
       from: mol.getBondAtom(0, b),
       to: mol.getBondAtom(1, b),
       order: depictionOrder(mol, b),
+      ...(openUnspecifiedDoubleBonds && mol.getBondOrder(b) === 2 &&
+          (type === OCL.Molecule.cBondTypeCross || mol.getBondParity(b) === OCL.Molecule.cBondParityUnknown)
+        ? { stereo: "either" as const } : {}),
       wedge: type === up ? "wedge" : type === down ? "hashed" : null
     });
   }
@@ -467,7 +472,7 @@ function inventDepiction2D(
  * corresponding molfile. Atom indices in `bonds` and the molfile match the `atoms`
  * array, so coordinates returned by `generate3DConformer(molfile)` align 1:1.
  */
-export function depictSmiles2D(smiles: string): Depiction2D {
+export function depictSmiles2D(smiles: string, options: { openUnspecifiedDoubleBonds?: boolean } = {}): Depiction2D {
   const molecule = OCL.Molecule.fromSmiles(smiles);
   const brackets = tagBracketAtoms(smiles);
   const tagged = brackets.atoms.length > 0 ? reparseTaggedSmiles(brackets.smiles, molecule) : undefined;
@@ -478,7 +483,7 @@ export function depictSmiles2D(smiles: string): Depiction2D {
     const verdict = bracketHydrogenVerdict(brackets, tagged);
     if (verdict !== "match") throw new UnrequestedSmilesHydrogenError(smiles, verdict);
   }
-  return inventDepiction2D(molecule);
+  return inventDepiction2D(molecule, undefined, options.openUnspecifiedDoubleBonds ?? false);
 }
 
 /**
@@ -686,9 +691,21 @@ function inputHydrogenNeighbourCounts(brackets: TaggedBracketSmiles): Map<number
  * writes coordinates and stereo bonds).
  */
 export function relayoutMolfile2D(molfile: string): Depiction2D {
+  // Only explicit input CTfile markers carry intent. OCL also reports unknown parity for
+  // degenerate geometry, which must not turn an ordinary native bond into an open bond.
+  const inputEitherPairs = new Set(v2000Blocks(molfile)?.bondLines.flatMap((line) => {
+    const atoms = v2000BondAtomIndices(line);
+    return atoms && Number(line.slice(6, 9)) === 2 && Number(line.slice(9, 12)) === 3
+      ? [numericAtomPairKey(atoms.from, atoms.to)] : [];
+  }));
   const parsed = parseMolfileWithInputOrder(molfile);
   const identityBefore = parsed.molecule.getIDCode();
-  const invented = inventDepiction2D(parsed.molecule, parsed);
+  const laidOut = inventDepiction2D(parsed.molecule, parsed, false);
+  const invented = {
+    ...laidOut,
+    bonds: laidOut.bonds.map((bond) => inputEitherPairs.has(numericAtomPairKey(bond.from, bond.to))
+      ? { ...bond, stereo: "either" as const } : bond)
+  };
   const depiction = { ...invented, molfile: rewriteOriginalV2000Depiction(molfile, invented) };
   // Reparse the actual serialized output. Comparing the same mutable OCL object before/after does
   // not validate the wedge/coordinate representation that crosses the adapter boundary.
@@ -735,6 +752,71 @@ export function perceiveStereoCentersFromMolfile(molfile: string): OclAtomStereo
     }
     return { isStereoCenter, descriptor };
   });
+}
+
+/** Specified, stereogenic double bonds, with endpoints in the input molfile atom order.
+ * Equivalent ligands, terminal bonds and either markers do not appear in this list. */
+export interface OclDoubleBondStereo {
+  from: number;
+  to: number;
+  /** A specified parity may still have an unassignable CIP descriptor. */
+  descriptor: "E" | "Z" | "unspecified";
+}
+
+export function perceiveDoubleBondStereoFromMolfile(molfile: string): OclDoubleBondStereo[] {
+  const { molecule: mol, originalToEngineAtom } = parseMolfileWithInputOrder(molfile);
+  mol.ensureHelperArrays(OCL.Molecule.cHelperCIP);
+  const inputIndex = new Map(originalToEngineAtom.map((engine, input) => [engine, input]));
+  const result: OclDoubleBondStereo[] = [];
+  for (let bond = 0; bond < mol.getAllBonds(); bond++) {
+    if (mol.getBondOrder(bond) !== 2) continue;
+    const parity = mol.getBondParity(bond);
+    if (parity !== OCL.Molecule.cBondParityEor1 && parity !== OCL.Molecule.cBondParityZor2) continue;
+    const from = inputIndex.get(mol.getBondAtom(0, bond));
+    const to = inputIndex.get(mol.getBondAtom(1, bond));
+    if (from === undefined || to === undefined) continue;
+    const cip = mol.getBondCIPParity(bond);
+    result.push({ from, to, descriptor: cip === OCL.Molecule.cBondCIPParityEorP ? "E"
+      : cip === OCL.Molecule.cBondCIPParityZorM ? "Z" : "unspecified" });
+  }
+  return result;
+}
+
+/** Verify stored math-frame coordinates against drawn stereo without projecting or repairing
+ * them. `unmarkedMolfile` is the same graph with drawn wedge/hash styles removed. Coordinates
+ * use input atom order, including explicit hydrogens; no engine objects leave the adapter. */
+export function storedCoordinatesMatchStereo(
+  referenceMolfile: string, unmarkedMolfile: string, coords: ArrayLike<number>
+): boolean {
+  const reference = perceiveStereoCentersFromMolfile(referenceMolfile);
+  if (coords.length !== reference.length * 3 || Array.from(coords).some(value => !Number.isFinite(value))) return false;
+  const stored = OCL.Molecule.fromMolfileWithAtomMap(unmarkedMolfile);
+  if (stored.map.length !== reference.length) return false;
+  reference.forEach((_, index) => {
+    const atom = stored.map[index];
+    stored.molecule.setAtomX(atom, coords[index * 3]);
+    stored.molecule.setAtomY(atom, coords[index * 3 + 1]);
+    stored.molecule.setAtomZ(atom, coords[index * 3 + 2]);
+  });
+  stored.molecule.invalidateHelperArrays(OCL.Molecule.cHelperAll);
+  const storedMolfile = stored.molecule.toMolfile();
+  const actual = perceiveStereoCentersFromMolfile(storedMolfile);
+  for (let index = 0; index < reference.length; index++) {
+    const expected = reference[index];
+    if (expected.isStereoCenter && (expected.descriptor === "R" || expected.descriptor === "S") &&
+      actual[stored.map[index]]?.descriptor !== expected.descriptor) return false;
+  }
+  // Compare CIP parity in 3D, independent of the stored view's XY projection.
+  const spatial = OCL.Molecule.fromMolfileWithAtomMap(storedMolfile);
+  spatial.molecule.ensureHelperArrays(OCL.Molecule.cHelperCIP);
+  for (const bond of perceiveDoubleBondStereoFromMolfile(referenceMolfile)) {
+    if (bond.descriptor === "unspecified") return false;
+    const index = spatial.molecule.getBond(spatial.map[stored.map[bond.from]], spatial.map[stored.map[bond.to]]);
+    if (index < 0) return false;
+    const expected = bond.descriptor === "E" ? OCL.Molecule.cBondCIPParityEorP : OCL.Molecule.cBondCIPParityZorM;
+    if (spatial.molecule.getBondCIPParity(index) !== expected) return false;
+  }
+  return true;
 }
 
 export interface UnrepresentableStereo {

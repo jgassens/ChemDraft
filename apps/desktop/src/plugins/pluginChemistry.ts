@@ -155,7 +155,7 @@ export async function structureFromSmilesForPlugin(
     warningMessage: [origin
       ? `Generated an editable 2D structure from SMILES supplied by ${origin}.`
       : "Generated an editable 2D structure from SMILES supplied by a plugin.", ...(warnings ?? [])].join(" ")
-  });
+  }, { openUnspecifiedDoubleBonds: true });
 
   if (object.type !== "molecule") {
     return { available: true, built: false, reason: "The structure builder did not return a molecule." };

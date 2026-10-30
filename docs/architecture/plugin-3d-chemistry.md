@@ -49,17 +49,14 @@ It checks incoming geometry with the same input-specified stereo rule (phase `fl
 Unspecified tetrahedral sites receive no wedge/hash. Specified stereo must survive the final
 canonical isomeric SMILES read-back exactly.
 
-Native bonds cannot persist open E/Z. Before depiction or view search, `flatten3d` therefore refuses
-each component containing a double bond that RDKit perceives as stereogenic but whose E/Z is
-unspecified in its signed input SMILES. Plugins must specify `/` or `\` for those bonds:
-`Component 1 (CC=CC): double bond 2 has no E/Z in the input, and ChemDraft drawings cannot store an open double bond yet; specify / or \ in the SMILES.`
-Indices are one-based in component input bond order; multiple open stereogenic bonds add
-` (first of <count>)` after the first bond index. The check uses a temporary CXSMILES cis tag on
+Native bonds preserve open E/Z as `stereo: "either"`. `flatten3d` maps each double bond that RDKit
+perceives as stereogenic but whose E/Z is unspecified in signed input SMILES to that flag.
+The check uses a temporary CXSMILES cis tag on
 each candidate and RDKit's stereo cleanup to test whether the bond supports E/Z. RDKit's SMILES
 traversal maps preserve input indices across ring closures. No depiction or plugin-edited coordinates
-are used for this perception. Carbonyls, terminal and symmetric alkenes, small-ring double bonds,
-aromatic rings, and symmetric TTF central double bonds pass. Embedding and minimization still accept
-unspecified E/Z. **This refusal will be lifted once native open-E/Z support lands.**
+are used for this perception. Endpoint pairs carry the result through molblock bond reordering.
+Carbonyls, terminal and symmetric alkenes, small-ring double bonds, aromatic rings, and symmetric
+TTF central double bonds receive no either flag. Embedding and minimization also accept unspecified E/Z.
 
 Native atoms cannot store isotope mass labels. Before depiction or view search, isotopic components
 fail specifically, for example:
@@ -143,11 +140,9 @@ all model coordinates despite the signed `addedHydrogen` flags. The reference no
 input graph and the retained coordinate subset, with input-explicit H, stereo and SMILES checks
 preserved. No calling-plugin code or plugin API shape/version changes are required.
 
-An MDL 'either' flag in the returned CTAB alone cannot preserve open E/Z after native
-reserialization, selection read-back or molfile copy, which is why plugin flattening refuses it.
-Spin 3D's existing flatten path still has this related limitation: a real-RDKit check of the shared
-helper kept `CC(O)CC` as `CCC(C)O`, but turned `CC=CC` into `C/C=C/C`. Spin 3D behaviour is
-unchanged here; preserving unspecified double-bond intent needs a separate schema/serializer change.
+The native either flag and its CTAB encoding both survive flattening, selection read-back and MOL
+copy. Spin 3D shares the flatten helper: open `CC=CC` remains open; a projection changing specified
+E/Z is refused. Tetrahedral read-back checks assigned and open sites after wedge reconciliation.
 
 Every result carries the method contract: RDKit MinimalLib Release_2026_03_3 + patches 0001-0008;
 ETKDGv3 seed; force field; nonbonded cutoff 10 A; gas phase; no counterions or solvent; energies rank

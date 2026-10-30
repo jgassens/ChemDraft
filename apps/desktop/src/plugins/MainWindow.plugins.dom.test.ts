@@ -238,7 +238,7 @@ describe("MainWindow bundled plugin integration", () => {
     const x = offPage ? -50 : 180;
     const y = offPage ? -20 : 200;
     await act(async () => bundled.runtime!.registerPlugin({ id: "org.test.batchPlacement", name: "Batch test", version: "0.0.1",
-      apiVersion: "^0.1.15", entry: "index.js", permissions: ["document.write"],
+      apiVersion: "^0.1.16", entry: "index.js", permissions: ["document.write"],
       contributes: { commands: [{ id, title: "Insert complex", requiredPermissions: [] }] } }, {
       commandHandlers: { [id]: context => context.documents.applyPatch!({ reason: "test 3D output", patch: {
         op: "batch", patches: [0, 1].map(index => ({ op: "addObject" as const, pageId: page.id,

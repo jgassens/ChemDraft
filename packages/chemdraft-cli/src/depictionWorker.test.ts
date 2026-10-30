@@ -35,6 +35,31 @@ it("keeps >=100/100 graphs in V2000 and preserves unspecified E/Z when recheckin
   expect(warnings.some((warning) => warning.includes("could not be verified"))).toBe(false);
 }, 30_000);
 
+it("preserves legacy unspecified E/Z (stored molfile marker, no native flag) when rechecking the CTAB", async () => {
+  const result = await buildSmilesDocument(`C1${"C".repeat(96)}C=CC1`);
+  expect(result.molecule.atoms.length).toBeGreaterThanOrEqual(100);
+  expect(result.molecule.bonds.length).toBeGreaterThanOrEqual(100);
+  expect(result.unspecifiedDoubleBonds).toBe(1);
+  expect(result.molecule.structureFormat).toBe("molfile-v2000");
+  // Simulate a document predating native either flags. New SMILES builds keep the
+  // stored graph consistent; this compatibility guard is specifically for old records.
+  const legacyMolecule = {
+    ...result.molecule,
+    structure: result.identityMolfile,
+    bonds: result.molecule.bonds.map((bond) => {
+      const legacy = { ...bond };
+      delete legacy.stereo;
+      return legacy;
+    })
+  };
+  const warnings: string[] = [];
+  const current = await currentMoleculeIdentityMolfile(legacyMolecule, warnings);
+  expect(current.format).toBe("molfile-v2000");
+  expect(current.contents).toBe(legacyMolecule.structure);
+  expect(warnings).toContain("E/Z unspecified for 1 double bond(s); the 2D drawing necessarily shows one geometry");
+  expect(warnings.some((warning) => warning.includes("could not be verified"))).toBe(false);
+}, 30_000);
+
 it("a Node depiction command exits promptly after its result despite the 60 s idle lifetime", async () => {
   const entry = new URL("./depictionClient.ts", import.meta.url).href;
   const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e",
