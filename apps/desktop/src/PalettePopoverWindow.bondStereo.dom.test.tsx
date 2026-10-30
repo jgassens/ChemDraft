@@ -14,7 +14,7 @@ const native = vi.hoisted(() => ({
   dismiss: undefined as undefined | ((payload?: ToolsetPopoverDismissPayload) => void),
   request: undefined as undefined | ((toolsetId: string) => void),
   hide: vi.fn(async () => {}), focus: vi.fn(async () => {}), show: vi.fn(async () => {}),
-  invoke: vi.fn(async (_command: string, _args?: Record<string, unknown>) => {}),
+  invoke: vi.fn(async (_command: string, _args?: Record<string, unknown>): Promise<unknown> => {}),
   fallbackShow: vi.fn(async () => {}),
   events: {} as Record<string, () => void>
 }));
@@ -49,6 +49,8 @@ let container: HTMLDivElement, root: Root;
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   vi.clearAllMocks();
+  native.invoke.mockReset().mockImplementation(async (command: string, args?: Record<string, unknown>) =>
+    command === "register_plugin_panel_input_focus" ? "popover-page" : args?.editing);
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
 });
 
@@ -100,7 +102,10 @@ describe("document-owned bond stereo popover", () => {
       // Use the real reveal transport so the no-activating-fallback guarantee and
       // the popover-to-document close notification are exercised together.
       native.show.mockImplementationOnce(() => manager.showCurrentToolsetPopoverWindow("preserve"));
-      native.invoke.mockRejectedValueOnce(error);
+      // Lease registration runs on mount, before the reveal. Fail only the reveal.
+      const invoke = native.invoke.getMockImplementation()!;
+      native.invoke.mockImplementation((command, args) => command === "show_toolset_popover_window"
+        ? Promise.reject(error) : invoke(command, args));
       vi.mocked(sendBondStereoPopoverAction).mockImplementationOnce(async payload => { ownerAction?.(payload); });
       await act(async () => root.render(<><Owner /><PalettePopoverWindow toolsetId="core.bondStereo" kind="flyout" prewarm /></>));
       await act(async () => native.content?.({ toolsetId: "core.bondStereo", ...content, anchor }));
@@ -249,15 +254,34 @@ describe("open-bond native popover body", () => {
     expect(sendBondStereoPopoverAction).not.toHaveBeenCalled();
   });
   it("keeps the shared color picker reveal focusable and its text input editable", async () => {
-    await act(async () => root.render(<PalettePopoverWindow toolsetId="core.art" kind="artColor" prewarm />));
-    await act(async () => native.content?.({ toolsetId: "core.art", kind: "artColor" }));
-    expect(native.show).toHaveBeenCalledWith("focus");
-    const input = container.querySelector<HTMLInputElement>('input[type="text"]')!;
-    expect(input).not.toBeNull();
-    input.focus();
-    expect(document.activeElement).toBe(input);
-    expect(input.disabled).toBe(false);
-    expect(input.readOnly).toBe(false);
+    const host = window as typeof window & { __TAURI__?: unknown };
+    host.__TAURI__ = {};
+    let acquire!: (acquired: boolean) => void;
+    const invoke = native.invoke.getMockImplementation()!;
+    native.invoke.mockImplementation((command, args) => command === "set_plugin_panel_input_focus" && args?.editing
+      ? new Promise<boolean>(resolve => { acquire = resolve; }) : invoke(command, args));
+    try {
+      await act(async () => root.render(<PalettePopoverWindow toolsetId="core.art" kind="artColor" prewarm />));
+      await act(async () => native.content?.({ toolsetId: "core.art", kind: "artColor" }));
+      // Keep the shared transport default: Rust maps non-E/Z reveals to Preserve,
+      // so the color field borrows the keyboard through its input lease.
+      expect(native.show).toHaveBeenCalledWith("focus");
+      const input = container.querySelector<HTMLInputElement>('input[type="text"]')!;
+      expect(input).not.toBeNull();
+      await act(async () => input.focus());
+      expect(native.invoke).toHaveBeenCalledWith("set_plugin_panel_input_focus", expect.objectContaining({ editing: true }));
+      expect(document.activeElement).not.toBe(input); // No caret before native acquisition.
+      await act(async () => acquire(true));
+      expect(document.activeElement).toBe(input);
+      expect(input.disabled).toBe(false);
+      expect(input.readOnly).toBe(false);
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "#12ab");
+        input.dispatchEvent(new InputEvent("input", { inputType: "insertText", bubbles: true }));
+      });
+      expect(input.value).toBe("#12AB"); // The shared picker's change handler accepts the typed draft.
+      expect(document.activeElement).toBe(input);
+    } finally { delete host.__TAURI__; }
   });
   it.each(["bondStereo", "artColor", "menu"] as const)("ignores a stale dismiss for fresh %s content and honors a later press", async variant => {
     const now = vi.spyOn(performance, "now").mockReturnValue(200);

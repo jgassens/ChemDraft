@@ -709,7 +709,9 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     expect(hotkey.defaultPrevented).toBe(true);
     // jsdom does not hit-test CSS: assert the pass-through rule excludes buttons.
     const css = readFileSync(resolve("apps/desktop/src/App.css"), "utf8");
-    const disabledRules = css.split("/* Disabled native form controls")[1]!;
+    // Stop after the wrapper cursor rule; later popover button styles are unrelated.
+    const disabledRules = css.match(/\/\* Disabled native form controls[\s\S]*?cursor:\s*not-allowed;\s*\}/)?.[0];
+    expect(disabledRules).toBeDefined();
     expect(disabledRules).not.toContain("button");
     expect(disabledRules).toContain(":is(input, textarea, select):disabled");
     expect(disabledRules).toContain("cursor: not-allowed");
