@@ -27,6 +27,7 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * 0.1.15 adds optional 3D chemistry: chemistry.embed3d, minimize3d, flatten3d
  * (including structured minimize3d clash/contact diagnostics and flatten3d clash refusal).
  * 0.1.16 adds optional isotope mass numbers to native document atoms.
+ * 0.1.17 adds the optional MoleculeBond `stereo: "either"` field for E/Z-unspecified double bonds.
  * 0.1.18 adds command-scoped documents.insertTable with a validated native PluginTableSpec.
  *
  * The MINOR stays at 1 for both. For a 0.x release `isPluginApiVersionCompatible` treats the minor as

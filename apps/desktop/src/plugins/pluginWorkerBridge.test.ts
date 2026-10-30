@@ -161,7 +161,7 @@ function startWorkerRoutedPlugin(registration: PluginWorkerRegistration): Plugin
 describe("PluginWorkerBridge — M34 isolation boundary", () => {
   it("delivers successful and error capability replies when the logger throws", async () => {
     const commandId = "plugin.throwingLogger.run";
-    const manifest = parsePluginManifest({ id: "org.test.throwing-logger", name: "Throwing Logger", version: "0", apiVersion: "^0.1.15", entry: "worker.js",
+    const manifest = parsePluginManifest({ id: "org.test.throwing-logger", name: "Throwing Logger", version: "0", apiVersion: "^0.1.16", entry: "worker.js",
       permissions: ["chemistry.compute"], contributes: { commands: [{ id: commandId, title: "3D" }] } });
     let shouldFail = false;
     const { mainSide, workerSide } = linkedEndpoints();
@@ -179,7 +179,7 @@ describe("PluginWorkerBridge — M34 isolation boundary", () => {
   });
   it.each(["result", "error"])("drops a late capability %s after a worker restart reuses request id 1", async kind => {
     const commandId = "plugin.restart.run";
-    const manifest = parsePluginManifest({ id: "org.test.restart", name: "Restart", version: "0", apiVersion: "^0.1.15", entry: "worker.js",
+    const manifest = parsePluginManifest({ id: "org.test.restart", name: "Restart", version: "0", apiVersion: "^0.1.16", entry: "worker.js",
       permissions: ["chemistry.compute"], contributes: { commands: [{ id: commandId, title: "3D" }] } });
     const completions: { resolve(value: unknown): void; reject(error: Error): void }[] = [];
     const replyLogger = vi.fn();
@@ -224,7 +224,7 @@ describe("PluginWorkerBridge — M34 isolation boundary", () => {
   });
   it("round-trips every 0.1.15 3D method with chemistry.compute alone, including host validation", async () => {
     const commandId = "plugin.threeD.run";
-    const manifest = parsePluginManifest({ id: "org.test.threeD", name: "3D", version: "0", apiVersion: "^0.1.15", entry: "worker.js",
+    const manifest = parsePluginManifest({ id: "org.test.threeD", name: "3D", version: "0", apiVersion: "^0.1.16", entry: "worker.js",
       permissions: ["chemistry.compute"], contributes: { commands: [{ id: commandId, title: "3D" }] } });
     const embedded: PluginEmbed3DResult = {
       model: { atoms: [{ element: "C", charge: 0, component: 0, addedHydrogen: false }], bonds: [], coords: [0, 0, 0],

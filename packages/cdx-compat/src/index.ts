@@ -730,6 +730,12 @@ function exportBond(
     `E="${atomIds.get(bond.toAtomId) ?? escapeXmlAttribute(bond.toAtomId)}"`,
     `Order="${order}"`
   ];
+  if (bond.order === "double" && bond.stereo === "either") {
+    warnings.push(warning(
+      "cdxml.open_double_bond_native_only",
+      `E/Z-unspecified double bond ${bond.id} is kept for ChemDraft only; other apps will see a plain double bond.`
+    ));
+  }
   const bondStyle = cdxmlBondDisplayForBondStyle(bond.display);
   if (bondStyle) {
     attributes.push(`Display="${bondStyle}"`);

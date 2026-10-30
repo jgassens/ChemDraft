@@ -1208,6 +1208,30 @@ textarea:focus-visible,
   min-width: 0;
 }
 
+.molecule-inspector-bond-stereo-actions {
+  display: grid;
+  gap: 4px;
+}
+
+.molecule-inspector-bond-stereo-actions button {
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid var(--cd-border);
+  border-radius: 4px;
+  background: var(--cd-bg);
+  color: var(--cd-text);
+  font: inherit;
+  font-size: 11px;
+}
+
+.molecule-inspector-bond-stereo-actions button[aria-pressed="true"] {
+  background: var(--cd-bg-selected);
+}
+
+.molecule-inspector-bond-stereo-actions button:disabled {
+  color: var(--cd-text-muted);
+}
+
 .molecule-inspector-field > span:first-child {
   min-width: 0;
   overflow-wrap: anywhere;
@@ -4209,7 +4233,7 @@ textarea:focus-visible,
 .graphic-gradient-control-layer {
   position: absolute;
   inset: 0;
-  z-index: 3;
+  z-index: 5;
   display: block;
   width: 100%;
   height: 100%;
@@ -4244,7 +4268,7 @@ textarea:focus-visible,
 
 .graphic-gradient-handle {
   position: absolute;
-  z-index: 4;
+  z-index: 6;
   width: 12px;
   height: 12px;
   padding: 0;
@@ -4624,6 +4648,14 @@ textarea:focus-visible,
   will-change: transform;
 }
 
+/* Typed controls share the frame's geometry but escape its handle stacking context. */
+.object-transform-input-layer {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+  will-change: transform;
+}
+
 /* Bounding box around a multi-object selection (group rotate/resize chrome). */
 .group-selection-frame {
   border: 1.5px dashed var(--cd-accent-border);
@@ -4926,7 +4958,8 @@ textarea:focus-visible,
   top: calc(100% + 8px);
 }
 
-.object-transform-frame[data-has-tilt3d="true"] .object-rotation-input-popover[data-rotation-input-kind="z"] {
+.object-transform-frame[data-has-tilt3d="true"] .object-rotation-input-popover[data-rotation-input-kind="z"],
+.object-transform-input-layer[data-has-tilt3d="true"] .object-rotation-input-popover[data-rotation-input-kind="z"] {
   left: calc(50% - 17px);
 }
 
@@ -5057,6 +5090,24 @@ textarea:focus-visible,
 
 .native-atom-invalid-marker {
   pointer-events: none;
+}
+
+/* A sibling of the selection's transform frame (z-index: 3), not a child of
+   its lower SVG overlay. Only the badge itself accepts hits; the rest passes through. */
+.native-bond-stereo-badge-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+
+.native-bond-stereo-marker {
+  cursor: pointer;
+  pointer-events: all;
+}
+
+@media print {
+  .native-bond-stereo-marker { display: none !important; }
 }
 
 .native-atom-invalid-ring {
@@ -7798,3 +7849,8 @@ textarea:focus-visible,
 .cd-page-size-buttons { display: flex; gap: 8px; justify-content: flex-end; }
 .cd-page-size-form button { padding: 6px 14px; }
 .cd-page-size-web-fallback .cd-page-size-form { width: 420px; min-height: 300px; border: 1px solid var(--cd-border-subtle); border-radius: 8px; }
+
+.native-bond-stereo-marker:focus-visible .native-atom-invalid-ring { stroke: var(--cd-accent, #2965c7); stroke-width: 3; }
+.bond-stereo-popover { width: 290px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.bond-stereo-popover p { margin: 0; line-height: 1.4; white-space: normal; }
+.bond-stereo-popover button { min-height: 28px; text-align: left; }

@@ -22,6 +22,50 @@ dialogs, plugin panels, Preferences, and color popovers: no browser menu appears
 typing, and Tab input keep working. Ctrl+X/C/V/A still work in text fields. Repeat right-click on
 palettes, tooltips, and the 3D debugger; app menus and subsequent input must keep working.
 
+## Unspecified E/Z (macOS and Windows)
+
+Paste `CC=CC`, then a list containing two copies of it.
+Each stereogenic double bond keeps unspecified E/Z, shows a small (!) beside its midpoint without
+covering the bond or labels, and its hover text reads exactly "E/Z was not specified for this double
+bond. Confirm the geometry by redrawing the bond or choosing 'Use drawn geometry'." The paste status
+reads "E/Z was not specified for N double bond(s) in the pasted structure. Confirm the geometry."
+with N = 1 for the single paste and N = 2 for the list. Repeat with plain text, chemical MIME
+clipboard text, and native Paste. `C/C=C/C` keeps E and shows no notice; `CC=O` and `CC=C(C)C` have no flag.
+Select a double bond in the floating inspector: E/Z unspecified and Use drawn geometry (E)/(Z)
+each make one labelled Undo entry, keep the bond selected, and survive Undo/Redo and save/reopen.
+Verify the drawn geometry label with both E and Z drawings and unequal CIP priorities. Carbonyls,
+symmetric ends and small rings disable E/Z unspecified with a specific reason. Reapply double order
+with the bond tool or hovered-bond shortcut: the (!) disappears and the bond becomes geometry-defined.
+Move atoms, rotate and restyle first: these keep the flag and badge. SVG, PDF, CDXML exports and
+browser/system print preview contain no badge or hover text.
+
+With a real mouse, click the (!) badge with nothing selected, then with its bond selected and a
+resize handle overlapping the badge: the badge receives the click, no resize starts, and the
+popover stays open without a document/canvas blur. Repeat cold and warm opens. Focus the canvas,
+Tab to the badge, and press Enter or Space: this keyboard open focuses the first enabled action.
+A small native popover anchors below it, showing “E/Z not specified”,
+the geometry explanation, both geometry choices (correct E/Z labels), and Keep unspecified.
+Confirm and flip each record exactly one labelled Undo entry, retain bond selection, and Undo/Redo
+restore geometry and the badge. Flip moves only one end's substituents; test unequal CIP priorities,
+nearby stereocentres, conjugated bonds and charged/isotopic substituents. Keep unspecified, Escape
+and click-away change no document/history, close, and return focus to the canvas. Repeat click-away
+from a floating toolbar and keyboard Tab/Shift+Tab within the popover.
+Right-click an open bond: “Mark E/Z as unspecified” is absent. On a non-stereogenic double bond it
+remains disabled with its reason. The inspector retains its previous behavior.
+Scroll, pan or zoom the canvas and move or resize the document between monitors at 100% and
+150%/200% scaling (including negative monitor coordinates): the popover closes. Reopen it at the
+badge; mouse opens and their action buttons preserve document focus, have no taskbar entry on
+Windows, and close when switching tabs/documents. Click elsewhere in the document or press Escape
+while the popover has never had focus: it must still close. Alternate keyboard and mouse opens to
+check that the reused window resets its focus mode. Open the Art color picker afterwards and type
+in its hex/RGB inputs: those shared-popover inputs still accept keyboard focus.
+Check print and SVG/PDF/CDXML again with the popover open: neither badge nor popover is included.
+Dismiss during the first cold open, then immediately reopen from a badge. Only the newest request
+may appear or act; an older create/reveal finishing late must not hide it. Change the selection or
+switch tabs while it opens and verify that a late action cannot affect the new selection/document.
+Ring bonds refuse the flip with a reason. If retained isotope/radical properties cannot be mapped
+through a label expansion, both geometry choices refuse rather than discarding those properties.
+
 ## Spin 3D (macOS and Windows)
 
 Paste `c1ccccc1.CC(C)(C)C.OCCO` as one native molecule object; with RDKit and the OCL fallback,

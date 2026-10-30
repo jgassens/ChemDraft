@@ -4,6 +4,9 @@ Defines public plugin API types, Zod-backed manifest schemas, permission names, 
 
 This package must not contain app-specific implementation code or direct document mutation logic.
 
+API 0.1.17 adds optional `MoleculeBond.stereo: "either"` for E/Z-unspecified double bonds.
+Preserve it when copying bonds; it is valid only on double bonds.
+
 API 0.1.15 adds optional command-scoped `context.chemistry.embed3d`, `minimize3d`, and `flatten3d`
 methods for plugins declaring `chemistry.compute`. They run in the app's in-process RDKit WASM worker
 with no process, network, or new permission. `embed3d` makes explicit-hydrogen ETKDGv3 models for

@@ -111,11 +111,11 @@ schema has no isotope mass field (its `chemistry.isotopeLabels` is molecule-leve
 isotopic components are refused before depiction or view search with the component's input SMILES
 and isotope labels. Embedding/minimization still preserve them.
 References come from the signed input after a separate 3D stereo check, so an unspecified centre
-cannot acquire a wedge/hash. Native bonds cannot store open E/Z: flattening refuses double bonds
-that RDKit perceives as stereogenic but whose E/Z is unspecified in the signed SMILES, before any
-depiction or view search. Plugins must specify `/` or `\` for these bonds. Non-stereogenic double
-bonds (carbonyls, terminal or symmetric alkenes, small-ring double bonds, aromatic bonds, and the
-symmetric TTF central double bond) pass. Embedding and minimization still accept open E/Z.
+cannot acquire a wedge/hash. Double bonds that RDKit perceives as stereogenic but whose E/Z is
+unspecified in the signed SMILES become native `stereo: "either"` bonds. Their MOL representation
+keeps the either marker, so projecting coordinates never assigns E/Z. Specified E/Z must survive
+projection and canonical read-back. Carbonyls, terminal or symmetric alkenes, small-ring double
+bonds, aromatic bonds, and the symmetric TTF central double bond receive no open-stereo flag.
 Page crossing overrides are not document objects: when needed, a warning explains their omission.
 
 Every result carries the pinned engine, ETKDGv3 seed, field/variant (or `none` when this call
@@ -167,7 +167,6 @@ integer and range errors, the explicit schema and host refusals are:
 - `Component <n>: <minimize3d input|minimize3d result|flatten3d input> would change specified tetrahedral stereo at centre <atom>; restore the input geometry.`
 - `Component <n>: <minimize3d input|minimize3d result|flatten3d input> would change specified E/Z stereo at bond <a>-<b>; restore the input geometry.`
 - `Component <n> (<SMILES>) carries isotope labels (<labels>), which ChemDraft drawings cannot store yet; flatten3d refuses rather than drop them.`
-- `Component <n> (<input SMILES>): double bond <k> has no E/Z in the input, and ChemDraft drawings cannot store an open double bond yet; specify / or \ in the SMILES.` (`k` is one-based in input bond order; multiple open stereogenic bonds add ` (first of <count>)` after `k`.)
 - `RDKit could not perceive potential double-bond stereochemistry.`
 - `RDKit could not read the signed component SMILES.`
 - `RDKit could not read the explicit-hydrogen input.`

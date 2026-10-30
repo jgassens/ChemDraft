@@ -50,7 +50,7 @@ const nativeMoleculePadding = 8;
  *  engine (which stays behind a dynamic import to keep it out of the static graph). */
 export interface PastedStructureDepiction {
   atoms: ReadonlyArray<{ element: string; isotope?: number; x: number; y: number; charge: number }>;
-  bonds: ReadonlyArray<{ from: number; to: number; order: MoleculeBond["order"]; wedge: "wedge" | "hashed" | null }>;
+  bonds: ReadonlyArray<{ from: number; to: number; order: MoleculeBond["order"]; stereo?: "either"; wedge: "wedge" | "hashed" | null }>;
 }
 
 /**
@@ -81,6 +81,7 @@ export function pastedStructureDepictionFromMolfile(molfile: string): PastedStru
         // explicitly refuses this same collapse citing AGENTS.md section 5.7. Flattening an
         // un-kekulized aromatic ring to all-single bonds is a silent chemistry change.
         order: bond.order,
+        ...(bond.stereo === "either" ? { stereo: "either" as const } : {}),
         // Dative (dashed) bonds parse with a display style, not a wedge — they fall to null here
         // and keep their style through the structural insert path.
         wedge: bond.bondStyle === "wedge" || bond.bondStyle === "hashed" ? bond.bondStyle : null
@@ -132,6 +133,8 @@ export const SMILES_PASTE_SOURCE: SmilesMoleculeSource = {
 export interface SmilesMoleculeOptions {
   bondLengthPx?: number;
   objectStyle?: DocumentDrawingDefaults["objectStyle"];
+  /** Retain perceived, unassigned E/Z from the depiction. Desktop SMILES input enables this. */
+  openUnspecifiedDoubleBonds?: boolean;
 }
 
 /**
@@ -175,7 +178,8 @@ export function createSmilesMolecule(
       id: `b${index}`,
       fromAtomId: `a${bond.from}`,
       toAtomId: `a${bond.to}`,
-      order: bond.order
+      order: bond.order,
+      ...(options.openUnspecifiedDoubleBonds && bond.stereo === "either" ? { stereo: "either" as const } : {})
     })),
     warnings: []
   };
@@ -200,7 +204,8 @@ export function createSmilesMolecule(
         id: `b${index}`,
         fromAtomId: `a${bond.from}`,
         toAtomId: `a${bond.to}`,
-        order: bond.order
+        order: bond.order,
+        ...(options.openUnspecifiedDoubleBonds && bond.stereo === "either" ? { stereo: "either" as const } : {})
       };
       return bond.wedge ? { ...base, display: { bondStyle: bond.wedge } } : base;
     })

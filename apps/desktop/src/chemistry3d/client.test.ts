@@ -51,7 +51,7 @@ describe("3D chemistry conformer worker lifetime", () => {
     const host = new PluginHost({ flatten3d: (_request, signal) => pool.run(jobs[2], signal) as
       Promise<import("@chemdraft/plugin-api").PluginFlatten3DResult> });
     const id = "plugin.coldFlatten.run";
-    host.registerPlugin({ id: "org.test.coldFlatten", name: "Cold flatten", version: "0.0.1", apiVersion: "^0.1.15",
+    host.registerPlugin({ id: "org.test.coldFlatten", name: "Cold flatten", version: "0.0.1", apiVersion: "^0.1.16",
       entry: "index.js", permissions: ["chemistry.compute"], contributes: { commands: [{ id, title: "Flatten", requiredPermissions: [] }] } },
     { commandHandlers: { [id]: context => context.chemistry!.flatten3d!({ model, view: "auto" }) } });
     const result = host.invokeCommand(id);

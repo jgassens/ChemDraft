@@ -61,7 +61,9 @@ into core — e.g. `import type { ChemDraftDocument, DocumentPatch } from "@chem
 ```
 
 `apiVersion` in your manifest declares the SDK contract you target (`PluginApiVersion`, currently
-`0.1.18`). API 0.1.16 adds optional positive integer `isotope` mass numbers to native document atoms.
+`0.1.18`). API 0.1.17 adds optional `MoleculeBond.stereo: "either"` for an E/Z-unspecified double bond.
+It is allowed only on double bonds; plugins must preserve it when copying bonds and must not set it on other orders.
+API 0.1.16 adds optional positive integer `isotope` mass numbers to native document atoms.
 Native molecule objects returned by `chemistry.structureFromSmiles` and passed through document
 patches also preserve isotope masses. Hydrogen-2 and hydrogen-3 use elements `D` and `T` without an
 `isotope` field; other labelled atoms (including hydrogen-1) carry the mass number in `isotope`.
@@ -84,6 +86,7 @@ it declares.
 | API version | Additive capability | Permission |
 | --- | --- | --- |
 | 0.1.18 | `documents.insertTable(spec)` | `document.write`, during the plugin's own command |
+| 0.1.17 | Optional bond `stereo: "either"` for E/Z-unspecified double bonds | No new permission |
 | 0.1.16 | Optional atom `isotope` fields | No new permission |
 | 0.1.15 | `chemistry.embed3d`, `minimize3d`, `flatten3d` | `chemistry.compute`, during the plugin's own command |
 
@@ -448,15 +451,12 @@ Refusals identify the component and one-based centre or bond, for example
 `Component 1: minimize3d input would change specified tetrahedral stereo at centre 2; restore the input geometry.`
 or `Component 1: minimize3d result would change specified E/Z stereo at bond 2-3; restore the input geometry.`
 Flattening checks incoming geometry by the same rule (phase `flatten3d input`), keeps specified
-stereo, and never adds wedges/hashes at unspecified tetrahedral sites. Plugins must specify E/Z
-with `/` or `\` in the input SMILES for every stereogenic double bond they intend to flatten.
-Native drawing bonds cannot store an open double bond, so `flatten3d` refuses these before depiction
-or view search, using RDKit's stereo perception rather than rejecting all double bonds:
-`Component 1 (CC=CC): double bond 2 has no E/Z in the input, and ChemDraft drawings cannot store an open double bond yet; specify / or \ in the SMILES.`
-The bond index is one-based in the component's input order. With several open stereogenic double
-bonds, the first index is followed by ` (first of <count>)`. Carbonyls, terminal and symmetric alkenes,
-small-ring double bonds, aromatic rings, and a symmetric TTF central double bond pass this check.
-`embed3d` and `minimize3d` still accept unspecified E/Z in the 3D-only model.
+stereo, and never adds wedges/hashes at unspecified tetrahedral sites. A stereogenic double bond
+without E/Z in the signed SMILES becomes a native `stereo: "either"` bond, preserving unspecified
+intent through MOL serialization and later Spin 3D flattening. Specified `/` or `\` stereo must
+survive projection and final canonical isomeric SMILES read-back. RDKit perceives potential E/Z;
+carbonyls, terminal and symmetric alkenes, small-ring double bonds, aromatic rings, and a symmetric
+TTF central double bond receive no either flag. `embed3d` and `minimize3d` also accept unspecified E/Z.
 
 Native drawing atoms have no isotope mass field. `flatten3d` therefore refuses isotopic components
 before depiction or view search:

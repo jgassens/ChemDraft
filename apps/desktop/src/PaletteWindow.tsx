@@ -44,6 +44,7 @@ import {
   currentWindowLogicalWorkArea,
   fitCurrentPaletteWindow,
   dismissToolsetPopovers,
+  toolsetPopoverTimestamp,
   hidePaletteFloatingTooltip,
   openToolsetPopoverWindow,
   prewarmToolsetPopoverWindow,
@@ -765,6 +766,7 @@ export function PaletteWindow({
   );
 
   const openPopover = (anchor: ToolbarPopoverAnchor, kind: string, content: ToolsetPopoverContent) => {
+    content = { ...content, openedAt: toolsetPopoverTimestamp() };
     void (async () => {
       // No silent origin fallback: a failed position read once sent the first popover
       // open to the anchor offset from (0,0) — inches from its button — while every
@@ -865,7 +867,7 @@ export function PaletteWindow({
       if (target instanceof Element && target.closest(".toolbar-color-trigger, .command-flyout-button, .distribute-mode-button")) {
         return;
       }
-      void dismissToolsetPopovers().catch(() => undefined);
+      void dismissToolsetPopovers(toolsetPopoverTimestamp()).catch(() => undefined);
     };
     window.addEventListener("pointerdown", handlePointerDown, true);
     return () => window.removeEventListener("pointerdown", handlePointerDown, true);

@@ -67,6 +67,14 @@ export function unspecifiedStereoDoubleBonds(rdkit: RdkitMinimalModule, smiles: 
   } finally { input.delete(); }
 }
 
+/** Endpoint identity survives molblock bond reordering (ring closures and explicit Hs).
+ * Keep this mapping beside potential-stereo perception rather than matching bond ordinals
+ * from two different serializations in the flatten builder. */
+export function unspecifiedStereoDoubleBondPairs(rdkit: RdkitMinimalModule, smiles: string,
+  graph: StereoGraph): readonly (readonly [number, number])[] {
+  return unspecifiedStereoDoubleBonds(rdkit, smiles).map(index => graph.bonds[index - 1].atoms);
+}
+
 /** Normalize parity against sorted neighbours, independent of bond traversal order. */
 function parity(graph: StereoGraph, center: number): number {
   const neighbors = graph.bonds.flatMap(b => b.atoms[0] === center ? [b.atoms[1]] : b.atoms[1] === center ? [b.atoms[0]] : []);
