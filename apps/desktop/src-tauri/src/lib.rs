@@ -4254,8 +4254,8 @@ async fn open_toolset_popover(
     y: f64,
     focus_mode: Option<ToolsetPopoverFocusMode>,
 ) -> Result<(), String> {
-    let focus_mode = focus_mode.unwrap_or_default();
     let label = toolset_popover_window_label(&toolset_id);
+    let focus_mode = effective_toolset_popover_focus_mode(&label, focus_mode.unwrap_or_default());
     let _creation = lock_window_creation()?;
     if utility_windows_suspended() {
         return Ok(());
@@ -4300,7 +4300,7 @@ async fn prewarm_toolset_popover(app: tauri::AppHandle, toolset_id: String) -> R
         "artColor",
         true,
         (0.0, 0.0),
-        ToolsetPopoverFocusMode::Focus,
+        effective_toolset_popover_focus_mode(&label, ToolsetPopoverFocusMode::Focus),
     )
 }
 
@@ -4456,6 +4456,21 @@ fn toolset_popover_window_label(toolset_id: &str) -> String {
     format!("toolset-popover-{}", toolset_id.replace('.', "-"))
 }
 
+/// Palette popovers (colour pickers and flyouts) never take key status when they open: their
+/// text fields borrow the keyboard through the guarded input lease (`install_toolset_input_focus`),
+/// like palette settings. Only the E/Z popover honours a keyboard open's request for real focus,
+/// because its choices are buttons, which never lease.
+fn effective_toolset_popover_focus_mode(
+    label: &str,
+    requested: ToolsetPopoverFocusMode,
+) -> ToolsetPopoverFocusMode {
+    if label == toolset_popover_window_label("core.bondStereo") {
+        requested
+    } else {
+        ToolsetPopoverFocusMode::Preserve
+    }
+}
+
 #[derive(Clone, serde::Serialize)]
 struct WindowLogicalPosition {
     x: f64,
@@ -4572,7 +4587,10 @@ fn show_toolset_popover_window(
     if utility_windows_suspended() {
         return Ok(());
     }
-    let focus_mode = focus_mode.unwrap_or_default();
+    let focus_mode = effective_toolset_popover_focus_mode(
+        window.label(),
+        focus_mode.unwrap_or_default(),
+    );
     configure_toolset_popover_window(&window, focus_mode)?;
     #[cfg(target_os = "macos")]
     if focus_mode == ToolsetPopoverFocusMode::Preserve {
@@ -9363,6 +9381,26 @@ mod tests {
             assert_eq!(config.parent.as_deref(), Some(MAIN_WINDOW_LABEL));
             #[cfg(not(windows))]
             assert_eq!(config.parent, None);
+        }
+    }
+
+    #[test]
+    fn palette_popovers_open_without_focus_and_lease_their_fields() {
+        let bond_stereo = toolset_popover_window_label("core.bondStereo");
+        assert!(effective_toolset_popover_focus_mode(
+            &bond_stereo,
+            ToolsetPopoverFocusMode::Focus
+        ) == ToolsetPopoverFocusMode::Focus);
+        assert!(effective_toolset_popover_focus_mode(
+            &bond_stereo,
+            ToolsetPopoverFocusMode::Preserve
+        ) == ToolsetPopoverFocusMode::Preserve);
+        for toolset in ["core.art", "core.drawnStructureSettings", "core.text"] {
+            let label = toolset_popover_window_label(toolset);
+            assert!(effective_toolset_popover_focus_mode(
+                &label,
+                ToolsetPopoverFocusMode::Focus
+            ) == ToolsetPopoverFocusMode::Preserve);
         }
     }
 
