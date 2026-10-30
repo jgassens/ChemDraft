@@ -39,7 +39,7 @@ import {
  * deactivating (hidesOnDeactivate). The colour picker deliberately does NOT close on every commit
  * (it commits per RGB/hex keystroke); a flyout closes the moment you pick a command.
  */
-function hidePopoverWindow() {
+function hideNativePopoverWindow() {
   void import("@tauri-apps/api/window")
     .then(({ getCurrentWindow }) => getCurrentWindow().hide())
     .catch(() => undefined);
@@ -66,6 +66,11 @@ export function PalettePopoverWindow({
   // Set the moment this popover is dismissed (Escape, click-away, a chosen flyout command) so an
   // in-flight reveal chain cannot show it again after the user has closed it.
   const dismissedRef = useRef(false);
+  const keepWindowFocusRef = useRef(false);
+  const hidePopoverWindow = () => {
+    keepWindowFocusRef.current = false;
+    hideNativePopoverWindow();
+  };
   const closedBondStereoSessions = useRef(new Set<string>());
   // Where this open's top-left belongs (global logical). Re-asserted after every content-fit
   // resize: macOS resizes are bottom-anchored, so a height change after Rust's set_position
@@ -97,7 +102,7 @@ export function PalettePopoverWindow({
 
   useEffect(() => {
     const shell = shellRef.current;
-    if (shell) return installPaletteInputFocus(shell);
+    if (shell) return installPaletteInputFocus(shell, undefined, undefined, () => keepWindowFocusRef.current);
   }, []);
 
   useEffect(() => {
@@ -260,9 +265,11 @@ export function PalettePopoverWindow({
         return;
       }
       try {
-        // Only the button-only E/Z mouse open keeps the document's focus. Other
-        // popovers retain focusability, including the color picker's text inputs.
+        // Rust maps other popovers to Preserve; their fields lease the keyboard.
+        // Only a deliberate E/Z keyboard reveal owns focus without a field lease.
         const preserveFocus = content.kind === "flyout" && content.flyout.variant === "bondStereo" && !content.flyout.keyboardOpen;
+        keepWindowFocusRef.current = toolsetId === "core.bondStereo" && content.kind === "flyout" &&
+          content.flyout.variant === "bondStereo" && !!content.flyout.keyboardOpen;
         await showCurrentToolsetPopoverWindow(preserveFocus ? "preserve" : "focus");
         if (cancelled || dismissedRef.current) {
           // An older reveal may complete after a fresh open. Only hide the content
@@ -299,11 +306,12 @@ export function PalettePopoverWindow({
     })();
     return () => {
       cancelled = true;
+      keepWindowFocusRef.current = false;
       perfHook(() => perfProbe?.surfaceShown(perfShown, "no-op"));
       window.clearTimeout(scrubTimer);
       document.body.style.backgroundColor = "";
     };
-  }, [content, prewarm]);
+  }, [content, prewarm, toolsetId]);
 
   // Safety net for a cold user-initiated open: if content never arrives (e.g. the owning palette went
   // away mid-open), show anyway so the window can't get stuck invisible. Prewarmed windows are the

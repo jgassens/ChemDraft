@@ -110,12 +110,14 @@ async function listenNativePanelFocus(listener: (event: NativePanelFocusEvent) =
 }
 
 /** Palettes also accept text accessibility focus and release after control focus settles. Reports retain their
- * pointer-intent policy and ignore transient WebView2 DOM blur during native activation. */
+ * pointer-intent policy and ignore transient WebView2 DOM blur during native activation.
+ * keepWindowFocus exempts an intentional Focus-mode reveal from idle/pointer hand-back until hidden. */
 export function installPaletteInputFocus(
   shell: HTMLElement, platform: ShortcutPlatform = detectDesktopShortcutPlatform(),
-  menuShortcut: (event: KeyboardEvent) => boolean = () => false
+  menuShortcut: (event: KeyboardEvent) => boolean = () => false,
+  keepWindowFocus: () => boolean = () => false
 ): () => void {
-  return installPluginPanelInputFocus(shell, undefined, platform, undefined, true, menuShortcut);
+  return installPluginPanelInputFocus(shell, undefined, platform, undefined, true, menuShortcut, keepWindowFocus);
 }
 
 /** A trusted input click or deliberate report-text selection borrows the keyboard for a lease. */
@@ -125,7 +127,8 @@ export function installPluginPanelInputFocus(
   platform: ShortcutPlatform = detectDesktopShortcutPlatform(),
   subscribeFocus: (listener: (event: NativePanelFocusEvent) => void) => Promise<() => void> = listenNativePanelFocus,
   editableFocus = false,
-  menuShortcut: (event: KeyboardEvent) => boolean = () => false
+  menuShortcut: (event: KeyboardEvent) => boolean = () => false,
+  keepWindowFocus: () => boolean = () => false
 ): () => void {
   const editableControl = (target: EventTarget | null) => panelEditableControl(target, editableFocus);
   // Disabled controls cannot take DOM focus. Their palette is a keyboard sink instead.
@@ -252,6 +255,9 @@ export function installPluginPanelInputFocus(
     if (active && shell.contains(active) && !(preserveNativeChooser && nativeChooser)) active.blur();
   };
   const returnPointerFocus = (pointerBefore?: number): void => {
+    // A keyboard-opened E/Z popover owns focus for its whole reveal, without a
+    // control lease. Activation and button clicks must not undo that explicit intent.
+    if (keepWindowFocus()) return;
     // WebView2 can activate its parent despite NOACTIVATE/WM_MOUSEACTIVATE. Like the
     // toolbar command route, explicitly hand back after an ordinary interaction, even
     // when there was no lease to finish. The native command checks foreground ownership.

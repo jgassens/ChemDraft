@@ -7,6 +7,7 @@ import { sendBondStereoPopoverAction, sendPaletteCommand, type ToolsetPopoverDis
 import { useBondStereoPopover } from "./useBondStereoPopover";
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
 import { closeToolsetPopoverWindow, currentWindowLogicalPosition, openToolsetPopoverWindow, setToolsetPopoverContent } from "./window-manager";
+import type { NativePanelFocusEvent } from "./plugins/pluginPanelInputFocus";
 
 const native = vi.hoisted(() => ({
   content: undefined as undefined | ((payload: ToolsetPopoverContentPayload) => void),
@@ -16,11 +17,24 @@ const native = vi.hoisted(() => ({
   hide: vi.fn(async () => {}), focus: vi.fn(async () => {}), show: vi.fn(async () => {}),
   invoke: vi.fn(async (_command: string, _args?: Record<string, unknown>): Promise<unknown> => {}),
   fallbackShow: vi.fn(async () => {}),
+  platform: "macos" as "macos" | "windows",
+  notifyFocus: undefined as undefined | ((event: { payload: NativePanelFocusEvent }) => void),
   events: {} as Record<string, () => void>
 }));
 vi.mock("./window-manager/tauriEvents", () => ({
-  listenCurrentWindowEvent: vi.fn(async (name: string, handler: () => void) => { native.events[name] = handler; return () => { delete native.events[name]; }; }),
+  listenCurrentWindowEvent: vi.fn(async (name: string, handler: () => void) => {
+    if (name === "chemdraft://plugin-panel-focus") {
+      native.notifyFocus = handler;
+      return () => { native.notifyFocus = undefined; };
+    }
+    native.events[name] = handler;
+    return () => { delete native.events[name]; };
+  }),
   listenTauriEvent: vi.fn(async () => () => {})
+}));
+vi.mock("./keyboardShortcuts", async importOriginal => ({
+  ...await importOriginal<typeof import("./keyboardShortcuts")>(),
+  detectDesktopShortcutPlatform: () => native.platform
 }));
 vi.mock("./documentWorkflow", async importOriginal => ({
   ...await importOriginal<typeof import("./documentWorkflow")>(),
@@ -49,6 +63,8 @@ let container: HTMLDivElement, root: Root;
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   vi.clearAllMocks();
+  native.platform = "macos";
+  native.notifyFocus = undefined;
   native.invoke.mockReset().mockImplementation(async (command: string, args?: Record<string, unknown>) =>
     command === "register_plugin_panel_input_focus" ? "popover-page" : args?.editing);
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
@@ -169,7 +185,7 @@ describe("native popover focus transport", () => {
     } finally { delete host.__TAURI__; }
   });
 });
-afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.restoreAllMocks(); });
+afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.restoreAllMocks(); vi.useRealTimers(); });
 async function open(keyboardOpen = false) {
   await act(async () => root.render(<PalettePopoverWindow toolsetId="core.bondStereo" kind="flyout" prewarm />));
   expect(native.show).not.toHaveBeenCalled();
@@ -341,13 +357,79 @@ describe("open-bond native popover body", () => {
     expect(sendBondStereoPopoverAction).toHaveBeenCalledWith({ sessionId: "session-1", action: "close" });
     expect(native.hide).toHaveBeenCalledTimes(1);
   });
-  it("keyboard opens focus the first action and Tab wraps within the native window", async () => {
-    const buttons = await open(true);
-    expect(native.focus).toHaveBeenCalledTimes(1); expect(document.activeElement).toBe(buttons[0]);
-    await act(async () => buttons[0].dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true, cancelable: true })));
-    expect(document.activeElement).toBe(buttons[2]);
-    await act(async () => buttons[2].dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true })));
-    expect(document.activeElement).toBe(buttons[0]);
+  it.each(["macos", "windows"] as const)("keeps a keyboard E/Z reveal focused through native activation, Tab and Enter (%s)", async platform => {
+    vi.useFakeTimers();
+    native.platform = platform;
+    const host = window as typeof window & { __TAURI__?: unknown };
+    host.__TAURI__ = {};
+    let popoverOwnsKeyboard = false;
+    const invoke = native.invoke.getMockImplementation()!;
+    native.invoke.mockImplementation(async (command, args) => {
+      if (command === "set_plugin_panel_input_focus" && !args?.editing) {
+        // Model the native release: subsequent keys would reach the document.
+        popoverOwnsKeyboard = false;
+        (document.activeElement as HTMLElement)?.blur();
+      }
+      return invoke(command, args);
+    });
+    native.show.mockImplementationOnce(async () => {
+      popoverOwnsKeyboard = true;
+      expect(native.notifyFocus).toBeTypeOf("function");
+      // Activation can arrive during reveal, before setFocus() resolves.
+      native.notifyFocus!({ payload: { kind: "activated", generation: 0 } });
+    });
+    const handBacks = () => native.invoke.mock.calls.filter(([command, args]) =>
+      command === "set_plugin_panel_input_focus" && args?.editing === false);
+    const press = async (key: string, shiftKey = false) => {
+      const target = popoverOwnsKeyboard ? document.activeElement! : document.body;
+      const event = new KeyboardEvent("keydown", { key, shiftKey, bubbles: true, cancelable: true });
+      await act(async () => {
+        target.dispatchEvent(event);
+        // jsdom has no Enter-to-click default; model it only at the native key destination.
+        if (key === "Enter" && !event.defaultPrevented && target instanceof HTMLButtonElement) target.click();
+      });
+    };
+    try {
+      const buttons = await open(true);
+      await act(async () => { await vi.advanceTimersByTimeAsync(40); });
+      expect(handBacks()).toHaveLength(0);
+      expect(native.focus).toHaveBeenCalledTimes(1);
+      expect(document.activeElement).toBe(buttons[0]);
+      await press("Tab", true);
+      expect(document.activeElement).toBe(buttons[2]);
+      await press("Tab");
+      expect(document.activeElement).toBe(buttons[0]);
+      await press("Enter");
+      expect(sendBondStereoPopoverAction).toHaveBeenCalledExactlyOnceWith({ sessionId: "session-1", action: "geometry" });
+      expect(native.hide).toHaveBeenCalledTimes(1);
+      expect(handBacks()).toHaveLength(0);
+      // A late activation after hide must no longer carry the focused-reveal exemption.
+      await act(async () => {
+        native.notifyFocus!({ payload: { kind: "activated", generation: 0 } });
+        await vi.advanceTimersByTimeAsync(40);
+      });
+      expect(handBacks()).toHaveLength(platform === "windows" ? 1 : 0);
+      if (platform === "windows") expect(handBacks()[0][1]).toMatchObject({ returnFocus: true });
+    } finally { delete host.__TAURI__; }
+  });
+  it.each(["mouse E/Z", "colour"])("still returns idle Windows activation for a %s popover", async kind => {
+    vi.useFakeTimers();
+    native.platform = "windows";
+    const host = window as typeof window & { __TAURI__?: unknown };
+    host.__TAURI__ = {};
+    try {
+      if (kind === "mouse E/Z") await open();
+      else {
+        await act(async () => root.render(<PalettePopoverWindow toolsetId="core.art" prewarm />));
+        await act(async () => native.content?.({ toolsetId: "core.art", kind: "artColor" }));
+      }
+      expect(native.notifyFocus).toBeTypeOf("function");
+      await act(async () => {
+        native.notifyFocus!({ payload: { kind: "activated", generation: 0 } });
+        await vi.advanceTimersByTimeAsync(40);
+      });
+      expect(native.invoke).toHaveBeenCalledWith("set_plugin_panel_input_focus", expect.objectContaining({ editing: false, returnFocus: true }));
+    } finally { delete host.__TAURI__; }
   });
   it("does not let an older reveal hide a newly opened session", async () => {
     let finishReveal!: () => void;

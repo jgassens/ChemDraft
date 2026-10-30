@@ -884,8 +884,16 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
       const escape = await press(select, "Escape");
       await flush();
       expect(escape.defaultPrevented).toBe(true);
+      if (platform === "macos") {
+        // WebKit delivers the list-closing Escape to the page; R5 keeps its lease.
+        expect(document.activeElement).toBe(select);
+        expect(leases().map(([, args]) => args.editing)).toEqual([true]);
+        expect((await press(select, "Escape")).defaultPrevented).toBe(true);
+        await flush();
+      }
       expect(document.activeElement).not.toBe(select);
       expect(leases().map(([, args]) => args.editing)).toEqual([true, false]);
+      expect(leases().at(-1)![1]).toMatchObject({ returnFocus: true });
     } finally {
       uninstall();
     }
@@ -1084,8 +1092,16 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     if (kind !== "button") {
       await act(async () => control.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
       await flush();
+      if (platform === "macos" && kind === "select") {
+        // The pointer/Space opened the native list. Its first Escape only closes it.
+        expect(leases().map(([, args]) => args.editing)).toEqual([true]);
+        expect(document.activeElement).toBe(control);
+        expect((await press(control, "Escape")).defaultPrevented).toBe(true);
+        await flush();
+      }
       expect(leases().map(([, args]) => args.editing)).toEqual([true, false]);
       expect(document.activeElement).not.toBe(control);
+      expect(leases().at(-1)![1]).toMatchObject({ returnFocus: true });
     }
   });
 
@@ -1318,6 +1334,15 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     await clickControl(select);
     await press(select, "n"); // Native type-ahead keeps the lease.
     const event = await press(select, key);
+    if (platform === "macos" && key === "Escape") {
+      // Type-ahead does not close a pointer-opened list: R5 reserves this Escape
+      // for the list, and only the next page Escape requests document foreground.
+      await flush();
+      expect(event.defaultPrevented).toBe(true);
+      expect(leases().map(([, args]) => args.editing)).toEqual([true]);
+      expect(document.activeElement).toBe(select);
+      expect((await press(select, "Escape")).defaultPrevented).toBe(true);
+    }
     if (key === "Tab") {
       expect(event.defaultPrevented).toBe(false);
       await act(async () => select.blur()); // Browser's traversal out of the palette.
