@@ -176,6 +176,95 @@ describe("HTML table fixtures", () => {
   });
 });
 
+describe("real Windows Office 16 clipboard captures (2026-10-30)", () => {
+  const names = ["windows-real-excel", "windows-real-word-plain", "windows-real-word-repeat"];
+  const header = [["Solvent", "bp (°C)", "Density (g/mL)"]];
+  const wordRows = [
+    ["CH2Cl2", "39.6", "1.33"],
+    ["Ethanol", "78.37", "0.7914"],
+    ["Mercury", "356.7", "13.546"],
+    ["Water", "100", "1"]
+  ];
+  const excelRows = wordRows.map((row, index) => [row[0], row[1], ["1.33", "0.79", "13.55", "1.00"][index]]);
+
+  it.each(names)("reads the native reader's HTML and Unicode text (%s)", name => {
+    const html = fixture(`${name}.html`);
+    // parse_cf_html strips the CF_HTML envelope, retaining the document and markers.
+    expect(html).not.toMatch(/Version:|StartHTML:|StartFragment:/);
+    expect(html).toContain("<!--StartFragment-->");
+    expect(html).toContain("<!--EndFragment-->");
+    const result = expectOk(readHtmlAndTsv(html, fixture(`${name}.txt`)));
+    expect(result).toEqual({
+      ok: true,
+      source: "html",
+      spec: {
+        columns: [left, { align: "decimal" }, { align: "decimal" }],
+        caption: "Table 1. Solvent properties",
+        headerRows: header,
+        rows: name === "windows-real-excel" ? excelRows : wordRows,
+        footnotes: ["a Densities at 20 °C."]
+      },
+      warnings: []
+    });
+    expect(TableSpecSchema.parse(result.spec)).toEqual(result.spec);
+    let id = 0;
+    const built = buildTableObject(result.spec, { id: "real-table", x: 0, y: 0, newId: () => `real-${++id}` }).object;
+    expect(built.headerRowCount).toBe(1);
+    expect(built.rows).toHaveLength(5);
+    expect(built.rows.every(row => row.cells.length === 3)).toBe(true);
+  });
+
+  it("recovers only the formatted Density values actually exposed by CF_UNICODETEXT", () => {
+    const text = fixture("windows-real-excel.txt");
+    expect(text.split("\r\n").slice(2, 6).map(row => row.split("\t")[2]))
+      .toEqual(["1.33", "0.79", "13.55", "1.00"]);
+    const html = fixture("windows-real-excel.html");
+    expect(html.match(/>##<\/td>/g)).toHaveLength(4);
+    expect(html).not.toContain("x:num");
+    const result = expectOk(readHtml(html));
+    expect(result.spec.headerRows).toEqual(header);
+    expect(result.spec.rows.map(row => row[2])).toEqual(["##", "##", "##", "##"]);
+    expect(result.warnings).toEqual([3, 4, 5, 6].map(row =>
+      `The cell in row ${row}, column 3 contains Excel overflow text (#); `
+      + "its value was unavailable in x:num and the matching TSV, so the overflow text was kept."
+    ));
+  });
+
+  it("infers the plain Word header without treating its positional first-row marker as a header", () => {
+    const html = fixture("windows-real-word-plain.html");
+    expect(html).not.toMatch(/<thead\b|<th\b|<w:tblHeader\b/i);
+    expect(html).toContain("mso-yfti-firstrow:yes");
+    expect(expectOk(readHtml(html)).spec.headerRows).toEqual(header);
+  });
+
+  it("extracts the merged caption even though Word puts it inside thead", () => {
+    const html = fixture("windows-real-word-repeat.html");
+    const head = parseHtml(html).querySelector("thead")!;
+    expect(head.rows).toHaveLength(2);
+    expect(head.rows[0].cells).toHaveLength(1);
+    expect(head.rows[0].cells[0].colSpan).toBe(3);
+    const result = expectOk(readHtml(html));
+    expect(result.spec.caption).toBe("Table 1. Solvent properties");
+    expect(result.spec.headerRows).toEqual(header);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it.each(["data-first", "all-text"])("keeps a real plain Word table %s variant at zero headers", variant => {
+    const document = parseHtml(fixture("windows-real-word-plain.html"));
+    const rows = document.querySelectorAll("tr");
+    if (variant === "data-first") rows[1].remove();
+    else for (const row of Array.from(rows).slice(2, -1)) {
+      row.querySelectorAll("td")[1].textContent = "unknown";
+      row.querySelectorAll("td")[2].textContent = "unknown";
+    }
+    const result = expectOk(readHtml(document.documentElement.outerHTML));
+    expect(result.spec.headerRows).toBeUndefined();
+    expect(result.spec.caption).toBe("Table 1. Solvent properties");
+    expect(result.spec.footnotes).toEqual(["a Densities at 20 °C."]);
+    expect(result.warnings).toEqual([]);
+  });
+});
+
 describe("Excel overflow recovery", () => {
   const excelHeaders = ["Material", "MW (g/mol)", "Density (g/mL)", "Equiv.", "mmol", "Mass (g)", "Volume (mL)"];
   const textOf = (cell: string | { text: string }) => typeof cell === "string" ? cell : cell.text;
@@ -817,6 +906,18 @@ describe("table structure", () => {
     );
     expect(result.spec.headerRows).toEqual([["A", "B"]]);
     expect(result.spec.rows).toEqual([["1", "2"]]);
+  });
+
+  it.each([false, true])("never promotes a full-width thead caption (column headings in thead: %s)", headingsInHead => {
+    const caption = '<tr><td colspan=2>Caption</td></tr>';
+    const heading = '<tr><td>Material</td><td>State</td></tr>';
+    const result = expectOk(readHtml(`<table><thead>${caption}${headingsInHead ? heading : ""}</thead>`
+      + `<tbody>${headingsInHead ? "" : heading}<tr><td>ethanol</td><td>liquid</td></tr></tbody></table>`));
+    expect(result.spec.caption).toBe("Caption");
+    expect(result.spec.headerRows).toEqual(headingsInHead ? [["Material", "State"]] : undefined);
+    expect(result.spec.rows).toEqual(headingsInHead
+      ? [["ethanol", "liquid"]] : [["Material", "State"], ["ethanol", "liquid"]]);
+    expect(result.warnings).toEqual([]);
   });
 
   it("takes leading all-th rows as headers, and no others", () => {

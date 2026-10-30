@@ -181,6 +181,37 @@ describe("paste precedence and table building", () => {
       .toMatchObject({ ok: true, source: "tsv", warnings: [] });
   });
 
+  it.each(["windows-real-excel", "windows-real-word-plain", "windows-real-word-repeat"])(
+    "pastes the real Windows capture with its caption and one heading row (%s)", name => {
+      // Only formats consumed by table parsing are needed; Csv is advertised but never decoded.
+      // The fixtures already have parse_cf_html's envelope removal and Unicode-text decoding.
+      const raw = payload(
+        { type: "text/html", text: fixture(`${name}.html`) },
+        { type: "text/plain", text: fixture(`${name}.txt`) }
+      );
+      if (name === "windows-real-excel") raw.types.push("Csv", "Biff12");
+      const decision = tableClipboardPasteDecision(raw, parseHtml);
+      expect(decision.kind).toBe("table");
+      const parsed = readTableClipboardPaste(raw, parseHtml);
+      expect(decision).toEqual({ kind: "table", result: parsed });
+      if (!parsed?.ok) throw new Error("Expected real Windows Office table");
+      expect(parsed.source).toBe("html");
+      expect(parsed.spec.headerRows).toEqual([["Solvent", "bp (°C)", "Density (g/mL)"]]);
+      expect(parsed.spec.rows).toHaveLength(4);
+      expect(parsed.warnings).toEqual([]);
+      const built = pasteTableIntoDocument(createPhase4Document(), parsed, { x: 408, y: 528 }, {}, ids());
+      const table = built.document.pages[0].objects[0] as TableObject;
+      expect(table.headerRowCount).toBe(1);
+      expect(table.rows).toHaveLength(5);
+      expect(table.rows.every(row => row.cells.length === 3)).toBe(true);
+      expect(table.caption?.text).toBe("Table 1. Solvent properties");
+      expect(table.footnotes.map(note => note.text)).toEqual(["a Densities at 20 °C."]);
+      expect(table.rows.slice(1).map(row => row.cells[2].text)).toEqual(name === "windows-real-excel"
+        ? ["1.33", "0.79", "13.55", "1.00"] : ["1.33", "0.7914", "13.546", "1"]);
+      expect(built.warnings).toEqual([]);
+    }
+  );
+
   it.each(["word-office-notes", "excel-overflow-notes"])("recognizes the %s table despite incidental SMILES candidates", name => {
     const raw = payload(
       { type: "public.utf8-plain-text", text: fixture(`${name}.tsv`) },
