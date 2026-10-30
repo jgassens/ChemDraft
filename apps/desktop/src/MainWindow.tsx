@@ -1637,7 +1637,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.30.08.00-codex";
+const CURRENT_BUILD_STAMP = "10.30.08.01-codex";
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -3363,11 +3363,10 @@ export function MainWindow({
         future: []
       };
     });
-    setFileState((current) => {
-      const next = { ...current, dirty: true };
-      fileStateRef.current = next;
-      return next;
-    });
+    // Close/quit guards read the ref immediately, before React processes state updates.
+    const nextFileState = { ...fileStateRef.current, dirty: true };
+    fileStateRef.current = nextFileState;
+    setFileState(nextFileState);
   };
   const settleOtherPalettePreview = useCallback((commandId: string) => {
     const session = artStylePreviewRef.current ?? moleculeInspectorPreviewRef.current;
@@ -8670,6 +8669,7 @@ export function MainWindow({
   }, [installDocumentTab, newDocumentTab, snapshotDocumentTab]);
 
   const requestCloseDocumentTab = useCallback((id = activeDocumentTabIdRef.current) => {
+    settlePalettePreviewRef.current();
     if (closeTabPrompt) return;
     if (!documentTabsRef.current.some((tab) => tab.id === id)) return;
     if (id !== activeDocumentTabIdRef.current && !documentTabSnapshotsRef.current.get(id)?.file.dirty) {

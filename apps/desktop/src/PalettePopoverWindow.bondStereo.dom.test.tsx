@@ -15,7 +15,7 @@ const native = vi.hoisted(() => ({
   dismiss: undefined as undefined | ((payload?: ToolsetPopoverDismissPayload) => void),
   request: undefined as undefined | ((toolsetId: string) => void),
   hide: vi.fn(async () => {}), focus: vi.fn(async () => {}), show: vi.fn(async () => {}),
-  invoke: vi.fn(async (_command: string, _args?: Record<string, unknown>): Promise<unknown> => {}),
+  invoke: vi.fn(async (_command: string, _args?: Record<string, unknown>): Promise<unknown> => undefined),
   fallbackShow: vi.fn(async () => {}),
   platform: "macos" as "macos" | "windows",
   notifyFocus: undefined as undefined | ((event: { payload: NativePanelFocusEvent }) => void),

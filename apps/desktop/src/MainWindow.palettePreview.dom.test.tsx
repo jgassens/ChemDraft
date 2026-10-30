@@ -9,6 +9,7 @@ import { representativeMoleculeBondLengthPx } from "./moleculeInspectorModel";
 import { moleculeStructureBondColorCommandId, moleculeStructureBondLengthCommandId } from "./commands";
 import { PALETTE_COMMAND_CANCEL_EVENT, PALETTE_COMMAND_COMMIT_EVENT, PALETTE_COMMAND_PREVIEW_EVENT } from "./window-manager";
 import { MemoryStorage } from "./testSupport/memoryStorage";
+import { setNativePromptProvider, type NativePromptOptions } from "./nativePrompt";
 
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("@scena/react-ruler", () => ({ default: () => <canvas /> }));
@@ -135,10 +136,20 @@ describe.each(["macos", "windows"] as const)("palette preview interruption (%s)"
       }] });
       await act(async () => fileInput.dispatchEvent(new Event("change", { bubbles: true })));
     } else {
-      await command("document.closeTab");
-      const dialog = container.querySelector('[role="dialog"][aria-label="Save changes before closing?"]')!;
-      expect(dialog).not.toBeNull();
-      await act(async () => [...dialog.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Cancel")!.click());
+      let pendingPrompt: { prompt: NativePromptOptions; resolve: (id: string) => void } | undefined;
+      const restorePromptProvider = setNativePromptProvider(prompt => new Promise(resolve => {
+        pendingPrompt = { prompt, resolve };
+      }));
+      try {
+        await command("document.closeTab");
+        expect(pendingPrompt?.prompt.title).toBe("Save changes before closing?");
+        const { prompt, resolve } = pendingPrompt!;
+        const cancel = prompt.choices.find(choice => choice.label === "Cancel");
+        expect(cancel).toBeDefined();
+        await act(async () => resolve(cancel!.id));
+      } finally {
+        restorePromptProvider();
+      }
     }
     if (navigation !== "close") {
       expect(tabs()).toHaveLength(2);
