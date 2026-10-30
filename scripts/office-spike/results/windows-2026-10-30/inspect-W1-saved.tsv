@@ -1,0 +1,3 @@
+Container	Entry	Type	Bytes	SHA-256	Pixels / DPI	References	Carriers / errors / blob guess	Notes
+C:/dev/office-phase0/files/W1.docx	word/media/image1.png	png	18071	10ad18c75404d90f1b8a0941f3ef0e7d8767575fb8f740566fba6298558e0041	664x744 / 191.99859999999998x191.99859999999998	word/document.xml	 	
+C:/dev/office-phase0/files/W1.docx	word/media/image2.svg	svg	5889	0477ba5997b3228efc916a1656f43c018458f2936a0048d9f3aca7918935442b		word/document.xml	 	

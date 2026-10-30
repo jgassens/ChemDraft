@@ -1,0 +1,56 @@
+[
+    {
+        "id":  49279,
+        "name":  "PNG",
+        "file":  "49279-PNG.bin",
+        "size":  19783,
+        "sha256":  "6f1bb356d480f559f966227d8e92b8dd19e81c239a28b8ede265015ced85198e"
+    },
+    {
+        "id":  49468,
+        "name":  "image/png",
+        "file":  "49468-image_png.bin",
+        "size":  19783,
+        "sha256":  "6f1bb356d480f559f966227d8e92b8dd19e81c239a28b8ede265015ced85198e"
+    },
+    {
+        "id":  17,
+        "name":  "CF_DIBV5",
+        "file":  "17-CF_DIBV5.bin",
+        "size":  1610524,
+        "sha256":  "8b45afefb1e634622a5f61b7cbf6c53d7eef049228203bb7ea4255ee7df9f971"
+    },
+    {
+        "id":  49491,
+        "name":  "image/svg+xml",
+        "file":  "49491-image_svg_xml.bin",
+        "size":  61453,
+        "sha256":  "004735909a71ea476e65850f0327df7b4365a73a40d3082526cf245006c2e731"
+    },
+    {
+        "id":  49458,
+        "name":  "application/pdf",
+        "file":  "49458-application_pdf.bin",
+        "size":  8807,
+        "sha256":  "e71aaa73cb78871a1bb198dbbed852ff7c2d3e5ac21b18219b11a7392e66ff68"
+    },
+    {
+        "id":  49651,
+        "name":  "application/x-chemdraft-selection+json",
+        "file":  "49651-application_x-chemdraft-selection_json.bin",
+        "size":  22225,
+        "sha256":  "312ab3a46e5162490ebad1e0ddfc14c57fdabef33d376007740cb673072a40af"
+    },
+    {
+        "id":  2,
+        "name":  "CF_BITMAP",
+        "note":  "Handle-based format, not HGLOBAL"
+    },
+    {
+        "id":  8,
+        "name":  "CF_DIB",
+        "file":  "8-CF_DIB.bin",
+        "size":  1610452,
+        "sha256":  "c8e546ef130d739dacfff1623c7395555678950a270ca3fda8e76d52e80ea9c5"
+    }
+]

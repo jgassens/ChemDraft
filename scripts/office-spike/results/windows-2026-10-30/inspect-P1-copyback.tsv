@@ -1,0 +1,20 @@
+Container	Entry	Type	Bytes	SHA-256	Pixels / DPI	References	Carriers / errors / blob guess	Notes
+C:\dev\office-phase0\dumps\P1-reopened\14-CF_ENHMETAFILE.bin	14-CF_ENHMETAFILE.bin	emf	42276	378afa68116e728ed65ae8f3aca7b79580ecd96648b022846d7feb0a48445788			 	
+C:\dev\office-phase0\dumps\P1-reopened\17-CF_DIBV5.bin	17-CF_DIBV5.bin	other	494152	598cee3a1dcdaa6c1c760957c257cadf95e1a9b337d9f918c38c922704db08a1			unknown blob (not a ZIP) 7c0000004c0100007401000001002000	
+C:\dev\office-phase0\dumps\P1-reopened\49161-DataObject.bin	49161-DataObject.bin	other	8	329eccfd3ec168ab3edf6472fb6031b9be05e2a94898146946bcc5223dda848a			unknown blob (not a ZIP) 0606200000000000	
+C:\dev\office-phase0\dumps\P1-reopened\49166-Object_Descriptor.bin	49166-Object_Descriptor.bin	other	148	6dd6226456f9b2d93183d9f04a8ef66eb533c74e60a5cfecbfda0e291c4df0b8			unknown blob (not a ZIP) 94000000000000000000000000000000	
+C:\dev\office-phase0\dumps\P1-reopened\49171-Ole_Private_Data.bin	49171-Ole_Private_Data.bin	other	888	e67f8a6dc818d482251da57f60bd2e5a955dc7d7075d6141a6632ceaa48165f6			unknown blob (not a ZIP) 00000000780300000100000011000000	
+C:\dev\office-phase0\dumps\P1-reopened\49277-GIF.bin	49277-GIF.bin	gif	3702	410a40b79ffa06b73f7fa2e597e8e0caffe9ed2d0efcc25478996b16c94d48f0			 	
+C:\dev\office-phase0\dumps\P1-reopened\49278-JFIF.bin	49278-JFIF.bin	jpeg	12327	83e97efd39658dea50e46869d2e194d321087885c1097c878e1e576a3026c944			 	
+C:\dev\office-phase0\dumps\P1-reopened\49279-PNG.bin	49279-PNG.bin	png	14082	ce4231af467fe9c89aa3070557a27c2ea7b80f8b30157a2ca6d09b28f96493ee	518x581 / 149.987x149.987		 	
+C:\dev\office-phase0\dumps\P1-reopened\49331-Preferred_DropEffect.bin	49331-Preferred_DropEffect.bin	other	4	df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119			unknown blob (not a ZIP) 00000000	
+C:\dev\office-phase0\dumps\P1-reopened\49336-InShellDragLoop.bin	49336-InShellDragLoop.bin	other	4	df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119			unknown blob (not a ZIP) 00000000	
+C:\dev\office-phase0\dumps\P1-reopened\49491-image_svg_xml.bin	49491-image_svg_xml.bin	svg	5889	0477ba5997b3228efc916a1656f43c018458f2936a0048d9f3aca7918935442b			 	
+C:\dev\office-phase0\dumps\P1-reopened\49653-Web_Custom_Format_Map.bin	49653-Web_Custom_Format_Map.bin	other	35	bc09782a460fd26e3f0eb90aef2c85c3c478bed3771a630cc19e97ab471f7e5e			unknown blob (not a ZIP) 7b227070742f736861706573223a2257	
+C:\dev\office-phase0\dumps\P1-reopened\49689-PowerPoint_12.0_Internal_Shapes.bin	49689-PowerPoint_12.0_Internal_Shapes.bin	other	8	a241a8d341e182f5c82ca4d1750cf6a85ed7f8c103a8f292cac151c3179335a4			unknown blob (not a ZIP) c8c7851a41010000	
+C:\dev\office-phase0\dumps\P1-reopened\49701-application_x-moz-custom-clipdata.bin	49701-application_x-moz-custom-clipdata.bin	other	23510	be347f62c3a16ea6869171fb713a3dc644d6a20b6af760c347ad4592f969e573			unknown blob (not a ZIP) 00000001000000147000700074002f00	
+C:\dev\office-phase0\dumps\P1-reopened\49712-Web_Custom_Format0.bin	49712-Web_Custom_Format0.bin	other	23442	bca0f1bbd4b4269ad261c6ebb4d797ddae9f9c3c37d7cc2fd0c958afdd82d01b			unknown blob (not a ZIP) 7b002200630063007000690064002200	
+C:\dev\office-phase0\dumps\P1-reopened\49784-PowerPoint_12.0_Internal_Color_Scheme.bin	49784-PowerPoint_12.0_Internal_Color_Scheme.bin	other	8	4d3435a8daabbd1ce06c2a2a18794168f5c897ef5b7f64ad577e99038c90f119			unknown blob (not a ZIP) b088851a41010000	
+C:\dev\office-phase0\dumps\P1-reopened\49812-Art__GVML_ClipFormat.bin	clipboard/media/image1.svg	svg	5889	0477ba5997b3228efc916a1656f43c018458f2936a0048d9f3aca7918935442b		clipboard/drawings/drawing1.xml	 	
+C:\dev\office-phase0\dumps\P1-reopened\49839-PowerPoint_12.0_Internal_Theme.bin	49839-PowerPoint_12.0_Internal_Theme.bin	other	8	4eae26fbb1962c82cb0bad70f1948f9f0f71c6ce06f86c74467816f5143f0658			unknown blob (not a ZIP) a888851a41010000	
+C:\dev\office-phase0\dumps\P1-reopened\8-CF_DIB.bin	8-CF_DIB.bin	other	494068	b8c9b95da5ca0276588820ef79bcd0a54875dac4e61141603fcb4c5db55b0c7d			unknown blob (not a ZIP) 280000004c0100007401000001002000	

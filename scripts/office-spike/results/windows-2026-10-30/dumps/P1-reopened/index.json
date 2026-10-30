@@ -1,0 +1,145 @@
+[
+    {
+        "id":  49161,
+        "name":  "DataObject",
+        "file":  "49161-DataObject.bin",
+        "size":  8,
+        "sha256":  "329eccfd3ec168ab3edf6472fb6031b9be05e2a94898146946bcc5223dda848a"
+    },
+    {
+        "id":  49331,
+        "name":  "Preferred DropEffect",
+        "file":  "49331-Preferred_DropEffect.bin",
+        "size":  4,
+        "sha256":  "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119"
+    },
+    {
+        "id":  49336,
+        "name":  "InShellDragLoop",
+        "file":  "49336-InShellDragLoop.bin",
+        "size":  4,
+        "sha256":  "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119"
+    },
+    {
+        "id":  49166,
+        "name":  "Object Descriptor",
+        "file":  "49166-Object_Descriptor.bin",
+        "size":  148,
+        "sha256":  "6dd6226456f9b2d93183d9f04a8ef66eb533c74e60a5cfecbfda0e291c4df0b8"
+    },
+    {
+        "id":  49839,
+        "name":  "PowerPoint 12.0 Internal Theme",
+        "file":  "49839-PowerPoint_12.0_Internal_Theme.bin",
+        "size":  8,
+        "sha256":  "4eae26fbb1962c82cb0bad70f1948f9f0f71c6ce06f86c74467816f5143f0658"
+    },
+    {
+        "id":  49784,
+        "name":  "PowerPoint 12.0 Internal Color Scheme",
+        "file":  "49784-PowerPoint_12.0_Internal_Color_Scheme.bin",
+        "size":  8,
+        "sha256":  "4d3435a8daabbd1ce06c2a2a18794168f5c897ef5b7f64ad577e99038c90f119"
+    },
+    {
+        "id":  49689,
+        "name":  "PowerPoint 12.0 Internal Shapes",
+        "file":  "49689-PowerPoint_12.0_Internal_Shapes.bin",
+        "size":  8,
+        "sha256":  "a241a8d341e182f5c82ca4d1750cf6a85ed7f8c103a8f292cac151c3179335a4"
+    },
+    {
+        "id":  49712,
+        "name":  "Web Custom Format0",
+        "file":  "49712-Web_Custom_Format0.bin",
+        "size":  23442,
+        "sha256":  "bca0f1bbd4b4269ad261c6ebb4d797ddae9f9c3c37d7cc2fd0c958afdd82d01b"
+    },
+    {
+        "id":  49653,
+        "name":  "Web Custom Format Map",
+        "file":  "49653-Web_Custom_Format_Map.bin",
+        "size":  35,
+        "sha256":  "bc09782a460fd26e3f0eb90aef2c85c3c478bed3771a630cc19e97ab471f7e5e"
+    },
+    {
+        "id":  49701,
+        "name":  "application/x-moz-custom-clipdata",
+        "file":  "49701-application_x-moz-custom-clipdata.bin",
+        "size":  23510,
+        "sha256":  "be347f62c3a16ea6869171fb713a3dc644d6a20b6af760c347ad4592f969e573"
+    },
+    {
+        "id":  49812,
+        "name":  "Art::GVML ClipFormat",
+        "file":  "49812-Art__GVML_ClipFormat.bin",
+        "size":  8660,
+        "sha256":  "a55870b0a2cee100926a8b5cf6d68c13290e2e5964ef11916738daa87e353be1"
+    },
+    {
+        "id":  49491,
+        "name":  "image/svg+xml",
+        "file":  "49491-image_svg_xml.bin",
+        "size":  5889,
+        "sha256":  "0477ba5997b3228efc916a1656f43c018458f2936a0048d9f3aca7918935442b"
+    },
+    {
+        "id":  49279,
+        "name":  "PNG",
+        "file":  "49279-PNG.bin",
+        "size":  14082,
+        "sha256":  "ce4231af467fe9c89aa3070557a27c2ea7b80f8b30157a2ca6d09b28f96493ee"
+    },
+    {
+        "id":  49278,
+        "name":  "JFIF",
+        "file":  "49278-JFIF.bin",
+        "size":  12327,
+        "sha256":  "83e97efd39658dea50e46869d2e194d321087885c1097c878e1e576a3026c944"
+    },
+    {
+        "id":  49277,
+        "name":  "GIF",
+        "file":  "49277-GIF.bin",
+        "size":  3702,
+        "sha256":  "410a40b79ffa06b73f7fa2e597e8e0caffe9ed2d0efcc25478996b16c94d48f0"
+    },
+    {
+        "id":  2,
+        "name":  "CF_BITMAP",
+        "note":  "Handle-based format, not HGLOBAL"
+    },
+    {
+        "id":  14,
+        "name":  "CF_ENHMETAFILE",
+        "file":  "14-CF_ENHMETAFILE.bin",
+        "size":  42276,
+        "sha256":  "378afa68116e728ed65ae8f3aca7b79580ecd96648b022846d7feb0a48445788"
+    },
+    {
+        "id":  3,
+        "name":  "CF_METAFILEPICT",
+        "note":  "Handle-based format, not HGLOBAL"
+    },
+    {
+        "id":  49171,
+        "name":  "Ole Private Data",
+        "file":  "49171-Ole_Private_Data.bin",
+        "size":  888,
+        "sha256":  "e67f8a6dc818d482251da57f60bd2e5a955dc7d7075d6141a6632ceaa48165f6"
+    },
+    {
+        "id":  8,
+        "name":  "CF_DIB",
+        "file":  "8-CF_DIB.bin",
+        "size":  494068,
+        "sha256":  "b8c9b95da5ca0276588820ef79bcd0a54875dac4e61141603fcb4c5db55b0c7d"
+    },
+    {
+        "id":  17,
+        "name":  "CF_DIBV5",
+        "file":  "17-CF_DIBV5.bin",
+        "size":  494152,
+        "sha256":  "598cee3a1dcdaa6c1c760957c257cadf95e1a9b337d9f918c38c922704db08a1"
+    }
+]

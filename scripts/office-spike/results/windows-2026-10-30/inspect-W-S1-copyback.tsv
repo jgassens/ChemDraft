@@ -1,0 +1,12 @@
+Container	Entry	Type	Bytes	SHA-256	Pixels / DPI	References	Carriers / errors / blob guess	Notes
+C:\dev\office-phase0\dumps\W-S1-reopened\14-CF_ENHMETAFILE.bin	14-CF_ENHMETAFILE.bin	emf	3295912	f2335a652c8912461239f889fea98e9d470336d2a8e404dc29af2bc5dfe41f92			 	Byte scan PNG at 456: missing terminator within 20 MB
+C:\dev\office-phase0\dumps\W-S1-reopened\17-CF_DIBV5.bin	17-CF_DIBV5.bin	other	1610536	f800a74ce4678d3e2fd31c2b579448907826175a4f2c0024189fce5f5120d1bb			unknown blob (not a ZIP) 7c000000580200009f02000001002000	
+C:\dev\office-phase0\dumps\W-S1-reopened\49161-DataObject.bin	49161-DataObject.bin	other	8	4eb300e99260e39e0a22438018c6d8796fc9d93d7bcc826cc125417b479bbbac			unknown blob (not a ZIP) 96003f0000000000	
+C:\dev\office-phase0\dumps\W-S1-reopened\49166-Object_Descriptor.bin	49166-Object_Descriptor.bin	other	148	cdbf4fde7aaa5f8fdede4ae444e8b4230bf6930591f7b816a270cbcad9565fd9			unknown blob (not a ZIP) 940000009b4c75f4f564404b8af46797	
+C:\dev\office-phase0\dumps\W-S1-reopened\49171-Ole_Private_Data.bin	49171-Ole_Private_Data.bin	other	504	ea341d2eb17b87e9c00e264b2437a0ce27b15353197aec1fd4b21e9aed7f691c			unknown blob (not a ZIP) 00000000f80100000100000009000000	
+C:\dev\office-phase0\dumps\W-S1-reopened\49277-GIF.bin	49277-GIF.bin	gif	7044	2bd8d2ec24a8d5fc34eba2c757f055b182add42f8cb430404a6fe263c4843041			 	
+C:\dev\office-phase0\dumps\W-S1-reopened\49278-JFIF.bin	49278-JFIF.bin	jpeg	26115	469a722dabe9fffb65c768dffd7825db5d78a70c68ba1539141060ce1bec60ff			 	
+C:\dev\office-phase0\dumps\W-S1-reopened\49279-PNG.bin	49279-PNG.bin	png	50859	1189563b637d5835150eca3b80693fe2c23edadb08ac74d10598b16f6e4881cd	938x1048 / 149.987x149.987		 	
+C:\dev\office-phase0\dumps\W-S1-reopened\49491-image_svg_xml.bin	49491-image_svg_xml.bin	svg	26718	4559c7da3d835607213d1f780535cc851516337214fb56f907d9d97930413b80			 	
+C:\dev\office-phase0\dumps\W-S1-reopened\49812-Art__GVML_ClipFormat.bin	clipboard/media/image1.png	png	19783	6f1bb356d480f559f966227d8e92b8dd19e81c239a28b8ede265015ced85198e	600x671 / unspecified	clipboard/drawings/drawing1.xml	png zTXt: valid; expect=true	
+C:\dev\office-phase0\dumps\W-S1-reopened\8-CF_DIB.bin	8-CF_DIB.bin	other	1610452	80b92406bd5857958275836052dd9c8d10140a1c9cfb7a5e76cecee02c4e672b			unknown blob (not a ZIP) 28000000580200009f02000001002000	

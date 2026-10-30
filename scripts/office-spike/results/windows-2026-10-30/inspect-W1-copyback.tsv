@@ -1,0 +1,14 @@
+Container	Entry	Type	Bytes	SHA-256	Pixels / DPI	References	Carriers / errors / blob guess	Notes
+C:\dev\office-phase0\dumps\W1-reopened\14-CF_ENHMETAFILE.bin	14-CF_ENHMETAFILE.bin	emf	1069068	52694c0fbef6c627e5ee04ba48552781d92fc469377c7cc05e9b101464ac6708			 	
+C:\dev\office-phase0\dumps\W1-reopened\14-CF_ENHMETAFILE.bin	14-CF_ENHMETAFILE.bin > byte scan at 436 (PNG; found by byte scan)	png	17314	9ce936572dcd1aaf1bc60d69803cdecdf043e6dc171117cef311c85b1c8bf256	664x744 / 191.99859999999998x191.99859999999998		 	
+C:\dev\office-phase0\dumps\W1-reopened\17-CF_DIBV5.bin	17-CF_DIBV5.bin	other	494152	8abfaa538601a254e6800a40cde4a91014ca501910d69cc42847bdebca9d9a04			unknown blob (not a ZIP) 7c0000004c0100007401000001002000	
+C:\dev\office-phase0\dumps\W1-reopened\49161-DataObject.bin	49161-DataObject.bin	other	8	4eb300e99260e39e0a22438018c6d8796fc9d93d7bcc826cc125417b479bbbac			unknown blob (not a ZIP) 96003f0000000000	
+C:\dev\office-phase0\dumps\W1-reopened\49166-Object_Descriptor.bin	49166-Object_Descriptor.bin	other	148	cdbf4fde7aaa5f8fdede4ae444e8b4230bf6930591f7b816a270cbcad9565fd9			unknown blob (not a ZIP) 940000009b4c75f4f564404b8af46797	
+C:\dev\office-phase0\dumps\W1-reopened\49171-Ole_Private_Data.bin	49171-Ole_Private_Data.bin	other	504	958a188316acc7895e6d30dac49d1ea1c07565d1b75446fd9ef26535f226f5aa			unknown blob (not a ZIP) 00000000f80100000100000009000000	
+C:\dev\office-phase0\dumps\W1-reopened\49277-GIF.bin	49277-GIF.bin	gif	3702	410a40b79ffa06b73f7fa2e597e8e0caffe9ed2d0efcc25478996b16c94d48f0			 	
+C:\dev\office-phase0\dumps\W1-reopened\49278-JFIF.bin	49278-JFIF.bin	jpeg	11712	7fbdd694e7eaee5e3accca51a2fc182ab981034056740d4ef53d75e4aa66e80a			 	
+C:\dev\office-phase0\dumps\W1-reopened\49279-PNG.bin	49279-PNG.bin	png	14239	02e7c4d4424b7310665bf6dd199c531b6a51549ebecbd5b3bc980ea3869d44fd	519x581 / 149.987x149.987		 	
+C:\dev\office-phase0\dumps\W1-reopened\49491-image_svg_xml.bin	49491-image_svg_xml.bin	svg	5889	0477ba5997b3228efc916a1656f43c018458f2936a0048d9f3aca7918935442b			 	
+C:\dev\office-phase0\dumps\W1-reopened\49812-Art__GVML_ClipFormat.bin	clipboard/media/image1.png	png	18071	10ad18c75404d90f1b8a0941f3ef0e7d8767575fb8f740566fba6298558e0041	664x744 / 191.99859999999998x191.99859999999998	clipboard/drawings/drawing1.xml	 	
+C:\dev\office-phase0\dumps\W1-reopened\49812-Art__GVML_ClipFormat.bin	clipboard/media/image2.svg	svg	5889	0477ba5997b3228efc916a1656f43c018458f2936a0048d9f3aca7918935442b		clipboard/drawings/drawing1.xml	 	
+C:\dev\office-phase0\dumps\W1-reopened\8-CF_DIB.bin	8-CF_DIB.bin	other	494068	78b8368d59ca285c892a05e6eb1af01a312a987e22bb8df8049179da294f2876			unknown blob (not a ZIP) 280000004c0100007401000001002000	
