@@ -624,11 +624,13 @@ const MENU_COMMAND_IDS: &[&str] = &[
 ];
 
 /// A plugin's contributed menu item, synced from the webview (which owns the plugin registry) so the
-/// native menu can include it. `id` is the `plugin.*` command id, routed back by prefix (ADR-0016).
+/// native menu can include it. Plugin ids route by prefix; core items opt in explicitly (ADR-0016).
 #[derive(Clone, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PluginMenuItemInput {
     id: String,
+    #[serde(default)]
+    core_routed: bool,
     label: String,
     #[serde(default = "default_plugin_menu_location")]
     location: String,
@@ -642,6 +644,12 @@ fn default_plugin_menu_location() -> String {
 
 fn default_menu_item_enabled() -> bool {
     true
+}
+
+fn is_core_routed_dynamic_menu_command(command_id: &str, items: &[PluginMenuItemInput]) -> bool {
+    items
+        .iter()
+        .any(|item| item.core_routed && item.id == command_id)
 }
 
 fn plugin_menu_items_in<'a>(
@@ -1009,7 +1017,9 @@ pub fn run() {
                 close_key_window(app);
                 return;
             }
-            if is_routed_menu_command(command_id) {
+            if is_routed_menu_command(command_id)
+                || is_core_routed_dynamic_menu_command(command_id, &current_plugin_menu_items(app))
+            {
                 if let Err(error) = emit_menu_command(app, command_id) {
                     eprintln!("Could not route ChemDraft menu command {command_id}: {error}");
                 }
@@ -6171,7 +6181,7 @@ impl Default for ViewMenuState {
 
 /// Sync the webview's plugin menu items into the native menu (ADR-0016): store them, then
 /// rebuild + reinstall the app menu so they appear natively. Clicks route back by the `plugin.`
-/// prefix through the existing native→webview command bridge.
+/// prefix or an explicit `core_routed` flag through the existing native→webview command bridge.
 #[tauri::command]
 fn sync_plugin_menu_items(
     app: tauri::AppHandle,
@@ -9289,18 +9299,21 @@ mod tests {
         let items = vec![
             PluginMenuItemInput {
                 id: "plugin.first".to_owned(),
+                core_routed: false,
                 label: "First".to_owned(),
                 location: "plugins".to_owned(),
                 enabled: true,
             },
             PluginMenuItemInput {
                 id: "plugin.analyze".to_owned(),
+                core_routed: false,
                 label: "Analyze".to_owned(),
                 location: "analyze".to_owned(),
                 enabled: true,
             },
             PluginMenuItemInput {
                 id: "plugin.second".to_owned(),
+                core_routed: false,
                 label: "Second".to_owned(),
                 location: "plugins".to_owned(),
                 enabled: false,
@@ -9335,6 +9348,31 @@ mod tests {
     #[test]
     fn plugin_manager_menu_command_is_routed() {
         expect_true(is_routed_menu_command("plugins.manage"));
+    }
+
+    #[test]
+    fn dynamic_core_menu_commands_require_explicit_routing() {
+        let mut item = PluginMenuItemInput {
+            id: "plugins.showUpdates".to_owned(),
+            core_routed: false,
+            label: "Plugin Updates Available (1)…".to_owned(),
+            location: "plugins".to_owned(),
+            enabled: true,
+        };
+        assert!(!is_routed_menu_command(&item.id));
+        assert!(!is_core_routed_dynamic_menu_command(
+            &item.id,
+            std::slice::from_ref(&item)
+        ));
+        item.core_routed = true;
+        assert!(is_core_routed_dynamic_menu_command(
+            &item.id,
+            std::slice::from_ref(&item)
+        ));
+        assert!(!is_core_routed_dynamic_menu_command(
+            "plugins.other",
+            &[item]
+        ));
     }
 
     #[test]

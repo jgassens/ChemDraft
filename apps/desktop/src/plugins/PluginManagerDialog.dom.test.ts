@@ -266,6 +266,7 @@ function Harness({ runtime, onClose, onPluginsChanged, ...installProps }: {
   onInstallPackage?: (inspection: PluginPackageInspection) => Promise<void>;
   onPrepareOfficialPluginInstall?: (pluginId: string) => Promise<PreparedOfficialPluginInstall>;
   onUninstallPlugin?: (pluginId: string) => Promise<void>;
+  cachedPluginUpdateResults?: readonly PluginUpdateCheckResult[];
   onCheckPluginUpdates?: () => Promise<readonly PluginUpdateCheckResult[]>;
   onPreparePluginUpdate?: (offer: PluginUpdateOffer) => Promise<PreparedPluginUpdate>;
   onUpdatePlugin?: (prepared: PreparedPluginUpdate) => Promise<void>;
@@ -1445,6 +1446,53 @@ describe("PluginManagerDialog", () => {
     await vi.waitFor(() => expect(revoke).toHaveBeenCalledWith("claude", installedPluginId));
     await vi.waitFor(() => expect(document.querySelector('[data-testid="plugin-external-tool-access"]')).toBeNull());
     expect(list).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows cached results immediately and receives later automatic results after a manual result, keeping manual-only failures", async () => {
+    const runtime = createRuntime();
+    const offer = updateOffer();
+    const failedPluginId = "org.chemdraft.test.failed";
+    const check = vi.fn(async (): Promise<readonly PluginUpdateCheckResult[]> => [{
+      status: "available", pluginId: installedPluginId, installedVersion: installedManifest.version,
+      latestVersion: offer.version, offer
+    }, {
+      status: "failed", pluginId: failedPluginId, installedVersion: installedManifest.version,
+      message: "Manual source is offline"
+    }]);
+    const prepare = vi.fn(async () => preparedUpdate());
+    const renderDialog = (cachedPluginUpdateResults: readonly PluginUpdateCheckResult[]) =>
+      createElement(Harness, {
+        runtime, onClose: vi.fn(), onPluginsChanged: vi.fn(), installedPlugins: [
+          installedEntry(), installedEntry({ ...installedManifest, id: failedPluginId, name: "Failed Test Plugin" })
+        ],
+        cachedPluginUpdateResults, onCheckPluginUpdates: check,
+        onPreparePluginUpdate: prepare, onUpdatePlugin: vi.fn(async () => {})
+      });
+    mount(renderDialog([{
+      status: "available", pluginId: installedPluginId, installedVersion: installedManifest.version,
+      latestVersion: offer.version, offer
+    }]));
+    await act(async () => {});
+    expect(document.querySelector('[data-update-status="available"]')?.textContent).toContain("Version 2.1.0 is available.");
+    expect(document.querySelector<HTMLButtonElement>('[data-action="review-plugin-update"]')?.disabled).toBe(false);
+    expect(check).not.toHaveBeenCalled();
+    expect(prepare).not.toHaveBeenCalled();
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[data-action="check-plugin-updates"]')!.click();
+    });
+    expect(check).toHaveBeenCalledOnce();
+    expect(document.querySelector('[data-update-status="available"]')).not.toBeNull();
+    expect(document.querySelector('[data-update-status="failed"]')?.textContent).toContain("Manual source is offline");
+    await act(async () => {
+      root!.render(renderDialog([{
+        status: "upToDate", pluginId: installedPluginId, installedVersion: installedManifest.version,
+        latestVersion: installedManifest.version
+      }]));
+    });
+    expect(document.querySelector('[data-update-status="available"]')).toBeNull();
+    expect(document.querySelector('[data-update-status="up-to-date"]')?.textContent).toContain("Up to date");
+    expect(document.querySelector('[data-update-status="failed"]')?.textContent).toContain("Manual source is offline");
+    expect(check).toHaveBeenCalledOnce();
   });
 
   it("waits for the installed-plugin catalog before enabling package and update actions", async () => {
