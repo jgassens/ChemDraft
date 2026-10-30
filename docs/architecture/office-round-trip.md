@@ -123,35 +123,43 @@ so it shows the bitmap. The test PDF's page is 612×792 points, making the bitma
 in the one file measured. A picture pasted on macOS therefore appears on Windows as a 72 dpi
 bitmap in this measurement, and will look soft when zoomed or printed.
 
-## Decisions supported by the measurements
+## Decisions
+
+On 2026-10-30, the owner decided that ChemDraft will give Office a high-DPI PNG with a zTXt or iTXt
+carrier on both platforms: documents travel between macOS and Windows, where the measured PDF pasted
+on macOS appeared as Office for Mac's 72 dpi fallback bitmap.
 
 macOS:
 
-1. Rely on PDF with the drawing as an embedded file for Word and PowerPoint. Keep the PNG carrier,
-   which also survives, and keep writing SVG for other apps.
-2. For paste-back, check each source in this order: `com.adobe.pdf`, then GVML zip media, then RTF picture data, then PNG. Validate the carrier found, and fall through to the next source when a carrier is missing or fails validation.
-3. Use the planned Office add-in to replace a picture with an edited version; paste-over adds a picture
+1. ChemDraft's Copy gives Office a high-DPI PNG with a zTXt or iTXt carrier.
+2. Copy does not offer `com.adobe.pdf` to Office: when PDF and PNG are both offered, both apps take
+   the PDF, which showed on Windows as a 72 dpi bitmap in the measured file. PDF stays available
+   through Copy As.
+3. SVG may still be written for other apps; Office for Mac pasted nothing from SVG alone. Whether it
+   takes the PNG when PNG and SVG are offered together without PDF is still to be confirmed.
+4. For paste-back, check each source in this order: `com.adobe.pdf`, then GVML zip media, then RTF
+   picture data, then PNG. Validate the carrier found, and fall through to the next source when a
+   carrier is missing or fails validation. GVML media can be a PNG or an EMF wrapping a PDF, so the
+   reader must handle both; documents made with the earlier PDF route still need reading.
+5. Use the planned Office add-in to replace a picture with an edited version; paste-over adds a picture
    in both apps.
 
-Windows (proposed; pending the owner's decision):
+Windows:
 
-1. Word and PowerPoint take SVG over PNG when both are offered, and drop the carrier. The order of
-   formats does not change this: COMBINED-WIN wrote PNG before SVG. So on Windows, ChemDraft's Copy
-   can give Office an editable PNG or a vector SVG, not both. Proposed: do not offer `image/svg+xml`
-   to Office on Windows, and rely on PNG with a zTXt or iTXt carrier, which both apps keep
-   byte-identical at its stated resolution.
-2. Windows Office ignores PDF and `image/png`.
-3. For paste-back, check each source in order: GVML zip media, EMF+ image objects in
+1. ChemDraft's Copy gives Office a high-DPI PNG in the registered `PNG` format with a zTXt or iTXt
+   carrier, plus a size-capped CF_DIBV5 for older apps. It does not offer `image/svg+xml` or
+   `application/pdf` to Office: both
+   apps take SVG over PNG and drop the carrier (the order of formats does not change this), and they
+   ignore PDF and `image/png`. Vector SVG stays available through Copy As.
+2. For paste-back, check each source in order: GVML zip media, EMF+ image objects in
    `CF_ENHMETAFILE`, then the top-level PNG. Validate the carrier found and fall through when it is
-   missing or invalid. GVML zip media can be either the PNG (a picture pasted on Windows) or the
-   macOS EMF wrapping the PDF (a picture pasted on macOS), so the reader must handle both.
-   PowerPoint's `ppt/shapes` web format holds the same media as GVML with a valid carrier in both
-   tests. Whether Office on the web or the add-in can read it is not yet measured.
-4. Use the planned add-in to replace a picture, as on macOS.
-5. Windows gets a bitmap, not a vector picture, until an EMF carrier is measured.
-6. A picture pasted on macOS retains its recoverable carrier on Windows but displays there as
-   Office for Mac's 72 dpi fallback bitmap in the one file measured. If documents travel between
-   platforms, this belongs in the owner's choice of formats.
+   missing or invalid. GVML zip media can be the PNG or a macOS EMF wrapping a PDF, so the reader
+   must handle both. PowerPoint's `ppt/shapes` web format holds the same media as GVML with a valid
+   carrier in both tests; whether Office on the web or the add-in can read it is not yet measured.
+3. Use the planned add-in to replace a picture, as on macOS.
+4. A later upgrade may give Windows a vector picture that stays editable: an EMF that ChemDraft writes
+   itself, with drawing records and the carrier in a comment. That needs an EMF writer and its own
+   measurements.
 
 ## Not yet measured
 
@@ -160,6 +168,7 @@ The following remain unmeasured:
 - Compress Pictures and Paste Special.
 - Cropped, rotated or grouped pictures.
 - Copy-back of a picture pasted as PNG on macOS.
+- Whether Office for Mac takes the PNG when PNG and SVG are offered without PDF.
 - Windows-made documents opened, copied from and saved on macOS; the macOS-to-Windows direction is
   measured above.
 - Why PowerPoint for Windows produces a blank top-level PNG and an SVG wrapping it when copying the
