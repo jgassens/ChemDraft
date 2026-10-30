@@ -789,7 +789,7 @@ describe("CF_HTML header", () => {
 
 describe("table structure", () => {
   it.each([
-    "<1 mg", ">1 g/mL", "≤-1.25 °C", "≥1,234.5 mmol", "~.5%", "≈−1.2e-3 mg", "±1E+2 g",
+    "<1 mg", "<=1 mg", ">=1 mg", ">= 5 %", "=<1 mg", "=>1 mg", ">1 g/mL", "≤-1.25 °C", "≥1,234.5 mmol", "~.5%", "≈−1.2e-3 mg", "±1E+2 g",
     "< -1,234.5e-2 µmol/L", "1 mg", "18%"
   ])("keeps a headerless measurement row as data (%s)", measurement => {
     const rows = [["ethanol", measurement], ["water", "18"], ["methanol", "32"]];
@@ -799,6 +799,12 @@ describe("table structure", () => {
     expect(result.spec.headerRows).toBeUndefined();
     expect(result.spec.rows).toEqual(rows);
     expect(result.warnings).toEqual([]);
+  });
+
+  it.each(["MW (g/mol)", "Density (g/mL)", "mmol"])("infers a header with a measurement label (%s)", label => {
+    const rows = [["Material", label], ["water", "18"], ["methanol", "32"]];
+    const html = table(rows.map(row => `<tr>${row.map(text => `<td>${text}</td>`).join("")}</tr>`).join(""));
+    expect(expectOk(readHtml(html)).spec.headerRows).toEqual([rows[0]]);
   });
 
   it("does not infer a heading from padded ragged data rows", () => {

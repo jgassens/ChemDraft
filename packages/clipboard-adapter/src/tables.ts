@@ -515,7 +515,7 @@ function contentHeader(grid: CellEntry[][]): boolean {
   // Comparison-prefixed numbers are data too, including unit/percent suffixes and exponents.
   // Reject any numeric start conservatively; punctuation/dashes alone are not labels.
   if (!first.some(Boolean) || first.some(text => text !== "" &&
-    (numericCell(text) || /^[<>≤≥~≈±]?\s*[+\-−]?(?:\d|[.,]\d)/.test(text) || !/\p{L}/u.test(text)))) return false;
+    (numericCell(text) || /^(?:[<>]=|=[<>]|[<>≤≥~≈±])?\s*[+\-−]?(?:\d|[.,]\d)/.test(text) || !/\p{L}/u.test(text)))) return false;
   let majorityNumeric = false;
   for (let column = 0; column < first.length; column += 1) {
     const count = grid.slice(1).filter(row => numericCell(cellText(row[column].input).trim())).length;
