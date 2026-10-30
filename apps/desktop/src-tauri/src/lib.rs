@@ -4587,10 +4587,8 @@ fn show_toolset_popover_window(
     if utility_windows_suspended() {
         return Ok(());
     }
-    let focus_mode = effective_toolset_popover_focus_mode(
-        window.label(),
-        focus_mode.unwrap_or_default(),
-    );
+    let focus_mode =
+        effective_toolset_popover_focus_mode(window.label(), focus_mode.unwrap_or_default());
     configure_toolset_popover_window(&window, focus_mode)?;
     #[cfg(target_os = "macos")]
     if focus_mode == ToolsetPopoverFocusMode::Preserve {
@@ -9387,20 +9385,20 @@ mod tests {
     #[test]
     fn palette_popovers_open_without_focus_and_lease_their_fields() {
         let bond_stereo = toolset_popover_window_label("core.bondStereo");
-        assert!(effective_toolset_popover_focus_mode(
-            &bond_stereo,
-            ToolsetPopoverFocusMode::Focus
-        ) == ToolsetPopoverFocusMode::Focus);
-        assert!(effective_toolset_popover_focus_mode(
-            &bond_stereo,
-            ToolsetPopoverFocusMode::Preserve
-        ) == ToolsetPopoverFocusMode::Preserve);
+        assert!(
+            effective_toolset_popover_focus_mode(&bond_stereo, ToolsetPopoverFocusMode::Focus)
+                == ToolsetPopoverFocusMode::Focus
+        );
+        assert!(
+            effective_toolset_popover_focus_mode(&bond_stereo, ToolsetPopoverFocusMode::Preserve)
+                == ToolsetPopoverFocusMode::Preserve
+        );
         for toolset in ["core.art", "core.drawnStructureSettings", "core.text"] {
             let label = toolset_popover_window_label(toolset);
-            assert!(effective_toolset_popover_focus_mode(
-                &label,
-                ToolsetPopoverFocusMode::Focus
-            ) == ToolsetPopoverFocusMode::Preserve);
+            assert!(
+                effective_toolset_popover_focus_mode(&label, ToolsetPopoverFocusMode::Focus)
+                    == ToolsetPopoverFocusMode::Preserve
+            );
         }
     }
 
