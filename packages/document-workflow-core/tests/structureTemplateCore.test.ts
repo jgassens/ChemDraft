@@ -79,14 +79,30 @@ describe("native structure templates", () => {
       const before = structuredClone(entry);
       const centre = { x: 350, y: 400 };
       const molecule = structureTemplateMolecule(entry, { document, centre });
-      expect(meanBondLength(molecule)).toBeCloseTo(DocumentStylePreset.drawing.bondLengthPx, 6);
+      let layoutScale = DocumentStylePreset.drawing.bondLengthPx;
+      if (entry.projection === "perspective") {
+        // Perspective templates scale by their longest non-stretched bond.
+        const ordinaryBonds = entry.layout.bonds.filter(([a, b]) =>
+          !entry.layout.stretchedBonds?.some(([c, d]) => a === c && b === d || a === d && b === c));
+        const longestLayoutBond = Math.max(...ordinaryBonds.map(([a, b]) => {
+          const from = entry.layout.atoms[a]!, to = entry.layout.atoms[b]!;
+          return Math.hypot(to.x - from.x, to.y - from.y);
+        }));
+        const longestDocumentBond = Math.max(...ordinaryBonds.map(([a, b]) => {
+          const from = molecule.atoms[a]!, to = molecule.atoms[b]!;
+          return Math.hypot(to.x - from.x, to.y - from.y);
+        }));
+        expect(longestDocumentBond).toBeCloseTo(DocumentStylePreset.drawing.bondLengthPx, 9);
+        layoutScale /= longestLayoutBond;
+      } else {
+        expect(meanBondLength(molecule)).toBeCloseTo(DocumentStylePreset.drawing.bondLengthPx, 6);
+      }
       expect(molecule.style.bondLengthPx).toBe(DocumentStylePreset.drawing.bondLengthPx);
       for (const axis of ["x", "y"] as const) {
         const values = molecule.atoms.map((atom) => atom[axis]);
         expect((Math.min(...values) + Math.max(...values)) / 2).toBeCloseTo(centre[axis], 9);
       }
-      expect(molecule.atoms[0]!.y - centre.y).toBeCloseTo(-entry.layout.atoms[0]!.y *
-        DocumentStylePreset.drawing.bondLengthPx, 2);
+      expect(molecule.atoms[0]!.y - centre.y).toBeCloseTo(-entry.layout.atoms[0]!.y * layoutScale, 2);
       const warnings: Parameters<typeof moleculeSmiles>[2] = [];
       const smiles = await moleculeSmiles(molecule, 0, warnings, computeStructureIdentifiers);
       expect(warnings).toEqual([]);

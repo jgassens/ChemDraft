@@ -1,21 +1,18 @@
 // @vitest-environment jsdom
 import { createElement, act } from "react";
-import { createRequire } from "node:module";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEmptyDocument, moleculeToMolfileV2000, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { canonicalVisibleCdxml, exportDocumentToCdxml, openChemDraftPayload } from "@chemdraft/cdx-compat";
-import { setRdkitModuleLoader } from "../../../packages/rdkit-adapter/src/conformer";
 import { compositionFromRdkitJson, ensureRdkit, type RdkitJson } from "../../../packages/rdkit-adapter/src/index";
 import { structureTemplates } from "../../../packages/template-library/src/index";
-import { nativeMoleculeBondDrawingStyle, representativeMoleculeBondLength } from "@chemdraft/layout-engine";
+import { nativeBondOrderResolution, nativeMoleculeBondDrawingStyle, representativeMoleculeBondLength } from "@chemdraft/layout-engine";
 import { insertStructureTemplate } from "./structureTemplateInsertion";
 import { applyMoleculeBaseStylePatch, applySingleBondToolAtNativeAtom, applyNativeRingAttachAtAtomTarget } from "./documentWorkflow";
 import { MainWindow } from "./MainWindow";
 import { getAssistantHistoryPort } from "./assistant/historyPort";
 import { MemoryStorage } from "./testSupport/memoryStorage";
+import { installDomRdkitLoader } from "./testSupport/rdkitIdentity";
 import { DOM_COMMAND_EVENT } from "./window-manager";
 
 // Resolve the template registry in THIS checkout even with shared node_modules.
@@ -29,18 +26,15 @@ const perspectiveTemplates = structureTemplates.filter(template => template.proj
 const molecule = (document: ChemDraftDocument) => document.pages[0]!.objects[0] as MoleculeObject;
 let rdkit: Awaited<ReturnType<typeof ensureRdkit>>;
 beforeAll(async () => {
-  // jsdom rewrites import.meta.url to http; load the vendored WASM locally,
-  // without network or mocked chemistry, for both identity and cleanup tests.
-  const vendor = resolve("packages/rdkit-adapter/vendor");
-  const source = readFileSync(resolve(vendor, "RDKit_minimal.js"), "utf8");
-  const factory = new Function("require", "__dirname", `${source}\n;return initRDKitModule;`)(
-    createRequire(resolve("package.json")), vendor);
-  setRdkitModuleLoader(() => factory({ wasmBinary: new Uint8Array(readFileSync(resolve(vendor, "RDKit_minimal.wasm"))) }));
+  installDomRdkitLoader();
   rdkit = await ensureRdkit();
 }, 60_000);
 
 function identity(object: MoleculeObject) {
-  const parsed = rdkit.get_mol(moleculeToMolfileV2000(object, { fromDocFrame: true }).contents)!;
+  const parsed = rdkit.get_mol(moleculeToMolfileV2000(object, {
+    fromDocFrame: true,
+    kekuleBondOrders: nativeBondOrderResolution(object.atoms, object.bonds).kekuleOrders
+  }).contents)!;
   expect(parsed).toBeTruthy();
   try {
     // The vendored engine exposes atom CIP and bond E/Z descriptors. Compare
