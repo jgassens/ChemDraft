@@ -220,7 +220,9 @@ describe("MainWindow SMILES paste failure notices", () => {
       expect(status).toContain("pasted as text");
       expect(container.querySelectorAll(".molecule-object")).toHaveLength(0);
       expect(container.querySelectorAll(".text-object")).toHaveLength(1);
-      expect(container.querySelector("[data-object-controls] .text-object-content")?.textContent).toContain("n1cccc1");
+      // Paste now leaves text selected on the canvas, so editor-only content is absent.
+      expect(container.querySelector('[data-page-svg-object-visual][data-object-type="text"]')?.textContent).toContain("n1cccc1");
+      expect(container.querySelectorAll(".text-object.selected")).toHaveLength(1);
     },
     20_000
   );
@@ -277,7 +279,9 @@ describe("MainWindow SMILES paste failure notices", () => {
     expect(status).toBe("Pasted editable text");
     expect(container.querySelectorAll(".molecule-object")).toHaveLength(0);
     expect(container.querySelectorAll(".text-object")).toHaveLength(1);
-    expect(container.querySelector(".text-object-content")?.textContent).toContain(text);
+    // Paste now leaves text selected on the canvas, so editor-only content is absent.
+    expect(container.querySelector('[data-page-svg-object-visual][data-object-type="text"]')?.textContent).toContain(text);
+    expect(container.querySelectorAll(".text-object.selected")).toHaveLength(1);
   }, 20_000);
 
   it("reports both failures and the first reason when the whole list falls back to text", async () => {

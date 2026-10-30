@@ -512,9 +512,10 @@ function numericCell(text: string): boolean {
 function contentHeader(grid: CellEntry[][]): boolean {
   if (grid.length < 2) return false;
   const first = grid[0].map(entry => cellText(entry.input).trim());
-  // Number-like values with units are data too; punctuation/dashes alone are not labels.
+  // Comparison-prefixed numbers are data too, including unit/percent suffixes and exponents.
+  // Reject any numeric start conservatively; punctuation/dashes alone are not labels.
   if (!first.some(Boolean) || first.some(text => text !== "" &&
-    (numericCell(text) || /^[+\-−]?(?:\d|[.,]\d)/.test(text) || !/\p{L}/u.test(text)))) return false;
+    (numericCell(text) || /^[<>≤≥~≈±]?\s*[+\-−]?(?:\d|[.,]\d)/.test(text) || !/\p{L}/u.test(text)))) return false;
   let majorityNumeric = false;
   for (let column = 0; column < first.length; column += 1) {
     const count = grid.slice(1).filter(row => numericCell(cellText(row[column].input).trim())).length;
@@ -630,11 +631,10 @@ function convertTable(
   if (rows.length > LIMITS.maxRows) {
     return tooManyRows(rows.length);
   }
-  const nominal = Math.max(
-    ...rows.map((row) =>
-      cellsOf(row.element).reduce((sum, cell) => sum + spanAttribute(cell, "colspan", 1, MAX_COLSPAN), 0)
-    )
+  const sourceWidths = rows.map((row) =>
+    cellsOf(row.element).reduce((sum, cell) => sum + spanAttribute(cell, "colspan", 1, MAX_COLSPAN), 0)
   );
+  const nominal = Math.max(...sourceWidths);
   if (nominal > LIMITS.maxColumns) {
     return tooManyColumns(nominal);
   }
@@ -806,7 +806,9 @@ function convertTable(
         headerCount = candidate - start;
       }
     }
-    if (headerCount === 0 && !mergedRows.has(start) && !rowspanRows.has(start) && contentHeader(body)) {
+    // Padding cannot supply evidence for a heading; compare source widths, counting colspans.
+    const rectangularSource = sourceWidths.slice(start, end).every(width => width === sourceWidths[start]);
+    if (headerCount === 0 && rectangularSource && !mergedRows.has(start) && !rowspanRows.has(start) && contentHeader(body)) {
       headerCount = 1;
     }
   }

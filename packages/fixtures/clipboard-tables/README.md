@@ -58,6 +58,8 @@ byte offsets, matching `windows_clipboard.rs` / `parse_cf_html`: the CF_HTML
 are retained. Existing `file:///C:/Users/user_/…` paths remain redacted as supplied;
 no paths have been added. The `.txt` files are `13-CF_UNICODETEXT.bin` decoded as
 UTF-16LE up to the first NUL and saved as UTF-8, retaining CRLF and tabs.
+Both formats retain their captured CRLF line endings; `.gitattributes` marks
+`windows-real-*` as `-text` so Git preserves those bytes on every platform.
 The native payload names are `text/html` and `text/plain`. `Csv` may appear in
 `types`, but the Windows reader does not fetch it into `textItems`.
 

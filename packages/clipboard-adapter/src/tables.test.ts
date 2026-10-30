@@ -95,6 +95,7 @@ describe("HTML table fixtures", () => {
     expect(result.warnings).toEqual([]);
     expect(result.spec).toEqual({
       columns: [left, ...Array.from({ length: 6 }, () => ({ align: "decimal" }))],
+      // excel-like.html starts with Material and six property labels above numeric columns.
       headerRows: [["Material", "MW (g/mol)", "Density (g/mL)", "Equiv.", "mmol", "Mass (g)", "Volume (mL)"]],
       rows: [
         ["allyl alcohol", "58.08", "0.854", "1.00", "17.22", "1.00", "1.17"],
@@ -109,11 +110,13 @@ describe("HTML table fixtures", () => {
   it.each([false, true])("reads Excel markers inside the table (CF_HTML: %s)", (wrapped) => {
     const html = fixture("excel-markers-inside-table.html");
     const result = expectOk(readHtml(wrapped ? cfHtml(html) : html, wrapped ? "HTML Format" : "text/html"));
+    // excel-markers-inside-table.html has the same labels above numeric reagent properties.
     expect(result).toEqual(expectOk(readHtml(fixture("excel-like.html"))));
   });
 
   const wordSpec = {
     columns: [left, { align: "decimal" }, { align: "decimal" }],
+    // word-like.html starts with Material, MW and Density labels above numeric property columns.
     headerRows: [[bold("Material"), bold("MW (g/mol)"), bold("Density (g/mL)")]],
     rows: [
       ["allyl alcohol", "58.08", "0.854"],
@@ -166,6 +169,7 @@ describe("HTML table fixtures", () => {
     expect(result.warnings).toEqual([]);
     expect(result.spec).toEqual({
       columns: [left, { align: "decimal" }, { align: "decimal" }],
+      // google-sheets-like.html starts with Material, MW and mmol labels above numeric columns.
       headerRows: [["Material", "MW (g/mol)", "mmol"]],
       rows: [
         ["allyl alcohol", "58.08", "17.22"],
@@ -189,11 +193,17 @@ describe("real Windows Office 16 clipboard captures (2026-10-30)", () => {
 
   it.each(names)("reads the native reader's HTML and Unicode text (%s)", name => {
     const html = fixture(`${name}.html`);
+    const text = fixture(`${name}.txt`);
+    // Native-reader payloads retain the capture's CRLF, including in CF_UNICODETEXT.
+    for (const captured of [html, text]) {
+      expect(captured).toContain("\r\n");
+      expect(captured.replace(/\r\n/g, "")).not.toMatch(/[\r\n]/);
+    }
     // parse_cf_html strips the CF_HTML envelope, retaining the document and markers.
     expect(html).not.toMatch(/Version:|StartHTML:|StartFragment:/);
     expect(html).toContain("<!--StartFragment-->");
     expect(html).toContain("<!--EndFragment-->");
-    const result = expectOk(readHtmlAndTsv(html, fixture(`${name}.txt`)));
+    const result = expectOk(readHtmlAndTsv(html, text));
     expect(result).toEqual({
       ok: true,
       source: "html",
@@ -613,6 +623,7 @@ describe("Word-like captions and footnotes", () => {
       { text: "a Synthetic reagent data.", spans: [{ text: "a", script: "superscript" }, { text: " Synthetic reagent data." }] },
       "Densities are in g/mL."
     ]);
+    // word-like-notes.html starts with Material and Density labels above numeric densities.
     expect(result.spec.headerRows).toEqual([["Material", "Density (g/mL)"]]);
     expect(result.spec.rows).toEqual([
       ["allyl alcohol", "0.854"],
@@ -777,6 +788,35 @@ describe("CF_HTML header", () => {
 });
 
 describe("table structure", () => {
+  it.each([
+    "<1 mg", ">1 g/mL", "≤-1.25 °C", "≥1,234.5 mmol", "~.5%", "≈−1.2e-3 mg", "±1E+2 g",
+    "< -1,234.5e-2 µmol/L", "1 mg", "18%"
+  ])("keeps a headerless measurement row as data (%s)", measurement => {
+    const rows = [["ethanol", measurement], ["water", "18"], ["methanol", "32"]];
+    const html = table(rows.map(row => `<tr>${row.map(text =>
+      `<td>${text.replace(/</g, "&lt;")}</td>`).join("")}</tr>`).join(""));
+    const result = expectOk(readHtml(html));
+    expect(result.spec.headerRows).toBeUndefined();
+    expect(result.spec.rows).toEqual(rows);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("does not infer a heading from padded ragged data rows", () => {
+    const rows = [["ethanol", "not measured"], ["water", "18", "liquid"], ["methanol", "32", "liquid"]];
+    const html = table(rows.map(row => `<tr>${row.map(text => `<td>${text}</td>`).join("")}</tr>`).join(""));
+    const result = expectOk(readHtml(html));
+    expect(result.spec.headerRows).toBeUndefined();
+    expect(result.spec.rows).toEqual([["ethanol", "not measured", ""], ...rows.slice(1)]);
+    expect(result.warnings).toEqual(["Short rows were padded with empty cells."]);
+  });
+
+  it.each([1, 2])("counts body colspans when checking source widths (span %s)", span => {
+    const result = expectOk(readHtml(table('<tr><td>Material</td><td>MW</td><td>State</td></tr>'
+      + `<tr><td>water</td><td colspan=${span}>18</td></tr>`
+      + '<tr><td>methanol</td><td>32</td><td>liquid</td></tr>')));
+    expect(result.spec.headerRows).toEqual(span === 2 ? [["Material", "MW", "State"]] : undefined);
+  });
+
   it.each([
     '<tr><td>allyl alcohol</td><td>58.08</td></tr><tr><td>Ti(OiPr)4</td><td>284.22</td></tr>',
     '<tr><td>Material</td><td>State</td></tr><tr><td>allyl alcohol</td><td>liquid</td></tr>',
