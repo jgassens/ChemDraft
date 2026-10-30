@@ -1,5 +1,6 @@
 import { finishLayout } from "./geometry.mjs";
 import { runFamilyIfMain } from "./generate.mjs";
+import { calixareneConeModel, projectCone, coneParametersFor } from "./calixarene-cone.mjs";
 
 // PubChem supplies identity metadata only. Coordinates below are original unit-hexagon,
 // regular-polygon and circle-intersection constructions, without a depiction engine.
@@ -96,8 +97,12 @@ const entries = [
 
 const point = (angle, radius = 1) => ({ x: radius * Math.cos(angle), y: radius * Math.sin(angle) });
 
-function hostLayout(entry) {
+function hostLayout(entry, variant) {
   const { kind, n } = entry;
+  if (kind === "calix") {
+    const parameters = coneParametersFor(n, variant);
+    return finishLayout(projectCone(calixareneConeModel(n, entry.tertButyl, parameters), parameters.elevation, parameters), "perspective");
+  }
   const halfSector = Math.PI / n;
   const pillar = kind === "pillar", ctv = kind === "ctv";
   // Solve the polygon radius from the bridge-endpoint chord, then intersect unit
@@ -167,12 +172,13 @@ export const generator = {
   scriptName: "calixarenes-pillararenes.mjs",
   fileName: "calixarenesPillararenes.ts",
   exportName: "calixarenesPillararenesTemplates",
-  generateTemplates: () => entries.map((entry) => ({
+  generateTemplates: (variant = "B") => entries.map((entry) => ({
     id: entry.id, name: entry.name, synonyms: entry.synonyms,
     family: "calixarenes-pillararenes", category: "supramolecular",
     smiles: entry.smiles, formula: entry.formula, charge: 0,
     source: { database: "PubChem", cid: entry.cid },
-    ...(entry.note ? { note: entry.note } : {}), layout: hostLayout(entry)
+    ...(entry.kind === "calix" ? { projection: "perspective" } : {}),
+    ...(entry.note ? { note: entry.note } : {}), layout: hostLayout(entry, variant)
   }))
 };
 

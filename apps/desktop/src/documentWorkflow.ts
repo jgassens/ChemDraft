@@ -3765,6 +3765,10 @@ function isNativeChairTemplate(templateId: NativeMoleculeTemplateId): boolean {
 }
 
 function nativeTemplateBondLength(molecule: MoleculeObject): number {
+  // Perspective templates deliberately foreshorten bonds; grow at their nominal length.
+  if (molecule.style.projection === "perspective") {
+    return nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx;
+  }
   // Imported molecules can have coordinates that disagree with the stored drawing style.
   // Only a molecule without measurable bonds (such as a single atom) needs the style fallback.
   return representativeMoleculeBondLength(molecule) ??
@@ -14941,7 +14945,8 @@ export function cleanUpNativeMolecules2d(
     // Stripped perspective depth weights are a real change even when the geometry
     // was already ideal (the changed-check below only compares atoms/transform).
     const strippedDepthWeights = molecule.bonds.some((bond) => bond.display?.depthWeight !== undefined);
-    return nativeMoleculeGeometryOrTransformChanged(molecule, cleaned) || strippedDepthWeights
+    return nativeMoleculeGeometryOrTransformChanged(molecule, cleaned) || strippedDepthWeights ||
+      molecule.style.projection !== cleaned.style.projection
       ? [{ op: "updateObject" as const, objectId: molecule.id, changes: cleaned }]
       : [];
   });
@@ -15383,7 +15388,7 @@ export function applyNativeMoleculeEngineRelayout(
   }
 
   const cleaned = withNativeMoleculeTransform(
-    normalizeNativeMoleculeGeometry({ ...molecule, atoms, bonds }),
+    normalizeNativeMoleculeGeometry({ ...molecule, atoms, bonds, style: flatNativeMoleculeStyle(molecule) }),
     defaultNativeMoleculeTransform
   );
   const atomMetadataChanged = JSON.stringify(molecule.atoms) !== JSON.stringify(cleaned.atoms);
@@ -15397,7 +15402,8 @@ export function applyNativeMoleculeEngineRelayout(
     !nativeMoleculeGeometryOrTransformChanged(molecule, cleaned) &&
     !atomMetadataChanged &&
     !bondDisplayOrDirectionChanged &&
-    !normalizedBoundsChanged
+    !normalizedBoundsChanged &&
+    molecule.style.projection === cleaned.style.projection
   ) {
     return document;
   }
@@ -17863,13 +17869,21 @@ function withNativeMoleculeTransform(
   };
 }
 
+// A successful flat re-layout no longer has a projection's nominal-length contract.
+function flatNativeMoleculeStyle(molecule: MoleculeObject): MoleculeObject["style"] {
+  if (molecule.style.projection !== "perspective") return molecule.style;
+  const { projection: _projection, ...style } = molecule.style;
+  return style;
+}
+
 // Drops per-atom projected-plane depth so a 2D cleanup leaves a genuinely flat molecule.
 // Without this, atoms keep stale `z` from a prior 3D tilt and `pointZ()` would still read
 // that depth on the next projected-plane operation even though the transform reset to 2D.
 function flattenNativeMoleculeDepth(molecule: MoleculeObject): MoleculeObject {
   return {
     ...molecule,
-    atoms: molecule.atoms.map(({ z: _z, ...atom }) => atom)
+    atoms: molecule.atoms.map(({ z: _z, ...atom }) => atom),
+    style: flatNativeMoleculeStyle(molecule)
   };
 }
 
@@ -17939,7 +17953,9 @@ function cleanUpNativeMoleculeGeometry2d(molecule: MoleculeObject): MoleculeObje
     normalizeNativeMoleculeGeometry({
       ...molecule,
       atoms,
-      bonds
+      bonds,
+      // A multi-ring component skipped by this simple layout is still projected.
+      style: nextAtomPoints.size === molecule.atoms.length ? flatNativeMoleculeStyle(molecule) : molecule.style
     }),
     defaultNativeMoleculeTransform
   );

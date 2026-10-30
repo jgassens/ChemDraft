@@ -1,5 +1,37 @@
 // Original, dependency-free construction geometry; no depiction engine or database coordinates.
 
+/**
+ * Orthographic camera, screen y up; angles in degrees. At azimuth 0 its view normal
+ * is viewerSide * (0, cos(elevation), sin(elevation)); positive depth faces the viewer.
+ * viewerSide selects the oriented normal without changing the screen-plane geometry.
+ */
+export function projectOrthographic(model, { elevation = 18, azimuth = 0, viewerSide = 1, centre = { x: 0, y: 0, z: 0 } } = {}) {
+  const e = elevation * Math.PI / 180, a = azimuth * Math.PI / 180;
+  return { ...model, atoms: model.atoms.map(({ z, ...atom }) => {
+    const x = atom.x - centre.x, y = atom.y - centre.y;
+    const right = x * Math.cos(a) - y * Math.sin(a);
+    const toward = x * Math.sin(a) + y * Math.cos(a);
+    return { ...atom, x: right, y: (z - centre.z) * Math.cos(e) - toward * Math.sin(e),
+      depth: viewerSide * (toward * Math.cos(e) + (z - centre.z) * Math.sin(e)) };
+  }) };
+}
+
+/** Cosmetic front-half line weight. Directed stereo always wins over depth styling. */
+export function cueBondDepth(layout, deadZone = 0.15) {
+  return { ...layout, bonds: layout.bonds.map(([from, to, order, display]) => {
+    if (display === "wedge" || display === "hash") return [from, to, order, display];
+    return (layout.atoms[from].depth + layout.atoms[to].depth) / 2 > deadZone
+      ? [from, to, order, "bold"] : [from, to, order];
+  }) };
+}
+
+/** The native renderer stacks a molecule's bonds by array order at a crossing. */
+export function orderBondsByDepth(layout) {
+  // Quantize ties so insignificant trig differences cannot reorder generated files across hosts.
+  const depth = ([a, b]) => Math.round((layout.atoms[a].depth + layout.atoms[b].depth) / 2 * 1e9);
+  return { ...layout, bonds: [...layout.bonds].sort((a, b) => depth(a) - depth(b)) };
+}
+
 export function rotate(points, radians) {
   const c = Math.cos(radians), s = Math.sin(radians);
   return points.map((point) => ({ ...point, x: point.x * c - point.y * s, y: point.x * s + point.y * c }));
@@ -21,26 +53,6 @@ export function regularPolygon(count, rotation = Math.PI / 2) {
   return Array.from({ length: count }, (_, index) => {
     const angle = rotation + 2 * Math.PI * index / count;
     return { x: radius * Math.cos(angle), y: radius * Math.sin(angle) };
-  });
-}
-
-/** Circular arc from (-chord/2, 0) to (chord/2, 0), including both endpoints; each bond is 1. */
-export function equalBondArc(bondCount, chord, side = 1) {
-  if (!Number.isInteger(bondCount) || bondCount < 2 || chord <= 0 || chord >= bondCount) {
-    throw new Error("An arc needs at least two bonds and a chord shorter than its contour.");
-  }
-  let low = 0, high = 2 * Math.PI;
-  for (let iteration = 0; iteration < 80; iteration += 1) {
-    const sweep = (low + high) / 2;
-    const span = Math.sin(sweep / 2) / Math.sin(sweep / (2 * bondCount));
-    if (span > chord) low = sweep;
-    else high = sweep;
-  }
-  const sweep = (low + high) / 2;
-  const radius = 1 / (2 * Math.sin(sweep / (2 * bondCount)));
-  return Array.from({ length: bondCount + 1 }, (_, index) => {
-    const angle = -sweep / 2 + sweep * index / bondCount;
-    return { x: radius * Math.sin(angle), y: side * radius * (Math.cos(angle) - Math.cos(sweep / 2)) };
   });
 }
 
@@ -67,15 +79,18 @@ export function fuseBenzeneOnEdge(layout, from, to) {
   return layout;
 }
 
-/** Mean bond length is exactly 1 before the final four-decimal serialization. */
-export function normaliseMeanBondLength(layout) {
+/** Mean (flat) or longest (projection) bond is 1 before four-decimal serialization. */
+function normaliseBondLength(layout, projection) {
   if (layout.bonds.length === 0) throw new Error("Cannot normalise a layout without bonds.");
-  const mean = layout.bonds.reduce((sum, [from, to]) => {
+  const stretched = new Set((layout.stretchedBonds ?? []).map(([a, b]) => `${Math.min(a, b)}:${Math.max(a, b)}`));
+  const lengths = layout.bonds.filter(([a, b]) => projection !== "perspective" || !stretched.has(`${Math.min(a, b)}:${Math.max(a, b)}`)).map(([from, to]) => {
     const a = layout.atoms[from], b = layout.atoms[to];
-    return sum + Math.hypot(b.x - a.x, b.y - a.y);
-  }, 0) / layout.bonds.length;
-  if (!Number.isFinite(mean) || mean <= 0) throw new Error("Invalid mean bond length.");
-  return { ...layout, atoms: layout.atoms.map((atom) => ({ ...atom, x: atom.x / mean, y: atom.y / mean })) };
+    return Math.hypot(b.x - a.x, b.y - a.y);
+  });
+  const referenceLength = projection === "perspective" ? Math.max(...lengths)
+    : lengths.reduce((sum, length) => sum + length, 0) / lengths.length;
+  if (!Number.isFinite(referenceLength) || referenceLength <= 0) throw new Error("Invalid bond length.");
+  return { ...layout, atoms: layout.atoms.map((atom) => ({ ...atom, x: atom.x / referenceLength, y: atom.y / referenceLength })) };
 }
 
 export function round4(value) {
@@ -83,8 +98,8 @@ export function round4(value) {
   return Object.is(rounded, -0) ? 0 : rounded;
 }
 
-export function finishLayout(layout) {
-  const normalised = normaliseMeanBondLength(layout);
+export function finishLayout(layout, projection) {
+  const normalised = normaliseBondLength(layout, projection);
   return {
     ...normalised,
     atoms: centre(normalised.atoms).map((atom) => ({ ...atom, x: round4(atom.x), y: round4(atom.y) }))

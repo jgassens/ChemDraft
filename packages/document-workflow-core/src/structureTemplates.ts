@@ -4,7 +4,7 @@ import {
   type MoleculeObject
 } from "@chemdraft/chem-core";
 import { structureTemplates, type StructureTemplate } from "@chemdraft/template-library";
-import { createSmilesMolecule } from "./molecule";
+import { createSmilesMolecule, perspectiveTemplateBoldWidthRatio } from "./molecule";
 import { documentDrawingDefaults } from "./drawingDefaults";
 import type { PagePoint } from "./shared";
 import type { StructureNameDeps } from "./structureName";
@@ -73,7 +73,7 @@ export interface StructureTemplateMoleculeOptions {
   reservedObjectIds?: Set<string>;
 }
 
-/** Retain the authored layout, with its mean bond length scaled exactly and its y axis flipped. */
+/** Retain authored coordinates: mean for flat layouts, longest non-stretched bond for projections. */
 export function structureTemplateMolecule(
   template: StructureTemplate,
   options: StructureTemplateMoleculeOptions
@@ -86,11 +86,24 @@ export function structureTemplateMolecule(
   const style = { ...defaults.objectStyle, ...options.style };
   const bondLengthPx = options.style
     ? nativeDrawingStyleFromObjectStyle(style).bondLengthPx : defaults.bondLengthPx;
-  return createSmilesMolecule(document, centre, {
+  const lengths = template.layout.bonds.map(([from, to]) => {
+    const a = template.layout.atoms[from]!, b = template.layout.atoms[to]!;
+    return Math.hypot(b.x - a.x, b.y - a.y);
+  });
+  const referenceLength = Math.max(...lengths.filter((_, index) => {
+    const [a, b] = template.layout.bonds[index]!;
+    return !template.layout.stretchedBonds?.some(([c, d]) => a === c && b === d || a === d && b === c);
+  }));
+  // The shared depiction path normalizes by the mean. Adjust its geometry target so
+  // projection foreshortening survives, then retain the actual document length in style.
+  const geometryBondLength = template.projection === "perspective"
+    ? bondLengthPx * (lengths.reduce((sum, length) => sum + length, 0) / lengths.length) / referenceLength
+    : bondLengthPx;
+  const molecule = createSmilesMolecule(document, centre, {
     atoms: template.layout.atoms.map((atom) => ({ ...atom, charge: atom.charge ?? 0 })),
     bonds: template.layout.bonds.map(([from, to, order, display]) => ({
       from, to, order: order === 1 ? "single" : order === 2 ? "double" : "triple",
-      wedge: display === "hash" ? "hashed" : display ?? null
+      wedge: display === "hash" ? "hashed" : display === "wedge" ? "wedge" : null
     }))
   }, template.smiles, {
     objectIdPrefix: "mol_template",
@@ -99,10 +112,23 @@ export function structureTemplateMolecule(
     warningMessage: `Inserted ${template.name} using its original ChemDraft layout.${template.note ? ` ${template.note}` : ""}`,
     reservedObjectIds
   }, {
-    bondLengthPx,
+    bondLengthPx: geometryBondLength,
     objectStyle: style,
     constrainToPage: false
   });
+  const bonds = molecule.bonds.map((bond, index) => template.layout.bonds[index]?.[3] === "bold"
+      && bond.display?.bondStyle !== "wedge" && bond.display?.bondStyle !== "hashed"
+      ? { ...bond, display: { ...bond.display, bondStyle: "bold" as const } } : bond);
+  const boldBonds = template.projection === "perspective"
+    ? bonds.filter(bond => bond.display?.bondStyle === "bold") : [];
+  return { ...molecule, bonds,
+    style: { ...molecule.style, bondLengthPx,
+      ...(template.projection === "perspective" ? { projection: "perspective" } : {}),
+      // Use the molecule width so the inspector can change the template's depth cues.
+      // Explicit caller style wins; ordinary bonds still use bondStrokeWidthPx.
+      ...(boldBonds.length ? {
+        bondBoldWidthPx: options.style?.bondBoldWidthPx ?? perspectiveTemplateBoldWidthRatio * bondLengthPx
+      } : {}) } };
 }
 
 /** Status for a host-built template object; no identity or coordinate inference. */

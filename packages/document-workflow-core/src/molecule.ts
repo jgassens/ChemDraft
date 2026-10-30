@@ -10,6 +10,7 @@ import {
   type MoleculeObject,
   moleculeToMolfileV2000,
   normalizeAtomIsotope,
+  nativeDrawingStyleFromObjectStyle,
   UnknownBondOrderError,
   type MoleculeTransformState
 } from "@chemdraft/chem-core";
@@ -41,6 +42,8 @@ export const nativeSingleBondDimensions = {
 } as const;
 
 export const nativeBondLengthPx = ChemDraftSyntheticStylePreset.drawing.bondLengthPx;
+
+export const perspectiveTemplateBoldWidthRatio = 0.136;
 
 const nativeMoleculePadding = 8;
 
@@ -325,7 +328,14 @@ export function applyMoleculeTargetBondLength(
       const representative = representativeNativeMoleculeBondLength(object);
       const nextStyle = {
         ...object.style,
-        bondLengthPx: targetBondLengthPx
+        bondLengthPx: targetBondLengthPx,
+        // The CLI builds templates at its default length before applying --bond-length.
+        // Follow that final length only for the automatic template width; retain custom widths.
+        ...(object.style.projection === "perspective"
+          && typeof object.style.source === "string" && object.style.source.startsWith("structure-template:")
+          && representative && object.style.bondBoldWidthPx === perspectiveTemplateBoldWidthRatio * representative
+          && object.bonds.some(bond => bond.display?.bondStyle === "bold")
+          ? { bondBoldWidthPx: perspectiveTemplateBoldWidthRatio * targetBondLengthPx } : {})
       };
       const scaled = representative
         ? scaledMoleculeToTargetBondLength(object, targetBondLengthPx, representative, nextStyle)
@@ -345,6 +355,10 @@ export function applyMoleculeTargetBondLength(
 }
 
 function representativeNativeMoleculeBondLength(molecule: MoleculeObject): number | undefined {
+  // Projected distances are foreshortened; their stored length is the nominal scale.
+  if (molecule.style.projection === "perspective") {
+    return nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx;
+  }
   const atomById = new Map(molecule.atoms.map((atom) => [atom.id, atom]));
   const heavyDistances: number[] = [];
   const allDistances: number[] = [];

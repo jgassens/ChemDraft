@@ -15,12 +15,12 @@ export interface StructureTemplateAtom {
   y: number;
 }
 
-/** Zero-based indices, Kekulé orders. Wedge/hash starts at the stereocentre (first atom). */
+/** Zero-based indices, Kekulé orders. Wedge/hash is directed stereo; bold is cosmetic only. */
 export type StructureTemplateBond = readonly [
   from: number,
   to: number,
   order: 1 | 2 | 3,
-  display?: "wedge" | "hash"
+  display?: "wedge" | "hash" | "bold"
 ];
 
 interface StructureTemplateData {
@@ -35,9 +35,13 @@ interface StructureTemplateData {
   /** Hill formula; hydrogens in the layout are implicit under standard valence. */
   formula: string;
   charge: number;
+  /** Spatial projection: scale the longest non-stretched bond, retaining foreshortening. */
+  projection?: "perspective";
   layout: {
     atoms: readonly StructureTemplateAtom[];
     bonds: readonly StructureTemplateBond[];
+    /** Authored projection exceptions, excluded from nominal length; at most 2× that length. */
+    stretchedBonds?: readonly (readonly [from: number, to: number])[];
   };
   /** Only for unavoidable crossings in a family's 2D projection; document the reason at source. */
   allowedCrossings?: number;
