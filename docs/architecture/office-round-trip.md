@@ -21,7 +21,7 @@ reopened it, selected and copied the picture, dumped the clipboard, and inspecte
 file and the dump. The carriers were PNG with a zTXt or iTXt text chunk, including at 384 dpi;
 PDF with the drawing as an embedded file or as a catalog key; and SVG with a metadata element.
 COMBINED means PNG, PDF, SVG and ChemDraft's private JSON together, as ChemDraft's Copy will
-write them. COMBINED-WIN offered six Windows formats: registered `PNG`, `image/png`, CF_DIBV5
+write them. COMBINED-WIN wrote six Windows formats, in this order: registered `PNG`, `image/png`, CF_DIBV5
 (an uncompressed bitmap), `image/svg+xml`, `application/pdf` and ChemDraft's private JSON.
 
 ## Environment
@@ -103,12 +103,13 @@ macOS:
 3. Use the planned Office add-in to replace a picture with an edited version; paste-over adds a picture
    in both apps.
 
-Windows:
+Windows (proposed; pending the owner's decision):
 
-1. Word and PowerPoint take SVG over PNG when both are offered and drop the carrier. ChemDraft's Copy
-   must not offer `image/svg+xml` to Office on Windows unless the format-order test below shows that
-   placing PNG first changes Office's choice. Rely on PNG with a zTXt or iTXt carrier, which both apps
-   keep byte-identical at its stated resolution.
+1. Word and PowerPoint take SVG over PNG when both are offered, and drop the carrier. The order of
+   formats does not change this: COMBINED-WIN wrote PNG before SVG. So on Windows, ChemDraft's Copy
+   can give Office an editable PNG or a vector SVG, not both. Proposed: do not offer `image/svg+xml`
+   to Office on Windows, and rely on PNG with a zTXt or iTXt carrier, which both apps keep
+   byte-identical at its stated resolution.
 2. Windows Office ignores PDF and `image/png`.
 3. For paste-back, check each source in order: GVML zip media, EMF+ image objects in
    `CF_ENHMETAFILE`, then the top-level PNG. Validate the carrier found and fall through when it is
@@ -124,7 +125,6 @@ The following remain unmeasured:
 - Compress Pictures and Paste Special.
 - Cropped, rotated or grouped pictures.
 - Copy-back of a picture pasted as PNG on macOS.
-- Whether Windows Office still takes SVG when PNG is written before SVG.
 - Documents moved between macOS and Windows, and copy-back there.
 - Whole-document copy on Windows.
 - Pictures large enough that the EMF+ image object is split across records; only a 19,783-byte PNG
