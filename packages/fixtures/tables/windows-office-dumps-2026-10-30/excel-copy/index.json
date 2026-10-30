@@ -1,0 +1,223 @@
+[
+    {
+        "id": 49161,
+        "name": "DataObject",
+        "file": "49161-DataObject.bin",
+        "size": 8,
+        "sha256": "ea4b4207bb3224aabc4b5fb4d095c018fab2fb8a0fb5b166346fcdeac1ef9f8f"
+    },
+    {
+        "id": 14,
+        "name": "CF_ENHMETAFILE",
+        "file": "14-CF_ENHMETAFILE.bin",
+        "size": 7380,
+        "sha256": "ef3bba7273748c55a61a3725891add71dae322fef3f75038d975f96952343b4b"
+    },
+    {
+        "id": 3,
+        "name": "CF_METAFILEPICT",
+        "note": "Handle-based format, not HGLOBAL"
+    },
+    {
+        "id": 2,
+        "name": "CF_BITMAP",
+        "note": "Handle-based format, not HGLOBAL"
+    },
+    {
+        "id": 49936,
+        "name": "Biff12",
+        "file": "49936-Biff12.bin",
+        "size": 7527,
+        "sha256": "26a9415ef9dde4788f56b46ffe59fa49259447f78f50fb28930fa45b36733d42"
+    },
+    {
+        "id": 49926,
+        "name": "Biff8",
+        "file": "49926-Biff8.bin",
+        "size": 15360,
+        "sha256": "664b21e512d141953c2760e89f226f0d7b5197f95d2ad1b77942a42fc35e76ca"
+    },
+    {
+        "id": 49927,
+        "name": "Biff5",
+        "file": "49927-Biff5.bin",
+        "size": 9728,
+        "sha256": "3bb46a5919a8c12c17af12ce7c177b78fdf5a9d62f68cf94b7b0549355cafdfc"
+    },
+    {
+        "id": 4,
+        "name": "CF_4",
+        "file": "4-CF_4.bin",
+        "size": 1933,
+        "sha256": "acb3bc90543f8dde572eeb9782a0a9efc006ad86c9e7ab7993ea33365d4ab7f9"
+    },
+    {
+        "id": 5,
+        "name": "CF_5",
+        "file": "5-CF_5.bin",
+        "size": 468,
+        "sha256": "180a3afc5ee8ec1ca194bde07e9096d3e19a2fb595cb346cd1fd632ebc5dd6f9"
+    },
+    {
+        "id": 49935,
+        "name": "XML Spreadsheet",
+        "file": "49935-XML_Spreadsheet.bin",
+        "size": 2334,
+        "sha256": "04089a6cfbd6a3c772d43caeb4ddf13e9c3d93387bdab34ccf6516a04ce5ba50"
+    },
+    {
+        "id": 49330,
+        "name": "HTML Format",
+        "file": "49330-HTML_Format.bin",
+        "size": 3069,
+        "sha256": "15f510a99c6c045cd9cee4468eeae938d6d7251b65857a941c50ec17212a9e01",
+        "note": "profile name in Office temp paths replaced with \"user_\" (same length)"
+    },
+    {
+        "id": 13,
+        "name": "CF_UNICODETEXT",
+        "file": "13-CF_UNICODETEXT.bin",
+        "size": 328,
+        "sha256": "b89ad046ebf9752b8702a9ba54062f69c3c76086717ffa8abd6d7b55786f8bd9"
+    },
+    {
+        "id": 1,
+        "name": "CF_TEXT",
+        "file": "1-CF_TEXT.bin",
+        "size": 164,
+        "sha256": "8c9095dcb1eee4cd1f48baa57cd9880cc9606a501f52240d7bdd18ce9b1aed4d"
+    },
+    {
+        "id": 49928,
+        "name": "Csv",
+        "file": "49928-Csv.bin",
+        "size": 164,
+        "sha256": "465f4421d1a00957f7363ec2a78826ab21514f7b1f277564bcf87b2c9a714f2e"
+    },
+    {
+        "id": 49792,
+        "name": "Hyperlink",
+        "file": "49792-Hyperlink.bin",
+        "size": 293,
+        "sha256": "ad6842321b440bba14ca38bc26618d21cd3545ef26049e6e640caa4b218be83b"
+    },
+    {
+        "id": 49939,
+        "name": "ShadowWorkbook",
+        "file": "49939-ShadowWorkbook.bin",
+        "size": 12189,
+        "sha256": "c9c09089fc8eb2f111afe4650458795f244b56ec6f406918534ba70433867034"
+    },
+    {
+        "id": 49653,
+        "name": "Web Custom Format Map",
+        "file": "49653-Web_Custom_Format_Map.bin",
+        "size": 41,
+        "sha256": "321910e978853ae43b095aec18b3efac4c43051c9cff802cbdfc1f9178fc1cf5"
+    },
+    {
+        "id": 49272,
+        "name": "Rich Text Format",
+        "file": "49272-Rich_Text_Format.bin",
+        "size": 4807,
+        "sha256": "e0484070a829a218cea8ce12b391d585004a9f8fae896fa5d5b776e72015b965"
+    },
+    {
+        "id": 49163,
+        "name": "Embed Source",
+        "file": "49163-Embed_Source.bin",
+        "size": 15360,
+        "sha256": "b08e6a57b7d6c8da2ac355a7d6324dadee3d16a2af3e196a3706d56306e34e2a"
+    },
+    {
+        "id": 49156,
+        "name": "Native",
+        "file": "49156-Native.bin",
+        "size": 15360,
+        "sha256": "19c43872a91db41ee480fb713431b7ba0052b277f41b6be6b0ece68be2579595"
+    },
+    {
+        "id": 49155,
+        "name": "OwnerLink",
+        "file": "49155-OwnerLink.bin",
+        "size": 57,
+        "sha256": "21a959d68990b498fed6f1eb785e7de384572f37cfbaa2f9ad2de9dc2397d65a"
+    },
+    {
+        "id": 49166,
+        "name": "Object Descriptor",
+        "file": "49166-Object_Descriptor.bin",
+        "size": 162,
+        "sha256": "0f3d0d75c437a255a6b8bf0df79c2f2ed383fee961d6eb6f225d34ec515399c9"
+    },
+    {
+        "id": 49165,
+        "name": "Link Source",
+        "file": "49165-Link_Source.bin",
+        "size": 255,
+        "sha256": "8b1827674af90f3d2c5d3b7be4e7298321a002ca0a129e7795f619c7ab9cc463"
+    },
+    {
+        "id": 49167,
+        "name": "Link Source Descriptor",
+        "file": "49167-Link_Source_Descriptor.bin",
+        "size": 162,
+        "sha256": "0f3d0d75c437a255a6b8bf0df79c2f2ed383fee961d6eb6f225d34ec515399c9"
+    },
+    {
+        "id": 49817,
+        "name": "Link",
+        "file": "49817-Link.bin",
+        "size": 70,
+        "sha256": "2294ed17f582b8444a23d85ac6bf2386ec8a6f9383d8aa489cbdd25bdec364ef"
+    },
+    {
+        "id": 129,
+        "name": "CF_129",
+        "file": "129-CF_129.bin",
+        "size": 13,
+        "sha256": "604b4778b05f9817345e26e56a686c5249ae1df17408bb24f45b635eacb43805"
+    },
+    {
+        "id": 49154,
+        "name": "ObjectLink",
+        "file": "49154-ObjectLink.bin",
+        "size": 97,
+        "sha256": "5a7fd1602809deb70c6f2351fdefda87fda7530be46c7327800de61cd58965c5"
+    },
+    {
+        "id": 49171,
+        "name": "Ole Private Data",
+        "file": "49171-Ole_Private_Data.bin",
+        "size": 1176,
+        "sha256": "e34f67f211aabd80bb10513e98933e5acba7d16950d7a6361e98a822736fa5d0"
+    },
+    {
+        "id": 16,
+        "name": "CF_LOCALE",
+        "file": "16-CF_LOCALE.bin",
+        "size": 4,
+        "sha256": "641c2b20cfae89ad63861b5b6a0142bd371f17d9a4002e2983baa7aca9f062a6"
+    },
+    {
+        "id": 7,
+        "name": "CF_OEMTEXT",
+        "file": "7-CF_OEMTEXT.bin",
+        "size": 164,
+        "sha256": "a3be06d943c51c3ba8d8bb41e89462c7a90831c787c160bdcc7c91b81816df78"
+    },
+    {
+        "id": 8,
+        "name": "CF_DIB",
+        "file": "8-CF_DIB.bin",
+        "size": 339676,
+        "sha256": "ee537adeb1906ccddce930df3ff0ff97fb2131d9ed30566c9f58bf3d7f187a0a"
+    },
+    {
+        "id": 17,
+        "name": "CF_DIBV5",
+        "file": "17-CF_DIBV5.bin",
+        "size": 339760,
+        "sha256": "dfb78f686e99475a59a3230d895e6a398e76d252a0d0d96e0ad6c42dcff23bed"
+    }
+]

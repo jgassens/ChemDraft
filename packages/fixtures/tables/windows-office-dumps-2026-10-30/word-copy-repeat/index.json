@@ -1,0 +1,134 @@
+[
+    {
+        "id": 49161,
+        "name": "DataObject",
+        "file": "49161-DataObject.bin",
+        "size": 8,
+        "sha256": "4eb300e99260e39e0a22438018c6d8796fc9d93d7bcc826cc125417b479bbbac"
+    },
+    {
+        "id": 49166,
+        "name": "Object Descriptor",
+        "file": "49166-Object_Descriptor.bin",
+        "size": 206,
+        "sha256": "4307f0071f2f88ffe0459b550efc979953ae655b2ecc1d199d13a2eab1d3b642"
+    },
+    {
+        "id": 49272,
+        "name": "Rich Text Format",
+        "file": "49272-Rich_Text_Format.bin",
+        "size": 51276,
+        "sha256": "0b94f5e38c9a7b05b258b77e983ca565ef0e650978442dea5356085067f1ad8b"
+    },
+    {
+        "id": 49330,
+        "name": "HTML Format",
+        "file": "49330-HTML_Format.bin",
+        "size": 46530,
+        "sha256": "436a1c1b1df2c6df1a8cd4e0140abcf10ee2fc7fe9eba72836f720ca4b016161",
+        "note": "profile name in Office temp paths replaced with \"user_\" (same length)"
+    },
+    {
+        "id": 1,
+        "name": "CF_TEXT",
+        "file": "1-CF_TEXT.bin",
+        "size": 160,
+        "sha256": "e15dbbef40a848eefe3e052b51ee7199cbe232f59cd6849c9264c7349ecd3fdd"
+    },
+    {
+        "id": 13,
+        "name": "CF_UNICODETEXT",
+        "file": "13-CF_UNICODETEXT.bin",
+        "size": 320,
+        "sha256": "c2213cc75f0bbc7467f19e890e16fd352f7ac662ddad769aae7468020b5f37e0"
+    },
+    {
+        "id": 14,
+        "name": "CF_ENHMETAFILE",
+        "file": "14-CF_ENHMETAFILE.bin",
+        "size": 44584,
+        "sha256": "472b470b0b58c80ff3d3c37abb041b7bea9299c5bebb219693af53f0776f9596"
+    },
+    {
+        "id": 3,
+        "name": "CF_METAFILEPICT",
+        "note": "Handle-based format, not HGLOBAL"
+    },
+    {
+        "id": 49163,
+        "name": "Embed Source",
+        "file": "49163-Embed_Source.bin",
+        "size": 14207,
+        "sha256": "de61131c45a587e4a514b196542b3ec96a164e16bf7c0ac3345c2546fac14a5d"
+    },
+    {
+        "id": 49156,
+        "name": "Native",
+        "file": "49156-Native.bin",
+        "size": 14208,
+        "sha256": "0e6e517d0d826a7882cba9c356819d0149348f6da25f285d32dd4468a40c1890"
+    },
+    {
+        "id": 49155,
+        "name": "OwnerLink",
+        "file": "49155-OwnerLink.bin",
+        "size": 72,
+        "sha256": "bb866b347460916986007961b9b2e8ab3db022392acc7d56c2d926efebb50f5c"
+    },
+    {
+        "id": 49165,
+        "name": "Link Source",
+        "file": "49165-Link_Source.bin",
+        "size": 249,
+        "sha256": "578ef0172d56cca2021728be6e31c2a64a6730de408048ef5be07108d80c6684"
+    },
+    {
+        "id": 49167,
+        "name": "Link Source Descriptor",
+        "file": "49167-Link_Source_Descriptor.bin",
+        "size": 206,
+        "sha256": "4307f0071f2f88ffe0459b550efc979953ae655b2ecc1d199d13a2eab1d3b642"
+    },
+    {
+        "id": 49154,
+        "name": "ObjectLink",
+        "file": "49154-ObjectLink.bin",
+        "size": 70,
+        "sha256": "f2c489d5a0fdd660e6f4e40fa420f26483ae79c6552c5ea288e97640ef22433a"
+    },
+    {
+        "id": 49821,
+        "name": "HyperlinkWordBkmk",
+        "file": "49821-HyperlinkWordBkmk.bin",
+        "size": 106,
+        "sha256": "7c82af678f0c6c4dfaf818e230df053e88883bbeed8de513357da50fa517f12e"
+    },
+    {
+        "id": 49792,
+        "name": "Hyperlink",
+        "file": "49792-Hyperlink.bin",
+        "size": 48,
+        "sha256": "a553df2d94b9b7670b059de7646f57c5de77428478ff46fc05876aaa26fe18bb"
+    },
+    {
+        "id": 49171,
+        "name": "Ole Private Data",
+        "file": "49171-Ole_Private_Data.bin",
+        "size": 696,
+        "sha256": "286cf379c90ee49114e8b5fe6b1bfc9df1bed17d06e2e3e14c78e3265297d487"
+    },
+    {
+        "id": 16,
+        "name": "CF_LOCALE",
+        "file": "16-CF_LOCALE.bin",
+        "size": 4,
+        "sha256": "641c2b20cfae89ad63861b5b6a0142bd371f17d9a4002e2983baa7aca9f062a6"
+    },
+    {
+        "id": 7,
+        "name": "CF_OEMTEXT",
+        "file": "7-CF_OEMTEXT.bin",
+        "size": 160,
+        "sha256": "7cfbc03054b86a98f53991101c80758dceda1220563996cf8a41f1783ab31eb2"
+    }
+]

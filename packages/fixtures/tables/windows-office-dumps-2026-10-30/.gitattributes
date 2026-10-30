@@ -1,0 +1,2 @@
+# Raw clipboard dumps: keep every byte (CRLF included) exactly as captured.
+*.bin binary

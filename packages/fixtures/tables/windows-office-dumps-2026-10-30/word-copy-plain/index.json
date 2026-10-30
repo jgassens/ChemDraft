@@ -1,0 +1,127 @@
+[
+    {
+        "id": 49161,
+        "name": "DataObject",
+        "file": "49161-DataObject.bin",
+        "size": 8,
+        "sha256": "4eb300e99260e39e0a22438018c6d8796fc9d93d7bcc826cc125417b479bbbac"
+    },
+    {
+        "id": 49166,
+        "name": "Object Descriptor",
+        "file": "49166-Object_Descriptor.bin",
+        "size": 186,
+        "sha256": "35f232152acb992394bcbf97567f6bc2ec78ae5c70067d74d493ecf8e455a74e"
+    },
+    {
+        "id": 49272,
+        "name": "Rich Text Format",
+        "file": "49272-Rich_Text_Format.bin",
+        "size": 50544,
+        "sha256": "8a2b95ac0c5f8f8bde38e426a7bebc48fe5e10ff58a0eeb9cbdec0caaac15e0c"
+    },
+    {
+        "id": 49330,
+        "name": "HTML Format",
+        "file": "49330-HTML_Format.bin",
+        "size": 44903,
+        "sha256": "f5880cee71f024ebd11b21235f9ebcb425ce3f8ebb5feaeb4e3f36c4f0f9fa7b",
+        "note": "profile name in Office temp paths replaced with \"user_\" (same length)"
+    },
+    {
+        "id": 1,
+        "name": "CF_TEXT",
+        "file": "1-CF_TEXT.bin",
+        "size": 160,
+        "sha256": "e15dbbef40a848eefe3e052b51ee7199cbe232f59cd6849c9264c7349ecd3fdd"
+    },
+    {
+        "id": 13,
+        "name": "CF_UNICODETEXT",
+        "file": "13-CF_UNICODETEXT.bin",
+        "size": 320,
+        "sha256": "c2213cc75f0bbc7467f19e890e16fd352f7ac662ddad769aae7468020b5f37e0"
+    },
+    {
+        "id": 14,
+        "name": "CF_ENHMETAFILE",
+        "file": "14-CF_ENHMETAFILE.bin",
+        "size": 44584,
+        "sha256": "d1bb1e1c63cc1c47d97300101c09d972af4aef515525b119e1d0769a88257ed7"
+    },
+    {
+        "id": 3,
+        "name": "CF_METAFILEPICT",
+        "note": "Handle-based format, not HGLOBAL"
+    },
+    {
+        "id": 49163,
+        "name": "Embed Source",
+        "file": "49163-Embed_Source.bin",
+        "size": 14160,
+        "sha256": "e431534afa05bdafca2873c04537c9e07e28dbeeb10cb78ac24ad683ffe26c69"
+    },
+    {
+        "id": 49156,
+        "name": "Native",
+        "file": "49156-Native.bin",
+        "size": 14158,
+        "sha256": "b3cdcad5dd9766ec5fbc2b83d315ea081621ef3e3997a7244d3a9c2598564dca"
+    },
+    {
+        "id": 49155,
+        "name": "OwnerLink",
+        "file": "49155-OwnerLink.bin",
+        "size": 62,
+        "sha256": "b26305029177fa2b7c5e744807bf73d4da09db099b69f2ce4689ad83d3428d3c"
+    },
+    {
+        "id": 49165,
+        "name": "Link Source",
+        "file": "49165-Link_Source.bin",
+        "size": 249,
+        "sha256": "578ef0172d56cca2021728be6e31c2a64a6730de408048ef5be07108d80c6684"
+    },
+    {
+        "id": 49167,
+        "name": "Link Source Descriptor",
+        "file": "49167-Link_Source_Descriptor.bin",
+        "size": 206,
+        "sha256": "4307f0071f2f88ffe0459b550efc979953ae655b2ecc1d199d13a2eab1d3b642"
+    },
+    {
+        "id": 49154,
+        "name": "ObjectLink",
+        "file": "49154-ObjectLink.bin",
+        "size": 70,
+        "sha256": "f2c489d5a0fdd660e6f4e40fa420f26483ae79c6552c5ea288e97640ef22433a"
+    },
+    {
+        "id": 49792,
+        "name": "Hyperlink",
+        "file": "49792-Hyperlink.bin",
+        "size": 48,
+        "sha256": "51b375c64006b3da3bc8eed71419ae0301d8d553bf101a4be2788ecf06fb6e49"
+    },
+    {
+        "id": 49171,
+        "name": "Ole Private Data",
+        "file": "49171-Ole_Private_Data.bin",
+        "size": 648,
+        "sha256": "45ab9e74ba491e265a007155bd874cc31befd488723a3406c40a277887867df1"
+    },
+    {
+        "id": 16,
+        "name": "CF_LOCALE",
+        "file": "16-CF_LOCALE.bin",
+        "size": 4,
+        "sha256": "641c2b20cfae89ad63861b5b6a0142bd371f17d9a4002e2983baa7aca9f062a6"
+    },
+    {
+        "id": 7,
+        "name": "CF_OEMTEXT",
+        "file": "7-CF_OEMTEXT.bin",
+        "size": 160,
+        "sha256": "7cfbc03054b86a98f53991101c80758dceda1220563996cf8a41f1783ab31eb2"
+    }
+]
