@@ -1003,39 +1003,69 @@ function MoleculeInspectorNumericControl({
   );
 }
 
+const PALETTE_COLOR_ECHO_TIMEOUT_MS = 1000;
+
 /** React's color onChange is a live input notification. Only the native change
  * ends a chooser pick; WebKit's Colors panel need not blur its owning input. */
-function PaletteColorInput({ value, onPreviewColor, onCommitColor, onKeyDownCapture, ...props }: Omit<
+function PaletteColorInput({ value, contextKey: explicitContextKey, onPreviewColor, onCommitColor, onKeyDownCapture, ...props }: Omit<
   InputHTMLAttributes<HTMLInputElement>, "type" | "value" | "onChange" | "onBlur"
-> & { value: string; onPreviewColor: (color: string) => void; onCommitColor: (color: string) => void }) {
+> & { value: string; contextKey?: string; onPreviewColor: (color: string) => void; onCommitColor: (color: string) => void }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const pendingColor = useRef<string | undefined>(undefined);
   const settledColor = useRef(value);
   const awaitingColorEcho = useRef<string | undefined>(undefined);
-  // Detached palettes receive the model echo later over IPC. Keep the browser's
-  // live value locally: rendering the old prop here resets the native input before
-  // WebKit's subsequent change/blur and commits the old colour back to the drawing.
+  const { colorContextKey } = useToolbarWidgetState();
+  const contextKey = explicitContextKey ?? colorContextKey;
+  const previousContext = useRef(contextKey);
+  const latestModel = useRef(value);
+  latestModel.current = value;
+  const echoTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // Retain only an outstanding echo, never ownership of the model. A matching
+  // preview still needs a native change/blur commit, but no longer pins the value.
   const [localColor, setLocalColor] = useState(value);
+  const followModel = () => {
+    clearTimeout(echoTimer.current);
+    awaitingColorEcho.current = undefined;
+    pendingColor.current = undefined;
+    settledColor.current = latestModel.current;
+    setLocalColor(latestModel.current);
+  };
+  const retainUntilEcho = (color: string) => {
+    clearTimeout(echoTimer.current);
+    awaitingColorEcho.current = color === value ? undefined : color;
+    // IPC can be dropped/rejected. Never leave a chooser pinned to a value the
+    // document did not accept, including when the model prop never changes.
+    if (awaitingColorEcho.current !== undefined) {
+      echoTimer.current = setTimeout(followModel, PALETTE_COLOR_ECHO_TIMEOUT_MS);
+    }
+    setLocalColor(color);
+  };
   useEffect(() => {
+    if (previousContext.current !== contextKey) {
+      previousContext.current = contextKey;
+      followModel();
+      return;
+    }
     if (awaitingColorEcho.current !== undefined) {
       if (value !== awaitingColorEcho.current) return;
+      clearTimeout(echoTimer.current);
       awaitingColorEcho.current = undefined;
-    }
-    if (pendingColor.current === undefined) {
-      settledColor.current = value;
       setLocalColor(value);
+      return;
     }
-  }, [value]);
+    // An acknowledged preview no longer shields the input from undo, redo or
+    // another surface's edit. Forget its pending commit before following props.
+    followModel();
+  }, [value, contextKey]);
+  useEffect(() => () => clearTimeout(echoTimer.current), []);
   const preview = (color: string) => {
-    setLocalColor(color);
-    awaitingColorEcho.current = color === value ? undefined : color;
+    retainUntilEcho(color);
     if (color === (pendingColor.current ?? settledColor.current)) return;
     pendingColor.current = color;
     onPreviewColor(color);
   };
   const commit = (color: string) => {
-    setLocalColor(color);
-    awaitingColorEcho.current = color === value ? undefined : color;
+    retainUntilEcho(color);
     if (pendingColor.current === undefined && color === settledColor.current) return;
     // Some choosers send change without a preceding input notification.
     if (pendingColor.current !== color) onPreviewColor(color);
@@ -1048,11 +1078,7 @@ function PaletteColorInput({ value, onPreviewColor, onCommitColor, onKeyDownCapt
     const change = () => commit(input.value);
     // The lease handler may blur before the popover sees Escape, including when
     // the key targets body. Discard first so the blur fallback cannot commit.
-    const discard = () => {
-      pendingColor.current = undefined;
-      awaitingColorEcho.current = undefined;
-      setLocalColor(value);
-    };
+    const discard = followModel;
     input.addEventListener("change", change);
     input.addEventListener(PALETTE_INPUT_FOCUS_CANCEL_EVENT, discard);
     return () => {
@@ -1063,9 +1089,7 @@ function PaletteColorInput({ value, onPreviewColor, onCommitColor, onKeyDownCapt
   return <input {...props} ref={inputRef} type="color" value={localColor}
     onKeyDownCapture={(event) => {
       if (event.key === "Escape") {
-        pendingColor.current = undefined;
-        awaitingColorEcho.current = undefined;
-        setLocalColor(value);
+        followModel();
       }
       onKeyDownCapture?.(event);
     }}
@@ -3226,11 +3250,13 @@ function ColorPickerControl({
 export function ColorPickerPopoverBody({
   activeColor,
   value,
+  contextKey,
   onCommitColor,
   onPreviewColor
 }: {
   activeColor?: string;
   value: string;
+  contextKey?: string;
   onCommitColor: (color: string) => void;
   onPreviewColor: (color: string) => void;
 }) {
@@ -3369,7 +3395,10 @@ export function ColorPickerPopoverBody({
               <span className="visually-hidden">System color wheel</span>
               <PaletteColorInput
                 className="color-wheel-input"
-                value={normalizedValue}
+                contextKey={contextKey}
+                // The popover draft is optimistic too; only the model colour
+                // acknowledges a native chooser pick (or supplies its fallback).
+                value={normalizedActiveColor}
                 aria-label="System color wheel"
                 onPreviewColor={previewColor}
                 onCommitColor={commitColor}

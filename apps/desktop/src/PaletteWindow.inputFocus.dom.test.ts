@@ -1416,6 +1416,75 @@ describe.each(["macos", "windows"] as const)("palette input focus (%s)", (platfo
     expect(document.activeElement).toBe(control);
   });
 
+  it("ends a popup-suspended select on hide, then acquires fresh focus on reopen before typing", async () => {
+    const input = await mountSettings();
+    const select = await nonTextControl("select");
+    await clickControl(select);
+    const shell = container.querySelector<HTMLElement>(".palette-window-shell")!;
+    const firstGeneration = leases().at(-1)![1].generation;
+    // AppKit popup tracking blurs to body and resigns key status without a known
+    // window click. On Windows that native deactivation is already terminal.
+    await act(async () => {
+      select.blur();
+      native.notify!({ payload: { kind: "deactivated", generation: firstGeneration, reason: "window" } });
+    });
+    await flush();
+    expect(shell.dataset.paletteInputFocus).toBe(platform === "macos" ? "held" : undefined);
+
+    // Native Toolbars-menu close: the page stays mounted and receives the native
+    // end-for-hide event, not a DOM click-away or an effect teardown.
+    await act(async () => native.notify!({
+      payload: { kind: "deactivated", generation: firstGeneration, reason: "hide" }
+    }));
+    await flush();
+    expect(shell.dataset.paletteInputFocus).toBeUndefined();
+    expect(leases().at(-1)![1]).toMatchObject({ editing: false, returnFocus: false });
+
+    // Reopening configures the native window non-focusable. Clicking the SAME
+    // select must reacquire; changing to a number alone would mask the bug by
+    // changing selectInteraction and forcing a retry even with a stale lease.
+    native.invoke.mockClear();
+    await clickControl(select);
+    expect(leases()).toHaveLength(1);
+    expect(leases()[0]![1]).toMatchObject({ editing: true });
+    expect(leases()[0]![1].selectInteraction).toBe(platform === "macos" ? true : undefined);
+    expect(leases()[0]![1].generation).toBeGreaterThan(firstGeneration);
+    expect(shell.dataset.paletteInputFocus).toBe("held");
+    expect(document.activeElement).toBe(select);
+    vi.mocked(sendPaletteCommand).mockClear();
+    expect((await press(select, "n")).defaultPrevented).toBe(false);
+    expect(sendPaletteCommand).not.toHaveBeenCalled();
+
+    await clickControl(input);
+    expect(document.activeElement).toBe(input);
+    expect((await press(input, "3")).defaultPrevented).toBe(false);
+    await type(input, "33");
+    expect(input.value).toBe("33");
+    expect(sendPaletteCommand).not.toHaveBeenCalled();
+  });
+
+  it("delivers colour context changes to the same mounted chooser without a model colour change", async () => {
+    await mountSettings();
+    const model = lengthModel(22);
+    model.structure.values.bondColor = { value: "#111111", mixed: false };
+    const snapshotColor = async (context: string) => act(async () => broadcastToolsetTextStyle({
+      ...createToolsetTextStylePayload(DefaultNativeTextStyle, "normal", undefined, "fill", model),
+      colorContextKey: context
+    }));
+    await snapshotColor("selection-a/history-1");
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Bond color"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "#0000ff");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(input.value).toBe("#0000ff");
+    await snapshotColor("selection-b/history-1");
+    expect(container.querySelector('input[aria-label="Bond color"]')).toBe(input);
+    expect(input.value).toBe("#111111");
+    await act(async () => input.dispatchEvent(new Event("change", { bubbles: true })));
+    expect(sendPaletteCommandCommit).not.toHaveBeenCalled();
+  });
+
   it("lets the settings control cancel its preview before Escape releases focus", async () => {
     const input = await mountSettings();
     await act(async () => input.focus());

@@ -66,7 +66,7 @@ export function isPaletteWindowDragPress(
 export interface NativePanelFocusEvent {
   kind: "activated" | "deactivated";
   generation: number;
-  reason?: "window" | "outside" | "app";
+  reason?: "window" | "outside" | "app" | "hide";
 }
 
 // Survives effect teardown/reinstall (including React StrictMode). Native bookkeeping
@@ -403,7 +403,7 @@ export function installPluginPanelInputFocus(
     if (disposed) return;
     if (event.kind === "deactivated") {
       if (editing && nativeGenerations.has(event.generation) && nativeSelectInteraction &&
-        event.reason !== "outside" && event.reason !== "app") {
+        (event.reason === undefined || event.reason === "window")) {
         // Losing key status to AppKit's popup is not a click away. Native code
         // keeps this select eligible to regain key status when tracking ends.
         selectSuspended = true;
@@ -411,7 +411,9 @@ export function installPluginPanelInputFocus(
         return;
       }
       // Loss is terminal even if a delayed acquisition reply says it acquired focus.
-      if (editing && nativeGenerations.has(event.generation)) finish(false, true, undefined, false);
+      if (editing && nativeGenerations.has(event.generation)) {
+        finish(false, event.reason !== "hide", undefined, false);
+      }
     } else if (selectSuspended && editing) {
       selectSuspended = false;
       focusLeasedControl();

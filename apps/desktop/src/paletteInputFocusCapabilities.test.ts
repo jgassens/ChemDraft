@@ -115,3 +115,29 @@ it("retains a pending palette control on forwarded app commands and requires exp
   expect(release).toContain("return_focus: Option<bool>");
   expect(release).toContain("return_focus_after_interaction(&target, return_focus.unwrap_or(false))");
 });
+
+// These source guards complement the DOM hide/reopen regression: a simulated
+// native event alone would not catch a menu/suspension path forgetting to emit it.
+it("ends native and page leases before every reusable toolset hide and native close", () => {
+  const source = readNative("src/lib.rs");
+  for (const name of ["close_toolset_window", "close_toolset_popover", "suspend_toolset_windows"]) {
+    const body = source.split(`fn ${name}(`)[1]!.split("\nfn ")[0]!;
+    const end = body.indexOf("panel_window::end_for_hide(window.app_handle(), window.label())");
+    expect(end, name).toBeGreaterThanOrEqual(0);
+    expect(end, name).toBeLessThan(body.indexOf("window.hide()"));
+  }
+  const events = source.split(".on_window_event(")[1]!.split(".setup(")[0]!;
+  expect(events).toMatch(/is_input_focus_window_label\(window.label\(\)\)\s*&& matches!\(event, WindowEvent::CloseRequested \{ \.\. \}\)\s*\{\s*panel_window::end_for_hide/);
+  const panel = readNative("src/panel_window.rs");
+  const end = panel.split("fn end_for_hide")[1]!.split("\npub(crate) fn ")[0]!;
+  expect(end).toContain("PointerGuardEnd::Hide");
+  expect(end).toContain('activation_with_reason(&window, false, "hide")');
+  const transition = panel.split("fn activation_with_reason")[1]!.split("// Key resignation")[0]!;
+  expect(transition).toContain('reason == "window" && lease.suspend_select()');
+  expect(transition).toContain("lease.deactivate()");
+  expect(transition).toContain("window.set_focusable(false)");
+  expect(transition).toContain("window.emit_to");
+  // A request not yet registered at hide time must also be refused when it runs.
+  const acquire = source.split("async fn set_plugin_panel_input_focus(")[1]!.split("/// Sent to the main window")[0]!;
+  expect(acquire).toContain("if !target.is_visible().unwrap_or(false)");
+});

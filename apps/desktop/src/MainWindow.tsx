@@ -2937,6 +2937,20 @@ export function MainWindow({
     }
   }, [activeToolState.activeCommandId, currentEyedropperStatus]);
 
+  // Preview replacements keep the history arrays; commits/settlement, undo and
+  // redo replace them. Count identities, not lengths (bounded history can stay full).
+  const colorHistoryBoundary = useRef({ past: documentHistory.past, future: documentHistory.future, revision: 0 });
+  if (colorHistoryBoundary.current.past !== documentHistory.past ||
+    colorHistoryBoundary.current.future !== documentHistory.future) {
+    colorHistoryBoundary.current = {
+      past: documentHistory.past, future: documentHistory.future, revision: colorHistoryBoundary.current.revision + 1
+    };
+  }
+  const colorContextKey = JSON.stringify([
+    activeDocumentTabId, document.id, document.selection, selectedNativeMoleculePart,
+    selectedNativeMoleculeParts, colorHistoryBoundary.current.revision
+  ]);
+
   const currentToolbarTextStateRef = useRef(
     createToolsetTextStylePayload(
       currentToolbarTextStyle,
@@ -2946,7 +2960,9 @@ export function MainWindow({
       currentMoleculeInspector,
       currentToolbarSelection,
       analysisReport,
-      analysisBusy
+      analysisBusy,
+      false,
+      colorContextKey
     )
   );
   currentToolbarTextStateRef.current = createToolsetTextStylePayload(
@@ -2957,7 +2973,9 @@ export function MainWindow({
     currentMoleculeInspector,
     currentToolbarSelection,
     analysisReport,
-    analysisBusy
+    analysisBusy,
+    false,
+    colorContextKey
   );
   const activeEditorMolecule =
     selectedMolecule && selectedMolecule.id === activeEditorObjectId ? selectedMolecule : undefined;
@@ -3693,7 +3711,8 @@ export function MainWindow({
         // unchanged while making the effect's identity stable across document changes.
         analysisReportForBroadcast,
         analysisBusy,
-        analysisReportIsStale
+        analysisReportIsStale,
+        colorContextKey
       )
     ).catch(() => undefined);
     // `analysisReport` reaches this through `analysisReportForBroadcast`, so a detached Molecular
@@ -3708,7 +3727,8 @@ export function MainWindow({
     currentMoleculeInspector,
     currentToolbarSelection,
     currentToolbarTextScript,
-    currentToolbarTextStyle
+    currentToolbarTextStyle,
+    colorContextKey
   ]);
 
   useEffect(() => {
@@ -20083,6 +20103,7 @@ export function MainWindow({
                 onInvoke={invoke}
                 customize={customizingThis ? { groupIds: renderGroups.map((group) => group.id) } : undefined}
                 widgetState={{
+                  colorContextKey,
                   currentObjectColor: currentToolbarObjectColor,
                   currentArtStyle,
                   currentArtStyleTarget: activeArtPaintTarget,

@@ -91,6 +91,7 @@ export function PalettePopoverWindow({
   };
   const [artStyleTarget, setArtStyleTarget] = useState<ToolsetArtPaintTarget>("fill");
   const [fallbackColor, setFallbackColor] = useState<string | undefined>();
+  const [colorContextKey, setColorContextKey] = useState<string | undefined>();
   const [draft, setDraft] = useState<string | undefined>();
 
   const effectiveTarget: ToolsetArtPaintTarget = artStyle?.activePaintTarget ?? artStyleTarget ?? "fill";
@@ -164,6 +165,7 @@ export function PalettePopoverWindow({
     let unlisten: (() => void) | undefined;
     void listenForToolsetTextStyle((payload) => {
       setArtStyle(payload.currentArtStyle);
+      setColorContextKey(payload.colorContextKey);
       setArtStyleTarget(payload.currentArtStyle?.activePaintTarget ?? payload.currentArtStyleTarget ?? "fill");
       setFallbackColor(payload.currentTextStyle?.color);
     })
@@ -179,7 +181,7 @@ export function PalettePopoverWindow({
   // draft — the picker should reflect whatever the current object actually is.
   useEffect(() => {
     setDraft(undefined);
-  }, [currentColor]);
+  }, [currentColor, colorContextKey]);
 
   // Fit the window to whatever content it's showing, in both dimensions. Every resize
   // re-asserts the anchored position: a bottom-anchored macOS resize moves the top-left,
@@ -511,6 +513,7 @@ export function PalettePopoverWindow({
       ) : (
         <div className="art-color-popover" role="dialog" aria-label="Art color picker">
           <ColorPickerPopoverBody
+            contextKey={colorContextKey}
             activeColor={currentColor}
             value={value}
             onPreviewColor={previewColor}

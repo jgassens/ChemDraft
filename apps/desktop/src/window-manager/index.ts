@@ -74,6 +74,7 @@ export type PaletteCommandPayload = ToolsetCommandPayload;
 export type ToolsetActiveToolPayload = ToolsetCommandPayload;
 
 export interface ToolsetTextStylePayload {
+  colorContextKey?: string;
   currentTextStyle: NativeTextStyle;
   currentTextScript: TextSpan["script"];
   currentArtStyle?: ToolsetArtStylePayload;
@@ -160,11 +161,13 @@ export function createToolsetTextStylePayload(
   currentSelection?: ToolbarSelectionModel,
   currentMolecularInspector?: AnalysisReport,
   molecularInspectorBusy = false,
-  molecularInspectorStale = false
+  molecularInspectorStale = false,
+  colorContextKey?: string
 ): ToolsetTextStylePayload {
   return {
     currentTextStyle,
     currentTextScript,
+    ...(colorContextKey !== undefined ? { colorContextKey } : {}),
     ...(currentArtStyle ? { currentArtStyle, currentArtStyleTarget } : {}),
     ...(currentMoleculeInspector ? { currentMoleculeInspector } : {}),
     ...(currentSelection ? { currentSelection } : {}),

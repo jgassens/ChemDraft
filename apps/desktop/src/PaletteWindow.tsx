@@ -175,6 +175,7 @@ export function PaletteWindow({
   const [currentTextScript, setCurrentTextScript] = useState<TextSpan["script"]>("normal");
   const [currentArtStyle, setCurrentArtStyle] = useState<ToolsetArtStylePayload | undefined>();
   const [currentArtStyleTarget, setCurrentArtStyleTarget] = useState<ToolsetArtPaintTarget>("fill");
+  const [colorContextKey, setColorContextKey] = useState<string | undefined>();
   const [currentMoleculeInspector, setCurrentMoleculeInspector] = useState<ToolsetMoleculeInspectorPayload | undefined>();
   const [currentSelection, setCurrentSelection] = useState<ToolbarSelectionModel | undefined>();
   const [currentMolecularInspector, setCurrentMolecularInspector] = useState<AnalysisReport | undefined>();
@@ -508,6 +509,7 @@ export function PaletteWindow({
       setCurrentArtStyle(payload.currentArtStyle);
       setCurrentArtStyleTarget(payload.currentArtStyle?.activePaintTarget ?? payload.currentArtStyleTarget ?? "fill");
       setCurrentMoleculeInspector(payload.currentMoleculeInspector);
+      setColorContextKey(payload.colorContextKey);
       // Version skew degrades to the pre-variant behavior: an unknown kind reads as no selection
       // model at all rather than freezing the palette on a rejected payload.
       setCurrentSelection(
@@ -1004,6 +1006,7 @@ export function PaletteWindow({
         onInvoke={invokeCommand}
         customize={customizeThisPalette ? { groupIds: renderGroups.map((group) => group.id) } : undefined}
         widgetState={{
+          colorContextKey,
           currentObjectColor: currentTextStyle.color,
           currentArtStyle,
           currentArtStyleTarget,

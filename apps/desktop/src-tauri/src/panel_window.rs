@@ -43,6 +43,15 @@ pub(crate) fn end_pointer_guard<R: tauri::Runtime>(
     key_guard::end(app, label, why, sequence, before);
 }
 
+/// Hiding is terminal even when a select popup already resigned key status.
+/// Invalidate native acquisition and notify the still-mounted page before hiding.
+pub(crate) fn end_for_hide<R: tauri::Runtime>(app: &tauri::AppHandle<R>, label: &str) {
+    key_guard::end(app, label, PointerGuardEnd::Hide, None, 0);
+    if let Some(window) = app.get_webview_window(label) {
+        activation_with_reason(&window, false, "hide");
+    }
+}
+
 pub(crate) fn holds_input_focus<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> bool {
     window
         .state::<PanelFocusState>()
@@ -96,8 +105,7 @@ pub(crate) fn return_focus_after_interaction<R: tauri::Runtime>(
     #[cfg(target_os = "macos")]
     {
         use objc2_app_kit::{NSApplication, NSWindow};
-        let marker =
-            objc2::MainThreadMarker::new().ok_or("Panel focus requires the main thread.")?;
+        let marker = objc2::MainThreadMarker::new().ok_or("Panel focus requires the main thread.")?;
         let pointer = window.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
         let panel = unsafe { pointer.as_ref() }.ok_or("Could not access native panel window.")?;
         if focus_return::should_return(

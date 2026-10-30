@@ -1119,6 +1119,12 @@ pub fn run() {
                 panel_window::forget(window);
             }
 
+            if is_input_focus_window_label(window.label())
+                && matches!(event, WindowEvent::CloseRequested { .. })
+            {
+                panel_window::end_for_hide(window.app_handle(), window.label());
+            }
+
             // A report or analysis window closed natively (Window > Close Window, Cmd+W) must take
             // the same path as its own close control: hidden, not destroyed, and the main document
             // told, so a plugin gets its close signal (AGENTS.md §8a) and a later report re-shows the
@@ -1153,13 +1159,6 @@ pub fn run() {
                         return;
                     }
                     api.prevent_close();
-                    panel_window::end_pointer_guard(
-                        window.app_handle(),
-                        window.label(),
-                        panel_window::PointerGuardEnd::Hide,
-                        None,
-                        0,
-                    );
                     if let Err(error) = window.hide() {
                         eprintln!(
                             "Could not hide ChemDraft panel window {}: {error}",
@@ -2017,13 +2016,7 @@ async fn suspend_toolset_windows(
                 {
                     continue;
                 }
-                panel_window::end_pointer_guard(
-                    window.app_handle(),
-                    window.label(),
-                    panel_window::PointerGuardEnd::Hide,
-                    None,
-                    0,
-                );
+                panel_window::end_for_hide(window.app_handle(), window.label());
                 if let Err(error) = window.hide() {
                     // A failed acquisition must undo its own temporary hides; JS will not release
                     // an acquisition that rejected and will use the in-app fallback instead.
@@ -2460,13 +2453,7 @@ fn close_toolset_window(
     let state = mark_toolset_window_closed(&app, &toolset_id)?;
 
     if let Some(window) = window {
-        panel_window::end_pointer_guard(
-            window.app_handle(),
-            window.label(),
-            panel_window::PointerGuardEnd::Hide,
-            None,
-            0,
-        );
+        panel_window::end_for_hide(window.app_handle(), window.label());
         window.hide().map_err(|error| error.to_string())?;
     }
 
@@ -3161,11 +3148,15 @@ async fn set_plugin_panel_input_focus(
             }
             if editing {
                 let result = (|| -> Result<bool, String> {
+                    // An acquisition dispatched before a hide can arrive afterwards.
+                    // Hidden reusable palettes must wait for a fresh visible click.
+                    if !target.is_visible().unwrap_or(false) {
+                        return Ok(false);
+                    }
                     #[cfg(target_os = "macos")]
                     {
                         // makeKeyWindow must not lend a background app a persistent lease.
-                        let marker =
-                            MainThreadMarker::new().ok_or("Panel focus requires the main thread.")?;
+                        let marker = MainThreadMarker::new().ok_or("Panel focus requires the main thread.")?;
                         if !objc2_app_kit::NSApplication::sharedApplication(marker).isActive() {
                             return Ok(false);
                         }
@@ -4476,13 +4467,7 @@ fn toolset_popover_extended_style(style: isize, focus_mode: ToolsetPopoverFocusM
 #[tauri::command]
 fn close_toolset_popover(app: tauri::AppHandle, toolset_id: String) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(&toolset_popover_window_label(&toolset_id)) {
-        panel_window::end_pointer_guard(
-            window.app_handle(),
-            window.label(),
-            panel_window::PointerGuardEnd::Hide,
-            None,
-            0,
-        );
+        panel_window::end_for_hide(window.app_handle(), window.label());
         window.hide().map_err(|error| error.to_string())?;
     }
     Ok(())
