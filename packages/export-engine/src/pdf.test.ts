@@ -35,8 +35,8 @@ const timestamp = "2026-05-29T00:00:00.000Z";
 describe("exportDocumentToPdf", () => {
   it("skips picture-less graphics with format-specific warnings", async () => {
     const document = createEmptyDocument();
-    const picture = createImageGraphicObject({ id: "missing-picture", mimeType: "image/png", dataBase64: "AAAA", pixelWidth: 1, pixelHeight: 1, center: { x: 0, y: 0 } });
-    document.pages[0]!.objects = [{ ...picture, data: {} }];
+    document.pages[0]!.objects = [{ id: "missing-picture", type: "graphic", graphicKind: "image",
+      x: 0, y: 0, width: 1, height: 1, rotation: 0, data: {}, style: {} }];
     const svg = exportDocumentToSvg(document);
     expect(svg.contents).not.toContain('data-object-id="missing-picture"');
     expect(svg.warnings).toEqual([{ code: "export.svg.picture_missing_data", severity: "warning", objectId: "missing-picture",

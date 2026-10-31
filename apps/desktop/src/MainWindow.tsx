@@ -6741,11 +6741,18 @@ export function MainWindow({
 
   const applyDetectedClipboardPayload = useCallback((detectedPayload: ClipboardDetectedPayload) => {
     smilesListPasteAbortRef.current?.abort();
+    const pasteFallbackImage = () => {
+      if (detectedPayload.kind !== "smiles" || !detectedPayload.fallbackImage) return false;
+      const image = detectedPayload.fallbackImage;
+      applySyncClipboardPayload(inspectClipboardPayload({ types: [image.type], textItems: [], imageItems: [image] }));
+      return true;
+    };
     if (detectedPayload.kind === "smiles" && !/\s/.test(detectedPayload.text.trim())) {
       void renderPastedSmiles(detectedPayload.text.trim()).then(({ rendered, reason, failed }) => {
         if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
         if (failed) return;
         if (!rendered) {
+          if (pasteFallbackImage()) return;
           applySyncClipboardPayload({ kind: "plain-text", text: detectedPayload.text, sourceType: detectedPayload.sourceType, warnings: [] });
           if (reason) {
             setStatus(reason.startsWith("the structure could not be verified")
@@ -6790,6 +6797,7 @@ export function MainWindow({
         templatePlacement: { document: pasteDocument, centre: pastePointForViewport() }
       });
       if (!pendingList) {
+        if (pasteFallbackImage()) return;
         pasteAsText();
         return;
       }
@@ -6797,6 +6805,7 @@ export function MainWindow({
         if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
         if (listAbort.signal.aborted) return;
         if (!parsed) {
+          if (pasteFallbackImage()) return;
           pasteAsText();
           return;
         }
@@ -6807,6 +6816,7 @@ export function MainWindow({
         const result = insertSmilesMoleculeGrid(
           pasteDocument, pastePointForViewport(), entries);
         parsed.failures.push(...verified.failures);
+        if (!result.objectIds.length && pasteFallbackImage()) return;
         const engineUnavailable = !result.objectIds.length && parsed.failures.some(failure =>
           failure.error.includes("the RDKit engine did not load:"));
         if (engineUnavailable) pasteAsText();
@@ -6839,6 +6849,7 @@ export function MainWindow({
       }).catch((error: unknown) => {
         if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
         if (listAbort.signal.aborted) return;
+        if (error instanceof SmilesListPasteError && pasteFallbackImage()) return;
         if (error instanceof SmilesListPasteError) pasteAsText();
         const failures = error instanceof SmilesListPasteError ? error.failures : [];
         const firstReason = failures.length ? smilesListFailureStatus(failures)

@@ -7,8 +7,12 @@ import { createImageGraphicObject, DOCUMENT_STYLE_UNITS_PER_PT, MAX_IMAGE_OBJECT
 import { inspectClipboardPayload, type ClipboardReadPayload } from "@chemdraft/clipboard-adapter";
 import { MainWindow, selectionInSelectionRect, selectionInSelectionPolygon } from "./MainWindow";
 import * as clipboard from "./clipboard";
+import * as smilesPaste from "./smilesListPaste";
+import * as smilesIdentity from "./smilesPasteIdentity";
 import { createPhase4Document } from "./documentWorkflow";
-import { picturePngBase64, pictureSvg } from "./testSupport/imageFixture";
+import { pictureSvg } from "./testSupport/imageFixture";
+
+const picturePngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAJAAAABICAYAAAAZK3z6AAAA80lEQVR4nO3OsQkAMBDEsNt/6c8OaYzBhXptu0v+4YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YG44YGYPTnRs7EzXJbBAAAAAElFTkSuQmCC";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -31,6 +35,7 @@ describe("picture paste and canvas", () => {
 
   beforeEach(() => {
     vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+    vi.stubGlobal("Image", class { src = ""; async decode() {} });
     Element.prototype.setPointerCapture = () => {};
     Element.prototype.releasePointerCapture = () => {};
     Element.prototype.hasPointerCapture = () => false;
@@ -144,6 +149,40 @@ describe("picture paste and canvas", () => {
     expect(inspectClipboardPayload(payload)).toMatchObject({ kind: "image-refused", message: "Couldn't paste the picture: PNG is 26.0 MB; the limit is 25 MB." });
     expect(read).not.toHaveBeenCalled();
     await pasteFiles([file]);
+    expect(snapshot().pages[0]!.objects).toHaveLength(0);
+    expect(canUndo()).toBe(false);
+  });
+
+  it("refuses a framed PNG when the browser cannot decode it", async () => {
+    await render();
+    const bytes = Uint8Array.from(atob(picturePngBase64), char => char.charCodeAt(0));
+    bytes[24] = 3; // Illegal PNG bit depth, while chunk framing remains intact.
+    const file = new File([bytes], "bad.png", { type: "image/png" });
+    const transfer = { types: ["Files"], files: [file], getData: () => "" } as unknown as DataTransfer;
+    const decoder = vi.fn().mockRejectedValue(new Error("decode failed"));
+    const payload = await clipboard.clipboardPayloadFromDataTransfer(transfer, decoder);
+    expect(decoder).toHaveBeenCalledOnce();
+    expect(inspectClipboardPayload(payload)).toMatchObject({ kind: "image-refused",
+      message: "Couldn't paste the picture: the image data could not be decoded." });
+    vi.stubGlobal("Image", class { src = ""; async decode() { throw new Error("decode failed"); } });
+    await pasteFiles([file]);
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Couldn't paste the picture: the image data could not be decoded.");
+    expect(snapshot().pages[0]!.objects).toHaveLength(0);
+    expect(canUndo()).toBe(false);
+  });
+
+  it.each(["PNG", "CCO CCN"])("pastes the fallback picture when %s yields no structures", async text => {
+    await render();
+    vi.spyOn(clipboard, "readClipboardPayload").mockResolvedValue({ ...nativeImage,
+      types: ["text/plain", "image/png"], textItems: [{ type: "text/plain", text }] });
+    vi.spyOn(smilesIdentity, "verifySmilesPasteInput").mockResolvedValue(undefined);
+    vi.spyOn(smilesPaste, "depictSmilesForPaste").mockResolvedValue(undefined);
+    vi.spyOn(smilesPaste, "depictSmilesListForPaste").mockReturnValue(Promise.resolve(undefined));
+    await command("clipboard.paste");
+    expect(snapshot().pages[0]!.objects).toHaveLength(1);
+    expect(snapshot().pages[0]!.objects[0]).toMatchObject({ type: "graphic", graphicKind: "image" });
+    await command("edit.undo");
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Undid Paste Picture");
     expect(snapshot().pages[0]!.objects).toHaveLength(0);
     expect(canUndo()).toBe(false);
   });
