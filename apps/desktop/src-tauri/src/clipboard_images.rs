@@ -804,7 +804,7 @@ mod tests {
     fn tiff_converts_pixels_and_refuses_bad_data() {
         let mut bytes = Cursor::new(Vec::new());
         image::codecs::tiff::TiffEncoder::new(&mut bytes)
-            .encode(&[11, 22, 33, 64], 1, 1, image::ExtendedColorType::Rgba8)
+            .write_image(&[11, 22, 33, 64], 1, 1, image::ExtendedColorType::Rgba8)
             .unwrap();
         let item = tiff_image_item(bytes.get_ref()).unwrap();
         assert_eq!(decoded(&item).as_raw(), &[11, 22, 33, 64]);
