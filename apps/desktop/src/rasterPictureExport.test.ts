@@ -24,7 +24,7 @@ describe("picture page raster requests", () => {
   it.each(["image/png", "image/svg+xml"] as const)("sends a %s page at 1x and 3x with source density and preserves the native warning", async mimeType => {
     const document = pageWithPicture(mimeType);
     const warning = { code: "raster_pictures_omitted", severity: "warning",
-      message: "PNG export: pictures are not included in image exports yet; export SVG or PDF to include them." };
+      message: "PNG export: PNG and other bitmap pictures are not included in image exports yet; export SVG or PDF to include them." };
     native.invoke.mockResolvedValue({ bytes: [1, 2, 3], width: 1, height: 1, warnings: [warning] });
     let previousSvg: string | undefined;
     for (const scale of [1, 3]) {
