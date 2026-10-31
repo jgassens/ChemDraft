@@ -3,6 +3,7 @@ import type { ShortcutRegistry } from "@chemdraft/shortcut-engine";
 /** Native app menu routes, mirrored from lib.rs MENU_COMMAND_IDS by a parity test.
  * Close Window is absent: its native action closes the palette, not the document tab. */
 export const NATIVE_MENU_COMMAND_IDS: ReadonlySet<string> = new Set([
+  "template.insertDialog",
   "edit.undo",
   "edit.redo",
   "edit.selectAll",
