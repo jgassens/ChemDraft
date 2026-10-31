@@ -151,6 +151,32 @@ describe("document-window spectrum actions", () => {
     expect(dependencies.respondCopy).toHaveBeenCalledWith("copy-1", false);
   });
 
+  it("accepts Chromium color chunks before IDAT and rejects duplicates, late chunks and oversized profiles", async () => {
+    const dependencies = fakes();
+    const gamma = chunk("gAMA", new Uint8Array(4));
+    const chromaticity = chunk("cHRM", new Uint8Array(32));
+    const profile = chunk("iCCP", new Uint8Array([0x70, 0, 0, 1]));
+    const valid = png(header, gamma, chromaticity, profile, imageData, imageEnd);
+    await handleSpectrumWindowAction({ ...copy, pngBase64: base64(valid) }, dependencies);
+    expect(dependencies.writeClipboard).toHaveBeenCalledWith([
+      { type: "image/png", bytes: valid, required: true },
+      { type: "public.svg-image", text: copy.svg, required: false },
+      { type: "image/svg+xml", text: copy.svg, required: false }
+    ]);
+    expect(dependencies.respondCopy).toHaveBeenCalledWith("copy-1", true);
+
+    for (const invalid of [
+      png(header, gamma, gamma, imageData, imageEnd),
+      png(header, imageData, profile, imageEnd),
+      png(header, chunk("iCCP", new Uint8Array(1024 * 1024 + 1)), imageData, imageEnd)
+    ]) {
+      const isolated = fakes();
+      await handleSpectrumWindowAction({ ...copy, pngBase64: base64(invalid) }, isolated);
+      expect(isolated.writeClipboard).not.toHaveBeenCalled();
+      expect(isolated.respondCopy).toHaveBeenCalledWith("copy-1", false);
+    }
+  });
+
   it.each([
     pngBytes.slice(0, 33),
     pngBytes.map((byte, index) => index === 29 ? byte ^ 1 : byte),

@@ -523,7 +523,7 @@ function isPng(bytes: Uint8Array): boolean {
     const end = offset + 12 + length;
     if (end > bytes.length) return false;
     const type = String.fromCharCode(...bytes.subarray(offset + 4, offset + 8));
-    if (!["IHDR", "IDAT", "IEND", "pHYs", "sRGB", "eXIf"].includes(type) ||
+    if (!["IHDR", "IDAT", "IEND", "pHYs", "sRGB", "eXIf", "gAMA", "cHRM", "iCCP"].includes(type) ||
         (offset === 8 && type !== "IHDR") || (type !== "IDAT" && seen.has(type))) return false;
     let crc = 0xffffffff;
     for (let index = offset + 4; index < end - 4; index += 1) {
@@ -547,6 +547,12 @@ function isPng(bytes: Uint8Array): boolean {
       if (seen.has("IDAT") || length !== 1 || bytes[offset + 8] > 3) return false;
     } else if (type === "eXIf") {
       if (seen.has("IDAT") || !length || length > 65536) return false;
+    } else if (type === "gAMA") {
+      if (seen.has("IDAT") || length !== 4) return false;
+    } else if (type === "cHRM") {
+      if (seen.has("IDAT") || length !== 32) return false;
+    } else if (type === "iCCP") {
+      if (seen.has("IDAT") || length < 4 || length > 1024 * 1024) return false;
     } else if (type === "IDAT") {
       hasData ||= length > 0;
     } else if (type === "IEND") return length === 0 && hasData && end === bytes.length;
