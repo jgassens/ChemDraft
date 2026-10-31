@@ -15,6 +15,9 @@ through `readPngInfo`, and converts physical points with `DOCUMENT_STYLE_UNITS_P
 density, each image pixel is one point (72 dpi on every platform). `readSvgInfo` reads root dimensions
 or the viewBox, keeps absolute SVG units at their stated physical size, and defaults to 300 × 150.
 These metadata readers do not decode pixels or sanitize SVG; import/render boundaries handle those.
+Native document loading enforces the same PNG chunk structure and pixel limits as picture creation,
+and requires a complete SVG root. PNG allocation padding after IEND is accepted. Legacy imageHref-only
+and picture-less image graphics remain loadable.
 
 The MOL writers require an explicit `kekuleBondOrders` map and return `{ contents, warnings }`.
 Callers resolve orders through layout-engine; this package cannot depend on it. An empty or partial

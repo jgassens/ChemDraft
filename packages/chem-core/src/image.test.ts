@@ -62,6 +62,49 @@ describe("embedded picture graphics", () => {
       data: { image: { mimeType: "image/png", pixelWidth: 144, pixelHeight: 72 } } });
   });
 
+  it("accepts PNG allocation padding after IEND through creation and native loading", () => {
+    const bytes = Buffer.concat([png(144, 72), Buffer.from([0, 255, 1, 2, 3])]);
+    expect(readPngInfo(bytes)).toEqual({ pixelWidth: 144, pixelHeight: 72 });
+    const object = createImageGraphicObject({ ...options, dataBase64: bytes.toString("base64") });
+    const document = createEmptyDocument();
+    document.pages[0].objects.push(object);
+    expect(deserializeDocument(serializeDocument(document))).toEqual(document);
+  });
+
+  it("enforces image structure and actual and declared pixel limits when loading a document", () => {
+    const object = createImageGraphicObject(options);
+    const cases = [
+      { dataBase64: "AAAA", reason: "the PNG has invalid structure." },
+      { dataBase64: Buffer.from(png(10, 10).subarray(0, 33)).toString("base64"), reason: "the PNG has no image data." },
+      { dataBase64: Buffer.from(png(20000, 20000)).toString("base64"), reason: "it is 20000 x 20000 pixels; the limit is 16384 pixels on a side." },
+      { dataBase64: Buffer.from(png(9000, 9000)).toString("base64"), reason: "it is 9000 x 9000 pixels; the decoded limit is 256 MiB." },
+      { pixelWidth: 20000, reason: "it is 20000 x 72 pixels; the limit is 16384 pixels on a side." },
+      { mimeType: "image/svg+xml", dataBase64: Buffer.from("<svg ").toString("base64"), reason: "the SVG is incomplete." },
+      { mimeType: "image/svg+xml", dataBase64: Buffer.from("<other/>").toString("base64"), reason: "the SVG is incomplete." },
+      { mimeType: "image/svg+xml", dataBase64: Buffer.from('<svg width="20000" height="20000"/>').toString("base64"), reason: "it is 20000 x 20000 pixels; the limit is 16384 pixels on a side." }
+    ];
+    for (const { reason, ...image } of cases) {
+      const invalidObject = { ...object, data: { image: { ...object.data.image, ...image } } };
+      expect(() => GraphicObjectSchema.parse(invalidObject)).toThrow(`Image object g12: ${reason}`);
+      const document = createEmptyDocument();
+      const saved = { ...document, pages: [{ ...document.pages[0], objects: [invalidObject] }] };
+      expect(() => deserializeDocument(JSON.stringify(saved))).toThrow(`Image object g12: ${reason}`);
+    }
+  });
+
+  it("refuses incomplete SVG roots even with explicit dimensions", () => {
+    for (const source of ["<svg ", "<svg>", '<svg width="10"', "<svg><svg></svg>",
+      "<svg><!-- </svg> -->", "<svg><![CDATA[</svg>]]>", '<svg><text title="</svg>"/>']) {
+      expect(readSvgInfo(source)).toBeUndefined();
+      expect(() => createImageGraphicObject({ ...options, mimeType: "image/svg+xml", pixelWidth: 10,
+        pixelHeight: 10, dataBase64: Buffer.from(source).toString("base64") }))
+        .toThrow("Couldn't paste the picture: the SVG is incomplete.");
+    }
+    for (const source of ["<svg/>", "<svg></svg>", "<svg><svg/></svg>", "<svg><svg></svg></svg>"]) {
+      expect(readSvgInfo(source)).toEqual({ pixelWidth: 300, pixelHeight: 150 });
+    }
+  });
+
   it("refuses missing image data, malformed chunks, and excessive decoded dimensions", () => {
     const noData = png(10, 10).subarray(0, 33);
     expect(readPngInfo(noData)).toBeUndefined();
@@ -136,7 +179,9 @@ describe("embedded picture graphics", () => {
   it("accepts the exact decoded cap and gives object-specific over-cap errors through native validation", () => {
     expect(MAX_IMAGE_OBJECT_BYTES).toBe(25 * 1024 * 1024);
     const object = createImageGraphicObject(options);
-    const dataBase64 = Buffer.alloc(MAX_IMAGE_OBJECT_BYTES).toString("base64");
+    const bytes = Buffer.alloc(MAX_IMAGE_OBJECT_BYTES);
+    bytes.set(png(144, 72));
+    const dataBase64 = bytes.toString("base64");
     expect(GraphicObjectSchema.safeParse({ ...object, data: { image: { ...object.data.image, dataBase64 } } }).success).toBe(true);
     const document = createEmptyDocument();
     document.pages[0].objects.push({ ...object, data: { image: { ...object.data.image!,

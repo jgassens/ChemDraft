@@ -483,6 +483,76 @@ describe("clipboard-adapter", () => {
     expect(inspect(bytes)).toMatchObject({ kind: "image-refused", message: "Couldn't paste the picture: it is 40000 x 20000 pixels; the limit is 16384 pixels on a side." });
   });
 
+  it("applies the unreadable advertised chemistry guard to SVG-source text", () => {
+    for (const type of ["chemical/x-cdxml", "com.cambridgesoft.ChemDraw.CDX", "chemical/x-mdl-molfile", "org.opensmiles.smiles"]) {
+      const detected = inspectClipboardPayload({ types: [type, "text/plain"],
+        textItems: [{ type: "text/plain", text: "<svg/>" }] });
+      expect(detected.kind).not.toBe("image");
+      expect(detected.kind).not.toBe("plain-text");
+      expect(detected.kind).not.toBe("image-refused");
+    }
+    expect(inspectClipboardPayload({ types: ["chemical/x-mdl-molfile", "text/plain"], textItems: [
+      { type: "text/plain", text: "<svg/>" }, { type: "org.opensmiles.smiles", text: "CCO" }
+    ] })).toMatchObject({ kind: "smiles", text: "CCO" });
+  });
+
+  it("preserves readable chemistry and prose despite an unreadable advertised CDXML flavor", () => {
+    const image = { type: "image/svg+xml" as const, bytesBase64: "PHN2Zy8+" };
+    const types = ["chemical/x-cdxml", "text/plain"];
+    expect(inspectClipboardPayload({ types, textItems: [{ type: "text/plain", text: "CCO" }], imageItems: [image] }))
+      .toMatchObject({ kind: "smiles", text: "CCO" });
+    for (const imageItems of [undefined, [image]]) {
+      expect(inspectClipboardPayload({ types, imageItems,
+        textItems: [{ type: "text/plain", text: "reaction conditions: rt, 1 h" }] }))
+        .toMatchObject({ kind: "plain-text", text: "reaction conditions: rt, 1 h" });
+    }
+  });
+
+  it("retains a fallback picture for heuristic SMILES candidates without asserting parse success", () => {
+    const png = { type: "image/png" as const, bytesBase64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/aWQAAAAASUVORK5CYII=" };
+    const svg = { type: "image/svg+xml" as const, bytesBase64: "PHN2Zy8+" };
+    for (const image of [png, svg]) {
+      const result = inspectClipboardPayload({ types: ["text/plain", image.type], imageItems: [svg, image],
+        textItems: [{ type: "text/plain", text: "PNG" }] });
+      expect(result).toMatchObject({ kind: "smiles", text: "PNG", fallbackImage: image });
+    }
+    const svgTextResult = inspectClipboardPayload({ types: ["text/plain"], textItems: [
+      { type: "text/plain", text: "PNG" }, { type: "image/svg+xml", text: "<svg/>" }
+    ] });
+    expect(svgTextResult).toMatchObject({ kind: "smiles", fallbackImage: { ...svg, pixelWidth: 300, pixelHeight: 150 } });
+    for (const payload of [
+      { types: ["chemical/x-cdxml"], textItems: [{ type: "text/plain", text: "PNG" }], imageItems: [png] },
+      { types: ["org.opensmiles.smiles"], textItems: [{ type: "org.opensmiles.smiles", text: "CCO" }], imageItems: [png] }
+    ]) {
+      expect(inspectClipboardPayload(payload)).not.toHaveProperty("fallbackImage");
+    }
+  });
+
+  it("chooses supported SMILES-list candidates before pictures and retains the fallback", () => {
+    const image = { type: "image/svg+xml" as const, bytesBase64: "PHN2Zy8+" };
+    for (const text of ["CCO\nCCN", "CCO CCN", "1. CCO\n2. CCN", "CCO ethanol\nCCN ethylamine"]) {
+      expect(inspectClipboardPayload({ types: ["text/plain"], imageItems: [image],
+        textItems: [{ type: "text/plain", text }] }))
+        .toMatchObject({ kind: "smiles", text, fallbackImage: image });
+    }
+    expect(inspectClipboardPayload({ types: ["text/plain"], imageItems: [image],
+      textItems: [{ type: "text/plain", text: "Add the CO and CS to the flask" }] }).kind).toBe("image");
+  });
+
+  it("refuses incomplete SVG source and image flavors instead of creating a blank picture", () => {
+    const text = "<svg ";
+    const payloads = [
+      { types: ["text/plain"], textItems: [{ type: "text/plain", text }] },
+      { types: ["image/svg+xml"], textItems: [], imageItems: [
+        { type: "image/svg+xml" as const, bytesBase64: Buffer.from(text).toString("base64") }
+      ] }
+    ];
+    for (const payload of payloads) {
+      expect(inspectClipboardPayload(payload)).toMatchObject({ kind: "image-refused",
+        message: "Couldn't paste the picture: the SVG is incomplete." });
+    }
+  });
+
   it("refuses skipped-only pictures with the native reason while retaining chemistry precedence", () => {
     const skippedImageItems = [{ type: "image/png", byteLength: 32715571,
       reason: "PNG is 31.2 MB; the limit is 25 MB." }];
@@ -500,7 +570,6 @@ describe("clipboard-adapter", () => {
   it("recognizes SVG roots after XML prologs without turning SVG source into a text box", () => {
     for (const text of [
       "<svg/>",
-      "<svg ",
       ' \uFEFF <?xml version="1.0"?>\n<!-- comment -->\n<!DOCTYPE svg [<!ENTITY x \'a>b\'>]>\n<svg class="spectrum"></svg>',
       '<!-- before --><!DOCTYPE svg PUBLIC "id" "url"><!-- after --><svg xmlns="http://www.w3.org/2000/svg"/>',
       '<svg width="1in" height="0.5in"><text>δ &amp; Δ</text>\r\n</svg>'

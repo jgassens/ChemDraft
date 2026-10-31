@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { normalizeAtomIsotope } from "./isotopes";
 import { atomicNumberForElementSymbol } from "./elements";
-import { imageBase64Error } from "./imageBytes";
+import { decodeImageBase64, imageBase64Error } from "./imageBytes";
+import { imagePixelLimitError, validatePngImage, validateSvgImage } from "./imageInfo";
 import {
   PageOrientations,
   PageSizePresetIds,
@@ -549,8 +550,18 @@ const GraphicObjectShapeSchema = BaseObjectSchema.extend({
 function validateGraphicImage(object: z.infer<typeof GraphicObjectShapeSchema>, context: z.RefinementCtx) {
   if (object.data.image) {
     const message = imageBase64Error(object.data.image.dataBase64, object.id);
-    if (message) context.addIssue({ code: z.ZodIssueCode.custom,
-      path: ["data", "image", "dataBase64"], message });
+    if (message) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["data", "image", "dataBase64"], message });
+      return;
+    }
+    const image = object.data.image;
+    const bytes = decodeImageBase64(image.dataBase64, object.id);
+    const result = image.mimeType === "image/png"
+      ? validatePngImage(bytes) : validateSvgImage(new TextDecoder().decode(bytes));
+    const error = result.error ?? imagePixelLimitError(image.pixelWidth, image.pixelHeight);
+    if (error) context.addIssue({ code: z.ZodIssueCode.custom,
+      path: ["data", "image", "dataBase64"],
+      message: error.replace("Couldn't paste the picture:", `Image object ${object.id}:`) });
   }
 }
 
