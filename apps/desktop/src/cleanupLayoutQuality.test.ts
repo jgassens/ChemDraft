@@ -152,6 +152,7 @@ describe("Clean Up Structure 2D layout quality (real engines)", () => {
     const module = await ensureRdkit();
     const smiles = (molecule: MoleculeObject) => {
       const mol = module.get_mol(stereoPerceptionMolfile(molecule));
+      if (!mol || !mol.get_smiles) throw new Error("RDKit could not parse molecule or provide SMILES");
       try { return mol.get_smiles(); } finally { mol.delete(); }
     };
     const originalSmiles = smiles(before);

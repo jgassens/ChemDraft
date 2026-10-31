@@ -18129,7 +18129,7 @@ describe("2D engine cleanup candidate gate", () => {
     expect(doubleBondStereoState(candidate).get(doubleId)).toBe(1);
     const colliding = { ...regular, atoms: regular.atoms.map((atom, i) => i === size - 2 ? regular.atoms[size - 3] : atom) };
     const search = vi.spyOn(layoutEngine, "repairLayoutOverlaps").mockReturnValue([{
-      atoms: regular.atoms, quality: layoutEngine.evaluateLayoutQuality(regular.atoms, regular.bonds),
+      atoms: [...regular.atoms], quality: layoutEngine.evaluateLayoutQuality(regular.atoms, regular.bonds),
       kind: "substituent swing", pivot: 0, movedAtoms: [size - 1], angleDegrees: 40
     }]);
     try {
