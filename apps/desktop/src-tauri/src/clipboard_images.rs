@@ -6,8 +6,8 @@ use image::{metadata::Orientation, ImageDecoder, ImageEncoder};
 use std::io::{Cursor, Write};
 
 pub(crate) const MAX_CLIPBOARD_IMAGE_BYTES: usize = 25 * 1024 * 1024;
-pub(crate) const MAX_IMAGE_SIDE: u32 = 16_384;
-pub(crate) const MAX_DECODED_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_IMAGE_SIDE: u32 = 16_384;
+const MAX_DECODED_BYTES: u64 = 256 * 1024 * 1024;
 
 #[derive(Clone, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]

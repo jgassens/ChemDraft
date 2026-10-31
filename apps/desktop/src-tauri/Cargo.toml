@@ -17,10 +17,7 @@ base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 flate2 = "1"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "bmp", "gif", "tiff"] }
-# Match tiny-skia 0.12.0's PNG decoder exactly when validating embedded picture headers.
-png = "=0.18.1"
-# resvg gates PNG decoding too behind raster-images; without it pasted pictures disappear.
-resvg = { version = "0.47.0", default-features = false, features = ["text", "system-fonts", "raster-images"] }
+resvg = { version = "0.47.0", default-features = false, features = ["text", "system-fonts"] }
 # The OCSR engine installer's downloads (uv, the MolScribe model). reqwest 0.12 is already in the
 # graph through tauri-plugin-http. Feature unification gives BOTH clients OS + Mozilla roots.
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "rustls-tls-native-roots"] }
