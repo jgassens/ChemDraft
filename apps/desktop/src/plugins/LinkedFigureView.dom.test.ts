@@ -15,31 +15,28 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LinkedFigureView, restoreLinkedFigureWindowFrame } from "./LinkedFigureView";
 import { exportSpectrumFigure, saveTextFile, standaloneSpectrumSvg } from "./spectrumExport";
+import { installPluginPanelInputFocus } from "./pluginPanelInputFocus";
 
-const nativeWindow = vi.hoisted(() => ({
-  innerSize: vi.fn(), outerSize: vi.fn(), outerPosition: vi.fn(), setSize: vi.fn(), setPosition: vi.fn()
+const nativePanel = vi.hoisted(() => ({
+  invoke: vi.fn(),
+  listen: vi.fn(),
+  unlisten: vi.fn(),
+  notify: undefined as ((event: { payload: { enabled: boolean } }) => void) | undefined
 }));
-const nativeMonitor = vi.hoisted(() => vi.fn());
-vi.mock("@tauri-apps/api/window", async (importOriginal) => ({
-  ...await importOriginal<typeof import("@tauri-apps/api/window")>(),
-  getCurrentWindow: () => nativeWindow,
-  currentMonitor: nativeMonitor
-}));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: nativePanel.invoke }));
+vi.mock("../window-manager/tauriEvents", () => ({ listenCurrentWindowEvent: nativePanel.listen }));
 vi.mock("./spectrumExport", async (importOriginal) => ({
   ...await importOriginal<typeof import("./spectrumExport")>(),
   copySpectrumToClipboard: vi.fn(), exportSpectrumFigure: vi.fn(), saveTextFile: vi.fn()
 }));
 
 beforeEach(() => {
-  nativeWindow.innerSize.mockResolvedValue({ width: 760, height: 1040 });
-  nativeWindow.outerSize.mockResolvedValue({ width: 760, height: 1040 });
-  nativeWindow.outerPosition.mockResolvedValue({ x: -1800, y: 300 });
-  nativeWindow.setSize.mockResolvedValue(undefined);
-  nativeWindow.setPosition.mockResolvedValue(undefined);
-  nativeMonitor.mockResolvedValue({
-    scaleFactor: 2,
-    workArea: { position: { x: -2560, y: 48 }, size: { width: 2560, height: 1392 } }
+  nativePanel.invoke.mockImplementation(async (_command: string, args: { enabled: boolean }) => ({ enabled: args.enabled }));
+  nativePanel.listen.mockImplementation(async (_event: string, handler: typeof nativePanel.notify) => {
+    nativePanel.notify = handler;
+    return nativePanel.unlisten;
   });
+  nativePanel.notify = undefined;
   vi.mocked(exportSpectrumFigure).mockResolvedValue("saved");
   vi.mocked(saveTextFile).mockResolvedValue("saved");
 });
@@ -49,8 +46,8 @@ beforeEach(() => {
 let container: HTMLElement | undefined;
 let root: Root | undefined;
 
-afterEach(() => {
-  act(() => {
+afterEach(async () => {
+  await act(async () => {
     root?.unmount();
   });
   container?.remove();
@@ -93,7 +90,7 @@ function click(element: Element): void {
 async function enlargeNativeFigure(): Promise<void> {
   await act(async () => {
     [...container!.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Full size")!.click();
-    await vi.waitFor(() => expect(nativeWindow.setSize).toHaveBeenCalled(), { interval: 1 });
+    await vi.waitFor(() => expect(nativePanel.invoke).toHaveBeenCalled(), { interval: 1 });
   });
 }
 
@@ -210,8 +207,8 @@ describe("LinkedFigureView", () => {
     mount(createElement(LinkedFigureView, { spectrum }));
     const svg = container!.querySelector<SVGSVGElement>(".lf-spectrum")!;
     const exported = new DOMParser().parseFromString(standaloneSpectrumSvg(svg), "text/html");
-    expect(exported.querySelectorAll(".lf-peak > line")).toHaveLength(2);
-    for (const line of exported.querySelectorAll(".lf-peak > line")) {
+    expect(exported.querySelectorAll(".lf-label-leader")).toHaveLength(2);
+    for (const line of exported.querySelectorAll(".lf-label-leader")) {
       expect(line.getAttribute("stroke")).toBe("#8a8f98");
       expect(line.getAttribute("stroke-width")).toBe("0.6");
     }
@@ -640,66 +637,114 @@ describe("LinkedFigureView", () => {
     }
   });
 
-  it.each(["button", "Escape", "panel close"])("enlarges within the monitor work area and restores the exact frame on %s", async (exit) => {
+  it.each(["button", "Escape", "panel close"])("uses the native full size command to enter and exit on %s", async (exit) => {
     (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
-    nativeWindow.outerSize.mockResolvedValue({ width: 776, height: 1072 });
     mount(createElement(LinkedFigureView, { spectrum, structure }));
     await enlargeNativeFigure();
-    expect(nativeWindow.setSize).toHaveBeenCalledWith(expect.objectContaining({ width: 2544, height: 1360 }));
-    expect(nativeWindow.setPosition).toHaveBeenCalledWith(expect.objectContaining({ x: -2560, y: 48 }));
+    expect(nativePanel.invoke).toHaveBeenCalledWith("set_plugin_panel_full_size", {
+      enabled: true, width: 2072, height: 700
+    });
+    expect(nativePanel.listen).toHaveBeenCalledWith("chemdraft://plugin-panel-full-size", expect.any(Function));
     expect(document.querySelectorAll(".lf-spectrum")).toHaveLength(1);
     await act(async () => {
       if (exit === "panel close") await restoreLinkedFigureWindowFrame();
       else if (exit === "Escape") window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", cancelable: true }));
       else document.querySelector<HTMLButtonElement>(".lf-modal-close")!.click();
     });
-    expect(nativeWindow.setSize).toHaveBeenLastCalledWith(expect.objectContaining({ width: 760, height: 1040 }));
-    expect(nativeWindow.setPosition).toHaveBeenLastCalledWith(expect.objectContaining({ x: -1800, y: 300 }));
+    expect(nativePanel.invoke).toHaveBeenLastCalledWith("set_plugin_panel_full_size", {
+      enabled: false, width: 0, height: 0
+    });
     expect(document.querySelector(".lf-modal")).toBeNull();
   });
 
-  it("centres the enlarged frame on the old frame when there is room", async () => {
+  it("uses the returned full size state", async () => {
     (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
-    nativeWindow.innerSize.mockResolvedValue({ width: 380, height: 520 });
-    nativeWindow.outerSize.mockResolvedValue({ width: 380, height: 520 });
-    nativeWindow.outerPosition.mockResolvedValue({ x: 1000, y: 500 });
-    nativeMonitor.mockResolvedValue({
-      scaleFactor: 1, workArea: { position: { x: 0, y: 0 }, size: { width: 5000, height: 3000 } }
-    });
-    mount(createElement(LinkedFigureView, { spectrum, structure }));
+    nativePanel.invoke.mockResolvedValueOnce({ enabled: false });
+    mount(createElement(LinkedFigureView, { spectrum }));
     await enlargeNativeFigure();
-    expect(nativeWindow.setSize).toHaveBeenCalledWith(expect.objectContaining({ width: 2072, height: 700 }));
-    expect(nativeWindow.setPosition).toHaveBeenCalledWith(expect.objectContaining({ x: 154, y: 410 }));
-    await act(async () => restoreLinkedFigureWindowFrame());
+    expect(document.querySelector(".lf-modal")).toBeNull();
+    expect(nativePanel.invoke).toHaveBeenCalledWith("set_plugin_panel_full_size", {
+      enabled: true, width: 1392, height: 660
+    });
+  });
+
+  it("does not expand an idle figure when another figure enlarges the native panel", async () => {
+    (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+    mount(createElement(LinkedFigureView, { spectrum }));
+    await act(async () => nativePanel.notify!({ payload: { enabled: true } }));
+    expect(document.querySelector(".lf-modal")).toBeNull();
+    expect(nativePanel.invoke).not.toHaveBeenCalled();
+  });
+
+  it.each(["close", "hide", "quit"])("leaves full size and closes Export when native ends it on %s", async () => {
+    (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+    mount(createElement(LinkedFigureView, { spectrum }));
+    await enlargeNativeFigure();
+    click(document.querySelector('.lf-modal [aria-haspopup="menu"]')!);
+    expect(document.querySelector('[role="menu"]')).not.toBeNull();
+    act(() => nativePanel.notify!({ payload: { enabled: false } }));
+    expect(document.querySelector(".lf-modal")).toBeNull();
+    expect(document.querySelector('[role="menu"]')).toBeNull();
+    await act(async () => root!.unmount());
+    root = undefined;
+    expect(nativePanel.unlisten).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not reopen full size when a command reply arrives after the native end event", async () => {
+    (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+    let finishResize!: (status: { enabled: boolean }) => void;
+    nativePanel.invoke.mockImplementationOnce(() => new Promise((resolve) => { finishResize = resolve; }));
+    mount(createElement(LinkedFigureView, { spectrum }));
+    await enlargeNativeFigure();
+    await act(async () => {
+      nativePanel.notify!({ payload: { enabled: false } });
+      finishResize({ enabled: true });
+    });
+    expect(document.querySelector(".lf-modal")).toBeNull();
   });
 
   it("finishes an in-flight enlargement before restoring for close", async () => {
     (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
-    let finishResize!: () => void;
-    nativeWindow.setSize.mockImplementationOnce(() => new Promise<void>((resolve) => { finishResize = resolve; }));
+    let finishResize!: (status: { enabled: boolean }) => void;
+    nativePanel.invoke.mockImplementationOnce(() => new Promise((resolve) => { finishResize = resolve; }));
     mount(createElement(LinkedFigureView, { spectrum }));
     await enlargeNativeFigure();
     let restored = false;
     const closing = restoreLinkedFigureWindowFrame().then(() => { restored = true; });
     await Promise.resolve();
     expect(restored).toBe(false);
+    expect(nativePanel.invoke).toHaveBeenCalledTimes(1);
     await act(async () => {
-      finishResize();
+      finishResize({ enabled: true });
       await closing;
     });
-    expect(nativeWindow.setSize).toHaveBeenLastCalledWith(expect.objectContaining({ width: 760, height: 1040 }));
-    expect(nativeWindow.setPosition).toHaveBeenLastCalledWith(expect.objectContaining({ x: -1800, y: 300 }));
+    expect(nativePanel.invoke).toHaveBeenLastCalledWith("set_plugin_panel_full_size", {
+      enabled: false, width: 0, height: 0
+    });
   });
 
-  it("fills the panel when enlargement is unavailable and still restores a partially changed frame", async () => {
+  it("fills the panel when native enlargement fails and allows exiting", async () => {
     (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
-    nativeWindow.setPosition.mockRejectedValueOnce(new Error("Position unavailable"));
+    nativePanel.invoke.mockRejectedValueOnce(new Error("Enlargement unavailable"));
     mount(createElement(LinkedFigureView, { spectrum }));
     await enlargeNativeFigure();
     expect(document.querySelector(".lf-modal")!.textContent).toContain("The figure fills this panel");
     await act(async () => document.querySelector<HTMLButtonElement>(".lf-modal-close")!.click());
-    expect(nativeWindow.setSize).toHaveBeenLastCalledWith(expect.objectContaining({ width: 760, height: 1040 }));
-    expect(nativeWindow.setPosition).toHaveBeenLastCalledWith(expect.objectContaining({ x: -1800, y: 300 }));
+    expect(nativePanel.invoke).toHaveBeenLastCalledWith("set_plugin_panel_full_size", {
+      enabled: false, width: 0, height: 0
+    });
+    expect(document.querySelector(".lf-modal")).toBeNull();
+  });
+
+  it("keeps full size open and reports a failed native restore so it can be retried", async () => {
+    (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+    mount(createElement(LinkedFigureView, { spectrum }));
+    await enlargeNativeFigure();
+    nativePanel.invoke.mockRejectedValueOnce(new Error("Restore unavailable"));
+    await act(async () => document.querySelector<HTMLButtonElement>(".lf-modal-close")!.click());
+    expect(document.querySelector(".lf-modal")!.textContent).toContain("Try leaving full size again");
+    await act(async () => document.querySelector<HTMLButtonElement>(".lf-modal-close")!.click());
+    expect(document.querySelector(".lf-modal")).toBeNull();
   });
 
   it("keeps zoom, field and wheel interaction when entering and leaving full size", async () => {
@@ -727,6 +772,7 @@ describe("LinkedFigureView", () => {
     expect(owner.hasAttribute("aria-controls")).toBe(false);
     click(owner);
     const menu = document.getElementById(owner.getAttribute("aria-controls")!)!;
+    expect(menu.dataset.pluginPanelInputMenu).toBe("true");
     const items = [...menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
     expect(items.map((item) => item.textContent)).toEqual(["JCAMP-DX (.jdx)", "PNG", "SVG", "PDF"]);
     expect(document.activeElement).toBe(items[0]);
@@ -786,6 +832,84 @@ describe("LinkedFigureView", () => {
       expect(escape.defaultPrevented).toBe(prevented);
     }
     expect(document.querySelector(".lf-modal")).toBeNull();
+  });
+
+  it.each([false, true])("holds and releases the Export menu's native focus lease (full size: %s)", async (fullSize) => {
+    const requestFocus = vi.fn(async (editing: boolean) => editing);
+    const stop = installPluginPanelInputFocus(document.body, requestFocus, "windows", async () => () => undefined);
+    try {
+      mount(createElement(LinkedFigureView, { spectrum }));
+      if (fullSize) click([...container!.querySelectorAll("button")].find((button) => button.textContent === "Full size")!);
+      for (const close of ["Escape", "outside", "toggle", "export"] as const) {
+        requestFocus.mockClear();
+        const owner = document.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!;
+        await act(async () => owner.click());
+        expect(requestFocus).toHaveBeenCalledWith(true, expect.any(Number));
+        const items = document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]');
+        act(() => items[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true })));
+        expect(document.activeElement).toBe(items[1]);
+        expect(requestFocus.mock.calls.map(([editing]) => editing)).toEqual([true]);
+        await act(async () => {
+          if (close === "Escape") items[1].dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+          else if (close === "outside") document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+          else if (close === "toggle") owner.click();
+          else items[1].click();
+        });
+        expect(document.querySelector('[role="menu"]')).toBeNull();
+        expect(requestFocus.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+      }
+    } finally {
+      stop();
+    }
+  });
+
+  it("paints opaque backgrounds above every leader for coincident peaks and shelf structure labels, including SVG export", () => {
+    const count = 10;
+    const crowded: PluginLinkedFigureSpectrum = {
+      nucleus: "13C", domain: { min: 0, max: 200 },
+      peaks: Array.from({ length: count }, (_, index) => ({
+        id: `p${index}`, ppm: 128, intensity: 1, label: "128.00 / 128.10 (alternative)", atomIndices: [index]
+      }))
+    };
+    mount(createElement(LinkedFigureView, {
+      spectrum: crowded,
+      structure: {
+        atoms: Array.from({ length: count }, (_, index) => ({ index, x: 0, y: 0, element: "C" })),
+        bonds: []
+      }
+    }));
+    const checkBackgrounds = (svg: Element, selector: string): void => {
+      const leaders = [...svg.querySelectorAll(".lf-label-leader")];
+      const labels = [...svg.querySelectorAll<SVGTextElement>(selector)];
+      expect(leaders).toHaveLength(count);
+      expect(labels).toHaveLength(count);
+      expect(svg.querySelectorAll(".lf-label-background")).toHaveLength(count);
+      for (const label of labels) {
+        const background = label.previousElementSibling!;
+        expect(background.classList.contains("lf-label-background")).toBe(true);
+        expect(background.getAttribute("fill")).toBe("#fff");
+        const box = textBox(label);
+        for (const key of ["x", "y", "width", "height"] as const) {
+          expect(Number(background.getAttribute(key))).toBeCloseTo(box[key]);
+        }
+        for (const leader of leaders) {
+          expect(leader.compareDocumentPosition(background) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        }
+      }
+    };
+    checkBackgrounds(container!.querySelector(".lf-spectrum")!, ".lf-peak-label");
+    const structureSvg = container!.querySelector(".lf-structure")!;
+    checkBackgrounds(structureSvg, ".lf-shift-label");
+    // Overwide annotations force the fallback shelf; the last leader crosses a nearer label's box.
+    const firstBox = textBox(structureSvg.querySelector<SVGTextElement>(".lf-shift-label")!);
+    const lastLeader = [...structureSvg.querySelectorAll(".lf-label-leader")].at(-1)!;
+    expect(Number(lastLeader.getAttribute("x1"))).toBeGreaterThan(firstBox.x);
+    expect(Number(lastLeader.getAttribute("x1"))).toBeLessThan(firstBox.x + firstBox.width);
+    expect(Number(lastLeader.getAttribute("y1"))).toBeLessThan(firstBox.y);
+    expect(Number(lastLeader.getAttribute("y2"))).toBeGreaterThan(firstBox.y + firstBox.height);
+    const svg = standaloneSpectrumSvg(container!.querySelector<SVGSVGElement>(".lf-spectrum")!);
+    const exported = new DOMParser().parseFromString(svg, "text/html");
+    checkBackgrounds(exported.querySelector("svg")!, ".lf-peak-label");
   });
 
   it.each([380, 508, 1200])("keeps the exit control in wrapping toolbar flow at %spx", (width) => {

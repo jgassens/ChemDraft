@@ -7387,7 +7387,7 @@ textarea:focus-visible,
   fill: var(--cd-accent-text);
 }
 
-/* Estimation quality (ChemDraw-style): a shift's color tells the reader how much to trust it. */
+/* Estimation quality: a shift's color tells the reader how much to trust it. */
 .lf-shift-label.is-good {
   fill: #2f6fed;
 }

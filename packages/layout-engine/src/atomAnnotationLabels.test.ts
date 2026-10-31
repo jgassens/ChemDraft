@@ -1,12 +1,52 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  annotationBondLines,
   annotationLabelBoxesOverlap,
   estimateAnnotationTextWidth,
   layoutAtomAnnotationLabels,
   type AnnotationAtom,
   type AnnotationLabelBox
 } from "./atomAnnotationLabels";
+
+describe("annotation bond lines", () => {
+  it("keeps single strokes and scales centered double/triple gaps with the fitted drawing", () => {
+    const a = { x: 10, y: 20 };
+    const b = { x: 40, y: 20 };
+    expect(annotationBondLines(a, b, 1)).toEqual([{ x1: 10, y1: 20, x2: 40, y2: 20 }]);
+    expect(annotationBondLines(a, b, 2)).toEqual([
+      { x1: 10, y1: 18.5, x2: 40, y2: 18.5 },
+      { x1: 10, y1: 21.5, x2: 40, y2: 21.5 }
+    ]);
+    expect(annotationBondLines(a, b, 3, 0.5)).toEqual([
+      { x1: 10, y1: 18.5, x2: 40, y2: 18.5 },
+      { x1: 10, y1: 20, x2: 40, y2: 20 },
+      { x1: 10, y1: 21.5, x2: 40, y2: 21.5 }
+    ]);
+  });
+
+  it("offsets diagonal bonds perpendicularly with the existing tenth-unit rounding", () => {
+    const a = { x: 1, y: 2 };
+    const b = { x: 4, y: 6 };
+    expect(annotationBondLines(a, b, 2, 0.5)).toEqual([
+      { x1: 1.6, y1: 1.6, x2: 4.6, y2: 5.6 },
+      { x1: 0.4, y1: 2.5, x2: 3.4, y2: 6.5 }
+    ]);
+    expect(annotationBondLines(b, a, 2, 0.5)).toEqual([
+      { x1: 3.4, y1: 6.5, x2: 0.4, y2: 2.5 },
+      { x1: 4.6, y1: 5.6, x2: 1.6, y2: 1.6 }
+    ]);
+  });
+
+  it("preserves the fallback for unsupported orders and coincident endpoints", () => {
+    expect(annotationBondLines({ x: 0, y: 0 }, { x: 0, y: 10 }, 4)).toEqual([
+      { x1: 0, y1: 0, x2: 0, y2: 10 }
+    ]);
+    expect(annotationBondLines({ x: 1, y: 2 }, { x: 1, y: 2 }, 3, 0.2)).toEqual(
+      Array.from({ length: 3 }, () => ({ x1: 1, y1: 2, x2: 1, y2: 2 }))
+    );
+  });
+});
 
 function inside(box: AnnotationLabelBox): void {
   expect(box.x).toBeGreaterThanOrEqual(0);

@@ -1,7 +1,7 @@
 export { DocumentStyleScale, documentStylePointBounds, FigureStyles, type FigureStyle } from "./documentStyle";
 export { medianLength, representativeMoleculeBondLength, scalePageGeometry } from "./pageScale";
 export {
-  layoutAtomAnnotationLabels, estimateAnnotationTextWidth, annotationLabelBoxesOverlap,
+  layoutAtomAnnotationLabels, estimateAnnotationTextWidth, annotationLabelBoxesOverlap, annotationBondLines,
   type AnnotationAtom, type AnnotationLabelBox
 } from "./atomAnnotationLabels";
 export {

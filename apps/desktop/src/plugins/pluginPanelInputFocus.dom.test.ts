@@ -52,6 +52,62 @@ function pointerDown(target: Element): void {
   pointerHandlers.get(shell)!({ target, button: 0, isTrusted: true, pointerId: 1, clientX: 10, clientY: 10 } as unknown as Event);
 }
 
+describe("host menu input focus", () => {
+  it.each(["macos", "windows"] as const)("leases focus for an open menu and releases on removal on %s", async (platform) => {
+    const { shell, request, activate } = mount('<button>Export</button>', platform);
+    const menu = document.createElement("div");
+    menu.setAttribute("role", "menu");
+    menu.dataset.pluginPanelInputMenu = "true";
+    menu.innerHTML = '<button role="menuitem">PNG</button><button role="menuitem">SVG</button>';
+    shell.append(menu);
+    await flush();
+    expect(request).toHaveBeenCalledWith(true, expect.any(Number));
+    const first = menu.querySelector("button")!;
+    first.focus();
+    pointerDown(first);
+    pointerUp(first, false);
+    click(first);
+    activate();
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true]);
+    expect(key(first, "ArrowDown").defaultPrevented).toBe(false);
+    expect(key(first, "Escape").defaultPrevented).toBe(false);
+    expect(request).toHaveBeenCalledTimes(1);
+    menu.remove();
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+  });
+
+  it("does not lease arbitrary menus without the host marker", async () => {
+    const { shell, request } = mount('<div role="menu"><button>PNG</button></div>', "windows");
+    shell.querySelector("button")!.focus();
+    await flush();
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("ends a menu lease on native focus loss without reacquiring on unrelated mutations", async () => {
+    const { shell, request, deactivate } = mount('<div role="menu" data-plugin-panel-input-menu="true"><button>PNG</button></div>');
+    await flush();
+    deactivate();
+    await flush();
+    shell.append(document.createElement("span"));
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+    pointerDown(shell.querySelector("button")!);
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false, true]);
+  });
+
+  it("releases a menu lease when the focus handler is torn down", async () => {
+    const { request } = mount('<div role="menu" data-plugin-panel-input-menu="true"><button>PNG</button></div>');
+    await flush();
+    cleanup!();
+    cleanup = undefined;
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+  });
+});
+
 function selectText(target: Element, end = target): void {
   const range = document.createRange();
   range.setStart(target.firstChild!, 0);

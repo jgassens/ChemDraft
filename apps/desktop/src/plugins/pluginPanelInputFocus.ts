@@ -49,7 +49,7 @@ async function listenNativePanelFocus(listener: (event: NativePanelFocusEvent) =
   return listenCurrentWindowEvent<NativePanelFocusEvent>("chemdraft://plugin-panel-focus", ({ payload }) => listener(payload));
 }
 
-/** A trusted input click or deliberate report-text selection borrows the keyboard for a lease. */
+/** Editable input, report-text selection and open host menus borrow the keyboard for a lease. */
 export function installPluginPanelInputFocus(
   shell: HTMLElement,
   requestFocus: (editing: boolean, generation: number) => Promise<boolean> = requestNativeInputFocus,
@@ -62,6 +62,8 @@ export function installPluginPanelInputFocus(
   }
   let editing = false;
   let leasedControl: HTMLElement | undefined;
+  let leasedMenu: HTMLElement | undefined;
+  let observedMenu: HTMLElement | null = null;
   let selectionLease = false;
   let selectionNodes: Node[] = [];
   let selectionGesture: { pointerId: number; x: number; y: number; dragged: boolean } | undefined;
@@ -111,6 +113,7 @@ export function installPluginPanelInputFocus(
   const finish = (): void => {
     setEditing(false);
     leasedControl = undefined;
+    leasedMenu = undefined;
     selectionGesture = undefined;
     if (selectionLease) document.getSelection()?.removeAllRanges();
     selectionLease = false;
@@ -148,6 +151,15 @@ export function installPluginPanelInputFocus(
     pointerActive = true;
     pointerClickTarget = event.target;
     selectionGesture = undefined;
+    const menu = event.target instanceof Element
+      ? event.target.closest<HTMLElement>('[role="menu"][data-plugin-panel-input-menu="true"]') : null;
+    if (menu && shell.contains(menu)) {
+      if (leasedMenu !== menu) {
+        leasedMenu = menu;
+        setEditing(true, true);
+      }
+      return;
+    }
     const control = panelEditableControl(event.target);
     if (control && shell.contains(control)) {
       if (selectionLease) finish();
@@ -227,6 +239,8 @@ export function installPluginPanelInputFocus(
     pointerClickTarget = undefined;
     const control = panelEditableControl(event.target);
     if (!editing || event.isComposing) return;
+    // The menu owns arrows and Escape; removing it releases the lease below.
+    if (leasedMenu) return;
     if (event.key === "Escape" && !event.defaultPrevented) {
       event.preventDefault();
       event.stopPropagation(); // Escape finishes editing; it must not close the report window.
@@ -267,14 +281,25 @@ export function installPluginPanelInputFocus(
     if (selectionLease && !hasReportSelection()) finish();
   };
   // Removing a focused node need not emit focusout (including a replaced report or closed portal).
-  const observer = new MutationObserver(() => {
+  const checkLeases = (): void => {
+    const menu = shell.querySelector<HTMLElement>('[role="menu"][data-plugin-panel-input-menu="true"]');
+    if (menu !== observedMenu) {
+      observedMenu = menu;
+      if (menu) {
+        finish();
+        leasedMenu = menu;
+        setEditing(true);
+      } else if (leasedMenu) finish();
+    }
+    if (leasedMenu) return;
     if (selectionLease) {
       if (selectionNodes.some((node) => !shell.contains(node))) finish();
     } else if (editing && (!leasedControl || !shell.contains(leasedControl) ||
       panelEditableControl(leasedControl) !== leasedControl)) finish();
-  });
+  };
+  const observer = new MutationObserver(checkLeases);
   observer.observe(shell, { childList: true, subtree: true, attributes: true,
-    attributeFilter: ["disabled", "readonly", "contenteditable", "type"] });
+    attributeFilter: ["disabled", "readonly", "contenteditable", "type", "data-plugin-panel-input-menu"] });
   shell.addEventListener("pointerdown", pointerDown, true);
   window.addEventListener("pointermove", pointerMove, true);
   window.addEventListener("pointerup", pointerUp, true);
@@ -289,6 +314,7 @@ export function installPluginPanelInputFocus(
     else unsubscribeFocus = unsubscribe;
   });
   void subscribed.catch((error: unknown) => console.error("Could not observe panel focus:", error));
+  checkLeases();
   return () => {
     disposed = true;
     clearTimeout(activationTimer);

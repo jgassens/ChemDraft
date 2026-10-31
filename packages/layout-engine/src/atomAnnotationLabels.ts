@@ -13,6 +13,30 @@ export interface AnnotationAtom {
   annotation?: string;
 }
 
+/** Centered bond strokes for declarative annotation figures, scaled with the fitted drawing. */
+export function annotationBondLines(
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+  order: number,
+  fitScale = 1
+): { x1: number; y1: number; x2: number; y2: number }[] {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const length = Math.hypot(dx, dy) || 1;
+  const nx = -dy / length;
+  const ny = dx / length;
+  const gap = 3 * fitScale;
+  const count = order >= 1 && order <= 3 ? order : 1;
+  const offsets = count === 1 ? [0] : count === 2 ? [-gap / 2, gap / 2] : [-gap, 0, gap];
+  const round = (value: number): number => Math.round(value * 10) / 10;
+  return offsets.map((offset) => ({
+    x1: round(a.x + nx * offset),
+    y1: round(a.y + ny * offset),
+    x2: round(b.x + nx * offset),
+    y2: round(b.y + ny * offset)
+  }));
+}
+
 /** Conservative advance, including bold/italic text, without browser font measurement. */
 export function estimateAnnotationTextWidth(text: string, fontSize: number): number {
   return (Array.from(text).length + 0.5) * fontSize;

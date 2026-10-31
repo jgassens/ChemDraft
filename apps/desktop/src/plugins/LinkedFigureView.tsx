@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
+  annotationBondLines,
   annotationLabelBoxesOverlap,
   estimateAnnotationTextWidth,
   layoutAtomAnnotationLabels,
@@ -28,6 +29,7 @@ import {
   type SpectrumComparisonMode
 } from "./spectrumExport";
 import { isDesktopRuntime } from "../window-manager";
+import { listenCurrentWindowEvent } from "../window-manager/tauriEvents";
 
 const fullSizeRestorers = new Set<() => Promise<void>>();
 
@@ -45,8 +47,6 @@ export async function restoreLinkedFigureWindowFrame(): Promise<void> {
 export interface LinkedFigureViewProps {
   spectrum: PluginLinkedFigureSpectrum;
   structure?: PluginLinkedFigureStructure;
-  /** Render the figure using the expanded layout. */
-  fullScreen?: boolean;
   /** Initial rendering field (MHz). */
   defaultSpectrometerMHz?: number;
   /** Initial comparison display mode. */
@@ -72,7 +72,6 @@ interface AtomShiftLabelPart {
 export function LinkedFigureView({
   spectrum,
   structure,
-  fullScreen = false,
   defaultSpectrometerMHz = DEFAULT_SPECTROMETER_MHZ,
   defaultComparisonMode = "primary"
 }: LinkedFigureViewProps) {
@@ -102,7 +101,8 @@ export function LinkedFigureView({
   const [fullSizeBusy, setFullSizeBusy] = useState(false);
   const [fullSizeNotice, setFullSizeNotice] = useState<string | null>(null);
   const fullSizeTaskRef = useRef<Promise<void>>(Promise.resolve());
-  const restoreFrameRef = useRef<(() => Promise<void>) | null>(null);
+  const fullSizeListenerRef = useRef<Promise<void>>(Promise.resolve());
+  const fullSizeEventRevisionRef = useRef(0);
   const fullSizeButtonRef = useRef<HTMLButtonElement | null>(null);
   const fullSizeWasOpenRef = useRef(false);
   const dragRef = useRef<number | null>(null);
@@ -270,7 +270,7 @@ export function LinkedFigureView({
   const onCopy = (): void => {
     const svg = spectrumRef.current;
     if (!svg) return;
-    // Prefer a PNG (pastes as an image into Word) with the SVG as text fallback for vector editors.
+    // Copy PNG and SVG image flavors for document and vector editors.
     void copySpectrumToClipboard(
       standaloneSpectrumSvg(
         svg,
@@ -316,8 +316,13 @@ export function LinkedFigureView({
 
   const restoreFrame = useCallback(async (): Promise<void> => {
     await fullSizeTaskRef.current;
-    await restoreFrameRef.current?.();
-    restoreFrameRef.current = null;
+    if (isDesktopRuntime()) {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const status = await invoke<{ enabled: boolean }>("set_plugin_panel_full_size", {
+        enabled: false, width: 0, height: 0
+      });
+      setShowFull(status.enabled);
+    }
   }, []);
   const leaveFullSize = useCallback(async (): Promise<void> => {
     setFullSizeBusy(true);
@@ -341,30 +346,15 @@ export function LinkedFigureView({
     setFullSizeBusy(true);
     fullSizeTaskRef.current = (async () => {
       try {
-        const { getCurrentWindow, currentMonitor, PhysicalSize, PhysicalPosition } = await import("@tauri-apps/api/window");
-        const panel = getCurrentWindow();
-        const [size, outerSize, position, monitor] = await Promise.all([
-          panel.innerSize(), panel.outerSize(), panel.outerPosition(), currentMonitor()
-        ]);
-        if (!monitor) throw new Error("The panel's monitor is unavailable.");
-        restoreFrameRef.current = async () => {
-          await panel.setSize(new PhysicalSize(size.width, size.height));
-          await panel.setPosition(new PhysicalPosition(position.x, position.y));
-        };
-        const area = monitor.workArea;
-        const scale = monitor.scaleFactor;
-        const borderWidth = outerSize.width - size.width;
-        const borderHeight = outerSize.height - size.height;
-        const width = Math.min(area.size.width - borderWidth, Math.max(size.width,
-          Math.round((SPECTRUM_W + (structure ? STRUCT_W : 0)) * 2 * scale + 32 * scale)));
-        const height = Math.min(area.size.height - borderHeight, Math.max(size.height,
-          Math.round((Math.max(SPECTRUM_H, structure ? STRUCT_H : 0) * 2 + 180) * scale)));
-        const x = clamp(Math.round(position.x + (outerSize.width - width - borderWidth) / 2),
-          area.position.x, area.position.x + area.size.width - width - borderWidth);
-        const y = clamp(Math.round(position.y + (outerSize.height - height - borderHeight) / 2),
-          area.position.y, area.position.y + area.size.height - height - borderHeight);
-        await panel.setSize(new PhysicalSize(width, height));
-        await panel.setPosition(new PhysicalPosition(x, y));
+        await fullSizeListenerRef.current;
+        const { invoke } = await import("@tauri-apps/api/core");
+        const revision = fullSizeEventRevisionRef.current;
+        const status = await invoke<{ enabled: boolean }>("set_plugin_panel_full_size", {
+          enabled: true,
+          width: (SPECTRUM_W + (structure ? STRUCT_W : 0)) * 2 + 32,
+          height: Math.max(SPECTRUM_H, structure ? STRUCT_H : 0) * 2 + 180
+        });
+        if (revision === fullSizeEventRevisionRef.current) setShowFull(status.enabled);
       } catch {
         // Restricted/web hosts still get the whole panel rather than an inset modal box.
         setFullSizeNotice("Window enlargement is unavailable. The figure fills this panel.");
@@ -373,6 +363,28 @@ export function LinkedFigureView({
       }
     })();
   };
+
+  useEffect(() => {
+    if (!isDesktopRuntime()) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    fullSizeListenerRef.current = listenCurrentWindowEvent<{ enabled: boolean }>("chemdraft://plugin-panel-full-size", ({ payload }) => {
+      if (disposed) return;
+      fullSizeEventRevisionRef.current++;
+      if (!payload.enabled) {
+        setShowFull(false);
+        setExportMenuOpen(false);
+        setFullSizeNotice(null);
+      }
+    }).then((stop) => {
+      if (disposed) stop();
+      else unlisten = stop;
+    }).catch((error: unknown) => console.error("Could not observe panel full size:", error));
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     const restoreBeforeClose = async (): Promise<void> => {
@@ -513,7 +525,7 @@ export function LinkedFigureView({
   const hasQuality = atomQuality.size > 0;
 
   const figure = (
-    <div className={`lf-root${fullScreen || showFull ? " is-fullscreen" : ""}`}>
+    <div className={`lf-root${showFull ? " is-fullscreen" : ""}`}>
       <div className="lf-toolbar">
         <span className="lf-axis-name">{formatNucleus(spectrum.nucleus)}</span>
         <div className="lf-toolbar-actions">
@@ -561,20 +573,18 @@ export function LinkedFigureView({
             {exportBusy ? "Exporting…" : exportStatus === "saved" ? "Exported"
               : exportStatus === "failed" ? "Export failed" : exportStatus === "cancelled" ? "Export cancelled" : "Export"}
           </button>
-          {!fullScreen || showFull ? (
-            <button
-              type="button"
-              ref={fullSizeButtonRef}
-              className={`lf-btn${showFull ? " lf-modal-close" : ""}`}
-              onClick={() => showFull ? void leaveFullSize() : enterFullSize()}
-              disabled={fullSizeBusy}
-              title={fullSizeBusy ? "Updating the panel's size and position"
-                : showFull ? "Restore the previous panel size and position" : "Open an enlarged spectrum"}
-              aria-label={showFull ? "Close full-size spectrum" : undefined}
-            >
-              {showFull ? "Exit full size" : "Full size"}
-            </button>
-          ) : null}
+          <button
+            type="button"
+            ref={fullSizeButtonRef}
+            className={`lf-btn${showFull ? " lf-modal-close" : ""}`}
+            onClick={() => showFull ? void leaveFullSize() : enterFullSize()}
+            disabled={fullSizeBusy}
+            title={fullSizeBusy ? "Updating the panel's size and position"
+              : showFull ? "Restore the previous panel size and position" : "Open an enlarged spectrum"}
+            aria-label={showFull ? "Close full-size spectrum" : undefined}
+          >
+            {showFull ? "Exit full size" : "Full size"}
+          </button>
         </div>
       </div>
 
@@ -584,6 +594,7 @@ export function LinkedFigureView({
           ref={exportMenuRef}
           className="lf-export-menu"
           role="menu"
+          data-plugin-panel-input-menu="true"
           aria-label="Export spectrum"
           onBlur={(event) => {
             if (!event.currentTarget.contains(event.relatedTarget)
@@ -705,6 +716,15 @@ export function LinkedFigureView({
           ))}
           {activeCurvePath ? <path className="lf-curve is-active" d={activeCurvePath} /> : null}
           {renderPeakLayouts.map(({ peak, lines }) => {
+            const label = peakLabels.get(peak.key);
+            if (!label) return null;
+            const apexY = BASE_Y - Math.max(...lines.map((line) => heightAtPpm(line.ppm)));
+            return <line key={peak.key} className="lf-label-leader"
+              x1={xOf(peak.ppm)} y1={apexY} x2={label.x + label.width / 2}
+              y2={apexY < label.y ? label.y : label.y + label.height}
+              stroke="#8a8f98" strokeWidth={0.6} pointerEvents="none" />;
+          })}
+          {renderPeakLayouts.map(({ peak, lines }) => {
             const centerX = xOf(peak.ppm);
             if (centerX < MARGIN.left - 1 || centerX > MARGIN.left + PLOT_W + 1) return null;
             const active = activePeakIds.has(peak.sourceId);
@@ -715,7 +735,6 @@ export function LinkedFigureView({
             const xs = lines.map((line) => xOf(line.ppm));
             const minX = Math.min(centerX, ...xs);
             const maxX = Math.max(centerX, ...xs);
-            const apexY = BASE_Y - Math.max(...lines.map((line) => heightAtPpm(line.ppm)));
             const label = peakLabels.get(peak.key);
             const text = peak.variant === "alternative" ? `${peak.label}${alternativeSuffix}` : peak.label;
             return (
@@ -735,11 +754,8 @@ export function LinkedFigureView({
                 <title>{text} ppm</title>
                 {label ? (
                   <>
-                    <line
-                      x1={centerX} y1={apexY} x2={label.x + label.width / 2}
-                      y2={apexY < label.y ? label.y : label.y + label.height}
-                      stroke="#8a8f98" strokeWidth={0.6} pointerEvents="none"
-                    />
+                    <rect className="lf-label-background" x={label.x} y={label.y}
+                      width={label.width} height={label.height} fill="#fff" pointerEvents="none" />
                     <text
                       className={labelClass} x={label.x + label.width / 2}
                       y={label.y + PEAK_LABEL_FONT_SIZE}
@@ -768,6 +784,12 @@ export function LinkedFigureView({
                 ))}
               </g>
             ))}
+            {layout.labels.map((annotation) => {
+              const atom = layout.atoms.find((candidate) => candidate.index === annotation.index)!;
+              return <line key={annotation.index} className="lf-label-leader"
+                x1={atom.sx} y1={atom.sy} x2={annotation.leaderX} y2={annotation.leaderY}
+                stroke="#8a8f98" strokeWidth={0.6} pointerEvents="none" />;
+            })}
             {layout.atoms.map((atom) => {
               const active = activeAtoms.has(atom.index);
               const shift = atomShift.get(atom.index);
@@ -781,12 +803,6 @@ export function LinkedFigureView({
                   onMouseEnter={() => setHoverAtomIndex(atom.index)}
                   onMouseLeave={() => setHoverAtomIndex(null)}
                 >
-                  {annotation ? (
-                    <line
-                      x1={atom.sx} y1={atom.sy} x2={annotation.leaderX} y2={annotation.leaderY}
-                      stroke="#8a8f98" strokeWidth={0.6} pointerEvents="none"
-                    />
-                  ) : null}
                   {active ? <circle className="lf-atom-halo" cx={atom.sx} cy={atom.sy} r={12 * layout.fitScale} /> : null}
                   {isHetero ? (
                     <>
@@ -797,23 +813,27 @@ export function LinkedFigureView({
                     </>
                   ) : null}
                   {shift && annotation ? (
-                    <text
-                      className={`lf-shift-label${atomQuality.has(atom.index) ? ` is-${atomQuality.get(atom.index)}` : ""}`}
-                      x={annotation.x}
-                      y={annotation.y + layout.labelFontSize}
-                      style={{ fontSize: layout.labelFontSize }}
-                      textAnchor="start"
-                    >
-                      {shift.map((part, index) => (
-                        <tspan
-                          key={`${part.variant}-${part.label}-${index}`}
-                          className={part.variant === "alternative" ? "lf-shift-alternative" : undefined}
-                        >
-                          {index > 0 ? " / " : ""}
-                          {part.label}
-                        </tspan>
-                      ))}
-                    </text>
+                    <>
+                      <rect className="lf-label-background" x={annotation.x} y={annotation.y}
+                        width={annotation.width} height={annotation.height} fill="#fff" pointerEvents="none" />
+                      <text
+                        className={`lf-shift-label${atomQuality.has(atom.index) ? ` is-${atomQuality.get(atom.index)}` : ""}`}
+                        x={annotation.x}
+                        y={annotation.y + layout.labelFontSize}
+                        style={{ fontSize: layout.labelFontSize }}
+                        textAnchor="start"
+                      >
+                        {shift.map((part, index) => (
+                          <tspan
+                            key={`${part.variant}-${part.label}-${index}`}
+                            className={part.variant === "alternative" ? "lf-shift-alternative" : undefined}
+                          >
+                            {index > 0 ? " / " : ""}
+                            {part.label}
+                          </tspan>
+                        ))}
+                      </text>
+                    </>
                   ) : null}
                   {/* Transparent hover target covering the vertex. */}
                   <circle className="lf-hit" cx={atom.sx} cy={atom.sy} r={13 * layout.fitScale} />
@@ -837,7 +857,7 @@ export function LinkedFigureView({
     </div>
   );
 
-  if (fullScreen || !showFull) {
+  if (!showFull) {
     return figure;
   }
 
@@ -860,7 +880,7 @@ interface LaidOutBond {
   lines: { x1: number; y1: number; x2: number; y2: number }[];
 }
 
-/** Annotation fitting is shared rendering math; bond drawing retains its existing geometry. */
+/** Fit declarative structure geometry with the shared annotation layout. */
 function layoutStructure(
   structure: PluginLinkedFigureStructure,
   shifts: ReadonlyMap<number, AtomShiftLabelPart[]>
@@ -882,7 +902,7 @@ function layoutStructure(
     const a = byIndex.get(bond.from);
     const b = byIndex.get(bond.to);
     if (!a || !b) return [];
-    return [{ lines: parallelLines(a, b, bond.order, placement.fitScale) }];
+    return [{ lines: annotationBondLines({ x: a.sx, y: a.sy }, { x: b.sx, y: b.sy }, bond.order, placement.fitScale) }];
   });
   return { ...placement, atoms, bonds };
 }
@@ -913,28 +933,6 @@ function placePeakLabels(peaks: {
     }
   }
   return placed;
-}
-
-function parallelLines(
-  a: { sx: number; sy: number },
-  b: { sx: number; sy: number },
-  order: number,
-  fitScale = 1
-): { x1: number; y1: number; x2: number; y2: number }[] {
-  const dx = b.sx - a.sx;
-  const dy = b.sy - a.sy;
-  const length = Math.hypot(dx, dy) || 1;
-  const nx = -dy / length;
-  const ny = dx / length;
-  const gap = 3 * fitScale;
-  const count = order >= 1 && order <= 3 ? order : 1;
-  const offsets = count === 1 ? [0] : count === 2 ? [-gap / 2, gap / 2] : [-gap, 0, gap];
-  return offsets.map((offset) => ({
-    x1: round(a.sx + nx * offset),
-    y1: round(a.sy + ny * offset),
-    x2: round(b.sx + nx * offset),
-    y2: round(b.sy + ny * offset)
-  }));
 }
 
 /** Selectable rendering fields. J is field-independent in Hz; the field sets the ppm spacing (J/MHz). */
