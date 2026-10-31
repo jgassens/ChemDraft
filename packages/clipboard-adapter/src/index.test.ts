@@ -540,14 +540,31 @@ describe("clipboard-adapter", () => {
       textItems: [{ type: "text/plain", text: "Add the CO and CS to the flask" }] }).kind).toBe("image");
   });
 
-  it("checks strict single-token SMILES in every text flavor before choosing a list", () => {
+  it("orders every heuristic chemistry candidate by text flavor, with singles before lists", () => {
     const image = { type: "image/png" as const, bytesBase64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/aWQAAAAASUVORK5CYII=" };
-    for (const text of ["PNG PNG", '["CCN","CCC"]']) {
+    for (const text of ["PNG PNG", "CCO CCN", '["CCN","CCC"]']) {
       expect(inspectClipboardPayload({ types: ["image/png", "text/plain", "public.utf8-plain-text"],
         imageItems: [image], textItems: [
-          { type: "text/plain", text }, { type: "public.utf8-plain-text", text: "CCO" }
-        ] })).toMatchObject({ kind: "smiles", text: "CCO", sourceType: "public.utf8-plain-text", fallbackImage: image });
+          { type: "text/plain", text }, { type: "public.utf8-plain-text", text: "PNG" },
+          { type: "public.text", text: "CCO" }
+        ] })).toMatchObject({ kind: "plain-text", text, sourceType: "text/plain", fallbackImage: image,
+        chemistryCandidates: [
+          { kind: "smiles-list", text, sourceType: "text/plain" },
+          { kind: "smiles", text: "PNG", sourceType: "public.utf8-plain-text" },
+          { kind: "smiles", text: "CCO", sourceType: "public.text" }
+        ] });
     }
+    expect(inspectClipboardPayload({ types: ["image/png", "text/plain"], imageItems: [image],
+      textItems: [{ type: "text/plain", text: "PNG PNG" }] })).toMatchObject({
+      kind: "plain-text", text: "PNG PNG", fallbackImage: image,
+      chemistryCandidates: [{ kind: "smiles-list", text: "PNG PNG", sourceType: "text/plain" }]
+    });
+    expect(inspectClipboardPayload({ types: ["image/png", "text/plain"], imageItems: [image],
+      textItems: [{ type: "text/plain", text: "CCO" }, { type: "public.text", text: "CCN CCC" }] }))
+      .toMatchObject({ kind: "smiles", chemistryCandidates: [
+        { kind: "smiles", text: "CCO", sourceType: "text/plain" },
+        { kind: "smiles-list", text: "CCN CCC", sourceType: "public.text" }
+      ] });
   });
 
   it("refuses incomplete SVG source and image flavors instead of creating a blank picture", () => {

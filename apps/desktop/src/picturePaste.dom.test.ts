@@ -171,7 +171,7 @@ describe("picture paste and canvas", () => {
     expect(canUndo()).toBe(false);
   });
 
-  it.each(["PNG", "CCO CCN"])("pastes the fallback picture when %s yields no structures", async text => {
+  it.each(["PNG", "PNG PNG", "CCO CCN"])("pastes the fallback picture when %s yields no structures", async text => {
     await render();
     vi.spyOn(clipboard, "readClipboardPayload").mockResolvedValue({ ...nativeImage,
       types: ["text/plain", "image/png"], textItems: [{ type: "text/plain", text }] });
@@ -183,6 +183,75 @@ describe("picture paste and canvas", () => {
     expect(snapshot().pages[0]!.objects[0]).toMatchObject({ type: "graphic", graphicKind: "image" });
     await command("edit.undo");
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Undid Paste Picture");
+    expect(snapshot().pages[0]!.objects).toHaveLength(0);
+    expect(canUndo()).toBe(false);
+  });
+
+  it.each(["none", "unparseable", "error"])("pastes CCO CCN before a later PNG flavor (earlier candidate: %s)", async earlierFailure => {
+    await render();
+    vi.spyOn(clipboard, "readClipboardPayload").mockResolvedValue({ ...nativeImage,
+      types: ["image/png", "text/plain", "public.utf8-plain-text", "public.text"],
+      textItems: [
+        ...(earlierFailure !== "none" ? [{ type: "public.text", text: "PNG" }] : []),
+        { type: "text/plain", text: "CCO CCN" }, { type: "public.utf8-plain-text", text: "PNG" }
+      ] });
+    const single = vi.spyOn(smilesPaste, "depictSmilesForPaste").mockResolvedValue(undefined);
+    if (earlierFailure === "error") single.mockRejectedValue(new Error("Could not draw this token"));
+    vi.spyOn(smilesIdentity, "verifySmilesPasteInput").mockResolvedValue(undefined);
+    const entries = ["CCO", "CCN"].map(smiles => ({ smiles, depiction: {
+      atoms: [...smiles].map((element, index) => ({ element, x: index * 1.5, y: 0, charge: 0 })),
+      bonds: [{ from: 0, to: 1, order: "single" as const, wedge: null },
+        { from: 1, to: 2, order: "single" as const, wedge: null }]
+    } }));
+    const list = vi.spyOn(smilesPaste, "depictSmilesListForPaste").mockResolvedValue({
+      entries, skipped: 0, skippedItems: [], failures: []
+    });
+    vi.spyOn(smilesIdentity, "verifySmilesGridEntries").mockResolvedValue({ entries, failures: [] });
+    await command("clipboard.paste");
+    expect(list).toHaveBeenCalledOnce();
+    expect(list.mock.calls[0]![0]).toBe("CCO CCN");
+    expect(single).toHaveBeenCalledTimes(earlierFailure !== "none" ? 1 : 0);
+    const pasted = snapshot();
+    const objects = pasted.pages[0]!.objects;
+    expect(objects).toHaveLength(2);
+    expect(objects.map(object => object.type === "molecule" ? object.atoms.map(atom => atom.element).join("") : object.type))
+      .toEqual(["CCO", "CCN"]);
+    expect(pasted.selection.objectIds).toEqual(objects.map(object => object.id));
+    await command("edit.undo");
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Undid Paste SMILES list");
+    expect(snapshot().pages[0]!.objects).toHaveLength(0);
+    expect(canUndo()).toBe(false);
+    await command("edit.redo");
+    expect(snapshot().pages[0]!.objects).toEqual(objects);
+    expect(list).toHaveBeenCalledOnce();
+    expect(single).toHaveBeenCalledTimes(earlierFailure !== "none" ? 1 : 0);
+  });
+
+  it("tries a later single SMILES after a list fails, without committing the failed attempt", async () => {
+    await render();
+    vi.spyOn(clipboard, "readClipboardPayload").mockResolvedValue({ ...nativeImage,
+      types: ["image/png", "text/plain", "public.utf8-plain-text"], textItems: [
+        { type: "text/plain", text: "PNG PNG" }, { type: "public.utf8-plain-text", text: "CCO" }
+      ] });
+    const list = vi.spyOn(smilesPaste, "depictSmilesListForPaste").mockRejectedValue(
+      new smilesPaste.SmilesListPasteError([{ input: "PNG", error: "Could not draw this token" }]));
+    vi.spyOn(smilesIdentity, "verifySmilesPasteInput").mockResolvedValue(undefined);
+    vi.spyOn(smilesIdentity, "verifySmilesPaste").mockResolvedValue(undefined);
+    const single = vi.spyOn(smilesPaste, "depictSmilesForPaste").mockResolvedValue({ stereoCount: 0, depiction: {
+      atoms: ["C", "C", "O"].map((element, index) => ({ element, x: index * 1.5, y: 0, charge: 0 })),
+      bonds: [{ from: 0, to: 1, order: "single", wedge: null }, { from: 1, to: 2, order: "single", wedge: null }]
+    } });
+    await command("clipboard.paste");
+    expect(list).toHaveBeenCalledOnce();
+    expect(single).toHaveBeenCalledOnce();
+    const objects = snapshot().pages[0]!.objects;
+    expect(objects).toHaveLength(1);
+    expect(objects[0]).toMatchObject({ type: "molecule", atoms: [
+      { element: "C" }, { element: "C" }, { element: "O" }
+    ] });
+    expect(snapshot().selection.objectIds).toEqual([objects[0]!.id]);
+    await command("edit.undo");
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Undid Paste SMILES");
     expect(snapshot().pages[0]!.objects).toHaveLength(0);
     expect(canUndo()).toBe(false);
   });

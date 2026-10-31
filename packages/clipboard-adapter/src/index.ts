@@ -35,6 +35,13 @@ export interface ClipboardReadPayload {
 
 export type ClipboardMolfileFormat = "molfile-v2000" | "molfile-v3000";
 
+/** A text heuristic to try with the host chemistry parser, not an assertion of validity. */
+export interface ClipboardChemistryCandidate {
+  kind: "smiles" | "smiles-list";
+  sourceType: string;
+  text: string;
+}
+
 export type ClipboardDetectedPayload =
   | {
       kind: "image";
@@ -51,6 +58,7 @@ export type ClipboardDetectedPayload =
       kind: "plain-text";
       /** For heuristic SMILES lists: picture to paste if host chemistry parsing fails. */
       fallbackImage?: ClipboardImageItem;
+      chemistryCandidates?: ClipboardChemistryCandidate[];
       text: string;
       sourceType?: string;
       warnings: ClipboardTransferWarning[];
@@ -68,6 +76,7 @@ export type ClipboardDetectedPayload =
        * Omitted when an unreadable advertised chemistry flavor blocks pictures.
        * The host must validate it through the ordinary picture paste path. */
       fallbackImage?: ClipboardImageItem;
+      chemistryCandidates?: ClipboardChemistryCandidate[];
       text: string;
       sourceType?: string;
       warnings: ClipboardTransferWarning[];
@@ -240,29 +249,34 @@ export function inspectClipboardPayload(payload: ClipboardReadPayload): Clipboar
     || isSmilesType(type) || /(?:molfile|rxnfile|inchi|chemical\/)/i.test(type));
   // Text heuristics still need the host's chemistry parser; retain artwork in case parsing fails.
   const hasPicture = image || skippedImage || svgText;
-  const smilesCandidate = hasPicture && textItems.find((item) => looksLikeSmilesStrict(item.text));
   const fallbackImage = !suppressPicture ? image ?? (svgText ? svgTextImage(svgText.text) : undefined) : undefined;
-  if (smilesCandidate) {
-    return { kind: "smiles", text: smilesCandidate.text, sourceType: smilesCandidate.type, warnings: [],
-      ...(fallbackImage ? { fallbackImage } : {}) };
-  }
-  const smilesListCandidate = hasPicture && textItems.find((item) => {
-    if (looksLikeSvgDocument(item.text)) return false;
-    const tokens = smilesListTokens(item.text);
-    const candidates = smilesListCandidates(item.text);
-    const firstTokenColumns = new Map<number, number>();
-    for (const token of tokens) {
-      if (!firstTokenColumns.has(token.line)) firstTokenColumns.set(token.line, token.column);
+  const chemistryCandidates: ClipboardChemistryCandidate[] = [];
+  if (hasPicture) {
+    for (const item of textItems) {
+      if (looksLikeSvgDocument(item.text)) continue;
+      if (looksLikeSmilesStrict(item.text)) {
+        chemistryCandidates.push({ kind: "smiles", text: item.text, sourceType: item.type });
+      }
+      const tokens = smilesListTokens(item.text);
+      const candidates = smilesListCandidates(item.text);
+      const firstTokenColumns = new Map<number, number>();
+      for (const token of tokens) {
+        if (!firstTokenColumns.has(token.line)) firstTokenColumns.set(token.line, token.column);
+      }
+      if (smilesListDecision({
+        candidates: tokens.length,
+        parsed: candidates.length,
+        lineCount: item.text.split(/\r\n|\r|\n/).filter((line) => line.trim().length > 0).length,
+        parsedFirstTokenLines: candidates.filter((candidate) => candidate.column === firstTokenColumns.get(candidate.line)).length
+      })) {
+        chemistryCandidates.push({ kind: "smiles-list", text: item.text, sourceType: item.type });
+      }
     }
-    return smilesListDecision({
-      candidates: tokens.length,
-      parsed: candidates.length,
-      lineCount: item.text.split(/\r\n|\r|\n/).filter((line) => line.trim().length > 0).length,
-      parsedFirstTokenLines: candidates.filter((candidate) => candidate.column === firstTokenColumns.get(candidate.line)).length
-    });
-  });
-  if (smilesListCandidate) {
-    return { kind: "plain-text", text: smilesListCandidate.text, sourceType: smilesListCandidate.type, warnings: [],
+  }
+  const firstCandidate = chemistryCandidates[0];
+  if (firstCandidate) {
+    return { kind: firstCandidate.kind === "smiles" ? "smiles" : "plain-text",
+      text: firstCandidate.text, sourceType: firstCandidate.sourceType, warnings: [], chemistryCandidates,
       ...(fallbackImage ? { fallbackImage } : {}) };
   }
   if (image && !suppressPicture) {
