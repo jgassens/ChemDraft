@@ -58,6 +58,27 @@ export interface LayoutRepairOptions {
   belowSign?: 1 | -1;
 }
 
+/** Refresh direction-dependent labels, retaining translation-only cached boxes elsewhere.
+ * The callback currently plans the full native graph; count that full work, even though
+ * only changed labels are retained. This also preserves the callback's full-graph chemistry. */
+export function replanRepairLabels(
+  atoms: readonly LayoutPoint[], boxes: readonly LayoutLabelBox[], points: readonly LayoutPoint[],
+  changing: ReadonlySet<number>, labelBoxes?: LayoutRepairOptions["labelBoxes"], work: (count?: number) => void = () => {}
+): LayoutLabelBox[] {
+  let refreshed = new Map<number, LayoutLabelBox>();
+  if (labelBoxes && boxes.some(box => changing.has(box.atom))) {
+    work(atoms.length);
+    refreshed = new Map(labelBoxes(points).filter(box => changing.has(box.atom)).map(box => [box.atom, box]));
+  }
+  return boxes.map(box => {
+    work();
+    const fresh = refreshed.get(box.atom);
+    if (fresh) return fresh;
+    const p = points[box.atom], a = atoms[box.atom];
+    return { ...box, x: box.x + p.x - a.x, y: box.y + p.y - a.y };
+  });
+}
+
 /** A deterministic cap for the entire candidate, independent of machine speed. Exhaustion
  * discards partial results rather than selecting a repair from a truncated search. */
 export const MAX_LAYOUT_REPAIR_TRIALS = 1024;
@@ -167,14 +188,15 @@ function searchLayoutRepairs(
     }
   }
   const repairs: LayoutRepair[] = [];
-  // Cache upright box sizes/offsets once per whole-layout orientation. Fragment swings
-  // change positions, not label chemistry. Work in an origin-centred frame so translations
+  // Cache upright box sizes/offsets once per whole-layout orientation. Re-plan labels
+  // affected by each swing below. Work in an origin-centred frame so translations
   // introduced by the conventional ring-centroid pivot do not invalidate the cache.
   const planned = new Map<number, { atoms: readonly LayoutPoint[]; labels: readonly LayoutLabelBox[] }>(
     [[0, { atoms, labels: originalLabels }]]);
   let trials = 0;
   for (const move of moves) {
     const moving = new Set(move.movedAtoms);
+    const changingLabels = new Set(move.movedAtoms.flatMap(i => [i, ...adjacent[i]]));
     if (!options.labelBoxes && !original.overlappingAtoms.some(([a, b]) => moving.has(a) !== moving.has(b))) continue;
     // A rigid move cannot fix a defect whose participants all stay on the same side.
     const mobileBond = bonds.map(b => moving.has(b.from) || moving.has(b.to));
@@ -199,14 +221,10 @@ function searchLayoutRepairs(
       }
       let evaluate = labelEvaluators.get(key);
       if (!evaluate) {
-        evaluate = prepareLayoutLabelEvaluator(base.atoms, bonds, base.labels, reference, moving, work);
+        evaluate = prepareLayoutLabelEvaluator(base.atoms, bonds, base.labels, reference, moving, work, [], changingLabels);
         labelEvaluators.set(key, evaluate);
       }
-      const labels = base.labels.map(box => {
-        work();
-        const p = points[box.atom], a = base.atoms[box.atom];
-        return { ...box, x: box.x + p.x - a.x, y: box.y + p.y - a.y };
-      });
+      const labels = replanRepairLabels(base.atoms, base.labels, points, changingLabels, options.labelBoxes, work);
       return evaluate(points, labels);
     };
     // Intra-fragment pair distances are invariant. Compute their minima once per move;

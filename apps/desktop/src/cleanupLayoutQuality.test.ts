@@ -10,6 +10,8 @@ import { ensureRdkit, generateSmiles2DMolfile, resetRdkitForTesting } from "../.
 import { createRdkit2DRelayouts } from "../../../packages/rdkit-adapter/src/relayout2d";
 import { installRealRdkitModuleLoader } from "../../../packages/rdkit-adapter/src/testing";
 import { depictInWorker } from "./depiction2d/depict";
+import { replanRepairLabels } from "../../../packages/layout-engine/src/layoutRepair";
+import { prepareLayoutLabelEvaluator } from "../../../packages/layout-engine/src/layoutQuality";
 import { inspectStructureInWorker } from "./depiction2d/identityInspect";
 import { verifySmilesPaste } from "./smilesPasteIdentity";
 import {
@@ -98,6 +100,46 @@ beforeAll(async () => { installRealRdkitModuleLoader(); await ensureOclResources
 afterAll(() => resetRdkitForTesting());
 
 describe("Clean Up Structure 2D layout quality (real engines)", () => {
+  it.each(fixtures)("%s random rigid trials match a fresh renderer label plan", async (_name, smiles) => {
+    const parsed = await depictInWorker(smiles, generateSmiles2DMolfile, () => {});
+    const document = insertSmilesMolecule(createEmptyDocument(), { x: 400, y: 400 }, parsed.depiction, smiles, SMILES_PASTE_OPTIONS);
+    const molecule = document.pages[0].objects[0] as MoleculeObject;
+    const ids = new Map(molecule.atoms.map((a, i) => [a.id, i]));
+    const bonds = molecule.bonds.map(b => ({ from: ids.get(b.fromAtomId)!, to: ids.get(b.toAtomId)! }));
+    const labels = (points: readonly LayoutPoint[]) => moleculeLayoutLabelBoxes({ ...molecule,
+      atoms: molecule.atoms.map((a, i) => ({ ...a, ...points[i] })) });
+    let seed = 0x5eed;
+    const random = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 2 ** 32; };
+    const rotate = (p: LayoutPoint, pivot: LayoutPoint, angle: number) => ({
+      x: pivot.x + (p.x - pivot.x) * Math.cos(angle) - (p.y - pivot.y) * Math.sin(angle),
+      y: pivot.y + (p.x - pivot.x) * Math.sin(angle) + (p.y - pivot.y) * Math.cos(angle)
+    });
+    for (let trial = 0; trial < 20; trial++) {
+      const angle = random() * 2 * Math.PI;
+      const base = molecule.atoms.map(a => rotate(a, { x: 0, y: 0 }, angle));
+      const pivot = Math.floor(random() * base.length), swing = (random() - 0.5) * Math.PI;
+      const moving = new Set(base.flatMap((_, i) => i !== pivot && random() < 0.35 ? [i] : []));
+      const changing = new Set(moving);
+      bonds.forEach(b => {
+        if (moving.has(b.from)) changing.add(b.to);
+        if (moving.has(b.to)) changing.add(b.from);
+      });
+      const points = base.map((a, i) => moving.has(i) ? rotate(a, base[pivot], swing) : a);
+      const original = labels(base), fresh = labels(points);
+      const planned = replanRepairLabels(base, original, points, changing, labels);
+      expect(planned).toHaveLength(fresh.length);
+      planned.forEach((box, i) => {
+        expect(box.atom).toBe(fresh[i].atom);
+        for (const key of ["x", "y", "width", "height"] as const) expect(box[key]).toBeCloseTo(fresh[i][key], 10);
+      });
+      const reference = nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx;
+      const geometry = prepareLayoutLabelEvaluator(base, bonds, original, reference, moving, undefined, [], changing)(points, planned);
+      const full = prepareLayoutLabelEvaluator(points, bonds, fresh, reference)();
+      expect(geometry.labelLabelOverlaps).toEqual(full.labelLabelOverlaps);
+      expect(geometry.labelBondOverlaps).toEqual(full.labelBondOverlaps);
+      expect(geometry.smallestLabelBondClearance).toBeCloseTo(full.smallestLabelBondClearance, 10);
+    }
+  });
   it("keeps the clean primary when coordinated sulfur is S in the full graph, without loading alternates", async () => {
     const document = createEmptyDocument();
     const molecule: MoleculeObject = {

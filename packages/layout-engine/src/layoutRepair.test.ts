@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { MoleculeObject } from "@chemdraft/chem-core";
-import { moleculeLayoutLabelBoxes } from "./index";
-import { compareLayoutRepairs, repairLayoutOverlaps, conventionalLayoutOrientations, orientLayoutForLabels, type LayoutRepair } from "./layoutRepair";
-import { evaluateLayoutQuality, type LayoutPoint, type LayoutBond } from "./layoutQuality";
+import { moleculeLayoutLabelBoxes, planMoleculeAtomLabels } from "./index";
+import { compareLayoutRepairs, repairLayoutOverlaps, conventionalLayoutOrientations, orientLayoutForLabels, replanRepairLabels, type LayoutRepair } from "./layoutRepair";
+import { evaluateLayoutQuality, prepareLayoutLabelEvaluator, type LayoutPoint, type LayoutBond } from "./layoutQuality";
 
 const polygon = (n: number, center: LayoutPoint, phase = 0): LayoutPoint[] => {
   const r = 1 / (2 * Math.sin(Math.PI / n));
@@ -51,6 +51,44 @@ function expectLocalScoresMatchFullEvaluation(repairs: LayoutRepair[], bonds: La
 }
 
 describe("rigid fragment overlap repair", () => {
+  it("rejects the OMe swing whose turned label collides with isolated water", () => {
+    const ring = polygon(6, { x: 0, y: 0 }, 105 * Math.PI / 180).map(p => ({ x: p.x * 30, y: p.y * 30 }));
+    const atoms = [...ring, { x: ring[0].x * 2, y: ring[0].y * 2 }, { x: -44.5, y: 36.5 }];
+    const bonds = [...cycle(6), { from: 0, to: 6 }];
+    const molecule: MoleculeObject = {
+      id: "methoxy-water", type: "molecule", x: -60, y: -60, width: 120, height: 120, rotation: 0,
+      structure: "", structureFormat: "smiles", superatoms: [], rGroups: [],
+      style: { bondLengthPx: 30, atomLabelFontSizePx: 15 },
+      atoms: atoms.map((a, i) => ({ ...a, id: `a${i}`, element: i < 6 ? "C" : i === 6 ? "OMe" : "O",
+        formalCharge: 0 })),
+      bonds: bonds.map((b, i) => ({ id: `b${i}`, fromAtomId: `a${b.from}`, toAtomId: `a${b.to}`, order: "single" }))
+    };
+    const labels = (points: readonly LayoutPoint[]) => moleculeLayoutLabelBoxes({ ...molecule,
+      atoms: molecule.atoms.map((a, i) => ({ ...a, ...points[i] })) });
+    const swung = atoms.map((a, i) => i === 6 ? rotate([a], atoms[0], 30)[0] : a);
+    const base = rotate(atoms, { x: 0, y: 0 }, 135);
+    const points = rotate(swung, { x: 0, y: 0 }, 135);
+    const text = (points: readonly LayoutPoint[]) => planMoleculeAtomLabels({ ...molecule,
+      atoms: molecule.atoms.map((a, i) => ({ ...a, ...points[i] })) }).find(p => p.atom.id === "a6")!.label;
+    expect(text(base)).toBe("MeO");
+    expect(text(points)).toBe("OMe");
+    const baseLabels = labels(base);
+    const stale = baseLabels.map(box => ({ ...box,
+      x: box.x + points[box.atom].x - base[box.atom].x,
+      y: box.y + points[box.atom].y - base[box.atom].y }));
+    expect(evaluateLayoutQuality(points, bonds, 30, undefined, undefined, stale).passes).toBe(true);
+    const fresh = labels(points);
+    const planned = replanRepairLabels(base, baseLabels, points, new Set([0, 6]), labels);
+    expect(planned).toEqual(fresh);
+    const evaluate = prepareLayoutLabelEvaluator(base, bonds, baseLabels, 30, new Set([6]), undefined, [], new Set([0, 6]));
+    expect(evaluate(points, planned).labelLabelOverlaps).toContainEqual([6, 7]);
+    expect(evaluateLayoutQuality(points, bonds, 30, undefined, undefined, planned).passes).toBe(false);
+    const repairs = repairLayoutOverlaps(atoms, bonds, { labelBoxes: labels, conventionalOrientation: true });
+    expect(repairs.length).toBeGreaterThan(0);
+    for (const repair of repairs) {
+      expect(evaluateLayoutQuality(repair.atoms, bonds, 30, undefined, undefined, labels(repair.atoms)).hardDefects).toBe(0);
+    }
+  });
   it.each([100, 500])("bounds labelled repair including orientation work on %i nitrogen atoms", count => {
     const molecule: MoleculeObject = {
       id: "nitrogen-chain", type: "molecule", x: -30, y: -30, width: count * 30, height: 60, rotation: 0,
@@ -75,7 +113,7 @@ describe("rigid fragment overlap repair", () => {
     const elapsed = performance.now() - start;
     console.log(`LABEL_REPAIR_TIMING atoms=${count} ms=${elapsed.toFixed(1)} plans=${labels.mock.calls.length}`);
     expect(elapsed).toBeLessThan(2000);
-    expect(labels.mock.calls.length).toBeLessThanOrEqual(13);
+    expect(labels.mock.calls.length).toBeLessThanOrEqual(Math.ceil(131_072 / count));
     expect(repairs).toEqual([]); // the oversized terminal label cannot be fixed by a ring substituent swing
     expect(molecule).toEqual(snapshot);
   }, 300_000);
@@ -102,7 +140,7 @@ describe("rigid fragment overlap repair", () => {
     expect(orientLayoutForLabels(atoms, bonds, stepLabels).angleDegrees).toBeCloseTo(-7);
   });
 
-  it("repairs a label-only collision by swinging a substituent with one reusable label plan", () => {
+  it("repairs a label-only collision by swinging a substituent with fresh direction-dependent labels", () => {
     const atoms = [...polygon(6, { x: 0, y: 0 }), { x: 2, y: 0 }];
     const bonds = [...cycle(6), { from: 0, to: 6 }];
     const labels = (points: readonly LayoutPoint[]) => [{ atom: 6,
@@ -112,7 +150,7 @@ describe("rigid fragment overlap repair", () => {
     expect(q.labelBondOverlaps.length).toBeGreaterThan(0);
     const planner = vi.fn(labels);
     const repairs = repairLayoutOverlaps(atoms, bonds, { labelBoxes: planner });
-    expect(planner).toHaveBeenCalledOnce();
+    expect(planner.mock.calls.length).toBeGreaterThan(1);
     expect(repairs.length).toBeGreaterThan(0);
     for (const repair of repairs) {
       expect(evaluateLayoutQuality(repair.atoms, bonds, 1, undefined, undefined, labels(repair.atoms)).hardDefects).toBe(0);

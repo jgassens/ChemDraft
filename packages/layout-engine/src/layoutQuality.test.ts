@@ -11,6 +11,20 @@ const polygon = (n: number): LayoutPoint[] => Array.from({ length: n }, (_, i) =
 const cycle = (n: number) => Array.from({ length: n }, (_, from) => ({ from, to: (from + 1) % n }));
 
 describe("2D layout quality", () => {
+  it("rechecks stationary attachment labels against stationary bonds and labels", () => {
+    const atoms = [{ x: 0, y: 0 }, { x: 30, y: 0 }, { x: -20, y: 0 }, { x: -20, y: 30 }];
+    const bonds = [{ from: 0, to: 1 }, { from: 2, to: 3 }];
+    const boxes = [{ atom: 0, x: 0, y: -5, width: 10, height: 10 },
+      { atom: 2, x: -30, y: -5, width: 10, height: 10 }];
+    const points = atoms.map((a, i) => i === 1 ? { x: 0, y: 30 } : a);
+    // Atom 0 does not move, but the bond's new direction puts its label on the left.
+    const labels = [{ ...boxes[0], x: -25, width: 25 }, boxes[1]];
+    const evaluate = prepareLayoutLabelEvaluator(atoms, bonds, boxes, 30, new Set([1]), undefined, [], new Set([0, 1]));
+    const expected = prepareLayoutLabelEvaluator(points, bonds, labels, 30)();
+    expect(evaluate(points, labels)).toEqual(expected);
+    expect(expected.labelBondOverlaps).toContainEqual([0, 1]);
+    expect(expected.labelLabelOverlaps).toContainEqual([0, 2]);
+  });
   it("spatial label checks match exhaustive contacts and exact clearance through rigid swings", () => {
     const atoms = Array.from({ length: 16 }, (_, i) => ({ x: (i % 4) * 30, y: Math.floor(i / 4) * 30 }));
     const bonds = atoms.slice(1).map((_, i) => ({ from: i, to: i + 1 }));

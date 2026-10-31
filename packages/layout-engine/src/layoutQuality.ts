@@ -418,7 +418,9 @@ export type LayoutLabelGeometry = Pick<LayoutQuality,
 export function prepareLayoutLabelEvaluator(
   atoms: readonly LayoutPoint[], bonds: readonly LayoutBond[], boxes: readonly LayoutLabelBox[], reference: number,
   moving: ReadonlySet<number> = new Set(), work: () => void = () => {},
-  exemptions: readonly (readonly [number, number])[] = []
+  exemptions: readonly (readonly [number, number])[] = [],
+  // Stationary attachment atoms can acquire a different label when a neighbour swings.
+  changingLabels: ReadonlySet<number> = moving
 ): (points?: readonly LayoutPoint[], labels?: readonly LayoutLabelBox[]) => LayoutLabelGeometry {
   if (!boxes.length) return () => ({ labelBondOverlaps: [], labelLabelOverlaps: [], smallestLabelBondClearance: Infinity });
   const padding = LABEL_CLEARANCE_PADDING * reference;
@@ -434,7 +436,7 @@ export function prepareLayoutLabelEvaluator(
     work();
     if (![b.x, b.y, b.width, b.height].every(Number.isFinite) || b.width < 0 || b.height < 0 ||
         !Number.isInteger(b.atom) || b.atom < 0 || b.atom >= atoms.length) throw new Error("Layout label boxes must be finite with valid atom indices.");
-    if (!moving.has(b.atom)) { fixedLabelIds.push(i); fixedLabels.add(i, b, corner(b)); }
+    if (!changingLabels.has(b.atom)) { fixedLabelIds.push(i); fixedLabels.add(i, b, corner(b)); }
   });
   const scan = (points: readonly LayoutPoint[], labels: readonly LayoutLabelBox[], dynamic: boolean,
     baseline?: LayoutLabelGeometry): LayoutLabelGeometry => {
@@ -482,7 +484,7 @@ export function prepareLayoutLabelEvaluator(
         if (mobileBonds[i]) { work(); mobileBondIds.push(i); mobileBondGrid.add(i, points[b.from], points[b.to]); }
       });
       labels.forEach((b, i) => {
-        if (moving.has(b.atom)) { work(); mobileLabelIds.push(i); mobileLabelGrid.add(i, b, corner(b)); }
+        if (changingLabels.has(b.atom)) { work(); mobileLabelIds.push(i); mobileLabelGrid.add(i, b, corner(b)); }
       });
       scanLabels(mobileLabelIds, fixedBonds, fixedBondIds, fixedLabels, () => true);
       scanLabels(mobileLabelIds, mobileBondGrid, mobileBondIds, mobileLabelGrid, (i, j) => j > i);
@@ -503,5 +505,5 @@ export function prepareLayoutLabelEvaluator(
     return { labelBondOverlaps, labelLabelOverlaps, smallestLabelBondClearance: clearance / reference };
   };
   const baseline = scan(atoms, boxes, false);
-  return (points = atoms, labels = boxes) => moving.size ? scan(points, labels, true, baseline) : baseline;
+  return (points = atoms, labels = boxes) => moving.size || changingLabels.size ? scan(points, labels, true, baseline) : baseline;
 }
