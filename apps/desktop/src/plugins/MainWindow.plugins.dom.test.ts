@@ -847,7 +847,24 @@ describe("MainWindow bundled plugin integration", () => {
   });
 
   it("performs a report window's file save itself, with the main window's own permissions", async () => {
+    let receive!: Parameters<typeof panelBridge.listenForAnalysisWindowActions>[0];
+    vi.spyOn(panelBridge, "listenForAnalysisWindowActions").mockImplementation(handler => { receive = handler; return () => undefined; });
+    vi.spyOn(panelBridge, "broadcastPluginPanelReport").mockResolvedValue();
+    vi.spyOn(panelBridge, "openPluginPanelWindow").mockResolvedValue();
+    const saveReply = vi.spyOn(panelBridge, "respondToSaveTextFile").mockResolvedValue();
     await renderMainWindow();
+    nativeDialog.desktop = true;
+    const runtime = bundled.runtime!;
+    const identity = { pluginId: namingManifest.id, panelId: "panel.namingTest.result" };
+    const label = panelBridge.pluginPanelWindowLabel(identity);
+    await act(async () => {
+      runtime.registerPlugin(namingManifest);
+      runtime.panels.showReport(identity.pluginId, identity.panelId, { title: "Result", sections: [{
+        kind: "linkedFigure", spectrum: { nucleus: "13C", domain: { min: 0, max: 200 }, peaks: [] }
+      }] });
+      runtime.panels.detachPanel(identity.pluginId, identity.panelId);
+    });
+    nativeDialog.desktop = false;
     const downloads: string[] = [];
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
       downloads.push(this.download);
@@ -855,8 +872,9 @@ describe("MainWindow bundled plugin integration", () => {
     URL.createObjectURL ??= () => "blob:test";
     URL.revokeObjectURL ??= () => undefined;
     await act(async () => {
-      await expect(panelBridge.requestSaveTextFileFromMain("predicted-1H-nmr.jdx", "##TITLE=x", "jcamp")).resolves.toBe("saved");
+      receive({ kind: "saveTextFile", requestId: "save", filename: "predicted-1H-nmr.jdx", text: "##TITLE=x", format: "jcamp" }, label);
     });
     expect(downloads).toEqual(["predicted-1H-nmr.jdx"]);
+    expect(saveReply).toHaveBeenCalledWith("save", "saved", label);
   });
 });
