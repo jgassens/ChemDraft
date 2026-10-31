@@ -547,9 +547,10 @@ const GraphicObjectShapeSchema = BaseObjectSchema.extend({
 }).strict();
 
 function validateGraphicImage(object: z.infer<typeof GraphicObjectShapeSchema>, context: z.RefinementCtx) {
-  if (object.graphicKind === "image" && !object.data.image) {
+  // data.image is the structured picture-paste form; imageHref is the accepted older/imported form.
+  if (object.graphicKind === "image" && !object.data.image && object.data.imageHref === undefined) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["data", "image"],
-      message: `Image object ${object.id} is missing data.image.` });
+      message: `Image object ${object.id} has no picture data (data.image or data.imageHref).` });
   }
   if (object.data.image) {
     const message = imageBase64Error(object.data.image.dataBase64, object.id);

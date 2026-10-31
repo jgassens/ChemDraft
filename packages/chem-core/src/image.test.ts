@@ -90,7 +90,7 @@ describe("embedded picture graphics", () => {
 
   it("requires the image payload, decodable base64, positive integer dimensions and strict keys", () => {
     const object = createImageGraphicObject(options);
-    expect(() => GraphicObjectSchema.parse({ ...object, data: {} })).toThrow("Image object g12 is missing data.image");
+    expect(() => GraphicObjectSchema.parse({ ...object, data: {} })).toThrow("Image object g12 has no picture data (data.image or data.imageHref).");
     for (const dataBase64 of ["", "!!", "A", "AA=A", "a===", "data:image/png;base64,AAAA"]) {
       expect(() => GraphicObjectSchema.parse({ ...object,
         data: { image: { ...object.data.image, dataBase64 } } })).toThrow("Image object g12 has invalid base64 image data");
@@ -100,6 +100,16 @@ describe("embedded picture graphics", () => {
       expect(GraphicObjectSchema.safeParse({ ...object, data: { image: { ...object.data.image, ...field } } }).success).toBe(false);
     }
     expect(GraphicObjectSchema.safeParse({ ...object, graphicKind: "rect", data: {} }).success).toBe(true);
+  });
+
+  it("accepts older imageHref graphics standalone and through native document loading", () => {
+    const object = { ...createImageGraphicObject(options), data: {
+      imageHref: "data:image/png;base64,AAAA", imageMimeType: "image/png"
+    } };
+    expect(GraphicObjectSchema.parse(object)).toEqual(object);
+    const document = createEmptyDocument();
+    document.pages[0].objects.push(object);
+    expect(deserializeDocument(JSON.stringify(document))).toEqual(document);
   });
 
   it("accepts the exact decoded cap and gives object-specific over-cap errors through native validation", () => {
