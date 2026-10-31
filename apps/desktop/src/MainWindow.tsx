@@ -200,7 +200,7 @@ import { canvasOverlayDockSlots, PluginCanvasOverlay } from "./plugins/PluginCan
 import { pluginPanelOpenCommand } from "./plugins/pluginPanelOpenCommand";
 import { canvasOverlayPrompt, OVERLAY_BUSY_MESSAGE, pluginCanvasOverlayOpenCommand } from "./plugins/pluginCanvasOverlayControls";
 import type { PluginPanelActionRequest, PluginPanelActionResult } from "./plugins/pluginPanelActionTypes";
-import { saveTextFileHere } from "./plugins/spectrumExport";
+import { handleSpectrumWindowAction, saveTextFileHere } from "./plugins/spectrumExport";
 import type { QueuedProposedPatch } from "@chemdraft/plugin-host";
 import { isBlockedByModalDialog, shouldIgnoreShortcutTarget, subscribeToModalDialogChanges, type ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import {
@@ -11319,6 +11319,10 @@ export function MainWindow({
             }
             return;
           }
+          case "copySpectrum":
+          case "saveBinaryFile":
+            void handleSpectrumWindowAction(action).catch(() => undefined);
+            return;
           case "saveTextFile": {
             // A report window asked for a save it has no permission to perform itself (the NMR
             // figure's JCAMP-DX export). Run it here and tell that window how it ended.

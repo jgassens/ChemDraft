@@ -247,6 +247,8 @@ export type AnalysisWindowAction =
   | { kind: "changeMolecularInterpretation"; interpretationId?: string }
   | { kind: "acceptPluginProposal"; proposalId: string; requestId?: string }
   | { kind: "rejectPluginProposal"; proposalId: string; requestId?: string }
+  // The document handler validates these payloads, including malformed requests it must answer.
+  | { kind: "copySpectrum" | "saveBinaryFile"; requestId: string }
   | ({ kind: "saveTextFile"; requestId: string; filename: string; text: string } & SaveTextFileOptions);
 
 /** Main → window: how a `saveTextFile` action ended, keyed to the request that asked. */
@@ -368,6 +370,50 @@ export async function respondToSaveTextFile(requestId: string, result: SaveTextF
   }
   const { emit } = await import("@tauri-apps/api/event");
   await emit<AnalysisWindowSaveResult>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, { requestId, result });
+}
+
+/** Detached panels never receive clipboard or filesystem permission. Subscribe before forwarding. */
+export function requestCopySpectrumFromMain(pngBase64: string, svg: string): Promise<boolean> {
+  return requestSpectrumWindowAction({ kind: "copySpectrum", pngBase64, svg }, false, isCopyResult, (reply) => reply.ok, 10_000);
+}
+
+export function requestSaveBinaryFileFromMain(
+  filename: string,
+  bytesBase64: string,
+  options: SaveTextFileOptions
+): Promise<SaveTextFileResult> {
+  return requestSpectrumWindowAction(
+    { kind: "saveBinaryFile", filename, bytesBase64, ...options, extensions: [...options.extensions] },
+    "failed", isSaveResult, (reply) => reply.result, 120_000
+  );
+}
+
+async function requestSpectrumWindowAction<TReply extends { requestId: string }, TResult>(
+  action: Record<string, unknown>,
+  failure: TResult,
+  validateReply: (payload: unknown) => payload is TReply,
+  readReply: (reply: TReply) => TResult,
+  timeoutMs: number
+): Promise<TResult> {
+  if (!isDesktopRuntime()) return failure;
+  const requestId = `spectrum-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  let unlisten: (() => void) | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    let answer: (result: TResult) => void = () => undefined;
+    const answered = new Promise<TResult>((resolve) => { answer = resolve; });
+    unlisten = await listenTauriEvent<unknown>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, (event) => {
+      if (validateReply(event.payload) && event.payload.requestId === requestId) answer(readReply(event.payload));
+    });
+    timer = setTimeout(() => answer(failure), timeoutMs);
+    await emitPanelEvent(ANALYSIS_WINDOW_ACTION_EVENT, { ...action, requestId });
+    return await answered;
+  } catch {
+    return failure;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    unlisten?.();
+  }
 }
 
 /** How long the review window waits for the main window to answer an Accept or Reject. */
@@ -888,6 +934,10 @@ function isAnalysisWindowAction(payload: unknown): payload is AnalysisWindowActi
         Array.isArray(candidate.extensions) &&
         candidate.extensions.every((extension) => typeof extension === "string")
       );
+    case "copySpectrum":
+    case "saveBinaryFile":
+      // Forward malformed data to the bounded document handler so the requester gets a failure.
+      return typeof candidate.requestId === "string" && candidate.requestId.length > 0 && candidate.requestId.length <= 200;
     default:
       return false;
   }
