@@ -167,7 +167,8 @@ afterEach(async () => {
     // Entire-lifetime assertions, including teardown and any failed test. Do not clear
     // these spies between setup, send, Mode choice and the refused submission.
     expect(native.openPanelWindow).not.toHaveBeenCalled();
-    expect(native.invoke.mock.calls.filter(([command]) => command === "open_plugin_panel_window")).toEqual([]);
+    // Publication mode delivers a private snapshot without opening or revealing a window.
+    expect(native.invoke.mock.calls.filter(([command, args]) => command === "open_plugin_panel_window" && args?.request)).toEqual([]);
   } finally {
     descriptor?.deactivate?.();
     descriptor = undefined;

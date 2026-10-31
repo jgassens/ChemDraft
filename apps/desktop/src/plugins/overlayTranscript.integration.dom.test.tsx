@@ -14,7 +14,7 @@ import { TauriAssistantMcpEngine } from "../assistant/assistantMcpEngine";
 import { MainWindow } from "../MainWindow";
 import { createPhase4Document } from "../documentWorkflow";
 import { MemoryStorage } from "../testSupport/memoryStorage";
-import { pluginPanelWindowId } from "./panelBridge";
+import { pluginPanelWindowId, PLUGIN_PANEL_REQUEST_EVENT, PLUGIN_PANEL_REPORT_EVENT } from "./panelBridge";
 import * as pluginPanelActions from "./pluginPanelActions";
 
 const native = vi.hoisted(() => ({
@@ -117,6 +117,7 @@ afterEach(async () => {
 it.each(["tauri://localhost", "http://tauri.localhost"])("replays synthetic tool output into the overlay and panel (%s)", async origin => {
   const lines = readFileSync(resolve(fixture, "tool-reply.stdout.jsonl"), "utf8").trim().split("\n");
   const reply = JSON.parse(lines.find(line => line.includes('"reply"'))!).text as string;
+  const dispatch = window.dispatchEvent.bind(window);
   native.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
     if (command === "external_tool_status") return {
       tool: args!.tool, publisher: "OpenAI", state: "installed", signedIn: true, consented: true,
@@ -131,6 +132,15 @@ it.each(["tauri://localhost", "http://tauri.localhost"])("replays synthetic tool
     if (command === "plugin_panel_event_forward") {
       for (const handler of native.listeners.get(args!.event as string) ?? []) handler({ payload: args!.payload });
     }
+    if (command === "open_plugin_panel_window" && args?.publication) {
+      const publication = args.publication as { targetLabel: string; event: string; payload: unknown };
+      const windowId = new URLSearchParams(window.location.search).get("panelId");
+      if (windowId) {
+        expect(args).not.toHaveProperty("request");
+        expect(publication.targetLabel).toBe(`plugin-panel-${windowId}`);
+        dispatch(new CustomEvent(publication.event, { detail: publication.payload }));
+      }
+    }
     return undefined;
   });
   const container = document.createElement("div"); document.body.append(container);
@@ -138,6 +148,8 @@ it.each(["tauri://localhost", "http://tauri.localhost"])("replays synthetic tool
   await act(async () => root!.render(<MainWindow initialDocument={createPhase4Document("Test document")}
     initialPaletteMode="hidden" initialRulersVisible={false} nativePalette={false} />));
   const runtime = native.runtime!;
+  // Linked native imports may bypass Vitest's module mock; provide the real IPC entry point too.
+  vi.stubGlobal("__TAURI_INTERNALS__", { invoke: (command: string, args: unknown) => native.invoke(command, args) });
   const descriptor = loadPackagedPlugin({ baseUrl: `${origin}/installed-plugins/overlay-transcript/`, manifest }, { createWorker });
   await act(async () => { runtime.registerPlugin(descriptor.manifest, descriptor.options); });
   try {
@@ -164,8 +176,10 @@ it.each(["tauri://localhost", "http://tauri.localhost"])("replays synthetic tool
     expect([...transcript.querySelectorAll("code")].map(node => node.textContent)).toEqual(["lookup_item", "sample_item", "C"]);
     const panel = runtime.panels.getDetachedPanels()[0]!;
     const windowId = pluginPanelWindowId(manifest.id, panel.panelId);
+    // Separate webviews share neither DOM events nor private native publications.
+    vi.spyOn(window, "dispatchEvent").mockImplementation(event =>
+      [PLUGIN_PANEL_REQUEST_EVENT, PLUGIN_PANEL_REPORT_EVENT].includes(event.type) ? true : dispatch(event));
     window.history.replaceState(null, "", `/?window=pluginPanel&panelId=${windowId}`);
-    vi.stubGlobal("__TAURI_INTERNALS__", {});
     const detached = document.createElement("div"); document.body.append(detached);
     panelRoot = createRoot(detached);
     await act(async () => panelRoot!.render(<PluginPanelWindow panelId={windowId} />));
@@ -270,6 +284,7 @@ it("dispatches live overlay content with no panel contribution and never opens a
   await act(async () => container.querySelector<HTMLButtonElement>(".plugin-canvas-overlay-icon")!.click());
   expect(container.querySelector(".plugin-canvas-overlay-panel")).toBeNull();
   expect(runtime.panels.getDetachedPanels()).toEqual([]);
-  expect(native.invoke.mock.calls.some(([command]) => command === "open_plugin_panel_window")).toBe(false);
+  // Publication mode delivers a private snapshot without opening or revealing a window.
+  expect(native.invoke.mock.calls.some(([command, args]) => command === "open_plugin_panel_window" && args?.request)).toBe(false);
   await act(async () => runtime.unregisterPlugin("single"));
 });
