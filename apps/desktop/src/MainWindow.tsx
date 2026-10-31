@@ -6398,12 +6398,7 @@ export function MainWindow({
     };
   }, [activePage.height, activePage.width]);
 
-  const pastePointForViewport = useCallback((): ClientPoint => {
-    const pointerPoint = pastePointerPagePoint();
-    if (pointerPoint) {
-      return pointerPoint;
-    }
-
+  const viewportCentrePagePoint = useCallback((): ClientPoint => {
     const canvas = canvasRegionRef.current;
     const page = pageRef.current;
     if (!canvas || !page) {
@@ -6424,7 +6419,11 @@ export function MainWindow({
       x: clamp((clientPoint.x - pageRect.left) / viewportRef.current.scale, 0, activePage.width),
       y: clamp((clientPoint.y - pageRect.top) / viewportRef.current.scale, 0, activePage.height)
     };
-  }, [activePage.height, activePage.margin.left, activePage.margin.top, activePage.width, pastePointerPagePoint]);
+  }, [activePage.height, activePage.margin.left, activePage.margin.top, activePage.width]);
+
+  const pastePointForViewport = useCallback((): ClientPoint =>
+    pastePointerPagePoint() ?? viewportCentrePagePoint(),
+  [pastePointerPagePoint, viewportCentrePagePoint]);
 
   const clearScheduledTextEditorFocus = useCallback(() => {
     textEditorFocusTimeoutsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
@@ -6647,7 +6646,7 @@ export function MainWindow({
     const result = applyClipboardPastePayload(
       documentRef.current,
       detectedPayload,
-      pastePointForViewport(),
+      detectedPayload.kind === "image" ? viewportCentrePagePoint() : pastePointForViewport(),
       textStyleDefaults
     );
     if (result.document !== documentRef.current) {
@@ -6658,7 +6657,7 @@ export function MainWindow({
     }
     resetPasteUiState(result.editTextObjectId);
     setStatus(result.status);
-  }, [commitDocumentChange, pastePointForViewport, resetPasteUiState, textStyleDefaults]);
+  }, [commitDocumentChange, pastePointForViewport, resetPasteUiState, textStyleDefaults, viewportCentrePagePoint]);
 
   // SMILES → editable 2D structure with stereochemistry. The depiction engines are loaded
   // on demand. Parser/chemistry refusals retain text fallback; worker failures reach status.

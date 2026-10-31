@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  createEmptyDocument, createImageGraphicObject, deserializeDocument, DOCUMENT_STYLE_UNITS_PER_PT,
+  createEmptyDocument, createImageGraphicObject, deserializeDocument,
   GraphicObjectSchema, isSvgImageSource, MAX_IMAGE_OBJECT_BYTES, readPngInfo, readSvgInfo, serializeDocument, validateDocument
 } from "./index";
 
@@ -52,10 +52,10 @@ describe("embedded picture graphics", () => {
     expect(readPngInfo(new Uint8Array(33))).toBeUndefined();
   });
 
-  it("places an undensitized PNG at 72 dpi with the ordinary rectangle frame", () => {
+  it("places an undensitized PNG at 96 dpi (one pixel per page unit) with the ordinary rectangle frame", () => {
     const object = createImageGraphicObject(options);
-    expect(object.width).toBeCloseTo(144 * DOCUMENT_STYLE_UNITS_PER_PT);
-    expect(object.height).toBeCloseTo(72 * DOCUMENT_STYLE_UNITS_PER_PT);
+    expect(object.width).toBe(144);
+    expect(object.height).toBe(72);
     expect(object.x + object.width / 2).toBe(400);
     expect(object.y + object.height / 2).toBe(300);
     expect(object).toMatchObject({ type: "graphic", graphicKind: "image", rotation: 0,
@@ -145,20 +145,30 @@ describe("embedded picture graphics", () => {
   it("uses independent physical densities from pHYs, or explicit native metadata", () => {
     const object = createImageGraphicObject({ ...options,
       dataBase64: Buffer.from(png(600, 300, { x: 11811, y: 5906 })).toString("base64") });
-    expect(object.width).toBeCloseTo(600 / (11811 * 0.0254) * 72 * DOCUMENT_STYLE_UNITS_PER_PT);
-    expect(object.height).toBeCloseTo(300 / (5906 * 0.0254) * 72 * DOCUMENT_STYLE_UNITS_PER_PT);
+    expect(object.width).toBeCloseTo(600 / (11811 * 0.0254) * 96);
+    expect(object.height).toBeCloseTo(300 / (5906 * 0.0254) * 96);
     const override = createImageGraphicObject({ ...options,
       pixelWidth: 600, pixelHeight: 300, pixelsPerMeter: { x: 10000, y: 20000 } });
-    expect(override.width).toBeCloseTo(600 / 254 * 72 * DOCUMENT_STYLE_UNITS_PER_PT);
-    expect(override.height).toBeCloseTo(300 / 508 * 72 * DOCUMENT_STYLE_UNITS_PER_PT);
+    expect(override.width).toBeCloseTo(600 / 254 * 96);
+    expect(override.height).toBeCloseTo(300 / 508 * 96);
+  });
+
+  it("uses 96 page units per inch for a 288 × 144 PNG at 144 dpi", () => {
+    const object = createImageGraphicObject({ ...options,
+      dataBase64: Buffer.from(png(288, 144, { x: 5669, y: 5669 })).toString("base64") });
+    // Integer pHYs values quantize 144 dpi to 143.993 dpi (less than 0.01 page unit).
+    expect(object.width).toBeCloseTo(192, 1);
+    expect(object.height).toBeCloseTo(96, 1);
+    expect(object.x + object.width / 2).toBe(400);
+    expect(object.y + object.height / 2).toBe(300);
   });
 
   it.each([
     ['width="144px" height="72px"', 144, 72],
-    ['width="144pt" height="72pt"', 144, 72],
-    ['width="2in" height="1in"', 144, 72],
-    ['width="50.8mm" height="25.4mm"', 144, 72],
-    ["width='5.08cm' height='2.54cm'", 144, 72],
+    ['width="144pt" height="72pt"', 192, 96],
+    ['width="2in" height="1in"', 192, 96],
+    ['width="50.8mm" height="25.4mm"', 192, 96],
+    ["width='5.08cm' height='2.54cm'", 192, 96],
     ['viewBox="10 20 240 120"', 240, 120],
     ['width="144" viewBox="0 0 2 1"', 144, 72],
     ['height="72" viewBox="0,0,2,1"', 144, 72],
@@ -168,8 +178,8 @@ describe("embedded picture graphics", () => {
     expect(readSvgInfo(source)).toEqual({ pixelWidth, pixelHeight });
     const object = createImageGraphicObject({ ...options, mimeType: "image/svg+xml",
       dataBase64: Buffer.from(source).toString("base64") });
-    expect(object.width).toBeCloseTo(pixelWidth * DOCUMENT_STYLE_UNITS_PER_PT);
-    expect(object.height).toBeCloseTo(pixelHeight * DOCUMENT_STYLE_UNITS_PER_PT);
+    expect(object.width).toBe(pixelWidth);
+    expect(object.height).toBe(pixelHeight);
   });
 
   it("accepts picture-less graphics and validates image payloads when present", () => {

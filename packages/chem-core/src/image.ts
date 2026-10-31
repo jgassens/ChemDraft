@@ -1,6 +1,6 @@
 import { decodeImageBase64 } from "./imageBytes";
 import { GraphicObjectSchema, type GraphicObject, type ImageObjectData, type Point } from "./schemas";
-import { DOCUMENT_STYLE_UNITS_PER_PT } from "./styles";
+import { CSS_PX_PER_INCH } from "./page-layout";
 
 import { imagePixelLimitError, validatePngImage, validateSvgImage } from "./imageInfo";
 export { MAX_IMAGE_SIDE, MAX_IMAGE_DECODED_BYTES, imagePixelLimitError, validatePngImage, validateSvgImage,
@@ -16,6 +16,9 @@ export interface CreateImageGraphicObjectOptions {
   id: string;
 }
 
+/** Centre a picture in page units (96 per inch), using 96 dpi when density is absent.
+ * Picture dimensions are physical sizes, independent of molecule drawing styles and bond lengths.
+ */
 export function createImageGraphicObject(options: CreateImageGraphicObjectOptions): GraphicObject {
   const { mimeType, dataBase64, id, center } = options;
   const bytes = decodeImageBase64(dataBase64, id);
@@ -31,10 +34,8 @@ export function createImageGraphicObject(options: CreateImageGraphicObjectOption
     pixelHeight: options.pixelHeight ?? info?.pixelHeight ?? NaN,
     ...(pixelsPerMeter ? { pixelsPerMeter } : {})
   };
-  const widthPt = image.pixelsPerMeter ? image.pixelWidth / (image.pixelsPerMeter.x * 0.0254) * 72 : image.pixelWidth;
-  const heightPt = image.pixelsPerMeter ? image.pixelHeight / (image.pixelsPerMeter.y * 0.0254) * 72 : image.pixelHeight;
-  const width = widthPt * DOCUMENT_STYLE_UNITS_PER_PT;
-  const height = heightPt * DOCUMENT_STYLE_UNITS_PER_PT;
+  const width = image.pixelsPerMeter ? image.pixelWidth / (image.pixelsPerMeter.x * 0.0254) * CSS_PX_PER_INCH : image.pixelWidth;
+  const height = image.pixelsPerMeter ? image.pixelHeight / (image.pixelsPerMeter.y * 0.0254) * CSS_PX_PER_INCH : image.pixelHeight;
   // Like rect graphics, the frame is top-level x/y (top left), width/height and rotation.
   // No separate image geometry: moving, resizing and selecting reuse the ordinary graphic frame.
   return GraphicObjectSchema.parse({

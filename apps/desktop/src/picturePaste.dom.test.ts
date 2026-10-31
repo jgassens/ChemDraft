@@ -3,8 +3,9 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createImageGraphicObject, DOCUMENT_STYLE_UNITS_PER_PT, MAX_IMAGE_OBJECT_BYTES, type ChemDraftDocument } from "@chemdraft/chem-core";
+import { createImageGraphicObject, MAX_IMAGE_OBJECT_BYTES, type ChemDraftDocument } from "@chemdraft/chem-core";
 import { inspectClipboardPayload, type ClipboardReadPayload } from "@chemdraft/clipboard-adapter";
+import { documentDrawingDefaults } from "@chemdraft/document-workflow-core";
 import { MainWindow, selectionInSelectionRect, selectionInSelectionPolygon } from "./MainWindow";
 import * as clipboard from "./clipboard";
 import * as smilesPaste from "./smilesListPaste";
@@ -24,6 +25,16 @@ const nativeImage: ClipboardReadPayload = {
     pixelsPerMeter: { x: 11811, y: 11811 }
   }]
 };
+
+// Transparent PNGs with matching IHDR dimensions; only the first carries pHYs (5669 px/m).
+const sizeCases = [
+  { name: "144-dpi PNG", pixelWidth: 288, pixelHeight: 144, width: 192, height: 96,
+    bytesBase64: "iVBORw0KGgoAAAANSUhEUgAAASAAAACQCAYAAACoPrZBAAAACXBIWXMAABYlAAAWJQFJUiTwAAAAuElEQVR42u3BMQEAAADCoPVPbQ0PoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAFwOIrgABLLiMAwAAAABJRU5ErkJggg==" },
+  { name: "no-DPI DIB converted to PNG", pixelWidth: 288, pixelHeight: 144, width: 288, height: 144,
+    bytesBase64: "iVBORw0KGgoAAAANSUhEUgAAASAAAACQCAYAAACoPrZBAAAAuElEQVR42u3BMQEAAADCoPVPbQ0PoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAFwOIrgABLLiMAwAAAABJRU5ErkJggg==" },
+  { name: "no-DPI screen capture", pixelWidth: 600, pixelHeight: 300, width: 600, height: 300,
+    bytesBase64: "iVBORw0KGgoAAAANSUhEUgAAAlgAAAEsCAYAAAAfPc2WAAAC0ElEQVR42u3BAQ0AAADCoPdPbQ8HFAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADwbP5CAAExinjxAAAAAElFTkSuQmCC" }
+];
 
 describe("picture paste and canvas", () => {
   let container: HTMLDivElement;
@@ -106,7 +117,7 @@ describe("picture paste and canvas", () => {
     await command("clipboard.paste");
     const document = snapshot();
     const image = document.pages[0]!.objects.find(object => object.type === "graphic")!;
-    const width = 144 / (11811 * 0.0254) * 72 * DOCUMENT_STYLE_UNITS_PER_PT;
+    const width = 144 / (11811 * 0.0254) * 96;
     expect(image).toMatchObject({ graphicKind: "image", width, height: width / 2 });
     expect(image.x + image.width / 2).toBeCloseTo(396);
     expect(image.y + image.height / 2).toBeCloseTo(306);
@@ -120,6 +131,37 @@ describe("picture paste and canvas", () => {
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Redid Paste Picture");
     expect(snapshot().pages[0]!.objects).toEqual(document.pages[0]!.objects);
   });
+
+  it.each(sizeCases.flatMap(picture => [22, 34].map(bondLengthPx => ({ ...picture, bondLengthPx }))))(
+    "centres $name at its physical size with bond length $bondLengthPx, despite a previous pointer position",
+    async ({ bytesBase64, pixelWidth, pixelHeight, width, height, bondLengthPx }) => {
+      const drawing = createPhase4Document("True picture size");
+      drawing.styles.drawing = { ...documentDrawingDefaults(drawing).drawing, bondLengthPx };
+      await render(drawing);
+      if (bondLengthPx === 34) await command("view.zoomIn");
+      page().getBoundingClientRect = () => ({ ...pageRect, left: 21, top: -115 });
+      const canvas = container.querySelector<HTMLElement>(".canvas-region")!;
+      canvas.getBoundingClientRect = () => ({ ...pageRect, left: 32, top: 80 });
+      await act(async () => pointer(page(), "pointermove", 30, 100));
+      const { scale } = bridge().snapshot().viewport as { scale: number };
+      const centre = { x: 407 / scale, y: 501 / scale };
+      vi.spyOn(clipboard, "readClipboardPayload").mockResolvedValue({
+        types: ["image/png"], textItems: [], imageItems: [{ type: "image/png", bytesBase64, pixelWidth, pixelHeight }]
+      });
+      await command("clipboard.paste");
+      const image = snapshot().pages[0]!.objects[0]!;
+      expect(image).toMatchObject({ type: "graphic", graphicKind: "image" });
+      // pHYs is integer pixels/m, so the 144-dpi frame differs by less than 0.01 unit.
+      expect(image.width).toBeCloseTo(width, 1);
+      expect(image.height).toBeCloseTo(height, 1);
+      if (width === pixelWidth) expect([image.width, image.height]).toEqual([width, height]);
+      expect(Math.abs(image.x + image.width / 2 - centre.x)).toBeLessThan(0.5);
+      expect(Math.abs(image.y + image.height / 2 - centre.y)).toBeLessThan(0.5);
+      expect(image.x).toBeCloseTo(centre.x - width / 2, 1);
+      expect(image.y).toBeCloseTo(centre.y - height / 2, 1);
+      expect(image.x).toBeGreaterThan(0);
+    }
+  );
 
   it("shows the specific refused-image message without changing document, selection or undo", async () => {
     const drawing = createPhase4Document("Refused Picture");
@@ -144,8 +186,8 @@ describe("picture paste and canvas", () => {
     const image = snapshot().pages[0]!.objects.find(object => object.type === "graphic")!;
     expect(image).toMatchObject({ graphicKind: "image", data: { image: { mimeType: type,
       dataBase64: type === "image/png" ? picturePngBase64 : btoa(pictureSvg) } } });
-    expect(image.width).toBe(144 * DOCUMENT_STYLE_UNITS_PER_PT);
-    expect(image.height).toBe(72 * DOCUMENT_STYLE_UNITS_PER_PT);
+    expect(image.width).toBe(144);
+    expect(image.height).toBe(72);
     expect(snapshot().selection.objectIds).toEqual([image.id]);
     await command("edit.undo");
     expect(canUndo()).toBe(false);

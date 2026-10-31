@@ -1,3 +1,5 @@
+import { CSS_PX_PER_INCH } from "./page-layout";
+
 export interface ImagePixelInfo {
   pixelWidth: number;
   pixelHeight: number;
@@ -106,7 +108,7 @@ export function validateSvgImage(source: string): { info?: ImagePixelInfo; error
   return error ? { error } : { info };
 }
 
-/** SVG image pixels follow the paste default of 72 dpi; absolute units retain their physical size. */
+/** SVG image pixels follow the paste default of 96 dpi; absolute units retain their physical size. */
 export function readSvgInfo(source: string): ImagePixelInfo | undefined {
   const root = completeSvgRoot(svgRootSource(source));
   if (!root) return undefined;
@@ -115,7 +117,10 @@ export function readSvgInfo(source: string): ImagePixelInfo | undefined {
   const length = (value: string | undefined): number | undefined => {
     const match = value?.trim().match(/^([+]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)\s*(px|pt|in|mm|cm)?$/i);
     if (!match) return undefined;
-    const scale: Record<string, number> = { px: 1, pt: 1, in: 72, mm: 72 / 25.4, cm: 72 / 2.54 };
+    const scale: Record<string, number> = {
+      px: 1, pt: CSS_PX_PER_INCH / 72, in: CSS_PX_PER_INCH,
+      mm: CSS_PX_PER_INCH / 25.4, cm: CSS_PX_PER_INCH / 2.54
+    };
     const result = Number(match[1]) * scale[(match[2] ?? "px").toLowerCase()];
     return Number.isFinite(result) && result > 0 ? result : undefined;
   };

@@ -11,8 +11,9 @@ limit is `MAX_IMAGE_OBJECT_BYTES` (25 MiB). Their frame uses the same top-level 
 This optional field follows existing additive v1 conventions and needs no document migration.
 
 `createImageGraphicObject` centers the frame at the requested point, reads missing PNG metadata
-through `readPngInfo`, and converts physical points with `DOCUMENT_STYLE_UNITS_PER_PT`. Without
-density, each image pixel is one point (72 dpi on every platform). `readSvgInfo` reads root dimensions
+through `readPngInfo`, and converts physical sizes at 96 page units per inch, independently of
+molecule bond lengths and drawing styles. Without density, each image pixel is one page unit
+(a CSS pixel, 96 dpi on every platform). `readSvgInfo` reads root dimensions
 or the viewBox, keeps absolute SVG units at their stated physical size, and defaults to 300 × 150.
 These metadata readers do not decode pixels or sanitize SVG; import/render boundaries handle those.
 Native document loading enforces the same PNG chunk structure and pixel limits as picture creation;
