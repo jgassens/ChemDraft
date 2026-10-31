@@ -2,7 +2,7 @@
 #![cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 
 use base64::{engine::general_purpose::STANDARD, Engine};
-use image::ImageEncoder;
+use image::{metadata::Orientation, ImageDecoder, ImageEncoder};
 use std::io::{Cursor, Write};
 
 pub(crate) const MAX_CLIPBOARD_IMAGE_BYTES: usize = 25 * 1024 * 1024;
@@ -106,7 +106,34 @@ pub(crate) fn png_pixels_per_meter(png: &[u8]) -> Option<(u32, u32)> {
     None
 }
 
-fn decode_raster(bytes: &[u8], format: image::ImageFormat) -> Result<image::DynamicImage, String> {
+/// Clipboard allocations can extend beyond the PNG datastream. Walk complete chunks rather
+/// than searching for IEND bytes, which can also occur inside another chunk's data.
+fn png_through_iend(bytes: &[u8]) -> Result<&[u8], String> {
+    let missing_iend = || "PNG read failed: missing or truncated IEND chunk".to_string();
+    let mut index = 8usize;
+    loop {
+        let header_end = index.checked_add(8).ok_or_else(missing_iend)?;
+        let header = bytes.get(index..header_end).ok_or_else(missing_iend)?;
+        let length = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
+        let end = header_end
+            .checked_add(length)
+            .and_then(|end| end.checked_add(4))
+            .ok_or_else(missing_iend)?;
+        bytes.get(index..end).ok_or_else(missing_iend)?;
+        if &header[4..8] == b"IEND" {
+            if length != 0 {
+                return Err("PNG read failed: IEND chunk must be empty".to_string());
+            }
+            return Ok(&bytes[..end]);
+        }
+        index = end;
+    }
+}
+
+fn decode_raster(
+    bytes: &[u8],
+    format: image::ImageFormat,
+) -> Result<(image::DynamicImage, Orientation), String> {
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(MAX_IMAGE_SIDE);
     limits.max_image_height = Some(MAX_IMAGE_SIDE);
@@ -122,8 +149,22 @@ fn decode_raster(bytes: &[u8], format: image::ImageFormat) -> Result<image::Dyna
         ));
     }
     let mut reader = image::ImageReader::with_format(Cursor::new(bytes), format);
-    reader.limits(limits);
-    reader.decode().map_err(|error| error.to_string())
+    reader.limits(limits.clone());
+    let mut decoder = reader.into_decoder().map_err(|error| error.to_string())?;
+    // Match ImageReader::decode's allocation accounting when accessing metadata ourselves.
+    limits
+        .reserve(decoder.total_bytes())
+        .map_err(|error| error.to_string())?;
+    decoder
+        .set_limits(limits)
+        .map_err(|error| error.to_string())?;
+    let orientation = if format == image::ImageFormat::Tiff {
+        decoder.orientation().map_err(|error| error.to_string())?
+    } else {
+        Orientation::NoTransforms
+    };
+    let decoded = image::DynamicImage::from_decoder(decoder).map_err(|error| error.to_string())?;
+    Ok((decoded, orientation))
 }
 
 pub(crate) fn png_image_item(bytes: &[u8]) -> Result<ClipboardImageItem, String> {
@@ -131,6 +172,7 @@ pub(crate) fn png_image_item(bytes: &[u8]) -> Result<ClipboardImageItem, String>
     // Validate IHDR before decoding; dimensions come from that header, never a guessed print size.
     let (width, height) = crate::windows_clipboard::bounded_png_dimensions(bytes)
         .map_err(|reason| format!("PNG read failed: {reason}"))?;
+    let bytes = png_through_iend(bytes)?;
     decode_raster(bytes, image::ImageFormat::Png)
         .map_err(|reason| format!("PNG decode failed: {reason}"))?;
     Ok(raster_item(
@@ -217,14 +259,22 @@ fn encode_rgba(
 #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
 pub(crate) fn tiff_image_item(bytes: &[u8]) -> Result<ClipboardImageItem, String> {
     check_image_byte_length("TIFF", bytes.len())?;
-    let rgba = decode_raster(bytes, image::ImageFormat::Tiff)
-        .map_err(|reason| format!("TIFF decode failed: {reason}"))?
-        .into_rgba8();
+    let (mut decoded, orientation) = decode_raster(bytes, image::ImageFormat::Tiff)
+        .map_err(|reason| format!("TIFF decode failed: {reason}"))?;
+    decoded.apply_orientation(orientation);
+    let resolution = tiff_pixels_per_meter(bytes).map(|(x, y)| match orientation {
+        Orientation::Rotate90
+        | Orientation::Rotate270
+        | Orientation::Rotate90FlipH
+        | Orientation::Rotate270FlipH => (y, x),
+        _ => (x, y),
+    });
+    let rgba = decoded.into_rgba8();
     encode_rgba(
         rgba.as_raw(),
         rgba.width(),
         rgba.height(),
-        tiff_pixels_per_meter(bytes),
+        resolution,
         "TIFF",
     )
 }
@@ -311,7 +361,7 @@ fn channel(pixel: u32, mask: u32) -> u8 {
 }
 
 /// A packed clipboard DIB has no BMP file header. Rows are DWORD-aligned; positive heights
-/// are bottom-up. V4 and V5 BITFIELDS headers can explicitly declare an alpha channel.
+/// are bottom-up. V3, V4 and V5 BITFIELDS headers can explicitly declare an alpha channel.
 #[cfg_attr(not(any(windows, test)), allow(dead_code))]
 pub(crate) fn dib_image_item(bytes: &[u8], source: &str) -> Result<ClipboardImageItem, String> {
     check_image_byte_length(source, bytes.len())?;
@@ -363,7 +413,7 @@ fn dib_image_item_inner(bytes: &[u8]) -> Result<ClipboardImageItem, String> {
             pixel_offset += 12;
         }
     }
-    if header_size == 124 || (header_size == 108 && compression == 3) {
+    if header_size == 124 || (matches!(header_size, 56 | 108) && compression == 3) {
         masks[3] = dib_u32(bytes, 52)?;
     }
     let valid_bits = if bits == 24 { 0x00ff_ffff } else { u32::MAX };
@@ -516,8 +566,45 @@ mod tests {
         assert_eq!(item.pixels_per_meter, None);
         assert!(png_image_item(&bytes[..33])
             .unwrap_err()
-            .contains("PNG decode failed"));
+            .contains("missing or truncated IEND chunk"));
         assert!(png_image_item(b"not PNG").unwrap_err().contains("IHDR"));
+    }
+
+    #[test]
+    fn png_read_trims_allocation_padding_after_iend() {
+        let original = png();
+        for padding in [vec![0; 64], b"allocation padding IEND".to_vec()] {
+            let mut bytes = original.clone();
+            bytes.extend_from_slice(&padding);
+            let item = png_image_item(&bytes).unwrap();
+            assert_eq!(STANDARD.decode(&item.bytes_base64).unwrap(), original);
+            assert_eq!(decoded(&item).as_raw(), &[255, 0, 0, 128]);
+        }
+    }
+
+    #[test]
+    fn png_read_refuses_missing_truncated_and_overflowing_iend_chunks() {
+        let bytes = png();
+        // All partial datastreams, including a complete IDAT without IEND, must fail.
+        for end in 33..bytes.len() {
+            assert_eq!(
+                png_image_item(&bytes[..end]).unwrap_err(),
+                "PNG read failed: missing or truncated IEND chunk"
+            );
+        }
+        let mut overflow = bytes[..33].to_vec();
+        overflow.extend_from_slice(&u32::MAX.to_be_bytes());
+        overflow.extend_from_slice(b"IDAT");
+        assert!(png_image_item(&overflow)
+            .unwrap_err()
+            .contains("missing or truncated IEND chunk"));
+        // A marker inside chunk data must never be mistaken for the final chunk.
+        let mut embedded = bytes[..33].to_vec();
+        embedded.extend_from_slice(&12u32.to_be_bytes());
+        embedded.extend_from_slice(b"tEXt\0\0\0\0IEND\xaeB\x60\x82\0\0\0\0");
+        assert!(png_image_item(&embedded)
+            .unwrap_err()
+            .contains("missing or truncated IEND chunk"));
     }
 
     #[test]
@@ -593,6 +680,19 @@ mod tests {
                 &[11, 22, 33, expected]
             );
         }
+    }
+
+    #[test]
+    fn v3_bitfields_alpha_mask_keeps_transparent_red() {
+        let mut bytes = dib(56, 1, 1, 32, 3);
+        for (index, mask) in [0xff0000u32, 0xff00, 0xff, 0xff000000].iter().enumerate() {
+            bytes[40 + index * 4..44 + index * 4].copy_from_slice(&mask.to_le_bytes());
+        }
+        bytes.extend_from_slice(&[0, 0, 255, 0]);
+        assert_eq!(
+            decoded(&dib_image_item(&bytes, "CF_DIB").unwrap()).as_raw(),
+            &[255, 0, 0, 0]
+        );
     }
 
     #[test]
@@ -711,6 +811,61 @@ mod tests {
         assert!(tiff_image_item(b"bad TIFF")
             .unwrap_err()
             .contains("TIFF decode failed"));
+    }
+
+    #[test]
+    fn tiff_orientation_rotates_pixels_and_swaps_density_axes() {
+        for orientation in [1u32, 6] {
+            // Classic little-endian TIFF: two RGB pixels, red then green, at 300/150 px/cm.
+            let bits_offset = 8 + 2 + 13 * 12 + 4;
+            let x_offset = bits_offset + 6;
+            let y_offset = x_offset + 8;
+            let pixel_offset = y_offset + 8;
+            let entries: [(u16, u16, u32, u32); 13] = [
+                (256, 4, 1, 2),
+                (257, 4, 1, 1),
+                (258, 3, 3, bits_offset),
+                (259, 3, 1, 1),
+                (262, 3, 1, 2),
+                (273, 4, 1, pixel_offset),
+                (274, 3, 1, orientation),
+                (277, 3, 1, 3),
+                (278, 4, 1, 1),
+                (279, 4, 1, 6),
+                (282, 5, 1, x_offset),
+                (283, 5, 1, y_offset),
+                (296, 3, 1, 3),
+            ];
+            let mut bytes = b"II\x2a\0\x08\0\0\0".to_vec();
+            bytes.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+            for (tag, kind, count, value) in entries {
+                bytes.extend_from_slice(&tag.to_le_bytes());
+                bytes.extend_from_slice(&kind.to_le_bytes());
+                bytes.extend_from_slice(&count.to_le_bytes());
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+            bytes.extend_from_slice(&0u32.to_le_bytes()); // no next IFD
+            for bits in [8u16; 3] {
+                bytes.extend_from_slice(&bits.to_le_bytes());
+            }
+            for value in [300u32, 1, 150, 1] {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+            bytes.extend_from_slice(&[255, 0, 0, 0, 255, 0]);
+            let item = tiff_image_item(&bytes).unwrap();
+            let (dimensions, density) = if orientation == 6 {
+                ((1, 2), (15000, 30000))
+            } else {
+                ((2, 1), (30000, 15000))
+            };
+            assert_eq!(decoded(&item).dimensions(), dimensions);
+            assert_eq!(
+                (item.pixel_width, item.pixel_height),
+                (Some(dimensions.0), Some(dimensions.1))
+            );
+            assert_eq!(item.pixels_per_meter, Some(density));
+            assert_eq!(decoded(&item).as_raw(), &[255, 0, 0, 255, 0, 255, 0, 255]);
+        }
     }
 
     #[test]
