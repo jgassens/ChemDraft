@@ -1,4 +1,4 @@
-import { normalizeAtomIsotope } from "@chemdraft/chem-core";
+import { MAX_IMAGE_OBJECT_BYTES, normalizeAtomIsotope, readSvgInfo } from "@chemdraft/chem-core";
 
 export type ClipboardPayloadKind = "svg" | "png" | "text/plain" | "smiles" | "mol" | "rxn" | "cdxml" | "cdx";
 
@@ -12,14 +12,41 @@ export interface ClipboardTextItem {
   text: string;
 }
 
+export interface ClipboardImageItem {
+  type: "image/png" | "image/svg+xml";
+  bytesBase64: string;
+  pixelsPerMeter?: { x: number; y: number };
+  pixelWidth?: number;
+  pixelHeight?: number;
+}
+
+export interface ClipboardSkippedImageItem {
+  type: string;
+  byteLength: number;
+  reason: string;
+}
+
 export interface ClipboardReadPayload {
   types: string[];
   textItems: ClipboardTextItem[];
+  imageItems?: ClipboardImageItem[];
+  skippedImageItems?: ClipboardSkippedImageItem[];
 }
 
 export type ClipboardMolfileFormat = "molfile-v2000" | "molfile-v3000";
 
 export type ClipboardDetectedPayload =
+  | {
+      kind: "image";
+      image: ClipboardImageItem;
+      sourceType?: string;
+      warnings: ClipboardTransferWarning[];
+    }
+  | {
+      kind: "image-refused";
+      message: string;
+      warnings: ClipboardTransferWarning[];
+    }
   | {
       kind: "plain-text";
       text: string;
@@ -213,7 +240,32 @@ export function inspectClipboardPayload(payload: ClipboardReadPayload): Clipboar
   const firstPlainText =
     textItems.find((item) => isTextLikeType(item.type)) ??
     textItems.find((item) => !isMarkupType(item.type));
-  if (firstPlainText) {
+  const svgText = payload.textItems.find((item) => looksLikeSvgDocument(item.text));
+  const image = payload.imageItems?.find((item) => item.type === "image/png") ?? payload.imageItems?.[0];
+  const skippedImage = payload.skippedImageItems?.[0];
+  // Plain SMILES still reaches the host's chemistry parser when accompanied by artwork.
+  // This is only a candidate, never a claim of chemical validity.
+  const smilesCandidate = (image || skippedImage || svgText) && textItems.find((item) =>
+    !looksLikeSvgDocument(item.text) && looksLikeSmilesStrict(item.text));
+  if (smilesCandidate) {
+    return { kind: "smiles", text: smilesCandidate.text, sourceType: smilesCandidate.type, warnings: [] };
+  }
+  if (image) return { kind: "image", image, sourceType: image.type, warnings: [] };
+  if (svgText) {
+    const bytes = new TextEncoder().encode(svgText.text);
+    if (bytes.length > MAX_IMAGE_OBJECT_BYTES) {
+      return refusedImage(`SVG is ${(bytes.length / (1024 * 1024)).toFixed(1)} MB; the limit is 25 MB.`);
+    }
+    const chunks: string[] = [];
+    for (let offset = 0; offset < bytes.length; offset += 8192) {
+      chunks.push(String.fromCharCode(...bytes.subarray(offset, offset + 8192)));
+    }
+    return { kind: "image", sourceType: svgText.type, warnings: [], image: {
+      type: "image/svg+xml", bytesBase64: btoa(chunks.join("")), ...readSvgInfo(svgText.text)
+    } };
+  }
+  if (skippedImage) return refusedImage(skippedImage.reason);
+  if (firstPlainText && !looksLikeSvgDocument(firstPlainText.text)) {
     return {
       kind: "plain-text",
       text: firstPlainText.text,
@@ -245,6 +297,15 @@ export function inspectClipboardPayload(payload: ClipboardReadPayload): Clipboar
       }
     ]
   };
+}
+
+function refusedImage(reason: string): ClipboardDetectedPayload {
+  const message = reason.startsWith("Couldn't paste the picture:") ? reason : `Couldn't paste the picture: ${reason}`;
+  return { kind: "image-refused", message: /[.!?]$/.test(message) ? message : `${message}.`, warnings: [] };
+}
+
+function looksLikeSvgDocument(text: string): boolean {
+  return readSvgInfo(text) !== undefined;
 }
 
 export function parseMolfileGraph(molfile: string): ParsedMolfileGraph {
@@ -696,8 +757,8 @@ export function looksLikeInchi(text: string): boolean {
  * token, length ≥ 2, only SMILES grammar characters, and at least one ASCII letter
  * (an element). This NEVER asserts validity (that needs a real parser); the app layer
  * confirms by attempting an OpenChemLib depiction and falls back to plain text on
- * failure. Deliberately not used by `inspectClipboardPayload` — it stays conservative
- * and only classifies plain text as SMILES once the app has actually parsed it.
+ * failure. `inspectClipboardPayload` uses the stricter pre-filter only when a picture
+ * would otherwise hide a plain-text chemistry candidate; the host must still parse it.
  */
 export function looksLikeSmiles(text: string): boolean {
   const token = text.trim();

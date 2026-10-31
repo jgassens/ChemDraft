@@ -1,4 +1,6 @@
 export { normalizeAtomIsotope } from "./isotopes";
+export { MAX_IMAGE_OBJECT_BYTES } from "./imageBytes";
+export { createImageGraphicObject, readPngInfo, readSvgInfo, type CreateImageGraphicObjectOptions, type ImagePixelInfo } from "./image";
 
 export {
   AnchorSchema,
@@ -24,6 +26,7 @@ export {
   GraphicObjectDataSchema,
   GraphicMarkerSchema,
   GraphicObjectSchema,
+  ImageObjectDataSchema,
   GraphicObjectStyleSchema,
   GraphicPathNodeSchema,
   GraphicPaintSchema,
@@ -74,6 +77,7 @@ export {
   type GraphicObjectData,
   type GraphicMarker,
   type GraphicObject,
+  type ImageObjectData,
   type GraphicObjectStyle,
   type GraphicPathNode,
   type GraphicPaint,

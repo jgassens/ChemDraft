@@ -429,6 +429,65 @@ describe("clipboard-adapter", () => {
     });
   });
 
+  it("classifies picture paste with chemistry before images and images before prose", () => {
+    const png = { type: "image/png" as const, bytesBase64: "cG5n", pixelWidth: 200, pixelHeight: 100 };
+    const svg = { type: "image/svg+xml" as const, bytesBase64: "PHN2Zy8+" };
+    const cases = [
+      { textItems: [{ type: "chemical/x-daylight-smiles", text: "CCO" }], imageItems: [png], kind: "smiles" },
+      { textItems: [{ type: "text/plain", text: "CCO" }], imageItems: [png], kind: "smiles" },
+      { textItems: [{ type: "text/plain", text: "reaction conditions: rt, 1 h" }], imageItems: [png], kind: "image", type: "image/png" },
+      { textItems: [{ type: "text/plain", text: "<svg/>" }], imageItems: [png], kind: "image", type: "image/png" },
+      { textItems: [{ type: "text/plain", text: "<svg/>" }], kind: "image", type: "image/svg+xml" },
+      { textItems: [], imageItems: [svg, png], kind: "image", type: "image/png" },
+      { textItems: [], imageItems: [svg], kind: "image", type: "image/svg+xml" },
+      { textItems: [], imageItems: [png], kind: "image", type: "image/png" },
+      { textItems: [{ type: "text/plain", text: cyclopropaneV2000 }], imageItems: [png], kind: "molfile" },
+      { textItems: [{ type: "text/plain", text: "<CDXML><page /></CDXML>" }], imageItems: [png], kind: "cdxml" },
+      { textItems: [{ type: "text/plain", text: "InChI=1S/CH4/h1H4" }], imageItems: [png], kind: "inchi" },
+      { textItems: [], types: ["com.cambridgesoft.ChemDraw.CDX"], imageItems: [png], kind: "cdx" },
+      { textItems: [], kind: "empty" }
+    ];
+    for (const entry of cases) {
+      const result = inspectClipboardPayload({ types: [], ...entry });
+      expect(result.kind, JSON.stringify(entry)).toBe(entry.kind);
+      if ("type" in entry) expect(result).toMatchObject({ image: { type: entry.type } });
+    }
+  });
+
+  it("refuses skipped-only pictures with the native reason while retaining chemistry precedence", () => {
+    const skippedImageItems = [{ type: "image/png", byteLength: 32715571,
+      reason: "PNG is 31.2 MB; the limit is 25 MB." }];
+    expect(inspectClipboardPayload({ types: ["image/png"], textItems: [], skippedImageItems })).toMatchObject({
+      kind: "image-refused", message: "Couldn't paste the picture: PNG is 31.2 MB; the limit is 25 MB."
+    });
+    expect(inspectClipboardPayload({ types: [], skippedImageItems,
+      textItems: [{ type: "chemical/x-daylight-smiles", text: "CCO" }] }).kind).toBe("smiles");
+    expect(inspectClipboardPayload({ types: [], skippedImageItems,
+      textItems: [{ type: "text/plain", text: "some prose" }] }).kind).toBe("image-refused");
+    expect(inspectClipboardPayload({ types: [], skippedImageItems,
+      imageItems: [{ type: "image/svg+xml", bytesBase64: "PHN2Zy8+" }], textItems: [] }).kind).toBe("image");
+  });
+
+  it("recognizes SVG roots after XML prologs without turning SVG source into a text box", () => {
+    for (const text of [
+      "<svg/>",
+      "<svg ",
+      ' \uFEFF <?xml version="1.0"?>\n<!-- comment -->\n<!DOCTYPE svg [<!ENTITY x \'a>b\'>]>\n<svg class="spectrum"></svg>',
+      '<!-- before --><!DOCTYPE svg PUBLIC "id" "url"><!-- after --><svg xmlns="http://www.w3.org/2000/svg"/>',
+      '<svg width="1in" height="0.5in"><text>δ &amp; Δ</text>\r\n</svg>'
+    ]) {
+      const result = inspectClipboardPayload({ types: ["text/plain"], textItems: [{ type: "text/plain", text }] });
+      expect(result).toMatchObject({ kind: "image", image: { type: "image/svg+xml" } });
+      if (result.kind === "image") expect(Buffer.from(result.image.bytesBase64, "base64").toString("utf8")).toBe(text);
+    }
+    for (const text of ["This mentions <svg in a sentence", "<svgish/>", "<!-- comment --><other><svg/></other>"]) {
+      expect(inspectClipboardPayload({ types: ["text/plain"], textItems: [{ type: "text/plain", text }] }))
+        .toMatchObject({ kind: "plain-text", text });
+    }
+    expect(inspectClipboardPayload({ types: ["image/svg+xml"],
+      textItems: [{ type: "image/svg+xml", text: "<svg/>" }] }).kind).toBe("image");
+  });
+
   it("does not treat ambiguous plain SMILES-looking text as chemistry without a SMILES type", () => {
     const detected = inspectClipboardPayload({
       types: ["public.utf8-plain-text"],
