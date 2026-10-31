@@ -281,7 +281,7 @@ export async function svgToPngBlob(
     if (!blob) return null;
     const bytes = new Uint8Array(await blob.arrayBuffer());
     const png = pngWithPhysicalDensity(bytes, scale * 96);
-    return isPng(png) ? new Blob([new Uint8Array(png)], { type: "image/png" }) : null;
+    return await isPng(png) ? new Blob([new Uint8Array(png)], { type: "image/png" }) : null;
   } finally {
     URL.revokeObjectURL(url);
   }
@@ -303,7 +303,7 @@ export function copySpectrumToClipboard(
         const png = await rasterize(svgMarkup);
         if (!png) return "none";
         const bytes = new Uint8Array(await png.arrayBuffer());
-        if (!isPng(bytes)) return "none";
+        if (!await isPng(bytes)) return "none";
         if (isPluginPanelWindowRoute()) {
           return await requestCopySpectrumFromMain(bytesToBase64(bytes), svgMarkup) ? "image" : "none";
         }
@@ -321,7 +321,7 @@ export function copySpectrumToClipboard(
       // asynchronous rasterization as a ClipboardItem promise rather than awaiting it first.
       const png = rasterize(svgMarkup).then(async (blob) => {
         if (!blob) throw new Error("PNG rasterization is unavailable");
-        if (!isPng(new Uint8Array(await blob.arrayBuffer()))) throw new Error("Invalid spectrum PNG.");
+        if (!await isPng(new Uint8Array(await blob.arrayBuffer()))) throw new Error("Invalid spectrum PNG.");
         return blob;
       });
       // Some browsers reject write() before consuming the item promises.
@@ -512,12 +512,48 @@ function decodeBase64(value: string): Uint8Array {
   return Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
 }
 
-function isPng(bytes: Uint8Array): boolean {
+async function validPngImageData(data: Uint8Array, rowStride: number, expectedSize: number): Promise<boolean> {
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  try {
+    reader = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(data);
+        controller.close();
+      }
+    }).pipeThrough(new DecompressionStream("deflate")).getReader();
+    let size = 0;
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) return size === expectedSize;
+      // Inspect output incrementally; never accumulate an inflated image or read past its budget.
+      if (value.length > expectedSize - size) {
+        await reader.cancel();
+        return false;
+      }
+      for (let index = (rowStride - size % rowStride) % rowStride; index < value.length; index += rowStride) {
+        if (value[index] > 4) {
+          await reader.cancel();
+          return false;
+        }
+      }
+      size += value.length;
+    }
+  } catch {
+    return false;
+  } finally {
+    reader?.releaseLock();
+  }
+}
+
+async function isPng(bytes: Uint8Array): Promise<boolean> {
   if (bytes.length < 45 || bytes.length > MAX_SPECTRUM_TRANSFER_BYTES ||
       ![137, 80, 78, 71, 13, 10, 26, 10].every((byte, index) => bytes[index] === byte)) return false;
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const seen = new Set<string>();
-  let hasData = false;
+  const dataChunks: Uint8Array[] = [];
+  let dataSize = 0;
+  let rowStride = 0;
+  let expectedSize = 0;
   for (let offset = 8; offset + 12 <= bytes.length;) {
     const length = view.getUint32(offset);
     const end = offset + 12 + length;
@@ -538,6 +574,8 @@ function isPng(bytes: Uint8Array): boolean {
       if (!width || !height || Math.max(width, height) > 16384 || width * height > 64 * 1024 * 1024 ||
           bytes[offset + 16] !== 8 || ![2, 6].includes(bytes[offset + 17]) ||
           bytes[offset + 18] !== 0 || bytes[offset + 19] !== 0 || bytes[offset + 20] !== 0) return false;
+      rowStride = 1 + width * (bytes[offset + 17] === 6 ? 4 : 3);
+      expectedSize = height * rowStride;
     } else if (type === "pHYs") {
       if (seen.has("IDAT") || length !== 9 || bytes[offset + 16] !== 1) return false;
       const x = view.getUint32(offset + 8);
@@ -554,8 +592,18 @@ function isPng(bytes: Uint8Array): boolean {
     } else if (type === "iCCP") {
       if (seen.has("IDAT") || length < 4 || length > 1024 * 1024) return false;
     } else if (type === "IDAT") {
-      hasData ||= length > 0;
-    } else if (type === "IEND") return length === 0 && hasData && end === bytes.length;
+      dataChunks.push(bytes.subarray(offset + 8, end - 4));
+      dataSize += length;
+    } else if (type === "IEND") {
+      if (length !== 0 || !dataSize || end !== bytes.length) return false;
+      const data = new Uint8Array(dataSize);
+      let dataOffset = 0;
+      for (const chunk of dataChunks) {
+        data.set(chunk, dataOffset);
+        dataOffset += chunk.length;
+      }
+      return validPngImageData(data, rowStride, expectedSize);
+    }
     seen.add(type);
     offset = end;
   }
@@ -600,7 +648,7 @@ export async function handleSpectrumWindowAction(
       if (svgSize === undefined) throw new Error("Spectrum clipboard exceeds 20 MB.");
       if (svg !== undefined) sanitizeSpectrumSvg(svg as string);
       const png = decodeBase64(action.pngBase64 as string);
-      if (!isPng(png)) throw new Error("Invalid spectrum PNG.");
+      if (!await isPng(png)) throw new Error("Invalid spectrum PNG.");
       const result = await dependencies.writeClipboard(spectrumClipboardItems(png, svg as string | undefined));
       ok = result.ok && result.written.includes("image/png");
     } catch {
@@ -626,7 +674,7 @@ export async function handleSpectrumWindowAction(
           throw new Error("Invalid spectrum binary payload.");
         }
         const bytes = decodeBase64(action.bytesBase64 as string);
-        if (!isPng(bytes)) {
+        if (!await isPng(bytes)) {
           throw new Error("Spectrum file does not match its format.");
         }
         result = await dependencies.saveBinary(target.filename, bytes, target.options);
@@ -646,7 +694,7 @@ export async function saveBinaryFile(
   try {
     const target = spectrumSaveTarget(filename, saveFormat(options));
     if (!target || (target.format !== "png" && target.format !== "pdf") || bytes.length > MAX_SPECTRUM_TRANSFER_BYTES) return "failed";
-    if (target.format === "png" && !isPng(bytes)) return "failed";
+    if (target.format === "png" && !await isPng(bytes)) return "failed";
     if (isDesktopRuntime() && isPluginPanelWindowRoute()) {
       if (target.format === "pdf") return "failed";
       return await requestSaveBinaryFileFromMain(target.filename, bytesToBase64(bytes), target.format);
@@ -666,7 +714,7 @@ export async function saveBinaryFileHere(
   const target = spectrumSaveTarget(filename, saveFormat(options));
   if (!target || (target.format !== "png" && target.format !== "pdf") || bytes.length > MAX_SPECTRUM_TRANSFER_BYTES) return "failed";
   if (isDesktopRuntime() && isPluginPanelWindowRoute()) return "failed";
-  if (target.format === "png" && !isPng(bytes)) return "failed";
+  if (target.format === "png" && !await isPng(bytes)) return "failed";
   filename = target.filename;
   options = target.options;
   if (isDesktopRuntime()) {

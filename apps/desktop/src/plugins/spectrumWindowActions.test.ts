@@ -2,12 +2,14 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { crc32, deflateSync } from "node:zlib";
+import { Resvg } from "@resvg/resvg-js";
 import { pngWithPhysicalDensity } from "../clipboard";
 
 import { ANALYSIS_WINDOW_ACTION_EVENT, listenForAnalysisWindowActions } from "./panelBridge";
 import {
   handleSpectrumWindowAction,
   MAX_SPECTRUM_TRANSFER_BYTES,
+  standaloneSpectrumSvg,
   type SpectrumWindowActionDependencies
 } from "./spectrumExport";
 
@@ -247,6 +249,74 @@ describe("document-window spectrum actions", () => {
     const rgb = png(ihdr((data) => { data[9] = 2; }), chunk("IDAT", deflateSync(new Uint8Array([0, 255, 0, 0]))), imageEnd);
     await handleSpectrumWindowAction({ ...save, bytesBase64: base64(rgb) }, dependencies);
     expect(dependencies.saveBinary).toHaveBeenLastCalledWith("spectrum.png", rgb, expect.any(Object));
+  });
+
+  it.each([
+    ["58-byte review PoC", new Uint8Array([0])],
+    ["truncated zlib stream", deflateSync(new Uint8Array(5)).subarray(0, -1)],
+    ["short image data", deflateSync(new Uint8Array(4))],
+    ["over-long image data", deflateSync(new Uint8Array(6))],
+    ["bad filter byte", deflateSync(new Uint8Array([5, 0, 0, 0, 0]))],
+    ["bad zlib checksum", deflateSync(new Uint8Array(5)).map((byte, index, bytes) => index === bytes.length - 1 ? byte ^ 1 : byte)],
+    ["trailing compressed data", new Uint8Array([...deflateSync(new Uint8Array(5)), 0])]
+  ] as const)("rejects CRC-valid PNG with %s before copy or save", async (name, data) => {
+    const bytes = png(header, chunk("IDAT", data), imageEnd);
+    if (name === "58-byte review PoC") expect(bytes.length).toBe(58);
+    const dependencies = fakes();
+    await handleSpectrumWindowAction({ ...copy, pngBase64: base64(bytes) }, dependencies);
+    await handleSpectrumWindowAction({ ...save, bytesBase64: base64(bytes) }, dependencies);
+    expect(dependencies.writeClipboard).not.toHaveBeenCalled();
+    expect(dependencies.saveBinary).not.toHaveBeenCalled();
+    expect(dependencies.respondCopy).toHaveBeenCalledWith("copy-1", false);
+    expect(dependencies.respondSave).toHaveBeenCalledWith("save-1", "failed");
+  });
+
+  it("cancels inflation as soon as an output chunk exceeds the IHDR size cap", async () => {
+    const bytes = png(header, chunk("IDAT", deflateSync(new Uint8Array(1024 * 1024))), imageEnd);
+    const read = vi.spyOn(ReadableStreamDefaultReader.prototype, "read");
+    const cancel = vi.spyOn(ReadableStreamDefaultReader.prototype, "cancel");
+    const dependencies = fakes();
+    await handleSpectrumWindowAction({ ...copy, pngBase64: base64(bytes) }, dependencies);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(dependencies.writeClipboard).not.toHaveBeenCalled();
+    expect(dependencies.respondCopy).toHaveBeenCalledWith("copy-1", false);
+  });
+
+  it("checks every row filter across decompression output chunks and accepts filters 0 through 4", async () => {
+    const width = 4096;
+    const rowStride = width * 4 + 1;
+    const data = new Uint8Array(rowStride * 5);
+    for (let row = 0; row < 5; row += 1) data[row * rowStride] = row;
+    const largeHeader = ihdr((_data, view) => { view.setUint32(0, width); view.setUint32(4, 5); });
+    const valid = png(largeHeader, chunk("IDAT", deflateSync(data)), imageEnd);
+    const dependencies = fakes();
+    await handleSpectrumWindowAction({ ...save, bytesBase64: base64(valid) }, dependencies);
+    expect(dependencies.saveBinary).toHaveBeenCalledWith("spectrum.png", valid, expect.any(Object));
+    dependencies.saveBinary.mockClear();
+    data[4 * rowStride] = 255;
+    const invalid = png(largeHeader, chunk("IDAT", deflateSync(data)), imageEnd);
+    await handleSpectrumWindowAction({ ...save, bytesBase64: base64(invalid) }, dependencies);
+    expect(dependencies.saveBinary).not.toHaveBeenCalled();
+    expect(dependencies.respondSave).toHaveBeenLastCalledWith("save-1", "failed");
+  });
+
+  it("accepts a real encoder spectrum PNG at the rasterizer's 3x size and print density", async () => {
+    const element = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    element.setAttribute("viewBox", "0 0 680 240");
+    element.innerHTML = '<path class="lf-curve" d="M18 210 L660 210 M120 210 L120 80 M350 210 L350 30 M530 210 L530 110"/><text class="lf-axis-caption" x="18" y="230">Shift (ppm)</text>';
+    const svg = standaloneSpectrumSvg(element);
+    const encoded = new Resvg(svg, { fitTo: { mode: "zoom", value: 3 }, background: "#ffffff" }).render().asPng();
+    const bytes = pngWithPhysicalDensity(encoded, 288);
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    expect([view.getUint32(16), view.getUint32(20)]).toEqual([2040, 720]);
+    const dependencies = fakes();
+    await handleSpectrumWindowAction({ ...copy, pngBase64: base64(bytes), svg }, dependencies);
+    await handleSpectrumWindowAction({ ...save, bytesBase64: base64(bytes) }, dependencies);
+    expect(dependencies.writeClipboard.mock.calls[0][0][0].bytes).toEqual(bytes);
+    expect(dependencies.saveBinary).toHaveBeenCalledWith("spectrum.png", bytes, expect.any(Object));
+    expect(dependencies.respondCopy).toHaveBeenCalledWith("copy-1", true);
+    expect(dependencies.respondSave).toHaveBeenCalledWith("save-1", "saved");
   });
 
   it.each([
