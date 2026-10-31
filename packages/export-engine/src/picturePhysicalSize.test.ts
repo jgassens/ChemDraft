@@ -56,10 +56,26 @@ describe("picture physical size on export", () => {
     expect(physical.y + physical.height / 2).toBeCloseTo(styledPicture.y + styledPicture.height / 2);
   });
 
-  it.each(["pixels", "inches", "millimetres"])("retains picture dimensions when SVG output is resized in %s", unit => {
+  it.each([
+    { name: "300-DPI raster", outputWidth: 2550, outputHeight: 3300, expectedWidth: 300 },
+    { name: "800-pixel preview", outputWidth: 816 * 800 / 1056, outputHeight: 800, expectedWidth: 96 * 800 / 1056 }
+  ])("scales pictures with the page for $name output", ({ outputWidth, outputHeight, expectedWidth }) => {
     const document = savedPictureDocument();
-    const options = unit === "pixels" ? { outputWidth: 1632, outputHeight: 2112 }
-      : unit === "inches" ? { outputWidth: 17, outputHeight: 22, outputUnit: "in" as const }
+    const page = document.pages[0]!;
+    expect([page.width, page.height]).toEqual([816, 1056]);
+    const picture = page.objects[1]!;
+    picture.width = picture.height = 96;
+    const image = imageFrame(exportDocumentToSvg(document, { outputWidth, outputHeight }).contents);
+    const pageScale = Math.min(outputWidth / page.width, outputHeight / page.height);
+    expect(image.width! * pageScale).toBeCloseTo(expectedWidth, 6);
+    expect(image.height! * pageScale).toBeCloseTo(expectedWidth, 6);
+    expect(image.x).toBe(picture.x);
+    expect(image.y).toBe(picture.y);
+  });
+
+  it.each(["inches", "millimetres"])("retains picture dimensions when physical SVG output is resized in %s", unit => {
+    const document = savedPictureDocument();
+    const options = unit === "inches" ? { outputWidth: 17, outputHeight: 22, outputUnit: "in" as const }
       : { outputWidth: 431.8, outputHeight: 558.8, outputUnit: "mm" as const };
     const image = imageFrame(exportDocumentToSvg(document, options).contents);
     // Twice the original page size: a viewBox unit now represents 1.5 pt.

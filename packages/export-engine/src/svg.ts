@@ -21,6 +21,7 @@ export interface SvgExportOptions {
    * background rect entirely so downstream raster/PNG export can preserve transparency.
    */
   background?: string;
+  /** Explicit dimensions without outputUnit are pixels; all objects scale with the page. */
   outputWidth?: number;
   outputHeight?: number;
   /** Units for explicitly requested dimensions; omitted sizes retain page-layout units. */
@@ -88,6 +89,7 @@ export function exportDocumentToSvg(document: ChemDraftDocument, options: SvgExp
   const svgSize = pageLayoutSvgSize(page.layout);
   const outputWidth = options.outputWidth === undefined ? svgSize.width : `${options.outputWidth}${options.outputUnit ?? ""}`;
   const outputHeight = options.outputHeight === undefined ? svgSize.height : `${options.outputHeight}${options.outputUnit ?? ""}`;
+  const pixelOutput = options.outputUnit === undefined && (options.outputWidth !== undefined || options.outputHeight !== undefined);
   const pointsPerUnit = Math.min(svgLengthInPoints(outputWidth) / page.width, svgLengthInPoints(outputHeight) / page.height);
   const missingPictures = page.objects.filter((object) => object.type === "graphic" && object.graphicKind === "image" && !object.data.image && object.data.imageHref === undefined);
   const missingIds = new Set(missingPictures.map((object) => object.id));
@@ -100,7 +102,9 @@ export function exportDocumentToSvg(document: ChemDraftDocument, options: SvgExp
     if (!image || fragment.kind !== "element" || image.type !== "graphic" || !image.data.image) return serializeSvgFragment(fragment, 2);
     if (renderedImages.has(image.id)) return "";
     renderedImages.add(image.id);
-    const frame = physicalPictureFrame(image, pointsPerUnit);
+    // Raster sampling and previews scale the whole page, including picture frames.
+    const frame = pixelOutput ? { x: image.x, y: image.y, width: image.width, height: image.height }
+      : physicalPictureFrame(image, pointsPerUnit);
     return serializeSvgFragment({ ...fragment, tag: "g", children: [{ kind: "element", key: `image-${image.id}`, tag: "image", attrs: {
       ...Object.fromEntries(Object.entries(frame).map(([key, value]) => [key, String(value)])),
       // Keep the native frame so later document-style conversion cannot rescale the picture twice.
