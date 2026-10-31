@@ -9,8 +9,11 @@ import { createPhase4Document } from "../documentWorkflow";
 import { MainWindow } from "../MainWindow";
 import { ANALYSIS_WINDOW_ACTION_EVENT, type AnalysisWindowAction } from "./panelBridge";
 import * as panelBridge from "./panelBridge";
+import * as spectrumExport from "./spectrumExport";
+import * as clipboard from "../clipboard";
 import {
   RECOGNITION_FIXTURE_COMMAND_ID,
+  RECOGNITION_FIXTURE_PLUGIN_ID,
   RECOGNITION_FIXTURE_PANEL_ID
 } from "../testSupport/recognitionFixturePlugin";
 import type { DesktopPluginRuntime } from "./createPluginRuntime";
@@ -730,6 +733,117 @@ describe("MainWindow bundled plugin integration", () => {
     await sendAnalysisWindowAction({ kind: "copyMolecularInspector", text: "C6H6" });
     expect(writeText).toHaveBeenCalledWith("C6H6");
     expect(statusText()).toContain("Analysis copied");
+  });
+
+  it.each(["acceptPluginProposal", "rejectPluginProposal"] as const)(
+    "authorizes %s and review-window closing only for the proposal's own window", async (kind) => {
+      bundled.withRecognitionFixture = true;
+      let receive!: Parameters<typeof panelBridge.listenForAnalysisWindowActions>[0];
+      let nativeClose!: Parameters<typeof panelBridge.listenForNativePanelWindowCloses>[0];
+      vi.spyOn(panelBridge, "listenForAnalysisWindowActions").mockImplementation(handler => { receive = handler; return () => undefined; });
+      vi.spyOn(panelBridge, "listenForNativePanelWindowCloses").mockImplementation(handler => { nativeClose = handler; return () => undefined; });
+      vi.spyOn(panelBridge, "broadcastAnalysisWindowSnapshot").mockResolvedValue();
+      vi.spyOn(panelBridge, "openPluginPanelWindow").mockResolvedValue();
+      vi.spyOn(panelBridge, "hidePluginPanelWindow").mockResolvedValue();
+      const respond = vi.spyOn(panelBridge, "respondToProposalDecision").mockResolvedValue();
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      await renderMainWindow();
+      nativeDialog.desktop = true;
+      const before = getAssistantHistoryPort().read("initial")!;
+      const host = bundled.runtime!.host;
+      let proposalId!: string;
+      await act(async () => {
+        proposalId = host.proposePatch(RECOGNITION_FIXTURE_PLUGIN_ID, {
+          reason: "Insert test molecule",
+          patch: { op: "addObject", pageId: before.pages[0]!.id, object: { ...namingMolecule, id: "reviewed-molecule" } }
+        }).id;
+      });
+      const review = { pluginId: panelBridge.ANALYSIS_WINDOW_OWNER_ID, panelId: panelBridge.PATCH_REVIEW_WINDOW_ID };
+      const label = panelBridge.pluginPanelWindowLabel(review);
+      const other = panelBridge.pluginPanelWindowLabel({ pluginId: "org.nmr", panelId: "panel.nmr.result" });
+      const action = { kind, proposalId, requestId: "decision" };
+      await act(async () => {
+        receive(action, other);
+        receive(action);
+        receive({ ...action, proposalId: "not-displayed" }, label);
+        receive({ kind: "close", windowId: review.panelId }, other);
+      });
+      expect(host.listProposedPatches("pending")).toHaveLength(1);
+      expect(getAssistantHistoryPort().read("initial")!.pages).toEqual(before.pages);
+      expect(respond).not.toHaveBeenCalled();
+      expect(container!.querySelector("[data-pending-proposals-badge]")).toBeNull();
+      expect(warn).toHaveBeenCalledTimes(4);
+      await act(async () => { receive({ kind: "close", windowId: review.panelId }, label); });
+      const badge = container!.querySelector("[data-pending-proposals-badge] button")!;
+      expect(badge).not.toBeNull();
+      await click(badge);
+      await act(async () => { nativeClose(review); });
+      expect(container!.querySelector("[data-pending-proposals-badge]")).not.toBeNull();
+      await click(container!.querySelector("[data-pending-proposals-badge] button")!);
+      await act(async () => { receive(action, label); });
+      expect(host.listProposedPatches("pending")).toHaveLength(0);
+      expect(respond).toHaveBeenCalledWith("decision", expect.objectContaining({ ok: true }), label);
+      const inserted = getAssistantHistoryPort().read("initial")!.pages[0]!.objects.some(object => object.id === "reviewed-molecule");
+      expect(inserted).toBe(kind === "acceptPluginProposal");
+    }
+  );
+
+  it("binds report text copy and every spectrum action to live panel content", async () => {
+    let receive!: Parameters<typeof panelBridge.listenForAnalysisWindowActions>[0];
+    vi.spyOn(panelBridge, "listenForAnalysisWindowActions").mockImplementation(handler => { receive = handler; return () => undefined; });
+    vi.spyOn(panelBridge, "broadcastAnalysisWindowSnapshot").mockResolvedValue();
+    vi.spyOn(panelBridge, "broadcastPluginPanelReport").mockResolvedValue();
+    vi.spyOn(panelBridge, "broadcastPluginPanelStaleness").mockResolvedValue();
+    vi.spyOn(panelBridge, "broadcastPluginPanelReportCleared").mockResolvedValue();
+    vi.spyOn(panelBridge, "openPluginPanelWindow").mockResolvedValue();
+    vi.spyOn(panelBridge, "hidePluginPanelWindow").mockResolvedValue();
+    const copyReply = vi.spyOn(panelBridge, "respondToCopyMolecularInspector").mockResolvedValue();
+    const saveReply = vi.spyOn(panelBridge, "respondToSaveTextFile").mockResolvedValue();
+    const handleSpectrum = vi.spyOn(spectrumExport, "handleSpectrumWindowAction").mockResolvedValue();
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const writeText = vi.spyOn(clipboard, "writeClipboardTextItems").mockResolvedValue(true);
+    await renderMainWindow();
+    nativeDialog.desktop = true;
+    const runtime = bundled.runtime!;
+    const identity = { pluginId: namingManifest.id, panelId: "panel.namingTest.result" };
+    const label = panelBridge.pluginPanelWindowLabel(identity);
+    const other = panelBridge.pluginPanelWindowLabel({ ...identity, panelId: "panel.namingTest.other" });
+    await act(async () => {
+      runtime.registerPlugin(namingManifest);
+      runtime.panels.showReport(identity.pluginId, identity.panelId, { title: "Result", sections: [{
+        kind: "linkedFigure", spectrum: { nucleus: "13C", domain: { min: 0, max: 200 }, peaks: [] }
+      }] });
+      runtime.panels.detachPanel(identity.pluginId, identity.panelId);
+    });
+    const actions: AnalysisWindowAction[] = [
+      { kind: "copyMolecularInspector", text: "ethanol", requestId: "name" },
+      { kind: "copySpectrum", requestId: "spectrum" },
+      { kind: "saveTextFile", requestId: "text" },
+      { kind: "saveBinaryFile", requestId: "binary" }
+    ];
+    await act(async () => { for (const action of actions) receive(action, other); });
+    expect(writeText).not.toHaveBeenCalled();
+    expect(handleSpectrum).not.toHaveBeenCalled();
+    await act(async () => { for (const action of actions) receive(action, label); });
+    expect(writeText).toHaveBeenCalledExactlyOnceWith([{ type: "text/plain", text: "ethanol" }]);
+    expect(copyReply).toHaveBeenCalledWith("name", true, label);
+    expect(handleSpectrum.mock.calls.map(([action]) => action)).toEqual(actions.slice(1));
+    const dependencies = handleSpectrum.mock.calls[0]![1]!;
+    await dependencies.respondCopy("spectrum", true);
+    await dependencies.respondSave("text", "saved");
+    expect(copyReply).toHaveBeenCalledWith("spectrum", true, label);
+    expect(saveReply).toHaveBeenCalledWith("text", "saved", label);
+    handleSpectrum.mockClear();
+    await act(async () => {
+      runtime.panels.showReport(identity.pluginId, identity.panelId, { title: "Name only", sections: [] });
+      for (const action of actions.slice(1)) receive(action, label);
+    });
+    expect(handleSpectrum).not.toHaveBeenCalled();
+    await act(async () => {
+      runtime.panels.closeDetachedPanel(identity.pluginId, identity.panelId);
+      receive(actions[0]!, label);
+    });
+    expect(writeText).toHaveBeenCalledTimes(1);
   });
 
   it("performs a report window's file save itself, with the main window's own permissions", async () => {

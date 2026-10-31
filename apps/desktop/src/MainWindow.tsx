@@ -170,7 +170,6 @@ import { AnalyzerNoticeBanner, type AnalyzerNotice } from "./plugins/AnalyzerNot
 import { PatchReviewTray, PendingProposalsBadge, proposalReviewItem } from "./plugins/PatchReviewTray";
 import type { DesktopPluginRuntime } from "./plugins/createPluginRuntime";
 import {
-  ANALYSIS_WINDOW_ACTION_EVENT,
   ANALYSIS_WINDOW_OWNER_ID,
   MOLECULAR_INSPECTOR_WINDOW_ID,
   PATCH_REVIEW_WINDOW_ID,
@@ -193,6 +192,7 @@ import {
   respondToCopyMolecularInspector,
   respondToPluginPanelAction,
   respondToProposalDecision,
+  respondToSaveTextFile,
   type AnalysisWindowAction,
   type AnalysisWindowContent,
   type AnalysisWindowSnapshotPayload,
@@ -200,12 +200,12 @@ import {
   type PluginPanelReportPayload,
   type ProposalDecisionOutcome
 } from "./plugins/panelBridge";
-import { resolvePluginPanelAction } from "./plugins/pluginPanelActions";
+import { isAnalysisWindowActionAuthorized, resolvePluginPanelAction } from "./plugins/pluginPanelActions";
 import { canvasOverlayDockSlots, PluginCanvasOverlay } from "./plugins/PluginCanvasOverlay";
 import { pluginPanelOpenCommand } from "./plugins/pluginPanelOpenCommand";
 import { canvasOverlayPrompt, OVERLAY_BUSY_MESSAGE, pluginCanvasOverlayOpenCommand } from "./plugins/pluginCanvasOverlayControls";
 import type { PluginPanelActionRequest, PluginPanelActionResult } from "./plugins/pluginPanelActionTypes";
-import { handleSpectrumWindowAction } from "./plugins/spectrumExport";
+import { handleSpectrumWindowAction, saveBinaryFileHere, saveTextFileHere, spectrumToPdf } from "./plugins/spectrumExport";
 import type { QueuedProposedPatch } from "@chemdraft/plugin-host";
 import { isBlockedByModalDialog, shouldIgnoreShortcutTarget, subscribeToModalDialogChanges, type ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import {
@@ -412,6 +412,7 @@ import {
   writeClipboardText,
   writeClipboardTextItems,
   writeClipboardImage,
+  writeClipboardItems,
   rasterizeSvgInBrowser,
   type ClipboardWriteTextItem
 } from "./clipboard";
@@ -11205,8 +11206,8 @@ export function MainWindow({
     const runtime = pluginRuntime.runtime;
     return listenForNativePanelWindowCloses(({ pluginId, panelId }) => {
       if (pluginId === ANALYSIS_WINDOW_OWNER_ID) {
-        const action: AnalysisWindowAction = { kind: "close", windowId: panelId };
-        window.dispatchEvent(new CustomEvent(ANALYSIS_WINDOW_ACTION_EVENT, { detail: action }));
+        if (panelId === PLUGIN_DIAGNOSTICS_WINDOW_ID) setPluginDiagnosticsOpen(false);
+        if (panelId === PATCH_REVIEW_WINDOW_ID) setProposalReview((current) => ({ ...current, windowOpen: false }));
         return;
       }
       runtime.panels.closeDetachedPanel(pluginId, panelId);
@@ -11428,8 +11429,20 @@ export function MainWindow({
   }, [acceptPluginProposal, copyAnalysisText, pluginRuntime.runtime, recomputeAnalysisFor, rejectPluginProposal]);
   useEffect(
     () =>
-      listenForAnalysisWindowActions((action: AnalysisWindowAction) => {
+      listenForAnalysisWindowActions((action: AnalysisWindowAction, sourceLabel?: string) => {
         const handlers = analysisWindowActionHandlersRef.current;
+        if (sourceLabel !== undefined || isDesktopRuntime()) {
+          const identity = sourceLabel ? parsePluginPanelWindowLabel(sourceLabel) : undefined;
+          const panel = identity && handlers.runtime.panels.getDetachedPanels().find((candidate) =>
+            candidate.pluginId === identity.pluginId && candidate.panelId === identity.panelId);
+          const owner = identity?.pluginId === ANALYSIS_WINDOW_OWNER_ID
+            ? analysisWindowSnapshotsRef.current.get(pluginPanelIdentityKey(identity.pluginId, identity.panelId))
+            : panel ? { ...panel, content: { kind: "report" as const, report: panel.report } } : undefined;
+          if (!sourceLabel || !isAnalysisWindowActionAuthorized(action, sourceLabel, owner)) {
+            console.warn("Rejected analysis window action", action.kind, sourceLabel);
+            return;
+          }
+        }
         switch (action.kind) {
           case "close":
             if (action.windowId === PLUGIN_DIAGNOSTICS_WINDOW_ID) {
@@ -11446,7 +11459,7 @@ export function MainWindow({
             void handlers
               .copyAnalysisText(text)
               .catch(() => false)
-              .then((ok) => (requestId ? respondToCopyMolecularInspector(requestId, ok) : undefined))
+              .then((ok) => (requestId ? respondToCopyMolecularInspector(requestId, ok, sourceLabel) : undefined))
               .catch(() => undefined);
             return;
           }
@@ -11470,14 +11483,24 @@ export function MainWindow({
               outcome = handlers.rejectPluginProposal(proposal);
             }
             if (action.requestId) {
-              void respondToProposalDecision(action.requestId, outcome).catch(() => undefined);
+              const response = sourceLabel === undefined
+                ? respondToProposalDecision(action.requestId, outcome)
+                : respondToProposalDecision(action.requestId, outcome, sourceLabel);
+              void response.catch(() => undefined);
             }
             return;
           }
           case "copySpectrum":
           case "saveBinaryFile":
           case "saveTextFile":
-            void handleSpectrumWindowAction(action).catch(() => undefined);
+            void handleSpectrumWindowAction(action, {
+              writeClipboard: writeClipboardItems,
+              saveBinary: saveBinaryFileHere,
+              saveText: saveTextFileHere,
+              pdf: spectrumToPdf,
+              respondCopy: (requestId, ok) => respondToCopyMolecularInspector(requestId, ok, sourceLabel),
+              respondSave: (requestId, result) => respondToSaveTextFile(requestId, result, sourceLabel)
+            }).catch(() => undefined);
             return;
         }
       }),
@@ -11741,7 +11764,7 @@ export function MainWindow({
   const pluginPanelActionHandlerRef = useRef<Parameters<typeof listenForPluginPanelActions>[0]>(() => undefined);
   pluginPanelActionHandlerRef.current = (id, request, sourceLabel) => {
     const refuse = (reason: string) => {
-      void respondToPluginPanelAction(id, { ok: false, reason }).catch(() => undefined);
+      void respondToPluginPanelAction(id, { ok: false, reason }, sourceLabel).catch(() => undefined);
     };
     const runtime = pluginRuntime.runtime;
     const openPanel = runtime.panels.getOpenPanel();
@@ -11777,7 +11800,7 @@ export function MainWindow({
     // invoke enqueues plugin work and returns immediately. Acknowledge acceptance, never wait
     // for completion: a long submit must leave the panel free to send its separate stop command.
     void acceptPluginInput(resolved.commandId, resolved.input)
-      .then(result => respondToPluginPanelAction(id, result.ok ? { ok: true } : { ok: false, reason: result.message }))
+      .then(result => respondToPluginPanelAction(id, result.ok ? { ok: true } : { ok: false, reason: result.message }, sourceLabel))
       .catch(() => undefined);
   };
   useEffect(() => listenForPluginPanelActions((id, request, sourceLabel) => {

@@ -5,6 +5,43 @@ import {
 } from "@chemdraft/plugin-api";
 
 import type { PluginPanelActionRequest } from "./pluginPanelActionTypes";
+import {
+  ANALYSIS_WINDOW_OWNER_ID,
+  MOLECULAR_INSPECTOR_WINDOW_ID,
+  PATCH_REVIEW_WINDOW_ID,
+  pluginPanelWindowLabel,
+  type AnalysisWindowAction,
+  type AnalysisWindowContent,
+  type PluginPanelIdentity
+} from "./panelBridge";
+
+/** Resolve authority from retained host content, never from ids or content claimed by a panel. */
+export function isAnalysisWindowActionAuthorized(
+  action: AnalysisWindowAction,
+  sourceLabel: string,
+  owner: (PluginPanelIdentity & { content: AnalysisWindowContent }) | undefined
+): boolean {
+  if (!owner || sourceLabel !== pluginPanelWindowLabel(owner)) return false;
+  const { content } = owner;
+  const core = owner.pluginId === ANALYSIS_WINDOW_OWNER_ID;
+  switch (action.kind) {
+    case "close":
+      return core && action.windowId === owner.panelId;
+    case "copyMolecularInspector":
+      // Chemical-name reports use the same text-copy bridge as the inspector.
+      return content.kind === "report" || (core && content.kind === "molecularInspector");
+    case "changeMolecularInterpretation":
+      return core && owner.panelId === MOLECULAR_INSPECTOR_WINDOW_ID && content.kind === "molecularInspector";
+    case "acceptPluginProposal":
+    case "rejectPluginProposal":
+      return core && owner.panelId === PATCH_REVIEW_WINDOW_ID && content.kind === "patchReview"
+        && content.proposals.some((proposal) => proposal.id === action.proposalId);
+    case "copySpectrum":
+    case "saveBinaryFile":
+    case "saveTextFile":
+      return content.kind === "report" && content.report.sections.some((section) => section.kind === "linkedFigure");
+  }
+}
 
 /** The panel id travels with the cross-window envelope, not with the untrusted control data. */
 export type PluginPanelActionWithPanel = PluginPanelActionRequest & { panelId: string };

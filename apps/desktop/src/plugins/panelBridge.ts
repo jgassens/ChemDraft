@@ -75,8 +75,7 @@ export interface PluginPanelReportClearedPayload extends PluginPanelIdentity {
 export async function broadcastPluginPanelReportCleared(payload: PluginPanelReportClearedPayload): Promise<void> {
   window.dispatchEvent(new CustomEvent(PLUGIN_PANEL_REPORT_CLEARED_EVENT, { detail: payload }));
   if (isDesktopRuntime()) {
-    const { emit } = await import("@tauri-apps/api/event");
-    await emit(PLUGIN_PANEL_REPORT_CLEARED_EVENT, payload);
+    await publishPanelWindowEvent(pluginPanelWindowLabel(payload), PLUGIN_PANEL_REPORT_CLEARED_EVENT, payload);
   }
 }
 
@@ -182,14 +181,13 @@ export function listenForPluginPanelActions(
 }
 
 /** Return the document window's decision to the panel that initiated a request. */
-export async function respondToPluginPanelAction(id: string, result: PluginPanelActionResult): Promise<void> {
+export async function respondToPluginPanelAction(id: string, result: PluginPanelActionResult, sourceLabel?: string): Promise<void> {
   const envelope: PluginPanelActionResultEnvelope = { id, result: result.ok ? { ok: true } : { ok: false, reason: result.reason } };
   // The CustomEvent path keeps the web build and DOM tests independent of Tauri.
   window.dispatchEvent(new CustomEvent(PLUGIN_PANEL_ACTION_RESULT_EVENT, { detail: envelope }));
-  if (!isTauriHost()) return;
+  if (!isTauriHost() || !sourceLabel) return;
   try {
-    const { emit } = await import("@tauri-apps/api/event");
-    await emit<PluginPanelActionResultEnvelope>(PLUGIN_PANEL_ACTION_RESULT_EVENT, envelope);
+    await publishPanelWindowEvent(sourceLabel, PLUGIN_PANEL_ACTION_RESULT_EVENT, envelope);
   } catch {
     // A close racing a response is expected. The panel's timeout communicates the failure.
   }
@@ -318,6 +316,31 @@ async function emitPanelEvent(event: string, payload: unknown): Promise<void> {
   }
 }
 
+/** Deliver only into the recipient webview; Tauri targeted events also reach Any listeners. */
+async function publishPanelWindowEvent(targetLabel: string, event: string, payload: unknown): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("open_plugin_panel_window", { publication: { targetLabel, event, payload } });
+}
+
+async function listenForPanelResult(handler: (payload: unknown) => void): Promise<() => void> {
+  const domListener = (event: Event) => handler((event as CustomEvent<unknown>).detail);
+  window.addEventListener(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, domListener);
+  const stop = attachTauriListener(
+    ANALYSIS_WINDOW_ACTION_RESULT_EVENT,
+    domListener,
+    (payload): payload is AnalysisWindowSaveResult | AnalysisWindowCopyResult | AnalysisWindowProposalResult =>
+      isSaveResult(payload) || isCopyResult(payload) || isProposalResult(payload),
+    handler
+  );
+  try {
+    await stop.ready;
+    return stop;
+  } catch (error) {
+    stop();
+    throw error;
+  }
+}
+
 /** Panels request a format; the document window owns save metadata and validation. */
 export function requestSaveTextFileFromMain(
   filename: string,
@@ -331,12 +354,12 @@ export function requestSaveTextFileFromMain(
 }
 
 /** Main → window: answer a `saveTextFile` action. */
-export async function respondToSaveTextFile(requestId: string, result: SaveTextFileResult): Promise<void> {
+export async function respondToSaveTextFile(requestId: string, result: SaveTextFileResult, sourceLabel?: string): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<AnalysisWindowSaveResult>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, { requestId, result });
+  if (!sourceLabel) return;
+  await publishPanelWindowEvent(sourceLabel, ANALYSIS_WINDOW_ACTION_RESULT_EVENT, { requestId, result });
 }
 
 /** Detached panels never receive clipboard or filesystem permission. Subscribe before forwarding. */
@@ -369,8 +392,8 @@ async function requestSpectrumWindowAction<TReply extends { requestId: string },
   try {
     let answer: (result: TResult) => void = () => undefined;
     const answered = new Promise<TResult>((resolve) => { answer = resolve; });
-    unlisten = await listenTauriEvent<unknown>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, (event) => {
-      if (validateReply(event.payload) && event.payload.requestId === requestId) answer(readReply(event.payload));
+    unlisten = await listenForPanelResult((payload) => {
+      if (validateReply(payload) && payload.requestId === requestId) answer(readReply(payload));
     });
     timer = setTimeout(() => answer(failure), timeoutMs);
     await emitPanelEvent(ANALYSIS_WINDOW_ACTION_EVENT, { ...action, requestId });
@@ -412,9 +435,9 @@ export async function requestProposalDecision(
     const answered = new Promise<ProposalDecisionOutcome>((resolve) => {
       answer = resolve;
     });
-    unlisten = await listenTauriEvent<unknown>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, (event) => {
-      if (isProposalResult(event.payload) && event.payload.requestId === requestId) {
-        answer(event.payload.proposal);
+    unlisten = await listenForPanelResult((payload) => {
+      if (isProposalResult(payload) && payload.requestId === requestId) {
+        answer(payload.proposal);
       }
     });
     timer = setTimeout(
@@ -439,12 +462,12 @@ export async function requestProposalDecision(
 }
 
 /** Main → window: answer an `acceptPluginProposal`/`rejectPluginProposal` action. */
-export async function respondToProposalDecision(requestId: string, outcome: ProposalDecisionOutcome): Promise<void> {
+export async function respondToProposalDecision(requestId: string, outcome: ProposalDecisionOutcome, sourceLabel?: string): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<AnalysisWindowProposalResult>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, {
+  if (!sourceLabel) return;
+  await publishPanelWindowEvent(sourceLabel, ANALYSIS_WINDOW_ACTION_RESULT_EVENT, {
     requestId,
     proposal: { ok: outcome.ok, message: outcome.message }
   });
@@ -469,9 +492,9 @@ export async function requestCopyAnalysisText(text: string): Promise<boolean> {
     const answered = new Promise<boolean>((resolve) => {
       answer = resolve;
     });
-    unlisten = await listenTauriEvent<unknown>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, (event) => {
-      if (isCopyResult(event.payload) && event.payload.requestId === requestId) {
-        answer(event.payload.ok);
+    unlisten = await listenForPanelResult((payload) => {
+      if (isCopyResult(payload) && payload.requestId === requestId) {
+        answer(payload.ok);
       }
     });
     await emitPanelEvent(ANALYSIS_WINDOW_ACTION_EVENT, { kind: "copyMolecularInspector", requestId, text });
@@ -487,12 +510,12 @@ export async function requestCopyAnalysisText(text: string): Promise<boolean> {
 export const requestCopyMolecularInspectorText = requestCopyAnalysisText;
 
 /** Main → window: answer a `copyMolecularInspector` action. */
-export async function respondToCopyMolecularInspector(requestId: string, ok: boolean): Promise<void> {
+export async function respondToCopyMolecularInspector(requestId: string, ok: boolean, sourceLabel?: string): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<AnalysisWindowCopyResult>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, { requestId, ok });
+  if (!sourceLabel) return;
+  await publishPanelWindowEvent(sourceLabel, ANALYSIS_WINDOW_ACTION_RESULT_EVENT, { requestId, ok });
 }
 
 export async function broadcastPluginPanelReport(payload: PluginPanelReportPayload): Promise<void> {
@@ -501,8 +524,7 @@ export async function broadcastPluginPanelReport(payload: PluginPanelReportPaylo
     return;
   }
 
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<PluginPanelReportPayload>(PLUGIN_PANEL_REPORT_EVENT, payload);
+  await publishPanelWindowEvent(pluginPanelWindowLabel(payload), PLUGIN_PANEL_REPORT_EVENT, payload);
 }
 
 export async function broadcastAnalysisWindowSnapshot(payload: AnalysisWindowSnapshotPayload): Promise<void> {
@@ -511,8 +533,7 @@ export async function broadcastAnalysisWindowSnapshot(payload: AnalysisWindowSna
     return;
   }
 
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<AnalysisWindowSnapshotPayload>(ANALYSIS_WINDOW_SNAPSHOT_EVENT, payload);
+  await publishPanelWindowEvent(pluginPanelWindowLabel(payload), ANALYSIS_WINDOW_SNAPSHOT_EVENT, payload);
 }
 
 export function listenForAnalysisWindowSnapshots(
@@ -542,15 +563,20 @@ export async function requestAnalysisWindowAction(action: AnalysisWindowAction):
   await emitPanelEvent(ANALYSIS_WINDOW_ACTION_EVENT, action);
 }
 
-export function listenForAnalysisWindowActions(handler: (action: AnalysisWindowAction) => void): () => void {
+export function listenForAnalysisWindowActions(
+  handler: (action: AnalysisWindowAction, sourceLabel?: string) => void
+): () => void {
+  const nativeHost = isTauriHost();
   const domListener = (event: Event) => {
     const payload = (event as CustomEvent<unknown>).detail;
-    if (isAnalysisWindowAction(payload)) {
-      handler(payload);
-    }
+    if (!nativeHost && isAnalysisWindowAction(payload)) handler(payload);
   };
   window.addEventListener(ANALYSIS_WINDOW_ACTION_EVENT, domListener);
-  return attachTauriListener(ANALYSIS_WINDOW_ACTION_EVENT, domListener, isAnalysisWindowAction, handler);
+  return attachTauriListener(ANALYSIS_WINDOW_ACTION_EVENT, domListener, isAnalysisWindowAction, (action) => {
+    const sourceLabel = (action as AnalysisWindowAction & { sourceLabel?: unknown }).sourceLabel;
+    if (typeof sourceLabel === "string") handler(action, sourceLabel);
+    else console.warn("Rejected analysis window action without a native source", action.kind);
+  });
 }
 
 export function listenForPluginPanelReports(
@@ -608,8 +634,7 @@ export async function broadcastPluginPanelStaleness(payload: PluginPanelStalenes
     return;
   }
 
-  const { emit } = await import("@tauri-apps/api/event");
-  await emit<PluginPanelStalenessPayload>(PLUGIN_PANEL_STALENESS_EVENT, payload);
+  await publishPanelWindowEvent(pluginPanelWindowLabel(payload), PLUGIN_PANEL_STALENESS_EVENT, payload);
 }
 
 export function listenForPluginPanelStaleness(
@@ -755,6 +780,11 @@ export function pluginPanelIdentityKey(pluginId: string, panelId: string): strin
 /** Reversible, native-label-safe identity passed through Rust's existing `panelId` field. */
 export function pluginPanelWindowId(pluginId: string, panelId: string): string {
   return `v1x${encodeHex(pluginId)}x${encodeHex(panelId)}`;
+}
+
+/** The exact native destination shared by reports, snapshots, and action authorization. */
+export function pluginPanelWindowLabel(identity: PluginPanelIdentity): string {
+  return `${PLUGIN_PANEL_WINDOW_LABEL_PREFIX}${pluginPanelWindowId(identity.pluginId, identity.panelId)}`;
 }
 
 /** Decode only the native panel label scheme used by openPluginPanelWindow and lib.rs. */

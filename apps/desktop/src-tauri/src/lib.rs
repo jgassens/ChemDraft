@@ -3054,9 +3054,21 @@ fn validate_plugin_panel_event(
             }
             Ok(())
         }
-        "chemdraft://analysis-window-action" => Ok(()),
+        "chemdraft://analysis-window-action" if payload.is_object() => Ok(()),
         _ => Err("This event cannot be forwarded by a panel window.".into()),
     }
+}
+
+fn authenticated_plugin_panel_event(
+    label: &str,
+    event: &str,
+    mut payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    validate_plugin_panel_event(label, event, &payload)?;
+    if event == "chemdraft://analysis-window-action" {
+        payload["sourceLabel"] = serde_json::Value::String(label.into());
+    }
+    Ok(payload)
 }
 
 #[tauri::command]
@@ -3065,7 +3077,7 @@ fn plugin_panel_event_forward(
     event: String,
     payload: serde_json::Value,
 ) -> Result<(), String> {
-    validate_plugin_panel_event(window.label(), &event, &payload)?;
+    let payload = authenticated_plugin_panel_event(window.label(), &event, payload)?;
     window
         .app_handle()
         .emit_to(MAIN_WINDOW_LABEL, &event, payload)
@@ -3333,6 +3345,103 @@ mod plugin_panel_label_tests {
     }
 
     #[test]
+    fn plugin_panel_analysis_actions_overwrite_forged_sources() {
+        use super::authenticated_plugin_panel_event;
+        let label = plugin_panel_window_label("v1x61x62");
+        let event = "chemdraft://analysis-window-action";
+        for kind in [
+            "close",
+            "copyMolecularInspector",
+            "changeMolecularInterpretation",
+            "acceptPluginProposal",
+            "rejectPluginProposal",
+            "copySpectrum",
+            "saveBinaryFile",
+            "saveTextFile",
+        ] {
+            for source in [
+                serde_json::Value::Null,
+                serde_json::json!("plugin-panel-other"),
+            ] {
+                let payload = serde_json::json!({"kind": kind, "sourceLabel": source});
+                let forwarded = authenticated_plugin_panel_event(&label, event, payload).unwrap();
+                assert_eq!(forwarded["sourceLabel"], label);
+                assert_eq!(forwarded["kind"], kind);
+            }
+            let forwarded =
+                authenticated_plugin_panel_event(&label, event, serde_json::json!({"kind": kind}))
+                    .unwrap();
+            assert_eq!(forwarded["sourceLabel"], label);
+        }
+        for payload in [
+            serde_json::Value::Null,
+            serde_json::json!([]),
+            serde_json::json!(1),
+        ] {
+            assert!(authenticated_plugin_panel_event(&label, event, payload).is_err());
+        }
+    }
+
+    #[test]
+    fn plugin_panel_publications_are_private_and_document_owned() {
+        use super::{plugin_panel_publication_script, PluginPanelPublication};
+        let state = std::sync::Mutex::new(super::utility_suspension::UtilitySuspension::default());
+        let mut publication = PluginPanelPublication {
+            target_label: plugin_panel_window_label("v1x61x62"),
+            event: "chemdraft://analysis-window-snapshot".into(),
+            payload: serde_json::json!({"text": "\"}); alert('untrusted'); //"}),
+        };
+        for source in ["plugin-panel-other", "preferences", "toolset-core-main"] {
+            assert!(plugin_panel_publication_script(source, &publication, &state).is_err());
+        }
+        let script = plugin_panel_publication_script("main", &publication, &state).unwrap();
+        assert!(script.starts_with("window.dispatchEvent(new CustomEvent("));
+        assert!(script.contains("JSON.parse("));
+        assert!(!script.contains("__TAURI_EVENT_PLUGIN_INTERNALS__"));
+        for event in [
+            "chemdraft://plugin-panel-report",
+            "chemdraft://plugin-panel-report-cleared",
+            "chemdraft://plugin-panel-staleness",
+            "chemdraft://analysis-window-snapshot",
+            "chemdraft://analysis-window-action-result",
+            "chemdraft://plugin-panel-action-result",
+        ] {
+            publication.event = event.into();
+            assert!(plugin_panel_publication_script("main", &publication, &state).is_ok());
+        }
+        publication.event = "chemdraft://analysis-window-action".into();
+        assert!(plugin_panel_publication_script("main", &publication, &state).is_err());
+        publication.event = "chemdraft://analysis-window-snapshot".into();
+        publication.target_label = "main".into();
+        assert!(plugin_panel_publication_script("main", &publication, &state).is_err());
+    }
+
+    #[test]
+    fn plugin_panel_private_tombstones_cancel_suspended_restores() {
+        use super::{
+            dispatch_plugin_panel_open, plugin_panel_publication_script,
+            resume_deferred_plugin_panels, PluginPanelPublication,
+        };
+        let state = std::sync::Mutex::new(super::utility_suspension::UtilitySuspension::default());
+        let label = plugin_panel_window_label("v1x61x62");
+        state.lock().unwrap().begin([], None);
+        let request = serde_json::from_value(serde_json::json!({
+            "panelId": "v1x61x62", "title": "Result"
+        }))
+        .unwrap();
+        dispatch_plugin_panel_open(&state, request, false, |_| panic!("suspended")).unwrap();
+        let publication = PluginPanelPublication {
+            target_label: label,
+            event: super::PLUGIN_PANEL_REPORT_CLEARED_EVENT.into(),
+            payload: serde_json::json!({"pluginId": "a", "panelId": "b", "revision": 2}),
+        };
+        plugin_panel_publication_script("main", &publication, &state).unwrap();
+        state.lock().unwrap().release(false);
+        resume_deferred_plugin_panels(&state, || false, |_| panic!("removed panel restored"))
+            .unwrap();
+    }
+
+    #[test]
     fn suspended_panel_opens_skip_builder_and_duplicates_build_once_after_last_resume() {
         use super::{dispatch_plugin_panel_open, resume_deferred_plugin_panels};
         let state = std::sync::Mutex::new(super::utility_suspension::UtilitySuspension::default());
@@ -3585,13 +3694,65 @@ mod plugin_panel_label_tests {
     }
 }
 
-/// Host-owned analysis windows. Plugin reports and built-in Analyze surfaces share this one
-/// transport; each window is parented to the main document rather than being globally floating.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PluginPanelPublication {
+    target_label: String,
+    event: String,
+    payload: serde_json::Value,
+}
+
+fn plugin_panel_publication_script(
+    source: &str,
+    publication: &PluginPanelPublication,
+    suspension: &Mutex<utility_suspension::UtilitySuspension>,
+) -> Result<String, String> {
+    if source != MAIN_WINDOW_LABEL || !is_plugin_panel_window_label(&publication.target_label) {
+        return Err("Only the document window may publish to a panel.".into());
+    }
+    match publication.event.as_str() {
+        "chemdraft://plugin-panel-report"
+        | "chemdraft://plugin-panel-report-cleared"
+        | "chemdraft://plugin-panel-staleness"
+        | "chemdraft://analysis-window-snapshot"
+        | "chemdraft://analysis-window-action-result"
+        | "chemdraft://plugin-panel-action-result" => {}
+        _ => return Err("This event cannot be published to a panel.".into()),
+    }
+    let event = serde_json::to_string(&publication.event).map_err(|error| error.to_string())?;
+    let payload = serde_json::to_string(&publication.payload).map_err(|error| error.to_string())?;
+    if publication.event == PLUGIN_PANEL_REPORT_CLEARED_EVENT {
+        cancel_plugin_panel_restore(suspension, &payload);
+    }
+    let payload = serde_json::to_string(&payload).map_err(|error| error.to_string())?;
+    Ok(format!(
+        "window.dispatchEvent(new CustomEvent({event}, {{ detail: JSON.parse({payload}) }}));"
+    ))
+}
+
+/// Host-owned analysis windows share their existing document-window grant for private publications.
+/// Publication mode delivers content without opening or revealing a window.
 #[tauri::command]
 async fn open_plugin_panel_window(
     app: tauri::AppHandle,
-    request: OpenPluginPanelRequest,
+    window: tauri::WebviewWindow,
+    request: Option<OpenPluginPanelRequest>,
+    publication: Option<PluginPanelPublication>,
 ) -> Result<(), String> {
+    if let Some(publication) = publication {
+        if request.is_some() {
+            return Err("Cannot open and publish a panel in the same request.".into());
+        }
+        let script =
+            plugin_panel_publication_script(window.label(), &publication, &UTILITY_SUSPENSION)?;
+        // Tauri's emit_to also reaches Any listeners in other webviews. Evaluate only in the
+        // recipient so proposal snapshots and replies never enter that shared event bus.
+        if let Some(target) = app.get_webview_window(&publication.target_label) {
+            target.eval(script).map_err(|error| error.to_string())?;
+        }
+        return Ok(());
+    }
+    let request = request.ok_or("Missing plugin panel request.")?;
     if !is_valid_plugin_storage_id(&request.panel_id) {
         return Err(format!("Invalid plugin panel id \"{}\".", request.panel_id));
     }
