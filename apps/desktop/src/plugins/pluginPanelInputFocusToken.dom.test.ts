@@ -48,6 +48,14 @@ it("registers once per page and sends its token with acquisitions and releases a
     expect(invoke).toHaveBeenLastCalledWith("set_plugin_panel_input_focus", {
       editing: true, generation: expect.any(Number), pageToken: "opaque-page-token"
     });
+    const firstGeneration = invoke.mock.calls.at(-1)![1].generation;
+    press();
+    await flush();
+    expect(invoke).toHaveBeenLastCalledWith("set_plugin_panel_input_focus", {
+      editing: true, generation: expect.any(Number), pageToken: "opaque-page-token"
+    });
+    expect(invoke.mock.calls.at(-1)![1].generation).toBeGreaterThan(firstGeneration);
+    expect(invoke.mock.calls.filter(([command]) => command === "register_plugin_panel_input_focus")).toHaveLength(1);
     shell.querySelector("input")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     await flush();
     expect(invoke).toHaveBeenLastCalledWith("set_plugin_panel_input_focus", {

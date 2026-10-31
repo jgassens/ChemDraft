@@ -30,7 +30,7 @@ import {
 } from "./spectrumExport";
 import { isDesktopRuntime } from "../window-manager";
 import { listenCurrentWindowEvent } from "../window-manager/tauriEvents";
-import { listenNativePanelFocus } from "./pluginPanelInputFocus";
+import { listenPanelDeactivation } from "./pluginPanelInputFocus";
 
 const fullSizeRestorers = new Set<() => Promise<void>>();
 
@@ -421,17 +421,9 @@ export function LinkedFigureView({
         && !exportButtonRef.current?.contains(event.target)) setExportMenuOpen(false);
     };
     window.addEventListener("pointerdown", onPointerDown);
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    void listenNativePanelFocus((event) => {
-      if (!disposed && event.kind === "deactivated") setExportMenuOpen(false);
-    }).then((stop) => {
-      if (disposed) stop();
-      else unlisten = stop;
-    }).catch((error: unknown) => console.error("Could not observe Export menu focus:", error));
+    const unlisten = listenPanelDeactivation(() => setExportMenuOpen(false));
     return () => {
-      disposed = true;
-      unlisten?.();
+      unlisten();
       window.removeEventListener("pointerdown", onPointerDown);
     };
   }, [exportMenuOpen]);

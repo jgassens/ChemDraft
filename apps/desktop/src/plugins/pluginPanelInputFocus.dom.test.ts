@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDesktopShortcutRegistry } from "../keyboardShortcuts";
-import { installPluginPanelInputFocus, panelEditableControl, type NativePanelFocusEvent } from "./pluginPanelInputFocus";
+import { installPluginPanelInputFocus, listenPanelDeactivation, panelEditableControl, type NativePanelFocusEvent } from "./pluginPanelInputFocus";
 import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
 
 let cleanup: (() => void) | undefined;
@@ -27,6 +27,12 @@ function mount(html: string, platform: ShortcutPlatform = "macos", ready = Promi
     { id: "edit.undo", title: "Undo", icon: "undo", shortcut: "CmdOrCtrl+Z" },
     { id: "edit.redo", title: "Redo", icon: "redo", shortcut: "CmdOrCtrl+Shift+Z" },
     { id: "edit.copy", title: "Copy", icon: "copy", shortcut: "CmdOrCtrl+C" },
+    { id: "edit.cut", title: "Cut", icon: "copy", shortcut: "CmdOrCtrl+X" },
+    { id: "edit.paste", title: "Paste", icon: "copy", shortcut: "CmdOrCtrl+V" },
+    { id: "edit.delete", title: "Delete", icon: "close", shortcut: "Delete" },
+    { id: "edit.backspace", title: "Delete", icon: "close", shortcut: "Backspace" },
+    { id: "edit.clear", title: "Clear", icon: "close", shortcut: "CmdOrCtrl+K" },
+    { id: "edit.selectAll", title: "Select All", icon: "copy", shortcut: "CmdOrCtrl+A" },
     { id: "tool.bond", title: "Bond", icon: "undo", shortcut: "b" },
     { id: "tool.disabled", title: "Disabled", icon: "undo", shortcut: "d", enabled: false },
     { id: "view.rulers", title: "Rulers", icon: "undo", shortcut: "CmdOrCtrl+R" },
@@ -62,11 +68,22 @@ function mount(html: string, platform: ShortcutPlatform = "macos", ready = Promi
   };
 }
 
+function selectText(start: Element, end: Element = start): void {
+  const range = document.createRange();
+  range.setStart(start.firstChild!, 0);
+  range.setEnd(end.firstChild!, end.textContent!.length);
+  document.getSelection()!.removeAllRanges();
+  document.getSelection()!.addRange(range);
+  document.dispatchEvent(new Event("selectionchange"));
+}
+
 describe.each(["macos", "windows"] as const)("persistent panel focus (%s)", (platform) => {
   it.each([
     "<input>", "<textarea></textarea>", "<select><option>One</option></select>",
     "<button>Export</button>", "<h2>Title</h2>", "<canvas></canvas>", "<div>Empty space</div>",
-    "<input readonly>", "<input disabled>", '<div contenteditable="true">Text</div>'
+    "<input readonly>", "<input disabled>", '<div contenteditable="true">Text</div>',
+    '<input type="number">', '<div contenteditable="plaintext-only">Text</div>',
+    '<div contenteditable><span>Nested text</span></div>'
   ])("keeps focus after a click on %s", async (html) => {
     const { shell, press, request, native } = mount(html, platform);
     press(shell.firstElementChild!);
@@ -80,13 +97,14 @@ describe.each(["macos", "windows"] as const)("persistent panel focus (%s)", (pla
     expect(request).toHaveBeenCalledExactlyOnceWith(true, expect.any(Number));
     press(shell);
     await flush();
-    expect(request).toHaveBeenCalledTimes(1);
+    expect(request.mock.calls.map(([active]) => active)).toEqual([true, true]);
+    expect(request.mock.calls[1][1]).toBeGreaterThan(request.mock.calls[0][1]);
     native("deactivated");
     await flush();
-    expect(request.mock.calls.map(([active]) => active)).toEqual([true, false]);
+    expect(request.mock.calls.map(([active]) => active)).toEqual([true, true, false]);
     press(shell);
     await flush();
-    expect(request.mock.calls.map(([active]) => active)).toEqual([true, false, true]);
+    expect(request.mock.calls.map(([active]) => active)).toEqual([true, true, false, true]);
   });
 
   it("does not take focus on mount, report/menu replacement, DOM focus, synthetic clicks or idle activation", async () => {
@@ -196,6 +214,190 @@ describe.each(["macos", "windows"] as const)("persistent panel focus (%s)", (pla
     expect(document.getSelection()!.toString()).toBe("");
     expect(forward).not.toHaveBeenCalled();
     expect(request.mock.calls.map(([active]) => active)).toEqual([true]);
+  });
+
+  it.each([
+    ["Delete", {}], ["Backspace", {}], ["Delete", { shiftKey: true }],
+    ["x", { primary: true }], ["v", { primary: true }],
+    ["v", { primary: true, shiftKey: true }], ["Insert", { shiftKey: true }],
+    ["k", { primary: true }], ["z", { primary: true }],
+    ["b", {}], ["ArrowRight", {}], ["Enter", {}], ["Tab", {}]
+  ] as const)("consumes selection-ending %s with %j before any document command", async (value, modifiers) => {
+    const { shell, press, key, forward, request } = mount('<div class="plugin-report"><p>Report text</p></div>', platform);
+    const text = shell.querySelector("p")!;
+    press(text);
+    await flush();
+    selectText(text);
+    const { primary, ...rest } = modifiers as KeyboardEventInit & { primary?: boolean };
+    const event = key(text, value, { ...rest, ...(primary ? platform === "macos" ? { metaKey: true } : { ctrlKey: true } : {}) });
+    expect(event.defaultPrevented).toBe(true);
+    expect(document.getSelection()!.isCollapsed).toBe(true);
+    expect(forward).not.toHaveBeenCalled();
+    expect(request.mock.calls.map(([active]) => active)).toEqual([true]);
+    expect(key(text, "b").defaultPrevented).toBe(true);
+    expect(forward).toHaveBeenCalledExactlyOnceWith("tool.bond");
+  });
+
+  it.each([
+    ["F5", {}], ["F5", { ctrlKey: true }], ["BrowserRefresh", {}],
+    ["r", { ctrlKey: true }], ["R", { ctrlKey: true, shiftKey: true }],
+    ["r", { metaKey: true }], ["R", { metaKey: true, shiftKey: true }]
+  ] as const)("suppresses selected-report reload %s with %j before selection branches", (value, modifiers) => {
+    const { shell, key, forward } = mount('<div class="plugin-report"><p>Report text</p></div>', platform);
+    const text = shell.querySelector("p")!;
+    selectText(text);
+    expect(key(text, value, modifiers).defaultPrevented).toBe(true);
+    expect(document.getSelection()!.toString()).toBe("Report text");
+    expect(forward).not.toHaveBeenCalled();
+  });
+
+  it.each(["drag", "double", "triple"])("preserves browser-created report selection after a %s click gesture", async (gesture) => {
+    const { shell, press, key, forward, request } = mount('<div class="plugin-report"><p>Report text</p></div>', platform);
+    const text = shell.querySelector("p")!;
+    const count = gesture === "double" ? 2 : gesture === "triple" ? 3 : 1;
+    for (let i = 1; i <= count; i++) {
+      press(text);
+      // jsdom has no text-selection default action; supply the range the browser creates.
+      if (i === count) selectText(text);
+      for (const type of gesture === "drag" ? ["pointermove", "pointerup", "click"] : ["pointerup", "click"]) {
+        const event = new MouseEvent(type, { bubbles: true, cancelable: true, detail: i });
+        text.dispatchEvent(event);
+        expect(event.defaultPrevented).toBe(false);
+      }
+      await flush();
+    }
+    shell.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    window.dispatchEvent(new Event("blur"));
+    expect(key(text, "c", platform === "macos" ? { metaKey: true } : { ctrlKey: true }).defaultPrevented).toBe(false);
+    expect(document.getSelection()!.toString()).toBe("Report text");
+    expect(forward).not.toHaveBeenCalled();
+    expect(request.mock.calls.every(([active]) => active)).toBe(true);
+  });
+
+  it("keeps Copy, Select All, Shift extension and modifier keys in the report", () => {
+    const { shell, key, forward } = mount('<div class="plugin-report"><p>Report text</p><p>More text</p></div>', platform);
+    const [first, last] = shell.querySelectorAll("p");
+    selectText(first);
+    for (const value of ["c", "C", "a", "A"]) {
+      expect(key(first, value, platform === "macos" ? { metaKey: true } : { ctrlKey: true }).defaultPrevented).toBe(false);
+    }
+    for (const value of ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"]) {
+      expect(key(first, value, { shiftKey: true }).defaultPrevented).toBe(false);
+    }
+    for (const value of ["Shift", "Control", "Alt", "Meta", "AltGraph"]) {
+      expect(key(first, value).defaultPrevented).toBe(false);
+    }
+    expect(document.getSelection()!.toString()).toBe("Report text");
+    selectText(first, last); // Browser default after Select All / Shift extension.
+    expect(key(last, "c", platform === "macos" ? { metaKey: true } : { ctrlKey: true }).defaultPrevented).toBe(false);
+    expect(document.getSelection()!.toString()).toBe("Report textMore text");
+    expect(forward).not.toHaveBeenCalled();
+  });
+
+  it.each(["collapsed", "outside", "control", "cross boundary"])("checks report selection boundaries: %s", (boundary) => {
+    const { shell, key, forward } = mount('<h2>Heading</h2><div class="plugin-report"><p>Report text</p><button>Action</button></div>', platform);
+    const text = shell.querySelector("p")!;
+    const heading = shell.querySelector("h2")!;
+    if (boundary === "outside") selectText(heading);
+    else if (boundary === "control") selectText(shell.querySelector("button")!);
+    else if (boundary === "cross boundary") selectText(heading, text);
+    else { selectText(text); document.getSelection()!.collapseToEnd(); }
+    expect(key(text, "b").defaultPrevented).toBe(true);
+    if (boundary === "control" || boundary === "cross boundary") {
+      expect(document.getSelection()!.isCollapsed).toBe(true);
+      expect(forward).not.toHaveBeenCalled();
+    } else expect(forward).toHaveBeenCalledExactlyOnceWith("tool.bond");
+  });
+
+  it.each([
+    '<input type="number">', '<div contenteditable="plaintext-only">Text</div>',
+    '<div contenteditable><span>Nested text</span></div>'
+  ])("keeps arrows and editing local in %s", async (html) => {
+    const { shell, press, key, request, forward } = mount(html, platform);
+    const control = shell.firstElementChild as HTMLElement;
+    const target = control.querySelector("span") ?? control;
+    expect(panelEditableControl(target.firstChild ?? target)).toBe(control);
+    press(target); control.focus();
+    await flush();
+    for (const value of ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"]) {
+      expect(key(target, value).defaultPrevented).toBe(false);
+    }
+    expect(key(target, "z", platform === "macos" ? { metaKey: true } : { ctrlKey: true }).defaultPrevented).toBe(false);
+    expect(document.activeElement).toBe(control);
+    expect(forward).not.toHaveBeenCalled();
+    expect(request.mock.calls.map(([active]) => active)).toEqual([true]);
+  });
+
+  it.each(["Enter", "Escape"])("runs input commit handlers on %s while keeping Escape from panel close", async (value) => {
+    const { shell, press, request, forward } = mount("<input>", platform);
+    const input = shell.querySelector("input")!;
+    press(input); input.focus();
+    await flush();
+    const commit = vi.fn();
+    const outerKey = vi.fn();
+    input.addEventListener("keydown", commit);
+    window.addEventListener("keydown", outerKey);
+    try {
+      const event = new KeyboardEvent("keydown", { key: value, bubbles: true, cancelable: true });
+      input.dispatchEvent(event);
+      expect(commit).toHaveBeenCalledOnce();
+      expect(document.activeElement).not.toBe(input);
+      expect(outerKey).toHaveBeenCalledTimes(value === "Escape" ? 0 : 1);
+      expect(event.defaultPrevented).toBe(value === "Escape");
+      expect(forward).not.toHaveBeenCalled();
+      expect(request.mock.calls.map(([active]) => active)).toEqual([true]);
+    } finally {
+      window.removeEventListener("keydown", outerKey);
+    }
+  });
+
+  it.each(["before request", "during request", "after reply"])("rejects the previous activation's loss after a new click (%s)", async (timing) => {
+    const { shell, press, request, native } = mount('<input><div class="plugin-report"><p>Report text</p></div>', platform);
+    const input = shell.querySelector("input")!;
+    const text = shell.querySelector("p")!;
+    press(input); input.focus();
+    await flush();
+    const previous = request.mock.calls[0][1];
+    window.dispatchEvent(new Event("blur"));
+    native("activated", previous);
+    let complete!: (active: boolean) => void;
+    if (timing === "during request") request.mockImplementationOnce(() => new Promise<boolean>((resolve) => { complete = resolve; }));
+    press(input); input.focus(); selectText(text);
+    if (timing !== "before request") await flush();
+    native("deactivated", previous);
+    expect(document.activeElement).toBe(input);
+    expect(document.getSelection()!.toString()).toBe("Report text");
+    if (timing === "during request") complete(true);
+    await flush();
+    expect(request.mock.calls.map(([active]) => active)).toEqual([true, true]);
+    native("deactivated");
+    await flush();
+    expect(document.activeElement).not.toBe(input);
+    expect(document.getSelection()!.isCollapsed).toBe(true);
+    expect(request.mock.calls.map(([active]) => active)).toEqual([true, true, false]);
+  });
+
+  it("ends the current interaction if native loss precedes the new acquisition request", async () => {
+    const { shell, press, request, native } = mount('<input><div class="plugin-report"><p>Report text</p></div>', platform);
+    const input = shell.querySelector("input")!;
+    press(input); input.focus();
+    await flush();
+    const previous = request.mock.calls[0][1];
+    const lost = vi.fn();
+    const stop = listenPanelDeactivation(lost);
+    try {
+      request.mockResolvedValueOnce(false); // Native refuses to focus a panel that is no longer active.
+      press(input); input.focus(); selectText(shell.querySelector("p")!);
+      native("deactivated", previous);
+      expect(lost).not.toHaveBeenCalled();
+      await flush();
+      expect(document.activeElement).not.toBe(input);
+      expect(document.getSelection()!.isCollapsed).toBe(true);
+      expect(lost).toHaveBeenCalledOnce();
+      expect(request.mock.calls.map(([active]) => active)).toEqual([true, true]);
+    } finally {
+      stop();
+    }
   });
 
   it("leaves window-close accelerators to the focused panel and never forwards document close", async () => {

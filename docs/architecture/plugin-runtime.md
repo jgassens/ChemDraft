@@ -75,10 +75,13 @@ the main document window, not global always-on-top panels, and retain their
 session position when hidden and reopened. The in-app `PluginPanelSurface` and
 proposal tray are web-build fallbacks only.
 
-Panel webview focus requests use generations and a native epoch to reject stale requests
-and events. They can focus the webview only while the panel is already active; they cannot
-activate a panel after the user has switched windows. A newly built panel whose native
-focus/resize hooks fail is destroyed and its open request fails.
+Panel webview focus requests use generations and a native page epoch to reject stale requests.
+Native focus events carry a generation, but no page epoch. Each trusted click advances the
+generation immediately, so a delayed loss from the preceding activation cannot clear the new
+interaction. The input handler validates loss notifications once and shares accepted deactivation
+with consumers such as Export. Requests can focus the webview only while the panel is already
+active; they cannot activate a panel after the user has switched windows. A newly built panel whose
+native focus/resize hooks fail is destroyed and its open request fails.
 
 Analysis windows hold no dialog, filesystem, or clipboard permission
 (`capabilities/plugin-panel.json`), and must not gain one. Anything that needs
@@ -101,11 +104,19 @@ fall into a re-registration gap when the document changes.
 
 **Focus.** Panels are built and shown without activating them, so opening, revealing,
 or updating a report leaves focus in the document. The old `focus` hint is ignored.
-A user click activates the panel, which keeps OS focus until the user switches windows or
-closes it. Editable controls, menus, buttons, and report-text selection handle their own
-keys. Other recognized shortcuts are forwarded to the document through the live command
-catalog without moving focus. Close accelerators (Alt+F4 on Windows and Cmd+W on macOS)
-stay local and close only the panel. Reload shortcuts are blocked.
+A user click activates the panel, preserving its current OS focus until the user switches windows
+or closes it. Editable controls own editing and navigation keys; Enter in a single-line control,
+Escape and Tab can end DOM editing without returning OS focus. Menus own their keyboard navigation
+and buttons keep activation/navigation keys. Selected report text keeps Copy, Select All, modifier
+keys and Shift navigation local, including ranges extended into panel chrome. Any key ending that
+selection is consumed, including Delete, Backspace, cut, paste and history shortcuts; it never also
+edits the drawing. Escape dismisses an open Export menu first, then Full size, then DOM editing or
+report selection before panel close.
+Other recognized shortcuts are forwarded to the document through the live command catalog without
+moving focus. Close accelerators (Alt+F4 on Windows and Cmd+W on macOS) stay local and close only
+the panel. Browser reload defaults are suppressed before selection handling, including shifted
+reload chords; an otherwise unclaimed panel key can still invoke a registered drawing shortcut
+such as Ctrl+R for rulers.
 
 Each panel's frame is saved relative to its monitor. Resize grab zones extend 6 logical
 pixels inside the border along every edge and corner. Full size uses the caller-bound native

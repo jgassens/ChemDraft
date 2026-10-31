@@ -1,7 +1,7 @@
 import { isDesktopRuntime, listenForToolsetCommandSpecs, TOOLSET_COMMAND_SPECS_REQUEST_EVENT } from "../window-manager";
 import { listenCurrentWindowEvent } from "../window-manager/tauriEvents";
 import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
-import { createDesktopShortcutRegistry, detectDesktopShortcutPlatform, isBrowserReloadChord } from "../keyboardShortcuts";
+import { createDesktopShortcutRegistry, detectDesktopShortcutPlatform } from "../keyboardShortcuts";
 
 /** Editable controls handle their own keys. Labels count as their control. */
 export function panelEditableControl(target: EventTarget | null): HTMLElement | undefined {
@@ -29,6 +29,13 @@ export interface NativePanelFocusEvent {
 // resets at PageLoadEvent::Started when a reload creates a fresh JS counter.
 let nextGeneration = 0;
 let pageToken: Promise<string> | undefined;
+const deactivationListeners = new Set<() => void>();
+
+/** Consumers share the input handler's generation check instead of interpreting raw focus events. */
+export function listenPanelDeactivation(listener: () => void): () => void {
+  deactivationListeners.add(listener);
+  return () => { deactivationListeners.delete(listener); };
+}
 
 function registerNativeInputFocus(): Promise<string> {
   // Register once per JS page, including across StrictMode effect reinstalls. Never
@@ -70,31 +77,27 @@ export function installPluginPanelInputFocus(
   let revision = 0;
   let disposed = false;
   let pending = Promise.resolve();
-  const nativeGenerations = new Set<number>();
+  let requestedFocus = false;
   const setFocused = (next: boolean): void => {
     focused = next;
     const generation = revision = ++nextGeneration;
     pending = pending.catch(() => undefined).then(async () => {
       await subscribed;
       if (revision !== generation) return;
-      if (next) nativeGenerations.add(generation);
+      if (next) requestedFocus = true;
       let acquired: boolean;
       try {
         acquired = await requestFocus(next, generation);
       } catch (error) {
         if (revision === generation) {
           focused = false;
-          nativeGenerations.clear();
         }
         throw error;
       }
       if (revision !== generation) return;
       if (next && !acquired) {
         focused = false;
-        nativeGenerations.clear();
-      } else if (next) {
-        nativeGenerations.clear();
-        nativeGenerations.add(generation);
+        clearInteraction();
       }
     });
     void pending.catch((error: unknown) => console.error("Could not change panel input focus:", error));
@@ -103,13 +106,16 @@ export function installPluginPanelInputFocus(
     const active = panelEditableControl(document.activeElement);
     if (active && shell.contains(active)) active.blur();
   };
+  const clearInteraction = (): void => {
+    blurControl();
+    document.getSelection()?.removeAllRanges();
+    for (const listener of deactivationListeners) listener();
+  };
   const nativeFocus = (event: NativePanelFocusEvent): void => {
     if (disposed || event.kind !== "deactivated") return;
-    if (focused && (nativeGenerations.has(event.generation) || nativeGenerations.size === 0)) {
-      nativeGenerations.clear();
+    if (focused && (event.generation === revision || !requestedFocus)) {
       setFocused(false);
-      blurControl();
-      document.getSelection()?.removeAllRanges();
+      clearInteraction();
     }
   };
   let registry: ReturnType<typeof createDesktopShortcutRegistry> | undefined;
@@ -141,25 +147,28 @@ export function installPluginPanelInputFocus(
     if (!event.isTrusted || !shell.contains(event.target as Node)) return;
     // Native pointer activation has already made the window key. This request only focuses
     // its webview, and native code refuses it if the user has since switched windows.
-    if (!focused) setFocused(true);
+    // A new native activation can precede delivery of the previous loss notification.
+    // Fence it off immediately, even if JS still thinks the preceding episode is focused.
+    setFocused(true);
   };
   const hasReportSelection = (): boolean => {
     const selection = document.getSelection();
-    const inReport = (node: Node | null): boolean => {
-      const element = node instanceof Element ? node : node?.parentElement;
-      return !!element && shell.contains(element) &&
-        !!element.closest(".plugin-report, .plugin-panel-content") &&
-        !element.closest("button, input, textarea, select, [contenteditable]");
-    };
-    return !!selection && !selection.isCollapsed &&
-      inReport(selection.anchorNode) && inReport(selection.focusNode);
+    if (!selection || selection.isCollapsed) return false;
+    // A drag can extend into panel chrome; protect any range intersecting the report.
+    return [...shell.querySelectorAll(".plugin-report, .plugin-panel-content")].some((report) => {
+      for (let i = 0; i < selection.rangeCount; i++) {
+        if (selection.getRangeAt(i).intersectsNode(report)) return true;
+      }
+      return false;
+    });
   };
   const keyDown = (event: KeyboardEvent): void => {
     if (event.defaultPrevented || event.isComposing) return;
     const control = panelEditableControl(event.target);
     const menu = shell.querySelector('[role="menu"][data-plugin-panel-input-menu="true"]');
-    const reload = isBrowserReloadChord(event, platform);
-    if (reload && (control || menu)) {
+    const reload = event.key === "F5" || event.key === "BrowserRefresh" ||
+      (!event.altKey && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "r");
+    if (reload && (control || menu || hasReportSelection())) {
       event.preventDefault();
       return;
     }
@@ -193,13 +202,14 @@ export function installPluginPanelInputFocus(
     }
     if (hasReportSelection()) {
       if ((event.ctrlKey || event.metaKey) && !event.altKey && ["c", "a"].includes(event.key.toLowerCase())) return;
-      if (event.shiftKey || ["Shift", "Control", "Alt", "Meta", "AltGraph"].includes(event.key)) return;
+      if (["Shift", "Control", "Alt", "Meta", "AltGraph"].includes(event.key) ||
+        (event.shiftKey && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"].includes(event.key))) return;
       document.getSelection()?.removeAllRanges();
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        return;
-      }
+      // The key ending a report selection belongs to the panel, including cut/paste,
+      // history and destructive commands. It must never act on selected chemistry.
+      event.preventDefault();
+      event.stopPropagation();
+      return;
     }
     if (event.target instanceof Element && event.target.closest("button, a, [role=button]") &&
       ["Enter", " ", "Tab", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
