@@ -1,11 +1,96 @@
-use objc2::{rc::Retained, runtime::ProtocolObject};
-use objc2_app_kit::{NSWindow, NSWindowDidBecomeKeyNotification, NSWindowDidResignKeyNotification};
-use objc2_foundation::{NSNotification, NSNotificationCenter, NSObjectProtocol};
+use objc2::{
+    msg_send,
+    rc::Retained,
+    runtime::{AnyClass, AnyObject, ClassBuilder, ProtocolObject, Sel},
+    sel,
+};
+use objc2_app_kit::{
+    NSView, NSWindow, NSWindowDidBecomeKeyNotification, NSWindowDidResignKeyNotification,
+    NSWindowStyleMask,
+};
+use objc2_foundation::{NSNotification, NSNotificationCenter, NSObjectProtocol, NSPoint, NSRect};
 use std::{cell::RefCell, collections::HashMap, ptr::NonNull};
 
 type Observers = Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>;
 thread_local! {
     static OBSERVERS: RefCell<HashMap<String, Observers>> = RefCell::default();
+}
+
+pub(super) fn resize_edge(x: f64, y: f64, width: f64, height: f64) -> bool {
+    const EDGE: f64 = 5.0;
+    x >= 0.0
+        && y >= 0.0
+        && x < width
+        && y < height
+        && (x < EDGE || y < EDGE || x >= width - EDGE || y >= height - EDGE)
+}
+
+unsafe extern "C-unwind" fn content_hit_test(
+    view: &AnyObject,
+    _: Sel,
+    point: NSPoint,
+) -> *mut NSView {
+    let frame: NSRect = unsafe { msg_send![view, frame] };
+    let panel: Option<Retained<NSWindow>> = unsafe { msg_send![view, window] };
+    if panel.is_some_and(|panel| {
+        let style = panel.styleMask();
+        style.contains(NSWindowStyleMask::Resizable)
+            && !style.contains(NSWindowStyleMask::FullScreen)
+    }) && resize_edge(
+        point.x - frame.origin.x,
+        point.y - frame.origin.y,
+        frame.size.width,
+        frame.size.height,
+    ) {
+        return std::ptr::null_mut();
+    }
+    let superclass = AnyClass::get(c"ChemDraftResizablePanelContentView")
+        .and_then(AnyClass::superclass)
+        .expect("panel content superclass");
+    unsafe { msg_send![super(view, superclass), hitTest: point] }
+}
+
+pub(super) fn install_resize_hit_test<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+) -> Result<(), String> {
+    objc2::MainThreadMarker::new().ok_or("Panel resize installation requires the main thread.")?;
+    let pointer = window.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
+    let panel = unsafe { pointer.as_ref() }.ok_or("Could not access native panel window.")?;
+    panel.setStyleMask(super::macos_style(panel.styleMask()));
+    let content = panel
+        .contentView()
+        .ok_or("Could not access panel content view.")?;
+    let object: &AnyObject = &content;
+    let class_name = c"ChemDraftResizablePanelContentView";
+    if object.class().name() == class_name {
+        return Ok(());
+    }
+    let original = object.class();
+    let class = if let Some(class) = AnyClass::get(class_name) {
+        if class.superclass() != Some(original) {
+            return Err("Panel content view class changed during resize installation.".into());
+        }
+        class
+    } else {
+        let mut builder = ClassBuilder::new(class_name, original)
+            .ok_or("Could not create panel content hit test.")?;
+        unsafe {
+            builder.add_method(
+                sel!(hitTest:),
+                content_hit_test as unsafe extern "C-unwind" fn(_, _, _) -> _,
+            );
+        }
+        builder.register()
+    };
+    // AppKit's NSThemeFrame tracks native edge/corner resizing when its content's hitTest:
+    // returns nil. A full-window WKWebView otherwise claims those mouse-downs. Exclude only a
+    // thin logical-point band at the content root, including its webview descendants; AppKit
+    // keeps its native cursors, minimum-size constraint and non-activating resize loop.
+    // Subclass only this content instance (no ivars added), preserving Tauri's view and handlers.
+    unsafe {
+        AnyObject::set_class(object, class);
+    }
+    Ok(())
 }
 
 pub(super) fn observe<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {

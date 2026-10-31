@@ -18,6 +18,7 @@ mod network_test_http;
 mod ocsr_engine;
 mod opsin;
 mod panel_window;
+mod panel_window_frame;
 mod perf_log;
 mod plugin_package;
 #[cfg(test)]
@@ -842,6 +843,8 @@ struct ToolsetLayoutState {
     /// `ensure_main_window_visible`; centering is only the fallback when nothing usable was saved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     main_window: Option<MainWindowGeometry>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    plugin_panels: HashMap<String, panel_window_frame::Frame>,
 }
 
 impl Default for ToolsetLayoutState {
@@ -850,6 +853,7 @@ impl Default for ToolsetLayoutState {
             version: 1,
             toolsets: HashMap::new(),
             main_window: None,
+            plugin_panels: HashMap::new(),
         }
     }
 }
@@ -1104,6 +1108,19 @@ pub fn run() {
             // told, so a plugin gets its close signal (AGENTS.md §8a) and a later report re-shows the
             // window. Destroying it left the main window believing it was still open.
             if is_plugin_panel_window_label(window.label()) {
+                if matches!(
+                    event,
+                    WindowEvent::Moved(_)
+                        | WindowEvent::Resized(_)
+                        | WindowEvent::CloseRequested { .. }
+                ) {
+                    if let Err(error) = persist_plugin_panel_geometry(window) {
+                        eprintln!(
+                            "Could not persist ChemDraft panel frame {}: {error}",
+                            window.label()
+                        );
+                    }
+                }
                 // Native resize edges sit outside the DOM's focus hook. Resizing finishes an
                 // input lease too, on both platforms, without changing the resize gesture.
                 if matches!(event, WindowEvent::Resized(_))
@@ -3689,6 +3706,21 @@ fn build_or_show_plugin_panel<R: Runtime>(
                 restore_utility_in_document_group(&target)
             })?;
         }
+        if !window.is_visible().unwrap_or(true) {
+            // Reopening a reusable window also checks for a monitor disconnected since close.
+            // Prompt restoration above deliberately leaves its live frame and ordering alone.
+            let webview: &tauri::Webview<R> = window.as_ref();
+            let live = current_plugin_panel_geometry(&webview.window());
+            let (width, height, position) = plugin_panel_initial_geometry(app, &request, live);
+            if let Some(position) = position {
+                window
+                    .set_position(position)
+                    .map_err(|error| error.to_string())?;
+            }
+            window
+                .set_size(tauri::LogicalSize::new(width, height))
+                .map_err(|error| error.to_string())?;
+        }
         // `show()` makes the window key on macOS (tao's `set_visible` is makeKeyAndOrderFront), so
         // an automatic re-show leaves visibility to `configure_analysis_window`, which only orders
         // the window front.
@@ -3699,9 +3731,11 @@ fn build_or_show_plugin_panel<R: Runtime>(
         return Ok(());
     }
 
-    let width = request.width.unwrap_or(380.0);
-    let height = request.height.unwrap_or(520.0);
-    let position = analysis_window_initial_position(app, width, height);
+    let saved = load_toolset_layout_state(app)
+        .plugin_panels
+        .get(&request.panel_id)
+        .copied();
+    let (width, height, position) = plugin_panel_initial_geometry(app, &request, saved);
     // `.parent` is an owner window on Windows (no taskbar entry, stays above the document), the
     // same relationship utility_window_builder gives the palettes.
     let mut builder = WebviewWindowBuilder::new(
@@ -3711,7 +3745,10 @@ fn build_or_show_plugin_panel<R: Runtime>(
     )
     .title(format!("ChemDraft {}", request.title))
     .inner_size(width, height)
-    .min_inner_size(280.0, 200.0)
+    .min_inner_size(
+        panel_window_frame::MIN_WIDTH,
+        panel_window_frame::MIN_HEIGHT,
+    )
     .accept_first_mouse(true)
     .focusable(false)
     // Windows uses this creation trait for EVERY later show, not just the initial reveal.
@@ -3751,6 +3788,35 @@ fn build_or_show_plugin_panel<R: Runtime>(
     }
     configure_analysis_window(&window)?;
     Ok(())
+}
+
+fn current_plugin_panel_geometry<R: Runtime>(
+    window: &tauri::Window<R>,
+) -> Option<panel_window_frame::Frame> {
+    let position = window.outer_position().ok()?;
+    let size = window.inner_size().ok()?;
+    panel_window_frame::Frame::from_physical(
+        (position.x, position.y),
+        (size.width, size.height),
+        window.scale_factor().ok()?,
+    )
+}
+
+fn plugin_panel_initial_geometry<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    request: &OpenPluginPanelRequest,
+    saved: Option<panel_window_frame::Frame>,
+) -> (f64, f64, Option<tauri::LogicalPosition<f64>>) {
+    let monitors = app.available_monitors().unwrap_or_default();
+    let areas: Vec<_> = monitors.iter().map(monitor_logical_work_area).collect();
+    let frame = saved.and_then(|frame| frame.restore(&areas));
+    let (width, height) = frame
+        .map(|frame| (frame.width, frame.height))
+        .unwrap_or_else(|| panel_window_frame::default_size(request.width, request.height));
+    let position = frame
+        .map(|frame| tauri::LogicalPosition::new(frame.x, frame.y))
+        .or_else(|| analysis_window_initial_position(app, width, height));
+    (width, height, position)
 }
 
 fn analysis_window_initial_position<R: Runtime>(
@@ -7691,6 +7757,38 @@ fn persist_main_window_geometry<R: Runtime>(window: &tauri::Window<R>) -> Result
     })
 }
 
+fn persist_plugin_panel_geometry<R: Runtime>(window: &tauri::Window<R>) -> Result<(), String> {
+    if APP_QUITTING.load(Ordering::SeqCst) || utility_windows_suspended() {
+        return Ok(());
+    }
+    // Native state is authoritative before Tao's cached minimized flag catches up. Windows may
+    // move an owned panel to its minimized parking position before reporting the owner's resize.
+    let native = main_window_placement::snapshot(window)?;
+    let owner_minimized = window
+        .app_handle()
+        .get_webview_window(MAIN_WINDOW_LABEL)
+        .is_some_and(|owner| owner.is_minimized().unwrap_or(true));
+    let Some(frame) = current_plugin_panel_geometry(window) else {
+        return Ok(());
+    };
+    let Some(frame) = frame.for_save(
+        native.minimized || window.is_minimized().unwrap_or(true),
+        owner_minimized,
+        native.fullscreen || window.is_fullscreen().unwrap_or(true),
+    ) else {
+        return Ok(());
+    };
+    let Some(id) = window
+        .label()
+        .strip_prefix(PLUGIN_PANEL_WINDOW_LABEL_PREFIX)
+    else {
+        return Ok(());
+    };
+    update_toolset_layout_state(window.app_handle(), |layout| {
+        layout.plugin_panels.insert(id.replace(':', "."), frame);
+    })
+}
+
 fn update_main_window_geometry(
     saved: &mut Option<MainWindowGeometry>,
     update: MainWindowGeometryUpdate,
@@ -8843,6 +8941,7 @@ mod tests {
         let saved = ToolsetLayoutState {
             version: 1,
             toolsets: HashMap::new(),
+            plugin_panels: HashMap::new(),
             main_window: Some(MainWindowGeometry {
                 x: 12.0,
                 y: 34.0,
