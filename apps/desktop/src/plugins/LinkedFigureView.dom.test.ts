@@ -396,6 +396,9 @@ describe("LinkedFigureView", () => {
     mount(createElement(LinkedFigureView, { spectrum, structure }));
 
     expect(container!.querySelectorAll(".lf-peak").length).toBe(2);
+    const peaks = [...container!.querySelectorAll<SVGGElement>(".lf-peak")];
+    expect(peaks.map((peak) => peak.getAttribute("aria-label"))).toEqual(["7.30 ppm", "2.40 ppm"]);
+    expect(peaks.every((peak) => peak.querySelector("title") === null)).toBe(true);
     expect(container!.querySelector(".lf-spectrum")).not.toBeNull();
     expect(container!.querySelector(".lf-structure")).not.toBeNull();
     expect(container!.querySelectorAll(".lf-atom").length).toBe(3);

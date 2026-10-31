@@ -798,7 +798,6 @@ export function LinkedFigureView({
                 onMouseEnter={() => setHoverPeakId(peak.sourceId)}
                 onMouseLeave={() => setHoverPeakId(null)}
               >
-                <title>{text} ppm</title>
                 {label ? (
                   <>
                     <rect className="lf-label-background" x={label.x} y={label.y}
