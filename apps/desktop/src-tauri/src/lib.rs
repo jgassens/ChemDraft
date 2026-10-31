@@ -4845,7 +4845,7 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let text_items = pasteboard
+    let mut text_items = pasteboard
         .types()
         .map(|types| {
             types
@@ -4865,7 +4865,7 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
 
     let mut image_items = Vec::new();
     let mut skipped_image_items = Vec::new();
-    // Keep the text path above unchanged. Chemistry/image precedence belongs to the caller.
+    // Picture flavors bypass the text reader. SVG text is decoded only from these bounded bytes.
     for (sources, output_type) in [
         (&["public.png", "public.tiff"][..], "image/png"),
         (&["public.svg-image", "image/svg+xml"][..], "image/svg+xml"),
@@ -4889,13 +4889,28 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
                     match source {
                         "public.png" => clipboard_images::png_image_item(&bytes),
                         "public.tiff" => clipboard_images::tiff_image_item(&bytes),
-                        _ => clipboard_images::svg_image_item(&bytes, source),
+                        _ => {
+                            if let Some(text) = decode_clipboard_text_bytes(&bytes) {
+                                text_items.push(ClipboardTextItem {
+                                    r#type: source.to_string(),
+                                    text,
+                                });
+                            }
+                            clipboard_images::svg_image_item(&bytes, source)
+                        }
                     }
                 });
             match result {
                 Ok(item) => {
-                    image_items.push(item);
-                    break;
+                    if !image_items
+                        .iter()
+                        .any(|item: &ClipboardImageItem| item.r#type == output_type)
+                    {
+                        image_items.push(item);
+                    }
+                    if output_type != "image/svg+xml" {
+                        break;
+                    }
                 }
                 Err(reason) => skipped_image_items.push(SkippedClipboardImageItem::new(
                     output_type,
@@ -4991,7 +5006,8 @@ fn clipboard_text_for_type(
     pasteboard: &NSPasteboard,
     pasteboard_type: &objc2_app_kit::NSPasteboardType,
 ) -> Option<String> {
-    if is_opaque_clipboard_type(&pasteboard_type.to_string()) {
+    let kind = pasteboard_type.to_string();
+    if is_opaque_clipboard_type(&kind) || clipboard_images::is_image_clipboard_type(&kind) {
         return None;
     }
 
@@ -10248,13 +10264,12 @@ mod tests {
             STANDARD.encode(&png)
         });
         let pasteboard = NSPasteboard::generalPasteboard();
-        assert_eq!(
-            pasteboard
-                .dataForType(&NSString::from_str("public.png"))
-                .expect("PNG reads back")
-                .to_vec(),
-            png
-        );
+        let data = pasteboard
+            .dataForType(&NSString::from_str("public.png"))
+            .expect("PNG reads back");
+        clipboard_images::check_image_byte_length("public.png", data.length())
+            .expect("PNG fits the clipboard image limit");
+        assert_eq!(data.to_vec(), png);
     }
 
     /// Round-trips the real NSPasteboard, so it stomps the user's clipboard — run explicitly

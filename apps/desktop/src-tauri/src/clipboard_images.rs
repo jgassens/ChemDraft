@@ -60,6 +60,28 @@ pub(crate) fn check_image_byte_length(source: &str, byte_length: usize) -> Resul
     Ok(())
 }
 
+/// Picture flavors must bypass the unbounded text readers, including textual SVG.
+pub(crate) fn is_image_clipboard_type(source: &str) -> bool {
+    source.starts_with("image/")
+        || matches!(
+            source,
+            "public.png"
+                | "public.tiff"
+                | "public.jpeg"
+                | "public.jpeg-2000"
+                | "public.svg-image"
+                | "com.compuserve.gif"
+                | "com.microsoft.bmp"
+                | "PNG"
+                | "TIFF"
+                | "JFIF"
+                | "GIF"
+                | "CF_BITMAP"
+                | "CF_DIB"
+                | "CF_DIBV5"
+        )
+}
+
 /// The pixels-per-metre a PNG declares in pHYs (unit 1 = metre), before the image data.
 /// Chunk lengths are checked before every slice, including on 32-bit hosts.
 pub(crate) fn png_pixels_per_meter(png: &[u8]) -> Option<(u32, u32)> {
@@ -289,7 +311,7 @@ fn channel(pixel: u32, mask: u32) -> u8 {
 }
 
 /// A packed clipboard DIB has no BMP file header. Rows are DWORD-aligned; positive heights
-/// are bottom-up. Only V5's explicit alpha mask authorizes reading an alpha channel.
+/// are bottom-up. V4 and V5 BITFIELDS headers can explicitly declare an alpha channel.
 #[cfg_attr(not(any(windows, test)), allow(dead_code))]
 pub(crate) fn dib_image_item(bytes: &[u8], source: &str) -> Result<ClipboardImageItem, String> {
     check_image_byte_length(source, bytes.len())?;
@@ -341,7 +363,7 @@ fn dib_image_item_inner(bytes: &[u8]) -> Result<ClipboardImageItem, String> {
             pixel_offset += 12;
         }
     }
-    if header_size == 124 {
+    if header_size == 124 || (header_size == 108 && compression == 3) {
         masks[3] = dib_u32(bytes, 52)?;
     }
     let valid_bits = if bits == 24 { 0x00ff_ffff } else { u32::MAX };
@@ -553,21 +575,57 @@ mod tests {
     }
 
     #[test]
-    fn only_v5_explicit_alpha_mask_preserves_alpha() {
-        for (header_size, alpha_mask, expected) in [
-            (124, 0xff00_0000, 64),
-            (124, 0, 255),
-            (108, 0xff00_0000, 255),
+    fn v4_and_v5_explicit_alpha_masks_preserve_alpha() {
+        for (header_size, alpha_mask, alpha, expected) in [
+            (124, 0xff00_0000, 64, 64),
+            (124, 0, 64, 255),
+            (108, 0xff00_0000, 0, 0),
+            (108, 0xff00_0000, 64, 64),
+            (108, 0, 0, 255),
         ] {
             let mut bytes = dib(header_size, 1, -1, 32, 3);
             for (index, mask) in [0xff0000u32, 0xff00, 0xff, alpha_mask].iter().enumerate() {
                 bytes[40 + index * 4..44 + index * 4].copy_from_slice(&mask.to_le_bytes());
             }
-            bytes.extend_from_slice(&[33, 22, 11, 64]);
+            bytes.extend_from_slice(&[33, 22, 11, alpha]);
             assert_eq!(
                 decoded(&dib_image_item(&bytes, "CF_DIBV5").unwrap()).as_raw(),
                 &[11, 22, 33, expected]
             );
+        }
+    }
+
+    #[test]
+    fn image_size_decision_needs_only_the_native_allocation_length() {
+        for source in ["public.png", "public.tiff", "image/svg+xml", "CF_DIBV5"] {
+            for length in [0, MAX_CLIPBOARD_IMAGE_BYTES - 1, MAX_CLIPBOARD_IMAGE_BYTES] {
+                assert!(check_image_byte_length(source, length).is_ok());
+            }
+            // No picture allocation is needed to reject even a 500 MiB clipboard handle.
+            for length in [MAX_CLIPBOARD_IMAGE_BYTES + 1, 500 * 1024 * 1024, usize::MAX] {
+                assert!(check_image_byte_length(source, length).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn picture_flavors_bypass_unbounded_text_readers() {
+        for source in [
+            "public.png",
+            "public.tiff",
+            "public.svg-image",
+            "image/png",
+            "image/tiff",
+            "image/svg+xml",
+            "PNG",
+            "CF_BITMAP",
+            "CF_DIB",
+            "CF_DIBV5",
+        ] {
+            assert!(is_image_clipboard_type(source), "{source}");
+        }
+        for source in ["text/plain", "public.utf8-plain-text", "chemical/x-cdxml"] {
+            assert!(!is_image_clipboard_type(source), "{source}");
         }
     }
 
