@@ -12,6 +12,27 @@ import {
 } from "./moleculeInspectorTemplates";
 
 describe("moleculeInspectorModel", () => {
+  it("tolerates measured bond-length noise, rounds the shared display value, and keeps other fields exact", () => {
+    const molecules = [22, 21.996, 22.004].map((length, index) => {
+      const molecule = singleBondMolecule(`noise_${index}`, 0);
+      molecule.atoms[1].x = length;
+      molecule.style.bondStrokeWidthPx = 1 + index * 0.001;
+      return molecule;
+    });
+    const selection = { selectedObjectIds: molecules.map((molecule) => molecule.id) };
+    const model = createMoleculeInspectorModel(documentWithObjects(molecules), selection);
+    expect(model.structure.values.bondLengthPx).toEqual({ value: 22, mixed: false });
+    expect(model.structure.values.bondStrokeWidthPx.mixed).toBe(true);
+
+    molecules[0].atoms[1].x = 22.0004;
+    expect(createMoleculeInspectorModel(documentWithObjects(molecules), selection).structure.values.bondLengthPx)
+      .toEqual({ value: 22, mixed: false });
+
+    molecules[1].atoms[1].x = 22.5;
+    expect(createMoleculeInspectorModel(documentWithObjects(molecules.slice(0, 2)), selection).structure.values.bondLengthPx)
+      .toEqual({ value: null, mixed: true });
+  });
+
   it("reports the nominal bond length for a perspective molecule", () => {
     const molecule = singleBondMolecule("perspective", 100, {
       style: { projection: "perspective", bondLengthPx: 96 }
@@ -25,7 +46,8 @@ describe("moleculeInspectorModel", () => {
     molecule.style.bondLengthPx = 72;
     const model = createMoleculeInspectorModel(documentWithObjects([molecule]), { selectedObjectIds: [molecule.id] });
     // Four bonds are hypot(52, 30) long; two are 60. The median differs from the mean.
-    expect(model.structure.values.bondLengthPx).toEqual({ value: Math.hypot(52, 30), mixed: false });
+    // The shared value is rounded to the field's three-decimal display precision.
+    expect(model.structure.values.bondLengthPx).toEqual({ value: Number(Math.hypot(52, 30).toFixed(3)), mixed: false });
   });
 
   it.each([undefined, 0, -1, "96"])("keeps the measured length for a perspective molecule with invalid nominal length %s", bondLengthPx => {

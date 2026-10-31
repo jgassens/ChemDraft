@@ -1,3 +1,5 @@
+import { paletteFocusDiagnostic } from "./paletteFocusDiagnostic";
+import { installMainWindowPalettePendingKeys } from "./palettePendingKeys";
 import { nextObjectId, structureTemplateLayoutMessage } from "@chemdraft/document-workflow-core";
 import { insertStructureTemplate } from "./structureTemplateInsertion";
 import { structureTemplates } from "@chemdraft/template-library";
@@ -1646,7 +1648,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.31.10.00-codex";
+const CURRENT_BUILD_STAMP = "10.31.12.30-codex";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -1897,6 +1899,14 @@ export interface MainWindowProps {
   nativePalette?: boolean;
 }
 
+// Preview-capable command factories encode their final value after ':' (molecule
+// fields/ring targets) or '.' (object colours, percentages and gradient stops).
+// Keep target/stop/effect identity, so a different field cannot reuse a rollback snapshot.
+function palettePreviewCommandKey(commandId: string): string {
+  const colon = commandId.lastIndexOf(":");
+  return commandId.slice(0, colon >= 0 ? colon : commandId.lastIndexOf("."));
+}
+
 // Native floating NSPanel palettes are the desktop renderer; the browser build always uses
 // in-window web palettes. `localStorage["chemdraft.forceWebPalettes"] = "1"` is a runtime
 // escape hatch (no rebuild) if native palettes misbehave on a given machine.
@@ -1931,6 +1941,7 @@ export function MainWindow({
   shortcutPlatform,
   nativePalette = shouldDefaultToNativePalettes()
 }: MainWindowProps) {
+  useEffect(() => installMainWindowPalettePendingKeys(), []);
   useInAppModalUtilitySuspension();
   // Plugin commands may settle after the document window has unmounted.
   const mountedRef = useRef(true);
@@ -2147,8 +2158,10 @@ export function MainWindow({
   const objectResizeReadoutTimeoutRef = useRef<number | undefined>(undefined);
   const groupTransformDragRef = useRef<GroupTransformDragState | null>(null);
   const textResizeRef = useRef<TextResizeState | null>(null);
-  const artStylePreviewRef = useRef<{ startDocument: ChemDraftDocument } | null>(null);
-  const moleculeInspectorPreviewRef = useRef<{ startDocument: ChemDraftDocument } | null>(null);
+  const artStylePreviewRef = useRef<{ startDocument: ChemDraftDocument; undoLabel: string; commandKey: string; commandId: string } | null>(null);
+  const moleculeInspectorPreviewRef = useRef<{ startDocument: ChemDraftDocument; undoLabel: string; commandKey: string; commandId: string } | null>(null);
+  const settlePalettePreviewRef = useRef<(reason: string) => void>(() => undefined);
+  const palettePreviewSettlingRef = useRef(false);
   const palettePreviewHandlersRef = useRef<{
     preview: (commandId: string) => void;
     commit: (commandId: string) => void;
@@ -2940,6 +2953,20 @@ export function MainWindow({
     }
   }, [activeToolState.activeCommandId, currentEyedropperStatus]);
 
+  // Preview replacements keep the history arrays; commits/settlement, undo and
+  // redo replace them. Count identities, not lengths (bounded history can stay full).
+  const colorHistoryBoundary = useRef({ past: documentHistory.past, future: documentHistory.future, revision: 0 });
+  if (colorHistoryBoundary.current.past !== documentHistory.past ||
+    colorHistoryBoundary.current.future !== documentHistory.future) {
+    colorHistoryBoundary.current = {
+      past: documentHistory.past, future: documentHistory.future, revision: colorHistoryBoundary.current.revision + 1
+    };
+  }
+  const colorContextKey = JSON.stringify([
+    activeDocumentTabId, document.id, document.selection, selectedNativeMoleculePart,
+    selectedNativeMoleculeParts, colorHistoryBoundary.current.revision
+  ]);
+
   const currentToolbarTextStateRef = useRef(
     createToolsetTextStylePayload(
       currentToolbarTextStyle,
@@ -2949,7 +2976,9 @@ export function MainWindow({
       currentMoleculeInspector,
       currentToolbarSelection,
       analysisReport,
-      analysisBusy
+      analysisBusy,
+      false,
+      colorContextKey
     )
   );
   currentToolbarTextStateRef.current = createToolsetTextStylePayload(
@@ -2960,7 +2989,9 @@ export function MainWindow({
     currentMoleculeInspector,
     currentToolbarSelection,
     analysisReport,
-    analysisBusy
+    analysisBusy,
+    false,
+    colorContextKey
   );
   const activeEditorMolecule =
     selectedMolecule && selectedMolecule.id === activeEditorObjectId ? selectedMolecule : undefined;
@@ -3216,8 +3247,22 @@ export function MainWindow({
   const assistantHistoryMountedRef = useRef(true);
   const assistantRecordedAfterRef = useRef(new WeakMap<ChemDraftDocument, ChemDraftDocument>());
   const assistantUserEditListenersRef = useRef(new Set<(tabId: string) => void>());
-  const installDocumentHistory = useCallback((history: DocumentHistory, switchingTabs = false) => {
+  const installDocumentHistory = useCallback((
+    update: DocumentHistory | ((current: DocumentHistory) => DocumentHistory),
+    switchingTabs = false,
+    palettePreview = false
+  ) => {
+    // A chooser may never blur. Close its snapshot transaction before *any* other
+    // document write, including live drawing/selection replacements and navigation.
+    // Compute history only afterwards so this edit cannot skip the preview's undo entry.
+    if (!palettePreview) {
+      const assistantWriting = assistantHistoryWritingRef.current;
+      assistantHistoryWritingRef.current = false;
+      try { settlePalettePreviewRef.current("history edit"); } finally { assistantHistoryWritingRef.current = assistantWriting; }
+    }
     const previous = documentHistoryRef.current;
+    const history = typeof update === "function" ? update(previous) : update;
+    if (history === previous) return;
     if (!switchingTabs && !assistantHistoryWritingRef.current) {
       const navigated = history.past !== previous.past || history.future !== previous.future;
       const recorded = assistantRecordedAfterRef.current.get(previous.present);
@@ -3271,22 +3316,24 @@ export function MainWindow({
     setOpenWarningsListOpen(false);
   }, [installDocumentHistory]);
   const replacePresentDocument = useCallback((
-    nextDocumentOrUpdate: ChemDraftDocument | ((current: ChemDraftDocument) => ChemDraftDocument)
+    nextDocumentOrUpdate: ChemDraftDocument | ((current: ChemDraftDocument) => ChemDraftDocument),
+    palettePreview = false
   ): boolean => {
     if (quitMutationFrozenRef.current) throw new Error("Quit is completing; the pending edit was not applied.");
-    const currentHistory = documentHistoryRef.current;
-    const nextDocument = typeof nextDocumentOrUpdate === "function"
-      ? nextDocumentOrUpdate(currentHistory.present)
-      : nextDocumentOrUpdate;
-    if (nextDocument === currentHistory.present) {
-      return false;
-    }
+    let changed = false;
+    installDocumentHistory((currentHistory) => {
+      const nextDocument = typeof nextDocumentOrUpdate === "function"
+        ? nextDocumentOrUpdate(currentHistory.present)
+        : nextDocumentOrUpdate;
+      if (nextDocument === currentHistory.present) return currentHistory;
 
-    const present = normalizeCommittedDocument(nextDocument);
-    const undoLabel = documentUndoLabelsRef.current.get(currentHistory.present);
-    if (undoLabel) documentUndoLabelsRef.current.set(present, undoLabel);
-    installDocumentHistory({ ...currentHistory, present });
-    return true;
+      const present = normalizeCommittedDocument(nextDocument);
+      const undoLabel = documentUndoLabelsRef.current.get(currentHistory.present);
+      if (undoLabel) documentUndoLabelsRef.current.set(present, undoLabel);
+      changed = true;
+      return { ...currentHistory, present };
+    }, false, palettePreview);
+    return changed;
   }, [installDocumentHistory]);
   // Strip the live draft before normalization, then carry the name across both object changes.
   const atomLabelHistorySnapshot = useCallback((current: ChemDraftDocument): ChemDraftDocument => {
@@ -3311,20 +3358,22 @@ export function MainWindow({
     undoLabel?: string
   ): boolean => {
     if (quitMutationFrozenRef.current) throw new Error("Quit is completing; the pending edit was not applied.");
-    const currentHistory = documentHistoryRef.current;
-    const nextDocument = typeof nextDocumentOrUpdate === "function"
-      ? nextDocumentOrUpdate(currentHistory.present)
-      : nextDocumentOrUpdate;
-    if (nextDocument === currentHistory.present) {
-      return false;
-    }
+    let changed = false;
+    installDocumentHistory((currentHistory) => {
+      const nextDocument = typeof nextDocumentOrUpdate === "function"
+        ? nextDocumentOrUpdate(currentHistory.present)
+        : nextDocumentOrUpdate;
+      if (nextDocument === currentHistory.present) return currentHistory;
 
-    const present = prepareDocumentCommit(nextDocument, undoLabel);
-    installDocumentHistory({
-      past: boundedHistoryPast([...currentHistory.past, atomLabelHistorySnapshot(currentHistory.present)], present),
-      present,
-      future: []
+      const present = prepareDocumentCommit(nextDocument, undoLabel);
+      changed = true;
+      return {
+        past: boundedHistoryPast([...currentHistory.past, atomLabelHistorySnapshot(currentHistory.present)], present),
+        present,
+        future: []
+      };
     });
+    if (!changed) return false;
     setFileState((current) => {
       const nextFileState = { ...current, dirty: true };
       fileStateRef.current = nextFileState;
@@ -3332,35 +3381,71 @@ export function MainWindow({
     });
     return true;
   }, [atomLabelHistorySnapshot, installDocumentHistory, prepareDocumentCommit]);
+  settlePalettePreviewRef.current = (reason) => {
+    const session = artStylePreviewRef.current ?? moleculeInspectorPreviewRef.current;
+    if (!session) return;
+    paletteFocusDiagnostic(`settle command=${session.commandId} targets=${JSON.stringify(documentRef.current.selection.objectIds)} before=open: ${session.commandKey} outcome=${documentHistoryRef.current.present === session.startDocument ? "unchanged" : "changed"} reason=${reason}`);
+    palettePreviewSettlingRef.current = true;
+    // Clear ownership before installing history: recursive installs and late chooser
+    // commit/cancel notifications must never restore this obsolete startDocument.
+    artStylePreviewRef.current = null;
+    moleculeInspectorPreviewRef.current = null;
+    installDocumentHistory((history) => {
+      if (history.present === session.startDocument) return history;
+      const present = prepareDocumentCommit(history.present, session.undoLabel);
+      return {
+        past: boundedHistoryPast([...history.past, atomLabelHistorySnapshot(session.startDocument)], present),
+        present,
+        future: []
+      };
+    });
+    // Close/quit guards read the ref immediately, before React processes state updates.
+    const nextFileState = { ...fileStateRef.current, dirty: true };
+    fileStateRef.current = nextFileState;
+    setFileState(nextFileState);
+    palettePreviewSettlingRef.current = false;
+  };
+  const settleOtherPalettePreview = useCallback((commandId: string) => {
+    const session = artStylePreviewRef.current ?? moleculeInspectorPreviewRef.current;
+    if (session && session.commandKey !== palettePreviewCommandKey(commandId)) settlePalettePreviewRef.current("other command");
+  }, []);
   const assistantHistoryPort = useMemo<AssistantHistoryPort>(() => {
     const readHistory = (tabId: string): DocumentHistory | undefined => {
       if (!assistantHistoryMountedRef.current || !documentTabsRef.current.some(tab => tab.id === tabId)) return undefined;
       return tabId === activeDocumentTabIdRef.current
         ? documentHistoryRef.current : documentTabSnapshotsRef.current.get(tabId)?.history;
     };
-    const install = (tabId: string, history: DocumentHistory) => {
+    const install = (tabId: string, update: (history: DocumentHistory) => DocumentHistory) => {
       if (quitMutationFrozenRef.current) throw new Error("Quit is completing; the assistant edit was refused.");
       if (!readHistory(tabId)) throw new Error("The assistant's document tab is closed; write refused.");
       if (tabId === activeDocumentTabIdRef.current) {
+        let changed = false;
         assistantHistoryWritingRef.current = true;
-        const previousIds = new Set(readHistory(tabId)!.present.pages.flatMap(page => page.objects.map(object => object.id)));
-        const templateMessages = history.present.pages.flatMap(page => page.objects.flatMap(object =>
-          object.type === "molecule" && !previousIds.has(object.id) && history.present.selection.objectIds.includes(object.id)
-            ? [structureTemplateLayoutMessage(object)].filter((message): message is string => !!message) : []));
+        let templateMessages: string[] = [];
+        try {
+          installDocumentHistory((history) => {
+            const next = update(history);
+            changed = next !== history;
+            if (changed) {
+              const previousIds = new Set(history.present.pages.flatMap(page => page.objects.map(object => object.id)));
+              templateMessages = next.present.pages.flatMap(page => page.objects.flatMap(object =>
+                object.type === "molecule" && !previousIds.has(object.id) && next.present.selection.objectIds.includes(object.id)
+                  ? [structureTemplateLayoutMessage(object)].filter((message): message is string => !!message) : []));
+            }
+            return next;
+          });
+        } finally { assistantHistoryWritingRef.current = false; }
+        if (!changed) return;
         if (templateMessages.length) setStatus(templateMessages.join("; "));
-        try { installDocumentHistory(history); } finally { assistantHistoryWritingRef.current = false; }
         fileStateRef.current = { ...fileStateRef.current, dirty: true };
         setFileState(fileStateRef.current);
         setSelectedNativeMoleculePart(undefined);
       } else {
         const snapshot = documentTabSnapshotsRef.current.get(tabId)!;
+        const history = update(snapshot.history);
+        if (history === snapshot.history) return;
         documentTabSnapshotsRef.current.set(tabId, { ...snapshot, history, parts: [], file: { ...snapshot.file, dirty: true } });
       }
-    };
-    const requireHistory = (tabId: string): DocumentHistory => {
-      const history = readHistory(tabId);
-      if (!history) throw new Error("The assistant's document tab is closed; write refused.");
-      return history;
     };
     const labelled = (document: ChemDraftDocument, label: string) => {
       const present = prepareDocumentCommit(document, label);
@@ -3397,36 +3482,41 @@ export function MainWindow({
           width: (right - left) / scale, height: (bottom - top) / scale };
       },
       push: (tabId, before, after, label) => {
-        const history = requireHistory(tabId);
-        const present = labelled(after, label);
-        const beforeLabel = documentUndoLabelsRef.current.get(history.present);
-        if (beforeLabel) documentUndoLabelsRef.current.set(before, beforeLabel);
-        const recorded = assistantRecordedAfterRef.current.get(history.present);
-        if (recorded) assistantRecordedAfterRef.current.set(before, recorded);
-        install(tabId, { past: boundedHistoryPast([...history.past, before], present), present, future: [] });
+        install(tabId, (history) => {
+          const present = labelled(after, label);
+          const beforeLabel = documentUndoLabelsRef.current.get(history.present);
+          if (beforeLabel) documentUndoLabelsRef.current.set(before, beforeLabel);
+          const recorded = assistantRecordedAfterRef.current.get(history.present);
+          if (recorded) assistantRecordedAfterRef.current.set(before, recorded);
+          return { past: boundedHistoryPast([...history.past, before], present), present, future: [] };
+        });
       },
       amend: (tabId, after, label) => {
-        const history = requireHistory(tabId);
-        install(tabId, { ...history, present: labelled(after, label) });
+        install(tabId, history => ({ ...history, present: labelled(after, label) }));
       },
       select: (tabId, objectIds, label) => {
-        const history = requireHistory(tabId);
-        const present = history.present;
-        const pageId = present.pages.find(page => page.objects.some(object => objectIds.includes(object.id)))?.id ?? present.selection.pageId;
-        install(tabId, { ...history, present: labelled(adoptDerivedDocument(present,
-          { ...present, selection: { pageId, objectIds: [...objectIds] } }), label) });
+        install(tabId, (history) => {
+          const present = history.present;
+          const pageId = present.pages.find(page => page.objects.some(object => objectIds.includes(object.id)))?.id ?? present.selection.pageId;
+          return { ...history, present: labelled(adoptDerivedDocument(present,
+            { ...present, selection: { pageId, objectIds: [...objectIds] } }), label) };
+        });
       },
       onUserEdit: listener => {
         assistantUserEditListenersRef.current.add(listener);
         return () => { assistantUserEditListenersRef.current.delete(listener); };
       },
       undo: (tabId, expected) => {
-        const history = readHistory(tabId);
-        if (!history || (history.present !== expected && assistantRecordedAfterRef.current.get(history.present) !== expected) ||
-          history.past.length === 0) return false;
-        for (const listener of assistantUserEditListenersRef.current) listener(tabId);
-        install(tabId, undoDocumentHistory({ ...history, present: expected }));
-        return true;
+        if (!readHistory(tabId)) return false;
+        let undone = false;
+        install(tabId, (history) => {
+          if ((history.present !== expected && assistantRecordedAfterRef.current.get(history.present) !== expected) ||
+            history.past.length === 0) return history;
+          for (const listener of assistantUserEditListenersRef.current) listener(tabId);
+          undone = true;
+          return undoDocumentHistory({ ...history, present: expected });
+        });
+        return undone;
       }
     };
   }, [installDocumentHistory, prepareDocumentCommit, setSelectedNativeMoleculePart]);
@@ -3445,15 +3535,14 @@ export function MainWindow({
     undoLabel?: string
   ) => {
     if (quitMutationFrozenRef.current) throw new Error("Quit is completing; the pending edit was not applied.");
-    const currentHistory = documentHistoryRef.current;
     const present = normalizeCommittedDocument(nextDocument);
     const label = undoLabel ?? documentUndoLabelsRef.current.get(nextDocument);
     if (label) documentUndoLabelsRef.current.set(present, label);
-    installDocumentHistory({
+    installDocumentHistory((currentHistory) => ({
       past: boundedHistoryPast([...currentHistory.past, atomLabelHistorySnapshot(startDocument)], present),
       present,
       future: []
-    });
+    }));
     setFileState((current) => {
       const nextFileState = { ...current, dirty: true };
       fileStateRef.current = nextFileState;
@@ -3513,16 +3602,17 @@ export function MainWindow({
     });
   }, []);
   const commitLiveInputPreview = useCallback((startDocument: ChemDraftDocument): boolean => {
-    const currentHistory = documentHistoryRef.current;
-    if (currentHistory.present === startDocument) {
-      return false;
-    }
-
-    installDocumentHistory({
-      past: boundedHistoryPast([...currentHistory.past, atomLabelHistorySnapshot(startDocument)], currentHistory.present),
-      present: currentHistory.present,
-      future: []
+    let changed = false;
+    installDocumentHistory((currentHistory) => {
+      if (currentHistory.present === startDocument) return currentHistory;
+      changed = true;
+      return {
+        past: boundedHistoryPast([...currentHistory.past, atomLabelHistorySnapshot(startDocument)], currentHistory.present),
+        present: currentHistory.present,
+        future: []
+      };
     });
+    if (!changed) return false;
     markDocumentDirty();
     return true;
   }, [atomLabelHistorySnapshot, installDocumentHistory, markDocumentDirty]);
@@ -3648,7 +3738,8 @@ export function MainWindow({
         // unchanged while making the effect's identity stable across document changes.
         analysisReportForBroadcast,
         analysisBusy,
-        analysisReportIsStale
+        analysisReportIsStale,
+        colorContextKey
       )
     ).catch(() => undefined);
     // `analysisReport` reaches this through `analysisReportForBroadcast`, so a detached Molecular
@@ -3663,7 +3754,8 @@ export function MainWindow({
     currentMoleculeInspector,
     currentToolbarSelection,
     currentToolbarTextScript,
-    currentToolbarTextStyle
+    currentToolbarTextStyle,
+    colorContextKey
   ]);
 
   useEffect(() => {
@@ -7741,6 +7833,7 @@ export function MainWindow({
   }, []);
 
   const previewObjectStyleCommand = useCallback((commandId: string) => {
+    settleOtherPalettePreview(commandId);
     const session = artStylePreviewRef.current;
     const startDocument = session?.startDocument ?? documentRef.current;
     const result = applyObjectStyleCommandToDocument(startDocument, commandId, effectiveArtPaintTarget, "keep");
@@ -7748,22 +7841,14 @@ export function MainWindow({
       return;
     }
 
-    artStylePreviewRef.current = session ?? { startDocument };
-    const selectedColor = objectColorForCommand(commandId);
-    const graphicObjectIds = selectedColor ? selectedGraphicObjectIds(startDocument) : [];
-    if (
-      selectedColor &&
-      canPreviewGraphicObjectColorOnDom(startDocument, graphicObjectIds, effectiveArtPaintTarget) &&
-      previewGraphicObjectColorOnDom(pageRef.current, startDocument, graphicObjectIds, effectiveArtPaintTarget, selectedColor)
-    ) {
-      return;
-    }
-
-    clearArtStyleDomPreview(pageRef.current);
-    replacePresentDocument(result.document);
-  }, [applyObjectStyleCommandToDocument, effectiveArtPaintTarget, replacePresentDocument]);
+    artStylePreviewRef.current = { startDocument, undoLabel: result.message, commandKey: palettePreviewCommandKey(commandId), commandId };
+    // Keep previews in the model: an edit computed from documentRef must include
+    // the visible colour before it interrupts this transaction.
+    replacePresentDocument(result.document, true);
+  }, [applyObjectStyleCommandToDocument, effectiveArtPaintTarget, replacePresentDocument, settleOtherPalettePreview]);
 
   const commitObjectStylePreview = useCallback((commandId: string) => {
+    settleOtherPalettePreview(commandId);
     const session = artStylePreviewRef.current;
     if (!session) {
       applyObjectStyleCommand(commandId);
@@ -7772,14 +7857,14 @@ export function MainWindow({
 
     const result = applyObjectStyleCommandToDocument(session.startDocument, commandId, effectiveArtPaintTarget);
     artStylePreviewRef.current = null;
-    clearArtStyleDomPreview(pageRef.current);
-    replacePresentDocument(session.startDocument);
     if (!result.handled || !result.targeted) {
+      replacePresentDocument(session.startDocument, true);
       setStatus("Select a graphic before changing object style");
       return;
     }
 
     if (result.needsRingOverrideChoice) {
+      replacePresentDocument(session.startDocument, true);
       setMoleculeStyleOverridePrompt({
         commandId,
         target: effectiveArtPaintTarget,
@@ -7790,10 +7875,14 @@ export function MainWindow({
       return;
     }
 
-    const changed = commitDocumentChange(result.document);
+    // The present is already the preview. Install the final value and its original
+    // undo snapshot together; never roll back then compare against a live present.
+    const changed = result.document !== session.startDocument;
+    if (changed) commitDocumentHistoryFrom(session.startDocument, result.document, result.message);
+    else replacePresentDocument(session.startDocument, true);
     setActiveEditorObjectId(undefined);
     setStatus(changed ? result.message : "Selected object style unchanged");
-  }, [applyObjectStyleCommand, applyObjectStyleCommandToDocument, commitDocumentChange, effectiveArtPaintTarget, replacePresentDocument]);
+  }, [applyObjectStyleCommand, applyObjectStyleCommandToDocument, commitDocumentHistoryFrom, effectiveArtPaintTarget, replacePresentDocument, settleOtherPalettePreview]);
 
   const cancelObjectStylePreview = useCallback(() => {
     const session = artStylePreviewRef.current;
@@ -7802,7 +7891,6 @@ export function MainWindow({
     }
 
     artStylePreviewRef.current = null;
-    clearArtStyleDomPreview(pageRef.current);
     replacePresentDocument(session.startDocument);
     setStatus("Canceled graphic style edit");
   }, [replacePresentDocument]);
@@ -8250,6 +8338,7 @@ export function MainWindow({
   }, [applyMoleculeInspectorCommandToDocument, commitDocumentChange]);
 
   const previewMoleculeInspectorCommand = useCallback((commandId: string) => {
+    settleOtherPalettePreview(commandId);
     const session = moleculeInspectorPreviewRef.current;
     const startDocument = session?.startDocument ?? documentRef.current;
     const result = applyMoleculeInspectorCommandToDocument(startDocument, commandId);
@@ -8257,11 +8346,12 @@ export function MainWindow({
       return;
     }
 
-    moleculeInspectorPreviewRef.current = session ?? { startDocument };
-    replacePresentDocument(result.document);
-  }, [applyMoleculeInspectorCommandToDocument, replacePresentDocument]);
+    moleculeInspectorPreviewRef.current = { startDocument, undoLabel: result.message, commandKey: palettePreviewCommandKey(commandId), commandId };
+    replacePresentDocument(result.document, true);
+  }, [applyMoleculeInspectorCommandToDocument, replacePresentDocument, settleOtherPalettePreview]);
 
   const commitMoleculeInspectorPreview = useCallback((commandId: string) => {
+    settleOtherPalettePreview(commandId);
     const session = moleculeInspectorPreviewRef.current;
     if (!session) {
       applyMoleculeInspectorCommand(commandId);
@@ -8270,16 +8360,18 @@ export function MainWindow({
 
     const result = applyMoleculeInspectorCommandToDocument(session.startDocument, commandId);
     moleculeInspectorPreviewRef.current = null;
-    replacePresentDocument(session.startDocument);
     if (!result.handled || !result.targeted) {
+      replacePresentDocument(session.startDocument, true);
       setStatus("Select a molecule before changing Drawn Structure Settings style");
       return;
     }
 
-    const changed = commitDocumentChange(result.document, moleculeDoubleBondPositionForCommand(commandId) ? result.message : undefined);
+    const changed = result.document !== session.startDocument;
+    if (changed) commitDocumentHistoryFrom(session.startDocument, result.document, result.message);
+    else replacePresentDocument(session.startDocument, true);
     setActiveEditorObjectId(undefined);
     setStatus(changed ? result.message : "Selected molecule style unchanged");
-  }, [applyMoleculeInspectorCommand, applyMoleculeInspectorCommandToDocument, commitDocumentChange, replacePresentDocument]);
+  }, [applyMoleculeInspectorCommand, applyMoleculeInspectorCommandToDocument, commitDocumentHistoryFrom, replacePresentDocument, settleOtherPalettePreview]);
 
   const cancelMoleculeInspectorPreview = useCallback(() => {
     const session = moleculeInspectorPreviewRef.current;
@@ -8410,19 +8502,37 @@ export function MainWindow({
   ]);
 
   useEffect(() => {
+    const diagnose = (event: "preview" | "commit" | "cancel", commandId: string | undefined, run: () => void) => {
+      const session = artStylePreviewRef.current ?? moleculeInspectorPreviewRef.current;
+      const before = palettePreviewSettlingRef.current ? "settling" : session ? `open: ${session.commandKey}` : "none";
+      const present = documentHistoryRef.current.present;
+      const history = documentHistoryRef.current;
+      const targets = [...documentRef.current.selection.objectIds];
+      run();
+      const nextSession = artStylePreviewRef.current ?? moleculeInspectorPreviewRef.current;
+      const changed = present !== documentHistoryRef.current.present || history !== documentHistoryRef.current;
+      const reason = session && commandId && session.commandKey !== palettePreviewCommandKey(commandId)
+        ? "settled other preview"
+        : event === "cancel" ? session ? "restored preview start" : "no preview"
+        : changed ? event === "commit" ? "committed value" : "applied preview"
+        : targets.length === 0 ? "no target"
+        : event === "preview" && !nextSession ? "no applicable target or unhandled command"
+        : "same as present";
+      paletteFocusDiagnostic(`${event} command=${commandId ?? session?.commandId ?? "none"} targets=${JSON.stringify(targets)} before=${before} outcome=${changed ? "changed" : "unchanged"} reason=${reason}`);
+    };
     palettePreviewHandlersRef.current = {
-      preview: (commandId) => {
+      preview: (commandId) => diagnose("preview", commandId, () => {
         previewObjectStyleCommand(commandId);
         previewMoleculeInspectorCommand(commandId);
-      },
-      commit: (commandId) => {
+      }),
+      commit: (commandId) => diagnose("commit", commandId, () => {
         commitObjectStylePreview(commandId);
         commitMoleculeInspectorPreview(commandId);
-      },
-      cancel: () => {
+      }),
+      cancel: () => diagnose("cancel", undefined, () => {
         cancelObjectStylePreview();
         cancelMoleculeInspectorPreview();
-      }
+      })
     };
   }, [
     cancelMoleculeInspectorPreview,
@@ -8438,23 +8548,26 @@ export function MainWindow({
       return;
     }
 
-    const recordedAfter = assistantRecordedAfterRef.current.get(documentHistoryRef.current.present);
-    const currentHistory = { ...documentHistoryRef.current,
-      present: direction === "undo" && recordedAfter ? recordedAfter : atomLabelHistorySnapshot(documentHistoryRef.current.present) };
-    const nextHistory = direction === "undo"
-      ? undoDocumentHistory(currentHistory)
-      : redoDocumentHistory(currentHistory);
-    if (nextHistory === currentHistory) {
+    let nextHistory: DocumentHistory | undefined;
+    let undoLabel: string | undefined;
+    installDocumentHistory((history) => {
+      const recordedAfter = assistantRecordedAfterRef.current.get(history.present);
+      const currentHistory = { ...history,
+        present: direction === "undo" && recordedAfter ? recordedAfter : atomLabelHistorySnapshot(history.present) };
+      const restored = direction === "undo" ? undoDocumentHistory(currentHistory) : redoDocumentHistory(currentHistory);
+      if (restored === currentHistory) return history;
+      undoLabel = direction === "undo"
+        ? documentUndoLabelsRef.current.get(currentHistory.present)
+        : documentUndoLabelsRef.current.get(restored.present);
+      nextHistory = restored;
+      return restored;
+    });
+    if (!nextHistory) {
       setStatus(direction === "undo" ? "Nothing to undo" : "Nothing to redo");
       return;
     }
 
-    const undoLabel = direction === "undo"
-      ? documentUndoLabelsRef.current.get(currentHistory.present)
-      : documentUndoLabelsRef.current.get(nextHistory.present);
-
     historyNavigationCountRef.current += 1;
-    installDocumentHistory(nextHistory);
     setFileState((current) => {
       const nextFileState = { ...current, dirty: true };
       fileStateRef.current = nextFileState;
@@ -8484,6 +8597,9 @@ export function MainWindow({
   }, [assignHoveredNativeDeleteTarget, atomLabelHistorySnapshot, cancelSpin3dSession, installDocumentHistory]);
 
   const cancelDocumentTabSessions = useCallback(() => {
+    // Settle chooser edits before choosing a rollback snapshot. Otherwise the
+    // history boundary commits the colour, then restores its captured old document.
+    settlePalettePreviewRef.current("tab cleanup");
     smilesListPasteAbortRef.current?.abort();
     clearObjectTransformPreview();
     // Roll back snapshot-based previews while their source document is still installed.
@@ -8698,6 +8814,7 @@ export function MainWindow({
   }, [installDocumentTab, newDocumentTab, snapshotDocumentTab]);
 
   const requestCloseDocumentTab = useCallback((id = activeDocumentTabIdRef.current) => {
+    settlePalettePreviewRef.current("close");
     if (closeTabPrompt) return;
     if (!documentTabsRef.current.some((tab) => tab.id === id)) return;
     if (id !== activeDocumentTabIdRef.current && !documentTabSnapshotsRef.current.get(id)?.file.dirty) {
@@ -20183,6 +20300,7 @@ export function MainWindow({
                 onInvoke={invoke}
                 customize={customizingThis ? { groupIds: renderGroups.map((group) => group.id) } : undefined}
                 widgetState={{
+                  colorContextKey,
                   currentObjectColor: currentToolbarObjectColor,
                   currentArtStyle,
                   currentArtStyleTarget: activeArtPaintTarget,
@@ -22160,109 +22278,6 @@ function xmlAttributeValue(value: string | number | undefined): string {
     .replace(/"/g, "&quot;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
-}
-
-function artObjectPreviewElement(root: HTMLElement, objectId: string): HTMLElement | null {
-  return root.querySelector<HTMLElement>(`[data-object-id="${cssEscapeIdentifier(objectId)}"].graphic-object`);
-}
-
-function canPreviewGraphicObjectColorOnDom(
-  document: ChemDraftDocument,
-  objectIds: readonly string[],
-  target: GraphicStylePaintTarget
-): boolean {
-  return objectIds.every((objectId) => {
-    const object = findDocumentObject(document, objectId);
-    if (object?.type !== "graphic") {
-      return true;
-    }
-    if (target === "fill" && object.style.fillMode === "gloss") {
-      return false;
-    }
-    const paint = target === "fill" ? object.style.fillPaint : object.style.strokePaint;
-    return paint?.kind !== "linear-gradient" && paint?.kind !== "radial-gradient";
-  });
-}
-
-function previewGraphicObjectColorOnDom(
-  root: HTMLElement | null,
-  document: ChemDraftDocument,
-  objectIds: readonly string[],
-  target: GraphicStylePaintTarget,
-  color: string
-): boolean {
-  if (!root || objectIds.length === 0) {
-    return false;
-  }
-
-  let applied = false;
-  for (const objectId of objectIds) {
-    const object = findDocumentObject(document, objectId);
-    if (object?.type !== "graphic") {
-      continue;
-    }
-
-    const elements = [artObjectPreviewElement(root, objectId),
-      root.querySelector(`[data-page-svg-object-visual="${cssEscapeIdentifier(objectId)}"]`)].filter((element): element is Element => element !== null);
-    if (elements.length === 0) {
-      continue;
-    }
-
-    const freehandPath = graphicObjectIsFreehandPath(object);
-    const paintAttribute = freehandPath || target === "fill" ? "fill" : "stroke";
-    const selector = freehandPath || target === "fill"
-      ? ".graphic-glyph-path, .graphic-glyph-shape, .graphic-glyph-projected-shape"
-      : ".graphic-glyph-path, .graphic-glyph-shape, .graphic-glyph-projected-shape, .graphic-glyph-stroke";
-    for (const paintElement of elements.flatMap(element => Array.from(element.querySelectorAll<SVGElement>(selector)))) {
-      if (paintElement.classList.contains("graphic-glyph-hit-target") || paintElement.classList.contains("graphic-glyph-shadow")) {
-        continue;
-      }
-      primeArtStylePreviewElement(paintElement, paintAttribute);
-      paintElement.setAttribute(paintAttribute, color);
-      applied = true;
-    }
-  }
-
-  return applied;
-}
-
-function clearArtStyleDomPreview(root: HTMLElement | null): void {
-  if (!root) {
-    return;
-  }
-
-  for (const element of Array.from(root.querySelectorAll<SVGElement>("[data-art-style-preview='true']"))) {
-    restoreArtStylePreviewElement(element);
-  }
-}
-
-function primeArtStylePreviewElement(element: SVGElement, attribute: "fill" | "stroke"): void {
-  element.setAttribute("data-art-style-preview", "true");
-  const originalAttribute = `data-art-style-preview-original-${attribute}`;
-  if (!element.hasAttribute(originalAttribute)) {
-    element.setAttribute(originalAttribute, element.getAttribute(attribute) ?? "");
-  }
-}
-
-function restoreArtStylePreviewElement(element: SVGElement): void {
-  restoreArtStylePreviewAttribute(element, "fill");
-  restoreArtStylePreviewAttribute(element, "stroke");
-  element.removeAttribute("data-art-style-preview");
-}
-
-function restoreArtStylePreviewAttribute(element: SVGElement, attribute: "fill" | "stroke"): void {
-  const originalAttribute = `data-art-style-preview-original-${attribute}`;
-  if (!element.hasAttribute(originalAttribute)) {
-    return;
-  }
-
-  const originalValue = element.getAttribute(originalAttribute) ?? "";
-  if (originalValue.length > 0) {
-    element.setAttribute(attribute, originalValue);
-  } else {
-    element.removeAttribute(attribute);
-  }
-  element.removeAttribute(originalAttribute);
 }
 
 function cssEscapeIdentifier(value: string): string {

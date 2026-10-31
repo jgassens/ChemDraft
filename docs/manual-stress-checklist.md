@@ -15,6 +15,118 @@ selection after tab switching/closing.
 Canvas context menus (macOS and Windows): open the page and object menus with the mouse and keyboard;
 use arrows, Home/End, Arrange and Copy As submenus, Enter, Space, Escape and Tab, then verify canvas
 focus and drawing shortcuts return after an action or dismissal.
+Palette field input (macOS and Windows): in Drawn Structure Settings, click Target bond length,
+type 30 and press Return; the value changes, the canvas does not, and no hotkey fires. Switch to
+another app and back, then click the field again; Customize gallery search still types.
+After clicking or double-clicking Target bond length, select its text, type 26 and press Return.
+Immediately press Delete/Backspace, Cmd/Ctrl+A and digits: all edit the same focused box, with no
+document deletion, selection change or hotkey. Repeat after an ArrowUp/ArrowDown commit and its
+canvas update; clean-number Cmd/Ctrl+Z still undoes the document without leaving the box.
+With the document initially key (also immediately after leaving a previous palette edit), click
+the number and immediately press Cmd/Ctrl+A, digits and Delete/Backspace before acquisition can
+settle. Keys either reach the box or are dropped; the document must never Select All or change.
+With “No molecule”, click the disabled Chain angle box and type digits, Delete/Backspace and
+Cmd/Ctrl+A: the palette ignores them until Escape or a click elsewhere. In the Text toolbar,
+click the size dropdown and repeat: type-ahead and arrows belong to the select, Escape dismisses
+its popup, and Select All never selects canvas objects. Choosing a size keeps keys in the select.
+After each case, click a palette tool button or its background and verify tool hotkeys work again.
+While a number box or Text size select holds the keyboard, verify Save, Open, Export, View and
+Copy still work; repeat Save immediately after mouse-down, before the lease reply. During that
+pending interval, Cmd/Ctrl+A, Cut/Paste, Undo/Redo, Delete/Backspace and tool/bond typing must not
+reach the document. Cmd+Q, Cmd+H, Cmd/Ctrl+W and preferences must retain their menu behavior,
+including after a disabled-field click. Repeat on Windows with the document WebView2 focused.
+Windows menu routing: Ctrl+S saves exactly once from a held number box, the Text size select,
+the disabled Chain angle sink, and immediately after mouse-down while acquisition is pending;
+the control/sink keeps focus (a Save As chooser may take it). Repeat Save As, Open, New, Close,
+Export, Preferences and zoom/view shortcuts. Ctrl+A/C/V/X and draft Undo/Redo stay in the field;
+clean-number history keeps its existing document route. On macOS Cmd+S uses the native menu
+exactly once with a clean field; a dirty typed draft commits first and the page saves exactly once.
+With a dirty draft, Save As/Export include the value and Ctrl+Tab commits to the original tab
+before switching. From a held checkbox/slider on macOS, Cmd+= zooms, Ctrl+Tab switches tabs,
+and Cmd+W closes the document tab. Hover the disabled number box itself:
+its real wrapper shows not-allowed, even before the palette becomes key; no title means no tooltip.
+Foreground after editing: type ahead in the Text size select, dismiss its popup, then press
+Escape again with the select closed. Press M immediately: the document must receive it. Repeat
+on macOS and Windows by opening the list with a pointer, and with Space/Alt+Down where supported:
+the first Escape only dismisses the list, typing 18 and Arrow Down still act on the select,
+and a further Escape hands the keyboard back to the document.
+Tab out of the palette and a control finishing with no palette destination, on both platforms.
+Tab/click between palette controls keeps their keyboard lease. Switching apps, clicking another
+palette, or opening a native colour/select chooser must never pull focus back to the document.
+Foreground after dragging: on Windows drag the Text toolbar by its title and background, release,
+then immediately press M. The document receives it and the toolbar stays where dropped. Repeat
+a press with no movement and a drag while a keyboard lease is held: dragging ends any lease,
+and the document has the keyboard afterwards. Switching apps during the gesture must not steal
+focus. On macOS verify dragging still leaves the document key.
+Drag the palette background (including a press without movement), close it on pointerdown, switch
+apps, and click the canvas or another window: no guard may remain. With a loading/unresponsive
+palette page, editing hotkeys must recover after about one second. Rapidly click a button then a
+number box while native IPC is delayed: the old button release must not clear the new click.
+Hold Shift across a palette click and release it: document modifier state must not stay latched.
+Double- and triple-click a number box, then type 3, Delete and Backspace: the box keeps focus and
+the drawing never changes. With another app in front, clicking a palette field does NOT bring
+ChemDraft forward or take its keys, by design: floating palettes never yank focus from another app.
+Click the drawing first, then the field to edit it.
+While typing 30, the field shows 30 and applies on Return; three list-pasted molecules show one Target bond length, not Mixed.
+Type 30 in Target bond length and Tab to its slider: exactly one edit applies 30, and releasing Tab
+or leaving the slider keeps 30. Tab out of an untouched Mixed field: no edit. The first spinner
+click on an unfocused field steps once; holding ArrowUp or the spinner increases each tick without
+duplicate undo entries or backward jumps as delayed snapshots arrive, and blur adds no edit.
+Arrows/spinners leave Mixed alone until typing or moving its slider. Pointer drag/click on the
+slider applies changed values. Clicking a checkbox,
+slider or select takes the keyboard on both platforms; Delete, Backspace, arrows, Home/End and
+PageUp/PageDown never reach the drawing. Slider arrows apply each changed value once on release.
+Repeat a checkbox click, click checkbox A then B, and click a number then its slider:
+each clicked control keeps focus and Delete/Backspace stay off the drawing, even when WebKit's
+click default briefly leaves focus on the page body.
+Selects retain native type-ahead; Escape dismisses an open popup, and Escape with the popup
+closed returns the keyboard to the document, as it does in other controls. Enabled tool/command
+buttons never borrow it; disabled controls use the palette shell as their typing sink.
+Cmd/Ctrl+Z still reaches document history from non-text controls; tool hotkeys still work from
+checkboxes, sliders and colour controls. A focused number follows undo immediately unless it holds typed, uncommitted
+text. Focus Target bond length at 22, step ArrowUp three times to 23.5, then press real Cmd/Ctrl+Z
+inside the box: the document undoes once and the focused box shows 23. Choose Edit > Undo from
+the menu to reach 22.5, then Edit > Redo to return to 23: the box refreshes immediately, and Tab
+adds no edit. Repeat with a main-window text input left focused before activating the palette.
+Redo with Cmd+Shift+Z on macOS and Ctrl+Shift+Z / Ctrl+Y on Windows, and repeat after spinner
+clicks. An untouched number
+also forwards history. Type an uncommitted value: keyboard and menu undo/redo now edit only its
+text. Retype an exactly equal model value and Tab or Enter: no undo entry; type a different value:
+exactly one entry. With molecules selected, typing the value already shown adds no undo entry, even when the selected
+molecules differ by less than 0.01 px (they show one value); type a different value to set them all.
+Step to 22.5, start typing 22.5, and change
+the document's value elsewhere to 40: committing the draft must apply 22.5 once again.
+Click Bond color, Label color, Atom label background color, Custom ring fill color and Ring
+effect color: each opens its native picker on both platforms (the Windows palette may activate
+for it). Leave it open through palette snapshots; clicking the canvas dismisses it without
+changing the drawing. Open the colour popover, type a hex shorthand and press Enter: the colour
+commits once and shortcuts return. Keep two palettes open, edit a field in each in turn, and switch
+apps: their leases stay independent and the first palette can acquire focus again.
+Colour transaction regression (macOS and Windows): select a molecule, pick blue in Bond color's
+native chooser and close it, draw a new bond, then pick green and close the chooser again. The
+bond must remain and the new colour must apply to the current target. Undo green, then the bond,
+then blue as separate steps; cancelling the green pick must also preserve the bond and blue.
+Repeat with Label color, Atom label background color, Custom ring fill color, Ring effect color,
+and the colour popover's system picker. A pick commits when the chooser sends change, even without
+input blur; moving focus afterwards adds no duplicate undo step. If the chooser stays open during
+a canvas edit, that edit must end the earlier preview, so a later commit/cancel cannot erase it.
+Use real mouse/keyboard events for the native chooser and its colour grid, and separately for
+the application's colour-grid popover (synthetic input/change pairs do not cover WebKit's event
+order). Select Blueberry in macOS Colors: the drawing and well must agree before and after closing
+the panel. Repeat for an art object's fill/stroke. A grid swatch must apply on its first click.
+One Undo restores the previous colour; the next Undo removes the preceding drawing edit, never
+a second colour entry. Repeat on Windows with its actual native chooser and both grids.
+For a focus trace, directly launch this worktree's binary from a terminal using the existing
+`--chemdraft-agent-bridge` switch (or `CHEMDRAFT_AGENT_BRIDGE=1`). Save stderr's `[palette-focus]`
+lines while opening Text size by pointer, pressing Escape, typing 18, then pressing Escape again.
+The first Escape must leave type-ahead/arrows in the select; the second returns tool keys to the
+document. Repeat with Tab, a click elsewhere, and switching apps while the list is open: those
+must end the select interaction without pulling focus from the destination. The trace includes
+window activation/deactivation, lease requests/results, pending-click set/clear and hand-back
+decisions. A release with `returnFocus=true` immediately after the first Escape identifies page
+handling; an earlier `activation ... active=false reason=window` identifies native key loss.
+Repeat without the bridge switch/environment setting and confirm there are no `[palette-focus]`
+lines. Neither diagnostic mode nor synthetic bridge events replace the real-event pass.
 Text commit clicks (macOS and Windows): edit a text object with Bond or Select restored, then click empty canvas or an existing atom; that click commits only, preserves bonds and selection, and focuses SECTION.canvas-region for shortcuts; the next click works normally. Repeat Enter/Escape/Tab, toolbar actions, double-click editing, and IME composition (no mid-composition commit).
 With nothing focused, press Shift+F10: the app menu opens, never the browser menu, and mouse and keyboard input keep working.
 On Windows, right-click and press Shift+F10 in text fields (including textareas) in the document,

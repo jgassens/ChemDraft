@@ -12,7 +12,11 @@ import {
 import { writeClipboardTextItems } from "./clipboard";
 import { allShellCommands, type CommandSpec } from "./commands";
 import { createPhase4Document } from "./documentWorkflow";
-import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
+import { createDesktopShortcutRegistry, detectDesktopShortcutPlatform } from "./keyboardShortcuts";
+import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
+import { NATIVE_MENU_COMMAND_IDS, paletteMenuShortcut } from "./paletteMenuShortcuts";
+import { disabledControlAtPointer, installPaletteInputFocus, isPaletteInputFocusPending, paletteInputFocusControl, PALETTE_INPUT_FOCUS_COMMIT_EVENT } from "./plugins/pluginPanelInputFocus";
+import { editHistoryDirection, forceDocumentHistoryCommandId, isCleanPaletteNumberInput, isTextEditingElement } from "./editHistoryRouting";
 import { applyKeybindingSchemeToCommands } from "./keybindingScheme";
 import { isCompoundLayoutCommand } from "./compoundLayoutSettings";
 import { useCompoundLayoutTools } from "./useCompoundLayoutTools";
@@ -72,7 +76,6 @@ import {
   sendPaletteCommandPreview,
   showPaletteFloatingTooltip,
   setCurrentWindowLogicalSize,
-  setToolsetWindowFocusable,
   startPaletteWindowDrag,
   toolsetCommandSpecsSignature,
   type ToolsetArtPaintTarget,
@@ -121,13 +124,16 @@ export function PaletteWindow({
   toolsetId = "core.main",
   // Interim seam so tests (and, until Phase 4's definition-push, callers) can supply a
   // registry that already includes plugin toolsets. Defaults to the core registry.
-  initialRegistry
+  initialRegistry,
+  platform = detectDesktopShortcutPlatform()
 }: {
   toolsetId?: string;
   initialRegistry?: DesktopToolsetRegistry;
+  platform?: ShortcutPlatform;
 }) {
   const dragRef = useRef<PaletteWindowDrag | null>(null);
   const shellRef = useRef<HTMLElement | null>(null);
+  const settlingBeforeForwardRef = useRef(false);
   const lastLoggedSizeRef = useRef<string>("");
   const sizeAnimationFrameRef = useRef<number | undefined>(undefined);
   const compoundLayoutsEnabled = useCompoundLayoutTools();
@@ -169,6 +175,7 @@ export function PaletteWindow({
   const [currentTextScript, setCurrentTextScript] = useState<TextSpan["script"]>("normal");
   const [currentArtStyle, setCurrentArtStyle] = useState<ToolsetArtStylePayload | undefined>();
   const [currentArtStyleTarget, setCurrentArtStyleTarget] = useState<ToolsetArtPaintTarget>("fill");
+  const [colorContextKey, setColorContextKey] = useState<string | undefined>();
   const [currentMoleculeInspector, setCurrentMoleculeInspector] = useState<ToolsetMoleculeInspectorPayload | undefined>();
   const [currentSelection, setCurrentSelection] = useState<ToolbarSelectionModel | undefined>();
   const [currentMolecularInspector, setCurrentMolecularInspector] = useState<AnalysisReport | undefined>();
@@ -218,9 +225,11 @@ export function PaletteWindow({
     );
   }, [allCommands, compoundLayoutsEnabled]);
   const shortcutRegistry = useMemo(
-    () => createDesktopShortcutRegistry(allCommands, { includeDisabled: true }),
-    [allCommands]
+    () => createDesktopShortcutRegistry(allCommands, { includeDisabled: true, platform }),
+    [allCommands, platform]
   );
+  const shortcutRegistryRef = useRef(shortcutRegistry);
+  shortcutRegistryRef.current = shortcutRegistry;
   // Every append-mode section widget the gallery can offer (Style Controls, Text Style) — present ones
   // gray out, removed ones (e.g. Style Controls after a drag-out) show as restorable tiles.
   const galleryWidgets = APPENDABLE_TOOLBAR_WIDGETS;
@@ -412,17 +421,13 @@ export function PaletteWindow({
     };
   }, [toolset.id]);
 
-  // Palettes ship non-focusable; the gallery's search field needs keystrokes, so flip focusability on
-  // while customizing this palette and back off on exit (restoring the never-steal-key default).
+  // All non-button settings borrow the keyboard: otherwise Delete reaches the drawing
+  // after a checkbox/slider/select click. Command buttons keep the document's keyboard.
   useEffect(() => {
-    if (!customizeThisPalette) {
-      return;
-    }
-    void setToolsetWindowFocusable(toolset.id, true).catch(() => undefined);
-    return () => {
-      void setToolsetWindowFocusable(toolset.id, false).catch(() => undefined);
-    };
-  }, [customizeThisPalette, toolset.id]);
+    const shell = shellRef.current;
+    if (shell) return installPaletteInputFocus(shell, platform,
+      (event) => !!paletteMenuShortcut(event, shortcutRegistryRef.current));
+  }, [platform]);
 
   useEffect(() => {
     const preferredSize = toolset.preferredWindowSize ?? gridWindowSize;
@@ -504,6 +509,7 @@ export function PaletteWindow({
       setCurrentArtStyle(payload.currentArtStyle);
       setCurrentArtStyleTarget(payload.currentArtStyle?.activePaintTarget ?? payload.currentArtStyleTarget ?? "fill");
       setCurrentMoleculeInspector(payload.currentMoleculeInspector);
+      setColorContextKey(payload.colorContextKey);
       // Version skew degrades to the pre-variant behavior: an unknown kind reads as no selection
       // model at all rather than freezing the palette on a rejected payload.
       setCurrentSelection(
@@ -669,20 +675,62 @@ export function PaletteWindow({
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      const commandId = shortcutRegistry.resolve(event);
-      if (!commandId) {
+      const menuCommand = paletteMenuShortcut(event, shortcutRegistry);
+      if (menuCommand) {
+        const drafts = shellRef.current?.querySelectorAll<HTMLElement>('[data-palette-number-draft="true"]');
+        // Settle into the original document before Save/Export or a tab change. Commits
+        // and commands share ordered IPC; suppress AppKit's menu when settling a draft.
+        if (platform === "macos" && NATIVE_MENU_COMMAND_IDS.has(menuCommand) && !drafts?.length) return;
+        event.preventDefault();
+        settlingBeforeForwardRef.current = true;
+        try {
+          drafts?.forEach((control) => control.dispatchEvent(new Event(PALETTE_INPUT_FOCUS_COMMIT_EVENT)));
+        } finally {
+          settlingBeforeForwardRef.current = false;
+        }
+        const leased = isPaletteInputFocusPending(shellRef.current) || !!paletteInputFocusControl(shellRef.current);
+        void (leased ? sendPaletteCommand(menuCommand, { preserveInputFocus: true })
+          : sendPaletteCommand(menuCommand)).catch(() => undefined);
         return;
       }
+      // WebKit/WebView2 can temporarily target body during a control click. The leased
+      // destination still owns editing keys; a disabled control uses the shell as its sink.
+      const target = event.target instanceof Element && event.target !== document.body
+        && event.target !== shellRef.current ? event.target : paletteInputFocusControl(shellRef.current) ?? null;
+      // Clean inspector numbers and non-text controls delegate history to the document.
+      // Select type-ahead and every uncommitted typed draft retain native behavior.
+      const controlHistory = (isCleanPaletteNumberInput(target) || !!target?.closest("select")) &&
+        !event.isComposing && (event.ctrlKey || event.metaKey) && ["z", "y"].includes(event.key.toLowerCase());
+      if (event.defaultPrevented || isPaletteInputFocusPending(shellRef.current) ||
+        target?.matches(":disabled") || (target?.closest("select") && !controlHistory) ||
+        (isTextEditingElement(target) && !controlHistory)) return;
+      // Activation, value and editing keys belong to every form control. In
+      // particular, Delete/Backspace here must never delete document objects.
+      if (target?.closest("input, textarea, select, button") &&
+        [" ", "Enter", "Backspace", "Delete", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"].includes(event.key)) return;
+      // The shared registry conservatively ignores all form controls. Palette non-text
+      // controls keep document shortcuts, so resolve from their surrounding surface.
+      const commandId = shortcutRegistry.resolve({
+        key: event.key,
+        altKey: event.altKey,
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey,
+        shiftKey: event.shiftKey,
+        repeat: event.repeat,
+        target: target?.closest("input, select")?.parentElement ?? event.target
+      });
+      if (controlHistory && commandId !== "edit.undo" && commandId !== "edit.redo") return;
+      if (!commandId) return;
 
       event.preventDefault();
-      void sendPaletteCommand(commandId).catch(() => undefined);
+      void sendPaletteCommand(editHistoryDirection(commandId) ? forceDocumentHistoryCommandId(commandId) : commandId).catch(() => undefined);
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [shortcutRegistry]);
+  }, [shortcutRegistry, platform]);
 
   const invokeCommand = (commandId: string) => {
     void sendPaletteCommand(commandId).catch(() => undefined);
@@ -691,7 +739,9 @@ export function PaletteWindow({
     void sendPaletteCommandPreview(commandId).catch(() => undefined);
   };
   const commitPreviewCommand = (commandId: string) => {
-    void sendPaletteCommandCommit(commandId).catch(() => undefined);
+    void (settlingBeforeForwardRef.current
+      ? sendPaletteCommandCommit(commandId, { settleBeforeForward: true })
+      : sendPaletteCommandCommit(commandId)).catch(() => undefined);
   };
   const cancelPreviewCommand = () => {
     void sendPaletteCommandCancel("palette.preview.cancel").catch(() => undefined);
@@ -846,7 +896,8 @@ export function PaletteWindow({
       return;
     }
 
-    if ((event.target as HTMLElement).closest("button, select, input, textarea, [data-palette-control]")) {
+    if ((event.target as HTMLElement).closest("button, select, input, textarea, [data-palette-control]") ||
+      (shellRef.current && disabledControlAtPointer(shellRef.current, event.nativeEvent))) {
       return;
     }
 
@@ -860,7 +911,8 @@ export function PaletteWindow({
       return;
     }
 
-    if ((event.target as HTMLElement).closest("button, select, input, textarea, [data-palette-control]")) {
+    if ((event.target as HTMLElement).closest("button, select, input, textarea, [data-palette-control]") ||
+      (shellRef.current && disabledControlAtPointer(shellRef.current, event.nativeEvent))) {
       return;
     }
 
@@ -954,6 +1006,7 @@ export function PaletteWindow({
         onInvoke={invokeCommand}
         customize={customizeThisPalette ? { groupIds: renderGroups.map((group) => group.id) } : undefined}
         widgetState={{
+          colorContextKey,
           currentObjectColor: currentTextStyle.color,
           currentArtStyle,
           currentArtStyleTarget,
@@ -986,7 +1039,7 @@ export function PaletteWindow({
       className="palette-window-shell"
       aria-label={`ChemDraft floating ${toolset.title}`}
       data-toolset-id={toolset.id}
-      data-palette-drag-surface="true"
+      data-palette-drag-surface={customizeThisPalette ? undefined : "true"}
       onPointerDown={startDragFromPaletteSurface}
       onPointerUp={stopPaletteWindowDrag}
       onPointerCancel={stopPaletteWindowDrag}

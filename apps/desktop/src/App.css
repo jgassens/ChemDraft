@@ -7801,6 +7801,20 @@ textarea:focus-visible,
 .cd-page-size-form button { padding: 6px 14px; }
 .cd-page-size-web-fallback .cd-page-size-form { width: 420px; min-height: 300px; border: 1px solid var(--cd-border-subtle); border-radius: 8px; }
 
+/* Disabled native form controls may suppress pointer events entirely in WebKit.
+   Let the wrapper classify the click and lease the palette shell as a keyboard sink. */
+.palette-window-shell :is(input, textarea, select):disabled,
+.palette-popover-shell :is(input, textarea, select):disabled {
+  pointer-events: none;
+}
+
+/* The real hit target is the immediate wrapper (including the number-field label).
+   Non-key utility windows need the cursor even when the OS does not supply :hover. */
+.palette-window-shell :has(> :is(input, textarea, select):disabled),
+.palette-popover-shell :has(> :is(input, textarea, select):disabled) {
+  cursor: not-allowed;
+}
+
 .native-bond-stereo-marker:focus-visible .native-atom-invalid-ring { stroke: var(--cd-accent, #2965c7); stroke-width: 3; }
 .bond-stereo-popover { width: 290px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
 .bond-stereo-popover p { margin: 0; line-height: 1.4; white-space: normal; }

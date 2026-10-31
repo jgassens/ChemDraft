@@ -74,6 +74,7 @@ export type PaletteCommandPayload = ToolsetCommandPayload;
 export type ToolsetActiveToolPayload = ToolsetCommandPayload;
 
 export interface ToolsetTextStylePayload {
+  colorContextKey?: string;
   currentTextStyle: NativeTextStyle;
   currentTextScript: TextSpan["script"];
   currentArtStyle?: ToolsetArtStylePayload;
@@ -160,11 +161,13 @@ export function createToolsetTextStylePayload(
   currentSelection?: ToolbarSelectionModel,
   currentMolecularInspector?: AnalysisReport,
   molecularInspectorBusy = false,
-  molecularInspectorStale = false
+  molecularInspectorStale = false,
+  colorContextKey?: string
 ): ToolsetTextStylePayload {
   return {
     currentTextStyle,
     currentTextScript,
+    ...(colorContextKey !== undefined ? { colorContextKey } : {}),
     ...(currentArtStyle ? { currentArtStyle, currentArtStyleTarget } : {}),
     ...(currentMoleculeInspector ? { currentMoleculeInspector } : {}),
     ...(currentSelection ? { currentSelection } : {}),
@@ -268,18 +271,6 @@ export async function closeToolsetPopoverWindow(toolsetId: string): Promise<void
 
   const { invoke } = await import("@tauri-apps/api/core");
   await invoke("close_toolset_popover", { toolsetId }).catch(() => undefined);
-}
-
-/** Toggle a palette window's focusability. Palettes ship non-focusable (they never steal key status);
- *  the in-place customize gallery flips this on so its search field can take keystrokes, and off again
- *  on exit. No-op in the browser build. */
-export async function setToolsetWindowFocusable(toolsetId: string, focusable: boolean): Promise<void> {
-  if (!isDesktopRuntime()) {
-    return;
-  }
-
-  const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("set_toolset_window_focusable", { toolsetId, focusable }).catch(() => undefined);
 }
 
 /** Route param identifying a palette popover webview (see App.tsx / PalettePopoverWindow). */
@@ -739,15 +730,16 @@ export async function setMenuChecked(commandId: string, checked: boolean): Promi
   await invoke("set_menu_checked", { commandId, checked }).catch(() => undefined);
 }
 
-export async function sendPaletteCommand(commandId: string): Promise<void> {
-  return routeToolsetCommand(commandId);
+export async function sendPaletteCommand(commandId: string, options?: { preserveInputFocus: boolean }): Promise<void> {
+  return routeToolsetCommand(commandId, options);
 }
 
 export async function sendPaletteCommandPreview(commandId: string): Promise<void> {
   return emitToolsetCommandEvent(PALETTE_COMMAND_PREVIEW_EVENT, commandId);
 }
 
-export async function sendPaletteCommandCommit(commandId: string): Promise<void> {
+export async function sendPaletteCommandCommit(commandId: string, options?: { settleBeforeForward: true }): Promise<void> {
+  if (options?.settleBeforeForward && isDesktopRuntime()) return routeToolsetCommand(commandId, { commit: true });
   return emitToolsetCommandEvent(PALETTE_COMMAND_COMMIT_EVENT, commandId);
 }
 
@@ -755,17 +747,54 @@ export async function sendPaletteCommandCancel(commandId: string): Promise<void>
   return emitToolsetCommandEvent(PALETTE_COMMAND_CANCEL_EVENT, commandId);
 }
 
-export async function routeToolsetCommand(commandId: string): Promise<void> {
+// Only shortcut-settle commits share this queue with app commands. Ordinary commits stay
+// on the event bus with their previews and cancels.
+let paletteCommandQueue: Promise<void> = Promise.resolve();
+const pendingPaletteEvents = new Set<Promise<void>>();
+// Only bounds a stuck event-plugin emit. Normal ordering is preserved because emit
+// resolves after Tauri enqueues the destination eval, before the subsequent invoke.
+export const PALETTE_EVENT_SETTLE_TIMEOUT_MS = 500;
+export function routeToolsetCommand(
+  commandId: string, options?: { preserveInputFocus?: boolean; commit?: boolean }
+): Promise<void> {
   // Single delivery: the invoke routes through Rust `route_toolset_command`, which dispatches the
   // native-command DOM event into the main window (the one listener in `listenForToolsetCommands`).
   // No client-side `emit` — that used to also fan out over the tauri event bus, so every command
   // arrived several times and needed `dedupeAdjacentCommands` to collapse it.
   const payload = createToolsetCommandPayload(commandId);
-  const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("route_toolset_command", payload as unknown as Record<string, unknown>);
+  // The number control also has a previewing slider. Flush all earlier event sends,
+  // including its release commit, before entering synchronous IPC. Tauri emit resolves
+  // after enqueueing the destination eval; the subsequent route cannot pass that eval.
+  const earlierEvents = options?.commit ? [...pendingPaletteEvents] : [];
+  const next = paletteCommandQueue.then(async () => {
+    if (options?.commit && earlierEvents.length > 0) {
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          Promise.allSettled(earlierEvents),
+          new Promise<void>((resolve) => { timeout = setTimeout(resolve, PALETTE_EVENT_SETTLE_TIMEOUT_MS); })
+        ]);
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("route_toolset_command", { ...payload, ...options });
+  });
+  paletteCommandQueue = next;
+  // A failed commit also rejects its already-queued command. Fresh gestures may retry.
+  void next.catch(() => { if (paletteCommandQueue === next) paletteCommandQueue = Promise.resolve(); });
+  return next;
 }
 
-async function emitToolsetCommandEvent(eventName: string, commandId: string): Promise<void> {
+function emitToolsetCommandEvent(eventName: string, commandId: string): Promise<void> {
+  const pending = deliverToolsetCommandEvent(eventName, commandId);
+  pendingPaletteEvents.add(pending);
+  void pending.then(() => pendingPaletteEvents.delete(pending), () => pendingPaletteEvents.delete(pending));
+  return pending;
+}
+
+async function deliverToolsetCommandEvent(eventName: string, commandId: string): Promise<void> {
   const payload = createToolsetCommandPayload(commandId);
   dispatchDomToolsetEvent(eventName, payload);
   if (!isDesktopRuntime()) {

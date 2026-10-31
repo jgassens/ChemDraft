@@ -965,7 +965,19 @@ pub fn run() {
 
     builder
         .on_page_load(|webview, payload| {
-            if is_plugin_panel_window_label(webview.label())
+            if matches!(payload.event(), PageLoadEvent::Finished) {
+                if let Some(window) = webview.app_handle().get_webview_window(webview.label()) {
+                    let target = window.clone();
+                    if let Err(error) = run_on_main_thread_blocking(&window, move || {
+                        panel_window::install_pointer_guard(&target)
+                    })
+                    .and_then(|result| result)
+                    {
+                        eprintln!("Could not observe window pointer intent: {error}");
+                    }
+                }
+            }
+            if is_input_focus_window_label(webview.label())
                 && matches!(payload.event(), PageLoadEvent::Started)
             {
                 // Reset before the new page can install its focus listener or acquire a lease.
@@ -1100,6 +1112,20 @@ pub fn run() {
                     .closed(window.label());
             }
 
+            // Focused is queued by Tao and may describe an older activation by delivery.
+            // Lease ownership is observed synchronously at the OS boundary instead.
+            if is_input_focus_window_label(window.label())
+                && matches!(event, WindowEvent::Destroyed)
+            {
+                panel_window::forget(window);
+            }
+
+            if is_input_focus_window_label(window.label())
+                && matches!(event, WindowEvent::CloseRequested { .. })
+            {
+                panel_window::end_for_hide(window.app_handle(), window.label());
+            }
+
             // A report or analysis window closed natively (Window > Close Window, Cmd+W) must take
             // the same path as its own close control: hidden, not destroyed, and the main document
             // told, so a plugin gets its close signal (AGENTS.md §8a) and a later report re-shows the
@@ -1120,18 +1146,14 @@ pub fn run() {
                         window.hwnd(),
                         window.app_handle().get_webview_window(MAIN_WINDOW_LABEL),
                     ) {
-                        let _ = panel_window::return_focus_to_document(panel.0, &main);
+                        let _ =
+                            panel_window::return_focus_to_document(panel.0, &main, window.label());
                     }
                     #[cfg(not(windows))]
                     let _ = focus_main_document_window_impl(
                         window.app_handle(),
                         MainWindowFocusMode::OnlyIfAppActive,
                     );
-                }
-                // Focused is queued by Tao and may describe an older activation by delivery.
-                // Lease ownership is observed synchronously at the OS boundary instead.
-                if matches!(event, WindowEvent::Destroyed) {
-                    panel_window::forget(window);
                 }
                 if let WindowEvent::CloseRequested { api, .. } = event {
                     if APP_QUITTING.load(Ordering::SeqCst) {
@@ -1213,6 +1235,7 @@ pub fn run() {
         })
         .setup(|app| {
             let app = app.handle();
+            panel_window::observe_document_pointer_release(app);
             // Programmatic panel removal hides a reusable window, so it produces neither
             // CloseRequested nor Destroyed. Cancel its native restore work via the same bridge
             // messages that clear the report and notify the host of a panel's close control.
@@ -1348,7 +1371,6 @@ pub fn run() {
             quit_prompt_showing,
             cancel_quit,
             close_toolset_popover,
-            set_toolset_window_focusable,
             route_toolset_command,
             sync_plugin_menu_items,
             read_clipboard_payload,
@@ -1359,6 +1381,7 @@ pub fn run() {
             toggle_preferences_window,
             window_logical_position,
             agent_bridge_status,
+            palette_focus_diagnostic,
             perf_log::perf_log_clock,
             perf_log::perf_log_append,
             perf_log::perf_log_complete,
@@ -1484,6 +1507,14 @@ fn ensure_main_window_visible<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(
         None => create_main_window(app)?,
     };
 
+    let target = window.clone();
+    if let Err(error) = run_on_main_thread_blocking(&window, move || {
+        panel_window::install_pointer_guard(&target)
+    })
+    .and_then(|result| result)
+    {
+        eprintln!("Could not observe window pointer intent: {error}");
+    }
     let already_on_screen = window.is_visible().unwrap_or(false);
     main_window_placement::reveal_after_preparation(
         |errors| {
@@ -1987,6 +2018,7 @@ async fn suspend_toolset_windows(
                 {
                     continue;
                 }
+                panel_window::end_for_hide(window.app_handle(), window.label());
                 if let Err(error) = window.hide() {
                     // A failed acquisition must undo its own temporary hides; JS will not release
                     // an acquisition that rejected and will use the in-app fallback instead.
@@ -2423,6 +2455,7 @@ fn close_toolset_window(
     let state = mark_toolset_window_closed(&app, &toolset_id)?;
 
     if let Some(window) = window {
+        panel_window::end_for_hide(window.app_handle(), window.label());
         window.hide().map_err(|error| error.to_string())?;
     }
 
@@ -3034,11 +3067,19 @@ fn plugin_panel_event_forward(
 
 /// The IPC injects the calling window; it never accepts a caller-selected target label.
 fn validate_plugin_panel_focus_caller(label: &str) -> Result<(), String> {
-    if is_plugin_panel_window_label(label) {
+    if is_input_focus_window_label(label) {
         Ok(())
     } else {
-        Err("Only a ChemDraft panel window may request panel input focus.".into())
+        Err("Only a ChemDraft panel or tool palette window may request input focus.".into())
     }
+}
+
+fn is_input_focus_window_label(label: &str) -> bool {
+    is_plugin_panel_window_label(label)
+        || label.strip_prefix("toolset-").is_some_and(|suffix| {
+            // Popovers share a window between command flyouts and editable colour fields.
+            !suffix.is_empty() && suffix != "tooltip" && suffix != "popover" && suffix != "popover-"
+        })
 }
 
 #[tauri::command]
@@ -3047,121 +3088,191 @@ fn register_plugin_panel_input_focus(window: tauri::WebviewWindow) -> Result<Str
     Ok(panel_window::page_token(&window))
 }
 
+// Keep the existing flat IPC payload compatible.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn set_plugin_panel_input_focus(
     window: tauri::WebviewWindow,
     page_token: String,
     editing: bool,
     generation: u64,
+    click_sequence: Option<u64>,
+    pointer_before: Option<u64>,
+    return_focus: Option<bool>,
+    select_interaction: Option<bool>,
 ) -> Result<bool, String> {
-    validate_plugin_panel_focus_caller(window.label())?;
-    // Register the pending generation BEFORE marshalling acquisition to the UI thread.
-    // A native loss while that operation is queued must cancel it, not be forgotten.
-    let Some(epoch) = panel_window::request(&window, generation, &page_token, editing) else {
-        return Ok(false);
-    };
-    let target = window.clone();
-    run_on_main_thread_blocking(&window, move || {
-        if !panel_window::is_current(&target, generation, epoch)
-            || (editing && !panel_window::acquired(&target, generation, epoch, true))
-        {
-            return Ok(false);
-        }
-        if editing {
-            let result = (|| -> Result<bool, String> {
-                #[cfg(target_os = "macos")]
-                {
-                    // makeKeyWindow must not lend a background app a persistent lease.
-                    let marker =
-                        MainThreadMarker::new().ok_or("Panel focus requires the main thread.")?;
-                    if !objc2_app_kit::NSApplication::sharedApplication(marker).isActive() {
-                        return Ok(false);
-                    }
-                    target
-                        .set_focusable(true)
-                        .map_err(|error| error.to_string())?;
-                    let pointer =
-                        target.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
-                    let panel = unsafe { pointer.as_ref() }.ok_or_else(|| {
-                        "Could not access native ChemDraft panel window.".to_string()
-                    })?;
-                    // Tao's set_focus activates NSApplication even for a NonactivatingPanel.
-                    // Only make this panel key: an exposed input click or delayed IPC must never
-                    // activate ChemDraft after the user has switched to another application.
-                    panel.makeKeyWindow();
-                }
-                #[cfg(windows)]
-                {
-                    // Never use Tao's force_window_active (including its synthetic Alt fallback).
-                    // Keep NOACTIVATE throughout the lease and drop delayed background requests.
-                    let hwnd = target.hwnd().map_err(|error| error.to_string())?.0;
-                    if !panel_window::focus_if_app_active(hwnd) {
-                        return Ok(false);
-                    }
-                }
-                #[cfg(not(any(target_os = "macos", windows)))]
-                {
-                    target
-                        .set_focusable(false)
-                        .map_err(|error| error.to_string())?;
-                    target.set_focus().map_err(|error| error.to_string())?;
-                }
-                let webview: &tauri::Webview = target.as_ref();
-                webview.set_focus().map_err(|error| error.to_string())?;
-                #[cfg(windows)]
-                return Ok(unsafe {
-                    windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow()
-                        == target.hwnd().map_err(|error| error.to_string())?.0
-                });
-                #[cfg(target_os = "macos")]
-                return Ok(unsafe {
-                    &*(target.ns_window().map_err(|error| error.to_string())? as *mut NSWindow)
-                }
-                .isKeyWindow());
-                #[cfg(not(any(target_os = "macos", windows)))]
-                target.is_focused().map_err(|error| error.to_string())
-            })();
-            let held = panel_window::acquired(
-                &target,
-                generation,
-                epoch,
-                result.as_ref().copied().unwrap_or(false),
+    let result: Result<bool, String> = (|| {
+        validate_plugin_panel_focus_caller(window.label())?;
+        let before = pointer_before.unwrap_or(0);
+        // Register the pending generation BEFORE marshalling acquisition to the UI thread.
+        // A native loss while that operation is queued must cancel it, not be forgotten.
+        let Some(epoch) = panel_window::request(
+            &window,
+            generation,
+            &page_token,
+            editing,
+            select_interaction.unwrap_or(false),
+        ) else {
+            if !editing {
+                palette_focus_log(format_args!(
+                    "hand-back label={} result=skipped reason=stale-page-or-generation",
+                    window.label()
+                ));
+            }
+            panel_window::end_pointer_guard(
+                window.app_handle(),
+                window.label(),
+                panel_window::PointerGuardEnd::Refused,
+                click_sequence,
+                before,
             );
-            if !held && panel_window::is_current(&target, generation, epoch) {
-                let _ = target.set_focusable(false);
-            }
-            result.map(|_| held)
-        } else {
-            // Tao tracks focus on the parent HWND; WebView2 moves it into a child HWND.
-            // The foreground top-level window remains the authoritative Windows lease owner.
-            #[cfg(windows)]
-            let was_focused = unsafe {
-                windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow()
-                    == target.hwnd().map_err(|error| error.to_string())?.0
-            };
-            #[cfg(not(windows))]
-            let was_focused = target.is_focused().unwrap_or(false);
-            target
-                .set_focusable(false)
-                .map_err(|error| error.to_string())?;
-            // A blur caused by clicking the document/another app must not raise or activate it.
-            if was_focused {
-                #[cfg(windows)]
-                if let Some(main) = target.app_handle().get_webview_window(MAIN_WINDOW_LABEL) {
-                    panel_window::return_focus_to_document(
-                        target.hwnd().map_err(|error| error.to_string())?.0,
-                        &main,
-                    )?;
+            return Ok(false);
+        };
+        let target = window.clone();
+        run_on_main_thread_blocking(&window, move || {
+            if !panel_window::is_current(&target, generation, epoch)
+                || (editing && !panel_window::acquired(&target, generation, epoch, true))
+            {
+                if !editing {
+                    palette_focus_log(format_args!(
+                        "hand-back label={} result=skipped reason=stale-or-deactivated-lease",
+                        target.label()
+                    ));
                 }
-                #[cfg(not(windows))]
-                focus_main_document_window_impl(
+                panel_window::end_pointer_guard(
                     target.app_handle(),
-                    MainWindowFocusMode::OnlyIfAppActive,
-                )?;
+                    target.label(),
+                    panel_window::PointerGuardEnd::Refused,
+                    click_sequence,
+                    before,
+                );
+                return Ok(false);
             }
-            Ok(false)
-        }
-    })?
+            if editing {
+                let result = (|| -> Result<bool, String> {
+                    // An acquisition dispatched before a hide can arrive afterwards.
+                    // Hidden reusable palettes must wait for a fresh visible click.
+                    if !target.is_visible().unwrap_or(false) {
+                        return Ok(false);
+                    }
+                    #[cfg(target_os = "macos")]
+                    {
+                        // makeKeyWindow must not lend a background app a persistent lease.
+                        let marker = MainThreadMarker::new()
+                            .ok_or("Panel focus requires the main thread.")?;
+                        if !objc2_app_kit::NSApplication::sharedApplication(marker).isActive() {
+                            return Ok(false);
+                        }
+                        target
+                            .set_focusable(true)
+                            .map_err(|error| error.to_string())?;
+                        let pointer =
+                            target.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
+                        let panel = unsafe { pointer.as_ref() }.ok_or_else(|| {
+                            "Could not access native ChemDraft panel window.".to_string()
+                        })?;
+                        // Tao's set_focus activates NSApplication even for a NonactivatingPanel.
+                        // Only make this panel key: an exposed input click or delayed IPC must never
+                        // activate ChemDraft after the user has switched to another application.
+                        panel.makeKeyWindow();
+                    }
+                    #[cfg(windows)]
+                    {
+                        // Never use Tao's force_window_active (including its synthetic Alt fallback).
+                        // Keep NOACTIVATE throughout the lease and drop delayed background requests.
+                        let hwnd = target.hwnd().map_err(|error| error.to_string())?.0;
+                        let already_active = unsafe {
+                            windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow()
+                                == hwnd
+                        };
+                        if !panel_window::focus_if_app_active(hwnd) {
+                            return Ok(false);
+                        }
+                        // A native colour popup may have opened during the click default before
+                        // this IPC runs. Refocusing its WebView2 owner would dismiss the popup.
+                        if already_active {
+                            return Ok(true);
+                        }
+                    }
+                    #[cfg(not(any(target_os = "macos", windows)))]
+                    {
+                        target
+                            .set_focusable(false)
+                            .map_err(|error| error.to_string())?;
+                        target.set_focus().map_err(|error| error.to_string())?;
+                    }
+                    let webview: &tauri::Webview = target.as_ref();
+                    webview.set_focus().map_err(|error| error.to_string())?;
+                    #[cfg(windows)]
+                    return Ok(unsafe {
+                        windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow()
+                            == target.hwnd().map_err(|error| error.to_string())?.0
+                    });
+                    #[cfg(target_os = "macos")]
+                    return Ok(unsafe {
+                        &*(target.ns_window().map_err(|error| error.to_string())? as *mut NSWindow)
+                    }
+                    .isKeyWindow());
+                    #[cfg(not(any(target_os = "macos", windows)))]
+                    target.is_focused().map_err(|error| error.to_string())
+                })();
+                let held = panel_window::acquired(
+                    &target,
+                    generation,
+                    epoch,
+                    result.as_ref().copied().unwrap_or(false),
+                );
+                panel_window::end_pointer_guard(
+                    target.app_handle(),
+                    target.label(),
+                    if held {
+                        panel_window::PointerGuardEnd::Acquired
+                    } else {
+                        panel_window::PointerGuardEnd::Refused
+                    },
+                    click_sequence,
+                    before,
+                );
+                if !held && panel_window::is_current(&target, generation, epoch) {
+                    let _ = target.set_focusable(false);
+                }
+                result.map(|_| held)
+            } else {
+                panel_window::end_pointer_guard(
+                    target.app_handle(),
+                    target.label(),
+                    panel_window::PointerGuardEnd::Released,
+                    click_sequence,
+                    before,
+                );
+                // Hand back before disabling key eligibility: AppKit can resign a panel as
+                // that flag changes. The helper checks the actual key/foreground window,
+                // current lease and app activation; native loss/cleanup never request it.
+                if let Err(error) = panel_window::return_focus_after_interaction(
+                    &target,
+                    return_focus.unwrap_or(false),
+                ) {
+                    palette_focus_log(format_args!(
+                        "hand-back label={} result=skipped reason=error error={error}",
+                        target.label()
+                    ));
+                    eprintln!("Could not return panel keyboard focus after release: {error}");
+                }
+                target
+                    .set_focusable(false)
+                    .map_err(|error| error.to_string())?;
+                Ok(false)
+            }
+        })?
+    })();
+    palette_focus_log(format_args!(
+        "set_plugin_panel_input_focus label={} editing={editing} returnFocus={} clickSequencePresent={} selectInteraction={} result={result:?}",
+        window.label(),
+        return_focus.unwrap_or(false),
+        click_sequence.is_some(),
+        select_interaction.unwrap_or(false)
+    ));
+    result
 }
 /// Sent to the main window with the closed window's label; `listenForNativePanelWindowCloses` in
 /// panelBridge.ts decodes it back to the panel.
@@ -3411,10 +3522,27 @@ mod plugin_panel_label_tests {
     }
 
     #[test]
-    fn input_focus_command_accepts_only_its_injected_panel_caller() {
+    fn input_focus_command_accepts_only_its_injected_panel_or_palette_caller() {
         use super::validate_plugin_panel_focus_caller;
         assert!(validate_plugin_panel_focus_caller(&plugin_panel_window_label("panel.a")).is_ok());
-        for label in ["main", "toolset-core-main", "preferences", "plugin-panel-"] {
+        for label in [
+            "toolset-core-main",
+            "toolset-core-drawnStructureSettings",
+            "toolset-popover-core-art",
+        ] {
+            assert!(validate_plugin_panel_focus_caller(label).is_ok(), "{label}");
+        }
+        for label in [
+            "",
+            "main",
+            "dialog-main-export-1",
+            "preferences",
+            "plugin-panel-",
+            "toolset-",
+            "toolset-tooltip",
+            "toolset-popover",
+            "toolset-popover-",
+        ] {
             assert!(
                 validate_plugin_panel_focus_caller(label).is_err(),
                 "{label}"
@@ -4158,8 +4286,8 @@ async fn open_toolset_popover(
     y: f64,
     focus_mode: Option<ToolsetPopoverFocusMode>,
 ) -> Result<(), String> {
-    let focus_mode = focus_mode.unwrap_or_default();
     let label = toolset_popover_window_label(&toolset_id);
+    let focus_mode = effective_toolset_popover_focus_mode(&label, focus_mode.unwrap_or_default());
     let _creation = lock_window_creation()?;
     if utility_windows_suspended() {
         return Ok(());
@@ -4204,7 +4332,7 @@ async fn prewarm_toolset_popover(app: tauri::AppHandle, toolset_id: String) -> R
         "artColor",
         true,
         (0.0, 0.0),
-        ToolsetPopoverFocusMode::Focus,
+        effective_toolset_popover_focus_mode(&label, ToolsetPopoverFocusMode::Focus),
     )
 }
 
@@ -4283,6 +4411,7 @@ fn build_toolset_popover_window(
 
     disable_default_context_menus(&window);
     configure_toolset_popover_window(&window, focus_mode)?;
+    install_toolset_input_focus(&window)?;
     // Re-assert the anchor as the FINAL step, mirroring the warm path: panel configuration
     // can nudge the frame, and builder-time positioning has proven less trustworthy than an
     // explicit post-build LogicalPosition set (first opens landed away from the anchor).
@@ -4292,7 +4421,8 @@ fn build_toolset_popover_window(
 }
 
 /// Reapply the requested focus policy on every reuse, including keyboard → mouse.
-/// Only E/Z mouse opens use Preserve; color inputs keep the existing focusable behavior.
+/// Only E/Z keyboard opens use Focus; palette colour fields borrow the keyboard through
+/// the guarded input lease instead (see `effective_toolset_popover_focus_mode`).
 fn configure_toolset_popover_window<R: Runtime>(
     window: &tauri::WebviewWindow<R>,
     focus_mode: ToolsetPopoverFocusMode,
@@ -4342,6 +4472,7 @@ fn toolset_popover_extended_style(style: isize, focus_mode: ToolsetPopoverFocusM
 #[tauri::command]
 fn close_toolset_popover(app: tauri::AppHandle, toolset_id: String) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(&toolset_popover_window_label(&toolset_id)) {
+        panel_window::end_for_hide(window.app_handle(), window.label());
         window.hide().map_err(|error| error.to_string())?;
     }
     Ok(())
@@ -4351,23 +4482,19 @@ fn toolset_popover_window_label(toolset_id: &str) -> String {
     format!("toolset-popover-{}", toolset_id.replace('.', "-"))
 }
 
-/// Toggle a palette window's focusability. Palettes ship `focusable(false)` (they never steal key
-/// status — see `toolset_window_focusable`), but the in-place customize gallery's search field needs
-/// keyboard focus. Mirrors the popover precedent: `configure_toolset_popover_window` re-asserts
-/// `set_focusable(true)` for a focusable popover and the color-picker hex input proves a text field
-/// then receives input without the panel activating the app. The palette re-asserts `false` on exit.
-#[tauri::command]
-fn set_toolset_window_focusable(
-    app: tauri::AppHandle,
-    toolset_id: String,
-    focusable: bool,
-) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window(&toolset_window_label(&toolset_id)) {
-        window
-            .set_focusable(focusable)
-            .map_err(|error| error.to_string())?;
+/// Palette popovers (colour pickers and flyouts) never take key status when they open: their
+/// text fields borrow the keyboard through the guarded input lease (`install_toolset_input_focus`),
+/// like palette settings. Only the E/Z popover honours a keyboard open's request for real focus,
+/// because its choices are buttons, which never lease.
+fn effective_toolset_popover_focus_mode(
+    label: &str,
+    requested: ToolsetPopoverFocusMode,
+) -> ToolsetPopoverFocusMode {
+    if label == toolset_popover_window_label("core.bondStereo") {
+        requested
+    } else {
+        ToolsetPopoverFocusMode::Preserve
     }
-    Ok(())
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -4486,7 +4613,8 @@ fn show_toolset_popover_window(
     if utility_windows_suspended() {
         return Ok(());
     }
-    let focus_mode = focus_mode.unwrap_or_default();
+    let focus_mode =
+        effective_toolset_popover_focus_mode(window.label(), focus_mode.unwrap_or_default());
     configure_toolset_popover_window(&window, focus_mode)?;
     #[cfg(target_os = "macos")]
     if focus_mode == ToolsetPopoverFocusMode::Preserve {
@@ -4680,8 +4808,14 @@ fn build_toolset_tooltip_window(app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn route_toolset_command(app: tauri::AppHandle, command_id: String) -> Result<(), String> {
-    if utility_windows_suspended() {
+fn route_toolset_command(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    command_id: String,
+    preserve_input_focus: Option<bool>,
+    commit: Option<bool>,
+) -> Result<(), String> {
+    if utility_windows_suspended() && !commit.unwrap_or(false) {
         return Ok(());
     }
     let command_id = command_id.trim();
@@ -4689,7 +4823,29 @@ fn route_toolset_command(app: tauri::AppHandle, command_id: String) -> Result<()
         return Err("Toolset command id cannot be empty.".to_string());
     }
 
+    if commit.unwrap_or(false) {
+        let main = app
+            .get_webview_window(MAIN_WINDOW_LABEL)
+            .ok_or_else(|| "Main document window is not available.".to_string())?;
+        // Shortcut-settle commits retain the event-bus commit's no-focus behavior and
+        // delivery while utility windows are suspended (for example by a native prompt).
+        return dispatch_dom_toolset_event(
+            &main,
+            &ToolsetCommandPayload {
+                command_id: command_id.to_string(),
+            },
+            "chemdraft://palette-command-commit",
+        );
+    }
     emit_command_to_main(&app, command_id)?;
+    // Select changes and clean-number undo update the document while the control
+    // keeps the keyboard. Button/background clicks release the lease themselves.
+    if panel_window::keeps_palette_focus(
+        window.label(),
+        panel_window::holds_input_focus(&window) || preserve_input_focus.unwrap_or(false),
+    ) {
+        return Ok(());
+    }
     if let Err(error) = focus_main_document_window_impl(&app, MainWindowFocusMode::Force) {
         eprintln!(
             "Could not refocus ChemDraft document after toolbar command {command_id}: {error}"
@@ -5319,6 +5475,31 @@ fn agent_bridge_status() -> AgentBridgeStatus {
     agent_bridge_status_from(env_value.as_deref(), std::env::args())
 }
 
+#[tauri::command]
+fn palette_focus_diagnostic(window: tauri::WebviewWindow, line: String) -> Result<(), String> {
+    if !agent_bridge_status().enabled {
+        return Ok(());
+    }
+    let label = window.label();
+    if label != "main" && !(label.starts_with("toolset-") && is_input_focus_window_label(label)) {
+        return Err("Palette diagnostics require a document or tool palette window.".into());
+    }
+    let line: String = line
+        .chars()
+        .take(500)
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    palette_focus_log(format_args!("{line}"));
+    Ok(())
+}
+
+// Diagnostics share the existing bridge gate; no separate flag.
+fn palette_focus_log(message: std::fmt::Arguments<'_>) {
+    if agent_bridge_status().enabled {
+        eprintln!("[palette-focus] {message}");
+    }
+}
+
 fn agent_bridge_status_from<I, S>(env_value: Option<&str>, args: I) -> AgentBridgeStatus
 where
     I: IntoIterator<Item = S>,
@@ -5921,6 +6102,9 @@ fn emit_menu_command<R: Runtime>(
         .map(|(label, _)| label);
     let target_label = menu_command_target_label(command_id, focused_label.as_deref());
     if target_label == MAIN_WINDOW_LABEL {
+        if panel_window::palette_blocks_menu(true, command_id) {
+            return Ok(());
+        }
         return emit_command_to_main(app, command_id);
     }
     let target = app
@@ -5955,8 +6139,16 @@ fn dispatch_dom_command_event<R: Runtime>(
     main: &tauri::WebviewWindow<R>,
     payload: &ToolsetCommandPayload,
 ) -> Result<(), String> {
+    dispatch_dom_toolset_event(main, payload, DOM_COMMAND_EVENT)
+}
+
+fn dispatch_dom_toolset_event<R: Runtime>(
+    main: &tauri::WebviewWindow<R>,
+    payload: &ToolsetCommandPayload,
+    event_name: &str,
+) -> Result<(), String> {
     let payload_json = serde_json::to_string(payload).map_err(|error| error.to_string())?;
-    let event_json = serde_json::to_string(DOM_COMMAND_EVENT).map_err(|error| error.to_string())?;
+    let event_json = serde_json::to_string(event_name).map_err(|error| error.to_string())?;
     main.eval(format!(
         "window.dispatchEvent(new CustomEvent({event_json}, {{ detail: {payload_json} }}));"
     ))
@@ -7083,7 +7275,19 @@ fn ensure_toolset_window<R: Runtime>(
 
     disable_default_context_menus(&window);
     configure_toolset_utility_window(&window, true)?;
+    install_toolset_input_focus(&window)?;
     Ok(())
+}
+
+/// Install once at construction, including native focus-loss delivery for every input lease.
+fn install_toolset_input_focus<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
+    let target = window.clone();
+    let installed =
+        run_on_main_thread_blocking(window, move || panel_window::install_input_focus(&target))
+            .and_then(|result| result);
+    panel_window::finish_installation(installed, || {
+        window.destroy().map_err(|error| error.to_string())
+    })
 }
 
 /// Run `task` on the main thread and wait for its result. AppKit is main-thread-only, and the
@@ -9068,7 +9272,8 @@ mod tests {
     fn registered_commands_have_permissions_and_capability_grants() {
         let lib_source = include_str!("lib.rs");
         let capability = format!(
-            "{}{}{}{}{}{}{}",
+            "{}{}{}{}{}{}{}{}",
+            include_str!("../capabilities/palette-focus-diagnostic.json"),
             include_str!("../capabilities/window-drag.json"),
             include_str!("../capabilities/default.json"),
             include_str!("../capabilities/document-dialogs.json"),
@@ -9270,6 +9475,26 @@ mod tests {
             assert_eq!(config.parent.as_deref(), Some(MAIN_WINDOW_LABEL));
             #[cfg(not(windows))]
             assert_eq!(config.parent, None);
+        }
+    }
+
+    #[test]
+    fn palette_popovers_open_without_focus_and_lease_their_fields() {
+        let bond_stereo = toolset_popover_window_label("core.bondStereo");
+        assert!(
+            effective_toolset_popover_focus_mode(&bond_stereo, ToolsetPopoverFocusMode::Focus)
+                == ToolsetPopoverFocusMode::Focus
+        );
+        assert!(
+            effective_toolset_popover_focus_mode(&bond_stereo, ToolsetPopoverFocusMode::Preserve)
+                == ToolsetPopoverFocusMode::Preserve
+        );
+        for toolset in ["core.art", "core.drawnStructureSettings", "core.text"] {
+            let label = toolset_popover_window_label(toolset);
+            assert!(
+                effective_toolset_popover_focus_mode(&label, ToolsetPopoverFocusMode::Focus)
+                    == ToolsetPopoverFocusMode::Preserve
+            );
         }
     }
 

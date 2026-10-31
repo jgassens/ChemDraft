@@ -18,7 +18,7 @@ import { DOM_COMMAND_EVENT } from "./window-manager";
  *
  * Rust delivers the two commands to whichever window is key, as AppKit's predefined items did. A
  * secondary window (palette, popover, preferences, plugin panel) answers with its own field's text
- * undo, or forwards to the main window's document history when no field is focused
+ * undo, or forwards to the main window's document history when no text draft is focused
  * (`installSecondaryWindowEditHistory`).
  */
 export type EditHistoryDirection = "undo" | "redo";
@@ -61,12 +61,17 @@ export function isTextEditingElement(element: Element | null | undefined): boole
   return editableHost !== null && editableHost.getAttribute("contenteditable")?.toLowerCase() !== "false";
 }
 
+/** Stepped inspector numbers have document history until actual typing starts a draft. */
+export function isCleanPaletteNumberInput(element: Element | null | undefined): boolean {
+  return element?.matches('input[type="number"][data-palette-number-draft="false"]') ?? false;
+}
+
 export function resolveEditHistoryRoute(
   direction: EditHistoryDirection,
   state: { activeElement: Element | null | undefined; canUndo: boolean; canRedo: boolean },
   options?: {
     /**
-     * A secondary window already decided no text field was focused there, and forwarded the command
+     * A secondary window already decided no field should handle text history there, and forwarded the command
      * to the document window for exactly that reason. The document window's own `activeElement` can
      * still be a text input (a hidden field never blurred, since the document window is not key), so
      * that check must not run a second time here — it would undo the field's text instead of the
@@ -75,14 +80,14 @@ export function resolveEditHistoryRoute(
     forceDocument?: boolean;
   }
 ): EditHistoryRoute {
-  if (!options?.forceDocument && isTextEditingElement(state.activeElement)) {
+  if (!options?.forceDocument && isTextEditingElement(state.activeElement) && !isCleanPaletteNumberInput(state.activeElement)) {
     return "text";
   }
   const canMove = direction === "undo" ? state.canUndo : state.canRedo;
   return canMove ? "document" : "nothing";
 }
 
-/** Suffix marking a commandId as forwarded from a secondary window with no text field focused there. */
+/** Suffix marking a commandId as forwarded from a secondary window to document history. */
 const FORCE_DOCUMENT_HISTORY_SUFFIX = ":forceDocumentHistory";
 
 /** Wraps `commandId` so the document window skips its own text-field check when it arrives. */
@@ -128,8 +133,8 @@ export function performFocusedFieldSelectAll(doc: Document): boolean {
 /**
  * Edit ▸ Undo / Redo in a secondary window. Rust sends the routed menu command to the key window, so
  * a palette's color hex box or the customize gallery's search gets its own text undo — the drawing
- * is not touched. With no text field focused there, ⌘Z still means the drawing, so the command is
- * forwarded to the main window. Returns the uninstaller.
+ * is not touched. With no text field focused, or a clean inspector number focused, ⌘Z means the
+ * drawing, so the command is forwarded to the main window. Returns the uninstaller.
  */
 export function installSecondaryWindowEditHistory(options: {
   target?: Window;
@@ -141,8 +146,13 @@ export function installSecondaryWindowEditHistory(options: {
     if (typeof commandId !== "string") {
       return;
     }
+    const doc = target.document;
+    // Native menu accelerators may arrive after the palette becomes key but before
+    // its acquisition reply restores the caret. No command belongs to the drawing then.
+    if (doc.querySelector('[data-palette-input-focus="pending"]')) return;
     if (commandId === "edit.selectAll") {
-      if (!performFocusedFieldSelectAll(target.document)) {
+      if (!performFocusedFieldSelectAll(doc) && !doc.querySelector("[data-palette-input-focus]") &&
+        !(doc.activeElement instanceof HTMLSelectElement)) {
         void Promise.resolve(options.forwardToMain(forceDocumentHistoryCommandId(commandId)))
           .catch((error: unknown) => console.error("Could not forward Select All to the document window.", error));
       }
@@ -152,8 +162,7 @@ export function installSecondaryWindowEditHistory(options: {
     if (!direction) {
       return;
     }
-    const doc = target.document;
-    if (isTextEditingElement(doc.activeElement)) {
+    if (resolveEditHistoryRoute(direction, { activeElement: doc.activeElement, canUndo: true, canRedo: true }) === "text") {
       performTextFieldHistory(direction, doc);
       return;
     }
