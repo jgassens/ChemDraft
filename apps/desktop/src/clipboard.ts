@@ -1,4 +1,5 @@
 import type { ClipboardReadPayload } from "@chemdraft/clipboard-adapter";
+import { MAX_IMAGE_OBJECT_BYTES } from "@chemdraft/chem-core";
 import { isDesktopRuntime } from "./window-manager";
 
 export interface ClipboardWriteTextItem {
@@ -334,14 +335,34 @@ export async function rasterizeSvgInBrowser(
   }
 }
 
-export function clipboardPayloadFromDataTransfer(dataTransfer: DataTransfer): ClipboardReadPayload {
+export async function clipboardPayloadFromDataTransfer(dataTransfer: DataTransfer): Promise<ClipboardReadPayload> {
+  // Snapshot text and File references while the paste event still owns DataTransfer access.
   const types = Array.from(dataTransfer.types);
   const textItems = types
     .map((type) => ({ type, text: dataTransfer.getData(type) }))
     .filter((item) => item.text.length > 0);
+  const files = Array.from(dataTransfer.files ?? [])
+    .filter((file) => file.type === "image/png" || file.type === "image/svg+xml");
+  const payload: ClipboardReadPayload = { types, textItems };
+  for (const file of files) {
+    const type = file.type as "image/png" | "image/svg+xml";
+    if (!types.includes(type)) types.push(type);
+    if (file.size > MAX_IMAGE_OBJECT_BYTES) {
+      (payload.skippedImageItems ??= []).push({
+        type, byteLength: file.size,
+        reason: `${type === "image/png" ? "PNG" : "SVG"} is ${(file.size / (1024 * 1024)).toFixed(1)} MB; the limit is 25 MB.`
+      });
+      continue;
+    }
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(reader.error ?? new Error(`Could not read clipboard ${type} file.`));
+      reader.onabort = () => reject(new Error(`Reading clipboard ${type} file was cancelled.`));
+      reader.readAsDataURL(file);
+    });
+    (payload.imageItems ??= []).push({ type, bytesBase64: dataUrl.slice(dataUrl.indexOf(",") + 1) });
+  }
 
-  return {
-    types,
-    textItems
-  };
+  return payload;
 }

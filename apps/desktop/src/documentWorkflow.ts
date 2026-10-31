@@ -53,6 +53,7 @@ import {
   applyPatches,
   ChemDraftSyntheticStylePreset,
   createEmptyDocument,
+  createImageGraphicObject,
   DocumentObjectSchema,
   createPageLayout,
   createCustomPageLayout,
@@ -5128,6 +5129,33 @@ export function applyClipboardPastePayload(
   point: PagePoint,
   textStyle: Partial<NativeTextStyle> = {}
 ): ClipboardPasteResult {
+  if (payload.kind === "image-refused") {
+    return { document, kind: payload.kind, status: payload.message, warnings: payload.warnings };
+  }
+
+  if (payload.kind === "image") {
+    try {
+      const page = firstPage(document);
+      const { type, bytesBase64, ...metadata } = payload.image;
+      const object = createImageGraphicObject({
+        ...metadata, id: nextObjectId(document, "image"), mimeType: type,
+        dataBase64: bytesBase64, center: point
+      });
+      return {
+        document: applyPatches(document, [
+          { op: "addObject", pageId: page.id, object },
+          { op: "setSelection", pageId: page.id, objectIds: [object.id] }
+        ], { now: phase4Timestamp }),
+        kind: payload.kind, status: "Pasted picture", selectedObjectId: object.id, warnings: payload.warnings
+      };
+    } catch (error) {
+      return {
+        document, kind: payload.kind, warnings: payload.warnings,
+        status: `Couldn't paste the picture: ${error instanceof Error ? error.message : String(error)}`
+      };
+    }
+  }
+
   if (payload.kind === "plain-text") {
     const nextDocument = insertNativeTextObject(document, point, payload.text, textStyle);
     const selected = getSelectedTextObject(nextDocument);

@@ -6651,7 +6651,10 @@ export function MainWindow({
       textStyleDefaults
     );
     if (result.document !== documentRef.current) {
-      commitDocumentChange(result.document);
+      commitDocumentChange(result.document, detectedPayload.kind === "image" ? "Paste Picture" : undefined);
+    } else if (detectedPayload.kind === "image" || detectedPayload.kind === "image-refused") {
+      setStatus(result.status);
+      return;
     }
     resetPasteUiState(result.editTextObjectId);
     setStatus(result.status);
@@ -7048,10 +7051,15 @@ export function MainWindow({
     }
   }, []);
 
-  const pasteClipboard = useCallback(async (domPayload?: ClipboardReadPayload) => {
+  const pasteClipboard = useCallback(async (domPayload?: ClipboardReadPayload | Promise<ClipboardReadPayload>) => {
     smilesListPasteAbortRef.current?.abort();
     let rawPayload: ClipboardReadPayload | undefined;
     let readFailure: string | undefined;
+    // Handle fallback read failures immediately, while the preferred native read is in flight.
+    const fallbackPayload = Promise.resolve(domPayload).catch((error: unknown) => {
+      readFailure ??= error instanceof Error ? error.message : String(error);
+      return undefined;
+    });
     try {
       rawPayload = await readClipboardPayload();
     } catch (error) {
@@ -7060,7 +7068,9 @@ export function MainWindow({
     if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
     // Prefer the native private flavor, then other native content. The event snapshot is a
     // fallback when the native clipboard was busy or empty; DataTransfer is no longer readable here.
-    for (const payload of [rawPayload, domPayload]) {
+    for (const candidate of [rawPayload, fallbackPayload]) {
+      const payload = await candidate;
+      if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
       if (!payload) continue;
       const selectionPayload = payload.textItems
         .map((item) => parseSelectionClipboardPayload(item.text))
@@ -12157,28 +12167,24 @@ export function MainWindow({
         return;
       }
 
-      // WKWebView and WebView2 cannot expose the natively written private ChemDraft flavor
-      // through DataTransfer. Read natively before a text/plain fallback can lose formatting.
+      const domPayload = clipboardPayloadFromDataTransfer(event.clipboardData);
+      event.preventDefault();
+      // WKWebView and WebView2 may hide private flavors in DataTransfer. Prefer the native read.
       if (isDesktopRuntime()) {
-        const domPayload = clipboardPayloadFromDataTransfer(event.clipboardData);
-        event.preventDefault();
         void pasteClipboard(domPayload);
         return;
       }
-
-      const detectedPayload = inspectClipboardPayload(clipboardPayloadFromDataTransfer(event.clipboardData));
-      if (detectedPayload.kind !== "empty") {
-        event.preventDefault();
-        applyDetectedClipboardPayload(detectedPayload);
-        return;
-      }
-
-      // Reuse the last in-app selection when the browser event carried nothing usable,
-      // without overriding real external clipboard content above.
-      if (selectionClipboardPayloadRef.current) {
-        event.preventDefault();
-        applySelectionClipboardPayload(selectionClipboardPayloadRef.current);
-      }
+      void domPayload.then((payload) => {
+        if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
+        const detectedPayload = inspectClipboardPayload(payload);
+        if (detectedPayload.kind !== "empty") {
+          applyDetectedClipboardPayload(detectedPayload);
+        } else if (selectionClipboardPayloadRef.current) {
+          applySelectionClipboardPayload(selectionClipboardPayloadRef.current);
+        }
+      }).catch((error: unknown) => {
+        setStatus(`Couldn't read the clipboard: ${error instanceof Error ? error.message : String(error)}`);
+      });
     };
 
     window.addEventListener("copy", handleCopy);
@@ -21839,6 +21845,12 @@ export function graphicArtTransformPreviewSvgDataUrl(object: GraphicObject): {
   width: number;
   height: number;
 } | undefined {
+  if (object.graphicKind === "image" && object.data.image) {
+    return {
+      imageUrl: `data:${object.data.image.mimeType};base64,${object.data.image.dataBase64}`,
+      width: object.width, height: object.height
+    };
+  }
   try {
     const plan = planNativeArtVisual(object, { coordinateSpace: "local" });
     const width = Math.max(1, plan.width);
@@ -28758,6 +28770,19 @@ function reactSvgSketchEffectSourcePaths(plan: NativeArtVisualPlan, objectId: st
 }
 
 const GraphicGlyph = memo(function GraphicGlyph({ object, definitionPrefix = "" }: { object: GraphicObject; definitionPrefix?: string }) {
+  if (object.graphicKind === "image" && object.data.image) {
+    const image = object.data.image;
+    return (
+      <svg className="graphic-glyph" viewBox={`0 0 ${object.width} ${object.height}`} preserveAspectRatio="none" aria-hidden="true">
+        <image
+          className="graphic-glyph-image"
+          href={`data:${image.mimeType};base64,${image.dataBase64}`}
+          x={0} y={0} width={object.width} height={object.height}
+          preserveAspectRatio="none" pointerEvents="all"
+        />
+      </svg>
+    );
+  }
   const plan = markFrame("render art object", () => planNativeArtVisual(object, { coordinateSpace: "local" }));
   const freehandPath = graphicObjectIsFreehandPath(object);
   const width = plan.width;
