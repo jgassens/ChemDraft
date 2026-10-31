@@ -33,9 +33,23 @@ const header = pngBytes.slice(8, 33);
 const imageData = pngBytes.slice(33, -12);
 const imageEnd = pngBytes.slice(-12);
 function png(...chunks: Uint8Array[]): Uint8Array {
-  return new Uint8Array([...pngBytes.slice(0, 8), ...chunks.flatMap((bytes) => [...bytes])]);
+  const length = 8 + chunks.reduce((total, bytes) => total + bytes.length, 0);
+  const result = new Uint8Array(length);
+  result.set(pngBytes.slice(0, 8));
+  let offset = 8;
+  for (const bytes of chunks) {
+    result.set(bytes, offset);
+    offset += bytes.length;
+  }
+  return result;
 }
-function base64(bytes: Uint8Array): string { return btoa(String.fromCharCode(...bytes)); }
+function base64(bytes: Uint8Array): string {
+  const chunks: string[] = [];
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    chunks.push(String.fromCharCode(...bytes.subarray(offset, offset + 0x8000)));
+  }
+  return btoa(chunks.join(""));
+}
 function ihdr(change: (data: Uint8Array, view: DataView) => void): Uint8Array {
   const data = header.slice(8, -4);
   change(data, new DataView(data.buffer));
