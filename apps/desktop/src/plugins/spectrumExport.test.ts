@@ -410,7 +410,7 @@ describe("spectrum picture exports", () => {
   });
 
   it("downloads SVG and binary files on the web with the requested MIME types", async () => {
-    const createObjectURL = vi.fn(() => "blob:download");
+    const createObjectURL = vi.fn((_blob: Blob) => "blob:download");
     const revokeObjectURL = vi.fn();
     vi.stubGlobal("URL", { createObjectURL, revokeObjectURL });
     const downloads: string[] = [];

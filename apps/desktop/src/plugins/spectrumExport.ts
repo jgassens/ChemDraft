@@ -512,10 +512,10 @@ function decodeBase64(value: string): Uint8Array {
   return Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
 }
 
-async function validPngImageData(data: Uint8Array, rowStride: number, expectedSize: number): Promise<boolean> {
+async function validPngImageData(data: Uint8Array<ArrayBuffer>, rowStride: number, expectedSize: number): Promise<boolean> {
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   try {
-    reader = new ReadableStream<Uint8Array>({
+    reader = new ReadableStream<BufferSource>({
       start(controller) {
         controller.enqueue(data);
         controller.close();

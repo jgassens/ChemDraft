@@ -385,6 +385,14 @@
   },
   {
     "file": "lib.rs",
+    "name": "set_plugin_panel_full_size",
+    "async": true,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, enabled: bool, width: f64, height: f64,",
+    "returnType": "Result<panel_full_size::Status, String>"
+  },
+  {
+    "file": "lib.rs",
     "name": "plugin_panel_action_forward",
     "async": false,
     "generics": "",
@@ -420,7 +428,7 @@
     "name": "open_plugin_panel_window",
     "async": true,
     "generics": "",
-    "parameters": "app: tauri::AppHandle, request: OpenPluginPanelRequest,",
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, request: Option<OpenPluginPanelRequest>, publication: Option<PluginPanelPublication>,",
     "returnType": "Result<(), String>"
   },
   {
@@ -782,6 +790,14 @@
     "generics": "<R: Runtime>",
     "parameters": "app: tauri::AppHandle<R>, name: String,",
     "returnType": "Result<OpsinConversion, OpsinError>"
+  },
+  {
+    "file": "panel_window_controls.rs",
+    "name": "hide_plugin_panel_window",
+    "async": true,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow",
+    "returnType": "Result<(), String>"
   },
   {
     "file": "plugin_package.rs",

@@ -242,7 +242,8 @@ describe("document-window spectrum actions", () => {
       chunk("IDAT", data.slice(0, 5)), chunk("IDAT", data.slice(5)), imageEnd), 288);
     await handleSpectrumWindowAction({ ...copy, pngBase64: base64(bytes) }, dependencies);
     await handleSpectrumWindowAction({ ...save, bytesBase64: base64(bytes) }, dependencies);
-    expect(dependencies.writeClipboard.mock.calls[0][0][0].bytes).toEqual(bytes);
+    const item = dependencies.writeClipboard.mock.calls[0][0][0];
+    expect("bytes" in item && item.bytes).toEqual(bytes);
     expect(dependencies.saveBinary.mock.calls[0][1]).toEqual(bytes);
     expect(dependencies.respondCopy).toHaveBeenCalledWith("copy-1", true);
     expect(dependencies.respondSave).toHaveBeenCalledWith("save-1", "saved");
@@ -313,7 +314,8 @@ describe("document-window spectrum actions", () => {
     const dependencies = fakes();
     await handleSpectrumWindowAction({ ...copy, pngBase64: base64(bytes), svg }, dependencies);
     await handleSpectrumWindowAction({ ...save, bytesBase64: base64(bytes) }, dependencies);
-    expect(dependencies.writeClipboard.mock.calls[0][0][0].bytes).toEqual(bytes);
+    const item = dependencies.writeClipboard.mock.calls[0][0][0];
+    expect("bytes" in item && item.bytes).toEqual(bytes);
     expect(dependencies.saveBinary).toHaveBeenCalledWith("spectrum.png", bytes, expect.any(Object));
     expect(dependencies.respondCopy).toHaveBeenCalledWith("copy-1", true);
     expect(dependencies.respondSave).toHaveBeenCalledWith("save-1", "saved");

@@ -854,12 +854,8 @@ describe("MainWindow bundled plugin integration", () => {
     });
     URL.createObjectURL ??= () => "blob:test";
     URL.revokeObjectURL ??= () => undefined;
-    await sendAnalysisWindowAction({
-      kind: "saveTextFile",
-      requestId: "save-1",
-      filename: "predicted-1H-nmr.jdx",
-      text: "##TITLE=x",
-      format: "jcamp"
+    await act(async () => {
+      await expect(panelBridge.requestSaveTextFileFromMain("predicted-1H-nmr.jdx", "##TITLE=x", "jcamp")).resolves.toBe("saved");
     });
     expect(downloads).toEqual(["predicted-1H-nmr.jdx"]);
   });
