@@ -1,4 +1,4 @@
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 
 use image::{codecs::jpeg::JpegEncoder, ColorType, DynamicImage, ImageEncoder, ImageFormat};
 use resvg::{tiny_skia, usvg};
@@ -14,7 +14,7 @@ const DEFAULT_JPEG_QUALITY: u8 = 90;
 // fixtures/ocsr/brevetoxin-a.svg): about 106 MiB total, with room for page markup.
 const MAX_SVG_BYTES: usize = 128 * 1024 * 1024;
 
-/// Export SVGs may embed data URLs, but must never read files from the host.
+/// Export SVGs may embed data URLs, but must never resolve host file paths or URLs.
 fn export_svg_options() -> usvg::Options<'static> {
     usvg::Options {
         fontdb: shared_fontdb(),
@@ -111,10 +111,32 @@ fn rasterize_svg_impl(request: RasterExportRequest) -> Result<RasterExportRespon
 
     let options = export_svg_options();
 
-    let tree = usvg::Tree::from_data(request.svg.as_bytes(), &options)
+    // Inspect the source XML: usvg can discard unsupported or malformed pictures.
+    // roxmltree is publicly re-exported by usvg; no extra dependency is needed.
+    let document = usvg::roxmltree::Document::parse_with_options(
+        &request.svg,
+        usvg::roxmltree::ParsingOptions {
+            // Match usvg::Tree::from_str.
+            allow_dtd: true,
+            ..Default::default()
+        },
+    )
+    .map_err(|error| format!("Could not parse SVG for raster export: {error}"))?;
+    let mut inspection_budget = MAX_SVG_BYTES;
+    let contains_bitmap_pictures = contains_bitmap_pictures(&document, 0, &mut inspection_budget);
+    let tree = usvg::Tree::from_xmltree(&document, &options)
         .map_err(|error| format!("Could not parse SVG for raster export: {error}"))?;
     let base_size = tree.size().to_int_size();
     let (width, height, scale_x, scale_y, mut warnings) = target_size(&request, base_size)?;
+    if contains_bitmap_pictures {
+        warnings.push(warning(
+            "raster_pictures_omitted",
+            format!(
+                "{} export: PNG and other bitmap pictures are not included in image exports yet; export SVG or PDF to include them.",
+                request.format.label()
+            ),
+        ));
+    }
     let background = parse_background(request.background.as_deref())?;
 
     let mut pixmap =
@@ -145,6 +167,100 @@ fn rasterize_svg_impl(request: RasterExportRequest) -> Result<RasterExportRespon
         height,
         warnings,
     })
+}
+
+// Inspect source XML: usvg may discard an image before the renderer sees it.
+// Check all href namespaces and ambiguous duplicates conservatively.
+fn contains_bitmap_pictures(
+    document: &usvg::roxmltree::Document<'_>,
+    depth: usize,
+    remaining_bytes: &mut usize,
+) -> bool {
+    document.descendants().any(|node| {
+        if !node.is_element() || node.tag_name().name() != "image" {
+            return false;
+        }
+        let mut hrefs = node
+            .attributes()
+            .filter(|attr| attr.name() == "href")
+            .peekable();
+        if hrefs.peek().is_none() {
+            return true;
+        }
+        hrefs.any(|attr| {
+            // usvg 0.47 has no explicit image nesting bound. Cap inspection and
+            // warn on exhaustion so a deeper bitmap can never be missed.
+            if depth >= 32 {
+                return true;
+            }
+            let Some(data) = decode_svg_picture(attr.value(), remaining_bytes) else {
+                return true;
+            };
+            let Ok(text) = std::str::from_utf8(&data) else {
+                return true;
+            };
+            let Ok(nested) = usvg::roxmltree::Document::parse_with_options(
+                text,
+                usvg::roxmltree::ParsingOptions {
+                    allow_dtd: true,
+                    ..Default::default()
+                },
+            ) else {
+                return true;
+            };
+            contains_bitmap_pictures(&nested, depth + 1, remaining_bytes)
+        })
+    })
+}
+
+// Accept a strict subset of usvg's data-url syntax; anything uncertain warns.
+// For this subset, percent decoding followed by base64 decoding matches usvg.
+// SVGZ uses the same gzip decoder as usvg, with a bounded output size.
+fn decode_svg_picture(href: &str, remaining_bytes: &mut usize) -> Option<Vec<u8>> {
+    let href = href.trim_matches(|ch| ch <= ' ');
+    let (header, body) = href.split_once(',')?;
+    let header = header.to_ascii_lowercase();
+    let is_base64 = match header.as_str() {
+        "data:image/svg+xml" => false,
+        "data:image/svg+xml;base64" => true,
+        _ => return None,
+    };
+    let body = body.split('#').next()?;
+    if body.len() > *remaining_bytes {
+        return None;
+    }
+    let body = body.as_bytes();
+    let mut data = Vec::with_capacity(body.len());
+    let mut index = 0;
+    while index < body.len() {
+        // Match data-url's handling of literal tabs/newlines, while leaving
+        // percent-encoded whitespace intact (it belongs to the decoded SVG).
+        if matches!(body[index], b'\t' | b'\n' | b'\r') {
+            index += 1;
+        } else if body[index] == b'%' {
+            let high = char::from(*body.get(index + 1)?).to_digit(16)?;
+            let low = char::from(*body.get(index + 2)?).to_digit(16)?;
+            data.push((high * 16 + low) as u8);
+            index += 3;
+        } else {
+            data.push(body[index]);
+            index += 1;
+        }
+    }
+    if is_base64 {
+        data.retain(|byte| !matches!(byte, b'\t' | b'\n' | b'\x0c' | b'\r' | b' '));
+        data = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, data).ok()?;
+    }
+    if data.starts_with(&[0x1f, 0x8b]) {
+        let mut decoded = Vec::new();
+        flate2::read::GzDecoder::new(data.as_slice())
+            .take(*remaining_bytes as u64 + 1)
+            .read_to_end(&mut decoded)
+            .ok()?;
+        data = decoded;
+    }
+    *remaining_bytes = remaining_bytes.checked_sub(data.len())?;
+    Some(data)
 }
 
 fn target_size(
@@ -434,6 +550,7 @@ fn warning(code: &'static str, message: String) -> RasterExportWarning {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
 
     #[test]
     fn export_images_accept_only_data_urls() {
@@ -448,7 +565,10 @@ mod tests {
         let absolute = image_path.to_string_lossy().replace('\\', "/");
         for href in [
             format!("file:///{absolute}"),
+            "https://example.invalid/fixture.svg".to_string(),
+            "http://example.invalid/fixture.png".to_string(),
             "fixture.svg".to_string(),
+            r"C:\pictures\fixture.png".to_string(),
             absolute,
         ] {
             let escaped_href = href
@@ -497,6 +617,207 @@ mod tests {
             jpeg_quality: None,
             max_dimension_px: None,
             css_px_per_inch: None,
+        }
+    }
+
+    fn assert_picture_warning(response: &RasterExportResponse, format: RasterExportFormat) {
+        assert_eq!(response.warnings.len(), 1);
+        assert_eq!(response.warnings[0].code, "raster_pictures_omitted");
+        assert_eq!(response.warnings[0].severity, "warning");
+        assert_eq!(
+            response.warnings[0].message,
+            format!(
+                "{} export: PNG and other bitmap pictures are not included in image exports yet; export SVG or PDF to include them.",
+                format.label()
+            )
+        );
+    }
+
+    fn svg_picture_page(href: &str, element: &str, attribute: &str) -> String {
+        let href = href
+            .replace('&', "&amp;")
+            .replace('"', "&quot;")
+            .replace('<', "&lt;");
+        format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:s="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="8" height="8"><{element} {attribute}="{href}" width="8" height="8"/></svg>"#
+        )
+    }
+
+    fn svg_data_uri(svg: &str) -> String {
+        format!(
+            "data:image/svg+xml;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(svg)
+        )
+    }
+
+    #[test]
+    fn svg_pictures_render_red_without_a_bitmap_warning() {
+        let red = r#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="red"/></svg>"#;
+        let percent_encoded = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8'%3E%3Crect width='8' height='8' fill='red'/%3E%3C/svg%3E";
+        for href in [svg_data_uri(red), percent_encoded.to_string()] {
+            for element in ["image", "s:image"] {
+                for attribute in ["href", "xlink:href", "s:href"] {
+                    let response = rasterize_svg_impl(RasterExportRequest {
+                        svg: svg_picture_page(&href, element, attribute),
+                        ..request(RasterExportFormat::Png)
+                    })
+                    .expect("render SVG picture");
+                    assert!(response.warnings.is_empty());
+                    let pixels = image::load_from_memory(&response.bytes)
+                        .expect("decode exported page")
+                        .to_rgba8();
+                    assert_eq!(pixels.get_pixel(4, 4).0, [255, 0, 0, 255]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bitmap_pictures_nested_in_svg_pictures_warn() {
+        let picture = image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 255]));
+        let mut cursor = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(picture)
+            .write_to(&mut cursor, ImageFormat::Png)
+            .expect("encode nested PNG");
+        let href = format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(cursor.into_inner())
+        );
+        for element in ["image", "s:image", "image xmlns=\"\""] {
+            for attribute in ["href", "xlink:href", "s:href"] {
+                let mut nested = svg_picture_page(&href, element, attribute);
+                for _ in 0..3 {
+                    let page = svg_picture_page(&svg_data_uri(&nested), "image", "href");
+                    let response = rasterize_svg_impl(RasterExportRequest {
+                        svg: page.clone(),
+                        ..request(RasterExportFormat::Png)
+                    })
+                    .expect("export page with nested bitmap");
+                    assert_picture_warning(&response, RasterExportFormat::Png);
+                    nested = page;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn nested_inspection_warns_on_decode_failure_or_exhaustion() {
+        for href in [
+            "data:image/svg+xml;base64,!",
+            "data:image/svg+xml,%FF",
+            "data:image/svg+xml,%3Csvg",
+        ] {
+            let response = rasterize_svg_impl(RasterExportRequest {
+                svg: svg_picture_page(href, "image", "href"),
+                ..request(RasterExportFormat::Png)
+            })
+            .expect("undecodable pictures do not prevent page export");
+            assert_picture_warning(&response, RasterExportFormat::Png);
+        }
+        let page = svg_picture_page(&svg_data_uri(SIMPLE_SVG), "image", "href");
+        let document = usvg::roxmltree::Document::parse(&page).expect("parse fixture");
+        let mut budget = MAX_SVG_BYTES;
+        assert!(contains_bitmap_pictures(&document, 32, &mut budget));
+        assert!(contains_bitmap_pictures(&document, 0, &mut 1));
+    }
+
+    #[test]
+    fn svgz_picture_inspection_is_bounded_and_checks_nested_bitmaps() {
+        use std::io::Write;
+
+        for (svg, expected_warning) in [
+            (SIMPLE_SVG.to_string(), false),
+            (
+                svg_picture_page("data:image/png;base64,!", "image", "href"),
+                true,
+            ),
+        ] {
+            let mut encoder =
+                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            encoder.write_all(svg.as_bytes()).expect("compress SVG");
+            let href = format!(
+                "data:image/svg+xml;base64,{}",
+                base64::engine::general_purpose::STANDARD
+                    .encode(encoder.finish().expect("finish SVGZ"))
+            );
+            let page = svg_picture_page(&href, "image", "href");
+            let document = usvg::roxmltree::Document::parse(&page).expect("parse SVGZ page");
+            let mut budget = MAX_SVG_BYTES;
+            assert_eq!(
+                contains_bitmap_pictures(&document, 0, &mut budget),
+                expected_warning
+            );
+            let mut small_budget = 1;
+            assert!(decode_svg_picture(&href, &mut small_budget).is_none());
+        }
+    }
+
+    #[test]
+    fn page_with_png_picture_warns_and_still_draws_benzene() {
+        let picture = image::RgbaImage::from_pixel(4, 4, image::Rgba([255, 0, 0, 255]));
+        let mut cursor = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(picture)
+            .write_to(&mut cursor, ImageFormat::Png)
+            .expect("encode the picture fixture");
+        let encoded = base64::engine::general_purpose::STANDARD.encode(cursor.into_inner());
+        let svg = format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="8.5in" height="11in" viewBox="0 0 816 1056"><rect width="816" height="1056" fill="#ffffff"/><g data-object-id="benzene" fill="none" stroke="#000000" stroke-width="1"><path d="M 500 280 L 517.32 290 L 517.32 310 L 500 320 L 482.68 310 L 482.68 290 Z"/><path d="M 501 285 L 513 292 M 513 308 L 501 315 M 487 307 L 487 293"/></g><image href="data:image/png;base64,{encoded}" x="192" y="192" width="16" height="16"/></svg>"##
+        );
+        for scale in [1, 3] {
+            let response = rasterize_svg_impl(RasterExportRequest {
+                svg: svg.clone(),
+                scale: Some(f64::from(scale)),
+                ..request(RasterExportFormat::Png)
+            })
+            .expect("export vectors even when a picture is omitted");
+            assert_eq!(
+                (response.width, response.height),
+                (816 * scale, 1056 * scale)
+            );
+            assert_picture_warning(&response, RasterExportFormat::Png);
+            let pixels = image::load_from_memory(&response.bytes)
+                .expect("decode the exported page")
+                .to_rgba8();
+            assert_eq!(pixels.get_pixel(200 * scale, 200 * scale).0, [255; 4]);
+            assert!(pixels.enumerate_pixels().any(|(x, y, pixel)| {
+                (480 * scale..520 * scale).contains(&x)
+                    && (278 * scale..322 * scale).contains(&y)
+                    && pixel[0] < 128
+                    && pixel[1] < 128
+                    && pixel[2] < 128
+            }));
+        }
+    }
+
+    #[test]
+    fn warns_once_for_image_elements_with_any_href_form_in_every_format() {
+        for format in [
+            RasterExportFormat::Png,
+            RasterExportFormat::Jpeg,
+            RasterExportFormat::Bmp,
+            RasterExportFormat::Gif,
+            RasterExportFormat::Tiff,
+        ] {
+            for attribute in [
+                "href=\"data:image/png;base64,!\"",
+                "xlink:href=\"data:image/png,%89PNG\"",
+                "href=\"https://example.invalid/picture.png\"",
+                "href=\"file:///picture.png\"",
+                "href=\"picture.png\"",
+                "href=\"#picture\"",
+                "",
+            ] {
+                let response = rasterize_svg_impl(RasterExportRequest {
+                    svg: format!(
+                        r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:s="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="8" height="8"><s:image {attribute} width="8" height="8"/><image width="0" height="0"/></svg>"#
+                    ),
+                    ..request(format)
+                })
+                .expect("omitted pictures should warn without failing the export");
+                assert_picture_warning(&response, format);
+            }
+            let response = rasterize_svg_impl(request(format)).expect("export without pictures");
+            assert!(response.warnings.is_empty());
         }
     }
 
@@ -603,6 +924,28 @@ mod tests {
         // The IHDR chunk must still come first and decode cleanly.
         assert_eq!(&response.bytes[12..16], b"IHDR");
         image::load_from_memory(&response.bytes).expect("PNG with pHYs should still decode");
+    }
+
+    #[test]
+    fn png_export_at_3x_declares_288_dpi_on_both_axes() {
+        let response = rasterize_svg_impl(RasterExportRequest {
+            scale: Some(3.0),
+            css_px_per_inch: Some(96.0),
+            ..request(RasterExportFormat::Png)
+        })
+        .expect("PNG export at 3x should encode with density");
+        assert_eq!((response.width, response.height), (192, 96));
+        let phys_offset = response
+            .bytes
+            .windows(4)
+            .position(|window| window == b"pHYs")
+            .expect("PNG should contain a pHYs chunk");
+        let data = &response.bytes[phys_offset + 4..phys_offset + 13];
+        let expected = (288.0_f64 / 0.0254).round() as u32;
+        assert_eq!(u32::from_be_bytes(data[0..4].try_into().unwrap()), expected);
+        assert_eq!(u32::from_be_bytes(data[4..8].try_into().unwrap()), expected);
+        assert_eq!(data[8], 1, "pHYs unit must be metres");
+        image::load_from_memory(&response.bytes).expect("PNG with 288 dpi should decode");
     }
 
     #[test]

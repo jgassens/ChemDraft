@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { normalizeAtomIsotope } from "./isotopes";
 import { atomicNumberForElementSymbol } from "./elements";
+import { decodeImageBase64, imageBase64Error } from "./imageBytes";
+import { imagePixelLimitError, validatePngImage } from "./imageInfo";
 import {
   PageOrientations,
   PageSizePresetIds,
@@ -220,6 +222,17 @@ export const GraphicFreehandOptionsSchema = z
   })
   .strict();
 
+export const ImageObjectDataSchema = z.object({
+  mimeType: z.enum(["image/png", "image/svg+xml"]),
+  dataBase64: z.string(),
+  pixelWidth: z.number().int().positive(),
+  pixelHeight: z.number().int().positive(),
+  pixelsPerMeter: z.object({
+    x: z.number().int().positive(),
+    y: z.number().int().positive()
+  }).strict().optional()
+}).strict();
+
 export const GraphicObjectDataSchema = z
   .object({
     lineStart: PointSchema.optional(),
@@ -262,6 +275,8 @@ export const GraphicObjectDataSchema = z
     cornerRadiusPx: z.number().finite().nonnegative().optional(),
     imageHref: z.string().optional(),
     imageMimeType: z.string().optional(),
+    // Additive optional data, like the other graphic fields: existing v1 documents need no migration.
+    image: ImageObjectDataSchema.optional(),
     artToolId: z.string().optional()
   })
   .strict();
@@ -525,12 +540,33 @@ export const BracketObjectSchema = BaseObjectSchema.extend({
   containedObjectIds: z.array(IdSchema).default([])
 }).strict();
 
-export const GraphicObjectSchema = BaseObjectSchema.extend({
+const GraphicObjectShapeSchema = BaseObjectSchema.extend({
   type: z.literal("graphic"),
   graphicKind: degradingEnum(["line", "rect", "ellipse", "path", "image", "unknown"]),
   style: GraphicObjectStyleSchema.default({}),
   data: GraphicObjectDataSchema.default({})
 }).strict();
+
+function validateGraphicImage(object: z.infer<typeof GraphicObjectShapeSchema>, context: z.RefinementCtx) {
+  if (object.data.image) {
+    const message = imageBase64Error(object.data.image.dataBase64, object.id);
+    if (message) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["data", "image", "dataBase64"], message });
+      return;
+    }
+    const image = object.data.image;
+    // Existing SVG payloads are preserved on load; completeness is checked when pasting.
+    if (image.mimeType !== "image/png") return;
+    const bytes = decodeImageBase64(image.dataBase64, object.id);
+    const result = validatePngImage(bytes);
+    const error = result.error ?? imagePixelLimitError(image.pixelWidth, image.pixelHeight);
+    if (error) context.addIssue({ code: z.ZodIssueCode.custom,
+      path: ["data", "image", "dataBase64"],
+      message: error.replace("Couldn't paste the picture:", `Image object ${object.id}:`) });
+  }
+}
+
+export const GraphicObjectSchema = GraphicObjectShapeSchema.superRefine(validateGraphicImage);
 
 export const PlusObjectSchema = BaseObjectSchema.extend({
   type: z.literal("plus")
@@ -581,7 +617,7 @@ export const DocumentObjectSchema = z.discriminatedUnion("type", [
   ElectronMarkObjectSchema,
   TextObjectSchema,
   BracketObjectSchema,
-  GraphicObjectSchema,
+  GraphicObjectShapeSchema,
   PlusObjectSchema,
   GroupObjectSchema,
   AnnotationObjectSchema,
@@ -589,7 +625,10 @@ export const DocumentObjectSchema = z.discriminatedUnion("type", [
   RGroupLabelObjectSchema,
   GenericAtomLabelObjectSchema,
   UnknownCompatibilityObjectSchema
-]);
+]).superRefine((object, context) => {
+  // Keep the discriminated union's fast dispatch while applying the same standalone validation.
+  if (object.type === "graphic") validateGraphicImage(object, context);
+});
 
 export const PageSizePresetIdSchema = z.enum(PageSizePresetIds);
 export const PageSizeUnitSchema = z.enum(PageSizeUnits);
@@ -701,6 +740,7 @@ export type GraphicFreehandPoint = z.infer<typeof GraphicFreehandPointSchema>;
 export type GraphicFreehandOptions = z.infer<typeof GraphicFreehandOptionsSchema>;
 export type GraphicObjectStyle = z.infer<typeof GraphicObjectStyleSchema>;
 export type GraphicObjectData = z.infer<typeof GraphicObjectDataSchema>;
+export type ImageObjectData = z.infer<typeof ImageObjectDataSchema>;
 export type GraphicObject = z.infer<typeof GraphicObjectSchema>;
 export type PlusObject = z.infer<typeof PlusObjectSchema>;
 export type GroupObject = z.infer<typeof GroupObjectSchema>;

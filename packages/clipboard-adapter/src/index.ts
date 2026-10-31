@@ -1,4 +1,4 @@
-import { normalizeAtomIsotope } from "@chemdraft/chem-core";
+import { MAX_IMAGE_OBJECT_BYTES, normalizeAtomIsotope, isSvgImageSource, readSvgInfo, validatePngImage, validateSvgImage, imagePixelLimitError } from "@chemdraft/chem-core";
 
 export type ClipboardPayloadKind = "svg" | "png" | "text/plain" | "smiles" | "mol" | "rxn" | "cdxml" | "cdx";
 
@@ -12,16 +12,53 @@ export interface ClipboardTextItem {
   text: string;
 }
 
+export interface ClipboardImageItem {
+  type: "image/png" | "image/svg+xml";
+  bytesBase64: string;
+  pixelsPerMeter?: { x: number; y: number };
+  pixelWidth?: number;
+  pixelHeight?: number;
+}
+
+export interface ClipboardSkippedImageItem {
+  type: string;
+  byteLength: number;
+  reason: string;
+}
+
 export interface ClipboardReadPayload {
   types: string[];
   textItems: ClipboardTextItem[];
+  imageItems?: ClipboardImageItem[];
+  skippedImageItems?: ClipboardSkippedImageItem[];
 }
 
 export type ClipboardMolfileFormat = "molfile-v2000" | "molfile-v3000";
 
+/** A text heuristic to try with the host chemistry parser, not an assertion of validity. */
+export interface ClipboardChemistryCandidate {
+  kind: "smiles" | "smiles-list";
+  sourceType: string;
+  text: string;
+}
+
 export type ClipboardDetectedPayload =
   | {
+      kind: "image";
+      image: ClipboardImageItem;
+      sourceType?: string;
+      warnings: ClipboardTransferWarning[];
+    }
+  | {
+      kind: "image-refused";
+      message: string;
+      warnings: ClipboardTransferWarning[];
+    }
+  | {
       kind: "plain-text";
+      /** For heuristic SMILES lists: picture to paste if host chemistry parsing fails. */
+      fallbackImage?: ClipboardImageItem;
+      chemistryCandidates?: ClipboardChemistryCandidate[];
       text: string;
       sourceType?: string;
       warnings: ClipboardTransferWarning[];
@@ -35,6 +72,11 @@ export type ClipboardDetectedPayload =
     }
   | {
       kind: "smiles";
+      /** For text heuristics only: paste this picture if host chemistry parsing fails.
+       * Omitted when an unreadable advertised chemistry flavor blocks pictures.
+       * The host must validate it through the ordinary picture paste path. */
+      fallbackImage?: ClipboardImageItem;
+      chemistryCandidates?: ClipboardChemistryCandidate[];
       text: string;
       sourceType?: string;
       warnings: ClipboardTransferWarning[];
@@ -196,6 +238,98 @@ export function inspectClipboardPayload(payload: ClipboardReadPayload): Clipboar
     };
   }
 
+  const firstPlainText =
+    textItems.find((item) => isTextLikeType(item.type)) ??
+    textItems.find((item) => !isMarkupType(item.type));
+  const svgText = payload.textItems.find((item) => looksLikeSvgDocument(item.text));
+  const image = payload.imageItems?.find((item) => item.type === "image/png") ?? payload.imageItems?.[0];
+  const skippedImage = payload.skippedImageItems?.[0];
+  // Unreadable advertised chemistry blocks only pictures, including a heuristic fallback.
+  const suppressPicture = payload.types.some((type) => isCdxmlType(type) || isCdxType(type)
+    || isSmilesType(type) || /(?:molfile|rxnfile|inchi|chemical\/)/i.test(type));
+  // Text heuristics still need the host's chemistry parser; retain artwork in case parsing fails.
+  const hasPicture = image || skippedImage || svgText;
+  const fallbackImage = !suppressPicture ? image ?? (svgText ? svgTextImage(svgText.text) : undefined) : undefined;
+  const chemistryCandidates: ClipboardChemistryCandidate[] = [];
+  if (hasPicture) {
+    for (const item of textItems) {
+      if (looksLikeSvgDocument(item.text)) continue;
+      if (looksLikeSmilesStrict(item.text)) {
+        chemistryCandidates.push({ kind: "smiles", text: item.text, sourceType: item.type });
+      }
+      const tokens = smilesListTokens(item.text);
+      const candidates = smilesListCandidates(item.text);
+      const firstTokenColumns = new Map<number, number>();
+      for (const token of tokens) {
+        if (!firstTokenColumns.has(token.line)) firstTokenColumns.set(token.line, token.column);
+      }
+      if (smilesListDecision({
+        candidates: tokens.length,
+        parsed: candidates.length,
+        lineCount: item.text.split(/\r\n|\r|\n/).filter((line) => line.trim().length > 0).length,
+        parsedFirstTokenLines: candidates.filter((candidate) => candidate.column === firstTokenColumns.get(candidate.line)).length
+      })) {
+        chemistryCandidates.push({ kind: "smiles-list", text: item.text, sourceType: item.type });
+      }
+    }
+  }
+  const firstCandidate = chemistryCandidates[0];
+  if (firstCandidate) {
+    return { kind: firstCandidate.kind === "smiles" ? "smiles" : "plain-text",
+      text: firstCandidate.text, sourceType: firstCandidate.sourceType, warnings: [], chemistryCandidates,
+      ...(fallbackImage ? { fallbackImage } : {}) };
+  }
+  if (image && !suppressPicture) {
+    try {
+      const binary = atob(image.bytesBase64);
+      if (binary.length > MAX_IMAGE_OBJECT_BYTES) {
+        return refusedImage(`${image.type === "image/png" ? "PNG" : "SVG"} is ${(binary.length / (1024 * 1024)).toFixed(1)} MB; the limit is 25 MB.`);
+      }
+      const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+      if (image.type === "image/png") {
+        const result = validatePngImage(bytes);
+        if (result.error) return refusedImage(result.error);
+        const limitError = imagePixelLimitError(image.pixelWidth ?? result.info!.pixelWidth, image.pixelHeight ?? result.info!.pixelHeight);
+        if (limitError) return refusedImage(limitError);
+      } else {
+        const result = validateSvgImage(new TextDecoder().decode(bytes));
+        if (result.error) return refusedImage(result.error);
+        const info = result.info;
+        const limitError = imagePixelLimitError(image.pixelWidth ?? info?.pixelWidth ?? 0, image.pixelHeight ?? info?.pixelHeight ?? 0);
+        if (limitError) return refusedImage(limitError);
+      }
+    } catch {
+      return refusedImage(`the ${image.type === "image/png" ? "PNG" : "SVG"} has invalid data.`);
+    }
+    return { kind: "image", image, sourceType: image.type, warnings: [] };
+  }
+  if (svgText && !suppressPicture) {
+    const bytes = new TextEncoder().encode(svgText.text);
+    if (bytes.length > MAX_IMAGE_OBJECT_BYTES) {
+      return refusedImage(`SVG is ${(bytes.length / (1024 * 1024)).toFixed(1)} MB; the limit is 25 MB.`);
+    }
+    const result = validateSvgImage(svgText.text);
+    if (result.error) return refusedImage(result.error);
+    return { kind: "image", sourceType: svgText.type, warnings: [], image: svgTextImage(svgText.text) };
+  }
+  if (skippedImage && !suppressPicture) return refusedImage(skippedImage.reason);
+  if (firstPlainText && !looksLikeSvgDocument(firstPlainText.text)) {
+    return {
+      kind: "plain-text",
+      text: firstPlainText.text,
+      sourceType: firstPlainText.type,
+      warnings: []
+    };
+  }
+
+  const cdxmlType = payload.types.find(isCdxmlType);
+  if (cdxmlType) {
+    return { kind: "cdxml", text: "", sourceType: cdxmlType, warnings: [{
+      code: "clipboard.cdxml_not_implemented",
+      message: "The clipboard contains CDXML, but CDXML paste parsing is not implemented yet."
+    }] };
+  }
+
   const cdxType = payload.types.find(isCdxType);
   if (cdxType) {
     return {
@@ -207,18 +341,6 @@ export function inspectClipboardPayload(payload: ClipboardReadPayload): Clipboar
           message: "The clipboard contains a CDX payload, but best-effort CDX paste parsing is not implemented yet."
         }
       ]
-    };
-  }
-
-  const firstPlainText =
-    textItems.find((item) => isTextLikeType(item.type)) ??
-    textItems.find((item) => !isMarkupType(item.type));
-  if (firstPlainText) {
-    return {
-      kind: "plain-text",
-      text: firstPlainText.text,
-      sourceType: firstPlainText.type,
-      warnings: []
     };
   }
 
@@ -245,6 +367,24 @@ export function inspectClipboardPayload(payload: ClipboardReadPayload): Clipboar
       }
     ]
   };
+}
+
+function refusedImage(reason: string): ClipboardDetectedPayload {
+  const message = reason.startsWith("Couldn't paste the picture:") ? reason : `Couldn't paste the picture: ${reason}`;
+  return { kind: "image-refused", message: /[.!?]$/.test(message) ? message : `${message}.`, warnings: [] };
+}
+
+function svgTextImage(text: string): ClipboardImageItem {
+  const bytes = new TextEncoder().encode(text);
+  const chunks: string[] = [];
+  for (let offset = 0; offset < bytes.length; offset += 8192) {
+    chunks.push(String.fromCharCode(...bytes.subarray(offset, offset + 8192)));
+  }
+  return { type: "image/svg+xml", bytesBase64: btoa(chunks.join("")), ...readSvgInfo(text) };
+}
+
+function looksLikeSvgDocument(text: string): boolean {
+  return isSvgImageSource(text);
 }
 
 export function parseMolfileGraph(molfile: string): ParsedMolfileGraph {
@@ -696,8 +836,8 @@ export function looksLikeInchi(text: string): boolean {
  * token, length ≥ 2, only SMILES grammar characters, and at least one ASCII letter
  * (an element). This NEVER asserts validity (that needs a real parser); the app layer
  * confirms by attempting an OpenChemLib depiction and falls back to plain text on
- * failure. Deliberately not used by `inspectClipboardPayload` — it stays conservative
- * and only classifies plain text as SMILES once the app has actually parsed it.
+ * failure. `inspectClipboardPayload` uses the stricter pre-filter only when a picture
+ * would otherwise hide a plain-text chemistry candidate; the host must still parse it.
  */
 export function looksLikeSmiles(text: string): boolean {
   const token = text.trim();

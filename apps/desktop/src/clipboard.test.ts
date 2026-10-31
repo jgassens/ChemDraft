@@ -24,8 +24,8 @@ afterEach(() => {
 });
 
 describe("desktop clipboard bridge", () => {
-  it("extracts text items from paste event clipboard data", () => {
-    const payload = clipboardPayloadFromDataTransfer({
+  it("extracts text items from paste event clipboard data", async () => {
+    const payload = await clipboardPayloadFromDataTransfer({
       types: ["text/html", "text/plain", "public.svg-image"],
       getData: (type: string) => {
         if (type === "text/plain") {

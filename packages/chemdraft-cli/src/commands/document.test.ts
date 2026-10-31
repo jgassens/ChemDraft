@@ -1,13 +1,16 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { JSDOM } from "jsdom";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { openChemDraftPayload } from "@chemdraft/cdx-compat";
-import type { ChemDraftDocument, MoleculeObject } from "@chemdraft/chem-core";
+import { createEmptyDocument, createImageGraphicObject, deserializeDocument, serializeDocument,
+  type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
-import { nativeMoleculeRings } from "@chemdraft/layout-engine";
+import { DocumentStyleScale, nativeMoleculeRings } from "@chemdraft/layout-engine";
 import { buildSmilesDocument, renderSmilesToAssets } from "../document";
 import { perceiveDoubleBondStereo } from "./stereo";
 import { MAX_DOCUMENT_BYTES, validateDocumentOutputPath } from "../documentInput";
@@ -26,6 +29,38 @@ async function run(args: string[]) {
 }
 
 describe("native document agent commands", () => {
+  it("exports the saved PNG at 144 × 72 pt through CLI render-document in default and document styles", async () => {
+    // 288 × 144 transparent PNG with pHYs = 5669 pixels/m (144 dpi, quantized to integers).
+    const png = "iVBORw0KGgoAAAANSUhEUgAAASAAAACQCAYAAACoPrZBAAAACXBIWXMAABYlAAAWJQFJUiTwAAAAuElEQVR42u3BMQEAAADCoPVPbQ0PoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAFwOIrgABLLiMAwAAAABJRU5ErkJggg==";
+    const document = createEmptyDocument();
+    const molecule: MoleculeObject = { id: "m", type: "molecule", x: 100, y: 100,
+      width: 44, height: 20, rotation: 0, structure: "CC", structureFormat: "smiles",
+      style: {}, superatoms: [], rGroups: [],
+      atoms: [{ id: "a", element: "C", x: 100, y: 110, formalCharge: 0 },
+        { id: "b", element: "C", x: 144, y: 110, formalCharge: 0 }],
+      bonds: [{ id: "ab", fromAtomId: "a", toAtomId: "b", order: "single" }] };
+    document.pages[0]!.objects = [molecule, createImageGraphicObject({ id: "picture", mimeType: "image/png",
+      dataBase64: png, center: { x: 400, y: 300 } })];
+    const saved = deserializeDocument(serializeDocument(document));
+    const directory = mkdtempSync(join(tmpdir(), "chemdraft-picture-"));
+    try {
+      const input = join(directory, "saved.chemdraft");
+      writeFileSync(input, serializeDocument(saved));
+      for (const style of [undefined, "document"]) {
+        const output = join(directory, `${style ?? "default"}.svg`);
+        const result = await run(["render-document", "--document", input, "--out", output,
+          ...(style ? ["--style", style] : [])]);
+        expect(result.result.ok).toBe(true);
+        const dom = new JSDOM(readFileSync(output, "utf8"), { contentType: "image/svg+xml" });
+        try {
+          const image = dom.window.document.querySelector('[data-object-id="picture"] image')!;
+          const pointsPerUnit = style ? DocumentStyleScale.pointsPerUnit : 72 / 96;
+          expect(Number(image.getAttribute("width")) * pointsPerUnit).toBeCloseTo(144, 1);
+          expect(Number(image.getAttribute("height")) * pointsPerUnit).toBeCloseTo(72, 1);
+        } finally { dom.window.close(); }
+      }
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  }, 20_000);
   it.each([
     { smiles: "CC=CC", open: [1], stereo: [{ bondIndex: 1, descriptor: "unspecified" }] },
     { smiles: "C/C=C/C", open: [], stereo: [{ bondIndex: 1, descriptor: "E" }] },

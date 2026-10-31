@@ -49,6 +49,11 @@ export async function exportDocumentToPdf(
     includePageGuides: options.includePageGuides
   });
   const svgElement = parseSvgElement(svgResult.contents, options.domParser);
+  const pictures = new Map(page.objects.filter((object) => object.type === "graphic" && object.graphicKind === "image" && object.data.image)
+    .map((object) => [object.id, object]));
+  const warnings = svgResult.warnings.map((warning) => warning.code === "export.svg.picture_missing_data"
+    ? { ...warning, code: "export.pdf.picture_missing_data", message: `PDF export: picture ${warning.objectId} has no picture data and was not drawn` }
+    : warning);
 
   const pdf = new jsPDF({
     orientation: widthPt >= heightPt ? "landscape" : "portrait",
@@ -61,13 +66,56 @@ export async function exportDocumentToPdf(
   let releaseHaloPaint = () => {};
   try {
     releaseHaloPaint = await preparePdfHaloPaint(svgElement, pdf, svg2pdf, widthPt, heightPt);
-    await svg2pdf(svgElement, pdf, {
-      x: 0,
-      y: 0,
-      width: widthPt,
-      height: heightPt,
-      loadExternalStyleSheets: false
+    const render = (element: Element) => svg2pdf(element, pdf, {
+      x: 0, y: 0, width: widthPt, height: heightPt, loadExternalStyleSheets: false
     });
+    if (pictures.size === 0) {
+      await render(svgElement);
+    } else {
+      // Render contiguous runs in order so pictures retain their stacking relative to other objects.
+      // svg2pdf's raster image loader relies on a browser Image and silently skips load failures;
+      // jsPDF can embed the PNG bytes directly, including in headless exports.
+      const children = [...svgElement.children];
+      let run: Element[] = [];
+      const flush = async () => {
+        if (!run.length) return;
+        const part = svgElement.cloneNode(false) as Element;
+        for (const child of children) if (child.tagName === "defs" || run.includes(child)) part.appendChild(child.cloneNode(true));
+        await render(part);
+        run = [];
+      };
+      for (const child of children) {
+        const picture = pictures.get(child.getAttribute("data-object-id") ?? "");
+        if (!picture || picture.type !== "graphic" || !picture.data.image) {
+          if (child.tagName !== "defs") run.push(child);
+          continue;
+        }
+        await flush();
+        if (picture.data.image.mimeType === "image/svg+xml") {
+          warnings.push({ code: "export.pdf.svg_picture_not_drawn", severity: "warning", objectId: picture.id,
+            message: `PDF export: SVG picture ${picture.id} was not drawn; paste it as PNG or export SVG` });
+          continue;
+        }
+        const scale = Math.min(widthPt / page.width, heightPt / page.height);
+        const offsetX = (widthPt - page.width * scale) / 2;
+        const offsetY = (heightPt - page.height * scale) / 2;
+        const radians = picture.rotation * Math.PI / 180;
+        const cos = Math.cos(radians), sin = Math.sin(radians);
+        const cx = picture.x + picture.width / 2, cy = picture.y + picture.height / 2;
+        const pictureScale = cssPxToPdfPt(1) / scale;
+        const width = picture.width * pictureScale;
+        const height = picture.height * pictureScale;
+        pdf.advancedAPI();
+        pdf.saveGraphicsState();
+        pdf.setCurrentTransformationMatrix(pdf.Matrix(scale * cos, scale * sin, -scale * sin, scale * cos,
+          offsetX + scale * (cx - cos * cx + sin * cy), offsetY + scale * (cy - sin * cx - cos * cy)));
+        pdf.addImage(`data:image/png;base64,${picture.data.image.dataBase64}`, "PNG",
+          picture.x + (picture.width - width) / 2, picture.y + (picture.height - height) / 2, width, height);
+        pdf.restoreGraphicsState();
+        pdf.compatAPI();
+      }
+      await flush();
+    }
   } finally {
     releaseHaloPaint();
     releaseFonts();
@@ -79,7 +127,7 @@ export async function exportDocumentToPdf(
     bytes: new Uint8Array(pdf.output("arraybuffer")),
     mimeType: descriptor.mimeType,
     extension: descriptor.extensions[0] ?? "pdf",
-    warnings: svgResult.warnings
+    warnings
   };
 }
 

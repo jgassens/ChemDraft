@@ -17,8 +17,15 @@ export function applyDocumentStyle(document: ChemDraftDocument, warnings: Compat
     warnings.push({ code: "document_style.mixed_bond_lengths",
       message: `Mixed molecule bond lengths differ by more than 2%; using the median across molecules (${Number(representative!.toFixed(2))} native units) to scale the whole page uniformly. Individual bond lengths remain proportional.` });
   }
-  const scaled = scalePageGeometry(page, representative === undefined ? 1 : DocumentStylePreset.drawing.bondLengthPx / representative);
-  return { ...document, pages: [{ ...scaled, objects: scaled.objects.map((object) => {
+  const scale = representative === undefined ? 1 : DocumentStylePreset.drawing.bondLengthPx / representative;
+  const scaled = scalePageGeometry(page, scale);
+  return { ...document, pages: [{ ...scaled, objects: scaled.objects.map((object, index) => {
+    if (object.type === "graphic" && object.graphicKind === "image") {
+      // Pictures follow layout by their centre; their frame is a physical size, not a bond length.
+      const source = page.objects[index]!;
+      return { ...source, x: (source.x + source.width / 2) * scale - source.width / 2,
+        y: (source.y + source.height / 2) * scale - source.height / 2 };
+    }
     if (object.type === "molecule") return { ...object, style: { ...object.style, ...DocumentMoleculeSizeStyle } };
     if (object.type === "text") return { ...object,
       style: { ...object.style, fontFamily: DocumentTextStyle.fontFamily,

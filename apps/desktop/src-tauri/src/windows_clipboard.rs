@@ -23,6 +23,7 @@
 use super::{decode_clipboard_text_bytes, text_is_plausible_clipboard_text};
 #[cfg(any(windows, test))]
 use crate::clipboard_formats::{windows_target_for_payload_type, WindowsTarget};
+use crate::clipboard_images::png_pixels_per_meter;
 
 // Standard clipboard format ids (winuser.h). Kept local so the pure helpers build off Windows.
 const CF_TEXT: u32 = 1;
@@ -36,6 +37,19 @@ const CF_DIBV5: u32 = 17;
 const PNG_FORMAT: &str = "PNG";
 const CDX_FORMAT: &str = "ChemDraw Interchange Format";
 const MDLCT_FORMAT: &str = "MDLCT";
+
+/// Native PNG is preferred, followed by the MIME alias ChemDraft also writes, then DIBs.
+/// Registered IDs are injected so this order can be tested without the Windows clipboard.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn image_read_formats(png_id: u32, mime_png_id: u32, svg_id: u32) -> [(&'static str, u32); 5] {
+    [
+        (PNG_FORMAT, png_id),
+        ("image/png", mime_png_id),
+        ("CF_DIBV5", CF_DIBV5),
+        ("CF_DIB", CF_DIB),
+        ("image/svg+xml", svg_id),
+    ]
+}
 
 /// Formats whose bytes are never text a user meant to paste: list them as types, but do not fetch
 /// or decode them. Besides binary payloads this covers the shell's and OLE's bookkeeping formats —
@@ -130,7 +144,7 @@ pub(crate) fn is_binary_windows_format(name: &str) -> bool {
         || NON_TEXT_FORMAT_PREFIXES
             .iter()
             .any(|prefix| name.starts_with(prefix))
-        || name.starts_with("image/") && name != "image/svg+xml"
+        || crate::clipboard_images::is_image_clipboard_type(name) && name != "image/svg+xml"
 }
 
 /// Accept decoded clipboard text only if it could be something a person copied: plausible (no
@@ -215,33 +229,6 @@ pub(crate) fn decode_mdlct(bytes: &[u8]) -> Option<String> {
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn windows_line_endings(text: &str) -> String {
     text.replace("\r\n", "\n").replace('\n', "\r\n")
-}
-
-/// The pixels-per-metre a PNG declares in its `pHYs` chunk (unit 1 = metre), if any. Copy As PNG
-/// stamps the real print density there (e.g. 384 dpi for its 4x render).
-#[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) fn png_pixels_per_meter(png: &[u8]) -> Option<(u32, u32)> {
-    const SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
-    if !png.starts_with(SIGNATURE) {
-        return None;
-    }
-    let mut index = SIGNATURE.len();
-    while index + 8 <= png.len() {
-        let length = u32::from_be_bytes(png[index..index + 4].try_into().ok()?) as usize;
-        let kind = &png[index + 4..index + 8];
-        let data = png.get(index + 8..index + 8 + length)?;
-        if kind == b"pHYs" && length == 9 {
-            let x = u32::from_be_bytes(data[0..4].try_into().ok()?);
-            let y = u32::from_be_bytes(data[4..8].try_into().ok()?);
-            return (data[8] == 1 && x > 0 && y > 0).then_some((x, y));
-        }
-        if kind == b"IDAT" || kind == b"IEND" {
-            // pHYs must precede the image data.
-            return None;
-        }
-        index += 12 + length;
-    }
-    None
 }
 
 // Clipboard compatibility extras are optional: cap each dimension at 16384 pixels and the
@@ -386,11 +373,16 @@ pub(crate) mod native {
         build_cf_html, clipboard_utf8, parse_cf_html, ClipboardWriteData, ClipboardWriteResult,
         ValidatedClipboardItem,
     };
+    use crate::clipboard_images::{
+        check_image_byte_length, dib_image_item, png_image_item, svg_image_item,
+        ClipboardImageItem, SkippedClipboardImageItem,
+    };
     use crate::{is_opaque_clipboard_type, ClipboardReadPayload, ClipboardTextItem};
     use windows_sys::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND};
     use windows_sys::Win32::System::DataExchange::{
         CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData,
-        GetClipboardFormatNameW, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
+        GetClipboardFormatNameW, IsClipboardFormatAvailable, OpenClipboard,
+        RegisterClipboardFormatW, SetClipboardData,
     };
     use windows_sys::Win32::System::Memory::{
         GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
@@ -463,6 +455,87 @@ pub(crate) mod native {
         Some(String::from_utf16_lossy(&units)).filter(|text| !text.is_empty())
     }
 
+    /// Check the allocation size before copying image bytes, including SVG used as text.
+    fn image_format_bytes(
+        id: u32,
+        source: &str,
+        kind: &str,
+    ) -> Result<Vec<u8>, SkippedClipboardImageItem> {
+        let refused = |length, reason| SkippedClipboardImageItem::new(kind, length, reason);
+        // SAFETY: read_payload holds the clipboard open. The clipboard owns the handle; the
+        // pointer is read only while locked and the copied slice fits its GlobalSize allocation.
+        unsafe {
+            let handle = GetClipboardData(id);
+            if handle.is_null() {
+                return Err(refused(
+                    0,
+                    format!("Could not read {source} clipboard data"),
+                ));
+            }
+            let size = GlobalSize(handle as HGLOBAL);
+            check_image_byte_length(source, size).map_err(|reason| refused(size, reason))?;
+            let pointer = GlobalLock(handle as HGLOBAL) as *const u8;
+            if pointer.is_null() {
+                return Err(refused(
+                    size,
+                    format!("Could not lock {source} clipboard data"),
+                ));
+            }
+            let bytes = std::slice::from_raw_parts(pointer, size).to_vec();
+            GlobalUnlock(handle as HGLOBAL);
+            Ok(bytes)
+        }
+    }
+
+    fn read_images(
+        text_items: &mut Vec<ClipboardTextItem>,
+    ) -> (Vec<ClipboardImageItem>, Vec<SkippedClipboardImageItem>) {
+        let mut items = Vec::new();
+        let mut skipped = Vec::new();
+        for (source, id) in image_read_formats(
+            registered(PNG_FORMAT),
+            registered("image/png"),
+            registered("image/svg+xml"),
+        ) {
+            let kind = if source == "image/svg+xml" {
+                "image/svg+xml"
+            } else {
+                "image/png"
+            };
+            if items
+                .iter()
+                .any(|item: &ClipboardImageItem| item.r#type == kind)
+            {
+                continue;
+            }
+            // SAFETY: format IDs are standard or returned by RegisterClipboardFormatW.
+            if id == 0 || unsafe { IsClipboardFormatAvailable(id) } == 0 {
+                continue;
+            }
+            let result = image_format_bytes(id, source, kind).and_then(|bytes| {
+                let item = match source {
+                    PNG_FORMAT | "image/png" => png_image_item(&bytes),
+                    "image/svg+xml" => {
+                        if let Some(text) = decode_registered_text(&bytes) {
+                            text_items.push(ClipboardTextItem {
+                                r#type: kind.to_string(),
+                                text,
+                            });
+                        }
+                        svg_image_item(&bytes, source)
+                    }
+                    _ => dib_image_item(&bytes, source),
+                };
+                item.map_err(|reason| SkippedClipboardImageItem::new(kind, bytes.len(), reason))
+            });
+            match result {
+                Ok(item) => items.push(item),
+                Err(reason) => skipped.push(reason),
+            }
+        }
+        (items, skipped)
+    }
+
     pub(crate) fn read_payload() -> Result<ClipboardReadPayload, String> {
         let _clipboard = OpenedClipboard::open(std::ptr::null_mut())?;
         let mut types = Vec::new();
@@ -491,7 +564,12 @@ pub(crate) mod native {
                 Some("HTML Format") => {
                     format_bytes(id).and_then(|bytes| parse_cf_html(&bytes).ok())
                 }
-                Some(name) if is_binary_windows_format(name) || is_opaque_clipboard_type(name) => {
+                // SVG text is populated by read_images, after the GlobalSize guard.
+                Some(name)
+                    if crate::clipboard_images::is_image_clipboard_type(name)
+                        || is_binary_windows_format(name)
+                        || is_opaque_clipboard_type(name) =>
+                {
                     None
                 }
                 Some(_) => format_bytes(id).and_then(|bytes| decode_registered_text(&bytes)),
@@ -504,7 +582,13 @@ pub(crate) mod native {
             }
         }
 
-        Ok(ClipboardReadPayload { types, text_items })
+        let (image_items, skipped_image_items) = read_images(&mut text_items);
+        Ok(ClipboardReadPayload {
+            types,
+            text_items,
+            image_items,
+            skipped_image_items,
+        })
     }
 
     /// Hand `bytes` to the clipboard under `format`. On success the clipboard owns the memory; on
@@ -792,8 +876,18 @@ pub(crate) mod native {
                 assert_eq!(text, expected);
             }
             assert!(payload.types.iter().any(|kind| kind == "image/png"));
+            assert_eq!(payload.image_items.len(), 1);
+            assert!(payload.skipped_image_items.is_empty());
+            {
+                use base64::{engine::general_purpose::STANDARD, Engine};
+                let bytes = STANDARD
+                    .decode(&payload.image_items[0].bytes_base64)
+                    .unwrap();
+                assert_eq!(bytes.get(..png.len()), Some(png.as_slice()));
+            }
             let _clipboard = OpenedClipboard::open(owner.0).expect("open for binary readback");
-            let bytes = format_bytes(registered(PNG_FORMAT)).expect("registered PNG reads back");
+            let bytes = image_format_bytes(registered(PNG_FORMAT), PNG_FORMAT, "image/png")
+                .expect("registered PNG reads back");
             // GlobalSize may include allocation padding after the original binary payload.
             assert_eq!(bytes.get(..png.len()), Some(png.as_slice()));
         }
@@ -921,10 +1015,27 @@ mod tests {
         assert!(is_binary_windows_format("PNG"));
         assert!(is_binary_windows_format("ChemDraw Interchange Format"));
         assert!(is_binary_windows_format("image/png"));
+        assert!(is_binary_windows_format("image/tiff"));
+        assert!(is_binary_windows_format("public.png"));
+        assert!(is_binary_windows_format("public.tiff"));
         assert!(!is_binary_windows_format("image/svg+xml"));
         assert!(!is_binary_windows_format(
             "application/x-chemdraft-selection+json"
         ));
+    }
+
+    #[test]
+    fn image_read_order_prefers_both_png_formats_before_dibs() {
+        assert_eq!(
+            image_read_formats(0xC100, 0xC101, 0xC102),
+            [
+                ("PNG", 0xC100),
+                ("image/png", 0xC101),
+                ("CF_DIBV5", CF_DIBV5),
+                ("CF_DIB", CF_DIB),
+                ("image/svg+xml", 0xC102),
+            ]
+        );
     }
 
     #[test]

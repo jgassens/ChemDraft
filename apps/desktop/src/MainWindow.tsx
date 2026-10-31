@@ -1646,7 +1646,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.31.10.00-codex";
+const CURRENT_BUILD_STAMP = "10.31.12.35-codex";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -6413,12 +6413,7 @@ export function MainWindow({
     };
   }, [activePage.height, activePage.width]);
 
-  const pastePointForViewport = useCallback((): ClientPoint => {
-    const pointerPoint = pastePointerPagePoint();
-    if (pointerPoint) {
-      return pointerPoint;
-    }
-
+  const viewportCentrePagePoint = useCallback((clampToPage = true): ClientPoint => {
     const canvas = canvasRegionRef.current;
     const page = pageRef.current;
     if (!canvas || !page) {
@@ -6435,11 +6430,19 @@ export function MainWindow({
       y: canvasRect.top + canvas.clientHeight / 2
     };
 
-    return {
-      x: clamp((clientPoint.x - pageRect.left) / viewportRef.current.scale, 0, activePage.width),
-      y: clamp((clientPoint.y - pageRect.top) / viewportRef.current.scale, 0, activePage.height)
+    const point = {
+      x: (clientPoint.x - pageRect.left) / viewportRef.current.scale,
+      y: (clientPoint.y - pageRect.top) / viewportRef.current.scale
     };
-  }, [activePage.height, activePage.margin.left, activePage.margin.top, activePage.width, pastePointerPagePoint]);
+    return clampToPage ? {
+      x: clamp(point.x, 0, activePage.width),
+      y: clamp(point.y, 0, activePage.height)
+    } : point;
+  }, [activePage.height, activePage.margin.left, activePage.margin.top, activePage.width]);
+
+  const pastePointForViewport = useCallback((): ClientPoint =>
+    pastePointerPagePoint() ?? viewportCentrePagePoint(),
+  [pastePointerPagePoint, viewportCentrePagePoint]);
 
   const clearScheduledTextEditorFocus = useCallback(() => {
     textEditorFocusTimeoutsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
@@ -6662,32 +6665,48 @@ export function MainWindow({
     const result = applyClipboardPastePayload(
       documentRef.current,
       detectedPayload,
-      pastePointForViewport(),
+      detectedPayload.kind === "image" ? viewportCentrePagePoint(false) : pastePointForViewport(),
       textStyleDefaults
     );
     if (result.document !== documentRef.current) {
-      commitDocumentChange(result.document);
+      commitDocumentChange(result.document, detectedPayload.kind === "image" ? "Paste Picture" : undefined);
+    } else if (detectedPayload.kind === "image" || detectedPayload.kind === "image-refused") {
+      setStatus(result.status);
+      return;
     }
     resetPasteUiState(result.editTextObjectId);
     setStatus(result.status);
-  }, [commitDocumentChange, pastePointForViewport, resetPasteUiState, textStyleDefaults]);
+  }, [commitDocumentChange, pastePointForViewport, resetPasteUiState, textStyleDefaults, viewportCentrePagePoint]);
 
   // SMILES → editable 2D structure with stereochemistry. The depiction engines are loaded
   // on demand. Parser/chemistry refusals retain text fallback; worker failures reach status.
-  const renderPastedSmiles = useCallback(async (smilesText: string): Promise<{ rendered: boolean; reason?: string; failed?: boolean }> => {
+  const renderPastedSmiles = useCallback(async (smilesText: string, signal: AbortSignal, pictureFallback = false): Promise<{
+    outcome: "success" | "no-structure" | "terminal"; reason?: string; failed?: boolean
+  }> => {
+    const terminalResult = () => {
+      if (quitInteractionRef.current) {
+        setStatus("Paste cancelled while quitting");
+        return { outcome: "terminal" as const };
+      }
+      if (signal.aborted) return { outcome: "terminal" as const };
+    };
     setStatus("Drawing the pasted SMILES…");
     try {
-      await verifySmilesPasteInput(smilesText);
+      await verifySmilesPasteInput(smilesText, signal);
+      let terminal = pictureFallback ? terminalResult() : undefined;
+      if (terminal) return terminal;
       const layoutDocument = documentRef.current;
       const point = pastePointForViewport();
-      const parsed = await depictSmilesForPaste(smilesText, {}, {
+      const parsed = await depictSmilesForPaste(smilesText, { signal }, {
         document: layoutDocument, centre: point, reservedObjectIds: new Set<string>()
       });
-      if (quitInteractionRef.current) return { rendered: false, reason: "Paste cancelled while quitting" };
-      if (!parsed) return { rendered: false };
+      terminal = terminalResult();
+      if (terminal) return terminal;
+      if (!parsed) return { outcome: "no-structure" };
       const { depiction } = parsed;
       await verifySmilesPaste(depiction, smilesText);
-      if (quitInteractionRef.current) return { rendered: false, reason: "Paste cancelled while quitting" };
+      terminal = terminalResult();
+      if (terminal) return terminal;
       const pasteDocument = documentRef.current;
       if (parsed.molecule && pasteDocument !== layoutDocument) throw new Error("The document changed while preparing SMILES paste; paste again.");
       // Reuse the template built with this document's defaults, placement and object IDs.
@@ -6724,7 +6743,9 @@ export function MainWindow({
       } catch (error) {
         stereoWarnings.push(`Stereocenter counts unavailable: ${error instanceof Error ? error.message : String(error)}`);
       }
-      if (quitInteractionRef.current || documentRef.current !== pasteDocument) throw new Error("The document changed while preparing SMILES paste; paste again.");
+      terminal = terminalResult();
+      if (terminal) return terminal;
+      if (documentRef.current !== pasteDocument) throw new Error("The document changed while preparing SMILES paste; paste again.");
       commitDocumentChange(nextDocument, "Paste SMILES");
       resetPasteUiState();
       // A pasted structure can be larger than the current page (e.g. a long peptide). Offer
@@ -6737,133 +6758,182 @@ export function MainWindow({
         ? `${baseStatus}; content exceeds ${pageFitPromptLayoutLabel(fit.currentPageTitle, fit.currentOrientation)}`
         : baseStatus;
       setStatus([pasteStatus, ...(inserted.status ? [inserted.status] : []), ...(parsed.warnings ?? []), ...stereoWarnings].join("; "));
-      return { rendered: true };
+      return { outcome: "success" };
     } catch (error) {
+      const terminal = terminalResult();
+      if (terminal) return terminal;
       const reason = error instanceof Error ? error.message : String(error);
       if (reason.includes("the RDKit engine did not load:")) {
         const detail = reason.slice(reason.indexOf("the structure could not be verified"));
-        return { rendered: false, reason: detail };
+        return { outcome: "no-structure", reason: detail };
       }
-      if ((error as { smilesChemistryRefusal?: boolean })?.smilesChemistryRefusal) return { rendered: false, reason };
+      if ((error as { smilesChemistryRefusal?: boolean })?.smilesChemistryRefusal) return { outcome: "no-structure", reason };
       setStatus(reason.startsWith("SMILES paste refused:")
         ? reason : `Clipboard SMILES could not be placed: ${reason}`);
-      return { rendered: false, failed: true, reason };
+      return { outcome: reason === "The document changed while preparing SMILES paste; paste again." ? "terminal" : "no-structure", failed: true, reason };
     }
+  }, [commitDocumentChange, pastePointForViewport, resetPasteUiState]);
+
+  // Prepare and verify the whole list before committing. Unsuccessful attempts leave fallback
+  // handling to the caller, so another text flavor can still supply readable chemistry.
+  const renderPastedSmilesList = useCallback((text: string, signal: AbortSignal, pictureFallback = false):
+    Promise<{ outcome: "success" | "no-structure" | "terminal"; pasteAsText: boolean; status?: string }> | undefined => {
+    const pasteDocument = documentRef.current;
+    const terminalResult = (checkDocument = false) => {
+      if (quitInteractionRef.current) {
+        setStatus("Paste cancelled while quitting");
+        return { outcome: "terminal" as const, pasteAsText: false };
+      }
+      if (signal.aborted) return { outcome: "terminal" as const, pasteAsText: false };
+      if (checkDocument && documentRef.current !== pasteDocument) {
+        setStatus("No SMILES structures were pasted; 1 item failed: The document changed while preparing SMILES paste; paste again.");
+        return { outcome: "terminal" as const, pasteAsText: false };
+      }
+    };
+    const pendingList = depictSmilesListForPaste(text, smilesListCandidates(text), (completed, total) => {
+      setStatus(`Parsing SMILES list: ${completed} of ${total} tokens`);
+    }, {
+      signal, inspectInput: verifySmilesPasteInput,
+      templatePlacement: { document: pasteDocument, centre: pastePointForViewport() }
+    });
+    if (!pendingList) return undefined;
+    return pendingList.then(async (parsed) => {
+      let terminal = terminalResult(pictureFallback);
+      if (terminal) return terminal;
+      if (!parsed) return { outcome: "no-structure" as const, pasteAsText: true };
+      const verified = await verifySmilesGridEntries(parsed.entries, undefined, signal);
+      const entries = parsed.entries.filter(entry => verified.entries.includes(entry));
+      terminal = terminalResult(true);
+      if (terminal) return terminal;
+      const result = insertSmilesMoleculeGrid(
+        pasteDocument, pastePointForViewport(), entries);
+      parsed.failures.push(...verified.failures);
+      const engineUnavailable = !result.objectIds.length && parsed.failures.some(failure =>
+        failure.error.includes("the RDKit engine did not load:"));
+      const renderedSkippedItems = new Set(visibleSkippedItems(parsed.skippedItems));
+      const unmatchedSkippedItems = [...parsed.skippedItems];
+      // Failures have no line; match tokens by occurrence order, consuming each skipped item once.
+      const displayedFailures = result.objectIds.length
+        ? parsed.failures.flatMap(failure => {
+          const index = unmatchedSkippedItems.findIndex(item => item.token === failure.input);
+          if (index < 0) return [failure];
+          const [item] = unmatchedSkippedItems.splice(index, 1);
+          if (renderedSkippedItems.has(item!)) return [];
+          return [{ ...failure, error: item!.reason }];
+        })
+        : parsed.failures;
+      const failures = smilesListFailureStatus(displayedFailures);
+      const placementStatus = result.objectIds.length
+        ? insertSmilesMoleculeGridStatus(result, parsed.skipped, parsed.skippedItems) : "No SMILES structures were pasted";
+      const baseStatus = [placementStatus, ...new Set(entries.flatMap(entry => entry.molecule ? [structureTemplateLayoutMessage(entry.molecule)!] : [])), ...(parsed.warnings ?? [])].join("; ");
+      const failureCount = displayedFailures.length;
+      const status = failures
+        ? `${baseStatus}; ${failureCount} item${failureCount === 1 ? "" : "s"} failed: ${failures}` +
+          (engineUnavailable ? "; pasted as text" : "")
+        : baseStatus;
+      if (result.objectIds.length > 0) {
+        commitDocumentChange(result.document, "Paste SMILES list");
+        resetPasteUiState();
+        setPageFitPrompt(undefined);
+        setStatus(status);
+      }
+      return { outcome: result.objectIds.length > 0 ? "success" as const : "no-structure" as const, pasteAsText: engineUnavailable, status };
+    }).catch((error: unknown) => {
+      const terminal = terminalResult(pictureFallback);
+      if (terminal) return terminal;
+      const failures = error instanceof SmilesListPasteError ? error.failures : [];
+      const firstReason = failures.length ? smilesListFailureStatus(failures)
+        : error instanceof Error ? error.message : String(error);
+      const failureCount = failures.length || 1;
+      return { outcome: "no-structure" as const, pasteAsText: error instanceof SmilesListPasteError,
+        status: `No SMILES structures were pasted; ` +
+        `${failureCount} item${failureCount === 1 ? "" : "s"} failed: ${firstReason}` +
+        (error instanceof SmilesListPasteError ? "; pasted as text" : "") };
+    });
   }, [commitDocumentChange, pastePointForViewport, resetPasteUiState]);
 
   const applyDetectedClipboardPayload = useCallback((detectedPayload: ClipboardDetectedPayload) => {
     smilesListPasteAbortRef.current?.abort();
-    if (detectedPayload.kind === "smiles" && !/\s/.test(detectedPayload.text.trim())) {
-      void renderPastedSmiles(detectedPayload.text.trim()).then(({ rendered, reason, failed }) => {
-        if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
-        if (failed) return;
-        if (!rendered) {
-          applySyncClipboardPayload({ kind: "plain-text", text: detectedPayload.text, sourceType: detectedPayload.sourceType, warnings: [] });
-          if (reason) {
-            setStatus(reason.startsWith("the structure could not be verified")
-              ? `SMILES pasted as text: ${reason}`
-              : `Clipboard SMILES could not be parsed: ${reason}; pasted as text`);
-          }
-        }
-      });
-      return;
-    }
     if (detectedPayload.kind === "inchi") {
       applySyncClipboardPayload({ kind: "plain-text", text: detectedPayload.text, sourceType: detectedPayload.sourceType, warnings: [] });
       setStatus("InChI detected — structure import from InChI isn't supported yet; pasted as text");
       return;
     }
     if (detectedPayload.kind === "plain-text" || detectedPayload.kind === "smiles") {
-      const candidates = smilesListCandidates(detectedPayload.text);
-      const pasteAsText = () => applySyncClipboardPayload({ ...detectedPayload, kind: "plain-text" });
-      const trimmedText = detectedPayload.text.trim();
-      if (looksLikeSmiles(trimmedText) && !/\s/.test(trimmedText)) {
-        void renderPastedSmiles(trimmedText).then(({ rendered, reason, failed }) => {
-          if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
-          if (failed) return;
-          if (!rendered) {
-            pasteAsText();
-            if (reason) {
-              setStatus(reason.startsWith("the structure could not be verified")
-                ? `SMILES pasted as text: ${reason}`
-                : `Clipboard SMILES could not be parsed: ${reason}; pasted as text`);
+      const pasteFallbackImage = () => {
+        if (!detectedPayload.fallbackImage) return false;
+        const image = detectedPayload.fallbackImage;
+        applySyncClipboardPayload(inspectClipboardPayload({ types: [image.type], textItems: [], imageItems: [image] }));
+        return true;
+      };
+      const pasteAsText = () => applySyncClipboardPayload(detectedPayload.kind === "smiles" && !/\s/.test(detectedPayload.text.trim())
+        ? { kind: "plain-text", text: detectedPayload.text, sourceType: detectedPayload.sourceType, warnings: [] }
+        : { ...detectedPayload, kind: "plain-text" });
+      const finishSingleFallback = ({ reason, failed }: Awaited<ReturnType<typeof renderPastedSmiles>>) => {
+        if (failed) return;
+        pasteAsText();
+        if (reason) {
+          setStatus(reason.startsWith("the structure could not be verified")
+            ? `SMILES pasted as text: ${reason}`
+            : `Clipboard SMILES could not be parsed: ${reason}; pasted as text`);
+        }
+      };
+      const finishListFallback = (result: Awaited<ReturnType<typeof renderPastedSmilesList>>) => {
+        if (!result || result.pasteAsText) pasteAsText();
+        if (result?.status) setStatus(result.status);
+      };
+      const chemistryCandidates = detectedPayload.chemistryCandidates;
+      if (detectedPayload.fallbackImage && chemistryCandidates?.length) {
+        const listAbort = new AbortController();
+        smilesListPasteAbortRef.current = listAbort;
+        void (async () => {
+          let firstFallback: (() => void) | undefined;
+          for (const candidate of chemistryCandidates) {
+            if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
+            if (listAbort.signal.aborted) return;
+            if (candidate.kind === "smiles") {
+              const result = await renderPastedSmiles(candidate.text.trim(), listAbort.signal, true);
+              if (result.outcome !== "no-structure") return;
+              firstFallback ??= () => finishSingleFallback(result);
+            } else {
+              const result = await renderPastedSmilesList(candidate.text, listAbort.signal, true);
+              if (result && result.outcome !== "no-structure") return;
+              firstFallback ??= () => finishListFallback(result);
             }
           }
+          if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
+          if (listAbort.signal.aborted) return;
+          if (!pasteFallbackImage()) firstFallback?.();
+        })();
+        return;
+      }
+      const trimmedText = detectedPayload.text.trim();
+      if ((detectedPayload.kind === "smiles" || looksLikeSmiles(trimmedText)) && !/\s/.test(trimmedText)) {
+        // Keep ordinary single SMILES pastes independent of later pastes, as before.
+        // Only lists and picture candidate loops register their cancellation controller.
+        void renderPastedSmiles(trimmedText, new AbortController().signal).then(result => {
+          if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
+          if (result.outcome !== "no-structure") return;
+          if (!pasteFallbackImage()) finishSingleFallback(result);
         });
         return;
       }
       const listAbort = new AbortController();
       smilesListPasteAbortRef.current = listAbort;
-      const pasteDocument = documentRef.current;
-      const pendingList = depictSmilesListForPaste(detectedPayload.text, candidates, (completed, total) => {
-        setStatus(`Parsing SMILES list: ${completed} of ${total} tokens`);
-      }, {
-        signal: listAbort.signal, inspectInput: verifySmilesPasteInput,
-        templatePlacement: { document: pasteDocument, centre: pastePointForViewport() }
-      });
+      const pendingList = renderPastedSmilesList(detectedPayload.text, listAbort.signal);
       if (!pendingList) {
-        pasteAsText();
+        if (!pasteFallbackImage()) pasteAsText();
         return;
       }
-      void pendingList.then(async (parsed) => {
+      void pendingList.then(result => {
         if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
-        if (listAbort.signal.aborted) return;
-        if (!parsed) {
-          pasteAsText();
-          return;
-        }
-        const verified = await verifySmilesGridEntries(parsed.entries, undefined, listAbort.signal);
-        const entries = parsed.entries.filter(entry => verified.entries.includes(entry));
-        listAbort.signal.throwIfAborted();
-        if (quitInteractionRef.current || documentRef.current !== pasteDocument) throw new Error("The document changed while preparing SMILES paste; paste again.");
-        const result = insertSmilesMoleculeGrid(
-          pasteDocument, pastePointForViewport(), entries);
-        parsed.failures.push(...verified.failures);
-        const engineUnavailable = !result.objectIds.length && parsed.failures.some(failure =>
-          failure.error.includes("the RDKit engine did not load:"));
-        if (engineUnavailable) pasteAsText();
-        if (result.objectIds.length > 0) {
-          commitDocumentChange(result.document, "Paste SMILES list");
-          resetPasteUiState();
-          setPageFitPrompt(undefined);
-        }
-        const renderedSkippedItems = new Set(visibleSkippedItems(parsed.skippedItems));
-        const unmatchedSkippedItems = [...parsed.skippedItems];
-        // Failures have no line; match tokens by occurrence order, consuming each skipped item once.
-        const displayedFailures = result.objectIds.length
-          ? parsed.failures.flatMap(failure => {
-            const index = unmatchedSkippedItems.findIndex(item => item.token === failure.input);
-            if (index < 0) return [failure];
-            const [item] = unmatchedSkippedItems.splice(index, 1);
-            if (renderedSkippedItems.has(item!)) return [];
-            return [{ ...failure, error: item!.reason }];
-          })
-          : parsed.failures;
-        const failures = smilesListFailureStatus(displayedFailures);
-        const placementStatus = result.objectIds.length
-          ? insertSmilesMoleculeGridStatus(result, parsed.skipped, parsed.skippedItems) : "No SMILES structures were pasted";
-        const baseStatus = [placementStatus, ...new Set(entries.flatMap(entry => entry.molecule ? [structureTemplateLayoutMessage(entry.molecule)!] : [])), ...(parsed.warnings ?? [])].join("; ");
-        const failureCount = displayedFailures.length;
-        setStatus(failures
-          ? `${baseStatus}; ${failureCount} item${failureCount === 1 ? "" : "s"} failed: ${failures}` +
-            (engineUnavailable ? "; pasted as text" : "")
-          : baseStatus);
-      }).catch((error: unknown) => {
-        if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
-        if (listAbort.signal.aborted) return;
-        if (error instanceof SmilesListPasteError) pasteAsText();
-        const failures = error instanceof SmilesListPasteError ? error.failures : [];
-        const firstReason = failures.length ? smilesListFailureStatus(failures)
-          : error instanceof Error ? error.message : String(error);
-        const failureCount = failures.length || 1;
-        setStatus(`No SMILES structures were pasted; ` +
-          `${failureCount} item${failureCount === 1 ? "" : "s"} failed: ${firstReason}` +
-          (error instanceof SmilesListPasteError ? "; pasted as text" : ""));
+        if (result.outcome !== "no-structure" || listAbort.signal.aborted) return;
+        if (!pasteFallbackImage()) finishListFallback(result);
       });
       return;
     }
     applySyncClipboardPayload(detectedPayload);
-  }, [applySyncClipboardPayload, commitDocumentChange, pastePointForViewport, renderPastedSmiles, resetPasteUiState]);
+  }, [applySyncClipboardPayload, renderPastedSmiles, renderPastedSmilesList]);
 
   const applySelectionClipboardPayload = useCallback((payload: NonNullable<ReturnType<typeof createSelectionClipboardPayload>>) => {
     smilesListPasteAbortRef.current?.abort();
@@ -7063,10 +7133,15 @@ export function MainWindow({
     }
   }, []);
 
-  const pasteClipboard = useCallback(async (domPayload?: ClipboardReadPayload) => {
+  const pasteClipboard = useCallback(async (domPayload?: ClipboardReadPayload | Promise<ClipboardReadPayload>) => {
     smilesListPasteAbortRef.current?.abort();
     let rawPayload: ClipboardReadPayload | undefined;
     let readFailure: string | undefined;
+    // Handle fallback read failures immediately, while the preferred native read is in flight.
+    const fallbackPayload = Promise.resolve(domPayload).catch((error: unknown) => {
+      readFailure ??= error instanceof Error ? error.message : String(error);
+      return undefined;
+    });
     try {
       rawPayload = await readClipboardPayload();
     } catch (error) {
@@ -7075,7 +7150,9 @@ export function MainWindow({
     if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
     // Prefer the native private flavor, then other native content. The event snapshot is a
     // fallback when the native clipboard was busy or empty; DataTransfer is no longer readable here.
-    for (const payload of [rawPayload, domPayload]) {
+    for (const candidate of [rawPayload, fallbackPayload]) {
+      const payload = await candidate;
+      if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
       if (!payload) continue;
       const selectionPayload = payload.textItems
         .map((item) => parseSelectionClipboardPayload(item.text))
@@ -12172,28 +12249,24 @@ export function MainWindow({
         return;
       }
 
-      // WKWebView and WebView2 cannot expose the natively written private ChemDraft flavor
-      // through DataTransfer. Read natively before a text/plain fallback can lose formatting.
+      const domPayload = clipboardPayloadFromDataTransfer(event.clipboardData);
+      event.preventDefault();
+      // WKWebView and WebView2 may hide private flavors in DataTransfer. Prefer the native read.
       if (isDesktopRuntime()) {
-        const domPayload = clipboardPayloadFromDataTransfer(event.clipboardData);
-        event.preventDefault();
         void pasteClipboard(domPayload);
         return;
       }
-
-      const detectedPayload = inspectClipboardPayload(clipboardPayloadFromDataTransfer(event.clipboardData));
-      if (detectedPayload.kind !== "empty") {
-        event.preventDefault();
-        applyDetectedClipboardPayload(detectedPayload);
-        return;
-      }
-
-      // Reuse the last in-app selection when the browser event carried nothing usable,
-      // without overriding real external clipboard content above.
-      if (selectionClipboardPayloadRef.current) {
-        event.preventDefault();
-        applySelectionClipboardPayload(selectionClipboardPayloadRef.current);
-      }
+      void domPayload.then((payload) => {
+        if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
+        const detectedPayload = inspectClipboardPayload(payload);
+        if (detectedPayload.kind !== "empty") {
+          applyDetectedClipboardPayload(detectedPayload);
+        } else if (selectionClipboardPayloadRef.current) {
+          applySelectionClipboardPayload(selectionClipboardPayloadRef.current);
+        }
+      }).catch((error: unknown) => {
+        setStatus(`Couldn't read the clipboard: ${error instanceof Error ? error.message : String(error)}`);
+      });
     };
 
     window.addEventListener("copy", handleCopy);
@@ -21854,6 +21927,12 @@ export function graphicArtTransformPreviewSvgDataUrl(object: GraphicObject): {
   width: number;
   height: number;
 } | undefined {
+  if (object.graphicKind === "image" && object.data.image) {
+    return {
+      imageUrl: `data:${object.data.image.mimeType};base64,${object.data.image.dataBase64}`,
+      width: object.width, height: object.height
+    };
+  }
   try {
     const plan = planNativeArtVisual(object, { coordinateSpace: "local" });
     const width = Math.max(1, plan.width);
@@ -28773,6 +28852,19 @@ function reactSvgSketchEffectSourcePaths(plan: NativeArtVisualPlan, objectId: st
 }
 
 const GraphicGlyph = memo(function GraphicGlyph({ object, definitionPrefix = "" }: { object: GraphicObject; definitionPrefix?: string }) {
+  if (object.graphicKind === "image" && object.data.image) {
+    const image = object.data.image;
+    return (
+      <svg className="graphic-glyph" viewBox={`0 0 ${object.width} ${object.height}`} preserveAspectRatio="none" aria-hidden="true">
+        <image
+          className="graphic-glyph-image"
+          href={`data:${image.mimeType};base64,${image.dataBase64}`}
+          x={0} y={0} width={object.width} height={object.height}
+          preserveAspectRatio="none" pointerEvents="all"
+        />
+      </svg>
+    );
+  }
   const plan = markFrame("render art object", () => planNativeArtVisual(object, { coordinateSpace: "local" }));
   const freehandPath = graphicObjectIsFreehandPath(object);
   const width = plan.width;
@@ -31524,7 +31616,9 @@ export async function createDialogExportResult(
     });
     const rasterResult = await rasterizeSvgNative(svgResult.contents, rasterFormat, {
       scale: sized || preview ? 1 : sanitizedDialogNumber(state.raster.scale, 1, 1, 4),
-      ...(sized || preview ? { cssPxPerInch: dpi } : {}),
+      // Legacy scale-based exports use the source SVG's 96 CSS px/inch. Rust multiplies
+      // by the applied scale (including clamping); explicitly sized output uses its chosen DPI.
+      cssPxPerInch: sized || preview ? dpi : CSS_PX_PER_INCH,
       background: transparent ? "transparent" : "#ffffff",
       jpegQuality: sanitizedDialogNumber(state.raster.jpegQuality, 90, 1, 100),
       maxDimensionPx: sanitizedDialogNumber(state.raster.maxDimensionPx, 8192, 1, 8192)

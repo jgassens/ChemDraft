@@ -16,7 +16,7 @@ desktop importers did not change.
 |---|---|
 | `drawingDefaults.ts` | Field-by-field document drawing/text defaults for newly inserted objects, falling back to the hand-drawing preset |
 | `molecule.ts` | SMILES/molfile depiction → native molecule, target bond length, double-bond sides |
-| `documentStyle.ts` | Scale the whole first page uniformly using layout-engine geometry, including pixel style overrides; preserve colours and appearance toggles and apply fixed molecule size keys |
+| `documentStyle.ts` | Scale first-page layout using layout-engine geometry, including pixel style overrides; keep picture dimensions physical, preserve colours and appearance toggles and apply fixed molecule size keys |
 | `documentInventory.ts` | Native atom/bond ids and page geometry, with rings from layout-engine |
 | `textObjects.ts` | Text object sizing, creation, insertion |
 | `reactionArrows.ts` | Reaction arrow creation and insertion |
@@ -69,7 +69,8 @@ imports from `apps/` again.
 (objects, atoms, arrows/control points, graphics, captions and page size) to 22 native units per
 bond. If molecule medians differ by more than 2%, it uses their median and emits a warning naming
 that value, preserving relative geometry rather than normalizing molecules separately. Later pages
-remain unchanged. Arrows and graphics without authored strokes use the fixed document line width
+remain unchanged. Picture centres follow the page scaling, but their width and height remain at
+their physical size (96 page units per inch). Arrows and graphics without authored strokes use the fixed document line width
 (1.134 pt); authored graphic strokes scale with the page, and image styles remain unchanged.
 Text defaults to Arial, Helvetica, sans-serif at 10 pt. Explicit object/span font sizes scale with
 the page. Only whole-molecule size/geometry style keys are replaced; other styling is preserved.
