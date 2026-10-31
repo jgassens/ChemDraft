@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "dialog-host",
   "description": "Draft-only native dialogs: receive owner snapshots and send validated ready/action messages. No generic emit, command routing, filesystem, native dialogs, clipboard, capture, engine, or window creation privileges.",
-  "windows": ["dialog-main-pageSize-*", "dialog-main-arrangementSpacing-*", "dialog-main-insertTable-*", "dialog-main-export-*", "dialog-main-engineInstall-*", "dialog-main-toolInstall-*"],
+  "windows": ["dialog-main-pageSize-*", "dialog-main-arrangementSpacing-*", "dialog-main-insertTable-*", "dialog-main-export-*", "dialog-main-engineInstall-*", "dialog-main-toolInstall-*", "dialog-main-structureTemplates-*"],
   "permissions": [
     "allow-dialog-request",
     "allow-dialog-send"

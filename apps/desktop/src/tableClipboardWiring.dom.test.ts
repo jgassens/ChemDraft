@@ -282,7 +282,8 @@ describe("MainWindow table clipboard wiring", () => {
     vi.mocked(readClipboardPayload).mockResolvedValue(clipboard(readFileSync("packages/fixtures/clipboard-tables/word-like.html", "utf8"), text));
     await command("clipboard.paste");
     expect(depictSmilesListForPaste).toHaveBeenCalledOnce();
-    expect(vi.mocked(depictSmilesListForPaste).mock.calls[0][4]).toBeTypeOf("function");
+    // inspectInput moved into the options object when the paste API changed.
+    expect(vi.mocked(depictSmilesListForPaste).mock.calls[0][3]?.inspectInput).toBeTypeOf("function");
     await vi.waitFor(async () => {
       await act(async () => { await Promise.resolve(); });
       expect(snapshot().document.pages[0].objects).toHaveLength(4);

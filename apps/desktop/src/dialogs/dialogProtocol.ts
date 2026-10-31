@@ -3,10 +3,12 @@ import type { ExportOptions, ExportFrame, ExportPreviewResult } from "./exportOp
 import { validExportOptions } from "./exportOptionsValidation";
 import { validInsertTableOptions, type InsertTableOptions } from "./insertTableOptions";
 export { validInsertTableOptions, type InsertTableOptions } from "./insertTableOptions";
+import { structureTemplateById } from "@chemdraft/template-library";
 export const DIALOG_PROTOCOL_VERSION = 1;
 export const DIALOG_MAX_BYTES = 16 * 1024;
 export const DIALOG_PREVIEW_MAX_BYTES = 5 * 1024 * 1024;
-export type DialogKind = "pageSize" | "arrangementSpacing" | "export" | "engineInstall" | "toolInstall" | "insertTable";
+export type DialogKind = "pageSize" | "arrangementSpacing" | "export" | "engineInstall" | "toolInstall" | "insertTable" | "structureTemplates";
+export interface StructureTemplatesSnapshot { title: string; templateIds: string[] }
 export type EngineInstallAction = "install" | "cancelInstall" | "close";
 export type ToolInstallAction = "install" | "allow" | "cancelInstall" | "close";
 export type EngineInstallState =
@@ -67,12 +69,13 @@ export type DialogSnapshot = DialogEnvelope & (
   | { dialogKind: "export"; type: "snapshot"; data: { title: string; options: ExportOptions; frame?: ExportFrame } }
   | { dialogKind: "engineInstall"; type: "snapshot"; data: EngineInstallSnapshot }
   | { dialogKind: "toolInstall"; type: "snapshot"; data: ToolInstallSnapshot }
+  | { dialogKind: "structureTemplates"; type: "snapshot"; data: StructureTemplatesSnapshot }
 );
 export type DialogMessage = DialogSnapshot | (DialogEnvelope & (
   | { type: "request" | "ready"; data: Record<string, never> }
-  | { type: "action"; data: ({ action: "apply" } & (PageSize | InsertTableOptions)) | { action: "apply" | "preview"; percent: number } | { action: "cancel" } | { action: EngineInstallAction | ToolInstallAction } | { action: "export" | "chooseDestination" | "preview"; options: ExportOptions } }
+  | { type: "action"; data: ({ action: "apply" } & (PageSize | InsertTableOptions)) | { action: "apply" | "preview"; percent: number } | { action: "insert"; templateId: string } | { action: "cancel" } | { action: EngineInstallAction | ToolInstallAction } | { action: "export" | "chooseDestination" | "preview"; options: ExportOptions } }
   | { type: "preview"; data: SpacingPreview }
-  | { type: "result"; data: { status: "accepted" | "applied" | "progress" | ExportDialogResult["status"] | "preview" | "frame"; preview?: ExportPreviewResult; frame?: ExportFrame; error?: string; destinationPath?: string; filename?: string; notice?: string } }
+  | { type: "result"; data: { status: "accepted" | "applied" | "inserted" | "progress" | ExportDialogResult["status"] | "preview" | "frame"; preview?: ExportPreviewResult; frame?: ExportFrame; error?: string; destinationPath?: string; filename?: string; notice?: string } }
   | { type: "closed"; data: { reason: DialogCloseReason } }
 ));
 export interface DialogRegistration { hostId: string; windowLabel: string }
@@ -92,13 +95,26 @@ export function parseDialogMessage(value: unknown): DialogMessage | undefined {
   try {
     if (new TextEncoder().encode(JSON.stringify(value)).length > (record(value) && value.dialogKind === "export" && value.type === "result" && record(value.data) && value.data.status === "preview" ? DIALOG_PREVIEW_MAX_BYTES : DIALOG_MAX_BYTES)) return undefined;
     if (!record(value) || !keys(value, ["protocolVersion", "ownerWindowId", "documentTabId", "dialogKind", "sessionId", "requestId", "snapshotRevision", "type", "data"])) return undefined;
-    if (value.protocolVersion !== 1 || value.ownerWindowId !== "main" || typeof value.dialogKind !== "string" || !["pageSize", "arrangementSpacing", "export", "engineInstall", "toolInstall", "insertTable"].includes(value.dialogKind) ||
+    if (value.protocolVersion !== 1 || value.ownerWindowId !== "main" || typeof value.dialogKind !== "string" || !["pageSize", "arrangementSpacing", "export", "engineInstall", "toolInstall", "insertTable", "structureTemplates"].includes(value.dialogKind) ||
         !token(value.documentTabId) || !token(value.sessionId) || !token(value.requestId) ||
         !Number.isSafeInteger(value.snapshotRevision) || Number(value.snapshotRevision) < 1 || !record(value.data)) return undefined;
     const d = value.data;
     // Room for the Rust-written delivery wrapper, including the longest native label.
     if ((value.dialogKind === "engineInstall" || value.dialogKind === "toolInstall") && new TextEncoder().encode(JSON.stringify(value)).length > 3400) return undefined;
     let valid = false;
+    if (value.dialogKind === "structureTemplates") {
+      switch (value.type) {
+        case "snapshot": valid = keys(d, ["title", "templateIds"]) && typeof d.title === "string" && d.title.length > 0 && d.title.length <= 256 && !d.title.includes("\0") &&
+          Array.isArray(d.templateIds) && d.templateIds.length > 0 && d.templateIds.length <= 64 && new Set(d.templateIds).size === d.templateIds.length &&
+          d.templateIds.every(id => typeof id === "string" && !!structureTemplateById(id)); break;
+        case "action": valid = d.action === "cancel" ? keys(d, ["action"]) : d.action === "insert" && keys(d, ["action", "templateId"]) && typeof d.templateId === "string" && !!structureTemplateById(d.templateId); break;
+        case "request": case "ready": valid = keys(d, []); break;
+        case "closed": valid = keys(d, ["reason"]) && reasons.has(d.reason as DialogCloseReason); break;
+        case "result": valid = keys(d, ["status"], ["error"]) && ["accepted", "inserted", "cancelled", "error"].includes(String(d.status)) &&
+          (d.error === undefined || typeof d.error === "string" && d.error.length <= 2048); break;
+      }
+      return valid ? value as unknown as DialogMessage : undefined;
+    }
     switch (value.type) {
       case "snapshot": valid = typeof d.title === "string" && d.title.length > 0 && d.title.length <= 256 &&
         (value.dialogKind === "insertTable" ? keys(d, ["title", "rows", "columns", "headerRows", "preset"]) && validInsertTableOptions(d) : value.dialogKind === "engineInstall" ? validEngineInstallSnapshot(d) : value.dialogKind === "toolInstall" ? validToolInstallSnapshot(d) : value.dialogKind === "pageSize" ? keys(d, ["title", "width", "height", "unit"]) && validPageSize(d) :

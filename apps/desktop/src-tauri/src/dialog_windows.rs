@@ -24,6 +24,13 @@ struct DialogKindSpec {
 }
 fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
     match kind {
+        "structureTemplates" => Ok(DialogKindSpec {
+            maximizable: false,
+            resizable: true,
+            title: "Templates",
+            size: (620.0, 700.0),
+            min_size: (420.0, 360.0),
+        }),
         "pageSize" => Ok(DialogKindSpec {
             maximizable: false,
             resizable: false,
@@ -147,6 +154,28 @@ struct SpacingSnapshot {
     title: String,
     min_percent: u32,
     max_percent: u32,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StructureTemplatesSnapshot {
+    title: String,
+    template_ids: Vec<String>,
+}
+fn template_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 80
+        && id
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+}
+#[derive(Deserialize)]
+#[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
+enum StructureTemplatesAction {
+    Insert {
+        #[serde(rename = "templateId")]
+        template_id: String,
+    },
+    Cancel,
 }
 #[derive(Deserialize)]
 #[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
@@ -689,6 +718,38 @@ impl Message {
                     preset,
                 } => valid_table_options(rows, columns, header_rows, &preset),
             }),
+            "snapshot" if self.dialog_kind == "structureTemplates" => {
+                serde_json::from_value::<StructureTemplatesSnapshot>(self.data.clone()).is_ok_and(
+                    |s| {
+                        valid_title(&s.title)
+                            && !s.title.contains('\0')
+                            && !s.template_ids.is_empty()
+                            && s.template_ids.len() <= 64
+                            && s.template_ids.iter().all(|id| template_id(id))
+                            && s.template_ids
+                                .iter()
+                                .collect::<std::collections::HashSet<_>>()
+                                .len()
+                                == s.template_ids.len()
+                    },
+                )
+            }
+            "action" if self.dialog_kind == "structureTemplates" => serde_json::from_value::<
+                StructureTemplatesAction,
+            >(self.data.clone())
+            .is_ok_and(|action| match action {
+                StructureTemplatesAction::Cancel => true,
+                StructureTemplatesAction::Insert { template_id: id } => template_id(&id),
+            }),
+            "result" if self.dialog_kind == "structureTemplates" => {
+                serde_json::from_value::<Receipt>(self.data.clone()).is_ok_and(|r| {
+                    matches!(
+                        r.status.as_str(),
+                        "accepted" | "inserted" | "cancelled" | "error"
+                    ) && optional_string_fields(&self.data, &["error"])
+                        && r.error.is_none_or(|s| s.encode_utf16().count() <= 2048)
+                })
+            }
             "snapshot" if self.dialog_kind == "engineInstall" => {
                 serde_json::from_value::<EngineInstallSnapshot>(self.data.clone())
                     .is_ok_and(|s| s.valid())
@@ -980,6 +1041,14 @@ fn send_host(session: &Session, message: &Message) -> Result<(), String> {
 }
 /// Reserve before forwarding: request-ID dedup alone cannot prevent two distinct Apply requests.
 fn reserve_action(session: &mut Session, message: &Message) -> Result<bool, String> {
+    if message.dialog_kind == "structureTemplates"
+        && message.data["action"] == "insert"
+        && !session.snapshot.data["templateIds"]
+            .as_array()
+            .is_some_and(|ids| ids.contains(&message.data["templateId"]))
+    {
+        return Err("Unknown structure template in this dialog".into());
+    }
     if message.dialog_kind == "arrangementSpacing" && message.data["action"] == "preview" {
         return if session.terminal_request.is_none() {
             Ok(true)
@@ -1130,6 +1199,7 @@ pub(crate) async fn dialog_open(
         session.ready
             && (session.snapshot.dialog_kind == "engineInstall"
                 || session.snapshot.dialog_kind == "toolInstall"
+                || session.snapshot.dialog_kind == "structureTemplates"
                 || session.terminal_request.is_none()
                 || session
                     .terminal_request
@@ -1342,7 +1412,7 @@ pub(crate) fn dialog_publish(
         }
         if matches!(
             message.data["status"].as_str(),
-            Some("error" | "picked" | "cancelled")
+            Some("error" | "picked" | "cancelled" | "inserted")
         ) && session.terminal_request.as_ref() == Some(&message.request_id)
         {
             session.terminal_request = None;
@@ -1725,12 +1795,29 @@ fn place_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), Stri
     let destination = saved
         .and_then(|s| monitors.iter().find(|m| m.id == s.monitor))
         .unwrap_or(&work);
+    let template_placement = (kind == "structureTemplates").then_some(TemplatePlacement {
+        saved,
+        owner_rect: (
+            f64::from(position.x) / destination.scale,
+            f64::from(position.y) / destination.scale,
+            f64::from(owner_size.width) / destination.scale,
+            f64::from(owner_size.height) / destination.scale,
+        ),
+    });
+    if template_placement.is_some() {
+        // The picker must also fit work areas smaller than its normal minimum. Restore a
+        // bounded minimum after measuring the destination monitor's actual decorations.
+        window
+            .set_min_size(Some(tauri::LogicalSize::new(1.0, 1.0)))
+            .map_err(|e| e.to_string())?;
+    }
     // WM_DPICHANGED runs when moving between Windows monitors. Move first, set the desired
     // client size at the destination DPI, then clamp using the measured final outer frame.
     finish_placement(
         (x, y, destination_scale),
         spec.size,
         destination,
+        template_placement,
         |x, y| {
             window
                 .set_position(tauri::PhysicalPosition::new(x as i32, y as i32))
@@ -1742,34 +1829,91 @@ fn place_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), Stri
                 .map_err(|e| e.to_string())
         },
         || {
-            window
-                .outer_size()
-                .map(|s| (s.width, s.height))
-                .map_err(|e| e.to_string())
+            let outer = window.outer_size().map_err(|e| e.to_string())?;
+            let client = window.inner_size().map_err(|e| e.to_string())?;
+            Ok(DialogFrame {
+                outer: (outer.width, outer.height),
+                client: (client.width, client.height),
+            })
         },
     )?;
+    if kind == "structureTemplates" {
+        let client = window.inner_size().map_err(|e| e.to_string())?;
+        window
+            // Keep constraints logical so Windows rescales them on later DPI changes.
+            .set_min_size(Some(tauri::LogicalSize::new(
+                (f64::from(client.width) / destination.scale).min(spec.min_size.0),
+                (f64::from(client.height) / destination.scale).min(spec.min_size.1),
+            )))
+            .map_err(|e| e.to_string())?;
+    }
     mark_transient(window.label());
     Ok(())
+}
+struct TemplatePlacement<'a> {
+    saved: Option<&'a SavedPosition>,
+    owner_rect: (f64, f64, f64, f64),
+}
+struct DialogFrame {
+    outer: (u32, u32),
+    client: (u32, u32),
+}
+// All arguments/results are physical pixels. Decoration sizes are measured after the move,
+// since Windows may replace them during WM_DPICHANGED.
+fn fitted_template_client(client: (u32, u32), frame: (u32, u32), work: &WorkArea) -> (u32, u32) {
+    let available_width = (work.width * work.scale) as u32;
+    let available_height = (work.height * work.scale) as u32;
+    (
+        client
+            .0
+            .min(available_width.saturating_sub(frame.0.saturating_sub(client.0)))
+            .max(1),
+        client
+            .1
+            .min(available_height.saturating_sub(frame.1.saturating_sub(client.1)))
+            .max(1),
+    )
 }
 fn finish_placement(
     (x, y, scale): (f64, f64, f64),
     (client_width, client_height): (f64, f64),
     work: &WorkArea,
+    template: Option<TemplatePlacement<'_>>,
     mut move_to: impl FnMut(f64, f64) -> Result<(), String>,
     mut resize: impl FnMut(u32, u32) -> Result<(), String>,
-    mut measure: impl FnMut() -> Result<(u32, u32), String>,
+    mut measure: impl FnMut() -> Result<DialogFrame, String>,
 ) -> Result<(), String> {
     move_to(x, y)?;
     resize(
         (client_width * scale) as u32,
         (client_height * scale) as u32,
     )?;
-    let (width, height) = measure()?;
+    let mut frame = measure()?;
+    if let Some(template) = template {
+        let fitted = fitted_template_client(frame.client, frame.outer, work);
+        if fitted != frame.client {
+            resize(fitted.0, fitted.1)?;
+            frame = measure()?;
+        }
+        // Re-centre using the final outer frame, rather than the initial monitor's frame.
+        // A saved position still uses the shared per-kind destination/offset policy.
+        let (x, y, _) = position_for(
+            template.saved,
+            std::slice::from_ref(work),
+            work,
+            template.owner_rect,
+            (
+                f64::from(frame.outer.0) / scale,
+                f64::from(frame.outer.1) / scale,
+            ),
+        );
+        return move_to(x, y);
+    }
     let (x, y) = work.clamp(
         x / scale,
         y / scale,
-        f64::from(width) / scale,
-        f64::from(height) / scale,
+        f64::from(frame.outer.0) / scale,
+        f64::from(frame.outer.1) / scale,
     );
     move_to(x * scale, y * scale)
 }
@@ -2005,6 +2149,51 @@ pub(crate) fn on_window_event<R: Runtime>(window: &tauri::Window<R>, event: &Win
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn structure_templates_registration_and_actions_are_bounded_on_all_platforms() {
+        let mut message = snapshot();
+        message.dialog_kind = "structureTemplates".into();
+        message.data =
+            json!({"title":"Drawing A","templateIds":["beta-cyclodextrin","pillar-5-arene"]});
+        assert!(message.validate().is_ok());
+        let spec = kind_spec("structureTemplates").unwrap();
+        assert!(spec.resizable && !spec.maximizable);
+        let mut registry = Registry::default();
+        let (registration, build) = register(&mut registry, message.clone(), false).unwrap();
+        assert!(build);
+        assert!(registration
+            .window_label
+            .starts_with("dialog-main-structureTemplates-"));
+        assert!(is_dialog_label(&registration.window_label));
+        assert!(include_str!("../capabilities/dialog-host.json")
+            .contains("dialog-main-structureTemplates-*"));
+        assert!(!register(&mut registry, message.clone(), false).unwrap().1);
+        let session = registry.sessions.get_mut(&registration.host_id).unwrap();
+        message.message_type = "action".into();
+        for data in [
+            json!({"action":"insert"}),
+            json!({"action":"insert","templateId":"../main"}),
+            json!({"action":"insert","templateId":"beta-cyclodextrin","commandId":"document.new"}),
+        ] {
+            message.data = data;
+            assert!(message.validate().is_err());
+        }
+        message.data = json!({"action":"insert","templateId":"unknown"});
+        assert!(reserve_action(session, &message).is_err());
+        message.data = json!({"action":"insert","templateId":"beta-cyclodextrin"});
+        assert!(message.validate().is_ok());
+        assert!(reserve_action(session, &message).unwrap());
+        assert!(!reserve_action(session, &message).unwrap());
+        message.request_id = "second-insert".into();
+        assert!(reserve_action(session, &message).is_err());
+        session.terminal_request = None;
+        assert!(reserve_action(session, &message).unwrap());
+        message.message_type = "snapshot".into();
+        message.data = json!({"title":"A","templateIds":["beta-cyclodextrin","beta-cyclodextrin"]});
+        assert!(message.validate().is_err());
+        message.data = json!({"title":"A","templateIds":[],"extra":true});
+        assert!(message.validate().is_err());
+    }
     fn engine_install_snapshot() -> Message {
         let mut message = snapshot();
         message.dialog_kind = "engineInstall".into();
@@ -2484,6 +2673,129 @@ mod tests {
         assert!(reserve_action(session, &action).unwrap());
     }
     #[test]
+    fn template_placement_fits_oversized_frames_at_destination_dpi_and_negative_origins() {
+        use std::cell::RefCell;
+        // Physical monitor origin, scale, work area in logical units. The first case is
+        // smaller than both the picker's default size and its normal minimum height.
+        for (origin, scale, area, expected_client, expected_position) in [
+            ((0.0, 24.0), 1.0, (500.0, 300.0), (484, 260), (0.0, 24.0)),
+            (
+                (2880.0, 0.0),
+                1.5,
+                (1000.0, 900.0),
+                (930, 1050),
+                (3037.0, 10.0),
+            ),
+            (
+                (-1600.0, -900.0),
+                2.0,
+                (800.0, 700.0),
+                (1240, 1360),
+                (-1388.0, -900.0),
+            ),
+        ] {
+            let work = WorkArea {
+                id: "destination".into(),
+                x: origin.0 / scale,
+                y: origin.1 / scale,
+                width: area.0,
+                height: area.1,
+                scale,
+            };
+            let owner_rect = (work.x + 20.0, work.y + 20.0, 800.0, 700.0);
+            let client = RefCell::new((0, 0));
+            let position = RefCell::new((0.0, 0.0));
+            finish_placement(
+                (origin.0, origin.1, scale),
+                kind_spec("structureTemplates").unwrap().size,
+                &work,
+                Some(TemplatePlacement {
+                    saved: None,
+                    owner_rect,
+                }),
+                |x, y| {
+                    *position.borrow_mut() = (x, y);
+                    Ok(())
+                },
+                |w, h| {
+                    *client.borrow_mut() = (w, h);
+                    Ok(())
+                },
+                || {
+                    let (w, h) = *client.borrow();
+                    Ok(DialogFrame {
+                        outer: (w + 16, h + 40),
+                        client: (w, h),
+                    })
+                },
+            )
+            .unwrap();
+            assert_eq!(*client.borrow(), expected_client);
+            assert!((position.borrow().0 - expected_position.0).abs() < 0.001);
+            assert!((position.borrow().1 - expected_position.1).abs() < 0.001);
+            let (x, y) = *position.borrow();
+            let (w, h) = *client.borrow();
+            assert!(x >= origin.0 && y >= origin.1);
+            assert!(x + f64::from(w + 16) <= origin.0 + area.0 * scale);
+            assert!(y + f64::from(h + 40) <= origin.1 + area.1 * scale);
+        }
+    }
+    #[test]
+    fn template_placement_restores_saved_offsets_or_centres_when_monitor_is_gone() {
+        use std::cell::RefCell;
+        let work = WorkArea {
+            id: "secondary".into(),
+            x: -800.0,
+            y: 0.0,
+            width: 800.0,
+            height: 600.0,
+            scale: 2.0,
+        };
+        for (monitor, expected_position) in [
+            ("secondary", (-1256.0, 0.0)),
+            ("disconnected", (-1488.0, 0.0)),
+        ] {
+            let saved = SavedPosition {
+                monitor: monitor.into(),
+                x: 9999.0,
+                y: 9999.0,
+                offset_x: 1.0,
+                offset_y: 0.5,
+            };
+            let client = RefCell::new((0, 0));
+            let moves = RefCell::new(Vec::new());
+            let sizes = RefCell::new(Vec::new());
+            finish_placement(
+                (-1600.0, 0.0, work.scale),
+                kind_spec("structureTemplates").unwrap().size,
+                &work,
+                Some(TemplatePlacement {
+                    saved: Some(&saved),
+                    owner_rect: (-780.0, 20.0, 700.0, 500.0),
+                }),
+                |x, y| {
+                    moves.borrow_mut().push((x, y));
+                    Ok(())
+                },
+                |w, h| {
+                    *client.borrow_mut() = (w, h);
+                    sizes.borrow_mut().push((w, h));
+                    Ok(())
+                },
+                || {
+                    let (w, h) = *client.borrow();
+                    Ok(DialogFrame {
+                        outer: (w + 16, h + 40),
+                        client: (w, h),
+                    })
+                },
+            )
+            .unwrap();
+            assert_eq!(*sizes.borrow(), [(1240, 1400), (1240, 1160)]);
+            assert_eq!(*moves.borrow(), [(-1600.0, 0.0), expected_position]);
+        }
+    }
+    #[test]
     fn placement_moves_before_destination_resize_and_clamps_the_measured_outer_frame() {
         use std::cell::RefCell;
         let calls = RefCell::new(Vec::new());
@@ -2500,6 +2812,7 @@ mod tests {
             (3000.0, 1000.0, 2.0),
             (420.0, 300.0),
             &work,
+            None,
             |x, y| {
                 calls.borrow_mut().push(format!("move:{x},{y}"));
                 if calls.borrow().len() == 1 {
@@ -2516,7 +2829,11 @@ mod tests {
             },
             || {
                 calls.borrow_mut().push("measure".into());
-                Ok(*frame.borrow())
+                let (w, h) = *frame.borrow();
+                Ok(DialogFrame {
+                    outer: (w, h),
+                    client: (w - 32, h - 80),
+                })
             },
         )
         .unwrap();
@@ -3112,12 +3429,18 @@ mod tests {
             (0.0, 0.0, 1.5),
             kind_spec("export").unwrap().size,
             &work,
+            None,
             |_, _| Ok(()),
             |w, h| {
                 sizes.borrow_mut().push((w, h));
                 Ok(())
             },
-            || Ok((780, 960)),
+            || {
+                Ok(DialogFrame {
+                    outer: (780, 960),
+                    client: (780, 930),
+                })
+            },
         )
         .unwrap();
         assert_eq!(*sizes.borrow(), [(780, 930)]);

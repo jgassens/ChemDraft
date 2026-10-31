@@ -251,7 +251,8 @@ describe.each(["macos", "windows"] as const)("text paste formatting (%s)", platf
     expect(table.columns[1]!.align).toBe("decimal");
     expect(window.__CHEMDRAFT_AGENT__!.snapshot().selection.objectIds).toEqual([table.id]);
     expect(status()).toBe("Pasted table; Images in the table were not imported.");
-    expect(status()).not.toMatch(/Paste failed|Nothing to paste/);
+    // Paste failures now use the current user-facing status wording.
+    expect(status()).not.toMatch(/Couldn't paste|Couldn't read the clipboard/);
     expect(depictSmilesForPaste).not.toHaveBeenCalled();
     await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.undo"); });
     expect(objects()).toHaveLength(0);
@@ -280,7 +281,8 @@ describe.each(["macos", "windows"] as const)("text paste formatting (%s)", platf
     }
     expect(nativeReads()).toHaveLength(1);
     expect(objects()).toHaveLength(0);
-    expect(status()).toBe(`Paste failed: ${clipboardBusy}`);
+    // Keep the templates branch's specific paste-failure wording for native read errors.
+    expect(status()).toBe(`Couldn't read the clipboard: ${clipboardBusy}`);
   });
 
   async function cacheSelection() {
@@ -313,7 +315,8 @@ describe.each(["macos", "windows"] as const)("text paste formatting (%s)", platf
     await mount();
     await paste({});
     expect(objects()).toHaveLength(0);
-    expect(status()).toBe("Nothing to paste");
+    // Keep the templates branch's specific paste-failure wording for unsupported clipboard content.
+    expect(status()).toBe("Couldn't paste: the clipboard contains no supported drawing or text content.");
   });
 
   it("prefers usable native content over the DataTransfer fallback", async () => {
@@ -331,7 +334,12 @@ describe.each(["macos", "windows"] as const)("text paste formatting (%s)", platf
     await mount(nativeClipboard("c1ccccc1O"));
     expect((await paste({ "text/plain": "c1ccccc1O" })).defaultPrevented).toBe(true);
     expect(nativeReads()).toHaveLength(1);
-    expect(depictSmilesForPaste).toHaveBeenCalledExactlyOnceWith("c1ccccc1O");
+    // The templates branch also passes depiction options and document placement context.
+    expect(depictSmilesForPaste).toHaveBeenCalledExactlyOnceWith("c1ccccc1O", {}, {
+      document: expect.objectContaining({ title: "Paste formatting" }),
+      centre: expect.any(Object),
+      reservedObjectIds: expect.any(Set)
+    });
     await vi.waitFor(async () => {
       await act(async () => { await Promise.resolve(); });
       expect(objects()).toHaveLength(1);
@@ -399,7 +407,8 @@ describe.each(["macos", "windows"] as const)("text paste formatting (%s)", platf
     await act(async () => button!.click());
     expect(nativeReads()).toHaveLength(1);
     expect(objects()).toHaveLength(0);
-    expect(status()).toBe(`Paste failed: ${clipboardBusy}`);
+    // Keep the templates branch's specific paste-failure wording for right-click native read errors.
+    expect(status()).toBe(`Couldn't read the clipboard: ${clipboardBusy}`);
   });
 
   it("leaves paste to an open modal dialog", async () => {

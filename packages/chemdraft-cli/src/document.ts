@@ -1,6 +1,7 @@
 import { Resvg } from "@resvg/resvg-js";
 
 import {
+  applyPatches,
   createEmptyDocument,
   stylePresetToObjectStyle,
   DocumentStylePreset,
@@ -42,6 +43,8 @@ import {
   expandNativeMoleculeLabelGroups,
   nativeSingleHeavyElementLabelValence,
   moleculeSmiles,
+  structureTemplateForSmiles,
+  structureTemplateMolecule,
   insertSmilesMolecule,
   pastedStructureDepictionFromMolfile,
   type PastedStructureDepiction
@@ -67,6 +70,7 @@ export interface RenderSmilesOptions {
 }
 
 export interface RenderedSmiles {
+  layout?: string;
   name: string;
   smiles: string;
   svg: string;
@@ -231,6 +235,15 @@ async function optionalCanonicalSmiles(structure: string): Promise<string | unde
     return undefined;
   }
 }
+
+// Stable callback identity lets the shared core cache canonical template identities.
+const templateCanonicalize = async (smiles: string): Promise<string | null> => {
+  const rdkit = await ensureRdkit();
+  const molecule = rdkit.get_mol(smiles);
+  if (!molecule) return null;
+  try { return molecule.get_smiles?.() || null; }
+  finally { molecule.delete(); }
+};
 
 /** Fail closed if RDKit's canonical isomeric SMILES says a conversion changed identity. */
 export async function assertCanonicalIdentity(
@@ -821,6 +834,7 @@ export interface BuildSmilesDocumentOptions {
 }
 
 export interface BuiltSmilesDocument {
+  layout?: string;
   name: string;
   smiles: string;
   document: ChemDraftDocument;
@@ -846,6 +860,40 @@ export async function buildSmilesDocument(
   const name = options.name ?? "structure";
   const bondLength = options.style === "document" ? DocumentStylePreset.drawing.bondLengthPx
     : finitePositive(options.bondLength ?? CLI_DEFAULT_BOND_LENGTH_PX, "Bond length");
+  // Only this coordinate-less SMILES entry point substitutes an authored layout. Native
+  // documents and molfile readers retain their supplied coordinates.
+  installNodeEngines();
+  const template = await structureTemplateForSmiles(trimmedSmiles, templateCanonicalize).catch(() => undefined);
+  if (template) {
+    await rejectOversizedSmiles(trimmedSmiles);
+    let document = createEmptyDocument({ title: name });
+    const page = document.pages[0]!;
+    let molecule = structureTemplateMolecule(template, {
+      document, centre: { x: page.width / 2, y: page.height / 2 },
+      style: { ...(options.style === "document" ? stylePresetToObjectStyle(DocumentStylePreset) : {}),
+        bondLengthPx: CLI_DEFAULT_BOND_LENGTH_PX }
+    });
+    document = applyPatches(document, [
+      { op: "addObject", pageId: page.id, object: molecule },
+      { op: "setSelection", pageId: page.id, objectIds: [molecule.id] }
+    ]);
+    // Match the ordinary CLI SMILES path's explicit sizing and document-style conversion.
+    if (Math.abs(bondLength - CLI_DEFAULT_BOND_LENGTH_PX) > 0.0001) {
+      document = applyMoleculeTargetBondLength(document, [molecule.id], bondLength);
+      molecule = moleculeFromDocument(document);
+    }
+    if (options.style === "document") {
+      document = applyDocumentStyle(document);
+      molecule = moleculeFromDocument(document);
+    }
+    const sourceCanonicalSmiles = await canonicalSmiles(trimmedSmiles, "input");
+    await assertCanonicalIdentity(sourceCanonicalSmiles, molecule.structure);
+    const ocl = await import("@chemdraft/ocl-adapter");
+    return { name, smiles: trimmedSmiles, document, molecule, layout: `template:${template.id}`,
+      engine: "rdkit", ...stereoCenterCounts(ocl.perceiveStereoCentersFromMolfile(molecule.structure)),
+      unspecifiedDoubleBonds: 0, dativeBonds: 0, sourceCanonicalSmiles,
+      identityVerifiedByRdkit: true, identityMolfile: molecule.structure, warnings: [] };
+  }
   const depicted = await depictSmiles(trimmedSmiles);
   let document = createEmptyDocument({ title: name });
   const page = document.pages[0];
@@ -943,6 +991,7 @@ export async function renderSmilesToAssets(
     svg: cropped.svg,
     png,
     engine: built.engine,
+    layout: built.layout,
     stereoCenters: built.stereoCenters,
     unspecifiedStereoCenters: built.unspecifiedStereoCenters,
     unspecifiedDoubleBonds: built.unspecifiedDoubleBonds,

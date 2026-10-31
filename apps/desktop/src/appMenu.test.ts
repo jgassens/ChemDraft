@@ -54,6 +54,19 @@ function parseNativeMenuCommandIds(): string[] {
 }
 
 describe("app menu model", () => {
+  it.each(["MacIntel", "Win32"])("places Insert > Templates… after Edit on %s", platform => {
+    vi.stubGlobal("navigator", { platform });
+    try {
+      const model = buildAppMenuModel(EMPTY_CONTEXT);
+      const index = model.findIndex(section => section.id === "edit");
+      expect(model.slice(index, index + 3).map(section => section.id)).toEqual(["edit", "insert", "view"]);
+      // Insert holds Table… (tables) and Templates… (structure templates) since both landed.
+      expect(model[index + 1]!.items).toEqual([
+        expect.objectContaining({ commandId: "table.insertDialog", label: "Table…" }),
+        expect.objectContaining({ commandId: "template.insertDialog", label: "Templates…" })
+      ]);
+    } finally { vi.unstubAllGlobals(); }
+  });
   it("routes synced plugin items by section in the shared native builder for both platforms", () => {
     const source = readFileSync("apps/desktop/src-tauri/src/lib.rs", "utf8");
     const builder = source.split("fn create_app_menu_for_toolsets<R: Runtime>")[1]?.split("/// Close Window")[0];
@@ -195,8 +208,10 @@ describe("app menu model", () => {
     const index = model.findIndex((section) => section.id === "insert");
     expect(model[index - 1]?.id).toBe("edit");
     expect(model[index + 1]?.id).toBe("view");
+    // Templates… (structure templates) shares the Insert menu.
     expect(model[index]?.items).toEqual([
-      expect.objectContaining({ kind: "command", commandId: "table.insertDialog", label: "Table…", enabled: true })
+      expect.objectContaining({ kind: "command", commandId: "table.insertDialog", label: "Table…", enabled: true }),
+      expect.objectContaining({ kind: "command", commandId: "template.insertDialog", label: "Templates…" })
     ]);
     expect(nativeRoutedCommandIds(model)).toContain("table.insertDialog");
   });
