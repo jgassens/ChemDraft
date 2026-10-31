@@ -213,7 +213,7 @@ export function inspectClipboardPayload(payload: ClipboardReadPayload): Clipboar
   const firstPlainText =
     textItems.find((item) => isTextLikeType(item.type)) ??
     textItems.find((item) => !isMarkupType(item.type));
-  if (firstPlainText) {
+  if (firstPlainText && !looksLikeSvgDocument(firstPlainText.text)) {
     return {
       kind: "plain-text",
       text: firstPlainText.text,
@@ -222,7 +222,7 @@ export function inspectClipboardPayload(payload: ClipboardReadPayload): Clipboar
     };
   }
 
-  const vectorType = payload.types.find(isVectorArtworkType);
+  const vectorType = firstPlainText?.type ?? payload.types.find(isVectorArtworkType);
   if (vectorType) {
     return {
       kind: "vector-only",
@@ -245,6 +245,39 @@ export function inspectClipboardPayload(payload: ClipboardReadPayload): Clipboar
       }
     ]
   };
+}
+
+function looksLikeSvgDocument(text: string): boolean {
+  let rest = text.trimStart();
+  if (rest.startsWith("\uFEFF")) rest = rest.slice(1).trimStart();
+  if (rest.startsWith("<?xml")) {
+    const end = rest.indexOf("?>");
+    if (end < 0) return false;
+    rest = rest.slice(end + 2).trimStart();
+  }
+  while (rest.startsWith("<!--") || /^<!DOCTYPE\b/i.test(rest)) {
+    if (rest.startsWith("<!--")) {
+      const end = rest.indexOf("-->");
+      if (end < 0) return false;
+      rest = rest.slice(end + 3).trimStart();
+      continue;
+    }
+    let quote = "";
+    let depth = 0;
+    let end = -1;
+    for (let i = 9; i < rest.length; i += 1) {
+      const char = rest[i];
+      if (quote) {
+        if (char === quote) quote = "";
+      } else if (char === '"' || char === "'") quote = char;
+      else if (char === "[") depth += 1;
+      else if (char === "]") depth -= 1;
+      else if (char === ">" && depth === 0) { end = i; break; }
+    }
+    if (end < 0) return false;
+    rest = rest.slice(end + 1).trimStart();
+  }
+  return /^<svg(?=[\s/>])/.test(rest);
 }
 
 export function parseMolfileGraph(molfile: string): ParsedMolfileGraph {

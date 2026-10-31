@@ -429,6 +429,40 @@ describe("clipboard-adapter", () => {
     });
   });
 
+  it("classifies SVG documents in plain-text flavors as vector artwork", () => {
+    for (const text of [
+      "<svg/>",
+      " \uFEFF <?xml version=\"1.0\"?>\n<!-- comment -->\n<!DOCTYPE svg [<!ENTITY x 'a>b'>]>\n<svg class=\"spectrum\"></svg>",
+      "<!-- before --><!DOCTYPE svg PUBLIC 'id' 'url'><!-- after --><svg xmlns=\"http://www.w3.org/2000/svg\"/>"
+    ]) {
+      expect(inspectClipboardPayload({
+        types: ["public.utf8-plain-text"],
+        textItems: [{ type: "public.utf8-plain-text", text }]
+      })).toMatchObject({ kind: "vector-only", sourceType: "public.utf8-plain-text", warnings: [{ code: "clipboard.vector_only" }] });
+    }
+  });
+
+  it("keeps text mentioning SVG and other root elements as plain text", () => {
+    for (const text of ["This mentions <svg in a sentence", "<svgish/>", "<!-- comment --><other><svg/></other>"]) {
+      expect(inspectClipboardPayload({
+        types: ["text/plain"], textItems: [{ type: "text/plain", text }]
+      })).toMatchObject({ kind: "plain-text", text });
+    }
+  });
+
+  it("prefers chemistry flavors over SVG source", () => {
+    for (const [type, text, kind] of [
+      ["chemical/x-daylight-smiles", "CCO", "smiles"],
+      ["text/plain", cyclopropaneV2000, "molfile"],
+      ["text/plain", "<CDXML><page /></CDXML>", "cdxml"]
+    ]) {
+      expect(inspectClipboardPayload({
+        types: ["text/plain", type],
+        textItems: [{ type: "text/plain", text: "<svg/>" }, { type, text }]
+      }).kind).toBe(kind);
+    }
+  });
+
   it("does not treat ambiguous plain SMILES-looking text as chemistry without a SMILES type", () => {
     const detected = inspectClipboardPayload({
       types: ["public.utf8-plain-text"],
