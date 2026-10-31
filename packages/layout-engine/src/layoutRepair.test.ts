@@ -1,0 +1,300 @@
+import { describe, expect, it, vi } from "vitest";
+import type { MoleculeObject } from "@chemdraft/chem-core";
+import { moleculeLayoutLabelBoxes, planMoleculeAtomLabels } from "./index";
+import { compareLayoutRepairs, repairLayoutOverlaps, conventionalLayoutOrientations, orientLayoutForLabels, replanRepairLabels, type LayoutRepair } from "./layoutRepair";
+import { evaluateLayoutQuality, prepareLayoutLabelEvaluator, type LayoutPoint, type LayoutBond } from "./layoutQuality";
+
+const polygon = (n: number, center: LayoutPoint, phase = 0): LayoutPoint[] => {
+  const r = 1 / (2 * Math.sin(Math.PI / n));
+  return Array.from({ length: n }, (_, i) => ({
+    x: center.x + r * Math.cos(phase + 2 * Math.PI * i / n),
+    y: center.y + r * Math.sin(phase + 2 * Math.PI * i / n)
+  }));
+};
+const cycle = (n: number, offset = 0): LayoutBond[] => Array.from({ length: n }, (_, i) => ({
+  from: i + offset, to: (i + 1) % n + offset
+}));
+const rotate = (points: LayoutPoint[], pivot: LayoutPoint, degrees: number) => points.map(p => {
+  const a = degrees * Math.PI / 180;
+  return { x: pivot.x + (p.x - pivot.x) * Math.cos(a) - (p.y - pivot.y) * Math.sin(a),
+    y: pivot.y + (p.x - pivot.x) * Math.sin(a) + (p.y - pivot.y) * Math.cos(a) };
+});
+
+function expectRigid(before: LayoutPoint[], after: LayoutPoint[], bonds: LayoutBond[]) {
+  const q = evaluateLayoutQuality(before, bonds);
+  for (const ring of q.rings) {
+    for (const a of ring.atoms) for (const b of ring.atoms) {
+      expect(Math.hypot(after[a].x - after[b].x, after[a].y - after[b].y))
+        .toBeCloseTo(Math.hypot(before[a].x - before[b].x, before[a].y - before[b].y), 12);
+    }
+    const area = (points: LayoutPoint[]) => ring.atoms.reduce((sum, a, i) => {
+      const b = ring.atoms[(i + 1) % ring.atoms.length];
+      return sum + points[a].x * points[b].y - points[b].x * points[a].y;
+    }, 0);
+    expect(Math.sign(area(after))).toBe(Math.sign(area(before))); // never reflected
+  }
+  for (const { from: a, to: b } of bonds) {
+    expect(Math.hypot(after[a].x - after[b].x, after[a].y - after[b].y))
+      .toBeCloseTo(Math.hypot(before[a].x - before[b].x, before[a].y - before[b].y), 12);
+  }
+}
+
+function expectLocalScoresMatchFullEvaluation(repairs: LayoutRepair[], bonds: LayoutBond[]) {
+  for (const repair of repairs) {
+    const full = evaluateLayoutQuality(repair.atoms, bonds, repair.quality.referenceBondLength);
+    expect(full.hardDefects).toBe(0);
+    expect(full.passes).toBe(repair.quality.passes);
+    expect(full.passesRelaxed).toBe(repair.quality.passesRelaxed);
+    expect(full.nearestAtomPairDistance).toBeCloseTo(repair.quality.nearestAtomPairDistance, 12);
+    expect(full.nearestNonBondedAtomPairDistance).toBeCloseTo(repair.quality.nearestNonBondedAtomPairDistance, 12);
+  }
+}
+
+describe("rigid fragment overlap repair", () => {
+  it("clears several inward OH exits beyond forty degrees without moving or reflecting the ring", () => {
+    const ring = polygon(8, { x: 0, y: 0 }).map(a => ({ x: a.x * 30, y: a.y * 30 }));
+    const pivots = [0, 2, 4, 6];
+    const atoms = [...ring, ...pivots.map(i => {
+      const r = Math.hypot(ring[i].x, ring[i].y);
+      return { x: ring[i].x * (r - 30) / r, y: ring[i].y * (r - 30) / r };
+    })];
+    const bonds = [...cycle(8), ...pivots.map((from, i) => ({ from, to: 8 + i }))];
+    const molecule: MoleculeObject = {
+      id: "inward-oh", type: "molecule", x: -60, y: -60, width: 120, height: 120, rotation: 0,
+      structure: "", structureFormat: "smiles", superatoms: [], rGroups: [],
+      style: { bondLengthPx: 30, atomLabelFontSizePx: 15 },
+      atoms: atoms.map((a, i) => ({ ...a, id: `a${i}`, element: i < 8 ? "C" : "O", formalCharge: 0 })),
+      bonds: bonds.map((b, i) => ({ id: `b${i}`, fromAtomId: `a${b.from}`, toAtomId: `a${b.to}`, order: "single" }))
+    };
+    const labels = (points: readonly LayoutPoint[]) => moleculeLayoutLabelBoxes({ ...molecule,
+      atoms: molecule.atoms.map((a, i) => ({ ...a, ...points[i] })) });
+    const snapshot = structuredClone(molecule);
+    const original = evaluateLayoutQuality(atoms, bonds, 30, undefined, undefined, labels(atoms));
+    expect(original.labelLabelOverlaps.length).toBeGreaterThan(1);
+    const repairs = repairLayoutOverlaps(atoms, bonds, { labelBoxes: labels });
+    expect(repairs.length).toBeGreaterThan(0);
+    expect(repairs[0].swings!.length).toBeGreaterThan(1);
+    expect(repairs[0].swings!.some(s => Math.abs(s.angleDegrees) > 40)).toBe(true);
+    for (const repair of repairs) {
+      const fresh = evaluateLayoutQuality(repair.atoms, bonds, 30, undefined, undefined, labels(repair.atoms));
+      expect(fresh.hardDefects).toBe(0);
+      expect(fresh).toEqual(repair.quality);
+      expect(repair.atoms.slice(0, 8)).toEqual(ring);
+      expectRigid(atoms, repair.atoms, bonds);
+    }
+    expect(repairLayoutOverlaps(atoms, bonds, { labelBoxes: labels })).toEqual(repairs);
+    expect(molecule).toEqual(snapshot);
+  });
+  it("rejects the OMe swing whose turned label collides with isolated water", () => {
+    const ring = polygon(6, { x: 0, y: 0 }, 105 * Math.PI / 180).map(p => ({ x: p.x * 30, y: p.y * 30 }));
+    const atoms = [...ring, { x: ring[0].x * 2, y: ring[0].y * 2 }, { x: -44.5, y: 36.5 }];
+    const bonds = [...cycle(6), { from: 0, to: 6 }];
+    const molecule: MoleculeObject = {
+      id: "methoxy-water", type: "molecule", x: -60, y: -60, width: 120, height: 120, rotation: 0,
+      structure: "", structureFormat: "smiles", superatoms: [], rGroups: [],
+      style: { bondLengthPx: 30, atomLabelFontSizePx: 15 },
+      atoms: atoms.map((a, i) => ({ ...a, id: `a${i}`, element: i < 6 ? "C" : i === 6 ? "OMe" : "O",
+        formalCharge: 0 })),
+      bonds: bonds.map((b, i) => ({ id: `b${i}`, fromAtomId: `a${b.from}`, toAtomId: `a${b.to}`, order: "single" }))
+    };
+    const labels = (points: readonly LayoutPoint[]) => moleculeLayoutLabelBoxes({ ...molecule,
+      atoms: molecule.atoms.map((a, i) => ({ ...a, ...points[i] })) });
+    const swung = atoms.map((a, i) => i === 6 ? rotate([a], atoms[0], 30)[0] : a);
+    const base = rotate(atoms, { x: 0, y: 0 }, 135);
+    const points = rotate(swung, { x: 0, y: 0 }, 135);
+    const text = (points: readonly LayoutPoint[]) => planMoleculeAtomLabels({ ...molecule,
+      atoms: molecule.atoms.map((a, i) => ({ ...a, ...points[i] })) }).find(p => p.atom.id === "a6")!.label;
+    expect(text(base)).toBe("MeO");
+    expect(text(points)).toBe("OMe");
+    const baseLabels = labels(base);
+    const stale = baseLabels.map(box => ({ ...box,
+      x: box.x + points[box.atom].x - base[box.atom].x,
+      y: box.y + points[box.atom].y - base[box.atom].y }));
+    expect(evaluateLayoutQuality(points, bonds, 30, undefined, undefined, stale).passes).toBe(true);
+    const fresh = labels(points);
+    const planned = replanRepairLabels(base, baseLabels, points, new Set([0, 6]), labels);
+    expect(planned).toEqual(fresh);
+    const evaluate = prepareLayoutLabelEvaluator(base, bonds, baseLabels, 30, new Set([6]), undefined, [], new Set([0, 6]));
+    expect(evaluate(points, planned).labelLabelOverlaps).toContainEqual([6, 7]);
+    expect(evaluateLayoutQuality(points, bonds, 30, undefined, undefined, planned).passes).toBe(false);
+    const repairs = repairLayoutOverlaps(atoms, bonds, { labelBoxes: labels, conventionalOrientation: true });
+    expect(repairs.length).toBeGreaterThan(0);
+    for (const repair of repairs) {
+      expect(evaluateLayoutQuality(repair.atoms, bonds, 30, undefined, undefined, labels(repair.atoms)).hardDefects).toBe(0);
+    }
+  });
+  it.each([100, 500])("bounds labelled repair including orientation work on %i nitrogen atoms", count => {
+    const molecule: MoleculeObject = {
+      id: "nitrogen-chain", type: "molecule", x: -30, y: -30, width: count * 30, height: 60, rotation: 0,
+      structure: "", structureFormat: "smiles", superatoms: [], rGroups: [],
+      style: { bondLengthPx: 30, atomLabelFontSizePx: 15, atomLabelFontSizes: { [`a${count - 1}`]: 80 } },
+      atoms: Array.from({ length: count }, (_, i) => ({ id: `a${i}`, element: "N", formalCharge: 0,
+        x: i < 6 ? 30 * Math.cos(i * Math.PI / 3) : 30 * (i - 4),
+        y: i < 6 ? 30 * Math.sin(i * Math.PI / 3) : 0 })),
+      bonds: [...cycle(6), { from: 0, to: 6 }, ...Array.from({ length: count - 7 }, (_, i) => ({ from: i + 6, to: i + 7 }))]
+        .map((b, i) => ({ id: `b${i}`, fromAtomId: `a${b.from}`, toAtomId: `a${b.to}`, order: "single" }))
+    };
+    const atoms = molecule.atoms;
+    const bonds = molecule.bonds.map(b => ({ from: Number(b.fromAtomId.slice(1)), to: Number(b.toAtomId.slice(1)) }));
+    const labels = vi.fn((points: readonly LayoutPoint[]) => moleculeLayoutLabelBoxes({ ...molecule,
+      atoms: atoms.map((a, i) => ({ ...a, ...points[i] })) }));
+    expect(evaluateLayoutQuality(atoms, bonds).hardDefects).toBe(0);
+    expect(evaluateLayoutQuality(atoms, bonds, 30, undefined, undefined, labels(atoms)).hardDefects).toBe(3);
+    labels.mockClear();
+    const snapshot = structuredClone(molecule);
+    const start = performance.now();
+    const repairs = repairLayoutOverlaps(atoms, bonds, { labelBoxes: labels, conventionalOrientation: true });
+    const elapsed = performance.now() - start;
+    console.log(`LABEL_REPAIR_TIMING atoms=${count} ms=${elapsed.toFixed(1)} plans=${labels.mock.calls.length}`);
+    expect(elapsed).toBeLessThan(2000);
+    expect(labels.mock.calls.length).toBeLessThanOrEqual(Math.ceil(131_072 / count));
+    expect(repairs).toEqual([]); // the oversized terminal label cannot be fixed by a ring substituent swing
+    expect(molecule).toEqual(snapshot);
+  }, 300_000);
+  it("orients the largest ring horizontally with the pendant below, deterministically without reflection", () => {
+    const ring = polygon(6, { x: 0, y: 0 }).map(a => ({ x: a.x * 2, y: a.y }));
+    const atoms = rotate([...ring, { x: 0, y: 3 }], { x: 0, y: 0 }, 37);
+    const bonds = [...cycle(6), { from: 1, to: 6 }];
+    const snapshot = structuredClone(atoms);
+    const orientations = conventionalLayoutOrientations(atoms, bonds);
+    const first = orientations[0];
+    expect(first.angleDegrees).toBeCloseTo(-37);
+    expect(first.atoms[6].y).toBeGreaterThan(0);
+    expect(first.atoms.slice(0, 6).reduce((sum, a) => sum + a.x * a.y, 0)).toBeCloseTo(0, 12);
+    expect(orientations).toHaveLength(12);
+    for (const orientation of orientations) expectRigid(atoms, orientation.atoms, bonds);
+    expect(conventionalLayoutOrientations(atoms, bonds)).toEqual(orientations);
+    expect(atoms).toEqual(snapshot);
+    // Only the second orientation has a clear synthetic label: it must be tried before rejection.
+    const labels = (points: readonly LayoutPoint[]) => [{ atom: 6, x: points[6].y > 0 ? -3 : 20,
+      y: -2, width: 6, height: 4 }];
+    expect(orientLayoutForLabels(atoms, bonds, labels).angleDegrees).toBeCloseTo(143);
+    const stepLabels = (points: readonly LayoutPoint[]) => [{ atom: 6, x: Math.abs(points[6].x) < 1 ? -3 : 20,
+      y: -2, width: 6, height: 4 }];
+    expect(orientLayoutForLabels(atoms, bonds, stepLabels).angleDegrees).toBeCloseTo(-7);
+  });
+
+  it("repairs a label-only collision by swinging a substituent with fresh direction-dependent labels", () => {
+    const atoms = [...polygon(6, { x: 0, y: 0 }), { x: 2, y: 0 }];
+    const bonds = [...cycle(6), { from: 0, to: 6 }];
+    const labels = (points: readonly LayoutPoint[]) => [{ atom: 6,
+      x: points[6].x - 1, y: points[6].y - 0.1, width: 1.2, height: 0.2 }];
+    const q = evaluateLayoutQuality(atoms, bonds, 1, undefined, undefined, labels(atoms));
+    expect(q.overlappingAtoms).toEqual([]);
+    expect(q.labelBondOverlaps.length).toBeGreaterThan(0);
+    const planner = vi.fn(labels);
+    const repairs = repairLayoutOverlaps(atoms, bonds, { labelBoxes: planner });
+    expect(planner.mock.calls.length).toBeGreaterThan(1);
+    expect(repairs.length).toBeGreaterThan(0);
+    for (const repair of repairs) {
+      expect(evaluateLayoutQuality(repair.atoms, bonds, 1, undefined, undefined, labels(repair.atoms)).hardDefects).toBe(0);
+      expectRigid(atoms, repair.atoms, bonds);
+    }
+  });
+  it("bounds repair work on 500 atoms with coincident hexagons deterministically", () => {
+    const atoms: LayoutPoint[] = [];
+    const bonds: LayoutBond[] = [];
+    for (let i = 0; i < 83; i++) {
+      atoms.push(...polygon(6, { x: 0, y: 0 }));
+      bonds.push(...cycle(6, i * 6));
+      if (i) bonds.push({ from: (i - 1) * 6, to: i * 6 + 3 });
+    }
+    atoms.push({ x: 2, y: 0 }, { x: 3, y: 0 });
+    bonds.push({ from: 0, to: 498 }, { from: 498, to: 499 });
+    const snapshot = structuredClone(atoms);
+    const start = performance.now();
+    const first = repairLayoutOverlaps(atoms, bonds);
+    const elapsed = performance.now() - start;
+    console.log(`REPAIR_TIMING atoms=${atoms.length} ms=${elapsed.toFixed(1)}`);
+    expect(elapsed).toBeLessThan(2000);
+    expect(repairLayoutOverlaps(atoms, bonds)).toEqual(first);
+    expect(atoms).toEqual(snapshot);
+  }, 60_000);
+
+  it("orders strict repairs by soft score, clearance, and then input order", () => {
+    const quality = evaluateLayoutQuality(polygon(6, { x: 0, y: 0 }), cycle(6));
+    const repair = (softScore: number, nearest: number, passes = true): LayoutRepair => ({
+      atoms: [], kind: "spiro rotation", pivot: 0, movedAtoms: [], angleDegrees: 0,
+      quality: { ...quality, passes, passesRelaxed: true, softScore, nearestNonBondedAtomPairDistance: nearest }
+    });
+    const best = repair(1, 2), tie = repair(1, 2), lessClear = repair(1, 1);
+    const worse = repair(2, 10), relaxed = repair(0, 20, false);
+    expect([relaxed, worse, best, lessClear, tie].sort(compareLayoutRepairs))
+      .toEqual([best, tie, lessClear, worse, relaxed]);
+  });
+  it("rotates a spiro ring away from a third ring while preserving all intra-ring distances", () => {
+    const hex = polygon(6, { x: 0, y: 0 });
+    // Fuse the second hexagon across the upper edge (1--2).
+    const p = hex[1], q = hex[2];
+    const reflect = (a: LayoutPoint) => {
+      const t = ((a.x - p.x) * (q.x - p.x) + (a.y - p.y) * (q.y - p.y)) /
+        ((q.x - p.x) ** 2 + (q.y - p.y) ** 2);
+      return { x: 2 * (p.x + t * (q.x - p.x)) - a.x, y: 2 * (p.y + t * (q.y - p.y)) - a.y };
+    };
+    const fused = [0, 3, 4, 5].map(i => reflect(hex[i]));
+    const fusedIndices = [6, 1, 2, 7, 8, 9];
+    const radius = 1 / (2 * Math.sin(Math.PI / 5));
+    const pent = polygon(5, { x: hex[0].x + radius, y: hex[0].y }, Math.PI);
+    const atoms = [...hex, ...fused, ...rotate(pent.slice(1), hex[0], 60)];
+    const pentIndices = [0, 10, 11, 12, 13];
+    const bonds = [...cycle(6), ...[fusedIndices, pentIndices].flatMap(ids => ids.map((from, i) => ({
+      from, to: ids[(i + 1) % ids.length]
+    }))).filter(b => !(b.from === 1 && b.to === 2))];
+    const original = evaluateLayoutQuality(atoms, bonds);
+    expect(original.overlappingAtoms.length).toBeGreaterThan(0);
+    expect(original.overlappingAtoms.some(([a, b]) => a >= 6 && a <= 9 && b >= 10)).toBe(true);
+    expect(original.crossings).toEqual([]);
+    const repairs = repairLayoutOverlaps(atoms, bonds);
+    expect(repairs.length).toBeGreaterThan(0);
+    expectLocalScoresMatchFullEvaluation(repairs, bonds);
+    expect(repairs[0].kind).toBe("spiro rotation");
+    expect(repairs[0].pivot).toBe(0);
+    expect(repairs[0].quality.passes).toBe(true);
+    const repaired = repairs[0].atoms;
+    const neighbours = bonds.flatMap(b => b.from === 0 ? [b.to] : b.to === 0 ? [b.from] : []);
+    for (const a of neighbours) for (const b of neighbours) {
+      if (a === b) continue;
+      const angleA = Math.atan2(repaired[a].y - repaired[0].y, repaired[a].x - repaired[0].x);
+      const angleB = Math.atan2(repaired[b].y - repaired[0].y, repaired[b].x - repaired[0].x);
+      expect(Math.acos(Math.cos(angleA - angleB)) * 180 / Math.PI).toBeGreaterThanOrEqual(30 - 1e-9);
+    }
+    expectRigid(atoms, repairs[0].atoms, bonds);
+    expect(repairLayoutOverlaps(atoms, bonds)).toEqual(repairs);
+  });
+
+  it("clears a pendant phenyl by a bridge swing and is deterministic", () => {
+    const first = polygon(6, { x: 0, y: 0 });
+    const second = polygon(6, { x: 3, y: 0 });
+    // A nearby substituent collides with the phenyl; both rings remain regular.
+    const atoms = [...first, ...rotate(second, first[0], 35), { x: 1.5, y: Math.sqrt(3) / 2 }];
+    const bonds = [...cycle(6), ...cycle(6, 6), { from: 0, to: 9 }, { from: 1, to: 12 }];
+    const snapshot = structuredClone(atoms);
+    const repairs = repairLayoutOverlaps(atoms, bonds);
+    expect(repairs.length).toBeGreaterThan(0);
+    expectLocalScoresMatchFullEvaluation(repairs, bonds);
+    const repaired = repairs.find(r => r.kind === "bridge swing")!;
+    expect(repaired).toBeDefined();
+    expect(Math.abs(repaired.angleDegrees)).toBeLessThanOrEqual(40);
+    expect(repaired.quality.passes).toBe(true);
+    expectRigid(atoms, repaired.atoms, bonds);
+    expect(atoms).toEqual(snapshot);
+    expect(repairLayoutOverlaps(atoms, bonds)).toEqual(repairs);
+    const substituent = repairs.find(r => r.kind === "substituent swing")!;
+    expect(substituent).toBeDefined();
+    expect(substituent.movedAtoms).toEqual([12]);
+    expect(Math.abs(substituent.angleDegrees)).toBeLessThanOrEqual(40);
+    expectRigid(atoms, substituent.atoms, bonds);
+  });
+
+  it("returns no repair when a collision is inside one rigid ring", () => {
+    const atoms = polygon(6, { x: 0, y: 0 });
+    atoms[2] = { ...atoms[0] };
+    expect(repairLayoutOverlaps(atoms, cycle(6))).toEqual([]);
+  });
+
+  it("leaves already passing layouts and layouts with crossings alone", () => {
+    expect(repairLayoutOverlaps(polygon(6, { x: 0, y: 0 }), cycle(6))).toEqual([]);
+    expect(repairLayoutOverlaps([{ x: -1, y: -1 }, { x: 1, y: 1 }, { x: 1, y: -1 }, { x: -1, y: 1 }],
+      [{ from: 0, to: 1 }, { from: 2, to: 3 }])).toEqual([]);
+  });
+});
