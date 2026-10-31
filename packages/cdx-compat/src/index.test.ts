@@ -39,7 +39,7 @@ it("warns when a picture is omitted from visible CDXML and retains the native pa
   const document = createEmptyDocument();
   document.pages[0].objects = [picture];
   const exported = exportDocumentToCdxml(document);
-  expect(exported.warnings).toContainEqual({ code: "cdxml.picture_not_saved", objectId: "g12",
+  expect(exported.warnings).toContainEqual({ code: "cdxml.picture_not_saved", sourceObjectId: "g12",
     message: "CDXML export: picture g12 is not saved in CDXML" });
   expect(exported.contents).not.toContain("<graphic");
   expect(openChemDraftPayload(exported.contents).document?.pages[0].objects).toEqual([picture]);
