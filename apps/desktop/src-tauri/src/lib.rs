@@ -4057,6 +4057,7 @@ fn plugin_panel_default_placement<R: Runtime>(
     Some(panel_window_frame::Placement {
         position: (position.x, position.y),
         size: (size.width, size.height),
+        scale,
     })
 }
 

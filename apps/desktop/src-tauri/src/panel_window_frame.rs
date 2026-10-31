@@ -74,11 +74,13 @@ pub(super) struct Frame {
 pub(super) struct Placement {
     pub position: (i32, i32),
     pub size: (u32, u32),
+    pub scale: f64,
 }
 
 impl Placement {
     // Moving can synchronously change DPI. Convert the final size with the destination monitor,
     // then apply both operations on the UI thread without consulting a stale window scale.
+    #[cfg(any(not(target_os = "macos"), test))]
     pub fn apply<E>(
         self,
         move_to: impl FnOnce((i32, i32)) -> Result<(), E>,
@@ -86,6 +88,20 @@ impl Placement {
     ) -> Result<(), E> {
         move_to(self.position)?;
         resize(self.size)
+    }
+
+    #[cfg(any(target_os = "macos", test))]
+    pub fn appkit_frame(self, primary_height: f64, border: (f64, f64)) -> ScreenRect {
+        // Tao's macOS physical monitor origins are global logical origins multiplied by that
+        // monitor's scale. Undo that scale, never the window's current (possibly other) scale.
+        let width = f64::from(self.size.0) / self.scale + border.0;
+        let height = f64::from(self.size.1) / self.scale + border.1;
+        ScreenRect::new(
+            f64::from(self.position.0) / self.scale,
+            primary_height - f64::from(self.position.1) / self.scale - height,
+            width,
+            height,
+        )
     }
 }
 
@@ -180,6 +196,7 @@ impl Frame {
                 (self.width * monitor.scale).round() as u32,
                 (self.height * monitor.scale).round() as u32,
             ),
+            scale: monitor.scale,
         }
     }
 
@@ -283,6 +300,51 @@ mod tests {
     }
 
     #[test]
+    fn appkit_restore_uses_destination_scale_for_global_origin_and_size() {
+        for origin in [(1920, -200), (-1920, 1080), (0, 0)] {
+            for scale in [1.0, 1.5, 2.0] {
+                let destination = monitor(
+                    (
+                        (f64::from(origin.0) * scale) as i32,
+                        (f64::from(origin.1) * scale) as i32,
+                    ),
+                    scale,
+                );
+                let elsewhere = monitor(
+                    if origin == (0, 0) { (-2560, 0) } else { (0, 0) },
+                    if scale == 1.0 { 2.0 } else { 1.0 },
+                );
+                let saved = frame(&destination);
+                // The enlarged window may now be on any other screen; only the saved frame's
+                // destination monitor scale participates in its AppKit conversion.
+                let placement = saved.restore_normal(&[elsewhere, destination]).unwrap();
+                assert_eq!(
+                    placement.appkit_frame(1080.0, (0.0, 0.0)),
+                    ScreenRect::new(
+                        f64::from(origin.0) + 100.0,
+                        1080.0 - f64::from(origin.1) - 80.0 - 500.0,
+                        600.0,
+                        500.0,
+                    )
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn appkit_frame_preserves_outer_top_left_and_logical_content_size() {
+        let placement = Placement {
+            position: (4040, -300),
+            size: (1200, 1000),
+            scale: 2.0,
+        };
+        assert_eq!(
+            placement.appkit_frame(1080.0, (10.0, 28.0)),
+            ScreenRect::new(2020.0, 702.0, 610.0, 528.0)
+        );
+    }
+
+    #[test]
     fn matching_requires_name_and_physical_bounds_and_uses_current_scale() {
         let m = monitor((1920, 0), 2.0);
         let saved = frame(&m);
@@ -322,7 +384,8 @@ mod tests {
             oversized.restore(std::slice::from_ref(&m)),
             Some(Placement {
                 position: (1920, 50),
-                size: (1920, 1550)
+                size: (1920, 1550),
+                scale: 2.0,
             })
         );
         let small = Frame {
@@ -336,7 +399,8 @@ mod tests {
             small.restore(&[m]),
             Some(Placement {
                 position: (3280, 1200),
-                size: (560, 400)
+                size: (560, 400),
+                scale: 2.0,
             })
         );
         assert_eq!(default_size(None, None), (380.0, 520.0));
@@ -358,14 +422,16 @@ mod tests {
             f.enlarged(500.0, 400.0, (0.0, 0.0), &m),
             Some(Placement {
                 position: (2320, 300),
-                size: (1000, 800)
+                size: (1000, 800),
+                scale: 2.0,
             })
         );
         assert_eq!(
             f.enlarged(5000.0, 4000.0, (10.0, 10.0), &m),
             Some(Placement {
                 position: (1920, 50),
-                size: (1900, 1530)
+                size: (1900, 1530),
+                scale: 2.0,
             })
         );
         assert_eq!(
@@ -381,6 +447,7 @@ mod tests {
         let p = Placement {
             position: (2200, 160),
             size: (1200, 1000),
+            scale: 2.0,
         };
         p.apply::<()>(
             |pos| {
@@ -417,6 +484,7 @@ mod tests {
         let expected = Placement {
             position: (2920, 160),
             size: (1200, 1000),
+            scale: 2.0,
         };
         assert_eq!(
             normal.restore_normal(std::slice::from_ref(&m)),
