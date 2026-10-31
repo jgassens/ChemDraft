@@ -1,5 +1,6 @@
 mod assistant_mcp;
 mod clipboard_formats;
+mod clipboard_images;
 mod dialog_windows;
 mod document_session;
 mod download_diagnosis;
@@ -36,6 +37,7 @@ mod windows_clipboard;
 use clipboard_formats::{
     validate_clipboard_items, ClipboardWriteItem, ClipboardWriteResult, ValidatedClipboardItem,
 };
+use clipboard_images::{ClipboardImageItem, SkippedClipboardImageItem};
 
 use std::{
     collections::HashMap,
@@ -781,6 +783,8 @@ struct ClipboardTextItem {
 struct ClipboardReadPayload {
     types: Vec<String>,
     text_items: Vec<ClipboardTextItem>,
+    image_items: Vec<ClipboardImageItem>,
+    skipped_image_items: Vec<SkippedClipboardImageItem>,
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -4859,7 +4863,55 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
         })
         .unwrap_or_default();
 
-    Ok(ClipboardReadPayload { types, text_items })
+    let mut image_items = Vec::new();
+    let mut skipped_image_items = Vec::new();
+    // Keep the text path above unchanged. Chemistry/image precedence belongs to the caller.
+    for (sources, output_type) in [
+        (&["public.png", "public.tiff"][..], "image/png"),
+        (&["public.svg-image", "image/svg+xml"][..], "image/svg+xml"),
+    ] {
+        for &source in sources {
+            if !types.iter().any(|kind| kind == source) {
+                continue;
+            }
+            let Some(data) = pasteboard.dataForType(&NSString::from_str(source)) else {
+                skipped_image_items.push(SkippedClipboardImageItem::new(
+                    output_type,
+                    0,
+                    format!("Could not read {source} clipboard data"),
+                ));
+                continue;
+            };
+            let byte_length = data.length();
+            let result =
+                clipboard_images::check_image_byte_length(source, byte_length).and_then(|()| {
+                    let bytes = data.to_vec();
+                    match source {
+                        "public.png" => clipboard_images::png_image_item(&bytes),
+                        "public.tiff" => clipboard_images::tiff_image_item(&bytes),
+                        _ => clipboard_images::svg_image_item(&bytes, source),
+                    }
+                });
+            match result {
+                Ok(item) => {
+                    image_items.push(item);
+                    break;
+                }
+                Err(reason) => skipped_image_items.push(SkippedClipboardImageItem::new(
+                    output_type,
+                    byte_length,
+                    reason,
+                )),
+            }
+        }
+    }
+
+    Ok(ClipboardReadPayload {
+        types,
+        text_items,
+        image_items,
+        skipped_image_items,
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -5117,6 +5169,8 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
     Ok(ClipboardReadPayload {
         types: Vec::new(),
         text_items: Vec::new(),
+        image_items: Vec::new(),
+        skipped_image_items: Vec::new(),
     })
 }
 
@@ -10187,6 +10241,12 @@ mod tests {
             );
         }
         assert!(payload.types.iter().any(|kind| kind == "public.png"));
+        assert_eq!(payload.image_items.len(), 1);
+        assert!(payload.skipped_image_items.is_empty());
+        assert_eq!(payload.image_items[0].bytes_base64, {
+            use base64::{engine::general_purpose::STANDARD, Engine};
+            STANDARD.encode(&png)
+        });
         let pasteboard = NSPasteboard::generalPasteboard();
         assert_eq!(
             pasteboard
