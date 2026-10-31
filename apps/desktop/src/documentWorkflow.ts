@@ -132,6 +132,12 @@ import {
   type TextExportResult
 } from "@chemdraft/export-engine";
 import {
+  compareLayoutQuality,
+  compareLayoutRepairs,
+  evaluateLayoutQuality,
+  repairLayoutOverlaps,
+  type LayoutBond,
+  type LayoutQuality,
   aimPlacementVertices,
   placementAimDegrees,
   findNearestAtomAtPoint,
@@ -14978,6 +14984,9 @@ function skipUnknownBondStereoGuard(molecule: MoleculeObject): boolean {
  * back (atom count/element mismatch) — the caller surfaces that as a status, nothing commits.
  */
 export interface NativeEngineRelayoutOptions {
+  /** Tried in order only after the primary fails quality or identity/stereo validation.
+   * Supplying this list (even empty) enables the 2D quality gate without a style length. */
+  alternateRelayouts?: readonly NativeMoleculeRelayoutEngine[];
   /** MOL/perception warnings surfaced by the cleanup command. */
   warnings?: string[];
   /**
@@ -14995,6 +15004,140 @@ export interface NativeEngineRelayoutOptions {
    * engine's own wedge assignment is trusted as before.
    */
   perceiveStereo?: StereoPerceiver;
+}
+
+export type NativeMoleculeRelayoutEngine = (molfile: string) => PastedStructureDepiction;
+
+interface EngineRelayoutCandidate {
+  document: ChemDraftDocument;
+  quality?: LayoutQuality;
+  drawnQuality?: LayoutQuality;
+  warnings: string[];
+  repairSource?: { depiction: PastedStructureDepiction; bonds: LayoutBond[] };
+}
+type EngineRelayoutAttempt = { ok: true; candidate: EngineRelayoutCandidate } | { ok: false; error: unknown };
+
+/** Avoid replacing an ordinary drawing for a negligible soft-geometry improvement. */
+export const MIN_CLEANUP_SOFT_SCORE_IMPROVEMENT = 0.05;
+
+function evaluateEngineRelayoutCandidate(
+  document: ChemDraftDocument, objectId: string, relayout: NativeMoleculeRelayoutEngine,
+  options: NativeEngineRelayoutOptions
+): EngineRelayoutAttempt {
+  // Failed or rejected candidates must not leak their warnings into the committed result.
+  const warnings: string[] = [];
+  let quality: LayoutQuality | undefined;
+  let drawnQuality: LayoutQuality | undefined;
+  let repairSource: EngineRelayoutCandidate["repairSource"];
+  try {
+    const next = buildNativeMoleculeEngineRelayout(document, objectId, relayout, { ...options, warnings }, (generated, drawn, depiction, bonds) => {
+      quality = generated;
+      drawnQuality = drawn;
+      repairSource = { depiction, bonds };
+    });
+    return { ok: true, candidate: { document: next, quality, drawnQuality, warnings, repairSource } };
+  } catch (error) {
+    return { ok: false, error };
+  }
+}
+
+function chooseEngineRelayout(
+  document: ChemDraftDocument, objectId: string, primary: EngineRelayoutAttempt,
+  alternates: readonly NativeMoleculeRelayoutEngine[], options: NativeEngineRelayoutOptions
+): ChemDraftDocument {
+  const finish = (candidate: EngineRelayoutCandidate) => {
+    options.warnings?.push(...candidate.warnings);
+    return candidate.document;
+  };
+  if (primary.ok && (!primary.candidate.quality || primary.candidate.quality.passes)) return finish(primary.candidate);
+  let best = primary.ok ? primary.candidate : undefined;
+  const candidates = primary.ok ? [primary.candidate] : [];
+  let bestRelaxed = primary.ok && primary.candidate.quality?.passesRelaxed ? primary.candidate : undefined;
+  for (const alternate of alternates) {
+    const attempt = evaluateEngineRelayoutCandidate(document, objectId, alternate, options);
+    if (!attempt.ok) continue;
+    const candidate = attempt.candidate;
+    candidates.push(candidate);
+    if (!candidate.quality || candidate.quality.passes) return finish(candidate);
+    if (!best?.quality || compareLayoutQuality(candidate.quality, best.quality) < 0) best = candidate;
+    if (candidate.quality.passesRelaxed &&
+        (!bestRelaxed?.quality || candidate.quality.softScore < bestRelaxed.quality.softScore)) bestRelaxed = candidate;
+  }
+  // Unmodified strict passes above keep their existing engine priority. Repairs precede the
+  // relaxed/soft fallback and are rebuilt through the identical identity and stereo guard.
+  const repairs = candidates.flatMap(candidate => {
+    const source = candidate.repairSource;
+    return source ? repairLayoutOverlaps(source.depiction.atoms, source.bonds).map(repair => ({ source, repair })) : [];
+  }).sort((a, b) => compareLayoutRepairs(a.repair, b.repair));
+  for (const { source, repair } of repairs) {
+    const depiction = { ...source.depiction, atoms: source.depiction.atoms.map((atom, i) => ({ ...atom, ...repair.atoms[i] })) };
+    const attempt = evaluateEngineRelayoutCandidate(document, objectId, () => depiction, options);
+    if (!attempt.ok || !(attempt.candidate.quality?.passes || attempt.candidate.quality?.passesRelaxed)) continue;
+    const before = findMoleculeObject(document, objectId);
+    const after = findMoleculeObject(attempt.candidate.document, objectId);
+    if (!before || !after) continue;
+    // R/S has already passed the normal read-back/reconciliation above. A swing can also move
+    // an alkene ligand across its axis; guard its drawn E/Z with the same conservative state
+    // comparison used by flatten. Either markers stay unspecified.
+    const actualDoubleStereo = doubleBondStereoState(after);
+    if ([...doubleBondStereoState(before)].some(([id, expected]) =>
+      expected !== 0 && actualDoubleStereo.get(id) !== expected)) continue;
+    return finish(attempt.candidate);
+  }
+  if (!best) {
+    if (!primary.ok) throw primary.error;
+    return document;
+  }
+  // Preserve the existing bridged/cage policy; regular planar geometry may be impossible there.
+  const bridged = best.quality?.hasBridgedRings;
+  if (!bridged && bestRelaxed) return finish(bestRelaxed);
+  const generated = best.quality;
+  const drawn = best.drawnQuality;
+  const improvesOrdinary = generated && drawn && (generated.hardDefects < drawn.hardDefects ||
+    (generated.hardDefects === 0 && generated.softScore <= drawn.softScore - MIN_CLEANUP_SOFT_SCORE_IMPROVEMENT));
+  if (generated && drawn && (bridged ? drawn.hardDefects < generated.hardDefects : !improvesOrdinary)) {
+    options.warnings?.push(...best.warnings);
+    const reason = generated.overlappingAtoms.length > 0 && generated.crossings.length > 0
+      ? "put atoms on top of each other and crossed bonds"
+      : generated.overlappingAtoms.length > 0 ? "put atoms on top of each other"
+      : generated.crossings.length > 0 ? "crossed bonds" : "distorted bonds or rings beyond the cleanup limits";
+    options.warnings?.push(`Clean Up kept the drawn layout of this structure: the generated layouts ${reason}.`);
+    return document;
+  }
+  // Bridged/cage graphs may have unavoidable crossings or distorted rings. Equal hard-defect
+  // counts still allow their cleanup; a strictly better drawn layout blocks a generated layout.
+  return finish(best);
+}
+
+export function applyNativeMoleculeEngineRelayout(
+  document: ChemDraftDocument, objectId: string, relayout: NativeMoleculeRelayoutEngine,
+  options: NativeEngineRelayoutOptions = {}
+): ChemDraftDocument {
+  // The legacy 3D Cleanup caller preserves the drawing's scale and metal-placement behavior.
+  // 2D Cleanup supplies a style length (or uses the asynchronous preparation entry below).
+  if (options.targetBondLengthPx === undefined && options.alternateRelayouts === undefined) {
+    return buildNativeMoleculeEngineRelayout(document, objectId, relayout, options);
+  }
+  const primary = evaluateEngineRelayoutCandidate(document, objectId, relayout, options);
+  return chooseEngineRelayout(document, objectId, primary, options.alternateRelayouts ?? [], options);
+}
+
+/** Pure preparation for the command's single commit. Passing OCL layouts never invoke the
+ * loader. Every candidate, including alternates, goes through the same complete read-back guard. */
+export async function prepareNativeMoleculeEngineRelayout(
+  document: ChemDraftDocument, objectId: string, relayout: NativeMoleculeRelayoutEngine,
+  loadAlternates: () => Promise<readonly NativeMoleculeRelayoutEngine[]>,
+  options: NativeEngineRelayoutOptions = {}
+): Promise<ChemDraftDocument> {
+  const primary = evaluateEngineRelayoutCandidate(document, objectId, relayout, options);
+  if (primary.ok && (!primary.candidate.quality || primary.candidate.quality.passes)) {
+    return chooseEngineRelayout(document, objectId, primary, [], options);
+  }
+  let alternates: readonly NativeMoleculeRelayoutEngine[] = [];
+  try { alternates = await loadAlternates(); } catch (error) {
+    options.warnings?.push(`Clean Up could not load alternate layouts: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return chooseEngineRelayout(document, objectId, primary, alternates, options);
 }
 
 /**
@@ -15111,11 +15254,12 @@ function placeEngineFragmentsOnDrawing(
   return placed;
 }
 
-export function applyNativeMoleculeEngineRelayout(
+function buildNativeMoleculeEngineRelayout(
   document: ChemDraftDocument,
   objectId: string,
   relayout: (molfile: string) => PastedStructureDepiction,
-  options: NativeEngineRelayoutOptions = {}
+  options: NativeEngineRelayoutOptions,
+  reportQuality?: (generated: LayoutQuality, drawn: LayoutQuality, depiction: PastedStructureDepiction, bonds: LayoutBond[]) => void
 ): ChemDraftDocument {
   const molecule = findMoleculeObject(document, objectId);
   if (!molecule || !isEditableNativeMoleculeGraph(molecule) || molecule.atoms.length === 0) {
@@ -15180,6 +15324,15 @@ export function applyNativeMoleculeEngineRelayout(
       throw new Error(`Engine re-layout atom ${index + 1} is ${atom.element}, expected ${expected}.`);
     }
   });
+  // Judge the engine's ligand skeleton before any metal placement/folding. Native bonds define
+  // the graph, so an engine cannot improve its score by omitting an inconvenient bond.
+  if (reportQuality) {
+    const ligandIndexById = new Map(ligandAtoms.map((atom, index) => [atom.id, index]));
+    const qualityBonds = ligandBonds.map(bond => ({
+      from: ligandIndexById.get(bond.fromAtomId)!, to: ligandIndexById.get(bond.toAtomId)!
+    }));
+    reportQuality(evaluateLayoutQuality(depiction.atoms, qualityBonds), evaluateLayoutQuality(ligandAtoms, qualityBonds), depiction, qualityBonds);
+  }
   // Engine bonds re-indexed onto the molecule's own atom order.
   const engineBonds = depiction.bonds.map((bond) => ({
     ...bond,

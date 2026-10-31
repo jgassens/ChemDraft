@@ -1,3 +1,5 @@
+export * from "./layoutQuality";
+export * from "./layoutRepair";
 export { DocumentStyleScale, documentStylePointBounds, FigureStyles, type FigureStyle } from "./documentStyle";
 export { medianLength, representativeMoleculeBondLength, scalePageGeometry } from "./pageScale";
 export {
