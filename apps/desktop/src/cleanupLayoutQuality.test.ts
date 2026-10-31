@@ -98,6 +98,46 @@ beforeAll(async () => { installRealRdkitModuleLoader(); await ensureOclResources
 afterAll(() => resetRdkitForTesting());
 
 describe("Clean Up Structure 2D layout quality (real engines)", () => {
+  it("keeps the clean primary when coordinated sulfur is S in the full graph, without loading alternates", async () => {
+    const document = createEmptyDocument();
+    const molecule: MoleculeObject = {
+      id: "sulfur-zinc", type: "molecule", x: -30, y: 0, width: 51, height: 50, rotation: 0,
+      structure: "", structureFormat: "smiles", superatoms: [], rGroups: [],
+      style: { bondLengthPx: 30, atomLabelFontSizePx: 15 },
+      // Metal deliberately precedes the water: ligand indices must be remapped.
+      atoms: [{ id: "c", element: "C", x: -30, y: 0, formalCharge: 0 }, { id: "s", element: "S", x: 0, y: 0, formalCharge: 0 },
+        { id: "zn", element: "Zn", x: 0, y: 50, formalCharge: 0 }, { id: "o", element: "O", x: 21, y: 0, formalCharge: 0 }],
+      bonds: [{ id: "cs", fromAtomId: "c", toAtomId: "s", order: "single" },
+        { id: "szn", fromAtomId: "s", toAtomId: "zn", order: "single", display: { bondStyle: "dashed" } }]
+    };
+    document.pages[0].objects.push(molecule);
+    const snapshot = structuredClone(document);
+    expect(layoutEngine.planMoleculeAtomLabels(molecule).find(p => p.atom.id === "s")!.label).toBe("S");
+    expect(evaluateLayoutQuality(molecule.atoms, [{ from: 0, to: 1 }], 30, undefined, undefined,
+      moleculeLayoutLabelBoxes(molecule)).hardDefects).toBe(0);
+    const primary = vi.fn((): PastedStructureDepiction => ({
+      atoms: molecule.atoms.filter(a => a.element !== "Zn").map(a => ({ ...a, y: -a.y, charge: 0 })),
+      bonds: [{ from: 0, to: 1, order: "single", wedge: null }]
+    }));
+    const loader = vi.fn(async () => [primary]);
+    const warnings: string[] = [];
+    const cleaned = await prepareNativeMoleculeEngineRelayout(document, molecule.id, primary, loader,
+      { targetBondLengthPx: 30, warnings });
+    expect(loader).not.toHaveBeenCalled();
+    expect(primary).toHaveBeenCalledOnce();
+    expect(warnings).toEqual([]);
+    // The normal metal-placement pass still runs. Keep that primary result exactly;
+    // there must be no alternate engine, conventional rotation or fragment repair.
+    const ungatedPrimary = applyNativeMoleculeEngineRelayout(document, molecule.id, primary);
+    expect(cleaned).toEqual(ungatedPrimary);
+    const after = cleaned.pages[0].objects[0] as MoleculeObject;
+    expect(evaluateLayoutQuality(after.atoms, [{ from: 0, to: 1 }], 30, undefined, undefined,
+      moleculeLayoutLabelBoxes(after)).hardDefects).toBe(0);
+    expect(after.atoms.map(({ x: _x, y: _y, ...a }) => a))
+      .toEqual(molecule.atoms.map(({ x: _x, y: _y, ...a }) => a));
+    expect(after.bonds).toEqual(molecule.bonds);
+    expect(document).toEqual(snapshot);
+  });
   it("rejects overlaps introduced by placing concentric disconnected naphthalenes", async () => {
     const parsed = await depictInWorker("c1ccc2ccccc2c1", generateSmiles2DMolfile, () => {});
     const first = parsed.depiction;

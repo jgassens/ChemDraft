@@ -243,7 +243,8 @@ export function evaluateLayoutQuality(
   topology?: LayoutTopology, geometry?: LayoutGeometry, labelBoxes: readonly LayoutLabelBox[] = [],
   // Host-placed coordination pockets may intentionally touch labels on a metal/donor pair.
   // This exempts only those label pairs, never atom centres or label/bond clearance.
-  labelLabelExemptions: readonly (readonly [number, number])[] = []
+  labelLabelExemptions: readonly (readonly [number, number])[] = [],
+  labelGeometry?: LayoutLabelGeometry
 ): LayoutQuality {
   if (atoms.some(a => !Number.isFinite(a.x) || !Number.isFinite(a.y)) || bonds.some(b =>
     !Number.isInteger(b.from) || !Number.isInteger(b.to) || b.from === b.to ||
@@ -324,27 +325,8 @@ export function evaluateLayoutQuality(
       fusedSideDefects.push([i, j]);
     }
   }
-  const labelBondOverlaps: [number, number][] = [], labelLabelOverlaps: [number, number][] = [];
-  const exemptLabelPairs = new Set(labelLabelExemptions.map(([a, b]) => pairKey(a, b)));
-  let smallestLabelBondClearance = Infinity;
-  for (const [i, box] of labelBoxes.entries()) {
-    if (![box.x, box.y, box.width, box.height].every(Number.isFinite) || box.width < 0 || box.height < 0 ||
-        !Number.isInteger(box.atom) || box.atom < 0 || box.atom >= atoms.length) throw new Error("Layout label boxes must be finite with valid atom indices.");
-    bonds.forEach((bond, j) => {
-      if (bond.from === box.atom || bond.to === box.atom) return;
-      smallestLabelBondClearance = Math.min(smallestLabelBondClearance,
-        labelBoxBondDistance(box, atoms[bond.from], atoms[bond.to]) / reference);
-      const padding = LABEL_CLEARANCE_PADDING * reference;
-      if (labelBoxBondDistance({ ...box, x: box.x - padding, y: box.y - padding,
-        width: box.width + 2 * padding, height: box.height + 2 * padding }, atoms[bond.from], atoms[bond.to]) === 0) labelBondOverlaps.push([box.atom, j]);
-    });
-    for (const other of labelBoxes.slice(i + 1)) {
-      if (box.atom === other.atom || exemptLabelPairs.has(pairKey(box.atom, other.atom))) continue;
-      const padding = LABEL_CLEARANCE_PADDING * reference;
-      if (box.x <= other.x + other.width + padding && other.x <= box.x + box.width + padding &&
-          box.y <= other.y + other.height + padding && other.y <= box.y + box.height + padding) labelLabelOverlaps.push([box.atom, other.atom]);
-    }
-  }
+  const { labelBondOverlaps, labelLabelOverlaps, smallestLabelBondClearance } = labelGeometry ??
+    prepareLayoutLabelEvaluator(atoms, bonds, labelBoxes, reference, undefined, undefined, labelLabelExemptions)();
   const hardDefects = overlappingAtoms.length + crossings.length + atomBondOverlaps.length + collinearBondOverlaps.length +
     labelBondOverlaps.length + labelLabelOverlaps.length;
   const ringError = Math.max(0, ...rings.map(ring => ring.maxAngleError ?? 0));
@@ -369,7 +351,7 @@ export function compareLayoutQuality(a: LayoutQuality, b: LayoutQuality): number
 }
 
 /** Exact distance from an axis-aligned label box to a bond centreline. */
-function labelBoxBondDistance(box: LayoutLabelBox, a: LayoutPoint, b: LayoutPoint): number {
+export function labelBoxBondDistance(box: LayoutLabelBox, a: LayoutPoint, b: LayoutPoint): number {
   let low = 0, high = 1;
   for (const [start, delta, min, max] of [[a.x, b.x - a.x, box.x, box.x + box.width],
     [a.y, b.y - a.y, box.y, box.y + box.height]]) {
@@ -389,4 +371,137 @@ function labelBoxBondDistance(box: LayoutLabelBox, a: LayoutPoint, b: LayoutPoin
   };
   return Math.min(pointBox(a), pointBox(b), ...[box.x, box.x + box.width].flatMap(x =>
     [box.y, box.y + box.height].map(y => pointSegment({ x, y }))));
+}
+
+/** Shared uniform index for rigid repair and label clearance. Large sparse queries scan
+ * occupied items instead of walking an unbounded rectangle of empty grid cells. */
+export class LayoutSpatialGrid {
+  private cells = new Map<string, number[]>();
+  private ids = new Set<number>();
+  private oversized = new Set<number>();
+  constructor(private size: number) {}
+  private bounds(a: LayoutPoint, b: LayoutPoint, margin: number) {
+    return [Math.floor((Math.min(a.x, b.x) - margin) / this.size),
+      Math.floor((Math.max(a.x, b.x) + margin) / this.size),
+      Math.floor((Math.min(a.y, b.y) - margin) / this.size),
+      Math.floor((Math.max(a.y, b.y) + margin) / this.size)];
+  }
+  add(id: number, a: LayoutPoint, b = a) {
+    this.ids.add(id);
+    const [x0, x1, y0, y1] = this.bounds(a, b, 0);
+    // A very long bond or large label stays queryable without filling its entire frame.
+    if (![x0, x1, y0, y1].every(Number.isSafeInteger) ||
+        (x1 - x0 + 1) * (y1 - y0 + 1) > 1024) { this.oversized.add(id); return; }
+    for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) {
+      const key = `${x}:${y}`, cell = this.cells.get(key);
+      if (cell) cell.push(id); else this.cells.set(key, [id]);
+    }
+  }
+  query(a: LayoutPoint, b = a, margin = 0): Set<number> {
+    const [x0, x1, y0, y1] = this.bounds(a, b, margin);
+    if (![x0, x1, y0, y1].every(Number.isSafeInteger) ||
+        (x1 - x0 + 1) * (y1 - y0 + 1) > Math.max(16, this.cells.size * 4)) return new Set(this.ids);
+    const ids = new Set(this.oversized);
+    for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) {
+      for (const id of this.cells.get(`${x}:${y}`) ?? []) ids.add(id);
+    }
+    return ids;
+  }
+}
+
+export type LayoutLabelGeometry = Pick<LayoutQuality,
+  "labelBondOverlaps" | "labelLabelOverlaps" | "smallestLabelBondClearance">;
+
+/** Index the stationary part once per orientation. Each swing visits only mobile labels,
+ * mobile bonds and their spatial neighbours. Upright text within the moving fragment is
+ * checked too: rotating its atom centres does not rotate its axis-aligned boxes. */
+export function prepareLayoutLabelEvaluator(
+  atoms: readonly LayoutPoint[], bonds: readonly LayoutBond[], boxes: readonly LayoutLabelBox[], reference: number,
+  moving: ReadonlySet<number> = new Set(), work: () => void = () => {},
+  exemptions: readonly (readonly [number, number])[] = []
+): (points?: readonly LayoutPoint[], labels?: readonly LayoutLabelBox[]) => LayoutLabelGeometry {
+  if (!boxes.length) return () => ({ labelBondOverlaps: [], labelLabelOverlaps: [], smallestLabelBondClearance: Infinity });
+  const padding = LABEL_CLEARANCE_PADDING * reference;
+  const exempt = new Set(exemptions.map(([a, b]) => pairKey(a, b)));
+  const mobileBonds = bonds.map(b => moving.has(b.from) || moving.has(b.to));
+  const fixedBonds = new LayoutSpatialGrid(reference), fixedLabels = new LayoutSpatialGrid(reference);
+  const fixedBondIds: number[] = [], fixedLabelIds: number[] = [];
+  const corner = (b: LayoutLabelBox) => ({ x: b.x + b.width, y: b.y + b.height });
+  bonds.forEach((b, i) => {
+    if (!mobileBonds[i]) { fixedBondIds.push(i); fixedBonds.add(i, atoms[b.from], atoms[b.to]); }
+  });
+  boxes.forEach((b, i) => {
+    work();
+    if (![b.x, b.y, b.width, b.height].every(Number.isFinite) || b.width < 0 || b.height < 0 ||
+        !Number.isInteger(b.atom) || b.atom < 0 || b.atom >= atoms.length) throw new Error("Layout label boxes must be finite with valid atom indices.");
+    if (!moving.has(b.atom)) { fixedLabelIds.push(i); fixedLabels.add(i, b, corner(b)); }
+  });
+  const scan = (points: readonly LayoutPoint[], labels: readonly LayoutLabelBox[], dynamic: boolean,
+    baseline?: LayoutLabelGeometry): LayoutLabelGeometry => {
+    const labelBondOverlaps: [number, number][] = [...(baseline?.labelBondOverlaps ?? [])];
+    const labelLabelOverlaps: [number, number][] = [...(baseline?.labelLabelOverlaps ?? [])];
+    let clearance = baseline ? baseline.smallestLabelBondClearance * reference : Infinity;
+    const bondContact = (i: number, j: number) => {
+      work();
+      const box = labels[i], b = bonds[j];
+      if (b.from === box.atom || b.to === box.atom) return;
+      clearance = Math.min(clearance, labelBoxBondDistance(box, points[b.from], points[b.to]));
+      if (labelBoxBondDistance({ ...box, x: box.x - padding, y: box.y - padding,
+        width: box.width + 2 * padding, height: box.height + 2 * padding }, points[b.from], points[b.to]) === 0)
+        labelBondOverlaps.push([box.atom, j]);
+    };
+    const labelContact = (i: number, j: number) => {
+      work();
+      const a = labels[i], b = labels[j];
+      if (a.atom === b.atom || exempt.has(pairKey(a.atom, b.atom))) return;
+      if (a.x <= b.x + b.width + padding && b.x <= a.x + a.width + padding &&
+          a.y <= b.y + b.height + padding && b.y <= a.y + a.height + padding)
+        labelLabelOverlaps.push(i < j ? [a.atom, b.atom] : [b.atom, a.atom]);
+    };
+    const scanLabels = (ids: number[], grid: LayoutSpatialGrid, bondIds: number[], labelGrid: LayoutSpatialGrid,
+      labelFilter: (i: number, j: number) => boolean) => {
+      for (const i of ids) {
+        work();
+        const box = labels[i];
+        // Seed an exact upper bound; the query includes every bond that can lower the
+        // minimum, as well as every possible padded contact.
+        if (!Number.isFinite(clearance)) {
+          const j = bondIds.find(j => { work(); return bonds[j].from !== box.atom && bonds[j].to !== box.atom; });
+          if (j !== undefined) clearance = labelBoxBondDistance(box, points[bonds[j].from], points[bonds[j].to]);
+        }
+        for (const j of grid.query(box, corner(box), Math.max(padding, Number.isFinite(clearance) ? clearance : 0))) bondContact(i, j);
+        for (const j of labelGrid.query(box, corner(box), padding)) if (labelFilter(i, j)) labelContact(i, j);
+      }
+    };
+    if (!dynamic) {
+      scanLabels(fixedLabelIds, fixedBonds, fixedBondIds, fixedLabels, (i, j) => j > i);
+    } else {
+      const mobileBondGrid = new LayoutSpatialGrid(reference), mobileLabelGrid = new LayoutSpatialGrid(reference);
+      const mobileBondIds: number[] = [], mobileLabelIds: number[] = [];
+      bonds.forEach((b, i) => {
+        if (mobileBonds[i]) { work(); mobileBondIds.push(i); mobileBondGrid.add(i, points[b.from], points[b.to]); }
+      });
+      labels.forEach((b, i) => {
+        if (moving.has(b.atom)) { work(); mobileLabelIds.push(i); mobileLabelGrid.add(i, b, corner(b)); }
+      });
+      scanLabels(mobileLabelIds, fixedBonds, fixedBondIds, fixedLabels, () => true);
+      scanLabels(mobileLabelIds, mobileBondGrid, mobileBondIds, mobileLabelGrid, (i, j) => j > i);
+      // The other direction: a stationary label touched by a swinging bond.
+      for (const j of mobileBondIds) {
+        work();
+        const b = bonds[j];
+        if (!Number.isFinite(clearance)) {
+          const i = fixedLabelIds.find(i => { work(); return boxes[i].atom !== b.from && boxes[i].atom !== b.to; });
+          if (i !== undefined) clearance = labelBoxBondDistance(labels[i], points[b.from], points[b.to]);
+        }
+        for (const i of fixedLabels.query(points[b.from], points[b.to], Math.max(padding, Number.isFinite(clearance) ? clearance : 0))) bondContact(i, j);
+      }
+    }
+    const order = new Map(labels.map((b, i) => [b.atom, i]));
+    labelBondOverlaps.sort((a, b) => order.get(a[0])! - order.get(b[0])! || a[1] - b[1]);
+    labelLabelOverlaps.sort((a, b) => order.get(a[0])! - order.get(b[0])! || order.get(a[1])! - order.get(b[1])!);
+    return { labelBondOverlaps, labelLabelOverlaps, smallestLabelBondClearance: clearance / reference };
+  };
+  const baseline = scan(atoms, boxes, false);
+  return (points = atoms, labels = boxes) => moving.size ? scan(points, labels, true, baseline) : baseline;
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { compareLayoutQuality, evaluateLayoutQuality, MAX_BRIDGE_STRETCH, type LayoutPoint } from "./layoutQuality";
+import { compareLayoutQuality, evaluateLayoutQuality, prepareLayoutLabelEvaluator, labelBoxBondDistance,
+  LABEL_CLEARANCE_PADDING, MAX_BRIDGE_STRETCH, type LayoutPoint, type LayoutLabelBox } from "./layoutQuality";
 import { testMoleculeFromSmiles } from "./testing";
 import { moleculeLayoutLabelBoxes, planMoleculeAtomLabels } from "./index";
 import type { MoleculeObject } from "@chemdraft/chem-core";
@@ -10,6 +11,54 @@ const polygon = (n: number): LayoutPoint[] => Array.from({ length: n }, (_, i) =
 const cycle = (n: number) => Array.from({ length: n }, (_, from) => ({ from, to: (from + 1) % n }));
 
 describe("2D layout quality", () => {
+  it("spatial label checks match exhaustive contacts and exact clearance through rigid swings", () => {
+    const atoms = Array.from({ length: 16 }, (_, i) => ({ x: (i % 4) * 30, y: Math.floor(i / 4) * 30 }));
+    const bonds = atoms.slice(1).map((_, i) => ({ from: i, to: i + 1 }));
+    const moving = new Set([8, 9, 10, 11, 12, 13, 14, 15]);
+    const boxes: LayoutLabelBox[] = atoms.map((a, atom) => ({ atom, x: a.x - 8, y: a.y - 10,
+      width: atom === 15 ? 80 : 16, height: atom === 15 ? 80 : 20 }));
+    const reference = 30, padding = LABEL_CLEARANCE_PADDING * reference;
+    const exhaustive = (points: LayoutPoint[], labels: LayoutLabelBox[]) => {
+      const labelBondOverlaps: [number, number][] = [], labelLabelOverlaps: [number, number][] = [];
+      let smallestLabelBondClearance = Infinity;
+      labels.forEach((box, i) => {
+        bonds.forEach((b, j) => {
+          if (b.from === box.atom || b.to === box.atom) return;
+          smallestLabelBondClearance = Math.min(smallestLabelBondClearance,
+            labelBoxBondDistance(box, points[b.from], points[b.to]) / reference);
+          if (labelBoxBondDistance({ ...box, x: box.x - padding, y: box.y - padding,
+            width: box.width + 2 * padding, height: box.height + 2 * padding }, points[b.from], points[b.to]) === 0)
+            labelBondOverlaps.push([box.atom, j]);
+        });
+        labels.slice(i + 1).forEach(other => {
+          if (box.x <= other.x + other.width + padding && other.x <= box.x + box.width + padding &&
+              box.y <= other.y + other.height + padding && other.y <= box.y + box.height + padding)
+            labelLabelOverlaps.push([box.atom, other.atom]);
+        });
+      });
+      return { labelBondOverlaps, labelLabelOverlaps, smallestLabelBondClearance };
+    };
+    const check = prepareLayoutLabelEvaluator(atoms, bonds, boxes, reference, moving);
+    // Includes mobile/mobile label changes, mobile labels against stationary bonds,
+    // and the reverse: a moving bond against a stationary label.
+    for (const degrees of [0, 30, -40, 90, 180]) {
+      const angle = degrees * Math.PI / 180, pivot = atoms[7];
+      const points = atoms.map((a, i) => !moving.has(i) ? a : ({
+        x: pivot.x + (a.x - pivot.x) * Math.cos(angle) - (a.y - pivot.y) * Math.sin(angle),
+        y: pivot.y + (a.x - pivot.x) * Math.sin(angle) + (a.y - pivot.y) * Math.cos(angle)
+      }));
+      const labels = boxes.map(b => ({ ...b, x: b.x + points[b.atom].x - atoms[b.atom].x,
+        y: b.y + points[b.atom].y - atoms[b.atom].y }));
+      const expected = exhaustive(points, labels);
+      expect(check(points, labels)).toEqual(expected);
+      const full = prepareLayoutLabelEvaluator(points, bonds, labels, reference)();
+      expect(full).toEqual(expected);
+    }
+    // Nonzero minima, and a sparse long-distance query whose empty cells must not dominate.
+    const sparse = atoms.map((a, i) => ({ x: a.x + (i % 2) * 10_000, y: a.y + (i % 2) * 10_000 }));
+    const farBoxes = boxes.slice(0, 2).map(b => ({ ...b, x: b.x - 20_000, y: b.y - 1000, width: 1, height: 1 }));
+    expect(prepareLayoutLabelEvaluator(sparse, bonds, farBoxes, reference)()).toEqual(exhaustive(sparse, farBoxes));
+  });
   it("uses renderer boxes for heteroatoms, isotope/charge labels and abbreviations with per-atom styles", () => {
     const molecule: MoleculeObject = {
       id: "labels", type: "molecule", x: 0, y: 0, width: 200, height: 80, rotation: 0,

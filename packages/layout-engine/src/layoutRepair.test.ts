@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { MoleculeObject } from "@chemdraft/chem-core";
+import { moleculeLayoutLabelBoxes } from "./index";
 import { compareLayoutRepairs, repairLayoutOverlaps, conventionalLayoutOrientations, orientLayoutForLabels, type LayoutRepair } from "./layoutRepair";
 import { evaluateLayoutQuality, type LayoutPoint, type LayoutBond } from "./layoutQuality";
 
@@ -49,6 +51,34 @@ function expectLocalScoresMatchFullEvaluation(repairs: LayoutRepair[], bonds: La
 }
 
 describe("rigid fragment overlap repair", () => {
+  it.each([100, 500])("bounds labelled repair including orientation work on %i nitrogen atoms", count => {
+    const molecule: MoleculeObject = {
+      id: "nitrogen-chain", type: "molecule", x: -30, y: -30, width: count * 30, height: 60, rotation: 0,
+      structure: "", structureFormat: "smiles", superatoms: [], rGroups: [],
+      style: { bondLengthPx: 30, atomLabelFontSizePx: 15, atomLabelFontSizes: { [`a${count - 1}`]: 80 } },
+      atoms: Array.from({ length: count }, (_, i) => ({ id: `a${i}`, element: "N", formalCharge: 0,
+        x: i < 6 ? 30 * Math.cos(i * Math.PI / 3) : 30 * (i - 4),
+        y: i < 6 ? 30 * Math.sin(i * Math.PI / 3) : 0 })),
+      bonds: [...cycle(6), { from: 0, to: 6 }, ...Array.from({ length: count - 7 }, (_, i) => ({ from: i + 6, to: i + 7 }))]
+        .map((b, i) => ({ id: `b${i}`, fromAtomId: `a${b.from}`, toAtomId: `a${b.to}`, order: "single" }))
+    };
+    const atoms = molecule.atoms;
+    const bonds = molecule.bonds.map(b => ({ from: Number(b.fromAtomId.slice(1)), to: Number(b.toAtomId.slice(1)) }));
+    const labels = vi.fn((points: readonly LayoutPoint[]) => moleculeLayoutLabelBoxes({ ...molecule,
+      atoms: atoms.map((a, i) => ({ ...a, ...points[i] })) }));
+    expect(evaluateLayoutQuality(atoms, bonds).hardDefects).toBe(0);
+    expect(evaluateLayoutQuality(atoms, bonds, 30, undefined, undefined, labels(atoms)).hardDefects).toBe(3);
+    labels.mockClear();
+    const snapshot = structuredClone(molecule);
+    const start = performance.now();
+    const repairs = repairLayoutOverlaps(atoms, bonds, { labelBoxes: labels, conventionalOrientation: true });
+    const elapsed = performance.now() - start;
+    console.log(`LABEL_REPAIR_TIMING atoms=${count} ms=${elapsed.toFixed(1)} plans=${labels.mock.calls.length}`);
+    expect(elapsed).toBeLessThan(2000);
+    expect(labels.mock.calls.length).toBeLessThanOrEqual(13);
+    expect(repairs).toEqual([]); // the oversized terminal label cannot be fixed by a ring substituent swing
+    expect(molecule).toEqual(snapshot);
+  }, 300_000);
   it("orients the largest ring horizontally with the pendant below, deterministically without reflection", () => {
     const ring = polygon(6, { x: 0, y: 0 }).map(a => ({ x: a.x * 2, y: a.y }));
     const atoms = rotate([...ring, { x: 0, y: 3 }], { x: 0, y: 0 }, 37);
@@ -72,7 +102,7 @@ describe("rigid fragment overlap repair", () => {
     expect(orientLayoutForLabels(atoms, bonds, stepLabels).angleDegrees).toBeCloseTo(-7);
   });
 
-  it("repairs a label-only collision by swinging a substituent, replanning text for every trial", () => {
+  it("repairs a label-only collision by swinging a substituent with one reusable label plan", () => {
     const atoms = [...polygon(6, { x: 0, y: 0 }), { x: 2, y: 0 }];
     const bonds = [...cycle(6), { from: 0, to: 6 }];
     const labels = (points: readonly LayoutPoint[]) => [{ atom: 6,
@@ -80,7 +110,9 @@ describe("rigid fragment overlap repair", () => {
     const q = evaluateLayoutQuality(atoms, bonds, 1, undefined, undefined, labels(atoms));
     expect(q.overlappingAtoms).toEqual([]);
     expect(q.labelBondOverlaps.length).toBeGreaterThan(0);
-    const repairs = repairLayoutOverlaps(atoms, bonds, { labelBoxes: labels });
+    const planner = vi.fn(labels);
+    const repairs = repairLayoutOverlaps(atoms, bonds, { labelBoxes: planner });
+    expect(planner).toHaveBeenCalledOnce();
     expect(repairs.length).toBeGreaterThan(0);
     for (const repair of repairs) {
       expect(evaluateLayoutQuality(repair.atoms, bonds, 1, undefined, undefined, labels(repair.atoms)).hardDefects).toBe(0);

@@ -1,4 +1,4 @@
-import { atomNearBond, bondsOverlap, prepareLayoutTopology, evaluateLayoutQuality, type LayoutBond, type LayoutPoint, type LayoutQuality, type LayoutLabelBox, type LayoutTopology } from "./layoutQuality";
+import { LayoutSpatialGrid as RepairGrid, prepareLayoutLabelEvaluator, type LayoutLabelGeometry, atomNearBond, bondsOverlap, prepareLayoutTopology, evaluateLayoutQuality, type LayoutBond, type LayoutPoint, type LayoutQuality, type LayoutLabelBox, type LayoutTopology } from "./layoutQuality";
 
 export interface LayoutOrientation { atoms: LayoutPoint[]; angleDegrees: number; ringSystemAtoms: number[]; rank: number }
 
@@ -62,32 +62,10 @@ export interface LayoutRepairOptions {
  * discards partial results rather than selecting a repair from a truncated search. */
 export const MAX_LAYOUT_REPAIR_TRIALS = 1024;
 
-/** Uniform spatial index for stationary atoms/bonds. Rebuilt once per move, not per angle. */
-class RepairGrid {
-  private cells = new Map<string, number[]>();
-  constructor(private size: number) {}
-  private bounds(a: LayoutPoint, b: LayoutPoint, margin: number) {
-    return [Math.floor((Math.min(a.x, b.x) - margin) / this.size),
-      Math.floor((Math.max(a.x, b.x) + margin) / this.size),
-      Math.floor((Math.min(a.y, b.y) - margin) / this.size),
-      Math.floor((Math.max(a.y, b.y) + margin) / this.size)];
-  }
-  add(id: number, a: LayoutPoint, b = a) {
-    const [x0, x1, y0, y1] = this.bounds(a, b, 0);
-    for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) {
-      const key = `${x}:${y}`, cell = this.cells.get(key);
-      if (cell) cell.push(id); else this.cells.set(key, [id]);
-    }
-  }
-  query(a: LayoutPoint, b = a, margin = 0): Set<number> {
-    const ids = new Set<number>();
-    const [x0, x1, y0, y1] = this.bounds(a, b, margin);
-    for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) {
-      for (const id of this.cells.get(`${x}:${y}`) ?? []) ids.add(id);
-    }
-    return ids;
-  }
-}
+/** Includes orientation attempts, label planning, translated boxes and spatial contact
+ * evaluations. In particular, twelve orientations are never one unit of trial work. */
+export const MAX_LAYOUT_REPAIR_EVALUATIONS = 131_072;
+const exhaustedRepairBudget = Symbol("exhausted repair budget");
 
 export interface LayoutRepair {
   atoms: LayoutPoint[];
@@ -118,8 +96,26 @@ export function compareLayoutRepairs(a: LayoutRepair, b: LayoutRepair): number {
 export function repairLayoutOverlaps(
   atoms: readonly LayoutPoint[], bonds: readonly LayoutBond[], options: LayoutRepairOptions = {}
 ): LayoutRepair[] {
+  try { return searchLayoutRepairs(atoms, bonds, options); }
+  catch (error) { if (error === exhaustedRepairBudget) return []; throw error; }
+}
+
+function searchLayoutRepairs(
+  atoms: readonly LayoutPoint[], bonds: readonly LayoutBond[], options: LayoutRepairOptions
+): LayoutRepair[] {
+  let evaluations = 0;
+  const work = (count = 1) => {
+    evaluations += count;
+    if (evaluations > MAX_LAYOUT_REPAIR_EVALUATIONS) throw exhaustedRepairBudget;
+  };
   const topology = prepareLayoutTopology(atoms.length, bonds);
-  const original = evaluateLayoutQuality(atoms, bonds, undefined, topology, undefined, options.labelBoxes?.(atoms));
+  work(atoms.length);
+  const originalLabels = options.labelBoxes?.(atoms) ?? [];
+  const skeleton = evaluateLayoutQuality(atoms, bonds, undefined, topology);
+  const originalLabelGeometry = prepareLayoutLabelEvaluator(atoms, bonds, originalLabels,
+    skeleton.referenceBondLength, undefined, work)();
+  const original = evaluateLayoutQuality(atoms, bonds, skeleton.referenceBondLength, topology, skeleton,
+    [], [], originalLabelGeometry);
   if ((!original.overlappingAtoms.length && !original.labelBondOverlaps.length && !original.labelLabelOverlaps.length) || original.crossings.length || original.hasBridgedRings ||
       original.fusedSideDefects.length) return [];
   const adjacent: number[][] = atoms.map(() => []);
@@ -171,6 +167,11 @@ export function repairLayoutOverlaps(
     }
   }
   const repairs: LayoutRepair[] = [];
+  // Cache upright box sizes/offsets once per whole-layout orientation. Fragment swings
+  // change positions, not label chemistry. Work in an origin-centred frame so translations
+  // introduced by the conventional ring-centroid pivot do not invalidate the cache.
+  const planned = new Map<number, { atoms: readonly LayoutPoint[]; labels: readonly LayoutLabelBox[] }>(
+    [[0, { atoms, labels: originalLabels }]]);
   let trials = 0;
   for (const move of moves) {
     const moving = new Set(move.movedAtoms);
@@ -185,6 +186,29 @@ export function repairLayoutOverlaps(
     atoms.forEach((a, i) => { if (!moving.has(i)) atomGrid.add(i, a); });
     bonds.forEach((b, i) => { if (!mobileBond[i]) bondGrid.add(i, atoms[b.from], atoms[b.to]); });
     const reference = original.referenceBondLength;
+    const labelEvaluators = new Map<number, ReturnType<typeof prepareLayoutLabelEvaluator>>();
+    const checkLabels = (points: readonly LayoutPoint[], degrees: number): LayoutLabelGeometry => {
+      const key = Math.round((((degrees % 360) + 360) % 360) * 1e8) % 36_000_000_000;
+      let base = planned.get(key);
+      if (!base) {
+        work(atoms.length);
+        const angle = degrees * Math.PI / 180, c = Math.cos(angle), s = Math.sin(angle);
+        const oriented = atoms.map(a => ({ x: a.x * c - a.y * s, y: a.x * s + a.y * c }));
+        base = { atoms: oriented, labels: options.labelBoxes?.(oriented) ?? [] };
+        planned.set(key, base);
+      }
+      let evaluate = labelEvaluators.get(key);
+      if (!evaluate) {
+        evaluate = prepareLayoutLabelEvaluator(base.atoms, bonds, base.labels, reference, moving, work);
+        labelEvaluators.set(key, evaluate);
+      }
+      const labels = base.labels.map(box => {
+        work();
+        const p = points[box.atom], a = base.atoms[box.atom];
+        return { ...box, x: box.x + p.x - a.x, y: box.y + p.y - a.y };
+      });
+      return evaluate(points, labels);
+    };
     // Intra-fragment pair distances are invariant. Compute their minima once per move;
     // the spatial queries below update them with only pairs straddling the cut.
     const bonded = new Set(bonds.map(b => `${Math.min(b.from, b.to)}:${Math.max(b.from, b.to)}`));
@@ -239,6 +263,7 @@ export function repairLayoutOverlaps(
     for (let angleDegrees = -move.limit; angleDegrees <= move.limit; angleDegrees += 2) {
       if (angleDegrees === 0 || (move.limit === 180 && angleDegrees === 180)) continue;
       if (++trials > MAX_LAYOUT_REPAIR_TRIALS) return [];
+      work();
       const angle = angleDegrees * Math.PI / 180;
       const c = Math.cos(angle), s = Math.sin(angle), p = atoms[move.pivot];
       const rotated = atoms.map((a, i) => moving.has(i) ? {
@@ -251,16 +276,30 @@ export function repairLayoutOverlaps(
       if (!locallyClear(rotated)) continue;
       // Local checks plus rigid-part invariants establish zero hard defects. Reuse that
       // snapshot: scoring recomputes bond/ring metrics, never global pair geometry or topology.
-      const orientation = options.conventionalOrientation
-        ? orientLayoutForLabels(rotated, bonds, options.labelBoxes ?? (() => []), options.belowSign, topology) : undefined;
+      let orientation: LayoutOrientation | undefined;
+      let labelGeometry: LayoutLabelGeometry | undefined;
+      let defects = Infinity;
+      const orientations = options.conventionalOrientation
+        ? conventionalLayoutOrientations(rotated, bonds, options.belowSign, topology)
+        : [{ atoms: rotated, angleDegrees: 0, ringSystemAtoms: [], rank: 0 }];
+      for (const candidate of orientations) {
+        work(atoms.length + 1);
+        const a = candidate.angleDegrees * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
+        const points = rotated.map(p => ({ x: p.x * c - p.y * s, y: p.x * s + p.y * c }));
+        const labels = checkLabels(points, candidate.angleDegrees);
+        const count = labels.labelBondOverlaps.length + labels.labelLabelOverlaps.length;
+        if (count < defects) { defects = count; orientation = candidate; labelGeometry = labels; }
+        if (!defects) break;
+      }
+      if (defects) continue;
       const points = orientation?.atoms ?? rotated;
       const quality = evaluateLayoutQuality(points, bonds, reference, topology, {
         ...nearestPairs(rotated), overlappingAtoms: [], atomBondOverlaps: [],
         crossings: [], collinearBondOverlaps: []
-      }, options.labelBoxes?.(points));
+      }, [], [], labelGeometry);
       if (quality.passes || quality.passesRelaxed) repairs.push({ atoms: points, quality,
         kind: move.kind, pivot: move.pivot, movedAtoms: move.movedAtoms, angleDegrees,
-        ...(orientation ? { rotationDegrees: orientation.angleDegrees, orientationRank: orientation.rank } : {}) });
+        ...(options.conventionalOrientation && orientation ? { rotationDegrees: orientation.angleDegrees, orientationRank: orientation.rank } : {}) });
     }
   }
   return repairs.sort(compareLayoutRepairs);

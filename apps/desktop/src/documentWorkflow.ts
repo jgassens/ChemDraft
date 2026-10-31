@@ -15421,12 +15421,21 @@ function buildNativeMoleculeEngineRelayout(
   const engineBondLength = mean(engineBondLengths);
   const scale = engineBondLength > 0.001 ? targetBondLength / engineBondLength : 1;
 
-  // Use the original native atoms (including abbreviations/isotopes/charges), with their own
-  // style at the final drawing scale. Only coordinate-frame conversion lives in the host.
-  const labelBoxes = (points: readonly { x: number; y: number }[]): LayoutLabelBox[] =>
-    moleculeLayoutLabelBoxes({ ...ligand, atoms: ligandAtoms.map((atom, i) => ({ ...atom,
-      x: points[i].x * scale, y: -points[i].y * scale })) }).map(box => ({ ...box,
-      x: box.x / scale, y: -(box.y + box.height) / scale, width: box.width / scale, height: box.height / scale }));
+  // Plan with the FULL native graph, just as the renderer does. Removing the metals and
+  // their dative bonds for the engine must not invent donor hydrogens (S becoming SH),
+  // change charge display, or lose isotope/abbreviation styles. Only then filter/remap
+  // the boxes onto the ligand indices and convert document y-down to engine y-up.
+  const labelBoxes = (points: readonly { x: number; y: number }[]): LayoutLabelBox[] => {
+    const fullAtoms = molecule.atoms.map(atom => {
+      const i = ligandIndexById.get(atom.id);
+      return i === undefined ? atom : { ...atom, x: points[i].x * scale, y: -points[i].y * scale };
+    });
+    return moleculeLayoutLabelBoxes({ ...molecule, atoms: fullAtoms }).flatMap(box => {
+      const atom = ligandIndexById.get(fullAtoms[box.atom].id);
+      return atom === undefined ? [] : [{ ...box, atom,
+        x: box.x / scale, y: -(box.y + box.height) / scale, width: box.width / scale, height: box.height / scale }];
+    });
+  };
   if (conventionalOrientation) {
     const oriented = orientLayoutForLabels(depiction.atoms, qualityBonds, labelBoxes, -1);
     depiction = { ...depiction, atoms: depiction.atoms.map((atom, i) => ({ ...atom, ...oriented.atoms[i] })) };
