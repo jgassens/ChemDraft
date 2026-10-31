@@ -1,4 +1,4 @@
-//! Native panel traits and guarded hand-back after WebView2 pointer activation.
+//! Non-activating presentation with persistent focus after native pointer activation.
 
 use std::{collections::HashMap, sync::Mutex};
 use tauri::{Emitter, Manager};
@@ -14,6 +14,31 @@ mod macos;
 
 #[derive(Default)]
 pub(crate) struct PanelFocusState(Mutex<HashMap<String, focus_lease::Lease>>);
+
+pub(crate) fn is_active<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+) -> Result<bool, String> {
+    if !window.is_visible().map_err(|error| error.to_string())?
+        || window.is_minimized().map_err(|error| error.to_string())?
+    {
+        return Ok(false);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let marker =
+            objc2::MainThreadMarker::new().ok_or("Panel focus requires the main thread.")?;
+        if !objc2_app_kit::NSApplication::sharedApplication(marker).isActive() {
+            return Ok(false);
+        }
+    }
+    #[cfg(windows)]
+    return Ok(unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow()
+            == window.hwnd().map_err(|error| error.to_string())?.0
+    });
+    #[cfg(not(windows))]
+    window.is_focused().map_err(|error| error.to_string())
+}
 
 pub(crate) fn reset_for_webview<R: tauri::Runtime>(window: &tauri::Window<R>) {
     window
@@ -98,23 +123,21 @@ pub(crate) fn activation<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>, ac
         let mut leases = state.0.lock().unwrap();
         let lease = leases.entry(window.label().to_string()).or_default();
         if active {
-            Some(lease.generation)
+            lease.activate();
         } else {
-            lease.deactivate()
+            lease.deactivate();
         }
+        lease.generation
     };
-    if let Some(generation) = generation {
-        if !active {
-            let _ = window.set_focusable(false);
-        }
-        let event = FocusEvent {
-            kind: if active { "activated" } else { "deactivated" },
-            generation,
-        };
-        if let Err(error) = window.emit_to(window.label(), "chemdraft://plugin-panel-focus", event)
-        {
-            eprintln!("Could not notify panel focus: {error}");
-        }
+    if !active {
+        let _ = window.set_focusable(false);
+    }
+    let event = FocusEvent {
+        kind: if active { "activated" } else { "deactivated" },
+        generation,
+    };
+    if let Err(error) = window.emit_to(window.label(), "chemdraft://plugin-panel-focus", event) {
+        eprintln!("Could not notify panel focus: {error}");
     }
 }
 
@@ -132,64 +155,6 @@ pub(crate) fn forget<R: tauri::Runtime>(window: &tauri::Window<R>) {
 #[cfg(any(windows, test))]
 #[path = "panel_window_geometry.rs"]
 mod geometry;
-
-/// SetActiveWindow changes activation only within our UI thread; unlike tao's set_focus it
-/// never calls SetForegroundWindow or synthesizes Alt. A late IPC is dropped in the background.
-#[cfg(windows)]
-pub(crate) fn focus_if_app_active(hwnd: windows_sys::Win32::Foundation::HWND) -> bool {
-    use windows_sys::Win32::{
-        System::Threading::GetCurrentProcessId,
-        UI::WindowsAndMessaging::{
-            GetForegroundWindow, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
-        },
-    };
-    // windows-sys gates this user32 entry point behind the otherwise unused keyboard feature.
-    #[link(name = "user32")]
-    extern "system" {
-        fn SetActiveWindow(
-            hwnd: windows_sys::Win32::Foundation::HWND,
-        ) -> windows_sys::Win32::Foundation::HWND;
-    }
-    unsafe {
-        // Preserve Tao's visible/non-minimized gate, including utility suspension for dialogs.
-        if hwnd.is_null() || IsWindowVisible(hwnd) == 0 || IsIconic(hwnd) != 0 {
-            return false;
-        }
-        let foreground = GetForegroundWindow();
-        let mut process = 0;
-        let known =
-            !foreground.is_null() && GetWindowThreadProcessId(foreground, &mut process) != 0;
-        geometry::with_owned_foreground(known.then_some(process), GetCurrentProcessId(), || {
-            SetActiveWindow(hwnd);
-        }) && GetForegroundWindow() == hwnd
-    }
-}
-
-/// Toolbar-style hand-back, without Tao's force_window_active / synthetic Alt fallback.
-/// Called when a lease ends, a non-lease pointer gesture completes or idle activation settles. Activation alone
-/// is not enough: keyboard focus must also leave the panel's WebView2 child HWND.
-#[cfg(windows)]
-pub(crate) fn return_focus_to_document<R: tauri::Runtime>(
-    panel: windows_sys::Win32::Foundation::HWND,
-    document: &tauri::WebviewWindow<R>,
-) -> Result<(), String> {
-    use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
-    let owner = document.hwnd().map_err(|error| error.to_string())?.0;
-    let foreground = unsafe { GetForegroundWindow() };
-    // Do not take focus from another ChemDraft panel/dialog either.
-    if !geometry::foreground_can_return_to_document(
-        foreground as usize,
-        panel as usize,
-        owner as usize,
-    ) {
-        return Ok(());
-    }
-    if focus_if_app_active(owner) {
-        let webview: &tauri::Webview<R> = document.as_ref();
-        webview.set_focus().map_err(|error| error.to_string())?;
-    }
-    Ok(())
-}
 
 #[cfg(target_os = "macos")]
 pub(crate) fn macos_style(
@@ -233,21 +198,10 @@ pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
         WindowsAndMessaging::{GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE},
     };
     let hwnd = window.hwnd().map_err(|error| error.to_string())?.0;
-    let document = window
-        .app_handle()
-        .get_webview_window(super::MAIN_WINDOW_LABEL)
-        .ok_or_else(|| "Main document window is not available.".to_string())?;
     let parent = hwnd as usize;
     let panel = window.clone();
-    let lease_panel = window.clone();
     let hide_panel = window.clone();
     let data = Box::into_raw(Box::new(PanelSubclass {
-        return_focus: std::rc::Rc::new(move || {
-            activation(&lease_panel, false);
-            if let Err(error) = return_focus_to_document(parent as _, &document) {
-                eprintln!("Could not return panel keyboard focus: {error}");
-            }
-        }),
         activation: std::rc::Rc::new(move |active| activation(&panel, active)),
         will_hide: std::rc::Rc::new(move || {
             let webview: &tauri::Webview<R> = hide_panel.as_ref();
@@ -288,7 +242,6 @@ pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
 
 #[cfg(windows)]
 struct PanelSubclass {
-    return_focus: std::rc::Rc<dyn Fn()>,
     activation: std::rc::Rc<dyn Fn(bool)>,
     will_hide: std::rc::Rc<dyn Fn()>,
 }
@@ -425,9 +378,8 @@ unsafe extern "system" fn resize_subclass(
     use windows_sys::Win32::UI::{
         Shell::{DefSubclassProc, RemoveWindowSubclass},
         WindowsAndMessaging::{
-            HTCLIENT, MA_NOACTIVATE, SWP_HIDEWINDOW, WA_INACTIVE, WINDOWPOS, WM_ACTIVATE,
-            WM_ACTIVATEAPP, WM_DPICHANGED, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_MOUSEACTIVATE,
-            WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_NCMBUTTONDOWN, WM_NCRBUTTONDOWN,
+            HTCLIENT, MA_ACTIVATE, SWP_HIDEWINDOW, WA_INACTIVE, WINDOWPOS, WM_ACTIVATE,
+            WM_ACTIVATEAPP, WM_DPICHANGED, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_NCHITTEST,
             WM_SETTINGCHANGE, WM_SHOWWINDOW, WM_SIZE, WM_WINDOWPOSCHANGING,
         },
     };
@@ -442,25 +394,13 @@ unsafe extern "system" fn resize_subclass(
         notify();
     }
     if message == WM_MOUSEACTIVATE {
-        // NOACTIVATE, not NOACTIVATEANDEAT: WebView2 must still receive the click.
-        return MA_NOACTIVATE as isize;
+        // Explicit mouse activation does not change WS_EX_NOACTIVATE or the lifetime
+        // focused(false) show mode. The click, including native resize edges, keeps focus.
+        return MA_ACTIVATE as isize;
     }
     if message == WM_NCHITTEST {
         // Share the overlay's geometry and bypass Tao's broad HTTOP client strip.
         return panel_resize_hit(hwnd, lparam).map_or(HTCLIENT as isize, |hit| hit as isize);
-    }
-    let non_client_press = matches!(
-        message,
-        WM_NCLBUTTONDOWN | WM_NCMBUTTONDOWN | WM_NCRBUTTONDOWN
-    );
-    // Copy the callback before DefSubclassProc: a nested move/resize loop may destroy the panel.
-    let return_focus = (non_client_press || matches!(message, WM_ENTERSIZEMOVE | WM_EXITSIZEMOVE))
-        .then(|| (*(data as *const PanelSubclass)).return_focus.clone());
-    if non_client_press {
-        // A native border/title press ends a lease even without movement. No DOM event arrives.
-        if let Some(return_focus) = &return_focus {
-            return_focus();
-        }
     }
     // A top-level deactivation is genuine even during acquisition. WebView2's
     // transient child blur is not WM_ACTIVATE, and must never release a lease.
@@ -483,11 +423,6 @@ unsafe extern "system" fn resize_subclass(
             eprintln!("{error}");
         }
     }
-    if let Some(return_focus) = return_focus {
-        // Wry focuses WebView2 on entering a native move/resize loop. Hand back AFTER it,
-        // and again after the gesture, including a title press that never becomes a drag.
-        return_focus();
-    }
     result
 }
 
@@ -507,14 +442,13 @@ unsafe extern "system" fn overlay_subclass(
     use windows_sys::Win32::UI::{
         Shell::{DefSubclassProc, RemoveWindowSubclass},
         WindowsAndMessaging::{
-            SendMessageW, HTTRANSPARENT, MA_NOACTIVATE, WM_MOUSEACTIVATE, WM_NCDESTROY,
-            WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_NCMBUTTONDOWN, WM_NCRBUTTONDOWN,
-            WM_WINDOWPOSCHANGED,
+            SendMessageW, HTTRANSPARENT, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_NCHITTEST,
+            WM_NCLBUTTONDOWN, WM_NCMBUTTONDOWN, WM_NCRBUTTONDOWN, WM_WINDOWPOSCHANGED,
         },
     };
     let parent = parent as windows_sys::Win32::Foundation::HWND;
     if message == WM_MOUSEACTIVATE {
-        return MA_NOACTIVATE as isize;
+        return SendMessageW(parent, message, wparam, lparam);
     }
     if message == WM_NCDESTROY {
         RemoveWindowSubclass(hwnd, Some(overlay_subclass), id);

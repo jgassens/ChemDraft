@@ -66,65 +66,9 @@ pub(super) fn overlay_cutout(window: Rect, client: Rect, bx: i32, by: i32) -> Re
     }
 }
 
-/// Missing foreground information fails closed; a delayed IPC cannot activate another process.
-pub(super) fn with_owned_foreground(
-    foreground_process: Option<u32>,
-    our_process: u32,
-    focus: impl FnOnce(),
-) -> bool {
-    if foreground_process != Some(our_process) {
-        return false;
-    }
-    focus();
-    true
-}
-
-/// A hand-back must not interrupt another panel/dialog, even within our own process.
-pub(super) fn foreground_can_return_to_document(
-    foreground: usize,
-    panel: usize,
-    document: usize,
-) -> bool {
-    foreground != 0 && (foreground == panel || foreground == document)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn pointer_hand_back_requires_our_foreground_and_the_same_document_group() {
-        for (foreground, process, expected) in [
-            (10, Some(7), true),  // panel
-            (20, Some(7), true),  // document already active; restore its webview focus
-            (30, Some(7), false), // another ChemDraft dialog/panel
-            (30, Some(42), false),
-            (10, Some(42), false), // process check is independent of the target check
-            (10, None, false),
-            (0, None, false),
-        ] {
-            let mut returned = false;
-            if foreground_can_return_to_document(foreground, 10, 20) {
-                with_owned_foreground(process, 7, || returned = true);
-            }
-            assert_eq!(
-                returned, expected,
-                "foreground={foreground}, process={process:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn background_and_missing_foreground_drop_focus_requests() {
-        for foreground in [None, Some(42)] {
-            assert!(!with_owned_foreground(foreground, 7, || panic!(
-                "must not activate"
-            )));
-        }
-        let mut focused = false;
-        assert!(with_owned_foreground(Some(7), 7, || focused = true));
-        assert!(focused);
-    }
 
     #[test]
     fn windows_10_and_11_system_top_border_and_title_at_each_dpi() {

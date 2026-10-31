@@ -1126,29 +1126,6 @@ pub fn run() {
                         );
                     }
                 }
-                // Native resize edges sit outside the DOM's focus hook. Resizing finishes an
-                // input lease too, on both platforms, without changing the resize gesture.
-                if matches!(event, WindowEvent::Resized(_))
-                    && window.is_focused().unwrap_or(false)
-                    && !window.is_minimized().unwrap_or(true)
-                {
-                    if let Some(panel) = window.app_handle().get_webview_window(window.label()) {
-                        panel_window::activation(&panel, false);
-                    }
-                    let _ = window.set_focusable(false);
-                    #[cfg(windows)]
-                    if let (Ok(panel), Some(main)) = (
-                        window.hwnd(),
-                        window.app_handle().get_webview_window(MAIN_WINDOW_LABEL),
-                    ) {
-                        let _ = panel_window::return_focus_to_document(panel.0, &main);
-                    }
-                    #[cfg(not(windows))]
-                    let _ = focus_main_document_window_impl(
-                        window.app_handle(),
-                        MainWindowFocusMode::OnlyIfAppActive,
-                    );
-                }
                 // Focused is queued by Tao and may describe an older activation by delivery.
                 // Lease ownership is observed synchronously at the OS boundary instead.
                 if matches!(event, WindowEvent::Destroyed) {
@@ -2948,7 +2925,7 @@ struct OpenPluginPanelRequest {
     width: Option<f64>,
     height: Option<f64>,
     /// Legacy reveal hint from the host. Opening a panel never grants keyboard focus;
-    /// only an input or deliberate report-text selection may lease it via set_plugin_panel_input_focus.
+    /// only a native pointer activation may grant it, independently of report updates.
     #[serde(default, rename = "focus")]
     _focus: bool,
 }
@@ -3036,7 +3013,30 @@ fn plugin_panel_action_forward(
 }
 
 /// Panel windows cannot emit arbitrary events (including forged authenticated actions).
-/// Preserve their existing non-command bridges through this fixed list only.
+/// Preserve their bridges through this fixed list only. Shortcut forwarding uses the live
+/// host command catalog and the same document dispatcher as toolbars, without moving focus.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PluginPanelShortcut {
+    command_id: String,
+}
+
+impl PluginPanelShortcut {
+    fn parse(payload: &serde_json::Value) -> Result<Self, String> {
+        let shortcut: Self = serde_json::from_value(payload.clone())
+            .map_err(|_| "Invalid panel shortcut.".to_string())?;
+        if shortcut.command_id.is_empty()
+            || shortcut.command_id.len() > 256
+            || shortcut.command_id.trim() != shortcut.command_id
+            || shortcut.command_id == "document.closeTab"
+            || shortcut.command_id.starts_with("document.closeTab.")
+        {
+            return Err("Invalid panel shortcut command.".into());
+        }
+        Ok(shortcut)
+    }
+}
+
 fn validate_plugin_panel_event(
     label: &str,
     event: &str,
@@ -3057,6 +3057,8 @@ fn validate_plugin_panel_event(
             Ok(())
         }
         "chemdraft://analysis-window-action" if payload.is_object() => Ok(()),
+        "chemdraft://toolset-command-specs-request" if payload == &serde_json::json!({}) => Ok(()),
+        "chemdraft://plugin-panel-shortcut" => PluginPanelShortcut::parse(payload).map(|_| ()),
         _ => Err("This event cannot be forwarded by a panel window.".into()),
     }
 }
@@ -3080,6 +3082,16 @@ fn plugin_panel_event_forward(
     payload: serde_json::Value,
 ) -> Result<(), String> {
     let payload = authenticated_plugin_panel_event(window.label(), &event, payload)?;
+    if event == "chemdraft://plugin-panel-shortcut" {
+        let shortcut = PluginPanelShortcut::parse(&payload)?;
+        let target = window.clone();
+        return run_on_main_thread_blocking(&window, move || {
+            if !utility_windows_suspended() && panel_window::is_active(&target)? {
+                return emit_command_to_main(target.app_handle(), &shortcut.command_id);
+            }
+            Ok(())
+        })?;
+    }
     window
         .app_handle()
         .emit_to(MAIN_WINDOW_LABEL, &event, payload)
@@ -3121,100 +3133,28 @@ async fn set_plugin_panel_input_focus(
         {
             return Ok(false);
         }
-        if editing {
-            let result = (|| -> Result<bool, String> {
-                #[cfg(target_os = "macos")]
-                {
-                    // makeKeyWindow must not lend a background app a persistent lease.
-                    let marker =
-                        MainThreadMarker::new().ok_or("Panel focus requires the main thread.")?;
-                    if !objc2_app_kit::NSApplication::sharedApplication(marker).isActive() {
-                        return Ok(false);
-                    }
-                    target
-                        .set_focusable(true)
-                        .map_err(|error| error.to_string())?;
-                    let pointer =
-                        target.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
-                    let panel = unsafe { pointer.as_ref() }.ok_or_else(|| {
-                        "Could not access native ChemDraft panel window.".to_string()
-                    })?;
-                    // Tao's set_focus activates NSApplication even for a NonactivatingPanel.
-                    // Only make this panel key: an exposed input click or delayed IPC must never
-                    // activate ChemDraft after the user has switched to another application.
-                    panel.makeKeyWindow();
-                }
-                #[cfg(windows)]
-                {
-                    // Never use Tao's force_window_active (including its synthetic Alt fallback).
-                    // Keep NOACTIVATE throughout the lease and drop delayed background requests.
-                    let hwnd = target.hwnd().map_err(|error| error.to_string())?.0;
-                    if !panel_window::focus_if_app_active(hwnd) {
-                        return Ok(false);
-                    }
-                }
-                #[cfg(not(any(target_os = "macos", windows)))]
-                {
-                    target
-                        .set_focusable(false)
-                        .map_err(|error| error.to_string())?;
-                    target.set_focus().map_err(|error| error.to_string())?;
-                }
-                let webview: &tauri::Webview = target.as_ref();
-                webview.set_focus().map_err(|error| error.to_string())?;
-                #[cfg(windows)]
-                return Ok(unsafe {
-                    windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow()
-                        == target.hwnd().map_err(|error| error.to_string())?.0
-                });
-                #[cfg(target_os = "macos")]
-                return Ok(unsafe {
-                    &*(target.ns_window().map_err(|error| error.to_string())? as *mut NSWindow)
-                }
-                .isKeyWindow());
-                #[cfg(not(any(target_os = "macos", windows)))]
-                target.is_focused().map_err(|error| error.to_string())
-            })();
-            let held = panel_window::acquired(
-                &target,
-                generation,
-                epoch,
-                result.as_ref().copied().unwrap_or(false),
-            );
-            if !held && panel_window::is_current(&target, generation, epoch) {
-                let _ = target.set_focusable(false);
-            }
-            result.map(|_| held)
-        } else {
-            // Tao tracks focus on the parent HWND; WebView2 moves it into a child HWND.
-            // The foreground top-level window remains the authoritative Windows lease owner.
-            #[cfg(windows)]
-            let was_focused = unsafe {
-                windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow()
-                    == target.hwnd().map_err(|error| error.to_string())?.0
-            };
-            #[cfg(not(windows))]
-            let was_focused = target.is_focused().unwrap_or(false);
-            target
-                .set_focusable(false)
-                .map_err(|error| error.to_string())?;
-            // A blur caused by clicking the document/another app must not raise or activate it.
-            if was_focused {
-                #[cfg(windows)]
-                if let Some(main) = target.app_handle().get_webview_window(MAIN_WINDOW_LABEL) {
-                    panel_window::return_focus_to_document(
-                        target.hwnd().map_err(|error| error.to_string())?.0,
-                        &main,
-                    )?;
-                }
-                #[cfg(not(windows))]
-                focus_main_document_window_impl(
-                    target.app_handle(),
-                    MainWindowFocusMode::OnlyIfAppActive,
-                )?;
-            }
-            Ok(false)
+        if !editing {
+            // Releasing input bookkeeping never moves OS focus. Only a user switching windows
+            // (or closing this one) ends panel activation.
+            return Ok(false);
         }
+        let result = (|| -> Result<bool, String> {
+            // Pointer activation already made the panel key/foreground. A delayed request must
+            // never reclaim it from the document, another panel, or another application.
+            if !panel_window::is_active(&target)? {
+                return Ok(false);
+            }
+            let webview: &tauri::Webview = target.as_ref();
+            webview.set_focus().map_err(|error| error.to_string())?;
+            panel_window::is_active(&target)
+        })();
+        let held = panel_window::acquired(
+            &target,
+            generation,
+            epoch,
+            result.as_ref().copied().unwrap_or(false),
+        );
+        result.map(|_| held)
     })?
 }
 /// Sent to the main window with the closed window's label; `listenForNativePanelWindowCloses` in
@@ -3344,6 +3284,29 @@ mod plugin_panel_label_tests {
             )
             .is_err());
         }
+    }
+
+    #[test]
+    fn panel_shortcut_bridge_is_typed_caller_bound_and_cannot_close_documents() {
+        use super::validate_plugin_panel_event;
+        let label = plugin_panel_window_label("panel.test");
+        let event = "chemdraft://plugin-panel-shortcut";
+        let undo = serde_json::json!({"commandId": "edit.undo"});
+        assert!(validate_plugin_panel_event(&label, event, &undo).is_ok());
+        assert!(validate_plugin_panel_event("main", event, &undo).is_err());
+        for payload in [
+            serde_json::json!({}),
+            serde_json::json!({"commandId": ""}),
+            serde_json::json!({"commandId": " edit.undo"}),
+            serde_json::json!({"commandId": "document.closeTab"}),
+            serde_json::json!({"commandId": "document.closeTab.other"}),
+            serde_json::json!({"commandId": "edit.undo", "sourceLabel": "main"}),
+        ] {
+            assert!(validate_plugin_panel_event(&label, event, &payload).is_err());
+        }
+        let request = "chemdraft://toolset-command-specs-request";
+        assert!(validate_plugin_panel_event(&label, request, &serde_json::json!({})).is_ok());
+        assert!(validate_plugin_panel_event(&label, request, &undo).is_err());
     }
 
     #[test]
@@ -4234,20 +4197,18 @@ fn configure_analysis_window_on_main_thread<R: Runtime>(
 
 #[cfg(target_os = "macos")]
 fn configure_analysis_window_traits<R: Runtime>(
-    window: &tauri::WebviewWindow<R>,
+    _window: &tauri::WebviewWindow<R>,
     ns_window: &NSWindow,
 ) -> Result<(), String> {
     // Normal level + a native parent keeps this movable/resizable, non-activating panel with its
-    // document. Focusability is enabled only for an input's temporary keyboard-focus lease.
+    // document. Only native pointer activation enables keyboard focus.
     ns_window.setLevel(NSNormalWindowLevel);
     ns_window.setHidesOnDeactivate(false);
     ns_window.setCanHide(true);
     ns_window.setIgnoresMouseEvents(false);
     ns_window.setStyleMask(panel_window::macos_style(ns_window.styleMask()));
     ns_window.setAcceptsMouseMovedEvents(true);
-    window
-        .set_focusable(false)
-        .map_err(|error| error.to_string())
+    Ok(())
 }
 
 /// Makes `child` a child window of the main document window again, if it is not one already.

@@ -30,6 +30,7 @@ import {
 } from "./spectrumExport";
 import { isDesktopRuntime } from "../window-manager";
 import { listenCurrentWindowEvent } from "../window-manager/tauriEvents";
+import { listenNativePanelFocus } from "./pluginPanelInputFocus";
 
 const fullSizeRestorers = new Set<() => Promise<void>>();
 
@@ -420,13 +421,44 @@ export function LinkedFigureView({
         && !exportButtonRef.current?.contains(event.target)) setExportMenuOpen(false);
     };
     window.addEventListener("pointerdown", onPointerDown);
-    return () => window.removeEventListener("pointerdown", onPointerDown);
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listenNativePanelFocus((event) => {
+      if (!disposed && event.kind === "deactivated") setExportMenuOpen(false);
+    }).then((stop) => {
+      if (disposed) stop();
+      else unlisten = stop;
+    }).catch((error: unknown) => console.error("Could not observe Export menu focus:", error));
+    return () => {
+      disposed = true;
+      unlisten?.();
+      window.removeEventListener("pointerdown", onPointerDown);
+    };
   }, [exportMenuOpen]);
 
   useEffect(() => {
     if (!showFull && !exportMenuOpen) return;
     const onKey = (event: KeyboardEvent): void => {
-      if (event.key !== "Escape" || event.defaultPrevented) return;
+      if (event.defaultPrevented || event.isComposing) return;
+      if (exportMenuOpen) {
+        const items = [...exportMenuRef.current?.querySelectorAll<HTMLButtonElement>("button") ?? []];
+        const index = items.indexOf(document.activeElement as HTMLButtonElement);
+        const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1
+          : event.key === "ArrowDown" || event.key === "ArrowRight" ? (index + 1) % items.length
+          : event.key === "ArrowUp" || event.key === "ArrowLeft" ? (index < 0 ? items.length - 1
+            : (index + items.length - 1) % items.length) : null;
+        if (next !== null) {
+          event.preventDefault();
+          items[next]?.focus();
+          return;
+        }
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          (items[index] ?? items[0])?.click();
+          return;
+        }
+      }
+      if (event.key !== "Escape") return;
       event.preventDefault();
       if (exportMenuOpen) {
         setExportMenuOpen(false);
@@ -621,21 +653,6 @@ export function LinkedFigureView({
           role="menu"
           data-plugin-panel-input-menu="true"
           aria-label="Export spectrum"
-          onBlur={(event) => {
-            if (!event.currentTarget.contains(event.relatedTarget)
-              && event.relatedTarget !== exportButtonRef.current) setExportMenuOpen(false);
-          }}
-          onKeyDown={(event) => {
-            const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("button")];
-            const index = items.indexOf(document.activeElement as HTMLButtonElement);
-            const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1
-              : event.key === "ArrowDown" || event.key === "ArrowRight" ? (index + 1) % items.length
-              : event.key === "ArrowUp" || event.key === "ArrowLeft" ? (index + items.length - 1) % items.length : null;
-            if (next !== null) {
-              event.preventDefault();
-              items[next]?.focus();
-            }
-          }}
         >
           {([["jdx", "JCAMP-DX (.jdx)"], ["png", "PNG"], ["svg", "SVG"], ["pdf", "PDF"]] as const).map(([format, label]) => (
             <button key={format} type="button" className="lf-btn" role="menuitem" tabIndex={-1} onClick={() => void onExport(format)}>

@@ -7,6 +7,7 @@ pub(super) struct Lease {
     pub generation: u64,
     pub epoch: u64,
     held: bool,
+    active: bool,
 }
 
 impl Lease {
@@ -15,6 +16,7 @@ impl Lease {
     pub fn reset(&mut self) {
         self.generation = 0;
         self.held = false;
+        self.active = false;
         self.epoch += 1;
     }
 
@@ -23,7 +25,7 @@ impl Lease {
     }
 
     pub fn request(&mut self, generation: u64, epoch: u64, editing: bool) -> bool {
-        if epoch != self.epoch || generation <= self.generation {
+        if epoch != self.epoch || generation <= self.generation || (editing && !self.active) {
             return false;
         }
         self.generation = generation;
@@ -32,7 +34,7 @@ impl Lease {
     }
 
     pub fn acquired(&mut self, generation: u64, epoch: u64, focused: bool) -> bool {
-        if !self.is_current(generation, epoch) || !self.held {
+        if !self.is_current(generation, epoch) || !self.held || !self.active {
             return false;
         }
         self.held = focused;
@@ -40,8 +42,14 @@ impl Lease {
     }
 
     pub fn deactivate(&mut self) -> Option<u64> {
+        self.active = false;
         let held = std::mem::replace(&mut self.held, false);
         held.then_some(self.generation)
+    }
+
+    /// Only a native activation can authorize webview focus; queued IPC cannot activate a window.
+    pub fn activate(&mut self) {
+        self.active = true;
     }
 }
 
@@ -50,8 +58,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn native_click_activation_keeps_focus_until_genuine_deactivation() {
+        let mut lease = Lease::default();
+        lease.activate();
+        assert!(lease.request(1, lease.epoch, true));
+        assert!(lease.acquired(1, lease.epoch, true));
+        // Completing a button/menu interaction releases bookkeeping, never activation.
+        assert!(lease.request(2, lease.epoch, false));
+        assert!(lease.active);
+        assert!(lease.request(3, lease.epoch, true));
+        assert!(lease.acquired(3, lease.epoch, true));
+        assert_eq!(lease.deactivate(), Some(3));
+        assert!(!lease.request(4, lease.epoch, true));
+    }
+
+    #[test]
+    fn show_restore_and_content_updates_cannot_acquire_focus() {
+        let mut lease = Lease::default();
+        for generation in 1..=3 {
+            assert!(!lease.request(generation, lease.epoch, true));
+            assert!(!lease.acquired(generation, lease.epoch, true));
+        }
+        lease.activate();
+        assert!(lease.request(4, lease.epoch, true));
+        lease.deactivate();
+        assert!(!lease.request(5, lease.epoch, true));
+        assert!(!lease.acquired(4, lease.epoch, true));
+    }
+
+    #[test]
     fn genuine_loss_during_acquisition_cannot_be_undone_by_its_completion() {
         let mut lease = Lease::default();
+        lease.activate();
         assert!(lease.request(1, lease.epoch, true));
         assert_eq!(lease.deactivate(), Some(1));
         assert!(!lease.acquired(1, 0, true));
@@ -61,9 +99,11 @@ mod tests {
     #[test]
     fn dropped_acquisition_never_holds_a_lease() {
         let mut lease = Lease::default();
+        lease.activate();
         lease.request(1, lease.epoch, true);
         assert!(!lease.acquired(1, 0, false));
         assert_eq!(lease.deactivate(), None);
+        lease.activate();
         assert!(lease.request(2, lease.epoch, true));
         assert!(lease.acquired(2, 0, true));
         assert_eq!(lease.deactivate(), Some(2));
@@ -72,6 +112,7 @@ mod tests {
     #[test]
     fn stale_requests_and_completions_cannot_change_a_new_lease() {
         let mut lease = Lease::default();
+        lease.activate();
         lease.request(1, lease.epoch, true);
         lease.request(2, lease.epoch, false);
         lease.request(3, lease.epoch, true);
@@ -84,6 +125,7 @@ mod tests {
     #[test]
     fn old_page_request_executing_after_reset_cannot_acquire_or_block_new_page() {
         let mut lease = Lease::default();
+        lease.activate();
         let old_page = lease.epoch;
         assert!(lease.request(40, old_page, true));
         // Generation 41 was dispatched by the old page, but its async command has
@@ -94,6 +136,7 @@ mod tests {
         assert!(!lease.is_current(41, new_page));
         assert!(!lease.acquired(41, old_page, true));
         assert_eq!(lease.deactivate(), None);
+        lease.activate();
         assert!(lease.request(1, new_page, true));
         assert!(lease.acquired(1, new_page, true));
         // An old page's release cannot end the new page's lease either.
@@ -104,11 +147,13 @@ mod tests {
     #[test]
     fn reloaded_webview_can_restart_generations_without_reviving_old_work() {
         let mut lease = Lease::default();
+        lease.activate();
         assert!(lease.request(1, lease.epoch, true));
         let old_epoch = lease.epoch;
         lease.reset();
         assert_eq!(lease.deactivate(), None);
         assert!(!lease.is_current(1, old_epoch));
+        lease.activate();
         assert!(lease.request(1, lease.epoch, true));
         assert!(!lease.is_current(1, old_epoch));
         assert!(!lease.acquired(1, old_epoch, false));

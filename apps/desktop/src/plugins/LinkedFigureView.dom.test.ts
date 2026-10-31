@@ -32,8 +32,8 @@ vi.mock("./spectrumExport", async (importOriginal) => ({
 
 beforeEach(() => {
   nativePanel.invoke.mockImplementation(async (_command: string, args: { enabled: boolean }) => ({ enabled: args.enabled }));
-  nativePanel.listen.mockImplementation(async (_event: string, handler: typeof nativePanel.notify) => {
-    nativePanel.notify = handler;
+  nativePanel.listen.mockImplementation(async (event: string, handler: typeof nativePanel.notify) => {
+    if (event === "chemdraft://plugin-panel-full-size") nativePanel.notify = handler;
     return nativePanel.unlisten;
   });
   nativePanel.notify = undefined;
@@ -812,7 +812,7 @@ describe("LinkedFigureView", () => {
     expect(document.querySelector('[role="menu"]')).toBeNull();
     await act(async () => root!.unmount());
     root = undefined;
-    expect(nativePanel.unlisten).toHaveBeenCalledTimes(1);
+    expect(nativePanel.unlisten).toHaveBeenCalledTimes(2); // Full size and the open menu each subscribe.
   });
 
   it("does not reopen full size when a command reply arrives after the native end event", async () => {
@@ -959,21 +959,24 @@ describe("LinkedFigureView", () => {
     expect(document.querySelector(".lf-modal")).toBeNull();
   });
 
-  it.each([false, true])("holds and releases the Export menu's native focus lease (full size: %s)", async (fullSize) => {
+  it.each([false, true])("keeps panel focus when the Export menu closes (full size: %s)", async (fullSize) => {
     const requestFocus = vi.fn(async (editing: boolean) => editing);
+    const listen = vi.spyOn(document.body, "addEventListener");
     const stop = installPluginPanelInputFocus(document.body, requestFocus, "windows", async () => () => undefined);
+    const down = listen.mock.calls.find(([event]) => event === "pointerdown")![1] as EventListener;
     try {
       mount(createElement(LinkedFigureView, { spectrum }));
       if (fullSize) click([...container!.querySelectorAll("button")].find((button) => button.textContent === "Full size")!);
       for (const close of ["Escape", "outside", "toggle", "export"] as const) {
-        requestFocus.mockClear();
         const owner = document.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!;
-        await act(async () => owner.click());
-        expect(requestFocus).toHaveBeenCalledWith(true, expect.any(Number));
+        await act(async () => {
+          down({ target: owner, isTrusted: true, button: 0 } as unknown as Event);
+          owner.click();
+        });
+        expect(requestFocus).toHaveBeenCalledExactlyOnceWith(true, expect.any(Number));
         const items = document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]');
         act(() => items[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true })));
         expect(document.activeElement).toBe(items[1]);
-        expect(requestFocus.mock.calls.map(([editing]) => editing)).toEqual([true]);
         await act(async () => {
           if (close === "Escape") items[1].dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
           else if (close === "outside") document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
@@ -981,11 +984,70 @@ describe("LinkedFigureView", () => {
           else items[1].click();
         });
         expect(document.querySelector('[role="menu"]')).toBeNull();
-        expect(requestFocus.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+        expect(requestFocus.mock.calls.map(([editing]) => editing)).toEqual([true]);
       }
     } finally {
       stop();
+      listen.mockRestore();
     }
+  });
+
+  it.each(["macos", "windows"] as const)("ignores hand-back-style blur and retains menu keyboard navigation on %s", (platform) => {
+    const request = vi.fn(async (editing: boolean) => editing);
+    const stop = installPluginPanelInputFocus(document.body, request, platform, async () => () => undefined);
+    try {
+      mount(createElement(LinkedFigureView, { spectrum }));
+      click(container!.querySelector('[aria-haspopup="menu"]')!);
+      const items = [...container!.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
+      act(() => {
+        items[0].dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: document.body }));
+        items[0].blur();
+        window.dispatchEvent(new Event("blur"));
+      });
+      expect(container!.querySelector('[role="menu"]')).not.toBeNull();
+      act(() => document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true })));
+      expect(document.activeElement).toBe(items[0]);
+      act(() => items[0].dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true, cancelable: true })));
+      expect(document.activeElement).toBe(items[3]);
+      act(() => items[3].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true, cancelable: true })));
+      expect(document.activeElement).toBe(items[2]);
+      const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+      act(() => items[2].dispatchEvent(escape));
+      expect(escape.defaultPrevented).toBe(true);
+      expect(container!.querySelector('[role="menu"]')).toBeNull();
+      expect(request).not.toHaveBeenCalled(); // DOM menu creation alone never activates a window.
+    } finally {
+      stop();
+    }
+  });
+
+  it("selects the focused Export item once with Enter after a hand-back-style blur", async () => {
+    mount(createElement(LinkedFigureView, { spectrum }));
+    click(container!.querySelector('[aria-haspopup="menu"]')!);
+    act(() => {
+      (document.activeElement as HTMLElement).blur();
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+      document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+    });
+    const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    await act(async () => document.activeElement!.dispatchEvent(enter));
+    expect(enter.defaultPrevented).toBe(true);
+    expect(exportSpectrumFigure).toHaveBeenCalledOnce();
+    expect(vi.mocked(exportSpectrumFigure).mock.calls[0][0]).toBe("png");
+    expect(container!.querySelector('[role="menu"]')).toBeNull();
+  });
+
+  it("closes Export on native window deactivation, independently of DOM blur", async () => {
+    (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+    mount(createElement(LinkedFigureView, { spectrum }));
+    await act(async () => click(container!.querySelector('[aria-haspopup="menu"]')!));
+    const handler = nativePanel.listen.mock.calls.find(([event]) => event === "chemdraft://plugin-panel-focus")![1] as
+      (event: { payload: { kind: string; generation: number } }) => void;
+    act(() => handler({ payload: { kind: "activated", generation: 1 } }));
+    expect(container!.querySelector('[role="menu"]')).not.toBeNull();
+    act(() => handler({ payload: { kind: "deactivated", generation: 1 } }));
+    expect(container!.querySelector('[role="menu"]')).toBeNull();
+    expect(nativePanel.unlisten).toHaveBeenCalled();
   });
 
   it("paints opaque backgrounds above every leader for coincident peaks and shelf structure labels, including SVG export", () => {

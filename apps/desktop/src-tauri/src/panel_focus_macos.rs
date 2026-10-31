@@ -5,8 +5,8 @@ use objc2::{
     sel,
 };
 use objc2_app_kit::{
-    NSView, NSWindow, NSWindowDidBecomeKeyNotification, NSWindowDidResignKeyNotification,
-    NSWindowStyleMask,
+    NSEvent, NSEventType, NSView, NSWindow, NSWindowDidBecomeKeyNotification,
+    NSWindowDidResignKeyNotification, NSWindowStyleMask,
 };
 use objc2_foundation::{NSNotification, NSNotificationCenter, NSObjectProtocol, NSPoint, NSRect};
 use std::{cell::RefCell, collections::HashMap, ptr::NonNull, rc::Rc};
@@ -16,6 +16,30 @@ type HideCallback = (String, Rc<dyn Fn()>);
 thread_local! {
     static OBSERVERS: RefCell<HashMap<String, Observers>> = RefCell::default();
     static HIDE_CALLBACKS: RefCell<HashMap<usize, HideCallback>> = RefCell::default();
+    static CLICK_CALLBACKS: RefCell<HashMap<usize, HideCallback>> = RefCell::default();
+}
+
+unsafe extern "C-unwind" fn panel_send_event(panel: &AnyObject, _: Sel, event: &NSEvent) {
+    if matches!(
+        event.r#type(),
+        NSEventType::LeftMouseDown | NSEventType::RightMouseDown | NSEventType::OtherMouseDown
+    ) {
+        let callback = CLICK_CALLBACKS.with(|callbacks| {
+            callbacks
+                .borrow()
+                .get(&(panel as *const AnyObject as usize))
+                .map(|(_, callback)| callback.clone())
+        });
+        if let Some(callback) = callback {
+            callback();
+        }
+    }
+    let superclass = AnyClass::get(c"ChemDraftRestorablePanelWindow")
+        .and_then(AnyClass::superclass)
+        .expect("panel window superclass");
+    unsafe {
+        let _: () = msg_send![super(panel, superclass), sendEvent: event];
+    }
 }
 
 unsafe extern "C-unwind" fn panel_order_out(panel: &AnyObject, _: Sel, sender: *mut AnyObject) {
@@ -57,6 +81,10 @@ fn install_hide_hook<R: tauri::Runtime>(
                     sel!(orderOut:),
                     panel_order_out as unsafe extern "C-unwind" fn(_, _, _),
                 );
+                builder.add_method(
+                    sel!(sendEvent:),
+                    panel_send_event as unsafe extern "C-unwind" fn(_, _, _),
+                );
             }
             builder.register()
         };
@@ -76,6 +104,27 @@ fn install_hide_hook<R: tauri::Runtime>(
                 }),
             ),
         )
+    });
+    let target = window.clone();
+    CLICK_CALLBACKS.with(|callbacks| {
+        callbacks.borrow_mut().insert(
+            object as *const AnyObject as usize,
+            (
+                window.label().into(),
+                Rc::new(move || {
+                    // This runs only for a real native mouse-down, before the webview sees it.
+                    // Showing, restoring and publishing a report never call makeKeyWindow.
+                    if target.is_visible().unwrap_or(false)
+                        && !target.is_minimized().unwrap_or(true)
+                    {
+                        let _ = target.set_focusable(true);
+                        if let Ok(pointer) = target.ns_window() {
+                            unsafe { &*(pointer as *const NSWindow) }.makeKeyWindow();
+                        }
+                    }
+                }),
+            ),
+        );
     });
     Ok(())
 }
@@ -193,6 +242,11 @@ pub(super) fn observe<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> Re
 }
 
 pub(super) fn forget(label: &str) {
+    CLICK_CALLBACKS.with(|callbacks| {
+        callbacks
+            .borrow_mut()
+            .retain(|_, (owner, _)| owner != label)
+    });
     HIDE_CALLBACKS.with(|callbacks| {
         callbacks
             .borrow_mut()
