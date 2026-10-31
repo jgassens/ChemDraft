@@ -89,6 +89,7 @@ interface ParsedArguments extends FigureStyleOptions {
 }
 
 export interface RenderedReactionScheme extends ParsedReactionSmiles {
+  layouts: { smiles: string; layout?: string }[];
   document: ChemDraftDocument;
   svg: string;
   viewBox: { x: number; y: number; width: number; height: number };
@@ -730,6 +731,7 @@ export async function renderReactionScheme(
 
   return {
     ...parsed,
+    layouts: [...reactants, ...products].map(component => ({ smiles: component.smiles, layout: component.layout })),
     document,
     svg: cropped.svg,
     viewBox: cropped.viewBox,
@@ -773,6 +775,7 @@ async function renderReactionJob(job: ReactionJob, io: CliIo): Promise<boolean> 
       products: rendered.products,
       arrow: rendered.arrow,
       conditions: rendered.conditions,
+      layouts: rendered.layouts,
       warnings: rendered.warnings
     });
     writeProgress(io, `Wrote ${job.out}`);

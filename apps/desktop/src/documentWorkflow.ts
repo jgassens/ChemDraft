@@ -3771,6 +3771,10 @@ function isNativeChairTemplate(templateId: NativeMoleculeTemplateId): boolean {
 }
 
 function nativeTemplateBondLength(molecule: MoleculeObject): number {
+  // Perspective templates deliberately foreshorten bonds; grow at their nominal length.
+  if (molecule.style.projection === "perspective") {
+    return nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx;
+  }
   // Imported molecules can have coordinates that disagree with the stored drawing style.
   // Only a molecule without measurable bonds (such as a single atom) needs the style fallback.
   return representativeMoleculeBondLength(molecule) ??
@@ -5016,7 +5020,7 @@ export const SMILES_PASTE_OPTIONS = { openUnspecifiedDoubleBonds: true } as cons
 export function insertSmilesMoleculeGrid(
   document: ChemDraftDocument,
   origin: PagePoint,
-  entries: readonly { smiles: string; depiction: PastedStructureDepiction }[],
+  entries: readonly { smiles: string; depiction: PastedStructureDepiction; molecule?: MoleculeObject }[],
   options: { gutterPx?: number } = {}
 ): { document: ChemDraftDocument; objectIds: string[]; columns: number; rows: number; pageResized: boolean } {
   if (entries.length === 0) {
@@ -5028,9 +5032,9 @@ export function insertSmilesMoleculeGrid(
   }
   const margin = 24;
   const page = firstPage(document);
-  const reservedObjectIds = new Set<string>();
+  const reservedObjectIds = new Set(entries.flatMap(entry => entry.molecule ? [entry.molecule.id] : []));
   const molecules = entries.map((entry) => {
-    const molecule = createSmilesMolecule(document, { x: margin, y: margin }, entry.depiction, entry.smiles, {
+    const molecule = entry.molecule ?? createSmilesMolecule(document, { x: margin, y: margin }, entry.depiction, entry.smiles, {
       ...SMILES_PASTE_SOURCE,
       reservedObjectIds
     }, SMILES_PASTE_OPTIONS);
@@ -5079,9 +5083,14 @@ export function insertSmilesMoleculeGrid(
   return { document: nextDocument, objectIds, columns, rows, pageResized };
 }
 
+export function visibleSkippedItems<T>(skippedItems: readonly T[]): T[] {
+  return skippedItems.slice(0, 3);
+}
+
 export function insertSmilesMoleculeGridStatus(
   result: ReturnType<typeof insertSmilesMoleculeGrid>,
-  skipped: number
+  skipped: number,
+  skippedItems: readonly { line: number; token: string; reason?: string }[] = []
 ): string {
   let status = `Pasted ${result.objectIds.length} SMILES structures in a ${result.columns} × ${result.rows} grid`;
   if (result.pageResized) {
@@ -5089,7 +5098,14 @@ export function insertSmilesMoleculeGridStatus(
     const unit = pageLayoutSourceUnit(page.layout);
     status += ` (page grown to Custom ${formatPageSizeValue(cssPxToPageSize(page.width, unit))} × ${formatPageSizeValue(cssPxToPageSize(page.height, unit))} ${pageSizeUnitLabel(unit)})`;
   }
-  if (skipped > 0) status += `; ${skipped} token${skipped === 1 ? "" : "s"} skipped`;
+  if (skippedItems.length > 0) {
+    const visibleItems = visibleSkippedItems(skippedItems);
+    for (const item of visibleItems) {
+      const token = item.token.length > 24 ? `${item.token.slice(0, 23)}…` : item.token;
+      status += `; skipped line ${item.line}: '${token}'${item.reason ? ` (${item.reason})` : ""}`;
+    }
+    if (skippedItems.length > visibleItems.length) status += `; and ${skippedItems.length - visibleItems.length} more`;
+  } else if (skipped > 0) status += `; ${skipped} token${skipped === 1 ? "" : "s"} skipped`;
   return status;
 }
 
@@ -14935,7 +14951,8 @@ export function cleanUpNativeMolecules2d(
     // Stripped perspective depth weights are a real change even when the geometry
     // was already ideal (the changed-check below only compares atoms/transform).
     const strippedDepthWeights = molecule.bonds.some((bond) => bond.display?.depthWeight !== undefined);
-    return nativeMoleculeGeometryOrTransformChanged(molecule, cleaned) || strippedDepthWeights
+    return nativeMoleculeGeometryOrTransformChanged(molecule, cleaned) || strippedDepthWeights ||
+      molecule.style.projection !== cleaned.style.projection
       ? [{ op: "updateObject" as const, objectId: molecule.id, changes: cleaned }]
       : [];
   });
@@ -15524,7 +15541,7 @@ function buildNativeMoleculeEngineRelayout(
   }
 
   const cleaned = withNativeMoleculeTransform(
-    normalizeNativeMoleculeGeometry({ ...molecule, atoms, bonds }),
+    normalizeNativeMoleculeGeometry({ ...molecule, atoms, bonds, style: flatNativeMoleculeStyle(molecule) }),
     defaultNativeMoleculeTransform
   );
   const atomMetadataChanged = JSON.stringify(molecule.atoms) !== JSON.stringify(cleaned.atoms);
@@ -15538,7 +15555,8 @@ function buildNativeMoleculeEngineRelayout(
     !nativeMoleculeGeometryOrTransformChanged(molecule, cleaned) &&
     !atomMetadataChanged &&
     !bondDisplayOrDirectionChanged &&
-    !normalizedBoundsChanged
+    !normalizedBoundsChanged &&
+    molecule.style.projection === cleaned.style.projection
   ) {
     return document;
   }
@@ -18004,13 +18022,21 @@ function withNativeMoleculeTransform(
   };
 }
 
+// A successful flat re-layout no longer has a projection's nominal-length contract.
+function flatNativeMoleculeStyle(molecule: MoleculeObject): MoleculeObject["style"] {
+  if (molecule.style.projection !== "perspective") return molecule.style;
+  const { projection: _projection, ...style } = molecule.style;
+  return style;
+}
+
 // Drops per-atom projected-plane depth so a 2D cleanup leaves a genuinely flat molecule.
 // Without this, atoms keep stale `z` from a prior 3D tilt and `pointZ()` would still read
 // that depth on the next projected-plane operation even though the transform reset to 2D.
 function flattenNativeMoleculeDepth(molecule: MoleculeObject): MoleculeObject {
   return {
     ...molecule,
-    atoms: molecule.atoms.map(({ z: _z, ...atom }) => atom)
+    atoms: molecule.atoms.map(({ z: _z, ...atom }) => atom),
+    style: flatNativeMoleculeStyle(molecule)
   };
 }
 
@@ -18080,7 +18106,9 @@ function cleanUpNativeMoleculeGeometry2d(molecule: MoleculeObject): MoleculeObje
     normalizeNativeMoleculeGeometry({
       ...molecule,
       atoms,
-      bonds
+      bonds,
+      // A multi-ring component skipped by this simple layout is still projected.
+      style: nextAtomPoints.size === molecule.atoms.length ? flatNativeMoleculeStyle(molecule) : molecule.style
     }),
     defaultNativeMoleculeTransform
   );
