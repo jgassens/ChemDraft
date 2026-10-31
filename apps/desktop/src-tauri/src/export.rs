@@ -1,8 +1,10 @@
-use std::io::Cursor;
+use std::io::{Cursor, Read};
+use std::sync::{Arc, Mutex};
 
 use image::{codecs::jpeg::JpegEncoder, ColorType, DynamicImage, ImageEncoder, ImageFormat};
 use resvg::{tiny_skia, usvg};
 
+use crate::clipboard_images::{MAX_DECODED_BYTES, MAX_IMAGE_SIDE};
 use crate::fonts::shared_fontdb;
 
 const DEFAULT_RASTER_SCALE: f64 = 1.0;
@@ -13,9 +15,10 @@ const DEFAULT_JPEG_QUALITY: u8 = 90;
 // images plus 500 molecules at the largest checked-in SVG fixture's size (82,007 bytes,
 // fixtures/ocsr/brevetoxin-a.svg): about 106 MiB total, with room for page markup.
 const MAX_SVG_BYTES: usize = 128 * 1024 * 1024;
+const MAX_PICTURE_SVG_DEPTH: usize = 8;
 
 /// Export SVGs may embed data URLs, but must never read files from the host.
-fn export_svg_options() -> usvg::Options<'static> {
+fn export_svg_options<'a>() -> usvg::Options<'a> {
     usvg::Options {
         fontdb: shared_fontdb(),
         image_href_resolver: usvg::ImageHrefResolver {
@@ -23,6 +26,414 @@ fn export_svg_options() -> usvg::Options<'static> {
             resolve_string: Box::new(|_, _| None),
         },
         ..Default::default()
+    }
+}
+
+#[derive(Default)]
+struct PictureBudget {
+    decoded_bytes: u64,
+    error: Option<String>,
+}
+
+/// Validate at the href resolver, before usvg can discard an unreadable image and before
+/// resvg can allocate its source bitmap. The same budget spans all nested SVGs and feImages.
+fn bounded_export_svg(
+    data: &[u8],
+    format: RasterExportFormat,
+    budget: &Mutex<PictureBudget>,
+    picture: &str,
+    depth: usize,
+) -> Result<usvg::Tree, String> {
+    let fail = |reason| format!("Could not export {}: {picture} {reason}", format.label());
+    let mut uncompressed = Vec::new();
+    let data = if data.starts_with(&[0x1f, 0x8b]) {
+        // usvg also accepts SVGZ data URLs. Do not let gzip bypass the SVG input bound.
+        flate2::read::GzDecoder::new(data)
+            .take(MAX_SVG_BYTES as u64 + 1)
+            .read_to_end(&mut uncompressed)
+            .map_err(|_| fail("has unreadable compressed SVG data."))?;
+        if uncompressed.len() > MAX_SVG_BYTES {
+            return Err(fail("exceeds the SVG input size limit."));
+        }
+        &uncompressed
+    } else {
+        data
+    };
+    let text = std::str::from_utf8(data).map_err(|_| fail("has unreadable SVG data."))?;
+    let doc = usvg::roxmltree::Document::parse_with_options(
+        text,
+        usvg::roxmltree::ParsingOptions {
+            allow_dtd: true,
+            ..Default::default()
+        },
+    )
+    .map_err(|error| format!("Could not parse SVG for raster export: {error}"))?;
+    let mut options = export_svg_options();
+    options.image_href_resolver.resolve_data = Box::new(|mime, data, _| {
+        if budget.lock().expect("picture budget lock").error.is_some() {
+            return None;
+        }
+        match bounded_export_image(mime, data, &doc, format, budget, picture, depth) {
+            Ok(kind) => kind,
+            Err(error) => {
+                budget
+                    .lock()
+                    .expect("picture budget lock")
+                    .error
+                    .get_or_insert(error);
+                None
+            }
+        }
+    });
+    let tree = usvg::Tree::from_xmltree(&doc, &options);
+    // A resolver returns Option, so propagate its first refusal explicitly rather than
+    // exporting a drawing with the offending picture silently omitted.
+    if let Some(error) = &budget.lock().expect("picture budget lock").error {
+        return Err(error.clone());
+    }
+    tree.map_err(|error| format!("Could not parse SVG for raster export: {error}"))
+}
+
+fn bounded_export_image(
+    mime: &str,
+    data: Arc<Vec<u8>>,
+    doc: &usvg::roxmltree::Document<'_>,
+    format: RasterExportFormat,
+    budget: &Mutex<PictureBudget>,
+    picture: &str,
+    depth: usize,
+) -> Result<Option<usvg::ImageKind>, String> {
+    // Mirror usvg's MIME handling, including magic sniffing for text/plain data URLs.
+    let kind = match mime {
+        "image/png" => usvg::ImageKind::PNG(data),
+        "image/jpg" | "image/jpeg" => usvg::ImageKind::JPEG(data),
+        "image/gif" => usvg::ImageKind::GIF(data),
+        "image/webp" => usvg::ImageKind::WEBP(data),
+        "text/plain" if data.starts_with(b"\x89PNG\r\n\x1a\n") => usvg::ImageKind::PNG(data),
+        "text/plain" if data.starts_with(b"\xff\xd8") => usvg::ImageKind::JPEG(data),
+        "text/plain" if data.starts_with(b"GIF8") => usvg::ImageKind::GIF(data),
+        "text/plain" if data.starts_with(b"RIFF") && data.get(8..12) == Some(b"WEBP") => {
+            usvg::ImageKind::WEBP(data)
+        }
+        "image/svg+xml" | "text/plain" => {
+            let picture = picture_source_label(doc, &data, picture);
+            if depth >= MAX_PICTURE_SVG_DEPTH {
+                return Err(format!(
+                    "Could not export {}: {picture} exceeds the nested SVG picture limit of {MAX_PICTURE_SVG_DEPTH} levels.",
+                    format.label()
+                ));
+            }
+            return bounded_export_svg(&data, format, budget, &picture, depth + 1)
+                .map(|tree| Some(usvg::ImageKind::SVG(tree)));
+        }
+        _ => return Ok(None),
+    };
+    let check = || -> Result<(), String> {
+        let (width, height) = raster_source_dimensions(&kind)
+            .filter(|&(width, height)| width > 0 && height > 0)
+            .ok_or(
+                "has an unreadable raster image header; source dimensions could not be checked.",
+            )?;
+        if width > MAX_IMAGE_SIDE || height > MAX_IMAGE_SIDE {
+            return Err(format!(
+                "is {width} x {height} pixels; the limit is {MAX_IMAGE_SIDE} pixels on a side."
+            ));
+        }
+        let decoded_bytes = u64::from(width) * u64::from(height) * 4;
+        if decoded_bytes > MAX_DECODED_BYTES {
+            return Err(format!(
+                "is {width} x {height} pixels and exceeds the {} MiB decoded picture limit.",
+                MAX_DECODED_BYTES / (1024 * 1024)
+            ));
+        }
+        let mut budget = budget.lock().expect("picture budget lock");
+        if decoded_bytes > MAX_DECODED_BYTES - budget.decoded_bytes {
+            return Err(format!(
+                "would exceed the {} MiB total decoded picture limit.",
+                MAX_DECODED_BYTES / (1024 * 1024)
+            ));
+        }
+        budget.decoded_bytes += decoded_bytes;
+        Ok(())
+    };
+    check().map_err(|reason| {
+        let data = match &kind {
+            usvg::ImageKind::PNG(data)
+            | usvg::ImageKind::JPEG(data)
+            | usvg::ImageKind::GIF(data)
+            | usvg::ImageKind::WEBP(data) => data,
+            usvg::ImageKind::SVG(_) => unreachable!(),
+        };
+        let picture = picture_source_label(doc, data, picture);
+        format!("Could not export {}: {picture} {reason}", format.label())
+    })?;
+    Ok(Some(kind))
+}
+
+/// Diagnostic lookup only: image resolution and validation use usvg's decoded bytes above.
+/// Match decoded hrefs so percent encoding, xlink:href and unpadded base64 retain object IDs.
+fn picture_source_label(
+    doc: &usvg::roxmltree::Document<'_>,
+    data: &[u8],
+    fallback: &str,
+) -> String {
+    for node in doc
+        .descendants()
+        .filter(|node| node.is_element() && matches!(node.tag_name().name(), "image" | "feImage"))
+    {
+        let Some(id) = node
+            .ancestors()
+            .filter(|ancestor| ancestor.has_tag_name("g"))
+            .find_map(|ancestor| ancestor.attribute("data-object-id"))
+        else {
+            continue;
+        };
+        for attr in node.attributes().filter(|attr| attr.name() == "href") {
+            if diagnostic_data_url_bytes(attr.value()).as_deref() == Some(data) {
+                return format!("picture {id}");
+            }
+        }
+    }
+    fallback.to_string()
+}
+
+fn diagnostic_data_url_bytes(href: &str) -> Option<Vec<u8>> {
+    let href: String = href
+        .trim_matches(|ch| ch <= ' ')
+        .chars()
+        .filter(|ch| !matches!(ch, '\t' | '\n' | '\r'))
+        .take_while(|ch| *ch != '#')
+        .collect();
+    if !href.get(..5)?.eq_ignore_ascii_case("data:") {
+        return None;
+    }
+    let (header, body) = href[5..].split_once(',')?;
+    let bytes = body.as_bytes();
+    let mut decoded = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if let Some(pair) = bytes.get(index + 1..index + 3) {
+                if let (Some(high), Some(low)) = (
+                    (pair[0] as char).to_digit(16),
+                    (pair[1] as char).to_digit(16),
+                ) {
+                    decoded.push((high * 16 + low) as u8);
+                    index += 3;
+                    continue;
+                }
+            }
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+    if header
+        .rsplit_once(';')
+        .is_some_and(|(_, suffix)| suffix.trim().eq_ignore_ascii_case("base64"))
+    {
+        decoded.retain(|byte| !byte.is_ascii_whitespace());
+        let engine = base64::engine::general_purpose::GeneralPurpose::new(
+            &base64::alphabet::STANDARD,
+            base64::engine::general_purpose::GeneralPurposeConfig::new()
+                .with_decode_padding_mode(base64::engine::DecodePaddingMode::Indifferent)
+                .with_decode_allow_trailing_bits(true),
+        );
+        base64::Engine::decode(&engine, decoded).ok()
+    } else {
+        Some(decoded)
+    }
+}
+
+/// Header reads only: never instantiate an image decoder or allocate a pixel buffer here.
+fn raster_source_dimensions(kind: &usvg::ImageKind) -> Option<(u32, u32)> {
+    match kind {
+        usvg::ImageKind::PNG(data) => {
+            let header = data.get(..33)?;
+            if &header[..16] != b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR" {
+                return None;
+            }
+            Some((
+                u32::from_be_bytes(header[16..20].try_into().ok()?),
+                u32::from_be_bytes(header[20..24].try_into().ok()?),
+            ))
+        }
+        usvg::ImageKind::JPEG(data) => jpeg_source_dimensions(data),
+        usvg::ImageKind::GIF(data) => gif_source_dimensions(data),
+        usvg::ImageKind::WEBP(data) => webp_source_dimensions(data),
+        usvg::ImageKind::SVG(_) => None,
+    }
+}
+
+fn gif_source_dimensions(data: &[u8]) -> Option<(u32, u32)> {
+    let header = data.get(..13)?;
+    if !matches!(&header[..6], b"GIF87a" | b"GIF89a") {
+        return None;
+    }
+    let width = u32::from(u16::from_le_bytes(header[6..8].try_into().ok()?));
+    let height = u32::from(u16::from_le_bytes(header[8..10].try_into().ok()?));
+    if width == 0 || height == 0 {
+        return None;
+    }
+    if width > MAX_IMAGE_SIDE || height > MAX_IMAGE_SIDE {
+        return Some((width, height));
+    }
+    let mut index = 13usize;
+    if header[10] & 0x80 != 0 {
+        index += 3 * (1usize << ((header[10] & 7) + 1));
+    }
+    loop {
+        match *data.get(index)? {
+            0x2c => {
+                // resvg decodes the first frame, and gif does not require it to fit the
+                // logical screen. Account for that frame's dimensions too, without LZW.
+                let frame = data.get(index..index.checked_add(10)?)?;
+                let frame_width = u32::from(u16::from_le_bytes(frame[5..7].try_into().ok()?));
+                let frame_height = u32::from(u16::from_le_bytes(frame[7..9].try_into().ok()?));
+                if frame_width == 0 || frame_height == 0 {
+                    return None;
+                }
+                return Some((width.max(frame_width), height.max(frame_height)));
+            }
+            0x21 => {
+                index = index.checked_add(2)?; // extension introducer and label
+                loop {
+                    let length = usize::from(*data.get(index)?);
+                    index = index.checked_add(1)?;
+                    data.get(index..index.checked_add(length)?)?;
+                    index += length;
+                    if length == 0 {
+                        break;
+                    }
+                }
+            }
+            _ => return None,
+        }
+    }
+}
+
+fn jpeg_source_dimensions(data: &[u8]) -> Option<(u32, u32)> {
+    if !data.starts_with(b"\xff\xd8") {
+        return None;
+    }
+    let mut index = 2usize;
+    loop {
+        if *data.get(index)? != 0xff {
+            return None;
+        }
+        while *data.get(index)? == 0xff {
+            index += 1;
+        }
+        let marker = *data.get(index)?;
+        index += 1;
+        if matches!(marker, 0x00 | 0xd8..=0xda) {
+            return None;
+        }
+        if marker == 0x01 || (0xd0..=0xd7).contains(&marker) {
+            continue;
+        }
+        let length = usize::from(u16::from_be_bytes(
+            data.get(index..index.checked_add(2)?)?.try_into().ok()?,
+        ));
+        if length < 2 {
+            return None;
+        }
+        let segment = data.get(index..index.checked_add(length)?)?;
+        if matches!(marker, 0xc0..=0xc3 | 0xc5..=0xc7 | 0xc9..=0xcb | 0xcd..=0xcf) {
+            let header = segment.get(..8)?;
+            return Some((
+                u32::from(u16::from_be_bytes(header[5..7].try_into().ok()?)),
+                u32::from(u16::from_be_bytes(header[3..5].try_into().ok()?)),
+            ));
+        }
+        index += length;
+    }
+}
+
+fn webp_source_dimensions(data: &[u8]) -> Option<(u32, u32)> {
+    let header = data.get(..20)?;
+    if &header[..4] != b"RIFF" || &header[8..12] != b"WEBP" {
+        return None;
+    }
+    let length = u32::from_le_bytes(header[16..20].try_into().ok()?) as usize;
+    let end = 20usize.checked_add(length)?;
+    let chunk = data.get(20..end)?;
+    let mut dimensions = webp_chunk_dimensions(&header[12..16], chunk)?;
+    if &header[12..16] == b"VP8X" {
+        // A malformed extended WebP can declare a small canvas but contain a much larger
+        // VP8 source. image-webp decodes that source before checking it against the canvas.
+        webp_extend_dimensions(
+            data.get(end.checked_add(length & 1)?..)?,
+            &mut dimensions,
+            true,
+        )?;
+    }
+    Some(dimensions)
+}
+
+fn webp_uint24(bytes: &[u8]) -> u32 {
+    u32::from(bytes[0]) | (u32::from(bytes[1]) << 8) | (u32::from(bytes[2]) << 16)
+}
+
+fn webp_extend_dimensions(
+    mut chunks: &[u8],
+    dimensions: &mut (u32, u32),
+    allow_animation: bool,
+) -> Option<()> {
+    while !chunks.is_empty() {
+        let header = chunks.get(..8)?;
+        let length = u32::from_le_bytes(header[4..8].try_into().ok()?) as usize;
+        let end = 8usize.checked_add(length)?;
+        let chunk = chunks.get(8..end)?;
+        match &header[..4] {
+            b"VP8 " | b"VP8L" => {
+                let (width, height) = webp_chunk_dimensions(&header[..4], chunk)?;
+                dimensions.0 = dimensions.0.max(width);
+                dimensions.1 = dimensions.1.max(height);
+            }
+            b"ANMF" => {
+                if !allow_animation {
+                    return None;
+                }
+                let frame = chunk.get(..16)?;
+                dimensions.0 = dimensions.0.max(webp_uint24(&frame[6..9]) + 1);
+                dimensions.1 = dimensions.1.max(webp_uint24(&frame[9..12]) + 1);
+                webp_extend_dimensions(&chunk[16..], dimensions, false)?;
+            }
+            _ => {}
+        }
+        chunks = chunks.get(end.checked_add(length & 1)?..)?;
+    }
+    Some(())
+}
+
+fn webp_chunk_dimensions(tag: &[u8], chunk: &[u8]) -> Option<(u32, u32)> {
+    match tag {
+        b"VP8 " => {
+            let frame = chunk.get(..10)?;
+            if frame[0] & 1 != 0 || &frame[3..6] != b"\x9d\x01\x2a" {
+                return None;
+            }
+            Some((
+                u32::from(u16::from_le_bytes(frame[6..8].try_into().ok()?) & 0x3fff),
+                u32::from(u16::from_le_bytes(frame[8..10].try_into().ok()?) & 0x3fff),
+            ))
+        }
+        b"VP8L" => {
+            let frame = chunk.get(..5)?;
+            let bits = u32::from_le_bytes(frame[1..5].try_into().ok()?);
+            if frame[0] != 0x2f || bits >> 29 != 0 {
+                return None;
+            }
+            Some(((bits & 0x3fff) + 1, ((bits >> 14) & 0x3fff) + 1))
+        }
+        b"VP8X" => {
+            let frame = chunk.get(..10)?;
+            Some((
+                webp_uint24(&frame[4..7]) + 1,
+                webp_uint24(&frame[7..10]) + 1,
+            ))
+        }
+        _ => None,
     }
 }
 
@@ -109,10 +520,13 @@ fn rasterize_svg_impl(request: RasterExportRequest) -> Result<RasterExportRespon
         ));
     }
 
-    let options = export_svg_options();
-
-    let tree = usvg::Tree::from_data(request.svg.as_bytes(), &options)
-        .map_err(|error| format!("Could not parse SVG for raster export: {error}"))?;
+    let tree = bounded_export_svg(
+        request.svg.as_bytes(),
+        request.format,
+        &Mutex::new(PictureBudget::default()),
+        "a picture",
+        0,
+    )?;
     let base_size = tree.size().to_int_size();
     let (width, height, scale_x, scale_y, mut warnings) = target_size(&request, base_size)?;
     let background = parse_background(request.background.as_deref())?;
@@ -511,6 +925,231 @@ mod tests {
             "data:image/png;base64,{}",
             base64::engine::general_purpose::STANDARD.encode(cursor.into_inner())
         )
+    }
+
+    fn data_url(mime: &str, bytes: &[u8]) -> String {
+        format!(
+            "data:{mime};base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        )
+    }
+
+    fn picture_svg(href: &str) -> String {
+        format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><g data-object-id="g12"><image href="{href}" width="64" height="64"/></g></svg>"#
+        )
+    }
+
+    fn png_with_declared_dimensions(width: u32, height: u32) -> Vec<u8> {
+        // Preserve real PNG chunks, including IDAT, while changing IHDR and its CRC. Its
+        // tiny compressed scanlines cannot fill the declared bitmap, but tiny-skia would
+        // allocate that entire bitmap BEFORE discovering the short image data.
+        let mut png = diagnostic_data_url_bytes(&red_png_data_url()).expect("PNG data URL");
+        png[16..20].copy_from_slice(&width.to_be_bytes());
+        png[20..24].copy_from_slice(&height.to_be_bytes());
+        let crc = png_crc32(&png[12..29]);
+        png[29..33].copy_from_slice(&crc.to_be_bytes());
+        assert!(
+            png.len() < 1024,
+            "fixtures must never allocate large rasters"
+        );
+        png
+    }
+
+    #[test]
+    fn refuses_embedded_png_source_bomb_before_render() {
+        let png = png_with_declared_dimensions(65_536, 65_536);
+        for format in [RasterExportFormat::Png, RasterExportFormat::Jpeg] {
+            let error = rasterize_svg_impl(RasterExportRequest {
+                svg: picture_svg(&data_url("image/png", &png)),
+                ..request(format)
+            })
+            .expect_err("refuse the 16 GiB source bitmap on a 64x64 page");
+            assert_eq!(
+                error,
+                format!("Could not export {}: picture g12 is 65536 x 65536 pixels; the limit is 16384 pixels on a side.", format.label())
+            );
+        }
+    }
+
+    #[test]
+    fn refuses_nested_svg_and_svgz_source_bombs() {
+        let png = data_url("image/png", &png_with_declared_dimensions(65_536, 65_536));
+        // The inner image has no object ID: retain the enclosing outer picture's ID.
+        let nested = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><image href="{png}" width="64" height="64"/></svg>"#
+        );
+        let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut gzip, nested.as_bytes()).expect("gzip nested SVG");
+        let svgz = gzip.finish().expect("finish SVGZ");
+        for payload in [nested.as_bytes(), svgz.as_slice()] {
+            let error = rasterize_svg_impl(RasterExportRequest {
+                svg: picture_svg(&data_url("image/svg+xml", payload)),
+                ..request(RasterExportFormat::Png)
+            })
+            .expect_err("refuse a nested source bitmap bomb");
+            assert_eq!(error, "Could not export PNG: picture g12 is 65536 x 65536 pixels; the limit is 16384 pixels on a side.");
+        }
+    }
+
+    #[test]
+    fn refuses_a_picture_over_the_decoded_budget() {
+        let png = png_with_declared_dimensions(MAX_IMAGE_SIDE, MAX_IMAGE_SIDE);
+        let error = rasterize_svg_impl(RasterExportRequest {
+            svg: picture_svg(&data_url("image/png", &png)),
+            ..request(RasterExportFormat::Png)
+        })
+        .expect_err("source fits side limit but requires 1 GiB decoded");
+        assert_eq!(error, "Could not export PNG: picture g12 is 16384 x 16384 pixels and exceeds the 256 MiB decoded picture limit.");
+    }
+
+    #[test]
+    fn refuses_total_decoded_budget_overflow_across_nested_pictures() {
+        let png = data_url("image/png", &png_with_declared_dimensions(4096, 6144));
+        // Each source is 96 MiB. Two are in the outer SVG and the third is nested.
+        let nested = picture_svg(&png);
+        let nested = data_url("image/svg+xml", nested.as_bytes());
+        let svg = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><image href="{png}" width="8" height="8"/><image href="{png}" width="8" height="8"/><g data-object-id="g12"><image href="{nested}" width="8" height="8"/></g></svg>"#
+        );
+        let error = rasterize_svg_impl(RasterExportRequest {
+            svg,
+            ..request(RasterExportFormat::Png)
+        })
+        .expect_err("three individually permitted sources exceed the shared budget");
+        assert_eq!(error, "Could not export PNG: picture g12 would exceed the 256 MiB total decoded picture limit.");
+    }
+
+    #[test]
+    fn permits_the_exact_decoded_budget_without_decoding_pixels() {
+        let budget = Mutex::new(PictureBudget::default());
+        let png = data_url("image/png", &png_with_declared_dimensions(8192, 8192));
+        bounded_export_svg(
+            picture_svg(&png).as_bytes(),
+            RasterExportFormat::Png,
+            &budget,
+            "a picture",
+            0,
+        )
+        .expect("256 MiB is permitted; only parse the header in this test");
+        assert_eq!(budget.lock().unwrap().decoded_bytes, MAX_DECODED_BYTES);
+    }
+
+    #[test]
+    fn refuses_unreadable_headers_instead_of_silently_omitting_pictures() {
+        for mime in ["image/png", "image/jpeg", "image/gif", "image/webp"] {
+            let error = rasterize_svg_impl(RasterExportRequest {
+                svg: picture_svg(&data_url(mime, b"truncated header")),
+                ..request(RasterExportFormat::Png)
+            })
+            .expect_err("unreadable raster headers must fail closed");
+            assert_eq!(error, "Could not export PNG: picture g12 has an unreadable raster image header; source dimensions could not be checked.");
+        }
+    }
+
+    #[test]
+    fn refuses_source_bombs_with_text_plain_mime_and_without_an_object_id() {
+        let png = png_with_declared_dimensions(65_536, 65_536);
+        let svg = picture_svg(&data_url("text/plain", &png)).replace("data-object-id=\"g12\"", "");
+        let error = rasterize_svg_impl(RasterExportRequest {
+            svg,
+            ..request(RasterExportFormat::Png)
+        })
+        .expect_err("MIME sniffing must use the same bounds");
+        assert_eq!(error, "Could not export PNG: a picture is 65536 x 65536 pixels; the limit is 16384 pixels on a side.");
+    }
+
+    #[test]
+    fn source_refusals_preserve_ids_for_percent_encoded_xlink_hrefs() {
+        let png = png_with_declared_dimensions(65_536, 65_536);
+        let encoded: String = png.iter().map(|byte| format!("%{byte:02X}")).collect();
+        let svg = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="64" height="64"><g data-object-id="g12"><image xlink:href="data:image/png,{encoded}" width="64" height="64"/></g></svg>"#
+        );
+        let error = rasterize_svg_impl(RasterExportRequest {
+            svg,
+            ..request(RasterExportFormat::Png)
+        })
+        .expect_err("percent-encoded raster sources must also be bounded");
+        assert_eq!(error, "Could not export PNG: picture g12 is 65536 x 65536 pixels; the limit is 16384 pixels on a side.");
+    }
+
+    #[test]
+    fn refuses_raster_sources_inside_filter_images() {
+        let png = data_url("image/png", &png_with_declared_dimensions(65_536, 65_536));
+        let svg = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><defs><filter id="f"><feImage href="{png}"/></filter></defs><rect width="64" height="64" filter="url(#f)"/></svg>"#
+        );
+        let error = rasterize_svg_impl(RasterExportRequest {
+            svg,
+            ..request(RasterExportFormat::Png)
+        })
+        .expect_err("feImage must not bypass the source budget");
+        assert_eq!(error, "Could not export PNG: a picture is 65536 x 65536 pixels; the limit is 16384 pixels on a side.");
+    }
+
+    #[test]
+    fn refuses_excessive_svg_picture_nesting() {
+        let mut svg = SIMPLE_SVG.to_string();
+        for _ in 0..=MAX_PICTURE_SVG_DEPTH {
+            svg = picture_svg(&data_url("image/svg+xml", svg.as_bytes()));
+        }
+        let error = rasterize_svg_impl(RasterExportRequest {
+            svg,
+            ..request(RasterExportFormat::Png)
+        })
+        .expect_err("nested SVG parsing must stop before stack exhaustion");
+        assert_eq!(
+            error,
+            "Could not export PNG: picture g12 exceeds the nested SVG picture limit of 8 levels."
+        );
+    }
+
+    #[test]
+    fn raster_headers_are_read_without_a_pixel_decoder() {
+        // SOI, APP0 (empty), SOF2: a progressive JPEG source header only.
+        let jpeg = b"\xff\xd8\xff\xe0\0\x02\xff\xc2\0\x0b\x08\0\x10\0\x20\x01\x01\x11\0";
+        assert_eq!(jpeg_source_dimensions(jpeg), Some((32, 16)));
+        assert_eq!(jpeg_source_dimensions(&jpeg[..jpeg.len() - 1]), None);
+
+        // GIF logical screen plus a comment extension and the first image descriptor.
+        let gif = b"GIF89a\x20\0\x10\0\0\0\0\x21\xfe\x01x\0\x2c\0\0\0\0\x20\0\x10\0\0";
+        assert_eq!(gif_source_dimensions(gif), Some((32, 16)));
+        let mut oversized_frame = gif.to_vec();
+        let length = oversized_frame.len();
+        oversized_frame[length - 5..length - 3].copy_from_slice(&32_768u16.to_le_bytes());
+        assert_eq!(gif_source_dimensions(&oversized_frame), Some((32_768, 16)));
+
+        let webp = |tag: &[u8; 4], payload: &[u8]| {
+            let mut bytes = b"RIFF".to_vec();
+            bytes.extend_from_slice(&(12 + payload.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(b"WEBP");
+            bytes.extend_from_slice(tag);
+            bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(payload);
+            bytes
+        };
+        for bytes in [
+            webp(b"VP8 ", b"\0\0\0\x9d\x01\x2a\x20\0\x10\0"),
+            webp(b"VP8L", &[0x2f, 0x1f, 0xc0, 0x03, 0]),
+            webp(b"VP8X", &[0, 0, 0, 0, 31, 0, 0, 15, 0, 0]),
+        ] {
+            assert_eq!(webp_source_dimensions(&bytes), Some((32, 16)));
+            assert_eq!(webp_source_dimensions(&bytes[..bytes.len() - 1]), None);
+        }
+
+        let mut extended = webp(b"VP8X", &[0, 0, 0, 0, 31, 0, 0, 15, 0, 0]);
+        let source = webp(b"VP8 ", b"\0\0\0\x9d\x01\x2a\xff\x3f\xff\x3f");
+        extended.extend_from_slice(&source[12..]);
+        let riff_length = (extended.len() - 8) as u32;
+        extended[4..8].copy_from_slice(&riff_length.to_le_bytes());
+        assert_eq!(webp_source_dimensions(&extended), Some((16_383, 16_383)));
+        let error = rasterize_svg_impl(RasterExportRequest {
+            svg: picture_svg(&data_url("image/webp", &extended)),
+            ..request(RasterExportFormat::Png)
+        })
+        .expect_err("a small WebP canvas must not hide an oversized VP8 source");
+        assert_eq!(error, "Could not export PNG: picture g12 is 16383 x 16383 pixels and exceeds the 256 MiB decoded picture limit.");
     }
 
     #[test]
