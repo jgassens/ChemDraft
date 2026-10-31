@@ -14,6 +14,7 @@ import { pathToFileURL } from "node:url";
 import { JSDOM } from "jsdom";
 import { Resvg } from "@resvg/resvg-js";
 import { jsPDF } from "jspdf";
+import { exportDocumentToCdxml } from "@chemdraft/cdx-compat";
 import { describe, expect, it } from "vitest";
 import { exportDocumentToPdf } from "./pdf";
 import { exportDocumentToSvg } from "./svg";
@@ -44,6 +45,8 @@ describe("exportDocumentToPdf", () => {
     const pdf = await withPdfDom((domParser) => exportDocumentToPdf(document, { domParser }));
     expect(pdf.warnings).toEqual([{ code: "export.pdf.picture_missing_data", severity: "warning", objectId: "missing-picture",
       message: "PDF export: picture missing-picture has no picture data and was not drawn" }]);
+    expect(exportDocumentToCdxml(document).warnings).toEqual([{ code: "cdxml.picture_not_saved", sourceObjectId: "missing-picture",
+      message: "CDXML export: picture missing-picture is not saved in CDXML" }]);
   });
 
   it("exports picture frames in SVG and embeds PNGs in PDF, warning for SVG pictures", async () => {

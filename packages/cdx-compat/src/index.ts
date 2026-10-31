@@ -813,7 +813,7 @@ function exportGraphicObject(
   warnings: CompatibilityConversionWarning[]
 ): string {
   if (graphic.graphicKind === "image") {
-    warnings.push({ code: "cdxml.picture_not_saved", message: `CDXML export: picture ${graphic.id} is not saved in CDXML`, objectId: graphic.id });
+    warnings.push({ code: "cdxml.picture_not_saved", message: `CDXML export: picture ${graphic.id} is not saved in CDXML`, sourceObjectId: graphic.id });
     return "";
   }
   const graphicId = idFor(ids, graphic.id, allocator);

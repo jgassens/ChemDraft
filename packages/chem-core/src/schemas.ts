@@ -2,7 +2,7 @@ import { z } from "zod";
 import { normalizeAtomIsotope } from "./isotopes";
 import { atomicNumberForElementSymbol } from "./elements";
 import { decodeImageBase64, imageBase64Error } from "./imageBytes";
-import { imagePixelLimitError, validatePngImage, validateSvgImage } from "./imageInfo";
+import { imagePixelLimitError, validatePngImage } from "./imageInfo";
 import {
   PageOrientations,
   PageSizePresetIds,
@@ -555,9 +555,10 @@ function validateGraphicImage(object: z.infer<typeof GraphicObjectShapeSchema>, 
       return;
     }
     const image = object.data.image;
+    // Existing SVG payloads are preserved on load; completeness is checked when pasting.
+    if (image.mimeType !== "image/png") return;
     const bytes = decodeImageBase64(image.dataBase64, object.id);
-    const result = image.mimeType === "image/png"
-      ? validatePngImage(bytes) : validateSvgImage(new TextDecoder().decode(bytes));
+    const result = validatePngImage(bytes);
     const error = result.error ?? imagePixelLimitError(image.pixelWidth, image.pixelHeight);
     if (error) context.addIssue({ code: z.ZodIssueCode.custom,
       path: ["data", "image", "dataBase64"],

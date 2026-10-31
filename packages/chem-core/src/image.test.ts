@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createEmptyDocument, createImageGraphicObject, deserializeDocument, DOCUMENT_STYLE_UNITS_PER_PT,
-  GraphicObjectSchema, MAX_IMAGE_OBJECT_BYTES, readPngInfo, readSvgInfo, serializeDocument, validateDocument
+  GraphicObjectSchema, isSvgImageSource, MAX_IMAGE_OBJECT_BYTES, readPngInfo, readSvgInfo, serializeDocument, validateDocument
 } from "./index";
 
 function png(width: number, height: number, density?: { x: number; y: number; unit?: number }): Uint8Array {
@@ -78,10 +78,7 @@ describe("embedded picture graphics", () => {
       { dataBase64: Buffer.from(png(10, 10).subarray(0, 33)).toString("base64"), reason: "the PNG has no image data." },
       { dataBase64: Buffer.from(png(20000, 20000)).toString("base64"), reason: "it is 20000 x 20000 pixels; the limit is 16384 pixels on a side." },
       { dataBase64: Buffer.from(png(9000, 9000)).toString("base64"), reason: "it is 9000 x 9000 pixels; the decoded limit is 256 MiB." },
-      { pixelWidth: 20000, reason: "it is 20000 x 72 pixels; the limit is 16384 pixels on a side." },
-      { mimeType: "image/svg+xml", dataBase64: Buffer.from("<svg ").toString("base64"), reason: "the SVG is incomplete." },
-      { mimeType: "image/svg+xml", dataBase64: Buffer.from("<other/>").toString("base64"), reason: "the SVG is incomplete." },
-      { mimeType: "image/svg+xml", dataBase64: Buffer.from('<svg width="20000" height="20000"/>').toString("base64"), reason: "it is 20000 x 20000 pixels; the limit is 16384 pixels on a side." }
+      { pixelWidth: 20000, reason: "it is 20000 x 72 pixels; the limit is 16384 pixels on a side." }
     ];
     for (const { reason, ...image } of cases) {
       const invalidObject = { ...object, data: { image: { ...object.data.image, ...image } } };
@@ -92,9 +89,36 @@ describe("embedded picture graphics", () => {
     }
   });
 
+  it("preserves SVG payloads on load without rechecking their roots or pixel limits", () => {
+    const object = createImageGraphicObject(options);
+    for (const source of ["<svg ", "<other/>", '<svg width="20000" height="20000"/>',
+      '<s:svg xmlns:s="http://www.w3.org/2000/svg" width="10" height="10"/>']) {
+      const savedObject = { ...object, data: { image: { ...object.data.image!,
+        mimeType: "image/svg+xml" as const, dataBase64: Buffer.from(source).toString("base64"),
+        pixelWidth: 20000, pixelHeight: 20000 } } };
+      expect(GraphicObjectSchema.parse(savedObject)).toEqual(savedObject);
+      const document = createEmptyDocument();
+      document.pages[0].objects.push(savedObject);
+      expect(deserializeDocument(serializeDocument(document))).toEqual(document);
+    }
+  });
+
+  it.each([
+    '<s:svg xmlns:s="http://www.w3.org/2000/svg" width="10" height="10"/>',
+    '<drawing:svg xmlns:drawing="http://www.w3.org/2000/svg" width="10" height="10"><drawing:svg/></drawing:svg>'
+  ])("accepts a complete namespace-prefixed SVG at paste time: %s", (source) => {
+    expect(isSvgImageSource(source)).toBe(true);
+    expect(readSvgInfo(source)).toEqual({ pixelWidth: 10, pixelHeight: 10 });
+    expect(createImageGraphicObject({ ...options, mimeType: "image/svg+xml",
+      dataBase64: Buffer.from(source).toString("base64") }).data.image)
+      .toMatchObject({ pixelWidth: 10, pixelHeight: 10 });
+  });
+
   it("refuses incomplete SVG roots even with explicit dimensions", () => {
     for (const source of ["<svg ", "<svg>", '<svg width="10"', "<svg><svg></svg>",
-      "<svg><!-- </svg> -->", "<svg><![CDATA[</svg>]]>", '<svg><text title="</svg>"/>']) {
+      "<svg><!-- </svg> -->", "<svg><![CDATA[</svg>]]>", '<svg><text title="</svg>"/>',
+      "<s:svg ", "<s:svg>", "<s:svg></svg>", "<s:svg></other:svg>",
+      "<s:svg><!-- </s:svg> -->", '<s:svg><text title="</s:svg>"/>']) {
       expect(readSvgInfo(source)).toBeUndefined();
       expect(() => createImageGraphicObject({ ...options, mimeType: "image/svg+xml", pixelWidth: 10,
         pixelHeight: 10, dataBase64: Buffer.from(source).toString("base64") }))
@@ -156,8 +180,10 @@ describe("embedded picture graphics", () => {
     document.pages[0].objects.push(pictureless);
     expect(deserializeDocument(JSON.stringify(document))).toEqual(document);
     for (const dataBase64 of ["", "!!", "A", "AA=A", "a===", "data:image/png;base64,AAAA"]) {
-      expect(() => GraphicObjectSchema.parse({ ...object,
-        data: { image: { ...object.data.image, dataBase64 } } })).toThrow("Image object g12 has invalid base64 image data");
+      for (const mimeType of ["image/png", "image/svg+xml"]) {
+        expect(() => GraphicObjectSchema.parse({ ...object,
+          data: { image: { ...object.data.image, mimeType, dataBase64 } } })).toThrow("Image object g12 has invalid base64 image data");
+      }
     }
     for (const field of [{ pixelWidth: 0 }, { pixelHeight: 1.5 }, { mimeType: "image/jpeg" },
       { pixelsPerMeter: { x: -1, y: 2 } }, { extra: true }]) {
@@ -183,14 +209,21 @@ describe("embedded picture graphics", () => {
     bytes.set(png(144, 72));
     const dataBase64 = bytes.toString("base64");
     expect(GraphicObjectSchema.safeParse({ ...object, data: { image: { ...object.data.image, dataBase64 } } }).success).toBe(true);
+    expect(GraphicObjectSchema.safeParse({ ...object, data: { image: {
+      ...object.data.image, mimeType: "image/svg+xml", dataBase64
+    } } }).success).toBe(true);
     const document = createEmptyDocument();
+    const oversizedDataBase64 = Buffer.alloc(Math.round(31.2 * 1024 * 1024)).toString("base64");
     document.pages[0].objects.push({ ...object, data: { image: { ...object.data.image!,
-      dataBase64: Buffer.alloc(Math.round(31.2 * 1024 * 1024)).toString("base64") } } });
+      dataBase64: oversizedDataBase64 } } });
     const result = validateDocument(document);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.issues).toContainEqual({
       path: "pages.0.objects.0.data.image.dataBase64", message: "Image object g12 is 31.2 MB; the limit is 25 MB."
     });
+    expect(() => GraphicObjectSchema.parse({ ...object, data: { image: {
+      ...object.data.image, mimeType: "image/svg+xml", dataBase64: oversizedDataBase64
+    } } })).toThrow("Image object g12 is 31.2 MB; the limit is 25 MB.");
     expect(() => createImageGraphicObject({ ...options, dataBase64: "!" })).toThrow("invalid base64");
   });
 

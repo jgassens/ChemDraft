@@ -104,7 +104,7 @@ export async function exportDocumentToPdf(
         const cx = picture.x + picture.width / 2, cy = picture.y + picture.height / 2;
         pdf.advancedAPI();
         pdf.saveGraphicsState();
-        pdf.setCurrentTransformationMatrix(new pdf.Matrix(scale * cos, scale * sin, -scale * sin, scale * cos,
+        pdf.setCurrentTransformationMatrix(pdf.Matrix(scale * cos, scale * sin, -scale * sin, scale * cos,
           offsetX + scale * (cx - cos * cx + sin * cy), offsetY + scale * (cy - sin * cx - cos * cy)));
         pdf.addImage(`data:image/png;base64,${picture.data.image.dataBase64}`, "PNG", picture.x, picture.y, picture.width, picture.height);
         pdf.restoreGraphicsState();

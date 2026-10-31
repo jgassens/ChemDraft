@@ -530,13 +530,24 @@ describe("clipboard-adapter", () => {
 
   it("chooses supported SMILES-list candidates before pictures and retains the fallback", () => {
     const image = { type: "image/svg+xml" as const, bytesBase64: "PHN2Zy8+" };
-    for (const text of ["CCO\nCCN", "CCO CCN", "1. CCO\n2. CCN", "CCO ethanol\nCCN ethylamine"]) {
+    for (const text of ["CCO\nCCN", "CCO CCN", "1. CCO\n2. CCN", "CCO ethanol\nCCN ethylamine",
+      '["CCO","CCN"]', '"CCO","CCN"', "CCO;CCN", "CCO,CCN"]) {
       expect(inspectClipboardPayload({ types: ["text/plain"], imageItems: [image],
         textItems: [{ type: "text/plain", text }] }))
-        .toMatchObject({ kind: "smiles", text, fallbackImage: image });
+        .toMatchObject({ kind: "plain-text", text, fallbackImage: image });
     }
     expect(inspectClipboardPayload({ types: ["text/plain"], imageItems: [image],
       textItems: [{ type: "text/plain", text: "Add the CO and CS to the flask" }] }).kind).toBe("image");
+  });
+
+  it("checks strict single-token SMILES in every text flavor before choosing a list", () => {
+    const image = { type: "image/png" as const, bytesBase64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/aWQAAAAASUVORK5CYII=" };
+    for (const text of ["PNG PNG", '["CCN","CCC"]']) {
+      expect(inspectClipboardPayload({ types: ["image/png", "text/plain", "public.utf8-plain-text"],
+        imageItems: [image], textItems: [
+          { type: "text/plain", text }, { type: "public.utf8-plain-text", text: "CCO" }
+        ] })).toMatchObject({ kind: "smiles", text: "CCO", sourceType: "public.utf8-plain-text", fallbackImage: image });
+    }
   });
 
   it("refuses incomplete SVG source and image flavors instead of creating a blank picture", () => {

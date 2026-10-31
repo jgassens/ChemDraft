@@ -49,6 +49,8 @@ export type ClipboardDetectedPayload =
     }
   | {
       kind: "plain-text";
+      /** For heuristic SMILES lists: picture to paste if host chemistry parsing fails. */
+      fallbackImage?: ClipboardImageItem;
       text: string;
       sourceType?: string;
       warnings: ClipboardTransferWarning[];
@@ -237,9 +239,15 @@ export function inspectClipboardPayload(payload: ClipboardReadPayload): Clipboar
   const suppressPicture = payload.types.some((type) => isCdxmlType(type) || isCdxType(type)
     || isSmilesType(type) || /(?:molfile|rxnfile|inchi|chemical\/)/i.test(type));
   // Text heuristics still need the host's chemistry parser; retain artwork in case parsing fails.
-  const smilesCandidate = (image || skippedImage || svgText) && textItems.find((item) => {
+  const hasPicture = image || skippedImage || svgText;
+  const smilesCandidate = hasPicture && textItems.find((item) => looksLikeSmilesStrict(item.text));
+  const fallbackImage = !suppressPicture ? image ?? (svgText ? svgTextImage(svgText.text) : undefined) : undefined;
+  if (smilesCandidate) {
+    return { kind: "smiles", text: smilesCandidate.text, sourceType: smilesCandidate.type, warnings: [],
+      ...(fallbackImage ? { fallbackImage } : {}) };
+  }
+  const smilesListCandidate = hasPicture && textItems.find((item) => {
     if (looksLikeSvgDocument(item.text)) return false;
-    if (looksLikeSmilesStrict(item.text)) return true;
     const tokens = smilesListTokens(item.text);
     const candidates = smilesListCandidates(item.text);
     const firstTokenColumns = new Map<number, number>();
@@ -253,9 +261,8 @@ export function inspectClipboardPayload(payload: ClipboardReadPayload): Clipboar
       parsedFirstTokenLines: candidates.filter((candidate) => candidate.column === firstTokenColumns.get(candidate.line)).length
     });
   });
-  if (smilesCandidate) {
-    const fallbackImage = !suppressPicture ? image ?? (svgText ? svgTextImage(svgText.text) : undefined) : undefined;
-    return { kind: "smiles", text: smilesCandidate.text, sourceType: smilesCandidate.type, warnings: [],
+  if (smilesListCandidate) {
+    return { kind: "plain-text", text: smilesListCandidate.text, sourceType: smilesListCandidate.type, warnings: [],
       ...(fallbackImage ? { fallbackImage } : {}) };
   }
   if (image && !suppressPicture) {

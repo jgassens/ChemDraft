@@ -76,18 +76,20 @@ function svgRootSource(source: string): string {
 
 /** Includes incomplete SVG source, which must never become an ordinary text box. */
 export function isSvgImageSource(source: string): boolean {
-  return /^<svg(?=[\s/>])/.test(svgRootSource(source));
+  return /^<(?:[A-Za-z_][\w.-]*:)?svg(?=[\s/>])/.test(svgRootSource(source));
 }
 
 /** Check the root is complete, ignoring apparent closing tags inside comments, CDATA or attributes. */
 function completeSvgRoot(rest: string): RegExpMatchArray | undefined {
-  const root = rest.match(/^<svg(?=[\s/>])((?:[^<>"']|"[^"]*"|'[^']*')*)>/);
+  const root = rest.match(/^<((?:[A-Za-z_][\w.-]*:)?svg)(?=[\s/>])((?:[^<>"']|"[^"]*"|'[^']*')*)>/);
   if (!root) return undefined;
   let depth = 0;
   const tags = /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<\?[\s\S]*?\?>|<((?:[^<>"']|"[^"]*"|'[^']*')*)>/g;
   for (const tag of rest.matchAll(tags)) {
-    if (/^<svg(?=[\s/>])/.test(tag[0]) && !/\/>$/.test(tag[0])) depth++;
-    if (/^<\/svg\s*>$/.test(tag[0])) depth--;
+    const openName = tag[0].match(/^<([^\s/>]+)(?=[\s/>])/);
+    const closeName = tag[0].match(/^<\/([^\s/>]+)\s*>$/);
+    if (openName?.[1] === root[1] && !/\/>$/.test(tag[0])) depth++;
+    if (closeName?.[1] === root[1]) depth--;
     if (depth === 0) {
       // Only whitespace, comments and processing instructions may follow the root.
       const tail = rest.slice(tag.index + tag[0].length);
@@ -108,7 +110,7 @@ export function validateSvgImage(source: string): { info?: ImagePixelInfo; error
 export function readSvgInfo(source: string): ImagePixelInfo | undefined {
   const root = completeSvgRoot(svgRootSource(source));
   if (!root) return undefined;
-  const attributes = new Map([...root[1].matchAll(/([^\s=]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)]
+  const attributes = new Map([...root[2].matchAll(/([^\s=]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)]
     .map((match) => [match[1], match[2] ?? match[3]]));
   const length = (value: string | undefined): number | undefined => {
     const match = value?.trim().match(/^([+]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)\s*(px|pt|in|mm|cm)?$/i);
@@ -131,4 +133,3 @@ export function readSvgInfo(source: string): ImagePixelInfo | undefined {
   // SVG's default viewport is 300 × 150 when no usable dimensions/viewBox are provided.
   return { pixelWidth: Math.max(1, Math.round(width ?? 300)), pixelHeight: Math.max(1, Math.round(height ?? 150)) };
 }
-
