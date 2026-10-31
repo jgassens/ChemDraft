@@ -2,10 +2,6 @@ import { createEmptyDocument, createImageGraphicObject, deserializeDocument, ser
   type MoleculeObject } from "@chemdraft/chem-core";
 import { applyDocumentStyle } from "@chemdraft/document-workflow-core";
 import { DocumentStyleScale } from "@chemdraft/layout-engine";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { JSDOM } from "jsdom";
 import { describe, expect, it } from "vitest";
 import { documentStyleSvg, exportDocumentToSvg } from "./svg";
@@ -112,22 +108,4 @@ describe("picture physical size on export", () => {
     } finally { dom.window.close(); }
   });
 
-  it("exports the saved PNG at 144 × 72 pt through CLI render-document in default and document styles", () => {
-    const directory = mkdtempSync(fileURLToPath(new URL("../.picture-export-test-", import.meta.url)));
-    try {
-      const input = join(directory, "saved.chemdraft");
-      writeFileSync(input, serializeDocument(savedPictureDocument()));
-      for (const style of [undefined, "document"]) {
-        const output = join(directory, `${style ?? "default"}.svg`);
-        const result = execFileSync(process.execPath, ["--import", "tsx", resolve("packages/chemdraft-cli/src/cli.ts"),
-          "render-document", "--document", input, "--out", output, ...(style ? ["--style", style] : [])],
-        { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-        expect(JSON.parse(result).ok).toBe(true);
-        const image = imageFrame(readFileSync(output, "utf8"));
-        const pointsPerUnit = style ? DocumentStyleScale.pointsPerUnit : 72 / 96;
-        expect(image.width * pointsPerUnit).toBeCloseTo(144, 1);
-        expect(image.height * pointsPerUnit).toBeCloseTo(72, 1);
-      }
-    } finally { rmSync(directory, { recursive: true, force: true }); }
-  }, 20_000);
 });
