@@ -77,14 +77,12 @@ export function installPluginPanelInputFocus(
   let revision = 0;
   let disposed = false;
   let pending = Promise.resolve();
-  let requestedFocus = false;
   const setFocused = (next: boolean): void => {
     focused = next;
     const generation = revision = ++nextGeneration;
     pending = pending.catch(() => undefined).then(async () => {
       await subscribed;
       if (revision !== generation) return;
-      if (next) requestedFocus = true;
       let acquired: boolean;
       try {
         acquired = await requestFocus(next, generation);
@@ -113,7 +111,7 @@ export function installPluginPanelInputFocus(
   };
   const nativeFocus = (event: NativePanelFocusEvent): void => {
     if (disposed || event.kind !== "deactivated") return;
-    if (focused && (event.generation === revision || !requestedFocus)) {
+    if (focused && event.generation === revision) {
       setFocused(false);
       clearInteraction();
     }
@@ -162,8 +160,20 @@ export function installPluginPanelInputFocus(
       return false;
     });
   };
+  const consumedKeys = new Set<string>();
+  const keyUp = (event: KeyboardEvent): void => { consumedKeys.delete(event.code); };
+  const consumeKey = (event: KeyboardEvent): void => {
+    consumedKeys.add(event.code);
+    event.preventDefault();
+    event.stopPropagation();
+  };
   const keyDown = (event: KeyboardEvent): void => {
     if (event.defaultPrevented || event.isComposing) return;
+    // Clearing the selection must not send this held key's repeats to the drawing.
+    if (consumedKeys.has(event.code)) {
+      consumeKey(event);
+      return;
+    }
     const control = panelEditableControl(event.target);
     const menu = shell.querySelector('[role="menu"][data-plugin-panel-input-menu="true"]');
     const reload = event.key === "F5" || event.key === "BrowserRefresh" ||
@@ -207,8 +217,7 @@ export function installPluginPanelInputFocus(
       document.getSelection()?.removeAllRanges();
       // The key ending a report selection belongs to the panel, including cut/paste,
       // history and destructive commands. It must never act on selected chemistry.
-      event.preventDefault();
-      event.stopPropagation();
+      consumeKey(event);
       return;
     }
     if (event.target instanceof Element && event.target.closest("button, a, [role=button]") &&
@@ -225,6 +234,7 @@ export function installPluginPanelInputFocus(
   };
   shell.addEventListener("pointerdown", pointerDown, true);
   shell.addEventListener("keydown", keyDown);
+  window.addEventListener("keyup", keyUp, true);
   let unsubscribeFocus: (() => void) | undefined;
   const subscribed = subscribeFocus(nativeFocus).then((unsubscribe) => {
     if (disposed) unsubscribe();
@@ -237,6 +247,7 @@ export function installPluginPanelInputFocus(
     unsubscribeCommands?.();
     shell.removeEventListener("pointerdown", pointerDown, true);
     shell.removeEventListener("keydown", keyDown);
+    window.removeEventListener("keyup", keyUp, true);
     if (focused) setFocused(false);
   };
 }

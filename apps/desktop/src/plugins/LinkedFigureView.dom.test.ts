@@ -1122,6 +1122,48 @@ describe("LinkedFigureView", () => {
     }
   });
 
+  it.each([
+    ["macos", true], ["macos", false], ["windows", true], ["windows", false]
+  ] as const)("rejects early generation-0 loss for Export on %s (acquired: %s)", async (platform, acquired) => {
+    let attach!: () => void;
+    const ready = new Promise<void>((resolve) => { attach = resolve; });
+    let notify!: (event: NativePanelFocusEvent) => void;
+    const request = vi.fn(async (_editing: boolean, _generation: number) => acquired);
+    const listen = vi.spyOn(document.body, "addEventListener");
+    const stop = installPluginPanelInputFocus(document.body, request, platform, async (listener) => {
+      notify = listener;
+      await ready;
+      return () => undefined;
+    }, { resolve: () => undefined, forward: vi.fn() });
+    const down = listen.mock.calls.find(([event]) => event === "pointerdown")![1] as EventListener;
+    try {
+      mount(createElement(LinkedFigureView, { spectrum }));
+      const owner = container!.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!;
+      await act(async () => down({ target: owner, isTrusted: true } as unknown as Event));
+      act(() => {
+        down({ target: owner, isTrusted: true } as unknown as Event);
+        owner.click();
+      });
+      act(() => notify({ kind: "deactivated", generation: 0 }));
+      expect(request).not.toHaveBeenCalled();
+      expect(container!.querySelector('[role="menu"]')).not.toBeNull();
+      await act(async () => { attach(); });
+      expect(request).toHaveBeenCalledExactlyOnceWith(true, expect.any(Number));
+      if (acquired) {
+        const items = container!.querySelectorAll('[role="menuitem"]');
+        expect(items).toHaveLength(4);
+        act(() => items[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true })));
+        expect(document.activeElement).toBe(items[1]);
+        await act(async () => notify({ kind: "deactivated", generation: request.mock.calls[0][1] }));
+        expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+      }
+      expect(container!.querySelector('[role="menu"]')).toBeNull();
+    } finally {
+      stop();
+      listen.mockRestore();
+    }
+  });
+
   it("paints opaque backgrounds above every leader for coincident peaks and shelf structure labels, including SVG export", () => {
     const count = 10;
     const crowded: PluginLinkedFigureSpectrum = {

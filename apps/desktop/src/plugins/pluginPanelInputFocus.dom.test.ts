@@ -53,10 +53,12 @@ function mount(html: string, platform: ShortcutPlatform = "macos", ready = Promi
     // jsdom cannot create trusted events. Call the installed handlers with real browser fields.
     press: (target: Element = shell, button = 0) => down({ target, button, isTrusted: true } as unknown as Event),
     key: (target: Element, value: string, modifiers: KeyboardEventInit = {}, handled = false) => {
-      const event = new KeyboardEvent("keydown", { key: value, cancelable: true, ...modifiers });
+      const event = new KeyboardEvent("keydown", {
+        key: value, code: value.length === 1 ? `Key${value.toUpperCase()}` : value, cancelable: true, ...modifiers
+      });
       if (handled) event.preventDefault();
       key({
-        target, key: event.key, isTrusted: true, isComposing: event.isComposing,
+        target, key: event.key, code: event.code, repeat: event.repeat, isTrusted: true, isComposing: event.isComposing,
         ctrlKey: event.ctrlKey, metaKey: event.metaKey, shiftKey: event.shiftKey, altKey: event.altKey,
         get defaultPrevented() { return event.defaultPrevented; },
         preventDefault: () => event.preventDefault(), stopPropagation: () => event.stopPropagation()
@@ -234,8 +236,33 @@ describe.each(["macos", "windows"] as const)("persistent panel focus (%s)", (pla
     expect(document.getSelection()!.isCollapsed).toBe(true);
     expect(forward).not.toHaveBeenCalled();
     expect(request.mock.calls.map(([active]) => active)).toEqual([true]);
+    text.dispatchEvent(new KeyboardEvent("keyup", { code: event.code, bubbles: true }));
     expect(key(text, "b").defaultPrevented).toBe(true);
     expect(forward).toHaveBeenCalledExactlyOnceWith("tool.bond");
+  });
+
+  it.each([
+    ["Delete", "Delete", "edit.delete"], ["Backspace", "Backspace", "edit.backspace"],
+    ["x", "KeyX", "edit.cut"], ["v", "KeyV", "edit.paste"], ["z", "KeyZ", "edit.undo"]
+  ])("owns held %s until keyup after ending report selection", async (value, code, command) => {
+    const { shell, press, key, forward } = mount('<div class="plugin-report"><p>Report text</p></div>', platform);
+    const text = shell.querySelector("p")!;
+    press(text);
+    await flush();
+    selectText(text);
+    const modifiers = value.length === 1 ? platform === "macos" ? { metaKey: true } : { ctrlKey: true } : {};
+    expect(key(text, value, { code, ...modifiers }).defaultPrevented).toBe(true);
+    expect(document.getSelection()!.isCollapsed).toBe(true);
+    for (let i = 0; i < 3; i++) {
+      expect(key(text, value, { code, ...modifiers, repeat: true }).defaultPrevented).toBe(true);
+    }
+    // Modifier changes must not turn the same held physical key into a drawing shortcut.
+    expect(key(text, value.toUpperCase(), { code, repeat: true, shiftKey: true }).defaultPrevented).toBe(true);
+    expect(forward).not.toHaveBeenCalled();
+    // The release can target a different element after focus changes within the panel.
+    document.body.dispatchEvent(new KeyboardEvent("keyup", { code, bubbles: true }));
+    expect(key(text, value, { code, ...modifiers }).defaultPrevented).toBe(true);
+    expect(forward).toHaveBeenCalledExactlyOnceWith(command);
   });
 
   it.each([
@@ -400,6 +427,42 @@ describe.each(["macos", "windows"] as const)("persistent panel focus (%s)", (pla
     }
   });
 
+  it.each([true, false])("rejects generation-0 loss after two clicks while subscribing (acquired: %s)", async (acquired) => {
+    let attach!: () => void;
+    const { shell, press, request, native } = mount('<input><div class="plugin-report"><p>Report text</p></div>', platform,
+      new Promise<void>((resolve) => { attach = resolve; }));
+    const input = shell.querySelector("input")!;
+    const lost = vi.fn();
+    const stop = listenPanelDeactivation(lost);
+    try {
+      request.mockResolvedValueOnce(acquired);
+      press(input); input.focus();
+      await flush();
+      press(input); input.focus(); selectText(shell.querySelector("p")!);
+      native("deactivated", 0);
+      expect(request).not.toHaveBeenCalled();
+      expect(document.activeElement).toBe(input);
+      expect(document.getSelection()!.toString()).toBe("Report text");
+      expect(lost).not.toHaveBeenCalled();
+      attach();
+      await flush();
+      expect(request).toHaveBeenCalledExactlyOnceWith(true, expect.any(Number));
+      if (acquired) {
+        expect(document.activeElement).toBe(input);
+        expect(document.getSelection()!.toString()).toBe("Report text");
+        expect(lost).not.toHaveBeenCalled();
+        native("deactivated");
+        await flush();
+        expect(request.mock.calls.map(([active]) => active)).toEqual([true, false]);
+      }
+      expect(document.activeElement).not.toBe(input);
+      expect(document.getSelection()!.isCollapsed).toBe(true);
+      expect(lost).toHaveBeenCalledOnce();
+    } finally {
+      stop();
+    }
+  });
+
   it("leaves window-close accelerators to the focused panel and never forwards document close", async () => {
     const { shell, press, key, forward, request } = mount("<button>Action</button>", platform);
     press(shell);
@@ -417,19 +480,6 @@ describe.each(["macos", "windows"] as const)("persistent panel focus (%s)", (pla
     shell.dispatchEvent(new KeyboardEvent("keydown", { key: "b", bubbles: true }));
     expect(forward).not.toHaveBeenCalled();
   });
-});
-
-it("subscribes before acquisition and cancels a queued request on native loss", async () => {
-  let attach!: () => void;
-  const { press, request, native } = mount("<button>Action</button>", "windows",
-    new Promise<void>((resolve) => { attach = resolve; }));
-  press();
-  await flush();
-  expect(request).not.toHaveBeenCalled();
-  native("deactivated");
-  attach();
-  await flush();
-  expect(request.mock.calls.map(([active]) => active)).toEqual([false]);
 });
 
 it("native loss wins over a late acquisition reply", async () => {
