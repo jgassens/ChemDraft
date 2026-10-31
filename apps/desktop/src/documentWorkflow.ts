@@ -15025,6 +15025,9 @@ export interface NativeEngineRelayoutOptions {
    * engine's own wedge assignment is trusted as before.
    */
   perceiveStereo?: StereoPerceiver;
+  /** Perceived stereogenic double bonds, excluding aromatic/nonstereogenic ring doubles.
+   * Without a reader, repairs retain the conservative drawn-geometry E/Z guard. */
+  perceiveDoubleBondStereo?: DoubleBondStereoReader;
 }
 
 export type NativeMoleculeRelayoutEngine = (molfile: string) => PastedStructureDepiction;
@@ -15099,7 +15102,7 @@ function chooseEngineRelayout(
   for (const { source, repair } of repairs) {
     const depiction = { ...source.depiction, atoms: source.depiction.atoms.map((atom, i) => ({ ...atom, ...repair.atoms[i] })) };
     const attempt = evaluateEngineRelayoutCandidate(document, objectId, () => depiction, options, true);
-    if (!attempt.ok || !(attempt.candidate.quality?.passes || attempt.candidate.quality?.passesRelaxed)) continue;
+    if (!attempt.ok || attempt.candidate.quality?.hardDefects !== 0) continue;
     const before = findMoleculeObject(document, objectId);
     const after = findMoleculeObject(attempt.candidate.document, objectId);
     if (!before || !after) continue;
@@ -15107,9 +15110,15 @@ function chooseEngineRelayout(
     // an alkene ligand across its axis; guard its drawn E/Z with the same conservative state
     // comparison used by flatten. Either markers stay unspecified.
     const actualDoubleStereo = doubleBondStereoState(after);
+    const specifiedDoubleBonds = specifiedDoubleBondIdsForFlatten(before, options.perceiveDoubleBondStereo);
     if ([...doubleBondStereoState(before)].some(([id, expected]) =>
+      (expected === "either" || specifiedDoubleBonds === undefined || specifiedDoubleBonds.has(id)) &&
       expected !== 0 && actualDoubleStereo.get(id) !== expected)) continue;
-    return finish(attempt.candidate);
+    if (attempt.candidate.quality.passes || attempt.candidate.quality.passesRelaxed) return finish(attempt.candidate);
+    // Terminal labels can be cleared while the fixed macrocycle retains soft distortion.
+    // Compare that fully guarded, hard-clear repair with the drawing in the normal fallback;
+    // a repair never gets to bypass the final atom/label veto or the improvement requirement.
+    candidates.push(attempt.candidate);
   }
   if (!best) {
     if (!primary.ok) throw primary.error;
@@ -15176,6 +15185,14 @@ export async function prepareNativeMoleculeEngineRelayout(
   let alternates: readonly NativeMoleculeRelayoutEngine[] = [];
   try { alternates = await loadAlternates(); } catch (error) {
     options.warnings?.push(`Clean Up could not load alternate layouts: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  // Load the real stereogenicity reader only on the alternate/repair path. Perspective
+  // aromatic rings can have misleading ligand-relative signs; those are not E/Z chemistry.
+  // The synchronous entry point accepts the same injected reader and otherwise stays
+  // conservative. Passing primary layouts still load nothing extra.
+  if (options.perceiveStereo && !options.perceiveDoubleBondStereo) {
+    const { perceiveDoubleBondStereoFromMolfile } = await import("@chemdraft/ocl-adapter");
+    options = { ...options, perceiveDoubleBondStereo: perceiveDoubleBondStereoFromMolfile };
   }
   return chooseEngineRelayout(document, objectId, primary, alternates, options);
 }

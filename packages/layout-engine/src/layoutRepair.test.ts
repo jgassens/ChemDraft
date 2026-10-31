@@ -51,6 +51,40 @@ function expectLocalScoresMatchFullEvaluation(repairs: LayoutRepair[], bonds: La
 }
 
 describe("rigid fragment overlap repair", () => {
+  it("clears several inward OH exits beyond forty degrees without moving or reflecting the ring", () => {
+    const ring = polygon(8, { x: 0, y: 0 }).map(a => ({ x: a.x * 30, y: a.y * 30 }));
+    const pivots = [0, 2, 4, 6];
+    const atoms = [...ring, ...pivots.map(i => {
+      const r = Math.hypot(ring[i].x, ring[i].y);
+      return { x: ring[i].x * (r - 30) / r, y: ring[i].y * (r - 30) / r };
+    })];
+    const bonds = [...cycle(8), ...pivots.map((from, i) => ({ from, to: 8 + i }))];
+    const molecule: MoleculeObject = {
+      id: "inward-oh", type: "molecule", x: -60, y: -60, width: 120, height: 120, rotation: 0,
+      structure: "", structureFormat: "smiles", superatoms: [], rGroups: [],
+      style: { bondLengthPx: 30, atomLabelFontSizePx: 15 },
+      atoms: atoms.map((a, i) => ({ ...a, id: `a${i}`, element: i < 8 ? "C" : "O", formalCharge: 0 })),
+      bonds: bonds.map((b, i) => ({ id: `b${i}`, fromAtomId: `a${b.from}`, toAtomId: `a${b.to}`, order: "single" }))
+    };
+    const labels = (points: readonly LayoutPoint[]) => moleculeLayoutLabelBoxes({ ...molecule,
+      atoms: molecule.atoms.map((a, i) => ({ ...a, ...points[i] })) });
+    const snapshot = structuredClone(molecule);
+    const original = evaluateLayoutQuality(atoms, bonds, 30, undefined, undefined, labels(atoms));
+    expect(original.labelLabelOverlaps.length).toBeGreaterThan(1);
+    const repairs = repairLayoutOverlaps(atoms, bonds, { labelBoxes: labels });
+    expect(repairs.length).toBeGreaterThan(0);
+    expect(repairs[0].swings!.length).toBeGreaterThan(1);
+    expect(repairs[0].swings!.some(s => Math.abs(s.angleDegrees) > 40)).toBe(true);
+    for (const repair of repairs) {
+      const fresh = evaluateLayoutQuality(repair.atoms, bonds, 30, undefined, undefined, labels(repair.atoms));
+      expect(fresh.hardDefects).toBe(0);
+      expect(fresh).toEqual(repair.quality);
+      expect(repair.atoms.slice(0, 8)).toEqual(ring);
+      expectRigid(atoms, repair.atoms, bonds);
+    }
+    expect(repairLayoutOverlaps(atoms, bonds, { labelBoxes: labels })).toEqual(repairs);
+    expect(molecule).toEqual(snapshot);
+  });
   it("rejects the OMe swing whose turned label collides with isolated water", () => {
     const ring = polygon(6, { x: 0, y: 0 }, 105 * Math.PI / 180).map(p => ({ x: p.x * 30, y: p.y * 30 }));
     const atoms = [...ring, { x: ring[0].x * 2, y: ring[0].y * 2 }, { x: -44.5, y: 36.5 }];

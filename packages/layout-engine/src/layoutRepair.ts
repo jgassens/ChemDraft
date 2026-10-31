@@ -1,4 +1,4 @@
-import { LayoutSpatialGrid as RepairGrid, prepareLayoutLabelEvaluator, type LayoutLabelGeometry, atomNearBond, bondsOverlap, prepareLayoutTopology, evaluateLayoutQuality, type LayoutBond, type LayoutPoint, type LayoutQuality, type LayoutLabelBox, type LayoutTopology } from "./layoutQuality";
+import { LayoutSpatialGrid as RepairGrid, prepareLayoutLabelEvaluator, type LayoutLabelGeometry, type LayoutGeometry, atomNearBond, bondsOverlap, prepareLayoutTopology, evaluateLayoutQuality, type LayoutBond, type LayoutPoint, type LayoutQuality, type LayoutLabelBox, type LayoutTopology } from "./layoutQuality";
 
 export interface LayoutOrientation { atoms: LayoutPoint[]; angleDegrees: number; ringSystemAtoms: number[]; rank: number }
 
@@ -98,6 +98,9 @@ export interface LayoutRepair {
   /** Whole-layout rotation after the fragment swing. */
   rotationDegrees?: number;
   orientationRank?: number;
+  /** Sequential terminal-substituent moves, when one swing cannot clear all labels.
+   * pivot/angleDegrees describe the first swing; movedAtoms is their union. */
+  swings?: { pivot: number; atom: number; angleDegrees: number }[];
 }
 
 /** Strict before relaxed, then conventional orientation, soft distortion and non-bonded clearance.
@@ -111,24 +114,31 @@ export function compareLayoutRepairs(a: LayoutRepair, b: LayoutRepair): number {
 
 /** Pure, rotation-only alternatives for atom or label overlaps. Cutting at an articulation atom
  * or an acyclic edge keeps every cyclic block rigid (including all attached downstream atoms).
- * All passing alternatives are returned in preference order so a caller can reject a rotation
- * on stereo read-back and still try the next one. No coordinates are changed in the input.
- * Search is deliberately bounded to one move: no combinations or ring deformation. */
+ * Passing single-move alternatives are returned in preference order so a caller can reject a
+ * rotation on stereo read-back and still try the next one. Terminal-label repairs may retain
+ * soft distortion: callers must compare those with the drawing. Input coordinates never change.
+ * The first search uses one rigid move. A second, budget-sharing search can clear several
+ * terminal labels independently; neither search deforms or reflects a ring. */
 export function repairLayoutOverlaps(
   atoms: readonly LayoutPoint[], bonds: readonly LayoutBond[], options: LayoutRepairOptions = {}
 ): LayoutRepair[] {
-  try { return searchLayoutRepairs(atoms, bonds, options); }
-  catch (error) { if (error === exhaustedRepairBudget) return []; throw error; }
-}
-
-function searchLayoutRepairs(
-  atoms: readonly LayoutPoint[], bonds: readonly LayoutBond[], options: LayoutRepairOptions
-): LayoutRepair[] {
-  let evaluations = 0;
+  let evaluations = 0, trials = 0;
   const work = (count = 1) => {
     evaluations += count;
     if (evaluations > MAX_LAYOUT_REPAIR_EVALUATIONS) throw exhaustedRepairBudget;
   };
+  const trial = () => { if (++trials > MAX_LAYOUT_REPAIR_TRIALS) throw exhaustedRepairBudget; work(); };
+  try {
+    const repairs = searchLayoutRepairs(atoms, bonds, options, work, trial);
+    return repairs.length ? repairs : repairTerminalLabels(atoms, bonds, options, work, trial);
+  }
+  catch (error) { if (error === exhaustedRepairBudget) return []; throw error; }
+}
+
+function searchLayoutRepairs(
+  atoms: readonly LayoutPoint[], bonds: readonly LayoutBond[], options: LayoutRepairOptions,
+  work: (count?: number) => void, trial: () => void
+): LayoutRepair[] {
   const topology = prepareLayoutTopology(atoms.length, bonds);
   work(atoms.length);
   const originalLabels = options.labelBoxes?.(atoms) ?? [];
@@ -193,7 +203,6 @@ function searchLayoutRepairs(
   // introduced by the conventional ring-centroid pivot do not invalidate the cache.
   const planned = new Map<number, { atoms: readonly LayoutPoint[]; labels: readonly LayoutLabelBox[] }>(
     [[0, { atoms, labels: originalLabels }]]);
-  let trials = 0;
   for (const move of moves) {
     const moving = new Set(move.movedAtoms);
     const changingLabels = new Set(move.movedAtoms.flatMap(i => [i, ...adjacent[i]]));
@@ -280,8 +289,7 @@ function searchLayoutRepairs(
     };
     for (let angleDegrees = -move.limit; angleDegrees <= move.limit; angleDegrees += 2) {
       if (angleDegrees === 0 || (move.limit === 180 && angleDegrees === 180)) continue;
-      if (++trials > MAX_LAYOUT_REPAIR_TRIALS) return [];
-      work();
+      trial();
       const angle = angleDegrees * Math.PI / 180;
       const c = Math.cos(angle), s = Math.sin(angle), p = atoms[move.pivot];
       const rotated = atoms.map((a, i) => moving.has(i) ? {
@@ -321,4 +329,120 @@ function searchLayoutRepairs(
     }
   }
   return repairs.sort(compareLayoutRepairs);
+}
+
+/** Last repair attempt for crowded inward labels, including on a macrocyclic ring block.
+ * Only degree-one labelled atoms directly attached to a ring can move. Try alternative
+ * exits around the attachment with proper rotations, preserving every bond length and
+ * every ring coordinate. Greedy moves must improve atom defects first, then labels and
+ * crossings; partial repairs are never returned. All work shares the first search's cap. */
+function repairTerminalLabels(
+  atoms: readonly LayoutPoint[], bonds: readonly LayoutBond[], options: LayoutRepairOptions,
+  work: (count?: number) => void, trial: () => void
+): LayoutRepair[] {
+  if (!options.labelBoxes) return [];
+  const topology = prepareLayoutTopology(atoms.length, bonds);
+  const ringAtoms = new Set(topology.rings.flat());
+  const leaves = topology.adjacent.flatMap((edges, atom) => edges.length === 1 && ringAtoms.has(edges[0].atom)
+    ? [{ atom, pivot: edges[0].atom, bond: edges[0].bond }] : []);
+  if (!leaves.length) return [];
+  work(atoms.length);
+  const initialLabels = options.labelBoxes(atoms);
+  const labelled = new Set(initialLabels.map(b => b.atom));
+  const moves = leaves.filter(m => labelled.has(m.atom));
+  if (!moves.length) return [];
+  const initial = evaluateLayoutQuality(atoms, bonds, undefined, topology, undefined, initialLabels);
+  if (!initial.labelBondOverlaps.length && !initial.labelLabelOverlaps.length) return [];
+  // Crossings inside the fixed skeleton cannot be fixed by a terminal-label exit.
+  if (initial.crossings.length || initial.fusedSideDefects.length) return [];
+  const atomDefects = (q: LayoutQuality) => q.overlappingAtoms.length + q.atomBondOverlaps.length + q.collinearBondOverlaps.length;
+  const contacts = (q: LayoutQuality) => q.labelBondOverlaps.length + q.labelLabelOverlaps.length + q.crossings.length;
+  const compare = (a: LayoutQuality, b: LayoutQuality) => atomDefects(a) - atomDefects(b) || contacts(a) - contacts(b);
+  const orientations = options.conventionalOrientation
+    ? conventionalLayoutOrientations(atoms, bonds, options.belowSign, topology)
+    : [{ atoms: atoms.map(a => ({ ...a })), angleDegrees: 0, ringSystemAtoms: [], rank: 0 }];
+  for (const orientation of orientations) {
+    work(atoms.length);
+    let points = orientation.atoms;
+    let boxes = options.labelBoxes(points);
+    let quality = evaluateLayoutQuality(points, bonds, initial.referenceBondLength, topology, initial, boxes);
+    const swings: NonNullable<LayoutRepair["swings"]> = [];
+    // Revisit leaves once: a neighbour's newly cleared exit may free the first one's label.
+    for (let pass = 0; pass < 2 && quality.hardDefects; pass++) {
+      let changed = false;
+      for (const move of moves) {
+        const { atom, pivot, bond } = move;
+        const involved = quality.labelBondOverlaps.some(([a, b]) => a === atom || b === bond) ||
+          quality.labelLabelOverlaps.some(pair => pair.includes(atom)) ||
+          quality.overlappingAtoms.some(pair => pair.includes(atom)) ||
+          quality.atomBondOverlaps.some(([a, b]) => a === atom || b === bond);
+        if (!involved) continue;
+        const moving = new Set([atom]), changing = new Set([atom, pivot]);
+        const evaluateLabels = prepareLayoutLabelEvaluator(points, bonds, boxes, initial.referenceBondLength,
+          moving, work, [], changing);
+        let best = quality, bestPoints = points, bestBoxes = boxes, bestAngle = 0;
+        // Prefer the smaller swing on equal contact counts, then the stable negative exit.
+        for (let magnitude = 10; magnitude <= 180; magnitude += 10) for (const sign of [-1, 1]) {
+          if (magnitude === 180 && sign === 1) continue;
+          trial();
+          const degrees = magnitude * sign, radians = degrees * Math.PI / 180;
+          const p = points[pivot], a = points[atom];
+          const moved = { x: p.x + (a.x - p.x) * Math.cos(radians) - (a.y - p.y) * Math.sin(radians),
+            y: p.y + (a.x - p.x) * Math.sin(radians) + (a.y - p.y) * Math.cos(radians) };
+          if (topology.adjacent[pivot].some(({ atom: i }) => i !== atom &&
+            Math.acos(Math.max(-1, Math.min(1, ((moved.x - p.x) * (points[i].x - p.x) +
+              (moved.y - p.y) * (points[i].y - p.y)) /
+              (Math.hypot(moved.x - p.x, moved.y - p.y) * Math.hypot(points[i].x - p.x, points[i].y - p.y))))) < Math.PI / 6 - 1e-9)) continue;
+          const candidate = points.map((a, i) => i === atom ? moved : a);
+          // Reuse stationary geometry, but recheck BOTH directions of atom/bond contacts
+          // and every bond against the moving attachment. No atom-level defect is exempt.
+          const geometry: LayoutGeometry = {
+            overlappingAtoms: quality.overlappingAtoms.filter(pair => !pair.includes(atom)),
+            atomBondOverlaps: quality.atomBondOverlaps.filter(([a, b]) => a !== atom && b !== bond),
+            collinearBondOverlaps: quality.collinearBondOverlaps.filter(pair => !pair.includes(bond)),
+            crossings: quality.crossings.filter(pair => !pair.includes(bond)),
+            nearestAtomPairDistance: 0, nearestNonBondedAtomPairDistance: 0
+          };
+          const reference = initial.referenceBondLength;
+          candidate.forEach((a, i) => {
+            work();
+            if (i !== atom && Math.hypot(a.x - moved.x, a.y - moved.y) < reference * 0.5)
+              geometry.overlappingAtoms.push(i < atom ? [i, atom] : [atom, i]);
+            if (i !== atom && i !== pivot && atomNearBond(a, p, moved, reference)) geometry.atomBondOverlaps.push([i, bond]);
+          });
+          bonds.forEach((b, i) => {
+            work();
+            if (i === bond) return;
+            const a = candidate[b.from], c = candidate[b.to];
+            if (b.from !== atom && b.to !== atom && atomNearBond(moved, a, c, reference)) geometry.atomBondOverlaps.push([atom, i]);
+            if (bondsOverlap(p, moved, a, c, reference)) {
+              const cross = (a: LayoutPoint) => (moved.x - p.x) * (a.y - p.y) - (moved.y - p.y) * (a.x - p.x);
+              const contacts = Math.abs(cross(a)) <= 1e-10 * reference ** 2 && Math.abs(cross(c)) <= 1e-10 * reference ** 2
+                ? geometry.collinearBondOverlaps : geometry.crossings;
+              contacts.push(i < bond ? [i, bond] : [bond, i]);
+            }
+          });
+          if (atomDefects({ ...quality, ...geometry }) > atomDefects(best)) continue;
+          const labels = replanRepairLabels(points, boxes, candidate, changing, options.labelBoxes, work);
+          work(atoms.length + bonds.length);
+          const q = evaluateLayoutQuality(candidate, bonds, reference, topology, geometry, [], [], evaluateLabels(candidate, labels));
+          if (compare(q, best) < 0) { best = q; bestPoints = candidate; bestBoxes = labels; bestAngle = degrees; }
+        }
+        if (bestAngle) {
+          points = bestPoints; boxes = bestBoxes; quality = best; changed = true;
+          swings.push({ atom, pivot, angleDegrees: bestAngle });
+        }
+      }
+      if (!changed) break;
+    }
+    if (!swings.length || quality.hardDefects) continue;
+    // Full independent evaluation also restores exact nearest-pair metrics. The host repeats
+    // this gate after placement, identity and stereo read-back before committing anything.
+    work(atoms.length ** 2 + bonds.length ** 2 + atoms.length * bonds.length);
+    const final = evaluateLayoutQuality(points, bonds, initial.referenceBondLength, topology, undefined, options.labelBoxes(points));
+    if (final.hardDefects === 0) return [{ atoms: points, quality: final, kind: "substituent swing",
+      pivot: swings[0].pivot, angleDegrees: swings[0].angleDegrees, movedAtoms: [...new Set(swings.map(s => s.atom))],
+      swings, rotationDegrees: orientation.angleDegrees, orientationRank: orientation.rank }];
+  }
+  return [];
 }

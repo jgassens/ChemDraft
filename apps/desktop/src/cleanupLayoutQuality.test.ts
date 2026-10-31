@@ -1,8 +1,9 @@
 /** P8: real paste kernel -> native document -> identity/stereo-checked cleanup candidates. */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import * as OCL from "openchemlib";
+import { insertStructureTemplate } from "./structureTemplateInsertion";
 import { createEmptyDocument, nativeDrawingStyleFromObjectStyle, undo, redo, type MoleculeObject } from "@chemdraft/chem-core";
-import { ensureOclResources, relayoutMolfile2D, perceiveStereoCentersFromMolfile } from "@chemdraft/ocl-adapter";
+import { ensureOclResources, relayoutMolfile2D, perceiveStereoCentersFromMolfile, perceiveDoubleBondStereoFromMolfile } from "@chemdraft/ocl-adapter";
 import { inspectHydrogenNormalizedIdentity, stereoPerceptionMolfile } from "@chemdraft/document-workflow-core";
 import * as layoutEngine from "@chemdraft/layout-engine";
 import { evaluateLayoutQuality, moleculeLayoutLabelBoxes, conventionalLayoutOrientations, type LayoutQuality, type LayoutRepair, type LayoutPoint } from "@chemdraft/layout-engine";
@@ -100,6 +101,94 @@ beforeAll(async () => { installRealRdkitModuleLoader(); await ensureOclResources
 afterAll(() => resetRdkitForTesting());
 
 describe("Clean Up Structure 2D layout quality (real engines)", () => {
+  it("still rejects a real E/Z-changing repair with the stereogenicity reader", () => {
+    const h = Math.sin(Math.PI / 9), w = Math.cos(Math.PI / 9);
+    const chain = (points: [number, number][]): PastedStructureDepiction => ({
+      atoms: points.map(([x, y]) => ({ x, y, element: "C", charge: 0 })),
+      bonds: Array.from({ length: 3 }, (_, i) => ({ from: i, to: i + 1,
+        order: i === 1 ? "double" : "single", wedge: null }))
+    });
+    const trans = chain([[-w, -h], [0, 0], [1, 0], [1 + w, h]]);
+    const cis = chain([[-w, -h], [0, 0], [1, 0], [1 + w, -h]]);
+    const colliding = chain([[-w, -h], [0, 0], [1, 0], [-0.7, -0.4]]);
+    const document = insertSmilesMolecule(createEmptyDocument(), { x: 400, y: 400 }, trans, "C/C=C/C");
+    const before = document.pages[0].objects[0] as MoleculeObject;
+    const search = vi.spyOn(layoutEngine, "repairLayoutOverlaps").mockReturnValue([{
+      atoms: [...cis.atoms], quality: evaluateLayoutQuality(cis.atoms, cis.bonds),
+      kind: "substituent swing", pivot: 2, movedAtoms: [3], angleDegrees: -40
+    }]);
+    const reader = vi.fn(perceiveDoubleBondStereoFromMolfile);
+    try {
+      const warnings: string[] = [];
+      expect(applyNativeMoleculeEngineRelayout(document, before.id, () => colliding, {
+        targetBondLengthPx: 22, warnings, perceiveDoubleBondStereo: reader
+      })).toBe(document);
+      expect(search).toHaveBeenCalledOnce();
+      expect(reader).toHaveBeenCalledOnce();
+      expect(reader.mock.results[0].value).toHaveLength(1);
+      expect(warnings).toEqual(["Clean Up kept the drawn layout of this structure: the generated layouts put atoms on top of each other."]);
+    } finally { search.mockRestore(); }
+  });
+  it.each(["calix-4-arene", "calix-6-arene", "p-tert-butylcalix-5-arene", "p-tert-butylcalix-6-arene"])(
+    "%s clears inward OH labels without atom-level defects", async id => {
+      const document = insertStructureTemplate(createEmptyDocument(), id, { x: 390, y: 300 }).document;
+      const before = document.pages[0].objects[0] as MoleculeObject;
+      const target = nativeDrawingStyleFromObjectStyle(before.style).bondLengthPx;
+      const snapshot = structuredClone(document);
+      const generated: { engine: string; depiction: PastedStructureDepiction }[] = [];
+      const engines = [relayoutMolfile2D, ...await createRdkit2DRelayouts()].map((engine, i) => (molfile: string) => {
+        const depiction = engine(molfile);
+        generated.push({ engine: ["OCL", "CoordGen", "default"][i], depiction });
+        return depiction;
+      });
+      const repairSearch = vi.spyOn(layoutEngine, "repairLayoutOverlaps");
+      const warnings: string[] = [];
+      let cleaned: ReturnType<typeof applyNativeMoleculeEngineRelayout>;
+      try {
+        cleaned = await prepareNativeMoleculeEngineRelayout(document, before.id, engines[0], async () => engines.slice(1), {
+          targetBondLengthPx: target, warnings,
+          perceiveStereo: perceiveStereoCentersFromMolfile
+        });
+        const report = (q: LayoutQuality) => ({ atoms: q.overlappingAtoms, onBonds: q.atomBondOverlaps,
+          collinear: q.collinearBondOverlaps, labelBonds: q.labelBondOverlaps, labelLabels: q.labelLabelOverlaps,
+          crossings: q.crossings, soft: q.softScore, strict: q.passes, relaxed: q.passesRelaxed,
+          bridged: q.hasBridgedRings, min: q.minBondLength, max: q.maxBondLength });
+        console.log("CALIX_DIAG " + JSON.stringify({ id, original: report(quality(before)), candidates: generated.map(({ engine, depiction }, i) => {
+          const args = repairSearch.mock.calls[i];
+          const source = args?.[0] ?? depiction.atoms;
+          const bonds = args?.[1] ?? depiction.bonds;
+          const labels = args?.[2]?.labelBoxes;
+          const q = (points: readonly LayoutPoint[]) => labels
+            ? evaluateLayoutQuality(points, bonds, undefined, undefined, undefined, labels(points))
+            : depictionQuality(before, { ...depiction, atoms: depiction.atoms.map((a, i) => ({ ...a, ...points[i] })) }, target);
+          return { engine, bonds: bonds.map(b => [b.from, b.to]), raw: report(q(depiction.atoms)), selected: report(q(source)),
+            rotations: conventionalLayoutOrientations(source, bonds, -1).map(o => ({ angle: o.angleDegrees, ...report(q(o.atoms)) })),
+            repairs: (repairSearch.mock.results[i]?.value as LayoutRepair[] | undefined)?.map(r => ({ kind: r.kind,
+              pivot: r.pivot, moved: r.movedAtoms, angle: r.angleDegrees, rotation: r.rotationDegrees, swings: r.swings, ...report(r.quality) })) };
+        }), committed: report(quality(cleaned.pages[0].objects[0] as MoleculeObject)), warnings }));
+      } finally { repairSearch.mockRestore(); }
+      expect(cleaned).not.toBe(document);
+      const after = cleaned.pages[0].objects[0] as MoleculeObject;
+      const committed = quality(after, target);
+      expect(committed.overlappingAtoms).toEqual([]);
+      expect(committed.atomBondOverlaps).toEqual([]);
+      expect(committed.collinearBondOverlaps).toEqual([]);
+      expect(committed.hardDefects).toBe(0);
+      expect(warnings).toEqual([]);
+      expect(cleaned.selection).toEqual(document.selection);
+      expect(after.atoms.map(({ x: _x, y: _y, ...atom }) => atom))
+        .toEqual(before.atoms.map(({ x: _x, y: _y, ...atom }) => atom));
+      const bondIdentity = (m: MoleculeObject) => m.bonds.map(b => [b.id, b.fromAtomId, b.toAtomId, b.order]);
+      expect(bondIdentity(after)).toEqual(bondIdentity(before));
+      expect(document).toEqual(snapshot);
+      expect(applyNativeMoleculeEngineRelayout(document, before.id, relayoutMolfile2D, {
+        targetBondLengthPx: target, alternateRelayouts: await createRdkit2DRelayouts(),
+        perceiveStereo: perceiveStereoCentersFromMolfile, perceiveDoubleBondStereo: perceiveDoubleBondStereoFromMolfile
+      })).toEqual(cleaned);
+      const module = await ensureRdkit();
+      expect(inspectStructureInWorker(module, stereoPerceptionMolfile(after)))
+        .toEqual(inspectStructureInWorker(module, stereoPerceptionMolfile(before)));
+    }, 60_000);
   it.each(fixtures)("%s random rigid trials match a fresh renderer label plan", async (_name, smiles) => {
     const parsed = await depictInWorker(smiles, generateSmiles2DMolfile, () => {});
     const document = insertSmilesMolecule(createEmptyDocument(), { x: 400, y: 400 }, parsed.depiction, smiles, SMILES_PASTE_OPTIONS);
