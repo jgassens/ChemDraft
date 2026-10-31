@@ -1,3 +1,7 @@
+import { nextObjectId, structureTemplateLayoutMessage } from "@chemdraft/document-workflow-core";
+import { insertStructureTemplate } from "./structureTemplateInsertion";
+import { structureTemplates } from "@chemdraft/template-library";
+import { templateInsertActions, templateInsertCommandId } from "./templateCommands";
 import { isEditableTarget } from "./editableTarget";
 import { ORPHANED_COMPOSITION_IDLE_MS } from "./imeComposition";
 import { useExportPreviewEnabled } from "./dialogs/useExportPreviewEnabled";
@@ -35,6 +39,8 @@ import {
   Fragment,
   createElement,
   memo,
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -551,6 +557,7 @@ import {
   nativeFreehandStrokeDocument,
   nativePolylinePathDocument,
   insertSmilesMoleculeGridStatus,
+  visibleSkippedItems,
   insertSmilesMolecule,
   SMILES_PASTE_OPTIONS,
   insertSmilesMoleculeGrid,
@@ -807,6 +814,7 @@ import { exportOptions } from "./dialogs/exportOptionsValidation";
 import type { ExportDialogResult } from "./dialogs/dialogProtocol";
 import { exportDialogHeight, exportDialogSizeError } from "./dialogs/exportPresentation";
 import { DialogCoordinator } from "./dialogs/DialogCoordinator";
+import type { StructureTemplatesSnapshot } from "./dialogs/dialogProtocol";
 import { nativeDialogTransport } from "./dialogs/dialogTransport";
 import { PageSizeForm, formatPageSizeFieldValue, pageSizeUnitShortLabel, type PageSizeDraft } from "./dialogs/PageSizeForm";
 import { atomLabelEditorWidth } from "./atomLabelEditorWidth";
@@ -1636,7 +1644,8 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.29.13.15-opus";
+const CURRENT_BUILD_STAMP = "10.30.12.45-opus";
+const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
   perfHook(() => startPerfProbe(CURRENT_BUILD_STAMP));
@@ -2315,6 +2324,9 @@ export function MainWindow({
   documentTabsRef.current = documentTabs;
   const pluginRuntimeRef = useRef<DesktopPluginRuntime | undefined>(undefined);
   const dialogCoordinatorRef = useRef<DialogCoordinator | undefined>(undefined);
+  const [browserTemplates, setBrowserTemplates] = useState<(StructureTemplatesSnapshot & { tabId: string }) | undefined>();
+  const templateCommandTargetRef = useRef<string | undefined>(undefined);
+  const dispatchTemplateRef = useRef<(tabId: string, id: string) => Promise<void>>(async () => {});
   const activeDocumentTabIdRef = useRef("initial");
   const smilesListPasteAbortRef = useRef<AbortController | undefined>(undefined);
   useEffect(() => () => smilesListPasteAbortRef.current?.abort(), []);
@@ -3329,6 +3341,11 @@ export function MainWindow({
       if (!readHistory(tabId)) throw new Error("The assistant's document tab is closed; write refused.");
       if (tabId === activeDocumentTabIdRef.current) {
         assistantHistoryWritingRef.current = true;
+        const previousIds = new Set(readHistory(tabId)!.present.pages.flatMap(page => page.objects.map(object => object.id)));
+        const templateMessages = history.present.pages.flatMap(page => page.objects.flatMap(object =>
+          object.type === "molecule" && !previousIds.has(object.id) && history.present.selection.objectIds.includes(object.id)
+            ? [structureTemplateLayoutMessage(object)].filter((message): message is string => !!message) : []));
+        if (templateMessages.length) setStatus(templateMessages.join("; "));
         try { installDocumentHistory(history); } finally { assistantHistoryWritingRef.current = false; }
         fileStateRef.current = { ...fileStateRef.current, dirty: true };
         setFileState(fileStateRef.current);
@@ -6643,28 +6660,68 @@ export function MainWindow({
   // SMILES → editable 2D structure with stereochemistry. The depiction engines are loaded
   // on demand. Parser/chemistry refusals retain text fallback; worker failures reach status.
   const renderPastedSmiles = useCallback(async (smilesText: string): Promise<{ rendered: boolean; reason?: string; failed?: boolean }> => {
+    setStatus("Drawing the pasted SMILES…");
     try {
       await verifySmilesPasteInput(smilesText);
-      const parsed = await depictSmilesForPaste(smilesText);
+      const layoutDocument = documentRef.current;
+      const point = pastePointForViewport();
+      const parsed = await depictSmilesForPaste(smilesText, {}, {
+        document: layoutDocument, centre: point, reservedObjectIds: new Set<string>()
+      });
       if (quitInteractionRef.current) return { rendered: false, reason: "Paste cancelled while quitting" };
       if (!parsed) return { rendered: false };
-      const { depiction, stereoCount } = parsed;
+      const { depiction } = parsed;
       await verifySmilesPaste(depiction, smilesText);
       if (quitInteractionRef.current) return { rendered: false, reason: "Paste cancelled while quitting" };
-      const nextDocument = insertSmilesMolecule(
-        documentRef.current, pastePointForViewport(), depiction, smilesText, SMILES_PASTE_OPTIONS);
-      commitDocumentChange(nextDocument);
+      const pasteDocument = documentRef.current;
+      if (parsed.molecule && pasteDocument !== layoutDocument) throw new Error("The document changed while preparing SMILES paste; paste again.");
+      // Reuse the template built with this document's defaults, placement and object IDs.
+      const molecule = parsed.molecule;
+      const inserted = molecule ? {
+        document: applyPatches(pasteDocument, [
+          { op: "addObject", pageId: pasteDocument.pages[0]!.id, object: molecule },
+          { op: "setSelection", pageId: pasteDocument.pages[0]!.id, objectIds: [molecule.id] }
+        ]),
+        status: structureTemplateLayoutMessage(molecule)
+      } : { document: insertSmilesMolecule(
+        pasteDocument,
+        point,
+        depiction,
+        smilesText,
+        SMILES_PASTE_OPTIONS
+      ), status: undefined };
+      const nextDocument = inserted.document;
+      let stereoStatus = "";
+      const stereoWarnings: string[] = [];
+      try {
+        // Count the actual drawn structure: the worker's total also includes unassigned centers.
+        const pastedMolecule = nextDocument.pages[0]!.objects.find(object =>
+          object.type === "molecule" && nextDocument.selection.objectIds.includes(object.id));
+        if (!pastedMolecule || pastedMolecule.type !== "molecule") throw new Error("The pasted molecule was not found.");
+        const { perceiveStereoCentersFromMolfile } = await import("@chemdraft/ocl-adapter");
+        const centers = perceiveStereoCentersFromMolfile(pastedMolecule.structure).filter(center => center.isStereoCenter);
+        const stereoCount = centers.length;
+        const unspecifiedStereoCount = centers.filter(center => center.descriptor === "unspecified").length;
+        if (stereoCount > 0) {
+          stereoStatus = `, ${stereoCount}${unspecifiedStereoCount === stereoCount ? " unspecified" : ""} stereocenter${stereoCount === 1 ? "" : "s"}`;
+          if (unspecifiedStereoCount > 0 && unspecifiedStereoCount < stereoCount) stereoStatus += ` (${unspecifiedStereoCount} unspecified)`;
+        }
+      } catch (error) {
+        stereoWarnings.push(`Stereocenter counts unavailable: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      if (quitInteractionRef.current || documentRef.current !== pasteDocument) throw new Error("The document changed while preparing SMILES paste; paste again.");
+      commitDocumentChange(nextDocument, "Paste SMILES");
       resetPasteUiState();
       // A pasted structure can be larger than the current page (e.g. a long peptide). Offer
       // the same page-resize prompt the external-CDXML import path uses, when the pasted
       // content overflows and a larger preset (up to A0) would fit it.
       const fit = recommendImportedPageFit(nextDocument);
       setPageFitPrompt(fit ? { ...fit, displayName: "The pasted structure" } : undefined);
-      const baseStatus = `Pasted SMILES structure — ${depiction.atoms.length} atoms${stereoCount ? `, ${stereoCount} stereocenter${stereoCount === 1 ? "" : "s"}` : ""}`;
+      const baseStatus = `Pasted SMILES structure — ${depiction.atoms.length} atoms${stereoStatus}`;
       const pasteStatus = fit
         ? `${baseStatus}; content exceeds ${pageFitPromptLayoutLabel(fit.currentPageTitle, fit.currentOrientation)}`
         : baseStatus;
-      setStatus([pasteStatus, ...(parsed.warnings ?? [])].join("; "));
+      setStatus([pasteStatus, ...(inserted.status ? [inserted.status] : []), ...(parsed.warnings ?? []), ...stereoWarnings].join("; "));
       return { rendered: true };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
@@ -6687,11 +6744,11 @@ export function MainWindow({
         if (failed) return;
         if (!rendered) {
           applySyncClipboardPayload({ kind: "plain-text", text: detectedPayload.text, sourceType: detectedPayload.sourceType, warnings: [] });
-          setStatus(reason
-            ? reason.startsWith("the structure could not be verified")
+          if (reason) {
+            setStatus(reason.startsWith("the structure could not be verified")
               ? `SMILES pasted as text: ${reason}`
-              : `Clipboard SMILES could not be parsed: ${reason}; pasted as text`
-            : "Clipboard SMILES could not be parsed; pasted as text");
+              : `Clipboard SMILES could not be parsed: ${reason}; pasted as text`);
+          }
         }
       });
       return;
@@ -6722,9 +6779,13 @@ export function MainWindow({
       }
       const listAbort = new AbortController();
       smilesListPasteAbortRef.current = listAbort;
+      const pasteDocument = documentRef.current;
       const pendingList = depictSmilesListForPaste(detectedPayload.text, candidates, (completed, total) => {
         setStatus(`Parsing SMILES list: ${completed} of ${total} tokens`);
-      }, listAbort.signal, verifySmilesPasteInput);
+      }, {
+        signal: listAbort.signal, inspectInput: verifySmilesPasteInput,
+        templatePlacement: { document: pasteDocument, centre: pastePointForViewport() }
+      });
       if (!pendingList) {
         pasteAsText();
         return;
@@ -6737,24 +6798,37 @@ export function MainWindow({
           return;
         }
         const verified = await verifySmilesGridEntries(parsed.entries, undefined, listAbort.signal);
-        if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
-        if (listAbort.signal.aborted) return;
+        const entries = parsed.entries.filter(entry => verified.entries.includes(entry));
+        listAbort.signal.throwIfAborted();
+        if (quitInteractionRef.current || documentRef.current !== pasteDocument) throw new Error("The document changed while preparing SMILES paste; paste again.");
         const result = insertSmilesMoleculeGrid(
-          documentRef.current, pastePointForViewport(), verified.entries);
+          pasteDocument, pastePointForViewport(), entries);
         parsed.failures.push(...verified.failures);
         const engineUnavailable = !result.objectIds.length && parsed.failures.some(failure =>
           failure.error.includes("the RDKit engine did not load:"));
         if (engineUnavailable) pasteAsText();
         if (result.objectIds.length > 0) {
-          commitDocumentChange(result.document);
+          commitDocumentChange(result.document, "Paste SMILES list");
           resetPasteUiState();
           setPageFitPrompt(undefined);
         }
-        const failures = smilesListFailureStatus(parsed.failures);
+        const renderedSkippedItems = new Set(visibleSkippedItems(parsed.skippedItems));
+        const unmatchedSkippedItems = [...parsed.skippedItems];
+        // Failures have no line; match tokens by occurrence order, consuming each skipped item once.
+        const displayedFailures = result.objectIds.length
+          ? parsed.failures.flatMap(failure => {
+            const index = unmatchedSkippedItems.findIndex(item => item.token === failure.input);
+            if (index < 0) return [failure];
+            const [item] = unmatchedSkippedItems.splice(index, 1);
+            if (renderedSkippedItems.has(item!)) return [];
+            return [{ ...failure, error: item!.reason }];
+          })
+          : parsed.failures;
+        const failures = smilesListFailureStatus(displayedFailures);
         const placementStatus = result.objectIds.length
-          ? insertSmilesMoleculeGridStatus(result, parsed.skipped) : "No SMILES structures were pasted";
-        const baseStatus = [placementStatus, ...(parsed.warnings ?? [])].join("; ");
-        const failureCount = parsed.failures.length;
+          ? insertSmilesMoleculeGridStatus(result, parsed.skipped, parsed.skippedItems) : "No SMILES structures were pasted";
+        const baseStatus = [placementStatus, ...new Set(entries.flatMap(entry => entry.molecule ? [structureTemplateLayoutMessage(entry.molecule)!] : [])), ...(parsed.warnings ?? [])].join("; ");
+        const failureCount = displayedFailures.length;
         setStatus(failures
           ? `${baseStatus}; ${failureCount} item${failureCount === 1 ? "" : "s"} failed: ${failures}` +
             (engineUnavailable ? "; pasted as text" : "")
@@ -7009,7 +7083,9 @@ export function MainWindow({
       applySelectionClipboardPayload(selectionClipboardPayloadRef.current);
       return;
     }
-    setStatus(readFailure !== undefined ? `Paste failed: ${readFailure}` : "Nothing to paste");
+    setStatus(readFailure !== undefined
+      ? `Couldn't read the clipboard: ${readFailure}`
+      : "Couldn't paste: the clipboard contains no supported drawing or text content.");
   }, [applyDetectedClipboardPayload, applySelectionClipboardPayload]);
 
   const updateTextObjectContent = useCallback((objectId: string, text: string) => {
@@ -8585,6 +8661,7 @@ export function MainWindow({
     if (index < 0) return;
     pluginRuntimeRef.current?.closeProposalDocumentTab(id, tabs[index]!.title);
     void dialogCoordinatorRef.current?.closeTab(id);
+    setBrowserTemplates(current => current?.tabId === id ? undefined : current);
     exportGrantsRef.current.delete(id);
     if (browserExportTabRef.current === id) { browserExportTabRef.current = undefined; browserExportSessionRef.current = undefined; setExportDialog(undefined); }
     // Closing the last document keeps the window open with a fresh document identity and history.
@@ -8681,6 +8758,7 @@ export function MainWindow({
     // A pristine tab keeps its tab ID but now represents a different document. Settle its drafts
     // synchronously before replacing the history; late actions must never target the opened file.
     void dialogCoordinatorRef.current?.closeTab(id);
+    setBrowserTemplates(current => current?.tabId === id ? undefined : current);
     exportGrantsRef.current.delete(id);
     if (browserExportTabRef.current === id) { browserExportTabRef.current = undefined; browserExportSessionRef.current = undefined; setExportDialog(undefined); }
     const tabs = documentTabsRef.current.map((tab) => tab.id === id ? { ...tab, title: displayName } : tab);
@@ -8785,6 +8863,64 @@ export function MainWindow({
     setCustomPageSizeDialog({ unit, width: formatPageSizeFieldValue(width), height: formatPageSizeFieldValue(height) });
   }, []);
 
+  const openTemplatesDialog = useCallback(() => {
+    const tabId = activeDocumentTabIdRef.current;
+    const data = { title: (documentTabsRef.current.find(tab => tab.id === tabId)?.title ?? "Untitled").slice(0, 256),
+      templateIds: structureTemplates.map(template => template.id) };
+    if (isDesktopRuntime()) {
+      const coordinator = dialogCoordinatorRef.current;
+      if (!coordinator) { setStatus("Templates could not open: the dialog host is unavailable."); return; }
+      void coordinator.openStructureTemplates(tabId, data).catch(error => setStatus(`Templates could not open: ${String(error)}`));
+    } else {
+      setBrowserTemplates(current => current?.tabId === tabId ? current : { ...data, tabId });
+      globalThis.document.querySelector<HTMLInputElement>(".cd-template-browser input")?.focus();
+    }
+  }, []);
+
+  const insertTemplateToTab = useCallback((tabId: string, id: string) => {
+    if (quitInteractionRef.current) throw new Error("Finish quitting before inserting a template.");
+    if (keptDrawingsPromptRef.current || closeTabPromptRef.current === tabId) throw new Error("Finish the open drawing question before inserting a template.");
+    if (!documentTabsRef.current.some(tab => tab.id === tabId)) throw new Error("The originating drawing was closed.");
+    const active = tabId === activeDocumentTabIdRef.current;
+    if (active && isSnapshotSessionActive()) throw new Error("Finish the current drawing gesture, then insert the template again.");
+    if (active) {
+      const labelEdit = activeAtomLabelEditRef.current;
+      if (labelEdit) {
+        tabEditFinishersRef.current.finalizeAtomLabelDraft(labelEdit);
+        finalizedAtomLabelEditRef.current = labelEdit;
+        activeAtomLabelEditRef.current = undefined;
+        setActiveAtomLabelEdit(undefined);
+      }
+      const textEdit = activeTextEditObjectIdRef.current;
+      if (textEdit) {
+        tabEditFinishersRef.current.finishActiveNativeTextEdit(textEdit);
+        activeTextEditObjectIdRef.current = undefined;
+      }
+    }
+    const snapshot = documentTabSnapshotsRef.current.get(tabId);
+    const source = active ? documentHistoryRef.current.present : snapshot?.history.present;
+    if (!source) throw new Error("The originating drawing is unavailable.");
+    const page = source.pages[0]!;
+    const visible = assistantHistoryPort.getViewportRect?.(tabId);
+    const centre = visible ? { x: visible.x + visible.width / 2, y: visible.y + visible.height / 2 }
+      : { x: page.width / 2, y: page.height / 2 };
+    const result = insertStructureTemplate(source, id, centre);
+    if (active) {
+      commitDocumentChange(result.document, result.label);
+      setSelectedNativeMoleculePart(undefined);
+      setStatus(result.label);
+    } else if (snapshot) {
+      const present = prepareDocumentCommit(result.document, result.label);
+      for (const listener of assistantUserEditListenersRef.current) listener(tabId);
+      documentTabSnapshotsRef.current.set(tabId, { ...snapshot,
+        history: { past: boundedHistoryPast([...snapshot.history.past, source], present), present, future: [] },
+        parts: [], file: { ...snapshot.file, dirty: true }, status: result.label });
+      nonPristineTabsRef.current.add(tabId);
+      setDocumentTabs([...documentTabsRef.current]);
+    }
+  // isSnapshotSessionActive is declared later and reads only stable refs.
+  }, [assistantHistoryPort, commitDocumentChange, prepareDocumentCommit]);
+
   const applyCustomPageSize = useCallback((size: { width: number; height: number; unit: PageSizeUnit }) => {
     commitDocumentChange((current) => setDocumentCustomPageSize(current, size), "Set Custom Page Size");
     setCustomPageSizeDialog(undefined);
@@ -8859,6 +8995,7 @@ export function MainWindow({
   useEffect(() => {
     if (!isDesktopRuntime()) return;
     const coordinator = new DialogCoordinator(nativeDialogTransport, {
+      insertTemplate: (tabId, id) => dispatchTemplateRef.current(tabId, id),
       applyPageSize: (tabId, size) => applyPageSizeToTabRef.current(tabId, size),
       previewArrangementSpacing: (tabId, percent) => previewSpacingRef.current(tabId, percent),
       applyArrangementSpacing: (tabId, percent) => applySpacingRef.current(tabId, percent),
@@ -9971,6 +10108,12 @@ export function MainWindow({
       });
     };
 
+    templateInsertActions.forEach(action => register(action, () => {
+      const tabId = templateCommandTargetRef.current ?? activeDocumentTabIdRef.current;
+      templateCommandTargetRef.current = undefined;
+      insertTemplateToTab(tabId, action.id.slice("template.insert.".length));
+    }));
+
     createDoubleBondPositionActions(currentMoleculeInspector.structure.doubleBondTargetCount).forEach((action) => {
       register(action, () => { applyMoleculeInspectorCommand(action.id); });
     });
@@ -10102,6 +10245,7 @@ export function MainWindow({
         if (action.id === "export.open") {
           openExportDialog();
         }
+        if (action.id === "template.insertDialog") openTemplatesDialog();
         if (action.id === "analyze.molecularProperties") {
           // Desktop analysis never occupies a toolbar or the drawing viewport. Open the shared
           // analysis-window host before starting the worker so progress/empty state is visible.
@@ -10690,6 +10834,8 @@ export function MainWindow({
     compoundLayoutsEnabled,
     nativePalette,
     openExportDialog,
+    openTemplatesDialog,
+    insertTemplateToTab,
     openInteractive3dWorkspace,
     openDocumentFromNativePicker,
     openCustomPageSizeDialog,
@@ -10726,6 +10872,12 @@ export function MainWindow({
       syncCoreCommands: createCoreCommandRegistrar(commandRegistry, () => coreCommandBindingsRef.current)
     };
   }, []);
+
+  dispatchTemplateRef.current = async (tabId, id) => {
+    templateCommandTargetRef.current = tabId;
+    try { await registry.invoke(templateInsertCommandId(id)); }
+    finally { templateCommandTargetRef.current = undefined; }
+  };
 
   useEffect(() => perfHook(() => onPerfStarted(() => { perfHook(() => perfProbe?.instrumentRegistry(registry)); })), [registry]);
 
@@ -10842,6 +10994,7 @@ export function MainWindow({
         if (documentIdentityRef.current !== documentIdentity) {
           throw new Error("The document changed while the plugin was running; nothing was inserted.");
         }
+        const previousIds = new Set(documentRef.current.pages.flatMap(page => page.objects.map(object => object.id)));
         const applied = applyPluginDocumentPatch(documentRef.current, patch, {
           insertionTarget: { pageId: documentRef.current.pages[0]!.id,
             bounds: assistantHistoryPort.getViewportRect?.(activeDocumentTabIdRef.current) }
@@ -10859,7 +11012,10 @@ export function MainWindow({
           : insertedObject?.type === "text"
             ? patch.reason === "Insert Name" ? "name" : "text"
             : undefined;
-        setStatus(
+        const templateMessages = applied.document.pages.flatMap(page => page.objects.flatMap(object =>
+          object.type === "molecule" && !previousIds.has(object.id) && applied.receipt.objectIds.includes(object.id)
+            ? [structureTemplateLayoutMessage(object)].filter((message): message is string => !!message) : []));
+        setStatus(templateMessages.length ? templateMessages.join("; ") :
           applied.receipt.objectIds.length > 0 && insertedDescription
             ? `${plugin.name}: inserted ${insertedDescription}`
             : `${plugin.name}: applied ${command.title}`
@@ -20817,6 +20973,10 @@ export function MainWindow({
           />
         ) : null}
       </section>
+      {!isDesktopRuntime() && browserTemplates ? <div className="cd-template-browser"><Suspense fallback={<p role="status">Opening Templates…</p>}>
+        <StructureTemplatePicker {...browserTemplates} onClose={() => setBrowserTemplates(undefined)}
+          onInsert={id => { void dispatchTemplateRef.current(browserTemplates.tabId, id).catch(error => setStatus(String(error))); }} />
+      </Suspense></div> : null}
       {!isDesktopRuntime() && spacingSource ? <ArrangementSpacingDialog document={spacingSource} onCancel={() => setSpacingSource(undefined)}
         onSave={factor => {
           if (documentRef.current !== spacingSource) {

@@ -580,6 +580,7 @@ const TOOLSET_LAYOUT_STATE_FILENAME: &str = "toolbar-state.json";
 const TOOLSET_CUSTOMIZATION_STATE_FILENAME: &str = "toolbar-layout-state.json";
 const DOCUMENT_SESSION_FILENAME: &str = "document-session.json";
 const MENU_COMMAND_IDS: &[&str] = &[
+    "template.insertDialog",
     "edit.undo",
     "edit.redo",
     "edit.selectAll",
@@ -6361,8 +6362,23 @@ fn reinstall_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), Strin
         .map_err(|error| error.to_string())
 }
 
-/// Build the Analyze submenu: the static "Validate Selected Structure" item plus any plugin items
-/// (synced from the webview), separated. Plugin `id`s are `plugin.*` command ids routed by prefix.
+/// Shared Insert menu for the macOS application menu and Windows document-window menu.
+fn build_insert_submenu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Submenu<R>> {
+    Submenu::with_items(
+        app,
+        "Insert",
+        true,
+        &[&MenuItem::with_id(
+            app,
+            "template.insertDialog",
+            "Templates…",
+            true,
+            None::<&str>,
+        )?],
+    )
+}
+
+/// Build the Analyze submenu: core entries followed by plugin command IDs.
 fn build_analyze_submenu<R: Runtime>(
     app: &tauri::AppHandle<R>,
     plugin_items: &[PluginMenuItemInput],
@@ -6447,6 +6463,7 @@ fn create_app_menu_for_toolsets<R: Runtime>(
     let native_app_menu = create_native_app_menu(app)?;
     let page_setup_menu = create_page_setup_menu(app)?;
     let view_menu = create_view_menu(app, entries, view_state)?;
+    let insert_menu = build_insert_submenu(app)?;
     let structure_menu = Submenu::with_items(
         app,
         "Structure",
@@ -6677,6 +6694,7 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                     )?,
                 ],
             )?,
+            &insert_menu,
             &view_menu,
             &structure_menu,
             &analyze_menu,
@@ -8090,6 +8108,33 @@ fn find_menu_item_by_id<R: Runtime>(
 mod tests {
 
     use super::*;
+
+    #[test]
+    fn insert_menu_is_shared_by_both_platforms_and_follows_edit() {
+        assert!(is_routed_menu_command("template.insertDialog"));
+        assert!(!is_routed_menu_command("template.insert.beta-cyclodextrin"));
+        let source = include_str!("lib.rs");
+        let builder = source
+            .split("fn create_app_menu_for_toolsets<R: Runtime>")
+            .nth(1)
+            .unwrap()
+            .split("/// Close Window")
+            .next()
+            .unwrap();
+        assert!(builder.contains("let insert_menu = build_insert_submenu(app)?;"));
+        assert!(builder.find("\"Edit\"").unwrap() < builder.find("&insert_menu,").unwrap());
+        assert!(builder.find("&insert_menu,").unwrap() < builder.find("&view_menu,").unwrap());
+        let helper = source
+            .split("fn build_insert_submenu<R: Runtime>")
+            .nth(1)
+            .unwrap()
+            .split("fn build_analyze_submenu")
+            .next()
+            .unwrap();
+        assert!(helper.contains("\"Insert\""));
+        assert!(helper.contains("\"Templates…\""));
+        assert!(!helper.contains("#[cfg"));
+    }
 
     #[test]
     fn main_window_starts_hidden_so_setup_can_place_it_before_showing() {

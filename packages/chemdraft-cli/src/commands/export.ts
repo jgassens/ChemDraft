@@ -345,7 +345,7 @@ async function runPerJobExport(
         out,
         format,
         bytes,
-        warnings: [...built.warnings, ...exported.warnings]
+        layout: built.layout, warnings: [...built.warnings, ...exported.warnings]
       });
       writeProgress(io, `Wrote ${out}`);
     } catch (error) {
@@ -359,6 +359,7 @@ async function runPerJobExport(
 }
 
 interface CombinedRecord {
+  layout?: string;
   job: ExportJob;
   content: string;
   warnings: string[];
@@ -395,7 +396,7 @@ async function combinedRecord(
     .map((warning) => warning.message));
 
   if (format === "smi") {
-    return { job, content: `${smiles}\t${job.name}\n`, warnings };
+    return { job, content: `${smiles}\t${job.name}\n`, warnings, layout: built.layout };
   }
 
   const title = job.name;
@@ -405,7 +406,7 @@ async function combinedRecord(
     `> <Index>\n${index + 1}\n\n` +
     `> <Name>\n${job.name}\n\n` +
     "$$$$\n";
-  return { job, content, warnings };
+  return { job, content, warnings, layout: built.layout };
 }
 
 async function runCombinedExport(
@@ -470,7 +471,7 @@ async function runCombinedExport(
       out,
       format,
       bytes,
-      warnings: record.warnings
+      layout: record.layout, warnings: record.warnings
     });
   }
   for (const failure of failures) {

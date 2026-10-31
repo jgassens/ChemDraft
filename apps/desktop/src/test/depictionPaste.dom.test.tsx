@@ -6,6 +6,8 @@ import { MainWindow } from "../MainWindow";
 import { createPhase4Document } from "../documentWorkflow";
 import { depictSmilesOffThread } from "../depiction2d/client";
 
+// These cases exercise generic depiction; template identity/layout has its own real-engine tests.
+vi.mock("../structureTemplateInsertion", () => ({ templateMoleculeForSmiles: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("../depiction2d/client", () => ({ depictSmilesOffThread: vi.fn() }));
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let container: HTMLDivElement;
