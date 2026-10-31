@@ -1,14 +1,15 @@
 import type { ChemDraftDocument, DocumentObject } from "@chemdraft/chem-core";
+import type { DocumentSessionEnvelope } from "./documentSession";
 
-/** Opens and closes the list of warnings the open document was opened with. */
+/** Opens and closes the current document's file warning list. */
 export const TOGGLE_OPEN_WARNINGS_COMMAND_ID = "view.toggleOpenWarnings";
 
-export const NO_OPEN_WARNINGS_REASON = "This document opened without warnings";
+export const NO_OPEN_WARNINGS_REASON = "This document has no open or save warnings";
 
 /** The list's element id, for the status-line button's aria-controls. */
 export const OPEN_WARNINGS_LIST_ID = "open-warnings-list";
 
-/** One warning from opening a file, as the importer reported it. */
+/** One warning from opening or saving a file, as the converter reported it. */
 export interface OpenWarning {
   code: string;
   message: string;
@@ -19,14 +20,29 @@ export interface OpenWarning {
 }
 
 /**
- * What a file open reported, kept so the status line can offer the list after its own text has
- * moved on. It belongs to the document that open produced, so whatever replaces that document
+ * What one file open or save reported, kept separately so the status line can offer both after its
+ * own text has moved on. It belongs to that document, so whatever replaces that document
  * (New, another open) drops it; document ids cannot tell them apart, as most documents are doc_001.
  */
 export interface OpenWarningsReport {
+  /** Absent on older reports, which always describe a file open. */
+  operation?: "open" | "save";
   displayName: string;
   sourceLabel: string;
   warnings: readonly OpenWarning[];
+}
+
+/** Independent optional session metadata: a malformed report must not discard its sibling or tab. */
+export function restoreSessionWarningReports(session: Pick<DocumentSessionEnvelope, "openWarnings" | "saveWarnings">): {
+  warnings?: OpenWarningsReport;
+  saveWarnings?: OpenWarningsReport;
+} {
+  const open = session.openWarnings;
+  const save = session.saveWarnings;
+  return {
+    warnings: open?.operation === "save" ? undefined : open,
+    saveWarnings: save ?? (open?.operation === "save" ? open : undefined)
+  };
 }
 
 /** What a warning's Show button selects: an object, and the atoms or bonds of it the warning names. */
@@ -51,12 +67,26 @@ export function warningCountLabel(count: number): string {
 }
 
 export function openWarningsHeading(report: OpenWarningsReport): string {
+  if (report.operation === "save") {
+    return `Saved ${report.displayName}: ${warningCountLabel(report.warnings.length)}`;
+  }
   return `Opened ${report.displayName} as ${report.sourceLabel}: ${warningCountLabel(report.warnings.length)}`;
 }
 
 /** The report, when it has warnings to show. */
 export function activeOpenWarnings(report: OpenWarningsReport | undefined): OpenWarningsReport | undefined {
   return report && report.warnings.length > 0 ? report : undefined;
+}
+
+/** Independent reports in display order, without changing either converter's warnings. */
+export function fileWarningReports(open: OpenWarningsReport | undefined, save: OpenWarningsReport | undefined): OpenWarningsReport[] {
+  return [open, save].filter((report): report is OpenWarningsReport => activeOpenWarnings(report) !== undefined);
+}
+
+export function fileWarningsTooltip(reports: readonly OpenWarningsReport[]): string | undefined {
+  return reports.length > 0
+    ? reports.map((report) => [openWarningsHeading(report), ...report.warnings.map((warning) => warning.message)].join("\n")).join("\n\n")
+    : undefined;
 }
 
 export function describeOpenWarningTarget(document: ChemDraftDocument, warning: OpenWarning): OpenWarningTarget {

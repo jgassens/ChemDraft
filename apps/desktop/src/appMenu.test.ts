@@ -60,7 +60,11 @@ describe("app menu model", () => {
       const model = buildAppMenuModel(EMPTY_CONTEXT);
       const index = model.findIndex(section => section.id === "edit");
       expect(model.slice(index, index + 3).map(section => section.id)).toEqual(["edit", "insert", "view"]);
-      expect(model[index + 1]!.items).toEqual([expect.objectContaining({ commandId: "template.insertDialog", label: "Templates…" })]);
+      // Insert holds Table… (tables) and Templates… (structure templates) since both landed.
+      expect(model[index + 1]!.items).toEqual([
+        expect.objectContaining({ commandId: "table.insertDialog", label: "Table…" }),
+        expect.objectContaining({ commandId: "template.insertDialog", label: "Templates…" })
+      ]);
     } finally { vi.unstubAllGlobals(); }
   });
   it("routes synced plugin items by section in the shared native builder for both platforms", () => {
@@ -197,6 +201,19 @@ describe("app menu model", () => {
       "Plugins",
       "Help"
     ]);
+  });
+
+  it("exposes Insert after Edit and before View with the routed Table command", () => {
+    const model = buildAppMenuModel(EMPTY_CONTEXT);
+    const index = model.findIndex((section) => section.id === "insert");
+    expect(model[index - 1]?.id).toBe("edit");
+    expect(model[index + 1]?.id).toBe("view");
+    // Templates… (structure templates) shares the Insert menu.
+    expect(model[index]?.items).toEqual([
+      expect.objectContaining({ kind: "command", commandId: "table.insertDialog", label: "Table…", enabled: true }),
+      expect.objectContaining({ kind: "command", commandId: "template.insertDialog", label: "Templates…" })
+    ]);
+    expect(nativeRoutedCommandIds(model)).toContain("table.insertDialog");
   });
 
   it("exposes the core plugin manager in its own native-routed section", () => {

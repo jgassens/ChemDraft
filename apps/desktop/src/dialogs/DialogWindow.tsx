@@ -11,6 +11,7 @@ import type { ExportDialogState, ExportOptions, ExportPreviewResult, ExportFrame
 import { exportOptions } from "./exportOptionsValidation";
 import { EngineInstallForm } from "./EngineInstallForm";
 import { ToolInstallForm } from "./ToolInstallForm";
+import { InsertTableForm } from "./InsertTableForm";
 const ExportForm = lazy(() => import("./ExportForm").then(module => ({ default: module.ExportForm })));
 const StructureTemplatePicker = lazy(() => import("./StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 
@@ -161,7 +162,7 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
     }, percent === 100 ? 0 : 120);
     return () => { clearTimeout(debounce); clearTimeout(previewTimer.current); };
   }, [hostId, snapshot, percent]);
-  useEffect(() => { if (snapshot?.dialogKind === "pageSize" || snapshot?.dialogKind === "arrangementSpacing" || snapshot?.dialogKind === "engineInstall" || snapshot?.dialogKind === "toolInstall") reportReady(); }, [snapshot, reportReady]);
+  useEffect(() => { if (snapshot?.dialogKind === "insertTable" || snapshot?.dialogKind === "pageSize" || snapshot?.dialogKind === "arrangementSpacing" || snapshot?.dialogKind === "engineInstall" || snapshot?.dialogKind === "toolInstall") reportReady(); }, [snapshot, reportReady]);
   const sendAction = (data: Extract<DialogMessage, { type: "action" }>["data"]) => {
     if (!snapshot) return;
     clearPreview();
@@ -222,6 +223,9 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
     onCancel={() => sendAction({ action: "cancel" })}
     onChooseDestination={() => sendAction({ action: "chooseDestination", options: exportOptions(exportDraft) })}
     onSubmit={() => sendAction({ action: "export", options: exportOptions(exportDraft) })} /></Suspense>;
+  if (snapshot?.dialogKind === "insertTable") return <InsertTableForm key={snapshot.sessionId} title={snapshot.data.title} initial={snapshot.data}
+    busy={busy} error={error} onCancel={() => sendAction({ action: "cancel" })}
+    onSubmit={options => sendAction({ action: "apply", ...options })} />;
   if (snapshot?.dialogKind === "engineInstall") return <EngineInstallForm snapshot={snapshot.data} onAction={action => sendAction({ action })} busy={busy} error={error} />;
   if (snapshot?.dialogKind === "toolInstall") return <ToolInstallForm snapshot={snapshot.data} onAction={action => sendAction({ action })} busy={busy} error={error} />;
   if (!snapshot || snapshot.dialogKind !== "pageSize" || !draft) return <p role="status">{error ?? "Opening dialog…"}</p>;

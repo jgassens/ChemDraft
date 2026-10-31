@@ -71,7 +71,7 @@ export const PLUGIN_WORKER_CAPABILITY_METHODS = {
   selection: ["getSelection"],
   analysis: ["write", "list", "getLatest"],
   storage: ["get", "set", "delete", "listKeys"],
-  documents: ["getActiveDocument", "proposePatch", "applyPatch"],
+  documents: ["getActiveDocument", "proposePatch", "applyPatch", "insertTable"],
   panels: ["showReport"],
   overlays: ["setStatus", "setTranscript", "setContent", "open"],
   chemistry: ["isotopeEnvelope", "nameToStructure", "structureFromSmiles", "structureToName", "embed3d", "minimize3d", "flatten3d"],
@@ -235,6 +235,13 @@ function parseSemver(value: string): Semver | undefined {
 
 function compareSemver(a: Semver, b: Semver): number {
   return a.major - b.major || a.minor - b.minor || a.patch - b.patch;
+}
+
+/** Whether the declared API range starts at or after the introduction of documents.insertTable.
+ * Exact, caret and tilde ranges have the same lower bound as in the compatibility check below. */
+export function supportsPluginTableInsertion(declaredRange: string): boolean {
+  const minimum = parseSemver(declaredRange.trim().replace(/^[~^]/, ""));
+  return minimum !== undefined && compareSemver(minimum, { major: 0, minor: 1, patch: 18 }) >= 0;
 }
 
 /**

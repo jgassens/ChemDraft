@@ -3,12 +3,16 @@ import type { ChemDraftDocument, MoleculeObject } from "@chemdraft/chem-core";
 import { openChemDraftPayload } from "@chemdraft/cdx-compat";
 import { describe, expect, it } from "vitest";
 import { allShellCommands, createOpenWarningsAction } from "./commands";
+import { buildDocumentSessionEnvelope, parseDocumentSessionEnvelope } from "./documentSession";
 import { createPhase4Document } from "./documentWorkflow";
 import {
   activeOpenWarnings,
   describeOpenWarningTarget,
+  fileWarningReports,
+  fileWarningsTooltip,
   NO_OPEN_WARNINGS_REASON,
   openWarningsHeading,
+  restoreSessionWarningReports as restoreParsedSessionWarningReports,
   TOGGLE_OPEN_WARNINGS_COMMAND_ID,
   warningCountLabel,
   type OpenWarning
@@ -37,7 +41,43 @@ function replaceMolecule(document: ChemDraftDocument, molecule: MoleculeObject):
   return { ...document, pages: document.pages.map((page) => ({ ...page, objects: page.objects.map((object) => (object.id === molecule.id ? molecule : object)) })) };
 }
 
+function restoreSessionWarningReports(metadata: unknown) {
+  const envelope = buildDocumentSessionEnvelope(
+    { contents: "document", payloadHash: "hash", filename: "drawing.chemdraft" },
+    { dirty: false }, "drawing.chemdraft", false
+  );
+  return restoreParsedSessionWarningReports(parseDocumentSessionEnvelope({ ...envelope, ...metadata as object }, true)!);
+}
+
 describe("open warnings model", () => {
+  const sessionOpen = {
+    displayName: "import.cdxml", sourceLabel: "external CDXML subset",
+    warnings: [{ code: "import", message: "Imported a subset.", sourceObjectId: "m1", atomIds: ["a1"], bondIds: ["b1"] }]
+  };
+  const sessionSave = { ...sessionOpen, operation: "save" as const, displayName: "drawing.chemdraft" };
+
+  it("restores session reports independently and routes a legacy save report to its own slot", () => {
+    expect(restoreSessionWarningReports({ openWarnings: sessionOpen, saveWarnings: sessionSave }))
+      .toEqual({ warnings: sessionOpen, saveWarnings: sessionSave });
+    expect(restoreSessionWarningReports({ openWarnings: sessionSave }))
+      .toEqual({ warnings: undefined, saveWarnings: sessionSave });
+    expect(restoreSessionWarningReports({ openWarnings: { ...sessionOpen, operation: "legacy-other" } }))
+      .toEqual({ warnings: sessionOpen, saveWarnings: undefined });
+    expect(restoreSessionWarningReports(undefined)).toEqual({ warnings: undefined, saveWarnings: undefined });
+  });
+
+  it.each([
+    null, [], { ...sessionOpen, displayName: 42 }, { ...sessionOpen, sourceLabel: null },
+    { ...sessionOpen, warnings: "bad" }, { ...sessionOpen, warnings: [null] },
+    ...[{ code: 42 }, { message: null }, { sourceObjectId: 42 }, { atomIds: [42] }, { bondIds: "b1" }]
+      .map(invalid => ({ ...sessionOpen, warnings: [{ code: "x", message: "bad", ...invalid }] }))
+  ])("drops only the malformed session warning report (%j)", malformed => {
+    expect(restoreSessionWarningReports({ openWarnings: malformed, saveWarnings: sessionSave }))
+      .toEqual({ warnings: undefined, saveWarnings: sessionSave });
+    expect(restoreSessionWarningReports({ openWarnings: sessionOpen, saveWarnings: malformed }))
+      .toEqual({ warnings: sessionOpen, saveWarnings: undefined });
+  });
+
   it("counts warnings in words, never \"1 warnings\"", () => {
     expect(warningCountLabel(1)).toBe("1 warning");
     expect(warningCountLabel(2)).toBe("2 warnings");
@@ -53,6 +93,43 @@ describe("open warnings model", () => {
     expect(activeOpenWarnings(report)).toBeUndefined();
     const warned = { ...report, warnings: [{ code: "x", message: "y" }] };
     expect(activeOpenWarnings(warned)).toBe(warned);
+  });
+
+  it("labels save reports distinctly while keeping older open reports compatible", () => {
+    const report = {
+      operation: "save" as const,
+      displayName: "table.chemdraft",
+      sourceLabel: "ChemDraft CDXML envelope",
+      warnings: [{ code: "cdxml.table_approximated", message: "Table written as text and lines." }]
+    };
+    expect(activeOpenWarnings(report)).toBe(report);
+    expect(openWarningsHeading(report)).toBe("Saved table.chemdraft: 1 warning");
+    expect(openWarningsHeading({ ...report, warnings: [...report.warnings, ...report.warnings] }))
+      .toBe("Saved table.chemdraft: 2 warnings");
+    expect(activeOpenWarnings({ ...report, warnings: [] })).toBeUndefined();
+  });
+
+  it("combines independent reports in open/save order and labels their tooltip messages", () => {
+    const open = Object.freeze({
+      displayName: "import.cdxml", sourceLabel: "external CDXML subset",
+      warnings: Object.freeze([{ code: "open", message: "Imported a supported subset." }])
+    });
+    const save = Object.freeze({
+      operation: "save" as const, displayName: "table.chemdraft", sourceLabel: "ChemDraft CDXML envelope",
+      warnings: Object.freeze([{ code: "save", message: "Table written as text and lines." }])
+    });
+    const reports = fileWarningReports(open, save);
+    expect(reports).toEqual([open, save]);
+    expect(reports[0]).toBe(open);
+    expect(reports[1]).toBe(save);
+    expect(fileWarningsTooltip(reports)).toBe(
+      "Opened import.cdxml as external CDXML subset: 1 warning\nImported a supported subset.\n\n" +
+      "Saved table.chemdraft: 1 warning\nTable written as text and lines."
+    );
+    expect(fileWarningReports(open, undefined)).toEqual([open]);
+    expect(fileWarningReports(open, { ...save, warnings: [] })).toEqual([open]);
+    expect(fileWarningReports(undefined, save)).toEqual([save]);
+    expect(fileWarningsTooltip(fileWarningReports(undefined, undefined))).toBeUndefined();
   });
 
   it("names the atom an unknown Element became, and selects it", () => {
@@ -124,7 +201,7 @@ describe("open warnings model", () => {
     });
   });
 
-  it("is a view command, disabled with a reason when the document opened without warnings", () => {
+  it("is a view command, disabled with a reason when the document has no warnings", () => {
     expect(createOpenWarningsAction()).toMatchObject({
       id: TOGGLE_OPEN_WARNINGS_COMMAND_ID,
       title: "Show Open Warnings",

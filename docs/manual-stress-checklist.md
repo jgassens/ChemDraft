@@ -782,6 +782,26 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
 - In the browser preview, check the same form/validation in the documented in-page fallback.
   Force native creation failure on desktop: show an error and never display the browser overlay.
 
+## Tables (macOS and Windows)
+
+- Insert a table from `Insert > Table…` and from the dialog. Type in cells with Tab, Shift+Tab,
+  arrows, Enter, Shift+Enter and Escape; verify focus and the caret behave at cell edges. Enter
+  Japanese or another IME composition in a cell and confirm it commits as text.
+- Enter `CH2Cl2` and `Ti(OiPr)4`; format formulas and verify subscripts. Undo once: only the
+  subscript formatting disappears. Add and delete rows and columns; drag a column boundary and
+  double-click it to auto-fit.
+- In the Table inspector, choose three-line and grid styles and change each rule width. Save and
+  reopen the drawing. Export SVG and PDF and compare table geometry, text, rules and alignment with
+  the canvas.
+- Copy a table into Word using default paste, Paste Special HTML and Paste Special RTF; into Excel
+  and confirm values land in cells and numbers remain numbers; and into PowerPoint, Google Docs and
+  Pages. Check borders, alignment, subscripts, widths and font in each destination.
+- Copy a table from Excel, Word and Google Docs into ChemDraft. Check cell contents, alignment,
+  subscripts and widths. Select a table together with another drawing object and copy: it must copy
+  as a ChemDraft drawing selection.
+- While editing a cell on Windows, press F5 and Ctrl+R: neither may reload the webview or discard
+  the document.
+
 ## Structure template picker (macOS and Windows)
 
 - Open Insert > Templates…; confirm Insert follows Edit and precedes View. Add Templates… from

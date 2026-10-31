@@ -8,10 +8,11 @@ import { Chemistry3dQueue } from "./chemistry3dQueue";
 import { chemistry3dTimeoutMs } from "./chemistry3dDeadline";
 import { chemistry3dResultError } from "./chemistry3dResult";
 export { chemistry3dTimeoutMs, CHEMISTRY3D_STARTUP_TIMEOUT_MS, pauseChemistry3dDeadlineForStartup } from "./chemistry3dDeadline";
-import { AssistantCapabilityPermissions, type PluginAssistantAPI } from "@chemdraft/plugin-api";
+import { AssistantCapabilityPermissions, supportsPluginTableInsertion, type PluginAssistantAPI } from "@chemdraft/plugin-api";
 import type { ChemDraftDocument } from "@chemdraft/plugin-api";
 import type {
   AppliedPatchReceipt,
+  PluginTableSpec,
   PluginAnalysisAPI,
   PluginCanvasOverlayContribution,
   PluginOverlaysAPI,
@@ -402,6 +403,9 @@ export interface PluginHostOptions {
   applyDocumentPatch?: (
     request: PluginPatchApplicationRequest
   ) => AppliedPatchReceipt | Promise<AppliedPatchReceipt>;
+  /** Builds and places a native table without writing. The result uses the ordinary direct-patch
+   * permission, invocation, document identity, scope, receipt, and history checks. */
+  buildTablePatch?: (spec: PluginTableSpec, document: ChemDraftDocument, selection: readonly string[]) => ProposedDocumentPatch;
   /**
    * Computes an isotope envelope on a plugin's behalf. Absent hosts expose no chemistry API — which is
    * why the capability is optional on the context rather than assumed. This package stays engine-free;
@@ -441,6 +445,7 @@ export class PluginHost {
   private readonly requestImage?: PluginHostOptions["requestImage"];
   private readonly recognizeStructure?: PluginHostOptions["recognizeStructure"];
   private readonly applyDocumentPatch?: PluginHostOptions["applyDocumentPatch"];
+  private readonly buildTablePatch?: PluginHostOptions["buildTablePatch"];
   private readonly computeIsotopeEnvelope?: PluginHostOptions["computeIsotopeEnvelope"];
   private readonly convertNameToStructure?: PluginHostOptions["convertNameToStructure"];
   private readonly buildStructureFromSmiles?: PluginHostOptions["buildStructureFromSmiles"];
@@ -486,6 +491,7 @@ export class PluginHost {
     this.requestImage = options.requestImage;
     this.recognizeStructure = options.recognizeStructure;
     this.applyDocumentPatch = options.applyDocumentPatch;
+    this.buildTablePatch = options.buildTablePatch;
     this.computeIsotopeEnvelope = options.computeIsotopeEnvelope;
     this.convertNameToStructure = options.convertNameToStructure;
     this.buildStructureFromSmiles = options.buildStructureFromSmiles;
@@ -939,7 +945,10 @@ export class PluginHost {
         ...(this.hasPermission(pluginId, "document.write")
           ? {
               applyPatch: async (patch: ProposedDocumentPatch) =>
-                this.applyPatchForPlugin(pluginId, invocationToken, patch)
+                this.applyPatchForPlugin(pluginId, invocationToken, patch),
+              ...(supportsPluginTableInsertion(plugin.manifest.apiVersion)
+                ? { insertTable: async (spec: PluginTableSpec) => this.insertTableForPlugin(pluginId, invocationToken, spec) }
+                : {})
             }
           : {})
       },
@@ -1030,12 +1039,30 @@ export class PluginHost {
     return { snapshot, hostHeld };
   }
 
+  /** Host-only entry point; plugins receive a closure bound to their own invocation. */
+  async insertTableForPlugin(pluginId: string, invocationToken: symbol | undefined, spec: PluginTableSpec): Promise<AppliedPatchReceipt> {
+    this.requirePermission(pluginId, "document.write");
+    const invocation = invocationToken ? this.activeCommandInvocations.get(invocationToken) : undefined;
+    if (!invocation || invocation.pluginId !== pluginId) {
+      throw new PluginHostError(
+        `Plugin "${pluginId}" may call documents.insertTable only while one of its own commands is executing.`
+      );
+    }
+    if (!this.buildTablePatch) throw new PluginHostError(`This host provides no table builder for plugin "${pluginId}".`);
+    const document = await this.getActiveDocument?.();
+    if (!document) throw new PluginHostError("No active document is available for table insertion.");
+    const patch = this.buildTablePatch(spec, document, [...invocation.writeScope]);
+    return this.applyPatchForPlugin(pluginId, invocationToken, patch, undefined, "Insert table");
+  }
+
   async applyPatchForPlugin(
     pluginId: string,
     invocationToken: symbol | undefined,
     patch: ProposedDocumentPatch,
     /** Trusted embedding-host override, never exposed on the plugin context. */
-    requestScope?: { objectIds: readonly string[]; apply: NonNullable<PluginHostOptions["applyDocumentPatch"]> }
+    requestScope?: { objectIds: readonly string[]; apply: NonNullable<PluginHostOptions["applyDocumentPatch"]> },
+    /** Trusted host label, never taken from plugin input. */
+    undoLabel?: string
   ): Promise<AppliedPatchReceipt> {
     this.requirePermission(pluginId, "document.write");
     const invocation = invocationToken ? this.activeCommandInvocations.get(invocationToken) :
@@ -1093,7 +1120,7 @@ export class PluginHost {
       plugin: { id: plugin.id, name: plugin.name, version: plugin.version },
       command: { id: invocation.commandId, title: invocation.commandTitle },
       patch: parsedPatch,
-      undoLabel: `${plugin.name}: ${invocation.commandTitle}`
+      undoLabel: undoLabel ?? `${plugin.name}: ${invocation.commandTitle}`
     });
     const parsedReceipt = AppliedPatchReceiptSchema.parse(receipt);
     // Only a successful write grows the scope; use actual ids returned by the host after rebasing.

@@ -1,5 +1,44 @@
 // Integration: desktop must declare zod ^3.25.76 (its v4 entry supplies JSON Schema export).
 import { z } from "zod/v4";
+import { TABLE_LIMITS } from "@chemdraft/chem-core";
+import { TableSpecSchema } from "@chemdraft/document-workflow-core";
+
+// Zod 4 supplies the wire JSON schema. The shared builder's Zod 3 schema remains the
+// authority for cross-field validation (ragged rows, header totals, and matching spans).
+const formulaRule = z.enum(["auto", "off"]);
+const tableCell = z.union([z.string().max(TABLE_LIMITS.maxCellCharacters), z.object({
+  text: z.string().max(TABLE_LIMITS.maxCellCharacters),
+  spans: z.array(z.object({ text: z.string(), script: z.enum(["normal", "subscript", "superscript"]).optional(),
+    bold: z.boolean().optional(), italic: z.boolean().optional() }).strict())
+    .max(TABLE_LIMITS.maxSpansPerCell, { error: issue =>
+      `maxSpansPerCell is ${TABLE_LIMITS.maxSpansPerCell}; actual value is `
+      + `${(issue.input as unknown[]).length}` })
+    .optional(),
+  formula: formulaRule.optional()
+}).strict()]);
+const tableSpec = z.object({
+  columns: z.array(z.object({ header: tableCell.optional(), align: z.enum(["left", "center", "right", "decimal"]).optional(),
+    widthPx: z.number().positive().max(4000).optional(), formula: formulaRule.optional() }).strict()).min(1).max(TABLE_LIMITS.maxColumns),
+  rows: z.array(z.array(tableCell)).max(TABLE_LIMITS.maxRows),
+  headerRows: z.array(z.array(tableCell)).optional(), caption: tableCell.optional(),
+  footnotes: z.array(tableCell).max(TABLE_LIMITS.maxFootnotes).optional(),
+  style: z.object({ preset: z.enum(["three-line", "grid"]).optional(), headerBold: z.boolean().optional(),
+    fontFamily: z.string().max(TABLE_LIMITS.maxFontFamilyLength, { error: issue =>
+      `maxFontFamilyLength is ${TABLE_LIMITS.maxFontFamilyLength}; `
+      + `actual value is ${(issue.input as string).length}` })
+      .optional(),
+    fontSizePx: z.number().min(1, {
+      error: issue => `fontSizePx must be 1..400; actual value is ${issue.input}`
+    }).max(TABLE_LIMITS.maxFontSizePx, {
+      error: issue => `fontSizePx must be 1..400; actual value is ${issue.input}` })
+      .optional() }).strict().optional(),
+  besideObjectId: z.string().min(1).max(256).optional()
+}).strict().superRefine(({ besideObjectId: _beside, ...spec }, ctx) => {
+  const result = TableSpecSchema.safeParse(spec);
+  if (!result.success) for (const issue of result.error.issues) {
+    ctx.addIssue({ code: "custom", path: issue.path, message: issue.message });
+  }
+});
 
 export const SMILES = z.string().min(1).max(5000);
 const id = z.string().min(1).max(256);
@@ -41,6 +80,7 @@ export const toolSchemas = {
     arrowKind: z.enum(["forward", "equilibrium", "retrosynthetic", "resonance"]).default("forward")
   }).strict(),
   insert_text: z.object({ text, relativeTo: relativeTo.optional(), style: textStyleSchema.optional() }).strict(),
+  insert_table: tableSpec,
   edit_structure: z.object({ objectId: id, smiles: SMILES, keepPosition: z.boolean().default(true) }).strict(),
   delete_objects: z.object({ objectIds: ids }).strict(),
   style_objects: z.object({ objectIds: ids, style: z.object({

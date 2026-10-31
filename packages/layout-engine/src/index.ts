@@ -2,6 +2,10 @@ export * from "./layoutQuality";
 import type { LayoutLabelBox } from "./layoutQuality";
 export * from "./layoutRepair";
 export { DocumentStyleScale, documentStylePointBounds, FigureStyles, type FigureStyle } from "./documentStyle";
+export {
+  planTableLayout, planTableObjectSvg, tableCellElementId, tableVisualBoundsForArrangement, type TableLayout
+} from "./table";
+export { textAdvanceEm, measureTextRun } from "./textMetrics";
 export { medianLength, representativeMoleculeBondLength, scalePageGeometry } from "./pageScale";
 export {
   nativeTextMetrics, nativeTextCharacterWidthFactor, nativeTextSubscriptBottomEm,
@@ -75,6 +79,8 @@ import {
   type NativeBondOrderResolution,
   type NativeElementSymbol
 } from "./valence";
+import { planTableObjectSvg } from "./table";
+import { textAdvanceEm } from "./textMetrics";
 import { formatNumber } from "./formatNumber";
 import { nativeTextScriptFontScale, nativeTextSubscriptOffsetEm, nativeTextSuperscriptOffsetEm } from "./textMetrics";
 import { nativeGroupLabelDisplay, type AtomLabelAnchor } from "./labelGrammar";
@@ -1514,6 +1520,8 @@ function planDocumentObjectSvg(
       return planMoleculeObjectSvg(object, layerIndex, gapsByBondKey);
     case "text":
       return planTextObjectSvg(object, layerIndex);
+    case "table":
+      return planTableObjectSvg(object, layerIndex);
     case "plus":
       return centeredTextFragment(object, "+", 24, 700, layerIndex);
     case "mechanism-arrow":
@@ -3534,7 +3542,8 @@ function planTextObjectSvg(object: TextObject, layerIndex: number): PageSvgEleme
   }), lineFragments);
 }
 
-function textSpanLineFragments(
+/** @internal Shared by native text and table SVG planning. */
+export function textSpanLineFragments(
   line: TextSpan[],
   lineIndex: number,
   x: number,
@@ -4976,7 +4985,8 @@ function centeredTextFragment(
   }), [textFragment(`centered-text-${object.id}`, label)]);
 }
 
-function objectAttributes(
+/** @internal Shared object selection and layer attributes. */
+export function objectAttributes(
   object: DocumentObject,
   layerIndex: number,
   extra: Record<string, PageSvgAttributeValue> = {}
@@ -4989,7 +4999,8 @@ function objectAttributes(
   };
 }
 
-function elementFragment(
+/** @internal SVG fragment constructor. */
+export function elementFragment(
   tag: string,
   key: string,
   attrs: Record<string, PageSvgAttributeValue> = {},
@@ -5850,16 +5861,10 @@ function atomLabelRunWidth(run: AtomLabelRun, drawingStyle: NativeDrawingStyle):
  * (0.62 em a letter) is too narrow for O, C or M and too wide for i or l. Any other character is
  * taken at that flat estimate.
  */
-const sansSerifAdvanceEm: Readonly<Record<string, number>> = {
-  A: 0.667, B: 0.667, C: 0.722, D: 0.722, E: 0.667, F: 0.611, G: 0.778, H: 0.722, I: 0.278, J: 0.5,
-  K: 0.667, L: 0.556, M: 0.833, N: 0.722, O: 0.778, P: 0.667, Q: 0.778, R: 0.722, S: 0.667, T: 0.611,
-  U: 0.722, V: 0.667, W: 0.944, X: 0.667, Y: 0.667, Z: 0.611,
-  a: 0.556, b: 0.556, c: 0.5, d: 0.556, e: 0.556, f: 0.278, g: 0.556, h: 0.556, i: 0.222, j: 0.222,
-  k: 0.5, l: 0.222, m: 0.833, n: 0.556, o: 0.556, p: 0.556, q: 0.556, r: 0.333, s: 0.5, t: 0.278,
-  u: 0.556, v: 0.5, w: 0.722, x: 0.5, y: 0.5, z: 0.5,
-  "0": 0.556, "1": 0.556, "2": 0.556, "3": 0.556, "4": 0.556, "5": 0.556, "6": 0.556, "7": 0.556,
-  "8": 0.556, "9": 0.556, "+": 0.584, "-": 0.333
-};
+export const sansSerifAdvanceEm: Readonly<Record<string, number>> = Object.fromEntries(
+  [..."ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+-"].map((character) =>
+    [character, textAdvanceEm(character)])
+);
 
 /** A run's width from `sansSerifAdvanceEm`, at its script's size and the label's weight and slant. */
 function atomLabelRunAdvance(run: AtomLabelRun, drawingStyle: NativeDrawingStyle): number {
@@ -7674,7 +7679,8 @@ export function projectedPlaneSvgTransformForObject(object: ArrowObject | Bracke
   return `matrix(${values.map(formatNumber).join(" ")})`;
 }
 
-function rotationTransform(object: DocumentObject): string | undefined {
+/** @internal Shared SVG object rotation around the stored frame. */
+export function rotationTransform(object: DocumentObject): string | undefined {
   if (object.rotation === 0) {
     return undefined;
   }
@@ -7682,7 +7688,8 @@ function rotationTransform(object: DocumentObject): string | undefined {
   return `rotate(${formatNumber(object.rotation)} ${formatNumber(object.x + object.width / 2)} ${formatNumber(object.y + object.height / 2)})`;
 }
 
-function transformPointForObject(object: DocumentObject, point: LayoutPoint): LayoutPoint {
+/** @internal Bounds must use the same pivot as SVG rendering. */
+export function transformPointForObject(object: DocumentObject, point: LayoutPoint): LayoutPoint {
   if (object.rotation === 0) {
     return point;
   }

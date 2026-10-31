@@ -3,6 +3,9 @@ import { planObjectArrangement, moleculeAnchorForArrangement, moleculeVisualBoun
 import { snapRotationDegrees } from "./rotationSnap";
 import { snapPlacementDegrees } from "./placementSnap";
 import { projectedDoubleBondSides } from "./interaction/projectedDoubleBondSides";
+import { buildTableObject } from "@chemdraft/document-workflow-core";
+import { planTableLayout, tableVisualBoundsForArrangement } from "@chemdraft/layout-engine";
+import { validTableDimensions, type TableInsertDimensions } from "./dialogs/insertTableOptions";
 import { doubleBondStereoState, perceivedSpecifiedDoubleBondIds } from "./interaction/doubleBondStereo";
 import type { storedCoordinatesMatchStereo } from "@chemdraft/ocl-adapter";
 import type { DoubleBondStereoReader } from "./interaction/doubleBondStereo";
@@ -12943,6 +12946,9 @@ export function documentObjectInteractionBounds(
   object: DocumentObject,
   objects: readonly DocumentObject[]
 ): ObjectBounds {
+  if (object.type === "table") {
+    return tableVisualBoundsForArrangement(object);
+  }
   if (object.type === "mechanism-arrow") {
     let snapshot = mechanismBoundsSnapshots.get(objects);
     if (!snapshot) {
@@ -14578,8 +14584,9 @@ function transformOtherObjectAroundPointPatches(
   const newCenter = Math.abs(degrees) >= 0.05
     ? rotatePointAround(scaledCenter, center, degrees * Math.PI / 180)
     : scaledCenter;
-  const nextWidth = object.width * scaleX;
-  const nextHeight = object.height * scaleY;
+  const tableLayout = object.type === "table" ? planTableLayout(object) : undefined;
+  const nextWidth = tableLayout?.width ?? object.width * scaleX;
+  const nextHeight = tableLayout?.height ?? object.height * scaleY;
   const nextX = newCenter.x - nextWidth / 2;
   const nextY = newCenter.y - nextHeight / 2;
 
@@ -20892,4 +20899,26 @@ function normalizeAngle(angle: number): number {
 function normalizeSignedAngle(angle: number): number {
   const normalized = normalizeAngle(angle);
   return normalized > Math.PI ? normalized - Math.PI * 2 : normalized;
+}
+
+/** Build an empty native table using the same text-style conversion as the text tool. */
+export function insertTableIntoDocument(document: ChemDraftDocument, options: TableInsertDimensions & {
+  preset: "three-line" | "grid"; center: { x: number; y: number }; newId: (prefix: string) => string;
+  textStyle?: Partial<NativeTextStyle>;
+}): ChemDraftDocument {
+  if (!validTableDimensions(options)) throw new Error("Invalid table dimensions");
+  const page = firstPage(document);
+  const blankRow = () => Array.from({ length: options.columns }, () => "");
+  const { object } = buildTableObject({
+    columns: Array.from({ length: options.columns }, () => ({ align: "left" })),
+    headerRows: Array.from({ length: options.headerRows }, blankRow),
+    rows: Array.from({ length: options.rows - options.headerRows }, blankRow),
+    style: { preset: options.preset }
+  }, { id: options.newId("table"), x: 0, y: 0, newId: options.newId,
+    style: textStyleToObjectStyle(options.textStyle ?? {}) });
+  const centered = { ...object, x: options.center.x - object.width / 2, y: options.center.y - object.height / 2 };
+  return applyPatches(document, [
+    { op: "addObject", pageId: page.id, object: centered },
+    { op: "setSelection", pageId: page.id, objectIds: [centered.id] }
+  ], { now: phase4Timestamp });
 }

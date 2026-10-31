@@ -310,7 +310,7 @@ describe("canvas ring-fill layers", () => {
     molecule: true, reaction: true, "reaction-arrow": true, "mechanism-arrow": true,
     "electron-mark": true, text: true, bracket: true, graphic: true, plus: true,
     group: true, annotation: true, superatom: true, "r-group-label": true,
-    "generic-atom-label": true, "unknown-compatibility-object": true
+    "generic-atom-label": true, "unknown-compatibility-object": true, table: true
   } satisfies Record<DocumentObject["type"], true>;
 
   it.each([...Object.keys(selectableTypes), "fallback-molecule", "charge", "radical-dot", "unknown-electron-mark", "line-graphic"]
@@ -320,6 +320,12 @@ describe("canvas ring-fill layers", () => {
       const base = { id: "selected-object", x: 100, y: 100, width: 80, height: 40, rotation: 0, style: {} };
       const anchor = { kind: "point" as const, point: { x: 100, y: 120 } };
       const objects: Record<DocumentObject["type"], DocumentObject> = {
+        table: { ...base, type: "table", tableVersion: 1,
+          columns: ["c1", "c2"].map(id => ({ id, align: "left", width: { mode: "auto" }, formula: "auto" })),
+          rows: ["r1", "r2"].map(id => ({ id, cells: [{ text: "A", spans: [] }, { text: "B", spans: [] }] })),
+          headerRowCount: 1, footnotes: [], tableStyle: { preset: "three-line", topRulePt: 1,
+            headerRulePt: 0.5, bottomRulePt: 1, gridRulePt: 0.5, headerBold: false,
+            cellPaddingPx: { x: 6, y: 2 } } },
         molecule: fixture.molecule,
         reaction: { ...base, type: "reaction", components: [], conditionsTextObjectIds: [], mappingState: "absent" },
         "reaction-arrow": { ...base, type: "reaction-arrow", arrowKind: "forward", start: anchor,

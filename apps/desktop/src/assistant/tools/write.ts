@@ -1,7 +1,7 @@
 import { requireDocument, type AssistantToolContext } from "../AssistantToolContext";
 import {
   applyAssistantWrite, buildEditStructure, buildInsertReaction, buildInsertStructures,
-  buildInsertText, buildMoveObjects, buildStyleObjects, scopeRefusal, captureWritePreconditions, type AssistantWrite
+  buildInsertText, buildInsertTable, buildMoveObjects, buildStyleObjects, scopeRefusal, captureWritePreconditions, type AssistantWrite
 } from "../writeBuilder";
 import type { ToolInput } from "./schemas";
 
@@ -13,6 +13,9 @@ export async function insertReaction(context: AssistantToolContext, input: ToolI
 }
 export async function insertText(context: AssistantToolContext, input: ToolInput<"insert_text">) {
   return applyAssistantWrite(context, buildInsertText(context, input));
+}
+export async function insertTable(context: AssistantToolContext, input: ToolInput<"insert_table">) {
+  return applyAssistantWrite(context, buildInsertTable(context, input));
 }
 async function scopedWrite(context: AssistantToolContext, ids: string[], builder: () => AssistantWrite | Promise<AssistantWrite>) {
   const refused = scopeRefusal(context, ids);
