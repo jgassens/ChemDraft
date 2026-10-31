@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compareLayoutRepairs, repairLayoutOverlaps, type LayoutRepair } from "./layoutRepair";
+import { compareLayoutRepairs, repairLayoutOverlaps, conventionalLayoutOrientations, orientLayoutForLabels, type LayoutRepair } from "./layoutRepair";
 import { evaluateLayoutQuality, type LayoutPoint, type LayoutBond } from "./layoutQuality";
 
 const polygon = (n: number, center: LayoutPoint, phase = 0): LayoutPoint[] => {
@@ -49,6 +49,44 @@ function expectLocalScoresMatchFullEvaluation(repairs: LayoutRepair[], bonds: La
 }
 
 describe("rigid fragment overlap repair", () => {
+  it("orients the largest ring horizontally with the pendant below, deterministically without reflection", () => {
+    const ring = polygon(6, { x: 0, y: 0 }).map(a => ({ x: a.x * 2, y: a.y }));
+    const atoms = rotate([...ring, { x: 0, y: 3 }], { x: 0, y: 0 }, 37);
+    const bonds = [...cycle(6), { from: 1, to: 6 }];
+    const snapshot = structuredClone(atoms);
+    const orientations = conventionalLayoutOrientations(atoms, bonds);
+    const first = orientations[0];
+    expect(first.angleDegrees).toBeCloseTo(-37);
+    expect(first.atoms[6].y).toBeGreaterThan(0);
+    expect(first.atoms.slice(0, 6).reduce((sum, a) => sum + a.x * a.y, 0)).toBeCloseTo(0, 12);
+    expect(orientations).toHaveLength(12);
+    for (const orientation of orientations) expectRigid(atoms, orientation.atoms, bonds);
+    expect(conventionalLayoutOrientations(atoms, bonds)).toEqual(orientations);
+    expect(atoms).toEqual(snapshot);
+    // Only the second orientation has a clear synthetic label: it must be tried before rejection.
+    const labels = (points: readonly LayoutPoint[]) => [{ atom: 6, x: points[6].y > 0 ? -3 : 20,
+      y: -2, width: 6, height: 4 }];
+    expect(orientLayoutForLabels(atoms, bonds, labels).angleDegrees).toBeCloseTo(143);
+    const stepLabels = (points: readonly LayoutPoint[]) => [{ atom: 6, x: Math.abs(points[6].x) < 1 ? -3 : 20,
+      y: -2, width: 6, height: 4 }];
+    expect(orientLayoutForLabels(atoms, bonds, stepLabels).angleDegrees).toBeCloseTo(-7);
+  });
+
+  it("repairs a label-only collision by swinging a substituent, replanning text for every trial", () => {
+    const atoms = [...polygon(6, { x: 0, y: 0 }), { x: 2, y: 0 }];
+    const bonds = [...cycle(6), { from: 0, to: 6 }];
+    const labels = (points: readonly LayoutPoint[]) => [{ atom: 6,
+      x: points[6].x - 1, y: points[6].y - 0.1, width: 1.2, height: 0.2 }];
+    const q = evaluateLayoutQuality(atoms, bonds, 1, undefined, undefined, labels(atoms));
+    expect(q.overlappingAtoms).toEqual([]);
+    expect(q.labelBondOverlaps.length).toBeGreaterThan(0);
+    const repairs = repairLayoutOverlaps(atoms, bonds, { labelBoxes: labels });
+    expect(repairs.length).toBeGreaterThan(0);
+    for (const repair of repairs) {
+      expect(evaluateLayoutQuality(repair.atoms, bonds, 1, undefined, undefined, labels(repair.atoms)).hardDefects).toBe(0);
+      expectRigid(atoms, repair.atoms, bonds);
+    }
+  });
   it("bounds repair work on 500 atoms with coincident hexagons deterministically", () => {
     const atoms: LayoutPoint[] = [];
     const bonds: LayoutBond[] = [];

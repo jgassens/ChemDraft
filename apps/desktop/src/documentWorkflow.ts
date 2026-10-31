@@ -137,7 +137,10 @@ import {
   evaluateLayoutQuality,
   prepareLayoutTopology,
   repairLayoutOverlaps,
+  moleculeLayoutLabelBoxes,
+  orientLayoutForLabels,
   type LayoutBond,
+  type LayoutLabelBox,
   type LayoutQuality,
   aimPlacementVertices,
   placementAimDegrees,
@@ -15032,7 +15035,8 @@ interface EngineRelayoutCandidate {
   drawnQuality?: LayoutQuality;
   warnings: string[];
   placementAddsHardDefects?: boolean;
-  repairSource?: { depiction: PastedStructureDepiction; bonds: LayoutBond[] };
+  repairSource?: { depiction: PastedStructureDepiction; bonds: LayoutBond[];
+    labelBoxes: (points: readonly { x: number; y: number }[]) => LayoutLabelBox[] };
 }
 type EngineRelayoutAttempt = { ok: true; candidate: EngineRelayoutCandidate } | { ok: false; error: unknown };
 
@@ -15041,7 +15045,7 @@ export const MIN_CLEANUP_SOFT_SCORE_IMPROVEMENT = 0.05;
 
 function evaluateEngineRelayoutCandidate(
   document: ChemDraftDocument, objectId: string, relayout: NativeMoleculeRelayoutEngine,
-  options: NativeEngineRelayoutOptions
+  options: NativeEngineRelayoutOptions, conventionalOrientation = false
 ): EngineRelayoutAttempt {
   // Failed or rejected candidates must not leak their warnings into the committed result.
   const warnings: string[] = [];
@@ -15050,12 +15054,12 @@ function evaluateEngineRelayoutCandidate(
   let repairSource: EngineRelayoutCandidate["repairSource"];
   let placementAddsHardDefects = false;
   try {
-    const next = buildNativeMoleculeEngineRelayout(document, objectId, relayout, { ...options, warnings }, (generated, drawn, depiction, bonds, placementDefect) => {
+    const next = buildNativeMoleculeEngineRelayout(document, objectId, relayout, { ...options, warnings }, (generated, drawn, depiction, bonds, placementDefect, labelBoxes) => {
       placementAddsHardDefects = placementDefect;
       quality = generated;
       drawnQuality = drawn;
-      repairSource = { depiction, bonds };
-    });
+      repairSource = { depiction, bonds, labelBoxes };
+    }, conventionalOrientation);
     return { ok: true, candidate: { document: next, quality, drawnQuality, warnings, repairSource, placementAddsHardDefects } };
   } catch (error) {
     return { ok: false, error };
@@ -15075,7 +15079,7 @@ function chooseEngineRelayout(
   const candidates = primary.ok ? [primary.candidate] : [];
   let bestRelaxed = primary.ok && primary.candidate.quality?.passesRelaxed ? primary.candidate : undefined;
   for (const alternate of alternates) {
-    const attempt = evaluateEngineRelayoutCandidate(document, objectId, alternate, options);
+    const attempt = evaluateEngineRelayoutCandidate(document, objectId, alternate, options, true);
     if (!attempt.ok) continue;
     const candidate = attempt.candidate;
     candidates.push(candidate);
@@ -15088,11 +15092,13 @@ function chooseEngineRelayout(
   // relaxed/soft fallback and are rebuilt through the identical identity and stereo guard.
   const repairs = candidates.flatMap(candidate => {
     const source = candidate.repairSource;
-    return source ? repairLayoutOverlaps(source.depiction.atoms, source.bonds).map(repair => ({ source, repair })) : [];
+    return source ? repairLayoutOverlaps(source.depiction.atoms, source.bonds, {
+      labelBoxes: source.labelBoxes, conventionalOrientation: true, belowSign: -1
+    }).map(repair => ({ source, repair })) : [];
   }).sort((a, b) => compareLayoutRepairs(a.repair, b.repair));
   for (const { source, repair } of repairs) {
     const depiction = { ...source.depiction, atoms: source.depiction.atoms.map((atom, i) => ({ ...atom, ...repair.atoms[i] })) };
-    const attempt = evaluateEngineRelayoutCandidate(document, objectId, () => depiction, options);
+    const attempt = evaluateEngineRelayoutCandidate(document, objectId, () => depiction, options, true);
     if (!attempt.ok || !(attempt.candidate.quality?.passes || attempt.candidate.quality?.passesRelaxed)) continue;
     const before = findMoleculeObject(document, objectId);
     const after = findMoleculeObject(attempt.candidate.document, objectId);
@@ -15113,7 +15119,8 @@ function chooseEngineRelayout(
   // alternative merely because its total hard-defect count is smaller.
   const usable = candidates.filter(candidate => !candidate.placementAddsHardDefects &&
     candidate.quality?.overlappingAtoms.length === 0 && candidate.quality.atomBondOverlaps.length === 0 &&
-    candidate.quality.collinearBondOverlaps.length === 0);
+    candidate.quality.collinearBondOverlaps.length === 0 && candidate.quality.labelBondOverlaps.length === 0 &&
+    candidate.quality.labelLabelOverlaps.length === 0);
   if (usable.length) best = usable.reduce((a, b) => compareLayoutQuality(a.quality!, b.quality!) <= 0 ? a : b);
   // Preserve the existing bridged/cage policy; regular planar geometry may be impossible there.
   const bridged = best.quality?.hasBridgedRings;
@@ -15124,6 +15131,7 @@ function chooseEngineRelayout(
     (generated.hardDefects === 0 && generated.softScore <= drawn.softScore - MIN_CLEANUP_SOFT_SCORE_IMPROVEMENT));
   if (generated && drawn && (best.placementAddsHardDefects || generated.overlappingAtoms.length > 0 ||
       generated.atomBondOverlaps.length > 0 || generated.collinearBondOverlaps.length > 0 ||
+      generated.labelBondOverlaps.length > 0 || generated.labelLabelOverlaps.length > 0 ||
       (bridged ? drawn.hardDefects < generated.hardDefects : !improvesOrdinary))) {
     options.warnings?.push(...best.warnings);
     const reason = generated.overlappingAtoms.length > 0 && generated.crossings.length > 0
@@ -15131,6 +15139,7 @@ function chooseEngineRelayout(
       : generated.overlappingAtoms.length > 0 ? "put atoms on top of each other"
       : generated.crossings.length > 0 ? "crossed bonds"
       : generated.atomBondOverlaps.length > 0 ? "put atoms on bonds"
+      : generated.labelBondOverlaps.length > 0 || generated.labelLabelOverlaps.length > 0 ? "overlapped atom labels"
       : generated.collinearBondOverlaps.length > 0 ? "overlapped bonds" : "distorted bonds or rings beyond the cleanup limits";
     options.warnings?.push(`Clean Up kept the drawn layout of this structure: the generated layouts ${reason}.`);
     return document;
@@ -15290,7 +15299,9 @@ function buildNativeMoleculeEngineRelayout(
   objectId: string,
   relayout: (molfile: string) => PastedStructureDepiction,
   options: NativeEngineRelayoutOptions,
-  reportQuality?: (generated: LayoutQuality, drawn: LayoutQuality, depiction: PastedStructureDepiction, bonds: LayoutBond[], placementAddsHardDefects: boolean) => void
+  reportQuality?: (generated: LayoutQuality, drawn: LayoutQuality, depiction: PastedStructureDepiction, bonds: LayoutBond[], placementAddsHardDefects: boolean,
+    labelBoxes: (points: readonly { x: number; y: number }[]) => LayoutLabelBox[]) => void,
+  conventionalOrientation = false
 ): ChemDraftDocument {
   const molecule = findMoleculeObject(document, objectId);
   if (!molecule || !isEditableNativeMoleculeGraph(molecule) || molecule.atoms.length === 0) {
@@ -15338,7 +15349,7 @@ function buildNativeMoleculeEngineRelayout(
     kekuleBondOrders: nativeBondOrderResolution(ligand.atoms, ligand.bonds).kekuleOrders
   }).contents;
   const emittedAtoms = parseMolfileGraph(molfile).atoms;
-  const depiction = relayout(molfile);
+  let depiction = relayout(molfile);
   if (depiction.atoms.length !== ligandAtoms.length) {
     throw new Error(
       `Engine re-layout returned ${depiction.atoms.length} atoms for a ${ligandAtoms.length}-atom structure.`
@@ -15410,6 +15421,20 @@ function buildNativeMoleculeEngineRelayout(
   const engineBondLength = mean(engineBondLengths);
   const scale = engineBondLength > 0.001 ? targetBondLength / engineBondLength : 1;
 
+  // Use the original native atoms (including abbreviations/isotopes/charges), with their own
+  // style at the final drawing scale. Only coordinate-frame conversion lives in the host.
+  const labelBoxes = (points: readonly { x: number; y: number }[]): LayoutLabelBox[] =>
+    moleculeLayoutLabelBoxes({ ...ligand, atoms: ligandAtoms.map((atom, i) => ({ ...atom,
+      x: points[i].x * scale, y: -points[i].y * scale })) }).map(box => ({ ...box,
+      x: box.x / scale, y: -(box.y + box.height) / scale, width: box.width / scale, height: box.height / scale }));
+  if (conventionalOrientation) {
+    const oriented = orientLayoutForLabels(depiction.atoms, qualityBonds, labelBoxes, -1);
+    depiction = { ...depiction, atoms: depiction.atoms.map((atom, i) => ({ ...atom, ...oriented.atoms[i] })) };
+    depiction.atoms.forEach((atom, index) => {
+      enginePointByIndex.set(ligandToOriginalIndex[index], { x: atom.x, y: -atom.y });
+    });
+  }
+
   const placedEnginePoints = placeEngineFragmentsOnDrawing(
     ligandAtoms,
     ligandBonds,
@@ -15472,21 +15497,34 @@ function buildNativeMoleculeEngineRelayout(
     // Keep raw ring/bond scoring and engine priority, but judge hard geometry on the final
     // placed and folded skeleton, including free metals as collision obstacles. Dative edges
     // are not covalent layout constraints; no metal-to-ligand atom overlap is exempted.
-    const raw = evaluateLayoutQuality(depiction.atoms, qualityBonds);
-    const placed = evaluateLayoutQuality([...ligandToOriginalIndex.map(i => atoms[i]),
-      ...atoms.filter(atom => freeMetalIds.has(atom.id))], qualityBonds);
+    const raw = evaluateLayoutQuality(depiction.atoms, qualityBonds, undefined, undefined, undefined, labelBoxes(depiction.atoms));
+    const placedOrder = [...ligandToOriginalIndex.map(i => atoms[i]), ...atoms.filter(atom => freeMetalIds.has(atom.id))];
+    const placedIndexById = new Map(placedOrder.map((atom, i) => [atom.id, i]));
+    // Only a free metal and its own directly coordinated donor may touch labels in the pocket.
+    // Keep every label box: non-donors, donor/donor contacts and ligand label/bond collisions
+    // still veto placement. Dative bonds remain outside the covalent skeleton checks, and a
+    // metal's own dative bonds are incident to its label (already exempt from label clearance).
+    const pocketLabelPairs = dashedBondsById
+      .filter(bond => freeMetalIds.has(bond.fromAtomId) || freeMetalIds.has(bond.toAtomId))
+      .map(bond => [placedIndexById.get(bond.fromAtomId)!, placedIndexById.get(bond.toAtomId)!] as const);
+    const placed = evaluateLayoutQuality(placedOrder, qualityBonds, undefined, undefined, undefined,
+      moleculeLayoutLabelBoxes({ ...molecule, atoms: placedOrder }), pocketLabelPairs);
     const introduced = (after: [number, number][], before: [number, number][]) => {
       const keys = new Set(before.map(pair => pair.join(":")));
       return after.some(pair => !keys.has(pair.join(":")));
     };
     const addsHardDefects = introduced(placed.overlappingAtoms, raw.overlappingAtoms) ||
       introduced(placed.crossings, raw.crossings) ||
-      introduced(placed.collinearBondOverlaps, raw.collinearBondOverlaps) || introduced(placed.atomBondOverlaps, raw.atomBondOverlaps);
+      introduced(placed.collinearBondOverlaps, raw.collinearBondOverlaps) || introduced(placed.atomBondOverlaps, raw.atomBondOverlaps) ||
+      introduced(placed.labelBondOverlaps, raw.labelBondOverlaps) || introduced(placed.labelLabelOverlaps, raw.labelLabelOverlaps);
     reportQuality({ ...raw, overlappingAtoms: placed.overlappingAtoms, crossings: placed.crossings,
       atomBondOverlaps: placed.atomBondOverlaps, collinearBondOverlaps: placed.collinearBondOverlaps, hardDefects: placed.hardDefects,
+      labelBondOverlaps: placed.labelBondOverlaps, labelLabelOverlaps: placed.labelLabelOverlaps,
+      smallestLabelBondClearance: placed.smallestLabelBondClearance,
       passes: raw.passes && placed.hardDefects === 0,
       passesRelaxed: raw.passesRelaxed && placed.hardDefects === 0 },
-      evaluateLayoutQuality([...ligandAtoms, ...drawnFreeMetals], qualityBonds), depiction, qualityBonds, addsHardDefects);
+      evaluateLayoutQuality([...ligandAtoms, ...drawnFreeMetals], qualityBonds, undefined, undefined, undefined,
+        moleculeLayoutLabelBoxes({ ...molecule, atoms: [...ligandAtoms, ...drawnFreeMetals] }), pocketLabelPairs), depiction, qualityBonds, addsHardDefects, labelBoxes);
   }
 
   // Wedge/hash assignments follow the parities on the NEW geometry; index bonds by their endpoint

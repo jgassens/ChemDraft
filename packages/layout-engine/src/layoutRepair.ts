@@ -1,4 +1,62 @@
-import { atomNearBond, bondsOverlap, prepareLayoutTopology, evaluateLayoutQuality, type LayoutBond, type LayoutPoint, type LayoutQuality } from "./layoutQuality";
+import { atomNearBond, bondsOverlap, prepareLayoutTopology, evaluateLayoutQuality, type LayoutBond, type LayoutPoint, type LayoutQuality, type LayoutLabelBox, type LayoutTopology } from "./layoutQuality";
+
+export interface LayoutOrientation { atoms: LayoutPoint[]; angleDegrees: number; ringSystemAtoms: number[]; rank: number }
+
+/** Largest biconnected ring block horizontal, with the remaining atoms below it.
+ * belowSign is +1 for document coordinates and -1 for engine (y-up) coordinates.
+ * Every alternative is a proper rotation about the same centroid, never a reflection. */
+export function conventionalLayoutOrientations(
+  atoms: readonly LayoutPoint[], bonds: readonly LayoutBond[], belowSign: 1 | -1 = 1,
+  topology = prepareLayoutTopology(atoms.length, bonds)
+): LayoutOrientation[] {
+  const ringSystemAtoms = [...topology.ringSystems].sort((a, b) => b.length - a.length || a[0] - b[0])[0] ?? [];
+  if (!ringSystemAtoms.length) return [{ atoms: atoms.map(a => ({ ...a })), angleDegrees: 0, ringSystemAtoms, rank: 0 }];
+  const center = ringSystemAtoms.reduce((p, i) => ({ x: p.x + atoms[i].x / ringSystemAtoms.length,
+    y: p.y + atoms[i].y / ringSystemAtoms.length }), { x: 0, y: 0 });
+  let xx = 0, yy = 0, xy = 0;
+  for (const i of ringSystemAtoms) {
+    const x = atoms[i].x - center.x, y = atoms[i].y - center.y;
+    xx += x * x; yy += y * y; xy += x * y;
+  }
+  // An isotropic block has no preferred axis: use its first atom as the stable tie-break.
+  let angle = Math.hypot(xx - yy, 2 * xy) < 1e-10 * (xx + yy)
+    ? -Math.atan2(atoms[ringSystemAtoms[0]].y - center.y, atoms[ringSystemAtoms[0]].x - center.x)
+    : -0.5 * Math.atan2(2 * xy, xx - yy);
+  const ring = new Set(ringSystemAtoms);
+  const restY = atoms.reduce((sum, a, i) => ring.has(i) ? sum :
+    sum + (a.x - center.x) * Math.sin(angle) + (a.y - center.y) * Math.cos(angle), 0);
+  if (restY * belowSign < -1e-10) angle += Math.PI;
+  return [0, 180, 30, -30, 60, -60, 90, -90, 120, -120, 150, -150].map((offset, rank) => {
+    const radians = angle + offset * Math.PI / 180, c = Math.cos(radians), s = Math.sin(radians);
+    return { ringSystemAtoms, rank, angleDegrees: ((radians * 180 / Math.PI + 540) % 360) - 180,
+      atoms: atoms.map(a => ({ x: center.x + (a.x - center.x) * c - (a.y - center.y) * s,
+        y: center.y + (a.x - center.x) * s + (a.y - center.y) * c })) };
+  });
+}
+
+/** Text stays upright after a rotation, so replan its boxes at each orientation. */
+export function orientLayoutForLabels(
+  atoms: readonly LayoutPoint[], bonds: readonly LayoutBond[], labelBoxes: (points: readonly LayoutPoint[]) => readonly LayoutLabelBox[],
+  belowSign: 1 | -1 = 1, topology?: LayoutTopology
+): LayoutOrientation {
+  const graph = topology ?? prepareLayoutTopology(atoms.length, bonds);
+  let best: LayoutOrientation | undefined, defects = Infinity;
+  for (const orientation of conventionalLayoutOrientations(atoms, bonds, belowSign, graph)) {
+    const q = evaluateLayoutQuality(orientation.atoms, bonds, undefined, graph, {
+      overlappingAtoms: [], crossings: [], collinearBondOverlaps: [], atomBondOverlaps: [],
+      nearestAtomPairDistance: Infinity, nearestNonBondedAtomPairDistance: Infinity
+    }, labelBoxes(orientation.atoms));
+    if (q.hardDefects < defects) { best = orientation; defects = q.hardDefects; }
+    if (defects === 0) break;
+  }
+  return best!;
+}
+
+export interface LayoutRepairOptions {
+  labelBoxes?: (points: readonly LayoutPoint[]) => readonly LayoutLabelBox[];
+  conventionalOrientation?: boolean;
+  belowSign?: 1 | -1;
+}
 
 /** A deterministic cap for the entire candidate, independent of machine speed. Exhaustion
  * discards partial results rather than selecting a repair from a truncated search. */
@@ -38,28 +96,31 @@ export interface LayoutRepair {
   pivot: number;
   movedAtoms: number[];
   angleDegrees: number;
+  /** Whole-layout rotation after the fragment swing. */
+  rotationDegrees?: number;
+  orientationRank?: number;
 }
 
-/** Strict before relaxed, then least soft distortion, then greatest non-bonded clearance.
+/** Strict before relaxed, then conventional orientation, soft distortion and non-bonded clearance.
  * Exact ties retain enumeration order. */
 export function compareLayoutRepairs(a: LayoutRepair, b: LayoutRepair): number {
   const strict = Number(b.quality.passes) - Number(a.quality.passes);
-  return strict || a.quality.softScore - b.quality.softScore ||
+  return strict || (a.orientationRank ?? 0) - (b.orientationRank ?? 0) || a.quality.softScore - b.quality.softScore ||
     (a.quality.nearestNonBondedAtomPairDistance === b.quality.nearestNonBondedAtomPairDistance ? 0 :
       b.quality.nearestNonBondedAtomPairDistance - a.quality.nearestNonBondedAtomPairDistance);
 }
 
-/** Pure, rotation-only alternatives for overlap-only defects. Cutting at an articulation atom
+/** Pure, rotation-only alternatives for atom or label overlaps. Cutting at an articulation atom
  * or an acyclic edge keeps every cyclic block rigid (including all attached downstream atoms).
  * All passing alternatives are returned in preference order so a caller can reject a rotation
  * on stereo read-back and still try the next one. No coordinates are changed in the input.
  * Search is deliberately bounded to one move: no combinations or ring deformation. */
 export function repairLayoutOverlaps(
-  atoms: readonly LayoutPoint[], bonds: readonly LayoutBond[]
+  atoms: readonly LayoutPoint[], bonds: readonly LayoutBond[], options: LayoutRepairOptions = {}
 ): LayoutRepair[] {
   const topology = prepareLayoutTopology(atoms.length, bonds);
-  const original = evaluateLayoutQuality(atoms, bonds, undefined, topology);
-  if (!original.overlappingAtoms.length || original.crossings.length || original.hasBridgedRings ||
+  const original = evaluateLayoutQuality(atoms, bonds, undefined, topology, undefined, options.labelBoxes?.(atoms));
+  if ((!original.overlappingAtoms.length && !original.labelBondOverlaps.length && !original.labelLabelOverlaps.length) || original.crossings.length || original.hasBridgedRings ||
       original.fusedSideDefects.length) return [];
   const adjacent: number[][] = atoms.map(() => []);
   bonds.forEach(b => { adjacent[b.from].push(b.to); adjacent[b.to].push(b.from); });
@@ -113,7 +174,7 @@ export function repairLayoutOverlaps(
   let trials = 0;
   for (const move of moves) {
     const moving = new Set(move.movedAtoms);
-    if (!original.overlappingAtoms.some(([a, b]) => moving.has(a) !== moving.has(b))) continue;
+    if (!options.labelBoxes && !original.overlappingAtoms.some(([a, b]) => moving.has(a) !== moving.has(b))) continue;
     // A rigid move cannot fix a defect whose participants all stay on the same side.
     const mobileBond = bonds.map(b => moving.has(b.from) || moving.has(b.to));
     if (original.overlappingAtoms.some(([a, b]) => moving.has(a) === moving.has(b)) ||
@@ -190,12 +251,16 @@ export function repairLayoutOverlaps(
       if (!locallyClear(rotated)) continue;
       // Local checks plus rigid-part invariants establish zero hard defects. Reuse that
       // snapshot: scoring recomputes bond/ring metrics, never global pair geometry or topology.
-      const quality = evaluateLayoutQuality(rotated, bonds, reference, topology, {
+      const orientation = options.conventionalOrientation
+        ? orientLayoutForLabels(rotated, bonds, options.labelBoxes ?? (() => []), options.belowSign, topology) : undefined;
+      const points = orientation?.atoms ?? rotated;
+      const quality = evaluateLayoutQuality(points, bonds, reference, topology, {
         ...nearestPairs(rotated), overlappingAtoms: [], atomBondOverlaps: [],
         crossings: [], collinearBondOverlaps: []
-      });
-      if (quality.passes || quality.passesRelaxed) repairs.push({ atoms: rotated, quality,
-        kind: move.kind, pivot: move.pivot, movedAtoms: move.movedAtoms, angleDegrees });
+      }, options.labelBoxes?.(points));
+      if (quality.passes || quality.passesRelaxed) repairs.push({ atoms: points, quality,
+        kind: move.kind, pivot: move.pivot, movedAtoms: move.movedAtoms, angleDegrees,
+        ...(orientation ? { rotationDegrees: orientation.angleDegrees, orientationRank: orientation.rank } : {}) });
     }
   }
   return repairs.sort(compareLayoutRepairs);

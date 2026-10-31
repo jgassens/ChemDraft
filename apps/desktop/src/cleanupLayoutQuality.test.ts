@@ -4,7 +4,8 @@ import * as OCL from "openchemlib";
 import { createEmptyDocument, nativeDrawingStyleFromObjectStyle, undo, redo, type MoleculeObject } from "@chemdraft/chem-core";
 import { ensureOclResources, relayoutMolfile2D, perceiveStereoCentersFromMolfile } from "@chemdraft/ocl-adapter";
 import { inspectHydrogenNormalizedIdentity, stereoPerceptionMolfile } from "@chemdraft/document-workflow-core";
-import { evaluateLayoutQuality, repairLayoutOverlaps, type LayoutQuality, type LayoutRepair } from "@chemdraft/layout-engine";
+import * as layoutEngine from "@chemdraft/layout-engine";
+import { evaluateLayoutQuality, moleculeLayoutLabelBoxes, conventionalLayoutOrientations, type LayoutQuality, type LayoutRepair, type LayoutPoint } from "@chemdraft/layout-engine";
 import { ensureRdkit, generateSmiles2DMolfile, resetRdkitForTesting } from "../../../packages/rdkit-adapter/src/conformer";
 import { createRdkit2DRelayouts } from "../../../packages/rdkit-adapter/src/relayout2d";
 import { installRealRdkitModuleLoader } from "../../../packages/rdkit-adapter/src/testing";
@@ -28,13 +29,51 @@ const fixtures = [
 
 function quality(m: MoleculeObject, reference?: number) {
   const ids = new Map(m.atoms.map((atom, i) => [atom.id, i]));
-  return evaluateLayoutQuality(m.atoms, m.bonds.map(b => ({ from: ids.get(b.fromAtomId)!, to: ids.get(b.toAtomId)! })), reference);
+  return evaluateLayoutQuality(m.atoms, m.bonds.map(b => ({ from: ids.get(b.fromAtomId)!, to: ids.get(b.toAtomId)! })),
+    reference, undefined, undefined, moleculeLayoutLabelBoxes(m));
+}
+
+/** Fit only a proper rotation and positive scale; reflections cannot match. */
+function fitLayout(source: readonly LayoutPoint[], target: readonly LayoutPoint[], indices = source.map((_, i) => i)) {
+  const center = (points: readonly LayoutPoint[]) => indices.reduce((p, i) => ({
+    x: p.x + points[i].x / indices.length, y: p.y + points[i].y / indices.length }), { x: 0, y: 0 });
+  const a = center(source), b = center(target);
+  let dot = 0, cross = 0, length2 = 0;
+  for (const i of indices) {
+    const x = source[i].x - a.x, y = source[i].y - a.y;
+    dot += x * (target[i].x - b.x) + y * (target[i].y - b.y);
+    cross += x * (target[i].y - b.y) - y * (target[i].x - b.x);
+    length2 += x * x + y * y;
+  }
+  const angle = Math.atan2(cross, dot), scale = Math.hypot(dot, cross) / length2;
+  return { angleDegrees: angle * 180 / Math.PI, error: Math.max(...indices.map(i => Math.hypot(
+    b.x + scale * ((source[i].x - a.x) * Math.cos(angle) - (source[i].y - a.y) * Math.sin(angle)) - target[i].x,
+    b.y + scale * ((source[i].x - a.x) * Math.sin(angle) + (source[i].y - a.y) * Math.cos(angle)) - target[i].y))) };
+}
+
+const engineFrame = (m: MoleculeObject) => m.atoms.map(a => ({ x: a.x, y: -a.y }));
+
+function depictionQuality(m: MoleculeObject, depiction: PastedStructureDepiction, target: number) {
+  const meanBond = depiction.bonds.reduce((sum, b) => sum + Math.hypot(
+    depiction.atoms[b.from].x - depiction.atoms[b.to].x, depiction.atoms[b.from].y - depiction.atoms[b.to].y), 0) / depiction.bonds.length;
+  const scale = target / meanBond;
+  return quality({ ...m, atoms: m.atoms.map((atom, i) => ({ ...atom,
+    x: depiction.atoms[i].x * scale, y: -depiction.atoms[i].y * scale })) }, target);
+}
+
+function expectConventional(m: MoleculeObject) {
+  const ids = new Map(m.atoms.map((a, i) => [a.id, i]));
+  const bonds = m.bonds.map(b => ({ from: ids.get(b.fromAtomId)!, to: ids.get(b.toAtomId)! }));
+  // The preferred orientation is already horizontal with the pendant below in document y-down.
+  expect(conventionalLayoutOrientations(m.atoms, bonds)[0].angleDegrees).toBeCloseTo(0, 2);
 }
 function metrics(q: LayoutQuality) {
   return { min: q.minBondLength, max: q.maxBondLength, std: q.bondLengthStdDev,
     nearest: q.nearestAtomPairDistance, nearestNonBonded: q.nearestNonBondedAtomPairDistance,
     overlaps: q.overlappingAtoms.length, crossings: q.crossings.length,
     atomsOnBonds: q.atomBondOverlaps.length, collinearBonds: q.collinearBondOverlaps.length,
+    labelBonds: q.labelBondOverlaps.length, labelLabels: q.labelLabelOverlaps.length,
+    labelClearance: q.smallestLabelBondClearance,
     maxRingAngleError: Math.max(0, ...q.rings.map(r => r.maxAngleError ?? 0)),
     maxBridgeLength: q.maxBridgeLength, hardDefects: q.hardDefects, softScore: q.softScore,
     fusedSideDefects: q.fusedSideDefects.length, strict: q.passes, relaxed: q.passesRelaxed };
@@ -84,7 +123,8 @@ describe("Clean Up Structure 2D layout quality (real engines)", () => {
   });
 
   it.each([
-    ["norbornane", "C1CC2CCC1C2", "RDKit default"],
+    // Bridged blocks now use hard defects only, so OCL's conventional norbornane passes.
+    ["norbornane", "C1CC2CCC1C2", "OCL"],
     ["adamantane", "C1C2CC3CC1CC(C2)C3", "RDKit CoordGen"],
     ["cubane", "C12C3C4C1C5C2C3C45", "OCL"]
   ])("%s cleanup commits no overlapping atoms and records candidate metrics", async (name, smiles, expectedWinner) => {
@@ -105,14 +145,19 @@ describe("Clean Up Structure 2D layout quality (real engines)", () => {
       ...options, warnings, alternateRelayouts: depictions.slice(1).map(d => () => d)
     });
     const after = cleaned.pages[0].objects[0] as MoleculeObject;
-    const winner = cleaned === document ? "kept original" : labels.find((_, i) =>
-      JSON.stringify(applyNativeMoleculeEngineRelayout(document, before.id, () => depictions[i], options).pages[0].objects[0]) === JSON.stringify(after));
+    // Alternates now rotate; match geometry by a proper rigid fit instead of byte equality.
+    const winnerIndex = depictions.findIndex(d => fitLayout(d.atoms, engineFrame(after)).error < 0.002);
+    const winner = cleaned === document ? "kept original" : labels[winnerIndex];
+    const rotationDegrees = fitLayout(depictions[winnerIndex].atoms, engineFrame(after)).angleDegrees;
     console.log("P8_CAGE " + JSON.stringify({ name, winner,
-      candidates: Object.fromEntries(depictions.map((d, i) => [labels[i], metrics(evaluateLayoutQuality(d.atoms, d.bonds))])),
+      rotationDegrees,
+      candidates: Object.fromEntries(depictions.map((d, i) => [labels[i], metrics(depictionQuality(before, d, target))])),
       committed: metrics(quality(after)), warnings }));
     expect(cleaned).not.toBe(document);
     expect(winner).toBe(expectedWinner);
     expect(quality(after).overlappingAtoms).toEqual([]);
+    if (winner === "OCL") expect(after).toEqual(applyNativeMoleculeEngineRelayout(document, before.id, () => depictions[0], options).pages[0].objects[0]);
+    if (name === "norbornane") expect(quality(after).passes).toBe(true);
     const module = await ensureRdkit();
     expect(inspectStructureInWorker(module, stereoPerceptionMolfile(after)))
       .toEqual(inspectStructureInWorker(module, stereoPerceptionMolfile(before)));
@@ -133,7 +178,10 @@ describe("Clean Up Structure 2D layout quality (real engines)", () => {
     }
     const before = document.pages[0].objects[0] as MoleculeObject;
     expect(moleculeHasFusedRingSystem(before)).toBe(true);
-    expect.soft(quality(before, target).hardDefects, "input must have no overlaps/crossings").toBe(0);
+    // Pasted text may collide before cleanup; this precondition checks only the input skeleton.
+    const inputIds = new Map(before.atoms.map((a, i) => [a.id, i]));
+    expect.soft(evaluateLayoutQuality(before.atoms, before.bonds.map(b => ({ from: inputIds.get(b.fromAtomId)!, to: inputIds.get(b.toAtomId)! })), target).hardDefects,
+      "input skeleton must have no overlaps/crossings").toBe(0);
     const warnings: string[] = [];
     const attempted: string[] = [];
     const generated = new Map<string, PastedStructureDepiction>();
@@ -146,7 +194,10 @@ describe("Clean Up Structure 2D layout quality (real engines)", () => {
     const primary = track("OCL", relayoutMolfile2D);
     const alternates = (await createRdkit2DRelayouts()).map((engine, i) => track(i === 0 ? "RDKit CoordGen" : "RDKit default", engine));
     const options = { targetBondLengthPx: target, perceiveStereo: perceiveStereoCentersFromMolfile, warnings, alternateRelayouts: alternates };
+    const repairSearch = vi.spyOn(layoutEngine, "repairLayoutOverlaps");
     const cleaned = applyNativeMoleculeEngineRelayout(document, before.id, primary, options);
+    const repairTrials = repairSearch.mock.calls.map((args, i) => ({ source: args[0], repairs: repairSearch.mock.results[i].value as LayoutRepair[] }));
+    repairSearch.mockRestore();
     const after = cleaned.pages[0].objects[0] as MoleculeObject;
     const identity = (value: string) => {
       const result = inspectStructureInWorker(module, value);
@@ -164,31 +215,29 @@ describe("Clean Up Structure 2D layout quality (real engines)", () => {
     expect(cleaned.selection).toEqual(document.selection);
     const committed = quality(after, target);
     const kept = cleaned === document;
-    const oclQuality = evaluateLayoutQuality(generated.get("OCL")!.atoms, generated.get("OCL")!.bonds);
+    const oclQuality = depictionQuality(before, generated.get("OCL")!, target);
     expect(oclQuality.passes).toBe(oclPasses);
     if (oclPasses) expect(attempted).toEqual(["OCL"]);
     let winner = kept ? "kept original" : "unknown";
     let winningRepair: LayoutRepair | undefined;
+    let rotationDegrees = 0;
     if (!kept) {
       for (const [label, depiction] of generated) {
-        const candidate = applyNativeMoleculeEngineRelayout(document, before.id, () => depiction, {
-          targetBondLengthPx: target, perceiveStereo: perceiveStereoCentersFromMolfile
-        });
-        if (JSON.stringify(candidate.pages[0].objects[0]) === JSON.stringify(after)) {
+        const fit = fitLayout(depiction.atoms, engineFrame(after));
+        if (fit.error < 0.002) {
           winner = label;
-          for (const repair of repairLayoutOverlaps(depiction.atoms, depiction.bonds)) {
-            const repaired = { ...depiction, atoms: depiction.atoms.map((atom, i) => ({ ...atom, ...repair.atoms[i] })) };
-            const repairedCandidate = applyNativeMoleculeEngineRelayout(document, before.id, () => repaired, {
-              targetBondLengthPx: target, perceiveStereo: perceiveStereoCentersFromMolfile
-            });
-            if (JSON.stringify(repairedCandidate.pages[0].objects[0]) === JSON.stringify(after)) {
-              winningRepair = repair;
-              winner += ` + ${repair.kind}`;
-              break;
-            }
-          }
+          rotationDegrees = fit.angleDegrees;
           break;
         }
+        for (const trial of repairTrials.filter(t => fitLayout(depiction.atoms, t.source).error < 1e-8)) {
+          winningRepair = trial.repairs.find(r => fitLayout(r.atoms, engineFrame(after)).error < 0.002);
+          if (!winningRepair) continue;
+          winner = label + ` + ${winningRepair.kind}`;
+          rotationDegrees = fitLayout(depiction.atoms, engineFrame(after), depiction.atoms.flatMap((_, i) =>
+            winningRepair!.movedAtoms.includes(i) ? [] : [i])).angleDegrees;
+          break;
+        }
+        if (winner !== "unknown") break;
       }
     }
     // Exercise the command's preparation path too: it must give the identical result and must
@@ -216,15 +265,22 @@ describe("Clean Up Structure 2D layout quality (real engines)", () => {
       }
     }
     console.log("P8_RESULT " + JSON.stringify({ name, variant, winner, attempted: firstAttempts,
+      rotationDegrees,
       original: metrics(quality(before)),
       candidates: Object.fromEntries([...allGenerated].map(([label, depiction]) =>
-        [label, metrics(evaluateLayoutQuality(depiction.atoms, depiction.bonds))])),
+        [label, metrics(depictionQuality(before, depiction, target))])),
       committed: metrics(committed), repair: winningRepair ? {
         kind: winningRepair.kind, pivot: winningRepair.pivot, angleDegrees: winningRepair.angleDegrees,
         movedAtoms: winningRepair.movedAtoms, metrics: metrics(winningRepair.quality)
       } : undefined, warnings }));
     expect(winner).not.toBe("unknown");
     if (oclPasses) expect(winner).toBe("OCL");
+    if (oclPasses) {
+      expect(after).toEqual(applyNativeMoleculeEngineRelayout(document, before.id, () => generated.get("OCL")!, {
+        targetBondLengthPx: target, perceiveStereo: perceiveStereoCentersFromMolfile
+      }).pages[0].objects[0]);
+      expect(rotationDegrees).toBeCloseTo(0, 2);
+    } else expectConventional(after);
     if (name === "TMR" || name === "fluorescein open quinoid") expect(winner).toBe("RDKit CoordGen");
     if (name === "fluorescein lactone") {
       // CoordGen's repaired rings have a lower soft distortion score than OCL's.
@@ -236,6 +292,9 @@ describe("Clean Up Structure 2D layout quality (real engines)", () => {
     expect(kept, "Clean Up must commit, including a passing layout close to the pasted drawing").toBe(false);
     expect(committed.overlappingAtoms).toEqual([]);
     expect(committed.crossings).toEqual([]);
+    expect(committed.hardDefects).toBe(0);
+    expect(committed.labelBondOverlaps).toEqual([]);
+    expect(committed.labelLabelOverlaps).toEqual([]);
     expect(committed.passes || committed.passesRelaxed, "committed layout must pass strict or bridge-only relaxed limits").toBe(true);
     expect(warnings).toEqual([]);
 

@@ -4605,7 +4605,7 @@ describe("Phase 4 document workflow", () => {
       });
     });
 
-    it("2D metal placement clears substituent crossings without exempting metal atom overlaps", () => {
+    it("2D metal placement clears substituent crossings while allowing only its metal/donor label contacts", () => {
       const { document, molecule } = zincTetrakisImidazoleFixture();
       const target = nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx;
       const shrunk = applyPatches(document, [{ op: "updateObject", objectId: molecule.id,
@@ -4617,13 +4617,46 @@ describe("Phase 4 document workflow", () => {
       expect(result).not.toBe(shrunk);
       const after = moleculeById(result, molecule.id);
       const ids = new Map(after.atoms.map((atom, i) => [atom.id, i]));
-      const q = layoutEngine.evaluateLayoutQuality(after.atoms, after.bonds
-        .filter(b => b.display?.bondStyle !== "dashed")
-        .map(b => ({ from: ids.get(b.fromAtomId)!, to: ids.get(b.toAtomId)! })), target);
-      expect(q.hardDefects).toBe(0);
+      const bonds = after.bonds.filter(b => b.display?.bondStyle !== "dashed")
+        .map(b => ({ from: ids.get(b.fromAtomId)!, to: ids.get(b.toAtomId)! }));
+      const q = layoutEngine.evaluateLayoutQuality(after.atoms, bonds, target, undefined, undefined,
+        layoutEngine.moleculeLayoutLabelBoxes(after));
+      // Record the unexempted final contacts at default font size: only two Zn/donor pairs.
+      expect(q.labelLabelOverlaps.map(pair => pair.map(i => after.atoms[i].id)))
+        .toEqual([["atom_008", "atom_009"], ["atom_008", "atom_014"]]);
+      expect(q.labelBondOverlaps).toEqual([]);
+      expect(q.overlappingAtoms).toEqual([]);
+      expect(q.atomBondOverlaps).toEqual([]);
+      expect(q.collinearBondOverlaps).toEqual([]);
+      expect(q.crossings).toEqual([]);
       expect(warnings).toEqual([]);
       expect(after.atoms.map(({ x: _x, y: _y, ...atom }) => atom))
         .toEqual(molecule.atoms.map(({ x: _x, y: _y, ...atom }) => atom));
+      // Cleanup chooses double-bond label sides; bond identity and dative styling stay intact.
+      const bondIdentity = (m: MoleculeObject) => m.bonds.map(bond => ({ ...bond,
+        display: { ...bond.display, doubleBondSide: undefined } }));
+      expect(bondIdentity(after)).toEqual(bondIdentity(molecule));
+    });
+
+    it("2D metal placement still refuses a non-metal ligand label collision", () => {
+      const { document, molecule } = zincTetrakisImidazoleFixture();
+      const target = nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx;
+      // This non-donor N is in the ligand skeleton; enlarging it must not gain a metal exemption.
+      const crowded = applyPatches(document, [{ op: "updateObject", objectId: molecule.id,
+        changes: { style: { ...molecule.style, atomLabelFontSizes: { atom_012: 80 } } } }]);
+      const placed = moleculeById(applyNativeMoleculeEngineRelayout(document, molecule.id, relayoutMolfile2D,
+        { targetBondLengthPx: target }), molecule.id);
+      const labeled = { ...placed, style: moleculeById(crowded, molecule.id).style };
+      const ids = new Map(labeled.atoms.map((atom, i) => [atom.id, i]));
+      const q = layoutEngine.evaluateLayoutQuality(labeled.atoms, labeled.bonds
+        .filter(b => b.display?.bondStyle !== "dashed")
+        .map(b => ({ from: ids.get(b.fromAtomId)!, to: ids.get(b.toAtomId)! })), target, undefined, undefined,
+      layoutEngine.moleculeLayoutLabelBoxes(labeled));
+      expect(q.labelLabelOverlaps.some(pair => pair.every(i => labeled.atoms[i].element !== "Zn"))).toBe(true);
+      const warnings: string[] = [];
+      expect(applyNativeMoleculeEngineRelayout(crowded, molecule.id, relayoutMolfile2D,
+        { targetBondLengthPx: target, warnings })).toBe(crowded);
+      expect(warnings).toEqual(["Clean Up kept the drawn layout of this structure: the generated layouts overlapped atom labels."]);
     });
 
     it("2D cleanup of a chelate is a fixed point as well: the metal stays where it was drawn and a second run reproduces the first", () => {
@@ -18000,7 +18033,10 @@ describe("2D engine cleanup candidate gate", () => {
     const chosen = applyNativeMoleculeEngineRelayout(document, molecule.id, () => colliding,
       { targetBondLengthPx: 22, alternateRelayouts: [alternate], warnings });
     expect(alternate).toHaveBeenCalledOnce();
-    expect(chosen).toEqual(applyNativeMoleculeEngineRelayout(document, molecule.id, () => strict, { targetBondLengthPx: 22 }));
+    // Alternate winners now receive a conventional rotation; the primary remains untouched.
+    const orientation = layoutEngine.conventionalLayoutOrientations(strict.atoms, strict.bonds, -1)[0];
+    const oriented = { ...strict, atoms: strict.atoms.map((atom, i) => ({ ...atom, ...orientation.atoms[i] })) };
+    expect(chosen).toEqual(applyNativeMoleculeEngineRelayout(document, molecule.id, () => oriented, { targetBondLengthPx: 22 }));
     const repaired = applyNativeMoleculeEngineRelayout(document, molecule.id, () => colliding,
       { targetBondLengthPx: 22, warnings });
     expect(repaired).not.toBe(document);

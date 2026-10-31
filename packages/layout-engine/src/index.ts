@@ -1,4 +1,5 @@
 export * from "./layoutQuality";
+import type { LayoutLabelBox } from "./layoutQuality";
 export * from "./layoutRepair";
 export { DocumentStyleScale, documentStylePointBounds, FigureStyles, type FigureStyle } from "./documentStyle";
 export { medianLength, representativeMoleculeBondLength, scalePageGeometry } from "./pageScale";
@@ -5412,6 +5413,15 @@ export function planMoleculeAtomLabels(
     );
     return plan ? [plan] : [];
   });
+}
+
+/** The same padded label geometry used by canvas, bond clipping and SVG export. */
+export function moleculeLayoutLabelBoxes(object: MoleculeObject): LayoutLabelBox[] {
+  const indices = new Map(object.atoms.map((atom, i) => [atom.id, i]));
+  return planMoleculeAtomLabels(object).map(plan => ({
+    atom: indices.get(plan.atom.id)!, x: plan.anchor.x + plan.layout.bounds.x,
+    y: plan.anchor.y + plan.layout.bounds.y, width: plan.layout.bounds.width, height: plan.layout.bounds.height
+  }));
 }
 
 /** Page-axis bounds of a caption's stored frame, using the same pivot as text SVG rendering. */

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { compareLayoutQuality, evaluateLayoutQuality, MAX_BRIDGE_STRETCH, type LayoutPoint } from "./layoutQuality";
+import { testMoleculeFromSmiles } from "./testing";
+import { moleculeLayoutLabelBoxes, planMoleculeAtomLabels } from "./index";
+import type { MoleculeObject } from "@chemdraft/chem-core";
 
 const polygon = (n: number): LayoutPoint[] => Array.from({ length: n }, (_, i) => ({
   x: Math.cos(i * 2 * Math.PI / n), y: Math.sin(i * 2 * Math.PI / n)
@@ -7,6 +10,76 @@ const polygon = (n: number): LayoutPoint[] => Array.from({ length: n }, (_, i) =
 const cycle = (n: number) => Array.from({ length: n }, (_, from) => ({ from, to: (from + 1) % n }));
 
 describe("2D layout quality", () => {
+  it("uses renderer boxes for heteroatoms, isotope/charge labels and abbreviations with per-atom styles", () => {
+    const molecule: MoleculeObject = {
+      id: "labels", type: "molecule", x: 0, y: 0, width: 200, height: 80, rotation: 0,
+      structure: "", structureFormat: "smiles", superatoms: [], rGroups: [],
+      style: { bondLengthPx: 30, atomLabelFontSizePx: 15, atomLabelFontSizes: { a4: 23 } },
+      atoms: ["C", "O", "C", "N", "OMe"].map((element, i) => ({
+        id: `a${i}`, element, x: i * 30, y: 0, formalCharge: i === 3 ? 1 : 0,
+        ...(i === 2 ? { isotope: 13 } : {}) })),
+      bonds: Array.from({ length: 4 }, (_, i) => ({ id: `b${i}`, fromAtomId: `a${i}`, toAtomId: `a${i + 1}`, order: "single" }))
+    };
+    const plans = planMoleculeAtomLabels(molecule);
+    const boxes = moleculeLayoutLabelBoxes(molecule);
+    expect(boxes.map(box => box.atom)).toEqual([1, 2, 3, 4]);
+    expect(plans.at(-1)!.fontSizePx).toBe(23);
+    expect(boxes).toEqual(plans.map(plan => ({ atom: molecule.atoms.indexOf(plan.atom),
+      x: plan.anchor.x + plan.layout.bounds.x, y: plan.anchor.y + plan.layout.bounds.y,
+      width: plan.layout.bounds.width, height: plan.layout.bounds.height })));
+  });
+  it("counts padded label/bond and label/label contacts as hard defects, excluding incident bonds", () => {
+    const atoms = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0.5, y: 1 }];
+    const bonds = [{ from: 0, to: 1 }];
+    const box = { atom: 2, x: 0.3, y: -0.1, width: 0.4, height: 1.2 };
+    const evaluate = (boxes: typeof box[]) => evaluateLayoutQuality(atoms, bonds, 1, undefined, undefined, boxes);
+    expect(evaluate([box]).labelBondOverlaps).toEqual([[2, 0]]);
+    expect(evaluate([box]).passes).toBe(false);
+    expect(evaluate([{ ...box, y: 0.02 }]).passes).toBe(false); // padding rejects near touches too
+    expect(evaluate([{ ...box, y: 0.05 }]).passes).toBe(true);
+    expect(evaluate([{ ...box, atom: 0 }]).labelBondOverlaps).toEqual([]);
+    expect(evaluate([{ ...box, y: 1 }, { ...box, atom: 1, y: 1 }]).labelLabelOverlaps).toEqual([[2, 1]]);
+    expect(evaluate([{ ...box, y: 1 }, { ...box, atom: 1, y: 3 }]).hardDefects).toBe(0);
+  });
+
+  it("exempts only declared label pairs, retaining other labels and all skeleton checks", () => {
+    const atoms = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0.5, y: 0 }, { x: 0.5, y: 0 }];
+    const bonds = [{ from: 0, to: 1 }, { from: 0, to: 2 }];
+    const boxes = [0, 2, 3].map(atom => ({ atom, x: 0.3, y: -0.1, width: 0.4, height: 1.2 }));
+    const raw = evaluateLayoutQuality(atoms, bonds, 1, undefined, undefined, boxes);
+    // Reversing the exemption's indices must not change which single pair is exempted.
+    const exempt = evaluateLayoutQuality(atoms, bonds, 1, undefined, undefined, boxes, [[3, 2]]);
+    expect(raw.labelLabelOverlaps).toEqual([[0, 2], [0, 3], [2, 3]]);
+    expect(exempt.labelLabelOverlaps).toEqual([[0, 2], [0, 3]]);
+    expect(exempt.labelBondOverlaps).toEqual(raw.labelBondOverlaps);
+    expect(exempt.labelBondOverlaps).toContainEqual([3, 0]);
+    expect(exempt.smallestLabelBondClearance).toBe(raw.smallestLabelBondClearance);
+    expect(exempt.overlappingAtoms).toEqual(raw.overlappingAtoms);
+    expect(exempt.overlappingAtoms).toContainEqual([2, 3]);
+    expect(exempt.atomBondOverlaps).toEqual(raw.atomBondOverlaps);
+    expect(exempt.atomBondOverlaps).toContainEqual([3, 0]);
+    expect(exempt.collinearBondOverlaps).toEqual(raw.collinearBondOverlaps);
+    expect(exempt.collinearBondOverlaps).toEqual([[0, 1]]);
+    expect(exempt.hardDefects).toBe(raw.hardDefects - 1);
+    expect(exempt.passes).toBe(false);
+    expect(exempt.passesRelaxed).toBe(false);
+  });
+
+  it("skips bridged ring angles but keeps planar limits on fused blocks in the same graph", () => {
+    const source = testMoleculeFromSmiles("C1CC2CCC1C2");
+    const indices = new Map(source.atoms.map((a, i) => [a.id, i]));
+    const bonds = source.bonds.map(b => ({ from: indices.get(b.fromAtomId)!, to: indices.get(b.toAtomId)! }));
+    const q = evaluateLayoutQuality(source.atoms, bonds);
+    expect(q.hasBridgedRings).toBe(true);
+    expect(q.rings.every(r => r.maxAngleError === undefined)).toBe(true);
+    const fused = testMoleculeFromSmiles("C1CCC2CCCCC2C1");
+    const ids = new Map(fused.atoms.map((a, i) => [a.id, i + source.atoms.length]));
+    const mixed = evaluateLayoutQuality([...source.atoms, ...fused.atoms.map(a => ({ ...a, x: a.x + 100 }))],
+      [...bonds, ...fused.bonds.map(b => ({ from: ids.get(b.fromAtomId)!, to: ids.get(b.toAtomId)! }))]);
+    expect(mixed.rings.filter(r => r.atoms.some(i => i >= source.atoms.length)).every(r => r.maxAngleError !== undefined)).toBe(true);
+    expect(mixed.rings.some(r => (r.maxAngleError ?? 0) > 10)).toBe(true);
+    expect(mixed.passes).toBe(false);
+  });
   it("bounds diamond-chain ring perception at 37 and 499 atoms", () => {
     for (const k of [12, 166]) {
       const atoms = Array.from({ length: k + 1 }, (_, i) => ({ x: 2 * i, y: 0 }));
@@ -135,13 +208,14 @@ describe("2D layout quality", () => {
     expect(opposite.passes).toBe(true);
   });
 
-  it("does not certify a cubane projection with distorted cage bonds", () => {
+  it("accepts a cubane projection with distorted cage bonds but no hard defects", () => {
     const atoms = [{ x: -2, y: -2 }, { x: 2, y: -2 }, { x: 2, y: 2 }, { x: -2, y: 2 },
       { x: -1, y: -1 }, { x: 1, y: -1 }, { x: 1, y: 1 }, { x: -1, y: 1 }];
     const bonds = [...cycle(4), ...cycle(4).map(b => ({ from: b.from + 4, to: b.to + 4 })),
       ...Array.from({ length: 4 }, (_, from) => ({ from, to: from + 4 }))];
     const quality = evaluateLayoutQuality(atoms, bonds);
-    expect(quality.passes).toBe(false);
+    // Cage bond lengths are projection conventions, so only hard defects veto this block.
+    expect(quality.passes).toBe(true);
     expect(quality.rings).toHaveLength(6);
     expect(quality.hasBridgedRings).toBe(true);
     expect(quality.minBondLength).toBeLessThan(0.9);

@@ -1,6 +1,10 @@
 /** Engine-independent geometry checks. Indices refer to the supplied atom order. */
 export interface LayoutPoint { x: number; y: number }
 export interface LayoutBond { from: number; to: number }
+export interface LayoutLabelBox { atom: number; x: number; y: number; width: number; height: number }
+
+/** Extra clearance beyond renderer padding, in bond lengths. */
+export const LABEL_CLEARANCE_PADDING = 0.04;
 export interface LayoutRingQuality {
   atoms: number[];
   /** Degrees, including reflex interior angles. Only five- and six-rings have this metric. */
@@ -25,6 +29,10 @@ export interface LayoutQuality {
   /** Topology requiring a bridged/cage depiction: shortest rings share a multi-bond path, or
    * redundant shortest faces outnumber the graph's independent cycles (e.g. cubane). */
   hasBridgedRings: boolean;
+  labelBondOverlaps: [number, number][];
+  labelLabelOverlaps: [number, number][];
+  /** Unpadded box-to-segment distance in bond lengths. */
+  smallestLabelBondClearance: number;
   hardDefects: number;
   softScore: number;
   passes: boolean;
@@ -72,6 +80,9 @@ export interface LayoutTopology {
   acyclicBonds: number[];
   adjacent: { atom: number; bond: number }[][];
   ringPairs: [number, number][];
+  ringSystems: number[][];
+  bridgedRingIndices: Set<number>;
+  bridgedBondIndices: Set<number>;
 }
 
 /** One deterministic shortest path per edge (O(E(V+E))), never every tied path.
@@ -89,6 +100,7 @@ export function prepareLayoutTopology(atomCount: number, bonds: readonly LayoutB
   const discovery = Array<number>(atomCount).fill(-1), low = [...discovery];
   const stack: number[] = [], acyclicBonds: number[] = [];
   const cyclicEdges = new Set<number>();
+  const cyclicBlocks: number[][] = [];
   let time = 0, components = 0;
   const visit = (node: number, parentEdge: number) => {
     discovery[node] = low[node] = time++;
@@ -103,7 +115,7 @@ export function prepareLayoutTopology(atomCount: number, bonds: readonly LayoutB
           let edge: number;
           do { edge = stack.pop()!; block.push(edge); } while (edge !== bond);
           if (block.length === 1) acyclicBonds.push(bond);
-          else block.forEach(edge => cyclicEdges.add(edge));
+          else { cyclicBlocks.push(block); block.forEach(edge => cyclicEdges.add(edge)); }
         }
       } else if (discovery[next] < discovery[node]) {
         stack.push(bond);
@@ -197,7 +209,24 @@ export function prepareLayoutTopology(atomCount: number, bonds: readonly LayoutB
   for (const ids of byAtom) for (let a = 0; a < ids.length; a++) for (let b = a + 1; b < ids.length; b++) {
     pairs.set(pairKey(ids[a], ids[b]), [ids[a], ids[b]]);
   }
-  return { rings: smallest, cycleRank: bonds.length - atomCount + components,
+  const ringEdges = smallest.map(ring => new Set(ring.map((atom, i) =>
+    bondIndex.get(pairKey(atom, ring[(i + 1) % ring.length]))!)));
+  const bridgedRingIndices = new Set<number>(), bridgedBondIndices = new Set<number>();
+  const ringSystems = cyclicBlocks.map(block => [...new Set(block.flatMap(i => [bonds[i].from, bonds[i].to]))].sort((a, b) => a - b));
+  cyclicBlocks.forEach((block, index) => {
+    const edges = new Set(block);
+    const members = ringEdges.flatMap((ring, i) => [...ring].every(edge => edges.has(edge)) ? [i] : []);
+    // Simple fused faces share one edge; spiro faces occupy separate Tarjan blocks.
+    const bridged = members.length > block.length - ringSystems[index].length + 1 ||
+      block.some(edge => members.filter(i => ringEdges[i].has(edge)).length > 2) || members.some((a, i) =>
+      members.slice(i + 1).some(b => {
+        const sharedAtoms = smallest[a].filter(atom => smallest[b].includes(atom)).length;
+        const sharedEdges = [...ringEdges[a]].filter(edge => ringEdges[b].has(edge)).length;
+        return sharedEdges > 1 || (sharedAtoms > 1 && sharedEdges !== 1);
+      }));
+    if (bridged) { members.forEach(i => bridgedRingIndices.add(i)); block.forEach(i => bridgedBondIndices.add(i)); }
+  });
+  return { ringSystems, bridgedRingIndices, bridgedBondIndices, rings: smallest, cycleRank: bonds.length - atomCount + components,
     bridgeBonds, acyclicBonds: acyclicBonds.sort((a, b) => a - b), adjacent,
     ringPairs: [...pairs.values()].sort((a, b) => a[0] - b[0] || a[1] - b[1]) };
 }
@@ -211,7 +240,10 @@ export type LayoutGeometry = Pick<LayoutQuality, "overlappingAtoms" | "crossings
  * Invalid/nonfinite geometry is refused rather than accidentally receiving a passing verdict. */
 export function evaluateLayoutQuality(
   atoms: readonly LayoutPoint[], bonds: readonly LayoutBond[], referenceBondLength?: number,
-  topology?: LayoutTopology, geometry?: LayoutGeometry
+  topology?: LayoutTopology, geometry?: LayoutGeometry, labelBoxes: readonly LayoutLabelBox[] = [],
+  // Host-placed coordination pockets may intentionally touch labels on a metal/donor pair.
+  // This exempts only those label pairs, never atom centres or label/bond clearance.
+  labelLabelExemptions: readonly (readonly [number, number])[] = []
 ): LayoutQuality {
   if (atoms.some(a => !Number.isFinite(a.x) || !Number.isFinite(a.y)) || bonds.some(b =>
     !Number.isInteger(b.from) || !Number.isInteger(b.to) || b.from === b.to ||
@@ -260,8 +292,8 @@ export function evaluateLayoutQuality(
   if (geometry) ({ overlappingAtoms, crossings, collinearBondOverlaps, atomBondOverlaps,
     nearestAtomPairDistance, nearestNonBondedAtomPairDistance } = geometry);
   const smallest = topology ?? prepareLayoutTopology(atoms.length, bonds);
-  const rings: LayoutRingQuality[] = smallest.rings.map(ids => {
-    if (ids.length !== 5 && ids.length !== 6) return { atoms: ids };
+  const rings: LayoutRingQuality[] = smallest.rings.map((ids, index) => {
+    if (smallest.bridgedRingIndices.has(index) || (ids.length !== 5 && ids.length !== 6)) return { atoms: ids };
     const points = ids.map(i => atoms[i]);
     // Signed area and turn distinguish a reflex interior angle from its acute supplement.
     const area = points.reduce((sum, p, i) => sum + cross(points[0], p, points[(i + 1) % points.length]), 0);
@@ -281,10 +313,10 @@ export function evaluateLayoutQuality(
   const edges = rings.map(ring => new Set(ring.atoms.map((a, i) => pairKey(a, ring.atoms[(i + 1) % ring.atoms.length]))));
   const centroid = (ids: number[]) => ({ x: mean(ids.map(i => atoms[i].x)), y: mean(ids.map(i => atoms[i].y)) });
   const fusedSideDefects: [number, number][] = [];
-  let hasBridgedRings = rings.length > smallest.cycleRank;
+  const hasBridgedRings = smallest.bridgedRingIndices.size > 0;
   for (const [i, j] of smallest.ringPairs) {
     const sharedEdges = [...edges[i]].filter(edge => edges[j].has(edge));
-    if (sharedEdges.length > 1) hasBridgedRings = true;
+    if (smallest.bridgedRingIndices.has(i) || smallest.bridgedRingIndices.has(j)) continue;
     // Rings sharing a bridge path rather than one bond are bridged, not fused.
     if (sharedEdges.length !== 1) continue;
     const [p, q] = sharedEdges[0].split(":").map(id => atoms[Number(id)]);
@@ -292,7 +324,29 @@ export function evaluateLayoutQuality(
       fusedSideDefects.push([i, j]);
     }
   }
-  const hardDefects = overlappingAtoms.length + crossings.length + atomBondOverlaps.length + collinearBondOverlaps.length;
+  const labelBondOverlaps: [number, number][] = [], labelLabelOverlaps: [number, number][] = [];
+  const exemptLabelPairs = new Set(labelLabelExemptions.map(([a, b]) => pairKey(a, b)));
+  let smallestLabelBondClearance = Infinity;
+  for (const [i, box] of labelBoxes.entries()) {
+    if (![box.x, box.y, box.width, box.height].every(Number.isFinite) || box.width < 0 || box.height < 0 ||
+        !Number.isInteger(box.atom) || box.atom < 0 || box.atom >= atoms.length) throw new Error("Layout label boxes must be finite with valid atom indices.");
+    bonds.forEach((bond, j) => {
+      if (bond.from === box.atom || bond.to === box.atom) return;
+      smallestLabelBondClearance = Math.min(smallestLabelBondClearance,
+        labelBoxBondDistance(box, atoms[bond.from], atoms[bond.to]) / reference);
+      const padding = LABEL_CLEARANCE_PADDING * reference;
+      if (labelBoxBondDistance({ ...box, x: box.x - padding, y: box.y - padding,
+        width: box.width + 2 * padding, height: box.height + 2 * padding }, atoms[bond.from], atoms[bond.to]) === 0) labelBondOverlaps.push([box.atom, j]);
+    });
+    for (const other of labelBoxes.slice(i + 1)) {
+      if (box.atom === other.atom || exemptLabelPairs.has(pairKey(box.atom, other.atom))) continue;
+      const padding = LABEL_CLEARANCE_PADDING * reference;
+      if (box.x <= other.x + other.width + padding && other.x <= box.x + box.width + padding &&
+          box.y <= other.y + other.height + padding && other.y <= box.y + box.height + padding) labelLabelOverlaps.push([box.atom, other.atom]);
+    }
+  }
+  const hardDefects = overlappingAtoms.length + crossings.length + atomBondOverlaps.length + collinearBondOverlaps.length +
+    labelBondOverlaps.length + labelLabelOverlaps.length;
   const ringError = Math.max(0, ...rings.map(ring => ring.maxAngleError ?? 0));
   const bridgeBonds = smallest.bridgeBonds;
   const bridges = new Set(bridgeBonds);
@@ -300,15 +354,39 @@ export function evaluateLayoutQuality(
   const softScore = bondLengthStdDev + Math.abs(1 - minBondLength) + Math.abs(maxBondLength - 1) + ringError / 180 + fusedSideDefects.length;
   return { referenceBondLength: reference, minBondLength, maxBondLength, bondLengthStdDev,
     crossings, collinearBondOverlaps, overlappingAtoms, atomBondOverlaps, nearestAtomPairDistance, nearestNonBondedAtomPairDistance,
-    rings, fusedSideDefects, hasBridgedRings, hardDefects, softScore,
+    rings, fusedSideDefects, hasBridgedRings, labelBondOverlaps, labelLabelOverlaps, smallestLabelBondClearance, hardDefects, softScore,
     bridgeBonds, maxBridgeLength: Math.max(0, ...bridgeBonds.map(i => fractions[i])),
     passesRelaxed: hardDefects === 0 && regularRings && fractions.every((length, i) =>
-      length >= 0.9 - 1e-9 && length <= (bridges.has(i) ? MAX_BRIDGE_STRETCH : 1.1) + 1e-9),
-    passes: hardDefects === 0 && minBondLength >= 0.9 - 1e-9 && maxBondLength <= 1.1 + 1e-9 &&
+      smallest.bridgedBondIndices.has(i) || (length >= 0.9 - 1e-9 && length <= (bridges.has(i) ? MAX_BRIDGE_STRETCH : 1.1) + 1e-9)),
+    passes: hardDefects === 0 && fractions.every((length, i) => smallest.bridgedBondIndices.has(i) ||
+      (length >= 0.9 - 1e-9 && length <= 1.1 + 1e-9)) &&
       regularRings };
 }
 
 /** Negative means a is better; hard defects always outrank the soft geometry score. */
 export function compareLayoutQuality(a: LayoutQuality, b: LayoutQuality): number {
   return a.hardDefects - b.hardDefects || a.softScore - b.softScore;
+}
+
+/** Exact distance from an axis-aligned label box to a bond centreline. */
+function labelBoxBondDistance(box: LayoutLabelBox, a: LayoutPoint, b: LayoutPoint): number {
+  let low = 0, high = 1;
+  for (const [start, delta, min, max] of [[a.x, b.x - a.x, box.x, box.x + box.width],
+    [a.y, b.y - a.y, box.y, box.y + box.height]]) {
+    if (Math.abs(delta) < 1e-15) { if (start < min || start > max) { high = -1; break; } }
+    else {
+      const t0 = (min - start) / delta, t1 = (max - start) / delta;
+      low = Math.max(low, Math.min(t0, t1)); high = Math.min(high, Math.max(t0, t1));
+    }
+  }
+  if (low <= high) return 0;
+  const pointBox = (p: LayoutPoint) => Math.hypot(Math.max(box.x - p.x, 0, p.x - box.x - box.width),
+    Math.max(box.y - p.y, 0, p.y - box.y - box.height));
+  const pointSegment = (p: LayoutPoint) => {
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / (dx * dx + dy * dy || 1)));
+    return Math.hypot(p.x - a.x - t * dx, p.y - a.y - t * dy);
+  };
+  return Math.min(pointBox(a), pointBox(b), ...[box.x, box.x + box.width].flatMap(x =>
+    [box.y, box.y + box.height].map(y => pointSegment({ x, y }))));
 }
