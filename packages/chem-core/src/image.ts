@@ -8,32 +8,64 @@ export interface ImagePixelInfo {
   pixelsPerMeter?: { x: number; y: number };
 }
 
-/** Read PNG header metadata only; no decompression, DOM, or native APIs. */
-export function readPngInfo(bytes: Uint8Array): ImagePixelInfo | undefined {
+export const MAX_IMAGE_SIDE = 16_384;
+export const MAX_IMAGE_DECODED_BYTES = 256 * 1024 * 1024;
+
+/** Inspect chunk framing without decompressing pixels or checking CRCs. */
+function inspectPng(bytes: Uint8Array): { info?: ImagePixelInfo; error?: string } {
+  const invalid = { error: "the PNG has invalid structure." };
   const signature = [137, 80, 78, 71, 13, 10, 26, 10];
-  if (bytes.length < 33 || !signature.every((value, index) => bytes[index] === value)) return undefined;
+  if (bytes.length < 33 || !signature.every((value, index) => bytes[index] === value)) return invalid;
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const chunkType = (offset: number) => String.fromCharCode(...bytes.subarray(offset + 4, offset + 8));
-  if (view.getUint32(8) !== 13 || chunkType(8) !== "IHDR") return undefined;
+  if (view.getUint32(8) !== 13 || chunkType(8) !== "IHDR") return invalid;
   const pixelWidth = view.getUint32(16);
   const pixelHeight = view.getUint32(20);
-  if (pixelWidth === 0 || pixelHeight === 0 || pixelWidth > 0x7fffffff || pixelHeight > 0x7fffffff) return undefined;
+  if (pixelWidth === 0 || pixelHeight === 0 || pixelWidth > 0x7fffffff || pixelHeight > 0x7fffffff) return invalid;
   const info: ImagePixelInfo = { pixelWidth, pixelHeight };
+  let hasData = false;
   for (let offset = 33; offset < bytes.length;) {
-    if (offset + 12 > bytes.length) return undefined;
+    if (offset + 12 > bytes.length) return invalid;
     const length = view.getUint32(offset);
-    if (length > bytes.length - offset - 12) return undefined;
+    if (length > bytes.length - offset - 12) return invalid;
     const type = chunkType(offset);
+    if (type === "IHDR") return invalid;
     if (type === "pHYs") {
-      if (length !== 9) return undefined;
+      if (length !== 9) return invalid;
       const x = view.getUint32(offset + 8);
       const y = view.getUint32(offset + 12);
       if (bytes[offset + 16] === 1 && x > 0 && y > 0) info.pixelsPerMeter = { x, y };
     }
-    if (type === "IDAT" || type === "IEND") break;
+    if (type === "IDAT" && length > 0) hasData = true;
+    if (type === "IEND") {
+      if (length !== 0 || offset + 12 !== bytes.length) return invalid;
+      return hasData ? { info } : { error: "the PNG has no image data." };
+    }
     offset += length + 12;
   }
-  return info;
+  return hasData ? invalid : { error: "the PNG has no image data." };
+}
+
+export function readPngInfo(bytes: Uint8Array): ImagePixelInfo | undefined {
+  return inspectPng(bytes).info;
+}
+
+export function imagePixelLimitError(width: number, height: number): string | undefined {
+  if (width > MAX_IMAGE_SIDE || height > MAX_IMAGE_SIDE) {
+    return `Couldn't paste the picture: it is ${width} x ${height} pixels; the limit is ${MAX_IMAGE_SIDE} pixels on a side.`;
+  }
+  if (width * height * 4 > MAX_IMAGE_DECODED_BYTES) {
+    return `Couldn't paste the picture: it is ${width} x ${height} pixels; the decoded limit is 256 MiB.`;
+  }
+  return undefined;
+}
+
+export function validatePngImage(bytes: Uint8Array): { info?: ImagePixelInfo; error?: string } {
+  const result = inspectPng(bytes);
+  if (result.error) return { error: `Couldn't paste the picture: ${result.error}` };
+  const info = result.info!;
+  const error = imagePixelLimitError(info.pixelWidth, info.pixelHeight);
+  return error ? { error } : { info };
 }
 
 /** SVG image pixels follow the paste default of 72 dpi; absolute units retain their physical size. */
@@ -84,7 +116,13 @@ export interface CreateImageGraphicObjectOptions {
 export function createImageGraphicObject(options: CreateImageGraphicObjectOptions): GraphicObject {
   const { mimeType, dataBase64, id, center } = options;
   const bytes = decodeImageBase64(dataBase64, id);
-  const info = mimeType === "image/png" ? readPngInfo(bytes) : readSvgInfo(new TextDecoder().decode(bytes));
+  const png = mimeType === "image/png" ? validatePngImage(bytes) : undefined;
+  if (png?.error) throw new Error(png.error);
+  const info = png?.info ?? (mimeType === "image/svg+xml" ? readSvgInfo(new TextDecoder().decode(bytes)) : undefined);
+  const actualLimitError = info && imagePixelLimitError(info.pixelWidth, info.pixelHeight);
+  if (actualLimitError) throw new Error(actualLimitError);
+  const limitError = imagePixelLimitError(options.pixelWidth ?? info?.pixelWidth ?? 0, options.pixelHeight ?? info?.pixelHeight ?? 0);
+  if (limitError) throw new Error(limitError);
   const pixelsPerMeter = options.pixelsPerMeter ?? info?.pixelsPerMeter;
   const image: ImageObjectData = {
     mimeType, dataBase64,

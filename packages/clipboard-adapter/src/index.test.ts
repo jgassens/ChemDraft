@@ -430,7 +430,7 @@ describe("clipboard-adapter", () => {
   });
 
   it("classifies picture paste with chemistry before images and images before prose", () => {
-    const png = { type: "image/png" as const, bytesBase64: "cG5n", pixelWidth: 200, pixelHeight: 100 };
+    const png = { type: "image/png" as const, bytesBase64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/aWQAAAAASUVORK5CYII=", pixelWidth: 200, pixelHeight: 100 };
     const svg = { type: "image/svg+xml" as const, bytesBase64: "PHN2Zy8+" };
     const cases = [
       { textItems: [{ type: "chemical/x-daylight-smiles", text: "CCO" }], imageItems: [png], kind: "smiles" },
@@ -445,6 +445,8 @@ describe("clipboard-adapter", () => {
       { textItems: [{ type: "text/plain", text: "<CDXML><page /></CDXML>" }], imageItems: [png], kind: "cdxml" },
       { textItems: [{ type: "text/plain", text: "InChI=1S/CH4/h1H4" }], imageItems: [png], kind: "inchi" },
       { textItems: [], types: ["com.cambridgesoft.ChemDraw.CDX"], imageItems: [png], kind: "cdx" },
+      { textItems: [], types: ["chemical/x-cdxml", "image/png"], imageItems: [png], kind: "cdxml" },
+      { textItems: [], types: ["chemical/x-mdl-molfile", "image/png"], imageItems: [png], kind: "empty" },
       { textItems: [], kind: "empty" }
     ];
     for (const entry of cases) {
@@ -452,6 +454,16 @@ describe("clipboard-adapter", () => {
       expect(result.kind, JSON.stringify(entry)).toBe(entry.kind);
       if ("type" in entry) expect(result).toMatchObject({ image: { type: entry.type } });
     }
+  });
+
+  it("refuses invalid and oversized PNG clipboard images", () => {
+    const bytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/aWQAAAAASUVORK5CYII=", "base64");
+    const inspect = (data: Buffer) => inspectClipboardPayload({ types: ["image/png"], textItems: [],
+      imageItems: [{ type: "image/png", bytesBase64: data.toString("base64") }] });
+    expect(inspect(bytes.subarray(0, 33))).toMatchObject({ kind: "image-refused", message: "Couldn't paste the picture: the PNG has no image data." });
+    bytes.writeUInt32BE(40000, 16);
+    bytes.writeUInt32BE(20000, 20);
+    expect(inspect(bytes)).toMatchObject({ kind: "image-refused", message: "Couldn't paste the picture: it is 40000 x 20000 pixels; the limit is 16384 pixels on a side." });
   });
 
   it("refuses skipped-only pictures with the native reason while retaining chemistry precedence", () => {

@@ -1,4 +1,4 @@
-import { MAX_IMAGE_OBJECT_BYTES, normalizeAtomIsotope, readSvgInfo } from "@chemdraft/chem-core";
+import { MAX_IMAGE_OBJECT_BYTES, normalizeAtomIsotope, readSvgInfo, validatePngImage, imagePixelLimitError } from "@chemdraft/chem-core";
 
 export type ClipboardPayloadKind = "svg" | "png" | "text/plain" | "smiles" | "mol" | "rxn" | "cdxml" | "cdx";
 
@@ -223,6 +223,14 @@ export function inspectClipboardPayload(payload: ClipboardReadPayload): Clipboar
     };
   }
 
+  const cdxmlType = payload.types.find(isCdxmlType);
+  if (cdxmlType) {
+    return { kind: "cdxml", text: "", sourceType: cdxmlType, warnings: [{
+      code: "clipboard.cdxml_not_implemented",
+      message: "The clipboard contains CDXML, but CDXML paste parsing is not implemented yet."
+    }] };
+  }
+
   const cdxType = payload.types.find(isCdxType);
   if (cdxType) {
     return {
@@ -235,6 +243,11 @@ export function inspectClipboardPayload(payload: ClipboardReadPayload): Clipboar
         }
       ]
     };
+  }
+
+  // An unreadable advertised chemistry flavor still takes precedence over artwork.
+  if (payload.types.some((type) => isSmilesType(type) || /(?:molfile|rxnfile|inchi|chemical\/)/i.test(type))) {
+    return { kind: "empty", warnings: [{ code: "clipboard.empty_or_unsupported", message: "The clipboard does not contain a supported ChemDraft paste payload." }] };
   }
 
   const firstPlainText =
@@ -250,18 +263,44 @@ export function inspectClipboardPayload(payload: ClipboardReadPayload): Clipboar
   if (smilesCandidate) {
     return { kind: "smiles", text: smilesCandidate.text, sourceType: smilesCandidate.type, warnings: [] };
   }
-  if (image) return { kind: "image", image, sourceType: image.type, warnings: [] };
+  if (image) {
+    try {
+      const binary = atob(image.bytesBase64);
+      if (binary.length > MAX_IMAGE_OBJECT_BYTES) {
+        return refusedImage(`${image.type === "image/png" ? "PNG" : "SVG"} is ${(binary.length / (1024 * 1024)).toFixed(1)} MB; the limit is 25 MB.`);
+      }
+      const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+      if (image.type === "image/png") {
+        const result = validatePngImage(bytes);
+        if (result.error) return refusedImage(result.error);
+        const limitError = imagePixelLimitError(image.pixelWidth ?? result.info!.pixelWidth, image.pixelHeight ?? result.info!.pixelHeight);
+        if (limitError) return refusedImage(limitError);
+      } else {
+        const info = readSvgInfo(new TextDecoder().decode(bytes));
+        const actualLimitError = info && imagePixelLimitError(info.pixelWidth, info.pixelHeight);
+        if (actualLimitError) return refusedImage(actualLimitError);
+        const limitError = imagePixelLimitError(image.pixelWidth ?? info?.pixelWidth ?? 0, image.pixelHeight ?? info?.pixelHeight ?? 0);
+        if (limitError) return refusedImage(limitError);
+      }
+    } catch {
+      return refusedImage(`the ${image.type === "image/png" ? "PNG" : "SVG"} has invalid data.`);
+    }
+    return { kind: "image", image, sourceType: image.type, warnings: [] };
+  }
   if (svgText) {
     const bytes = new TextEncoder().encode(svgText.text);
     if (bytes.length > MAX_IMAGE_OBJECT_BYTES) {
       return refusedImage(`SVG is ${(bytes.length / (1024 * 1024)).toFixed(1)} MB; the limit is 25 MB.`);
     }
+    const info = readSvgInfo(svgText.text)!;
+    const limitError = imagePixelLimitError(info.pixelWidth, info.pixelHeight);
+    if (limitError) return refusedImage(limitError);
     const chunks: string[] = [];
     for (let offset = 0; offset < bytes.length; offset += 8192) {
       chunks.push(String.fromCharCode(...bytes.subarray(offset, offset + 8192)));
     }
     return { kind: "image", sourceType: svgText.type, warnings: [], image: {
-      type: "image/svg+xml", bytesBase64: btoa(chunks.join("")), ...readSvgInfo(svgText.text)
+      type: "image/svg+xml", bytesBase64: btoa(chunks.join("")), ...info
     } };
   }
   if (skippedImage) return refusedImage(skippedImage.reason);

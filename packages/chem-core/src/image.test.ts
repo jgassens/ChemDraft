@@ -5,8 +5,8 @@ import {
 } from "./index";
 
 function png(width: number, height: number, density?: { x: number; y: number; unit?: number }): Uint8Array {
-  // Metadata-only PNG fixture: CRCs are irrelevant to the header reader (it does not decode PNG).
-  const bytes = new Uint8Array(33 + (density ? 21 : 0) + 12);
+  // CRCs and compressed bytes are not interpreted by the chunk reader.
+  const bytes = new Uint8Array(33 + (density ? 21 : 0) + 13 + 12);
   bytes.set([137, 80, 78, 71, 13, 10, 26, 10]);
   const view = new DataView(bytes.buffer);
   view.setUint32(8, 13);
@@ -24,6 +24,10 @@ function png(width: number, height: number, density?: { x: number; y: number; un
     bytes[49] = density.unit ?? 1;
     end += 21;
   }
+  view.setUint32(end, 1);
+  bytes.set(new TextEncoder().encode("IDAT"), end + 4);
+  bytes[end + 8] = 1;
+  end += 13;
   bytes.set(new TextEncoder().encode("IEND"), end + 4);
   return bytes;
 }
@@ -56,6 +60,19 @@ describe("embedded picture graphics", () => {
     expect(object.y + object.height / 2).toBe(300);
     expect(object).toMatchObject({ type: "graphic", graphicKind: "image", rotation: 0,
       data: { image: { mimeType: "image/png", pixelWidth: 144, pixelHeight: 72 } } });
+  });
+
+  it("refuses missing image data, malformed chunks, and excessive decoded dimensions", () => {
+    const noData = png(10, 10).subarray(0, 33);
+    expect(readPngInfo(noData)).toBeUndefined();
+    expect(() => createImageGraphicObject({ ...options, pixelWidth: 10, pixelHeight: 10,
+      dataBase64: Buffer.from(noData).toString("base64") })).toThrow("Couldn't paste the picture: the PNG has no image data.");
+    const huge = png(40000, 20000);
+    expect(() => createImageGraphicObject({ ...options, pixelWidth: 1, pixelHeight: 1,
+      dataBase64: Buffer.from(huge).toString("base64") })).toThrow("Couldn't paste the picture: it is 40000 x 20000 pixels; the limit is 16384 pixels on a side.");
+    expect(() => createImageGraphicObject({ ...options, dataBase64: Buffer.from(png(9000, 9000)).toString("base64") })).toThrow("decoded limit is 256 MiB");
+    expect(readPngInfo(png(10, 10).subarray(0, 50))).toBeUndefined();
+    expect(readPngInfo(png(10, 10))).toEqual({ pixelWidth: 10, pixelHeight: 10 });
   });
 
   it("uses independent physical densities from pHYs, or explicit native metadata", () => {
