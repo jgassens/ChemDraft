@@ -512,8 +512,7 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     expect(request?.payload).toMatchObject({
       kind: "saveTextFile",
       filename: "predicted-1H-nmr.jdx",
-      formatLabel: "JCAMP-DX",
-      extensions: ["jdx", "dx"]
+      format: "jcamp"
     });
     expect((request?.payload as { text: string }).text).toContain("##JCAMP-DX=");
     // The report window never reached for a dialog of its own.

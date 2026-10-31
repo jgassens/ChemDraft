@@ -745,10 +745,7 @@ describe("MainWindow bundled plugin integration", () => {
       requestId: "save-1",
       filename: "predicted-1H-nmr.jdx",
       text: "##TITLE=x",
-      title: "Export spectrum (JCAMP-DX)",
-      formatLabel: "JCAMP-DX",
-      extensions: ["jdx", "dx"],
-      mimeType: "chemical/x-jcamp-dx"
+      format: "jcamp"
     });
     expect(downloads).toEqual(["predicted-1H-nmr.jdx"]);
   });
