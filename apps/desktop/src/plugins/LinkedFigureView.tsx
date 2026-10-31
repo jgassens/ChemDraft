@@ -76,9 +76,11 @@ export function LinkedFigureView({
   defaultComparisonMode = "primary"
 }: LinkedFigureViewProps) {
   const reversed = spectrum.reversed ?? true;
-  const [protonFrequencyMHz, setProtonFrequencyMHz] = useState(defaultSpectrometerMHz);
+  const [protonFrequencyMHz, setProtonFrequencyMHz] = useState(
+    Number.isFinite(defaultSpectrometerMHz) && defaultSpectrometerMHz > 0 ? defaultSpectrometerMHz : DEFAULT_SPECTROMETER_MHZ
+  );
   const [comparisonMode, setComparisonMode] = useState<SpectrumComparisonMode>(defaultComparisonMode);
-  const hasAlternative = spectrum.peaks.some((peak) => peak.alternativePpm !== undefined);
+  const hasAlternative = spectrum.peaks.some((peak) => Number.isFinite(peak.alternativePpm));
   const supportsComparison = spectrum.comparison !== undefined || hasAlternative;
   const effectiveComparisonMode: SpectrumComparisonMode = hasAlternative ? comparisonMode : "primary";
   const comparison = spectrumComparisonLabels(spectrum);
@@ -87,7 +89,8 @@ export function LinkedFigureView({
   const domainSpan = Math.max(1e-6, effectiveDomain.max - effectiveDomain.min);
   const observeMHz = observeFrequencyMHz(spectrum.nucleus, protonFrequencyMHz);
   const renderPeaks = useMemo(
-    () => spectrumPeaksForMode(spectrum.peaks, effectiveComparisonMode),
+    () => spectrumPeaksForMode(spectrum.peaks, effectiveComparisonMode)
+      .filter((peak) => Number.isFinite(peak.ppm) && Number.isFinite(peak.intensity)),
     [spectrum.peaks, effectiveComparisonMode]
   );
   const spectrumIdentity = useMemo(() => spectrumViewportIdentity(spectrum), [spectrum]);
@@ -459,23 +462,33 @@ export function LinkedFigureView({
     [renderPeaks, observeMHz]
   );
   const spectrumLines = useMemo(
-    () =>
-      renderPeakLayouts.flatMap(({ peak, lines }) =>
+    () => {
+      const lines = renderPeakLayouts.flatMap(({ peak, lines }) =>
         lines.map((line) => ({
           ppm: line.ppm,
           amp: Math.max(0.001, peak.intensity) * line.rel,
           peakId: peak.sourceId,
           style: curveStyleForPeak(peak)
         }))
-      ),
+      ).filter((line) => Number.isFinite(line.ppm) && Number.isFinite(line.amp));
+      let maxAmplitude = 0;
+      for (const line of lines) maxAmplitude = Math.max(maxAmplitude, line.amp);
+      // A common scale cancels in normalization; avoid overflowing the sum of finite amplitudes.
+      if (maxAmplitude > Number.MAX_VALUE / Math.max(1, lines.length)) {
+        for (const line of lines) line.amp /= maxAmplitude;
+      }
+      return lines;
+    },
     [renderPeakLayouts]
   );
+  const envelope = useMemo(() => createSpectrumEnvelope(spectrumLines, halfWidthPpm), [spectrumLines, halfWidthPpm]);
   const sampled = useMemo(
-    () => sampleStyledEnvelope(spectrumLines, view, reversed, halfWidthPpm, sampleStep),
-    [spectrumLines, view.min, view.max, reversed, halfWidthPpm, sampleStep]
+    () => sampleStyledEnvelope(spectrumLines, view, reversed, halfWidthPpm, sampleStep, envelope),
+    [spectrumLines, view.min, view.max, reversed, halfWidthPpm, sampleStep, envelope]
   );
   const hasVisibleLine = spectrumLines.some((line) => line.ppm >= view.min && line.ppm <= view.max);
-  const offscreenScaleReference = Math.max(1e-9, ...spectrumLines.map((line) => line.amp));
+  let offscreenScaleReference = 1e-9;
+  for (const line of spectrumLines) offscreenScaleReference = Math.max(offscreenScaleReference, line.amp);
   const normalizationMax = hasVisibleLine ? sampled.max : offscreenScaleReference;
   const heightScale = (PLOT_H - SPECTRUM_TOP_PAD) / normalizationMax;
   const spectrumCurvePaths = useMemo(
@@ -489,7 +502,19 @@ export function LinkedFigureView({
     return spectrumPathFrom(s.xs, s.totals, heightScale);
   }, [spectrumLines, activePeakIds, view.min, view.max, reversed, halfWidthPpm, sampleStep, heightScale]);
   // Label height comes from the true curve value at the peak's center ppm (independent of sampling).
-  const heightAtPpm = (ppm: number): number => envelopeHeight(spectrumLines, ppm, halfWidthPpm) * heightScale;
+  const apexHeights = new Map<number, number>();
+  const apexHeight = (lines: readonly { ppm: number }[]): number => {
+    let max = 0;
+    for (const line of lines) {
+      let height = apexHeights.get(line.ppm);
+      if (height === undefined) {
+        height = envelope(line.ppm).total * heightScale;
+        apexHeights.set(line.ppm, height);
+      }
+      max = Math.max(max, height);
+    }
+    return max;
+  };
 
   const peakLabels = placePeakLabels(renderPeakLayouts.flatMap(({ peak, lines }) => {
     const x = xOf(peak.ppm);
@@ -498,7 +523,7 @@ export function LinkedFigureView({
       key: peak.key,
       text: peak.variant === "alternative" ? `${peak.label}${alternativeSuffix}` : peak.label,
       x,
-      apexY: BASE_Y - Math.max(...lines.map((line) => heightAtPpm(line.ppm))),
+      apexY: BASE_Y - apexHeight(lines),
       intensity: peak.intensity,
       ppm: peak.ppm
     }];
@@ -718,7 +743,7 @@ export function LinkedFigureView({
           {renderPeakLayouts.map(({ peak, lines }) => {
             const label = peakLabels.get(peak.key);
             if (!label) return null;
-            const apexY = BASE_Y - Math.max(...lines.map((line) => heightAtPpm(line.ppm)));
+            const apexY = BASE_Y - apexHeight(lines);
             return <line key={peak.key} className="lf-label-leader"
               x1={xOf(peak.ppm)} y1={apexY} x2={label.x + label.width / 2}
               y2={apexY < label.y ? label.y : label.y + label.height}
@@ -732,9 +757,14 @@ export function LinkedFigureView({
             // table instead (user direction, ADR-0025). Rule estimates stay visually distinct.
             const peakClass = `lf-peak${active ? " is-active" : ""}${peak.estimated ? " is-estimated" : ""}`;
             const labelClass = `lf-peak-label${peak.estimated ? " is-estimated" : ""}${peak.variant === "alternative" ? " is-alternative" : ""}`;
-            const xs = lines.map((line) => xOf(line.ppm));
-            const minX = Math.min(centerX, ...xs);
-            const maxX = Math.max(centerX, ...xs);
+            let minX = centerX;
+            let maxX = centerX;
+            for (const line of lines) {
+              const x = xOf(line.ppm);
+              if (!Number.isFinite(x)) continue;
+              minX = Math.min(minX, x);
+              maxX = Math.max(maxX, x);
+            }
             const label = peakLabels.get(peak.key);
             const text = peak.variant === "alternative" ? `${peak.label}${alternativeSuffix}` : peak.label;
             return (
@@ -785,7 +815,7 @@ export function LinkedFigureView({
               </g>
             ))}
             {layout.labels.map((annotation) => {
-              const atom = layout.atoms.find((candidate) => candidate.index === annotation.index)!;
+              const atom = layout.byIndex.get(annotation.index)!;
               return <line key={annotation.index} className="lf-label-leader"
                 x1={atom.sx} y1={atom.sy} x2={annotation.leaderX} y2={annotation.leaderY}
                 stroke="#8a8f98" strokeWidth={0.6} pointerEvents="none" />;
@@ -793,7 +823,7 @@ export function LinkedFigureView({
             {layout.atoms.map((atom) => {
               const active = activeAtoms.has(atom.index);
               const shift = atomShift.get(atom.index);
-              const annotation = layout.labels.find((label) => label.index === atom.index);
+              const annotation = layout.labelByIndex.get(atom.index);
               const isHetero = atom.element !== "C";
               return (
                 <g
@@ -904,7 +934,8 @@ function layoutStructure(
     if (!a || !b) return [];
     return [{ lines: annotationBondLines({ x: a.sx, y: a.sy }, { x: b.sx, y: b.sy }, bond.order, placement.fitScale) }];
   });
-  return { ...placement, atoms, bonds };
+  const labelByIndex = new Map(placement.labels.map((label) => [label.index, label]));
+  return { ...placement, atoms, bonds, byIndex, labelByIndex };
 }
 
 /** Keep labels near their ppm and stagger vertically, reserving the honesty note and axis. */
@@ -916,6 +947,7 @@ function placePeakLabels(peaks: {
     b.intensity - a.intensity || a.ppm - b.ppm || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)
   );
   const rows = Array.from({ length: 10 }, (_, index) => 18 + index * 18);
+  const occupiedRows = rows.map(() => [] as AnnotationLabelBox[]);
   for (const peak of sorted) {
     const width = estimateAnnotationTextWidth(peak.text, PEAK_LABEL_FONT_SIZE);
     if (width > PLOT_W) continue;
@@ -927,8 +959,11 @@ function placePeakLabels(peaks: {
         y, width, height: PEAK_LABEL_FONT_SIZE * 1.25
       };
       const clearance = { ...box, x: box.x - 2, y: box.y - 1, width: width + 4, height: box.height + 2 };
-      if ([...placed.values()].some((other) => annotationLabelBoxesOverlap(clearance, other))) continue;
+      // Row spacing exceeds the label height plus clearance, so only this row can collide.
+      const occupied = occupiedRows[rows.indexOf(y)];
+      if (occupied.some((other) => annotationLabelBoxesOverlap(clearance, other))) continue;
       placed.set(peak.key, box);
+      occupied.push(box);
       break;
     }
   }
@@ -981,7 +1016,10 @@ function multipletLines(
   peak: { ppm: number; couplings?: PluginLinkedFigurePeak["couplings"] },
   spectrometerMHz: number
 ): { ppm: number; rel: number }[] {
-  const couplings = peak.couplings ?? [];
+  if (!Number.isFinite(peak.ppm)) return [];
+  const couplings = (peak.couplings ?? []).filter((coupling) =>
+    Number.isFinite(coupling.jHz) && Number.isFinite(coupling.partnerCount)
+  );
   const lineCount = couplings.reduce((n, coupling) => n * (coupling.partnerCount + 1), 1);
   if (couplings.length === 0 || lineCount > MAX_MULTIPLET_LINES) {
     return [{ ppm: peak.ppm, rel: 1 }];
@@ -998,8 +1036,9 @@ function multipletLines(
     }
     lines = next;
   }
-  const maxWeight = Math.max(...lines.map((line) => line.weight));
-  return lines.map((line) => ({ ppm: line.ppm, rel: line.weight / maxWeight }));
+  let maxWeight = 0;
+  for (const line of lines) maxWeight = Math.max(maxWeight, line.weight);
+  return lines.filter((line) => Number.isFinite(line.ppm)).map((line) => ({ ppm: line.ppm, rel: line.weight / maxWeight }));
 }
 
 function binomial(n: number, k: number): number {
@@ -1017,13 +1056,123 @@ function lineShape(d: number): number {
   return LORENTZIAN_FRACTION * lorentzian + (1 - LORENTZIAN_FRACTION) * gaussian;
 }
 
-/** Evaluate the summed line-profile height (pre-scale) at a single ppm — used for peak-label placement. */
-function envelopeHeight(lines: readonly { ppm: number; amp: number }[], ppm: number, halfWidthPpm: number): number {
-  let total = 0;
-  for (const line of lines) {
-    total += line.amp * lineShape((ppm - line.ppm) / halfWidthPpm);
+interface EnvelopeHeight {
+  total: number;
+  byStyle: Record<CurveStyle, number>;
+}
+
+/** Index lines in ppm order, combining coincident lines into bins. Nearby sparse bins retain the
+ * exact profile; narrow dense bins use its convergent series so clustered lines stay cheap too.
+ * Distant bins use Lorentzian moments: unlike a cutoff, this preserves the long tails. At a
+ * radius/distance <= 1/8, 20 moments leave less than double-precision rounding error; the Gaussian
+ * beyond eight half-widths contributes less than 6e-20 of its amplitude. */
+export function createSpectrumEnvelope(lines: readonly SpectrumLine[], halfWidthPpm: number): (ppm: number) => EnvelopeHeight {
+  const finite = lines.filter((line) => Number.isFinite(line.ppm) && Number.isFinite(line.amp));
+  const styles = CURVE_STYLES.filter((style) => finite.some((line) => line.style === style));
+  const empty = (): EnvelopeHeight => ({ total: 0, byStyle: { trusted: 0, estimated: 0, alternative: 0 } });
+  if (!Number.isFinite(halfWidthPpm) || halfWidthPpm <= 0) return empty;
+  // Keep the original summation order for small figures, including their last rounding bit.
+  if (finite.length <= 64) return (ppm) => {
+    const result = empty();
+    if (!Number.isFinite(ppm)) return result;
+    for (const line of finite) {
+      const height = line.amp * lineShape((ppm - line.ppm) / halfWidthPpm);
+      result.total += height;
+      result.byStyle[line.style] += height;
+    }
+    return result;
+  };
+  interface Bin {
+    ppm: number;
+    byStyle: Record<CurveStyle, number>;
   }
-  return total;
+  interface Node {
+    center: number;
+    radius: number;
+    moments: Record<CurveStyle, Float64Array>;
+    start: number;
+    end: number;
+    children?: Node[];
+  }
+  const byPpm = new Map<number, Bin>();
+  for (const line of finite) {
+    let bin = byPpm.get(line.ppm);
+    if (!bin) {
+      bin = { ppm: line.ppm, byStyle: empty().byStyle };
+      byPpm.set(line.ppm, bin);
+    }
+    bin.byStyle[line.style] += line.amp;
+  }
+  const bins = [...byPpm.values()].sort((a, b) => a.ppm - b.ppm);
+  const momentCount = 20;
+  const build = (start: number, end: number): Node => {
+    const center = bins[start].ppm / 2 + bins[end - 1].ppm / 2;
+    const radius = Math.max(center - bins[start].ppm, bins[end - 1].ppm - center);
+    const moments = {
+      trusted: new Float64Array(momentCount), estimated: new Float64Array(momentCount), alternative: new Float64Array(momentCount)
+    };
+    for (let index = start; index < end; index += 1) {
+      const bin = bins[index];
+      const offset = radius === 0 ? 0 : (bin.ppm - center) / radius;
+      let power = 1;
+      for (let degree = 0; degree < momentCount; degree += 1) {
+        for (const style of styles) moments[style][degree] += bin.byStyle[style] * power;
+        power *= offset;
+      }
+    }
+    const node: Node = { center, radius, moments, start, end };
+    if (end - start > 8 && radius > halfWidthPpm / 8) {
+      const middle = Math.floor((start + end) / 2);
+      node.children = [build(start, middle), build(middle, end)];
+    }
+    return node;
+  };
+  const root = build(0, bins.length);
+  return (ppm) => {
+    const result = empty();
+    if (!Number.isFinite(ppm)) return result;
+    const visit = (node: Node): void => {
+      const distance = ppm - node.center;
+      const far = Math.abs(distance) - node.radius > 8 * halfWidthPpm;
+      if (node.radius <= halfWidthPpm / 8 || (far && node.radius <= Math.abs(distance) / 8)) {
+        const d = distance / halfWidthPpm;
+        const radius = node.radius / halfWidthPpm;
+        const denominator = 1 + d * d;
+        if (!Number.isFinite(denominator)) return;
+        let real = d / denominator;
+        let imaginary = -1 / denominator;
+        const ratioReal = radius * real;
+        const ratioImaginary = radius * imaginary;
+        let gaussian = far ? 0 : Math.exp(-Math.LN2 * d * d);
+        let previousGaussian = 0;
+        const linear = 2 * Math.LN2 * d * radius;
+        const quadratic = -2 * Math.LN2 * radius * radius;
+        for (let degree = 0; degree < momentCount; degree += 1) {
+          const profile = -LORENTZIAN_FRACTION * imaginary + (1 - LORENTZIAN_FRACTION) * gaussian;
+          for (const style of styles) {
+            result.byStyle[style] += profile * node.moments[style][degree];
+          }
+          const nextGaussian = (linear * gaussian + quadratic * previousGaussian) / (degree + 1);
+          previousGaussian = gaussian;
+          gaussian = nextGaussian;
+          const nextReal = real * ratioReal - imaginary * ratioImaginary;
+          imaginary = real * ratioImaginary + imaginary * ratioReal;
+          real = nextReal;
+        }
+      } else if (node.children) {
+        for (const child of node.children) visit(child);
+      } else {
+        for (let index = node.start; index < node.end; index += 1) {
+          const bin = bins[index];
+          const height = lineShape((ppm - bin.ppm) / halfWidthPpm);
+          for (const style of styles) result.byStyle[style] += bin.byStyle[style] * height;
+        }
+      }
+    };
+    visit(root);
+    for (const style of styles) result.total += result.byStyle[style];
+    return result;
+  };
 }
 
 /** Sample the summed line-profile envelope of `lines` across the plot at `step` px (sub-pixel so sharp
@@ -1036,19 +1185,7 @@ function sampleEnvelope(
   halfWidthPpm: number,
   step: number
 ): { xs: number[]; totals: number[]; max: number } {
-  const xs: number[] = [];
-  const totals: number[] = [];
-  let max = 1e-9;
-  const span = view.max - view.min || 1;
-  for (let x = MARGIN.left; x <= MARGIN.left + PLOT_W + step; x += step) {
-    const frac = (x - MARGIN.left) / PLOT_W;
-    const ppm = view.min + (reversed ? 1 - frac : frac) * span;
-    const total = envelopeHeight(lines, ppm, halfWidthPpm);
-    xs.push(x);
-    totals.push(total);
-    if (total > max) max = total;
-  }
-  return { xs, totals, max };
+  return sampleStyledEnvelope(lines.map((line) => ({ ...line, peakId: "", style: "trusted" })), view, reversed, halfWidthPpm, step);
 }
 
 interface StyledEnvelopeSample {
@@ -1060,12 +1197,13 @@ interface StyledEnvelopeSample {
 
 /** Sample all provenance styles in one traversal. This avoids repeating the line-profile work once
  * per curve layer while allowing rule-estimated and alternative traces to retain distinct styling. */
-function sampleStyledEnvelope(
+export function sampleStyledEnvelope(
   lines: readonly SpectrumLine[],
   view: { min: number; max: number },
   reversed: boolean,
   halfWidthPpm: number,
-  step: number
+  step: number,
+  envelope = createSpectrumEnvelope(lines, halfWidthPpm)
 ): StyledEnvelopeSample {
   const xs: number[] = [];
   const totals: number[] = [];
@@ -1074,22 +1212,13 @@ function sampleStyledEnvelope(
     estimated: [],
     alternative: []
   };
+  if (![view.min, view.max, step].every(Number.isFinite) || step <= 0) return { xs, totals, max: 1e-9, byStyle };
   let max = 1e-9;
   const span = view.max - view.min || 1;
   for (let x = MARGIN.left; x <= MARGIN.left + PLOT_W + step; x += step) {
     const frac = (x - MARGIN.left) / PLOT_W;
     const ppm = view.min + (reversed ? 1 - frac : frac) * span;
-    const styleTotals: Record<CurveStyle, number> = {
-      trusted: 0,
-      estimated: 0,
-      alternative: 0
-    };
-    let total = 0;
-    for (const line of lines) {
-      const height = line.amp * lineShape((ppm - line.ppm) / halfWidthPpm);
-      total += height;
-      styleTotals[line.style] += height;
-    }
+    const { total, byStyle: styleTotals } = envelope(ppm);
     xs.push(x);
     totals.push(total);
     for (const style of CURVE_STYLES) byStyle[style].push(styleTotals[style]);
@@ -1152,8 +1281,11 @@ function spectrumPathFrom(xs: readonly number[], totals: readonly number[], scal
 function axisTicks(min: number, max: number): number[] {
   const step = niceStep((max - min) / 6);
   const ticks: number[] = [];
+  if (![min, max, step].every(Number.isFinite) || step <= 0) return ticks;
   for (let tick = Math.ceil(min / step) * step; tick <= max + 1e-9; tick += step) {
-    ticks.push(Math.round(tick * 100) / 100);
+    const rounded = Math.round(tick * 100) / 100;
+    if (Number.isFinite(rounded)) ticks.push(rounded);
+    if (tick + step === tick) break;
   }
   return ticks;
 }
@@ -1193,17 +1325,23 @@ function formatObserveFrequency(frequencyMHz: number): string {
 /** A schema-valid alternative can fall outside the plugin's suggested domain. Expand only the side
  * that needs it, with a small label-safe pad, so no selected peak is permanently culled. */
 function effectiveSpectrumDomain(spectrum: PluginLinkedFigureSpectrum): { min: number; max: number } {
-  const peakPpm = spectrum.peaks.flatMap((peak) =>
-    peak.alternativePpm === undefined ? [peak.ppm] : [peak.ppm, peak.alternativePpm]
-  );
-  const rawMin = Math.min(spectrum.domain.min, ...peakPpm);
-  const rawMax = Math.max(spectrum.domain.max, ...peakPpm);
+  const domainMin = Number.isFinite(spectrum.domain.min) ? spectrum.domain.min : 0;
+  const domainMax = Number.isFinite(spectrum.domain.max) ? spectrum.domain.max : Math.max(1, domainMin + 1);
+  let rawMin = domainMin;
+  let rawMax = domainMax;
+  for (const peak of spectrum.peaks) {
+    for (const ppm of [peak.ppm, peak.alternativePpm]) {
+      if (ppm === undefined || !Number.isFinite(ppm)) continue;
+      rawMin = Math.min(rawMin, ppm);
+      rawMax = Math.max(rawMax, ppm);
+    }
+  }
   const span = Math.max(1e-6, rawMax - rawMin);
   const pad = Math.max(0.01, span * 0.025);
-  return {
-    min: rawMin < spectrum.domain.min ? rawMin - pad : spectrum.domain.min,
-    max: rawMax > spectrum.domain.max ? rawMax + pad : spectrum.domain.max
-  };
+  const min = rawMin < domainMin ? rawMin - pad : domainMin;
+  const max = rawMax > domainMax ? rawMax + pad : domainMax;
+  return Number.isFinite(min) && Number.isFinite(max) && Number.isFinite(max - min) && max > min
+    ? { min, max } : { min: 0, max: 1 };
 }
 
 /** Value fingerprint used only for viewport continuity: identical reruns preserve zoom, while a new

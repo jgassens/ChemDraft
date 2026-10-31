@@ -20,6 +20,7 @@ export function annotationBondLines(
   order: number,
   fitScale = 1
 ): { x1: number; y1: number; x2: number; y2: number }[] {
+  if (![a.x, a.y, b.x, b.y, order, fitScale].every(Number.isFinite)) return [];
   const dx = b.x - a.x;
   const dy = b.y - a.y;
   const length = Math.hypot(dx, dy) || 1;
@@ -34,7 +35,7 @@ export function annotationBondLines(
     y1: round(a.y + ny * offset),
     x2: round(b.x + nx * offset),
     y2: round(b.y + ny * offset)
-  }));
+  })).filter((line) => Object.values(line).every(Number.isFinite));
 }
 
 /** Conservative advance, including bold/italic text, without browser font measurement. */
@@ -56,20 +57,32 @@ export function layoutAtomAnnotationLabels(input: {
   height: number;
   padding?: number;
 }) {
-  const padding = input.padding ?? 8;
-  if (input.atoms.length === 0) {
+  const padding = Number.isFinite(input.padding) ? input.padding! : 8;
+  const finiteAtoms = input.atoms.filter((atom) =>
+    Number.isFinite(atom.index) && Number.isFinite(atom.x) && Number.isFinite(atom.y)
+  );
+  if (finiteAtoms.length === 0 || !Number.isFinite(input.width) || !Number.isFinite(input.height)) {
     return { atoms: [], labels: [], labelFontSize: 14, atomFontSize: 15, fitScale: 1 };
   }
-  const minX = Math.min(...input.atoms.map((atom) => atom.x));
-  const minY = Math.min(...input.atoms.map((atom) => atom.y));
-  const spanX = Math.max(...input.atoms.map((atom) => atom.x)) - minX;
-  const spanY = Math.max(...input.atoms.map((atom) => atom.y)) - minY;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const atom of finiteAtoms) {
+    minX = Math.min(minX, atom.x);
+    minY = Math.min(minY, atom.y);
+    maxX = Math.max(maxX, atom.x);
+    maxY = Math.max(maxY, atom.y);
+  }
+  const spanX = maxX - minX;
+  const spanY = maxY - minY;
   const scale = Math.min((input.width - 68) / (spanX || 1), (input.height - 68) / (spanY || 1));
-  const atoms = input.atoms.map((atom) => ({
+  const atoms = finiteAtoms.map((atom) => ({
     ...atom,
     x: (input.width - spanX * scale) / 2 + (atom.x - minX) * scale,
     y: (input.height - spanY * scale) / 2 + (atom.y - minY) * scale
-  }));
+  })).filter((atom) => Number.isFinite(atom.x) && Number.isFinite(atom.y));
+  if (atoms.length === 0) return { atoms: [], labels: [], labelFontSize: 14, atomFontSize: 15, fitScale: 1 };
   const byIndex = new Map(atoms.map((atom) => [atom.index, atom]));
   const bonds = input.bonds.flatMap((bond) => {
     const a = byIndex.get(bond.from);
@@ -85,7 +98,36 @@ export function layoutAtomAnnotationLabels(input: {
     width: Math.max(26, estimateAnnotationTextWidth(atom.element, 15) + 4),
     height: 26
   }));
-  const occupied = [...atomBoxes];
+  const atomIndex = obstacleIndex(atomBoxes, (box) => box);
+  const bondIndex = obstacleIndex(bonds, ({ a, b }) => ({
+    x: Math.min(a.x, b.x), y: Math.min(a.y, b.y),
+    width: Math.abs(a.x - b.x), height: Math.abs(a.y - b.y)
+  }));
+  // Only local labels enter the grid; shelf labels are below every occupied box and cannot collide
+  // with an in-frame candidate. Keep their extents incrementally for both shelf placement and fit.
+  const labelCells = new Map<string, AnnotationLabelBox[]>();
+  const cellKeys = (box: AnnotationLabelBox): string[] => {
+    const keys: string[] = [];
+    const left = Math.max(0, Math.floor(box.x / 32));
+    const right = Math.min(Math.floor(input.width / 32), Math.floor((box.x + box.width) / 32));
+    const top = Math.max(0, Math.floor(box.y / 32));
+    const bottom = Math.min(Math.floor(input.height / 32), Math.floor((box.y + box.height) / 32));
+    for (let x = left; x <= right; x += 1) {
+      for (let y = top; y <= bottom; y += 1) keys.push(`${x},${y}`);
+    }
+    return keys;
+  };
+  let left = Infinity;
+  let top = Infinity;
+  let right = -Infinity;
+  let bottom = -Infinity;
+  const include = (box: AnnotationLabelBox): void => {
+    left = Math.min(left, box.x);
+    top = Math.min(top, box.y);
+    right = Math.max(right, box.x + box.width);
+    bottom = Math.max(bottom, box.y + box.height);
+  };
+  for (const box of atomBoxes) include(box);
   const labels: (AnnotationLabelBox & { index: number; text: string })[] = [];
   const center = { x: input.width / 2, y: input.height / 2 };
   for (const atom of atoms) {
@@ -107,22 +149,26 @@ export function layoutAtomAnnotationLabels(input: {
         const clearance = { x: candidate.x - 3, y: candidate.y - 3, width: width + 6, height: height + 6 };
         if (candidate.x >= padding && candidate.y >= padding &&
             candidate.x + width <= input.width - padding && candidate.y + height <= input.height - padding &&
-            !occupied.some((other) => annotationLabelBoxesOverlap(clearance, other)) &&
-            !bonds.some(({ a, b }) => segmentIntersectsBox(a, b, clearance))) {
+            !atomIndex(clearance, (other) => annotationLabelBoxesOverlap(clearance, other)) &&
+            !cellKeys(clearance).some((key) => labelCells.get(key)?.some((other) => annotationLabelBoxesOverlap(clearance, other))) &&
+            !bondIndex(clearance, ({ a, b }) => segmentIntersectsBox(a, b, clearance))) {
           box = candidate;
           break;
         }
       }
     }
     // An unbounded shelf guarantees even coincident atoms or long comparison labels can be placed.
-    box ??= { x: atom.x - width / 2, y: Math.max(...occupied.map((other) => other.y + other.height)) + 6, width, height };
+    box ??= { x: atom.x - width / 2, y: bottom + 6, width, height };
     labels.push({ ...box, index: atom.index, text: atom.annotation });
-    occupied.push(box);
+    include(box);
+    for (const key of cellKeys(box)) {
+      const cell = labelCells.get(key) ?? [];
+      cell.push(box);
+      labelCells.set(key, cell);
+    }
   }
-  const left = Math.min(...occupied.map((box) => box.x));
-  const top = Math.min(...occupied.map((box) => box.y));
-  const width = Math.max(...occupied.map((box) => box.x + box.width)) - left;
-  const height = Math.max(...occupied.map((box) => box.y + box.height)) - top;
+  const width = right - left;
+  const height = bottom - top;
   const fitScale = Math.min(1, (input.width - padding * 2) / width, (input.height - padding * 2) / height);
   const project = (x: number, y: number) => ({
     x: (input.width - width * fitScale) / 2 + (x - left) * fitScale,
@@ -144,6 +190,41 @@ export function layoutAtomAnnotationLabels(input: {
     labelFontSize: fontSize * fitScale,
     atomFontSize: 15 * fitScale,
     fitScale
+  };
+}
+
+/** Bounding hierarchy for static obstacles. Exact predicates and candidate order stay unchanged. */
+function obstacleIndex<T>(items: readonly T[], boundsOf: (item: T) => AnnotationLabelBox) {
+  interface Node {
+    left: number; top: number; right: number; bottom: number;
+    items?: { item: T; box: AnnotationLabelBox }[];
+    children?: Node[];
+  }
+  const build = (entries: { item: T; box: AnnotationLabelBox }[]): Node => {
+    const node: Node = { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity };
+    for (const { box } of entries) {
+      node.left = Math.min(node.left, box.x);
+      node.top = Math.min(node.top, box.y);
+      node.right = Math.max(node.right, box.x + box.width);
+      node.bottom = Math.max(node.bottom, box.y + box.height);
+    }
+    if (entries.length <= 8) node.items = entries;
+    else {
+      const axis = node.right - node.left >= node.bottom - node.top ? "x" : "y";
+      entries.sort((a, b) => a.box[axis] - b.box[axis]);
+      const middle = Math.floor(entries.length / 2);
+      node.children = [build(entries.slice(0, middle)), build(entries.slice(middle))];
+    }
+    return node;
+  };
+  const root = build(items.map((item) => ({ item, box: boundsOf(item) })));
+  return (box: AnnotationLabelBox, intersects: (item: T) => boolean): boolean => {
+    const visit = (node: Node): boolean => {
+      if (box.x > node.right || box.y > node.bottom ||
+          box.x + box.width < node.left || box.y + box.height < node.top) return false;
+      return node.items ? node.items.some(({ item }) => intersects(item)) : node.children!.some(visit);
+    };
+    return visit(root);
   };
 }
 

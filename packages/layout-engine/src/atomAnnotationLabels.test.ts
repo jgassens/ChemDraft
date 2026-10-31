@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -59,6 +60,14 @@ function checkPlacement(atoms: AnnotationAtom[], bonds: { from: number; to: numb
   const input = { atoms, bonds, width: 340, height: 260 };
   const before = structuredClone(input);
   const result = layoutAtomAnnotationLabels(input);
+  // Frozen before spatial indexing: these cover the ring, hydrogen grid, shelf and isolated atom.
+  const originalPlacements: Record<number, string> = {
+    8: "fc432153b2228a165cb2b39664565dd53520e8f1bd1146f1a82062b142f42a54",
+    40: "ca5a78fdda2006bdc8435c8ce5196b422c584fed6ca6398826194306b786b08d",
+    20: "2b3f16e9d6c62cf9d3d8a35ddd7f125e3274564d268d1348f45051b4aa073c8e",
+    1: "e4f31c70e2177ecd00ce20581702527d0fcf390eaf6ebe1289a8b3e648c82d8b"
+  };
+  expect(createHash("sha256").update(JSON.stringify(result)).digest("hex")).toBe(originalPlacements[atoms.length]);
   expect(input).toEqual(before);
   expect(layoutAtomAnnotationLabels(input)).toEqual(result);
   expect(result.labels).toHaveLength(atoms.filter((atom) => atom.annotation).length);
@@ -120,5 +129,35 @@ describe("atom annotation labels", () => {
     })), []);
     checkPlacement([{ index: 0, x: 5, y: 5, element: "H", annotation: "1.21" }], []);
     expect(layoutAtomAnnotationLabels({ atoms: [], bonds: [], width: 340, height: 260 }).labels).toEqual([]);
+  });
+
+  it("ignores non-finite vertices and bond geometry without disturbing valid placements", () => {
+    const atoms = [{ index: 0, x: 5, y: 5, element: "H", annotation: "1.21" }];
+    const input = { atoms, bonds: [], width: 340, height: 260 };
+    expect(layoutAtomAnnotationLabels({
+      ...input,
+      atoms: [...atoms, { index: 1, x: Infinity, y: 0, element: "C", annotation: "bad" },
+        { index: 2, x: 0, y: NaN, element: "O" }],
+      bonds: [{ from: 0, to: 1 }, { from: 0, to: 2 }]
+    })).toEqual(layoutAtomAnnotationLabels(input));
+    expect(annotationBondLines({ x: Infinity, y: 0 }, { x: 0, y: 0 }, 1)).toEqual([]);
+    expect(annotationBondLines({ x: 0, y: 0 }, { x: 0, y: 1 }, NaN)).toEqual([]);
+    expect(annotationBondLines({ x: 0, y: 0 }, { x: 0, y: 1 }, 1, Infinity)).toEqual([]);
+    expect(annotationBondLines({ x: Number.MAX_VALUE, y: 0 }, { x: -Number.MAX_VALUE, y: 1 }, 1)).toEqual([]);
+    expect(layoutAtomAnnotationLabels({ ...input, width: Infinity }).atoms).toEqual([]);
+    expect(layoutAtomAnnotationLabels({ ...input, padding: NaN })).toEqual(layoutAtomAnnotationLabels(input));
+  });
+
+  it("places all 4,000 annotations beside 8,000 bonds in a few seconds", () => {
+    const atoms = Array.from({ length: 4000 }, (_, index) => ({
+      index, x: index % 80, y: Math.floor(index / 80), element: "C", annotation: "128.00"
+    }));
+    const bonds = Array.from({ length: 8000 }, (_, index) => ({ from: index % 4000, to: (index + 1) % 4000 }));
+    const start = performance.now();
+    const result = layoutAtomAnnotationLabels({ atoms, bonds, width: 340, height: 260 });
+    expect(performance.now() - start).toBeLessThan(2500);
+    expect(result.atoms).toHaveLength(4000);
+    expect(result.labels).toHaveLength(4000);
+    expect(JSON.stringify(result)).not.toMatch(/null/);
   });
 });

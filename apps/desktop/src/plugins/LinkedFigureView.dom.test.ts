@@ -13,7 +13,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { LinkedFigureView, restoreLinkedFigureWindowFrame } from "./LinkedFigureView";
+import { createSpectrumEnvelope, LinkedFigureView, restoreLinkedFigureWindowFrame, sampleStyledEnvelope } from "./LinkedFigureView";
 import { exportSpectrumFigure, saveTextFile, standaloneSpectrumSvg } from "./spectrumExport";
 import { installPluginPanelInputFocus } from "./pluginPanelInputFocus";
 
@@ -149,6 +149,130 @@ const structure: PluginLinkedFigureStructure = {
 };
 
 describe("LinkedFigureView", () => {
+  it.each([8, 200])("preserves sampled heights, provenance and apex heights over a %s ppm range", (max) => {
+    const lines = Array.from({ length: 320 }, (_, index) => ({
+      ppm: [7.30, 7.30, 7.25, 2.61, 1.21][Math.floor(index / 32) % 5] / 8 * max + (index % 32 - 15.5) * 0.003,
+      amp: (index % 5 + 1) / 5,
+      peakId: `p${Math.floor(index / 32)}`,
+      style: (["trusted", "estimated", "alternative"] as const)[index % 3]
+    }));
+    const halfWidth = max / 1288;
+    const envelope = createSpectrumEnvelope(lines, halfWidth);
+    const direct = (ppm: number) => {
+      const result = { total: 0, byStyle: { trusted: 0, estimated: 0, alternative: 0 } };
+      for (const line of lines) {
+        const d = (ppm - line.ppm) / halfWidth;
+        const height = line.amp * (0.3 / (1 + d * d) + 0.7 * Math.exp(-Math.LN2 * d * d));
+        result.total += height;
+        result.byStyle[line.style] += height;
+      }
+      return result;
+    };
+    const equalToRounding = (actual: number, expected: number): void => {
+      expect(Math.abs(actual - expected)).toBeLessThanOrEqual(Number.EPSILON * 32 * Math.max(1, expected));
+    };
+    for (const reversed of [true, false]) {
+      const sample = sampleStyledEnvelope(lines, { min: 0, max }, reversed, halfWidth, 0.25);
+      for (let index = 0; index < sample.xs.length; index += 1) {
+        const fraction = (sample.xs[index] - 18) / 644;
+        const expected = direct((reversed ? 1 - fraction : fraction) * max);
+        equalToRounding(sample.totals[index], expected.total);
+        for (const style of ["trusted", "estimated", "alternative"] as const) {
+          equalToRounding(sample.byStyle[style][index], expected.byStyle[style]);
+        }
+      }
+    }
+    for (const line of lines) equalToRounding(envelope(line.ppm).total, direct(line.ppm).total);
+    expect(envelope(0).total).toBeGreaterThan(0); // Lorentzian tails must never be cut off.
+    const small = lines.slice(0, 32);
+    expect(createSpectrumEnvelope(small, halfWidth)(small[0].ppm).total).toBe(
+      small.reduce((sum, line) => {
+        const d = (small[0].ppm - line.ppm) / halfWidth;
+        return sum + line.amp * (0.3 * (1 / (1 + d * d)) + 0.7 * Math.exp(-Math.LN2 * d * d));
+      }, 0)
+    );
+  });
+
+  it("ignores non-finite report numbers before they can reach SVG geometry", () => {
+    mount(createElement(LinkedFigureView, {
+      defaultSpectrometerMHz: Infinity,
+      spectrum: {
+        ...spectrum, domain: { min: -Infinity, max: Infinity },
+        peaks: [...spectrum.peaks,
+          { id: "bad-ppm", ppm: Infinity, intensity: 1, atomIndices: [0] },
+          { id: "bad-height", ppm: 3, intensity: Infinity, atomIndices: [0] },
+          { id: "nan", ppm: NaN, intensity: 1, atomIndices: [0] },
+          { id: "coupling", ppm: 4, alternativePpm: Infinity, intensity: 1, atomIndices: [0],
+            couplings: [{ jHz: Infinity, partnerCount: 1 }, { jHz: NaN, partnerCount: 1 }] }]
+      },
+      structure: { atoms: [...structure.atoms, { index: 3, x: Infinity, y: NaN, element: "N" }],
+        bonds: [...structure.bonds, { from: 0, to: 3, order: 1 }] }
+    }));
+    expect(container!.innerHTML).not.toMatch(/NaN|Infinity/);
+    expect(container!.querySelectorAll(".lf-peak")).toHaveLength(3);
+    expect(container!.querySelectorAll(".lf-atom")).toHaveLength(3);
+    expect(container!.querySelector(".lf-spectrum")!.getAttribute("data-observe-frequency-mhz")).toBe("300");
+    const valid = [{ ppm: 2, amp: 1, peakId: "a", style: "trusted" as const }];
+    const dirty = [...valid, { ...valid[0], ppm: Infinity }, { ...valid[0], amp: NaN }];
+    expect(createSpectrumEnvelope(dirty, 0.01)(2)).toEqual(createSpectrumEnvelope(valid, 0.01)(2));
+    expect(createSpectrumEnvelope(dirty, 0.01)(NaN).total).toBe(0);
+  });
+
+  it("evaluates all 128,000 apexes even when hostile lines cluster inside one half-width", () => {
+    const lines = Array.from({ length: 128000 }, (_, index) => ({
+      ppm: 7 + index / 128000 * 0.0001, amp: 1, peakId: `p${index}`, style: "trusted" as const
+    }));
+    const start = performance.now();
+    const envelope = createSpectrumEnvelope(lines, 0.01);
+    let max = 0;
+    for (const line of lines) max = Math.max(max, envelope(line.ppm).total);
+    expect(performance.now() - start).toBeLessThan(2500);
+    expect(max).toBeGreaterThan(127000);
+    for (const ppm of [7, 7.00005, 7.0001, 6.9, 7.1]) {
+      let expected = 0;
+      for (const line of lines) {
+        const d = (ppm - line.ppm) / 0.01;
+        expected += 0.3 / (1 + d * d) + 0.7 * Math.exp(-Math.LN2 * d * d);
+      }
+      expect(envelope(ppm).total).toBeCloseTo(expected, 7);
+    }
+  });
+
+  it("keeps normalized geometry finite when finite amplitudes would overflow their sum", () => {
+    const large: PluginLinkedFigureSpectrum = {
+      ...spectrum, peaks: spectrum.peaks.map((peak) => ({ ...peak, intensity: Number.MAX_VALUE }))
+    };
+    mount(createElement(LinkedFigureView, { spectrum: large }));
+    expect(container!.innerHTML).not.toMatch(/NaN|Infinity/);
+    const ys = pathYs(container!.querySelector(".lf-curve")!);
+    expect(ys.some((y) => y < 100)).toBe(true);
+    expect(container!.querySelectorAll(".lf-peak")).toHaveLength(2);
+  });
+
+  it("renders 4,000 peaks, 128,000 lines, 4,000 atoms and 8,000 bonds in a few seconds", () => {
+    const hostile: PluginLinkedFigureSpectrum = {
+      nucleus: "1H", domain: { min: 0, max: 10 },
+      peaks: Array.from({ length: 4000 }, (_, index) => ({
+        id: `p${index}`, ppm: 0.5 + index / 450, intensity: 1, atomIndices: [index],
+        couplings: Array.from({ length: 5 }, (_, coupling) => ({ jHz: 1 + coupling, partnerCount: 1 }))
+      }))
+    };
+    const start = performance.now();
+    mount(createElement(LinkedFigureView, {
+      spectrum: hostile,
+      structure: {
+        atoms: Array.from({ length: 4000 }, (_, index) => ({ index, x: index % 80, y: Math.floor(index / 80), element: "C" })),
+        bonds: Array.from({ length: 8000 }, (_, index) => ({ from: index % 4000, to: (index + 1) % 4000, order: 1 }))
+      }
+    }));
+    expect(performance.now() - start).toBeLessThan(4000);
+    expect(container!.querySelectorAll(".lf-peak")).toHaveLength(4000);
+    expect(container!.querySelectorAll('[data-line-count="32"]')).toHaveLength(4000);
+    expect(container!.querySelectorAll(".lf-atom")).toHaveLength(4000);
+    expect(container!.querySelectorAll(".lf-shift-label")).toHaveLength(4000);
+    expect(container!.querySelectorAll(".lf-bond")).toHaveLength(8000);
+  }, 8000);
+
   it.each([
     { nucleus: "13C", max: 200, shifts: [140.85, 137.56, 127.34, 126.89, 45.12, 45.01] },
     { nucleus: "1H", max: 8, shifts: [7.30, 7.30, 7.25, 2.61, 1.21] }
