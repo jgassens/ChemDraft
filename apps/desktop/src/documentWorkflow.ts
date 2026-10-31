@@ -15109,10 +15109,11 @@ function chooseEngineRelayout(
     if (!primary.ok) throw primary.error;
     return document;
   }
-  // A rejected placement or an atom collision must not outrank a usable crossing-only
+  // A rejected placement or overlapping geometry must not outrank a usable crossing-only
   // alternative merely because its total hard-defect count is smaller.
   const usable = candidates.filter(candidate => !candidate.placementAddsHardDefects &&
-    candidate.quality?.overlappingAtoms.length === 0);
+    candidate.quality?.overlappingAtoms.length === 0 && candidate.quality.atomBondOverlaps.length === 0 &&
+    candidate.quality.collinearBondOverlaps.length === 0);
   if (usable.length) best = usable.reduce((a, b) => compareLayoutQuality(a.quality!, b.quality!) <= 0 ? a : b);
   // Preserve the existing bridged/cage policy; regular planar geometry may be impossible there.
   const bridged = best.quality?.hasBridgedRings;
@@ -15122,6 +15123,7 @@ function chooseEngineRelayout(
   const improvesOrdinary = generated && drawn && (generated.hardDefects < drawn.hardDefects ||
     (generated.hardDefects === 0 && generated.softScore <= drawn.softScore - MIN_CLEANUP_SOFT_SCORE_IMPROVEMENT));
   if (generated && drawn && (best.placementAddsHardDefects || generated.overlappingAtoms.length > 0 ||
+      generated.atomBondOverlaps.length > 0 || generated.collinearBondOverlaps.length > 0 ||
       (bridged ? drawn.hardDefects < generated.hardDefects : !improvesOrdinary))) {
     options.warnings?.push(...best.warnings);
     const reason = generated.overlappingAtoms.length > 0 && generated.crossings.length > 0

@@ -17956,6 +17956,21 @@ describe("2D engine cleanup candidate gate", () => {
       { targetBondLengthPx: 22 }));
   });
 
+  it("refuses a hard-defect reduction that still places atoms on overlapping bonds", () => {
+    const bad = chain([[0, 0], [1, 0], [0.1, 0], [0.2, 0]]);
+    const candidate = chain([[0, 0], [1.08, 0], [0.54, 0], [0.54, 0.92]]);
+    const document = insertSmilesMolecule(createPhase4Document("Bond contacts"), { x: 400, y: 400 }, bad, "CCCC");
+    const molecule = selectedMolecule(document);
+    const quality = layoutEngine.evaluateLayoutQuality(candidate.atoms, candidate.bonds);
+    expect(quality.overlappingAtoms).toHaveLength(0);
+    expect(quality.atomBondOverlaps.length).toBeGreaterThan(0);
+    expect(quality.collinearBondOverlaps.length).toBeGreaterThan(0);
+    const warnings: string[] = [];
+    const chosen = applyNativeMoleculeEngineRelayout(document, molecule.id, () => candidate, { targetBondLengthPx: 22, warnings });
+    expect(chosen).toBe(document);
+    expect(warnings).toEqual(["Clean Up kept the drawn layout of this structure: the generated layouts put atoms on bonds."]);
+  });
+
   const linkedRings = (stretch: number): PastedStructureDepiction => {
     const hexagon = Array.from({ length: 6 }, (_, i) => ({ element: "C", charge: 0,
       x: Math.cos(i * Math.PI / 3), y: Math.sin(i * Math.PI / 3) }));
@@ -18032,7 +18047,7 @@ describe("2D engine cleanup candidate gate", () => {
     // Inject a passing geometry to exercise the integration boundary independently of the
     // fragment search. Its altered alkene must never be accepted just for passing quality.
     const search = vi.spyOn(layoutEngine, "repairLayoutOverlaps").mockReturnValue([{
-      atoms: cis.atoms, quality: layoutEngine.evaluateLayoutQuality(cis.atoms, cis.bonds),
+      atoms: [...cis.atoms], quality: layoutEngine.evaluateLayoutQuality(cis.atoms, cis.bonds),
       kind: "substituent swing", pivot: 2, movedAtoms: [3], angleDegrees: -40
     }]);
     try {
