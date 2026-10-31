@@ -266,6 +266,54 @@ describe("picture paste and canvas", () => {
     expect(canUndo()).toBe(false);
   });
 
+  it("inserts a single SMILES into the current document after an edit during verification, without trying another candidate or picture", async () => {
+    await render();
+    vi.spyOn(clipboard, "readClipboardPayload").mockResolvedValue({ ...nativeImage,
+      types: ["image/png", "text/plain", "public.utf8-plain-text"], textItems: [
+        { type: "text/plain", text: "CCO" }, { type: "public.utf8-plain-text", text: "CCN" }
+      ] });
+    vi.spyOn(smilesIdentity, "verifySmilesPasteInput").mockResolvedValue(undefined);
+    const single = vi.spyOn(smilesPaste, "depictSmilesForPaste").mockResolvedValue({ stereoCount: 0, depiction: {
+      atoms: ["C", "C", "O"].map((element, index) => ({ element, x: index * 1.5, y: 0, charge: 0 })),
+      bonds: [{ from: 0, to: 1, order: "single", wedge: null }, { from: 1, to: 2, order: "single", wedge: null }]
+    } });
+    const verification = deferred<void>();
+    const verify = vi.spyOn(smilesIdentity, "verifySmilesPaste").mockReturnValue(verification.promise);
+    await command("clipboard.paste");
+    expect(verify).toHaveBeenCalledOnce();
+
+    await command("tool.bond");
+    await act(async () => {
+      pointer(page(), "pointerdown", 200, 200);
+      pointer(page(), "pointerup", 200, 200);
+    });
+    const edited = snapshot();
+    expect(edited.pages[0]!.objects).toHaveLength(1);
+    await act(async () => {
+      verification.resolve();
+      await verification.promise;
+    });
+    await vi.waitFor(async () => {
+      await act(async () => { await Promise.resolve(); });
+      expect(container.querySelector('[role="status"]')?.textContent).toContain("Pasted SMILES structure");
+    });
+
+    const pasted = snapshot();
+    expect(single).toHaveBeenCalledOnce();
+    expect(pasted.pages[0]!.objects).toHaveLength(2);
+    expect(pasted.pages[0]!.objects[0]).toEqual(edited.pages[0]!.objects[0]);
+    expect(pasted.pages[0]!.objects[1]).toMatchObject({ type: "molecule", atoms: [
+      { element: "C" }, { element: "C" }, { element: "O" }
+    ] });
+    expect(pasted.selection.objectIds).toEqual([pasted.pages[0]!.objects[1]!.id]);
+    await command("edit.undo");
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Undid Paste SMILES");
+    expect(snapshot().pages[0]!.objects).toEqual(edited.pages[0]!.objects);
+    await command("edit.undo");
+    expect(snapshot().pages[0]!.objects).toHaveLength(0);
+    expect(canUndo()).toBe(false);
+  });
+
   it.each(["resolve", "reject"])("stops after a document edit during list verification (%s), without another candidate or picture undo", async completion => {
     await render();
     vi.spyOn(clipboard, "readClipboardPayload").mockResolvedValue({ ...nativeImage,
