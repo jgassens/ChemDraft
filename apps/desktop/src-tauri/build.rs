@@ -54,6 +54,7 @@ fn main() {
             "plugin_panel_event_forward",
             "register_plugin_panel_input_focus",
             "set_plugin_panel_input_focus",
+            "set_plugin_panel_full_size",
             "open_toolset_popover",
             "prewarm_toolset_popover",
             "prewarm_toolset_tooltip",

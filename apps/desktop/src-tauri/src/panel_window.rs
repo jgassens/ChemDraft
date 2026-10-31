@@ -240,6 +240,7 @@ pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
     let parent = hwnd as usize;
     let panel = window.clone();
     let lease_panel = window.clone();
+    let hide_panel = window.clone();
     let data = Box::into_raw(Box::new(PanelSubclass {
         return_focus: std::rc::Rc::new(move || {
             activation(&lease_panel, false);
@@ -248,6 +249,10 @@ pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
             }
         }),
         activation: std::rc::Rc::new(move |active| activation(&panel, active)),
+        will_hide: std::rc::Rc::new(move || {
+            let webview: &tauri::Webview<R> = hide_panel.as_ref();
+            super::panel_full_size::will_hide(&webview.window());
+        }),
     }));
     unsafe {
         SetWindowLongPtrW(
@@ -285,6 +290,7 @@ pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
 struct PanelSubclass {
     return_focus: std::rc::Rc<dyn Fn()>,
     activation: std::rc::Rc<dyn Fn(bool)>,
+    will_hide: std::rc::Rc<dyn Fn()>,
 }
 
 #[cfg(windows)]
@@ -419,11 +425,22 @@ unsafe extern "system" fn resize_subclass(
     use windows_sys::Win32::UI::{
         Shell::{DefSubclassProc, RemoveWindowSubclass},
         WindowsAndMessaging::{
-            HTCLIENT, MA_NOACTIVATE, WA_INACTIVE, WM_ACTIVATE, WM_ACTIVATEAPP, WM_DPICHANGED,
-            WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_NCHITTEST,
-            WM_NCLBUTTONDOWN, WM_NCMBUTTONDOWN, WM_NCRBUTTONDOWN, WM_SETTINGCHANGE, WM_SIZE,
+            HTCLIENT, MA_NOACTIVATE, SWP_HIDEWINDOW, WA_INACTIVE, WINDOWPOS, WM_ACTIVATE,
+            WM_ACTIVATEAPP, WM_DPICHANGED, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_MOUSEACTIVATE,
+            WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_NCMBUTTONDOWN, WM_NCRBUTTONDOWN,
+            WM_SETTINGCHANGE, WM_SHOWWINDOW, WM_SIZE, WM_WINDOWPOSCHANGING,
         },
     };
+    // This also covers core:window hide calls from the panel or document webview. Restore before
+    // the native hide; no DOM cleanup or queued WindowEvent is required.
+    if (message == WM_SHOWWINDOW && wparam == 0)
+        || (message == WM_WINDOWPOSCHANGING
+            && lparam != 0
+            && (*(lparam as *const WINDOWPOS)).flags & SWP_HIDEWINDOW != 0)
+    {
+        let notify = (*(data as *const PanelSubclass)).will_hide.clone();
+        notify();
+    }
     if message == WM_MOUSEACTIVATE {
         // NOACTIVATE, not NOACTIVATEANDEAT: WebView2 must still receive the click.
         return MA_NOACTIVATE as isize;

@@ -61,3 +61,63 @@ fn panels_can_forward_requests_and_subscribe_to_replies() {
         true,
     );
 }
+
+#[test]
+fn only_panels_can_control_their_native_full_size_state() {
+    assert_shipped_access("plugin-panel-x", &["set_plugin_panel_full_size"], true);
+    for label in [
+        "main",
+        "preferences",
+        "toolset-core-main",
+        "dialog-export",
+        "spin3d-debugger",
+    ] {
+        assert_shipped_access(label, &["set_plugin_panel_full_size"], false);
+    }
+    let capability: serde_json::Value =
+        serde_json::from_str(include_str!("../capabilities/plugin-panel.json")).unwrap();
+    let permissions: Vec<_> = capability["permissions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        permissions,
+        vec![
+            "core:app:default",
+            "core:path:default",
+            "core:window:default",
+            "core:webview:default",
+            "core:image:default",
+            "core:resources:default",
+            "core:event:allow-listen",
+            "core:event:allow-unlisten",
+            "allow-plugin-panel-action-forward",
+            "allow-plugin-panel-event-forward",
+            "core:window:allow-hide",
+            "core:window:allow-outer-position",
+            "core:window:allow-scale-factor",
+            "allow-register-plugin-panel-input-focus",
+            "allow-set-plugin-panel-input-focus",
+            "allow-set-plugin-panel-full-size",
+            "core:window:allow-set-position",
+            "core:window:allow-set-size",
+        ]
+    );
+    assert_shipped_access(
+        "plugin-panel-x",
+        &[
+            "plugin:fs|write_file",
+            "plugin:dialog|open",
+            "plugin:dialog|save",
+            "plugin:dialog|message",
+            "read_clipboard_payload",
+            "write_clipboard_items",
+            "write_clipboard_text_items",
+            "write_clipboard_image",
+            "open_plugin_panel_window",
+        ],
+        false,
+    );
+}

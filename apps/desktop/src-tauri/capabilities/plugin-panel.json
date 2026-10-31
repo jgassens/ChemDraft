@@ -19,6 +19,7 @@
     "core:window:allow-scale-factor",
     "allow-register-plugin-panel-input-focus",
     "allow-set-plugin-panel-input-focus",
+    "allow-set-plugin-panel-full-size",
     "core:window:allow-set-position",
     "core:window:allow-set-size"
   ]

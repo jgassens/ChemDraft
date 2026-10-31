@@ -17,6 +17,7 @@ mod network_error;
 mod network_test_http;
 mod ocsr_engine;
 mod opsin;
+mod panel_full_size;
 mod panel_window;
 mod panel_window_frame;
 mod perf_log;
@@ -932,6 +933,7 @@ pub fn run() {
         .manage(perf_log)
         .manage(PendingOpenDocument::default())
         .manage(panel_window::PanelFocusState::default())
+        .manage(panel_full_size::State::default())
         .manage(Engine3dSidecarSessions::default())
         .manage(ocsr_engine::OcsrEngineState::default())
         .manage(external_tools::ExternalToolsState::default())
@@ -1049,6 +1051,7 @@ pub fn run() {
                         // ExitRequested. Raise the quit flag so palette destruction that follows
                         // isn't recorded as user closes.
                         APP_QUITTING.store(true, Ordering::SeqCst);
+                        panel_full_size::restore_all(window.app_handle());
                         dialog_windows::dismiss_owned(window.app_handle(), "quit");
                         window.state::<ocsr_engine::OcsrEngineState>().shutdown();
                         external_tools::shutdown(window.app_handle());
@@ -1148,9 +1151,11 @@ pub fn run() {
                 // Focused is queued by Tao and may describe an older activation by delivery.
                 // Lease ownership is observed synchronously at the OS boundary instead.
                 if matches!(event, WindowEvent::Destroyed) {
+                    panel_full_size::forget(window);
                     panel_window::forget(window);
                 }
                 if let WindowEvent::CloseRequested { api, .. } = event {
+                    panel_full_size::will_hide(window);
                     if APP_QUITTING.load(Ordering::SeqCst) {
                         return;
                     }
@@ -1346,6 +1351,7 @@ pub fn run() {
             open_plugin_panel_window,
             plugin_panel_action_forward,
             plugin_panel_event_forward,
+            set_plugin_panel_full_size,
             register_plugin_panel_input_focus,
             set_plugin_panel_input_focus,
             open_toolset_popover,
@@ -1426,6 +1432,7 @@ pub fn run() {
                     request_quit(app);
                 } else {
                     APP_QUITTING.store(true, Ordering::SeqCst);
+                    panel_full_size::restore_all(app);
                     app.state::<ocsr_engine::OcsrEngineState>().shutdown();
                     external_tools::shutdown(app);
                     assistant_mcp::shutdown();
@@ -1437,6 +1444,7 @@ pub fn run() {
                 // only when the preference is enabled. System termination and preference-off
                 // AppKit quit still reach this final, non-blocking cleanup as before.
                 APP_QUITTING.store(true, Ordering::SeqCst);
+                panel_full_size::restore_all(app);
                 app.state::<ocsr_engine::OcsrEngineState>().shutdown();
                 external_tools::shutdown(app);
                 assistant_mcp::shutdown();
@@ -2972,6 +2980,21 @@ fn plugin_panel_window_label(panel_id: &str) -> String {
 
 const PLUGIN_PANEL_WINDOW_LABEL_PREFIX: &str = "plugin-panel-";
 
+#[tauri::command]
+async fn set_plugin_panel_full_size(
+    window: tauri::WebviewWindow,
+    enabled: bool,
+    width: f64,
+    height: f64,
+) -> Result<panel_full_size::Status, String> {
+    panel_full_size::authorize(window.label())?;
+    let target = window.clone();
+    run_on_main_thread_blocking(&window, move || {
+        let webview: &tauri::Webview = target.as_ref();
+        panel_full_size::set(&webview.window(), enabled, width, height)
+    })?
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PluginPanelActionForwardRequest {
@@ -3712,15 +3735,14 @@ fn build_or_show_plugin_panel<R: Runtime>(
             // Prompt restoration above deliberately leaves its live frame and ordering alone.
             let webview: &tauri::Webview<R> = window.as_ref();
             let live = current_plugin_panel_geometry(&webview.window());
-            let (width, height, position) = plugin_panel_initial_geometry(app, &request, live);
-            if let Some(position) = position {
-                window
-                    .set_position(position)
-                    .map_err(|error| error.to_string())?;
+            let (_, _, placement) = plugin_panel_initial_geometry(app, &request, live);
+            if let Some(placement) = placement {
+                let target = window.clone();
+                run_on_main_thread_blocking(&window, move || {
+                    let webview: &tauri::Webview<R> = target.as_ref();
+                    panel_full_size::apply(&webview.window(), placement)
+                })??;
             }
-            window
-                .set_size(tauri::LogicalSize::new(width, height))
-                .map_err(|error| error.to_string())?;
         }
         // `show()` makes the window key on macOS (tao's `set_visible` is makeKeyAndOrderFront), so
         // an automatic re-show leaves visibility to `configure_analysis_window`, which only orders
@@ -3735,8 +3757,8 @@ fn build_or_show_plugin_panel<R: Runtime>(
     let saved = load_toolset_layout_state(app)
         .plugin_panels
         .get(&request.panel_id)
-        .copied();
-    let (width, height, position) = plugin_panel_initial_geometry(app, &request, saved);
+        .cloned();
+    let (width, height, placement) = plugin_panel_initial_geometry(app, &request, saved);
     // `.parent` is an owner window on Windows (no taskbar entry, stays above the document), the
     // same relationship utility_window_builder gives the palettes.
     let mut builder = WebviewWindowBuilder::new(
@@ -3754,7 +3776,7 @@ fn build_or_show_plugin_panel<R: Runtime>(
     .focusable(false)
     // Windows uses this creation trait for EVERY later show, not just the initial reveal.
     .focused(presentation.focused_on_build)
-    .visible(presentation.visible_on_build)
+    .visible(presentation.visible_on_build && placement.is_none())
     .resizable(true)
     .decorations(false)
     // Overlapping panels need a visible edge, matching the palette popover's native shadow.
@@ -3767,13 +3789,14 @@ fn build_or_show_plugin_panel<R: Runtime>(
             builder = builder.parent(&main).map_err(|error| error.to_string())?;
         }
     }
-    if let Some(position) = position {
-        builder = builder.position(position.x, position.y);
-    }
     let window = builder.build().map_err(|error| error.to_string())?;
     disable_default_context_menus(&window);
     let target = window.clone();
     let installed = run_on_main_thread_blocking(&window, move || {
+        if let Some(placement) = placement {
+            let webview: &tauri::Webview<R> = target.as_ref();
+            panel_full_size::apply(&webview.window(), placement)?;
+        }
         panel_window::install_resize_hit_test(&target)
     })
     .and_then(|result| result);
@@ -3787,6 +3810,9 @@ fn build_or_show_plugin_panel<R: Runtime>(
             restore_utility_in_document_group(&target)
         })?;
     }
+    if !cfg!(target_os = "macos") {
+        window.show().map_err(|error| error.to_string())?;
+    }
     configure_analysis_window(&window)?;
     Ok(())
 }
@@ -3796,10 +3822,12 @@ fn current_plugin_panel_geometry<R: Runtime>(
 ) -> Option<panel_window_frame::Frame> {
     let position = window.outer_position().ok()?;
     let size = window.inner_size().ok()?;
+    let monitor =
+        panel_window_frame::Monitor::from_native(&window.current_monitor().ok().flatten()?);
     panel_window_frame::Frame::from_physical(
         (position.x, position.y),
         (size.width, size.height),
-        window.scale_factor().ok()?,
+        &monitor,
     )
 }
 
@@ -3807,17 +3835,66 @@ fn plugin_panel_initial_geometry<R: Runtime>(
     app: &tauri::AppHandle<R>,
     request: &OpenPluginPanelRequest,
     saved: Option<panel_window_frame::Frame>,
-) -> (f64, f64, Option<tauri::LogicalPosition<f64>>) {
+) -> (f64, f64, Option<panel_window_frame::Placement>) {
+    let (width, height) = panel_window_frame::default_size(request.width, request.height);
+    let placement = saved
+        .as_ref()
+        .and_then(|frame| plugin_panel_saved_placement(app, frame))
+        .or_else(|| plugin_panel_default_placement(app, width, height));
+    (width, height, placement)
+}
+
+fn plugin_panel_saved_placement<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    frame: &panel_window_frame::Frame,
+) -> Option<panel_window_frame::Placement> {
     let monitors = app.available_monitors().unwrap_or_default();
-    let areas: Vec<_> = monitors.iter().map(monitor_logical_work_area).collect();
-    let frame = saved.and_then(|frame| frame.restore(&areas));
-    let (width, height) = frame
-        .map(|frame| (frame.width, frame.height))
-        .unwrap_or_else(|| panel_window_frame::default_size(request.width, request.height));
-    let position = frame
-        .map(|frame| tauri::LogicalPosition::new(frame.x, frame.y))
-        .or_else(|| analysis_window_initial_position(app, width, height));
-    (width, height, position)
+    let monitors: Vec<_> = monitors
+        .iter()
+        .map(panel_window_frame::Monitor::from_native)
+        .collect();
+    frame.restore(&monitors)
+}
+
+fn plugin_panel_restore_geometry<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    saved: &panel_window_frame::Frame,
+) -> Option<(panel_window_frame::Placement, panel_window_frame::Frame)> {
+    let monitors = app.available_monitors().unwrap_or_default();
+    let monitors: Vec<_> = monitors
+        .iter()
+        .map(panel_window_frame::Monitor::from_native)
+        .collect();
+    if let Some(placement) = saved.restore_normal(&monitors) {
+        let monitor = monitors.iter().find(|m| m.identity == saved.monitor)?;
+        let frame =
+            panel_window_frame::Frame::from_physical(placement.position, placement.size, monitor)?;
+        return Some((placement, frame));
+    }
+    let (width, height) = panel_window_frame::default_size(None, None);
+    let placement = plugin_panel_default_placement(app, width, height)?;
+    let main = app.get_webview_window(MAIN_WINDOW_LABEL)?;
+    let monitor = panel_window_frame::Monitor::from_native(&main.current_monitor().ok().flatten()?);
+    let frame =
+        panel_window_frame::Frame::from_physical(placement.position, placement.size, &monitor)?;
+    Some((placement, frame))
+}
+
+fn plugin_panel_default_placement<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    width: f64,
+    height: f64,
+) -> Option<panel_window_frame::Placement> {
+    let position = analysis_window_initial_position(app, width, height)?;
+    let main = app.get_webview_window(MAIN_WINDOW_LABEL)?;
+    let monitor = main.current_monitor().ok().flatten()?;
+    let scale = monitor.scale_factor();
+    let position = position.to_physical::<i32>(scale);
+    let size = tauri::LogicalSize::new(width, height).to_physical::<u32>(scale);
+    Some(panel_window_frame::Placement {
+        position: (position.x, position.y),
+        size: (size.width, size.height),
+    })
 }
 
 fn analysis_window_initial_position<R: Runtime>(
@@ -7786,7 +7863,7 @@ fn persist_plugin_panel_geometry<R: Runtime>(window: &tauri::Window<R>) -> Resul
         .app_handle()
         .get_webview_window(MAIN_WINDOW_LABEL)
         .is_some_and(|owner| owner.is_minimized().unwrap_or(true));
-    let Some(frame) = current_plugin_panel_geometry(window) else {
+    let Some(frame) = panel_full_size::frame_for_save(window) else {
         return Ok(());
     };
     let Some(frame) = frame.for_save(
@@ -7796,6 +7873,17 @@ fn persist_plugin_panel_geometry<R: Runtime>(window: &tauri::Window<R>) -> Resul
     ) else {
         return Ok(());
     };
+    save_plugin_panel_frame(window, frame)
+}
+
+fn save_plugin_panel_frame<R: Runtime>(
+    window: &tauri::Window<R>,
+    frame: panel_window_frame::Frame,
+) -> Result<(), String> {
+    // Reject off-screen/parked positions rather than replacing the last usable frame.
+    if plugin_panel_saved_placement(window.app_handle(), &frame).is_none() {
+        return Ok(());
+    }
     let Some(id) = window
         .label()
         .strip_prefix(PLUGIN_PANEL_WINDOW_LABEL_PREFIX)

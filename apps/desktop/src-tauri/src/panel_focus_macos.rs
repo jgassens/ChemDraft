@@ -9,11 +9,75 @@ use objc2_app_kit::{
     NSWindowStyleMask,
 };
 use objc2_foundation::{NSNotification, NSNotificationCenter, NSObjectProtocol, NSPoint, NSRect};
-use std::{cell::RefCell, collections::HashMap, ptr::NonNull};
+use std::{cell::RefCell, collections::HashMap, ptr::NonNull, rc::Rc};
 
 type Observers = Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>;
+type HideCallback = (String, Rc<dyn Fn()>);
 thread_local! {
     static OBSERVERS: RefCell<HashMap<String, Observers>> = RefCell::default();
+    static HIDE_CALLBACKS: RefCell<HashMap<usize, HideCallback>> = RefCell::default();
+}
+
+unsafe extern "C-unwind" fn panel_order_out(panel: &AnyObject, _: Sel, sender: *mut AnyObject) {
+    let callback = HIDE_CALLBACKS.with(|callbacks| {
+        callbacks
+            .borrow()
+            .get(&(panel as *const AnyObject as usize))
+            .map(|(_, callback)| callback.clone())
+    });
+    if let Some(callback) = callback {
+        callback();
+    }
+    let superclass = AnyClass::get(c"ChemDraftRestorablePanelWindow")
+        .and_then(AnyClass::superclass)
+        .expect("panel window superclass");
+    unsafe {
+        let _: () = msg_send![super(panel, superclass), orderOut: sender];
+    }
+}
+
+fn install_hide_hook<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    panel: &NSWindow,
+) -> Result<(), String> {
+    let object: &AnyObject = panel;
+    let name = c"ChemDraftRestorablePanelWindow";
+    if object.class().name() != name {
+        let original = object.class();
+        let class = if let Some(class) = AnyClass::get(name) {
+            if class.superclass() != Some(original) {
+                return Err("Panel window class changed during hide installation.".into());
+            }
+            class
+        } else {
+            let mut builder =
+                ClassBuilder::new(name, original).ok_or("Could not create panel hide hook.")?;
+            unsafe {
+                builder.add_method(
+                    sel!(orderOut:),
+                    panel_order_out as unsafe extern "C-unwind" fn(_, _, _),
+                );
+            }
+            builder.register()
+        };
+        unsafe {
+            AnyObject::set_class(object, class);
+        }
+    }
+    let target = window.clone();
+    HIDE_CALLBACKS.with(|callbacks| {
+        callbacks.borrow_mut().insert(
+            object as *const AnyObject as usize,
+            (
+                window.label().into(),
+                Rc::new(move || {
+                    let webview: &tauri::Webview<R> = target.as_ref();
+                    super::super::panel_full_size::will_hide(&webview.window());
+                }),
+            ),
+        )
+    });
+    Ok(())
 }
 
 pub(super) fn resize_edge(x: f64, y: f64, width: f64, height: f64) -> bool {
@@ -96,6 +160,7 @@ pub(super) fn install_resize_hit_test<R: tauri::Runtime>(
 pub(super) fn observe<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
     let pointer = window.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
     let panel = unsafe { pointer.as_ref() }.ok_or("Could not access native panel window.")?;
+    install_hide_hook(window, panel)?;
     let center = NSNotificationCenter::defaultCenter();
     let mut tokens = Vec::new();
     for (name, active) in unsafe {
@@ -128,6 +193,11 @@ pub(super) fn observe<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> Re
 }
 
 pub(super) fn forget(label: &str) {
+    HIDE_CALLBACKS.with(|callbacks| {
+        callbacks
+            .borrow_mut()
+            .retain(|_, (owner, _)| owner != label)
+    });
     OBSERVERS.with(|observers| {
         if let Some(tokens) = observers.borrow_mut().remove(label) {
             let center = NSNotificationCenter::defaultCenter();
