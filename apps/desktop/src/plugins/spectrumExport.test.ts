@@ -3,7 +3,7 @@
 import type { PluginLinkedFigureSpectrum } from "@chemdraft/plugin-api";
 import { invoke } from "@tauri-apps/api/core";
 import { Blob as NodeBlob } from "node:buffer";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   copySpectrumToClipboard,
@@ -59,6 +59,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 const originalClipboardItem = globalThis.ClipboardItem;
+beforeEach(() => vi.stubGlobal("Blob", NodeBlob));
 
 afterEach(() => {
   nativeSave.mockReset();
@@ -217,13 +218,13 @@ describe("copySpectrumToClipboard", () => {
     vi.stubGlobal("Blob", NodeBlob);
     (globalThis as typeof globalThis & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
     writeClipboard.mockResolvedValue({ ok: true });
-    await expect(copySpectrumToClipboard("<svg/>", async () => new Blob(["png"], { type: "image/png" }))).resolves.toBe("image");
+    await expect(copySpectrumToClipboard("<svg/>", async () => new Blob([tinyPng], { type: "image/png" }))).resolves.toBe("image");
     expect(writeClipboard).toHaveBeenCalledWith([
       { type: "image/png", bytes: expect.any(Uint8Array), required: true },
       { type: "public.svg-image", text: "<svg/>", required: false },
       { type: "image/svg+xml", text: "<svg/>", required: false }
     ]);
-    expect(Array.from(writeClipboard.mock.calls[0][0][0].bytes)).toEqual([112, 110, 103]);
+    expect(writeClipboard.mock.calls[0][0][0].bytes).toEqual(tinyPng);
   });
   it("initiates ClipboardItem.write synchronously while PNG rasterization remains promise-backed", async () => {
     type ClipboardPayload = Record<string, Blob | Promise<Blob>>;
@@ -261,7 +262,7 @@ describe("copySpectrumToClipboard", () => {
     expect(TestClipboardItem.latest?.payload["image/svg+xml"]).toBeInstanceOf(Blob);
     expect(TestClipboardItem.latest?.payload["text/plain"]).toBeUndefined();
 
-    resolvePng?.(new Blob(["png"], { type: "image/png" }));
+    resolvePng?.(new Blob([tinyPng], { type: "image/png" }));
     await expect(pending).resolves.toBe("image");
   });
 
@@ -275,7 +276,7 @@ describe("copySpectrumToClipboard", () => {
     const write = vi.fn().mockResolvedValue(undefined);
     const writeText = vi.fn();
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { write, writeText } });
-    await expect(copySpectrumToClipboard("<svg/>", async () => new Blob(["png"], { type: "image/png" }))).resolves.toBe("image");
+    await expect(copySpectrumToClipboard("<svg/>", async () => new Blob([tinyPng], { type: "image/png" }))).resolves.toBe("image");
     expect(Object.keys(payload)).toEqual(["image/png"]);
     expect(writeText).not.toHaveBeenCalled();
   });
@@ -299,9 +300,9 @@ describe("copySpectrumToClipboard", () => {
     bridgeEmit.mockImplementation(async (_name: string, action: { requestId: string }) => {
       bridgeListeners.get(ANALYSIS_WINDOW_ACTION_RESULT_EVENT)?.({ payload: { requestId: action.requestId, ok: false } });
     });
-    await expect(copySpectrumToClipboard("<svg/>", async () => new Blob(["png"], { type: "image/png" }))).resolves.toBe("none");
+    await expect(copySpectrumToClipboard("<svg/>", async () => new Blob([tinyPng], { type: "image/png" }))).resolves.toBe("none");
     expect(bridgeEmit).toHaveBeenCalledWith(ANALYSIS_WINDOW_ACTION_EVENT,
-      expect.objectContaining({ kind: "copySpectrum", pngBase64: btoa("png"), svg: "<svg/>" }));
+      expect.objectContaining({ kind: "copySpectrum", pngBase64: pngBase64, svg: "<svg/>" }));
     expect(bridgeListeners.size).toBe(0);
   });
 
@@ -327,7 +328,8 @@ describe("copySpectrumToClipboard", () => {
   });
 });
 
-const tinyPng = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLttAAAAABJRU5ErkJggg=="), (c) => c.charCodeAt(0));
+const pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
+const tinyPng = Uint8Array.from(atob(pngBase64), (c) => c.charCodeAt(0));
 
 describe("spectrum picture exports", () => {
   it("loads the export-engine main entry without the PDF pipeline", async () => {
@@ -434,23 +436,61 @@ describe("spectrum picture exports", () => {
     await expect(saveBinaryFile("spectrum.png", tinyPng, options)).resolves.toBe("cancelled");
   });
 
-  it("forwards desktop panel binaries without opening a panel dialog", async () => {
+  it("forwards desktop panel PNG without opening a panel dialog", async () => {
     (globalThis as typeof globalThis & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
     window.history.replaceState(null, "", "/?window=pluginPanel");
     bridgeEmit.mockImplementation(async (_name: string, action: { requestId: string }) => {
       bridgeListeners.get(ANALYSIS_WINDOW_ACTION_RESULT_EVENT)?.({ payload: { requestId: action.requestId, result: "saved" } });
     });
-    await expect(saveBinaryFile("spectrum.pdf", new TextEncoder().encode("%PDF-1.4"), {
-      title: "Export spectrum as PDF", formatLabel: "PDF", extensions: ["pdf"], mimeType: "application/pdf"
+    await expect(saveBinaryFile("spectrum.png", tinyPng, {
+      title: "Export spectrum as PNG", formatLabel: "PNG", extensions: ["png"], mimeType: "image/png"
     })).resolves.toBe("saved");
     expect(bridgeEmit).toHaveBeenCalledWith(ANALYSIS_WINDOW_ACTION_EVENT,
-      expect.objectContaining({ kind: "saveBinaryFile", filename: "spectrum.pdf", bytesBase64: btoa("%PDF-1.4"), format: "pdf" }));
+      expect.objectContaining({ kind: "saveBinaryFile", filename: "spectrum.png", bytesBase64: pngBase64, format: "png" }));
     const action = bridgeEmit.mock.calls[0][1];
     expect(action).not.toHaveProperty("mimeType");
     expect(action).not.toHaveProperty("extensions");
     expect(action).not.toHaveProperty("title");
     expect(nativeSave).not.toHaveBeenCalled();
     expect(bridgeListeners.size).toBe(0);
+  });
+
+  it("requests host PDF generation from SVG and never forwards panel-authored PDF bytes", async () => {
+    (globalThis as typeof globalThis & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    window.history.replaceState(null, "", "/?window=pluginPanel");
+    bridgeEmit.mockImplementation(async (_name: string, action: { requestId: string }) => {
+      bridgeListeners.get(ANALYSIS_WINDOW_ACTION_RESULT_EVENT)?.({ payload: { requestId: action.requestId, result: "saved" } });
+    });
+    await expect(exportSpectrumFigure("pdf", "<svg/>", "13C")).resolves.toBe("saved");
+    expect(bridgeEmit).toHaveBeenCalledWith(ANALYSIS_WINDOW_ACTION_EVENT,
+      expect.objectContaining({ kind: "saveTextFile", filename: "predicted-13C-nmr.pdf", text: "<svg/>", format: "pdf" }));
+    expect(convertSvg).not.toHaveBeenCalled();
+    bridgeEmit.mockClear();
+    await expect(saveBinaryFile("spectrum.pdf", new TextEncoder().encode("%PDF-1.4 /OpenAction /JavaScript"), {
+      title: "PDF", formatLabel: "PDF", extensions: ["pdf"], mimeType: "application/pdf"
+    })).resolves.toBe("failed");
+    expect(bridgeEmit).not.toHaveBeenCalled();
+    expect(nativeSave).not.toHaveBeenCalled();
+  });
+
+  it("refuses unsafe SVG before copying, saving, rasterizing or PDF conversion", async () => {
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg"><image href="https://attacker.invalid/x"/><a href="https://attacker.invalid">link</a><script/></svg>';
+    const rasterize = vi.fn();
+    const createObjectURL = vi.fn();
+    vi.stubGlobal("URL", { createObjectURL });
+    await expect(copySpectrumToClipboard(svg, rasterize)).resolves.toBe("none");
+    await expect(svgToPngBlob(svg)).resolves.toBeNull();
+    await expect(spectrumToPdf(svg)).rejects.toThrow("Invalid spectrum SVG");
+    for (const format of ["svg", "png", "pdf"] as const) {
+      await expect(exportSpectrumFigure(format, svg, "13C")).resolves.toBe("failed");
+    }
+    await expect(saveTextFile("spectrum.svg", svg, {
+      title: "SVG", formatLabel: "SVG", extensions: ["svg"], mimeType: "image/svg+xml"
+    })).resolves.toBe("failed");
+    expect(rasterize).not.toHaveBeenCalled();
+    expect(convertSvg).not.toHaveBeenCalled();
+    expect(nativeSave).not.toHaveBeenCalled();
+    expect(createObjectURL).not.toHaveBeenCalled();
   });
 });
 

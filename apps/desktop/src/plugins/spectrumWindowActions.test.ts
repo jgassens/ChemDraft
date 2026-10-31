@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { crc32, deflateSync } from "node:zlib";
+import { pngWithPhysicalDensity } from "../clipboard";
 
 import { ANALYSIS_WINDOW_ACTION_EVENT, listenForAnalysisWindowActions } from "./panelBridge";
 import {
@@ -9,13 +11,44 @@ import {
   type SpectrumWindowActionDependencies
 } from "./spectrumExport";
 
-const pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLttAAAAABJRU5ErkJggg==";
+const pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
 const pngBytes = Uint8Array.from(atob(pngBase64), (character) => character.charCodeAt(0));
 const copy = { kind: "copySpectrum", requestId: "copy-1", pngBase64, svg: '<svg xmlns="http://www.w3.org/2000/svg"/>' };
 const save = {
   kind: "saveBinaryFile", requestId: "save-1", filename: "spectrum.png", bytesBase64: pngBase64,
   format: "png"
 };
+
+function chunk(type: string, data: Uint8Array): Uint8Array {
+  const bytes = new Uint8Array(data.length + 12);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(0, data.length);
+  bytes.set(new TextEncoder().encode(type), 4);
+  bytes.set(data, 8);
+  view.setUint32(bytes.length - 4, crc32(bytes.subarray(4, -4)));
+  return bytes;
+}
+
+const header = pngBytes.slice(8, 33);
+const imageData = pngBytes.slice(33, -12);
+const imageEnd = pngBytes.slice(-12);
+function png(...chunks: Uint8Array[]): Uint8Array {
+  return new Uint8Array([...pngBytes.slice(0, 8), ...chunks.flatMap((bytes) => [...bytes])]);
+}
+function base64(bytes: Uint8Array): string { return btoa(String.fromCharCode(...bytes)); }
+function ihdr(change: (data: Uint8Array, view: DataView) => void): Uint8Array {
+  const data = header.slice(8, -4);
+  change(data, new DataView(data.buffer));
+  return chunk("IHDR", data);
+}
+function phys(x: number, y = x, unit = 1): Uint8Array {
+  const data = new Uint8Array(9);
+  const view = new DataView(data.buffer);
+  view.setUint32(0, x);
+  view.setUint32(4, y);
+  data[8] = unit;
+  return chunk("pHYs", data);
+}
 
 function fakes() {
   return {
@@ -24,6 +57,7 @@ function fakes() {
     }),
     saveBinary: vi.fn<SpectrumWindowActionDependencies["saveBinary"]>().mockResolvedValue("saved"),
     saveText: vi.fn<SpectrumWindowActionDependencies["saveText"]>().mockResolvedValue("saved"),
+    pdf: vi.fn<SpectrumWindowActionDependencies["pdf"]>().mockResolvedValue(new TextEncoder().encode("%PDF-host")),
     respondCopy: vi.fn<SpectrumWindowActionDependencies["respondCopy"]>().mockResolvedValue(undefined),
     respondSave: vi.fn<SpectrumWindowActionDependencies["respondSave"]>().mockResolvedValue(undefined)
   };
@@ -69,15 +103,18 @@ describe("document-window spectrum actions", () => {
     expect(dependencies.writeClipboard).toHaveBeenCalledWith([{ type: "image/png", bytes: pngBytes, required: true }]);
   });
 
-  it.each([["x", 1], ["μ", 2], ["界", 3], ["😀", 4], ["\ud800", 3], ["\udc00", 3]] as const)(
+  it.each([["x", 1], ["μ", 2], ["界", 3], ["😀", 4]] as const)(
     "counts UTF-8 for %s at the exact remaining budget for both SVG flavors", async (character, byteSize) => {
       const dependencies = fakes();
       const budget = Math.floor((MAX_SPECTRUM_TRANSFER_BYTES - pngBytes.length) / 2);
-      const svg = character.repeat(Math.floor(budget / byteSize)) + "x".repeat(budget % byteSize);
+      const wrapper = "<svg><text></text></svg>";
+      const textBudget = budget - wrapper.length;
+      const svg = `<svg><text>${character.repeat(Math.floor(textBudget / byteSize))}${"x".repeat(textBudget % byteSize)}</text></svg>`;
       const encode = vi.spyOn(TextEncoder.prototype, "encode");
       await handleSpectrumWindowAction({ ...copy, svg }, dependencies);
       expect(dependencies.respondCopy).toHaveBeenLastCalledWith("copy-1", true);
       dependencies.writeClipboard.mockClear();
+      encode.mockClear();
       const decode = vi.spyOn(globalThis, "atob");
       await handleSpectrumWindowAction({ ...copy, svg: svg + "x" }, dependencies);
       expect(dependencies.respondCopy).toHaveBeenLastCalledWith("copy-1", false);
@@ -114,6 +151,92 @@ describe("document-window spectrum actions", () => {
     expect(dependencies.respondCopy).toHaveBeenCalledWith("copy-1", false);
   });
 
+  it.each([
+    pngBytes.slice(0, 33),
+    pngBytes.map((byte, index) => index === 29 ? byte ^ 1 : byte),
+    pngBytes.map((byte, index) => index === 45 ? byte ^ 1 : byte),
+    pngBytes.map((byte, index) => index === pngBytes.length - 1 ? byte ^ 1 : byte),
+    png(imageData, header, imageEnd), png(header, header, imageData, imageEnd),
+    png(chunk("IHDR", new Uint8Array(12)), imageData, imageEnd),
+    png(ihdr((_data, view) => view.setUint32(0, 0)), imageData, imageEnd),
+    png(ihdr((_data, view) => view.setUint32(4, 16385)), imageData, imageEnd),
+    png(ihdr((_data, view) => { view.setUint32(0, 16384); view.setUint32(4, 16384); }), imageData, imageEnd),
+    png(ihdr((data) => { data[8] = 16; }), imageData, imageEnd),
+    png(ihdr((data) => { data[9] = 3; }), imageData, imageEnd),
+    png(ihdr((data) => { data[10] = 1; }), imageData, imageEnd),
+    png(ihdr((data) => { data[11] = 1; }), imageData, imageEnd),
+    png(ihdr((data) => { data[12] = 1; }), imageData, imageEnd),
+    png(header, imageEnd), png(header, imageData), png(header, imageData, chunk("IEND", new Uint8Array(1))),
+    png(header, imageData, imageEnd, new Uint8Array([1])),
+    png(header, chunk("tEXt", new TextEncoder().encode("payload")), imageData, imageEnd),
+    png(header, chunk("acTL", new Uint8Array(8)), imageData, imageEnd),
+    png(header, phys(0), imageData, imageEnd), png(header, phys(1), imageData, imageEnd),
+    png(header, phys(11339, 0), imageData, imageEnd), png(header, phys(0xffffffff), imageData, imageEnd),
+    png(header, phys(11339, 11339, 0), imageData, imageEnd),
+    png(header, chunk("pHYs", new Uint8Array(8)), imageData, imageEnd),
+    png(header, phys(11339), phys(11339), imageData, imageEnd),
+    png(header, imageData, phys(11339), imageEnd),
+    png(header, chunk("IDAT", new Uint8Array()), phys(11339), imageData, imageEnd),
+    png(header, phys(11339).map((byte, index) => index === 20 ? byte ^ 1 : byte), imageData, imageEnd),
+    png(header, chunk("sRGB", new Uint8Array([4])), imageData, imageEnd),
+    png(header, chunk("eXIf", new Uint8Array()), imageData, imageEnd),
+    png(header, chunk("eXIf", new Uint8Array(65537)), imageData, imageEnd),
+    png(header, new Uint8Array([0x7f, 0xff, 0xff, 0xff, 73, 68, 65, 84]), imageEnd)
+  ])("rejects malformed PNG structure, CRC, dimensions, chunks and density for copy and save (%#)", async (bytes) => {
+    const dependencies = fakes();
+    await handleSpectrumWindowAction({ ...copy, pngBase64: base64(bytes) }, dependencies);
+    await handleSpectrumWindowAction({ ...save, bytesBase64: base64(bytes) }, dependencies);
+    expect(dependencies.writeClipboard).not.toHaveBeenCalled();
+    expect(dependencies.saveBinary).not.toHaveBeenCalled();
+    expect(dependencies.respondCopy).toHaveBeenCalledWith("copy-1", false);
+    expect(dependencies.respondSave).toHaveBeenCalledWith("save-1", "failed");
+  });
+
+  it("preserves rasterizer PNG chunks, split IDATs, RGB and print density", async () => {
+    const dependencies = fakes();
+    const exif = new Uint8Array([0x49, 0x49, 0x2a, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    const data = imageData.slice(8, -4);
+    const bytes = pngWithPhysicalDensity(png(header, chunk("sRGB", new Uint8Array([0])), chunk("eXIf", exif),
+      chunk("IDAT", data.slice(0, 5)), chunk("IDAT", data.slice(5)), imageEnd), 288);
+    await handleSpectrumWindowAction({ ...copy, pngBase64: base64(bytes) }, dependencies);
+    await handleSpectrumWindowAction({ ...save, bytesBase64: base64(bytes) }, dependencies);
+    expect(dependencies.writeClipboard.mock.calls[0][0][0].bytes).toEqual(bytes);
+    expect(dependencies.saveBinary.mock.calls[0][1]).toEqual(bytes);
+    expect(dependencies.respondCopy).toHaveBeenCalledWith("copy-1", true);
+    expect(dependencies.respondSave).toHaveBeenCalledWith("save-1", "saved");
+    const rgb = png(ihdr((data) => { data[9] = 2; }), chunk("IDAT", deflateSync(new Uint8Array([0, 255, 0, 0]))), imageEnd);
+    await handleSpectrumWindowAction({ ...save, bytesBase64: base64(rgb) }, dependencies);
+    expect(dependencies.saveBinary).toHaveBeenLastCalledWith("spectrum.png", rgb, expect.any(Object));
+  });
+
+  it.each([
+    '<script>alert(1)</script><foreignObject/><image href="https://attacker.invalid/x"/>',
+    '<a href="https://attacker.invalid">link</a>', '<path onload="alert(1)"/>',
+    '<style>@import "https://attacker.invalid/x";</style>'
+  ])("refuses review SVG payloads for clipboard, file and PDF before privileged use (%#)", async (body) => {
+    const dependencies = fakes();
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg">${body}</svg>`;
+    await handleSpectrumWindowAction({ ...copy, svg }, dependencies);
+    for (const format of ["svg", "pdf"]) {
+      await handleSpectrumWindowAction({ ...save, kind: "saveTextFile", format, filename: `spectrum.${format}`, text: svg }, dependencies);
+    }
+    expect(dependencies.writeClipboard).not.toHaveBeenCalled();
+    expect(dependencies.saveText).not.toHaveBeenCalled();
+    expect(dependencies.saveBinary).not.toHaveBeenCalled();
+    expect(dependencies.pdf).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["report\u202Efdp.svg", "reportfdp.svg"],
+    ["\u2066predicted-13C-nmr\u2069.svg", "predicted-13C-nmr.svg"],
+    ["spec\u200btrum\u00ad\ufeff.svg", "spectrum.svg"],
+    ["cafe\u0301.svg", "café.svg"], ["predicted-1H-nmr.svg", "predicted-1H-nmr.svg"]
+  ])("normalizes hostile filename controls without changing ordinary defaults: %s", async (filename, expected) => {
+    const dependencies = fakes();
+    await handleSpectrumWindowAction({ kind: "saveTextFile", requestId: "name", filename, format: "svg", text: copy.svg }, dependencies);
+    expect(dependencies.saveText.mock.calls[0][0]).toBe(expected);
+  });
+
   it.each(["saved", "cancelled", "failed"] as const)("returns the native binary save result: %s", async (result) => {
     const dependencies = fakes();
     dependencies.saveBinary.mockResolvedValue(result);
@@ -124,13 +247,24 @@ describe("document-window spectrum actions", () => {
     expect(dependencies.respondSave).toHaveBeenCalledWith("save-1", result);
   });
 
-  it("decodes and saves PDF bytes without converting them to text", async () => {
+  it("refuses panel PDF bytes, including a signature-valid JavaScript OpenAction", async () => {
     const dependencies = fakes();
     await handleSpectrumWindowAction({
-      ...save, filename: "spectrum.pdf", bytesBase64: btoa("%PDF-1.4\n"), format: "pdf"
+      ...save, filename: "spectrum.pdf", bytesBase64: btoa("%PDF-1.4\n<< /OpenAction << /S /JavaScript /JS (app.alert(1)) >> >>"), format: "pdf"
     }, dependencies);
+    expect(dependencies.saveBinary).not.toHaveBeenCalled();
+    expect(dependencies.pdf).not.toHaveBeenCalled();
+    expect(dependencies.respondSave).toHaveBeenCalledWith("save-1", "failed");
+  });
+
+  it("generates PDF in the document window from sanitized SVG", async () => {
+    const dependencies = fakes();
+    await handleSpectrumWindowAction({
+      ...save, kind: "saveTextFile", filename: "spectrum.pdf", text: copy.svg, format: "pdf"
+    }, dependencies);
+    expect(dependencies.pdf).toHaveBeenCalledWith(copy.svg);
     expect(dependencies.saveBinary.mock.calls[0][0]).toBe("spectrum.pdf");
-    expect(Array.from(dependencies.saveBinary.mock.calls[0][1])).toEqual(Array.from(new TextEncoder().encode("%PDF-1.4\n")));
+    expect(dependencies.saveBinary.mock.calls[0][1]).toEqual(new TextEncoder().encode("%PDF-host"));
     expect(dependencies.saveBinary.mock.calls[0][2]).toEqual(expect.objectContaining({ mimeType: "application/pdf", extensions: ["pdf"] }));
     expect(dependencies.respondSave).toHaveBeenCalledWith("save-1", "saved");
   });
@@ -139,6 +273,9 @@ describe("document-window spectrum actions", () => {
     { filename: "../file.png" }, { filename: "C:\\file.png" }, { filename: "file\u0000.png" },
     { filename: 3 }, { filename: "" }, { filename: "CON.png" }, { filename: "file:stream.png" },
     { filename: "file.png " }, { filename: "x".repeat(201) }, { filename: ".." },
+    { filename: "CONIN$.png" }, { filename: "conout$.png" },
+    { filename: "COM¹.png" }, { filename: "com².png" }, { filename: "LPT³.png" },
+    { filename: "COM\u200b¹.png" }, { format: "pdf" },
     { format: "exe" }, { format: "toString" }, { format: null }, { format: "svg" },
     { bytesBase64: "?===" }, { bytesBase64: 1 },
     { bytesBase64: "A".repeat(Math.ceil(MAX_SPECTRUM_TRANSFER_BYTES / 3) * 4 + 4) }
@@ -153,13 +290,13 @@ describe("document-window spectrum actions", () => {
 
   it.each(["jcamp", "svg", "png", "pdf"] as const)("owns metadata and forces the extension for %s saves", async (format) => {
     const dependencies = fakes();
-    const text = format === "jcamp" || format === "svg";
+    const text = format !== "png";
     await handleSpectrumWindowAction({
       ...save, kind: text ? "saveTextFile" : "saveBinaryFile", format, filename: "spectrum.exe",
-      text: "μ spectrum", bytesBase64: format === "pdf" ? btoa("%PDF-1.4") : pngBase64,
+      text: format === "jcamp" ? "μ spectrum" : copy.svg, bytesBase64: pngBase64,
       title: "Untrusted", formatLabel: "Executable", extensions: ["exe"], mimeType: "text/html"
     }, dependencies);
-    const writer = text ? dependencies.saveText : dependencies.saveBinary;
+    const writer = format === "jcamp" || format === "svg" ? dependencies.saveText : dependencies.saveBinary;
     const extension = format === "jcamp" ? "jdx" : format;
     expect(writer.mock.calls[0][0]).toBe(`spectrum.${extension}`);
     expect(writer.mock.calls[0][2]).toEqual({

@@ -3,6 +3,7 @@ import type { PluginLinkedFigurePeak, PluginLinkedFigureSpectrum } from "@chemdr
 import { pngWithPhysicalDensity, writeClipboardItems } from "../clipboard";
 import type { ClipboardWriteItem, ClipboardWriteResult } from "../clipboard";
 import { isDesktopRuntime } from "../window-manager";
+import { sanitizeSpectrumSvg, STANDALONE_SPECTRUM_STYLE } from "./spectrumSvgSanitizer";
 import {
   isPluginPanelWindowRoute,
   requestCopySpectrumFromMain,
@@ -176,22 +177,6 @@ export function spectrumToJcampDx(
   return `${lines.map(jcampAscii).join("\n")}\n`;
 }
 
-// Fixed colors so the copied SVG renders correctly on its own (the app's CSS variables aren't present
-// outside the app). Mirrors the in-app spectrum styling closely enough for a paste-ready figure.
-const STANDALONE_SPECTRUM_STYLE = [
-  ".lf-axis,.lf-tick{stroke:#8a8f98;stroke-width:1;fill:none}",
-  ".lf-tick-label,.lf-axis-caption{fill:#5b6068;font:11px system-ui,sans-serif}",
-  ".lf-curve{fill:none;stroke:#2f7d6f;stroke-width:1.25;stroke-linejoin:round}",
-  ".lf-curve.is-active{stroke:#1f5a4f}",
-  ".lf-curve.is-estimated{stroke:#8a8f98;opacity:.45;stroke-dasharray:2 2}",
-  ".lf-curve.is-alternative{stroke:#b5651d;opacity:.72;stroke-dasharray:5 3}",
-  ".lf-peak-label{fill:#2f7d6f;font:12px system-ui,sans-serif;text-anchor:middle}",
-  ".lf-peak-label.is-estimated{fill:#8a8f98;font-style:italic}",
-  ".lf-peak-label.is-alternative{fill:#b5651d;font-style:italic}",
-  ".lf-spectrum-note{fill:#5b6068;font:9.5px system-ui,sans-serif}",
-  ".lf-hit{fill:transparent;stroke:none}"
-].join("");
-
 function spectrumNote(
   alternativeLabel: string,
   hasVisibleAlternative: boolean,
@@ -222,7 +207,7 @@ export function standaloneSpectrumSvg(
   primaryLabel?: string
 ): string {
   const clone = svg.cloneNode(true) as SVGSVGElement;
-  clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  clone.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns", "http://www.w3.org/2000/svg");
   clone.removeAttribute("role");
   const viewBox = clone.getAttribute("viewBox")?.split(/\s+/) ?? ["0", "0", "680", "240"];
   clone.setAttribute("width", viewBox[2] ?? "680");
@@ -265,6 +250,11 @@ export async function svgToPngBlob(
   if (typeof document === "undefined" || typeof Image === "undefined") {
     return null;
   }
+  try {
+    svgMarkup = sanitizeSpectrumSvg(svgMarkup);
+  } catch {
+    return null;
+  }
   const size = spectrumSvgSize(svgMarkup);
   width ??= size.width;
   height ??= size.height;
@@ -290,7 +280,8 @@ export async function svgToPngBlob(
     const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
     if (!blob) return null;
     const bytes = new Uint8Array(await blob.arrayBuffer());
-    return new Blob([new Uint8Array(pngWithPhysicalDensity(bytes, scale * 96))], { type: "image/png" });
+    const png = pngWithPhysicalDensity(bytes, scale * 96);
+    return isPng(png) ? new Blob([new Uint8Array(png)], { type: "image/png" }) : null;
   } finally {
     URL.revokeObjectURL(url);
   }
@@ -301,12 +292,18 @@ export function copySpectrumToClipboard(
   svgMarkup: string,
   rasterize: (markup: string) => Promise<Blob | null> = svgToPngBlob
 ): Promise<"image" | "none"> {
+  try {
+    svgMarkup = sanitizeSpectrumSvg(svgMarkup);
+  } catch {
+    return Promise.resolve("none");
+  }
   if (isDesktopRuntime()) {
     return (async () => {
       try {
         const png = await rasterize(svgMarkup);
         if (!png) return "none";
         const bytes = new Uint8Array(await png.arrayBuffer());
+        if (!isPng(bytes)) return "none";
         if (isPluginPanelWindowRoute()) {
           return await requestCopySpectrumFromMain(bytesToBase64(bytes), svgMarkup) ? "image" : "none";
         }
@@ -322,8 +319,9 @@ export function copySpectrumToClipboard(
     try {
       // WebKit requires clipboard.write() to run in the original click call stack. Supply the
       // asynchronous rasterization as a ClipboardItem promise rather than awaiting it first.
-      const png = rasterize(svgMarkup).then((blob) => {
+      const png = rasterize(svgMarkup).then(async (blob) => {
         if (!blob) throw new Error("PNG rasterization is unavailable");
+        if (!isPng(new Uint8Array(await blob.arrayBuffer()))) throw new Error("Invalid spectrum PNG.");
         return blob;
       });
       // Some browsers reject write() before consuming the item promises.
@@ -356,6 +354,7 @@ function spectrumClipboardItems(png: Uint8Array, svg?: string): ClipboardWriteIt
 
 /** Trigger a client-side (browser) download of `text` as `filename`. */
 export function downloadTextFile(filename: string, text: string, mimeType: string): void {
+  if (mimeType === "image/svg+xml") text = sanitizeSpectrumSvg(text);
   downloadBlob(filename, new Blob([text], { type: mimeType }));
 }
 
@@ -398,10 +397,12 @@ function saveFormat(options: SaveTextFileOptions): SpectrumSaveFormat | undefine
 }
 
 function spectrumSaveTarget(filename: unknown, format: unknown) {
+  if (typeof filename !== "string" || filename.length > 200) return;
+  filename = filename.normalize("NFC").replace(/\p{Default_Ignorable_Code_Point}/gu, "");
   if (typeof format !== "string" || !Object.hasOwn(spectrumSaveFormats, format) ||
       typeof filename !== "string" || !filename.length || filename.length > 200 ||
       /[\\/\x00-\x1f\x7f<>:"|?*]/.test(filename) || /[. ]$/.test(filename) ||
-      /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(filename)) return;
+      /^(?:con|prn|aux|nul|conin\$|conout\$|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(filename)) return;
   const key = format as SpectrumSaveFormat;
   const options = spectrumSaveFormats[key];
   const stem = filename.replace(/\.[^.]*$/, "");
@@ -417,6 +418,11 @@ export async function saveTextFile(
   const target = spectrumSaveTarget(filename, saveFormat(options));
   if (!target || (target.format !== "jcamp" && target.format !== "svg") ||
       boundedUtf8Size(text, MAX_SPECTRUM_TRANSFER_BYTES) === undefined) return "failed";
+  try {
+    if (target.format === "svg") text = sanitizeSpectrumSvg(text);
+  } catch {
+    return "failed";
+  }
   // A detached report window has no dialog or filesystem permission, by design. The main window
   // shows the save dialog and writes the file for it (`saveTextFile` analysis-window action).
   if (isDesktopRuntime() && isPluginPanelWindowRoute()) {
@@ -434,6 +440,11 @@ export async function saveTextFileHere(
   const target = spectrumSaveTarget(filename, saveFormat(options));
   if (!target || (target.format !== "jcamp" && target.format !== "svg") ||
       boundedUtf8Size(text, MAX_SPECTRUM_TRANSFER_BYTES) === undefined) return "failed";
+  try {
+    if (target.format === "svg") text = sanitizeSpectrumSvg(text);
+  } catch {
+    return "failed";
+  }
   filename = target.filename;
   options = target.options;
   if (isDesktopRuntime()) {
@@ -502,13 +513,54 @@ function decodeBase64(value: string): Uint8Array {
 }
 
 function isPng(bytes: Uint8Array): boolean {
-  return bytes.length >= 33 && [137, 80, 78, 71, 13, 10, 26, 10].every((byte, index) => bytes[index] === byte);
+  if (bytes.length < 45 || bytes.length > MAX_SPECTRUM_TRANSFER_BYTES ||
+      ![137, 80, 78, 71, 13, 10, 26, 10].every((byte, index) => bytes[index] === byte)) return false;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const seen = new Set<string>();
+  let hasData = false;
+  for (let offset = 8; offset + 12 <= bytes.length;) {
+    const length = view.getUint32(offset);
+    const end = offset + 12 + length;
+    if (end > bytes.length) return false;
+    const type = String.fromCharCode(...bytes.subarray(offset + 4, offset + 8));
+    if (!["IHDR", "IDAT", "IEND", "pHYs", "sRGB", "eXIf"].includes(type) ||
+        (offset === 8 && type !== "IHDR") || (type !== "IDAT" && seen.has(type))) return false;
+    let crc = 0xffffffff;
+    for (let index = offset + 4; index < end - 4; index += 1) {
+      crc ^= bytes[index];
+      for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+    }
+    if (((crc ^ 0xffffffff) >>> 0) !== view.getUint32(end - 4)) return false;
+    if (type === "IHDR") {
+      if (offset !== 8 || length !== 13) return false;
+      const width = view.getUint32(offset + 8);
+      const height = view.getUint32(offset + 12);
+      if (!width || !height || Math.max(width, height) > 16384 || width * height > 64 * 1024 * 1024 ||
+          bytes[offset + 16] !== 8 || ![2, 6].includes(bytes[offset + 17]) ||
+          bytes[offset + 18] !== 0 || bytes[offset + 19] !== 0 || bytes[offset + 20] !== 0) return false;
+    } else if (type === "pHYs") {
+      if (seen.has("IDAT") || length !== 9 || bytes[offset + 16] !== 1) return false;
+      const x = view.getUint32(offset + 8);
+      const y = view.getUint32(offset + 12);
+      if (Math.min(x, y) < 1000 || Math.max(x, y) > 1000000) return false;
+    } else if (type === "sRGB") {
+      if (seen.has("IDAT") || length !== 1 || bytes[offset + 8] > 3) return false;
+    } else if (type === "eXIf") {
+      if (seen.has("IDAT") || !length || length > 65536) return false;
+    } else if (type === "IDAT") {
+      hasData ||= length > 0;
+    } else if (type === "IEND") return length === 0 && hasData && end === bytes.length;
+    seen.add(type);
+    offset = end;
+  }
+  return false;
 }
 
 export interface SpectrumWindowActionDependencies {
   writeClipboard: (items: readonly ClipboardWriteItem[]) => Promise<ClipboardWriteResult>;
   saveBinary: typeof saveBinaryFileHere;
   saveText: typeof saveTextFileHere;
+  pdf: typeof spectrumToPdf;
   respondCopy: (requestId: string, ok: boolean) => Promise<void>;
   respondSave: (requestId: string, result: SaveTextFileResult) => Promise<void>;
 }
@@ -520,6 +572,7 @@ export async function handleSpectrumWindowAction(
     writeClipboard: writeClipboardItems,
     saveBinary: saveBinaryFileHere,
     saveText: saveTextFileHere,
+    pdf: spectrumToPdf,
     respondCopy: respondToCopyMolecularInspector,
     respondSave: respondToSaveTextFile
   }
@@ -539,6 +592,7 @@ export async function handleSpectrumWindowAction(
       }
       const svgSize = svg === undefined ? 0 : boundedUtf8Size(svg, Math.floor((MAX_SPECTRUM_TRANSFER_BYTES - pngSize) / 2));
       if (svgSize === undefined) throw new Error("Spectrum clipboard exceeds 20 MB.");
+      if (svg !== undefined) sanitizeSpectrumSvg(svg as string);
       const png = decodeBase64(action.pngBase64 as string);
       if (!isPng(png)) throw new Error("Invalid spectrum PNG.");
       const result = await dependencies.writeClipboard(spectrumClipboardItems(png, svg as string | undefined));
@@ -553,17 +607,20 @@ export async function handleSpectrumWindowAction(
       const target = spectrumSaveTarget(action.filename, action.format);
       if (!target) throw new Error("Invalid spectrum save target.");
       if (action.kind === "saveTextFile") {
-        if ((target.format !== "jcamp" && target.format !== "svg") ||
+        if ((target.format !== "jcamp" && target.format !== "svg" && target.format !== "pdf") ||
             boundedUtf8Size(action.text, MAX_SPECTRUM_TRANSFER_BYTES) === undefined) {
           throw new Error("Invalid spectrum text payload.");
         }
-        result = await dependencies.saveText(target.filename, action.text as string, target.options);
+        const text = target.format === "jcamp" ? action.text as string : sanitizeSpectrumSvg(action.text as string);
+        result = target.format === "pdf"
+          ? await dependencies.saveBinary(target.filename, await dependencies.pdf(text), target.options)
+          : await dependencies.saveText(target.filename, text, target.options);
       } else {
-        if ((target.format !== "png" && target.format !== "pdf") || boundedBase64Size(action.bytesBase64) === undefined) {
+        if (target.format !== "png" || boundedBase64Size(action.bytesBase64) === undefined) {
           throw new Error("Invalid spectrum binary payload.");
         }
         const bytes = decodeBase64(action.bytesBase64 as string);
-        if (target.format === "png" ? !isPng(bytes) : ![37, 80, 68, 70, 45].every((byte, index) => bytes[index] === byte)) {
+        if (!isPng(bytes)) {
           throw new Error("Spectrum file does not match its format.");
         }
         result = await dependencies.saveBinary(target.filename, bytes, target.options);
@@ -583,7 +640,9 @@ export async function saveBinaryFile(
   try {
     const target = spectrumSaveTarget(filename, saveFormat(options));
     if (!target || (target.format !== "png" && target.format !== "pdf") || bytes.length > MAX_SPECTRUM_TRANSFER_BYTES) return "failed";
+    if (target.format === "png" && !isPng(bytes)) return "failed";
     if (isDesktopRuntime() && isPluginPanelWindowRoute()) {
+      if (target.format === "pdf") return "failed";
       return await requestSaveBinaryFileFromMain(target.filename, bytesToBase64(bytes), target.format);
     }
     return await saveBinaryFileHere(target.filename, bytes, target.options);
@@ -600,6 +659,8 @@ export async function saveBinaryFileHere(
 ): Promise<SaveTextFileResult> {
   const target = spectrumSaveTarget(filename, saveFormat(options));
   if (!target || (target.format !== "png" && target.format !== "pdf") || bytes.length > MAX_SPECTRUM_TRANSFER_BYTES) return "failed";
+  if (isDesktopRuntime() && isPluginPanelWindowRoute()) return "failed";
+  if (target.format === "png" && !isPng(bytes)) return "failed";
   filename = target.filename;
   options = target.options;
   if (isDesktopRuntime()) {
@@ -644,6 +705,7 @@ export interface SpectrumFigureExportDependencies {
 
 /** Requires export-engine's shared SVG entry point; keep jsPDF/svg2pdf out of startup. */
 export async function spectrumToPdf(svgMarkup: string): Promise<Uint8Array> {
+  svgMarkup = sanitizeSpectrumSvg(svgMarkup);
   const { exportSvgToPdf } = await import("@chemdraft/export-engine/pdf");
   const { width, height } = spectrumSvgSize(svgMarkup);
   return (await exportSvgToPdf(svgMarkup, { outputWidth: width, outputHeight: height })).bytes;
@@ -668,8 +730,14 @@ export async function exportSpectrumFigure(
   };
   const filename = `predicted-${nucleus.replace(/[^A-Za-z0-9-]/g, "") || "spectrum"}-nmr.${format}`;
   try {
+    svgMarkup = sanitizeSpectrumSvg(svgMarkup);
     if (format === "svg") return await dependencies.saveText(filename, svgMarkup, options);
-    if (format === "pdf") return await dependencies.saveBinary(filename, await dependencies.pdf(svgMarkup), options);
+    if (format === "pdf") {
+      if (isDesktopRuntime() && isPluginPanelWindowRoute()) {
+        return await requestSaveTextFileFromMain(filename, svgMarkup, "pdf");
+      }
+      return await dependencies.saveBinary(filename, await dependencies.pdf(svgMarkup), options);
+    }
     const png = await dependencies.rasterize(svgMarkup);
     if (!png) return "failed";
     return await dependencies.saveBinary(filename, new Uint8Array(await png.arrayBuffer()), options);
