@@ -88,9 +88,13 @@ describe("embedded picture graphics", () => {
     expect(object.height).toBeCloseTo(pixelHeight * DOCUMENT_STYLE_UNITS_PER_PT);
   });
 
-  it("requires the image payload, decodable base64, positive integer dimensions and strict keys", () => {
+  it("accepts picture-less graphics and validates image payloads when present", () => {
     const object = createImageGraphicObject(options);
-    expect(() => GraphicObjectSchema.parse({ ...object, data: {} })).toThrow("Image object g12 has no picture data (data.image or data.imageHref).");
+    const pictureless = { ...object, data: {} };
+    expect(GraphicObjectSchema.parse(pictureless)).toEqual(pictureless);
+    const document = createEmptyDocument();
+    document.pages[0].objects.push(pictureless);
+    expect(deserializeDocument(JSON.stringify(document))).toEqual(document);
     for (const dataBase64 of ["", "!!", "A", "AA=A", "a===", "data:image/png;base64,AAAA"]) {
       expect(() => GraphicObjectSchema.parse({ ...object,
         data: { image: { ...object.data.image, dataBase64 } } })).toThrow("Image object g12 has invalid base64 image data");

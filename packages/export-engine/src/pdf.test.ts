@@ -33,6 +33,19 @@ function filledRingFixture(): MoleculeObject {
 const timestamp = "2026-05-29T00:00:00.000Z";
 
 describe("exportDocumentToPdf", () => {
+  it("skips picture-less graphics with format-specific warnings", async () => {
+    const document = createEmptyDocument();
+    const picture = createImageGraphicObject({ id: "missing-picture", mimeType: "image/png", dataBase64: "AAAA", pixelWidth: 1, pixelHeight: 1, center: { x: 0, y: 0 } });
+    document.pages[0]!.objects = [{ ...picture, data: {} }];
+    const svg = exportDocumentToSvg(document);
+    expect(svg.contents).not.toContain('data-object-id="missing-picture"');
+    expect(svg.warnings).toEqual([{ code: "export.svg.picture_missing_data", severity: "warning", objectId: "missing-picture",
+      message: "SVG export: picture missing-picture has no picture data and was not drawn" }]);
+    const pdf = await withPdfDom((domParser) => exportDocumentToPdf(document, { domParser }));
+    expect(pdf.warnings).toEqual([{ code: "export.pdf.picture_missing_data", severity: "warning", objectId: "missing-picture",
+      message: "PDF export: picture missing-picture has no picture data and was not drawn" }]);
+  });
+
   it("exports picture frames in SVG and embeds PNGs in PDF, warning for SVG pictures", async () => {
     const png = Buffer.from(new Resvg('<svg xmlns="http://www.w3.org/2000/svg" width="2" height="1"><rect width="2" height="1" fill="red"/></svg>').render().asPng()).toString("base64");
     const picture = { ...createImageGraphicObject({ id: "g12", mimeType: "image/png", dataBase64: png, center: { x: 0, y: 0 } }),

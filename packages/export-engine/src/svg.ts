@@ -63,7 +63,9 @@ export function exportDocumentToSvg(document: ChemDraftDocument, options: SvgExp
   const svgSize = pageLayoutSvgSize(page.layout);
   const outputWidth = options.outputWidth === undefined ? svgSize.width : `${options.outputWidth}${options.outputUnit ?? ""}`;
   const outputHeight = options.outputHeight === undefined ? svgSize.height : `${options.outputHeight}${options.outputUnit ?? ""}`;
-  const plan = planPageSvgRender(page);
+  const missingPictures = page.objects.filter((object) => object.type === "graphic" && object.graphicKind === "image" && !object.data.image && object.data.imageHref === undefined);
+  const missingIds = new Set(missingPictures.map((object) => object.id));
+  const plan = planPageSvgRender({ ...page, objects: page.objects.filter((object) => !missingIds.has(object.id)) });
   const images = new Map(page.objects.filter((object) => object.type === "graphic" && object.graphicKind === "image" && object.data.image)
     .map((object) => [object.id, object]));
   const renderedImages = new Set<string>();
@@ -83,6 +85,10 @@ export function exportDocumentToSvg(document: ChemDraftDocument, options: SvgExp
     severity: "warning",
     objectId: warning.objectId
   }));
+  warnings.push(...missingPictures.map((picture): ExportWarning => ({
+    code: "export.svg.picture_missing_data", severity: "warning", objectId: picture.id,
+    message: `SVG export: picture ${picture.id} has no picture data and was not drawn`
+  })));
   const warningMarkup =
     options.includeWarnings === true && warnings.length > 0
       ? `\n  <metadata data-chemdraft-warnings="${escapeXml(JSON.stringify(warnings))}" />`

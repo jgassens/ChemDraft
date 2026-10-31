@@ -51,7 +51,9 @@ export async function exportDocumentToPdf(
   const svgElement = parseSvgElement(svgResult.contents, options.domParser);
   const pictures = new Map(page.objects.filter((object) => object.type === "graphic" && object.graphicKind === "image" && object.data.image)
     .map((object) => [object.id, object]));
-  const warnings = [...svgResult.warnings];
+  const warnings = svgResult.warnings.map((warning) => warning.code === "export.svg.picture_missing_data"
+    ? { ...warning, code: "export.pdf.picture_missing_data", message: `PDF export: picture ${warning.objectId} has no picture data and was not drawn` }
+    : warning);
 
   const pdf = new jsPDF({
     orientation: widthPt >= heightPt ? "landscape" : "portrait",
