@@ -12,6 +12,8 @@ ChemDraw uses XML toolbar files. ChemDraft's initial native toolbar format is a 
 
 | Asset | ChemDraft command | Intended function | Status |
 | --- | --- | --- | --- |
+| Original `templates` ring/grid SVG glyph in `icons.tsx` | `template.insertDialog` | Open Templates… from Insert or Customize Main Toolbar | Active; available in the gallery, absent from the default toolbar |
+| Original template layout rendered as SVG | `template.insert.<templateId>` | Insert the named whole molecule, selected, at default bond length; one labelled Undo entry | Active; generated from the template list via `templateInsertCommandId`; picker tiles only, no per-template menu items |
 | `Custom_Select.png` | `tool.select` | Select and move document objects | Active |
 | `Custom_Lasso.png` | `tool.lasso` | Lasso-select document objects | Active |
 | `Custom_Eraser.png` | `tool.eraser` | Erase editable objects | Active |

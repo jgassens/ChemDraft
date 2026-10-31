@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { createEmptyDocument, type ChemDraftDocument, type GraphicObject, type MoleculeObject } from "@chemdraft/chem-core";
-import { createMoleculeInspectorModel, resolveMoleculeInspectorTargets } from "./moleculeInspectorModel";
+import { createEmptyDocument, nativeDrawingStyleFromObjectStyle, type ChemDraftDocument, type GraphicObject, type MoleculeObject } from "@chemdraft/chem-core";
+import { structureTemplateMolecule } from "@chemdraft/document-workflow-core";
+import { structureTemplateById } from "@chemdraft/template-library";
+import { applyMoleculeBaseStylePatch, applyMoleculeTargetBondLength } from "./documentWorkflow";
+import { moleculeStructureNumberRanges } from "./commands";
+import { createMoleculeInspectorModel, representativeMoleculeBondLengthPx, resolveMoleculeInspectorTargets } from "./moleculeInspectorModel";
+import {
+  moleculeInspectorTemplatePatchFromDrawingStyle,
+  parseMoleculeInspectorTemplate,
+  serializeMoleculeInspectorTemplate
+} from "./moleculeInspectorTemplates";
 
 describe("moleculeInspectorModel", () => {
   it("tolerates measured bond-length noise, rounds the shared display value, and keeps other fields exact", () => {
@@ -22,6 +31,74 @@ describe("moleculeInspectorModel", () => {
     molecules[1].atoms[1].x = 22.5;
     expect(createMoleculeInspectorModel(documentWithObjects(molecules.slice(0, 2)), selection).structure.values.bondLengthPx)
       .toEqual({ value: null, mixed: true });
+  });
+
+  it("reports the nominal bond length for a perspective molecule", () => {
+    const molecule = singleBondMolecule("perspective", 100, {
+      style: { projection: "perspective", bondLengthPx: 96 }
+    });
+    const model = createMoleculeInspectorModel(documentWithObjects([molecule]), { selectedObjectIds: [molecule.id] });
+    expect(model.structure.values.bondLengthPx).toEqual({ value: 96, mixed: false });
+  });
+
+  it("keeps the measured median bond length for a flat molecule", () => {
+    const molecule = benzeneMolecule();
+    molecule.style.bondLengthPx = 72;
+    const model = createMoleculeInspectorModel(documentWithObjects([molecule]), { selectedObjectIds: [molecule.id] });
+    // Four bonds are hypot(52, 30) long; two are 60. The median differs from the mean.
+    // The shared value is rounded to the field's three-decimal display precision.
+    expect(model.structure.values.bondLengthPx).toEqual({ value: Number(Math.hypot(52, 30).toFixed(3)), mixed: false });
+  });
+
+  it.each([undefined, 0, -1, "96"])("keeps the measured length for a perspective molecule with invalid nominal length %s", bondLengthPx => {
+    const molecule = singleBondMolecule("perspective", 100, {
+      style: { projection: "perspective", bondLengthPx }
+    });
+    const model = createMoleculeInspectorModel(documentWithObjects([molecule]), { selectedObjectIds: [molecule.id] });
+    expect(model.structure.values.bondLengthPx).toEqual({ value: 72, mixed: false });
+  });
+
+  it.each([72, 96])("compares each molecule's representative length when detecting mixed values (%i px nominal)", bondLengthPx => {
+    const perspective = singleBondMolecule("perspective", 100, {
+      style: { projection: "perspective", bondLengthPx }
+    });
+    const flat = singleBondMolecule("flat", 220, { style: { bondLengthPx: 96 } });
+    const model = createMoleculeInspectorModel(documentWithObjects([perspective, flat]), {
+      selectedObjectIds: [perspective.id, flat.id]
+    });
+    expect(model.structure.values.bondLengthPx).toEqual(bondLengthPx === 72
+      ? { value: 72, mixed: false } : { value: null, mixed: true });
+  });
+
+  it.each([22, 30])("preserves perspective template coordinates when exporting and re-applying %i px Drawn Structure Settings", bondLengthPx => {
+    const template = structureTemplateById("calix-4-arene")!;
+    const molecule = structureTemplateMolecule(template, {
+      document: createEmptyDocument(), centre: { x: 400, y: 300 }, style: { bondLengthPx }
+    });
+    expect(molecule.style.projection).toBe("perspective");
+    const document = documentWithObjects([molecule]);
+    const model = createMoleculeInspectorModel(document, { selectedObjectIds: [molecule.id] });
+    expect(model.structure.values.bondLengthPx).toEqual({ value: bondLengthPx, mixed: false });
+
+    // Match MainWindow's export and import paths through their exported helpers.
+    const contents = serializeMoleculeInspectorTemplate("Perspective Style", {
+      ...nativeDrawingStyleFromObjectStyle(molecule.style),
+      bondLengthPx: representativeMoleculeBondLengthPx(molecule)
+    });
+    const imported = parseMoleculeInspectorTemplate(contents);
+    const { bondLengthPx: importedLength, ...baseStylePatch } = moleculeInspectorTemplatePatchFromDrawingStyle(imported.drawing);
+    const range = moleculeStructureNumberRanges.bondLengthPx;
+    const targetLength = Math.min(range.max, Math.max(range.min, importedLength));
+    const resized = applyMoleculeTargetBondLength(document, [molecule.id], targetLength);
+    const styled = applyMoleculeBaseStylePatch(resized, [molecule.id], baseStylePatch);
+    const result = styled.pages[0]!.objects[0] as MoleculeObject;
+    expect(result.atoms).toHaveLength(molecule.atoms.length);
+    for (const [index, atom] of molecule.atoms.entries()) {
+      const after = result.atoms[index]!;
+      expect(after.id).toBe(atom.id);
+      expect(Math.abs(after.x - atom.x)).toBeLessThan(1e-9);
+      expect(Math.abs(after.y - atom.y)).toBeLessThan(1e-9);
+    }
   });
 
   it("keeps position disabled for a whole molecule without a double bond", () => {

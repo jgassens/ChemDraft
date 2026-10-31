@@ -167,6 +167,7 @@ const GALLERY_SECTIONS: ReadonlyArray<{ id: string; title: string }> = [
 /** First matching family wins. Kept as data (pattern → section) so new command families land in a
  *  sensible bucket by prefix without touching the tray. */
 const COMMAND_SECTION_RULES: ReadonlyArray<{ pattern: RegExp; section: string }> = [
+  { pattern: /^template\./, section: "rings" },
   // A button that shows/hides another toolbar — the way grid-replacing surfaces (Art, the inspectors)
   // are reachable from Main without embedding them.
   { pattern: /^view\.toolset\.toggle\./, section: "toolbars" },

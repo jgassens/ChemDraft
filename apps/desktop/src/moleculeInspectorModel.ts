@@ -269,6 +269,11 @@ export function resolveMoleculeInspectorTargets(
 }
 
 export function representativeMoleculeBondLengthPx(object: MoleculeObject): number {
+  // Projected bonds are foreshortened; retain the nominal scale in settings and exports.
+  if (object.style.projection === "perspective"
+    && typeof object.style.bondLengthPx === "number" && object.style.bondLengthPx > 0) {
+    return object.style.bondLengthPx;
+  }
   const atomById = new Map(object.atoms.map((atom) => [atom.id, atom]));
   const heavyDistances: number[] = [];
   const allDistances: number[] = [];

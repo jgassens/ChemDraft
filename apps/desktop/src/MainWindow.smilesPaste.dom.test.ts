@@ -3,9 +3,11 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  depictSmiles2D, ensureOclResources, UnrequestedSmilesHydrogenError, UnrequestedSmilesRadicalError
-} from "@chemdraft/ocl-adapter";
+import { depictSmiles2D, ensureOclResources, UnrequestedSmilesHydrogenError, UnrequestedSmilesRadicalError } from "@chemdraft/ocl-adapter";
+import * as ocl from "@chemdraft/ocl-adapter";
+import * as workflow from "@chemdraft/document-workflow-core";
+import { generateSmiles2DMolfile } from "@chemdraft/rdkit-adapter";
+import { getAssistantHistoryPort } from "./assistant/historyPort";
 import { MainWindow } from "./MainWindow";
 import { createPhase4Document, pastedStructureDepictionFromMolfile } from "./documentWorkflow";
 import * as depictionClient from "./depiction2d/client";
@@ -16,6 +18,13 @@ import type { StructureInspector } from "./depiction2d/identityProtocol";
 
 // Exercise the OCL depiction fallback with a real RDKit identity inspector.
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
+vi.mock("@chemdraft/rdkit-adapter", async original => ({
+  ...await original<typeof import("@chemdraft/rdkit-adapter")>(),
+  generateSmiles2DMolfile: vi.fn().mockRejectedValue(new Error("WASM unavailable"))
+}));
+vi.mock("@chemdraft/document-workflow-core", async original => ({
+  ...await original<typeof import("@chemdraft/document-workflow-core")>()
+}));
 vi.mock("./depiction2d/identityClient", () => ({ inspectStructureOffThread: vi.fn() }));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -26,7 +35,7 @@ class TestResizeObserver {
   disconnect() {}
 }
 
-describe("MainWindow SMILES paste failure notices", () => {
+describe("MainWindow SMILES paste", () => {
   let container: HTMLDivElement;
   let root: Root;
   let realInspector: StructureInspector;
@@ -46,11 +55,13 @@ describe("MainWindow SMILES paste failure notices", () => {
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
+    const drawing = createPhase4Document("SMILES paste");
+    drawing.styles.drawing = { ...workflow.documentDrawingDefaults(drawing).drawing, bondLengthPx: 34, bondStrokeWidthPx: 2.4 };
     await act(async () => {
       root.render(createElement(MainWindow, {
         initialActiveToolCommandId: "tool.select",
         initialCrosshairsVisible: false,
-        initialDocument: createPhase4Document("SMILES paste errors"),
+        initialDocument: drawing,
         initialPaletteMode: "hidden",
         initialRulersVisible: false,
         nativePalette: true
@@ -61,8 +72,8 @@ describe("MainWindow SMILES paste failure notices", () => {
   afterEach(() => {
     act(() => { root.unmount(); });
     container.remove();
-    vi.unstubAllGlobals();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   function dispatchPaste(text: string, type = "text/plain") {
@@ -85,6 +96,40 @@ describe("MainWindow SMILES paste failure notices", () => {
     }, { timeout, interval: 50 });
     return container.querySelector('[role="status"]')?.textContent;
   }
+
+  it("pastes beta-cyclodextrin once with the active document's style and bond length without coordinate generation", async () => {
+    const template = workflow.resolveStructureTemplateName("beta-cyclodextrin")!;
+    const before = getAssistantHistoryPort().read("initial")!;
+    const defaults = workflow.documentDrawingDefaults(before);
+    expect(defaults.bondLengthPx).toBe(34);
+    expect(defaults.objectStyle.bondStrokeWidthPx).toBe(2.4);
+    const construction = vi.spyOn(workflow, "structureTemplateMolecule");
+    const unavailable = () => { throw new Error("Template paste must not generate coordinates"); };
+    const oclDepiction = vi.spyOn(ocl, "depictSmiles2D").mockImplementation(unavailable);
+    const workerDepiction = vi.spyOn(depictionClient, "depictSmilesOffThread").mockImplementation(unavailable);
+    vi.mocked(generateSmiles2DMolfile).mockClear();
+
+    await paste(template.smiles, "text/plain", "Used the β-Cyclodextrin template layout");
+
+    const after = getAssistantHistoryPort().read("initial")!;
+    expect(after.pages[0]!.objects).toHaveLength(1);
+    const molecule = after.pages[0]!.objects[0]!;
+    if (molecule.type !== "molecule") throw new Error("Expected template molecule");
+    expect(molecule.style).toMatchObject(defaults.objectStyle);
+    expect(molecule.style.source).toBe(`structure-template:${template.id}`);
+    const atoms = new Map(molecule.atoms.map(atom => [atom.id, atom]));
+    const lengths = molecule.bonds.map(bond => {
+      const a = atoms.get(bond.fromAtomId)!, b = atoms.get(bond.toAtomId)!;
+      return Math.hypot(a.x - b.x, a.y - b.y);
+    });
+    expect(lengths.reduce((sum, length) => sum + length, 0) / lengths.length).toBeCloseTo(defaults.bondLengthPx, 6);
+    expect(after.selection.objectIds).toEqual([molecule.id]);
+    expect(construction).toHaveBeenCalledOnce();
+    expect(construction.mock.calls[0]![1].document).toBe(before);
+    expect(oclDepiction).not.toHaveBeenCalled();
+    expect(workerDepiction).not.toHaveBeenCalled();
+    expect(generateSmiles2DMolfile).not.toHaveBeenCalled();
+  }, 20_000);
 
   it.each(["CCO", "CCO\n"])("pastes %j as text promptly when worker RDKit cannot load", async text => {
     vi.mocked(inspectStructureOffThread).mockRejectedValueOnce(
@@ -180,9 +225,55 @@ describe("MainWindow SMILES paste failure notices", () => {
     ["F/C=C=C=C/F", "cumulene cis/trans"],
     ["N[Pt@SP1](N)(Cl)Cl", "square-planar"]
   ])("skips only the unverifiable stereo entry in a two-item list: %s", async (smiles, kind) => {
-    const status = await paste(`${smiles}\nCCO`, "text/plain", "SMILES paste refused:");
-    expect(status).toContain(`1 item failed: ${smiles}`);
+    const status = await paste(`CCO\n${smiles}`, "text/plain", `${kind} stereochemistry cannot be verified or drawn`);
+    expect(status).toContain(`skipped line 2: '${smiles}'`);
+    expect(status!.split(smiles)).toHaveLength(2);
+    expect(status).not.toContain("item failed");
     expect(status).toContain(`${kind} stereochemistry cannot be verified or drawn`);
+    expect(container.querySelectorAll(".molecule-object")).toHaveLength(1);
+    expect(container.querySelectorAll(".text-object")).toHaveLength(0);
+  }, 20_000);
+
+  it("caps skipped refusals at three and reports the remaining two reasons once", async () => {
+    const refusals = [
+      ["OC(Cl)=[C@]=C(C)F", "allene (axial)"],
+      ["F/C=C=C=C/F", "cumulene cis/trans"],
+      ["N[Pt@SP1](N)(Cl)Cl", "square-planar"],
+      ["F[P@TB1](Cl)(Br)(N)I", "trigonal-bipyramidal"],
+      ["F[Co@OH1](Cl)(Br)(N)(O)I", "octahedral"]
+    ];
+    const status = await paste(["CCO", ...refusals.map(([smiles]) => smiles)].join("\n"),
+      "text/plain", "Pasted 1 SMILES structures");
+    for (const [index, [smiles, kind]] of refusals.entries()) {
+      expect(status!.split(smiles!)).toHaveLength(2);
+      expect(status!.split(`${kind} stereochemistry cannot be verified or drawn`)).toHaveLength(2);
+      if (index < 3) expect(status).toContain(`skipped line ${index + 2}: '${smiles}' (`);
+      else expect(status).not.toContain(`skipped line ${index + 2}:`);
+    }
+    expect(status).toContain("; and 2 more; 2 items failed: F[P@TB1](Cl)(Br)(N)I:");
+    expect(status).toContain("; F[Co@OH1](Cl)(Br)(N)(O)I: octahedral");
+    expect(container.querySelectorAll(".molecule-object")).toHaveLength(1);
+    expect(container.querySelectorAll(".text-object")).toHaveLength(0);
+  }, 20_000);
+
+  it("retains later failures when the same refused token occurs five times", async () => {
+    const smiles = "N[Pt@SP1](N)(Cl)Cl";
+    const status = await paste(["CCO", ...Array<string>(5).fill(smiles)].join("\n"),
+      "text/plain", "Pasted 1 SMILES structures");
+    expect(status!.split(smiles)).toHaveLength(6);
+    expect(status!.split("square-planar stereochemistry cannot be verified or drawn")).toHaveLength(6);
+    expect(status).toContain("; and 2 more; 2 items failed:");
+    expect(status).not.toContain("skipped line 5:");
+    expect(status).not.toContain("skipped line 6:");
+  }, 20_000);
+
+  it("still reports non-identity failures alongside a skipped identity refusal", async () => {
+    const smiles = "N[Pt@SP1](N)(Cl)Cl";
+    const status = await paste(`CCO\n${smiles}\nn1cccc1`);
+    expect(status).toContain(`skipped line 2: '${smiles}'`);
+    expect(status!.split(smiles)).toHaveLength(2);
+    expect(status).toContain("square-planar stereochemistry cannot be verified or drawn");
+    expect(status).toContain(`1 item failed: n1cccc1: ${new UnrequestedSmilesRadicalError("n1cccc1").message}`);
     expect(container.querySelectorAll(".molecule-object")).toHaveLength(1);
     expect(container.querySelectorAll(".text-object")).toHaveLength(0);
   }, 20_000);
@@ -254,8 +345,8 @@ describe("MainWindow SMILES paste failure notices", () => {
     expect(container.querySelectorAll(".text-object")).toHaveLength(0);
   }, 20_000);
 
-  it("counts C1CC as skipped while placing the other list entries", async () => {
-    const status = await paste("CCO\nC1CC\nCCN\nCCC", "text/plain", "1 token skipped");
+  it("names the skipped line for C1CC while placing the other list entries", async () => {
+    const status = await paste("CCO\nC1CC\nCCN\nCCC", "text/plain", "skipped line 2: 'C1CC' (not valid SMILES)");
     expect(status).not.toContain("failed");
     expect(container.querySelectorAll(".molecule-object")).toHaveLength(3);
   }, 20_000);
