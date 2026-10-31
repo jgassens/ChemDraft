@@ -317,7 +317,7 @@ describe("LinkedFigureView", () => {
     for (let index = 0; index < 30; index += 1) {
       const group = container!.querySelector(`[data-peak-id="dense${index}"]`)!;
       expect(group.querySelector(".lf-peak-label") !== null).toBe(index >= 20);
-      expect(group.querySelector("title")!.textContent).toBe(`4.00 (${index}) ppm`);
+      expect(group.getAttribute("aria-label")).toBe(`4.00 (${index}) ppm`);
       expect(group.getAttribute("tabindex")).toBe("0");
     }
     hover(container!.querySelector('[data-peak-id="dense0"]')!);
