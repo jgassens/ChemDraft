@@ -245,11 +245,6 @@ export function inspectClipboardPayload(payload: ClipboardReadPayload): Clipboar
     };
   }
 
-  // An unreadable advertised chemistry flavor still takes precedence over artwork.
-  if (payload.types.some((type) => isSmilesType(type) || /(?:molfile|rxnfile|inchi|chemical\/)/i.test(type))) {
-    return { kind: "empty", warnings: [{ code: "clipboard.empty_or_unsupported", message: "The clipboard does not contain a supported ChemDraft paste payload." }] };
-  }
-
   const firstPlainText =
     textItems.find((item) => isTextLikeType(item.type)) ??
     textItems.find((item) => !isMarkupType(item.type));
@@ -263,7 +258,10 @@ export function inspectClipboardPayload(payload: ClipboardReadPayload): Clipboar
   if (smilesCandidate) {
     return { kind: "smiles", text: smilesCandidate.text, sourceType: smilesCandidate.type, warnings: [] };
   }
-  if (image) {
+  // An unreadable advertised chemistry flavor suppresses picture items, but leaves
+  // the existing text and vector fallback behavior intact.
+  const suppressPicture = payload.types.some((type) => isSmilesType(type) || /(?:molfile|rxnfile|inchi|chemical\/)/i.test(type));
+  if (image && !suppressPicture) {
     try {
       const binary = atob(image.bytesBase64);
       if (binary.length > MAX_IMAGE_OBJECT_BYTES) {
@@ -303,7 +301,7 @@ export function inspectClipboardPayload(payload: ClipboardReadPayload): Clipboar
       type: "image/svg+xml", bytesBase64: btoa(chunks.join("")), ...info
     } };
   }
-  if (skippedImage) return refusedImage(skippedImage.reason);
+  if (skippedImage && !suppressPicture) return refusedImage(skippedImage.reason);
   if (firstPlainText && !looksLikeSvgDocument(firstPlainText.text)) {
     return {
       kind: "plain-text",

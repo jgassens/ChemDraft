@@ -446,7 +446,7 @@ describe("clipboard-adapter", () => {
       { textItems: [{ type: "text/plain", text: "InChI=1S/CH4/h1H4" }], imageItems: [png], kind: "inchi" },
       { textItems: [], types: ["com.cambridgesoft.ChemDraw.CDX"], imageItems: [png], kind: "cdx" },
       { textItems: [], types: ["chemical/x-cdxml", "image/png"], imageItems: [png], kind: "cdxml" },
-      { textItems: [], types: ["chemical/x-mdl-molfile", "image/png"], imageItems: [png], kind: "empty" },
+      { textItems: [], types: ["chemical/x-mdl-molfile", "image/png"], imageItems: [png], kind: "vector-only" },
       { textItems: [], kind: "empty" }
     ];
     for (const entry of cases) {
@@ -454,6 +454,23 @@ describe("clipboard-adapter", () => {
       expect(result.kind, JSON.stringify(entry)).toBe(entry.kind);
       if ("type" in entry) expect(result).toMatchObject({ image: { type: entry.type } });
     }
+  });
+
+  it("lets readable chemistry win while unreadable advertised chemistry suppresses pictures", () => {
+    const png = { type: "image/png" as const, bytesBase64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/aWQAAAAASUVORK5CYII=" };
+    const molfileTypes = ["chemical/x-mdl-molfile", "text/plain", "image/png"];
+    expect(inspectClipboardPayload({ types: molfileTypes,
+      textItems: [{ type: "text/plain", text: "CCO" }], imageItems: [png] }).kind).toBe("smiles");
+
+    const cdxml = { types: ["chemical/x-cdxml", "image/png"], textItems: [] };
+    expect(inspectClipboardPayload({ ...cdxml, imageItems: [png] })).toEqual(inspectClipboardPayload(cdxml));
+    expect(inspectClipboardPayload({ ...cdxml, imageItems: [png] }).kind).not.toBe("image");
+
+    const prose = { types: molfileTypes, textItems: [{ type: "text/plain", text: "reaction conditions: rt, 1 h" }] };
+    expect(inspectClipboardPayload({ ...prose, imageItems: [png] })).toEqual(inspectClipboardPayload(prose));
+    expect(inspectClipboardPayload({ ...prose, skippedImageItems: [{ type: "image/png", byteLength: 1, reason: "unreadable" }] }))
+      .toEqual(inspectClipboardPayload(prose));
+    expect(inspectClipboardPayload({ types: ["text/plain", "image/png"], textItems: prose.textItems, imageItems: [png] }).kind).toBe("image");
   });
 
   it("refuses invalid and oversized PNG clipboard images", () => {
