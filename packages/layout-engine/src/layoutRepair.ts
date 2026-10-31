@@ -1,4 +1,35 @@
-import { evaluateLayoutQuality, type LayoutBond, type LayoutPoint, type LayoutQuality } from "./layoutQuality";
+import { atomNearBond, bondsOverlap, prepareLayoutTopology, evaluateLayoutQuality, type LayoutBond, type LayoutPoint, type LayoutQuality } from "./layoutQuality";
+
+/** A deterministic cap for the entire candidate, independent of machine speed. Exhaustion
+ * discards partial results rather than selecting a repair from a truncated search. */
+export const MAX_LAYOUT_REPAIR_TRIALS = 1024;
+
+/** Uniform spatial index for stationary atoms/bonds. Rebuilt once per move, not per angle. */
+class RepairGrid {
+  private cells = new Map<string, number[]>();
+  constructor(private size: number) {}
+  private bounds(a: LayoutPoint, b: LayoutPoint, margin: number) {
+    return [Math.floor((Math.min(a.x, b.x) - margin) / this.size),
+      Math.floor((Math.max(a.x, b.x) + margin) / this.size),
+      Math.floor((Math.min(a.y, b.y) - margin) / this.size),
+      Math.floor((Math.max(a.y, b.y) + margin) / this.size)];
+  }
+  add(id: number, a: LayoutPoint, b = a) {
+    const [x0, x1, y0, y1] = this.bounds(a, b, 0);
+    for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) {
+      const key = `${x}:${y}`, cell = this.cells.get(key);
+      if (cell) cell.push(id); else this.cells.set(key, [id]);
+    }
+  }
+  query(a: LayoutPoint, b = a, margin = 0): Set<number> {
+    const ids = new Set<number>();
+    const [x0, x1, y0, y1] = this.bounds(a, b, margin);
+    for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) {
+      for (const id of this.cells.get(`${x}:${y}`) ?? []) ids.add(id);
+    }
+    return ids;
+  }
+}
 
 export interface LayoutRepair {
   atoms: LayoutPoint[];
@@ -26,7 +57,8 @@ export function compareLayoutRepairs(a: LayoutRepair, b: LayoutRepair): number {
 export function repairLayoutOverlaps(
   atoms: readonly LayoutPoint[], bonds: readonly LayoutBond[]
 ): LayoutRepair[] {
-  const original = evaluateLayoutQuality(atoms, bonds);
+  const topology = prepareLayoutTopology(atoms.length, bonds);
+  const original = evaluateLayoutQuality(atoms, bonds, undefined, topology);
   if (!original.overlappingAtoms.length || original.crossings.length || original.hasBridgedRings ||
       original.fusedSideDefects.length) return [];
   const adjacent: number[][] = atoms.map(() => []);
@@ -60,7 +92,8 @@ export function repairLayoutOverlaps(
     sides.sort((a, b) => b.length - a.length || a[0] - b[0]);
     for (const side of sides.slice(1)) moves.push({ kind: "spiro rotation", pivot, movedAtoms: side, limit: 180 });
   }
-  for (const edge of bonds) {
+  for (const edgeIndex of topology.acyclicBonds) {
+    const edge = bonds[edgeIndex];
     const fromSide = component(edge.from, -1, edge);
     if (fromSide.includes(edge.to)) continue; // cyclic edge
     const toSide = component(edge.to, -1, edge);
@@ -77,11 +110,74 @@ export function repairLayoutOverlaps(
     }
   }
   const repairs: LayoutRepair[] = [];
+  let trials = 0;
   for (const move of moves) {
     const moving = new Set(move.movedAtoms);
     if (!original.overlappingAtoms.some(([a, b]) => moving.has(a) !== moving.has(b))) continue;
+    // A rigid move cannot fix a defect whose participants all stay on the same side.
+    const mobileBond = bonds.map(b => moving.has(b.from) || moving.has(b.to));
+    if (original.overlappingAtoms.some(([a, b]) => moving.has(a) === moving.has(b)) ||
+        original.atomBondOverlaps.some(([a, b]) => moving.has(a) === mobileBond[b]) ||
+        original.collinearBondOverlaps.some(([a, b]) => mobileBond[a] === mobileBond[b])) continue;
+    const atomGrid = new RepairGrid(original.referenceBondLength);
+    const bondGrid = new RepairGrid(original.referenceBondLength);
+    atoms.forEach((a, i) => { if (!moving.has(i)) atomGrid.add(i, a); });
+    bonds.forEach((b, i) => { if (!mobileBond[i]) bondGrid.add(i, atoms[b.from], atoms[b.to]); });
+    const reference = original.referenceBondLength;
+    // Intra-fragment pair distances are invariant. Compute their minima once per move;
+    // the spatial queries below update them with only pairs straddling the cut.
+    const bonded = new Set(bonds.map(b => `${Math.min(b.from, b.to)}:${Math.max(b.from, b.to)}`));
+    let invariantNearest = Infinity, invariantNonBonded = Infinity;
+    for (let i = 0; i < atoms.length; i++) for (let j = i + 1; j < atoms.length; j++) {
+      if (moving.has(i) !== moving.has(j)) continue;
+      const d = Math.hypot(atoms[i].x - atoms[j].x, atoms[i].y - atoms[j].y) / reference;
+      invariantNearest = Math.min(invariantNearest, d);
+      if (!bonded.has(`${i}:${j}`)) invariantNonBonded = Math.min(invariantNonBonded, d);
+    }
+    // A finite upper bound for the rare case where neither rigid part has a nonbonded pair.
+    const radiusBound = 2 * Math.max(reference, ...atoms.map(a =>
+      Math.hypot(a.x - atoms[move.pivot].x, a.y - atoms[move.pivot].y))) / reference + 1;
+    const nearestPairs = (rotated: LayoutPoint[]) => {
+      let nearestAtomPairDistance = invariantNearest;
+      let nearestNonBondedAtomPairDistance = invariantNonBonded;
+      for (const i of move.movedAtoms) {
+        const p = rotated[i];
+        const radius = Math.max(nearestAtomPairDistance, nearestNonBondedAtomPairDistance);
+        for (const j of atomGrid.query(p, p, (Number.isFinite(radius) ? radius : radiusBound) * reference)) {
+          const d = Math.hypot(p.x - atoms[j].x, p.y - atoms[j].y) / reference;
+          nearestAtomPairDistance = Math.min(nearestAtomPairDistance, d);
+          if (!bonded.has(`${Math.min(i, j)}:${Math.max(i, j)}`)) nearestNonBondedAtomPairDistance = Math.min(nearestNonBondedAtomPairDistance, d);
+        }
+      }
+      return { nearestAtomPairDistance, nearestNonBondedAtomPairDistance };
+    };
+    const locallyClear = (rotated: LayoutPoint[]) => {
+      for (const i of move.movedAtoms) {
+        const p = rotated[i];
+        for (const j of atomGrid.query(p, p, reference * 0.5)) {
+          if (Math.hypot(p.x - atoms[j].x, p.y - atoms[j].y) < reference * 0.5) return false;
+        }
+        for (const j of bondGrid.query(p, p, reference * 0.25)) {
+          const b = bonds[j];
+          if (i !== b.from && i !== b.to && atomNearBond(p, atoms[b.from], atoms[b.to], reference)) return false;
+        }
+      }
+      for (let i = 0; i < bonds.length; i++) {
+        if (!mobileBond[i]) continue;
+        const b = bonds[i], p = rotated[b.from], q = rotated[b.to];
+        for (const j of atomGrid.query(p, q, reference * 0.25)) {
+          if (j !== b.from && j !== b.to && atomNearBond(atoms[j], p, q, reference)) return false;
+        }
+        for (const j of bondGrid.query(p, q)) {
+          const other = bonds[j];
+          if (bondsOverlap(p, q, atoms[other.from], atoms[other.to], reference)) return false;
+        }
+      }
+      return true;
+    };
     for (let angleDegrees = -move.limit; angleDegrees <= move.limit; angleDegrees += 2) {
       if (angleDegrees === 0 || (move.limit === 180 && angleDegrees === 180)) continue;
+      if (++trials > MAX_LAYOUT_REPAIR_TRIALS) return [];
       const angle = angleDegrees * Math.PI / 180;
       const c = Math.cos(angle), s = Math.sin(angle), p = atoms[move.pivot];
       const rotated = atoms.map((a, i) => moving.has(i) ? {
@@ -91,7 +187,13 @@ export function repairLayoutOverlaps(
       const angles = adjacent[move.pivot].map(i => Math.atan2(rotated[i].y - p.y, rotated[i].x - p.x));
       if (angles.some((a, i) => angles.slice(i + 1).some(b =>
         Math.acos(Math.max(-1, Math.min(1, Math.cos(a - b)))) < Math.PI / 6 - 1e-9))) continue;
-      const quality = evaluateLayoutQuality(rotated, bonds, original.referenceBondLength);
+      if (!locallyClear(rotated)) continue;
+      // Local checks plus rigid-part invariants establish zero hard defects. Reuse that
+      // snapshot: scoring recomputes bond/ring metrics, never global pair geometry or topology.
+      const quality = evaluateLayoutQuality(rotated, bonds, reference, topology, {
+        ...nearestPairs(rotated), overlappingAtoms: [], atomBondOverlaps: [],
+        crossings: [], collinearBondOverlaps: []
+      });
       if (quality.passes || quality.passesRelaxed) repairs.push({ atoms: rotated, quality,
         kind: move.kind, pivot: move.pivot, movedAtoms: move.movedAtoms, angleDegrees });
     }

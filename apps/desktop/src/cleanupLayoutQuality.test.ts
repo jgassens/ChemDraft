@@ -34,6 +34,7 @@ function metrics(q: LayoutQuality) {
   return { min: q.minBondLength, max: q.maxBondLength, std: q.bondLengthStdDev,
     nearest: q.nearestAtomPairDistance, nearestNonBonded: q.nearestNonBondedAtomPairDistance,
     overlaps: q.overlappingAtoms.length, crossings: q.crossings.length,
+    atomsOnBonds: q.atomBondOverlaps.length, collinearBonds: q.collinearBondOverlaps.length,
     maxRingAngleError: Math.max(0, ...q.rings.map(r => r.maxAngleError ?? 0)),
     maxBridgeLength: q.maxBridgeLength, hardDefects: q.hardDefects, softScore: q.softScore,
     fusedSideDefects: q.fusedSideDefects.length, strict: q.passes, relaxed: q.passesRelaxed };
@@ -58,6 +59,65 @@ beforeAll(async () => { installRealRdkitModuleLoader(); await ensureOclResources
 afterAll(() => resetRdkitForTesting());
 
 describe("Clean Up Structure 2D layout quality (real engines)", () => {
+  it("rejects overlaps introduced by placing concentric disconnected naphthalenes", async () => {
+    const parsed = await depictInWorker("c1ccc2ccccc2c1", generateSmiles2DMolfile, () => {});
+    const first = parsed.depiction;
+    const center = { x: first.atoms.reduce((s, a) => s + a.x, 0) / 10,
+      y: first.atoms.reduce((s, a) => s + a.y, 0) / 10 };
+    const concentric: PastedStructureDepiction = {
+      atoms: [...first.atoms, ...first.atoms.map(a => ({ ...a,
+        x: center.x + (a.x - center.x) * 10, y: center.y + (a.y - center.y) * 10 }))],
+      bonds: [...first.bonds, ...first.bonds.map(b => ({ ...b, from: b.from + 10, to: b.to + 10 }))]
+    };
+    const document = insertSmilesMolecule(createEmptyDocument(), { x: 400, y: 400 }, concentric,
+      "c1ccc2ccccc2c1.c1ccc2ccccc2c1", SMILES_PASTE_OPTIONS);
+    const before = document.pages[0].objects[0] as MoleculeObject;
+    const warnings: string[] = [];
+    let raw: PastedStructureDepiction | undefined;
+    const cleaned = applyNativeMoleculeEngineRelayout(document, before.id, molfile => {
+      raw = relayoutMolfile2D(molfile);
+      return raw;
+    }, { targetBondLengthPx: 22, warnings });
+    expect(evaluateLayoutQuality(raw!.atoms, raw!.bonds).passes).toBe(true);
+    expect(cleaned).toBe(document);
+    expect(warnings).toContainEqual(expect.stringMatching(/put atoms on top of each other/));
+  });
+
+  it.each([
+    ["norbornane", "C1CC2CCC1C2", "RDKit default"],
+    ["adamantane", "C1C2CC3CC1CC(C2)C3", "RDKit CoordGen"],
+    ["cubane", "C12C3C4C1C5C2C3C45", "OCL"]
+  ])("%s cleanup commits no overlapping atoms and records candidate metrics", async (name, smiles, expectedWinner) => {
+    const parsed = await depictInWorker(smiles, generateSmiles2DMolfile, () => {});
+    const document = insertSmilesMolecule(createEmptyDocument(), { x: 400, y: 400 }, parsed.depiction, smiles, SMILES_PASTE_OPTIONS);
+    const before = document.pages[0].objects[0] as MoleculeObject;
+    const target = nativeDrawingStyleFromObjectStyle(before.style).bondLengthPx;
+    const engines = [relayoutMolfile2D, ...await createRdkit2DRelayouts()];
+    const labels = ["OCL", "RDKit CoordGen", "RDKit default"];
+    const depictions = engines.map(engine => {
+      let depiction: PastedStructureDepiction | undefined;
+      applyNativeMoleculeEngineRelayout(document, before.id, molfile => { depiction = engine(molfile); return depiction; });
+      return depiction!;
+    });
+    const warnings: string[] = [];
+    const options = { targetBondLengthPx: target, perceiveStereo: perceiveStereoCentersFromMolfile };
+    const cleaned = applyNativeMoleculeEngineRelayout(document, before.id, () => depictions[0], {
+      ...options, warnings, alternateRelayouts: depictions.slice(1).map(d => () => d)
+    });
+    const after = cleaned.pages[0].objects[0] as MoleculeObject;
+    const winner = cleaned === document ? "kept original" : labels.find((_, i) =>
+      JSON.stringify(applyNativeMoleculeEngineRelayout(document, before.id, () => depictions[i], options).pages[0].objects[0]) === JSON.stringify(after));
+    console.log("P8_CAGE " + JSON.stringify({ name, winner,
+      candidates: Object.fromEntries(depictions.map((d, i) => [labels[i], metrics(evaluateLayoutQuality(d.atoms, d.bonds))])),
+      committed: metrics(quality(after)), warnings }));
+    expect(cleaned).not.toBe(document);
+    expect(winner).toBe(expectedWinner);
+    expect(quality(after).overlappingAtoms).toEqual([]);
+    const module = await ensureRdkit();
+    expect(inspectStructureInWorker(module, stereoPerceptionMolfile(after)))
+      .toEqual(inspectStructureInWorker(module, stereoPerceptionMolfile(before)));
+  });
+
   it.each(cases)("$name ($variant) commits a clean layout with unchanged chemistry", async ({ name, smiles, oclPasses, variant }) => {
     const module = await ensureRdkit();
     const parsed = await depictInWorker(smiles, generateSmiles2DMolfile, () => {});
@@ -143,7 +203,7 @@ describe("Clean Up Structure 2D layout quality (real engines)", () => {
     expect(preparedWarnings).toEqual(warnings);
     expect(loader).toHaveBeenCalledTimes(oclPasses ? 0 : 1);
     // Capture every engine independently for the handoff, even if strict selection stopped early.
-    // The host evaluates raw depictions against their mean bond length before uniform placement.
+    // Capture raw metrics too; the host also checks hard defects after placement and folding.
     const allGenerated = new Map(generated);
     for (const [i, engine] of [relayoutMolfile2D, ...await createRdkit2DRelayouts()].entries()) {
       const label = ["OCL", "RDKit CoordGen", "RDKit default"][i];

@@ -4605,6 +4605,27 @@ describe("Phase 4 document workflow", () => {
       });
     });
 
+    it("2D metal placement clears substituent crossings without exempting metal atom overlaps", () => {
+      const { document, molecule } = zincTetrakisImidazoleFixture();
+      const target = nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx;
+      const shrunk = applyPatches(document, [{ op: "updateObject", objectId: molecule.id,
+        changes: { atoms: molecule.atoms.map(atom => ({ ...atom,
+          x: 200 + (atom.x - 200) * 2 / 3, y: 150 + (atom.y - 150) * 2 / 3 })) } }]);
+      const warnings: string[] = [];
+      const result = applyNativeMoleculeEngineRelayout(shrunk, molecule.id, relayoutMolfile2D,
+        { targetBondLengthPx: target, warnings });
+      expect(result).not.toBe(shrunk);
+      const after = moleculeById(result, molecule.id);
+      const ids = new Map(after.atoms.map((atom, i) => [atom.id, i]));
+      const q = layoutEngine.evaluateLayoutQuality(after.atoms, after.bonds
+        .filter(b => b.display?.bondStyle !== "dashed")
+        .map(b => ({ from: ids.get(b.fromAtomId)!, to: ids.get(b.toAtomId)! })), target);
+      expect(q.hardDefects).toBe(0);
+      expect(warnings).toEqual([]);
+      expect(after.atoms.map(({ x: _x, y: _y, ...atom }) => atom))
+        .toEqual(molecule.atoms.map(({ x: _x, y: _y, ...atom }) => atom));
+    });
+
     it("2D cleanup of a chelate is a fixed point as well: the metal stays where it was drawn and a second run reproduces the first", () => {
       const { document, molecule } = zincTpaSplayedFixture();
       const styleBondLength = nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx;
@@ -17917,16 +17938,17 @@ describe("2D engine cleanup candidate gate", () => {
     expect(warnings).toEqual([]);
   });
 
-  it("reduces existing hard defects before comparing soft scores", () => {
+  it("refuses a hard-defect reduction that still overlaps atoms", () => {
     const bad = chain([[0, 0], [1, 0], [0.1, 0], [0.2, 0]]);
     const document = insertSmilesMolecule(createPhase4Document("Hard defects"), { x: 400, y: 400 }, bad, "CCCC");
     const molecule = selectedMolecule(document);
-    expect(layoutEngine.evaluateLayoutQuality(bad.atoms, bad.bonds).hardDefects).toBe(3);
-    expect(layoutEngine.evaluateLayoutQuality(overlap.atoms, overlap.bonds).hardDefects).toBe(1);
+    expect(layoutEngine.evaluateLayoutQuality(bad.atoms, bad.bonds).hardDefects).toBeGreaterThan(1);
+    expect(layoutEngine.evaluateLayoutQuality(overlap.atoms, overlap.bonds).overlappingAtoms).toHaveLength(1);
     const warnings: string[] = [];
     const chosen = applyNativeMoleculeEngineRelayout(document, molecule.id, () => overlap, { targetBondLengthPx: 22, warnings });
-    expect(chosen).not.toBe(document);
-    expect(warnings).toEqual([]);
+    // Fewer collisions still leave unreadable atoms; preserve the original exactly.
+    expect(chosen).toBe(document);
+    expect(warnings).toEqual(["Clean Up kept the drawn layout of this structure: the generated layouts put atoms on top of each other."]);
     const lessDistorted = chain([[0, 0], [0.8, 0], [1.8, 0], [2.8, 0]]);
     const withoutDefects = applyNativeMoleculeEngineRelayout(document, molecule.id, () => overlap,
       { targetBondLengthPx: 22, alternateRelayouts: [() => lessDistorted] });

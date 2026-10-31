@@ -12,7 +12,10 @@ export interface LayoutQuality {
   maxBondLength: number;
   bondLengthStdDev: number;
   crossings: [number, number][];
+  collinearBondOverlaps: [number, number][];
   overlappingAtoms: [number, number][];
+  /** [atom index, bond index], excluding endpoints. */
+  atomBondOverlaps: [number, number][];
   /** Fraction of referenceBondLength; Infinity when there are fewer than two atoms. */
   nearestAtomPairDistance: number;
   /** As above, excluding directly bonded pairs. */
@@ -40,54 +43,108 @@ const distance = (a: LayoutPoint, b: LayoutPoint) => Math.hypot(a.x - b.x, a.y -
 const pairKey = (a: number, b: number) => a < b ? `${a}:${b}` : `${b}:${a}`;
 const mean = (values: number[]) => values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0;
 
-/** Symmetrized smallest rings: retain every tied cycle that is not a sum of strictly shorter
- * cycles. Shortest paths supply large rings; bounded chordless-cycle enumeration also finds a
- * five/six-ring completely surrounded by smaller rings (not shortest through any single bond).
- * In cubane this retains all six square faces and excludes composite six-cycles. */
-function smallestRings(atomCount: number, bonds: readonly LayoutBond[]): { rings: number[][]; cycleRank: number } {
+/** Strict interior proximity: endpoints are covered by the atom-pair overlap check. */
+export function atomNearBond(p: LayoutPoint, a: LayoutPoint, b: LayoutPoint, reference: number): boolean {
+  const dx = b.x - a.x, dy = b.y - a.y, length2 = dx * dx + dy * dy;
+  if (length2 === 0) return false;
+  const t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / length2;
+  return t > 1e-10 && t < 1 - 1e-10 &&
+    Math.hypot(p.x - a.x - t * dx, p.y - a.y - t * dy) < 0.25 * reference;
+}
+
+export function bondsOverlap(p: LayoutPoint, q: LayoutPoint, r: LayoutPoint, s: LayoutPoint, reference: number): boolean {
+  const epsilon = 1e-10 * reference ** 2;
+  const opposite = (x: number, y: number) => (x > epsilon && y < -epsilon) || (x < -epsilon && y > epsilon);
+  if (opposite(cross(p, q, r), cross(p, q, s)) && opposite(cross(r, s, p), cross(r, s, q))) return true;
+  if (Math.abs(cross(p, q, r)) > epsilon || Math.abs(cross(p, q, s)) > epsilon) return false;
+  const dx = q.x - p.x, dy = q.y - p.y, length2 = dx * dx + dy * dy;
+  if (length2 === 0) return false;
+  const u = ((r.x - p.x) * dx + (r.y - p.y) * dy) / length2;
+  const v = ((s.x - p.x) * dx + (s.y - p.y) * dy) / length2;
+  return Math.min(1, Math.max(u, v)) - Math.max(0, Math.min(u, v)) > 1e-10;
+}
+
+/** Geometry-independent snapshot, shared by all rigid-repair trials for one candidate. */
+export interface LayoutTopology {
+  rings: number[][];
+  cycleRank: number;
+  bridgeBonds: number[];
+  acyclicBonds: number[];
+  adjacent: { atom: number; bond: number }[][];
+  ringPairs: [number, number][];
+}
+
+/** One deterministic shortest path per edge (O(E(V+E))), never every tied path.
+ * Fixed-size chordless faces retain surrounded five/six-rings and cubane's six faces.
+ * This bounded walk is polynomial too; it never enumerates larger composite cycles. */
+export function prepareLayoutTopology(atomCount: number, bonds: readonly LayoutBond[]): LayoutTopology {
   const adjacent: { atom: number; bond: number }[][] = Array.from({ length: atomCount }, () => []);
+  bonds.forEach(({ from, to }, bond) => {
+    adjacent[from].push({ atom: to, bond });
+    adjacent[to].push({ atom: from, bond });
+  });
+  adjacent.forEach(edges => edges.sort((a, b) => a.atom - b.atom || a.bond - b.bond));
+  // Tarjan edge blocks identify cyclic systems and true acyclic edges independently of
+  // which shortest cycles won ties. Spiro blocks share an atom, never an edge.
+  const discovery = Array<number>(atomCount).fill(-1), low = [...discovery];
+  const stack: number[] = [], acyclicBonds: number[] = [];
+  const cyclicEdges = new Set<number>();
+  let time = 0, components = 0;
+  const visit = (node: number, parentEdge: number) => {
+    discovery[node] = low[node] = time++;
+    for (const { atom: next, bond } of adjacent[node]) {
+      if (bond === parentEdge) continue;
+      if (discovery[next] === -1) {
+        stack.push(bond);
+        visit(next, bond);
+        low[node] = Math.min(low[node], low[next]);
+        if (low[next] >= discovery[node]) {
+          const block: number[] = [];
+          let edge: number;
+          do { edge = stack.pop()!; block.push(edge); } while (edge !== bond);
+          if (block.length === 1) acyclicBonds.push(bond);
+          else block.forEach(edge => cyclicEdges.add(edge));
+        }
+      } else if (discovery[next] < discovery[node]) {
+        stack.push(bond);
+        low[node] = Math.min(low[node], discovery[next]);
+      }
+    }
+  };
+  for (let i = 0; i < atomCount; i++) if (discovery[i] === -1) { components++; visit(i, -1); }
   const parent = Array.from({ length: atomCount }, (_, i) => i);
   const root = (i: number): number => {
     while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; }
     return i;
   };
-  let components = atomCount;
-  bonds.forEach(({ from, to }, bond) => {
-    adjacent[from].push({ atom: to, bond });
-    adjacent[to].push({ atom: from, bond });
-    const a = root(from), b = root(to);
-    if (a !== b) { parent[a] = b; components--; }
-  });
+  const ringAtoms = new Set<number>();
+  for (const edge of cyclicEdges) {
+    const { from, to } = bonds[edge];
+    parent[root(from)] = root(to);
+    ringAtoms.add(from); ringAtoms.add(to);
+  }
+  const bridgeBonds = acyclicBonds.filter(i => {
+    const { from, to } = bonds[i];
+    return ringAtoms.has(from) && ringAtoms.has(to) && root(from) !== root(to);
+  }).sort((a, b) => a - b);
   const rings = new Map<string, number[]>();
   bonds.forEach(({ from, to }, excluded) => {
-    const depths = Array<number>(atomCount).fill(-1);
-    const predecessors: number[][] = Array.from({ length: atomCount }, () => []);
+    const previous = Array<number>(atomCount).fill(-1);
     const queue = [from];
-    depths[from] = 0;
-    for (let head = 0; head < queue.length; head++) {
-      const node = queue[head];
-      if (depths[to] !== -1 && depths[node] >= depths[to]) break;
-      for (const edge of adjacent[node]) {
-        if (edge.bond === excluded) continue;
-        const depth = depths[node] + 1;
-        if (depths[edge.atom] === -1) {
-          depths[edge.atom] = depth;
-          queue.push(edge.atom);
-        }
-        if (depths[edge.atom] === depth) predecessors[edge.atom].push(node);
+    previous[from] = from;
+    for (let head = 0; head < queue.length && previous[to] === -1; head++) {
+      for (const edge of adjacent[queue[head]]) {
+        if (edge.bond === excluded || previous[edge.atom] !== -1) continue;
+        previous[edge.atom] = queue[head];
+        queue.push(edge.atom);
       }
     }
-    if (depths[to] < 2) return;
-    const visit = (path: number[]) => {
-      const node = path[path.length - 1];
-      if (node === from) {
-        const key = path.map((atom, i) => pairKey(atom, path[(i + 1) % path.length])).sort().join("|");
-        rings.set(key, path);
-      } else {
-        for (const previous of predecessors[node]) visit([...path, previous]);
-      }
-    };
-    visit([to]);
+    if (previous[to] === -1) return;
+    const path = [to];
+    while (path[path.length - 1] !== from) path.push(previous[path[path.length - 1]]);
+    if (path.length < 3) return;
+    const key = path.map((atom, i) => pairKey(atom, path[(i + 1) % path.length])).sort().join("|");
+    rings.set(key, path);
   });
   const adjacentAtoms = adjacent.map(edges => new Set(edges.map(edge => edge.atom)));
   const addSmallCycle = (path: number[]) => {
@@ -134,13 +191,27 @@ function smallestRings(atomCount: number, bonds: readonly LayoutBond[]): { rings
     }
     start = end;
   }
-  return { rings: smallest, cycleRank: bonds.length - atomCount + components };
+  const byAtom: number[][] = Array.from({ length: atomCount }, () => []);
+  smallest.forEach((ring, i) => ring.forEach(atom => byAtom[atom].push(i)));
+  const pairs = new Map<string, [number, number]>();
+  for (const ids of byAtom) for (let a = 0; a < ids.length; a++) for (let b = a + 1; b < ids.length; b++) {
+    pairs.set(pairKey(ids[a], ids[b]), [ids[a], ids[b]]);
+  }
+  return { rings: smallest, cycleRank: bonds.length - atomCount + components,
+    bridgeBonds, acyclicBonds: acyclicBonds.sort((a, b) => a - b), adjacent,
+    ringPairs: [...pairs.values()].sort((a, b) => a[0] - b[0] || a[1] - b[1]) };
 }
+
+/** Hard-geometry snapshot for a previously screened rigid rotation. This permits repair to
+ * reuse invariant geometry and score only moved-versus-stationary pairs on each trial. */
+export type LayoutGeometry = Pick<LayoutQuality, "overlappingAtoms" | "crossings" | "collinearBondOverlaps" |
+  "atomBondOverlaps" | "nearestAtomPairDistance" | "nearestNonBondedAtomPairDistance">;
 
 /** All distances and bond statistics are fractions of the reference (default: mean bond length).
  * Invalid/nonfinite geometry is refused rather than accidentally receiving a passing verdict. */
 export function evaluateLayoutQuality(
-  atoms: readonly LayoutPoint[], bonds: readonly LayoutBond[], referenceBondLength?: number
+  atoms: readonly LayoutPoint[], bonds: readonly LayoutBond[], referenceBondLength?: number,
+  topology?: LayoutTopology, geometry?: LayoutGeometry
 ): LayoutQuality {
   if (atoms.some(a => !Number.isFinite(a.x) || !Number.isFinite(a.y)) || bonds.some(b =>
     !Number.isInteger(b.from) || !Number.isInteger(b.to) || b.from === b.to ||
@@ -156,11 +227,13 @@ export function evaluateLayoutQuality(
   const minBondLength = fractions.length ? Math.min(...fractions) : 1;
   const maxBondLength = fractions.length ? Math.max(...fractions) : 1;
   const bondLengthStdDev = Math.sqrt(mean(fractions.map(length => (length - avg) ** 2)));
-  const overlappingAtoms: [number, number][] = [];
+  // Scale the orientation tolerance so the verdict is invariant under uniform scaling.
+  const epsilon = 1e-10 * reference ** 2;
+  let overlappingAtoms: [number, number][] = [];
   let nearestAtomPairDistance = Infinity;
   let nearestNonBondedAtomPairDistance = Infinity;
   const bondedPairs = new Set(bonds.map(b => pairKey(b.from, b.to)));
-  atoms.forEach((a, i) => {
+  if (!geometry) atoms.forEach((a, i) => {
     for (let j = i + 1; j < atoms.length; j++) {
       const d = distance(a, atoms[j]) / reference;
       nearestAtomPairDistance = Math.min(nearestAtomPairDistance, d);
@@ -168,19 +241,25 @@ export function evaluateLayoutQuality(
       if (d < 0.5) overlappingAtoms.push([i, j]);
     }
   });
-  const crossings: [number, number][] = [];
-  // Scale the orientation tolerance so the verdict is invariant under uniform scaling.
-  const epsilon = 1e-10 * reference ** 2;
-  bonds.forEach((a, i) => {
+  let crossings: [number, number][] = [];
+  let collinearBondOverlaps: [number, number][] = [];
+  if (!geometry) bonds.forEach((a, i) => {
     for (let j = i + 1; j < bonds.length; j++) {
       const b = bonds[j];
-      if (new Set([a.from, a.to, b.from, b.to]).size !== 4) continue;
-      const [p, q, r, s] = [atoms[a.from], atoms[a.to], atoms[b.from], atoms[b.to]];
-      const opposite = (x: number, y: number) => (x > epsilon && y < -epsilon) || (x < -epsilon && y > epsilon);
-      if (opposite(cross(p, q, r), cross(p, q, s)) && opposite(cross(r, s, p), cross(r, s, q))) crossings.push([i, j]);
+      const p = atoms[a.from], q = atoms[a.to], r = atoms[b.from], t = atoms[b.to];
+      if (bondsOverlap(p, q, r, t, reference)) {
+        if (Math.abs(cross(p, q, r)) <= epsilon && Math.abs(cross(p, q, t)) <= epsilon) collinearBondOverlaps.push([i, j]);
+        else crossings.push([i, j]);
+      }
     }
   });
-  const smallest = smallestRings(atoms.length, bonds);
+  let atomBondOverlaps: [number, number][] = [];
+  if (!geometry) atoms.forEach((p, i) => bonds.forEach((b, j) => {
+    if (i !== b.from && i !== b.to && atomNearBond(p, atoms[b.from], atoms[b.to], reference)) atomBondOverlaps.push([i, j]);
+  }));
+  if (geometry) ({ overlappingAtoms, crossings, collinearBondOverlaps, atomBondOverlaps,
+    nearestAtomPairDistance, nearestNonBondedAtomPairDistance } = geometry);
+  const smallest = topology ?? prepareLayoutTopology(atoms.length, bonds);
   const rings: LayoutRingQuality[] = smallest.rings.map(ids => {
     if (ids.length !== 5 && ids.length !== 6) return { atoms: ids };
     const points = ids.map(i => atoms[i]);
@@ -203,38 +282,24 @@ export function evaluateLayoutQuality(
   const centroid = (ids: number[]) => ({ x: mean(ids.map(i => atoms[i].x)), y: mean(ids.map(i => atoms[i].y)) });
   const fusedSideDefects: [number, number][] = [];
   let hasBridgedRings = rings.length > smallest.cycleRank;
-  rings.forEach((a, i) => {
-    for (let j = i + 1; j < rings.length; j++) {
-      const sharedEdges = [...edges[i]].filter(edge => edges[j].has(edge));
-      if (sharedEdges.length > 1) hasBridgedRings = true;
-      // Rings sharing a bridge path rather than one bond are bridged, not fused.
-      if (sharedEdges.length !== 1) continue;
-      const [p, q] = sharedEdges[0].split(":").map(id => atoms[Number(id)]);
-      if (cross(p, q, centroid(a.atoms)) * cross(p, q, centroid(rings[j].atoms)) > epsilon ** 2) {
-        fusedSideDefects.push([i, j]);
-      }
+  for (const [i, j] of smallest.ringPairs) {
+    const sharedEdges = [...edges[i]].filter(edge => edges[j].has(edge));
+    if (sharedEdges.length > 1) hasBridgedRings = true;
+    // Rings sharing a bridge path rather than one bond are bridged, not fused.
+    if (sharedEdges.length !== 1) continue;
+    const [p, q] = sharedEdges[0].split(":").map(id => atoms[Number(id)]);
+    if (cross(p, q, centroid(rings[i].atoms)) * cross(p, q, centroid(rings[j].atoms)) > epsilon ** 2) {
+      fusedSideDefects.push([i, j]);
     }
-  });
-  const hardDefects = overlappingAtoms.length + crossings.length;
+  }
+  const hardDefects = overlappingAtoms.length + crossings.length + atomBondOverlaps.length + collinearBondOverlaps.length;
   const ringError = Math.max(0, ...rings.map(ring => ring.maxAngleError ?? 0));
-  const ringEdges = new Set(edges.flatMap(group => [...group]));
-  const ringAtoms = new Set(rings.flatMap(ring => ring.atoms));
-  const parent = atoms.map((_, i) => i);
-  const root = (i: number): number => {
-    while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; }
-    return i;
-  };
-  bonds.forEach(bond => {
-    if (ringEdges.has(pairKey(bond.from, bond.to))) parent[root(bond.from)] = root(bond.to);
-  });
-  const bridgeBonds = bonds.flatMap((bond, i) =>
-    !ringEdges.has(pairKey(bond.from, bond.to)) && ringAtoms.has(bond.from) && ringAtoms.has(bond.to) &&
-      root(bond.from) !== root(bond.to) ? [i] : []);
+  const bridgeBonds = smallest.bridgeBonds;
   const bridges = new Set(bridgeBonds);
   const regularRings = ringError <= 10 + 1e-9 && fusedSideDefects.length === 0;
   const softScore = bondLengthStdDev + Math.abs(1 - minBondLength) + Math.abs(maxBondLength - 1) + ringError / 180 + fusedSideDefects.length;
   return { referenceBondLength: reference, minBondLength, maxBondLength, bondLengthStdDev,
-    crossings, overlappingAtoms, nearestAtomPairDistance, nearestNonBondedAtomPairDistance,
+    crossings, collinearBondOverlaps, overlappingAtoms, atomBondOverlaps, nearestAtomPairDistance, nearestNonBondedAtomPairDistance,
     rings, fusedSideDefects, hasBridgedRings, hardDefects, softScore,
     bridgeBonds, maxBridgeLength: Math.max(0, ...bridgeBonds.map(i => fractions[i])),
     passesRelaxed: hardDefects === 0 && regularRings && fractions.every((length, i) =>

@@ -7,6 +7,42 @@ const polygon = (n: number): LayoutPoint[] => Array.from({ length: n }, (_, i) =
 const cycle = (n: number) => Array.from({ length: n }, (_, from) => ({ from, to: (from + 1) % n }));
 
 describe("2D layout quality", () => {
+  it("bounds diamond-chain ring perception at 37 and 499 atoms", () => {
+    for (const k of [12, 166]) {
+      const atoms = Array.from({ length: k + 1 }, (_, i) => ({ x: 2 * i, y: 0 }));
+      const bonds: { from: number; to: number }[] = [{ from: 0, to: k }];
+      for (let i = 0; i < k; i++) {
+        const top = atoms.length;
+        atoms.push({ x: 2 * i + 1, y: 1 }, { x: 2 * i + 1, y: -1 });
+        bonds.push({ from: i, to: top }, { from: top, to: i + 1 },
+          { from: i, to: top + 1 }, { from: top + 1, to: i + 1 });
+      }
+      const start = performance.now();
+      const q = evaluateLayoutQuality(atoms, bonds);
+      const elapsed = performance.now() - start;
+      console.log(`DIAMOND_TIMING k=${k} atoms=${atoms.length} ms=${elapsed.toFixed(1)} rings=${q.rings.length}`);
+      expect(elapsed).toBeLessThan(1000);
+      expect(q.rings.length).toBeLessThanOrEqual(bonds.length);
+    }
+  });
+
+  it("counts an atom in a nonincident bond's interior as a hard defect", () => {
+    const q = evaluateLayoutQuality([{ x: 0, y: 0 }, { x: 1.08, y: 0 }, { x: 0.54, y: 0 }],
+      [{ from: 0, to: 1 }]);
+    expect(q.overlappingAtoms).toEqual([]);
+    expect(q.hardDefects).toBeGreaterThan(0);
+    expect(q.passes).toBe(false);
+  });
+
+  it("counts collinear bonds with positive length overlap as hard defects", () => {
+    const q = evaluateLayoutQuality([0, 1, 0.5, 1.5].map(x => ({ x, y: 0 })),
+      [{ from: 0, to: 1 }, { from: 2, to: 3 }], 1);
+    expect(q.overlappingAtoms).toEqual([]);
+    expect(q.collinearBondOverlaps).toEqual([[0, 1]]);
+    expect(q.hardDefects).toBeGreaterThan(0);
+    expect(q.passes).toBe(false);
+  });
+
   it.each([1.5, MAX_BRIDGE_STRETCH, 1.7])("relaxes only a bridge between separate ring systems (%s)", stretch => {
     const atoms = [...polygon(6), ...polygon(6).map(p => ({ x: p.x + 2 + stretch, y: p.y }))];
     const bonds = [...cycle(6), ...cycle(6).map(b => ({ from: b.from + 6, to: b.to + 6 })), { from: 0, to: 9 }];

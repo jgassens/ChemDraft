@@ -135,6 +135,7 @@ import {
   compareLayoutQuality,
   compareLayoutRepairs,
   evaluateLayoutQuality,
+  prepareLayoutTopology,
   repairLayoutOverlaps,
   type LayoutBond,
   type LayoutQuality,
@@ -15030,6 +15031,7 @@ interface EngineRelayoutCandidate {
   quality?: LayoutQuality;
   drawnQuality?: LayoutQuality;
   warnings: string[];
+  placementAddsHardDefects?: boolean;
   repairSource?: { depiction: PastedStructureDepiction; bonds: LayoutBond[] };
 }
 type EngineRelayoutAttempt = { ok: true; candidate: EngineRelayoutCandidate } | { ok: false; error: unknown };
@@ -15046,13 +15048,15 @@ function evaluateEngineRelayoutCandidate(
   let quality: LayoutQuality | undefined;
   let drawnQuality: LayoutQuality | undefined;
   let repairSource: EngineRelayoutCandidate["repairSource"];
+  let placementAddsHardDefects = false;
   try {
-    const next = buildNativeMoleculeEngineRelayout(document, objectId, relayout, { ...options, warnings }, (generated, drawn, depiction, bonds) => {
+    const next = buildNativeMoleculeEngineRelayout(document, objectId, relayout, { ...options, warnings }, (generated, drawn, depiction, bonds, placementDefect) => {
+      placementAddsHardDefects = placementDefect;
       quality = generated;
       drawnQuality = drawn;
       repairSource = { depiction, bonds };
     });
-    return { ok: true, candidate: { document: next, quality, drawnQuality, warnings, repairSource } };
+    return { ok: true, candidate: { document: next, quality, drawnQuality, warnings, repairSource, placementAddsHardDefects } };
   } catch (error) {
     return { ok: false, error };
   }
@@ -15105,6 +15109,11 @@ function chooseEngineRelayout(
     if (!primary.ok) throw primary.error;
     return document;
   }
+  // A rejected placement or an atom collision must not outrank a usable crossing-only
+  // alternative merely because its total hard-defect count is smaller.
+  const usable = candidates.filter(candidate => !candidate.placementAddsHardDefects &&
+    candidate.quality?.overlappingAtoms.length === 0);
+  if (usable.length) best = usable.reduce((a, b) => compareLayoutQuality(a.quality!, b.quality!) <= 0 ? a : b);
   // Preserve the existing bridged/cage policy; regular planar geometry may be impossible there.
   const bridged = best.quality?.hasBridgedRings;
   if (!bridged && bestRelaxed) return finish(bestRelaxed);
@@ -15112,17 +15121,20 @@ function chooseEngineRelayout(
   const drawn = best.drawnQuality;
   const improvesOrdinary = generated && drawn && (generated.hardDefects < drawn.hardDefects ||
     (generated.hardDefects === 0 && generated.softScore <= drawn.softScore - MIN_CLEANUP_SOFT_SCORE_IMPROVEMENT));
-  if (generated && drawn && (bridged ? drawn.hardDefects < generated.hardDefects : !improvesOrdinary)) {
+  if (generated && drawn && (best.placementAddsHardDefects || generated.overlappingAtoms.length > 0 ||
+      (bridged ? drawn.hardDefects < generated.hardDefects : !improvesOrdinary))) {
     options.warnings?.push(...best.warnings);
     const reason = generated.overlappingAtoms.length > 0 && generated.crossings.length > 0
       ? "put atoms on top of each other and crossed bonds"
       : generated.overlappingAtoms.length > 0 ? "put atoms on top of each other"
-      : generated.crossings.length > 0 ? "crossed bonds" : "distorted bonds or rings beyond the cleanup limits";
+      : generated.crossings.length > 0 ? "crossed bonds"
+      : generated.atomBondOverlaps.length > 0 ? "put atoms on bonds"
+      : generated.collinearBondOverlaps.length > 0 ? "overlapped bonds" : "distorted bonds or rings beyond the cleanup limits";
     options.warnings?.push(`Clean Up kept the drawn layout of this structure: the generated layouts ${reason}.`);
     return document;
   }
   // Bridged/cage graphs may have unavoidable crossings or distorted rings. Equal hard-defect
-  // counts still allow their cleanup; a strictly better drawn layout blocks a generated layout.
+  // counts still allow their cleanup without atom overlaps; a better drawing blocks the result.
   return finish(best);
 }
 
@@ -15276,7 +15288,7 @@ function buildNativeMoleculeEngineRelayout(
   objectId: string,
   relayout: (molfile: string) => PastedStructureDepiction,
   options: NativeEngineRelayoutOptions,
-  reportQuality?: (generated: LayoutQuality, drawn: LayoutQuality, depiction: PastedStructureDepiction, bonds: LayoutBond[]) => void
+  reportQuality?: (generated: LayoutQuality, drawn: LayoutQuality, depiction: PastedStructureDepiction, bonds: LayoutBond[], placementAddsHardDefects: boolean) => void
 ): ChemDraftDocument {
   const molecule = findMoleculeObject(document, objectId);
   if (!molecule || !isEditableNativeMoleculeGraph(molecule) || molecule.atoms.length === 0) {
@@ -15341,15 +15353,10 @@ function buildNativeMoleculeEngineRelayout(
       throw new Error(`Engine re-layout atom ${index + 1} is ${atom.element}, expected ${expected}.`);
     }
   });
-  // Judge the engine's ligand skeleton before any metal placement/folding. Native bonds define
-  // the graph, so an engine cannot improve its score by omitting an inconvenient bond.
-  if (reportQuality) {
-    const ligandIndexById = new Map(ligandAtoms.map((atom, index) => [atom.id, index]));
-    const qualityBonds = ligandBonds.map(bond => ({
-      from: ligandIndexById.get(bond.fromAtomId)!, to: ligandIndexById.get(bond.toAtomId)!
-    }));
-    reportQuality(evaluateLayoutQuality(depiction.atoms, qualityBonds), evaluateLayoutQuality(ligandAtoms, qualityBonds), depiction, qualityBonds);
-  }
+  const ligandIndexById = new Map(ligandAtoms.map((atom, index) => [atom.id, index]));
+  const qualityBonds = ligandBonds.map(bond => ({
+    from: ligandIndexById.get(bond.fromAtomId)!, to: ligandIndexById.get(bond.toAtomId)!
+  }));
   // Engine bonds re-indexed onto the molecule's own atom order.
   const engineBonds = depiction.bonds.map((bond) => ({
     ...bond,
@@ -15433,7 +15440,8 @@ function buildNativeMoleculeEngineRelayout(
         settleNativeMetalsInDonorPockets(foldedAtoms, molecule.bonds, targetBondLength),
         molecule.bonds,
         targetBondLength,
-        molecule.atoms
+        molecule.atoms,
+        reportQuality !== undefined
       );
   // The metals stay where the user drew them and the ligands are rebuilt around them: the whole
   // result is translated so the free metals' centroid is back on its drawn spot. Recentring the
@@ -15457,6 +15465,27 @@ function buildNativeMoleculeEngineRelayout(
         x: roundGeometryCoordinate(atom.x + metalShift.x),
         y: roundGeometryCoordinate(atom.y + metalShift.y)
       }));
+
+  if (reportQuality) {
+    // Keep raw ring/bond scoring and engine priority, but judge hard geometry on the final
+    // placed and folded skeleton, including free metals as collision obstacles. Dative edges
+    // are not covalent layout constraints; no metal-to-ligand atom overlap is exempted.
+    const raw = evaluateLayoutQuality(depiction.atoms, qualityBonds);
+    const placed = evaluateLayoutQuality([...ligandToOriginalIndex.map(i => atoms[i]),
+      ...atoms.filter(atom => freeMetalIds.has(atom.id))], qualityBonds);
+    const introduced = (after: [number, number][], before: [number, number][]) => {
+      const keys = new Set(before.map(pair => pair.join(":")));
+      return after.some(pair => !keys.has(pair.join(":")));
+    };
+    const addsHardDefects = introduced(placed.overlappingAtoms, raw.overlappingAtoms) ||
+      introduced(placed.crossings, raw.crossings) ||
+      introduced(placed.collinearBondOverlaps, raw.collinearBondOverlaps) || introduced(placed.atomBondOverlaps, raw.atomBondOverlaps);
+    reportQuality({ ...raw, overlappingAtoms: placed.overlappingAtoms, crossings: placed.crossings,
+      atomBondOverlaps: placed.atomBondOverlaps, collinearBondOverlaps: placed.collinearBondOverlaps, hardDefects: placed.hardDefects,
+      passes: raw.passes && placed.hardDefects === 0,
+      passesRelaxed: raw.passesRelaxed && placed.hardDefects === 0 },
+      evaluateLayoutQuality([...ligandAtoms, ...drawnFreeMetals], qualityBonds), depiction, qualityBonds, addsHardDefects);
+  }
 
   // Wedge/hash assignments follow the parities on the NEW geometry; index bonds by their endpoint
   // atom indices (the engine's bonds were re-indexed onto the molecule's own atom order above, so
@@ -16656,7 +16685,8 @@ function arrangeNativeMonodentateLigands(
   /** The atoms as drawn before the engine ran: slot choice follows where the DRAWING had each
    *  ligand, not where the engine's row happens to put it, so a second cleanup reproduces the
    *  first exactly instead of shuffling ligands between slots. */
-  drawnAtoms: readonly MoleculeAtom[] = atoms
+  drawnAtoms: readonly MoleculeAtom[] = atoms,
+  avoidHardDefects = false
 ): MoleculeAtom[] {
   const L = bondLengthPx;
   if (!(L > 0)) {
@@ -16751,6 +16781,7 @@ function arrangeNativeMonodentateLigands(
   });
   const pending = (index: number): boolean => pendingComponents.has(componentOf[index]) && !moved.has(index);
 
+  const mirrorAlternatives: { indices: number[]; alternative: PagePoint[] }[] = [];
   donorsByMetal.forEach((donorIndices, metalIndex) => {
     const metal = points[metalIndex];
     const donorsByComponent = new Map<number, number[]>();
@@ -16847,14 +16878,37 @@ function arrangeNativeMonodentateLigands(
       const preferred = drawnHandedness !== 0 && handednessOf(mirrored) === drawnHandedness ? mirrored : straight;
       const alternative = preferred === straight ? mirrored : straight;
       const chosen = clearance(preferred) < 0.5 * L && clearance(alternative) > clearance(preferred) + 1e-6
-        ? alternative
-        : preferred;
+        ? alternative : preferred;
+      mirrorAlternatives.push({ indices: fragmentIndices, alternative: chosen === preferred ? alternative : preferred });
       fragmentIndices.forEach((index, position) => {
         points[index] = chosen[position];
         moved.add(index);
       });
     });
   });
+
+  if (avoidHardDefects && mirrorAlternatives.length) {
+    const qualityBonds = bonds.filter(b => !isDashed(b)).map(b => ({
+      from: indexById.get(b.fromAtomId)!, to: indexById.get(b.toAtomId)!
+    }));
+    const topology = prepareLayoutTopology(atoms.length, qualityBonds);
+    let bestDefects = evaluateLayoutQuality(points, qualityBonds, L, topology).hardDefects;
+    // Greedy atom clearance can trap the final ligand between two substituent bonds. Try the
+    // existing mirror choices together, at most 256 combinations, before rejecting placement.
+    // Reflections still pass the normal final stereochemistry read-back guard.
+    const original = points.map(p => ({ ...p }));
+    for (let mask = 1; bestDefects > 0 && mask < 2 ** Math.min(8, mirrorAlternatives.length); mask++) {
+      const trial = [...original];
+      mirrorAlternatives.slice(0, 8).forEach(({ indices, alternative }, i) => {
+        if (mask & (1 << i)) indices.forEach((index, j) => { trial[index] = alternative[j]; });
+      });
+      const defects = evaluateLayoutQuality(trial, qualityBonds, L, topology).hardDefects;
+      if (defects < bestDefects) {
+        bestDefects = defects;
+        trial.forEach((point, i) => { points[i] = point; });
+      }
+    }
+  }
 
   return atoms.map((atom, index) => (
     moved.has(index)

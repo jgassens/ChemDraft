@@ -37,7 +37,38 @@ function expectRigid(before: LayoutPoint[], after: LayoutPoint[], bonds: LayoutB
   }
 }
 
+function expectLocalScoresMatchFullEvaluation(repairs: LayoutRepair[], bonds: LayoutBond[]) {
+  for (const repair of repairs) {
+    const full = evaluateLayoutQuality(repair.atoms, bonds, repair.quality.referenceBondLength);
+    expect(full.hardDefects).toBe(0);
+    expect(full.passes).toBe(repair.quality.passes);
+    expect(full.passesRelaxed).toBe(repair.quality.passesRelaxed);
+    expect(full.nearestAtomPairDistance).toBeCloseTo(repair.quality.nearestAtomPairDistance, 12);
+    expect(full.nearestNonBondedAtomPairDistance).toBeCloseTo(repair.quality.nearestNonBondedAtomPairDistance, 12);
+  }
+}
+
 describe("rigid fragment overlap repair", () => {
+  it("bounds repair work on 500 atoms with coincident hexagons deterministically", () => {
+    const atoms: LayoutPoint[] = [];
+    const bonds: LayoutBond[] = [];
+    for (let i = 0; i < 83; i++) {
+      atoms.push(...polygon(6, { x: 0, y: 0 }));
+      bonds.push(...cycle(6, i * 6));
+      if (i) bonds.push({ from: (i - 1) * 6, to: i * 6 + 3 });
+    }
+    atoms.push({ x: 2, y: 0 }, { x: 3, y: 0 });
+    bonds.push({ from: 0, to: 498 }, { from: 498, to: 499 });
+    const snapshot = structuredClone(atoms);
+    const start = performance.now();
+    const first = repairLayoutOverlaps(atoms, bonds);
+    const elapsed = performance.now() - start;
+    console.log(`REPAIR_TIMING atoms=${atoms.length} ms=${elapsed.toFixed(1)}`);
+    expect(elapsed).toBeLessThan(2000);
+    expect(repairLayoutOverlaps(atoms, bonds)).toEqual(first);
+    expect(atoms).toEqual(snapshot);
+  }, 60_000);
+
   it("orders strict repairs by soft score, clearance, and then input order", () => {
     const quality = evaluateLayoutQuality(polygon(6, { x: 0, y: 0 }), cycle(6));
     const repair = (softScore: number, nearest: number, passes = true): LayoutRepair => ({
@@ -73,6 +104,7 @@ describe("rigid fragment overlap repair", () => {
     expect(original.crossings).toEqual([]);
     const repairs = repairLayoutOverlaps(atoms, bonds);
     expect(repairs.length).toBeGreaterThan(0);
+    expectLocalScoresMatchFullEvaluation(repairs, bonds);
     expect(repairs[0].kind).toBe("spiro rotation");
     expect(repairs[0].pivot).toBe(0);
     expect(repairs[0].quality.passes).toBe(true);
@@ -97,6 +129,7 @@ describe("rigid fragment overlap repair", () => {
     const snapshot = structuredClone(atoms);
     const repairs = repairLayoutOverlaps(atoms, bonds);
     expect(repairs.length).toBeGreaterThan(0);
+    expectLocalScoresMatchFullEvaluation(repairs, bonds);
     const repaired = repairs.find(r => r.kind === "bridge swing")!;
     expect(repaired).toBeDefined();
     expect(Math.abs(repaired.angleDegrees)).toBeLessThanOrEqual(40);
