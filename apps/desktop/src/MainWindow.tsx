@@ -31616,7 +31616,9 @@ export async function createDialogExportResult(
     });
     const rasterResult = await rasterizeSvgNative(svgResult.contents, rasterFormat, {
       scale: sized || preview ? 1 : sanitizedDialogNumber(state.raster.scale, 1, 1, 4),
-      ...(sized || preview ? { cssPxPerInch: dpi } : {}),
+      // Legacy scale-based exports use the source SVG's 96 CSS px/inch. Rust multiplies
+      // by the applied scale (including clamping); explicitly sized output uses its chosen DPI.
+      cssPxPerInch: sized || preview ? dpi : CSS_PX_PER_INCH,
       background: transparent ? "transparent" : "#ffffff",
       jpegQuality: sanitizedDialogNumber(state.raster.jpegQuality, 90, 1, 100),
       maxDimensionPx: sanitizedDialogNumber(state.raster.maxDimensionPx, 8192, 1, 8192)

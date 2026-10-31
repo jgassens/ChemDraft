@@ -434,6 +434,7 @@ fn warning(code: &'static str, message: String) -> RasterExportWarning {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
 
     #[test]
     fn export_images_accept_only_data_urls() {
@@ -498,6 +499,113 @@ mod tests {
             max_dimension_px: None,
             css_px_per_inch: None,
         }
+    }
+
+    fn red_png_data_url() -> String {
+        let image = image::RgbaImage::from_pixel(4, 4, image::Rgba([255, 0, 0, 255]));
+        let mut cursor = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(image)
+            .write_to(&mut cursor, ImageFormat::Png)
+            .expect("encode the solid red 4x4 picture");
+        format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(cursor.into_inner())
+        )
+    }
+
+    #[test]
+    fn embedded_png_picture_pixels_survive_every_raster_format_at_1x_and_3x() {
+        let href = red_png_data_url();
+        let svg = format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><rect width="64" height="64" fill="#ffffff"/><image href="{href}" x="16" y="16" width="32" height="32" preserveAspectRatio="none"/></svg>"##
+        );
+        for format in [
+            RasterExportFormat::Png,
+            RasterExportFormat::Jpeg,
+            RasterExportFormat::Bmp,
+            RasterExportFormat::Gif,
+            RasterExportFormat::Tiff,
+        ] {
+            for scale in [1, 3] {
+                let response = rasterize_svg_impl(RasterExportRequest {
+                    svg: svg.clone(),
+                    scale: Some(f64::from(scale)),
+                    ..request(format)
+                })
+                .expect("export the embedded PNG picture");
+                assert_eq!((response.width, response.height), (64 * scale, 64 * scale));
+                assert!(response.warnings.is_empty());
+                let pixels = image::load_from_memory(&response.bytes)
+                    .expect("decode exported picture")
+                    .to_rgba8();
+                for (x, y) in [(28, 28), (32, 32), (36, 36)] {
+                    let pixel = pixels.get_pixel(x * scale, y * scale).0;
+                    if format == RasterExportFormat::Jpeg {
+                        // JPEG is lossy, but the interior must remain solid red.
+                        assert!(pixel[0] > 240 && pixel[1] < 16 && pixel[2] < 16);
+                    } else {
+                        assert_eq!(pixel, [255, 0, 0, 255], "{format:?} at {scale}x");
+                    }
+                }
+                assert_eq!(pixels.get_pixel(4 * scale, 4 * scale).0, [255; 4]);
+            }
+        }
+    }
+
+    #[test]
+    fn nested_svg_picture_renders_vector_and_embedded_png_pixels() {
+        let png = red_png_data_url();
+        let nested = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="4"><rect width="4" height="4" fill="blue"/><image href="{png}" x="4" width="4" height="4"/></svg>"#
+        );
+        let encoded = base64::engine::general_purpose::STANDARD.encode(nested);
+        let svg = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><g data-object-id="g12"><image href="data:image/svg+xml;base64,{encoded}" x="16" y="16" width="32" height="16" preserveAspectRatio="none"/></g></svg>"#
+        );
+        for scale in [1, 3] {
+            let response = rasterize_svg_impl(RasterExportRequest {
+                svg: svg.clone(),
+                scale: Some(f64::from(scale)),
+                ..request(RasterExportFormat::Png)
+            })
+            .expect("export an SVG picture containing vectors and a PNG");
+            assert!(response.warnings.is_empty());
+            let pixels = image::load_from_memory(&response.bytes)
+                .expect("decode SVG picture export")
+                .to_rgba8();
+            assert_eq!(pixels.get_pixel(24 * scale, 24 * scale).0, [0, 0, 255, 255]);
+            assert_eq!(pixels.get_pixel(40 * scale, 24 * scale).0, [255, 0, 0, 255]);
+            assert_eq!(pixels.get_pixel(4 * scale, 4 * scale).0, [0; 4]);
+        }
+    }
+
+    #[test]
+    fn letter_page_with_a_picture_and_benzene_is_not_blank_at_1x() {
+        // Match the app's physical Letter page, native-unit viewBox, page background,
+        // separate molecule/picture groups and data-URI image. Neither may disappear at 1x.
+        let href = red_png_data_url();
+        let svg = format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="8.5in" height="11in" viewBox="0 0 816 1056"><rect width="816" height="1056" fill="#ffffff"/><g data-object-id="benzene" fill="none" stroke="#000000" stroke-width="1"><path d="M 500 280 L 517.32 290 L 517.32 310 L 500 320 L 482.68 310 L 482.68 290 Z"/><path d="M 501 285 L 513 292 M 513 308 L 501 315 M 487 307 L 487 293"/></g><g data-object-id="g12"><image href="{href}" x="192" y="192" width="16" height="16" preserveAspectRatio="none"/></g></svg>"##
+        );
+        let response = rasterize_svg_impl(RasterExportRequest {
+            svg,
+            scale: Some(1.0),
+            ..request(RasterExportFormat::Png)
+        })
+        .expect("export a page with benzene and a picture at 1x");
+        assert_eq!((response.width, response.height), (816, 1056));
+        assert!(response.warnings.is_empty());
+        let pixels = image::load_from_memory(&response.bytes)
+            .expect("decode page PNG")
+            .to_rgba8();
+        assert_eq!(pixels.get_pixel(200, 200).0, [255, 0, 0, 255]);
+        assert!(pixels.enumerate_pixels().any(|(x, y, pixel)| {
+            (480..520).contains(&x)
+                && (278..322).contains(&y)
+                && pixel[0] < 128
+                && pixel[1] < 128
+                && pixel[2] < 128
+        }));
     }
 
     #[test]
@@ -603,6 +711,28 @@ mod tests {
         // The IHDR chunk must still come first and decode cleanly.
         assert_eq!(&response.bytes[12..16], b"IHDR");
         image::load_from_memory(&response.bytes).expect("PNG with pHYs should still decode");
+    }
+
+    #[test]
+    fn png_export_at_3x_declares_288_dpi_on_both_axes() {
+        let response = rasterize_svg_impl(RasterExportRequest {
+            scale: Some(3.0),
+            css_px_per_inch: Some(96.0),
+            ..request(RasterExportFormat::Png)
+        })
+        .expect("PNG export at 3x should encode with density");
+        assert_eq!((response.width, response.height), (192, 96));
+        let phys_offset = response
+            .bytes
+            .windows(4)
+            .position(|window| window == b"pHYs")
+            .expect("PNG should contain a pHYs chunk");
+        let data = &response.bytes[phys_offset + 4..phys_offset + 13];
+        let expected = (288.0_f64 / 0.0254).round() as u32;
+        assert_eq!(u32::from_be_bytes(data[0..4].try_into().unwrap()), expected);
+        assert_eq!(u32::from_be_bytes(data[4..8].try_into().unwrap()), expected);
+        assert_eq!(data[8], 1, "pHYs unit must be metres");
+        image::load_from_memory(&response.bytes).expect("PNG with 288 dpi should decode");
     }
 
     #[test]
