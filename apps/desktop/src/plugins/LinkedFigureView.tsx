@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import {
+  annotationLabelBoxesOverlap,
+  estimateAnnotationTextWidth,
+  layoutAtomAnnotationLabels,
+  type AnnotationLabelBox
+} from "@chemdraft/layout-engine";
 
 import type {
   PluginLinkedFigurePeak,
@@ -45,7 +51,7 @@ const BASE_Y = MARGIN.top + PLOT_H;
 
 const STRUCT_W = 340;
 const STRUCT_H = 260;
-const STRUCT_PAD = 34;
+const PEAK_LABEL_FONT_SIZE = 13;
 
 interface AtomShiftLabelPart {
   label: string;
@@ -286,7 +292,10 @@ export function LinkedFigureView({
   const ticks = useMemo(() => axisTicks(view.min, view.max), [view.min, view.max]);
   const zoomed = view.max - view.min < domainSpan - 1e-6;
 
-  const layout = useMemo(() => (structure ? layoutStructure(structure) : undefined), [structure]);
+  const layout = useMemo(
+    () => (structure ? layoutStructure(structure, atomShift) : undefined),
+    [structure, atomShift]
+  );
 
   // ---- realistic (summed pseudo-Voigt) spectrum -----------------------------------------------
   const ppmPerPx = (view.max - view.min) / PLOT_W;
@@ -335,8 +344,20 @@ export function LinkedFigureView({
   // Label height comes from the true curve value at the peak's center ppm (independent of sampling).
   const heightAtPpm = (ppm: number): number => envelopeHeight(spectrumLines, ppm, halfWidthPpm) * heightScale;
 
-  // Per-atom estimation quality (good/medium/rough) for coloring the structure's shift labels, the way
-  // ChemDraw signals confidence — derived from the same tiers as the table (high→good, low/est→rough).
+  const peakLabels = placePeakLabels(renderPeakLayouts.flatMap(({ peak, lines }) => {
+    const x = xOf(peak.ppm);
+    if (x < MARGIN.left - 1 || x > MARGIN.left + PLOT_W + 1) return [];
+    return [{
+      key: peak.key,
+      text: peak.variant === "alternative" ? `${peak.label}${alternativeSuffix}` : peak.label,
+      x,
+      apexY: BASE_Y - Math.max(...lines.map((line) => heightAtPpm(line.ppm))),
+      intensity: peak.intensity,
+      ppm: peak.ppm
+    }];
+  }));
+
+  // Per-atom estimation quality uses the same tiers as the table (high→good, low/est→rough).
   const atomQuality = useMemo(() => {
     const map = new Map<number, "good" | "medium" | "rough">();
     for (const peak of spectrum.peaks) {
@@ -481,7 +502,7 @@ export function LinkedFigureView({
             return (
               <g key={`t${tick}`}>
                 <line className="lf-tick" x1={x} y1={BASE_Y} x2={x} y2={BASE_Y + 4} />
-                <text className="lf-tick-label" x={x} y={BASE_Y + 16} textAnchor="middle">
+                <text className="lf-tick-label" x={x} y={BASE_Y + 12} style={{ fontSize: 11 }} textAnchor="middle">
                   {tick}
                 </text>
               </g>
@@ -504,6 +525,8 @@ export function LinkedFigureView({
             const minX = Math.min(centerX, ...xs);
             const maxX = Math.max(centerX, ...xs);
             const apexY = BASE_Y - Math.max(...lines.map((line) => heightAtPpm(line.ppm)));
+            const label = peakLabels.get(peak.key);
+            const text = peak.variant === "alternative" ? `${peak.label}${alternativeSuffix}` : peak.label;
             return (
               <g
                 key={peak.key}
@@ -511,18 +534,36 @@ export function LinkedFigureView({
                 data-peak-id={peak.key}
                 data-variant={peak.variant}
                 data-line-count={lines.length}
+                tabIndex={0}
+                aria-label={`${text} ppm`}
+                onFocus={() => setHoverPeakId(peak.sourceId)}
+                onBlur={() => setHoverPeakId(null)}
                 onMouseEnter={() => setHoverPeakId(peak.sourceId)}
                 onMouseLeave={() => setHoverPeakId(null)}
               >
-                <text className={labelClass} x={round(centerX)} y={round(apexY - 6)} textAnchor="middle">
-                  {peak.variant === "alternative" ? `${peak.label}${alternativeSuffix}` : peak.label}
-                </text>
+                <title>{text} ppm</title>
+                {label ? (
+                  <>
+                    <line
+                      x1={centerX} y1={apexY} x2={label.x + label.width / 2}
+                      y2={apexY < label.y ? label.y : label.y + label.height}
+                      stroke="#8a8f98" strokeWidth={0.6} pointerEvents="none"
+                    />
+                    <text
+                      className={labelClass} x={label.x + label.width / 2}
+                      y={label.y + PEAK_LABEL_FONT_SIZE}
+                      style={{ fontSize: PEAK_LABEL_FONT_SIZE }} textAnchor="middle"
+                    >
+                      {text}
+                    </text>
+                  </>
+                ) : null}
                 {/* Wider transparent hit area covering the whole multiplet, so it is easy to hover. */}
                 <rect className="lf-hit" x={round(minX - 6)} y={MARGIN.top} width={round(maxX - minX + 12)} height={PLOT_H} />
               </g>
             );
           })}
-          <text className="lf-axis-caption" x={MARGIN.left + PLOT_W / 2} y={SPECTRUM_H - 4} textAnchor="middle">
+          <text className="lf-axis-caption" x={MARGIN.left + PLOT_W / 2} y={SPECTRUM_H - 3} style={{ fontSize: 11 }} textAnchor="middle">
             δ (ppm){reversed ? " · high → low" : ""}
           </text>
         </svg>
@@ -539,6 +580,7 @@ export function LinkedFigureView({
             {layout.atoms.map((atom) => {
               const active = activeAtoms.has(atom.index);
               const shift = atomShift.get(atom.index);
+              const annotation = layout.labels.find((label) => label.index === atom.index);
               const isHetero = atom.element !== "C";
               return (
                 <g
@@ -548,20 +590,26 @@ export function LinkedFigureView({
                   onMouseEnter={() => setHoverAtomIndex(atom.index)}
                   onMouseLeave={() => setHoverAtomIndex(null)}
                 >
-                  {active ? <circle className="lf-atom-halo" cx={atom.sx} cy={atom.sy} r={12} /> : null}
+                  {annotation ? (
+                    <line
+                      x1={atom.sx} y1={atom.sy} x2={annotation.leaderX} y2={annotation.leaderY}
+                      stroke="#8a8f98" strokeWidth={0.6} pointerEvents="none"
+                    />
+                  ) : null}
+                  {active ? <circle className="lf-atom-halo" cx={atom.sx} cy={atom.sy} r={12 * layout.fitScale} /> : null}
                   {isHetero ? (
                     <>
-                      <circle className="lf-atom-bg" cx={atom.sx} cy={atom.sy} r={8} />
-                      <text className="lf-atom-label" x={atom.sx} y={atom.sy} textAnchor="middle" dominantBaseline="central">
+                      <circle className="lf-atom-bg" cx={atom.sx} cy={atom.sy} r={8 * layout.fitScale} />
+                      <text className="lf-atom-label" x={atom.sx} y={atom.sy} style={{ fontSize: layout.atomFontSize }} textAnchor="middle" dominantBaseline="central">
                         {atom.element}
                       </text>
                     </>
                   ) : null}
-                  {shift ? (
+                  {shift && annotation ? (
                     <text
                       className={`lf-shift-label${atomQuality.has(atom.index) ? ` is-${atomQuality.get(atom.index)}` : ""}`}
-                      x={atom.sx + 7}
-                      y={atom.sy - 7}
+                      x={annotation.x}
+                      y={annotation.y + layout.labelFontSize}
                       style={{ fontSize: layout.labelFontSize }}
                       textAnchor="start"
                     >
@@ -577,7 +625,7 @@ export function LinkedFigureView({
                     </text>
                   ) : null}
                   {/* Transparent hover target covering the vertex. */}
-                  <circle className="lf-hit" cx={atom.sx} cy={atom.sy} r={13} />
+                  <circle className="lf-hit" cx={atom.sx} cy={atom.sy} r={13 * layout.fitScale} />
                 </g>
               );
             })}
@@ -644,68 +692,73 @@ interface LaidOutBond {
   lines: { x1: number; y1: number; x2: number; y2: number }[];
 }
 
-/** Fit the molecule's arbitrary 2D coordinates into the structure viewBox, preserving aspect ratio,
- *  and pre-compute bond line geometry (double/triple bonds as parallel offset lines). */
+/** Annotation fitting is shared rendering math; bond drawing retains its existing geometry. */
 function layoutStructure(
-  structure: PluginLinkedFigureStructure
-): { atoms: LaidOutAtom[]; bonds: LaidOutBond[]; labelFontSize: number } {
-  const xs = structure.atoms.map((atom) => atom.x);
-  const ys = structure.atoms.map((atom) => atom.y);
-  const minX = Math.min(...xs);
-  const maxX = Math.max(...xs);
-  const minY = Math.min(...ys);
-  const maxY = Math.max(...ys);
-  const spanX = maxX - minX || 1;
-  const spanY = maxY - minY || 1;
-  const scale = Math.min((STRUCT_W - 2 * STRUCT_PAD) / spanX, (STRUCT_H - 2 * STRUCT_PAD) / spanY);
-  const offsetX = (STRUCT_W - spanX * scale) / 2;
-  const offsetY = (STRUCT_H - spanY * scale) / 2;
-  const project = (x: number, y: number): { sx: number; sy: number } => ({
-    sx: offsetX + (x - minX) * scale,
-    sy: offsetY + (y - minY) * scale
+  structure: PluginLinkedFigureStructure,
+  shifts: ReadonlyMap<number, AtomShiftLabelPart[]>
+) {
+  const placement = layoutAtomAnnotationLabels({
+    atoms: structure.atoms.map((atom) => ({
+      ...atom,
+      annotation: shifts.get(atom.index)?.map((part) => part.label).join(" / ")
+    })),
+    bonds: structure.bonds,
+    width: STRUCT_W,
+    height: STRUCT_H
   });
-
-  const byIndex = new Map<number, { sx: number; sy: number }>();
-  const atoms: LaidOutAtom[] = structure.atoms.map((atom) => {
-    const point = project(atom.x, atom.y);
-    byIndex.set(atom.index, point);
-    return { index: atom.index, element: atom.element, sx: round(point.sx), sy: round(point.sy) };
-  });
-
+  const atoms: LaidOutAtom[] = placement.atoms.map((atom) => ({
+    index: atom.index, element: atom.element, sx: atom.x, sy: atom.y
+  }));
+  const byIndex = new Map(atoms.map((atom) => [atom.index, atom]));
   const bonds: LaidOutBond[] = structure.bonds.flatMap((bond) => {
     const a = byIndex.get(bond.from);
     const b = byIndex.get(bond.to);
     if (!a || !b) return [];
-    return [{ lines: parallelLines(a, b, bond.order) }];
+    return [{ lines: parallelLines(a, b, bond.order, placement.fitScale) }];
   });
+  return { ...placement, atoms, bonds };
+}
 
-  // Shrink the shift labels when the structure is crowded (many atoms → short laid-out bonds) so the
-  // numbers don't overlap; a sparse structure keeps the full-size label.
-  const bondLengths = structure.bonds
-    .map((bond) => {
-      const a = byIndex.get(bond.from);
-      const b = byIndex.get(bond.to);
-      return a && b ? Math.hypot(b.sx - a.sx, b.sy - a.sy) : 0;
-    })
-    .filter((length) => length > 0)
-    .sort((left, right) => left - right);
-  const medianBond = bondLengths.length ? bondLengths[Math.floor(bondLengths.length / 2)] : 40;
-  const labelFontSize = Math.max(6.5, Math.min(14, medianBond * 0.34));
-
-  return { atoms, bonds, labelFontSize };
+/** Keep labels near their ppm and stagger vertically, reserving the honesty note and axis. */
+function placePeakLabels(peaks: {
+  key: string; text: string; x: number; apexY: number; intensity: number; ppm: number
+}[]): Map<string, AnnotationLabelBox> {
+  const placed = new Map<string, AnnotationLabelBox>();
+  const sorted = [...peaks].sort((a, b) =>
+    b.intensity - a.intensity || a.ppm - b.ppm || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)
+  );
+  const rows = Array.from({ length: 10 }, (_, index) => 18 + index * 18);
+  for (const peak of sorted) {
+    const width = estimateAnnotationTextWidth(peak.text, PEAK_LABEL_FONT_SIZE);
+    if (width > PLOT_W) continue;
+    const desiredTop = peak.apexY - 6 - PEAK_LABEL_FONT_SIZE;
+    const candidates = [...rows].sort((a, b) => Math.abs(a - desiredTop) - Math.abs(b - desiredTop) || a - b);
+    for (const y of candidates) {
+      const box = {
+        x: clamp(peak.x - width / 2, MARGIN.left, SPECTRUM_W - MARGIN.right - width),
+        y, width, height: PEAK_LABEL_FONT_SIZE * 1.25
+      };
+      const clearance = { ...box, x: box.x - 2, y: box.y - 1, width: width + 4, height: box.height + 2 };
+      if ([...placed.values()].some((other) => annotationLabelBoxesOverlap(clearance, other))) continue;
+      placed.set(peak.key, box);
+      break;
+    }
+  }
+  return placed;
 }
 
 function parallelLines(
   a: { sx: number; sy: number },
   b: { sx: number; sy: number },
-  order: number
+  order: number,
+  fitScale = 1
 ): { x1: number; y1: number; x2: number; y2: number }[] {
   const dx = b.sx - a.sx;
   const dy = b.sy - a.sy;
   const length = Math.hypot(dx, dy) || 1;
   const nx = -dy / length;
   const ny = dx / length;
-  const gap = 3;
+  const gap = 3 * fitScale;
   const count = order >= 1 && order <= 3 ? order : 1;
   const offsets = count === 1 ? [0] : count === 2 ? [-gap / 2, gap / 2] : [-gap, 0, gap];
   return offsets.map((offset) => ({

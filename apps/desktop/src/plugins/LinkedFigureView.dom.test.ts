@@ -1,11 +1,17 @@
 // @vitest-environment jsdom
 
 import type { PluginLinkedFigureSpectrum, PluginLinkedFigureStructure } from "@chemdraft/plugin-api";
+import {
+  annotationLabelBoxesOverlap,
+  estimateAnnotationTextWidth,
+  type AnnotationLabelBox
+} from "@chemdraft/layout-engine";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { LinkedFigureView } from "./LinkedFigureView";
+import { standaloneSpectrumSvg } from "./spectrumExport";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -64,6 +70,25 @@ function isActive(selector: string): boolean {
   return container!.querySelector(selector)!.classList.contains("is-active");
 }
 
+function textBox(node: SVGTextElement): AnnotationLabelBox {
+  const fontSize = parseFloat(node.style.fontSize);
+  const width = estimateAnnotationTextWidth(node.textContent ?? "", fontSize);
+  const centered = node.getAttribute("text-anchor") === "middle";
+  return {
+    x: Number(node.getAttribute("x")) - (centered ? width / 2 : 0),
+    y: Number(node.getAttribute("y")) - fontSize,
+    width, height: fontSize * 1.25
+  };
+}
+
+function expectSeparateLabels(selector: string): AnnotationLabelBox[] {
+  const boxes = [...container!.querySelectorAll<SVGTextElement>(selector)].map(textBox);
+  for (const [index, box] of boxes.entries()) {
+    for (const other of boxes.slice(index + 1)) expect(annotationLabelBoxesOverlap(box, other)).toBe(false);
+  }
+  return boxes;
+}
+
 const spectrum: PluginLinkedFigureSpectrum = {
   nucleus: "1H",
   domain: { min: 0, max: 8 },
@@ -87,6 +112,124 @@ const structure: PluginLinkedFigureStructure = {
 };
 
 describe("LinkedFigureView", () => {
+  it.each([
+    { nucleus: "13C", max: 200, shifts: [140.85, 137.56, 127.34, 126.89, 45.12, 45.01] },
+    { nucleus: "1H", max: 8, shifts: [7.30, 7.30, 7.25, 2.61, 1.21] }
+  ])("separates $nucleus peak labels and axis text through zoom and pan", ({ nucleus, max, shifts }) => {
+    const spec: PluginLinkedFigureSpectrum = {
+      nucleus, domain: { min: 0, max },
+      peaks: shifts.map((ppm, index) => ({ id: `p${index}`, ppm, intensity: 1, label: ppm.toFixed(2), atomIndices: [index] }))
+    };
+    mount(createElement(LinkedFigureView, { spectrum: spec }));
+    expect(container!.querySelectorAll(".lf-peak-label")).toHaveLength(shifts.length);
+    const svg = container!.querySelector<SVGSVGElement>(".lf-spectrum")!;
+    vi.spyOn(svg, "getBoundingClientRect").mockReturnValue({ left: 0, width: 680 } as DOMRect);
+    for (let zoom = 0; zoom < 15; zoom += 1) {
+      for (const box of expectSeparateLabels(".lf-peak-label")) {
+        expect(box.x).toBeGreaterThanOrEqual(18);
+        expect(box.y).toBeGreaterThanOrEqual(18);
+        expect(box.x + box.width).toBeLessThanOrEqual(662);
+        expect(box.y + box.height).toBeLessThan(210);
+      }
+      const caption = textBox(container!.querySelector<SVGTextElement>(".lf-axis-caption")!);
+      for (const tick of container!.querySelectorAll<SVGTextElement>(".lf-tick-label")) {
+        expect(annotationLabelBoxesOverlap(caption, textBox(tick))).toBe(false);
+      }
+      act(() => svg.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, clientX: 680 * (1 - shifts[0] / max), bubbles: true, cancelable: true })));
+    }
+    act(() => svg.dispatchEvent(new WheelEvent("wheel", { deltaX: 50, bubbles: true, cancelable: true })));
+    expectSeparateLabels(".lf-peak-label");
+  });
+
+  it("keeps the tallest labels on overflow, with hover, keyboard and atom links for every peak", () => {
+    const dense: PluginLinkedFigureSpectrum = {
+      nucleus: "1H", domain: { min: 0, max: 8 },
+      peaks: Array.from({ length: 30 }, (_, index) => ({
+        id: `dense${index}`, ppm: 4, intensity: index + 1, label: `4.00 (${index})`, atomIndices: [index % 3]
+      }))
+    };
+    mount(createElement(LinkedFigureView, { spectrum: dense, structure }));
+    expect(container!.querySelectorAll(".lf-peak")).toHaveLength(30);
+    expect(container!.querySelectorAll(".lf-peak-label")).toHaveLength(10);
+    expectSeparateLabels(".lf-peak-label");
+    for (let index = 0; index < 30; index += 1) {
+      const group = container!.querySelector(`[data-peak-id="dense${index}"]`)!;
+      expect(group.querySelector(".lf-peak-label") !== null).toBe(index >= 20);
+      expect(group.querySelector("title")!.textContent).toBe(`4.00 (${index}) ppm`);
+      expect(group.getAttribute("tabindex")).toBe("0");
+    }
+    hover(container!.querySelector('[data-peak-id="dense0"]')!);
+    expect(isActive('[data-atom-index="0"]')).toBe(true);
+    hover(container!.querySelector('[data-atom-index="1"]')!);
+    expect(isActive('[data-peak-id="dense1"]')).toBe(true);
+    act(() => container!.querySelector<SVGGElement>('[data-peak-id="dense2"]')!.focus());
+    expect(isActive('[data-atom-index="2"]')).toBe(true);
+  });
+
+  it("preserves leader lines, annotation sizes and the honesty note in the standalone clone", () => {
+    mount(createElement(LinkedFigureView, { spectrum }));
+    const svg = container!.querySelector<SVGSVGElement>(".lf-spectrum")!;
+    const exported = new DOMParser().parseFromString(standaloneSpectrumSvg(svg), "text/html");
+    expect(exported.querySelectorAll(".lf-peak > line")).toHaveLength(2);
+    for (const line of exported.querySelectorAll(".lf-peak > line")) {
+      expect(line.getAttribute("stroke")).toBe("#8a8f98");
+      expect(line.getAttribute("stroke-width")).toBe("0.6");
+    }
+    expect(exported.querySelector<SVGTextElement>(".lf-peak-label")!.style.fontSize).toBe("13px");
+    expect(exported.querySelector(".lf-spectrum-note")!.textContent).toBe(svg.querySelector(".lf-spectrum-note")!.textContent);
+  });
+
+  it("breaks equal-height overflow ties by ppm independently of report order", () => {
+    const peaks = Array.from({ length: 15 }, (_, index) => ({
+      id: `tie${index}`, ppm: 4 + index * 0.00001, intensity: 1, label: `peak ${index}`, atomIndices: [0]
+    }));
+    const spec: PluginLinkedFigureSpectrum = { nucleus: "1H", domain: { min: 0, max: 8 }, peaks: [...peaks].reverse() };
+    mount(createElement(LinkedFigureView, { spectrum: spec }));
+    const placements = (): Record<string, AnnotationLabelBox> => Object.fromEntries(
+      [...container!.querySelectorAll<SVGTextElement>(".lf-peak-label")].map((node) => [node.textContent!, textBox(node)])
+    );
+    const before = placements();
+    expect(Object.keys(before).sort()).toEqual(peaks.slice(0, 10).map((peak) => peak.label).sort());
+    rerender(createElement(LinkedFigureView, { spectrum: { ...spec, peaks } }));
+    expect(placements()).toEqual(before);
+  });
+
+  it("fits a crowded explicit-H structure and its shifts clear of atoms and other shifts", () => {
+    const atoms = Array.from({ length: 32 }, (_, index) => ({
+      index, x: Math.cos(index * Math.PI / 8) * (index < 16 ? 1 : 1.5),
+      y: Math.sin(index * Math.PI / 8) * (index < 16 ? 1 : 1.5), element: index < 16 ? "C" : "H"
+    }));
+    const crowded: PluginLinkedFigureStructure = {
+      atoms, bonds: atoms.slice(1).map((atom) => ({ from: atom.index - 1, to: atom.index, order: 1 }))
+    };
+    const spec: PluginLinkedFigureSpectrum = {
+      ...spectrum, peaks: [{ id: "h", ppm: 7.3, intensity: 1, label: "7.30", atomIndices: atoms.map((atom) => atom.index) }]
+    };
+    mount(createElement(LinkedFigureView, { spectrum: spec, structure: crowded }));
+    expect(container!.querySelectorAll(".lf-shift-label")).toHaveLength(atoms.length);
+    const boxes = expectSeparateLabels(".lf-shift-label");
+    for (const box of boxes) {
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.y).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(340);
+      expect(box.y + box.height).toBeLessThanOrEqual(260);
+      for (const atom of container!.querySelectorAll<SVGCircleElement>(".lf-atom > .lf-hit")) {
+        const fontSize = parseFloat(container!.querySelector<SVGTextElement>(".lf-atom-label")!.style.fontSize);
+        const radius = fontSize / 15 * 13;
+        expect(annotationLabelBoxesOverlap(box, {
+          x: Number(atom.getAttribute("cx")) - radius, y: Number(atom.getAttribute("cy")) - radius,
+          width: radius * 2, height: radius * 2
+        })).toBe(false);
+      }
+    }
+    for (const line of container!.querySelectorAll(".lf-bond line")) {
+      for (const attr of ["x1", "x2"]) expect(Number(line.getAttribute(attr))).toBeGreaterThanOrEqual(0);
+      for (const attr of ["x1", "x2"]) expect(Number(line.getAttribute(attr))).toBeLessThanOrEqual(340);
+      for (const attr of ["y1", "y2"]) expect(Number(line.getAttribute(attr))).toBeGreaterThanOrEqual(0);
+      for (const attr of ["y1", "y2"]) expect(Number(line.getAttribute(attr))).toBeLessThanOrEqual(260);
+    }
+  });
+
   it("renders a stick per peak, an annotated structure, and a shift next to each atom", () => {
     mount(createElement(LinkedFigureView, { spectrum, structure }));
 
@@ -478,7 +621,7 @@ describe("LinkedFigureView", () => {
     expect(fontOf(24)).toBeLessThan(9); // crowded → shrunk so numbers don't overlap
   });
 
-  it("colors structure shift labels by estimation quality (ChemDraw-style) and shows the legend", () => {
+  it("colors structure shift labels by estimation quality and shows the legend", () => {
     const qualitySpectrum: PluginLinkedFigureSpectrum = {
       nucleus: "1H",
       domain: { min: 0, max: 8 },
