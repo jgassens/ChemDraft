@@ -130,12 +130,12 @@ fn install_hide_hook<R: tauri::Runtime>(
 }
 
 pub(super) fn resize_edge(x: f64, y: f64, width: f64, height: f64) -> bool {
-    const EDGE: f64 = 5.0;
+    let edge = super::RESIZE_ZONE_LOGICAL_PX;
     x >= 0.0
         && y >= 0.0
         && x < width
         && y < height
-        && (x < EDGE || y < EDGE || x >= width - EDGE || y >= height - EDGE)
+        && (x < edge || y < edge || x >= width - edge || y >= height - edge)
 }
 
 unsafe extern "C-unwind" fn content_hit_test(

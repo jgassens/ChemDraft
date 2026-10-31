@@ -1,4 +1,4 @@
-//! Physical-pixel geometry for the panel's resize hit test and existing Tauri overlay.
+//! Physical-pixel geometry for the panel's inner resize zones and existing Tauri overlay.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Rect {
@@ -21,22 +21,20 @@ pub(super) enum ResizeHit {
     BottomRight = 17,
 }
 
-/// `rect` and the point must use the same origin (screen, window, or client).
-pub(super) fn resize_hit(x: i32, y: i32, rect: Rect, bx: i32, by: i32) -> Option<ResizeHit> {
+pub(super) fn resize_border(dpi: u32) -> i32 {
+    (super::RESIZE_ZONE_LOGICAL_PX * f64::from(dpi) / 96.0).round() as i32
+}
+
+/// `rect` is the visible content boundary, never the outer invisible window frame.
+/// It and the point must use the same origin (screen, window, or client).
+pub(super) fn resize_hit(x: i32, y: i32, rect: Rect, border: i32) -> Option<ResizeHit> {
     if x < rect.left || y < rect.top || x >= rect.right || y >= rect.bottom {
         return None;
     }
-    let left = x < rect.left + bx;
-    let right = x >= rect.right - bx;
-    let top = y < rect.top + by;
-    let bottom = y >= rect.bottom - by;
-    // Wider corner targets stay entirely within the system-height top band.
-    if top && x < rect.left + 2 * bx {
-        return Some(ResizeHit::TopLeft);
-    }
-    if top && x >= rect.right - 2 * bx {
-        return Some(ResizeHit::TopRight);
-    }
+    let left = x < rect.left + border;
+    let right = x >= rect.right - border;
+    let top = y < rect.top + border;
+    let bottom = y >= rect.bottom - border;
     match (left, right, top, bottom) {
         (true, _, true, _) => Some(ResizeHit::TopLeft),
         (_, true, true, _) => Some(ResizeHit::TopRight),
@@ -50,19 +48,15 @@ pub(super) fn resize_hit(x: i32, y: i32, rect: Rect, bx: i32, by: i32) -> Option
     }
 }
 
-/// Interior cut out of the overlay, in client coordinates. Only the parts of the system resize
-/// border inside the client area need overlay input; native non-client edges keep their owner.
-/// This also covers all four sides if WebView2 fills a client area without native side insets.
-pub(super) fn overlay_cutout(window: Rect, client: Rect, bx: i32, by: i32) -> Rect {
-    let width = (client.right - client.left).max(0);
-    let height = (client.bottom - client.top).max(0);
-    let left = (window.left + bx - client.left).clamp(0, width);
-    let top = (window.top + by - client.top).clamp(0, height);
+/// Interior cut out of the input overlay, leaving every edge above WebView2.
+pub(super) fn overlay_cutout(client: Rect, border: i32) -> Rect {
+    let left = (client.left + border).min(client.right);
+    let top = (client.top + border).min(client.bottom);
     Rect {
         left,
         top,
-        right: (window.right - bx - client.left).clamp(left, width),
-        bottom: (window.bottom - by - client.top).clamp(top, height),
+        right: (client.right - border).max(left),
+        bottom: (client.bottom - border).max(top),
     }
 }
 
@@ -71,83 +65,126 @@ mod tests {
     use super::*;
 
     #[test]
-    fn windows_10_and_11_system_top_border_and_title_at_each_dpi() {
-        // Representative per-DPI system metrics, not rounded DIP * a base metric:
-        // 150% must yield 12 physical pixels, not 16.
-        for (dpi, frame, padding, win11_inset) in [(96, 4, 4, 1), (144, 6, 6, 2), (192, 8, 8, 2)] {
-            let border = frame + padding;
-            // Tao keeps WS_CAPTION on both. Never change these client origins.
-            for (windows, client_top) in [("10", 0), ("11", win11_inset)] {
-                let rect = Rect {
-                    left: -1800,
-                    top: -900,
-                    right: -1400,
-                    bottom: -600,
-                };
-                let overlay = overlay_cutout(
-                    rect,
-                    Rect {
-                        left: rect.left + border,
-                        top: rect.top + client_top,
-                        right: rect.right - border,
-                        bottom: rect.bottom - border,
-                    },
-                    border,
-                    border,
-                );
-                assert_eq!(overlay.top + client_top, border);
-                assert_eq!(overlay.right, 400 - 2 * border);
-                // Every physical pixel through the whole top band is reachable:
-                // non-client pixels by the parent, client pixels by the SAME overlay.
-                // Test both sides of each widened top-corner boundary too.
-                for y in 0..border {
-                    for (x, expected) in [
-                        (rect.left, ResizeHit::TopLeft),
-                        (rect.left + 2 * border - 1, ResizeHit::TopLeft),
-                        (rect.left + 2 * border, ResizeHit::Top),
-                        (-1600, ResizeHit::Top),
-                        (rect.right - 2 * border - 1, ResizeHit::Top),
-                        (rect.right - 2 * border, ResizeHit::TopRight),
-                        (rect.right - 1, ResizeHit::TopRight),
+    fn six_logical_pixels_inside_every_edge_and_corner_at_each_dpi() {
+        for (dpi, expected_border) in [(96, 6), (144, 9), (192, 12)] {
+            let border = resize_border(dpi);
+            assert_eq!(border, expected_border);
+            let rect = Rect {
+                left: -1800,
+                top: -900,
+                right: -1400,
+                bottom: -600,
+            };
+            for depth in 0..border {
+                for (x, y, expected) in [
+                    (rect.left + depth, -750, ResizeHit::Left),
+                    (rect.right - 1 - depth, -750, ResizeHit::Right),
+                    (-1600, rect.top + depth, ResizeHit::Top),
+                    (-1600, rect.bottom - 1 - depth, ResizeHit::Bottom),
+                ] {
+                    assert_eq!(resize_hit(x, y, rect, border), Some(expected), "dpi={dpi}");
+                }
+                for other in 0..border {
+                    for (x, y, expected) in [
+                        (rect.left + depth, rect.top + other, ResizeHit::TopLeft),
+                        (
+                            rect.right - 1 - depth,
+                            rect.top + other,
+                            ResizeHit::TopRight,
+                        ),
+                        (
+                            rect.left + depth,
+                            rect.bottom - 1 - other,
+                            ResizeHit::BottomLeft,
+                        ),
+                        (
+                            rect.right - 1 - depth,
+                            rect.bottom - 1 - other,
+                            ResizeHit::BottomRight,
+                        ),
                     ] {
+                        assert_eq!(resize_hit(x, y, rect, border), Some(expected), "dpi={dpi}");
+                    }
+                }
+            }
+            for (x, y) in [
+                (rect.left + border, -750),
+                (rect.right - border - 1, -750),
+                (-1600, rect.top + border),
+                (-1600, rect.bottom - border - 1),
+                (rect.left + border, rect.top + border),
+                (rect.right - border - 1, rect.bottom - border - 1),
+            ] {
+                assert_eq!(resize_hit(x, y, rect, border), None, "dpi={dpi}");
+            }
+        }
+    }
+
+    #[test]
+    fn invisible_windows_frame_never_resizes_and_overlay_wins_every_inner_pixel() {
+        for (dpi, frame, win11_top) in [(96, 8, 1), (144, 12, 2), (192, 16, 2)] {
+            let border = resize_border(dpi);
+            let window = Rect {
+                left: -700,
+                top: -300,
+                right: -300,
+                bottom: 0,
+            };
+            // Tao's Win10/11 client origins are unchanged, including shadowless windows.
+            for (left, top, right, bottom) in [
+                (frame, 0, frame, frame),
+                (frame, win11_top, frame, frame),
+                (0, 0, 0, 0),
+            ] {
+                let client = Rect {
+                    left: window.left + left,
+                    top: window.top + top,
+                    right: window.right - right,
+                    bottom: window.bottom - bottom,
+                };
+                let local = Rect {
+                    left: 0,
+                    top: 0,
+                    right: client.right - client.left,
+                    bottom: client.bottom - client.top,
+                };
+                let cutout = overlay_cutout(local, border);
+                assert_eq!(cutout.left, border);
+                assert_eq!(cutout.top, border);
+                assert_eq!(local.right - cutout.right, border);
+                assert_eq!(local.bottom - cutout.bottom, border);
+                // Outside pixels never resize. Inside, every grab zone belongs to the
+                // overlay, including the right edge above WebView2's scrollbar.
+                for y in window.top - 1..=window.bottom {
+                    for x in window.left - 1..=window.right {
+                        let in_client = x >= client.left
+                            && x < client.right
+                            && y >= client.top
+                            && y < client.bottom;
+                        let local_x = x - client.left;
+                        let local_y = y - client.top;
+                        let in_overlay = in_client
+                            && (local_x < cutout.left
+                                || local_x >= cutout.right
+                                || local_y < cutout.top
+                                || local_y >= cutout.bottom);
                         assert_eq!(
-                            resize_hit(x, rect.top + y, rect, border, border),
-                            Some(expected),
-                            "Windows {windows}, dpi={dpi}, x={x}, y={y}"
+                            in_overlay,
+                            resize_hit(x, y, client, border).is_some(),
+                            "dpi={dpi}, client={client:?}, x={x}, y={y}"
                         );
                     }
-                    if y >= client_top {
-                        assert!(y - client_top < overlay.top);
-                    }
                 }
-                // The first pixel below the band and the remaining title strip pass
-                // through to the DOM, including below the widened corner targets.
-                for y in border..(28 * dpi / 96) {
-                    assert!(y - client_top >= overlay.top);
-                    for x in [rect.left + border, -1600, rect.right - border - 1] {
-                        assert_eq!(resize_hit(x, rect.top + y, rect, border, border), None);
-                    }
+                // The title below the top zone still reaches DOM title dragging.
+                for y in border..28 * dpi as i32 / 96 {
                     assert_eq!(
-                        resize_hit(rect.left, rect.top + y, rect, border, border),
-                        Some(ResizeHit::Left)
+                        resize_hit(client.left + border, client.top + y, client, border),
+                        None
                     );
                     assert_eq!(
-                        resize_hit(rect.right - 1, rect.top + y, rect, border, border),
-                        Some(ResizeHit::Right)
+                        resize_hit(client.right - border - 1, client.top + y, client, border),
+                        None
                     );
-                }
-                // Native side/bottom shadow borders retain their directions.
-                for (x, y, hit) in [
-                    (-1800, -601, ResizeHit::BottomLeft),
-                    (-1401, -601, ResizeHit::BottomRight),
-                    (-1800, -750, ResizeHit::Left),
-                    (-1401, -750, ResizeHit::Right),
-                    (-1600, -601, ResizeHit::Bottom),
-                ] {
-                    assert_eq!(resize_hit(x, y, rect, border, border), Some(hit));
-                }
-                for (x, y) in [(-1801, -900), (-1600, -901), (-1400, -900), (-1600, -600)] {
-                    assert_eq!(resize_hit(x, y, rect, border, border), None);
                 }
             }
         }
@@ -161,54 +198,19 @@ mod tests {
             right: 400,
             bottom: 300,
         };
-        assert_eq!(overlay_cutout(rect, rect, 0, 0), rect);
+        assert_eq!(overlay_cutout(rect, 0), rect);
         let empty = Rect {
-            left: 0,
-            top: 0,
             right: 0,
             bottom: 0,
+            ..rect
         };
-        assert_eq!(overlay_cutout(empty, empty, 16, 16), empty);
+        assert_eq!(overlay_cutout(empty, 12), empty);
         let short = Rect { bottom: 3, ..rect };
-        assert_eq!(overlay_cutout(short, short, 16, 16).top, 3);
+        let cutout = overlay_cutout(short, 12);
+        assert_eq!(cutout.top, 3);
+        assert_eq!(cutout.bottom, 3);
         for (x, y) in [(0, 0), (200, 0), (399, 0), (0, 150), (399, 299)] {
-            assert_eq!(resize_hit(x, y, rect, 0, 0), None);
-        }
-    }
-
-    #[test]
-    fn overlay_reaches_every_client_resize_pixel_over_a_full_webview() {
-        let window = Rect {
-            left: -700,
-            top: -300,
-            right: -300,
-            bottom: 0,
-        };
-        for (bx, by) in [(8, 8), (12, 12), (16, 16), (12, 8)] {
-            // With shadows the sides/bottom are native; without insets the overlay must cover
-            // all eight directions. Include asymmetric and partial client insets too.
-            for (left, top, right, bottom) in
-                [(bx, 0, bx, by), (bx, 2, bx, by), (0, 0, 0, 0), (2, 1, 3, 2)]
-            {
-                let client = Rect {
-                    left: window.left + left,
-                    top: window.top + top,
-                    right: window.right - right,
-                    bottom: window.bottom - bottom,
-                };
-                let cutout = overlay_cutout(window, client, bx, by);
-                for y in client.top..client.bottom {
-                    for x in client.left..client.right {
-                        let local_x = x - client.left;
-                        let local_y = y - client.top;
-                        let in_overlay = local_x < cutout.left
-                            || local_x >= cutout.right
-                            || local_y < cutout.top
-                            || local_y >= cutout.bottom;
-                        assert_eq!(in_overlay, resize_hit(x, y, window, bx, by).is_some());
-                    }
-                }
-            }
+            assert_eq!(resize_hit(x, y, rect, 0), None);
         }
     }
 }

@@ -156,6 +156,9 @@ pub(crate) fn forget<R: tauri::Runtime>(window: &tauri::Window<R>) {
 #[path = "panel_window_geometry.rs"]
 mod geometry;
 
+#[cfg(any(windows, target_os = "macos", test))]
+const RESIZE_ZONE_LOGICAL_PX: f64 = 6.0;
+
 #[cfg(target_os = "macos")]
 pub(crate) fn macos_style(
     style: objc2_app_kit::NSWindowStyleMask,
@@ -247,20 +250,34 @@ struct PanelSubclass {
 }
 
 #[cfg(windows)]
-unsafe fn resize_border(hwnd: windows_sys::Win32::Foundation::HWND) -> (i32, i32) {
-    use windows_sys::Win32::UI::{
-        HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi},
-        WindowsAndMessaging::{IsZoomed, SM_CXFRAME, SM_CXPADDEDBORDER, SM_CYFRAME},
-    };
+unsafe fn resize_border(hwnd: windows_sys::Win32::Foundation::HWND) -> i32 {
+    use windows_sys::Win32::UI::{HiDpi::GetDpiForWindow, WindowsAndMessaging::IsZoomed};
     if IsZoomed(hwnd) != 0 {
-        return (0, 0);
+        return 0;
     }
-    let dpi = GetDpiForWindow(hwnd);
-    let padding = GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
-    (
-        GetSystemMetricsForDpi(SM_CXFRAME, dpi) + padding,
-        GetSystemMetricsForDpi(SM_CYFRAME, dpi) + padding,
-    )
+    geometry::resize_border(GetDpiForWindow(hwnd))
+}
+
+#[cfg(windows)]
+unsafe fn panel_content_rect(hwnd: windows_sys::Win32::Foundation::HWND) -> Option<geometry::Rect> {
+    use windows_sys::Win32::{
+        Foundation::{POINT, RECT},
+        Graphics::Gdi::ClientToScreen,
+        UI::WindowsAndMessaging::GetClientRect,
+    };
+    let mut rect = RECT::default();
+    let mut origin = POINT::default();
+    if GetClientRect(hwnd, &mut rect) == 0 || ClientToScreen(hwnd, &mut origin) == 0 {
+        return None;
+    }
+    // The webview paints the visible border at the client edge. GetWindowRect includes
+    // invisible resize margins on Windows; those must never become panel grab zones.
+    Some(geometry::Rect {
+        left: origin.x + rect.left,
+        top: origin.y + rect.top,
+        right: origin.x + rect.right,
+        bottom: origin.y + rect.bottom,
+    })
 }
 
 #[cfg(windows)]
@@ -273,17 +290,15 @@ unsafe fn resize_overlay(
     FindWindowExW(parent, std::ptr::null_mut(), class.as_ptr(), name.as_ptr())
 }
 
-/// Widen the INPUT region of Tauri's existing child, not the parent's non-client frame.
-/// Tauri 2.11.2 otherwise clips this child to SM_CYFRAME (without SM_CXPADDEDBORDER),
-/// so a larger hit test alone cannot receive presses throughout the system resize band.
-/// Retain every border portion in the client area, including sides/corners over WebView2.
+/// Reserve six logical pixels inside every visible edge in Tauri's existing input child.
+/// Its region sits above WebView2, so the right grab zone wins over the content scrollbar.
 #[cfg(windows)]
 unsafe fn update_resize_overlay(
     parent: windows_sys::Win32::Foundation::HWND,
 ) -> Result<(), String> {
     use windows_sys::Win32::{
         Foundation::{HWND, RECT},
-        UI::WindowsAndMessaging::{GetClientRect, GetWindowRect},
+        UI::WindowsAndMessaging::GetClientRect,
     };
     // These entry points are gated behind windows-sys's otherwise unused GDI feature.
     type Region = *mut std::ffi::c_void;
@@ -300,34 +315,21 @@ unsafe fn update_resize_overlay(
         fn SetWindowRgn(hwnd: HWND, region: Region, redraw: i32) -> i32;
     }
     let overlay = resize_overlay(parent);
-    let mut window_rect = RECT::default();
-    let mut overlay_rect = RECT::default();
     let mut client_rect = RECT::default();
-    if overlay.is_null()
-        || GetWindowRect(parent, &mut window_rect) == 0
-        || GetWindowRect(overlay, &mut overlay_rect) == 0
-        || GetClientRect(parent, &mut client_rect) == 0
-    {
+    if overlay.is_null() || GetClientRect(parent, &mut client_rect) == 0 {
         return Err("Could not measure panel resize overlay.".into());
     }
-    let (bx, by) = resize_border(parent);
+    let border = resize_border(parent);
     let width = client_rect.right - client_rect.left;
     let height = client_rect.bottom - client_rect.top;
     let cutout = geometry::overlay_cutout(
         geometry::Rect {
-            left: window_rect.left,
-            top: window_rect.top,
-            right: window_rect.right,
-            bottom: window_rect.bottom,
+            left: 0,
+            top: 0,
+            right: width,
+            bottom: height,
         },
-        geometry::Rect {
-            left: overlay_rect.left,
-            top: overlay_rect.top,
-            right: overlay_rect.left + width,
-            bottom: overlay_rect.top + height,
-        },
-        bx,
-        by,
+        border,
     );
     let desired = CreateRectRgn(0, 0, width, height);
     let current = CreateRectRgn(0, 0, 0, 0);
@@ -417,7 +419,7 @@ unsafe extern "system" fn resize_subclass(
     }
     let result = DefSubclassProc(hwnd, message, wparam, lparam);
     // Run after Tauri's WM_SIZE handler rewrites the overlay region. DPI/settings
-    // changes also refresh the metrics even if the client size has not changed.
+    // changes also refresh the zone width even if the client size has not changed.
     if matches!(message, WM_SIZE | WM_DPICHANGED | WM_SETTINGCHANGE) {
         if let Err(error) = update_resize_overlay(hwnd) {
             eprintln!("{error}");
@@ -428,7 +430,7 @@ unsafe extern "system" fn resize_subclass(
 
 /// Tauri owns this overlay's size/lifetime. Its original shadow handler returns
 /// HTTOP for every pixel in SM_CYFRAME, swallowing title presses and corner directions.
-/// The adapted region and hit test reserve the system resize border and delegate the
+/// The adapted region and hit test reserve the inner six logical pixels and delegate the
 /// title interior below it to WebView2, without changing Tao's client origin.
 #[cfg(windows)]
 unsafe extern "system" fn overlay_subclass(
@@ -484,23 +486,12 @@ unsafe fn panel_resize_hit(
     hwnd: windows_sys::Win32::Foundation::HWND,
     lparam: isize,
 ) -> Option<geometry::ResizeHit> {
-    use windows_sys::Win32::{Foundation::RECT, UI::WindowsAndMessaging::GetWindowRect};
-    let mut rect = RECT::default();
-    if GetWindowRect(hwnd, &mut rect) == 0 {
-        return None;
-    }
-    let (bx, by) = resize_border(hwnd);
+    let rect = panel_content_rect(hwnd)?;
     geometry::resize_hit(
         (lparam as u16 as i16) as i32,
         ((lparam >> 16) as u16 as i16) as i32,
-        geometry::Rect {
-            left: rect.left,
-            top: rect.top,
-            right: rect.right,
-            bottom: rect.bottom,
-        },
-        bx,
-        by,
+        rect,
+        resize_border(hwnd),
     )
 }
 
@@ -510,6 +501,30 @@ mod tests {
     #[test]
     fn macos_content_hit_test_yields_all_edges_and_corners_only() {
         for (width, height) in [(280.0, 200.0), (380.0, 520.0), (1200.0, 800.0)] {
+            // AppKit coordinates are logical points; backing scale must not widen the zone.
+            for scale in [1.0, 1.5, 2.0] {
+                let border = (6.0_f64 * scale) as i32;
+                for depth in 0..border {
+                    let near = f64::from(depth) / scale;
+                    let far_x = width - f64::from(depth + 1) / scale;
+                    let far_y = height - f64::from(depth + 1) / scale;
+                    for (x, y) in [
+                        (near, height / 2.0),
+                        (far_x, height / 2.0),
+                        (width / 2.0, near),
+                        (width / 2.0, far_y),
+                        (near, near),
+                        (far_x, near),
+                        (near, far_y),
+                        (far_x, far_y),
+                    ] {
+                        assert!(
+                            super::macos::resize_edge(x, y, width, height),
+                            "scale={scale}"
+                        );
+                    }
+                }
+            }
             for (x, y) in [
                 (0.0, 0.0),
                 (width / 2.0, 0.0),
@@ -523,10 +538,15 @@ mod tests {
                 assert!(super::macos::resize_edge(x, y, width, height));
             }
             for (x, y) in [
-                (5.0, 5.0),
-                (width - 5.5, height - 5.5),
+                (6.0, 6.0),
+                (width - 6.5, height - 6.5),
+                (6.0, height / 2.0),
+                (width - 6.5, height / 2.0),
+                (width / 2.0, 6.0),
+                (width / 2.0, height - 6.5),
                 (width / 2.0, height / 2.0),
                 (-0.5, 0.0),
+                (0.0, -0.5),
                 (width, height / 2.0),
                 (0.0, height),
             ] {
