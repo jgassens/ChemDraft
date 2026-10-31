@@ -219,29 +219,53 @@ pub(crate) fn windows_line_endings(text: &str) -> String {
 
 /// The pixels-per-metre a PNG declares in its `pHYs` chunk (unit 1 = metre), if any. Copy As PNG
 /// stamps the real print density there (e.g. 384 dpi for its 4x render).
+/// Refuse corrupt or unrepresentable metadata before preparing any native clipboard formats.
 #[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) fn png_pixels_per_meter(png: &[u8]) -> Option<(u32, u32)> {
+pub(crate) fn png_pixels_per_meter(png: &[u8]) -> Result<Option<(u32, u32)>, String> {
     const SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+    let malformed = || "Malformed PNG density metadata.".to_string();
     if !png.starts_with(SIGNATURE) {
-        return None;
+        return Err(malformed());
     }
     let mut index = SIGNATURE.len();
+    let mut density = None;
+    let mut seen_density = false;
+    let mut seen_image = false;
     while index + 8 <= png.len() {
-        let length = u32::from_be_bytes(png[index..index + 4].try_into().ok()?) as usize;
+        let length = u32::from_be_bytes(png[index..index + 4].try_into().unwrap()) as usize;
         let kind = &png[index + 4..index + 8];
-        let data = png.get(index + 8..index + 8 + length)?;
-        if kind == b"pHYs" && length == 9 {
-            let x = u32::from_be_bytes(data[0..4].try_into().ok()?);
-            let y = u32::from_be_bytes(data[4..8].try_into().ok()?);
-            return (data[8] == 1 && x > 0 && y > 0).then_some((x, y));
+        let data_end = (index + 8).checked_add(length).ok_or_else(malformed)?;
+        let chunk_end = data_end.checked_add(4).ok_or_else(malformed)?;
+        let chunk = png.get(index + 4..chunk_end).ok_or_else(malformed)?;
+        if kind == b"pHYs" {
+            // PNG permits a single pHYs chunk, before the image data.
+            if length != 9 || seen_density || seen_image {
+                return Err(malformed());
+            }
+            seen_density = true;
+            let crc = u32::from_be_bytes(png[data_end..chunk_end].try_into().unwrap());
+            if png_crc32(&chunk[..4 + length]) != crc {
+                return Err("PNG density metadata has an invalid CRC.".into());
+            }
+            let data = &png[index + 8..data_end];
+            let x = u32::from_be_bytes(data[0..4].try_into().unwrap());
+            let y = u32::from_be_bytes(data[4..8].try_into().unwrap());
+            if data[8] == 1 {
+                // BITMAPV5HEADER stores both pixels-per-metre values as signed LONGs.
+                if x > i32::MAX as u32 || y > i32::MAX as u32 {
+                    return Err("PNG density exceeds the signed DIB range.".into());
+                }
+                density = (x > 0 && y > 0).then_some((x, y));
+            }
         }
-        if kind == b"IDAT" || kind == b"IEND" {
-            // pHYs must precede the image data.
-            return None;
+        index = chunk_end;
+        if kind == b"IDAT" {
+            seen_image = true;
+        } else if kind == b"IEND" {
+            return Ok(density);
         }
-        index += 12 + length;
     }
-    None
+    Err(malformed())
 }
 
 // Clipboard compatibility extras are optional: cap each dimension at 16384 pixels and the
@@ -318,6 +342,10 @@ pub(crate) fn png_to_dibv5(png: &[u8]) -> Result<Vec<u8>, String> {
     const LCS_GM_IMAGES: u32 = 4;
 
     let (width, height) = bounded_png_dimensions(png)?;
+    // Declare the PNG's own density: a hard-coded 72 dpi told bitmap-only readers that honor DIB
+    // resolution (older Office, WordPad) a 384 dpi Copy As PNG was 5.3x its real size.
+    let (pixels_per_meter_x, pixels_per_meter_y) =
+        png_pixels_per_meter(png)?.unwrap_or((2835, 2835));
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(MAX_PNG_SIDE);
     limits.max_image_height = Some(MAX_PNG_SIDE);
@@ -337,11 +365,6 @@ pub(crate) fn png_to_dibv5(png: &[u8]) -> Result<Vec<u8>, String> {
         .and_then(|pixels| pixels.checked_mul(4))
         .filter(|size| *size <= u32::MAX - HEADER_SIZE)
         .ok_or_else(|| format!("Image too large for the clipboard: {width}x{height}"))?;
-    // Declare the PNG's own density: a hard-coded 72 dpi told bitmap-only readers that honor DIB
-    // resolution (older Office, WordPad) a 384 dpi Copy As PNG was 5.3x its real size.
-    let (pixels_per_meter_x, pixels_per_meter_y) =
-        png_pixels_per_meter(png).unwrap_or((2835, 2835));
-
     let mut dib = Vec::with_capacity((HEADER_SIZE + size_image) as usize);
     let push = |dib: &mut Vec<u8>, value: u32| dib.extend_from_slice(&value.to_le_bytes());
     push(&mut dib, HEADER_SIZE); // bV5Size
@@ -549,6 +572,9 @@ pub(crate) mod native {
 
     fn prepare_write(item: &ValidatedClipboardItem) -> Result<PreparedWrite, String> {
         let target = windows_target_for_payload_type(&item.r#type);
+        if target == WindowsTarget::Png {
+            png_pixels_per_meter(item.data.bytes())?;
+        }
         let bytes = match &target {
             WindowsTarget::UnicodeText => wide(&windows_line_endings(clipboard_utf8(
                 item.data.bytes(),
@@ -687,20 +713,43 @@ pub(crate) mod native {
         }
 
         #[test]
-        fn png_preparation_preserves_required_bytes_when_extras_are_omitted() {
+        fn png_preparation_rejects_malformed_metadata_before_opening_or_clearing() {
             let item = ValidatedClipboardItem {
                 r#type: "image/png".to_string(),
                 data: ClipboardWriteData::Binary(b"malformed PNG".to_vec()),
                 required: true,
             };
-            let prepared = prepare_write(&item).expect("required PNG is not refused");
-            assert_eq!(prepared.target, WindowsTarget::Png);
-            assert_eq!(prepared.bytes, item.data.bytes());
-            assert!(matches!(
-                &prepared.extras[..],
-                [PreparedExtra::RegisteredAlias("image/png"), PreparedExtra::Dibv5(Err(reason))]
-                    if reason.contains("malformed PNG IHDR")
-            ));
+            assert_eq!(
+                prepare_write(&item).err().unwrap(),
+                "Malformed PNG density metadata."
+            );
+            assert_eq!(
+                write_items(std::ptr::null_mut(), &[item]).unwrap_err(),
+                "Malformed PNG density metadata."
+            );
+        }
+
+        #[test]
+        fn png_preparation_rejects_untrusted_density_before_opening_or_clearing() {
+            let mut corrupt = super::super::tests::png_with_density(15118, 15118, 1);
+            corrupt[50] ^= 1;
+            for png in [
+                corrupt,
+                super::super::tests::png_with_density(u32::MAX, 15118, 1),
+                super::super::tests::png_with_density(15118, u32::MAX, 1),
+            ] {
+                let reason = png_pixels_per_meter(&png).unwrap_err();
+                let item = ValidatedClipboardItem {
+                    r#type: "image/png".into(),
+                    data: ClipboardWriteData::Binary(png),
+                    required: true,
+                };
+                assert_eq!(prepare_write(&item).err().unwrap(), reason);
+                assert_eq!(
+                    write_items(std::ptr::null_mut(), &[item]).unwrap_err(),
+                    reason
+                );
+            }
         }
 
         #[test]
@@ -1033,29 +1082,98 @@ mod tests {
         assert_eq!(windows_line_endings("a\nb\r\nc"), "a\r\nb\r\nc");
     }
 
-    #[test]
-    fn reads_the_density_a_png_declares() {
+    pub(super) fn png_with_density(x: u32, y: u32, unit: u8) -> Vec<u8> {
         let mut image = image::RgbaImage::new(1, 1);
         image.put_pixel(0, 0, image::Rgba([0, 0, 0, 255]));
         let mut png = Vec::new();
         image::DynamicImage::ImageRgba8(image)
             .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
             .expect("encode png");
-        assert_eq!(png_pixels_per_meter(&png), None);
+        assert_eq!(png_pixels_per_meter(&png), Ok(None));
 
-        // Insert a pHYs chunk (15118 px/m = 384 dpi) right after IHDR, as export.rs does.
+        // Insert a pHYs chunk right after IHDR, as export.rs does (15118 px/m = 384 dpi).
         let ihdr_end = 8 + 12 + 13;
         let mut chunk = Vec::new();
         chunk.extend_from_slice(&9u32.to_be_bytes());
         chunk.extend_from_slice(b"pHYs");
-        chunk.extend_from_slice(&15118u32.to_be_bytes());
-        chunk.extend_from_slice(&15118u32.to_be_bytes());
-        chunk.push(1);
-        chunk.extend_from_slice(&[0, 0, 0, 0]); // CRC is not checked by the reader
+        chunk.extend_from_slice(&x.to_be_bytes());
+        chunk.extend_from_slice(&y.to_be_bytes());
+        chunk.push(unit);
+        chunk.extend_from_slice(&png_crc32(&chunk[4..]).to_be_bytes());
         let mut stamped = png[..ihdr_end].to_vec();
         stamped.extend_from_slice(&chunk);
         stamped.extend_from_slice(&png[ihdr_end..]);
-        assert_eq!(png_pixels_per_meter(&stamped), Some((15118, 15118)));
+        stamped
+    }
+
+    #[test]
+    fn reads_the_density_a_png_declares() {
+        let png = png_with_density(15118, 15118, 1);
+        assert_eq!(png_pixels_per_meter(&png), Ok(Some((15118, 15118))));
+        let dib = png_to_dibv5(&png).unwrap();
+        assert_eq!(i32::from_le_bytes(dib[24..28].try_into().unwrap()), 15118);
+        assert_eq!(i32::from_le_bytes(dib[28..32].try_into().unwrap()), 15118);
+        for png in [png_with_density(4, 3, 0), png_with_density(0, 15118, 1)] {
+            assert_eq!(png_pixels_per_meter(&png), Ok(None));
+            let dib = png_to_dibv5(&png).unwrap();
+            assert_eq!(i32::from_le_bytes(dib[24..28].try_into().unwrap()), 2835);
+            assert_eq!(i32::from_le_bytes(dib[28..32].try_into().unwrap()), 2835);
+        }
+    }
+
+    #[test]
+    fn rejects_density_crc_corruption_and_truncation_before_dib_conversion() {
+        let png = png_with_density(15118, 15118, 1);
+        for offset in [41, 45, 50] {
+            let mut corrupt = png.clone();
+            corrupt[offset] ^= 1;
+            assert!(png_pixels_per_meter(&corrupt).unwrap_err().contains("CRC"));
+            assert!(png_to_dibv5(&corrupt).unwrap_err().contains("CRC"));
+        }
+        // The density is not trusted until the complete CRC is present.
+        for length in 41..54 {
+            assert!(png_pixels_per_meter(&png[..length]).is_err());
+            assert!(png_to_dibv5(&png[..length]).is_err());
+        }
+        let mut duplicate = png.clone();
+        duplicate.splice(54..54, png[33..54].iter().copied());
+        assert!(png_pixels_per_meter(&duplicate).is_err());
+        let mut late = png[..33].to_vec();
+        late.extend_from_slice(&png[54..png.len() - 12]);
+        late.extend_from_slice(&png[33..54]);
+        late.extend_from_slice(&png[png.len() - 12..]);
+        assert!(png_pixels_per_meter(&late).is_err());
+    }
+
+    #[test]
+    fn density_fits_signed_dib_fields_without_changing_valid_values() {
+        let max = i32::MAX as u32;
+        for (x, y) in [(1, 1), (15118, 11811), (max, max)] {
+            let png = png_with_density(x, y, 1);
+            assert_eq!(png_pixels_per_meter(&png), Ok(Some((x, y))));
+            let dib = png_to_dibv5(&png).unwrap();
+            assert_eq!(
+                i32::from_le_bytes(dib[24..28].try_into().unwrap()),
+                x as i32
+            );
+            assert_eq!(
+                i32::from_le_bytes(dib[28..32].try_into().unwrap()),
+                y as i32
+            );
+        }
+        for (x, y) in [
+            (max + 1, 15118),
+            (15118, max + 1),
+            (u32::MAX, u32::MAX),
+            (max + 1, 0),
+            (0, max + 1),
+        ] {
+            let png = png_with_density(x, y, 1);
+            assert!(png_pixels_per_meter(&png)
+                .unwrap_err()
+                .contains("signed DIB"));
+            assert!(png_to_dibv5(&png).unwrap_err().contains("signed DIB"));
+        }
     }
 
     #[test]

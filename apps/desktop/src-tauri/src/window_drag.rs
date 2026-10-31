@@ -1,7 +1,16 @@
 /// The invoking window is supplied by Tauri, never by a caller-provided label.
 pub(crate) fn start(window: &tauri::WebviewWindow, grab_x: f64, grab_y: f64) -> Result<(), String> {
+    validate_grab(grab_x, grab_y)?;
     compensate_before_drag(window, grab_x, grab_y)?;
     window.start_dragging().map_err(|error| error.to_string())
+}
+
+fn validate_grab(x: f64, y: f64) -> Result<(), String> {
+    if x.is_finite() && y.is_finite() {
+        Ok(())
+    } else {
+        Err("Window drag coordinates must be finite.".into())
+    }
 }
 
 #[cfg(windows)]
@@ -98,7 +107,16 @@ fn compensation_delta(
 
 #[cfg(test)]
 mod tests {
-    use super::{compensation_delta, primary_button_vkey};
+    use super::{compensation_delta, primary_button_vkey, validate_grab};
+
+    #[test]
+    fn drag_coordinates_must_be_finite_on_both_platforms() {
+        assert!(validate_grab(42.0, 12.0).is_ok());
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(validate_grab(bad, 12.0).is_err());
+            assert!(validate_grab(42.0, bad).is_err());
+        }
+    }
 
     #[test]
     fn primary_button_honors_swapped_buttons() {

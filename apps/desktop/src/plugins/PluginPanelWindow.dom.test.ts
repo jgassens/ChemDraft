@@ -47,6 +47,7 @@ const tauriInvoke = vi.hoisted(() => vi.fn(async (command: string, args?: { enab
     await tauriEvents.emit("chemdraft://plugin-panel-full-size", status);
     return status;
   }
+  if (command === "hide_plugin_panel_window") return nativePanel.hide();
   return command === "register_plugin_panel_input_focus" ? "page-token" : true;
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: tauriInvoke }));
@@ -113,7 +114,7 @@ const nativePanel = vi.hoisted(() => ({
 }));
 vi.mock("@tauri-apps/api/window", async (importOriginal) => ({
   ...await importOriginal<typeof import("@tauri-apps/api/window")>(),
-  getCurrentWindow: () => nativePanel
+  getCurrentWindow: () => { throw new Error("Panel chrome must use caller-bound native controls"); }
 }));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -888,6 +889,7 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     expect(nativePanel.hide).not.toHaveBeenCalled();
     await act(async () => { finishRestore({ enabled: false }); });
     expect(nativePanel.hide).toHaveBeenCalledTimes(1);
+    expect(tauriInvoke).toHaveBeenCalledWith("hide_plugin_panel_window");
     expect(tauriEvents.emitted.filter(({ name }) => name === PLUGIN_PANEL_CLOSED_EVENT)).toHaveLength(1);
     expect(document.querySelector(".lf-modal")).toBeNull();
     await broadcast(reportPayload());

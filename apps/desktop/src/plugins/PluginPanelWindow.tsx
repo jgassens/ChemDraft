@@ -2,9 +2,9 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Pointer
 import { installPluginPanelInputFocus } from "./pluginPanelInputFocus";
 import { installPluginPanelPointerFeed } from "./pluginPanelPointerFeed";
 import { startPaletteWindowDrag } from "../window-manager";
+import { hideCurrentPanelWindow } from "./panelWindowControls";
 import {
   ANALYSIS_WINDOW_OWNER_ID,
-  hideCurrentPanelWindow,
   listenForAnalysisWindowSnapshots,
   listenForPluginPanelReports,
   listenForPluginPanelReportCleared,

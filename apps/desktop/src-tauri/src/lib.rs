@@ -19,6 +19,7 @@ mod ocsr_engine;
 mod opsin;
 mod panel_full_size;
 mod panel_window;
+mod panel_window_controls;
 mod panel_window_frame;
 mod perf_log;
 mod plugin_package;
@@ -1352,6 +1353,7 @@ pub fn run() {
             plugin_panel_action_forward,
             plugin_panel_event_forward,
             set_plugin_panel_full_size,
+            panel_window_controls::hide_plugin_panel_window,
             register_plugin_panel_input_focus,
             set_plugin_panel_input_focus,
             open_toolset_popover,

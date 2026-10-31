@@ -63,8 +63,9 @@ fn panels_can_forward_requests_and_subscribe_to_replies() {
 }
 
 #[test]
-fn only_panels_can_control_their_native_full_size_state() {
-    assert_shipped_access("plugin-panel-x", &["set_plugin_panel_full_size"], true);
+fn only_panels_can_control_their_native_window_state() {
+    let controls = ["set_plugin_panel_full_size", "hide_plugin_panel_window"];
+    assert_shipped_access("plugin-panel-x", &controls, true);
     for label in [
         "main",
         "preferences",
@@ -72,7 +73,7 @@ fn only_panels_can_control_their_native_full_size_state() {
         "dialog-export",
         "spin3d-debugger",
     ] {
-        assert_shipped_access(label, &["set_plugin_panel_full_size"], false);
+        assert_shipped_access(label, &controls, false);
     }
     let capability: serde_json::Value =
         serde_json::from_str(include_str!("../capabilities/plugin-panel.json")).unwrap();
@@ -87,22 +88,16 @@ fn only_panels_can_control_their_native_full_size_state() {
         vec![
             "core:app:default",
             "core:path:default",
-            "core:window:default",
-            "core:webview:default",
             "core:image:default",
             "core:resources:default",
             "core:event:allow-listen",
             "core:event:allow-unlisten",
             "allow-plugin-panel-action-forward",
             "allow-plugin-panel-event-forward",
-            "core:window:allow-hide",
-            "core:window:allow-outer-position",
-            "core:window:allow-scale-factor",
             "allow-register-plugin-panel-input-focus",
             "allow-set-plugin-panel-input-focus",
             "allow-set-plugin-panel-full-size",
-            "core:window:allow-set-position",
-            "core:window:allow-set-size",
+            "allow-hide-plugin-panel-window",
         ]
     );
     assert_shipped_access(
@@ -117,6 +112,17 @@ fn only_panels_can_control_their_native_full_size_state() {
             "write_clipboard_text_items",
             "write_clipboard_image",
             "open_plugin_panel_window",
+            "plugin:window|get_all_windows",
+            "plugin:window|hide",
+            "plugin:window|set_position",
+            "plugin:window|set_size",
+            "plugin:window|outer_position",
+            "plugin:window|scale_factor",
+            "plugin:window|start_dragging",
+            "plugin:window|close",
+            "plugin:window|set_focus",
+            "plugin:window|maximize",
+            "plugin:webview|get_all_webviews",
         ],
         false,
     );
