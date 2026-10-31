@@ -3,9 +3,10 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createImageGraphicObject, MAX_IMAGE_OBJECT_BYTES, type ChemDraftDocument } from "@chemdraft/chem-core";
+import { createImageGraphicObject, MAX_IMAGE_OBJECT_BYTES, serializeDocument, type ChemDraftDocument } from "@chemdraft/chem-core";
 import { inspectClipboardPayload, type ClipboardReadPayload } from "@chemdraft/clipboard-adapter";
 import { documentDrawingDefaults } from "@chemdraft/document-workflow-core";
+import { createViewportState } from "@chemdraft/viewport-engine";
 import { MainWindow, selectionInSelectionRect, selectionInSelectionPolygon } from "./MainWindow";
 import * as clipboard from "./clipboard";
 import * as smilesPaste from "./smilesListPaste";
@@ -162,6 +163,35 @@ describe("picture paste and canvas", () => {
       expect(image.x).toBeGreaterThan(0);
     }
   );
+
+  it("centres pictures on the visible viewport beyond the page at 25% zoom, while text stays on the page", async () => {
+    // Restore a low-zoom session through the ordinary desktop view path.
+    vi.spyOn(windowManager, "isDesktopRuntime").mockReturnValue(true);
+    vi.spyOn(windowManager, "loadDocumentSession").mockResolvedValue({
+      version: 1, contents: serializeDocument(createPhase4Document("Low zoom")), payloadHash: "test",
+      displayName: "Low zoom", blank: true, dirty: true, savedAt: "2026-10-31T00:00:00.000Z",
+      view: { viewport: createViewportState({ scale: 0.25, minZoom: 0.25 }), scrollLeft: 0, scrollTop: 0 }
+    });
+    await render();
+    await vi.waitFor(() => expect((bridge().snapshot().viewport as { scale: number }).scale).toBe(0.25));
+    const { scale } = bridge().snapshot().viewport as { scale: number };
+    page().getBoundingClientRect = () => ({ ...pageRect, left: 0, top: -50,
+      width: 816 * scale, height: 1056 * scale, right: 816 * scale, bottom: -50 + 1056 * scale });
+    vi.spyOn(clipboard, "readClipboardPayload").mockResolvedValue(nativeImage);
+    await command("clipboard.paste");
+    const image = snapshot().pages[0]!.objects[0]!;
+    expect(image.x + image.width / 2).toBeCloseTo(396 / scale);
+    expect(image.y + image.height / 2).toBeCloseTo(1424);
+    expect(image.y + image.height / 2).toBeGreaterThan(snapshot().pages[0]!.height);
+
+    vi.mocked(clipboard.readClipboardPayload).mockResolvedValue({ types: ["text/plain"],
+      textItems: [{ type: "text/plain", text: "Picture caption!" }] });
+    await command("clipboard.paste");
+    const text = snapshot().pages[0]!.objects.find(object => object.type === "text")!;
+    expect(text).toBeDefined();
+    expect(text.x).toBeLessThanOrEqual(snapshot().pages[0]!.width);
+    expect(text.y).toBeLessThanOrEqual(snapshot().pages[0]!.height);
+  });
 
   it("shows the specific refused-image message without changing document, selection or undo", async () => {
     const drawing = createPhase4Document("Refused Picture");

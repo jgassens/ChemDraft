@@ -4,6 +4,8 @@ export interface ImagePixelInfo {
   pixelWidth: number;
   pixelHeight: number;
   pixelsPerMeter?: { x: number; y: number };
+  /** Exact SVG viewport size in page units (96 per inch), before metadata rounding. */
+  physicalSize?: { width: number; height: number };
 }
 
 export const MAX_IMAGE_SIDE = 16_384;
@@ -136,5 +138,7 @@ export function readSvgInfo(source: string): ImagePixelInfo | undefined {
     height ??= box.height;
   }
   // SVG's default viewport is 300 × 150 when no usable dimensions/viewBox are provided.
-  return { pixelWidth: Math.max(1, Math.round(width ?? 300)), pixelHeight: Math.max(1, Math.round(height ?? 150)) };
+  const physicalSize = { width: width ?? 300, height: height ?? 150 };
+  return { pixelWidth: Math.max(1, Math.round(physicalSize.width)),
+    pixelHeight: Math.max(1, Math.round(physicalSize.height)), physicalSize };
 }

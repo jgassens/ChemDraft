@@ -73,6 +73,22 @@ describe("exportDocumentToPdf", () => {
     expect(pdf.warnings).toEqual([{ code: "export.pdf.svg_picture_not_drawn", severity: "warning", objectId: "g13",
       message: "PDF export: SVG picture g13 was not drawn; paste it as PNG or export SVG" }]);
   });
+
+  it.each([1, 0.5, 2])("keeps PNGs at physical size with output page scale %s, moving their centres with the layout", async outputScale => {
+    const png = Buffer.from(new Resvg('<svg xmlns="http://www.w3.org/2000/svg" width="288" height="144"><rect width="288" height="144" fill="red"/></svg>').render().asPng()).toString("base64");
+    const document = createEmptyDocument();
+    const picture = { ...createImageGraphicObject({ id: "physical-picture", mimeType: "image/png", dataBase64: png,
+      pixelsPerMeter: { x: 5669, y: 5669 }, center: { x: 400, y: 300 } }), rotation: 30 };
+    document.pages[0]!.objects = [picture];
+    const page = document.pages[0]!;
+    const pdf = await withPdfDom(domParser => exportDocumentToPdf(document, { domParser, compress: false,
+      outputWidth: page.width * outputScale, outputHeight: page.height * outputScale }));
+    const [frame] = pdfPictureFrames(Buffer.from(pdf.bytes).toString("latin1"));
+    expect(frame.width).toBeCloseTo(144, 1);
+    expect(frame.height).toBeCloseTo(72, 1);
+    expect(frame.cx).toBeCloseTo(400 * 0.75 * outputScale, 6);
+    expect(frame.cy).toBeCloseTo((page.height - 300) * 0.75 * outputScale, 6);
+  });
   it("exports CC=CC with either stereo as the canvas's crossed segments in SVG and painted PDF strokes", async () => {
     const document = createEmptyDocument({ now: timestamp });
     const molecule: MoleculeObject = {
@@ -891,4 +907,26 @@ function pdfDrawingPoints(pdf: string): Array<[number, number]> {
     else if (op === "re") { point(n[0], n[1]); point(n[0]+n[2], n[1]+n[3]); }
   }
   return points;
+}
+
+// Read the effective image matrices from the PDF, including rotation and nested q/Q state.
+function pdfPictureFrames(pdf: string) {
+  let matrix = [1, 0, 0, 1, 0, 0];
+  const stack: number[][] = [];
+  const frames: Array<{ width: number; height: number; cx: number; cy: number }> = [];
+  const streams = [...pdf.matchAll(/stream\n([\s\S]*?)\nendstream/g)].map(match => match[1]);
+  for (const line of streams.join("\n").split("\n")) {
+    const parts = line.trim().split(/\s+/), op = parts.pop();
+    if (op === "q") stack.push([...matrix]);
+    else if (op === "Q") matrix = stack.pop() ?? [1, 0, 0, 1, 0, 0];
+    else if (op === "cm") {
+      const n = parts.map(Number), [a, b, c, d, e, f] = matrix;
+      matrix = [a*n[0]+c*n[1], b*n[0]+d*n[1], a*n[2]+c*n[3], b*n[2]+d*n[3],
+        a*n[4]+c*n[5]+e, b*n[4]+d*n[5]+f];
+    } else if (op === "Do" && /^\/I\d+$/.test(parts[0])) {
+      const [a, b, c, d, e, f] = matrix;
+      frames.push({ width: Math.hypot(a, b), height: Math.hypot(c, d), cx: e + (a + c) / 2, cy: f + (b + d) / 2 });
+    }
+  }
+  return frames;
 }

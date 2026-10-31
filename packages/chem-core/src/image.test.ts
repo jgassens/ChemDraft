@@ -108,7 +108,7 @@ describe("embedded picture graphics", () => {
     '<drawing:svg xmlns:drawing="http://www.w3.org/2000/svg" width="10" height="10"><drawing:svg/></drawing:svg>'
   ])("accepts a complete namespace-prefixed SVG at paste time: %s", (source) => {
     expect(isSvgImageSource(source)).toBe(true);
-    expect(readSvgInfo(source)).toEqual({ pixelWidth: 10, pixelHeight: 10 });
+    expect(readSvgInfo(source)).toEqual({ pixelWidth: 10, pixelHeight: 10, physicalSize: { width: 10, height: 10 } });
     expect(createImageGraphicObject({ ...options, mimeType: "image/svg+xml",
       dataBase64: Buffer.from(source).toString("base64") }).data.image)
       .toMatchObject({ pixelWidth: 10, pixelHeight: 10 });
@@ -125,7 +125,7 @@ describe("embedded picture graphics", () => {
         .toThrow("Couldn't paste the picture: the SVG is incomplete.");
     }
     for (const source of ["<svg/>", "<svg></svg>", "<svg><svg/></svg>", "<svg><svg></svg></svg>"]) {
-      expect(readSvgInfo(source)).toEqual({ pixelWidth: 300, pixelHeight: 150 });
+      expect(readSvgInfo(source)).toEqual({ pixelWidth: 300, pixelHeight: 150, physicalSize: { width: 300, height: 150 } });
     }
   });
 
@@ -175,11 +175,28 @@ describe("embedded picture graphics", () => {
     ["", 300, 150]
   ])("derives SVG size from %s", (attributes, pixelWidth, pixelHeight) => {
     const source = `<svg ${attributes}><rect width="999" height="999"/></svg>`;
-    expect(readSvgInfo(source)).toEqual({ pixelWidth, pixelHeight });
+    expect(readSvgInfo(source)).toEqual({ pixelWidth, pixelHeight, physicalSize: { width: pixelWidth, height: pixelHeight } });
     const object = createImageGraphicObject({ ...options, mimeType: "image/svg+xml",
       dataBase64: Buffer.from(source).toString("base64") });
     expect(object.width).toBe(pixelWidth);
     expect(object.height).toBe(pixelHeight);
+  });
+
+  it("keeps fractional SVG physical dimensions separate from integer pixel metadata through paste and save", () => {
+    const source = '<svg xmlns="http://www.w3.org/2000/svg" width="1pt" height="2pt"/>';
+    const info = readSvgInfo(source)!;
+    expect(info).toEqual({ pixelWidth: 1, pixelHeight: 3, physicalSize: { width: 96 / 72, height: 192 / 72 } });
+    const object = createImageGraphicObject({ ...options, mimeType: "image/svg+xml",
+      dataBase64: Buffer.from(source).toString("base64"), pixelWidth: info.pixelWidth, pixelHeight: info.pixelHeight });
+    expect(object.data.image).toMatchObject({ pixelWidth: 1, pixelHeight: 3 });
+    expect(object.width).toBeCloseTo(1.333333, 3);
+    expect(object.height).toBeCloseTo(2.666667, 3);
+    expect(object.width / object.height).toBeCloseTo(0.5, 12);
+    expect(object.x + object.width / 2).toBe(options.center.x);
+    expect(object.y + object.height / 2).toBe(options.center.y);
+    const document = createEmptyDocument();
+    document.pages[0]!.objects = [object];
+    expect(deserializeDocument(serializeDocument(document)).pages[0]!.objects[0]).toEqual(object);
   });
 
   it("accepts picture-less graphics and validates image payloads when present", () => {

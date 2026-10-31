@@ -6398,7 +6398,7 @@ export function MainWindow({
     };
   }, [activePage.height, activePage.width]);
 
-  const viewportCentrePagePoint = useCallback((): ClientPoint => {
+  const viewportCentrePagePoint = useCallback((clampToPage = true): ClientPoint => {
     const canvas = canvasRegionRef.current;
     const page = pageRef.current;
     if (!canvas || !page) {
@@ -6415,10 +6415,14 @@ export function MainWindow({
       y: canvasRect.top + canvas.clientHeight / 2
     };
 
-    return {
-      x: clamp((clientPoint.x - pageRect.left) / viewportRef.current.scale, 0, activePage.width),
-      y: clamp((clientPoint.y - pageRect.top) / viewportRef.current.scale, 0, activePage.height)
+    const point = {
+      x: (clientPoint.x - pageRect.left) / viewportRef.current.scale,
+      y: (clientPoint.y - pageRect.top) / viewportRef.current.scale
     };
+    return clampToPage ? {
+      x: clamp(point.x, 0, activePage.width),
+      y: clamp(point.y, 0, activePage.height)
+    } : point;
   }, [activePage.height, activePage.margin.left, activePage.margin.top, activePage.width]);
 
   const pastePointForViewport = useCallback((): ClientPoint =>
@@ -6646,7 +6650,7 @@ export function MainWindow({
     const result = applyClipboardPastePayload(
       documentRef.current,
       detectedPayload,
-      detectedPayload.kind === "image" ? viewportCentrePagePoint() : pastePointForViewport(),
+      detectedPayload.kind === "image" ? viewportCentrePagePoint(false) : pastePointForViewport(),
       textStyleDefaults
     );
     if (result.document !== documentRef.current) {

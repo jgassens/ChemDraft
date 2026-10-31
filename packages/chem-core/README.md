@@ -15,6 +15,8 @@ through `readPngInfo`, and converts physical sizes at 96 page units per inch, in
 molecule bond lengths and drawing styles. Without density, each image pixel is one page unit
 (a CSS pixel, 96 dpi on every platform). `readSvgInfo` reads root dimensions
 or the viewBox, keeps absolute SVG units at their stated physical size, and defaults to 300 × 150.
+Its `physicalSize` keeps fractional page dimensions separate from integer pixel metadata, so small
+SVGs retain their original aspect ratio when pasted.
 These metadata readers do not decode pixels or sanitize SVG; import/render boundaries handle those.
 Native document loading enforces the same PNG chunk structure and pixel limits as picture creation;
 SVG loading checks only base64 validity and the payload byte cap. SVG completeness and pixel limits

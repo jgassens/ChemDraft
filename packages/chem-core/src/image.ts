@@ -34,8 +34,10 @@ export function createImageGraphicObject(options: CreateImageGraphicObjectOption
     pixelHeight: options.pixelHeight ?? info?.pixelHeight ?? NaN,
     ...(pixelsPerMeter ? { pixelsPerMeter } : {})
   };
-  const width = image.pixelsPerMeter ? image.pixelWidth / (image.pixelsPerMeter.x * 0.0254) * CSS_PX_PER_INCH : image.pixelWidth;
-  const height = image.pixelsPerMeter ? image.pixelHeight / (image.pixelsPerMeter.y * 0.0254) * CSS_PX_PER_INCH : image.pixelHeight;
+  const width = info?.physicalSize?.width ?? (image.pixelsPerMeter
+    ? image.pixelWidth / (image.pixelsPerMeter.x * 0.0254) * CSS_PX_PER_INCH : image.pixelWidth);
+  const height = info?.physicalSize?.height ?? (image.pixelsPerMeter
+    ? image.pixelHeight / (image.pixelsPerMeter.y * 0.0254) * CSS_PX_PER_INCH : image.pixelHeight);
   // Like rect graphics, the frame is top-level x/y (top left), width/height and rotation.
   // No separate image geometry: moving, resizing and selecting reuse the ordinary graphic frame.
   return GraphicObjectSchema.parse({
