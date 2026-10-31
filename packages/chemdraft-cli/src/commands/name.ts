@@ -1,3 +1,4 @@
+import { resolveStructureTemplateName } from "@chemdraft/document-workflow-core";
 import { spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { access, mkdir, writeFile } from "node:fs/promises";
@@ -292,12 +293,17 @@ async function runJob(
   dependencies: NameCommandDependencies
 ): Promise<boolean> {
   writeProgress(io, `Converting ${job.name}…`);
+  const template = resolveStructureTemplateName(job.query);
+  const provenance = template
+    ? { source: "template", templateId: template.id, templateName: template.name, engine: "chemdraft-templates" }
+    : { source: "opsin", engine: OPSIN_VERSION };
   try {
-    const converted = await convertNameWithOpsin(job.query, dependencies.opsinPaths);
+    const converted = template ? { smiles: template.smiles, warnings: [] as string[], failureReason: undefined }
+      : await convertNameWithOpsin(job.query, dependencies.opsinPaths);
     if (!converted.smiles) {
       const error = `Could not interpret chemical name "${job.query}": ${converted.failureReason}`;
       writeJsonLine(io, {
-        name: job.name, query: job.query, ok: false, smiles: null, engine: OPSIN_VERSION, error, warnings: converted.warnings
+        name: job.name, query: job.query, ok: false, smiles: null, ...provenance, error, warnings: converted.warnings
       });
       writeProgress(io, `Failed ${job.name}: ${error}`);
       return false;
@@ -307,7 +313,7 @@ async function runJob(
     if (reason !== undefined && !allowAmbiguous) {
       const error = `ambiguous name: ${reason}; give a locant or full name`;
       writeJsonLine(io, {
-        name: job.name, query: job.query, ok: false, smiles: null, engine: OPSIN_VERSION, error, warnings: converted.warnings
+        name: job.name, query: job.query, ok: false, smiles: null, ...provenance, error, warnings: converted.warnings
       });
       writeProgress(io, `Failed ${job.name}: ${error}`);
       return false;
@@ -317,7 +323,7 @@ async function runJob(
       const renderSmiles = dependencies.renderSmiles ?? (await import("../document")).renderSmilesToAssets;
       const rendered = await renderSmiles(
         converted.smiles,
-        { name: job.name }
+        { name: job.name, ...(template ? { style: "document" as const } : {}) }
       );
       await mkdir(dirname(renderPath), { recursive: true });
       await writeFile(renderPath, rendered.png);
@@ -326,8 +332,9 @@ async function runJob(
         query: job.query,
         ok: true,
         smiles: converted.smiles,
-        engine: OPSIN_VERSION,
+        ...provenance,
         png: renderPath,
+        layout: rendered.layout,
         warnings: [...converted.warnings, ...rendered.warnings]
       });
       writeProgress(io, `Wrote ${renderPath}`);
@@ -339,7 +346,7 @@ async function runJob(
       query: job.query,
       ok: true,
       smiles: converted.smiles,
-      engine: OPSIN_VERSION,
+      ...provenance,
       warnings: converted.warnings
     });
     writeProgress(io, `Converted ${job.name}`);
@@ -348,8 +355,8 @@ async function runJob(
     const message = error instanceof Error ? error.message : String(error);
     const namedMessage = error instanceof OpsinEngineError
       ? message
-      : `Unable to render OPSIN result for chemical name "${job.query}": ${message}`;
-    writeJsonLine(io, { name: job.name, query: job.query, ok: false, smiles: null, engine: OPSIN_VERSION, error: namedMessage });
+      : `Unable to render ${template ? "template" : "OPSIN"} result for chemical name "${job.query}": ${message}`;
+    writeJsonLine(io, { name: job.name, query: job.query, ok: false, smiles: null, ...provenance, error: namedMessage });
     writeProgress(io, `Failed ${job.name}: ${namedMessage}`);
     return false;
   }
@@ -393,6 +400,6 @@ export async function runNameCommand(
 
 export const nameCommand = {
   name: "name",
-  summary: "Convert chemical names to SMILES with OPSIN.",
+  summary: "Convert chemical names using built-in templates before OPSIN.",
   run: runNameCommand
 } as const;

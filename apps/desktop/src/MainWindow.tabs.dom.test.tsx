@@ -1702,7 +1702,7 @@ describe("documents in one window", () => {
             const original = smilesPasteIdentity.verifySmilesGridEntries;
             const entries = ["CC", "CC"].map(smiles => ({ smiles, depiction: parsed!.depiction }));
             vi.spyOn(smilesListPaste, "depictSmilesListForPaste")
-              .mockReturnValueOnce(Promise.resolve({ entries, skipped: 0, failures: [] }));
+              .mockReturnValueOnce(Promise.resolve({ entries, skipped: 0, skippedItems: [], failures: [] }));
             vi.spyOn(smilesPasteIdentity, "verifySmilesGridEntries").mockImplementationOnce(async entries => {
               await wait;
               return original(entries, inspect);

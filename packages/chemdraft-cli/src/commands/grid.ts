@@ -207,7 +207,7 @@ export interface RenderedGrid {
   viewBox: { x: number; y: number; width: number; height: number };
   columns: number;
   rows: number;
-  cells: { name: string; smiles: string; label: string | null; column: number; row: number }[];
+  cells: { name: string; smiles: string; label: string | null; column: number; row: number; layout?: string }[];
   warnings: string[];
 }
 
@@ -232,7 +232,7 @@ export async function renderGrid(
   const cells = entries.map((entry, index) => {
     const column = index % layout.columns;
     const row = Math.floor(index / layout.columns);
-    return { name: entry.name, smiles: entry.smiles, label: entry.label, column, row };
+    return { name: entry.name, smiles: entry.smiles, label: entry.label, column, row, layout: entry.built.layout };
   });
 
   const exported = exportDocumentToSvg(document, {

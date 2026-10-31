@@ -20,3 +20,4 @@ export {
   abbreviationSpellingSuggestion
 } from "./abbreviations";
 export { bondedElementLabelMeaning, isBondedGenericAtomLabel, isGenericAtomLabel } from "./genericLabels";
+export * from "./structureTemplates";

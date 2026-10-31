@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { structureTemplates } from "@chemdraft/template-library";
 import { engineInstallFixture } from "./engineInstallTestFixtures";
 import { toolInstallFixture } from "./toolInstallTestFixtures";
 import { DIALOG_PREVIEW_MAX_BYTES, DIALOG_MAX_BYTES, parseDialogMessage, validateDialogDelivery, type DialogMessage } from "./dialogProtocol";
@@ -116,4 +117,18 @@ it("validates tool install snapshots, states and actions fail closed", () => {
     { state: { status: "consent", extra: true } }, { buttons: ["install", "allow", "close"] },
     { state: { status: "installing", phase: "Downloading", bytesDone: 1.5 }, buttons: ["cancelInstall", "close"] }
   ]) expect(parseDialogMessage({ ...message, data: { ...data, ...change } })).toBeUndefined();
+});
+it("validates the template picker snapshot and its restricted actions", () => {
+  const message = { ...snapshot(), dialogKind: "structureTemplates", data: { title: "Drawing", templateIds: structureTemplates.map(template => template.id) } };
+  expect(parseDialogMessage(message)).toEqual(message);
+  for (const data of [{ title: "Drawing" }, { title: "", templateIds: [] }, { ...message.data, templateIds: ["unknown"] },
+    { ...message.data, templateIds: [structureTemplates[0]!.id, structureTemplates[0]!.id] }, { ...message.data, svg: "<script/>" }]) {
+    expect(parseDialogMessage({ ...message, data })).toBeUndefined();
+  }
+  expect(parseDialogMessage({ ...message, type: "action", data: { action: "insert", templateId: structureTemplates[0]!.id } })).toBeDefined();
+  for (const data of [{ action: "insert" }, { action: "insert", templateId: "../main" }, { action: "insert", templateId: "unknown" },
+    { action: "insert", templateId: structureTemplates[0]!.id, commandId: "document.new" }, { action: "apply" }]) {
+    expect(parseDialogMessage({ ...message, type: "action", data })).toBeUndefined();
+  }
+  expect(parseDialogMessage({ ...message, type: "result", data: { status: "inserted" } })).toBeDefined();
 });
