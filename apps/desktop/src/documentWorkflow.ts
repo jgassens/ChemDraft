@@ -15025,9 +15025,6 @@ export interface NativeEngineRelayoutOptions {
    * engine's own wedge assignment is trusted as before.
    */
   perceiveStereo?: StereoPerceiver;
-  /** Perceived stereogenic double bonds, excluding aromatic/nonstereogenic ring doubles.
-   * Without a reader, repairs retain the conservative drawn-geometry E/Z guard. */
-  perceiveDoubleBondStereo?: DoubleBondStereoReader;
 }
 
 export type NativeMoleculeRelayoutEngine = (molfile: string) => PastedStructureDepiction;
@@ -15042,6 +15039,36 @@ interface EngineRelayoutCandidate {
     labelBoxes: (points: readonly { x: number; y: number }[]) => LayoutLabelBox[] };
 }
 type EngineRelayoutAttempt = { ok: true; candidate: EngineRelayoutCandidate } | { ok: false; error: unknown };
+
+/** Only topology can exempt a repair from the drawn double-bond geometry guard.
+ * Removing the bond and finding its shortest alternate path gives the smallest ring
+ * containing that bond, including Kekulé doubles. Six alternate edges make a seven-ring;
+ * eight-rings and acyclic bonds retain the conservative guard regardless of perception. */
+function cleanupDoubleBondGeometryExemptions(molecule: MoleculeObject): ReadonlySet<string> {
+  const adjacent = new Map(molecule.atoms.map(atom => [atom.id, [] as { atom: string; bond: string }[]]));
+  for (const bond of molecule.bonds) {
+    adjacent.get(bond.fromAtomId)?.push({ atom: bond.toAtomId, bond: bond.id });
+    adjacent.get(bond.toAtomId)?.push({ atom: bond.fromAtomId, bond: bond.id });
+  }
+  const exempt = new Set<string>();
+  for (const bond of molecule.bonds) {
+    if (bond.order === "aromatic") { exempt.add(bond.id); continue; }
+    if (bond.order !== "double") continue;
+    const seen = new Set([bond.fromAtomId]);
+    const queue = [{ atom: bond.fromAtomId, distance: 0 }];
+    for (let i = 0; i < queue.length && !exempt.has(bond.id); i++) {
+      const { atom, distance } = queue[i];
+      if (distance >= 6) continue;
+      for (const edge of adjacent.get(atom) ?? []) {
+        if (edge.bond === bond.id || seen.has(edge.atom)) continue;
+        if (edge.atom === bond.toAtomId) { exempt.add(bond.id); break; }
+        seen.add(edge.atom);
+        queue.push({ atom: edge.atom, distance: distance + 1 });
+      }
+    }
+  }
+  return exempt;
+}
 
 /** Avoid replacing an ordinary drawing for a negligible soft-geometry improvement. */
 export const MIN_CLEANUP_SOFT_SCORE_IMPROVEMENT = 0.05;
@@ -15099,20 +15126,22 @@ function chooseEngineRelayout(
       labelBoxes: source.labelBoxes, conventionalOrientation: true, belowSign: -1
     }).map(repair => ({ source, repair })) : [];
   }).sort((a, b) => compareLayoutRepairs(a.repair, b.repair));
+  const before = findMoleculeObject(document, objectId);
+  const exemptDoubleBonds = before ? cleanupDoubleBondGeometryExemptions(before) : new Set<string>();
   for (const { source, repair } of repairs) {
     const depiction = { ...source.depiction, atoms: source.depiction.atoms.map((atom, i) => ({ ...atom, ...repair.atoms[i] })) };
     const attempt = evaluateEngineRelayoutCandidate(document, objectId, () => depiction, options, true);
     if (!attempt.ok || attempt.candidate.quality?.hardDefects !== 0) continue;
-    const before = findMoleculeObject(document, objectId);
     const after = findMoleculeObject(attempt.candidate.document, objectId);
     if (!before || !after) continue;
     // R/S has already passed the normal read-back/reconciliation above. A swing can also move
     // an alkene ligand across its axis; guard its drawn E/Z with the same conservative state
-    // comparison used by flatten. Either markers stay unspecified.
+    // comparison used by flatten. Only aromatic/small-ring topology exempts geometry;
+    // an empty engine perception is never evidence of non-stereogenicity. Either markers
+    // stay unspecified even on exempt bonds.
     const actualDoubleStereo = doubleBondStereoState(after);
-    const specifiedDoubleBonds = specifiedDoubleBondIdsForFlatten(before, options.perceiveDoubleBondStereo);
     if ([...doubleBondStereoState(before)].some(([id, expected]) =>
-      (expected === "either" || specifiedDoubleBonds === undefined || specifiedDoubleBonds.has(id)) &&
+      (expected === "either" || !exemptDoubleBonds.has(id)) &&
       expected !== 0 && actualDoubleStereo.get(id) !== expected)) continue;
     if (attempt.candidate.quality.passes || attempt.candidate.quality.passesRelaxed) return finish(attempt.candidate);
     // Terminal labels can be cleared while the fixed macrocycle retains soft distortion.
@@ -15185,14 +15214,6 @@ export async function prepareNativeMoleculeEngineRelayout(
   let alternates: readonly NativeMoleculeRelayoutEngine[] = [];
   try { alternates = await loadAlternates(); } catch (error) {
     options.warnings?.push(`Clean Up could not load alternate layouts: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  // Load the real stereogenicity reader only on the alternate/repair path. Perspective
-  // aromatic rings can have misleading ligand-relative signs; those are not E/Z chemistry.
-  // The synchronous entry point accepts the same injected reader and otherwise stays
-  // conservative. Passing primary layouts still load nothing extra.
-  if (options.perceiveStereo && !options.perceiveDoubleBondStereo) {
-    const { perceiveDoubleBondStereoFromMolfile } = await import("@chemdraft/ocl-adapter");
-    options = { ...options, perceiveDoubleBondStereo: perceiveDoubleBondStereoFromMolfile };
   }
   return chooseEngineRelayout(document, objectId, primary, alternates, options);
 }

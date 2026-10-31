@@ -101,7 +101,7 @@ beforeAll(async () => { installRealRdkitModuleLoader(); await ensureOclResources
 afterAll(() => resetRdkitForTesting());
 
 describe("Clean Up Structure 2D layout quality (real engines)", () => {
-  it("still rejects a real E/Z-changing repair with the stereogenicity reader", () => {
+  it("still rejects a real E/Z-changing repair without a stereogenicity reader", () => {
     const h = Math.sin(Math.PI / 9), w = Math.cos(Math.PI / 9);
     const chain = (points: [number, number][]): PastedStructureDepiction => ({
       atoms: points.map(([x, y]) => ({ x, y, element: "C", charge: 0 })),
@@ -117,16 +117,59 @@ describe("Clean Up Structure 2D layout quality (real engines)", () => {
       atoms: [...cis.atoms], quality: evaluateLayoutQuality(cis.atoms, cis.bonds),
       kind: "substituent swing", pivot: 2, movedAtoms: [3], angleDegrees: -40
     }]);
-    const reader = vi.fn(perceiveDoubleBondStereoFromMolfile);
     try {
       const warnings: string[] = [];
       expect(applyNativeMoleculeEngineRelayout(document, before.id, () => colliding, {
-        targetBondLengthPx: 22, warnings, perceiveDoubleBondStereo: reader
+        targetBondLengthPx: 22, warnings
       })).toBe(document);
       expect(search).toHaveBeenCalledOnce();
-      expect(reader).toHaveBeenCalledOnce();
-      expect(reader.mock.results[0].value).toHaveLength(1);
       expect(warnings).toEqual(["Clean Up kept the drawn layout of this structure: the generated layouts put atoms on top of each other."]);
+    } finally { search.mockRestore(); }
+  });
+  it.each(["synchronous", "prepared"])("%s cleanup refuses Astra's shallow trans-butene to cis repair despite empty perception", async path => {
+    const radius = 1 / (2 * Math.sin(Math.PI / 8));
+    const ring = Array.from({ length: 8 }, (_, i) => ({
+      x: radius * Math.cos(i * Math.PI / 4), y: radius * Math.sin(i * Math.PI / 4), element: "C", charge: 0
+    }));
+    const pivots = [0, 2, 4, 6];
+    const oh = pivots.map(i => ({ x: ring[i].x * (radius - 1) / radius,
+      y: ring[i].y * (radius - 1) / radius, element: "O", charge: 0 }));
+    const depiction = (angle: number, sign: number): PastedStructureDepiction => {
+      const w = Math.cos(angle * Math.PI / 180), h = Math.sin(angle * Math.PI / 180);
+      return {
+        atoms: [...ring, ...oh, ...[[-w, -h], [0, 0], [1, 0], [1 + w, sign * h]]
+          .map(([x, y]) => ({ x: x + 10, y, element: "C", charge: 0 }))],
+        bonds: [...Array.from({ length: 8 }, (_, from) => ({ from, to: (from + 1) % 8, order: "single" as const, wedge: null })),
+          ...pivots.map((from, i) => ({ from, to: i + 8, order: "single" as const, wedge: null })),
+          ...Array.from({ length: 3 }, (_, i) => ({ from: 12 + i, to: 13 + i,
+            order: i === 1 ? "double" as const : "single" as const, wedge: null }))]
+      };
+    };
+    const document = insertSmilesMolecule(createEmptyDocument(), { x: 400, y: 400 },
+      depiction(2.5, 1), "C/C=C/C.OC1CC(O)CC(O)CC(O)C1");
+    const before = document.pages[0].objects[0] as MoleculeObject;
+    expect(perceiveDoubleBondStereoFromMolfile(stereoPerceptionMolfile(before))).toEqual([]);
+    const module = await ensureRdkit();
+    const smiles = (molecule: MoleculeObject) => {
+      const mol = module.get_mol(stereoPerceptionMolfile(molecule));
+      try { return mol.get_smiles(); } finally { mol.delete(); }
+    };
+    const originalSmiles = smiles(before);
+    expect(originalSmiles).toContain("C/C=C/C");
+    const search = vi.spyOn(layoutEngine, "repairLayoutOverlaps");
+    const warnings: string[] = [];
+    const options = { targetBondLengthPx: 30, warnings, perceiveStereo: perceiveStereoCentersFromMolfile };
+    try {
+      const source = () => depiction(20, -1);
+      const cleaned = path === "prepared"
+        ? await prepareNativeMoleculeEngineRelayout(document, before.id, source, async () => [], options)
+        : applyNativeMoleculeEngineRelayout(document, before.id, source, options);
+      // The real repair clears the OH labels; rejection must come from the E/Z guard.
+      expect(search).toHaveBeenCalledOnce();
+      expect((search.mock.results[0].value as LayoutRepair[]).some(r => r.quality.hardDefects === 0)).toBe(true);
+      expect(cleaned).toBe(document);
+      expect(smiles(cleaned.pages[0].objects[0] as MoleculeObject)).toBe(originalSmiles);
+      expect(warnings).toContainEqual(expect.stringMatching(/^Clean Up kept the drawn layout/));
     } finally { search.mockRestore(); }
   });
   it.each(["calix-4-arene", "calix-6-arene", "p-tert-butylcalix-5-arene", "p-tert-butylcalix-6-arene"])(
@@ -183,7 +226,7 @@ describe("Clean Up Structure 2D layout quality (real engines)", () => {
       expect(document).toEqual(snapshot);
       expect(applyNativeMoleculeEngineRelayout(document, before.id, relayoutMolfile2D, {
         targetBondLengthPx: target, alternateRelayouts: await createRdkit2DRelayouts(),
-        perceiveStereo: perceiveStereoCentersFromMolfile, perceiveDoubleBondStereo: perceiveDoubleBondStereoFromMolfile
+        perceiveStereo: perceiveStereoCentersFromMolfile
       })).toEqual(cleaned);
       const module = await ensureRdkit();
       expect(inspectStructureInWorker(module, stereoPerceptionMolfile(after)))

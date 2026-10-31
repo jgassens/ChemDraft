@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { projectGraphicObjectPoint } from "@chemdraft/art-engine";
 import { atomDisplayLabel, mechanismArrowGeometry, nativeMoleculeRings, representativeMoleculeBondLength, resolvePageAnchorPoint } from "@chemdraft/layout-engine";
 import * as layoutEngine from "@chemdraft/layout-engine";
+import { doubleBondStereoState } from "./interaction/doubleBondStereo";
 import {
   aromaticFixtures,
   type AromaticFixture,
@@ -18093,6 +18094,58 @@ describe("2D engine cleanup candidate gate", () => {
       expect(search).toHaveBeenCalledOnce();
       expect(chosen).toBe(document);
       expect(warnings).toEqual(["Clean Up kept the drawn layout of this structure: the generated layouts put atoms on top of each other."]);
+    } finally { search.mockRestore(); }
+  });
+
+  it.each([
+    { name: "benzene Kekulé", size: 6, kekule: true, exempt: true },
+    { name: "cyclohexene", size: 6, kekule: false, exempt: true },
+    { name: "cycloheptene", size: 7, kekule: false, exempt: true },
+    { name: "cyclooctene", size: 8, kekule: false, exempt: false }
+  ])("uses only ring topology for the $name repair geometry exemption", ({ size, kekule, exempt }) => {
+    const radius = 1 / (2 * Math.sin(Math.PI / size));
+    const regular: PastedStructureDepiction = {
+      atoms: Array.from({ length: size }, (_, i) => ({ element: "C", charge: 0,
+        x: radius * Math.cos(2 * Math.PI * i / size), y: radius * Math.sin(2 * Math.PI * i / size) })),
+      bonds: Array.from({ length: size }, (_, from) => ({ from, to: (from + 1) % size,
+        order: from === 0 || (kekule && from % 2 === 0) ? "double" : "single", wedge: null }))
+    };
+    // Reflect only one ligand across the tested double bond, giving it the opposite sign.
+    // The proposed repair restores a regular ring; no engine decides whether it is exempt.
+    const a = regular.atoms[0], b = regular.atoms[1], ligand = regular.atoms[size - 1];
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const projection = ((ligand.x - a.x) * dx + (ligand.y - a.y) * dy) / (dx * dx + dy * dy);
+    const original = { ...regular, atoms: regular.atoms.map((atom, i) => i !== size - 1 ? atom : {
+      ...atom, x: 2 * (a.x + projection * dx) - atom.x, y: 2 * (a.y + projection * dy) - atom.y
+    }) };
+    const document = insertSmilesMolecule(createPhase4Document("Ring topology repair"), { x: 400, y: 400 },
+      original, kekule ? "C1=CC=CC=C1" : `C1=${"C".repeat(size - 1)}1`);
+    const molecule = selectedMolecule(document);
+    const candidate = { ...molecule, atoms: molecule.atoms.map((atom, i) => ({
+      ...atom, x: regular.atoms[i].x, y: -regular.atoms[i].y
+    })) };
+    const doubleId = molecule.bonds[0].id;
+    expect(doubleBondStereoState(molecule).get(doubleId)).toBe(-1);
+    expect(doubleBondStereoState(candidate).get(doubleId)).toBe(1);
+    const colliding = { ...regular, atoms: regular.atoms.map((atom, i) => i === size - 2 ? regular.atoms[size - 3] : atom) };
+    const search = vi.spyOn(layoutEngine, "repairLayoutOverlaps").mockReturnValue([{
+      atoms: regular.atoms, quality: layoutEngine.evaluateLayoutQuality(regular.atoms, regular.bonds),
+      kind: "substituent swing", pivot: 0, movedAtoms: [size - 1], angleDegrees: 40
+    }]);
+    try {
+      const warnings: string[] = [];
+      const chosen = applyNativeMoleculeEngineRelayout(document, molecule.id, () => colliding,
+        { targetBondLengthPx: 22, warnings });
+      expect(search).toHaveBeenCalledOnce();
+      if (exempt) {
+        expect(chosen).not.toBe(document);
+        expect(doubleBondStereoState(selectedMolecule(chosen)).get(doubleId))
+          .toBe(doubleBondStereoState(candidate).get(doubleId));
+        expect(warnings).toEqual([]);
+      } else {
+        expect(chosen).toBe(document);
+        expect(warnings).toContainEqual(expect.stringMatching(/^Clean Up kept the drawn layout/));
+      }
     } finally { search.mockRestore(); }
   });
 
