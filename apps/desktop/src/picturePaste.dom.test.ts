@@ -9,6 +9,7 @@ import { MainWindow, selectionInSelectionRect, selectionInSelectionPolygon } fro
 import * as clipboard from "./clipboard";
 import * as smilesPaste from "./smilesListPaste";
 import * as smilesIdentity from "./smilesPasteIdentity";
+import * as windowManager from "./window-manager";
 import { createPhase4Document } from "./documentWorkflow";
 import { pictureSvg } from "./testSupport/imageFixture";
 
@@ -358,6 +359,111 @@ describe("picture paste and canvas", () => {
     expect(snapshot().pages[0]!.objects).toHaveLength(0);
     expect(canUndo()).toBe(false);
   });
+
+  it.each([false, true])("stops after a document edit while PNG PNG parsing yields no structures (later candidate: %s)", async laterCandidate => {
+    await render();
+    vi.spyOn(clipboard, "readClipboardPayload").mockResolvedValue({ ...nativeImage,
+      types: ["image/png", "text/plain", ...(laterCandidate ? ["public.utf8-plain-text"] : [])],
+      textItems: [{ type: "text/plain", text: "PNG PNG" },
+        ...(laterCandidate ? [{ type: "public.utf8-plain-text", text: "CCO" }] : [])]
+    });
+    const parsing = deferred<Awaited<ReturnType<typeof smilesPaste.depictSmilesListForPaste>>>();
+    const list = vi.spyOn(smilesPaste, "depictSmilesListForPaste").mockReturnValue(parsing.promise);
+    vi.spyOn(smilesIdentity, "verifySmilesPasteInput").mockResolvedValue(undefined);
+    const single = vi.spyOn(smilesPaste, "depictSmilesForPaste").mockResolvedValue(undefined);
+    const verify = vi.spyOn(smilesIdentity, "verifySmilesGridEntries");
+    await command("clipboard.paste");
+    expect(list).toHaveBeenCalledOnce();
+    expect(list.mock.calls[0]![0]).toBe("PNG PNG");
+    expect(canUndo()).toBe(false);
+
+    await command("tool.bond");
+    await act(async () => {
+      pointer(page(), "pointerdown", 200, 200);
+      pointer(page(), "pointerup", 200, 200);
+    });
+    const edited = snapshot();
+    expect(edited.pages[0]!.objects).toHaveLength(1);
+    await act(async () => {
+      parsing.resolve(undefined);
+      await parsing.promise;
+    });
+
+    expect(snapshot()).toEqual(edited);
+    expect(container.querySelector('[role="status"]')?.textContent).toBe(
+      "No SMILES structures were pasted; 1 item failed: The document changed while preparing SMILES paste; paste again.");
+    expect(single).not.toHaveBeenCalled();
+    expect(verify).not.toHaveBeenCalled();
+    await command("edit.undo");
+    expect(snapshot().pages[0]!.objects).toHaveLength(0);
+    expect(canUndo()).toBe(false);
+  });
+
+  it("pastes F/C=C/F without a picture when quit during input verification is cancelled before depiction finishes", async () => {
+    let requestQuit!: (id: number) => Promise<void>;
+    vi.spyOn(windowManager, "isDesktopRuntime").mockReturnValue(true);
+    vi.spyOn(windowManager, "listenForQuitPromptRequest").mockImplementation(async handler => {
+      requestQuit = handler;
+      return () => {};
+    });
+    vi.spyOn(windowManager, "prepareQuitPrompt").mockResolvedValue(true);
+    vi.spyOn(windowManager, "reportQuitPromptShowing").mockResolvedValue(true);
+    const cancelQuit = vi.spyOn(windowManager, "cancelQuit").mockResolvedValue(true);
+    await render();
+    await command("tool.bond");
+    await act(async () => {
+      pointer(page(), "pointerdown", 200, 200);
+      pointer(page(), "pointerup", 200, 200);
+    });
+    const before = snapshot();
+    const parsed = await smilesPaste.depictSmilesForPaste("F/C=C/F");
+    expect(parsed).toBeDefined();
+    vi.spyOn(clipboard, "readClipboardPayload").mockResolvedValue({
+      types: ["text/plain"], textItems: [{ type: "text/plain", text: "F/C=C/F" }]
+    });
+    const verification = deferred<void>();
+    const verifyInput = vi.spyOn(smilesIdentity, "verifySmilesPasteInput").mockReturnValue(verification.promise);
+    vi.spyOn(smilesIdentity, "verifySmilesPaste").mockResolvedValue(undefined);
+    const depiction = deferred<Awaited<ReturnType<typeof smilesPaste.depictSmilesForPaste>>>();
+    const single = vi.spyOn(smilesPaste, "depictSmilesForPaste").mockReturnValue(depiction.promise);
+    await command("clipboard.paste");
+    expect(verifyInput).toHaveBeenCalledOnce();
+    expect(single).not.toHaveBeenCalled();
+    await act(async () => { await requestQuit(1); });
+    const prompt = container.querySelector('[aria-labelledby="quit-prompt-title"]');
+    expect(prompt).not.toBeNull();
+    await act(async () => {
+      verification.resolve();
+      await verification.promise;
+    });
+    expect(single).toHaveBeenCalledOnce();
+    expect(single.mock.calls[0]![0]).toBe("F/C=C/F");
+    await act(async () => {
+      Array.from(prompt!.querySelectorAll("button")).find(button => button.textContent === "Cancel")!.click();
+    });
+    expect(cancelQuit).toHaveBeenCalledWith(1);
+    expect(container.querySelector('[aria-labelledby="quit-prompt-title"]')).toBeNull();
+    await act(async () => {
+      depiction.resolve(parsed);
+      await depiction.promise;
+    });
+    await vi.waitFor(async () => {
+      await act(async () => { await Promise.resolve(); });
+      expect(container.querySelector('[role="status"]')?.textContent).toContain("Pasted SMILES structure");
+    });
+    const pasted = snapshot();
+    expect(pasted.pages[0]!.objects).toHaveLength(2);
+    expect(pasted.pages[0]!.objects[1]).toMatchObject({ type: "molecule", atoms: [
+      { element: "F" }, { element: "C" }, { element: "C" }, { element: "F" }
+    ] });
+    expect(pasted.selection.objectIds).toEqual([pasted.pages[0]!.objects[1]!.id]);
+    await command("edit.undo");
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Undid Paste SMILES");
+    expect(snapshot().pages[0]!.objects).toEqual(before.pages[0]!.objects);
+    await command("edit.undo");
+    expect(snapshot().pages[0]!.objects).toHaveLength(0);
+    expect(canUndo()).toBe(false);
+  }, 20_000);
 
   it.each(["depiction", "verification"])("never commits an aborted single SMILES pending %s or falls back to its picture", async pendingStage => {
     await render();

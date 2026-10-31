@@ -6662,7 +6662,7 @@ export function MainWindow({
 
   // SMILES → editable 2D structure with stereochemistry. The depiction engines are loaded
   // on demand. Parser/chemistry refusals retain text fallback; worker failures reach status.
-  const renderPastedSmiles = useCallback(async (smilesText: string, signal: AbortSignal): Promise<{
+  const renderPastedSmiles = useCallback(async (smilesText: string, signal: AbortSignal, pictureFallback = false): Promise<{
     outcome: "success" | "no-structure" | "terminal"; reason?: string; failed?: boolean
   }> => {
     const terminalResult = () => {
@@ -6675,7 +6675,7 @@ export function MainWindow({
     setStatus("Drawing the pasted SMILES…");
     try {
       await verifySmilesPasteInput(smilesText, signal);
-      let terminal = terminalResult();
+      let terminal = pictureFallback ? terminalResult() : undefined;
       if (terminal) return terminal;
       const layoutDocument = documentRef.current;
       const point = pastePointForViewport();
@@ -6780,7 +6780,7 @@ export function MainWindow({
     });
     if (!pendingList) return undefined;
     return pendingList.then(async (parsed) => {
-      let terminal = terminalResult();
+      let terminal = terminalResult(pictureFallback);
       if (terminal) return terminal;
       if (!parsed) return { outcome: "no-structure" as const, pasteAsText: true };
       const verified = await verifySmilesGridEntries(parsed.entries, undefined, signal);
@@ -6874,7 +6874,7 @@ export function MainWindow({
             if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
             if (listAbort.signal.aborted) return;
             if (candidate.kind === "smiles") {
-              const result = await renderPastedSmiles(candidate.text.trim(), listAbort.signal);
+              const result = await renderPastedSmiles(candidate.text.trim(), listAbort.signal, true);
               if (result.outcome !== "no-structure") return;
               firstFallback ??= () => finishSingleFallback(result);
             } else {
