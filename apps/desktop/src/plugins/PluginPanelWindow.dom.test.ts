@@ -283,48 +283,46 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     for (const name of contentEvents) expect(tauriEvents.listeners.get(name)?.size ?? 0).toBe(0);
   });
 
-  it("uses an AppKit key-window operation instead of Tao activation for input focus", () => {
-    const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src/lib.rs"), "utf8");
-    const command = source.split("async fn set_plugin_panel_input_focus(")[1]!.split("/// Sent to the main window")[0]!;
-    const mac = command.split('#[cfg(target_os = "macos")]')[1]!.split('#[cfg(windows)]')[0]!;
-    expect(mac).toContain("makeKeyWindow()");
-    expect(mac).not.toMatch(/\.set_focus\(|activateIgnoringOtherApps|makeKeyAndOrderFront/);
-    expect(command).toContain("run_on_main_thread_blocking");
-  });
-
-  it("uses guarded thread-local activation for Windows input, release and resize presses", () => {
+  it("uses an AppKit key-window operation only for native panel clicks instead of Tao activation", () => {
     const nativePath = join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src");
     const source = readFileSync(join(nativePath, "lib.rs"), "utf8");
     const command = source.split("async fn set_plugin_panel_input_focus(")[1]!.split("/// Sent to the main window")[0]!;
-    const windows = command.split('#[cfg(windows)]')[1]?.split('#[cfg(not(any(')[0] ?? "";
-    expect(windows).toContain("if !panel_window::focus_if_app_active(hwnd)");
-    expect(windows).toContain("return Ok(false)");
-    expect(windows).not.toContain("target.set_focus()");
-    expect(command).toContain("WindowsAndMessaging::GetForegroundWindow()");
-    const release = command.split("if was_focused {")[1]!.split('#[cfg(not(windows))]')[0]!;
-    expect(release).toContain("panel_window::return_focus_to_document(");
-    expect(release).not.toMatch(/focus_main_document_window_impl|main\.set_focus\(/);
+    const mac = readFileSync(join(nativePath, "panel_focus_macos.rs"), "utf8");
+    const click = mac.split("CLICK_CALLBACKS.with(|callbacks| {")[2]!.split("pub(super) fn resize_edge")[0]!;
+    expect(click).toContain("makeKeyWindow()");
+    expect(click).toContain("target.is_visible()");
+    expect(click).toContain("!target.is_minimized()");
+    const sendEvent = mac.split('fn panel_send_event(')[1]!.split('fn panel_order_out(')[0]!;
+    expect(sendEvent).toContain("NSEventType::LeftMouseDown | NSEventType::RightMouseDown | NSEventType::OtherMouseDown");
+    expect(sendEvent).toContain("callback()");
+    expect(mac).not.toMatch(/\.set_focus\(|activateIgnoringOtherApps|makeKeyAndOrderFront/);
+    expect(command).not.toMatch(/target\.set_focus\(|makeKeyWindow/);
+    expect(command).toMatch(/if !panel_window::is_active\(&target\)\?[\s\S]*return Ok\(false\)[\s\S]*webview\.set_focus\(\)/);
+    expect(command).toContain("run_on_main_thread_blocking");
+  });
+
+  it("keeps Windows pointer activation and refuses delayed input focus after the panel loses foreground", () => {
+    const nativePath = join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src");
+    const source = readFileSync(join(nativePath, "lib.rs"), "utf8");
+    const command = source.split("async fn set_plugin_panel_input_focus(")[1]!.split("/// Sent to the main window")[0]!;
+    expect(command).toMatch(/if !panel_window::is_active\(&target\)\?[\s\S]*return Ok\(false\)[\s\S]*webview\.set_focus\(\)/);
+    expect(command).not.toContain("target.set_focus()");
+    const release = command.split("if !editing {")[1]!.split("let result =")[0]!;
+    expect(release).toContain("return Ok(false)");
+    expect(release).not.toMatch(/set_focus\(|return_focus|focus_main_document/);
     const panel = readFileSync(join(nativePath, "panel_window.rs"), "utf8");
-    const focus = panel.split("pub(crate) fn focus_if_app_active(")[1]!.split('#[cfg(target_os')[0]!;
-    expect(focus).toContain("GetForegroundWindow()");
-    expect(focus).toContain("IsWindowVisible(hwnd) == 0");
-    expect(focus).toContain("IsIconic(hwnd) != 0");
-    expect(focus).toContain("GetWindowThreadProcessId");
-    expect(focus).toContain("with_owned_foreground");
-    expect(focus).toContain("SetActiveWindow(hwnd)");
-    expect(panel).not.toMatch(/SetForegroundWindow\(|SendInput\(/);
-    const handBack = panel.split("pub(crate) fn return_focus_to_document<")[1]!.split('#[cfg(target_os')[0]!;
-    expect(handBack).toContain("foreground_can_return_to_document");
-    expect(handBack).toContain("if focus_if_app_active(owner)");
-    expect(handBack).toContain("webview.set_focus()");
-    expect(panel).toContain("WM_NCLBUTTONDOWN | WM_NCMBUTTONDOWN | WM_NCRBUTTONDOWN");
-    expect(panel).toContain("WM_ENTERSIZEMOVE | WM_EXITSIZEMOVE");
-    expect(panel.split("if non_client_press {")[1]!.split("if message == WM_NCHITTEST")[0]!)
-      .toContain("return_focus()");
+    const active = panel.split("pub(crate) fn is_active<")[1]!.split("pub(crate) fn reset_for_webview")[0]!;
+    expect(active).toContain("!window.is_visible()");
+    expect(active).toContain("window.is_minimized()");
+    expect(active).toMatch(/#\[cfg\(windows\)\][\s\S]*GetForegroundWindow\(\)\s*== window\.hwnd\(\)/);
+    expect(panel).not.toMatch(/SetActiveWindow\(|SetForegroundWindow\(|SendInput\(|return_focus_to_document/);
     const resizeSubclass = panel.split("unsafe extern \"system\" fn resize_subclass")[1]!
       .split("unsafe extern \"system\" fn")[0]!;
-    expect(resizeSubclass.split("let result = DefSubclassProc").at(-1)!)
-      .toContain("return_focus()");
+    expect(resizeSubclass).toMatch(/if message == WM_MOUSEACTIVATE \{[\s\S]*return MA_ACTIVATE as isize;/);
+    expect(resizeSubclass).not.toMatch(/return_focus|set_focus\(/);
+    const overlaySubclass = panel.split("unsafe extern \"system\" fn overlay_subclass")[1]!
+      .split("unsafe fn panel_resize_hit")[0]!;
+    expect(overlaySubclass).toMatch(/if message == WM_MOUSEACTIVATE \{\s*return SendMessageW\(parent, message, wparam, lparam\);/);
   });
 
   it("preserves Tao's Win10 zero top inset and adapts the single existing resize overlay", () => {
@@ -336,8 +334,14 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     expect(panel).toContain("SetWindowSubclass(overlay, Some(overlay_subclass)");
     expect(panel).toContain("HTTRANSPARENT");
     expect(panel).toContain("GetDpiForWindow(hwnd)");
-    expect(panel).toContain("GetSystemMetricsForDpi(SM_CYFRAME, dpi) + padding");
+    expect(panel).toContain("geometry::resize_border(GetDpiForWindow(hwnd))");
+    expect(panel).toContain("ClientToScreen(hwnd, &mut origin)");
+    expect(panel).toContain("FindWindowExW(parent, std::ptr::null_mut(), class.as_ptr(), name.as_ptr())");
     expect(panel).toContain("geometry::overlay_cutout(");
+    const geometry = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src/panel_window_geometry.rs"), "utf8");
+    expect(panel).toContain("const RESIZE_ZONE_LOGICAL_PX: f64 = 6.0");
+    expect(geometry).toContain("(super::RESIZE_ZONE_LOGICAL_PX * f64::from(dpi) / 96.0).round()");
+    expect(geometry).toContain("let top = (client.top + border).min(client.bottom)");
     expect(panel).not.toMatch(/CreateWindow|controller\.SetBounds|controller\.ParentWindow|ResizeWebview/);
   });
 
@@ -378,7 +382,7 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     expect(build).toMatch(/finish_installation\(installed, \|\| \{[\s\S]*window\.destroy\(\)[\s\S]*\}\)\?/);
   });
 
-  it("grants and releases input focus for the full-size spectrum portal", async () => {
+  it("keeps panel focus after a full-size control blurs and Escape restores the frame", async () => {
     (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
     const bodyListen = vi.spyOn(document.body, "addEventListener");
     await mountWindow();
@@ -401,12 +405,20 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     });
     expect(tauriInvoke).toHaveBeenCalledWith("set_plugin_panel_input_focus", { editing: true, generation: expect.any(Number), pageToken: "page-token" });
     await act(async () => {
+      select.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    expect(document.activeElement).not.toBe(select);
+    expect(document.querySelector(".lf-modal")).not.toBeNull();
+    expect(tauriInvoke).not.toHaveBeenCalledWith("set_plugin_panel_full_size", {
+      enabled: false, width: 0, height: 0
+    });
+    await act(async () => {
+      select.focus();
       select.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
     });
     const focusCalls = tauriInvoke.mock.calls.filter(([command]) => command === "set_plugin_panel_input_focus");
     expect(focusCalls).toEqual([
-      ["set_plugin_panel_input_focus", { editing: true, generation: expect.any(Number), pageToken: "page-token" }],
-      ["set_plugin_panel_input_focus", { editing: false, generation: expect.any(Number), pageToken: "page-token" }]
+      ["set_plugin_panel_input_focus", { editing: true, generation: expect.any(Number), pageToken: "page-token" }]
     ]);
     expect(tauriInvoke).toHaveBeenCalledWith("set_plugin_panel_full_size", {
       enabled: false, width: 0, height: 0

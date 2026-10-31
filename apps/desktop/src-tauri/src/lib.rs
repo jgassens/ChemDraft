@@ -3035,6 +3035,16 @@ impl PluginPanelShortcut {
         }
         Ok(shortcut)
     }
+
+    fn document_command_id(&self) -> String {
+        // The panel already declined local editing. Like other secondary windows, skip any
+        // editor the inactive document webview retained when the user clicked the panel.
+        if is_edit_history_command(&self.command_id) || self.command_id == "edit.selectAll" {
+            format!("{}:forceDocumentHistory", self.command_id)
+        } else {
+            self.command_id.clone()
+        }
+    }
 }
 
 fn validate_plugin_panel_event(
@@ -3087,7 +3097,7 @@ fn plugin_panel_event_forward(
         let target = window.clone();
         return run_on_main_thread_blocking(&window, move || {
             if !utility_windows_suspended() && panel_window::is_active(&target)? {
-                return emit_command_to_main(target.app_handle(), &shortcut.command_id);
+                return emit_command_to_main(target.app_handle(), &shortcut.document_command_id());
             }
             Ok(())
         })?;
@@ -3307,6 +3317,25 @@ mod plugin_panel_label_tests {
         let request = "chemdraft://toolset-command-specs-request";
         assert!(validate_plugin_panel_event(&label, request, &serde_json::json!({})).is_ok());
         assert!(validate_plugin_panel_event(&label, request, &undo).is_err());
+    }
+
+    #[test]
+    fn panel_shortcuts_preserve_secondary_window_document_routing() {
+        use super::PluginPanelShortcut;
+        for command in ["edit.undo", "edit.redo", "edit.selectAll"] {
+            let shortcut =
+                PluginPanelShortcut::parse(&serde_json::json!({"commandId": command})).unwrap();
+            let forwarded = shortcut.document_command_id();
+            assert_eq!(forwarded, format!("{command}:forceDocumentHistory"));
+            let already_forwarded =
+                PluginPanelShortcut::parse(&serde_json::json!({"commandId": forwarded})).unwrap();
+            assert_eq!(already_forwarded.document_command_id(), forwarded);
+        }
+        for command in ["tool.bond", "clipboard.copy", "plugin.example.run"] {
+            let shortcut =
+                PluginPanelShortcut::parse(&serde_json::json!({"commandId": command})).unwrap();
+            assert_eq!(shortcut.document_command_id(), command);
+        }
     }
 
     #[test]

@@ -6760,7 +6760,7 @@ export function MainWindow({
 
   const applyDetectedClipboardPayload = useCallback((detectedPayload: ClipboardDetectedPayload) => {
     smilesListPasteAbortRef.current?.abort();
-    if (detectedPayload.kind === "vector-only" && (
+    if (detectedPayload.kind === "vector-only" && detectedPayload.sourceType !== undefined && (
       !isVectorArtworkType(detectedPayload.sourceType) ||
       ["public.svg", "image/svg+xml"].includes(detectedPayload.sourceType.trim().toLowerCase())
     )) {
@@ -11610,8 +11610,8 @@ export function MainWindow({
     // history both arrive here. Neither may reach the registry: the field wants native text undo,
     // and a disabled edit.undo would throw instead of saying "Nothing to undo".
     //
-    // A secondary window forwards here (see `installSecondaryWindowEditHistory`) only after finding
-    // no text field focused THERE, wrapping the commandId so we know to skip our own activeElement
+    // A secondary window forwards here (see `installSecondaryWindowEditHistory` and the native panel
+    // shortcut bridge) only after declining local editing, wrapping the commandId to skip activeElement
     // check below: this window is not key when that happens, so `globalThis.document.activeElement`
     // can still be a hidden field of ours that never blurred, and checking it would undo that field's
     // text instead of the drawing the user actually asked to undo.
