@@ -1,5 +1,8 @@
 // @vitest-environment jsdom
 
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { PluginLinkedFigureSpectrum, PluginLinkedFigureStructure } from "@chemdraft/plugin-api";
 import {
   annotationLabelBoxesOverlap,
@@ -8,10 +11,38 @@ import {
 } from "@chemdraft/layout-engine";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { LinkedFigureView } from "./LinkedFigureView";
-import { standaloneSpectrumSvg } from "./spectrumExport";
+import { LinkedFigureView, restoreLinkedFigureWindowFrame } from "./LinkedFigureView";
+import { exportSpectrumFigure, saveTextFile, standaloneSpectrumSvg } from "./spectrumExport";
+
+const nativeWindow = vi.hoisted(() => ({
+  innerSize: vi.fn(), outerSize: vi.fn(), outerPosition: vi.fn(), setSize: vi.fn(), setPosition: vi.fn()
+}));
+const nativeMonitor = vi.hoisted(() => vi.fn());
+vi.mock("@tauri-apps/api/window", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@tauri-apps/api/window")>(),
+  getCurrentWindow: () => nativeWindow,
+  currentMonitor: nativeMonitor
+}));
+vi.mock("./spectrumExport", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./spectrumExport")>(),
+  copySpectrumToClipboard: vi.fn(), exportSpectrumFigure: vi.fn(), saveTextFile: vi.fn()
+}));
+
+beforeEach(() => {
+  nativeWindow.innerSize.mockResolvedValue({ width: 760, height: 1040 });
+  nativeWindow.outerSize.mockResolvedValue({ width: 760, height: 1040 });
+  nativeWindow.outerPosition.mockResolvedValue({ x: -1800, y: 300 });
+  nativeWindow.setSize.mockResolvedValue(undefined);
+  nativeWindow.setPosition.mockResolvedValue(undefined);
+  nativeMonitor.mockResolvedValue({
+    scaleFactor: 2,
+    workArea: { position: { x: -2560, y: 48 }, size: { width: 2560, height: 1392 } }
+  });
+  vi.mocked(exportSpectrumFigure).mockResolvedValue("saved");
+  vi.mocked(saveTextFile).mockResolvedValue("saved");
+});
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -25,6 +56,8 @@ afterEach(() => {
   container?.remove();
   root = undefined;
   container = undefined;
+  delete (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__;
+  vi.clearAllMocks();
 });
 
 function mount(element: ReturnType<typeof createElement>): void {
@@ -54,6 +87,13 @@ function hover(element: Element): void {
 function click(element: Element): void {
   act(() => {
     element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+}
+
+async function enlargeNativeFigure(): Promise<void> {
+  await act(async () => {
+    [...container!.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Full size")!.click();
+    await vi.waitFor(() => expect(nativeWindow.setSize).toHaveBeenCalled(), { interval: 1 });
   });
 }
 
@@ -549,7 +589,7 @@ describe("LinkedFigureView", () => {
     );
   });
 
-  it("opens an enlarged spectrum modal from Full size, and closes it", () => {
+  it("fills the web panel from Full size, and closes it", async () => {
     mount(createElement(LinkedFigureView, { spectrum, structure }));
     expect(document.querySelector(".lf-modal")).toBeNull();
 
@@ -559,18 +599,18 @@ describe("LinkedFigureView", () => {
     });
     const modal = document.querySelector(".lf-modal");
     expect(modal).not.toBeNull();
-    // The modal hosts a second, full-size figure (no nested "Full size" button — no recursion).
+    // The same figure state fills the panel, with its exit button in the toolbar.
     expect(modal!.querySelector(".lf-root.is-fullscreen")).not.toBeNull();
     expect([...modal!.querySelectorAll(".lf-btn")].map((b) => b.textContent)).not.toContain("Full size");
 
     const close = modal!.querySelector<HTMLButtonElement>(".lf-modal-close")!;
-    act(() => {
+    await act(async () => {
       close.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(document.querySelector(".lf-modal")).toBeNull();
   });
 
-  it("claims Escape for Full size before any window-level handler sees it", () => {
+  it("claims Escape for Full size before any window-level handler sees it", async () => {
     // A report window's own Escape handler (registered earlier, bubbling) skips a defaultPrevented key.
     const outer = vi.fn((event: KeyboardEvent) => event.defaultPrevented);
     window.addEventListener("keydown", outer);
@@ -584,7 +624,7 @@ describe("LinkedFigureView", () => {
       });
       expect(document.querySelector(".lf-modal")).not.toBeNull();
 
-      act(() => {
+      await act(async () => {
         window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
       });
       expect(document.querySelector(".lf-modal")).toBeNull();
@@ -598,6 +638,176 @@ describe("LinkedFigureView", () => {
     } finally {
       window.removeEventListener("keydown", outer);
     }
+  });
+
+  it.each(["button", "Escape", "panel close"])("enlarges within the monitor work area and restores the exact frame on %s", async (exit) => {
+    (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+    nativeWindow.outerSize.mockResolvedValue({ width: 776, height: 1072 });
+    mount(createElement(LinkedFigureView, { spectrum, structure }));
+    await enlargeNativeFigure();
+    expect(nativeWindow.setSize).toHaveBeenCalledWith(expect.objectContaining({ width: 2544, height: 1360 }));
+    expect(nativeWindow.setPosition).toHaveBeenCalledWith(expect.objectContaining({ x: -2560, y: 48 }));
+    expect(document.querySelectorAll(".lf-spectrum")).toHaveLength(1);
+    await act(async () => {
+      if (exit === "panel close") await restoreLinkedFigureWindowFrame();
+      else if (exit === "Escape") window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", cancelable: true }));
+      else document.querySelector<HTMLButtonElement>(".lf-modal-close")!.click();
+    });
+    expect(nativeWindow.setSize).toHaveBeenLastCalledWith(expect.objectContaining({ width: 760, height: 1040 }));
+    expect(nativeWindow.setPosition).toHaveBeenLastCalledWith(expect.objectContaining({ x: -1800, y: 300 }));
+    expect(document.querySelector(".lf-modal")).toBeNull();
+  });
+
+  it("centres the enlarged frame on the old frame when there is room", async () => {
+    (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+    nativeWindow.innerSize.mockResolvedValue({ width: 380, height: 520 });
+    nativeWindow.outerSize.mockResolvedValue({ width: 380, height: 520 });
+    nativeWindow.outerPosition.mockResolvedValue({ x: 1000, y: 500 });
+    nativeMonitor.mockResolvedValue({
+      scaleFactor: 1, workArea: { position: { x: 0, y: 0 }, size: { width: 5000, height: 3000 } }
+    });
+    mount(createElement(LinkedFigureView, { spectrum, structure }));
+    await enlargeNativeFigure();
+    expect(nativeWindow.setSize).toHaveBeenCalledWith(expect.objectContaining({ width: 2072, height: 700 }));
+    expect(nativeWindow.setPosition).toHaveBeenCalledWith(expect.objectContaining({ x: 154, y: 410 }));
+    await act(async () => restoreLinkedFigureWindowFrame());
+  });
+
+  it("finishes an in-flight enlargement before restoring for close", async () => {
+    (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+    let finishResize!: () => void;
+    nativeWindow.setSize.mockImplementationOnce(() => new Promise<void>((resolve) => { finishResize = resolve; }));
+    mount(createElement(LinkedFigureView, { spectrum }));
+    await enlargeNativeFigure();
+    let restored = false;
+    const closing = restoreLinkedFigureWindowFrame().then(() => { restored = true; });
+    await Promise.resolve();
+    expect(restored).toBe(false);
+    await act(async () => {
+      finishResize();
+      await closing;
+    });
+    expect(nativeWindow.setSize).toHaveBeenLastCalledWith(expect.objectContaining({ width: 760, height: 1040 }));
+    expect(nativeWindow.setPosition).toHaveBeenLastCalledWith(expect.objectContaining({ x: -1800, y: 300 }));
+  });
+
+  it("fills the panel when enlargement is unavailable and still restores a partially changed frame", async () => {
+    (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+    nativeWindow.setPosition.mockRejectedValueOnce(new Error("Position unavailable"));
+    mount(createElement(LinkedFigureView, { spectrum }));
+    await enlargeNativeFigure();
+    expect(document.querySelector(".lf-modal")!.textContent).toContain("The figure fills this panel");
+    await act(async () => document.querySelector<HTMLButtonElement>(".lf-modal-close")!.click());
+    expect(nativeWindow.setSize).toHaveBeenLastCalledWith(expect.objectContaining({ width: 760, height: 1040 }));
+    expect(nativeWindow.setPosition).toHaveBeenLastCalledWith(expect.objectContaining({ x: -1800, y: 300 }));
+  });
+
+  it("keeps zoom, field and wheel interaction when entering and leaving full size", async () => {
+    mount(createElement(LinkedFigureView, { spectrum }));
+    click(container!.querySelector('[aria-label="Zoom in"]')!);
+    const before = tickSpan();
+    const field = container!.querySelector<HTMLSelectElement>("select")!;
+    act(() => {
+      field.value = "600";
+      field.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    click([...container!.querySelectorAll("button")].find((button) => button.textContent === "Full size")!);
+    const svg = document.querySelector<SVGSVGElement>(".lf-modal .lf-spectrum")!;
+    expect(svg.getAttribute("data-observe-frequency-mhz")).toBe("600");
+    vi.spyOn(svg, "getBoundingClientRect").mockReturnValue({ left: 0, width: 680 } as DOMRect);
+    act(() => svg.dispatchEvent(new WheelEvent("wheel", { deltaY: -1000, clientX: 340, bubbles: true, cancelable: true })));
+    await act(async () => document.querySelector<HTMLButtonElement>(".lf-modal-close")!.click());
+    expect(tickSpan()).toBeLessThan(before);
+    expect(container!.querySelector<HTMLSelectElement>("select")!.value).toBe("600");
+  });
+
+  it.each(["jdx", "png", "svg", "pdf"] as const)("exports %s through the existing save path", async (format) => {
+    mount(createElement(LinkedFigureView, { spectrum }));
+    const owner = container!.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!;
+    expect(owner.hasAttribute("aria-controls")).toBe(false);
+    click(owner);
+    const menu = document.getElementById(owner.getAttribute("aria-controls")!)!;
+    const items = [...menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
+    expect(items.map((item) => item.textContent)).toEqual(["JCAMP-DX (.jdx)", "PNG", "SVG", "PDF"]);
+    expect(document.activeElement).toBe(items[0]);
+    await act(async () => items[["jdx", "png", "svg", "pdf"].indexOf(format)].click());
+    if (format === "jdx") {
+      expect(saveTextFile).toHaveBeenCalledWith("predicted-1H-nmr.jdx", expect.stringContaining("##JCAMP-DX="),
+        expect.objectContaining({ extensions: ["jdx", "dx"] }));
+      expect(exportSpectrumFigure).not.toHaveBeenCalled();
+    } else {
+      expect(exportSpectrumFigure).toHaveBeenCalledWith(format, expect.stringContaining('<svg'), "1H");
+      expect(saveTextFile).not.toHaveBeenCalled();
+    }
+    expect(owner.textContent).toBe("Exported");
+    expect(container!.querySelector('[role="status"]')!.textContent).toBe("Spectrum saved.");
+    expect(document.activeElement).toBe(owner);
+    expect(owner.getAttribute("aria-expanded")).toBe("false");
+    expect(document.getElementById(menu.id)).toBeNull();
+  });
+
+  it.each(["jdx", "png", "svg", "pdf"] as const)("reports cancelled and failed %s exports", async (format) => {
+    mount(createElement(LinkedFigureView, { spectrum }));
+    const exporter = format === "jdx" ? vi.mocked(saveTextFile) : vi.mocked(exportSpectrumFigure);
+    for (const outcome of ["cancelled", "failed"] as const) {
+      exporter.mockResolvedValueOnce(outcome);
+      click(container!.querySelector('[aria-haspopup="menu"]')!);
+      const items = container!.querySelectorAll<HTMLButtonElement>('[role="menuitem"]');
+      await act(async () => items[["jdx", "png", "svg", "pdf"].indexOf(format)].click());
+      expect(container!.querySelector('[role="status"]')!.textContent).toBe(outcome === "cancelled" ? "Export cancelled." : "Spectrum export failed.");
+    }
+  });
+
+  it("disables export with a reason while saving and handles rejected saves", async () => {
+    let rejectSave!: (reason: Error) => void;
+    vi.mocked(exportSpectrumFigure).mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectSave = reject; }));
+    mount(createElement(LinkedFigureView, { spectrum }));
+    const owner = container!.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!;
+    click(owner);
+    click(container!.querySelectorAll('[role="menuitem"]')[1]);
+    expect(owner.disabled).toBe(true);
+    expect(owner.title).toBe("Saving the spectrum");
+    await act(async () => rejectSave(new Error("Save failed")));
+    expect(owner.disabled).toBe(false);
+    expect(owner.textContent).toBe("Export failed");
+  });
+
+  it("closes the menu, then full size, then allows the panel to handle Escape", async () => {
+    mount(createElement(LinkedFigureView, { spectrum }));
+    click([...container!.querySelectorAll("button")].find((button) => button.textContent === "Full size")!);
+    const owner = document.querySelector<HTMLButtonElement>('.lf-modal [aria-haspopup="menu"]')!;
+    click(owner);
+    const items = document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]');
+    act(() => items[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true })));
+    expect(document.activeElement).toBe(items[1]);
+    for (const prevented of [true, true, false]) {
+      const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+      await act(async () => window.dispatchEvent(escape));
+      expect(escape.defaultPrevented).toBe(prevented);
+    }
+    expect(document.querySelector(".lf-modal")).toBeNull();
+  });
+
+  it.each([380, 508, 1200])("keeps the exit control in wrapping toolbar flow at %spx", (width) => {
+    mount(createElement(LinkedFigureView, { spectrum, structure }));
+    container!.style.width = `${width}px`;
+    click([...container!.querySelectorAll("button")].find((button) => button.textContent === "Full size")!);
+    const exit = document.querySelector<HTMLButtonElement>(".lf-modal-close")!;
+    const toolbar = exit.closest(".lf-toolbar-actions")!;
+    expect(toolbar.querySelector('[aria-haspopup="menu"]')).not.toBeNull();
+    expect([...toolbar.querySelectorAll("button")].some((button) => button.textContent === "Copy")).toBe(true);
+    // jsdom cannot measure layout; assert the rules that keep all controls in normal wrapping flow.
+    const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../App.css"), "utf8");
+    const rule = (selector: string) => css.slice(css.indexOf(`\n${selector} {`)).split("}")[0];
+    expect(rule(".lf-toolbar")).toContain("flex-wrap: wrap;");
+    expect(rule(".lf-toolbar-actions")).toContain("flex-wrap: wrap;");
+    expect(rule(".lf-modal-close")).toContain("position: static;");
+    expect(rule(".lf-modal")).toContain("inset: 0;");
+    expect(rule(".lf-modal")).not.toMatch(/max-height|max-width|width:/);
+    expect(rule(".plugin-report-section")).toContain("min-width: 0;");
+    expect(rule(".plugin-report-section")).toContain("flex-shrink: 0;");
+    expect(rule(".plugin-report-table-scroll")).toContain("overflow-x: auto;");
+    expect(rule(".plugin-report-table-scroll")).toContain("max-width: 100%;");
   });
 
   it("shrinks shift labels for a crowded structure but keeps them full-size for a sparse one", () => {

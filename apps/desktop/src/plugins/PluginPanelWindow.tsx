@@ -23,6 +23,7 @@ import {
   type PluginProposalReviewItem
 } from "./panelBridge";
 import { PluginReportRenderer } from "./PluginReportRenderer";
+import { restoreLinkedFigureWindowFrame } from "./LinkedFigureView";
 import type { PluginPanelActionHandler } from "./pluginPanelActionTypes";
 import { isScrolledToBottom, shouldAutoscroll } from "./pluginPanelAutoscroll";
 import { PluginDiagnosticsPanel } from "./PluginDiagnosticsPanel";
@@ -59,6 +60,7 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
   const [payload, setPayload] = useState<PluginPanelReportPayload | undefined>();
   const [analysisPayload, setAnalysisPayload] = useState<AnalysisWindowSnapshotPayload | undefined>();
   const [staleness, setStaleness] = useState<{ revision: number; stale: boolean } | undefined>();
+  const [closeError, setCloseError] = useState<string | undefined>();
   const clearedRevisionRef = useRef(0);
   const contentRef = useRef<HTMLDivElement | null>(null);
   const scrollAfterReportRef = useRef(false);
@@ -106,9 +108,14 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
       }
       if (next.revision <= clearedRevisionRef.current) return;
       setPayload((current) => {
-        if (current && current.revision >= next.revision) return current;
+        if (current && current.revision >= next.revision) {
+          // Reopening a retained webview replays the same revision rather than mounting it anew.
+          if (current.revision === next.revision && contentRef.current
+            && !next.report.sections.some((section) => section.kind === "prompt")) contentRef.current.scrollTop = 0;
+          return current;
+        }
         const wasAtBottom = contentRef.current ? isScrolledToBottom(contentRef.current) : true;
-        scrollAfterReportRef.current = shouldAutoscroll({
+        scrollAfterReportRef.current = next.report.sections.some((section) => section.kind === "prompt") && shouldAutoscroll({
           wasAtBottom,
           ownSubmit: scrollAfterReportRef.current
         });
@@ -149,9 +156,14 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
   }, [identity?.panelId, identity?.pluginId]);
 
   useLayoutEffect(() => {
-    if (!scrollAfterReportRef.current) return;
     const content = contentRef.current;
-    if (content) content.scrollTop = content.scrollHeight;
+    if (!content || !payload) return;
+    // Results start at their heading. Only prompt-based transcripts follow appended output.
+    if (!payload.report.sections.some((section) => section.kind === "prompt")) {
+      content.scrollTop = 0;
+    } else if (scrollAfterReportRef.current) {
+      content.scrollTop = content.scrollHeight;
+    }
     scrollAfterReportRef.current = false;
   }, [payload?.revision]);
 
@@ -162,15 +174,19 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
     : payload?.report.title ?? "Plugin panel";
 
   const closeWindow = useCallback((): void => {
-    if (identity) {
-      if (isCoreAnalysisWindow) {
-        void requestAnalysisWindowAction({ kind: "close", windowId: identity.panelId }).catch(() => undefined);
-      } else {
-        // A plugin report window close is a real ADR-0012 close: the plugin cancels in-flight work.
-        void notifyPluginPanelClosed(identity).catch(() => undefined);
+    void restoreLinkedFigureWindowFrame().then(() => {
+      if (contentRef.current) contentRef.current.scrollTop = 0;
+      setCloseError(undefined);
+      if (identity) {
+        if (isCoreAnalysisWindow) {
+          void requestAnalysisWindowAction({ kind: "close", windowId: identity.panelId }).catch(() => undefined);
+        } else {
+          // A plugin report window close is a real ADR-0012 close: the plugin cancels in-flight work.
+          void notifyPluginPanelClosed(identity).catch(() => undefined);
+        }
       }
-    }
-    void hideCurrentPanelWindow().catch(() => undefined);
+      void hideCurrentPanelWindow().catch(() => undefined);
+    }).catch(() => setCloseError("Could not restore the panel's previous size and position. Try closing it again."));
   }, [identity?.panelId, identity?.pluginId, isCoreAnalysisWindow]);
 
   useEffect(() => {
@@ -228,6 +244,7 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
         ) : null}
       </div>
       <div ref={contentRef} className="plugin-panel-content">
+        {closeError ? <p role="alert">{closeError}</p> : null}
         {isCoreAnalysisWindow ? (
           analysisPayload ? (
             <AnalysisWindowContent payload={analysisPayload} />

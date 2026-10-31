@@ -39,6 +39,7 @@ import {
   type PluginPanelReportPayload
 } from "./panelBridge";
 import { PluginPanelWindow } from "./PluginPanelWindow";
+import { PluginPanelSurface } from "./PluginPanelSurface";
 
 const tauriInvoke = vi.hoisted(() => vi.fn(async (command: string) => command === "register_plugin_panel_input_focus" ? "page-token" : true));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: tauriInvoke }));
@@ -97,7 +98,22 @@ vi.mock("@tauri-apps/api/webviewWindow", () => ({
 }));
 const nativeSave = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/plugin-dialog", () => ({ save: nativeSave }));
-vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ hide: async () => undefined }) }));
+const nativePanel = vi.hoisted(() => ({
+  hide: vi.fn(async () => undefined),
+  innerSize: vi.fn(async () => ({ width: 380, height: 520 })),
+  outerSize: vi.fn(async () => ({ width: 380, height: 520 })),
+  outerPosition: vi.fn(async () => ({ x: 415, y: 235 })),
+  setSize: vi.fn(async (_size: unknown) => undefined),
+  setPosition: vi.fn(async (_position: unknown) => undefined)
+}));
+vi.mock("@tauri-apps/api/window", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@tauri-apps/api/window")>(),
+  getCurrentWindow: () => nativePanel,
+  currentMonitor: async () => ({
+    scaleFactor: 1,
+    workArea: { position: { x: 0, y: 28 }, size: { width: 1440, height: 872 } }
+  })
+}));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -120,6 +136,7 @@ afterEach(() => {
   tauriEvents.pending.clear();
   tauriEvents.emitted.length = 0;
   tauriEvents.setResponder(undefined);
+  Object.values(nativePanel).forEach((mock) => mock.mockClear());
   window.history.replaceState(null, "", "/");
 });
 
@@ -318,7 +335,7 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     expect(panel).toContain("HTTRANSPARENT");
     expect(panel).toContain("GetDpiForWindow(hwnd)");
     expect(panel).toContain("GetSystemMetricsForDpi(SM_CYFRAME, dpi) + padding");
-    expect(panel).toContain("geometry::top_overlay_rect(");
+    expect(panel).toContain("geometry::overlay_cutout(");
     expect(panel).not.toMatch(/CreateWindow|controller\.SetBounds|controller\.ParentWindow|ResizeWebview/);
   });
 
@@ -483,6 +500,10 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
       exportButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
+    await act(async () => {
+      container!.querySelector<HTMLButtonElement>('[role="menuitem"]')!.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
 
     const request = tauriEvents.emitted.find(
       (event) =>
@@ -519,6 +540,10 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     )!;
     await act(async () => {
       exportButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await act(async () => {
+      container!.querySelector<HTMLButtonElement>('[role="menuitem"]')!.click();
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     expect(exportButton.textContent).toBe("Export failed");
@@ -775,6 +800,85 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     expect(container!.querySelector(".plugin-panel-run-again")).toBeNull();
     await broadcast(reportPayload({ revision: 2 }));
     expect(container!.querySelector(".plugin-panel-run-again")).not.toBeNull();
+  });
+
+  it("opens result reports at the top and resets on a new result or same-revision reopen", async () => {
+    await mountWindow();
+    const content = container!.querySelector<HTMLDivElement>(".plugin-panel-content")!;
+    Object.defineProperties(content, {
+      scrollHeight: { configurable: true, value: 1000 },
+      clientHeight: { configurable: true, value: 100 },
+      scrollTop: { configurable: true, writable: true, value: 900 }
+    });
+    await broadcast(reportPayload());
+    expect(content.scrollTop).toBe(0);
+    content.scrollTop = 900;
+    await broadcast(reportPayload({ revision: 2 }));
+    expect(content.scrollTop).toBe(0);
+    content.scrollTop = 120;
+    await broadcast(reportPayload({ revision: 2 }));
+    expect(content.scrollTop).toBe(0);
+    content.scrollTop = 120;
+    await broadcast(reportPayload({ revision: 1 }));
+    expect(content.scrollTop).toBe(120);
+  });
+
+  it("keeps every shift table header and cell inside its own horizontal scroll box", async () => {
+    await mountWindow();
+    const columns = ["Nucleus", "δ (ppm)", "Equiv.", "Mult. est.", "J (Hz) est.", "Confidence", "Atoms", "Environment"];
+    const cells = ["¹³C", "140.85", "1", "—", "—", "medium", "12", "Long environment description".repeat(20)];
+    await broadcast(reportPayload({ report: { title: "Shifts", sections: [{ kind: "table", title: "Predicted shifts", columns, rows: [cells] }] } }));
+    const box = container!.querySelector(".plugin-report-table-scroll")!;
+    expect([...box.querySelectorAll("thead th")].map((cell) => cell.textContent)).toEqual(columns);
+    expect([...box.querySelectorAll("tbody td")].map((cell) => cell.textContent)).toEqual(cells);
+  });
+
+  it("starts replacement web fallback results at the top too", async () => {
+    const payload = reportPayload();
+    const panel = { pluginId: PLUGIN_ID, panelId: PANEL_ID, title: "Results", openedAt: "2026-10-31T00:00:00Z", report: payload.report };
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const render = (report: PluginPanelReport) => root!.render(createElement(PluginPanelSurface, {
+      openPanel: { ...panel, report }, diagnosticsOpen: false, plugins: [], diagnostics: [],
+      onClose: vi.fn(), onCloseDiagnostics: vi.fn(), onRunAgain: vi.fn()
+    }));
+    act(() => render(panel.report));
+    const report = container.querySelector<HTMLElement>(".plugin-report")!;
+    report.scrollTop = 500;
+    act(() => render({ ...panel.report }));
+    expect(report.scrollTop).toBe(0);
+  });
+
+  it("restores the original native frame before the close button hides a full-size panel", async () => {
+    (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+    await mountWindow();
+    await broadcast(reportPayload());
+    await act(async () => [...container!.querySelectorAll<HTMLButtonElement>(".lf-btn")].find((button) => button.textContent === "Full size")!.click());
+    expect(nativePanel.setSize).toHaveBeenCalledWith(expect.objectContaining({ width: 1392, height: 660 }));
+    await act(async () => container!.querySelector<HTMLButtonElement>('[aria-label="Close panel"]')!.click());
+    expect(nativePanel.setSize).toHaveBeenLastCalledWith(expect.objectContaining({ width: 380, height: 520 }));
+    expect(nativePanel.setPosition).toHaveBeenLastCalledWith(expect.objectContaining({ x: 415, y: 235 }));
+    expect(nativePanel.hide).toHaveBeenCalledTimes(1);
+    expect(nativePanel.setPosition.mock.invocationCallOrder.at(-1)).toBeLessThan(nativePanel.hide.mock.invocationCallOrder[0]);
+    expect(document.querySelector(".lf-modal")).toBeNull();
+    await broadcast(reportPayload());
+    expect(container!.querySelector(".lf-root")).not.toBeNull();
+  });
+
+  it("keeps the panel open with a visible reason if frame restoration fails, and lets close retry", async () => {
+    (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+    await mountWindow();
+    await broadcast(reportPayload());
+    await act(async () => [...container!.querySelectorAll<HTMLButtonElement>(".lf-btn")].find((button) => button.textContent === "Full size")!.click());
+    nativePanel.setPosition.mockRejectedValueOnce(new Error("Position unavailable"));
+    await act(async () => container!.querySelector<HTMLButtonElement>('[aria-label="Close panel"]')!.click());
+    expect(nativePanel.hide).not.toHaveBeenCalled();
+    expect(document.querySelector('.lf-modal [role="status"]')!.textContent).toContain("Try closing it again");
+    await act(async () => container!.querySelector<HTMLButtonElement>('[aria-label="Close panel"]')!.click());
+    expect(nativePanel.setPosition).toHaveBeenLastCalledWith(expect.objectContaining({ x: 415, y: 235 }));
+    expect(nativePanel.hide).toHaveBeenCalledTimes(1);
+    expect(document.querySelector(".lf-modal")).toBeNull();
   });
 
   it("follows replacement output only at the bottom or after the reader submits", async () => {

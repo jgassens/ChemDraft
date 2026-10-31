@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   annotationLabelBoxesOverlap,
@@ -15,6 +15,7 @@ import type {
 
 import {
   copySpectrumToClipboard,
+  exportSpectrumFigure,
   observeFrequencyMHz,
   saveTextFile,
   spectrumComparisonLabels,
@@ -22,8 +23,18 @@ import {
   spectrumToJcampDx,
   standaloneSpectrumSvg,
   type DisplaySpectrumPeak,
+  type SaveTextFileResult,
+  type SpectrumFigureFormat,
   type SpectrumComparisonMode
 } from "./spectrumExport";
+import { isDesktopRuntime } from "../window-manager";
+
+const fullSizeRestorers = new Set<() => Promise<void>>();
+
+/** The panel must restore its remembered frame before notifying the owner or hiding. */
+export async function restoreLinkedFigureWindowFrame(): Promise<void> {
+  await Promise.all([...fullSizeRestorers].map((restore) => restore()));
+}
 
 /**
  * Core-owned interactive figure for the `linkedFigure` panel section (ADR-0015). The plugin ships
@@ -34,11 +45,11 @@ import {
 export interface LinkedFigureViewProps {
   spectrum: PluginLinkedFigureSpectrum;
   structure?: PluginLinkedFigureStructure;
-  /** True when rendered inside the full-size modal — hides its own "Full size" button (no recursion). */
+  /** Render the figure using the expanded layout. */
   fullScreen?: boolean;
-  /** Initial rendering field (MHz); the modal passes the outer view's choice through. */
+  /** Initial rendering field (MHz). */
   defaultSpectrometerMHz?: number;
-  /** Initial comparison display mode; the modal passes the outer view's choice through. */
+  /** Initial comparison display mode. */
   defaultComparisonMode?: SpectrumComparisonMode;
 }
 
@@ -87,6 +98,13 @@ export function LinkedFigureView({
   const [hoverPeakId, setHoverPeakId] = useState<string | null>(null);
   const [hoverAtomIndex, setHoverAtomIndex] = useState<number | null>(null);
   const spectrumRef = useRef<SVGSVGElement | null>(null);
+  const [showFull, setShowFull] = useState(false);
+  const [fullSizeBusy, setFullSizeBusy] = useState(false);
+  const [fullSizeNotice, setFullSizeNotice] = useState<string | null>(null);
+  const fullSizeTaskRef = useRef<Promise<void>>(Promise.resolve());
+  const restoreFrameRef = useRef<(() => Promise<void>) | null>(null);
+  const fullSizeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const fullSizeWasOpenRef = useRef(false);
   const dragRef = useRef<number | null>(null);
   const pendingPanPixelsRef = useRef(0);
   const panFrameRef = useRef<number | null>(null);
@@ -220,7 +238,7 @@ export function LinkedFigureView({
     svg.addEventListener("wheel", onWheel, { passive: false });
     return () => svg.removeEventListener("wheel", onWheel);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reversed, domainSpan, effectiveDomain.min, effectiveDomain.max]);
+  }, [reversed, domainSpan, effectiveDomain.min, effectiveDomain.max, showFull]);
 
   const onPointerDown = (event: React.PointerEvent<SVGSVGElement>): void => {
     dragRef.current = event.clientX;
@@ -238,7 +256,17 @@ export function LinkedFigureView({
   };
 
   const [copied, setCopied] = useState(false);
-  const [exportStatus, setExportStatus] = useState<"saved" | "failed" | null>(null);
+  const [exportStatus, setExportStatus] = useState<SaveTextFileResult | null>(null);
+  const [exportBusy, setExportBusy] = useState(false);
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const exportMenuId = useId();
+  const exportButtonRef = useRef<HTMLButtonElement | null>(null);
+  const exportMenuRef = useRef<HTMLDivElement | null>(null);
+  const exportWasBusyRef = useRef(false);
+  useEffect(() => {
+    if (!exportBusy && exportWasBusyRef.current) exportButtonRef.current?.focus();
+    exportWasBusyRef.current = exportBusy;
+  }, [exportBusy]);
   const onCopy = (): void => {
     const svg = spectrumRef.current;
     if (!svg) return;
@@ -256,38 +284,145 @@ export function LinkedFigureView({
       }
     });
   };
-  const onExportJcamp = (): void => {
-    const jdx = spectrumToJcampDx(spectrum, {
-      title: `Predicted ${formatNucleus(spectrum.nucleus)} NMR`,
-      protonFrequencyMHz,
-      comparisonMode: effectiveComparisonMode
-    });
-    void saveTextFile(`predicted-${spectrum.nucleus}-nmr.jdx`, jdx, {
-      title: "Export spectrum (JCAMP-DX)",
-      formatLabel: "JCAMP-DX",
-      extensions: ["jdx", "dx"],
-      mimeType: "chemical/x-jcamp-dx"
-    }).then((result) => {
-      if (result === "cancelled") return;
-      setExportStatus(result === "saved" ? "saved" : "failed");
+  const onExport = async (format: SpectrumFigureFormat | "jdx"): Promise<void> => {
+    if (exportBusy) return;
+    setExportMenuOpen(false);
+    setExportBusy(true);
+    setExportStatus(null);
+    try {
+      const svg = spectrumRef.current;
+      const result = format === "jdx"
+        ? await saveTextFile(`predicted-${spectrum.nucleus}-nmr.jdx`, spectrumToJcampDx(spectrum, {
+            title: `Predicted ${formatNucleus(spectrum.nucleus)} NMR`,
+            protonFrequencyMHz,
+            comparisonMode: effectiveComparisonMode
+          }), {
+            title: "Export spectrum (JCAMP-DX)",
+            formatLabel: "JCAMP-DX",
+            extensions: ["jdx", "dx"],
+            mimeType: "chemical/x-jcamp-dx"
+          })
+        : svg ? await exportSpectrumFigure(format, standaloneSpectrumSvg(
+            svg, comparison.alternativeLabel, supportsComparison ? comparison.primaryLabel : undefined
+          ), spectrum.nucleus) : "failed";
+      setExportStatus(result);
+    } catch {
+      setExportStatus("failed");
+    } finally {
+      setExportBusy(false);
       window.setTimeout(() => setExportStatus(null), 1800);
-    });
+    }
   };
 
-  const [showFull, setShowFull] = useState(false);
+  const restoreFrame = useCallback(async (): Promise<void> => {
+    await fullSizeTaskRef.current;
+    await restoreFrameRef.current?.();
+    restoreFrameRef.current = null;
+  }, []);
+  const leaveFullSize = useCallback(async (): Promise<void> => {
+    setFullSizeBusy(true);
+    try {
+      await restoreFrame();
+      setShowFull(false);
+      setFullSizeNotice(null);
+    } catch {
+      setFullSizeNotice("Could not restore the panel's previous size and position. Try leaving full size again.");
+    } finally {
+      setFullSizeBusy(false);
+    }
+  }, [restoreFrame]);
+
+  const enterFullSize = (): void => {
+    if (fullSizeBusy) return;
+    setExportMenuOpen(false);
+    setFullSizeNotice(null);
+    setShowFull(true);
+    if (!isDesktopRuntime()) return;
+    setFullSizeBusy(true);
+    fullSizeTaskRef.current = (async () => {
+      try {
+        const { getCurrentWindow, currentMonitor, PhysicalSize, PhysicalPosition } = await import("@tauri-apps/api/window");
+        const panel = getCurrentWindow();
+        const [size, outerSize, position, monitor] = await Promise.all([
+          panel.innerSize(), panel.outerSize(), panel.outerPosition(), currentMonitor()
+        ]);
+        if (!monitor) throw new Error("The panel's monitor is unavailable.");
+        restoreFrameRef.current = async () => {
+          await panel.setSize(new PhysicalSize(size.width, size.height));
+          await panel.setPosition(new PhysicalPosition(position.x, position.y));
+        };
+        const area = monitor.workArea;
+        const scale = monitor.scaleFactor;
+        const borderWidth = outerSize.width - size.width;
+        const borderHeight = outerSize.height - size.height;
+        const width = Math.min(area.size.width - borderWidth, Math.max(size.width,
+          Math.round((SPECTRUM_W + (structure ? STRUCT_W : 0)) * 2 * scale + 32 * scale)));
+        const height = Math.min(area.size.height - borderHeight, Math.max(size.height,
+          Math.round((Math.max(SPECTRUM_H, structure ? STRUCT_H : 0) * 2 + 180) * scale)));
+        const x = clamp(Math.round(position.x + (outerSize.width - width - borderWidth) / 2),
+          area.position.x, area.position.x + area.size.width - width - borderWidth);
+        const y = clamp(Math.round(position.y + (outerSize.height - height - borderHeight) / 2),
+          area.position.y, area.position.y + area.size.height - height - borderHeight);
+        await panel.setSize(new PhysicalSize(width, height));
+        await panel.setPosition(new PhysicalPosition(x, y));
+      } catch {
+        // Restricted/web hosts still get the whole panel rather than an inset modal box.
+        setFullSizeNotice("Window enlargement is unavailable. The figure fills this panel.");
+      } finally {
+        setFullSizeBusy(false);
+      }
+    })();
+  };
+
   useEffect(() => {
-    if (!showFull) return undefined;
-    // Capture phase + preventDefault: the innermost overlay owns Escape. A floating report window
-    // closes itself on a bubbling window-level Escape that it skips once defaultPrevented, so this
-    // Escape dismisses only "Full size" and a second one closes the window.
+    const restoreBeforeClose = async (): Promise<void> => {
+      try {
+        await restoreFrame();
+      } catch (error) {
+        setFullSizeNotice("Could not restore the panel's previous size and position. Try closing it again.");
+        throw error;
+      }
+      setShowFull(false);
+      setExportMenuOpen(false);
+    };
+    fullSizeRestorers.add(restoreBeforeClose);
+    return () => {
+      fullSizeRestorers.delete(restoreBeforeClose);
+      void restoreFrame().catch(() => undefined);
+    };
+  }, [restoreFrame]);
+
+  useEffect(() => {
+    if (showFull || fullSizeWasOpenRef.current) fullSizeButtonRef.current?.focus();
+    fullSizeWasOpenRef.current = showFull;
+  }, [showFull, fullSizeBusy]);
+
+  useEffect(() => {
+    if (!exportMenuOpen) return;
+    exportMenuRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    const onPointerDown = (event: PointerEvent): void => {
+      if (event.target instanceof Node && !exportMenuRef.current?.contains(event.target)
+        && !exportButtonRef.current?.contains(event.target)) setExportMenuOpen(false);
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => window.removeEventListener("pointerdown", onPointerDown);
+  }, [exportMenuOpen]);
+
+  useEffect(() => {
+    if (!showFull && !exportMenuOpen) return;
     const onKey = (event: KeyboardEvent): void => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
       event.preventDefault();
-      setShowFull(false);
+      if (exportMenuOpen) {
+        setExportMenuOpen(false);
+        exportButtonRef.current?.focus();
+      } else {
+        void leaveFullSize();
+      }
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [showFull]);
+  }, [showFull, exportMenuOpen, leaveFullSize]);
 
   const ticks = useMemo(() => axisTicks(view.min, view.max), [view.min, view.max]);
   const zoomed = view.max - view.min < domainSpan - 1e-6;
@@ -378,7 +513,7 @@ export function LinkedFigureView({
   const hasQuality = atomQuality.size > 0;
 
   const figure = (
-    <div className={`lf-root${fullScreen ? " is-fullscreen" : ""}`}>
+    <div className={`lf-root${fullScreen || showFull ? " is-fullscreen" : ""}`}>
       <div className="lf-toolbar">
         <span className="lf-axis-name">{formatNucleus(spectrum.nucleus)}</span>
         <div className="lf-toolbar-actions">
@@ -392,6 +527,7 @@ export function LinkedFigureView({
             type="button"
             className="lf-btn"
             disabled={!zoomed}
+            title={zoomed ? "Show the whole spectrum" : "The whole spectrum is already visible"}
             onClick={() => setView(effectiveDomain)}
           >
             Reset
@@ -408,18 +544,73 @@ export function LinkedFigureView({
           <button
             type="button"
             className="lf-btn"
-            onClick={onExportJcamp}
-            title="Download as JCAMP-DX (.jdx) — opens in MestReNova, TopSpin, ACD, …"
+            ref={exportButtonRef}
+            aria-haspopup="menu"
+            aria-expanded={exportMenuOpen}
+            aria-controls={exportMenuOpen ? exportMenuId : undefined}
+            disabled={exportBusy}
+            onClick={() => setExportMenuOpen((open) => !open)}
+            onKeyDown={(event) => {
+              if (event.key === "ArrowDown") {
+                event.preventDefault();
+                setExportMenuOpen(true);
+              }
+            }}
+            title={exportBusy ? "Saving the spectrum" : "Export spectrum as JCAMP-DX, PNG, SVG or PDF"}
           >
-            {exportStatus === "saved" ? "Exported" : exportStatus === "failed" ? "Export failed" : "Export"}
+            {exportBusy ? "Exporting…" : exportStatus === "saved" ? "Exported"
+              : exportStatus === "failed" ? "Export failed" : exportStatus === "cancelled" ? "Export cancelled" : "Export"}
           </button>
-          {!fullScreen ? (
-            <button type="button" className="lf-btn" onClick={() => setShowFull(true)} title="Open an enlarged spectrum">
-              Full size
+          {!fullScreen || showFull ? (
+            <button
+              type="button"
+              ref={fullSizeButtonRef}
+              className={`lf-btn${showFull ? " lf-modal-close" : ""}`}
+              onClick={() => showFull ? void leaveFullSize() : enterFullSize()}
+              disabled={fullSizeBusy}
+              title={fullSizeBusy ? "Updating the panel's size and position"
+                : showFull ? "Restore the previous panel size and position" : "Open an enlarged spectrum"}
+              aria-label={showFull ? "Close full-size spectrum" : undefined}
+            >
+              {showFull ? "Exit full size" : "Full size"}
             </button>
           ) : null}
         </div>
       </div>
+
+      {exportMenuOpen ? (
+        <div
+          id={exportMenuId}
+          ref={exportMenuRef}
+          className="lf-export-menu"
+          role="menu"
+          aria-label="Export spectrum"
+          onBlur={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget)
+              && event.relatedTarget !== exportButtonRef.current) setExportMenuOpen(false);
+          }}
+          onKeyDown={(event) => {
+            const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("button")];
+            const index = items.indexOf(document.activeElement as HTMLButtonElement);
+            const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1
+              : event.key === "ArrowDown" || event.key === "ArrowRight" ? (index + 1) % items.length
+              : event.key === "ArrowUp" || event.key === "ArrowLeft" ? (index + items.length - 1) % items.length : null;
+            if (next !== null) {
+              event.preventDefault();
+              items[next]?.focus();
+            }
+          }}
+        >
+          {([["jdx", "JCAMP-DX (.jdx)"], ["png", "PNG"], ["svg", "SVG"], ["pdf", "PDF"]] as const).map(([format, label]) => (
+            <button key={format} type="button" className="lf-btn" role="menuitem" tabIndex={-1} onClick={() => void onExport(format)}>
+              {label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {exportStatus ? <span className="lf-status" role="status">{exportStatus === "saved" ? "Spectrum saved."
+        : exportStatus === "cancelled" ? "Export cancelled." : "Spectrum export failed."}</span> : null}
+      {fullSizeNotice ? <span className="lf-status" role="status">{fullSizeNotice}</span> : null}
 
       <div className="lf-meta">
         {spectrum.solvent ? <span>Solvent: {spectrum.solvent}</span> : null}
@@ -650,35 +841,12 @@ export function LinkedFigureView({
     return figure;
   }
 
-  // Enlarged spectrum in a modal, portalled to <body> so the draggable panel's transform can't offset
-  // it. The modal hosts a fresh full-size figure (its own zoom/pan); Esc, the Close button, or a
-  // backdrop click dismiss it.
-  return (
-    <>
+  return createPortal(
+    <div className="lf-modal" role="region" aria-label="Full-size spectrum"
+      style={{ top: document.querySelector(".plugin-panel-window-title")?.getBoundingClientRect().bottom ?? 0 }}>
       {figure}
-      {createPortal(
-        <div className="lf-modal-backdrop" role="presentation" onClick={() => setShowFull(false)}>
-          <div className="lf-modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
-            <button
-              type="button"
-              className="lf-btn lf-modal-close"
-              onClick={() => setShowFull(false)}
-              aria-label="Close full-size spectrum"
-            >
-              Close
-            </button>
-            <LinkedFigureView
-              spectrum={spectrum}
-              structure={structure}
-              fullScreen
-              defaultSpectrometerMHz={protonFrequencyMHz}
-              defaultComparisonMode={effectiveComparisonMode}
-            />
-          </div>
-        </div>,
-        document.body
-      )}
-    </>
+    </div>,
+    document.body
   );
 }
 
