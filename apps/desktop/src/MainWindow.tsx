@@ -251,7 +251,7 @@ import {
 import { createRdkitAdapter } from "@chemdraft/rdkit-adapter/adapter";
 import { buildAnalysisReport, type AnalysisReport, type AnalysisRun } from "@chemdraft/analysis-core";
 import { analysisClient } from "./analysisClient";
-import { inspectClipboardPayload, looksLikeSmiles, smilesListCandidates, type ClipboardDetectedPayload, type ClipboardReadPayload } from "@chemdraft/clipboard-adapter";
+import { inspectClipboardPayload, isVectorArtworkType, looksLikeSmiles, smilesListCandidates, type ClipboardDetectedPayload, type ClipboardReadPayload } from "@chemdraft/clipboard-adapter";
 import { verifySmilesPaste, verifySmilesPasteInput, verifySmilesGridEntries } from "./smilesPasteIdentity";
 import {
   SmilesListPasteError, depictSmilesForPaste, depictSmilesListForPaste, smilesListFailureStatus
@@ -1920,6 +1920,13 @@ function isCanvasDrawingPress(canvas: HTMLElement, event: { target: EventTarget 
   // Rulers are pointer-transparent, so their occupied strips also need a point check.
   const inset = canvas.classList.contains("rulers-visible") ? RULER_THICKNESS : 0;
   return x >= inset && y >= inset && x < canvas.clientWidth && y < canvas.clientHeight;
+}
+
+function inspectPastePayload(payload: ClipboardReadPayload): ClipboardDetectedPayload {
+  return inspectClipboardPayload({
+    ...payload,
+    types: payload.types.map((type) => type.trim().toLowerCase() === "public.svg-image" ? "public.svg" : type)
+  });
 }
 
 export function MainWindow({
@@ -6753,6 +6760,13 @@ export function MainWindow({
 
   const applyDetectedClipboardPayload = useCallback((detectedPayload: ClipboardDetectedPayload) => {
     smilesListPasteAbortRef.current?.abort();
+    if (detectedPayload.kind === "vector-only" && (
+      !isVectorArtworkType(detectedPayload.sourceType) ||
+      ["public.svg", "image/svg+xml"].includes(detectedPayload.sourceType.trim().toLowerCase())
+    )) {
+      setStatus("Couldn't paste: the clipboard holds vector artwork (SVG), which can't be pasted as an editable drawing or as text.");
+      return;
+    }
     if (detectedPayload.kind === "smiles" && !/\s/.test(detectedPayload.text.trim())) {
       void renderPastedSmiles(detectedPayload.text.trim()).then(({ rendered, reason, failed }) => {
         if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
@@ -7085,7 +7099,7 @@ export function MainWindow({
         return;
       }
 
-      const detectedPayload = inspectClipboardPayload(payload);
+      const detectedPayload = inspectPastePayload(payload);
       if (detectedPayload.kind !== "empty") {
         applyDetectedClipboardPayload(detectedPayload);
         return;
@@ -12199,7 +12213,8 @@ export function MainWindow({
         return;
       }
 
-      const detectedPayload = inspectClipboardPayload(clipboardPayloadFromDataTransfer(event.clipboardData));
+      const payload = clipboardPayloadFromDataTransfer(event.clipboardData);
+      const detectedPayload = inspectPastePayload(payload);
       if (detectedPayload.kind !== "empty") {
         event.preventDefault();
         applyDetectedClipboardPayload(detectedPayload);

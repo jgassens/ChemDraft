@@ -19,6 +19,7 @@ import {
 import { depictSmilesForPaste } from "./smilesListPaste";
 import { installDomRdkitLoader } from "./testSupport/rdkitIdentity";
 import { inspectStructureOffThread } from "./depiction2d/identityClient";
+import { DOM_COMMAND_EVENT } from "./window-manager";
 
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("./depiction2d/identityClient", () => ({ inspectStructureOffThread: vi.fn() }));
@@ -122,6 +123,34 @@ describe.each(["macos", "windows"] as const)("text paste formatting (%s)", platf
   const objects = () => window.__CHEMDRAFT_AGENT__!.snapshot().document.pages[0]!.objects;
   const status = () => container.querySelector('[role="status"]')?.textContent;
   const nativeReads = () => vi.mocked(invoke).mock.calls.filter(([command]) => command === "read_clipboard_payload");
+
+  it.each(["image/svg+xml", "public.svg-image", "text/plain"])("reports SVG from %s on menu and DOM paste", async type => {
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg"></svg>';
+    await mount({ types: [type], textItems: [{ type, text: svg }] });
+    const expected = "Couldn't paste: the clipboard holds vector artwork (SVG), which can't be pasted as an editable drawing or as text.";
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "clipboard.paste" } }));
+    });
+    expect(status()).toBe(expected);
+    expect((await paste({ [type]: svg })).defaultPrevented).toBe(true);
+    expect(status()).toBe(expected);
+    runtime.desktop = false;
+    expect((await paste({ [type]: svg })).defaultPrevented).toBe(true);
+    expect(status()).toBe(expected);
+    expect(objects()).toHaveLength(0);
+  });
+
+  it.each(["image/svg+xml", "public.svg-image"])("recognizes an SVG flavor without text: %s", async type => {
+    await mount({ types: [type], textItems: [] });
+    await paste({ [type]: "" });
+    expect(status()).toBe("Couldn't paste: the clipboard holds vector artwork (SVG), which can't be pasted as an editable drawing or as text.");
+  });
+
+  it("keeps the existing failure for a non-SVG image", async () => {
+    await mount({ types: ["public.png"], textItems: [] });
+    await paste({ "public.png": "" });
+    expect(status()).toBe("The clipboard contains vector artwork only; no editable chemistry payload was found.");
+  });
 
   async function paste(items: Record<string, string>, target: EventTarget = window, prevented = false) {
     const event = new Event("paste", { bubbles: true, cancelable: true });
