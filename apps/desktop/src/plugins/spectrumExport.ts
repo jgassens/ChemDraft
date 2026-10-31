@@ -347,7 +347,10 @@ export function copySpectrumToClipboard(
 function spectrumClipboardItems(png: Uint8Array, svg?: string): ClipboardWriteItem[] {
   return [
     { type: "image/png", bytes: png, required: true },
-    ...(svg === undefined ? [] : [{ type: "image/svg+xml", text: svg, required: false }])
+    ...(svg === undefined ? [] : [
+      { type: "public.svg-image", text: svg, required: false },
+      { type: "image/svg+xml", text: svg, required: false }
+    ])
   ];
 }
 
@@ -589,14 +592,9 @@ export interface SpectrumFigureExportDependencies {
 
 /** Requires export-engine's shared SVG entry point; keep jsPDF/svg2pdf out of startup. */
 export async function spectrumToPdf(svgMarkup: string): Promise<Uint8Array> {
-  const module = await import("@chemdraft/export-engine/pdf");
-  // TODO(export-engine): expose exportSvgToPdf using pdf.ts's existing font and svg2pdf pipeline.
-  const converter = (module as unknown as {
-    exportSvgToPdf?: (markup: string, options: { outputWidth: number; outputHeight: number }) => Promise<{ bytes: Uint8Array }>
-  }).exportSvgToPdf;
-  if (!converter) throw new Error("Spectrum PDF export requires export-engine's exportSvgToPdf entry point.");
+  const { exportSvgToPdf } = await import("@chemdraft/export-engine/pdf");
   const { width, height } = spectrumSvgSize(svgMarkup);
-  return (await converter(svgMarkup, { outputWidth: width, outputHeight: height })).bytes;
+  return (await exportSvgToPdf(svgMarkup, { outputWidth: width, outputHeight: height })).bytes;
 }
 
 /** The controls pass the standalone SVG so every picture format contains the displayed figure. */

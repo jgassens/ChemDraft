@@ -26,7 +26,14 @@ import {
 const nativeSave = vi.hoisted(() => vi.fn());
 const nativeWriteTextFile = vi.hoisted(() => vi.fn());
 const nativeWriteFile = vi.hoisted(() => vi.fn());
+const writeClipboard = vi.hoisted(() => vi.fn());
+const convertSvg = vi.hoisted(() => vi.fn());
 
+vi.mock("../clipboard", async (original) => ({
+  ...await original<typeof import("../clipboard")>(),
+  writeClipboardItems: writeClipboard
+}));
+vi.mock("@chemdraft/export-engine/pdf", () => ({ exportSvgToPdf: convertSvg }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ save: nativeSave }));
 vi.mock("@tauri-apps/api/core", async (original) => ({
   ...await original<typeof import("@tauri-apps/api/core")>(),
@@ -53,6 +60,8 @@ afterEach(() => {
   nativeSave.mockReset();
   nativeWriteTextFile.mockReset();
   nativeWriteFile.mockReset();
+  writeClipboard.mockReset();
+  convertSvg.mockReset();
   bridgeEmit.mockReset();
   bridgeListeners.clear();
   window.history.replaceState(null, "", "/");
@@ -200,6 +209,18 @@ describe("standaloneSpectrumSvg", () => {
 });
 
 describe("copySpectrumToClipboard", () => {
+  it("writes both optional native SVG flavors alongside PNG without text", async () => {
+    vi.stubGlobal("Blob", NodeBlob);
+    (globalThis as typeof globalThis & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    writeClipboard.mockResolvedValue({ ok: true });
+    await expect(copySpectrumToClipboard("<svg/>", async () => new Blob(["png"], { type: "image/png" }))).resolves.toBe("image");
+    expect(writeClipboard).toHaveBeenCalledWith([
+      { type: "image/png", bytes: expect.any(Uint8Array), required: true },
+      { type: "public.svg-image", text: "<svg/>", required: false },
+      { type: "image/svg+xml", text: "<svg/>", required: false }
+    ]);
+    expect(Array.from(writeClipboard.mock.calls[0][0][0].bytes)).toEqual([112, 110, 103]);
+  });
   it("initiates ClipboardItem.write synchronously while PNG rasterization remains promise-backed", async () => {
     type ClipboardPayload = Record<string, Blob | Promise<Blob>>;
     class TestClipboardItem {
@@ -371,8 +392,12 @@ describe("spectrum picture exports", () => {
     expect(dependencies.saveBinary).not.toHaveBeenCalled();
   });
 
-  it("reports the missing shared SVG PDF entry point explicitly", async () => {
-    await expect(spectrumToPdf("<svg/>")).rejects.toThrow("exportSvgToPdf");
+  it("passes the SVG dimensions to the shared PDF converter", async () => {
+    const bytes = new Uint8Array([1, 2, 3]);
+    convertSvg.mockResolvedValue({ bytes });
+    const svg = '<svg width="340" height="120" viewBox="0 0 680 240"/>';
+    await expect(spectrumToPdf(svg)).resolves.toBe(bytes);
+    expect(convertSvg).toHaveBeenCalledWith(svg, { outputWidth: 340, outputHeight: 120 });
   });
 
   it("downloads SVG and binary files on the web with the requested MIME types", async () => {

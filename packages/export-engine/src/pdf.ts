@@ -37,18 +37,41 @@ export async function exportDocumentToPdf(
     throw new Error(`Cannot export PDF: page index ${pageIndex} does not exist.`);
   }
 
-  const widthPt = cssPxToPdfPt(options.outputWidth ?? page.width);
-  const heightPt = cssPxToPdfPt(options.outputHeight ?? page.height);
-  if (Math.max(widthPt, heightPt) > 14400) {
-    throw new Error("Cannot export PDF: physical page size exceeds 14400 points (200 inches) per side. Reduce the pixel dimensions or increase DPI.");
-  }
-
   const descriptor = getExportFormatDescriptor("pdf");
   const svgResult = exportDocumentToSvg(document, {
     pageIndex,
     includePageGuides: options.includePageGuides
   });
-  const svgElement = parseSvgElement(svgResult.contents, options.domParser);
+  const { bytes } = await exportSvgToPdf(svgResult.contents, {
+    outputWidth: options.outputWidth ?? page.width,
+    outputHeight: options.outputHeight ?? page.height,
+    domParser: options.domParser,
+    compress: options.compress
+  });
+
+  return {
+    format: "pdf",
+    kind: "binary",
+    bytes,
+    mimeType: descriptor.mimeType,
+    extension: descriptor.extensions[0] ?? "pdf",
+    warnings: svgResult.warnings
+  };
+}
+
+export async function exportSvgToPdf(
+  svgMarkup: string,
+  options: { outputWidth: number; outputHeight: number; domParser?: DOMParser; compress?: boolean }
+): Promise<{ bytes: Uint8Array }> {
+  if (![options.outputWidth, options.outputHeight].every((value) => Number.isFinite(value) && value > 0)) {
+    throw new Error("Cannot export PDF: output dimensions must be finite positive numbers.");
+  }
+  const widthPt = cssPxToPdfPt(options.outputWidth);
+  const heightPt = cssPxToPdfPt(options.outputHeight);
+  if (Math.max(widthPt, heightPt) > 14400) {
+    throw new Error("Cannot export PDF: physical page size exceeds 14400 points (200 inches) per side. Reduce the pixel dimensions or increase DPI.");
+  }
+  const svgElement = parseSvgElement(svgMarkup, options.domParser);
 
   const pdf = new jsPDF({
     orientation: widthPt >= heightPt ? "landscape" : "portrait",
@@ -73,14 +96,7 @@ export async function exportDocumentToPdf(
     releaseFonts();
   }
 
-  return {
-    format: "pdf",
-    kind: "binary",
-    bytes: new Uint8Array(pdf.output("arraybuffer")),
-    mimeType: descriptor.mimeType,
-    extension: descriptor.extensions[0] ?? "pdf",
-    warnings: svgResult.warnings
-  };
+  return { bytes: new Uint8Array(pdf.output("arraybuffer")) };
 }
 
 function cssPxToPdfPt(value: number): number {
