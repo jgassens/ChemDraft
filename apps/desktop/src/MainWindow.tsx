@@ -509,6 +509,8 @@ import {
   formatElementList,
   nativeMoleculeUnmodeledMetalElements,
   applyNativeMoleculeEngineRelayout,
+  prepareNativeMoleculeEngineRelayout,
+  type NativeMoleculeRelayoutEngine,
   cleanUpNativeMolecules2d,
   moleculeHasFusedRingSystem,
   attachSpin3dModelFromConformer,
@@ -1644,7 +1646,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.31.08.29-codex";
+const CURRENT_BUILD_STAMP = "10.31.12.30-codex";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -4544,23 +4546,36 @@ export function MainWindow({
       try {
         const { relayoutMolfile2D, perceiveStereoCentersFromMolfile } = cachedOclAdapter = await import("@chemdraft/ocl-adapter");
         const warnings: string[] = [];
-        const changed = commitDocumentChange((current) =>
-          engineTargetIds.reduce((next, objectId) => {
-            // 2D Cleanup idealises to the style's bond length like the polygon+tree pass does, so
-            // repeated cleanups converge instead of freezing whatever scale the drawing drifted to.
-            // The perceiver is the read-back guard: the rebuilt drawing must say the same R/S it
-            // said before, or nothing commits.
-            const target = findDocumentObject(next, objectId);
-            const targetBondLengthPx = target?.type === "molecule"
-              ? nativeDrawingStyleFromObjectStyle(target.style).bondLengthPx
-              : undefined;
-            return applyNativeMoleculeEngineRelayout(next, objectId, relayoutMolfile2D, {
-              targetBondLengthPx,
-              warnings,
-              perceiveStereo: perceiveStereoCentersFromMolfile
-            });
-          }, cleanUpNativeMolecules2d(current, nativeTargetIds))
-        );
+        let alternatePromise: Promise<readonly NativeMoleculeRelayoutEngine[]> | undefined;
+        const loadAlternates = () => alternatePromise ??= (async () => {
+          const { registerRdkitWasmLoader } = await import("./rdkitWasmLoader");
+          registerRdkitWasmLoader();
+          const { createRdkit2DRelayouts } = await import("@chemdraft/rdkit-adapter/depiction");
+          return createRdkit2DRelayouts();
+        })();
+        let prepared = cleanUpNativeMolecules2d(currentDocument, nativeTargetIds);
+        for (const objectId of engineTargetIds) {
+          // 2D Cleanup idealises to the style's bond length like the polygon+tree pass does, so
+          // repeated cleanups converge instead of freezing whatever scale the drawing drifted to.
+          // The perceiver is the read-back guard: the rebuilt drawing must say the same R/S it
+          // said before, or nothing commits.
+          const target = findDocumentObject(prepared, objectId);
+          const targetBondLengthPx = target?.type === "molecule"
+            ? nativeDrawingStyleFromObjectStyle(target.style).bondLengthPx
+            : undefined;
+          prepared = await prepareNativeMoleculeEngineRelayout(prepared, objectId, relayoutMolfile2D, loadAlternates, {
+            targetBondLengthPx,
+            warnings,
+            perceiveStereo: perceiveStereoCentersFromMolfile
+          });
+        }
+        // Loading an alternate can yield to editing. Never replace edits made since preparation
+        // started; all accepted candidates otherwise land together in exactly one history entry.
+        if (documentRef.current !== currentDocument) {
+          setStatus("Clean up cancelled because the document changed");
+          return;
+        }
+        const changed = commitDocumentChange(() => prepared);
         setStatus(cleanedStatus(changed) + (warnings.length ? ` — ${[...new Set(warnings)].join(" ")}` : ""));
       } catch (error) {
         setStatus(`Clean up failed: ${error instanceof Error ? error.message : String(error)}`);
