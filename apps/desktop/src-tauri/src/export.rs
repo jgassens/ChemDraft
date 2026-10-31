@@ -566,6 +566,7 @@ mod tests {
             let response = rasterize_svg_impl(RasterExportRequest {
                 svg: svg.clone(),
                 scale: Some(f64::from(scale)),
+                background: Some("transparent".to_string()),
                 ..request(RasterExportFormat::Png)
             })
             .expect("export an SVG picture containing vectors and a PNG");
