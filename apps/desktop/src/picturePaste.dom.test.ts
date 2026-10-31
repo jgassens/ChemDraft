@@ -72,6 +72,16 @@ describe("picture paste and canvas", () => {
   const canUndo = () => container.querySelector('[data-can-undo="true"]') !== null;
   async function command(id: string) { await act(async () => { await bridge().command(id); }); }
 
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (reason: unknown) => void;
+    const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+      resolve = resolvePromise;
+      reject = rejectPromise;
+    });
+    return { promise, resolve, reject };
+  }
+
   function pointer(target: EventTarget, type: string, x: number, y: number, shiftKey = false) {
     const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0,
       buttons: type === "pointerup" ? 0 : 1, clientX: x, clientY: y, shiftKey });
@@ -252,6 +262,97 @@ describe("picture paste and canvas", () => {
     expect(snapshot().selection.objectIds).toEqual([objects[0]!.id]);
     await command("edit.undo");
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Undid Paste SMILES");
+    expect(snapshot().pages[0]!.objects).toHaveLength(0);
+    expect(canUndo()).toBe(false);
+  });
+
+  it.each(["resolve", "reject"])("stops after a document edit during list verification (%s), without another candidate or picture undo", async completion => {
+    await render();
+    vi.spyOn(clipboard, "readClipboardPayload").mockResolvedValue({ ...nativeImage,
+      types: ["image/png", "text/plain", "public.utf8-plain-text"], textItems: [
+        { type: "text/plain", text: "CCO CCN" }, { type: "public.utf8-plain-text", text: "CCO" }
+      ] });
+    const entries = ["CCO", "CCN"].map(smiles => ({ smiles, depiction: {
+      atoms: [...smiles].map((element, index) => ({ element, x: index * 1.5, y: 0, charge: 0 })),
+      bonds: [{ from: 0, to: 1, order: "single" as const, wedge: null },
+        { from: 1, to: 2, order: "single" as const, wedge: null }]
+    } }));
+    const list = vi.spyOn(smilesPaste, "depictSmilesListForPaste").mockResolvedValue({
+      entries, skipped: 0, skippedItems: [], failures: []
+    });
+    const verification = deferred<Awaited<ReturnType<typeof smilesIdentity.verifySmilesGridEntries>>>();
+    const verify = vi.spyOn(smilesIdentity, "verifySmilesGridEntries").mockReturnValue(verification.promise);
+    const single = vi.spyOn(smilesPaste, "depictSmilesForPaste").mockResolvedValue(undefined);
+    await command("clipboard.paste");
+    expect(verify).toHaveBeenCalledOnce();
+    expect(canUndo()).toBe(false);
+
+    await command("tool.bond");
+    await act(async () => {
+      pointer(page(), "pointerdown", 200, 200);
+      pointer(page(), "pointerup", 200, 200);
+    });
+    const edited = snapshot();
+    expect(edited.pages[0]!.objects).toHaveLength(1);
+    expect(canUndo()).toBe(true);
+    await act(async () => {
+      if (completion === "resolve") verification.resolve({ entries, failures: [] });
+      else verification.reject(new Error("Verification interrupted"));
+      await verification.promise.catch(() => {});
+    });
+
+    expect(snapshot()).toEqual(edited);
+    expect(container.querySelector('[role="status"]')?.textContent).toBe(
+      "No SMILES structures were pasted; 1 item failed: The document changed while preparing SMILES paste; paste again.");
+    expect(list).toHaveBeenCalledOnce();
+    expect(single).not.toHaveBeenCalled();
+    await command("edit.undo");
+    expect(snapshot().pages[0]!.objects).toHaveLength(0);
+    expect(canUndo()).toBe(false);
+  });
+
+  it.each(["depiction", "verification"])("never commits an aborted single SMILES pending %s or falls back to its picture", async pendingStage => {
+    await render();
+    const read = vi.spyOn(clipboard, "readClipboardPayload").mockResolvedValue({ ...nativeImage,
+      types: ["image/png", "text/plain", "public.utf8-plain-text"], textItems: [
+        { type: "text/plain", text: "CCO" }, { type: "public.utf8-plain-text", text: "CCN" }
+      ] });
+    vi.spyOn(smilesIdentity, "verifySmilesPasteInput").mockResolvedValue(undefined);
+    const parsed = { stereoCount: 0, depiction: {
+      atoms: ["C", "C", "O"].map((element, index) => ({ element, x: index * 1.5, y: 0, charge: 0 })),
+      bonds: [{ from: 0, to: 1, order: "single" as const, wedge: null },
+        { from: 1, to: 2, order: "single" as const, wedge: null }]
+    } };
+    const depiction = deferred<Awaited<ReturnType<typeof smilesPaste.depictSmilesForPaste>>>();
+    const verification = deferred<void>();
+    const single = vi.spyOn(smilesPaste, "depictSmilesForPaste").mockReturnValue(
+      pendingStage === "depiction" ? depiction.promise : Promise.resolve(parsed));
+    const verify = vi.spyOn(smilesIdentity, "verifySmilesPaste").mockReturnValue(
+      pendingStage === "verification" ? verification.promise : Promise.resolve());
+    await command("clipboard.paste");
+    expect(single).toHaveBeenCalledOnce();
+    expect(verify).toHaveBeenCalledTimes(pendingStage === "verification" ? 1 : 0);
+    const signal = single.mock.calls[0]![1]!.signal!;
+    expect(signal.aborted).toBe(false);
+    expect(canUndo()).toBe(false);
+
+    read.mockResolvedValue(nativeImage);
+    await command("clipboard.paste");
+    expect(signal.aborted).toBe(true);
+    const newerPaste = snapshot();
+    expect(newerPaste.pages[0]!.objects).toHaveLength(1);
+    const newerStatus = container.querySelector('[role="status"]')?.textContent;
+    await act(async () => {
+      depiction.resolve(parsed);
+      verification.resolve();
+      await Promise.all([depiction.promise, verification.promise]);
+    });
+
+    expect(single).toHaveBeenCalledOnce();
+    expect(snapshot()).toEqual(newerPaste);
+    expect(container.querySelector('[role="status"]')?.textContent).toBe(newerStatus);
+    await command("edit.undo");
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Undid Paste Picture");
     expect(snapshot().pages[0]!.objects).toHaveLength(0);
     expect(canUndo()).toBe(false);
   });

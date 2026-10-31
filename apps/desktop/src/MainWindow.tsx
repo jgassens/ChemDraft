@@ -1644,7 +1644,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.31.10.10-codex";
+const CURRENT_BUILD_STAMP = "10.31.10.20-codex";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -6662,22 +6662,39 @@ export function MainWindow({
 
   // SMILES → editable 2D structure with stereochemistry. The depiction engines are loaded
   // on demand. Parser/chemistry refusals retain text fallback; worker failures reach status.
-  const renderPastedSmiles = useCallback(async (smilesText: string): Promise<{ rendered: boolean; reason?: string; failed?: boolean }> => {
+  const renderPastedSmiles = useCallback(async (smilesText: string, signal: AbortSignal): Promise<{
+    outcome: "success" | "no-structure" | "terminal"; reason?: string; failed?: boolean
+  }> => {
+    const layoutDocument = documentRef.current;
+    const terminalResult = () => {
+      // A newer paste owns the status once this attempt has been aborted.
+      if (signal.aborted) return { outcome: "terminal" as const };
+      if (quitInteractionRef.current) {
+        setStatus("Paste cancelled while quitting");
+        return { outcome: "terminal" as const };
+      }
+      if (documentRef.current !== layoutDocument) {
+        setStatus("Clipboard SMILES could not be placed: The document changed while preparing SMILES paste; paste again.");
+        return { outcome: "terminal" as const };
+      }
+    };
     setStatus("Drawing the pasted SMILES…");
     try {
-      await verifySmilesPasteInput(smilesText);
-      const layoutDocument = documentRef.current;
+      await verifySmilesPasteInput(smilesText, signal);
+      let terminal = terminalResult();
+      if (terminal) return terminal;
       const point = pastePointForViewport();
-      const parsed = await depictSmilesForPaste(smilesText, {}, {
+      const parsed = await depictSmilesForPaste(smilesText, { signal }, {
         document: layoutDocument, centre: point, reservedObjectIds: new Set<string>()
       });
-      if (quitInteractionRef.current) return { rendered: false, reason: "Paste cancelled while quitting" };
-      if (!parsed) return { rendered: false };
+      terminal = terminalResult();
+      if (terminal) return terminal;
+      if (!parsed) return { outcome: "no-structure" };
       const { depiction } = parsed;
       await verifySmilesPaste(depiction, smilesText);
-      if (quitInteractionRef.current) return { rendered: false, reason: "Paste cancelled while quitting" };
+      terminal = terminalResult();
+      if (terminal) return terminal;
       const pasteDocument = documentRef.current;
-      if (parsed.molecule && pasteDocument !== layoutDocument) throw new Error("The document changed while preparing SMILES paste; paste again.");
       // Reuse the template built with this document's defaults, placement and object IDs.
       const molecule = parsed.molecule;
       const inserted = molecule ? {
@@ -6712,7 +6729,8 @@ export function MainWindow({
       } catch (error) {
         stereoWarnings.push(`Stereocenter counts unavailable: ${error instanceof Error ? error.message : String(error)}`);
       }
-      if (quitInteractionRef.current || documentRef.current !== pasteDocument) throw new Error("The document changed while preparing SMILES paste; paste again.");
+      terminal = terminalResult();
+      if (terminal) return terminal;
       commitDocumentChange(nextDocument, "Paste SMILES");
       resetPasteUiState();
       // A pasted structure can be larger than the current page (e.g. a long peptide). Offer
@@ -6725,25 +6743,38 @@ export function MainWindow({
         ? `${baseStatus}; content exceeds ${pageFitPromptLayoutLabel(fit.currentPageTitle, fit.currentOrientation)}`
         : baseStatus;
       setStatus([pasteStatus, ...(inserted.status ? [inserted.status] : []), ...(parsed.warnings ?? []), ...stereoWarnings].join("; "));
-      return { rendered: true };
+      return { outcome: "success" };
     } catch (error) {
+      const terminal = terminalResult();
+      if (terminal) return terminal;
       const reason = error instanceof Error ? error.message : String(error);
       if (reason.includes("the RDKit engine did not load:")) {
         const detail = reason.slice(reason.indexOf("the structure could not be verified"));
-        return { rendered: false, reason: detail };
+        return { outcome: "no-structure", reason: detail };
       }
-      if ((error as { smilesChemistryRefusal?: boolean })?.smilesChemistryRefusal) return { rendered: false, reason };
+      if ((error as { smilesChemistryRefusal?: boolean })?.smilesChemistryRefusal) return { outcome: "no-structure", reason };
       setStatus(reason.startsWith("SMILES paste refused:")
         ? reason : `Clipboard SMILES could not be placed: ${reason}`);
-      return { rendered: false, failed: true, reason };
+      return { outcome: "no-structure", failed: true, reason };
     }
   }, [commitDocumentChange, pastePointForViewport, resetPasteUiState]);
 
   // Prepare and verify the whole list before committing. Unsuccessful attempts leave fallback
   // handling to the caller, so another text flavor can still supply readable chemistry.
   const renderPastedSmilesList = useCallback((text: string, signal: AbortSignal):
-    Promise<{ rendered: boolean; pasteAsText: boolean; status?: string }> | undefined => {
+    Promise<{ outcome: "success" | "no-structure" | "terminal"; pasteAsText: boolean; status?: string }> | undefined => {
     const pasteDocument = documentRef.current;
+    const terminalResult = () => {
+      if (signal.aborted) return { outcome: "terminal" as const, pasteAsText: false };
+      if (quitInteractionRef.current) {
+        setStatus("Paste cancelled while quitting");
+        return { outcome: "terminal" as const, pasteAsText: false };
+      }
+      if (documentRef.current !== pasteDocument) {
+        setStatus("No SMILES structures were pasted; 1 item failed: The document changed while preparing SMILES paste; paste again.");
+        return { outcome: "terminal" as const, pasteAsText: false };
+      }
+    };
     const pendingList = depictSmilesListForPaste(text, smilesListCandidates(text), (completed, total) => {
       setStatus(`Parsing SMILES list: ${completed} of ${total} tokens`);
     }, {
@@ -6752,12 +6783,13 @@ export function MainWindow({
     });
     if (!pendingList) return undefined;
     return pendingList.then(async (parsed) => {
-      if (quitInteractionRef.current || signal.aborted) return { rendered: false, pasteAsText: false };
-      if (!parsed) return { rendered: false, pasteAsText: true };
+      let terminal = terminalResult();
+      if (terminal) return terminal;
+      if (!parsed) return { outcome: "no-structure" as const, pasteAsText: true };
       const verified = await verifySmilesGridEntries(parsed.entries, undefined, signal);
       const entries = parsed.entries.filter(entry => verified.entries.includes(entry));
-      signal.throwIfAborted();
-      if (quitInteractionRef.current || documentRef.current !== pasteDocument) throw new Error("The document changed while preparing SMILES paste; paste again.");
+      terminal = terminalResult();
+      if (terminal) return terminal;
       const result = insertSmilesMoleculeGrid(
         pasteDocument, pastePointForViewport(), entries);
       parsed.failures.push(...verified.failures);
@@ -6790,14 +6822,15 @@ export function MainWindow({
         setPageFitPrompt(undefined);
         setStatus(status);
       }
-      return { rendered: result.objectIds.length > 0, pasteAsText: engineUnavailable, status };
+      return { outcome: result.objectIds.length > 0 ? "success" as const : "no-structure" as const, pasteAsText: engineUnavailable, status };
     }).catch((error: unknown) => {
-      if (quitInteractionRef.current || signal.aborted) return { rendered: false, pasteAsText: false };
+      const terminal = terminalResult();
+      if (terminal) return terminal;
       const failures = error instanceof SmilesListPasteError ? error.failures : [];
       const firstReason = failures.length ? smilesListFailureStatus(failures)
         : error instanceof Error ? error.message : String(error);
       const failureCount = failures.length || 1;
-      return { rendered: false, pasteAsText: error instanceof SmilesListPasteError,
+      return { outcome: "no-structure" as const, pasteAsText: error instanceof SmilesListPasteError,
         status: `No SMILES structures were pasted; ` +
         `${failureCount} item${failureCount === 1 ? "" : "s"} failed: ${firstReason}` +
         (error instanceof SmilesListPasteError ? "; pasted as text" : "") };
@@ -6846,12 +6879,12 @@ export function MainWindow({
             if (listAbort.signal.aborted) return;
             if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
             if (candidate.kind === "smiles") {
-              const result = await renderPastedSmiles(candidate.text.trim());
-              if (result.rendered) return;
+              const result = await renderPastedSmiles(candidate.text.trim(), listAbort.signal);
+              if (result.outcome !== "no-structure") return;
               firstFallback ??= () => finishSingleFallback(result);
             } else {
               const result = await renderPastedSmilesList(candidate.text, listAbort.signal);
-              if (result?.rendered) return;
+              if (result && result.outcome !== "no-structure") return;
               firstFallback ??= () => finishListFallback(result);
             }
           }
@@ -6862,24 +6895,23 @@ export function MainWindow({
         return;
       }
       const trimmedText = detectedPayload.text.trim();
+      const listAbort = new AbortController();
+      smilesListPasteAbortRef.current = listAbort;
       if ((detectedPayload.kind === "smiles" || looksLikeSmiles(trimmedText)) && !/\s/.test(trimmedText)) {
-        void renderPastedSmiles(trimmedText).then(result => {
-          if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
-          if (!result.rendered && !pasteFallbackImage()) finishSingleFallback(result);
+        void renderPastedSmiles(trimmedText, listAbort.signal).then(result => {
+          if (result.outcome !== "no-structure" || listAbort.signal.aborted) return;
+          if (!pasteFallbackImage()) finishSingleFallback(result);
         });
         return;
       }
-      const listAbort = new AbortController();
-      smilesListPasteAbortRef.current = listAbort;
       const pendingList = renderPastedSmilesList(detectedPayload.text, listAbort.signal);
       if (!pendingList) {
         if (!pasteFallbackImage()) pasteAsText();
         return;
       }
       void pendingList.then(result => {
-        if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
-        if (listAbort.signal.aborted) return;
-        if (!result.rendered && !pasteFallbackImage()) finishListFallback(result);
+        if (result.outcome !== "no-structure" || listAbort.signal.aborted) return;
+        if (!pasteFallbackImage()) finishListFallback(result);
       });
       return;
     }
