@@ -28,12 +28,16 @@ const nativeWriteTextFile = vi.hoisted(() => vi.fn());
 const nativeWriteFile = vi.hoisted(() => vi.fn());
 const writeClipboard = vi.hoisted(() => vi.fn());
 const convertSvg = vi.hoisted(() => vi.fn());
+const loadPdf = vi.hoisted(() => vi.fn());
 
 vi.mock("../clipboard", async (original) => ({
   ...await original<typeof import("../clipboard")>(),
   writeClipboardItems: writeClipboard
 }));
-vi.mock("@chemdraft/export-engine/pdf", () => ({ exportSvgToPdf: convertSvg }));
+vi.mock("@chemdraft/export-engine/pdf", () => {
+  loadPdf();
+  return { exportSvgToPdf: convertSvg };
+});
 vi.mock("@tauri-apps/plugin-dialog", () => ({ save: nativeSave }));
 vi.mock("@tauri-apps/api/core", async (original) => ({
   ...await original<typeof import("@tauri-apps/api/core")>(),
@@ -318,9 +322,7 @@ describe("copySpectrumToClipboard", () => {
     (globalThis as typeof globalThis & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
     window.history.replaceState(null, "", "/?window=pluginPanel");
     bridgeEmit.mockRejectedValue(new Error("document closed"));
-    await expect(requestSaveBinaryFileFromMain("spectrum.png", "cG5n", {
-      title: "PNG", formatLabel: "PNG", mimeType: "image/png", extensions: ["png"]
-    })).resolves.toBe("failed");
+    await expect(requestSaveBinaryFileFromMain("spectrum.png", "cG5n", "png")).resolves.toBe("failed");
     expect(bridgeListeners.size).toBe(0);
   });
 });
@@ -328,6 +330,10 @@ describe("copySpectrumToClipboard", () => {
 const tinyPng = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLttAAAAABJRU5ErkJggg=="), (c) => c.charCodeAt(0));
 
 describe("spectrum picture exports", () => {
+  it("loads the export-engine main entry without the PDF pipeline", async () => {
+    await import("@chemdraft/export-engine");
+    expect(loadPdf).not.toHaveBeenCalled();
+  });
   it("declines rasterization without a DOM and refuses excessive raster dimensions", async () => {
     vi.stubGlobal("Image", undefined);
     vi.stubGlobal("DOMParser", undefined);
@@ -397,6 +403,7 @@ describe("spectrum picture exports", () => {
     convertSvg.mockResolvedValue({ bytes });
     const svg = '<svg width="340" height="120" viewBox="0 0 680 240"/>';
     await expect(spectrumToPdf(svg)).resolves.toBe(bytes);
+    expect(loadPdf).toHaveBeenCalledOnce();
     expect(convertSvg).toHaveBeenCalledWith(svg, { outputWidth: 340, outputHeight: 120 });
   });
 
@@ -437,7 +444,11 @@ describe("spectrum picture exports", () => {
       title: "Export spectrum as PDF", formatLabel: "PDF", extensions: ["pdf"], mimeType: "application/pdf"
     })).resolves.toBe("saved");
     expect(bridgeEmit).toHaveBeenCalledWith(ANALYSIS_WINDOW_ACTION_EVENT,
-      expect.objectContaining({ kind: "saveBinaryFile", filename: "spectrum.pdf", bytesBase64: btoa("%PDF-1.4") }));
+      expect.objectContaining({ kind: "saveBinaryFile", filename: "spectrum.pdf", bytesBase64: btoa("%PDF-1.4"), format: "pdf" }));
+    const action = bridgeEmit.mock.calls[0][1];
+    expect(action).not.toHaveProperty("mimeType");
+    expect(action).not.toHaveProperty("extensions");
+    expect(action).not.toHaveProperty("title");
     expect(nativeSave).not.toHaveBeenCalled();
     expect(bridgeListeners.size).toBe(0);
   });
@@ -481,12 +492,15 @@ describe("saveTextFile", () => {
     expect(nativeSave).not.toHaveBeenCalled();
     expect(invoke).toHaveBeenCalledWith("plugin_panel_event_forward", {
       event: ANALYSIS_WINDOW_ACTION_EVENT,
-      payload: expect.objectContaining({ kind: "saveTextFile", filename: "predicted.jdx", text: "data" })
+      payload: expect.objectContaining({ kind: "saveTextFile", filename: "predicted.jdx", text: "data", format: "jcamp" })
     });
     expect(bridgeEmit).toHaveBeenCalledWith(
       ANALYSIS_WINDOW_ACTION_EVENT,
-      expect.objectContaining({ kind: "saveTextFile", filename: "predicted.jdx", text: "data" })
+      expect.objectContaining({ kind: "saveTextFile", filename: "predicted.jdx", text: "data", format: "jcamp" })
     );
+    expect(bridgeEmit.mock.calls[0][1]).not.toHaveProperty("mimeType");
+    expect(bridgeEmit.mock.calls[0][1]).not.toHaveProperty("extensions");
+    expect(bridgeEmit.mock.calls[0][1]).not.toHaveProperty("title");
     // The listener is gone once answered.
     expect(bridgeListeners.has(ANALYSIS_WINDOW_ACTION_RESULT_EVENT)).toBe(false);
   });
@@ -504,5 +518,20 @@ describe("saveTextFile", () => {
       })
     ).resolves.toBe("failed");
     expect(bridgeListeners.has(ANALYSIS_WINDOW_ACTION_RESULT_EVENT)).toBe(false);
+  });
+
+  it("times out unanswered text saves and releases the reply listener", async () => {
+    vi.useFakeTimers();
+    (globalThis as typeof globalThis & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    window.history.replaceState(null, "", "/?window=pluginPanel");
+    const result = saveTextFile("spectrum.svg", "<svg/>", {
+      title: "SVG", formatLabel: "SVG", extensions: ["svg"], mimeType: "image/svg+xml"
+    });
+    await vi.advanceTimersByTimeAsync(120_001);
+    await expect(result).resolves.toBe("failed");
+    expect(bridgeListeners.size).toBe(0);
+    expect(nativeSave).not.toHaveBeenCalled();
+    expect(bridgeEmit).toHaveBeenCalledWith(ANALYSIS_WINDOW_ACTION_EVENT,
+      expect.objectContaining({ kind: "saveTextFile", format: "svg" }));
   });
 });

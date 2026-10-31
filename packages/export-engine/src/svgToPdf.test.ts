@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { exportSvgToPdf } from "./index";
+import { exportSvgToPdf } from "@chemdraft/export-engine/pdf";
 
 afterEach(() => vi.restoreAllMocks());
 

@@ -24,7 +24,6 @@ export type {
   TextExportResult
 } from "./results";
 export type { PdfExportOptions } from "./pdf";
-export { exportSvgToPdf } from "./pdf";
 export { documentStyleSvg, exportDocumentToSvg, type SvgExportOptions, type SvgExportResult } from "./svg";
 
 export type ExportFormat = ExportFormatId;

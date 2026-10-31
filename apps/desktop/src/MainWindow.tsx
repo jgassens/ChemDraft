@@ -193,7 +193,6 @@ import {
   respondToCopyMolecularInspector,
   respondToPluginPanelAction,
   respondToProposalDecision,
-  respondToSaveTextFile,
   type AnalysisWindowAction,
   type AnalysisWindowContent,
   type AnalysisWindowSnapshotPayload,
@@ -206,7 +205,7 @@ import { canvasOverlayDockSlots, PluginCanvasOverlay } from "./plugins/PluginCan
 import { pluginPanelOpenCommand } from "./plugins/pluginPanelOpenCommand";
 import { canvasOverlayPrompt, OVERLAY_BUSY_MESSAGE, pluginCanvasOverlayOpenCommand } from "./plugins/pluginCanvasOverlayControls";
 import type { PluginPanelActionRequest, PluginPanelActionResult } from "./plugins/pluginPanelActionTypes";
-import { handleSpectrumWindowAction, saveTextFileHere } from "./plugins/spectrumExport";
+import { handleSpectrumWindowAction } from "./plugins/spectrumExport";
 import type { QueuedProposedPatch } from "@chemdraft/plugin-host";
 import { isBlockedByModalDialog, shouldIgnoreShortcutTarget, subscribeToModalDialogChanges, type ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import {
@@ -11477,17 +11476,9 @@ export function MainWindow({
           }
           case "copySpectrum":
           case "saveBinaryFile":
+          case "saveTextFile":
             void handleSpectrumWindowAction(action).catch(() => undefined);
             return;
-          case "saveTextFile": {
-            // A report window asked for a save it has no permission to perform itself (the NMR
-            // figure's JCAMP-DX export). Run it here and tell that window how it ended.
-            const { requestId, filename, text, title, formatLabel, extensions, mimeType } = action;
-            void saveTextFileHere(filename, text, { title, formatLabel, extensions, mimeType })
-              .catch(() => "failed" as const)
-              .then((result) => respondToSaveTextFile(requestId, result))
-              .catch(() => undefined);
-          }
         }
       }),
     []

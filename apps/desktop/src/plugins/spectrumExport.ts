@@ -300,7 +300,7 @@ export async function svgToPngBlob(
 export function copySpectrumToClipboard(
   svgMarkup: string,
   rasterize: (markup: string) => Promise<Blob | null> = svgToPngBlob
-): Promise<"image" | "svg" | "none"> {
+): Promise<"image" | "none"> {
   if (isDesktopRuntime()) {
     return (async () => {
       try {
@@ -384,17 +384,45 @@ export interface SaveTextFileOptions {
   mimeType: string;
 }
 
+export type SpectrumSaveFormat = "jcamp" | "svg" | "png" | "pdf";
+
+const spectrumSaveFormats: Record<SpectrumSaveFormat, SaveTextFileOptions> = {
+  jcamp: { title: "Export spectrum (JCAMP-DX)", formatLabel: "JCAMP-DX", extensions: ["jdx", "dx"], mimeType: "chemical/x-jcamp-dx" },
+  svg: { title: "Export spectrum as SVG", formatLabel: "SVG", extensions: ["svg"], mimeType: "image/svg+xml" },
+  png: { title: "Export spectrum as PNG", formatLabel: "PNG", extensions: ["png"], mimeType: "image/png" },
+  pdf: { title: "Export spectrum as PDF", formatLabel: "PDF", extensions: ["pdf"], mimeType: "application/pdf" }
+};
+
+function saveFormat(options: SaveTextFileOptions): SpectrumSaveFormat | undefined {
+  return (Object.keys(spectrumSaveFormats) as SpectrumSaveFormat[]).find((key) => spectrumSaveFormats[key].mimeType === options.mimeType);
+}
+
+function spectrumSaveTarget(filename: unknown, format: unknown) {
+  if (typeof format !== "string" || !Object.hasOwn(spectrumSaveFormats, format) ||
+      typeof filename !== "string" || !filename.length || filename.length > 200 ||
+      /[\\/\x00-\x1f\x7f<>:"|?*]/.test(filename) || /[. ]$/.test(filename) ||
+      /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(filename)) return;
+  const key = format as SpectrumSaveFormat;
+  const options = spectrumSaveFormats[key];
+  const stem = filename.replace(/\.[^.]*$/, "");
+  if (!stem || stem === "." || stem === "..") return;
+  return { filename: `${stem}.${options.extensions[0]}`, format: key, options };
+}
+
 export async function saveTextFile(
   filename: string,
   text: string,
   options: SaveTextFileOptions
 ): Promise<SaveTextFileResult> {
+  const target = spectrumSaveTarget(filename, saveFormat(options));
+  if (!target || (target.format !== "jcamp" && target.format !== "svg") ||
+      boundedUtf8Size(text, MAX_SPECTRUM_TRANSFER_BYTES) === undefined) return "failed";
   // A detached report window has no dialog or filesystem permission, by design. The main window
   // shows the save dialog and writes the file for it (`saveTextFile` analysis-window action).
   if (isDesktopRuntime() && isPluginPanelWindowRoute()) {
-    return requestSaveTextFileFromMain(filename, text, options);
+    return requestSaveTextFileFromMain(target.filename, text, target.format);
   }
-  return saveTextFileHere(filename, text, options);
+  return saveTextFileHere(target.filename, text, target.options);
 }
 
 /** Save from THIS window with its own permissions. The main window uses it to serve report windows. */
@@ -403,6 +431,11 @@ export async function saveTextFileHere(
   text: string,
   options: SaveTextFileOptions
 ): Promise<SaveTextFileResult> {
+  const target = spectrumSaveTarget(filename, saveFormat(options));
+  if (!target || (target.format !== "jcamp" && target.format !== "svg") ||
+      boundedUtf8Size(text, MAX_SPECTRUM_TRANSFER_BYTES) === undefined) return "failed";
+  filename = target.filename;
+  options = target.options;
   if (isDesktopRuntime()) {
     try {
       const { save } = await import("../nativeFileDialog");
@@ -429,6 +462,24 @@ export async function saveTextFileHere(
 
 export const MAX_SPECTRUM_TRANSFER_BYTES = 20 * 1024 * 1024;
 
+/** Match UTF-8 replacement of unpaired surrogates without allocating an encoded copy. */
+function boundedUtf8Size(value: unknown, limit: number): number | undefined {
+  if (typeof value !== "string" || value.length > limit) return;
+  let size = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 0x80) size += 1;
+    else if (code < 0x800) size += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && index + 1 < value.length &&
+        value.charCodeAt(index + 1) >= 0xdc00 && value.charCodeAt(index + 1) <= 0xdfff) {
+      size += 4;
+      index += 1;
+    } else size += 3;
+    if (size > limit) return;
+  }
+  return size;
+}
+
 function bytesToBase64(bytes: Uint8Array): string {
   if (bytes.length > MAX_SPECTRUM_TRANSFER_BYTES) throw new Error("Spectrum file exceeds 20 MB.");
   const chunks: string[] = [];
@@ -454,18 +505,10 @@ function isPng(bytes: Uint8Array): boolean {
   return bytes.length >= 33 && [137, 80, 78, 71, 13, 10, 26, 10].every((byte, index) => bytes[index] === byte);
 }
 
-function validSaveOptions(value: Record<string, unknown>): value is Record<string, unknown> & SaveTextFileOptions & { filename: string } {
-  return typeof value.filename === "string" && value.filename.length > 0 && value.filename.length <= 200 &&
-    !/[\\/\x00-\x1f\x7f]/.test(value.filename) && value.filename !== "." && value.filename !== ".." &&
-    typeof value.title === "string" && value.title.length > 0 && value.title.length <= 200 &&
-    typeof value.formatLabel === "string" && value.formatLabel.length > 0 && value.formatLabel.length <= 100 &&
-    typeof value.mimeType === "string" && Array.isArray(value.extensions) && value.extensions.length === 1 &&
-    typeof value.extensions[0] === "string";
-}
-
 export interface SpectrumWindowActionDependencies {
   writeClipboard: (items: readonly ClipboardWriteItem[]) => Promise<ClipboardWriteResult>;
   saveBinary: typeof saveBinaryFileHere;
+  saveText: typeof saveTextFileHere;
   respondCopy: (requestId: string, ok: boolean) => Promise<void>;
   respondSave: (requestId: string, result: SaveTextFileResult) => Promise<void>;
 }
@@ -476,6 +519,7 @@ export async function handleSpectrumWindowAction(
   dependencies: SpectrumWindowActionDependencies = {
     writeClipboard: writeClipboardItems,
     saveBinary: saveBinaryFileHere,
+    saveText: saveTextFileHere,
     respondCopy: respondToCopyMolecularInspector,
     respondSave: respondToSaveTextFile
   }
@@ -493,8 +537,8 @@ export async function handleSpectrumWindowAction(
           (typeof svg !== "string" || !svg.length || svg.length > MAX_SPECTRUM_TRANSFER_BYTES))) {
         throw new Error("Invalid spectrum clipboard payload.");
       }
-      const svgSize = typeof svg === "string" ? new TextEncoder().encode(svg).length : 0;
-      if (pngSize + svgSize > MAX_SPECTRUM_TRANSFER_BYTES) throw new Error("Spectrum clipboard exceeds 20 MB.");
+      const svgSize = svg === undefined ? 0 : boundedUtf8Size(svg, Math.floor((MAX_SPECTRUM_TRANSFER_BYTES - pngSize) / 2));
+      if (svgSize === undefined) throw new Error("Spectrum clipboard exceeds 20 MB.");
       const png = decodeBase64(action.pngBase64 as string);
       if (!isPng(png)) throw new Error("Invalid spectrum PNG.");
       const result = await dependencies.writeClipboard(spectrumClipboardItems(png, svg as string | undefined));
@@ -503,23 +547,27 @@ export async function handleSpectrumWindowAction(
       ok = false;
     }
     await dependencies.respondCopy(requestId, ok);
-  } else if (action.kind === "saveBinaryFile") {
+  } else if (action.kind === "saveBinaryFile" || action.kind === "saveTextFile") {
     let result: SaveTextFileResult = "failed";
     try {
-      if (!validSaveOptions(action) || boundedBase64Size(action.bytesBase64) === undefined) {
-        throw new Error("Invalid spectrum file payload.");
+      const target = spectrumSaveTarget(action.filename, action.format);
+      if (!target) throw new Error("Invalid spectrum save target.");
+      if (action.kind === "saveTextFile") {
+        if ((target.format !== "jcamp" && target.format !== "svg") ||
+            boundedUtf8Size(action.text, MAX_SPECTRUM_TRANSFER_BYTES) === undefined) {
+          throw new Error("Invalid spectrum text payload.");
+        }
+        result = await dependencies.saveText(target.filename, action.text as string, target.options);
+      } else {
+        if ((target.format !== "png" && target.format !== "pdf") || boundedBase64Size(action.bytesBase64) === undefined) {
+          throw new Error("Invalid spectrum binary payload.");
+        }
+        const bytes = decodeBase64(action.bytesBase64 as string);
+        if (target.format === "png" ? !isPng(bytes) : ![37, 80, 68, 70, 45].every((byte, index) => bytes[index] === byte)) {
+          throw new Error("Spectrum file does not match its format.");
+        }
+        result = await dependencies.saveBinary(target.filename, bytes, target.options);
       }
-      const extension = action.mimeType === "image/png" ? "png" : action.mimeType === "application/pdf" ? "pdf" : undefined;
-      if (!extension || action.extensions[0] !== extension || !action.filename.toLowerCase().endsWith(`.${extension}`)) {
-        throw new Error("Unsupported spectrum binary format.");
-      }
-      const bytes = decodeBase64(action.bytesBase64 as string);
-      if (extension === "png" ? !isPng(bytes) : ![37, 80, 68, 70, 45].every((byte, index) => bytes[index] === byte)) {
-        throw new Error("Spectrum file does not match its format.");
-      }
-      result = await dependencies.saveBinary(action.filename, bytes, {
-        title: action.title, formatLabel: action.formatLabel, extensions: action.extensions, mimeType: action.mimeType
-      });
     } catch {
       result = "failed";
     }
@@ -533,11 +581,12 @@ export async function saveBinaryFile(
   options: SaveTextFileOptions
 ): Promise<SaveTextFileResult> {
   try {
-    if (bytes.length > MAX_SPECTRUM_TRANSFER_BYTES) return "failed";
+    const target = spectrumSaveTarget(filename, saveFormat(options));
+    if (!target || (target.format !== "png" && target.format !== "pdf") || bytes.length > MAX_SPECTRUM_TRANSFER_BYTES) return "failed";
     if (isDesktopRuntime() && isPluginPanelWindowRoute()) {
-      return await requestSaveBinaryFileFromMain(filename, bytesToBase64(bytes), options);
+      return await requestSaveBinaryFileFromMain(target.filename, bytesToBase64(bytes), target.format);
     }
-    return await saveBinaryFileHere(filename, bytes, options);
+    return await saveBinaryFileHere(target.filename, bytes, target.options);
   } catch {
     return "failed";
   }
@@ -549,7 +598,10 @@ export async function saveBinaryFileHere(
   bytes: Uint8Array,
   options: SaveTextFileOptions
 ): Promise<SaveTextFileResult> {
-  if (bytes.length > MAX_SPECTRUM_TRANSFER_BYTES) return "failed";
+  const target = spectrumSaveTarget(filename, saveFormat(options));
+  if (!target || (target.format !== "png" && target.format !== "pdf") || bytes.length > MAX_SPECTRUM_TRANSFER_BYTES) return "failed";
+  filename = target.filename;
+  options = target.options;
   if (isDesktopRuntime()) {
     try {
       const { save } = await import("../nativeFileDialog");

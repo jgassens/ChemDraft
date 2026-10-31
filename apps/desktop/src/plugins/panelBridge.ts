@@ -3,7 +3,7 @@ import type { PluginManifest, PluginPanelReport, RecognitionProposalReview } fro
 import { isDesktopRuntime } from "../window-manager";
 import { listenTauriEvent } from "../window-manager/tauriEvents";
 import type { PluginPanelActionRequest } from "./pluginPanelActionTypes";
-import type { SaveTextFileOptions, SaveTextFileResult } from "./spectrumExport";
+import type { SpectrumSaveFormat, SaveTextFileResult } from "./spectrumExport";
 import type { PluginDiagnostic } from "./types";
 
 export const PLUGIN_PANEL_REPORT_EVENT = "chemdraft://plugin-panel-report";
@@ -248,8 +248,7 @@ export type AnalysisWindowAction =
   | { kind: "acceptPluginProposal"; proposalId: string; requestId?: string }
   | { kind: "rejectPluginProposal"; proposalId: string; requestId?: string }
   // The document handler validates these payloads, including malformed requests it must answer.
-  | { kind: "copySpectrum" | "saveBinaryFile"; requestId: string }
-  | ({ kind: "saveTextFile"; requestId: string; filename: string; text: string } & SaveTextFileOptions);
+  | { kind: "copySpectrum" | "saveBinaryFile" | "saveTextFile"; requestId: string };
 
 /** Main → window: how a `saveTextFile` action ended, keyed to the request that asked. */
 export interface AnalysisWindowSaveResult {
@@ -319,48 +318,16 @@ async function emitPanelEvent(event: string, payload: unknown): Promise<void> {
   }
 }
 
-/**
- * Window → main: save a text file through the main window, and resolve with how it ended.
- *
- * Report windows hold no dialog or filesystem permission (capabilities/plugin-panel.json) and must
- * not gain one, so a save the user asks for there — the NMR figure's JCAMP-DX export — is performed
- * by the main window with its own permissions. The listener is attached before the request is sent,
- * so a fast answer cannot be missed.
- */
-export async function requestSaveTextFileFromMain(
+/** Panels request a format; the document window owns save metadata and validation. */
+export function requestSaveTextFileFromMain(
   filename: string,
   text: string,
-  options: SaveTextFileOptions
+  format: SpectrumSaveFormat
 ): Promise<SaveTextFileResult> {
-  if (!isDesktopRuntime()) {
-    return "failed";
-  }
-  const requestId = `save-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-  let unlisten: (() => void) | undefined;
-  try {
-    let answer: (result: SaveTextFileResult) => void = () => undefined;
-    const answered = new Promise<SaveTextFileResult>((resolve) => {
-      answer = resolve;
-    });
-    unlisten = await listenTauriEvent<unknown>(ANALYSIS_WINDOW_ACTION_RESULT_EVENT, (event) => {
-      if (isSaveResult(event.payload) && event.payload.requestId === requestId) {
-        answer(event.payload.result);
-      }
-    });
-    await emitPanelEvent(ANALYSIS_WINDOW_ACTION_EVENT, {
-      kind: "saveTextFile",
-      requestId,
-      filename,
-      text,
-      ...options,
-      extensions: [...options.extensions]
-    });
-    return await answered;
-  } catch {
-    return "failed";
-  } finally {
-    unlisten?.();
-  }
+  return requestSpectrumWindowAction(
+    { kind: "saveTextFile", filename, text, format },
+    "failed", isSaveResult, (reply) => reply.result, 120_000
+  );
 }
 
 /** Main → window: answer a `saveTextFile` action. */
@@ -380,10 +347,10 @@ export function requestCopySpectrumFromMain(pngBase64: string, svg: string): Pro
 export function requestSaveBinaryFileFromMain(
   filename: string,
   bytesBase64: string,
-  options: SaveTextFileOptions
+  format: SpectrumSaveFormat
 ): Promise<SaveTextFileResult> {
   return requestSpectrumWindowAction(
-    { kind: "saveBinaryFile", filename, bytesBase64, ...options, extensions: [...options.extensions] },
+    { kind: "saveBinaryFile", filename, bytesBase64, format },
     "failed", isSaveResult, (reply) => reply.result, 120_000
   );
 }
@@ -924,16 +891,6 @@ function isAnalysisWindowAction(payload: unknown): payload is AnalysisWindowActi
         (candidate.requestId === undefined || typeof candidate.requestId === "string")
       );
     case "saveTextFile":
-      return (
-        typeof candidate.requestId === "string" &&
-        typeof candidate.filename === "string" &&
-        typeof candidate.text === "string" &&
-        typeof candidate.title === "string" &&
-        typeof candidate.formatLabel === "string" &&
-        typeof candidate.mimeType === "string" &&
-        Array.isArray(candidate.extensions) &&
-        candidate.extensions.every((extension) => typeof extension === "string")
-      );
     case "copySpectrum":
     case "saveBinaryFile":
       // Forward malformed data to the bounded document handler so the requester gets a failure.

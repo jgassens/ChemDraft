@@ -432,6 +432,13 @@ describe("clipboard-adapter", () => {
   it("classifies SVG documents in plain-text flavors as vector artwork", () => {
     for (const text of [
       "<svg/>",
+      '<?xml version="1.0"?><?xml-stylesheet type="text/css" href="spectrum.css"?><svg/>',
+      '<?xml version="1.0"?><?custom data?><!-- prolog --><!DOCTYPE svg SYSTEM "unused.dtd"><?next?><svg></svg>',
+      '<s:svg xmlns:s="http://www.w3.org/2000/svg"/>',
+      '<s:svg width="1" xmlns:s="http://www.w3.org/2000/svg"><s:g><s:path d="M0 0"/></s:g></s:svg>',
+      '<svg><!-- </svg> --><![CDATA[</svg>]]><?custom?></svg>',
+      '<svg title="a > b"><g/></svg><!-- after --><?done?>',
+      '<!DOCTYPE svg [<!-- ] > [ --><!ENTITY x "unused">]><svg/>',
       " \uFEFF <?xml version=\"1.0\"?>\n<!-- comment -->\n<!DOCTYPE svg [<!ENTITY x 'a>b'>]>\n<svg class=\"spectrum\"></svg>",
       "<!-- before --><!DOCTYPE svg PUBLIC 'id' 'url'><!-- after --><svg xmlns=\"http://www.w3.org/2000/svg\"/>"
     ]) {
@@ -443,7 +450,18 @@ describe("clipboard-adapter", () => {
   });
 
   it("keeps text mentioning SVG and other root elements as plain text", () => {
-    for (const text of ["This mentions <svg in a sentence", "<svgish/>", "<!-- comment --><other><svg/></other>"]) {
+    for (const text of [
+      "This mentions <svg in a sentence", "<svgish/>", "<!-- comment --><other><svg/></other>",
+      "<svg ", "<svg>", "<svg title=", "<svg><g/></other>", "<svg><g></svg>",
+      "<svg/ trailing>", "<svg/><other/>", "<svg/> trailing text", "<svg><!-- </svg>",
+      '<svg xmlns="https://example.invalid"/>', '<s:svg/>',
+      '<s:svg xmlns="http://www.w3.org/2000/svg"/>',
+      '<s:svg xmlns:s="https://example.invalid"/>',
+      '<s:svg xmlns:s="http://www.w3.org/2000/svg"></svg>',
+      '<?xml version="1.0"?><?unfinished <svg/>', '<!DOCTYPE svg [<svg/>',
+      "<svg>" + "<g>".repeat(257) + "</g>".repeat(257) + "</svg>",
+      "<svg>" + "x".repeat(20 * 1024 * 1024) + "</svg>"
+    ]) {
       expect(inspectClipboardPayload({
         types: ["text/plain"], textItems: [{ type: "text/plain", text }]
       })).toMatchObject({ kind: "plain-text", text });
