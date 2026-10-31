@@ -4,6 +4,7 @@ import {
   ChemDraftDocumentSchema,
   DocumentSchemaVersion,
   createEmptyDocument,
+  createImageGraphicObject,
   elementSymbols,
   parseDocument,
   serializeDocument,
@@ -31,6 +32,18 @@ import {
   visibleHashForCdxml
 } from "./index";
 import { sha256Hex, utf8Bytes } from "./sha256";
+
+it("warns when a picture is omitted from visible CDXML and retains the native payload", () => {
+  const picture = createImageGraphicObject({ id: "g12", mimeType: "image/svg+xml", center: { x: 30, y: 40 },
+    dataBase64: btoa('<svg xmlns="http://www.w3.org/2000/svg" width="4" height="3"/>') });
+  const document = createEmptyDocument();
+  document.pages[0].objects = [picture];
+  const exported = exportDocumentToCdxml(document);
+  expect(exported.warnings).toContainEqual({ code: "cdxml.picture_not_saved", objectId: "g12",
+    message: "CDXML export: picture g12 is not saved in CDXML" });
+  expect(exported.contents).not.toContain("<graphic");
+  expect(openChemDraftPayload(exported.contents).document?.pages[0].objects).toEqual([picture]);
+});
 
 describe("files that are not CDXML", () => {
   it("names a ChemDraw binary .cdx file and says what to do", () => {

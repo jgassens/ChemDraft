@@ -64,8 +64,20 @@ export function exportDocumentToSvg(document: ChemDraftDocument, options: SvgExp
   const outputWidth = options.outputWidth === undefined ? svgSize.width : `${options.outputWidth}${options.outputUnit ?? ""}`;
   const outputHeight = options.outputHeight === undefined ? svgSize.height : `${options.outputHeight}${options.outputUnit ?? ""}`;
   const plan = planPageSvgRender(page);
-  const body = plan.fragments.map((fragment) => serializeSvgFragment(fragment, 2)).join("\n");
-  const warnings = plan.warnings.map<ExportWarning>((warning) => ({
+  const images = new Map(page.objects.filter((object) => object.type === "graphic" && object.graphicKind === "image" && object.data.image)
+    .map((object) => [object.id, object]));
+  const renderedImages = new Set<string>();
+  const body = plan.fragments.map((fragment) => {
+    const image = fragment.kind === "element" ? images.get(String(fragment.attrs["data-object-id"])) : undefined;
+    if (!image || fragment.kind !== "element" || image.type !== "graphic" || !image.data.image) return serializeSvgFragment(fragment, 2);
+    if (renderedImages.has(image.id)) return "";
+    renderedImages.add(image.id);
+    return serializeSvgFragment({ ...fragment, tag: "g", children: [{ kind: "element", key: `image-${image.id}`, tag: "image", attrs: {
+      x: String(image.x), y: String(image.y), width: String(image.width), height: String(image.height),
+      preserveAspectRatio: "none", href: `data:${image.data.image.mimeType};base64,${image.data.image.dataBase64}`
+    }, children: [] }] }, 2);
+  }).join("\n");
+  const warnings = plan.warnings.filter((warning) => !(warning.code === "export.svg.graphic_fallback" && warning.objectId && images.has(warning.objectId))).map<ExportWarning>((warning) => ({
     code: warning.code,
     message: warning.message,
     severity: "warning",

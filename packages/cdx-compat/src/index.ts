@@ -812,6 +812,10 @@ function exportGraphicObject(
   allocator: IdAllocator,
   warnings: CompatibilityConversionWarning[]
 ): string {
+  if (graphic.graphicKind === "image") {
+    warnings.push({ code: "cdxml.picture_not_saved", message: `CDXML export: picture ${graphic.id} is not saved in CDXML`, objectId: graphic.id });
+    return "";
+  }
   const graphicId = idFor(ids, graphic.id, allocator);
   warnForGraphicCdxmlLimitations(graphic, warnings);
   // An object that came in as an <arrow> goes back out as one, even now that it is tagged as a

@@ -1,6 +1,7 @@
 import {
   applyPatch,
   createEmptyDocument,
+  createImageGraphicObject,
   createCustomPageLayout,
   createPageLayout,
   type TextObject,
@@ -32,6 +33,30 @@ function filledRingFixture(): MoleculeObject {
 const timestamp = "2026-05-29T00:00:00.000Z";
 
 describe("exportDocumentToPdf", () => {
+  it("exports picture frames in SVG and embeds PNGs in PDF, warning for SVG pictures", async () => {
+    const png = Buffer.from(new Resvg('<svg xmlns="http://www.w3.org/2000/svg" width="2" height="1"><rect width="2" height="1" fill="red"/></svg>').render().asPng()).toString("base64");
+    const picture = { ...createImageGraphicObject({ id: "g12", mimeType: "image/png", dataBase64: png, center: { x: 0, y: 0 } }),
+      x: 10.12345, y: 20, width: 80, height: 40, rotation: 30 };
+    const svgPicture = { ...picture, id: "g13", data: { image: { ...picture.data.image!, mimeType: "image/svg+xml" as const,
+      dataBase64: btoa('<svg xmlns="http://www.w3.org/2000/svg"/>') } } };
+    const document = createEmptyDocument({ now: timestamp });
+    document.pages[0]!.objects = [picture, svgPicture];
+    const result = exportDocumentToSvg(document);
+    const dom = new JSDOM(result.contents, { contentType: "image/svg+xml" });
+    const image = dom.window.document.querySelector('[data-object-id="g12"] image')!;
+    expect(["x", "y", "width", "height", "preserveAspectRatio", "href"].map((name) => image.getAttribute(name)))
+      .toEqual(["10.12345", "20", "80", "40", "none", `data:image/png;base64,${png}`]);
+    expect(image.parentElement!.getAttribute("transform")).toBe("rotate(30 50.123 40)");
+    expect(result.warnings).toEqual([]);
+    dom.window.close();
+    const pdf = await withPdfDom((domParser) => exportDocumentToPdf(document, { domParser, compress: false }));
+    const content = Buffer.from(pdf.bytes).toString("latin1");
+    expect(content).toContain("/Subtype /Image");
+    expect(content).toMatch(/\/I\d+ Do/);
+    expect(content).toContain("80. 0 0 40. 10.12345");
+    expect(pdf.warnings).toEqual([{ code: "export.pdf.svg_picture_not_drawn", severity: "warning", objectId: "g13",
+      message: "PDF export: SVG picture g13 was not drawn; paste it as PNG or export SVG" }]);
+  });
   it("exports CC=CC with either stereo as the canvas's crossed segments in SVG and painted PDF strokes", async () => {
     const document = createEmptyDocument({ now: timestamp });
     const molecule: MoleculeObject = {
