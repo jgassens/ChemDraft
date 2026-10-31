@@ -174,6 +174,7 @@ export function PluginPanelWindow({ panelId }: { panelId: string }) {
     : payload?.report.title ?? "Plugin panel";
 
   const closeWindow = useCallback((): void => {
+    // Await pending enlargement and the native restore so a failure stays visible and retryable.
     void restoreLinkedFigureWindowFrame().then(() => {
       if (contentRef.current) contentRef.current.scrollTop = 0;
       setCloseError(undefined);

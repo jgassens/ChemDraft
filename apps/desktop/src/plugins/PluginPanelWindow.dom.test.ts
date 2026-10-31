@@ -41,7 +41,14 @@ import {
 import { PluginPanelWindow } from "./PluginPanelWindow";
 import { PluginPanelSurface } from "./PluginPanelSurface";
 
-const tauriInvoke = vi.hoisted(() => vi.fn(async (command: string) => command === "register_plugin_panel_input_focus" ? "page-token" : true));
+const tauriInvoke = vi.hoisted(() => vi.fn(async (command: string, args?: { enabled?: boolean }) => {
+  if (command === "set_plugin_panel_full_size") {
+    const status = { enabled: args?.enabled ?? false };
+    await tauriEvents.emit("chemdraft://plugin-panel-full-size", status);
+    return status;
+  }
+  return command === "register_plugin_panel_input_focus" ? "page-token" : true;
+}));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: tauriInvoke }));
 
 // A minimal cross-window event bus: `emit` reaches every `listen`er of that event name, as Tauri's
@@ -90,6 +97,9 @@ vi.mock("../window-manager/tauriEvents", async (importOriginal) => {
     ...actual,
     listenTauriEvent: (name: string, handler: EventCallback<unknown>) =>
       actual.safeTauriListen(name, (wrapped) => tauriEvents.listen(name, ({ payload }) =>
+        wrapped({ event: name, id: 1, payload })), handler).attached,
+    listenCurrentWindowEvent: (name: string, handler: EventCallback<unknown>) =>
+      actual.safeTauriListen(name, (wrapped) => tauriEvents.listen(name, ({ payload }) =>
         wrapped({ event: name, id: 1, payload })), handler).attached
   };
 });
@@ -99,20 +109,11 @@ vi.mock("@tauri-apps/api/webviewWindow", () => ({
 const nativeSave = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/plugin-dialog", () => ({ save: nativeSave }));
 const nativePanel = vi.hoisted(() => ({
-  hide: vi.fn(async () => undefined),
-  innerSize: vi.fn(async () => ({ width: 380, height: 520 })),
-  outerSize: vi.fn(async () => ({ width: 380, height: 520 })),
-  outerPosition: vi.fn(async () => ({ x: 415, y: 235 })),
-  setSize: vi.fn(async (_size: unknown) => undefined),
-  setPosition: vi.fn(async (_position: unknown) => undefined)
+  hide: vi.fn(async () => undefined)
 }));
 vi.mock("@tauri-apps/api/window", async (importOriginal) => ({
   ...await importOriginal<typeof import("@tauri-apps/api/window")>(),
-  getCurrentWindow: () => nativePanel,
-  currentMonitor: async () => ({
-    scaleFactor: 1,
-    workArea: { position: { x: 0, y: 28 }, size: { width: 1440, height: 872 } }
-  })
+  getCurrentWindow: () => nativePanel
 }));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -120,8 +121,8 @@ vi.mock("@tauri-apps/api/window", async (importOriginal) => ({
 let container: HTMLElement | undefined;
 let root: Root | undefined;
 
-afterEach(() => {
-  act(() => {
+afterEach(async () => {
+  await act(async () => {
     root?.unmount();
   });
   container?.remove();
@@ -384,6 +385,10 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     const fullSize = [...container!.querySelectorAll<HTMLButtonElement>(".lf-btn")]
       .find((button) => button.textContent === "Full size")!;
     await act(async () => { fullSize.click(); });
+    expect(tauriInvoke).toHaveBeenCalledWith("set_plugin_panel_full_size", {
+      enabled: true, width: 1392, height: 660
+    });
+    expect(tauriEvents.listeners.get("chemdraft://plugin-panel-full-size")?.size).toBe(1);
     const select = document.querySelector<HTMLSelectElement>(".lf-modal select")!;
     expect(select).not.toBeNull();
     expect(container!.contains(select)).toBe(false);
@@ -397,7 +402,16 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     await act(async () => {
       select.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
     });
-    expect(tauriInvoke).toHaveBeenLastCalledWith("set_plugin_panel_input_focus", { editing: false, generation: expect.any(Number), pageToken: "page-token" });
+    const focusCalls = tauriInvoke.mock.calls.filter(([command]) => command === "set_plugin_panel_input_focus");
+    expect(focusCalls).toEqual([
+      ["set_plugin_panel_input_focus", { editing: true, generation: expect.any(Number), pageToken: "page-token" }],
+      ["set_plugin_panel_input_focus", { editing: false, generation: expect.any(Number), pageToken: "page-token" }]
+    ]);
+    expect(tauriInvoke).toHaveBeenCalledWith("set_plugin_panel_full_size", {
+      enabled: false, width: 0, height: 0
+    });
+    expect(document.querySelector(".lf-modal")).toBeNull();
+    expect(nativePanel.hide).not.toHaveBeenCalled();
     expect(container!.querySelector(".plugin-panel-shell")).not.toBeNull();
   });
 
@@ -854,12 +868,27 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     await mountWindow();
     await broadcast(reportPayload());
     await act(async () => [...container!.querySelectorAll<HTMLButtonElement>(".lf-btn")].find((button) => button.textContent === "Full size")!.click());
-    expect(nativePanel.setSize).toHaveBeenCalledWith(expect.objectContaining({ width: 1392, height: 660 }));
+    expect(tauriInvoke).toHaveBeenCalledWith("set_plugin_panel_full_size", {
+      enabled: true, width: 1392, height: 660
+    });
+    expect(document.querySelector(".lf-modal")).not.toBeNull();
+    let finishRestore!: (status: { enabled: boolean }) => void;
+    tauriInvoke.mockImplementationOnce(() => new Promise<{ enabled: boolean }>((resolve) => { finishRestore = resolve; }));
     await act(async () => container!.querySelector<HTMLButtonElement>('[aria-label="Close panel"]')!.click());
-    expect(nativePanel.setSize).toHaveBeenLastCalledWith(expect.objectContaining({ width: 380, height: 520 }));
-    expect(nativePanel.setPosition).toHaveBeenLastCalledWith(expect.objectContaining({ x: 415, y: 235 }));
+    expect(tauriInvoke).toHaveBeenLastCalledWith("set_plugin_panel_full_size", {
+      enabled: false, width: 0, height: 0
+    });
+    expect(nativePanel.hide).not.toHaveBeenCalled();
+    expect(tauriEvents.emitted.filter(({ name }) => name === PLUGIN_PANEL_CLOSED_EVENT)).toHaveLength(0);
+    expect(document.querySelector(".lf-modal")).not.toBeNull();
+    await act(async () => {
+      await tauriEvents.emit("chemdraft://plugin-panel-full-size", { enabled: false });
+    });
+    expect(document.querySelector(".lf-modal")).toBeNull();
+    expect(nativePanel.hide).not.toHaveBeenCalled();
+    await act(async () => { finishRestore({ enabled: false }); });
     expect(nativePanel.hide).toHaveBeenCalledTimes(1);
-    expect(nativePanel.setPosition.mock.invocationCallOrder.at(-1)).toBeLessThan(nativePanel.hide.mock.invocationCallOrder[0]);
+    expect(tauriEvents.emitted.filter(({ name }) => name === PLUGIN_PANEL_CLOSED_EVENT)).toHaveLength(1);
     expect(document.querySelector(".lf-modal")).toBeNull();
     await broadcast(reportPayload());
     expect(container!.querySelector(".lf-root")).not.toBeNull();
@@ -870,13 +899,21 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     await mountWindow();
     await broadcast(reportPayload());
     await act(async () => [...container!.querySelectorAll<HTMLButtonElement>(".lf-btn")].find((button) => button.textContent === "Full size")!.click());
-    nativePanel.setPosition.mockRejectedValueOnce(new Error("Position unavailable"));
+    expect(document.querySelector(".lf-modal")).not.toBeNull();
+    tauriInvoke.mockRejectedValueOnce(new Error("Restore unavailable"));
     await act(async () => container!.querySelector<HTMLButtonElement>('[aria-label="Close panel"]')!.click());
+    expect(tauriInvoke).toHaveBeenLastCalledWith("set_plugin_panel_full_size", {
+      enabled: false, width: 0, height: 0
+    });
     expect(nativePanel.hide).not.toHaveBeenCalled();
+    expect(tauriEvents.emitted.filter(({ name }) => name === PLUGIN_PANEL_CLOSED_EVENT)).toHaveLength(0);
+    expect(container!.querySelector('[role="alert"]')!.textContent).toContain("Could not restore the panel's previous size and position. Try closing it again.");
     expect(document.querySelector('.lf-modal [role="status"]')!.textContent).toContain("Try closing it again");
     await act(async () => container!.querySelector<HTMLButtonElement>('[aria-label="Close panel"]')!.click());
-    expect(nativePanel.setPosition).toHaveBeenLastCalledWith(expect.objectContaining({ x: 415, y: 235 }));
+    expect(tauriInvoke.mock.calls.filter(([command, args]) => command === "set_plugin_panel_full_size" && args?.enabled === false)).toHaveLength(2);
     expect(nativePanel.hide).toHaveBeenCalledTimes(1);
+    expect(tauriEvents.emitted.filter(({ name }) => name === PLUGIN_PANEL_CLOSED_EVENT)).toHaveLength(1);
+    expect(container!.querySelector('[role="alert"]')).toBeNull();
     expect(document.querySelector(".lf-modal")).toBeNull();
   });
 
