@@ -7,8 +7,7 @@ export const coneParameters = {
   butylFan: 45, azimuthFraction: { odd: 0.75, even: 0.5 }
 };
 
-export function coneParametersFor(n, variant = "B") {
-  if (!["A", "B"].includes(variant)) throw new Error(`Unknown calix[4] geometry variant: ${variant}`);
+export function coneParametersFor(n) {
   const choices = {
     // View along one ring: one face-on foreground panel, its opposite behind,
     // and equal-depth end panels. Frame the depth plane ahead of the end rings;
@@ -37,18 +36,7 @@ export function coneParametersFor(n, variant = "B") {
       drop: 0.60, rimLevelling: 0.2 }
   };
   const p = choices[n] ?? {};
-  // A retains the round-3 end yaw. B opens the end panels and spreads complete units;
-  // equal-length projected CH2 spans keep their two junctions well separated.
-  const openEnds = n === 4 && variant === "B" ? {
-    screenPanelYaws: [-22, 0, 22, 0], screenShifts: [0.23853, -0.50243, -0.29178, 0.55601],
-    screenYShifts: [-0.00141, -0.01698, 0.0168, 0.00141],
-    // Retain B's wider terminal fans. Small junction corrections clear the
-    // shortened back oxygen without altering the original source-depth marks.
-    screenFanSpreads: { 0: 0.64, 2: 0.64 }, screenBridgeLength: 1.2,
-    screenBridgeOffsets: [{ x: 0.00009, y: 0.04165 }, { x: 0.00903, y: 0.03605 },
-      { x: -0.05243, y: 0.07996 }, { x: -0.0001, y: 0.00725 }]
-  } : {};
-  return { ...coneParameters, ...p, ...openEnds,
+  return { ...coneParameters, ...p,
     azimuthFractions: { [n]: p.fraction ?? (n % 2 ? 0.75 : 0.5) } };
 }
 
@@ -197,25 +185,6 @@ export function projectCone(model, elevation = coneParameters.elevation, options
     for (const axis of ["x", "y"]) projected.atoms[n * size + unit][axis] +=
       ((projected.atoms[a][axis] - original[a][axis]) + (projected.atoms[b][axis] - original[b][axis])) / 2;
   }
-  if (options.screenBridgeLength !== undefined) {
-    // Original textbook construction: the lower intersection of equal-radius
-    // circles about the displaced ortho endpoints. This opens the diagonal links
-    // without pulling one junction onto the other. Source geometry, bond order,
-    // original midpoint depth and stacking are untouched.
-    const length = options.screenBridgeLength;
-    for (let unit = 0; unit < n; unit++) {
-      const a = projected.atoms[unit * size + 1], b = projected.atoms[((unit + 1) % n) * size + 5];
-      const dx = b.x - a.x, dy = b.y - a.y, chord = Math.hypot(dx, dy);
-      if (!Number.isFinite(length) || length <= 0 || chord === 0 || chord > 2 * length) {
-        throw new Error(`Projected CH2 span ${unit} cannot close at length ${length}.`);
-      }
-      const bow = Math.sqrt(length * length - chord * chord / 4), sign = -Math.sign(dx);
-      Object.assign(projected.atoms[n * size + unit], {
-        x: (a.x + b.x) / 2 - sign * dy * bow / chord,
-        y: (a.y + b.y) / 2 + sign * dx * bow / chord
-      });
-    }
-  }
   // Explicit junction offsets clear carbon corners after whole-unit placement.
   // They change neither connectivity nor the original 3D depth/stacking decision.
   for (let unit = 0; unit < n; unit++) {
@@ -232,7 +201,7 @@ export function projectCone(model, elevation = coneParameters.elevation, options
     .map(([a, b]) => Math.hypot(projected.atoms[a].x - projected.atoms[b].x,
       projected.atoms[a].y - projected.atoms[b].y)));
   if (n === 4 || n === 5) {
-    // Depth-length OH for both tetramer geometries and the pentamer. Use the
+    // Depth-length OH for the tetramer and pentamer. Use the
     // original ring depths, before screen edits; the pentamer's curve saturates.
     const depths = units.map(unit => original.slice(unit.ipso, unit.ipso + 6)
       .reduce((sum, atom) => sum + atom.depth / 6, 0));

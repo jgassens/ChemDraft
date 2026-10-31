@@ -373,7 +373,7 @@ describe("structure template identities", () => {
 });
 
 describe("structure template geometry", () => {
-  it.each(["A", "B"])("%s: vertical calixarene C–O stems use depth lengths for n=4/5 and two heights for n=6/8, retaining every clearance gate", variant => {
+  it("vertical calixarene C–O stems use depth lengths for n=4/5 and two heights for n=6/8, retaining every clearance gate", () => {
     const generatorUrl = new URL("../../../tools/template-layouts/calixarenes-pillararenes.mjs", import.meta.url).href;
     const coneUrl = new URL("../../../tools/template-layouts/calixarene-cone.mjs", import.meta.url).href;
     const geometryUrl = new URL("../../../tools/template-layouts/geometry.mjs", import.meta.url).href;
@@ -383,9 +383,9 @@ describe("structure template geometry", () => {
       import { calixareneConeModel, coneParametersFor } from ${JSON.stringify(coneUrl)};
       import { projectOrthographic } from ${JSON.stringify(geometryUrl)};
       import { projectionMetrics } from ${JSON.stringify(inspectionUrl)};
-      console.log(JSON.stringify(generator.generateTemplates(${JSON.stringify(variant)}).filter(entry => entry.projection === "perspective").map(entry => {
+      console.log(JSON.stringify(generator.generateTemplates().filter(entry => entry.projection === "perspective").map(entry => {
         const n = entry.layout.atoms.filter(atom => atom.element === "O").length, size = entry.layout.atoms.length / n - 1;
-        const p = coneParametersFor(n, ${JSON.stringify(variant)}), model = calixareneConeModel(n, size === 11, p);
+        const p = coneParametersFor(n), model = calixareneConeModel(n, size === 11, p);
         const projected = projectOrthographic(model, { elevation: p.elevation, viewerSide: -1, centre: model.centre });
         const depths = Array.from({ length: n }, (_, unit) => projected.atoms.slice(unit * size, unit * size + 6)
           .reduce((sum, atom) => sum + atom.depth / 6, 0));
@@ -458,38 +458,25 @@ describe("structure template geometry", () => {
     }
   });
 
-  it("the comparison opens and spreads only the two tetramers, retaining the source model and depth marks", () => {
-    const generatorUrl = new URL("../../../tools/template-layouts/calixarenes-pillararenes.mjs", import.meta.url).href;
+  it("the tetramers retain narrow end panels and original depth marks independently of OH lengths", () => {
     const coneUrl = new URL("../../../tools/template-layouts/calixarene-cone.mjs", import.meta.url).href;
     const result = JSON.parse(execFileSync(process.execPath, ["--input-type=module", "-e", `
-      import { generator } from ${JSON.stringify(generatorUrl)};
       import { calixareneConeModel, coneParametersFor, projectCone } from ${JSON.stringify(coneUrl)};
-      console.log(JSON.stringify(["A", "B"].map(variant => {
-        const p = coneParametersFor(4, variant);
-        return { templates: generator.generateTemplates(variant),
-          models: [false, true].map(tertButyl => {
-            const model = calixareneConeModel(4, tertButyl, p);
-            return { model, layout: projectCone(model, p.elevation, p),
-              otherLengths: projectCone(model, p.elevation, { ...p, oxygenLength: { short: 0.85, long: 1.95 } }) };
-          }) };
+      const p = coneParametersFor(4);
+      console.log(JSON.stringify([false, true].map(tertButyl => {
+        const model = calixareneConeModel(4, tertButyl, p);
+        return { layout: projectCone(model, p.elevation, p),
+          otherLengths: projectCone(model, p.elevation, { ...p, oxygenLength: { short: 0.85, long: 1.95 } }) };
       })));
-    `], { encoding: "utf8" })) as { templates: StructureTemplate[];
-      models: { model: unknown; layout: StructureTemplate["layout"]; otherLengths: StructureTemplate["layout"] }[] }[];
-    const [a, b] = result as [typeof result[number], typeof result[number]];
-    expect(a.models.map(entry => entry.model)).toEqual(b.models.map(entry => entry.model));
-    expect(b.templates.slice(2)).toEqual(a.templates.slice(2));
-    for (const variant of result) for (const entry of variant.models) {
+    `], { encoding: "utf8" })) as { layout: StructureTemplate["layout"]; otherLengths: StructureTemplate["layout"] }[];
+    for (const [index, entry] of result.entries()) {
       expect(entry.layout.bonds).toEqual(entry.otherLengths.bonds);
       expect(entry.layout.stretchedBonds).toEqual(entry.otherLengths.stretchedBonds);
       expect(entry.layout.atoms.filter(atom => atom.element === "C"))
         .toEqual(entry.otherLengths.atoms.filter(atom => atom.element === "C"));
       expect(entry.layout.atoms.filter(atom => atom.element === "O"))
         .not.toEqual(entry.otherLengths.atoms.filter(atom => atom.element === "O"));
-    }
-    for (const [index, entry] of b.models.entries()) {
       const size = index === 0 ? 7 : 11;
-      const previous = a.models[index]!.layout;
-      expect(entry.layout.bonds).toEqual(previous.bonds);
       const ring = (unit: number) => entry.layout.atoms.slice(unit * size, unit * size + 6);
       const width = (unit: number) => Math.max(...ring(unit).map(atom => atom.x)) - Math.min(...ring(unit).map(atom => atom.x));
       const centre = (unit: number) => ring(unit).reduce((sum, atom) => sum + atom.x / 6, 0);
@@ -506,13 +493,11 @@ describe("structure template geometry", () => {
         const values = entry.layout.atoms.map(atom => atom[axis]);
         return Math.max(...values) - Math.min(...values);
       };
-      expect(bounds("x")).toBeGreaterThan(bounds("y"));
+      // The owner chose geometry A: the parent is wider than tall; the tBu template is taller.
+      expect(bounds("x") / bounds("y")).toBeCloseTo(index === 0 ? 1.1281 : 0.9363, 4);
       for (const unit of [0, 2]) {
-        expect(width(unit) / width(3)).toBeGreaterThanOrEqual(0.35);
-        expect(width(unit) / width(3)).toBeLessThanOrEqual(0.5);
-        const centreX = ring(unit).reduce((sum, atom) => sum + atom.x / 6, 0);
-        const oldCentreX = previous.atoms.slice(unit * size, unit * size + 6).reduce((sum, atom) => sum + atom.x / 6, 0);
-        expect(Math.abs(centreX)).toBeGreaterThan(Math.abs(oldCentreX));
+        // The owner chose geometry A, with narrow ends at ∓9.5° yaw.
+        expect(width(unit) / width(3)).toBeCloseTo(0.1948493876, 9);
       }
     }
   });

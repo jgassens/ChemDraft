@@ -97,10 +97,10 @@ const entries = [
 
 const point = (angle, radius = 1) => ({ x: radius * Math.cos(angle), y: radius * Math.sin(angle) });
 
-function hostLayout(entry, variant) {
+function hostLayout(entry) {
   const { kind, n } = entry;
   if (kind === "calix") {
-    const parameters = coneParametersFor(n, variant);
+    const parameters = coneParametersFor(n);
     return finishLayout(projectCone(calixareneConeModel(n, entry.tertButyl, parameters), parameters.elevation, parameters), "perspective");
   }
   const halfSector = Math.PI / n;
@@ -165,13 +165,13 @@ export const generator = {
   scriptName: "calixarenes-pillararenes.mjs",
   fileName: "calixarenesPillararenes.ts",
   exportName: "calixarenesPillararenesTemplates",
-  generateTemplates: (variant = "B") => entries.map((entry) => ({
+  generateTemplates: () => entries.map((entry) => ({
     id: entry.id, name: entry.name, synonyms: entry.synonyms,
     family: "calixarenes-pillararenes", category: "supramolecular",
     smiles: entry.smiles, formula: entry.formula, charge: 0,
     source: { database: "PubChem", cid: entry.cid },
     ...(entry.kind === "calix" ? { projection: "perspective" } : {}),
-    ...(entry.note ? { note: entry.note } : {}), layout: hostLayout(entry, variant)
+    ...(entry.note ? { note: entry.note } : {}), layout: hostLayout(entry)
   }))
 };
 

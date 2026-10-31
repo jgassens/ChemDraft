@@ -52,9 +52,9 @@ export function projectionMetrics({ atoms, bonds, stretchedBonds = [] }, countCr
     crossings, atomClearance, labelAtomClearance, labelBondClearance };
 }
 
-export function calixareneReview(template, variant = "B") {
+export function calixareneReview(template) {
   const n = template.layout.atoms.filter(atom => atom.element === "O").length;
-  const p = coneParametersFor(n, variant), metrics = projectionMetrics(template.layout);
+  const p = coneParametersFor(n), metrics = projectionMetrics(template.layout);
   const unitSize = template.layout.atoms.length / n - 1;
   const model = calixareneConeModel(n, unitSize === 11, p);
   const original = projectOrthographic(model, { elevation: p.elevation, viewerSide: -1, centre: model.centre });
@@ -89,7 +89,7 @@ export function calixareneReview(template, variant = "B") {
       angleFromVerticalDegrees: Math.atan2(oxygen.x - carbon.x, carbon.y - oxygen.y) * 180 / Math.PI };
   });
   const oxygens = oxygenBonds.map(({ to }) => template.layout.atoms[to]);
-  return { id: template.id, variant, rings,
+  return { id: template.id, rings,
     ...(n === 4 ? { endToFaceWidthRatio: rings[0].width / rings[3].width } : {}),
     anglesDegrees: { tilt: p.panelTilts ?? p.tilt, inclination: p.elevation,
       azimuth: p.panelAngles ?? coneAzimuth(n, p),
@@ -104,8 +104,7 @@ export function calixareneReview(template, variant = "B") {
       ...(n === 4 || n === 5
         ? { oxygenLength: { short: n === 5 ? 0.79 : 0.78, long: 1.99, curvature: n === 5 ? 8 : 0 } }
         : { oxygenRow: "vertical, foreground upper / rear lower", oxygenDrop: p.drop, oxygenStagger: 1.09 }),
-      oxygenSpacings: oxygens.slice(1).map((atom, index) => atom.x - oxygens[index].x),
-      projectedBridgeLength: p.screenBridgeLength ?? null },
+      oxygenSpacings: oxygens.slice(1).map((atom, index) => atom.x - oxygens[index].x) },
     viewerSide: -1, deadZone: 0.15,
     ...metrics, boldBondCount: metrics.boldBonds, boldBonds,
     stretchedBonds: oxygenBonds,
@@ -118,9 +117,7 @@ export function calixareneReview(template, variant = "B") {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const index = process.argv.indexOf("--calix4-variant"), variant = index < 0 ? "B" : process.argv[index + 1];
-  if (!["A", "B"].includes(variant)) throw new Error("--calix4-variant must be A or B");
-  for (const template of generator.generateTemplates(variant).filter(entry => entry.projection === "perspective")) {
-    console.log(JSON.stringify(calixareneReview(template, variant)));
+  for (const template of generator.generateTemplates().filter(entry => entry.projection === "perspective")) {
+    console.log(JSON.stringify(calixareneReview(template)));
   }
 }

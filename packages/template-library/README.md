@@ -123,19 +123,15 @@ viewer from the cone axis, so the end panels' nearer edges also stay behind its 
 The original 3D midpoint rule and 0.15 dead zone are unchanged; no ring's depth assignment is forced.
 Calix[8] retains its 9° inclination so the front and back panels remain distinguishable.
 
-The tetramer's generator offers two comparison geometries through `coneParametersFor(n, variant)`:
-**A** retains the round-3 end yaw of ∓9.5°.
-**B** (the default) opens the ends with ∓22° yaw to about **40.27% of face-on width**. Its projected CH2 junctions start at
-the lower intersections of equal-radius endpoint circles (radius 1.2 original bond units), then
-receive small corrections that clear the back oxygen. End tBu fan half-widths remain 0.6 bonds in A
-and 0.64 in B. Both geometries remain wider than tall.
-Every C–O bond in **all seven calixarenes**, including both tetramer geometries and bold foreground
+The tetramer uses end-panel yaws of ∓9.5° and end tBu fan half-widths of 0.6 bonds.
+The parent is wider than tall; its tBu derivative is taller. `coneParametersFor(n)` supplies the single shipped geometry.
+Every C–O bond in **all seven calixarenes**, including bold foreground
 bonds, points exactly down: each oxygen has its own phenolic carbon's x coordinate. For n = 4
-(A and B) and n = 5, its length increases smoothly with the original ring's nearness to the viewer,
+and n = 5, its length increases smoothly with the original ring's nearness to the viewer,
 averaged over its six aromatic carbons **before** screen adjustments. Equal depths give equal lengths, within four-decimal
 serialization. With `t = (depth − farthest) / (nearest − farthest)`, the length in nominal bonds is:
 
-- n = 4 (A and B): `0.78 + 1.21 t`.
+- n = 4: `0.78 + 1.21 t`.
 - n = 5: `0.79 + 1.20 (1 − exp(−8t)) / (1 − exp(−8))`, a saturating curve.
 
 The nearest stem is 1.99 nominal bonds; the farthest is 0.78 (0.79 for n = 5). The camera and
@@ -145,7 +141,7 @@ For n = 6 and n = 8, the OH labels instead retain two heights: foreground above,
 chosen by the sign of the original ring depth. The upper row is 0.65 nominal bonds below the
 lowest phenolic carbon for n = 6, or 0.60 for n = 8; the lower row is another 1.09 bonds below it.
 Their complete parsed entries, including all ring and CH2 coordinates, match `2f042f96`.
-The n = 4 (A and B) and n = 5 entries retain the depth-length layouts from `802cdc2d`.
+The n = 4 and n = 5 entries retain the depth-length layouts from `802cdc2d`.
 The source 3D cone retains unit bonds and
 rotationally identical complete aryl/OH/tBu/CH2 repeats. Depth styling and stacking precede these
 screen adjustments. Insertion assigns perspective templates with bold bonds a molecule-level
@@ -154,17 +150,15 @@ unless the caller explicitly overrides it. This lets the molecule inspector chan
 no per-bond width map is written. Flat templates retain their ordinary style, and normal bonds
 still use the normal stroke width. Presets and the shared renderer are unchanged, including their crossing gaps.
 
-Use `node tools/template-layouts/build.mjs --calix4-variant A` to generate A; omit the option (or
-pass B) to restore B. `render-check.mjs` and `inspect-calixarenes.mjs` accept the same option.
+Use `node tools/template-layouts/build.mjs` to regenerate the shipped layouts.
 Rendering inserts through `structureTemplateMolecule` and exports the native document; it records
 the inserted widths and confirms they occur in the exported SVG before rasterizing. The usual
-800 px raster width, 24-unit crop padding and contact-sheet framing apply to both variants.
+800 px raster width, 24-unit crop padding and contact-sheet framing apply.
 Use `render-check.mjs --ids <id,id,...>` to render a subset with the same insertion and framing.
 
 This is a textbook schematic, not an energy-minimized conformer. After projection, whole negative-y
-units retain their sideways displacement for n = 6 and 8 (0.59 and 0.55 source bonds). A and the
-pentamer retain their carbon placements. B retains its depth-length whole-unit translations and
-CH2-junction corrections. Both hexamers and both octamers retain their earlier two-height
+units retain their sideways displacement for n = 6 and 8 (0.59 and 0.55 source bonds). The tetramers and
+pentamer retain their carbon placements. Both hexamers and both octamers retain their earlier two-height
 placement parameters, with no additional ring or CH2 moves. These separate labels under the unchanged
 clearance gates.
 These translations include the aryl ring and its substituents; no ring vertices are sheared or

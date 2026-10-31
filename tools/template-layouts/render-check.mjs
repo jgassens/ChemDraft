@@ -4,7 +4,6 @@ import { pathToFileURL } from "node:url";
 import { register } from "tsx/esm/api";
 import { register as registerCjs } from "tsx/cjs/api";
 import { repositoryRoot } from "./generate.mjs";
-import { generator as calixarenes } from "./calixarenes-pillararenes.mjs";
 
 // Use this checkout's TS paths even when launched from another working directory.
 register({ tsconfig: path.join(repositoryRoot, "tsconfig.json") });
@@ -22,22 +21,19 @@ const { renderedLabelClearance } = await load("tools/template-layouts/label-clea
 
 const args = process.argv.slice(2);
 if (args.includes("--help")) {
-  console.log("Usage: node tools/template-layouts/render-check.mjs [--out <directory>] [--family <family>] [--ids <id,id,...>] [--calix4-variant A|B]");
+  console.log("Usage: node tools/template-layouts/render-check.mjs [--out <directory>] [--family <family>] [--ids <id,id,...>]");
   process.exit(0);
 }
 const options = new Map();
 for (let index = 0; index < args.length; index += 2) {
   const key = args[index], value = args[index + 1];
-  if (!["--out", "--family", "--ids", "--calix4-variant"].includes(key) || !value || value.startsWith("--") || options.has(key)) {
-    throw new Error("Usage: render-check.mjs [--out <directory>] [--family <family>] [--ids <id,id,...>] [--calix4-variant A|B]");
+  if (!["--out", "--family", "--ids"].includes(key) || !value || value.startsWith("--") || options.has(key)) {
+    throw new Error("Usage: render-check.mjs [--out <directory>] [--family <family>] [--ids <id,id,...>]");
   }
   options.set(key, value);
 }
-const variant = options.get("--calix4-variant") ?? "B";
-if (!["A", "B"].includes(variant)) throw new Error("--calix4-variant must be A or B");
-const generated = new Map(calixarenes.generateTemplates(variant).map(template => [template.id, template]));
 const ids = options.has("--ids") ? new Set(options.get("--ids").split(",")) : null;
-const selected = structureTemplates.map(template => generated.get(template.id) ?? template)
+const selected = structureTemplates
   .filter(template => (!options.has("--family") || template.family === options.get("--family")) && (!ids || ids.has(template.id)));
 if (!selected.length) throw new Error(`Unknown or empty template family: ${options.get("--family")}`);
 if (ids && selected.length !== ids.size) throw new Error("--ids contains an unknown template or an ID outside --family");
@@ -71,7 +67,7 @@ for (const [index, template] of selected.entries()) {
   if (widths.length && widths.some(width => !svgStrokeWidths.some(value => Math.abs(value - width) < 0.0001))) {
     throw new Error(`${template.id}: inserted bold widths missing from the real SVG export`);
   }
-  renderReviews.push({ id: template.id, variant, bondLengthPx: molecule.style.bondLengthPx,
+  renderReviews.push({ id: template.id, bondLengthPx: molecule.style.bondLengthPx,
     boldBondCount: widths.length, boldWidthsPx: [...new Set(widths)], svgStrokeWidths,
     cropViewBox: cropped.viewBox, rasterWidthPx: 800 });
   const png = svgToPng(cropped.svg, 800);
