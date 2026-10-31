@@ -75,15 +75,10 @@ the main document window, not global always-on-top panels, and retain their
 session position when hidden and reopened. The in-app `PluginPanelSurface` and
 proposal tray are web-build fallbacks only.
 
-Panel keyboard focus is a native-ended lease. Repeated input clicks may queue acquisitions,
-but loss or failure of the outstanding lease cancels its queued retries; an older generation
-also ends a successor that has not settled yet. Once that successor settles, obsolete native
-events cannot end it. Report-text selection leases end when their range collapses or leaves
-report text, or on a trusted key other than a copy/select-all, extension, or modifier key.
-At the start of a panel webview load, native generations reset alongside the
-JavaScript counter; a native epoch prevents queued work from the old page matching reused
-generations. A newly built panel whose native focus/resize hooks fail is destroyed and its
-open request fails.
+Panel webview focus requests use generations and a native epoch to reject stale requests
+and events. They can focus the webview only while the panel is already active; they cannot
+activate a panel after the user has switched windows. A newly built panel whose native
+focus/resize hooks fail is destroyed and its open request fails.
 
 Analysis windows hold no dialog, filesystem, or clipboard permission
 (`capabilities/plugin-panel.json`), and must not gain one. Anything that needs
@@ -99,107 +94,29 @@ one is performed by the main window on the window's behalf:
   over the event bridge without a user gesture in the main document. A failed
   write is reported as a failure.
 
-The main window registers its analysis-window action listener once and reads
-its live handlers through a ref, so no action can fall into a re-registration
-gap when the document changes.
+Native code stamps analysis-window actions with the caller's `sourceLabel`; the main window
+authorizes each action for its owning window and sends replies only to that window. The main
+window registers its listener once and reads its live handlers through a ref, so no action can
+fall into a re-registration gap when the document changes.
 
-**Focus.** Opening or revealing a panel keeps keyboard focus in the document,
-including Analyze commands and automatic report updates. The old `focus` hint
-is ignored. Ordinary clicks, buttons, charts, hovering, scrolling and window
-drags behave like floating toolbars. A trusted click on an editable control
-borrows keyboard focus until Escape, committing single-line Enter, Tab out,
-clicking elsewhere or loss of window focus. A deliberate drag or double/triple
-click selecting non-empty report text borrows the same focus so native Cmd/Ctrl+C
-copies it; a plain click or scripted selection does not. Clicking elsewhere,
-clicking the document or Escape clears the text selection and returns focus.
-During a selection lease, Cmd/Ctrl+C, Cmd/Ctrl+A, Shift+arrow/Home/End and bare
-Shift/Control/Alt/Meta keep the lease. Any other trusted non-composing key (including
-plain arrows, Home/End/PageUp/PageDown, letters, digits, Tab, Enter and Space) clears
-the selection and returns focus for the following drawing shortcut. This does not
-depend on the browser collapsing the range: WebView2 may scroll instead. Only the
-scrolling keys (arrows, Home/End/PageUp/PageDown and Space) have their default action
-prevented on release to avoid moving the report. Escape retains its handling below;
-input leases retain their normal editing and navigation behavior.
-Windows only lends focus while ChemDraft already owns the foreground, using
-thread-local activation without synthesized input; background requests are dropped.
-WebView2 can activate the panel on a content click despite `WS_EX_NOACTIVATE` and
-`WM_MOUSEACTIVATE`. Windows therefore mirrors the toolbar's explicit hand-back:
-`PaletteWindow` → `sendPaletteCommand` / `routeToolsetCommand` → native
-`route_toolset_command` returns focus after dispatch. Panels use their existing
-caller-validated `set_plugin_panel_input_focus(false)` after trusted non-lease
-pointer releases/clicks, even when no lease was previously active. Unlike the
-toolbar's force-focus route, this hand-back uses guarded `SetActiveWindow` followed
-by document **webview** focus, never Tao's forced activation or synthetic Alt.
-Report-text drags finish before the hand-back decision; double/triple clicks decide
-selection before queuing it. Input and selection leases suppress this hand-back.
-Click hand-back requires a matching trusted pointerdown in the same gesture; keyboard
-activation never queues it. Focus requests carry monotonically increasing webview-local
-generations, including across effect remounts, and remain serialized through native completion.
-The caller-validated command returns a boolean: true only when that generation acquired
-keyboard focus, false when the foreground/visibility guard dropped it, activation failed,
-or a native deactivation cancelled it. JavaScript immediately ends a rejected lease.
+**Focus.** Panels are built and shown without activating them, so opening, revealing,
+or updating a report leaves focus in the document. The old `focus` hint is ignored.
+A user click activates the panel, which keeps OS focus until the user switches windows or
+closes it. Editable controls, menus, buttons, and report-text selection handle their own
+keys. Other recognized shortcuts are forwarded to the document through the live command
+catalog without moving focus. Close accelerators (Alt+F4 on Windows and Cmd+W on macOS)
+stay local and close only the panel. Reload shortcuts are blocked.
 
-Native code owns lease validity. IPC registers the generation before queuing its main-thread
-acquisition, so a real deactivation while acquisition is queued cancels it before it can restore
-focus. Windows observes the panel's own WM_ACTIVATE and WM_ACTIVATEAPP; macOS observes
-NSWindowDidBecomeKeyNotification and NSWindowDidResignKeyNotification synchronously.
-The panel receives one chemdraft://plugin-panel-focus event with { kind, generation },
-subscribed through listenCurrentWindowEvent / safeTauriListen **before** acquiring.
-A deactivated event for the current lease is terminal, even if the acquisition reply arrives
-later reporting success. Notifications from an older generation cannot end a newer lease.
-Native activation requested by the lease is tagged with that generation; child-webview
-focusout/blur is not native window deactivation. No DOM blur timer, hasFocus() check, DOM
-focus recovery, or selectionchange guesses lease ownership. Escape, single-line Enter,
-Tab out, a trusted click elsewhere, removal/disablement of the leased control, or removal
-of the selected report text also explicitly end the lease. Hover and wheel alone do not.
+Each panel's frame is saved relative to its monitor. Resize grab zones extend 6 logical
+pixels inside the border along every edge and corner. Full size uses the caller-bound native
+`set_plugin_panel_full_size` command and restores the previous frame on exit. The proposal
+window is marked open only once its native open succeeds, so a failed open leaves the
+pending-proposals badge in place.
 
-The native command waits for its main-thread operation before replying, so an older hand-back
-cannot execute after a newer request from that panel. Native non-client presses and
-move/resize entry/exit end the lease and use the same guarded helper, restoring webview
-focus after Wry's own focus handling as well. A transient Windows foreground change is
-possible, as with toolbars; the panel must not retain the keyboard after an ordinary click.
-For **idle activation only**, the webview defers hand-back 32 ms so an immediately following
-trusted pointerdown can establish intent. That check never ends a lease and uses only the
-request generation and pointer/selection gesture state. It covers activation after closing
-another application without interrupting an active/pending lease or a chart drag.
-The native foreground/document-group guard still runs when hand-back executes.
-
-Windows uses **one resize mechanism**: Tauri's existing TAURI_DRAG_RESIZE_WINDOW overlay,
-adapted to share screen-coordinate hit testing with its parent. There is no second resize
-window and no WM_NCCALCSIZE override. Tao keeps its zero top non-client inset on Windows 10
-(necessary while WS_CAPTION remains set), and its DPI-scaled one-pixel top inset on Windows 11.
-The top hit band is the panel's current-DPI `SM_CYSIZEFRAME` (`SM_CYFRAME`) plus
-`SM_CXPADDEDBORDER`, measured in physical pixels from the outer window top, just like the
-native side/bottom resize borders. Only that band returns HTTOP/HTTOPLEFT/HTTOPRIGHT;
-below it, the title interior reaches WebView2's DOM drag handler (HTTRANSPARENT on the
-overlay, HTCLIENT on the parent). Side/bottom edges retain their proper directions.
-The same overlay's input region covers the client portion of that band, subtracting Tao's
-actual top inset. Updating hit testing alone is insufficient: Tauri 2.11.2 otherwise clips
-the overlay to SM_CYFRAME without the padded border. The adaptation refreshes this region
-after Tauri's size handling, on DPI/settings changes, and on the overlay's position/region
-notifications, including asynchronous sizing and shadow updates. Equal regions are left
-alone to avoid recursive SetWindowRgn notifications. Windows owns each installed region.
-WebView2 fills the whole client, without a second inset or exposed parent-client margin.
-Tauri still owns the overlay's window size and lifetime; no new window, painted border,
-caption, or WM_NCCALCSIZE adjustment is introduced. Maximized windows have no resize grip.
-Portable geometry tests cover Windows 10/11 client origins at 100%, 150%, and 200% DPI,
-each physical row of the top band, corner boundaries, title pass-through, negative monitor
-coordinates, and the empty maximized region. Native visual/input checks remain in the
-[manual stress checklist](../manual-stress-checklist.md).
-macOS makes the nonactivating panel key without activating the application and
-rejects background acquisition. A click on a panel or analysis window while another app is
-frontmost does activate ChemDraft on macOS (the drawing stays key; a clicked menu opens):
-`NonactivatingPanel` is set on Tao's `NSWindow`, and AppKit honours it only for `NSPanel`.
-This is accepted as ordinary Mac behaviour (owner decision, 2026-10-20); Windows keeps the
-other app in front. Neither platform activates ChemDraft without a click. The proposal window is marked open only once its native open
-succeeds, so a failed open leaves the pending-proposals badge in place.
-
-**Escape.** A report window closes on a bubbling window-level Escape unless the
-event was already `defaultPrevented`. An inner overlay (the linked figure's
-Full size view) handles Escape in the capture phase and prevents the default,
-so the first Escape closes the overlay. An active input or text-selection lease
-respects that prevented event; the next Escape releases the lease without closing
-the panel. Without a lease, the next Escape closes the window.
+**Escape.** A report window closes on a bubbling window-level Escape unless the event was
+already `defaultPrevented`. The linked figure handles Escape first in Full size, restoring
+the panel's previous frame. Escape in an editable control blurs it, and Escape with report
+text selected clears the selection; a subsequent Escape can close the panel.
 
 ## Menu integration + drift test
 
@@ -221,7 +138,7 @@ itself cannot choose a command id, payload, options, or length limit. It acknowl
 without waiting for command completion, allowing an independent Stop command while a submit runs.
 
 The report renderer owns prompt, action, and image rendering. A prompt's textarea is kept through a
-report replacement, stays enabled to retain its input-focus lease, and clears its draft only after
+report replacement, stays enabled to retain input focus, and clears its draft only after
 the main window accepts the action. Replacement autoscrolls only when the reader was at the bottom,
 or after that reader submitted; a report with a prompt hides the generic Run again action.
 

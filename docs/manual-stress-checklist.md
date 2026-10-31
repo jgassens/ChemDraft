@@ -884,3 +884,14 @@ caption must use the atom-label size. Existing structures on the page must not c
 # Reaction labels
 
 - Ask the assistant for a two-step Sharpless-style scheme and run `pnpm -s chemdraft reaction` with `--above`, `--below`, and `--caption`. Check that reagents stack above and conditions below, close to and centred on the arrow, which is only as long as the widest line; CH2Cl2 and Ti(OiPr)4 show subscripts while step numbers, mol%, °C and h do not. Check the caption sits under the scheme and old single-string conditions still work.
+
+## NMR panel (macOS and Windows)
+
+- Click in the panel and press Cmd+W on macOS or Alt+F4 on Windows: only the panel closes.
+  Reopen it, click a panel button, then use a drawing shortcut: it reaches the document.
+- Open Export and use its menu by keyboard: it stays open and each choice works. Export
+  JCAMP-DX, PNG, SVG, and PDF and open each file to check it. Paste SVG and verify the
+  vector-artwork message. Copy into Word and a rich-text editor; check the size is sensible.
+- Drag every edge and corner from 6 px inside the border. Use Full size, then Esc: the
+  exact previous frame returns. Repeat across monitors with different scaling.
+- Hover over peaks and verify no empty tooltip appears.
