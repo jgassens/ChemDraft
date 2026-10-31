@@ -872,7 +872,7 @@ describe("MainWindow bundled plugin integration", () => {
     URL.createObjectURL ??= () => "blob:test";
     URL.revokeObjectURL ??= () => undefined;
     await act(async () => {
-      receive({ kind: "saveTextFile", requestId: "save", filename: "predicted-1H-nmr.jdx", text: "##TITLE=x", format: "jcamp" }, label);
+      receive({ kind: "saveTextFile", requestId: "save", filename: "predicted-1H-nmr.jdx", text: "##TITLE=x", format: "jcamp" } as AnalysisWindowAction, label);
     });
     expect(downloads).toEqual(["predicted-1H-nmr.jdx"]);
     expect(saveReply).toHaveBeenCalledWith("save", "saved", label);
