@@ -1,5 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import {
+  annotationBondLines,
+  annotationLabelBoxesOverlap,
+  estimateAnnotationTextWidth,
+  layoutAtomAnnotationLabels,
+  type AnnotationLabelBox
+} from "@chemdraft/layout-engine";
 
 import type {
   PluginLinkedFigurePeak,
@@ -9,6 +16,7 @@ import type {
 
 import {
   copySpectrumToClipboard,
+  exportSpectrumFigure,
   observeFrequencyMHz,
   saveTextFile,
   spectrumComparisonLabels,
@@ -16,8 +24,19 @@ import {
   spectrumToJcampDx,
   standaloneSpectrumSvg,
   type DisplaySpectrumPeak,
+  type SaveTextFileResult,
+  type SpectrumFigureFormat,
   type SpectrumComparisonMode
 } from "./spectrumExport";
+import { isDesktopRuntime } from "../window-manager";
+import { listenCurrentWindowEvent } from "../window-manager/tauriEvents";
+
+const fullSizeRestorers = new Set<() => Promise<void>>();
+
+/** The panel must restore its remembered frame before notifying the owner or hiding. */
+export async function restoreLinkedFigureWindowFrame(): Promise<void> {
+  await Promise.all([...fullSizeRestorers].map((restore) => restore()));
+}
 
 /**
  * Core-owned interactive figure for the `linkedFigure` panel section (ADR-0015). The plugin ships
@@ -28,11 +47,9 @@ import {
 export interface LinkedFigureViewProps {
   spectrum: PluginLinkedFigureSpectrum;
   structure?: PluginLinkedFigureStructure;
-  /** True when rendered inside the full-size modal — hides its own "Full size" button (no recursion). */
-  fullScreen?: boolean;
-  /** Initial rendering field (MHz); the modal passes the outer view's choice through. */
+  /** Initial rendering field (MHz). */
   defaultSpectrometerMHz?: number;
-  /** Initial comparison display mode; the modal passes the outer view's choice through. */
+  /** Initial comparison display mode. */
   defaultComparisonMode?: SpectrumComparisonMode;
 }
 
@@ -45,7 +62,7 @@ const BASE_Y = MARGIN.top + PLOT_H;
 
 const STRUCT_W = 340;
 const STRUCT_H = 260;
-const STRUCT_PAD = 34;
+const PEAK_LABEL_FONT_SIZE = 13;
 
 interface AtomShiftLabelPart {
   label: string;
@@ -55,14 +72,15 @@ interface AtomShiftLabelPart {
 export function LinkedFigureView({
   spectrum,
   structure,
-  fullScreen = false,
   defaultSpectrometerMHz = DEFAULT_SPECTROMETER_MHZ,
   defaultComparisonMode = "primary"
 }: LinkedFigureViewProps) {
   const reversed = spectrum.reversed ?? true;
-  const [protonFrequencyMHz, setProtonFrequencyMHz] = useState(defaultSpectrometerMHz);
+  const [protonFrequencyMHz, setProtonFrequencyMHz] = useState(
+    Number.isFinite(defaultSpectrometerMHz) && defaultSpectrometerMHz > 0 ? defaultSpectrometerMHz : DEFAULT_SPECTROMETER_MHZ
+  );
   const [comparisonMode, setComparisonMode] = useState<SpectrumComparisonMode>(defaultComparisonMode);
-  const hasAlternative = spectrum.peaks.some((peak) => peak.alternativePpm !== undefined);
+  const hasAlternative = spectrum.peaks.some((peak) => Number.isFinite(peak.alternativePpm));
   const supportsComparison = spectrum.comparison !== undefined || hasAlternative;
   const effectiveComparisonMode: SpectrumComparisonMode = hasAlternative ? comparisonMode : "primary";
   const comparison = spectrumComparisonLabels(spectrum);
@@ -71,7 +89,8 @@ export function LinkedFigureView({
   const domainSpan = Math.max(1e-6, effectiveDomain.max - effectiveDomain.min);
   const observeMHz = observeFrequencyMHz(spectrum.nucleus, protonFrequencyMHz);
   const renderPeaks = useMemo(
-    () => spectrumPeaksForMode(spectrum.peaks, effectiveComparisonMode),
+    () => spectrumPeaksForMode(spectrum.peaks, effectiveComparisonMode)
+      .filter((peak) => Number.isFinite(peak.ppm) && Number.isFinite(peak.intensity)),
     [spectrum.peaks, effectiveComparisonMode]
   );
   const spectrumIdentity = useMemo(() => spectrumViewportIdentity(spectrum), [spectrum]);
@@ -81,6 +100,14 @@ export function LinkedFigureView({
   const [hoverPeakId, setHoverPeakId] = useState<string | null>(null);
   const [hoverAtomIndex, setHoverAtomIndex] = useState<number | null>(null);
   const spectrumRef = useRef<SVGSVGElement | null>(null);
+  const [showFull, setShowFull] = useState(false);
+  const [fullSizeBusy, setFullSizeBusy] = useState(false);
+  const [fullSizeNotice, setFullSizeNotice] = useState<string | null>(null);
+  const fullSizeTaskRef = useRef<Promise<void>>(Promise.resolve());
+  const fullSizeListenerRef = useRef<Promise<void>>(Promise.resolve());
+  const fullSizeEventRevisionRef = useRef(0);
+  const fullSizeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const fullSizeWasOpenRef = useRef(false);
   const dragRef = useRef<number | null>(null);
   const pendingPanPixelsRef = useRef(0);
   const panFrameRef = useRef<number | null>(null);
@@ -214,7 +241,7 @@ export function LinkedFigureView({
     svg.addEventListener("wheel", onWheel, { passive: false });
     return () => svg.removeEventListener("wheel", onWheel);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reversed, domainSpan, effectiveDomain.min, effectiveDomain.max]);
+  }, [reversed, domainSpan, effectiveDomain.min, effectiveDomain.max, showFull]);
 
   const onPointerDown = (event: React.PointerEvent<SVGSVGElement>): void => {
     dragRef.current = event.clientX;
@@ -232,11 +259,21 @@ export function LinkedFigureView({
   };
 
   const [copied, setCopied] = useState(false);
-  const [exportStatus, setExportStatus] = useState<"saved" | "failed" | null>(null);
+  const [exportStatus, setExportStatus] = useState<SaveTextFileResult | null>(null);
+  const [exportBusy, setExportBusy] = useState(false);
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const exportMenuId = useId();
+  const exportButtonRef = useRef<HTMLButtonElement | null>(null);
+  const exportMenuRef = useRef<HTMLDivElement | null>(null);
+  const exportWasBusyRef = useRef(false);
+  useEffect(() => {
+    if (!exportBusy && exportWasBusyRef.current) exportButtonRef.current?.focus();
+    exportWasBusyRef.current = exportBusy;
+  }, [exportBusy]);
   const onCopy = (): void => {
     const svg = spectrumRef.current;
     if (!svg) return;
-    // Prefer a PNG (pastes as an image into Word) with the SVG as text fallback for vector editors.
+    // Copy PNG and SVG image flavors for document and vector editors.
     void copySpectrumToClipboard(
       standaloneSpectrumSvg(
         svg,
@@ -250,43 +287,165 @@ export function LinkedFigureView({
       }
     });
   };
-  const onExportJcamp = (): void => {
-    const jdx = spectrumToJcampDx(spectrum, {
-      title: `Predicted ${formatNucleus(spectrum.nucleus)} NMR`,
-      protonFrequencyMHz,
-      comparisonMode: effectiveComparisonMode
-    });
-    void saveTextFile(`predicted-${spectrum.nucleus}-nmr.jdx`, jdx, {
-      title: "Export spectrum (JCAMP-DX)",
-      formatLabel: "JCAMP-DX",
-      extensions: ["jdx", "dx"],
-      mimeType: "chemical/x-jcamp-dx"
-    }).then((result) => {
-      if (result === "cancelled") return;
-      setExportStatus(result === "saved" ? "saved" : "failed");
+  const onExport = async (format: SpectrumFigureFormat | "jdx"): Promise<void> => {
+    if (exportBusy) return;
+    setExportMenuOpen(false);
+    setExportBusy(true);
+    setExportStatus(null);
+    try {
+      const svg = spectrumRef.current;
+      const result = format === "jdx"
+        ? await saveTextFile(`predicted-${spectrum.nucleus}-nmr.jdx`, spectrumToJcampDx(spectrum, {
+            title: `Predicted ${formatNucleus(spectrum.nucleus)} NMR`,
+            protonFrequencyMHz,
+            comparisonMode: effectiveComparisonMode
+          }), {
+            title: "Export spectrum (JCAMP-DX)",
+            formatLabel: "JCAMP-DX",
+            extensions: ["jdx", "dx"],
+            mimeType: "chemical/x-jcamp-dx"
+          })
+        : svg ? await exportSpectrumFigure(format, standaloneSpectrumSvg(
+            svg, comparison.alternativeLabel, supportsComparison ? comparison.primaryLabel : undefined
+          ), spectrum.nucleus) : "failed";
+      setExportStatus(result);
+    } catch {
+      setExportStatus("failed");
+    } finally {
+      setExportBusy(false);
       window.setTimeout(() => setExportStatus(null), 1800);
-    });
+    }
   };
 
-  const [showFull, setShowFull] = useState(false);
+  const restoreFrame = useCallback(async (): Promise<void> => {
+    await fullSizeTaskRef.current;
+    if (isDesktopRuntime()) {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const status = await invoke<{ enabled: boolean }>("set_plugin_panel_full_size", {
+        enabled: false, width: 0, height: 0
+      });
+      setShowFull(status.enabled);
+    }
+  }, []);
+  const leaveFullSize = useCallback(async (): Promise<void> => {
+    setFullSizeBusy(true);
+    try {
+      await restoreFrame();
+      setShowFull(false);
+      setFullSizeNotice(null);
+    } catch {
+      setFullSizeNotice("Could not restore the panel's previous size and position. Try leaving full size again.");
+    } finally {
+      setFullSizeBusy(false);
+    }
+  }, [restoreFrame]);
+
+  const enterFullSize = (): void => {
+    if (fullSizeBusy) return;
+    setExportMenuOpen(false);
+    setFullSizeNotice(null);
+    setShowFull(true);
+    if (!isDesktopRuntime()) return;
+    setFullSizeBusy(true);
+    fullSizeTaskRef.current = (async () => {
+      try {
+        await fullSizeListenerRef.current;
+        const { invoke } = await import("@tauri-apps/api/core");
+        const revision = fullSizeEventRevisionRef.current;
+        const status = await invoke<{ enabled: boolean }>("set_plugin_panel_full_size", {
+          enabled: true,
+          width: (SPECTRUM_W + (structure ? STRUCT_W : 0)) * 2 + 32,
+          height: Math.max(SPECTRUM_H, structure ? STRUCT_H : 0) * 2 + 180
+        });
+        if (revision === fullSizeEventRevisionRef.current) setShowFull(status.enabled);
+      } catch {
+        // Restricted/web hosts still get the whole panel rather than an inset modal box.
+        setFullSizeNotice("Window enlargement is unavailable. The figure fills this panel.");
+      } finally {
+        setFullSizeBusy(false);
+      }
+    })();
+  };
+
   useEffect(() => {
-    if (!showFull) return undefined;
-    // Capture phase + preventDefault: the innermost overlay owns Escape. A floating report window
-    // closes itself on a bubbling window-level Escape that it skips once defaultPrevented, so this
-    // Escape dismisses only "Full size" and a second one closes the window.
+    if (!isDesktopRuntime()) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    fullSizeListenerRef.current = listenCurrentWindowEvent<{ enabled: boolean }>("chemdraft://plugin-panel-full-size", ({ payload }) => {
+      if (disposed) return;
+      fullSizeEventRevisionRef.current++;
+      if (!payload.enabled) {
+        setShowFull(false);
+        setExportMenuOpen(false);
+        setFullSizeNotice(null);
+      }
+    }).then((stop) => {
+      if (disposed) stop();
+      else unlisten = stop;
+    }).catch((error: unknown) => console.error("Could not observe panel full size:", error));
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    const restoreBeforeClose = async (): Promise<void> => {
+      try {
+        await restoreFrame();
+      } catch (error) {
+        setFullSizeNotice("Could not restore the panel's previous size and position. Try closing it again.");
+        throw error;
+      }
+      setShowFull(false);
+      setExportMenuOpen(false);
+    };
+    fullSizeRestorers.add(restoreBeforeClose);
+    return () => {
+      fullSizeRestorers.delete(restoreBeforeClose);
+      void restoreFrame().catch(() => undefined);
+    };
+  }, [restoreFrame]);
+
+  useEffect(() => {
+    if (showFull || fullSizeWasOpenRef.current) fullSizeButtonRef.current?.focus();
+    fullSizeWasOpenRef.current = showFull;
+  }, [showFull, fullSizeBusy]);
+
+  useEffect(() => {
+    if (!exportMenuOpen) return;
+    exportMenuRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    const onPointerDown = (event: PointerEvent): void => {
+      if (event.target instanceof Node && !exportMenuRef.current?.contains(event.target)
+        && !exportButtonRef.current?.contains(event.target)) setExportMenuOpen(false);
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => window.removeEventListener("pointerdown", onPointerDown);
+  }, [exportMenuOpen]);
+
+  useEffect(() => {
+    if (!showFull && !exportMenuOpen) return;
     const onKey = (event: KeyboardEvent): void => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
       event.preventDefault();
-      setShowFull(false);
+      if (exportMenuOpen) {
+        setExportMenuOpen(false);
+        exportButtonRef.current?.focus();
+      } else {
+        void leaveFullSize();
+      }
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [showFull]);
+  }, [showFull, exportMenuOpen, leaveFullSize]);
 
   const ticks = useMemo(() => axisTicks(view.min, view.max), [view.min, view.max]);
   const zoomed = view.max - view.min < domainSpan - 1e-6;
 
-  const layout = useMemo(() => (structure ? layoutStructure(structure) : undefined), [structure]);
+  const layout = useMemo(
+    () => (structure ? layoutStructure(structure, atomShift) : undefined),
+    [structure, atomShift]
+  );
 
   // ---- realistic (summed pseudo-Voigt) spectrum -----------------------------------------------
   const ppmPerPx = (view.max - view.min) / PLOT_W;
@@ -303,23 +462,33 @@ export function LinkedFigureView({
     [renderPeaks, observeMHz]
   );
   const spectrumLines = useMemo(
-    () =>
-      renderPeakLayouts.flatMap(({ peak, lines }) =>
+    () => {
+      const lines = renderPeakLayouts.flatMap(({ peak, lines }) =>
         lines.map((line) => ({
           ppm: line.ppm,
           amp: Math.max(0.001, peak.intensity) * line.rel,
           peakId: peak.sourceId,
           style: curveStyleForPeak(peak)
         }))
-      ),
+      ).filter((line) => Number.isFinite(line.ppm) && Number.isFinite(line.amp));
+      let maxAmplitude = 0;
+      for (const line of lines) maxAmplitude = Math.max(maxAmplitude, line.amp);
+      // A common scale cancels in normalization; avoid overflowing the sum of finite amplitudes.
+      if (maxAmplitude > Number.MAX_VALUE / Math.max(1, lines.length)) {
+        for (const line of lines) line.amp /= maxAmplitude;
+      }
+      return lines;
+    },
     [renderPeakLayouts]
   );
+  const envelope = useMemo(() => createSpectrumEnvelope(spectrumLines, halfWidthPpm), [spectrumLines, halfWidthPpm]);
   const sampled = useMemo(
-    () => sampleStyledEnvelope(spectrumLines, view, reversed, halfWidthPpm, sampleStep),
-    [spectrumLines, view.min, view.max, reversed, halfWidthPpm, sampleStep]
+    () => sampleStyledEnvelope(spectrumLines, view, reversed, halfWidthPpm, sampleStep, envelope),
+    [spectrumLines, view.min, view.max, reversed, halfWidthPpm, sampleStep, envelope]
   );
   const hasVisibleLine = spectrumLines.some((line) => line.ppm >= view.min && line.ppm <= view.max);
-  const offscreenScaleReference = Math.max(1e-9, ...spectrumLines.map((line) => line.amp));
+  let offscreenScaleReference = 1e-9;
+  for (const line of spectrumLines) offscreenScaleReference = Math.max(offscreenScaleReference, line.amp);
   const normalizationMax = hasVisibleLine ? sampled.max : offscreenScaleReference;
   const heightScale = (PLOT_H - SPECTRUM_TOP_PAD) / normalizationMax;
   const spectrumCurvePaths = useMemo(
@@ -333,10 +502,34 @@ export function LinkedFigureView({
     return spectrumPathFrom(s.xs, s.totals, heightScale);
   }, [spectrumLines, activePeakIds, view.min, view.max, reversed, halfWidthPpm, sampleStep, heightScale]);
   // Label height comes from the true curve value at the peak's center ppm (independent of sampling).
-  const heightAtPpm = (ppm: number): number => envelopeHeight(spectrumLines, ppm, halfWidthPpm) * heightScale;
+  const apexHeights = new Map<number, number>();
+  const apexHeight = (lines: readonly { ppm: number }[]): number => {
+    let max = 0;
+    for (const line of lines) {
+      let height = apexHeights.get(line.ppm);
+      if (height === undefined) {
+        height = envelope(line.ppm).total * heightScale;
+        apexHeights.set(line.ppm, height);
+      }
+      max = Math.max(max, height);
+    }
+    return max;
+  };
 
-  // Per-atom estimation quality (good/medium/rough) for coloring the structure's shift labels, the way
-  // ChemDraw signals confidence — derived from the same tiers as the table (high→good, low/est→rough).
+  const peakLabels = placePeakLabels(renderPeakLayouts.flatMap(({ peak, lines }) => {
+    const x = xOf(peak.ppm);
+    if (x < MARGIN.left - 1 || x > MARGIN.left + PLOT_W + 1) return [];
+    return [{
+      key: peak.key,
+      text: peak.variant === "alternative" ? `${peak.label}${alternativeSuffix}` : peak.label,
+      x,
+      apexY: BASE_Y - apexHeight(lines),
+      intensity: peak.intensity,
+      ppm: peak.ppm
+    }];
+  }));
+
+  // Per-atom estimation quality uses the same tiers as the table (high→good, low/est→rough).
   const atomQuality = useMemo(() => {
     const map = new Map<number, "good" | "medium" | "rough">();
     for (const peak of spectrum.peaks) {
@@ -357,7 +550,7 @@ export function LinkedFigureView({
   const hasQuality = atomQuality.size > 0;
 
   const figure = (
-    <div className={`lf-root${fullScreen ? " is-fullscreen" : ""}`}>
+    <div className={`lf-root${showFull ? " is-fullscreen" : ""}`}>
       <div className="lf-toolbar">
         <span className="lf-axis-name">{formatNucleus(spectrum.nucleus)}</span>
         <div className="lf-toolbar-actions">
@@ -371,6 +564,7 @@ export function LinkedFigureView({
             type="button"
             className="lf-btn"
             disabled={!zoomed}
+            title={zoomed ? "Show the whole spectrum" : "The whole spectrum is already visible"}
             onClick={() => setView(effectiveDomain)}
           >
             Reset
@@ -387,18 +581,72 @@ export function LinkedFigureView({
           <button
             type="button"
             className="lf-btn"
-            onClick={onExportJcamp}
-            title="Download as JCAMP-DX (.jdx) — opens in MestReNova, TopSpin, ACD, …"
+            ref={exportButtonRef}
+            aria-haspopup="menu"
+            aria-expanded={exportMenuOpen}
+            aria-controls={exportMenuOpen ? exportMenuId : undefined}
+            disabled={exportBusy}
+            onClick={() => setExportMenuOpen((open) => !open)}
+            onKeyDown={(event) => {
+              if (event.key === "ArrowDown") {
+                event.preventDefault();
+                setExportMenuOpen(true);
+              }
+            }}
+            title={exportBusy ? "Saving the spectrum" : "Export spectrum as JCAMP-DX, PNG, SVG or PDF"}
           >
-            {exportStatus === "saved" ? "Exported" : exportStatus === "failed" ? "Export failed" : "Export"}
+            {exportBusy ? "Exporting…" : exportStatus === "saved" ? "Exported"
+              : exportStatus === "failed" ? "Export failed" : exportStatus === "cancelled" ? "Export cancelled" : "Export"}
           </button>
-          {!fullScreen ? (
-            <button type="button" className="lf-btn" onClick={() => setShowFull(true)} title="Open an enlarged spectrum">
-              Full size
-            </button>
-          ) : null}
+          <button
+            type="button"
+            ref={fullSizeButtonRef}
+            className={`lf-btn${showFull ? " lf-modal-close" : ""}`}
+            onClick={() => showFull ? void leaveFullSize() : enterFullSize()}
+            disabled={fullSizeBusy}
+            title={fullSizeBusy ? "Updating the panel's size and position"
+              : showFull ? "Restore the previous panel size and position" : "Open an enlarged spectrum"}
+            aria-label={showFull ? "Close full-size spectrum" : undefined}
+          >
+            {showFull ? "Exit full size" : "Full size"}
+          </button>
         </div>
       </div>
+
+      {exportMenuOpen ? (
+        <div
+          id={exportMenuId}
+          ref={exportMenuRef}
+          className="lf-export-menu"
+          role="menu"
+          data-plugin-panel-input-menu="true"
+          aria-label="Export spectrum"
+          onBlur={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget)
+              && event.relatedTarget !== exportButtonRef.current) setExportMenuOpen(false);
+          }}
+          onKeyDown={(event) => {
+            const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("button")];
+            const index = items.indexOf(document.activeElement as HTMLButtonElement);
+            const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1
+              : event.key === "ArrowDown" || event.key === "ArrowRight" ? (index + 1) % items.length
+              : event.key === "ArrowUp" || event.key === "ArrowLeft" ? (index + items.length - 1) % items.length : null;
+            if (next !== null) {
+              event.preventDefault();
+              items[next]?.focus();
+            }
+          }}
+        >
+          {([["jdx", "JCAMP-DX (.jdx)"], ["png", "PNG"], ["svg", "SVG"], ["pdf", "PDF"]] as const).map(([format, label]) => (
+            <button key={format} type="button" className="lf-btn" role="menuitem" tabIndex={-1} onClick={() => void onExport(format)}>
+              {label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {exportStatus ? <span className="lf-status" role="status">{exportStatus === "saved" ? "Spectrum saved."
+        : exportStatus === "cancelled" ? "Export cancelled." : "Spectrum export failed."}</span> : null}
+      {fullSizeNotice ? <span className="lf-status" role="status">{fullSizeNotice}</span> : null}
 
       <div className="lf-meta">
         {spectrum.solvent ? <span>Solvent: {spectrum.solvent}</span> : null}
@@ -481,7 +729,7 @@ export function LinkedFigureView({
             return (
               <g key={`t${tick}`}>
                 <line className="lf-tick" x1={x} y1={BASE_Y} x2={x} y2={BASE_Y + 4} />
-                <text className="lf-tick-label" x={x} y={BASE_Y + 16} textAnchor="middle">
+                <text className="lf-tick-label" x={x} y={BASE_Y + 12} style={{ fontSize: 11 }} textAnchor="middle">
                   {tick}
                 </text>
               </g>
@@ -493,6 +741,15 @@ export function LinkedFigureView({
           ))}
           {activeCurvePath ? <path className="lf-curve is-active" d={activeCurvePath} /> : null}
           {renderPeakLayouts.map(({ peak, lines }) => {
+            const label = peakLabels.get(peak.key);
+            if (!label) return null;
+            const apexY = BASE_Y - apexHeight(lines);
+            return <line key={peak.key} className="lf-label-leader"
+              x1={xOf(peak.ppm)} y1={apexY} x2={label.x + label.width / 2}
+              y2={apexY < label.y ? label.y : label.y + label.height}
+              stroke="#8a8f98" strokeWidth={0.6} pointerEvents="none" />;
+          })}
+          {renderPeakLayouts.map(({ peak, lines }) => {
             const centerX = xOf(peak.ppm);
             if (centerX < MARGIN.left - 1 || centerX > MARGIN.left + PLOT_W + 1) return null;
             const active = activePeakIds.has(peak.sourceId);
@@ -500,10 +757,16 @@ export function LinkedFigureView({
             // table instead (user direction, ADR-0025). Rule estimates stay visually distinct.
             const peakClass = `lf-peak${active ? " is-active" : ""}${peak.estimated ? " is-estimated" : ""}`;
             const labelClass = `lf-peak-label${peak.estimated ? " is-estimated" : ""}${peak.variant === "alternative" ? " is-alternative" : ""}`;
-            const xs = lines.map((line) => xOf(line.ppm));
-            const minX = Math.min(centerX, ...xs);
-            const maxX = Math.max(centerX, ...xs);
-            const apexY = BASE_Y - Math.max(...lines.map((line) => heightAtPpm(line.ppm)));
+            let minX = centerX;
+            let maxX = centerX;
+            for (const line of lines) {
+              const x = xOf(line.ppm);
+              if (!Number.isFinite(x)) continue;
+              minX = Math.min(minX, x);
+              maxX = Math.max(maxX, x);
+            }
+            const label = peakLabels.get(peak.key);
+            const text = peak.variant === "alternative" ? `${peak.label}${alternativeSuffix}` : peak.label;
             return (
               <g
                 key={peak.key}
@@ -511,18 +774,33 @@ export function LinkedFigureView({
                 data-peak-id={peak.key}
                 data-variant={peak.variant}
                 data-line-count={lines.length}
+                tabIndex={0}
+                aria-label={`${text} ppm`}
+                onFocus={() => setHoverPeakId(peak.sourceId)}
+                onBlur={() => setHoverPeakId(null)}
                 onMouseEnter={() => setHoverPeakId(peak.sourceId)}
                 onMouseLeave={() => setHoverPeakId(null)}
               >
-                <text className={labelClass} x={round(centerX)} y={round(apexY - 6)} textAnchor="middle">
-                  {peak.variant === "alternative" ? `${peak.label}${alternativeSuffix}` : peak.label}
-                </text>
+                <title>{text} ppm</title>
+                {label ? (
+                  <>
+                    <rect className="lf-label-background" x={label.x} y={label.y}
+                      width={label.width} height={label.height} fill="#fff" pointerEvents="none" />
+                    <text
+                      className={labelClass} x={label.x + label.width / 2}
+                      y={label.y + PEAK_LABEL_FONT_SIZE}
+                      style={{ fontSize: PEAK_LABEL_FONT_SIZE }} textAnchor="middle"
+                    >
+                      {text}
+                    </text>
+                  </>
+                ) : null}
                 {/* Wider transparent hit area covering the whole multiplet, so it is easy to hover. */}
                 <rect className="lf-hit" x={round(minX - 6)} y={MARGIN.top} width={round(maxX - minX + 12)} height={PLOT_H} />
               </g>
             );
           })}
-          <text className="lf-axis-caption" x={MARGIN.left + PLOT_W / 2} y={SPECTRUM_H - 4} textAnchor="middle">
+          <text className="lf-axis-caption" x={MARGIN.left + PLOT_W / 2} y={SPECTRUM_H - 3} style={{ fontSize: 11 }} textAnchor="middle">
             δ (ppm){reversed ? " · high → low" : ""}
           </text>
         </svg>
@@ -536,9 +814,16 @@ export function LinkedFigureView({
                 ))}
               </g>
             ))}
+            {layout.labels.map((annotation) => {
+              const atom = layout.byIndex.get(annotation.index)!;
+              return <line key={annotation.index} className="lf-label-leader"
+                x1={atom.sx} y1={atom.sy} x2={annotation.leaderX} y2={annotation.leaderY}
+                stroke="#8a8f98" strokeWidth={0.6} pointerEvents="none" />;
+            })}
             {layout.atoms.map((atom) => {
               const active = activeAtoms.has(atom.index);
               const shift = atomShift.get(atom.index);
+              const annotation = layout.labelByIndex.get(atom.index);
               const isHetero = atom.element !== "C";
               return (
                 <g
@@ -548,36 +833,40 @@ export function LinkedFigureView({
                   onMouseEnter={() => setHoverAtomIndex(atom.index)}
                   onMouseLeave={() => setHoverAtomIndex(null)}
                 >
-                  {active ? <circle className="lf-atom-halo" cx={atom.sx} cy={atom.sy} r={12} /> : null}
+                  {active ? <circle className="lf-atom-halo" cx={atom.sx} cy={atom.sy} r={12 * layout.fitScale} /> : null}
                   {isHetero ? (
                     <>
-                      <circle className="lf-atom-bg" cx={atom.sx} cy={atom.sy} r={8} />
-                      <text className="lf-atom-label" x={atom.sx} y={atom.sy} textAnchor="middle" dominantBaseline="central">
+                      <circle className="lf-atom-bg" cx={atom.sx} cy={atom.sy} r={8 * layout.fitScale} />
+                      <text className="lf-atom-label" x={atom.sx} y={atom.sy} style={{ fontSize: layout.atomFontSize }} textAnchor="middle" dominantBaseline="central">
                         {atom.element}
                       </text>
                     </>
                   ) : null}
-                  {shift ? (
-                    <text
-                      className={`lf-shift-label${atomQuality.has(atom.index) ? ` is-${atomQuality.get(atom.index)}` : ""}`}
-                      x={atom.sx + 7}
-                      y={atom.sy - 7}
-                      style={{ fontSize: layout.labelFontSize }}
-                      textAnchor="start"
-                    >
-                      {shift.map((part, index) => (
-                        <tspan
-                          key={`${part.variant}-${part.label}-${index}`}
-                          className={part.variant === "alternative" ? "lf-shift-alternative" : undefined}
-                        >
-                          {index > 0 ? " / " : ""}
-                          {part.label}
-                        </tspan>
-                      ))}
-                    </text>
+                  {shift && annotation ? (
+                    <>
+                      <rect className="lf-label-background" x={annotation.x} y={annotation.y}
+                        width={annotation.width} height={annotation.height} fill="#fff" pointerEvents="none" />
+                      <text
+                        className={`lf-shift-label${atomQuality.has(atom.index) ? ` is-${atomQuality.get(atom.index)}` : ""}`}
+                        x={annotation.x}
+                        y={annotation.y + layout.labelFontSize}
+                        style={{ fontSize: layout.labelFontSize }}
+                        textAnchor="start"
+                      >
+                        {shift.map((part, index) => (
+                          <tspan
+                            key={`${part.variant}-${part.label}-${index}`}
+                            className={part.variant === "alternative" ? "lf-shift-alternative" : undefined}
+                          >
+                            {index > 0 ? " / " : ""}
+                            {part.label}
+                          </tspan>
+                        ))}
+                      </text>
+                    </>
                   ) : null}
                   {/* Transparent hover target covering the vertex. */}
-                  <circle className="lf-hit" cx={atom.sx} cy={atom.sy} r={13} />
+                  <circle className="lf-hit" cx={atom.sx} cy={atom.sy} r={13 * layout.fitScale} />
                 </g>
               );
             })}
@@ -598,39 +887,16 @@ export function LinkedFigureView({
     </div>
   );
 
-  if (fullScreen || !showFull) {
+  if (!showFull) {
     return figure;
   }
 
-  // Enlarged spectrum in a modal, portalled to <body> so the draggable panel's transform can't offset
-  // it. The modal hosts a fresh full-size figure (its own zoom/pan); Esc, the Close button, or a
-  // backdrop click dismiss it.
-  return (
-    <>
+  return createPortal(
+    <div className="lf-modal" role="region" aria-label="Full-size spectrum"
+      style={{ top: document.querySelector(".plugin-panel-window-title")?.getBoundingClientRect().bottom ?? 0 }}>
       {figure}
-      {createPortal(
-        <div className="lf-modal-backdrop" role="presentation" onClick={() => setShowFull(false)}>
-          <div className="lf-modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
-            <button
-              type="button"
-              className="lf-btn lf-modal-close"
-              onClick={() => setShowFull(false)}
-              aria-label="Close full-size spectrum"
-            >
-              Close
-            </button>
-            <LinkedFigureView
-              spectrum={spectrum}
-              structure={structure}
-              fullScreen
-              defaultSpectrometerMHz={protonFrequencyMHz}
-              defaultComparisonMode={effectiveComparisonMode}
-            />
-          </div>
-        </div>,
-        document.body
-      )}
-    </>
+    </div>,
+    document.body
   );
 }
 
@@ -644,76 +910,64 @@ interface LaidOutBond {
   lines: { x1: number; y1: number; x2: number; y2: number }[];
 }
 
-/** Fit the molecule's arbitrary 2D coordinates into the structure viewBox, preserving aspect ratio,
- *  and pre-compute bond line geometry (double/triple bonds as parallel offset lines). */
+/** Fit declarative structure geometry with the shared annotation layout. */
 function layoutStructure(
-  structure: PluginLinkedFigureStructure
-): { atoms: LaidOutAtom[]; bonds: LaidOutBond[]; labelFontSize: number } {
-  const xs = structure.atoms.map((atom) => atom.x);
-  const ys = structure.atoms.map((atom) => atom.y);
-  const minX = Math.min(...xs);
-  const maxX = Math.max(...xs);
-  const minY = Math.min(...ys);
-  const maxY = Math.max(...ys);
-  const spanX = maxX - minX || 1;
-  const spanY = maxY - minY || 1;
-  const scale = Math.min((STRUCT_W - 2 * STRUCT_PAD) / spanX, (STRUCT_H - 2 * STRUCT_PAD) / spanY);
-  const offsetX = (STRUCT_W - spanX * scale) / 2;
-  const offsetY = (STRUCT_H - spanY * scale) / 2;
-  const project = (x: number, y: number): { sx: number; sy: number } => ({
-    sx: offsetX + (x - minX) * scale,
-    sy: offsetY + (y - minY) * scale
+  structure: PluginLinkedFigureStructure,
+  shifts: ReadonlyMap<number, AtomShiftLabelPart[]>
+) {
+  const placement = layoutAtomAnnotationLabels({
+    atoms: structure.atoms.map((atom) => ({
+      ...atom,
+      annotation: shifts.get(atom.index)?.map((part) => part.label).join(" / ")
+    })),
+    bonds: structure.bonds,
+    width: STRUCT_W,
+    height: STRUCT_H
   });
-
-  const byIndex = new Map<number, { sx: number; sy: number }>();
-  const atoms: LaidOutAtom[] = structure.atoms.map((atom) => {
-    const point = project(atom.x, atom.y);
-    byIndex.set(atom.index, point);
-    return { index: atom.index, element: atom.element, sx: round(point.sx), sy: round(point.sy) };
-  });
-
+  const atoms: LaidOutAtom[] = placement.atoms.map((atom) => ({
+    index: atom.index, element: atom.element, sx: atom.x, sy: atom.y
+  }));
+  const byIndex = new Map(atoms.map((atom) => [atom.index, atom]));
   const bonds: LaidOutBond[] = structure.bonds.flatMap((bond) => {
     const a = byIndex.get(bond.from);
     const b = byIndex.get(bond.to);
     if (!a || !b) return [];
-    return [{ lines: parallelLines(a, b, bond.order) }];
+    return [{ lines: annotationBondLines({ x: a.sx, y: a.sy }, { x: b.sx, y: b.sy }, bond.order, placement.fitScale) }];
   });
-
-  // Shrink the shift labels when the structure is crowded (many atoms → short laid-out bonds) so the
-  // numbers don't overlap; a sparse structure keeps the full-size label.
-  const bondLengths = structure.bonds
-    .map((bond) => {
-      const a = byIndex.get(bond.from);
-      const b = byIndex.get(bond.to);
-      return a && b ? Math.hypot(b.sx - a.sx, b.sy - a.sy) : 0;
-    })
-    .filter((length) => length > 0)
-    .sort((left, right) => left - right);
-  const medianBond = bondLengths.length ? bondLengths[Math.floor(bondLengths.length / 2)] : 40;
-  const labelFontSize = Math.max(6.5, Math.min(14, medianBond * 0.34));
-
-  return { atoms, bonds, labelFontSize };
+  const labelByIndex = new Map(placement.labels.map((label) => [label.index, label]));
+  return { ...placement, atoms, bonds, byIndex, labelByIndex };
 }
 
-function parallelLines(
-  a: { sx: number; sy: number },
-  b: { sx: number; sy: number },
-  order: number
-): { x1: number; y1: number; x2: number; y2: number }[] {
-  const dx = b.sx - a.sx;
-  const dy = b.sy - a.sy;
-  const length = Math.hypot(dx, dy) || 1;
-  const nx = -dy / length;
-  const ny = dx / length;
-  const gap = 3;
-  const count = order >= 1 && order <= 3 ? order : 1;
-  const offsets = count === 1 ? [0] : count === 2 ? [-gap / 2, gap / 2] : [-gap, 0, gap];
-  return offsets.map((offset) => ({
-    x1: round(a.sx + nx * offset),
-    y1: round(a.sy + ny * offset),
-    x2: round(b.sx + nx * offset),
-    y2: round(b.sy + ny * offset)
-  }));
+/** Keep labels near their ppm and stagger vertically, reserving the honesty note and axis. */
+function placePeakLabels(peaks: {
+  key: string; text: string; x: number; apexY: number; intensity: number; ppm: number
+}[]): Map<string, AnnotationLabelBox> {
+  const placed = new Map<string, AnnotationLabelBox>();
+  const sorted = [...peaks].sort((a, b) =>
+    b.intensity - a.intensity || a.ppm - b.ppm || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)
+  );
+  const rows = Array.from({ length: 10 }, (_, index) => 18 + index * 18);
+  const occupiedRows = rows.map(() => [] as AnnotationLabelBox[]);
+  for (const peak of sorted) {
+    const width = estimateAnnotationTextWidth(peak.text, PEAK_LABEL_FONT_SIZE);
+    if (width > PLOT_W) continue;
+    const desiredTop = peak.apexY - 6 - PEAK_LABEL_FONT_SIZE;
+    const candidates = [...rows].sort((a, b) => Math.abs(a - desiredTop) - Math.abs(b - desiredTop) || a - b);
+    for (const y of candidates) {
+      const box = {
+        x: clamp(peak.x - width / 2, MARGIN.left, SPECTRUM_W - MARGIN.right - width),
+        y, width, height: PEAK_LABEL_FONT_SIZE * 1.25
+      };
+      const clearance = { ...box, x: box.x - 2, y: box.y - 1, width: width + 4, height: box.height + 2 };
+      // Row spacing exceeds the label height plus clearance, so only this row can collide.
+      const occupied = occupiedRows[rows.indexOf(y)];
+      if (occupied.some((other) => annotationLabelBoxesOverlap(clearance, other))) continue;
+      placed.set(peak.key, box);
+      occupied.push(box);
+      break;
+    }
+  }
+  return placed;
 }
 
 /** Selectable rendering fields. J is field-independent in Hz; the field sets the ppm spacing (J/MHz). */
@@ -762,7 +1016,10 @@ function multipletLines(
   peak: { ppm: number; couplings?: PluginLinkedFigurePeak["couplings"] },
   spectrometerMHz: number
 ): { ppm: number; rel: number }[] {
-  const couplings = peak.couplings ?? [];
+  if (!Number.isFinite(peak.ppm)) return [];
+  const couplings = (peak.couplings ?? []).filter((coupling) =>
+    Number.isFinite(coupling.jHz) && Number.isFinite(coupling.partnerCount)
+  );
   const lineCount = couplings.reduce((n, coupling) => n * (coupling.partnerCount + 1), 1);
   if (couplings.length === 0 || lineCount > MAX_MULTIPLET_LINES) {
     return [{ ppm: peak.ppm, rel: 1 }];
@@ -779,8 +1036,9 @@ function multipletLines(
     }
     lines = next;
   }
-  const maxWeight = Math.max(...lines.map((line) => line.weight));
-  return lines.map((line) => ({ ppm: line.ppm, rel: line.weight / maxWeight }));
+  let maxWeight = 0;
+  for (const line of lines) maxWeight = Math.max(maxWeight, line.weight);
+  return lines.filter((line) => Number.isFinite(line.ppm)).map((line) => ({ ppm: line.ppm, rel: line.weight / maxWeight }));
 }
 
 function binomial(n: number, k: number): number {
@@ -798,13 +1056,123 @@ function lineShape(d: number): number {
   return LORENTZIAN_FRACTION * lorentzian + (1 - LORENTZIAN_FRACTION) * gaussian;
 }
 
-/** Evaluate the summed line-profile height (pre-scale) at a single ppm — used for peak-label placement. */
-function envelopeHeight(lines: readonly { ppm: number; amp: number }[], ppm: number, halfWidthPpm: number): number {
-  let total = 0;
-  for (const line of lines) {
-    total += line.amp * lineShape((ppm - line.ppm) / halfWidthPpm);
+interface EnvelopeHeight {
+  total: number;
+  byStyle: Record<CurveStyle, number>;
+}
+
+/** Index lines in ppm order, combining coincident lines into bins. Nearby sparse bins retain the
+ * exact profile; narrow dense bins use its convergent series so clustered lines stay cheap too.
+ * Distant bins use Lorentzian moments: unlike a cutoff, this preserves the long tails. At a
+ * radius/distance <= 1/8, 20 moments leave less than double-precision rounding error; the Gaussian
+ * beyond eight half-widths contributes less than 6e-20 of its amplitude. */
+export function createSpectrumEnvelope(lines: readonly SpectrumLine[], halfWidthPpm: number): (ppm: number) => EnvelopeHeight {
+  const finite = lines.filter((line) => Number.isFinite(line.ppm) && Number.isFinite(line.amp));
+  const styles = CURVE_STYLES.filter((style) => finite.some((line) => line.style === style));
+  const empty = (): EnvelopeHeight => ({ total: 0, byStyle: { trusted: 0, estimated: 0, alternative: 0 } });
+  if (!Number.isFinite(halfWidthPpm) || halfWidthPpm <= 0) return empty;
+  // Keep the original summation order for small figures, including their last rounding bit.
+  if (finite.length <= 64) return (ppm) => {
+    const result = empty();
+    if (!Number.isFinite(ppm)) return result;
+    for (const line of finite) {
+      const height = line.amp * lineShape((ppm - line.ppm) / halfWidthPpm);
+      result.total += height;
+      result.byStyle[line.style] += height;
+    }
+    return result;
+  };
+  interface Bin {
+    ppm: number;
+    byStyle: Record<CurveStyle, number>;
   }
-  return total;
+  interface Node {
+    center: number;
+    radius: number;
+    moments: Record<CurveStyle, Float64Array>;
+    start: number;
+    end: number;
+    children?: Node[];
+  }
+  const byPpm = new Map<number, Bin>();
+  for (const line of finite) {
+    let bin = byPpm.get(line.ppm);
+    if (!bin) {
+      bin = { ppm: line.ppm, byStyle: empty().byStyle };
+      byPpm.set(line.ppm, bin);
+    }
+    bin.byStyle[line.style] += line.amp;
+  }
+  const bins = [...byPpm.values()].sort((a, b) => a.ppm - b.ppm);
+  const momentCount = 20;
+  const build = (start: number, end: number): Node => {
+    const center = bins[start].ppm / 2 + bins[end - 1].ppm / 2;
+    const radius = Math.max(center - bins[start].ppm, bins[end - 1].ppm - center);
+    const moments = {
+      trusted: new Float64Array(momentCount), estimated: new Float64Array(momentCount), alternative: new Float64Array(momentCount)
+    };
+    for (let index = start; index < end; index += 1) {
+      const bin = bins[index];
+      const offset = radius === 0 ? 0 : (bin.ppm - center) / radius;
+      let power = 1;
+      for (let degree = 0; degree < momentCount; degree += 1) {
+        for (const style of styles) moments[style][degree] += bin.byStyle[style] * power;
+        power *= offset;
+      }
+    }
+    const node: Node = { center, radius, moments, start, end };
+    if (end - start > 8 && radius > halfWidthPpm / 8) {
+      const middle = Math.floor((start + end) / 2);
+      node.children = [build(start, middle), build(middle, end)];
+    }
+    return node;
+  };
+  const root = build(0, bins.length);
+  return (ppm) => {
+    const result = empty();
+    if (!Number.isFinite(ppm)) return result;
+    const visit = (node: Node): void => {
+      const distance = ppm - node.center;
+      const far = Math.abs(distance) - node.radius > 8 * halfWidthPpm;
+      if (node.radius <= halfWidthPpm / 8 || (far && node.radius <= Math.abs(distance) / 8)) {
+        const d = distance / halfWidthPpm;
+        const radius = node.radius / halfWidthPpm;
+        const denominator = 1 + d * d;
+        if (!Number.isFinite(denominator)) return;
+        let real = d / denominator;
+        let imaginary = -1 / denominator;
+        const ratioReal = radius * real;
+        const ratioImaginary = radius * imaginary;
+        let gaussian = far ? 0 : Math.exp(-Math.LN2 * d * d);
+        let previousGaussian = 0;
+        const linear = 2 * Math.LN2 * d * radius;
+        const quadratic = -2 * Math.LN2 * radius * radius;
+        for (let degree = 0; degree < momentCount; degree += 1) {
+          const profile = -LORENTZIAN_FRACTION * imaginary + (1 - LORENTZIAN_FRACTION) * gaussian;
+          for (const style of styles) {
+            result.byStyle[style] += profile * node.moments[style][degree];
+          }
+          const nextGaussian = (linear * gaussian + quadratic * previousGaussian) / (degree + 1);
+          previousGaussian = gaussian;
+          gaussian = nextGaussian;
+          const nextReal = real * ratioReal - imaginary * ratioImaginary;
+          imaginary = real * ratioImaginary + imaginary * ratioReal;
+          real = nextReal;
+        }
+      } else if (node.children) {
+        for (const child of node.children) visit(child);
+      } else {
+        for (let index = node.start; index < node.end; index += 1) {
+          const bin = bins[index];
+          const height = lineShape((ppm - bin.ppm) / halfWidthPpm);
+          for (const style of styles) result.byStyle[style] += bin.byStyle[style] * height;
+        }
+      }
+    };
+    visit(root);
+    for (const style of styles) result.total += result.byStyle[style];
+    return result;
+  };
 }
 
 /** Sample the summed line-profile envelope of `lines` across the plot at `step` px (sub-pixel so sharp
@@ -817,19 +1185,7 @@ function sampleEnvelope(
   halfWidthPpm: number,
   step: number
 ): { xs: number[]; totals: number[]; max: number } {
-  const xs: number[] = [];
-  const totals: number[] = [];
-  let max = 1e-9;
-  const span = view.max - view.min || 1;
-  for (let x = MARGIN.left; x <= MARGIN.left + PLOT_W + step; x += step) {
-    const frac = (x - MARGIN.left) / PLOT_W;
-    const ppm = view.min + (reversed ? 1 - frac : frac) * span;
-    const total = envelopeHeight(lines, ppm, halfWidthPpm);
-    xs.push(x);
-    totals.push(total);
-    if (total > max) max = total;
-  }
-  return { xs, totals, max };
+  return sampleStyledEnvelope(lines.map((line) => ({ ...line, peakId: "", style: "trusted" })), view, reversed, halfWidthPpm, step);
 }
 
 interface StyledEnvelopeSample {
@@ -841,12 +1197,13 @@ interface StyledEnvelopeSample {
 
 /** Sample all provenance styles in one traversal. This avoids repeating the line-profile work once
  * per curve layer while allowing rule-estimated and alternative traces to retain distinct styling. */
-function sampleStyledEnvelope(
+export function sampleStyledEnvelope(
   lines: readonly SpectrumLine[],
   view: { min: number; max: number },
   reversed: boolean,
   halfWidthPpm: number,
-  step: number
+  step: number,
+  envelope = createSpectrumEnvelope(lines, halfWidthPpm)
 ): StyledEnvelopeSample {
   const xs: number[] = [];
   const totals: number[] = [];
@@ -855,22 +1212,13 @@ function sampleStyledEnvelope(
     estimated: [],
     alternative: []
   };
+  if (![view.min, view.max, step].every(Number.isFinite) || step <= 0) return { xs, totals, max: 1e-9, byStyle };
   let max = 1e-9;
   const span = view.max - view.min || 1;
   for (let x = MARGIN.left; x <= MARGIN.left + PLOT_W + step; x += step) {
     const frac = (x - MARGIN.left) / PLOT_W;
     const ppm = view.min + (reversed ? 1 - frac : frac) * span;
-    const styleTotals: Record<CurveStyle, number> = {
-      trusted: 0,
-      estimated: 0,
-      alternative: 0
-    };
-    let total = 0;
-    for (const line of lines) {
-      const height = line.amp * lineShape((ppm - line.ppm) / halfWidthPpm);
-      total += height;
-      styleTotals[line.style] += height;
-    }
+    const { total, byStyle: styleTotals } = envelope(ppm);
     xs.push(x);
     totals.push(total);
     for (const style of CURVE_STYLES) byStyle[style].push(styleTotals[style]);
@@ -933,8 +1281,11 @@ function spectrumPathFrom(xs: readonly number[], totals: readonly number[], scal
 function axisTicks(min: number, max: number): number[] {
   const step = niceStep((max - min) / 6);
   const ticks: number[] = [];
+  if (![min, max, step].every(Number.isFinite) || step <= 0) return ticks;
   for (let tick = Math.ceil(min / step) * step; tick <= max + 1e-9; tick += step) {
-    ticks.push(Math.round(tick * 100) / 100);
+    const rounded = Math.round(tick * 100) / 100;
+    if (Number.isFinite(rounded)) ticks.push(rounded);
+    if (tick + step === tick) break;
   }
   return ticks;
 }
@@ -974,17 +1325,23 @@ function formatObserveFrequency(frequencyMHz: number): string {
 /** A schema-valid alternative can fall outside the plugin's suggested domain. Expand only the side
  * that needs it, with a small label-safe pad, so no selected peak is permanently culled. */
 function effectiveSpectrumDomain(spectrum: PluginLinkedFigureSpectrum): { min: number; max: number } {
-  const peakPpm = spectrum.peaks.flatMap((peak) =>
-    peak.alternativePpm === undefined ? [peak.ppm] : [peak.ppm, peak.alternativePpm]
-  );
-  const rawMin = Math.min(spectrum.domain.min, ...peakPpm);
-  const rawMax = Math.max(spectrum.domain.max, ...peakPpm);
+  const domainMin = Number.isFinite(spectrum.domain.min) ? spectrum.domain.min : 0;
+  const domainMax = Number.isFinite(spectrum.domain.max) ? spectrum.domain.max : Math.max(1, domainMin + 1);
+  let rawMin = domainMin;
+  let rawMax = domainMax;
+  for (const peak of spectrum.peaks) {
+    for (const ppm of [peak.ppm, peak.alternativePpm]) {
+      if (ppm === undefined || !Number.isFinite(ppm)) continue;
+      rawMin = Math.min(rawMin, ppm);
+      rawMax = Math.max(rawMax, ppm);
+    }
+  }
   const span = Math.max(1e-6, rawMax - rawMin);
   const pad = Math.max(0.01, span * 0.025);
-  return {
-    min: rawMin < spectrum.domain.min ? rawMin - pad : spectrum.domain.min,
-    max: rawMax > spectrum.domain.max ? rawMax + pad : spectrum.domain.max
-  };
+  const min = rawMin < domainMin ? rawMin - pad : domainMin;
+  const max = rawMax > domainMax ? rawMax + pad : domainMax;
+  return Number.isFinite(min) && Number.isFinite(max) && Number.isFinite(max - min) && max > min
+    ? { min, max } : { min: 0, max: 1 };
 }
 
 /** Value fingerprint used only for viewport continuity: identical reruns preserve zoom, while a new

@@ -17,7 +17,10 @@ mod network_error;
 mod network_test_http;
 mod ocsr_engine;
 mod opsin;
+mod panel_full_size;
 mod panel_window;
+mod panel_window_controls;
+mod panel_window_frame;
 mod perf_log;
 mod plugin_package;
 #[cfg(test)]
@@ -843,6 +846,8 @@ struct ToolsetLayoutState {
     /// `ensure_main_window_visible`; centering is only the fallback when nothing usable was saved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     main_window: Option<MainWindowGeometry>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    plugin_panels: HashMap<String, panel_window_frame::Frame>,
 }
 
 impl Default for ToolsetLayoutState {
@@ -851,6 +856,7 @@ impl Default for ToolsetLayoutState {
             version: 1,
             toolsets: HashMap::new(),
             main_window: None,
+            plugin_panels: HashMap::new(),
         }
     }
 }
@@ -928,6 +934,7 @@ pub fn run() {
         .manage(perf_log)
         .manage(PendingOpenDocument::default())
         .manage(panel_window::PanelFocusState::default())
+        .manage(panel_full_size::State::default())
         .manage(Engine3dSidecarSessions::default())
         .manage(ocsr_engine::OcsrEngineState::default())
         .manage(external_tools::ExternalToolsState::default())
@@ -1045,6 +1052,7 @@ pub fn run() {
                         // ExitRequested. Raise the quit flag so palette destruction that follows
                         // isn't recorded as user closes.
                         APP_QUITTING.store(true, Ordering::SeqCst);
+                        panel_full_size::restore_all(window.app_handle());
                         dialog_windows::dismiss_owned(window.app_handle(), "quit");
                         window.state::<ocsr_engine::OcsrEngineState>().shutdown();
                         external_tools::shutdown(window.app_handle());
@@ -1105,6 +1113,19 @@ pub fn run() {
             // told, so a plugin gets its close signal (AGENTS.md §8a) and a later report re-shows the
             // window. Destroying it left the main window believing it was still open.
             if is_plugin_panel_window_label(window.label()) {
+                if matches!(
+                    event,
+                    WindowEvent::Moved(_)
+                        | WindowEvent::Resized(_)
+                        | WindowEvent::CloseRequested { .. }
+                ) {
+                    if let Err(error) = persist_plugin_panel_geometry(window) {
+                        eprintln!(
+                            "Could not persist ChemDraft panel frame {}: {error}",
+                            window.label()
+                        );
+                    }
+                }
                 // Native resize edges sit outside the DOM's focus hook. Resizing finishes an
                 // input lease too, on both platforms, without changing the resize gesture.
                 if matches!(event, WindowEvent::Resized(_))
@@ -1131,9 +1152,11 @@ pub fn run() {
                 // Focused is queued by Tao and may describe an older activation by delivery.
                 // Lease ownership is observed synchronously at the OS boundary instead.
                 if matches!(event, WindowEvent::Destroyed) {
+                    panel_full_size::forget(window);
                     panel_window::forget(window);
                 }
                 if let WindowEvent::CloseRequested { api, .. } = event {
+                    panel_full_size::will_hide(window);
                     if APP_QUITTING.load(Ordering::SeqCst) {
                         return;
                     }
@@ -1329,6 +1352,8 @@ pub fn run() {
             open_plugin_panel_window,
             plugin_panel_action_forward,
             plugin_panel_event_forward,
+            set_plugin_panel_full_size,
+            panel_window_controls::hide_plugin_panel_window,
             register_plugin_panel_input_focus,
             set_plugin_panel_input_focus,
             open_toolset_popover,
@@ -1409,6 +1434,7 @@ pub fn run() {
                     request_quit(app);
                 } else {
                     APP_QUITTING.store(true, Ordering::SeqCst);
+                    panel_full_size::restore_all(app);
                     app.state::<ocsr_engine::OcsrEngineState>().shutdown();
                     external_tools::shutdown(app);
                     assistant_mcp::shutdown();
@@ -1420,6 +1446,7 @@ pub fn run() {
                 // only when the preference is enabled. System termination and preference-off
                 // AppKit quit still reach this final, non-blocking cleanup as before.
                 APP_QUITTING.store(true, Ordering::SeqCst);
+                panel_full_size::restore_all(app);
                 app.state::<ocsr_engine::OcsrEngineState>().shutdown();
                 external_tools::shutdown(app);
                 assistant_mcp::shutdown();
@@ -2955,6 +2982,21 @@ fn plugin_panel_window_label(panel_id: &str) -> String {
 
 const PLUGIN_PANEL_WINDOW_LABEL_PREFIX: &str = "plugin-panel-";
 
+#[tauri::command]
+async fn set_plugin_panel_full_size(
+    window: tauri::WebviewWindow,
+    enabled: bool,
+    width: f64,
+    height: f64,
+) -> Result<panel_full_size::Status, String> {
+    panel_full_size::authorize(window.label())?;
+    let target = window.clone();
+    run_on_main_thread_blocking(&window, move || {
+        let webview: &tauri::Webview = target.as_ref();
+        panel_full_size::set(&webview.window(), enabled, width, height)
+    })?
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PluginPanelActionForwardRequest {
@@ -3014,9 +3056,21 @@ fn validate_plugin_panel_event(
             }
             Ok(())
         }
-        "chemdraft://analysis-window-action" => Ok(()),
+        "chemdraft://analysis-window-action" if payload.is_object() => Ok(()),
         _ => Err("This event cannot be forwarded by a panel window.".into()),
     }
+}
+
+fn authenticated_plugin_panel_event(
+    label: &str,
+    event: &str,
+    mut payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    validate_plugin_panel_event(label, event, &payload)?;
+    if event == "chemdraft://analysis-window-action" {
+        payload["sourceLabel"] = serde_json::Value::String(label.into());
+    }
+    Ok(payload)
 }
 
 #[tauri::command]
@@ -3025,7 +3079,7 @@ fn plugin_panel_event_forward(
     event: String,
     payload: serde_json::Value,
 ) -> Result<(), String> {
-    validate_plugin_panel_event(window.label(), &event, &payload)?;
+    let payload = authenticated_plugin_panel_event(window.label(), &event, payload)?;
     window
         .app_handle()
         .emit_to(MAIN_WINDOW_LABEL, &event, payload)
@@ -3293,6 +3347,103 @@ mod plugin_panel_label_tests {
     }
 
     #[test]
+    fn plugin_panel_analysis_actions_overwrite_forged_sources() {
+        use super::authenticated_plugin_panel_event;
+        let label = plugin_panel_window_label("v1x61x62");
+        let event = "chemdraft://analysis-window-action";
+        for kind in [
+            "close",
+            "copyMolecularInspector",
+            "changeMolecularInterpretation",
+            "acceptPluginProposal",
+            "rejectPluginProposal",
+            "copySpectrum",
+            "saveBinaryFile",
+            "saveTextFile",
+        ] {
+            for source in [
+                serde_json::Value::Null,
+                serde_json::json!("plugin-panel-other"),
+            ] {
+                let payload = serde_json::json!({"kind": kind, "sourceLabel": source});
+                let forwarded = authenticated_plugin_panel_event(&label, event, payload).unwrap();
+                assert_eq!(forwarded["sourceLabel"], label);
+                assert_eq!(forwarded["kind"], kind);
+            }
+            let forwarded =
+                authenticated_plugin_panel_event(&label, event, serde_json::json!({"kind": kind}))
+                    .unwrap();
+            assert_eq!(forwarded["sourceLabel"], label);
+        }
+        for payload in [
+            serde_json::Value::Null,
+            serde_json::json!([]),
+            serde_json::json!(1),
+        ] {
+            assert!(authenticated_plugin_panel_event(&label, event, payload).is_err());
+        }
+    }
+
+    #[test]
+    fn plugin_panel_publications_are_private_and_document_owned() {
+        use super::{plugin_panel_publication_script, PluginPanelPublication};
+        let state = std::sync::Mutex::new(super::utility_suspension::UtilitySuspension::default());
+        let mut publication = PluginPanelPublication {
+            target_label: plugin_panel_window_label("v1x61x62"),
+            event: "chemdraft://analysis-window-snapshot".into(),
+            payload: serde_json::json!({"text": "\"}); alert('untrusted'); //"}),
+        };
+        for source in ["plugin-panel-other", "preferences", "toolset-core-main"] {
+            assert!(plugin_panel_publication_script(source, &publication, &state).is_err());
+        }
+        let script = plugin_panel_publication_script("main", &publication, &state).unwrap();
+        assert!(script.starts_with("window.dispatchEvent(new CustomEvent("));
+        assert!(script.contains("JSON.parse("));
+        assert!(!script.contains("__TAURI_EVENT_PLUGIN_INTERNALS__"));
+        for event in [
+            "chemdraft://plugin-panel-report",
+            "chemdraft://plugin-panel-report-cleared",
+            "chemdraft://plugin-panel-staleness",
+            "chemdraft://analysis-window-snapshot",
+            "chemdraft://analysis-window-action-result",
+            "chemdraft://plugin-panel-action-result",
+        ] {
+            publication.event = event.into();
+            assert!(plugin_panel_publication_script("main", &publication, &state).is_ok());
+        }
+        publication.event = "chemdraft://analysis-window-action".into();
+        assert!(plugin_panel_publication_script("main", &publication, &state).is_err());
+        publication.event = "chemdraft://analysis-window-snapshot".into();
+        publication.target_label = "main".into();
+        assert!(plugin_panel_publication_script("main", &publication, &state).is_err());
+    }
+
+    #[test]
+    fn plugin_panel_private_tombstones_cancel_suspended_restores() {
+        use super::{
+            dispatch_plugin_panel_open, plugin_panel_publication_script,
+            resume_deferred_plugin_panels, PluginPanelPublication,
+        };
+        let state = std::sync::Mutex::new(super::utility_suspension::UtilitySuspension::default());
+        let label = plugin_panel_window_label("v1x61x62");
+        state.lock().unwrap().begin([], None);
+        let request = serde_json::from_value(serde_json::json!({
+            "panelId": "v1x61x62", "title": "Result"
+        }))
+        .unwrap();
+        dispatch_plugin_panel_open(&state, request, false, |_| panic!("suspended")).unwrap();
+        let publication = PluginPanelPublication {
+            target_label: label,
+            event: super::PLUGIN_PANEL_REPORT_CLEARED_EVENT.into(),
+            payload: serde_json::json!({"pluginId": "a", "panelId": "b", "revision": 2}),
+        };
+        plugin_panel_publication_script("main", &publication, &state).unwrap();
+        state.lock().unwrap().release(false);
+        resume_deferred_plugin_panels(&state, || false, |_| panic!("removed panel restored"))
+            .unwrap();
+    }
+
+    #[test]
     fn suspended_panel_opens_skip_builder_and_duplicates_build_once_after_last_resume() {
         use super::{dispatch_plugin_panel_open, resume_deferred_plugin_panels};
         let state = std::sync::Mutex::new(super::utility_suspension::UtilitySuspension::default());
@@ -3545,13 +3696,65 @@ mod plugin_panel_label_tests {
     }
 }
 
-/// Host-owned analysis windows. Plugin reports and built-in Analyze surfaces share this one
-/// transport; each window is parented to the main document rather than being globally floating.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PluginPanelPublication {
+    target_label: String,
+    event: String,
+    payload: serde_json::Value,
+}
+
+fn plugin_panel_publication_script(
+    source: &str,
+    publication: &PluginPanelPublication,
+    suspension: &Mutex<utility_suspension::UtilitySuspension>,
+) -> Result<String, String> {
+    if source != MAIN_WINDOW_LABEL || !is_plugin_panel_window_label(&publication.target_label) {
+        return Err("Only the document window may publish to a panel.".into());
+    }
+    match publication.event.as_str() {
+        "chemdraft://plugin-panel-report"
+        | "chemdraft://plugin-panel-report-cleared"
+        | "chemdraft://plugin-panel-staleness"
+        | "chemdraft://analysis-window-snapshot"
+        | "chemdraft://analysis-window-action-result"
+        | "chemdraft://plugin-panel-action-result" => {}
+        _ => return Err("This event cannot be published to a panel.".into()),
+    }
+    let event = serde_json::to_string(&publication.event).map_err(|error| error.to_string())?;
+    let payload = serde_json::to_string(&publication.payload).map_err(|error| error.to_string())?;
+    if publication.event == PLUGIN_PANEL_REPORT_CLEARED_EVENT {
+        cancel_plugin_panel_restore(suspension, &payload);
+    }
+    let payload = serde_json::to_string(&payload).map_err(|error| error.to_string())?;
+    Ok(format!(
+        "window.dispatchEvent(new CustomEvent({event}, {{ detail: JSON.parse({payload}) }}));"
+    ))
+}
+
+/// Host-owned analysis windows share their existing document-window grant for private publications.
+/// Publication mode delivers content without opening or revealing a window.
 #[tauri::command]
 async fn open_plugin_panel_window(
     app: tauri::AppHandle,
-    request: OpenPluginPanelRequest,
+    window: tauri::WebviewWindow,
+    request: Option<OpenPluginPanelRequest>,
+    publication: Option<PluginPanelPublication>,
 ) -> Result<(), String> {
+    if let Some(publication) = publication {
+        if request.is_some() {
+            return Err("Cannot open and publish a panel in the same request.".into());
+        }
+        let script =
+            plugin_panel_publication_script(window.label(), &publication, &UTILITY_SUSPENSION)?;
+        // Tauri's emit_to also reaches Any listeners in other webviews. Evaluate only in the
+        // recipient so proposal snapshots and replies never enter that shared event bus.
+        if let Some(target) = app.get_webview_window(&publication.target_label) {
+            target.eval(script).map_err(|error| error.to_string())?;
+        }
+        return Ok(());
+    }
+    let request = request.ok_or("Missing plugin panel request.")?;
     if !is_valid_plugin_storage_id(&request.panel_id) {
         return Err(format!("Invalid plugin panel id \"{}\".", request.panel_id));
     }
@@ -3690,6 +3893,20 @@ fn build_or_show_plugin_panel<R: Runtime>(
                 restore_utility_in_document_group(&target)
             })?;
         }
+        if !window.is_visible().unwrap_or(true) {
+            // Reopening a reusable window also checks for a monitor disconnected since close.
+            // Prompt restoration above deliberately leaves its live frame and ordering alone.
+            let webview: &tauri::Webview<R> = window.as_ref();
+            let live = current_plugin_panel_geometry(&webview.window());
+            let (_, _, placement) = plugin_panel_initial_geometry(app, &request, live);
+            if let Some(placement) = placement {
+                let target = window.clone();
+                run_on_main_thread_blocking(&window, move || {
+                    let webview: &tauri::Webview<R> = target.as_ref();
+                    panel_full_size::apply(&webview.window(), placement)
+                })??;
+            }
+        }
         // `show()` makes the window key on macOS (tao's `set_visible` is makeKeyAndOrderFront), so
         // an automatic re-show leaves visibility to `configure_analysis_window`, which only orders
         // the window front.
@@ -3700,9 +3917,11 @@ fn build_or_show_plugin_panel<R: Runtime>(
         return Ok(());
     }
 
-    let width = request.width.unwrap_or(380.0);
-    let height = request.height.unwrap_or(520.0);
-    let position = analysis_window_initial_position(app, width, height);
+    let saved = load_toolset_layout_state(app)
+        .plugin_panels
+        .get(&request.panel_id)
+        .cloned();
+    let (width, height, placement) = plugin_panel_initial_geometry(app, &request, saved);
     // `.parent` is an owner window on Windows (no taskbar entry, stays above the document), the
     // same relationship utility_window_builder gives the palettes.
     let mut builder = WebviewWindowBuilder::new(
@@ -3712,12 +3931,15 @@ fn build_or_show_plugin_panel<R: Runtime>(
     )
     .title(format!("ChemDraft {}", request.title))
     .inner_size(width, height)
-    .min_inner_size(280.0, 200.0)
+    .min_inner_size(
+        panel_window_frame::MIN_WIDTH,
+        panel_window_frame::MIN_HEIGHT,
+    )
     .accept_first_mouse(true)
     .focusable(false)
     // Windows uses this creation trait for EVERY later show, not just the initial reveal.
     .focused(presentation.focused_on_build)
-    .visible(presentation.visible_on_build)
+    .visible(presentation.visible_on_build && placement.is_none())
     .resizable(true)
     .decorations(false)
     // Overlapping panels need a visible edge, matching the palette popover's native shadow.
@@ -3730,13 +3952,14 @@ fn build_or_show_plugin_panel<R: Runtime>(
             builder = builder.parent(&main).map_err(|error| error.to_string())?;
         }
     }
-    if let Some(position) = position {
-        builder = builder.position(position.x, position.y);
-    }
     let window = builder.build().map_err(|error| error.to_string())?;
     disable_default_context_menus(&window);
     let target = window.clone();
     let installed = run_on_main_thread_blocking(&window, move || {
+        if let Some(placement) = placement {
+            let webview: &tauri::Webview<R> = target.as_ref();
+            panel_full_size::apply(&webview.window(), placement)?;
+        }
         panel_window::install_resize_hit_test(&target)
     })
     .and_then(|result| result);
@@ -3750,8 +3973,92 @@ fn build_or_show_plugin_panel<R: Runtime>(
             restore_utility_in_document_group(&target)
         })?;
     }
+    if !cfg!(target_os = "macos") {
+        window.show().map_err(|error| error.to_string())?;
+    }
     configure_analysis_window(&window)?;
     Ok(())
+}
+
+fn current_plugin_panel_geometry<R: Runtime>(
+    window: &tauri::Window<R>,
+) -> Option<panel_window_frame::Frame> {
+    let position = window.outer_position().ok()?;
+    let size = window.inner_size().ok()?;
+    let monitor =
+        panel_window_frame::Monitor::from_native(&window.current_monitor().ok().flatten()?);
+    panel_window_frame::Frame::from_physical(
+        (position.x, position.y),
+        (size.width, size.height),
+        &monitor,
+    )
+}
+
+fn plugin_panel_initial_geometry<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    request: &OpenPluginPanelRequest,
+    saved: Option<panel_window_frame::Frame>,
+) -> (f64, f64, Option<panel_window_frame::Placement>) {
+    let (width, height) = panel_window_frame::default_size(request.width, request.height);
+    let placement = saved
+        .as_ref()
+        .and_then(|frame| plugin_panel_saved_placement(app, frame))
+        .or_else(|| plugin_panel_default_placement(app, width, height));
+    (width, height, placement)
+}
+
+fn plugin_panel_saved_placement<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    frame: &panel_window_frame::Frame,
+) -> Option<panel_window_frame::Placement> {
+    let monitors = app.available_monitors().unwrap_or_default();
+    let monitors: Vec<_> = monitors
+        .iter()
+        .map(panel_window_frame::Monitor::from_native)
+        .collect();
+    frame.restore(&monitors)
+}
+
+fn plugin_panel_restore_geometry<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    saved: &panel_window_frame::Frame,
+) -> Option<(panel_window_frame::Placement, panel_window_frame::Frame)> {
+    let monitors = app.available_monitors().unwrap_or_default();
+    let monitors: Vec<_> = monitors
+        .iter()
+        .map(panel_window_frame::Monitor::from_native)
+        .collect();
+    if let Some(placement) = saved.restore_normal(&monitors) {
+        let monitor = monitors.iter().find(|m| m.identity == saved.monitor)?;
+        let frame =
+            panel_window_frame::Frame::from_physical(placement.position, placement.size, monitor)?;
+        return Some((placement, frame));
+    }
+    let (width, height) = panel_window_frame::default_size(None, None);
+    let placement = plugin_panel_default_placement(app, width, height)?;
+    let main = app.get_webview_window(MAIN_WINDOW_LABEL)?;
+    let monitor = panel_window_frame::Monitor::from_native(&main.current_monitor().ok().flatten()?);
+    let frame =
+        panel_window_frame::Frame::from_physical(placement.position, placement.size, &monitor)?;
+    Some((placement, frame))
+}
+
+fn plugin_panel_default_placement<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    width: f64,
+    height: f64,
+) -> Option<panel_window_frame::Placement> {
+    let position = analysis_window_initial_position(app, width, height)?;
+    let main = app.get_webview_window(MAIN_WINDOW_LABEL)?;
+    let monitor = main.current_monitor().ok().flatten()?;
+    let scale = monitor.scale_factor();
+    let position = position.to_physical::<i32>(scale);
+    let size = tauri::LogicalSize::new(width, height).to_physical::<u32>(scale);
+    Some(panel_window_frame::Placement {
+        position: (position.x, position.y),
+        size: (size.width, size.height),
+        scale,
+    })
 }
 
 fn analysis_window_initial_position<R: Runtime>(
@@ -7709,6 +8016,49 @@ fn persist_main_window_geometry<R: Runtime>(window: &tauri::Window<R>) -> Result
     })
 }
 
+fn persist_plugin_panel_geometry<R: Runtime>(window: &tauri::Window<R>) -> Result<(), String> {
+    if APP_QUITTING.load(Ordering::SeqCst) || utility_windows_suspended() {
+        return Ok(());
+    }
+    // Native state is authoritative before Tao's cached minimized flag catches up. Windows may
+    // move an owned panel to its minimized parking position before reporting the owner's resize.
+    let native = main_window_placement::snapshot(window)?;
+    let owner_minimized = window
+        .app_handle()
+        .get_webview_window(MAIN_WINDOW_LABEL)
+        .is_some_and(|owner| owner.is_minimized().unwrap_or(true));
+    let Some(frame) = panel_full_size::frame_for_save(window) else {
+        return Ok(());
+    };
+    let Some(frame) = frame.for_save(
+        native.minimized || window.is_minimized().unwrap_or(true),
+        owner_minimized,
+        native.fullscreen || window.is_fullscreen().unwrap_or(true),
+    ) else {
+        return Ok(());
+    };
+    save_plugin_panel_frame(window, frame)
+}
+
+fn save_plugin_panel_frame<R: Runtime>(
+    window: &tauri::Window<R>,
+    frame: panel_window_frame::Frame,
+) -> Result<(), String> {
+    // Reject off-screen/parked positions rather than replacing the last usable frame.
+    if plugin_panel_saved_placement(window.app_handle(), &frame).is_none() {
+        return Ok(());
+    }
+    let Some(id) = window
+        .label()
+        .strip_prefix(PLUGIN_PANEL_WINDOW_LABEL_PREFIX)
+    else {
+        return Ok(());
+    };
+    update_toolset_layout_state(window.app_handle(), |layout| {
+        layout.plugin_panels.insert(id.replace(':', "."), frame);
+    })
+}
+
 fn update_main_window_geometry(
     saved: &mut Option<MainWindowGeometry>,
     update: MainWindowGeometryUpdate,
@@ -8888,6 +9238,7 @@ mod tests {
         let saved = ToolsetLayoutState {
             version: 1,
             toolsets: HashMap::new(),
+            plugin_panels: HashMap::new(),
             main_window: Some(MainWindowGeometry {
                 x: 12.0,
                 y: 34.0,

@@ -21,8 +21,9 @@ import { buildDocumentSessionEnvelope, buildDocumentTabsSession, parseDocumentSe
 import { createPluginRuntime, type DesktopPluginRuntime } from "./plugins/createPluginRuntime";
 import { applyPatches, type DocumentPatch, type MoleculeObject } from "@chemdraft/chem-core";
 import {
-  ANALYSIS_WINDOW_ACTION_EVENT, type AnalysisWindowSnapshotPayload,
-  broadcastAnalysisWindowSnapshot, respondToProposalDecision
+  ANALYSIS_WINDOW_ACTION_EVENT, ANALYSIS_WINDOW_OWNER_ID, PATCH_REVIEW_WINDOW_ID,
+  type AnalysisWindowSnapshotPayload, broadcastAnalysisWindowSnapshot,
+  pluginPanelWindowLabel, respondToProposalDecision
 } from "./plugins/panelBridge";
 import { createDesktopShortcutRegistry } from "./keyboardShortcuts";
 import { createDocumentTabActions } from "./commands";
@@ -603,10 +604,12 @@ describe("documents in one window", () => {
     await act(async () => { await runtime().invokeCommand(commandId); });
     return runtime().host.listProposedPatches("pending")[0]!;
   }
+  const reviewSourceLabel = pluginPanelWindowLabel({ pluginId: ANALYSIS_WINDOW_OWNER_ID, panelId: PATCH_REVIEW_WINDOW_ID });
   async function decide(kind: "acceptPluginProposal" | "rejectPluginProposal", proposalId: string) {
-    await act(async () => window.dispatchEvent(new CustomEvent(ANALYSIS_WINDOW_ACTION_EVENT, {
-      detail: { kind, proposalId, requestId: "review-result" }
-    })));
+    // Rust stamps the review window's label before forwarding the action to main.
+    await act(async () => native.events.get(ANALYSIS_WINDOW_ACTION_EVENT)!({
+      kind, proposalId, requestId: "review-result", sourceLabel: reviewSourceLabel
+    }));
   }
   const reviewItems = () => {
     const snapshots = vi.mocked(broadcastAnalysisWindowSnapshot).mock.calls
@@ -615,6 +618,35 @@ describe("documents in one window", () => {
     if (content.kind !== "patchReview") throw new Error("No proposal review snapshot");
     return content.proposals;
   };
+
+  it.each(["acceptPluginProposal", "rejectPluginProposal"] as const)("requires the native review window sender for %s", async kind => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await paste("Source object");
+    const before = bridge().snapshot().document;
+    const proposal = await propose({ op: "updateObject", objectId: before.pages[0]!.objects[0]!.id,
+      changes: { text: "Reviewed source" } });
+    const action = { kind, proposalId: proposal.id, requestId: "review-result" };
+    const receive = native.events.get(ANALYSIS_WINDOW_ACTION_EVENT)!;
+    const otherSourceLabel = pluginPanelWindowLabel({ pluginId: "org.test.tab-proposal", panelId: PATCH_REVIEW_WINDOW_ID });
+    for (const payload of [action, { ...action, sourceLabel: otherSourceLabel }]) {
+      await act(async () => receive(payload));
+      expect(runtime().host.listProposedPatches("pending")).toEqual([proposal]);
+      expect(bridge().snapshot().document).toEqual(before);
+      expect(respondToProposalDecision).not.toHaveBeenCalled();
+    }
+    await act(async () => window.dispatchEvent(new CustomEvent(ANALYSIS_WINDOW_ACTION_EVENT, {
+      detail: { ...action, sourceLabel: reviewSourceLabel }
+    })));
+    expect(runtime().host.listProposedPatches("pending")).toEqual([proposal]);
+    expect(bridge().snapshot().document).toEqual(before);
+    expect(respondToProposalDecision).not.toHaveBeenCalled();
+    await decide(kind, proposal.id);
+    expect(runtime().host.listProposedPatches("pending")).toEqual([]);
+    expect(drawnText()).toBe(kind === "acceptPluginProposal" ? "Reviewed source" : "Source object");
+    expect(respondToProposalDecision).toHaveBeenCalledExactlyOnceWith("review-result", {
+      ok: true, message: expect.any(String)
+    }, reviewSourceLabel);
+  });
 
   async function mountHoverChain() {
     act(() => root!.unmount());
@@ -821,7 +853,7 @@ describe("documents in one window", () => {
     expect(container.querySelector('[role="status"]')?.textContent).toContain("its document was closed (Closed source.chemdraft)");
     expect(respondToProposalDecision).toHaveBeenLastCalledWith("review-result", {
       ok: false, message: expect.stringContaining("its document was closed")
-    });
+    }, reviewSourceLabel);
     expect(runtime().host.listProposedPatches("pending")).toEqual([proposal]);
     expect(bridge().snapshot().document).toEqual(other);
     await command("edit.undo");
@@ -851,7 +883,7 @@ describe("documents in one window", () => {
     await decide("acceptPluginProposal", proposal.id);
     const message = "Could not accept the proposal: its document was closed (Renamed source.chemdraft). You can reject it.";
     expect(container.querySelector('[role="status"]')?.textContent).toContain(message);
-    expect(respondToProposalDecision).toHaveBeenLastCalledWith("review-result", { ok: false, message });
+    expect(respondToProposalDecision).toHaveBeenLastCalledWith("review-result", { ok: false, message }, reviewSourceLabel);
     expect(runtime().host.listProposedPatches("pending")).toEqual([proposal]);
   });
 
@@ -883,7 +915,7 @@ describe("documents in one window", () => {
     await decide("acceptPluginProposal", proposal.id);
     const message = "Could not accept the proposal: its document was closed (Renamed delayed source.chemdraft). You can reject it.";
     expect(container.querySelector('[role="status"]')?.textContent).toContain(message);
-    expect(respondToProposalDecision).toHaveBeenLastCalledWith("review-result", { ok: false, message });
+    expect(respondToProposalDecision).toHaveBeenLastCalledWith("review-result", { ok: false, message }, reviewSourceLabel);
     expect(runtime().host.listProposedPatches("pending")).toEqual([proposal]);
     expect(bridge().snapshot().document).toEqual(other);
     await decide("rejectPluginProposal", proposal.id);

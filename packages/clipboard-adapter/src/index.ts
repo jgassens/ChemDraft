@@ -213,7 +213,7 @@ export function inspectClipboardPayload(payload: ClipboardReadPayload): Clipboar
   const firstPlainText =
     textItems.find((item) => isTextLikeType(item.type)) ??
     textItems.find((item) => !isMarkupType(item.type));
-  if (firstPlainText) {
+  if (firstPlainText && !looksLikeSvgDocument(firstPlainText.text)) {
     return {
       kind: "plain-text",
       text: firstPlainText.text,
@@ -222,7 +222,7 @@ export function inspectClipboardPayload(payload: ClipboardReadPayload): Clipboar
     };
   }
 
-  const vectorType = payload.types.find(isVectorArtworkType);
+  const vectorType = firstPlainText?.type ?? payload.types.find(isVectorArtworkType);
   if (vectorType) {
     return {
       kind: "vector-only",
@@ -245,6 +245,128 @@ export function inspectClipboardPayload(payload: ClipboardReadPayload): Clipboar
       }
     ]
   };
+}
+
+/** Recognition only: bounded lexical scanning, with no XML execution or entity expansion. */
+function looksLikeSvgDocument(text: string): boolean {
+  if (text.length > 20 * 1024 * 1024) return false;
+  let offset = 0;
+  const whitespace = /[\s\uFEFF]*/y;
+  const name = /[A-Za-z_][\w.-]*(?::[A-Za-z_][\w.-]*)?/y;
+  const skipWhitespace = () => {
+    whitespace.lastIndex = offset;
+    whitespace.exec(text);
+    offset = whitespace.lastIndex;
+  };
+  const readName = () => {
+    name.lastIndex = offset;
+    const match = name.exec(text);
+    if (!match) return;
+    offset = name.lastIndex;
+    return match[0];
+  };
+  const skipDelimited = (end: string) => {
+    const index = text.indexOf(end, offset);
+    if (index < 0) return false;
+    offset = index + end.length;
+    return true;
+  };
+  skipWhitespace();
+  while (true) {
+    if (text.startsWith("<?", offset)) {
+      if (!skipDelimited("?>")) return false;
+    } else if (text.startsWith("<!--", offset)) {
+      if (!skipDelimited("-->")) return false;
+    } else if (text.startsWith("<!DOCTYPE", offset) && /\s/.test(text[offset + 9] ?? "")) {
+      offset += 9;
+      let quote = "";
+      let depth = 0;
+      let ended = false;
+      while (offset < text.length) {
+        if (!quote && text.startsWith("<!--", offset)) {
+          if (!skipDelimited("-->")) return false;
+          continue;
+        }
+        const char = text[offset++];
+        if (quote) {
+          if (char === quote) quote = "";
+        } else if (char === '"' || char === "'") quote = char;
+        else if (char === "[") depth += 1;
+        else if (char === "]") depth -= 1;
+        else if (char === ">" && depth === 0) { ended = true; break; }
+      }
+      if (!ended) return false;
+    } else break;
+    skipWhitespace();
+  }
+  const stack: string[] = [];
+  let rootSeen = false;
+  while (offset < text.length) {
+    if (text.startsWith("<!--", offset)) {
+      if (!skipDelimited("-->")) return false;
+      continue;
+    }
+    if (text.startsWith("<?", offset)) {
+      if (!skipDelimited("?>")) return false;
+      continue;
+    }
+    if (text.startsWith("<![CDATA[", offset) && stack.length) {
+      if (!skipDelimited("]]>")) return false;
+      continue;
+    }
+    if (text[offset] !== "<") {
+      if (!stack.length) {
+        skipWhitespace();
+        if (offset === text.length) break;
+        if (text[offset] !== "<") return false;
+      } else {
+        const next = text.indexOf("<", offset);
+        if (next < 0) return false;
+        offset = next;
+      }
+      continue;
+    }
+    offset += 1;
+    const closing = text[offset] === "/";
+    if (closing) offset += 1;
+    const tag = readName();
+    if (!tag) return false;
+    if (closing) {
+      skipWhitespace();
+      if (text[offset++] !== ">" || stack.pop() !== tag) return false;
+      continue;
+    }
+    const isRoot = !rootSeen;
+    if (!stack.length && rootSeen) return false;
+    if (isRoot && tag !== "svg" && !tag.endsWith(":svg")) return false;
+    let namespace: string | undefined;
+    let selfClosed = false;
+    while (true) {
+      const beforeWhitespace = offset;
+      skipWhitespace();
+      if (text.startsWith("/>", offset)) { offset += 2; selfClosed = true; break; }
+      if (text[offset] === ">") { offset += 1; break; }
+      if (offset === beforeWhitespace) return false;
+      const attribute = readName();
+      if (!attribute) return false;
+      skipWhitespace();
+      if (text[offset++] !== "=") return false;
+      skipWhitespace();
+      const quote = text[offset++];
+      if (quote !== '"' && quote !== "'") return false;
+      const end = text.indexOf(quote, offset);
+      if (end < 0) return false;
+      if (isRoot && attribute === (tag === "svg" ? "xmlns" : `xmlns:${tag.split(":")[0]}`)) {
+        namespace = text.slice(offset, end);
+      }
+      offset = end + 1;
+    }
+    if (isRoot && (tag !== "svg" || namespace !== undefined) && namespace !== "http://www.w3.org/2000/svg") return false;
+    rootSeen = true;
+    if (!selfClosed) stack.push(tag);
+    if (stack.length > 256) return false;
+  }
+  return rootSeen && stack.length === 0;
 }
 
 export function parseMolfileGraph(molfile: string): ParsedMolfileGraph {

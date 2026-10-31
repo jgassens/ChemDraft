@@ -4,6 +4,10 @@ export * from "./layoutRepair";
 export { DocumentStyleScale, documentStylePointBounds, FigureStyles, type FigureStyle } from "./documentStyle";
 export { medianLength, representativeMoleculeBondLength, scalePageGeometry } from "./pageScale";
 export {
+  layoutAtomAnnotationLabels, estimateAnnotationTextWidth, annotationLabelBoxesOverlap, annotationBondLines,
+  type AnnotationAtom, type AnnotationLabelBox
+} from "./atomAnnotationLabels";
+export {
   nativeTextMetrics, nativeTextCharacterWidthFactor, nativeTextSubscriptBottomEm,
   nativeTextScriptFontScale, nativeTextSubscriptOffsetEm, nativeTextSuperscriptOffsetEm
 } from "./textMetrics";

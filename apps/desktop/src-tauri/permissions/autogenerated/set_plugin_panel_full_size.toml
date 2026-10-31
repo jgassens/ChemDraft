@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-plugin-panel-full-size"
+description = "Enables the set_plugin_panel_full_size command without any pre-configured scope."
+commands.allow = ["set_plugin_panel_full_size"]
+
+[[permission]]
+identifier = "deny-set-plugin-panel-full-size"
+description = "Denies the set_plugin_panel_full_size command without any pre-configured scope."
+commands.deny = ["set_plugin_panel_full_size"]

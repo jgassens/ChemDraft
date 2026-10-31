@@ -6179,6 +6179,8 @@ textarea:focus-visible,
 
 .plugin-panel-content {
   flex: 1;
+  min-width: 0;
+  min-height: 0;
   overflow-y: auto;
   padding: 10px 12px;
   font-size: 12px;
@@ -6186,6 +6188,10 @@ textarea:focus-visible,
      ordinary Cmd/Ctrl+C is left to the focused webview. */
   user-select: text;
   -webkit-user-select: text;
+}
+
+.plugin-panel-content > .plugin-report {
+  overflow: visible;
 }
 
 .plugin-panel-content button,
@@ -6361,12 +6367,15 @@ textarea:focus-visible,
   flex-direction: column;
   gap: var(--cd-space-6);
   min-height: 0;
+  min-width: 0;
   overflow-y: auto;
   padding: var(--cd-space-5);
 }
 
 .plugin-report-section {
   margin: 0;
+  min-width: 0;
+  flex-shrink: 0;
 }
 
 .plugin-report-section h4 {
@@ -6408,6 +6417,8 @@ textarea:focus-visible,
 }
 
 .plugin-report-table-scroll {
+  max-width: 100%;
+  min-width: 0;
   overflow-x: auto;
 }
 
@@ -7147,10 +7158,12 @@ textarea:focus-visible,
   display: flex;
   flex-direction: column;
   gap: var(--cd-space-3);
+  min-width: 0;
 }
 
 .lf-toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: var(--cd-space-4);
@@ -7164,6 +7177,8 @@ textarea:focus-visible,
 
 .lf-toolbar-actions {
   display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
   align-items: center;
   gap: var(--cd-space-2);
 }
@@ -7188,6 +7203,8 @@ textarea:focus-visible,
 
 .lf-meta-field {
   display: inline-flex;
+  flex-wrap: wrap;
+  max-width: 100%;
   align-items: center;
   gap: var(--cd-space-2);
 }
@@ -7198,6 +7215,7 @@ textarea:focus-visible,
 }
 
 .lf-select {
+  max-width: 100%;
   height: 20px;
   border: 1px solid var(--cd-border-control);
   border-radius: var(--cd-radius-control);
@@ -7212,6 +7230,7 @@ textarea:focus-visible,
 }
 
 .lf-btn {
+  flex-shrink: 0;
   height: 22px;
   min-width: 26px;
   padding: 0 var(--cd-space-3);
@@ -7368,7 +7387,7 @@ textarea:focus-visible,
   fill: var(--cd-accent-text);
 }
 
-/* Estimation quality (ChemDraw-style): a shift's color tells the reader how much to trust it. */
+/* Estimation quality: a shift's color tells the reader how much to trust it. */
 .lf-shift-label.is-good {
   fill: #2f6fed;
 }
@@ -7413,40 +7432,38 @@ textarea:focus-visible,
   color: #d0421b;
 }
 
-/* Full-size spectrum modal (portalled to <body>). */
-.lf-modal-backdrop {
+/* Full-size spectrum view (portalled to <body>). */
+.lf-modal {
   position: fixed;
   inset: 0;
   z-index: var(--cd-z-modal);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: var(--cd-space-5);
-  background: rgba(0, 0, 0, 0.55);
-}
-
-.lf-modal {
-  position: relative;
-  width: min(1200px, 96vw);
-  max-height: 92vh;
   overflow: auto;
-  padding: var(--cd-space-6) var(--cd-space-5) var(--cd-space-5);
+  padding: var(--cd-space-3);
   background: var(--cd-bg-panel-raised);
-  border: 1px solid var(--cd-border);
-  border-radius: var(--cd-radius-panel);
-  box-shadow: var(--cd-shadow-panel);
 }
 
 .lf-modal-close {
-  position: absolute;
-  top: var(--cd-space-3);
-  right: var(--cd-space-3);
-  z-index: 1;
+  position: static;
 }
 
-/* In the modal the spectrum dominates; a wider SVG is proportionally taller (fixed viewBox aspect). */
-.lf-root.is-fullscreen .lf-figures {
-  flex-wrap: nowrap;
+.lf-export-menu {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--cd-space-2);
+}
+
+.lf-status {
+  font-size: 11px;
+  color: var(--cd-text-secondary);
+}
+
+.lf-modal > .lf-root {
+  min-height: 100%;
+}
+
+.lf-modal .lf-figures {
+  flex: 1;
+  align-items: center;
 }
 .lf-root.is-fullscreen .lf-spectrum {
   flex: 3 1 720px;

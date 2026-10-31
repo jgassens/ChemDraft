@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-hide-plugin-panel-window"
+description = "Hides only the invoking host-owned panel window."
+commands.allow = ["hide_plugin_panel_window"]

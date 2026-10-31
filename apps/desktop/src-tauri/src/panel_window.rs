@@ -195,13 +195,16 @@ pub(crate) fn return_focus_to_document<R: tauri::Runtime>(
 pub(crate) fn macos_style(
     style: objc2_app_kit::NSWindowStyleMask,
 ) -> objc2_app_kit::NSWindowStyleMask {
-    style | objc2_app_kit::NSWindowStyleMask::NonactivatingPanel
+    style
+        | objc2_app_kit::NSWindowStyleMask::Resizable
+        | objc2_app_kit::NSWindowStyleMask::NonactivatingPanel
 }
 
 #[cfg(target_os = "macos")]
 pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
     window: &tauri::WebviewWindow<R>,
 ) -> Result<(), String> {
+    macos::install_resize_hit_test(window)?;
     macos::observe(window)
 }
 
@@ -237,6 +240,7 @@ pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
     let parent = hwnd as usize;
     let panel = window.clone();
     let lease_panel = window.clone();
+    let hide_panel = window.clone();
     let data = Box::into_raw(Box::new(PanelSubclass {
         return_focus: std::rc::Rc::new(move || {
             activation(&lease_panel, false);
@@ -245,6 +249,10 @@ pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
             }
         }),
         activation: std::rc::Rc::new(move |active| activation(&panel, active)),
+        will_hide: std::rc::Rc::new(move || {
+            let webview: &tauri::Webview<R> = hide_panel.as_ref();
+            super::panel_full_size::will_hide(&webview.window());
+        }),
     }));
     unsafe {
         SetWindowLongPtrW(
@@ -282,6 +290,7 @@ pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
 struct PanelSubclass {
     return_focus: std::rc::Rc<dyn Fn()>,
     activation: std::rc::Rc<dyn Fn(bool)>,
+    will_hide: std::rc::Rc<dyn Fn()>,
 }
 
 #[cfg(windows)]
@@ -314,6 +323,7 @@ unsafe fn resize_overlay(
 /// Widen the INPUT region of Tauri's existing child, not the parent's non-client frame.
 /// Tauri 2.11.2 otherwise clips this child to SM_CYFRAME (without SM_CXPADDEDBORDER),
 /// so a larger hit test alone cannot receive presses throughout the system resize band.
+/// Retain every border portion in the client area, including sides/corners over WebView2.
 #[cfg(windows)]
 unsafe fn update_resize_overlay(
     parent: windows_sys::Win32::Foundation::HWND,
@@ -328,6 +338,7 @@ unsafe fn update_resize_overlay(
     extern "system" {
         fn CreateRectRgn(left: i32, top: i32, right: i32, bottom: i32) -> Region;
         fn EqualRgn(first: Region, second: Region) -> i32;
+        fn CombineRgn(destination: Region, first: Region, second: Region, mode: i32) -> i32;
         fn DeleteObject(object: Region) -> i32;
     }
     #[link(name = "user32")]
@@ -346,23 +357,47 @@ unsafe fn update_resize_overlay(
     {
         return Err("Could not measure panel resize overlay.".into());
     }
-    let (_, border) = resize_border(parent);
-    let region = geometry::top_overlay_rect(
-        client_rect.right - client_rect.left,
-        client_rect.bottom - client_rect.top,
-        overlay_rect.top - window_rect.top,
-        border,
+    let (bx, by) = resize_border(parent);
+    let width = client_rect.right - client_rect.left;
+    let height = client_rect.bottom - client_rect.top;
+    let cutout = geometry::overlay_cutout(
+        geometry::Rect {
+            left: window_rect.left,
+            top: window_rect.top,
+            right: window_rect.right,
+            bottom: window_rect.bottom,
+        },
+        geometry::Rect {
+            left: overlay_rect.left,
+            top: overlay_rect.top,
+            right: overlay_rect.left + width,
+            bottom: overlay_rect.top + height,
+        },
+        bx,
+        by,
     );
-    let desired = CreateRectRgn(region.left, region.top, region.right, region.bottom);
+    let desired = CreateRectRgn(0, 0, width, height);
     let current = CreateRectRgn(0, 0, 0, 0);
-    if desired.is_null() || current.is_null() {
+    let interior = CreateRectRgn(cutout.left, cutout.top, cutout.right, cutout.bottom);
+    if desired.is_null() || current.is_null() || interior.is_null() {
         if !desired.is_null() {
             DeleteObject(desired);
         }
         if !current.is_null() {
             DeleteObject(current);
         }
+        if !interior.is_null() {
+            DeleteObject(interior);
+        }
         return Err("Could not allocate panel resize region.".into());
+    }
+    const RGN_DIFF: i32 = 4;
+    let combined = CombineRgn(desired, desired, interior, RGN_DIFF);
+    DeleteObject(interior);
+    if combined == 0 {
+        DeleteObject(desired);
+        DeleteObject(current);
+        return Err("Could not construct panel resize region.".into());
     }
     // SetWindowRgn sends WM_WINDOWPOSCHANGED too. Comparing first makes that nested
     // callback a no-op and avoids repainting on ordinary moves of an unchanged band.
@@ -390,11 +425,22 @@ unsafe extern "system" fn resize_subclass(
     use windows_sys::Win32::UI::{
         Shell::{DefSubclassProc, RemoveWindowSubclass},
         WindowsAndMessaging::{
-            HTCLIENT, MA_NOACTIVATE, WA_INACTIVE, WM_ACTIVATE, WM_ACTIVATEAPP, WM_DPICHANGED,
-            WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_NCHITTEST,
-            WM_NCLBUTTONDOWN, WM_NCMBUTTONDOWN, WM_NCRBUTTONDOWN, WM_SETTINGCHANGE, WM_SIZE,
+            HTCLIENT, MA_NOACTIVATE, SWP_HIDEWINDOW, WA_INACTIVE, WINDOWPOS, WM_ACTIVATE,
+            WM_ACTIVATEAPP, WM_DPICHANGED, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE, WM_MOUSEACTIVATE,
+            WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_NCMBUTTONDOWN, WM_NCRBUTTONDOWN,
+            WM_SETTINGCHANGE, WM_SHOWWINDOW, WM_SIZE, WM_WINDOWPOSCHANGING,
         },
     };
+    // This also covers core:window hide calls from the panel or document webview. Restore before
+    // the native hide; no DOM cleanup or queued WindowEvent is required.
+    if (message == WM_SHOWWINDOW && wparam == 0)
+        || (message == WM_WINDOWPOSCHANGING
+            && lparam != 0
+            && (*(lparam as *const WINDOWPOS)).flags & SWP_HIDEWINDOW != 0)
+    {
+        let notify = (*(data as *const PanelSubclass)).will_hide.clone();
+        notify();
+    }
     if message == WM_MOUSEACTIVATE {
         // NOACTIVATE, not NOACTIVATEANDEAT: WebView2 must still receive the click.
         return MA_NOACTIVATE as isize;
@@ -528,13 +574,51 @@ unsafe fn panel_resize_hit(
 mod tests {
     #[cfg(target_os = "macos")]
     #[test]
+    fn macos_content_hit_test_yields_all_edges_and_corners_only() {
+        for (width, height) in [(280.0, 200.0), (380.0, 520.0), (1200.0, 800.0)] {
+            for (x, y) in [
+                (0.0, 0.0),
+                (width / 2.0, 0.0),
+                (width - 0.5, 0.0),
+                (0.0, height / 2.0),
+                (width - 0.5, height / 2.0),
+                (0.0, height - 0.5),
+                (width / 2.0, height - 0.5),
+                (width - 0.5, height - 0.5),
+            ] {
+                assert!(super::macos::resize_edge(x, y, width, height));
+            }
+            for (x, y) in [
+                (5.0, 5.0),
+                (width - 5.5, height - 5.5),
+                (width / 2.0, height / 2.0),
+                (-0.5, 0.0),
+                (width, height / 2.0),
+                (0.0, height),
+            ] {
+                assert!(!super::macos::resize_edge(x, y, width, height));
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn macos_keeps_resize_traits_and_adds_nonactivation() {
         use objc2_app_kit::NSWindowStyleMask;
-        let original = NSWindowStyleMask::Resizable | NSWindowStyleMask::Borderless;
-        let style = super::macos_style(original);
-        assert!(style.contains(NSWindowStyleMask::NonactivatingPanel));
-        assert!(style.contains(NSWindowStyleMask::Resizable));
-        assert_eq!(style, original | NSWindowStyleMask::NonactivatingPanel);
+        for original in [
+            NSWindowStyleMask::Borderless,
+            NSWindowStyleMask::Resizable,
+            NSWindowStyleMask::Titled | NSWindowStyleMask::Closable,
+        ] {
+            let style = super::macos_style(original);
+            assert!(style.contains(NSWindowStyleMask::NonactivatingPanel));
+            assert!(style.contains(NSWindowStyleMask::Resizable));
+            assert_eq!(
+                style,
+                original | NSWindowStyleMask::NonactivatingPanel | NSWindowStyleMask::Resizable
+            );
+            assert_eq!(super::macos_style(style), style);
+        }
     }
 
     #[cfg(windows)]
