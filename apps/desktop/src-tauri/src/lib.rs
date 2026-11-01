@@ -1373,6 +1373,7 @@ pub fn run() {
             plugin_panel_event_forward,
             set_plugin_panel_full_size,
             panel_window_controls::hide_plugin_panel_window,
+            panel_window_controls::hide_plugin_panel_from_main,
             register_plugin_panel_input_focus,
             set_plugin_panel_input_focus,
             open_toolset_popover,

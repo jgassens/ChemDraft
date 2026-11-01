@@ -486,30 +486,82 @@ struct HiddenChemDraftWindows<R: Runtime> {
 }
 
 impl<R: Runtime> HiddenChemDraftWindows<R> {
+    /// The capture command is async, so this runs on a runtime thread. Restoring an enlarged
+    /// plugin panel's normal frame is AppKit work that requires the main thread, so the restore
+    /// and the hide run there together, in that order, and this waits for them to finish.
     fn hide(app: &AppHandle<R>) -> Self {
-        let mut windows = Vec::new();
-        let mut key = None;
-        for window in app.webview_windows().into_values() {
-            let visible = window.is_visible().unwrap_or(false);
-            let minimized = window.is_minimized().unwrap_or(false);
-            let focused = window.is_focused().unwrap_or(false);
-            if !visible || minimized {
-                continue;
-            }
-            crate::panel_full_size::before_hide(&window);
-            if window.hide().is_ok() {
-                if focused {
-                    key = Some(window.label().to_string());
-                }
-                windows.push(window);
-            }
-        }
+        let on_main = app.clone();
+        let (windows, key) =
+            run_on_main_thread_and_wait(app, move || hide_visible_windows(&on_main))
+                .unwrap_or_else(|error| {
+                    eprintln!("Could not hide ChemDraft windows for screen capture: {error}");
+                    (Vec::new(), None)
+                });
         Self {
             app: app.clone(),
             windows,
             key,
         }
     }
+}
+
+/// Main-thread body of [`HiddenChemDraftWindows::hide`]: every visible, non-minimized window is
+/// first returned to its normal frame (an enlarged plugin panel), then hidden.
+fn hide_visible_windows<R: Runtime>(
+    app: &AppHandle<R>,
+) -> (Vec<tauri::WebviewWindow<R>>, Option<String>) {
+    let hidden = hide_each_after_restore(
+        app.webview_windows().into_values(),
+        |window| {
+            let visible = window.is_visible().unwrap_or(false);
+            let minimized = window.is_minimized().unwrap_or(false);
+            (visible && !minimized).then(|| window.is_focused().unwrap_or(false))
+        },
+        crate::panel_full_size::before_hide,
+        |window| window.hide().is_ok(),
+    );
+    let key = hidden
+        .iter()
+        .find(|(_, focused)| *focused)
+        .map(|(window, _)| window.label().to_string());
+    (hidden.into_iter().map(|(window, _)| window).collect(), key)
+}
+
+/// For each window `probe` accepts (returning whether it was focused), runs `restore` and only
+/// then `hide`; windows whose hide succeeded come back with their focus flag.
+fn hide_each_after_restore<W>(
+    windows: impl IntoIterator<Item = W>,
+    probe: impl Fn(&W) -> Option<bool>,
+    restore: impl Fn(&W),
+    hide: impl Fn(&W) -> bool,
+) -> Vec<(W, bool)> {
+    let mut hidden = Vec::new();
+    for window in windows {
+        let Some(focused) = probe(&window) else {
+            continue;
+        };
+        restore(&window);
+        if hide(&window) {
+            hidden.push((window, focused));
+        }
+    }
+    hidden
+}
+
+/// Runs `task` on the main thread and waits for its result. Tauri runs it inline when already on
+/// the main thread, so this is safe from either thread.
+fn run_on_main_thread_and_wait<R: Runtime, T: Send + 'static>(
+    app: &AppHandle<R>,
+    task: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, String> {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    app.run_on_main_thread(move || {
+        let _ = sender.send(task());
+    })
+    .map_err(|error| error.to_string())?;
+    receiver
+        .recv()
+        .map_err(|_| "The main thread dropped a screen capture task.".to_string())
 }
 
 /// The order hidden windows come back in: every window but the one that should end up key, then
@@ -786,6 +838,53 @@ mod tests {
         let base = std::env::temp_dir().join(format!("chemdraft-{name}-{}", unguessable_token()));
         std::fs::create_dir_all(&base).expect("scratch dir");
         base
+    }
+
+    #[test]
+    fn restores_each_window_before_hiding_it_and_skips_unprobed_ones() {
+        use std::cell::RefCell;
+        let log = RefCell::new(Vec::new());
+        let hidden = hide_each_after_restore(
+            ["main", "minimized", "plugin-panel-a", "stuck"],
+            |label| match *label {
+                "minimized" => None,
+                other => Some(other == "main"),
+            },
+            |label| log.borrow_mut().push(format!("restore {label}")),
+            |label| {
+                log.borrow_mut().push(format!("hide {label}"));
+                *label != "stuck"
+            },
+        );
+        assert_eq!(
+            *log.borrow(),
+            [
+                "restore main",
+                "hide main",
+                "restore plugin-panel-a",
+                "hide plugin-panel-a",
+                "restore stuck",
+                "hide stuck",
+            ]
+        );
+        assert_eq!(hidden, [("main", true), ("plugin-panel-a", false)]);
+    }
+
+    #[test]
+    fn capture_hides_windows_through_the_main_thread_executor() {
+        // `hide` must not restore or hide from the async worker: both belong in the task handed
+        // to the main-thread executor.
+        let source = include_str!("screen_capture.rs");
+        let hide = source
+            .split("fn hide(app: &AppHandle<R>) -> Self {")
+            .nth(1)
+            .and_then(|rest| rest.split("\n    }\n}").next())
+            .expect("hide body");
+        assert!(hide.contains("run_on_main_thread_and_wait(app"), "{hide}");
+        assert!(
+            !hide.contains("before_hide") && !hide.contains(".hide()"),
+            "{hide}"
+        );
     }
 
     #[test]

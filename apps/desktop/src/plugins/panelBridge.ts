@@ -615,17 +615,18 @@ export async function hideCurrentPanelWindow(): Promise<void> {
 }
 
 /** Hide a panel window from the MAIN window (plugin disabled/uninstalled, panel closed
- *  programmatically). Mirrors the Rust `plugin-panel-<request.panelId>` label scheme. */
+ *  programmatically). Mirrors the Rust `plugin-panel-<request.panelId>` label scheme. The native
+ *  command restores an enlarged panel's normal frame on the main thread before hiding it; a raw
+ *  `WebviewWindow.hide()` would skip that. */
 export async function hidePluginPanelWindow(pluginId: string, panelId: string): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
 
-  const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-  const window = await WebviewWindow.getByLabel(
-    `${PLUGIN_PANEL_WINDOW_LABEL_PREFIX}${pluginPanelWindowId(pluginId, panelId)}`
-  );
-  await window?.hide();
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("hide_plugin_panel_from_main", {
+    label: `${PLUGIN_PANEL_WINDOW_LABEL_PREFIX}${pluginPanelWindowId(pluginId, panelId)}`
+  });
 }
 
 export async function broadcastPluginPanelStaleness(payload: PluginPanelStalenessPayload): Promise<void> {

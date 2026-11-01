@@ -458,11 +458,17 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     // Utility suspension (file pickers) and screen capture restore before their own hides.
     expect(source).toMatch(/panel_window::end_for_hide\(window\.app_handle\(\), window\.label\(\)\);\s*panel_full_size::before_hide\(&window\);\s*if let Err\(error\) = window\.hide\(\)/);
     const capture = readFileSync(join(nativePath, "screen_capture.rs"), "utf8");
-    expect(capture).toMatch(/crate::panel_full_size::before_hide\(&window\);\s*if window\.hide\(\)\.is_ok\(\)/);
+    // Screen capture restores and hides together on the main thread (the restore requires it).
+    expect(capture).toMatch(/run_on_main_thread_and_wait\(app, move \|\| hide_visible_windows\(&on_main\)\)/);
+    expect(capture).toMatch(/crate::panel_full_size::before_hide,\s*\|window\| window\.hide\(\)\.is_ok\(\)/);
     // Closing (CloseRequested) and the panel's own hide command restore explicitly too.
     expect(source).toMatch(/if let WindowEvent::CloseRequested \{ api, \.\. \} = event \{\s*panel_full_size::will_hide\(window\);/);
     const controls = readFileSync(join(nativePath, "panel_window_controls.rs"), "utf8");
     expect(controls).toMatch(/panel_full_size::set\(window, false, 0\.0, 0\.0\)\?;\s*window\.hide\(\)/);
+    // So does the document window's hide of a panel, on the main thread, through a caller-bound command.
+    expect(controls).toMatch(/authorize_main_hide\(window\.label\(\), &label\)\?;/);
+    expect(controls).toMatch(/\|\| super::panel_full_size::before_hide\(window\),\s*\|\| window\.hide\(\)/);
+    expect(controls).toMatch(/run_on_main_thread_blocking\(&target, move \|\| restore_then_hide\(&task\)\)/);
     // Cmd+H keeps enlarged panels as they were; quit still restores every panel.
     const appHide = source.split("fn observe_hide_for_document_key_restore<")[1]!.split("\n}\n")[0]!;
     expect(appHide).not.toContain("restore_all");

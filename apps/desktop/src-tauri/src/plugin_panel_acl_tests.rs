@@ -63,6 +63,28 @@ fn panels_can_forward_requests_and_subscribe_to_replies() {
 }
 
 #[test]
+fn only_the_document_window_can_hide_panels_on_their_behalf() {
+    let command = ["hide_plugin_panel_from_main"];
+    assert_shipped_access("main", &command, true);
+    for label in [
+        "plugin-panel-x",
+        "preferences",
+        "toolset-core-main",
+        "dialog-export",
+        "spin3d-debugger",
+    ] {
+        assert_shipped_access(label, &command, false);
+    }
+    let capability: serde_json::Value =
+        serde_json::from_str(include_str!("../capabilities/plugin-panel-hide.json")).unwrap();
+    assert_eq!(capability["windows"], serde_json::json!(["main"]));
+    assert_eq!(
+        capability["permissions"],
+        serde_json::json!(["allow-hide-plugin-panel-from-main"])
+    );
+}
+
+#[test]
 fn only_panels_can_control_their_native_window_state() {
     let controls = ["set_plugin_panel_full_size", "hide_plugin_panel_window"];
     assert_shipped_access("plugin-panel-x", &controls, true);

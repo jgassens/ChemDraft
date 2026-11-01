@@ -16,7 +16,9 @@ import {
   requestPluginPanelRerun,
   notifyPluginPanelClosed,
   requestAnalysisWindowAction,
-  respondToPluginPanelAction
+  respondToPluginPanelAction,
+  hidePluginPanelWindow,
+  pluginPanelWindowId
 } from "./panelBridge";
 
 const native = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn(), emitTo: vi.fn() }));
@@ -197,5 +199,19 @@ describe("plugin panel action bridge", () => {
     const pending = requestPluginPanelAction({ panelId: "panel.example.chat", sectionId: "composer", control: "prompt", text: "draw" }, 0);
     await expect(pending).resolves.toEqual({ ok: false, reason: "timeout" });
     expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("hides a panel from the document window through the caller-bound native command", async () => {
+    vi.stubGlobal("__TAURI_INTERNALS__", {});
+    native.invoke.mockResolvedValue(undefined);
+    await hidePluginPanelWindow("org.panelA", "panel.a.chat");
+    expect(native.invoke).toHaveBeenCalledExactlyOnceWith("hide_plugin_panel_from_main", {
+      label: `plugin-panel-${pluginPanelWindowId("org.panelA", "panel.a.chat")}`
+    });
+  });
+
+  it("does nothing outside the desktop runtime", async () => {
+    await hidePluginPanelWindow("org.panelA", "panel.a.chat");
+    expect(native.invoke).not.toHaveBeenCalled();
   });
 });
