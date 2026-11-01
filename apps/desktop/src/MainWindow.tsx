@@ -568,6 +568,7 @@ import {
   documentObjectProjectedPlaneTilt,
   nativeBondStyleForToolCommand,
   nativeBondOrderForToolCommand,
+  nativeBondOrderTargetRefusal,
   nativeChargeMarkMaxMagnitude,
   nativeChargeStackRefusal,
   stereoPerceptionMolfile,
@@ -13854,9 +13855,14 @@ export function MainWindow({
     bondStyle?: NativeBondDisplayStyle,
     bondOrder: NativeBondOrderValue = "single"
   ) => {
-    const nextDocument = applySingleBondToolAtPoint(sourceDocument, point, { bondStyle, bondOrder });
+    let refusal: string | undefined;
+    const nextDocument = applySingleBondToolAtPoint(sourceDocument, point, {
+      bondStyle,
+      bondOrder,
+      onRefusal: reason => { refusal = reason; }
+    });
     if (nextDocument === sourceDocument) {
-      setStatus("Bond not placed: insufficient available valence");
+      setStatus(refusal ? `Bond not placed: ${refusal}` : "Bond not placed");
       return;
     }
     const selected = getSelectedMolecule(nextDocument);
@@ -14051,11 +14057,13 @@ export function MainWindow({
     bondOrder: NativeBondOrderValue = "single"
   ) => {
     const previousMolecule = findDocumentObject(sourceDocument, objectId);
+    let refusal: string | undefined;
     const nextDocument = applyFreeformSingleBondToolAtPoint(sourceDocument, objectId, atomId, point, {
       forceCustomLength,
       bondStyle,
       bondOrder,
-      placementAltKey
+      placementAltKey,
+      onRefusal: reason => { refusal = reason; }
     });
     const selected = getSelectedMolecule(nextDocument);
     const atomCount = selected?.atoms.length ?? 0;
@@ -14074,7 +14082,7 @@ export function MainWindow({
     setFreeformNativeBond(undefined);
     setStatus(
       nextDocument === sourceDocument
-        ? "Freeform bond not placed"
+        ? refusal ? `Freeform bond not placed: ${refusal}` : "Freeform bond not placed"
         : connectedExistingAtoms
           ? `Connected carbon atoms; molecule has ${atomCount} atoms`
           : `Placed freeform carbon bond; molecule has ${atomCount} atoms`
@@ -18014,9 +18022,21 @@ export function MainWindow({
 
     if (activeNativeBondToolStyle && activeNativeBondOrder !== "single" && object?.type === "molecule" && nativeMoleculeHit?.kind === "bond") {
       event.stopPropagation();
-      const nextDocument = applyNativeMoleculeBondOrderValueTarget(document, { objectId, ...nativeMoleculeHit }, activeNativeBondOrder);
-      if (nextDocument !== document) commitDocumentChange(nextDocument);
-      setStatus(nextDocument === document ? "Bond order unchanged" : `Set bond to ${activeNativeBondOrder}`);
+      const target = { objectId, ...nativeMoleculeHit };
+      const selectedDocument = selectDocumentObject(document, objectId);
+      const nextDocument = applyNativeMoleculeBondOrderValueTarget(selectedDocument, target, activeNativeBondOrder);
+      if (nextDocument === selectedDocument) {
+        setStatus(nativeBondOrderTargetRefusal(selectedDocument, target, activeNativeBondOrder) ?? "Bond order not changed");
+        return;
+      }
+      commitDocumentChange(nextDocument);
+      setActiveEditorObjectId(undefined);
+      setActiveTextEditObjectId(undefined);
+      setActiveAtomLabelEdit(undefined);
+      setHoveredNativeAtom(undefined);
+      assignHoveredNativeDeleteTarget(undefined);
+      setFreeformNativeBond(undefined);
+      setStatus(`Set bond to ${activeNativeBondOrder}`);
       return;
     }
 

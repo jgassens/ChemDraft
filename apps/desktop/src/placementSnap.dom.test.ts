@@ -6,12 +6,30 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChemDraftDocument, MoleculeObject, Point } from "@chemdraft/chem-core";
 import { nativeBondLengthPx } from "@chemdraft/document-workflow-core";
 import { MainWindow } from "./MainWindow";
-import { applyNativeChainTool, applySingleBondToolAtPoint, createPhase4Document, insertNativeSingleBondMolecule } from "./documentWorkflow";
+import {
+  applyFreeformSingleBondToolAtPoint, applyNativeChainTool, applySingleBondToolAtPoint, createPhase4Document,
+  getSelectedMolecule, insertNativeSingleBondMolecule
+} from "./documentWorkflow";
 import { saveKeybindingSettings } from "./keybindingSettings";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 class TestResizeObserver { observe() {} unobserve() {} disconnect() {} }
 const molecules = (document: ChemDraftDocument) => document.pages[0].objects.filter((object): object is MoleculeObject => object.type === "molecule");
+/** A carbon with four single bonds, plus a tail hanging off its first neighbour. */
+function fullCarbonWithTail() {
+  let document = applySingleBondToolAtPoint(createPhase4Document("Full carbon"), { x: 300, y: 300 });
+  const first = getSelectedMolecule(document)!;
+  const [origin, center] = first.atoms;
+  for (const degrees of [-60, 60, 180]) {
+    const radians = degrees * Math.PI / 180;
+    document = applyFreeformSingleBondToolAtPoint(document, first.id, center.id, {
+      x: center.x + Math.cos(radians) * 40, y: center.y + Math.sin(radians) * 40
+    });
+  }
+  document = applyFreeformSingleBondToolAtPoint(document, first.id, origin.id, { x: origin.x - 40, y: origin.y });
+  const molecule = getSelectedMolecule(document)!;
+  return { document, objectId: first.id, centerId: center.id, tailId: molecule.atoms.at(-1)!.id };
+}
 const angle = (start: Point, end: Point) => Math.atan2(end.y - start.y, end.x - start.x) * 180 / Math.PI;
 const pointAt = (start: Point, degrees: number, length = nativeBondLengthPx * 3) => ({
   x: start.x + Math.cos(degrees * Math.PI / 180) * length,
@@ -84,6 +102,63 @@ describe.each(["macos", "windows"] as const)("placement pointer handlers on %s",
     await undoOnce(before);
     await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.redo"); });
     expect(molecules(current())[0].bonds[0].order).toBe(order);
+  });
+
+  const status = () => container.querySelector("[data-status-message]")?.textContent ?? "";
+
+  it.each(["double", "triple"])("refuses to set a %s bond on a full-valence carbon, says why, and leaves Undo empty", async (order) => {
+    const { document, objectId, centerId } = fullCarbonWithTail();
+    await mount(`tool.${order}Bond`, document);
+    const before = molecules(current());
+    const molecule = before[0];
+    const bond = molecule.bonds.find(candidate => candidate.fromAtomId === centerId || candidate.toAtomId === centerId)!;
+    const from = molecule.atoms.find(atom => atom.id === bond.fromAtomId)!;
+    const to = molecule.atoms.find(atom => atom.id === bond.toAtomId)!;
+    const midpoint = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
+    const wrapper = container.querySelector<HTMLElement>(`[data-object-id="${objectId}"]`)!;
+    await pointer("pointerdown", midpoint, wrapper);
+    await pointer("pointerup", midpoint, wrapper);
+    expect(molecules(current())).toEqual(before);
+    expect(container.querySelector('[data-can-undo="true"]')).toBeNull();
+    expect(status()).toMatch(/Bond order not changed: C would exceed its valence/);
+  });
+
+  it("refuses a dashed (dative) bond click like order cycling and does not call it unchanged", async () => {
+    await mount("tool.doubleBond", insertNativeSingleBondMolecule(createPhase4Document("Dative"), { x: 240, y: 240 }, { bondStyle: "dashed" }));
+    const before = molecules(current());
+    const molecule = before[0];
+    const midpoint = { x: (molecule.atoms[0].x + molecule.atoms[1].x) / 2, y: (molecule.atoms[0].y + molecule.atoms[1].y) / 2 };
+    const wrapper = container.querySelector<HTMLElement>(`[data-object-id="${molecule.id}"]`)!;
+    await pointer("pointerdown", midpoint, wrapper);
+    await pointer("pointerup", midpoint, wrapper);
+    expect(molecules(current())).toEqual(before);
+    expect(container.querySelector('[data-can-undo="true"]')).toBeNull();
+    expect(status()).toMatch(/dashed \(dative\) bond stays single/);
+  });
+
+  it("says a click on a bond already of that order is already that order", async () => {
+    await mount("tool.doubleBond", applySingleBondToolAtPoint(createPhase4Document("Same"), { x: 240, y: 240 }, { bondOrder: "double" }));
+    const molecule = molecules(current())[0];
+    const midpoint = { x: (molecule.atoms[0].x + molecule.atoms[1].x) / 2, y: (molecule.atoms[0].y + molecule.atoms[1].y) / 2 };
+    const wrapper = container.querySelector<HTMLElement>(`[data-object-id="${molecule.id}"]`)!;
+    await pointer("pointerdown", midpoint, wrapper);
+    await pointer("pointerup", midpoint, wrapper);
+    expect(status()).toBe("Bond is already double");
+  });
+
+  it.each(["tool.doubleBond", "tool.tripleBond"])("refuses to connect two atoms with %s past valence, says why, and leaves Undo empty", async (tool) => {
+    const { document, centerId, tailId } = fullCarbonWithTail();
+    await mount(tool, document);
+    const before = molecules(current());
+    const source = before[0].atoms.find(atom => atom.id === tailId)!;
+    const target = before[0].atoms.find(atom => atom.id === centerId)!;
+    const wrapper = container.querySelector<HTMLElement>(`[data-object-id="${before[0].id}"]`)!;
+    await pointer("pointerdown", source, wrapper);
+    await pointer("pointermove", target, wrapper);
+    await pointer("pointerup", target, wrapper);
+    expect(molecules(current())).toEqual(before);
+    expect(container.querySelector('[data-can-undo="true"]')).toBeNull();
+    expect(status()).toMatch(/Freeform bond not placed: C (would exceed its valence|has no available valence)/);
   });
 
   const tools = ["tool.doubleBond", "tool.tripleBond", "tool.bond", "tool.wedgeBond", "tool.hashedBond", "tool.dashedBond", "tool.boldBond"];

@@ -1,9 +1,23 @@
 import { describe, expect, it } from "vitest";
 import {
-  applyFreeformSingleBondToolAtPoint, applySingleBondToolAtPoint, createPhase4Document,
-  getSelectedMolecule, nativeBondOrderForToolCommand, nativeBondStyleForToolCommand,
-  createNativeSavePayload, openNativeDocument
+  applyFreeformSingleBondToolAtPoint, applyNativeMoleculeBondOrderValueTarget, applySingleBondToolAtPoint,
+  createPhase4Document, getSelectedMolecule, nativeBondOrderForToolCommand, nativeBondOrderTargetRefusal,
+  nativeBondStyleForToolCommand, createNativeSavePayload, openNativeDocument
 } from "./documentWorkflow";
+
+/** A bond whose second atom takes three more single substituents, so it ends with four bonds (full carbon). */
+function branchedSeed() {
+  let document = applySingleBondToolAtPoint(createPhase4Document("Branched"), { x: 300, y: 300 });
+  const first = getSelectedMolecule(document)!;
+  const center = first.atoms[1];
+  for (const degrees of [-60, 60, 180]) {
+    const radians = degrees * Math.PI / 180;
+    document = applyFreeformSingleBondToolAtPoint(document, first.id, center.id, {
+      x: center.x + Math.cos(radians) * 40, y: center.y + Math.sin(radians) * 40
+    });
+  }
+  return { document, objectId: first.id, centerId: center.id };
+}
 
 describe.each(["double", "triple"] as const)("%s bond drawing", order => {
   it("maps the tool and inserts the requested chemistry", () => {
@@ -32,5 +46,73 @@ describe.each(["double", "triple"] as const)("%s bond drawing", order => {
     const atom = molecule.atoms[1];
     expect(applyFreeformSingleBondToolAtPoint(document, molecule.id, atom.id, { x: atom.x + 40, y: atom.y }, { bondOrder: order })).toBe(document);
     expect(applySingleBondToolAtPoint(document, atom, { bondOrder: order })).toBe(document);
+  });
+});
+
+describe("multiple bond tool refusals", () => {
+  it("stores the substituent-facing double bond side on a drawn chain, as order cycling does", () => {
+    const single = applySingleBondToolAtPoint(createPhase4Document("Side"), { x: 300, y: 300 });
+    const base = getSelectedMolecule(single)!;
+    const atom = base.atoms[1];
+    const point = { x: atom.x + 30, y: atom.y + 20 };
+    const drawn = getSelectedMolecule(applyFreeformSingleBondToolAtPoint(single, base.id, atom.id, point, { bondOrder: "double" }))!;
+    const asSingle = applyFreeformSingleBondToolAtPoint(single, base.id, atom.id, point);
+    const singleMolecule = getSelectedMolecule(asSingle)!;
+    const cycled = getSelectedMolecule(applyNativeMoleculeBondOrderValueTarget(
+      asSingle, { objectId: base.id, kind: "bond", bondId: singleMolecule.bonds[1].id }, "double"))!;
+    expect(drawn.structure).toBe("CC=C");
+    expect(drawn.bonds[1].display?.doubleBondSide).toBeDefined();
+    expect(drawn.bonds[1].display?.doubleBondSide).toBe(cycled.bonds[1].display?.doubleBondSide);
+  });
+
+  it("names the reason when a drag onto a full-valence atom is refused, and leaves the document alone", () => {
+    const { document, objectId, centerId } = branchedSeed();
+    const molecule = getSelectedMolecule(document)!;
+    const center = molecule.atoms.find(atom => atom.id === centerId)!;
+    const reasons: string[] = [];
+    const next = applyFreeformSingleBondToolAtPoint(document, objectId, centerId, { x: center.x - 40, y: center.y + 5 }, {
+      bondOrder: "double", onRefusal: reason => reasons.push(reason)
+    });
+    expect(next).toBe(document);
+    expect(reasons).toEqual([expect.stringMatching(/valence/)]);
+  });
+
+  it("names the reason when connecting two existing atoms would exceed valence", () => {
+    const { document, objectId, centerId } = branchedSeed();
+    const molecule = getSelectedMolecule(document)!;
+    const center = molecule.atoms.find(atom => atom.id === centerId)!;
+    // A tail hangs off the first atom; closing it back onto the full centre with a double bond must be refused.
+    const origin = molecule.atoms[0];
+    const withTail = applyFreeformSingleBondToolAtPoint(document, objectId, origin.id, { x: origin.x - 40, y: origin.y });
+    const tail = getSelectedMolecule(withTail)!.atoms.at(-1)!;
+    const reasons: string[] = [];
+    const next = applyFreeformSingleBondToolAtPoint(withTail, objectId, tail.id, { x: center.x, y: center.y }, {
+      bondOrder: "double", onRefusal: reason => reasons.push(reason)
+    });
+    expect(next).toBe(withTail);
+    expect(reasons).toEqual([expect.stringMatching(/valence/)]);
+  });
+
+  it("refuses to raise a bond at a full-valence atom with a specific reason", () => {
+    const { document, objectId, centerId } = branchedSeed();
+    const molecule = getSelectedMolecule(document)!;
+    const bond = molecule.bonds.find(candidate => candidate.fromAtomId === centerId || candidate.toAtomId === centerId)!;
+    const target = { objectId, kind: "bond" as const, bondId: bond.id };
+    expect(applyNativeMoleculeBondOrderValueTarget(document, target, "double")).toBe(document);
+    expect(nativeBondOrderTargetRefusal(document, target, "double")).toMatch(/not changed.*valence/);
+  });
+
+  it("tells an unchanged bond from a refused one, and refuses a dashed (dative) bond like order cycling", () => {
+    const single = applySingleBondToolAtPoint(createPhase4Document("Same"), { x: 300, y: 300 });
+    const molecule = getSelectedMolecule(single)!;
+    const target = { objectId: molecule.id, kind: "bond" as const, bondId: molecule.bonds[0].id };
+    expect(nativeBondOrderTargetRefusal(single, target, "single")).toBe("Bond is already single");
+    expect(nativeBondOrderTargetRefusal(single, target, "double")).toBeUndefined();
+
+    const dashed = applySingleBondToolAtPoint(createPhase4Document("Dative"), { x: 300, y: 300 }, { bondStyle: "dashed" });
+    const dative = getSelectedMolecule(dashed)!;
+    const dashedTarget = { objectId: dative.id, kind: "bond" as const, bondId: dative.bonds[0].id };
+    expect(applyNativeMoleculeBondOrderValueTarget(dashed, dashedTarget, "double")).toBe(dashed);
+    expect(nativeBondOrderTargetRefusal(dashed, dashedTarget, "double")).toMatch(/dashed \(dative\) bond stays single/);
   });
 });

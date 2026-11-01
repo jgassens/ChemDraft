@@ -721,6 +721,8 @@ function artArcTool(
 export interface NativeBondToolOptions {
   bondOrder?: NativeBondOrderValue;
   bondStyle?: NativeBondDisplayStyle;
+  /** Told why the tool refused to place the bond, so the caller can say so instead of guessing. */
+  onRefusal?: (reason: string) => void;
 }
 
 export interface NativeFreeformBondGrowthOptions extends NativeBondToolOptions {
@@ -7138,9 +7140,22 @@ export function applySingleBondToolAtPoint(
 
   if (!extended) {
     // A requested multiple bond at an atom must fail as a whole when valence refuses it.
-    if (options.bondOrder && options.bondOrder !== "single" &&
-        (findNativeMoleculeAtomHit(selected, point) ||
-         previewNativeMoleculeBondGrowth(selected, point, page.width, page.height))) return document;
+    if (options.bondOrder && options.bondOrder !== "single") {
+      const atomHit = findNativeMoleculeAtomHit(selected, point);
+      const preview = previewNativeMoleculeBondGrowth(selected, point, page.width, page.height);
+      if (atomHit || preview) {
+        // With a preview, extendNativeCarbonChain already named its reason; without one, say why.
+        if (!preview && atomHit) {
+          const element = selected.atoms.find(atom => atom.id === atomHit.atomId)?.element ?? "the atom";
+          options.onRefusal?.(!isEditableNativeMoleculeGraph(selected)
+            ? "this molecule cannot be edited as a native graph"
+            : atomHit.availableBonds <= 0
+              ? `${element} has no available valence`
+              : `there is no room to place a bond from ${element}`);
+        }
+        return document;
+      }
+    }
     return insertNativeSingleBondMolecule(document, point, options);
   }
 
@@ -7180,6 +7195,7 @@ export function applyFreeformSingleBondToolAtPoint(
       ? connectNativeCarbonAtoms(merged.molecule, sourceAtomId, mergedTargetAtomId, options)
       : undefined;
     if (!merged || !connected) {
+      if (!merged) options.onRefusal?.("those molecules cannot be merged into one");
       return document;
     }
     return applyPatches(
@@ -7203,6 +7219,10 @@ export function applyFreeformSingleBondToolAtPoint(
     options
   );
   if (!preview) {
+    options.onRefusal?.(nativeAtomGrowRefusalReason(molecule, sourceAtomId) ??
+      (isEditableNativeMoleculeGraph(molecule)
+        ? "there is no room to place that bond"
+        : "this molecule cannot be edited as a native graph"));
     return document;
   }
 
@@ -8876,6 +8896,28 @@ export function applyNativeMoleculeBondOrderValueTarget(
     { op: "updateObject", objectId: molecule.id, changes: nextMolecule },
     { now: phase4Timestamp }
   );
+}
+
+/**
+ * Why {@link applyNativeMoleculeBondOrderValueTarget} would leave the document alone, as a
+ * status-line sentence; undefined when it would change the bond.
+ */
+export function nativeBondOrderTargetRefusal(
+  document: ChemDraftDocument,
+  target: NativeBondOrderTarget,
+  order: NativeBondOrderValue
+): string | undefined {
+  const molecule = firstPage(document).objects.find((object): object is MoleculeObject =>
+    object.id === target.objectId && object.type === "molecule"
+  );
+  const bond = molecule?.bonds.find((candidate) => candidate.id === target.bondId);
+  if (!molecule || !bond) return "Bond order not changed: the bond no longer exists";
+  if (!isEditableNativeMoleculeGraph(molecule)) {
+    return "Bond order not changed: this molecule cannot be edited as a native graph";
+  }
+  if (order === bond.order && bond.stereo !== "either") return `Bond is already ${order}`;
+  const reason = nativeBondOrderRefusalReason(molecule, bond, order);
+  return reason ? `Bond order not changed: ${reason}` : undefined;
 }
 
 export type BondStereoValue = "either" | "geometry" | "flipped";
@@ -19583,7 +19625,9 @@ function extendNativeCarbonGraph(
   newAtomPoint: PagePoint,
   options: NativeBondToolOptions = {}
 ): MoleculeObject | undefined {
-  if (!canGrowNativeAtom(molecule, sourceAtomId)) {
+  const growRefusal = nativeAtomGrowRefusalReason(molecule, sourceAtomId);
+  if (growRefusal) {
+    options.onRefusal?.(growRefusal);
     return undefined;
   }
 
@@ -19606,13 +19650,30 @@ function extendNativeCarbonGraph(
     }
   ];
 
-  const addedBond = bonds[bonds.length - 1];
+  const orderedBonds = nativeBondsWithToolOrder(molecule, { ...molecule, atoms, bonds }, options);
+  return orderedBonds ? refreshNativeSingleBondGraph(molecule, atoms, orderedBonds) : undefined;
+}
+
+/**
+ * Give the bond a tool just added the tool's order, through the same path as order cycling so a
+ * double bond also stores its side. Returns the bonds unchanged for a single bond; reports the
+ * reason through `onRefusal` and returns undefined when the order would break an endpoint.
+ */
+function nativeBondsWithToolOrder(
+  baseline: MoleculeObject,
+  molecule: MoleculeObject,
+  options: NativeBondToolOptions
+): MoleculeBond[] | undefined {
   const order = options.bondOrder ?? "single";
-  if (order !== "single" && !canSetNativeBondOrder({ ...molecule, atoms, bonds }, addedBond, order)) {
+  const addedBond = molecule.bonds[molecule.bonds.length - 1];
+  if (order === "single") return molecule.bonds;
+  const refusal = nativeBondOrderRefusalReason(molecule, addedBond, order, baseline);
+  if (refusal) {
+    options.onRefusal?.(refusal);
     return undefined;
   }
-  return refreshNativeSingleBondGraph(molecule, atoms, bonds.map(bond =>
-    bond.id === addedBond.id ? { ...bond, order } : bond));
+  return molecule.bonds.map(bond =>
+    bond.id === addedBond.id ? nativeBondWithOrderAndDisplay(molecule, bond, order) : bond);
 }
 
 /**
@@ -20014,7 +20075,9 @@ function connectNativeCarbonAtoms(
   targetAtomId: string,
   options: NativeBondToolOptions = {}
 ): MoleculeObject | undefined {
-  if (!canConnectNativeAtoms(molecule, sourceAtomId, targetAtomId)) {
+  const connectRefusal = nativeAtomsConnectRefusalReason(molecule, sourceAtomId, targetAtomId);
+  if (connectRefusal) {
+    options.onRefusal?.(connectRefusal);
     return undefined;
   }
 
@@ -20029,13 +20092,8 @@ function connectNativeCarbonAtoms(
     }
   ];
 
-  const addedBond = bonds[bonds.length - 1];
-  const order = options.bondOrder ?? "single";
-  if (order !== "single" && !canSetNativeBondOrder({ ...molecule, bonds }, addedBond, order)) {
-    return undefined;
-  }
-  return refreshNativeSingleBondGraph(molecule, molecule.atoms, bonds.map(bond =>
-    bond.id === addedBond.id ? { ...bond, order } : bond));
+  const orderedBonds = nativeBondsWithToolOrder(molecule, { ...molecule, bonds }, options);
+  return orderedBonds ? refreshNativeSingleBondGraph(molecule, molecule.atoms, orderedBonds) : undefined;
 }
 
 function nativeAtomWithElement(
@@ -20159,25 +20217,41 @@ function canSetNativeBondOrder(
   bond: MoleculeBond,
   order: MoleculeBond["order"]
 ): boolean {
+  return nativeBondOrderRefusalReason(molecule, bond, order) === undefined;
+}
+
+/**
+ * Why a bond cannot take `order`, in words for the status line; undefined when it can. For a bond
+ * a tool has just added, pass the molecule as it was before the addition as `baseline`, so the
+ * endpoints are judged against what they were rather than against the single bond just added.
+ */
+function nativeBondOrderRefusalReason(
+  molecule: MoleculeObject,
+  bond: MoleculeBond,
+  order: MoleculeBond["order"],
+  baseline: MoleculeObject = molecule
+): string | undefined {
   if (order !== "single" && order !== "double" && order !== "triple") {
-    return false;
+    return `a ${order} bond cannot be set with this tool`;
   }
 
   const atomById = new Map(molecule.atoms.map((atom) => [atom.id, atom]));
   const fromAtom = atomById.get(bond.fromAtomId);
   const toAtom = atomById.get(bond.toAtomId);
   if (!fromAtom || !toAtom) {
-    return false;
+    return "the bond's atoms are missing";
   }
 
-  if (!nativeElementFromAtomLabel(fromAtom.element) || !nativeElementFromAtomLabel(toAtom.element)) {
-    return false;
+  for (const atom of [fromAtom, toAtom]) {
+    if (!nativeElementFromAtomLabel(atom.element)) {
+      return `${atom.element} is not a plain element, so its bond order is left alone`;
+    }
   }
   // The dashed style is the dative style, and dative means single: the dashed tool refuses a
   // double or triple bond for that reason, so a dashed bond may not be raised past single
   // either — a "dashed double" would draw as a dative bond and export as a covalent double.
   if (bond.display?.bondStyle === "dashed" && !isDativeBond({ ...bond, order })) {
-    return false;
+    return `a dashed (dative) bond stays single, not ${order}`;
   }
 
   // Judge the change by the validator the badges use, on the bonds as they WOULD be: the order
@@ -20192,24 +20266,36 @@ function canSetNativeBondOrder(
   const nextBonds = molecule.bonds.map((candidate) => (candidate.id === bond.id ? { ...candidate, order } : candidate));
   const nextAtoms = clearChangedAtomHydrogenHints(molecule, molecule.atoms, nextBonds);
   const nextAtomById = new Map(nextAtoms.map((atom) => [atom.id, atom]));
-  const beforeResolution = nativeBondOrderResolution(molecule.atoms, molecule.bonds);
+  const beforeResolution = nativeBondOrderResolution(baseline.atoms, baseline.bonds);
   const afterResolution = nativeBondOrderResolution(nextAtoms, nextBonds);
   const breaks = (atom: MoleculeAtom): boolean => {
     // A dismissed badge must not license the edit: judge the bare arithmetic.
-    const { warningSuppressed: _warningSuppressed, ...bare } = atom;
     const { warningSuppressed: _nextSuppressed, ...nextBare } = nextAtomById.get(atom.id)!;
+    const nextInvalid = !nativeAtomValidationState(nextBare, nextBonds, nextBare.formalCharge, nextAtoms, afterResolution).valid;
+    const priorAtom = baseline.atoms.find((candidate) => candidate.id === atom.id);
+    // An atom the tool just created has no earlier state: it is judged only as it ends up.
+    if (!priorAtom) return nextInvalid;
+    const { warningSuppressed: _warningSuppressed, ...bare } = priorAtom;
     // The proposed graph has already invalidated import-time hints. Judging it against the old
     // H count would refuse ordinary edits such as converting imported ethane to ethene.
-    return nativeAtomValidationState(bare, molecule.bonds, bare.formalCharge, molecule.atoms, beforeResolution).valid &&
-      !nativeAtomValidationState(nextBare, nextBonds, nextBare.formalCharge, nextAtoms, afterResolution).valid;
+    return nativeAtomValidationState(bare, baseline.bonds, bare.formalCharge, baseline.atoms, beforeResolution).valid &&
+      nextInvalid;
   };
-  return !breaks(fromAtom) && !breaks(toAtom);
+  const broken = [fromAtom, toAtom].find(breaks);
+  return broken ? `${broken.element} would exceed its valence with a ${order} bond` : undefined;
 }
 
 function canGrowNativeAtom(molecule: MoleculeObject, atomId: string): boolean {
+  return nativeAtomGrowRefusalReason(molecule, atomId) === undefined;
+}
+
+function nativeAtomGrowRefusalReason(molecule: MoleculeObject, atomId: string): string | undefined {
   const valenceUsage = atomBondOrderUsageMap(molecule.atoms, molecule.bonds);
   const atom = molecule.atoms.find((candidate) => candidate.id === atomId);
-  return atom !== undefined && nativeAtomAvailableBondCount(atom, valenceUsage.get(atomId) ?? 0, molecule) > 0;
+  if (!atom) return "the atom to grow from is missing";
+  return nativeAtomAvailableBondCount(atom, valenceUsage.get(atomId) ?? 0, molecule) > 0
+    ? undefined
+    : `${atom.element} has no available valence`;
 }
 
 function canConnectNativeAtoms(
@@ -20217,32 +20303,36 @@ function canConnectNativeAtoms(
   sourceAtomId: string,
   targetAtomId: string
 ): boolean {
+  return nativeAtomsConnectRefusalReason(molecule, sourceAtomId, targetAtomId) === undefined;
+}
+
+function nativeAtomsConnectRefusalReason(
+  molecule: MoleculeObject,
+  sourceAtomId: string,
+  targetAtomId: string
+): string | undefined {
   if (sourceAtomId === targetAtomId) {
-    return false;
+    return "an atom cannot bond to itself";
   }
 
-  const atomIds = new Set(molecule.atoms.map((atom) => atom.id));
-  if (!atomIds.has(sourceAtomId) || !atomIds.has(targetAtomId)) {
-    return false;
+  const atomById = new Map(molecule.atoms.map((atom) => [atom.id, atom]));
+  const sourceAtom = atomById.get(sourceAtomId);
+  const targetAtom = atomById.get(targetAtomId);
+  if (!sourceAtom || !targetAtom) {
+    return "an atom to connect is missing";
   }
 
   if (molecule.bonds.some((bond) =>
     (bond.fromAtomId === sourceAtomId && bond.toAtomId === targetAtomId) ||
     (bond.fromAtomId === targetAtomId && bond.toAtomId === sourceAtomId)
   )) {
-    return false;
+    return "those atoms are already bonded";
   }
 
   const valenceUsage = atomBondOrderUsageMap(molecule.atoms, molecule.bonds);
-  const atomById = new Map(molecule.atoms.map((atom) => [atom.id, atom]));
-  const sourceAtom = atomById.get(sourceAtomId);
-  const targetAtom = atomById.get(targetAtomId);
-  return (
-    sourceAtom !== undefined &&
-    targetAtom !== undefined &&
-    nativeAtomAvailableBondCount(sourceAtom, valenceUsage.get(sourceAtomId) ?? 0, molecule) > 0 &&
-    nativeAtomAvailableBondCount(targetAtom, valenceUsage.get(targetAtomId) ?? 0, molecule) > 0
-  );
+  const full = [sourceAtom, targetAtom].find((atom) =>
+    nativeAtomAvailableBondCount(atom, valenceUsage.get(atom.id) ?? 0, molecule) <= 0);
+  return full ? `${full.element} has no available valence` : undefined;
 }
 
 function deleteNativeCarbonAtom(
