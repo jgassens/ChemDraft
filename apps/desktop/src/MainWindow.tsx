@@ -570,6 +570,8 @@ import {
   insertSmilesMoleculeGrid,
   documentObjectProjectedPlaneTilt,
   nativeBondStyleForToolCommand,
+  nativeBondOrderForToolCommand,
+  nativeBondOrderTargetRefusal,
   nativeChargeMarkMaxMagnitude,
   nativeChargeStackRefusal,
   stereoPerceptionMolfile,
@@ -992,6 +994,7 @@ type NativeBondDragState = {
   objectId: string;
   atomId: string;
   bondStyle?: NativeBondDisplayStyle;
+  bondOrder?: NativeBondOrderValue;
   startPoint: ClientPoint;
   latestPoint: ClientPoint;
   dragging: boolean;
@@ -1008,6 +1011,7 @@ type NativePlacementDragState = {
   startPoint: ClientPoint;
   latestPoint: ClientPoint;
   bondStyle?: NativeBondDisplayStyle;
+  bondOrder?: NativeBondOrderValue;
   templateId?: NativeMoleculeTemplateId;
   arrowKind?: ArrowObject["arrowKind"];
   chainAnchor?: NativeChainAnchor;
@@ -3008,6 +3012,7 @@ export function MainWindow({
   );
   const activeEditorMolecule =
     selectedMolecule && selectedMolecule.id === activeEditorObjectId ? selectedMolecule : undefined;
+  const activeNativeBondOrder = nativeBondOrderForToolCommand(activeToolState.activeCommandId);
   const activeNativeBondToolStyle = nativeBondStyleForToolCommand(activeToolState.activeCommandId);
   const activeNativeBondDisplayStyle = activeNativeBondToolStyle && activeNativeBondToolStyle !== "solid"
     ? activeNativeBondToolStyle
@@ -13946,9 +13951,19 @@ export function MainWindow({
   const applySingleBondDocumentAtPoint = useCallback((
     sourceDocument: ChemDraftDocument,
     point: ClientPoint,
-    bondStyle?: NativeBondDisplayStyle
+    bondStyle?: NativeBondDisplayStyle,
+    bondOrder: NativeBondOrderValue = "single"
   ) => {
-    const nextDocument = applySingleBondToolAtPoint(sourceDocument, point, { bondStyle });
+    let refusal: string | undefined;
+    const nextDocument = applySingleBondToolAtPoint(sourceDocument, point, {
+      bondStyle,
+      bondOrder,
+      onRefusal: reason => { refusal = reason; }
+    });
+    if (nextDocument === sourceDocument) {
+      setStatus(refusal ? `Bond not placed: ${refusal}` : "Bond not placed");
+      return;
+    }
     const selected = getSelectedMolecule(nextDocument);
     const atomCount = selected?.atoms.length ?? 0;
     commitDocumentChange(nextDocument);
@@ -13959,7 +13974,7 @@ export function MainWindow({
     setFreeformNativeBond(undefined);
     setStatus(atomCount > 2
       ? `Extended carbon chain to ${atomCount} atoms`
-      : `Inserted ${nativeBondToolStatusLabel(bondStyle)} molecule`);
+      : `Inserted ${bondOrder === "single" ? nativeBondToolStatusLabel(bondStyle) : `${bondOrder} bond`} molecule`);
   }, [commitDocumentChange]);
 
   const applyNativeTemplateDocumentAtPoint = useCallback((
@@ -13996,7 +14011,7 @@ export function MainWindow({
     event: ObjectPointerEvent,
     point: ClientPoint,
     placement:
-      | { kind: "single-bond"; bondStyle?: NativeBondDisplayStyle }
+      | { kind: "single-bond"; bondStyle?: NativeBondDisplayStyle; bondOrder?: NativeBondOrderValue }
       | { kind: "template"; templateId: NativeMoleculeTemplateId }
       | { kind: "arrow"; arrowKind: ArrowObject["arrowKind"] }
       | { kind: "chain"; anchor?: NativeChainAnchor; flexible?: boolean }
@@ -14014,7 +14029,7 @@ export function MainWindow({
             ? applyNativeArtLineToolDefaultAtPoint(startDocument, point, placement.commandId)
             : placement.kind === "orbital"
               ? insertNativeArtGraphicObject(startDocument, point, placement.commandId)
-              : applySingleBondToolAtPoint(startDocument, point, { bondStyle: placement.bondStyle });
+              : applySingleBondToolAtPoint(startDocument, point, { bondStyle: placement.bondStyle, bondOrder: placement.bondOrder });
     const objectId = placementDocument.selection.objectIds[0];
     // Anchored chains grow an existing molecule, so the placed object legitimately pre-exists.
     const growsExistingObject = placement.kind === "chain" && placement.anchor !== undefined;
@@ -14031,6 +14046,7 @@ export function MainWindow({
       startPoint: point,
       latestPoint: point,
       bondStyle: placement.kind === "single-bond" ? placement.bondStyle : undefined,
+      bondOrder: placement.kind === "single-bond" ? placement.bondOrder : undefined,
       templateId: placement.kind === "template" ? placement.templateId : undefined,
       arrowKind: placement.kind === "arrow" ? placement.arrowKind : undefined,
       chainAnchor: placement.kind === "chain" ? placement.anchor : undefined,
@@ -14141,13 +14157,17 @@ export function MainWindow({
     point: ClientPoint,
     forceCustomLength: boolean,
     bondStyle?: NativeBondDisplayStyle,
-    placementAltKey = false
+    placementAltKey = false,
+    bondOrder: NativeBondOrderValue = "single"
   ) => {
     const previousMolecule = findDocumentObject(sourceDocument, objectId);
+    let refusal: string | undefined;
     const nextDocument = applyFreeformSingleBondToolAtPoint(sourceDocument, objectId, atomId, point, {
       forceCustomLength,
       bondStyle,
-      placementAltKey
+      bondOrder,
+      placementAltKey,
+      onRefusal: reason => { refusal = reason; }
     });
     const selected = getSelectedMolecule(nextDocument);
     const atomCount = selected?.atoms.length ?? 0;
@@ -14166,7 +14186,7 @@ export function MainWindow({
     setFreeformNativeBond(undefined);
     setStatus(
       nextDocument === sourceDocument
-        ? "Freeform bond not placed"
+        ? refusal ? `Freeform bond not placed: ${refusal}` : "Freeform bond not placed"
         : connectedExistingAtoms
           ? `Connected carbon atoms; molecule has ${atomCount} atoms`
           : `Placed freeform carbon bond; molecule has ${atomCount} atoms`
@@ -16268,8 +16288,8 @@ export function MainWindow({
     if (activeNativeBondToolStyle) {
       event.preventDefault();
       event.stopPropagation();
-      if (!startNativePlacementDrag(event, point, { kind: "single-bond", bondStyle: activeNativeBondDisplayStyle })) {
-        applySingleBondDocumentAtPoint(document, point, activeNativeBondDisplayStyle);
+      if (!startNativePlacementDrag(event, point, { kind: "single-bond", bondStyle: activeNativeBondDisplayStyle, bondOrder: activeNativeBondOrder })) {
+        applySingleBondDocumentAtPoint(document, point, activeNativeBondDisplayStyle, activeNativeBondOrder);
       }
     }
   }, [
@@ -16277,6 +16297,7 @@ export function MainWindow({
     activeMechanismArrowKind,
     startMechanismArrowDrag,
     activeNativeBondDisplayStyle,
+    activeNativeBondOrder,
     activeNativeBondToolStyle,
     activeNativeTemplateId,
     activeNativeArtTool,
@@ -18122,6 +18143,26 @@ export function MainWindow({
       return;
     }
 
+    if (activeNativeBondToolStyle && activeNativeBondOrder !== "single" && object?.type === "molecule" && nativeMoleculeHit?.kind === "bond") {
+      event.stopPropagation();
+      const target = { objectId, ...nativeMoleculeHit };
+      const selectedDocument = selectDocumentObject(document, objectId);
+      const nextDocument = applyNativeMoleculeBondOrderValueTarget(selectedDocument, target, activeNativeBondOrder);
+      if (nextDocument === selectedDocument) {
+        setStatus(nativeBondOrderTargetRefusal(selectedDocument, target, activeNativeBondOrder) ?? "Bond order not changed");
+        return;
+      }
+      commitDocumentChange(nextDocument);
+      setActiveEditorObjectId(undefined);
+      setActiveTextEditObjectId(undefined);
+      setActiveAtomLabelEdit(undefined);
+      setHoveredNativeAtom(undefined);
+      assignHoveredNativeDeleteTarget(undefined);
+      setFreeformNativeBond(undefined);
+      setStatus(`Set bond to ${activeNativeBondOrder}`);
+      return;
+    }
+
     if (activeToolState.activeCommandId === "tool.bond" && object?.type === "molecule" && point) {
       if (nativeMoleculeHit?.kind === "bond") {
         event.stopPropagation();
@@ -18148,7 +18189,7 @@ export function MainWindow({
       const page = document.pages[0];
       const preview = previewNativeMoleculeBondGrowth(object, point, page.width, page.height);
       if (!preview) {
-        applySingleBondDocumentAtPoint(selectDocumentObject(document, objectId), point, activeNativeBondDisplayStyle);
+        applySingleBondDocumentAtPoint(selectDocumentObject(document, objectId), point, activeNativeBondDisplayStyle, activeNativeBondOrder);
         return;
       }
 
@@ -18157,6 +18198,7 @@ export function MainWindow({
         objectId,
         atomId: preview.atomId,
         bondStyle: activeNativeBondDisplayStyle,
+        bondOrder: activeNativeBondOrder,
         startPoint: point,
         latestPoint: point,
         dragging: false,
@@ -18220,6 +18262,7 @@ export function MainWindow({
     startMechanismArrowDrag,
     activeNativeArtTool,
     activeNativeBondDisplayStyle,
+    activeNativeBondOrder,
     activeNativeBondToolStyle,
     activeNativeTemplateId,
     addChargeToHoveredNativeAtom,
@@ -19789,9 +19832,9 @@ export function MainWindow({
     const point = pagePointFromPointerEvent(event) ?? drag.latestPoint;
     const selectedDocument = selectDocumentObject(document, objectId);
     if (drag.dragging) {
-      applyFreeformBondDocumentAtPoint(selectedDocument, objectId, drag.atomId, drag.latestPoint, drag.freeformUnlocked || drag.connectsForeignAtom, drag.bondStyle, drag.altKey);
+      applyFreeformBondDocumentAtPoint(selectedDocument, objectId, drag.atomId, drag.latestPoint, drag.freeformUnlocked || drag.connectsForeignAtom, drag.bondStyle, drag.altKey, drag.bondOrder);
     } else {
-      applySingleBondDocumentAtPoint(selectedDocument, point, drag.bondStyle);
+      applySingleBondDocumentAtPoint(selectedDocument, point, drag.bondStyle, drag.bondOrder);
     }
     clearNativeBondDrag(event);
   }, [
@@ -22875,7 +22918,7 @@ function nativePlacementStatusLabel(drag: NativePlacementDragState): string {
   }
   return drag.kind === "template" && drag.templateId
     ? `${nativeTemplateStatusLabel(drag.templateId)} template`
-    : `${nativeBondToolStatusLabel(drag.bondStyle)} molecule`;
+    : `${drag.bondOrder && drag.bondOrder !== "single" ? `${drag.bondOrder} bond` : nativeBondToolStatusLabel(drag.bondStyle)} molecule`;
 }
 
 function nativeReactionArrowAriaLabel(arrowKind: ArrowObject["arrowKind"]): string {
