@@ -68,8 +68,31 @@ import { createLayerActions, createQuickActions } from "./commands";
 import { withStandaloneDrawingToolCommands } from "./drawingTools";
 import { createMainWindowShortcutCommands } from "./keyboardShortcuts";
 import { desktopToolsetRegistry, getToolsetCommandSpecs } from "./toolsets";
+import { elementSymbols } from "@chemdraft/chem-core";
+import { chemDrawHoveredTargetHotkeyCommand } from "./keybindingScheme";
 
 describe("fragment hotkey commands", () => {
+  it("reserves hover element and continuation keys for any new fragment bindings", () => {
+    // Existing bindings predate this guard. New bindings must also avoid both hover presets.
+    const existing = new Set(["g", "u", "z", "G", "J"]);
+    const elementKeys = new Set(elementSymbols.flatMap(symbol => [symbol[0].toLowerCase(), symbol[0].toUpperCase(), ...symbol.slice(1)]));
+    const keys = new Set([...Object.keys(fragmentAtomDrawingHotkeys), ...Object.keys(fragmentBondDrawingHotkeys)]);
+    for (const key of keys) {
+      if (existing.has(key)) continue;
+      expect(elementKeys.has(key), `element or continuation key ${key}`).toBe(false);
+      expect(/^[0-9]$/.test(key), `numeric key ${key}`).toBe(false);
+      expect(["k", "K", "+", "-"].includes(key), `ChemDraft hover key ${key}`).toBe(false);
+      for (const target of ["atom", "bond"] as const) {
+        const ownBinding = (target === "atom" ? fragmentAtomDrawingHotkeys : fragmentBondDrawingHotkeys)[key];
+        const resolved = chemDrawHoveredTargetHotkeyCommand(target, key);
+        expect(resolved === undefined || resolved === ownBinding, `compatibility hover key ${key}`).toBe(true);
+      }
+      expect(!(key in fragmentAtomDrawingHotkeys && key in fragmentBondDrawingHotkeys), `duplicate fragment key ${key}`).toBe(true);
+    }
+    for (const kind of ["sulfonyl", "tertButyl"] as const) {
+      expect(Object.values(fragmentAtomDrawingHotkeys)).not.toContain(fragmentSproutCommandId(kind));
+    }
+  });
   it.each(["chemdraft", "chemdraw"] as const)("keeps every fragment key free of tool/command shortcuts in %s", scheme => {
     const document = createPhase4Document();
     const commands = createMainWindowShortcutCommands({

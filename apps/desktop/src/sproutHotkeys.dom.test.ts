@@ -154,7 +154,7 @@ describe.each([
   });
 
   it.each([
-    ["g", 3, 4], ["u", 4, 5], ["K", 4, 4], ["k", 3, 3],
+    ["g", 3, 4], ["u", 4, 5],
     ["z", 2, 2], ["G", 5, 6], ["J", 6, 7]
   ] as const)("key %s over an atom builds one undoable substituent", async (key, atoms, bonds) => {
     await renderEthane();
@@ -163,7 +163,7 @@ describe.each([
     const event = await press(key);
     expect(event.defaultPrevented).toBe(true);
     const after = molecule();
-    const name = ({ g: "cyclopropyl", u: "cyclobutyl", K: "tert-butyl", k: "sulfonyl", z: "alkyne", G: "cyclopentadienyl", J: "phenyl" } as const)[key];
+    const name = ({ g: "cyclopropyl", u: "cyclobutyl", z: "alkyne", G: "cyclopentadienyl", J: "phenyl" } as const)[key];
     expect(container.querySelector("[data-status-message]")?.textContent).toContain(`Added ${name}`);
     expect(after.atoms).toHaveLength(2 + atoms);
     expect(after.bonds).toHaveLength(1 + bonds);
@@ -175,7 +175,7 @@ describe.each([
     expect(molecule()).toEqual(after);
   });
 
-  it.each(["g", "u", "K", "k", "z", "G", "J"])("key %s over a bond uses only its declared bond action", async key => {
+  it.each(["g", "u", "z", "G", "J"])("key %s over a bond uses only its declared bond action", async key => {
     await renderEthane();
     const before = molecule();
     await hoverBond();

@@ -23057,6 +23057,9 @@ export function hoveredNativeTargetShortcutCommand(
   if (Object.prototype.hasOwnProperty.call(numericAtomDrawingHotkeys, key)) {
     return numericAtomDrawingHotkeys[key];
   }
+  if (key.toLowerCase() === "k") {
+    return "atom.addCarbonylToHoveredAtom";
+  }
   if (key === "+") {
     return "atom.addPositiveChargeToHoveredAtom";
   }

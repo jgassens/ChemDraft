@@ -218,8 +218,6 @@ export function fragmentSproutKindForCommand(commandId: string): FragmentSproutK
 export const fragmentAtomDrawingHotkeys: Readonly<Record<string, string>> = {
   g: fragmentSproutCommandId("cyclopropyl"),
   u: fragmentSproutCommandId("cyclobutyl"),
-  K: fragmentSproutCommandId("tertButyl"),
-  k: fragmentSproutCommandId("sulfonyl"),
   z: fragmentSproutCommandId("alkyne"),
   G: fragmentSproutCommandId("cyclopentadienyl"),
   J: fragmentSproutCommandId("phenyl")
@@ -440,6 +438,7 @@ export const editActions: CommandSpec[] = [
     title: "Add Carbonyl or Oxo to Hovered Atom",
     icon: "bond",
     source: "core",
+    shortcut: "K",
     category: "edit",
     description: "Add C=O at carbon, or add =O directly at sulfur or phosphorus"
   },
