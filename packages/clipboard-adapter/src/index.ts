@@ -1,4 +1,4 @@
-import { normalizeAtomIsotope } from "@chemdraft/chem-core";
+import { MAX_IMAGE_OBJECT_BYTES, normalizeAtomIsotope, isSvgImageSource, readSvgInfo, validatePngImage, validateSvgImage, imagePixelLimitError } from "@chemdraft/chem-core";
 
 export type ClipboardPayloadKind = "svg" | "png" | "text/plain" | "smiles" | "mol" | "rxn" | "cdxml" | "cdx";
 
@@ -12,16 +12,53 @@ export interface ClipboardTextItem {
   text: string;
 }
 
+export interface ClipboardImageItem {
+  type: "image/png" | "image/svg+xml";
+  bytesBase64: string;
+  pixelsPerMeter?: { x: number; y: number };
+  pixelWidth?: number;
+  pixelHeight?: number;
+}
+
+export interface ClipboardSkippedImageItem {
+  type: string;
+  byteLength: number;
+  reason: string;
+}
+
 export interface ClipboardReadPayload {
   types: string[];
   textItems: ClipboardTextItem[];
+  imageItems?: ClipboardImageItem[];
+  skippedImageItems?: ClipboardSkippedImageItem[];
 }
 
 export type ClipboardMolfileFormat = "molfile-v2000" | "molfile-v3000";
 
+/** A text heuristic to try with the host chemistry parser, not an assertion of validity. */
+export interface ClipboardChemistryCandidate {
+  kind: "smiles" | "smiles-list";
+  sourceType: string;
+  text: string;
+}
+
 export type ClipboardDetectedPayload =
   | {
+      kind: "image";
+      image: ClipboardImageItem;
+      sourceType?: string;
+      warnings: ClipboardTransferWarning[];
+    }
+  | {
+      kind: "image-refused";
+      message: string;
+      warnings: ClipboardTransferWarning[];
+    }
+  | {
       kind: "plain-text";
+      /** For heuristic SMILES lists: picture to paste if host chemistry parsing fails. */
+      fallbackImage?: ClipboardImageItem;
+      chemistryCandidates?: ClipboardChemistryCandidate[];
       text: string;
       sourceType?: string;
       warnings: ClipboardTransferWarning[];
@@ -35,6 +72,11 @@ export type ClipboardDetectedPayload =
     }
   | {
       kind: "smiles";
+      /** For text heuristics only: paste this picture if host chemistry parsing fails.
+       * Omitted when an unreadable advertised chemistry flavor blocks pictures.
+       * The host must validate it through the ordinary picture paste path. */
+      fallbackImage?: ClipboardImageItem;
+      chemistryCandidates?: ClipboardChemistryCandidate[];
       text: string;
       sourceType?: string;
       warnings: ClipboardTransferWarning[];
@@ -196,6 +238,105 @@ export function inspectClipboardPayload(payload: ClipboardReadPayload): Clipboar
     };
   }
 
+  const firstPlainText =
+    textItems.find((item) => isTextLikeType(item.type)) ??
+    textItems.find((item) => !isMarkupType(item.type));
+  const svgText = payload.textItems.find((item) => looksLikeSvgDocument(item.text) ||
+    ["image/svg+xml", "public.svg", "public.svg-image"].includes(item.type.trim().toLowerCase()));
+  const image = payload.imageItems?.find((item) => item.type === "image/png") ?? payload.imageItems?.[0];
+  const skippedImage = payload.skippedImageItems?.[0];
+  // Unreadable advertised chemistry blocks only pictures, including a heuristic fallback.
+  const suppressPicture = payload.types.some((type) => isCdxmlType(type) || isCdxType(type)
+    || isSmilesType(type) || /(?:molfile|rxnfile|inchi|chemical\/)/i.test(type));
+  // Text heuristics still need the host's chemistry parser; retain artwork in case parsing fails.
+  const hasPicture = image || skippedImage || svgText;
+  const pasteableSvgText = svgText;
+  const fallbackImage = !suppressPicture ? image ?? (pasteableSvgText ? svgTextImage(pasteableSvgText.text) : undefined) : undefined;
+  const chemistryCandidates: ClipboardChemistryCandidate[] = [];
+  if (hasPicture) {
+    for (const item of textItems) {
+      if (looksLikeSvgDocument(item.text)) continue;
+      if (looksLikeSmilesStrict(item.text)) {
+        chemistryCandidates.push({ kind: "smiles", text: item.text, sourceType: item.type });
+      }
+      const tokens = smilesListTokens(item.text);
+      const candidates = smilesListCandidates(item.text);
+      const firstTokenColumns = new Map<number, number>();
+      for (const token of tokens) {
+        if (!firstTokenColumns.has(token.line)) firstTokenColumns.set(token.line, token.column);
+      }
+      if (smilesListDecision({
+        candidates: tokens.length,
+        parsed: candidates.length,
+        lineCount: item.text.split(/\r\n|\r|\n/).filter((line) => line.trim().length > 0).length,
+        parsedFirstTokenLines: candidates.filter((candidate) => candidate.column === firstTokenColumns.get(candidate.line)).length
+      })) {
+        chemistryCandidates.push({ kind: "smiles-list", text: item.text, sourceType: item.type });
+      }
+    }
+  }
+  const firstCandidate = chemistryCandidates[0];
+  if (firstCandidate) {
+    return { kind: firstCandidate.kind === "smiles" ? "smiles" : "plain-text",
+      text: firstCandidate.text, sourceType: firstCandidate.sourceType, warnings: [], chemistryCandidates,
+      ...(fallbackImage ? { fallbackImage } : {}) };
+  }
+  if (image && !suppressPicture) {
+    try {
+      const binary = atob(image.bytesBase64);
+      if (binary.length > MAX_IMAGE_OBJECT_BYTES) {
+        return refusedImage(`${image.type === "image/png" ? "PNG" : "SVG"} is ${(binary.length / (1024 * 1024)).toFixed(1)} MB; the limit is 25 MB.`);
+      }
+      const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+      if (image.type === "image/png") {
+        const result = validatePngImage(bytes);
+        if (result.error) return refusedImage(result.error);
+        const limitError = imagePixelLimitError(image.pixelWidth ?? result.info!.pixelWidth, image.pixelHeight ?? result.info!.pixelHeight);
+        if (limitError) return refusedImage(limitError);
+      } else {
+        const source = new TextDecoder().decode(bytes);
+        const svgError = svgClipboardError(source, bytes.length);
+        if (svgError) return refusedSvg(svgError);
+        const result = validateSvgImage(source);
+        if (result.error) return refusedSvg(result.error);
+        const info = result.info;
+        const limitError = imagePixelLimitError(image.pixelWidth ?? info?.pixelWidth ?? 0, image.pixelHeight ?? info?.pixelHeight ?? 0);
+        if (limitError) return refusedImage(limitError);
+      }
+    } catch {
+      return refusedImage(`the ${image.type === "image/png" ? "PNG" : "SVG"} has invalid data.`);
+    }
+    return { kind: "image", image, sourceType: image.type, warnings: [] };
+  }
+  if (pasteableSvgText && !suppressPicture) {
+    const bytes = new TextEncoder().encode(pasteableSvgText.text);
+    if (bytes.length > MAX_IMAGE_OBJECT_BYTES) {
+      return refusedSvg(`it is ${(bytes.length / (1024 * 1024)).toFixed(1)} MB; the limit is 25 MB.`);
+    }
+    const svgError = svgClipboardError(pasteableSvgText.text, bytes.length);
+    if (svgError) return refusedSvg(svgError);
+    const result = validateSvgImage(pasteableSvgText.text);
+    if (result.error) return refusedSvg(result.error);
+    return { kind: "image", sourceType: pasteableSvgText.type, warnings: [], image: svgTextImage(pasteableSvgText.text) };
+  }
+  if (skippedImage && !suppressPicture) return refusedImage(skippedImage.reason);
+  if (firstPlainText && !looksLikeSvgDocument(firstPlainText.text)) {
+    return {
+      kind: "plain-text",
+      text: firstPlainText.text,
+      sourceType: firstPlainText.type,
+      warnings: []
+    };
+  }
+
+  const cdxmlType = payload.types.find(isCdxmlType);
+  if (cdxmlType) {
+    return { kind: "cdxml", text: "", sourceType: cdxmlType, warnings: [{
+      code: "clipboard.cdxml_not_implemented",
+      message: "The clipboard contains CDXML, but CDXML paste parsing is not implemented yet."
+    }] };
+  }
+
   const cdxType = payload.types.find(isCdxType);
   if (cdxType) {
     return {
@@ -210,19 +351,7 @@ export function inspectClipboardPayload(payload: ClipboardReadPayload): Clipboar
     };
   }
 
-  const firstPlainText =
-    textItems.find((item) => isTextLikeType(item.type)) ??
-    textItems.find((item) => !isMarkupType(item.type));
-  if (firstPlainText && !looksLikeSvgDocument(firstPlainText.text)) {
-    return {
-      kind: "plain-text",
-      text: firstPlainText.text,
-      sourceType: firstPlainText.type,
-      warnings: []
-    };
-  }
-
-  const vectorType = firstPlainText?.type ?? payload.types.find(isVectorArtworkType);
+  const vectorType = svgText?.type ?? payload.types.find(isVectorArtworkType);
   if (vectorType) {
     return {
       kind: "vector-only",
@@ -247,9 +376,10 @@ export function inspectClipboardPayload(payload: ClipboardReadPayload): Clipboar
   };
 }
 
-/** Recognition only: bounded lexical scanning, with no XML execution or entity expansion. */
-function looksLikeSvgDocument(text: string): boolean {
-  if (text.length > 20 * 1024 * 1024) return false;
+/** Validation only: bounded lexical scanning, with no XML execution or entity expansion. */
+function svgDocumentError(text: string): string | undefined {
+  const invalid = "it isn't a valid SVG document.";
+  if (text.length > 20 * 1024 * 1024) return "it exceeds the 20 MB validation limit.";
   let offset = 0;
   const whitespace = /[\s\uFEFF]*/y;
   const name = /[A-Za-z_][\w.-]*(?::[A-Za-z_][\w.-]*)?/y;
@@ -274,9 +404,9 @@ function looksLikeSvgDocument(text: string): boolean {
   skipWhitespace();
   while (true) {
     if (text.startsWith("<?", offset)) {
-      if (!skipDelimited("?>")) return false;
+      if (!skipDelimited("?>")) return invalid;
     } else if (text.startsWith("<!--", offset)) {
-      if (!skipDelimited("-->")) return false;
+      if (!skipDelimited("-->")) return invalid;
     } else if (text.startsWith("<!DOCTYPE", offset) && /\s/.test(text[offset + 9] ?? "")) {
       offset += 9;
       let quote = "";
@@ -284,7 +414,7 @@ function looksLikeSvgDocument(text: string): boolean {
       let ended = false;
       while (offset < text.length) {
         if (!quote && text.startsWith("<!--", offset)) {
-          if (!skipDelimited("-->")) return false;
+          if (!skipDelimited("-->")) return invalid;
           continue;
         }
         const char = text[offset++];
@@ -295,7 +425,7 @@ function looksLikeSvgDocument(text: string): boolean {
         else if (char === "]") depth -= 1;
         else if (char === ">" && depth === 0) { ended = true; break; }
       }
-      if (!ended) return false;
+      if (!ended) return invalid;
     } else break;
     skipWhitespace();
   }
@@ -303,25 +433,25 @@ function looksLikeSvgDocument(text: string): boolean {
   let rootSeen = false;
   while (offset < text.length) {
     if (text.startsWith("<!--", offset)) {
-      if (!skipDelimited("-->")) return false;
+      if (!skipDelimited("-->")) return invalid;
       continue;
     }
     if (text.startsWith("<?", offset)) {
-      if (!skipDelimited("?>")) return false;
+      if (!skipDelimited("?>")) return invalid;
       continue;
     }
     if (text.startsWith("<![CDATA[", offset) && stack.length) {
-      if (!skipDelimited("]]>")) return false;
+      if (!skipDelimited("]]>")) return invalid;
       continue;
     }
     if (text[offset] !== "<") {
       if (!stack.length) {
         skipWhitespace();
         if (offset === text.length) break;
-        if (text[offset] !== "<") return false;
+        if (text[offset] !== "<") return invalid;
       } else {
         const next = text.indexOf("<", offset);
-        if (next < 0) return false;
+        if (next < 0 || invalidXmlText(text.slice(offset, next))) return invalid;
         offset = next;
       }
       continue;
@@ -330,15 +460,16 @@ function looksLikeSvgDocument(text: string): boolean {
     const closing = text[offset] === "/";
     if (closing) offset += 1;
     const tag = readName();
-    if (!tag) return false;
+    if (!tag) return invalid;
     if (closing) {
       skipWhitespace();
-      if (text[offset++] !== ">" || stack.pop() !== tag) return false;
+      if (text[offset++] !== ">" || stack.pop() !== tag) return invalid;
       continue;
     }
     const isRoot = !rootSeen;
-    if (!stack.length && rootSeen) return false;
-    if (isRoot && tag !== "svg" && !tag.endsWith(":svg")) return false;
+    if (!stack.length && rootSeen) return invalid;
+    if (isRoot && tag !== "svg" && !tag.endsWith(":svg")) return invalid;
+    const attributes = new Set<string>();
     let namespace: string | undefined;
     let selfClosed = false;
     while (true) {
@@ -346,27 +477,121 @@ function looksLikeSvgDocument(text: string): boolean {
       skipWhitespace();
       if (text.startsWith("/>", offset)) { offset += 2; selfClosed = true; break; }
       if (text[offset] === ">") { offset += 1; break; }
-      if (offset === beforeWhitespace) return false;
+      if (offset === beforeWhitespace) return invalid;
       const attribute = readName();
-      if (!attribute) return false;
+      if (!attribute || attributes.has(attribute)) return invalid;
+      attributes.add(attribute);
       skipWhitespace();
-      if (text[offset++] !== "=") return false;
+      if (text[offset++] !== "=") return invalid;
       skipWhitespace();
       const quote = text[offset++];
-      if (quote !== '"' && quote !== "'") return false;
+      if (quote !== '"' && quote !== "'") return invalid;
       const end = text.indexOf(quote, offset);
-      if (end < 0) return false;
+      if (end < 0 || text.slice(offset, end).includes("<") || invalidXmlText(text.slice(offset, end))) return invalid;
       if (isRoot && attribute === (tag === "svg" ? "xmlns" : `xmlns:${tag.split(":")[0]}`)) {
         namespace = text.slice(offset, end);
       }
       offset = end + 1;
     }
-    if (isRoot && (tag !== "svg" || namespace !== undefined) && namespace !== "http://www.w3.org/2000/svg") return false;
+    if (isRoot && (tag !== "svg" || namespace !== undefined) && namespace !== "http://www.w3.org/2000/svg") return invalid;
     rootSeen = true;
     if (!selfClosed) stack.push(tag);
-    if (stack.length > 256) return false;
+    if (stack.length > 256) return "it exceeds the 256-level nesting limit.";
   }
-  return rootSeen && stack.length === 0;
+  return rootSeen && stack.length === 0 ? undefined : invalid;
+}
+
+function refusedImage(reason: string): ClipboardDetectedPayload {
+  const message = reason.startsWith("Couldn't paste the picture:") ? reason : `Couldn't paste the picture: ${reason}`;
+  return { kind: "image-refused", message: /[.!?]$/.test(message) ? message : `${message}.`, warnings: [] };
+}
+
+function refusedSvg(reason: string): ClipboardDetectedPayload {
+  const detail = reason.replace(/^Couldn't paste the picture:\s*/, "");
+  return { kind: "image-refused", message: `Couldn't paste the SVG: ${detail}`, warnings: [] };
+}
+
+function invalidXmlText(text: string): boolean {
+  if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]|\]\]>/.test(text) ||
+      /&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[\da-fA-F]+);)/.test(text)) return true;
+  for (const match of text.matchAll(/&#(x[\da-fA-F]+|\d+);/g)) {
+    const code = match[1].startsWith("x") ? Number.parseInt(match[1].slice(1), 16) : Number(match[1]);
+    if (!(code === 9 || code === 10 || code === 13 || (code >= 32 && code <= 0x10ffff)) ||
+        (code >= 0xd800 && code <= 0xdfff) || code === 0xfffe || code === 0xffff) return true;
+  }
+  return false;
+}
+
+function svgClipboardError(source: string, byteLength: number): string | undefined {
+  if (byteLength > 20 * 1024 * 1024) return "it exceeds the 20 MB validation limit.";
+  return svgDocumentError(source) ?? svgContentError(source);
+}
+
+// Validate without rewriting: accepted picture bytes retain their original source.
+// Completeness and size are checked before this bounded, non-executing sanitizer.
+function svgContentError(source: string): string | undefined {
+  const markup = source.replace(/<!--[\s\S]*?-->/g, "");
+  if (/<!DOCTYPE/i.test(markup)) return "it contains a document type declaration that isn't allowed.";
+  if (/<\?(?!xml\s)/i.test(markup)) return "it contains a processing instruction that isn't allowed.";
+  const unsafeStyle = (value: string) => {
+    const css = value.replace(/\/\*[\s\S]*?\*\//g, "");
+    return /\\|@import\b|expression\s*\(/i.test(css) ||
+      /url\s*\(/i.test(css.replace(/url\(\s*(["']?)#[A-Za-z_][\w.-]*\1\s*\)/gi, ""));
+  };
+  const decodeEntities = (value: string) => value.replace(/&(?:#x([\da-f]+)|#(\d+)|(amp|lt|gt|quot|apos));/gi,
+    (_, hex: string | undefined, decimal: string | undefined, name: string | undefined) => {
+      if (name) return ({ amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" } as Record<string, string>)[name] ?? "";
+      const code = Number.parseInt(hex ?? decimal!, hex ? 16 : 10);
+      return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : "";
+    });
+  for (const style of markup.matchAll(/<(?:[\w.-]+:)?style\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?style\s*>/g)) {
+    const content = style[1].replace(/<!\[CDATA\[|\]\]>/g, "");
+    if (unsafeStyle(decodeEntities(content))) return "it contains external links or active content in styles, which isn't allowed.";
+  }
+  const tags = /<!\[CDATA\[[\s\S]*?\]\]>|<\?[\s\S]*?\?>|<([A-Za-z_][\w.:-]*)((?:[^<>"']|"[^"]*"|'[^']*')*)>/g;
+  for (const match of markup.matchAll(tags)) {
+    if (!match[1]) continue;
+    const tag = match[1].split(":").at(-1)!;
+    if (!safeSvgElements.has(tag)) return `it contains a <${tag}> element that isn't allowed.`;
+    for (const attribute of match[2].matchAll(/([^\s=]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)) {
+      const name = attribute[1].split(":").at(-1)!.toLowerCase();
+      const value = decodeEntities(attribute[2] ?? attribute[3]);
+      if (name.startsWith("on")) return `it contains an event handler (${attribute[1]}) that isn't allowed.`;
+      if (name === "base" || ((name === "href" || name === "src") && !/^#[A-Za-z_][\w.:-]*$/.test(value))) {
+        return "it contains external links or embedded objects, which aren't allowed.";
+      }
+      if (unsafeStyle(value)) return "it contains external links or active content in styles, which isn't allowed.";
+      if (/^xmlns(?::|$)/.test(attribute[1]) && ![
+        "http://www.w3.org/2000/svg", "http://www.w3.org/1999/xlink", "http://www.w3.org/XML/1998/namespace"
+      ].includes(value)) return "it contains an XML namespace that isn't allowed.";
+    }
+  }
+  return undefined;
+}
+
+const safeSvgElements = new Set([
+  "svg", "g", "defs", "symbol", "use", "switch", "title", "desc", "metadata", "style",
+  "path", "rect", "circle", "ellipse", "line", "polyline", "polygon",
+  "text", "tspan", "textPath", "a", "image", "clipPath", "mask", "marker", "pattern",
+  "linearGradient", "radialGradient", "stop", "filter", "feBlend", "feColorMatrix",
+  "feComponentTransfer", "feComposite", "feConvolveMatrix", "feDiffuseLighting",
+  "feDisplacementMap", "feDistantLight", "feDropShadow", "feFlood", "feFuncA", "feFuncB",
+  "feFuncG", "feFuncR", "feGaussianBlur", "feImage", "feMerge", "feMergeNode",
+  "feMorphology", "feOffset", "fePointLight", "feSpecularLighting", "feSpotLight",
+  "feTile", "feTurbulence"
+]);
+
+function svgTextImage(text: string): ClipboardImageItem {
+  const bytes = new TextEncoder().encode(text);
+  const chunks: string[] = [];
+  for (let offset = 0; offset < bytes.length; offset += 8192) {
+    chunks.push(String.fromCharCode(...bytes.subarray(offset, offset + 8192)));
+  }
+  return { type: "image/svg+xml", bytesBase64: btoa(chunks.join("")), ...readSvgInfo(text) };
+}
+
+function looksLikeSvgDocument(text: string): boolean {
+  return isSvgImageSource(text) || /^<(?:[A-Za-z_][\w.-]*:)?svg$/.test(text.trim()) || svgDocumentError(text) === undefined;
 }
 
 export function parseMolfileGraph(molfile: string): ParsedMolfileGraph {
@@ -818,8 +1043,8 @@ export function looksLikeInchi(text: string): boolean {
  * token, length ≥ 2, only SMILES grammar characters, and at least one ASCII letter
  * (an element). This NEVER asserts validity (that needs a real parser); the app layer
  * confirms by attempting an OpenChemLib depiction and falls back to plain text on
- * failure. Deliberately not used by `inspectClipboardPayload` — it stays conservative
- * and only classifies plain text as SMILES once the app has actually parsed it.
+ * failure. `inspectClipboardPayload` uses the stricter pre-filter only when a picture
+ * would otherwise hide a plain-text chemistry candidate; the host must still parse it.
  */
 export function looksLikeSmiles(text: string): boolean {
   const token = text.trim();

@@ -1,25 +1,72 @@
 // @vitest-environment jsdom
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createImageGraphicObject } from "@chemdraft/chem-core";
 import { exportSvgToPdf } from "@chemdraft/export-engine/pdf";
+import { Resvg } from "@resvg/resvg-js";
+
+beforeEach(() => {
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+  Object.defineProperty(SVGElement.prototype, "getBBox", {
+    configurable: true,
+    value: () => ({ x: 0, y: 0, width: 80, height: 16 })
+  });
+});
 
 afterEach(() => vi.restoreAllMocks());
 
 describe("exportSvgToPdf", () => {
   it("renders SVG text and paths as vectors at CSS pixel dimensions", async () => {
-    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
-    Object.defineProperty(SVGElement.prototype, "getBBox", {
-      configurable: true,
-      value: () => ({ x: 0, y: 0, width: 80, height: 16 })
-    });
     const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="192" height="96" viewBox="0 0 192 96"><path d="M10 20 L100 20" stroke="black"/><text x="10" y="50">Spectrum</text></svg>';
-    const { bytes } = await exportSvgToPdf(svg, { outputWidth: 192, outputHeight: 96, compress: false });
+    const { bytes, warnings } = await exportSvgToPdf(svg, { outputWidth: 192, outputHeight: 96, compress: false });
     const pdf = new TextDecoder("latin1").decode(bytes);
     expect(pdf.startsWith("%PDF-")).toBe(true);
     expect(pdf).toMatch(/\/MediaBox \[0 0 144(?:\.0*)? 72(?:\.0*)?\]/);
     expect(pdf).toContain("Spectrum");
     expect(pdf).toMatch(/10(?:\.0*)? 20(?:\.0*)? m/);
     expect(pdf).not.toContain("/Subtype /Image");
+    expect(warnings).toEqual([]);
+  });
+
+  it("renders pictures between vector runs and returns SVG-picture warnings", async () => {
+    const png = Buffer.from(new Resvg('<svg xmlns="http://www.w3.org/2000/svg" width="2" height="1"><rect width="2" height="1" fill="red"/></svg>').render().asPng()).toString("base64");
+    const picture = createImageGraphicObject({ id: "picture", mimeType: "image/png", dataBase64: png, center: { x: 40, y: 40 } });
+    const svgData = btoa('<svg xmlns="http://www.w3.org/2000/svg"/>');
+    const svgPicture = createImageGraphicObject({ id: "svg-picture", mimeType: "image/svg+xml", dataBase64: svgData, center: { x: 40, y: 40 } });
+    const pictures = new Map([[picture.id, picture], [svgPicture.id, svgPicture]]);
+    const markup = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 96">
+      <text x="10" y="10">Before</text>
+      <g data-object-id="picture"><image href="data:image/png;base64,${png}"/></g>
+      <text x="10" y="20">Between</text>
+      <g data-object-id="svg-picture"><image href="data:image/svg+xml;base64,${svgData}"/></g>
+      <text x="10" y="30">After</text>
+    </svg>`;
+    const result = await exportSvgToPdf(markup, { outputWidth: 192, outputHeight: 96,
+      compress: false, pictures, pageSize: { width: 192, height: 96 } });
+    const pdf = new TextDecoder("latin1").decode(result.bytes);
+    const imagePosition = pdf.search(/\/I\d+ Do/);
+    expect(imagePosition).toBeGreaterThan(pdf.indexOf("(Before)"));
+    expect(pdf.indexOf("(Between)")).toBeGreaterThan(imagePosition);
+    expect(pdf.indexOf("(After)")).toBeGreaterThan(pdf.indexOf("(Between)"));
+    expect(result.warnings).toEqual([{ code: "export.pdf.svg_picture_not_drawn", severity: "warning",
+      objectId: "svg-picture", message: "PDF export: SVG picture svg-picture was not drawn; paste it as PNG or export SVG" }]);
+    await expect(exportSvgToPdf(markup, { outputWidth: 192, outputHeight: 96, pictures }))
+      .rejects.toThrow("source page dimensions");
+    await expect(exportSvgToPdf(markup, { outputWidth: 192, outputHeight: 96, pictures,
+      pageSize: { width: Number.NaN, height: 96 } })).rejects.toThrow("source page dimensions");
+  });
+
+  it("keeps standalone SVG security checks when document pictures are optional", async () => {
+    const dataBase64 = btoa('<svg xmlns="http://www.w3.org/2000/svg"/>');
+    const picture = createImageGraphicObject({ id: "svg-picture", mimeType: "image/svg+xml", dataBase64, center: { x: 40, y: 40 } });
+    const image = `<g data-object-id="svg-picture"><image href="data:image/svg+xml;base64,${dataBase64}"/></g>`;
+    const options = { outputWidth: 192, outputHeight: 96 };
+    await expect(exportSvgToPdf(`<svg>${image}</svg>`, options)).rejects.toThrow("external SVG references");
+    await expect(exportSvgToPdf(`<svg><g>${image}</g></svg>`, { ...options,
+      pictures: new Map([[picture.id, picture]]), pageSize: { width: 192, height: 96 } }))
+      .rejects.toThrow("external SVG references");
+    await expect(exportSvgToPdf('<svg><script>alert(1)</script></svg>', options)).rejects.toThrow("active SVG content");
+    await expect(exportSvgToPdf('<!DOCTYPE svg [<!ENTITY x "text">]><svg/>', options)).rejects.toThrow("declarations");
   });
 
   it("rejects invalid and oversized dimensions", async () => {

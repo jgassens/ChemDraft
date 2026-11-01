@@ -1,11 +1,12 @@
 import {
   CSS_PX_PER_INCH,
-  type ChemDraftDocument
+  type ChemDraftDocument,
+  type GraphicObject
 } from "@chemdraft/chem-core";
 import { jsPDF } from "jspdf";
 import * as svg2pdfModule from "svg2pdf.js";
 import { getExportFormatDescriptor } from "./formats";
-import type { BinaryExportResult } from "./results";
+import type { BinaryExportResult, ExportWarning } from "./results";
 import { exportDocumentToSvg } from "./svg";
 import { preparePdfFonts } from "./pdfFonts";
 import { preparePdfHaloPaint } from "./pdfHaloPaint";
@@ -19,6 +20,16 @@ export interface PdfExportOptions {
   includePageGuides?: boolean;
   outputWidth?: number;
   outputHeight?: number;
+}
+
+export interface SvgToPdfOptions {
+  outputWidth: number;
+  outputHeight: number;
+  domParser?: DOMParser;
+  compress?: boolean;
+  pictures?: ReadonlyMap<string, GraphicObject>;
+  /** Source page dimensions, required when pictures need physical-size placement. */
+  pageSize?: { width: number; height: number };
 }
 
 export async function exportDocumentToPdf(
@@ -42,12 +53,20 @@ export async function exportDocumentToPdf(
     pageIndex,
     includePageGuides: options.includePageGuides
   });
-  const { bytes } = await exportSvgToPdf(svgResult.contents, {
+  const pictures = new Map(page.objects.filter((object): object is GraphicObject =>
+    object.type === "graphic" && object.graphicKind === "image" && !!object.data.image)
+    .map((object) => [object.id, object]));
+  const { bytes, warnings: pictureWarnings } = await exportSvgToPdf(svgResult.contents, {
     outputWidth: options.outputWidth ?? page.width,
     outputHeight: options.outputHeight ?? page.height,
     domParser: options.domParser,
-    compress: options.compress
+    compress: options.compress,
+    pictures,
+    pageSize: page
   });
+  const warnings = svgResult.warnings.map((warning) => warning.code === "export.svg.picture_missing_data"
+    ? { ...warning, code: "export.pdf.picture_missing_data", message: `PDF export: picture ${warning.objectId} has no picture data and was not drawn` }
+    : warning);
 
   return {
     format: "pdf",
@@ -55,14 +74,14 @@ export async function exportDocumentToPdf(
     bytes,
     mimeType: descriptor.mimeType,
     extension: descriptor.extensions[0] ?? "pdf",
-    warnings: svgResult.warnings
+    warnings: [...warnings, ...pictureWarnings]
   };
 }
 
 export async function exportSvgToPdf(
   svgMarkup: string,
-  options: { outputWidth: number; outputHeight: number; domParser?: DOMParser; compress?: boolean }
-): Promise<{ bytes: Uint8Array }> {
+  options: SvgToPdfOptions
+): Promise<{ bytes: Uint8Array; warnings: ExportWarning[] }> {
   if (![options.outputWidth, options.outputHeight].every((value) => Number.isFinite(value) && value > 0)) {
     throw new Error("Cannot export PDF: output dimensions must be finite positive numbers.");
   }
@@ -71,7 +90,13 @@ export async function exportSvgToPdf(
   if (Math.max(widthPt, heightPt) > 14400) {
     throw new Error("Cannot export PDF: physical page size exceeds 14400 points (200 inches) per side. Reduce the pixel dimensions or increase DPI.");
   }
-  const svgElement = parseSvgElement(svgMarkup, options.domParser);
+  const pictures = options.pictures ?? new Map<string, GraphicObject>();
+  const page = options.pageSize;
+  if (pictures.size > 0 && (!page || ![page.width, page.height].every((value) => Number.isFinite(value) && value > 0))) {
+    throw new Error("Cannot export PDF: pictures require finite positive source page dimensions.");
+  }
+  const svgElement = parseSvgElement(svgMarkup, options.domParser, pictures);
+  const warnings: ExportWarning[] = [];
 
   const pdf = new jsPDF({
     orientation: widthPt >= heightPt ? "landscape" : "portrait",
@@ -84,26 +109,69 @@ export async function exportSvgToPdf(
   let releaseHaloPaint = () => {};
   try {
     releaseHaloPaint = await preparePdfHaloPaint(svgElement, pdf, svg2pdf, widthPt, heightPt);
-    await svg2pdf(svgElement, pdf, {
-      x: 0,
-      y: 0,
-      width: widthPt,
-      height: heightPt,
-      loadExternalStyleSheets: false
+    const render = (element: Element) => svg2pdf(element, pdf, {
+      x: 0, y: 0, width: widthPt, height: heightPt, loadExternalStyleSheets: false
     });
+    if (pictures.size === 0 || !page) {
+      await render(svgElement);
+    } else {
+      // Render contiguous runs in order so pictures retain their stacking relative to other objects.
+      // svg2pdf's raster image loader relies on a browser Image and silently skips load failures;
+      // jsPDF can embed the PNG bytes directly, including in headless exports.
+      const children = [...svgElement.children];
+      let run: Element[] = [];
+      const flush = async () => {
+        if (!run.length) return;
+        const part = svgElement.cloneNode(false) as Element;
+        for (const child of children) if (child.tagName === "defs" || run.includes(child)) part.appendChild(child.cloneNode(true));
+        await render(part);
+        run = [];
+      };
+      for (const child of children) {
+        const picture = pictures.get(child.getAttribute("data-object-id") ?? "");
+        if (!picture || picture.type !== "graphic" || !picture.data.image) {
+          if (child.tagName !== "defs") run.push(child);
+          continue;
+        }
+        await flush();
+        if (picture.data.image.mimeType === "image/svg+xml") {
+          warnings.push({ code: "export.pdf.svg_picture_not_drawn", severity: "warning", objectId: picture.id,
+            message: `PDF export: SVG picture ${picture.id} was not drawn; paste it as PNG or export SVG` });
+          continue;
+        }
+        const scale = Math.min(widthPt / page.width, heightPt / page.height);
+        const offsetX = (widthPt - page.width * scale) / 2;
+        const offsetY = (heightPt - page.height * scale) / 2;
+        const radians = picture.rotation * Math.PI / 180;
+        const cos = Math.cos(radians), sin = Math.sin(radians);
+        const cx = picture.x + picture.width / 2, cy = picture.y + picture.height / 2;
+        const pictureScale = cssPxToPdfPt(1) / scale;
+        const width = picture.width * pictureScale;
+        const height = picture.height * pictureScale;
+        pdf.advancedAPI();
+        pdf.saveGraphicsState();
+        pdf.setCurrentTransformationMatrix(pdf.Matrix(scale * cos, scale * sin, -scale * sin, scale * cos,
+          offsetX + scale * (cx - cos * cx + sin * cy), offsetY + scale * (cy - sin * cx - cos * cy)));
+        pdf.addImage(`data:image/png;base64,${picture.data.image.dataBase64}`, "PNG",
+          picture.x + (picture.width - width) / 2, picture.y + (picture.height - height) / 2, width, height);
+        pdf.restoreGraphicsState();
+        pdf.compatAPI();
+      }
+      await flush();
+    }
   } finally {
     releaseHaloPaint();
     releaseFonts();
   }
 
-  return { bytes: new Uint8Array(pdf.output("arraybuffer")) };
+  return { bytes: new Uint8Array(pdf.output("arraybuffer")), warnings };
 }
 
 function cssPxToPdfPt(value: number): number {
   return value / CSS_PX_PER_INCH * 72;
 }
 
-function parseSvgElement(svg: string, domParser: DOMParser | undefined): Element {
+function parseSvgElement(svg: string, domParser: DOMParser | undefined, pictures: ReadonlyMap<string, GraphicObject>): Element {
   assertBoundedSvg(svg);
   const parser = domParser ?? createDomParser();
   const parsed = parser.parseFromString(svg, "image/svg+xml");
@@ -133,7 +201,8 @@ function parseSvgElement(svg: string, domParser: DOMParser | undefined): Element
           throw new Error("Cannot export PDF: active SVG attributes are not allowed.");
         }
         if (name === "href" && !/^#[A-Za-z_][\w.-]*$/.test(attribute.value) &&
-            !(element.localName === "image" && /^data:image\/(?:png|jpeg);base64,[A-Za-z0-9+/]+={0,2}$/.test(attribute.value))) {
+            !(element.localName === "image" && /^data:image\/(?:png|jpeg);base64,[A-Za-z0-9+/]+={0,2}$/.test(attribute.value)) &&
+            !isMappedSvgPicture(element, attribute.value, parsed.documentElement, pictures)) {
           throw new Error("Cannot export PDF: external SVG references are not allowed.");
         }
         if (name === "style" || ["fill", "stroke", "filter", "clip-path", "mask", "marker-start", "marker-mid", "marker-end"].includes(name)) {
@@ -146,6 +215,14 @@ function parseSvgElement(svg: string, domParser: DOMParser | undefined): Element
   }
 
   return parsed.documentElement;
+}
+
+/** These images are skipped with a warning by the picture renderer, never handed to svg2pdf. */
+function isMappedSvgPicture(element: Element, href: string, svgRoot: Element, pictures: ReadonlyMap<string, GraphicObject>): boolean {
+  if (element.localName !== "image" || element.parentElement?.parentElement !== svgRoot) return false;
+  const object = pictures.get(element.parentElement?.getAttribute("data-object-id") ?? "");
+  const image = object?.data.image;
+  return image?.mimeType === "image/svg+xml" && href === `data:image/svg+xml;base64,${image.dataBase64}`;
 }
 
 function assertLocalSvgCss(value: string): void {

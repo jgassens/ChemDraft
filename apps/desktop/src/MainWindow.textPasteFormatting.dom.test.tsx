@@ -124,18 +124,42 @@ describe.each(["macos", "windows"] as const)("text paste formatting (%s)", platf
   const status = () => container.querySelector('[role="status"]')?.textContent;
   const nativeReads = () => vi.mocked(invoke).mock.calls.filter(([command]) => command === "read_clipboard_payload");
 
-  it.each(["image/svg+xml", "public.svg-image", "text/plain"])("reports SVG from %s on menu and DOM paste", async type => {
-    const svg = '<svg xmlns="http://www.w3.org/2000/svg"></svg>';
+  it.each(["image/svg+xml", "public.svg-image", "text/plain"])("pastes SVG from %s as a picture on menu and DOM paste", async type => {
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><path d="M0 0L40 20"/></svg>';
     await mount({ types: [type], textItems: [{ type, text: svg }] });
-    const expected = "Couldn't paste: the clipboard holds vector artwork (SVG), which can't be pasted as an editable drawing or as text.";
+    const expectPictures = (count: number) => {
+      expect(status()).toBe("Pasted picture");
+      expect(objects()).toHaveLength(count);
+      for (const object of objects()) {
+        expect(object).toMatchObject({ type: "graphic", graphicKind: "image", data: { image: { mimeType: "image/svg+xml" } } });
+      }
+    };
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "clipboard.paste" } }));
+    });
+    expectPictures(1);
+    expect((await paste({ [type]: svg })).defaultPrevented).toBe(true);
+    expectPictures(2);
+    runtime.desktop = false;
+    expect((await paste({ [type]: svg })).defaultPrevented).toBe(true);
+    expectPictures(3);
+  });
+
+  it.each([
+    ["malformed", "<svg><g></svg>", "Couldn't paste the SVG: it isn't a valid SVG document."],
+    ["sanitizer-refused", "<svg><script>alert(1)</script></svg>", "Couldn't paste the SVG: it contains a <script> element that isn't allowed."]
+  ])("refuses %s SVG text on menu and DOM paste without inserting anything", async (_, svg, expected) => {
+    await mount(nativeClipboard(svg));
     await act(async () => {
       window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "clipboard.paste" } }));
     });
     expect(status()).toBe(expected);
-    expect((await paste({ [type]: svg })).defaultPrevented).toBe(true);
+    expect(objects()).toHaveLength(0);
+    expect((await paste({ "text/plain": svg })).defaultPrevented).toBe(true);
     expect(status()).toBe(expected);
+    expect(objects()).toHaveLength(0);
     runtime.desktop = false;
-    expect((await paste({ [type]: svg })).defaultPrevented).toBe(true);
+    expect((await paste({ "text/plain": svg })).defaultPrevented).toBe(true);
     expect(status()).toBe(expected);
     expect(objects()).toHaveLength(0);
   });
@@ -143,7 +167,8 @@ describe.each(["macos", "windows"] as const)("text paste formatting (%s)", platf
   it.each(["image/svg+xml", "public.svg-image"])("recognizes an SVG flavor without text: %s", async type => {
     await mount({ types: [type], textItems: [] });
     await paste({ [type]: "" });
-    expect(status()).toBe("Couldn't paste: the clipboard holds vector artwork (SVG), which can't be pasted as an editable drawing or as text.");
+    expect(status()).toBe("Couldn't paste the SVG: no readable SVG document was found on the clipboard.");
+    expect(objects()).toHaveLength(0);
   });
 
   it("keeps the existing failure for a non-SVG image", async () => {
@@ -274,7 +299,7 @@ describe.each(["macos", "windows"] as const)("text paste formatting (%s)", platf
     expect((await paste({ "text/plain": "c1ccccc1O" })).defaultPrevented).toBe(true);
     expect(nativeReads()).toHaveLength(1);
     // The templates branch also passes depiction options and document placement context.
-    expect(depictSmilesForPaste).toHaveBeenCalledExactlyOnceWith("c1ccccc1O", {}, {
+    expect(depictSmilesForPaste).toHaveBeenCalledExactlyOnceWith("c1ccccc1O", expect.objectContaining({}), {
       document: expect.objectContaining({ title: "Paste formatting" }),
       centre: expect.any(Object),
       reservedObjectIds: expect.any(Set)
