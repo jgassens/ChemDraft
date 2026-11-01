@@ -17,6 +17,8 @@ base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 flate2 = "1"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "bmp", "gif", "tiff"] }
+# Existing locked TIFF encoder (image's dependency): writes the X/Y resolution tags image cannot set.
+tiff = { version = "0.11.3", default-features = false }
 resvg = { version = "0.47.0", default-features = false, features = ["text", "system-fonts"] }
 # The OCSR engine installer's downloads (uv, the MolScribe model). reqwest 0.12 is already in the
 # graph through tauri-plugin-http. Feature unification gives BOTH clients OS + Mozilla roots.
