@@ -265,6 +265,46 @@ describe.each(["macos", "windows"] as const)("persistent panel focus (%s)", (pla
     expect(forward).toHaveBeenCalledExactlyOnceWith(command);
   });
 
+  it.each(["native deactivation", "window blur", "page hide", "page unload", "hidden page"])("releases consumed keys on %s before keyup", async (loss) => {
+    const { shell, press, key, forward, native } = mount('<input><div class="plugin-report"><p>Report text</p></div>', platform);
+    const text = shell.querySelector("p")!;
+    const input = shell.querySelector("input")!;
+    press(text);
+    await flush();
+    for (const value of ["Delete", "b"]) {
+      selectText(text);
+      expect(key(text, value).defaultPrevented).toBe(true);
+      expect(key(text, value, { repeat: true }).defaultPrevented).toBe(true);
+    }
+    expect(forward).not.toHaveBeenCalled();
+    if (loss === "native deactivation") native("deactivated");
+    else if (loss === "hidden page") {
+      vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+      document.dispatchEvent(new Event("visibilitychange"));
+    } else window.dispatchEvent(new Event(loss === "window blur" ? "blur" : loss === "page hide" ? "pagehide" : "unload"));
+    await flush();
+    // The held keys were released elsewhere, so no keyup reaches this panel.
+    if (loss === "hidden page") {
+      vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+      document.dispatchEvent(new Event("visibilitychange"));
+    }
+    native("activated");
+    press(text);
+    await flush();
+    expect(document.getSelection()!.isCollapsed).toBe(true);
+    key(text, "Delete");
+    key(text, "Delete", { repeat: true });
+    expect(forward.mock.calls).toEqual([["edit.delete"], ["edit.delete"]]);
+    press(input); input.focus();
+    await flush();
+    for (const value of ["Delete", "b"]) {
+      expect(key(input, value).defaultPrevented).toBe(false);
+      expect(key(input, value, { repeat: true }).defaultPrevented).toBe(false);
+    }
+    expect(document.activeElement).toBe(input);
+    expect(forward).toHaveBeenCalledTimes(2);
+  });
+
   it.each([
     ["F5", {}], ["F5", { ctrlKey: true }], ["BrowserRefresh", {}],
     ["r", { ctrlKey: true }], ["R", { ctrlKey: true, shiftKey: true }],

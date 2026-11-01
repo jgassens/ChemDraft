@@ -77,6 +77,7 @@ export function installPluginPanelInputFocus(
   let revision = 0;
   let disposed = false;
   let pending = Promise.resolve();
+  const consumedKeys = new Set<string>();
   const setFocused = (next: boolean): void => {
     focused = next;
     const generation = revision = ++nextGeneration;
@@ -105,6 +106,7 @@ export function installPluginPanelInputFocus(
     if (active && shell.contains(active)) active.blur();
   };
   const clearInteraction = (): void => {
+    consumedKeys.clear();
     blurControl();
     document.getSelection()?.removeAllRanges();
     for (const listener of deactivationListeners) listener();
@@ -160,7 +162,8 @@ export function installPluginPanelInputFocus(
       return false;
     });
   };
-  const consumedKeys = new Set<string>();
+  const clearConsumedKeys = (): void => { consumedKeys.clear(); };
+  const visibilityChange = (): void => { if (document.hidden) clearConsumedKeys(); };
   const keyUp = (event: KeyboardEvent): void => { consumedKeys.delete(event.code); };
   const consumeKey = (event: KeyboardEvent): void => {
     consumedKeys.add(event.code);
@@ -235,6 +238,10 @@ export function installPluginPanelInputFocus(
   shell.addEventListener("pointerdown", pointerDown, true);
   shell.addEventListener("keydown", keyDown);
   window.addEventListener("keyup", keyUp, true);
+  window.addEventListener("blur", clearConsumedKeys);
+  window.addEventListener("pagehide", clearConsumedKeys);
+  window.addEventListener("unload", clearConsumedKeys);
+  document.addEventListener("visibilitychange", visibilityChange);
   let unsubscribeFocus: (() => void) | undefined;
   const subscribed = subscribeFocus(nativeFocus).then((unsubscribe) => {
     if (disposed) unsubscribe();
@@ -248,6 +255,11 @@ export function installPluginPanelInputFocus(
     shell.removeEventListener("pointerdown", pointerDown, true);
     shell.removeEventListener("keydown", keyDown);
     window.removeEventListener("keyup", keyUp, true);
+    window.removeEventListener("blur", clearConsumedKeys);
+    window.removeEventListener("pagehide", clearConsumedKeys);
+    window.removeEventListener("unload", clearConsumedKeys);
+    document.removeEventListener("visibilitychange", visibilityChange);
+    clearConsumedKeys();
     if (focused) setFocused(false);
   };
 }
