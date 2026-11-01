@@ -36,8 +36,11 @@ import {
   planBondExtension,
   bondGrowthAngleDegrees,
   linearBondGrowthAimDegrees,
-  ringAttachmentFallbackPoints,
+  ringAttachmentAngleMetrics,
+  ringAttachmentCenterAngle,
   ringAttachmentIsClear,
+  ringAttachmentRotationAims,
+  selectRingAttachmentRotation,
   planNativeArtVisual,
   planPageSvgRender,
   planMoleculeAtomLabels,
@@ -81,18 +84,107 @@ describe("native subscript ink", () => {
 });
 
 describe("layout-engine molecule growth planning", () => {
-  it("orders ring fallbacks by widest gap, chain aim, then other directions before narrow gaps", () => {
-    const points = ringAttachmentFallbackPoints({
-      atoms: [{ id: "source", x: 783, y: 300 }, { id: "left", x: 761, y: 300 }, { id: "up", x: 783, y: 278 }],
-      bonds: [{ fromAtomId: "source", toAtomId: "left" }, { fromAtomId: "source", toAtomId: "up" }],
-      sourceAtomId: "source", bondLength: 22, targetBondAngleDegrees: 120,
-      pageBounds: baseInput.pageBounds,
-      growthDirection: { x: 0.5, y: Math.sqrt(3) / 2 }
+  it("turns a ring about its atom from the preferred orientation in 15 degree steps", () => {
+    const aims = ringAttachmentRotationAims({ sourceAtom: { x: 100, y: 50 }, centerAngle: Math.PI / 6, aimDistance: 44 });
+    expect(aims.map(({ rotationDegrees }) => rotationDegrees)).toEqual([
+      0, -15, 15, -30, 30, -45, 45, -60, 60, -75, 75, -90, 90, -105, 105, -120, 120, -135, 135, -150, 150, -165, 165, 180
+    ]);
+    for (const { rotationDegrees, point } of aims) {
+      expect(Math.hypot(point.x - 100, point.y - 50)).toBeCloseTo(44, 8);
+      const aimDegrees = Math.atan2(point.y - 50, point.x - 100) * 180 / Math.PI;
+      expect(((aimDegrees - 30 - rotationDegrees) % 360 + 540) % 360 - 180).toBeCloseTo(0, 6);
+    }
+  });
+
+  it("measures the ring centre direction from the atoms added at the source", () => {
+    expect(ringAttachmentCenterAngle({ x: 0, y: 0 }, [{ x: 10, y: 10 }, { x: 10, y: -10 }, { x: 30, y: 0 }]))
+      .toBeCloseTo(0, 8);
+    expect(ringAttachmentCenterAngle({ x: 0, y: 0 }, [])).toBeUndefined();
+  });
+
+  describe("ring attachment angles", () => {
+    // Existing bond runs left from the source; a ring bond pair opens `half` degrees either side of `centre`.
+    const source = { id: "source", x: 0, y: 0 };
+    const ringBondsAt = (centre: number, half: number) => [centre - half, centre + half].map((degrees, index) => ({
+      atom: { id: `r${index}`, x: 22 * Math.cos(degrees * Math.PI / 180), y: 22 * Math.sin(degrees * Math.PI / 180) },
+      bond: { fromAtomId: "source", toAtomId: `r${index}` }
+    }));
+    const metricsFor = (centre: number, half = 60) => ringAttachmentAngleMetrics({
+      atoms: [source, { id: "parent", x: -22, y: 0 }], bonds: [{ fromAtomId: "source", toAtomId: "parent" }],
+      addedAtoms: ringBondsAt(centre, half).map(({ atom }) => atom),
+      addedBonds: ringBondsAt(centre, half).map(({ bond }) => bond),
+      sourceAtomId: "source"
+    })!;
+
+    it("is symmetric with every angle 120 degrees when the old bond bisects the exterior", () => {
+      const metrics = metricsFor(0);
+      expect(metrics.minAngleDegrees).toBeCloseTo(120, 6);
+      expect(metrics.asymmetryDegrees).toBeCloseTo(0, 6);
     });
-    const angles = points.map((point) => Math.atan2(point.y - 300, point.x - 783) * 180 / Math.PI);
-    expect(angles[0]).toBeCloseTo(45, 6);
-    expect(angles[1]).toBeCloseTo(60, 6);
-    expect(angles.findIndex((angle) => Math.abs(angle + 135) < 1e-6)).toBeGreaterThan(1);
+
+    it("reports the 60/120/180 layout of a ring turned 60 degrees", () => {
+      const metrics = metricsFor(60);
+      expect(metrics.minAngleDegrees).toBeCloseTo(60, 6);
+      expect(metrics.asymmetryDegrees).toBeCloseTo(120, 6);
+    });
+
+    it("measures across every existing bond", () => {
+      const metrics = ringAttachmentAngleMetrics({
+        atoms: [source, { id: "parent", x: -22, y: 0 }, { id: "up", x: 0, y: -22 }],
+        bonds: [{ fromAtomId: "source", toAtomId: "parent" }, { fromAtomId: "source", toAtomId: "up" }],
+        addedAtoms: ringBondsAt(45, 60).map(({ atom }) => atom),
+        addedBonds: ringBondsAt(45, 60).map(({ bond }) => bond),
+        sourceAtomId: "source"
+      })!;
+      // Ring bonds at -15 and 105 degrees: 15 to the old bond straight up (-90), the least of all four.
+      expect(metrics.minAngleDegrees).toBeCloseTo(75, 6);
+    });
+
+    it("has no angular constraint on a bare atom and declines a ring without two bonds there", () => {
+      const ring = ringBondsAt(0, 60);
+      expect(ringAttachmentAngleMetrics({
+        atoms: [source], bonds: [], addedAtoms: ring.map(({ atom }) => atom),
+        addedBonds: ring.map(({ bond }) => bond), sourceAtomId: "source"
+      })).toEqual({ minAngleDegrees: 180, asymmetryDegrees: 0 });
+      expect(ringAttachmentAngleMetrics({
+        atoms: [source], bonds: [], addedAtoms: [ring[0]!.atom], addedBonds: [ring[0]!.bond], sourceAtomId: "source"
+      })).toBeUndefined();
+    });
+  });
+
+  describe("choosing a ring rotation", () => {
+    const turn = (rotationDegrees: number, minAngleDegrees: number, asymmetryDegrees = 0) =>
+      ({ rotationDegrees, minAngleDegrees, asymmetryDegrees });
+
+    it("takes the most symmetric rotation among those reaching 90 degrees", () => {
+      expect(selectRingAttachmentRotation([turn(15, 120, 30), turn(-45, 95, 10), turn(30, 60, 0)])).toBe(1);
+    });
+
+    it("breaks a tie by the smaller turn, then the negative direction", () => {
+      expect(selectRingAttachmentRotation([turn(60, 100, 20), turn(30, 100, 20)])).toBe(1);
+      expect(selectRingAttachmentRotation([turn(30, 100, 20), turn(-30, 100, 20)])).toBe(1);
+    });
+
+    it("accepts exactly 90 degrees", () => {
+      expect(selectRingAttachmentRotation([turn(-30, 90, 120)])).toBe(0);
+    });
+
+    it("accepts an exact 90-degree turn that rounded vertices measure a few thousandths short", () => {
+      // Source (780,300), neighbour (800.801,307.162): the -30 turn measures 89.99915.
+      expect(selectRingAttachmentRotation([turn(-30, 89.99915, 120)])).toBe(0);
+      expect(selectRingAttachmentRotation([turn(-30, 89.9, 120)])).toBeUndefined();
+    });
+
+    it("treats asymmetries within rounding noise as a tie", () => {
+      expect(selectRingAttachmentRotation([turn(30, 100, 20.004), turn(-30, 100, 20)])).toBe(1);
+      expect(selectRingAttachmentRotation([turn(-30, 100, 20.004), turn(30, 100, 20)])).toBe(0);
+    });
+
+    it("refuses when no rotation reaches 90 degrees, however wide the best one is", () => {
+      expect(selectRingAttachmentRotation([turn(90, 89, 120), turn(75, 51, 100), turn(105, 15, 140)])).toBeUndefined();
+      expect(selectRingAttachmentRotation([turn(120, 0, 180)])).toBeUndefined();
+      expect(selectRingAttachmentRotation([])).toBeUndefined();
+    });
   });
 
   const ringAtoms = [

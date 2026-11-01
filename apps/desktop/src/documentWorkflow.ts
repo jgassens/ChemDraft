@@ -157,8 +157,11 @@ import {
   moleculeFillCycleKeyBondIds,
   nativeMoleculeRings,
   planBondExtension,
-  ringAttachmentFallbackPoints,
+  ringAttachmentAngleMetrics,
+  ringAttachmentCenterAngle,
   ringAttachmentIsClear,
+  ringAttachmentRotationAims,
+  selectRingAttachmentRotation,
   layoutPointsFitBounds,
   bondGrowthAngleDegrees,
   linearBondGrowthAimDegrees,
@@ -3753,29 +3756,31 @@ function attachNativeTemplateRingToAtomOnPage(
   );
   if (fits(preferred)) return { molecule: preferred };
 
-  const growthDirection = nativeBondGrowthPlanForAtom(molecule, atomId, page.width, page.height)?.direction;
-  const candidates = ringAttachmentFallbackPoints({
-    atoms: molecule.atoms,
-    bonds: molecule.bonds,
-    sourceAtomId: atomId,
-    bondLength: nativeTemplateBondLength(molecule),
-    pageBounds,
-    targetBondAngleDegrees: nativeDrawingStyleFromObjectStyle(molecule.style).chainAngleDegrees,
-    growthDirection
-  });
+  const sourceAtom = molecule.atoms.find((atom) => atom.id === atomId);
+  const centerAngle = sourceAtom && ringAttachmentCenterAngle(
+    sourceAtom, preferred.atoms.filter((atom) => !existingAtomIds.has(atom.id))
+  );
+  if (!sourceAtom || centerAngle === undefined) return { refusal: "sprout-page-edge" };
+  const bondLength = nativeTemplateBondLength(molecule);
   const existingBondIds = new Set(molecule.bonds.map((bond) => bond.id));
-  for (const candidatePoint of candidates) {
-    const candidate = attachNativeTemplateRingToAtom(molecule, atomId, candidatePoint, templateId);
-    if (candidate && fits(candidate) && ringAttachmentIsClear({
-      atoms: molecule.atoms,
-      bonds: molecule.bonds,
-      addedAtoms: candidate.atoms.filter((atom) => !existingAtomIds.has(atom.id)),
-      addedBonds: candidate.bonds.filter((bond) => !existingBondIds.has(bond.id)),
-      sourceAtomId: atomId,
-      bondLength: nativeTemplateBondLength(molecule)
-    })) return { molecule: candidate };
-  }
-  return { refusal: "sprout-page-edge" };
+  // Turn the ring about the atom; keep each turn that fits the page and is clear of the drawing.
+  const turns = ringAttachmentRotationAims({ sourceAtom, centerAngle, aimDistance: bondLength * 2 })
+    .flatMap(({ rotationDegrees, point: aim }) => {
+      const candidate = attachNativeTemplateRingToAtom(molecule, atomId, aim, templateId);
+      if (!candidate || !fits(candidate)) return [];
+      const layout = {
+        atoms: molecule.atoms,
+        bonds: molecule.bonds,
+        addedAtoms: candidate.atoms.filter((atom) => !existingAtomIds.has(atom.id)),
+        addedBonds: candidate.bonds.filter((bond) => !existingBondIds.has(bond.id)),
+        sourceAtomId: atomId
+      };
+      const metrics = ringAttachmentIsClear({ ...layout, bondLength })
+        ? ringAttachmentAngleMetrics(layout) : undefined;
+      return metrics ? [{ candidate, rotationDegrees, ...metrics }] : [];
+    });
+  const chosen = selectRingAttachmentRotation(turns);
+  return chosen === undefined ? { refusal: "sprout-page-edge" } : { molecule: turns[chosen]!.candidate };
 }
 
 function attachNativeTemplateRingToAtom(

@@ -185,26 +185,17 @@ describe.each(["macos", "windows"] as const)("placement pointer handlers on %s",
     } });
   }
 
-  it.each([
-    ["3", 7, "C7H8"], ["6", 7, "C7H14"], ["7", 6, "C6H12"]
-  ] as const)("hover hotkey %s fits its entire ring at the page edge in one undo step", async (key, atomCount, formula) => {
+  it.each(["3", "6", "7"] as const)("hover hotkey %s refuses a ring 33 units from the page edge, with no undo entry", async (key) => {
+    // No turn of the ring fits the page with every angle at the source at 90 degrees or more.
     await mount("tool.bond", edgeRingSeed());
-    const before = molecules(current());
-    const source = before[0].atoms[1];
-    const wrapper = container.querySelector<HTMLElement>(`[data-object-id="${before[0].id}"]`)!;
+    const before = current();
+    const source = molecules(before)[0].atoms[1];
+    const wrapper = container.querySelector<HTMLElement>(`[data-object-id="${molecules(before)[0].id}"]`)!;
     await pointer("pointermove", source, wrapper);
     await act(async () => window.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })));
-    const after = molecules(current())[0];
-    expect(after.atoms).toHaveLength(atomCount);
-    expect(after.chemistry?.formula).toBe(formula);
-    expect(after.atoms.slice(0, 2)).toEqual(before[0].atoms);
-    for (const atom of after.atoms) {
-      expect(atom.x).toBeGreaterThanOrEqual(0);
-      expect(atom.x).toBeLessThanOrEqual(current().pages[0].width);
-      expect(atom.y).toBeGreaterThanOrEqual(0);
-      expect(atom.y).toBeLessThanOrEqual(current().pages[0].height);
-    }
-    await undoOnce(before);
+    expect(current()).toEqual(before);
+    expect(container.querySelector("[data-status-message]")?.textContent).toContain("the page edge blocks every direction");
+    expect(container.querySelector('[data-can-undo="true"]')).toBeNull();
   });
 
   it.each(["hotkey", "tool click"] as const)("reports the page-edge refusal for a blocked ring %s, without an undo entry", async (method) => {

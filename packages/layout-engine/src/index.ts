@@ -407,50 +407,111 @@ export function planBondExtension(input: BondExtensionPlanningInput): BondExtens
   return undefined;
 }
 
+/** Rotation step of the ring-attachment search, in degrees. */
+const RING_ATTACHMENT_ROTATION_STEP_DEGREES = 15;
+/** A turned ring is accepted only if every angle at the attachment atom between an existing bond and a new ring bond reaches this. */
+const RING_ATTACHMENT_PREFERRED_MIN_ANGLE_DEGREES = 90;
+
+/** Direction (radians) from the attachment atom to the centroid of the ring atoms added there. */
+export function ringAttachmentCenterAngle(
+  sourceAtom: LayoutPoint,
+  addedAtoms: readonly LayoutPoint[]
+): number | undefined {
+  if (addedAtoms.length === 0) return undefined;
+  const centroid = {
+    x: addedAtoms.reduce((sum, atom) => sum + atom.x, 0) / addedAtoms.length,
+    y: addedAtoms.reduce((sum, atom) => sum + atom.y, 0) / addedAtoms.length
+  };
+  return angleBetweenPoints(sourceAtom, centroid);
+}
+
 /**
- * Alternate ring-centre aims after an attachment's preferred aim does not fit the page.
- * Try the widest open-angle bisector, then the former chain-growth aim and the remaining
- * scored growth directions before narrower gaps. These are aims, never clamped ring vertices.
+ * Aim points that turn a ring about its attachment atom: the preferred orientation first, then
+ * 15 degrees to either side in growing steps (negative turn before positive) up to a half turn.
+ * Each aim lies `aimDistance` from the atom along the ring-centre direction.
  */
-export function ringAttachmentFallbackPoints(input: {
+export function ringAttachmentRotationAims(input: {
+  sourceAtom: LayoutPoint;
+  centerAngle: number;
+  aimDistance: number;
+}): Array<{ rotationDegrees: number; point: LayoutPoint }> {
+  const steps = Math.round(180 / RING_ATTACHMENT_ROTATION_STEP_DEGREES);
+  const rotations = [0];
+  for (let step = 1; step < steps; step += 1) {
+    rotations.push(-step * RING_ATTACHMENT_ROTATION_STEP_DEGREES, step * RING_ATTACHMENT_ROTATION_STEP_DEGREES);
+  }
+  rotations.push(180);
+  return rotations.map((rotationDegrees) => {
+    const angle = input.centerAngle + rotationDegrees * Math.PI / 180;
+    return {
+      rotationDegrees,
+      point: {
+        x: input.sourceAtom.x + Math.cos(angle) * input.aimDistance,
+        y: input.sourceAtom.y + Math.sin(angle) * input.aimDistance
+      }
+    };
+  });
+}
+
+/**
+ * How a ring bonded at `sourceAtomId` sits against the bonds already there. `minAngleDegrees` is
+ * the smallest angle between any existing bond and either of the ring's two bonds at the atom;
+ * `asymmetryDegrees` totals, over the existing bonds, how unequally that bond splits the ring
+ * bonds (0 when each existing bond bisects the ring's exterior angle). Undefined unless the ring
+ * has exactly two bonds at the atom.
+ */
+export function ringAttachmentAngleMetrics(input: {
   atoms: readonly MoleculeLayoutAtom[];
   bonds: readonly MoleculeLayoutBond[];
+  addedAtoms: readonly MoleculeLayoutAtom[];
+  addedBonds: readonly MoleculeLayoutBond[];
   sourceAtomId: string;
-  bondLength: number;
-  pageBounds: LayoutBounds;
-  targetBondAngleDegrees: number;
-  growthDirection?: LayoutPoint;
-}): LayoutPoint[] {
+}): { minAngleDegrees: number; asymmetryDegrees: number } | undefined {
   const sourceAtom = input.atoms.find((atom) => atom.id === input.sourceAtomId);
-  if (!sourceAtom) return [];
-  const neighbors = bondedNeighbors(input.atoms, input.bonds, sourceAtom.id);
-  const angles = neighbors.map((neighbor) => normalizeAngle(angleBetweenPoints(sourceAtom, neighbor)))
-    .sort((left, right) => left - right);
-  const gaps = angles.map((angle, index) => {
-    const next = angles[(index + 1) % angles.length]!;
-    const gap = (index === angles.length - 1 ? next + Math.PI * 2 : next) - angle;
-    return { gap, midpoint: normalizeAngle(angle + gap / 2) };
-  }).sort((left, right) => right.gap - left.gap || left.midpoint - right.midpoint);
-  const directions = extensionDirections({
-    ...input,
-    sourceAtom,
-    neighbors,
-    clickPoint: sourceAtom,
-    maxBondsPerAtom: Number.POSITIVE_INFINITY,
-    collisionRadius: input.bondLength * 0.45
-  });
-  const candidates = [
-    ...gaps.filter(({ gap }) => gap === gaps[0]?.gap).map(({ midpoint }) => midpoint),
-    ...(input.growthDirection ? [angleFromDirection(input.growthDirection)] : []),
-    ...directions.map(angleFromDirection),
-    ...gaps.map(({ midpoint }) => midpoint),
-    // A bare atom has no angular gaps; allow its ring to face each page direction.
-    ...(neighbors.length === 0 ? [-Math.PI / 2, 0, Math.PI / 2, Math.PI] : [])
-  ];
-  return uniqueAngles(candidates).map((angle) => ({
-    x: sourceAtom.x + Math.cos(angle) * input.bondLength,
-    y: sourceAtom.y + Math.sin(angle) * input.bondLength
-  }));
+  if (!sourceAtom) return undefined;
+  const atomById = new Map([...input.atoms, ...input.addedAtoms].map((atom) => [atom.id, atom]));
+  const ringNeighbors = bondedNeighbors(
+    [...input.atoms, ...input.addedAtoms], input.addedBonds, input.sourceAtomId
+  );
+  if (ringNeighbors.length !== 2) return undefined;
+  const existingNeighbors = bondedNeighbors(input.atoms, input.bonds, input.sourceAtomId)
+    .map((neighbor) => atomById.get(neighbor.id) ?? neighbor);
+  const separation = (left: LayoutPoint, right: LayoutPoint) => {
+    const difference = Math.abs(angleBetweenPoints(sourceAtom, left) - angleBetweenPoints(sourceAtom, right));
+    return Math.min(difference, Math.PI * 2 - difference) * 180 / Math.PI;
+  };
+  let minAngleDegrees = 180;
+  let asymmetryDegrees = 0;
+  for (const existing of existingNeighbors) {
+    const first = separation(existing, ringNeighbors[0]!);
+    const second = separation(existing, ringNeighbors[1]!);
+    minAngleDegrees = Math.min(minAngleDegrees, first, second);
+    asymmetryDegrees += Math.abs(first - second);
+  }
+  return { minAngleDegrees, asymmetryDegrees };
+}
+
+/**
+ * Pick among rotations that already fit the page and are clear. Only those whose every attachment
+ * angle reaches 90 degrees qualify; of them take the one closest to the symmetric placement (then
+ * the smallest turn from the preferred orientation, a negative turn first). Returns an index into
+ * `candidates`, or undefined when none qualifies.
+ */
+export function selectRingAttachmentRotation(
+  candidates: ReadonlyArray<{ rotationDegrees: number; minAngleDegrees: number; asymmetryDegrees: number }>
+): number | undefined {
+  // Vertices are rounded to 0.001, so an exact 90-degree turn measures a few thousandths short.
+  const epsilon = 0.01;
+  return candidates.map((_, index) => index)
+    .filter((index) => candidates[index]!.minAngleDegrees >= RING_ATTACHMENT_PREFERRED_MIN_ANGLE_DEGREES - epsilon)
+    .sort((left, right) => {
+      const a = candidates[left]!;
+      const b = candidates[right]!;
+      return (Math.abs(a.asymmetryDegrees - b.asymmetryDegrees) > epsilon
+          ? a.asymmetryDegrees - b.asymmetryDegrees : 0)
+        || Math.abs(a.rotationDegrees) - Math.abs(b.rotationDegrees)
+        || a.rotationDegrees - b.rotationDegrees;
+    })[0];
 }
 
 /** Whole-geometry page check: attachments must fit without clamping or distorting any vertex. */
