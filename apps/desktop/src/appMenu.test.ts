@@ -61,11 +61,12 @@ describe("app menu model", () => {
   it.each(["MacIntel", "Win32"])("shows the counted plugin update notice only for available offers on %s", platform => {
     vi.stubGlobal("navigator", { platform });
     try {
+      const context = { ...EMPTY_CONTEXT, platform: platform === "MacIntel" ? "macos" as const : "windows" as const };
       for (const count of [undefined, 0, -1]) {
-        const model = buildAppMenuModel({ ...EMPTY_CONTEXT, availablePluginUpdateCount: count });
+        const model = buildAppMenuModel({ ...context, availablePluginUpdateCount: count });
         expect(flattenAppMenuCommands(model).some(item => item.commandId === PLUGIN_UPDATES_COMMAND_ID)).toBe(false);
       }
-      const model = buildAppMenuModel({ ...EMPTY_CONTEXT, availablePluginUpdateCount: 2 });
+      const model = buildAppMenuModel({ ...context, availablePluginUpdateCount: 2 });
       const plugins = model.find(section => section.id === "plugins")!;
       const notice = flattenAppMenuCommands([plugins]).filter(item => item.commandId === PLUGIN_UPDATES_COMMAND_ID);
       expect(PLUGIN_UPDATES_COMMAND_ID).toBe("plugins.showUpdates");
@@ -95,7 +96,8 @@ describe("app menu model", () => {
   it.each(["MacIntel", "Win32"])("places Insert > Templates… after Edit on %s", platform => {
     vi.stubGlobal("navigator", { platform });
     try {
-      const model = buildAppMenuModel(EMPTY_CONTEXT);
+      const context = { ...EMPTY_CONTEXT, platform: platform === "MacIntel" ? "macos" as const : "windows" as const };
+      const model = buildAppMenuModel(context);
       const index = model.findIndex(section => section.id === "edit");
       expect(model.slice(index, index + 3).map(section => section.id)).toEqual(["edit", "insert", "view"]);
       expect(model[index + 1]!.items).toEqual([expect.objectContaining({ commandId: "template.insertDialog", label: "Templates…" })]);
@@ -128,7 +130,8 @@ describe("app menu model", () => {
   it.each(["MacIntel", "Win32"])("omits kept-drawing actions from the menu on %s", (platform) => {
     vi.stubGlobal("navigator", { platform });
     try {
-      const commands = flattenAppMenuCommands(buildAppMenuModel(EMPTY_CONTEXT));
+      const context = { ...EMPTY_CONTEXT, platform: platform === "MacIntel" ? "macos" as const : "windows" as const };
+      const commands = flattenAppMenuCommands(buildAppMenuModel(context));
       for (const id of ["document.saveUnrestoredTabs", "document.discardUnrestoredTabs"]) {
         expect(commands.some(command => command.commandId === id)).toBe(false);
         expect(parseNativeMenuCommandIds()).not.toContain(id);
