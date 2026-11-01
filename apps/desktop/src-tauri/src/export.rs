@@ -8,6 +8,7 @@ use crate::fonts::shared_fontdb;
 const DEFAULT_RASTER_SCALE: f64 = 1.0;
 const DEFAULT_MAX_DIMENSION_PX: u32 = 8192;
 const DEFAULT_JPEG_QUALITY: u8 = 90;
+const CSS_PX_PER_INCH: f64 = 96.0;
 // Bound parser input as well as output pixels. A permitted 25 MiB image becomes 33.3 MiB
 // when base64-embedded (PluginImageMaxBytes in plugin-api). 128 MiB accommodates two such
 // images plus 500 molecules at the largest checked-in SVG fixture's size (82,007 bytes,
@@ -148,15 +149,23 @@ fn rasterize_svg_impl(request: RasterExportRequest) -> Result<RasterExportRespon
     let transform = tiny_skia::Transform::from_scale(scale_x, scale_y);
     resvg::render(&tree, transform, &mut pixmap.as_mut());
 
-    let (mut bytes, encode_warnings) =
-        encode_raster(&pixmap, request.format, background, request.jpeg_quality)?;
+    // scale_x/scale_y are the ACTUAL raster-px-per-source-px ratio after any max-dimension
+    // clamping above, so densities derived from it always match the bitmap really produced —
+    // never a nominal request that clamping silently made too large.
+    let applied_scale = f64::from((scale_x + scale_y) / 2.0);
+    // TIFF always declares a density (a missing one reads as "1 dpi" in Word and Preview). Without
+    // a caller-supplied css_px_per_inch it assumes 96, the CSS convention every source SVG uses.
+    let tiff_pixels_per_inch = applied_scale * request.css_px_per_inch.unwrap_or(CSS_PX_PER_INCH);
+    let (mut bytes, encode_warnings) = encode_raster(
+        &pixmap,
+        request.format,
+        background,
+        request.jpeg_quality,
+        tiff_pixels_per_inch,
+    )?;
     warnings.extend(encode_warnings);
     if request.format == RasterExportFormat::Png {
         if let Some(css_px_per_inch) = request.css_px_per_inch {
-            // scale_x/scale_y are the ACTUAL raster-px-per-source-px ratio after any
-            // max-dimension clamping above, so this always matches the bitmap really produced —
-            // never a nominal request that clamping silently made too large.
-            let applied_scale = f64::from((scale_x + scale_y) / 2.0);
             bytes = png_with_physical_density(bytes, applied_scale * css_px_per_inch)?;
         }
     }
@@ -307,6 +316,7 @@ fn encode_raster(
     format: RasterExportFormat,
     background: Option<[u8; 3]>,
     jpeg_quality: Option<u8>,
+    tiff_pixels_per_inch: f64,
 ) -> Result<(Vec<u8>, Vec<RasterExportWarning>), String> {
     let width = pixmap.width();
     let height = pixmap.height();
@@ -360,19 +370,44 @@ fn encode_raster(
                 .map_err(|error| format!("Could not encode GIF export: {error}"))?;
         }
         RasterExportFormat::Tiff => {
-            let image = image::RgbImage::from_raw(
-                width,
-                height,
-                flatten_to_rgb(pixmap.data(), background.unwrap_or([255, 255, 255])),
-            )
-            .ok_or("Could not prepare TIFF raster export data.")?;
-            DynamicImage::ImageRgb8(image)
-                .write_to(&mut cursor, ImageFormat::Tiff)
-                .map_err(|error| format!("Could not encode TIFF export: {error}"))?;
+            let rgb = flatten_to_rgb(pixmap.data(), background.unwrap_or([255, 255, 255]));
+            let resolution = tiff_resolution(tiff_pixels_per_inch)?;
+            let encode_error =
+                |error: tiff::TiffError| format!("Could not encode TIFF export: {error}");
+            // Uncompressed RGB8 with no predictor: the same layout `image` wrote before.
+            let mut encoder = tiff::encoder::TiffEncoder::new(&mut cursor).map_err(encode_error)?;
+            let mut image = encoder
+                .new_image::<tiff::encoder::colortype::RGB8>(width, height)
+                .map_err(encode_error)?;
+            image.resolution(tiff::tags::ResolutionUnit::Inch, resolution);
+            image.write_data(&rgb).map_err(encode_error)?;
         }
     }
 
     Ok((cursor.into_inner(), warnings))
+}
+
+/// TIFF resolution tags are rationals; hundredths of a pixel per inch keeps fractional clamped
+/// densities exact enough while integral ones reduce to `n/1` (96 -> 96/1, 288 -> 288/1).
+fn tiff_resolution(pixels_per_inch: f64) -> Result<tiff::encoder::Rational, String> {
+    const DENOMINATOR: u32 = 100;
+    let hundredths = (pixels_per_inch * f64::from(DENOMINATOR)).round();
+    if !pixels_per_inch.is_finite() || hundredths < 1.0 || hundredths > f64::from(u32::MAX) {
+        return Err("TIFF export density must be a positive finite number.".to_string());
+    }
+    let numerator = hundredths as u32;
+    let divisor = greatest_common_divisor(numerator, DENOMINATOR);
+    Ok(tiff::encoder::Rational {
+        n: numerator / divisor,
+        d: DENOMINATOR / divisor,
+    })
+}
+
+fn greatest_common_divisor(mut a: u32, mut b: u32) -> u32 {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
 }
 
 fn straight_rgba(data: &[u8]) -> Vec<u8> {
@@ -988,6 +1023,152 @@ mod tests {
         // 192dpi / 0.0254 = 7559 px/meter (rounded) — NOT 100*96/0.0254 = 377953, which is what
         // stamping the unclamped nominal request would have produced.
         assert_eq!(pixels_per_meter, 7559);
+    }
+
+    fn tiff_resolution_tags(bytes: &[u8]) -> ((u32, u32), (u32, u32), u32) {
+        use tiff::decoder::ifd::Value;
+        use tiff::tags::Tag;
+
+        let mut decoder = tiff::decoder::Decoder::new(Cursor::new(bytes)).expect("TIFF header");
+        let mut rational = |tag| match decoder.get_tag(tag).expect("resolution tag") {
+            Value::Rational(numerator, denominator) => (numerator, denominator),
+            other => panic!("resolution tag should be a rational, got {other:?}"),
+        };
+        let x = rational(Tag::XResolution);
+        let y = rational(Tag::YResolution);
+        let unit = decoder
+            .get_tag_u32(Tag::ResolutionUnit)
+            .expect("resolution unit tag");
+        (x, y, unit)
+    }
+
+    #[test]
+    fn tiff_export_at_1x_declares_96_dpi_in_inches() {
+        let response = rasterize_svg_impl(RasterExportRequest {
+            scale: Some(1.0),
+            css_px_per_inch: Some(96.0),
+            ..request(RasterExportFormat::Tiff)
+        })
+        .expect("TIFF export at 1x should encode");
+        assert_eq!((response.width, response.height), (64, 32));
+        assert_eq!(tiff_resolution_tags(&response.bytes), ((96, 1), (96, 1), 2));
+    }
+
+    #[test]
+    fn tiff_export_at_3x_declares_288_dpi_in_inches() {
+        let response = rasterize_svg_impl(RasterExportRequest {
+            scale: Some(3.0),
+            css_px_per_inch: Some(96.0),
+            ..request(RasterExportFormat::Tiff)
+        })
+        .expect("TIFF export at 3x should encode");
+        assert_eq!((response.width, response.height), (192, 96));
+        assert_eq!(
+            tiff_resolution_tags(&response.bytes),
+            ((288, 1), (288, 1), 2)
+        );
+    }
+
+    #[test]
+    fn tiff_density_reflects_the_scale_actually_applied_after_clamping() {
+        // Scale 100 clamped to 128px wide is really 2x, so 192 dpi, not 100 * 96.
+        let response = rasterize_svg_impl(RasterExportRequest {
+            scale: Some(100.0),
+            max_dimension_px: Some(128),
+            css_px_per_inch: Some(96.0),
+            ..request(RasterExportFormat::Tiff)
+        })
+        .expect("clamped TIFF export should encode");
+        assert_eq!((response.width, response.height), (128, 64));
+        assert_eq!(
+            tiff_resolution_tags(&response.bytes),
+            ((192, 1), (192, 1), 2)
+        );
+    }
+
+    #[test]
+    fn tiff_export_without_css_density_assumes_96_css_px_per_inch() {
+        let response = rasterize_svg_impl(RasterExportRequest {
+            scale: Some(2.0),
+            ..request(RasterExportFormat::Tiff)
+        })
+        .expect("TIFF export without density should encode");
+        assert_eq!(
+            tiff_resolution_tags(&response.bytes),
+            ((192, 1), (192, 1), 2)
+        );
+    }
+
+    #[test]
+    fn tiff_resolution_keeps_fractional_densities_as_reduced_rationals() {
+        let half = tiff_resolution(96.5).expect("fractional density");
+        assert_eq!((half.n, half.d), (193, 2));
+        let quarter = tiff_resolution(100.25).expect("fractional density");
+        assert_eq!((quarter.n, quarter.d), (401, 4));
+        for invalid in [0.0, -1.0, f64::NAN, f64::INFINITY, 1.0e12] {
+            assert!(
+                tiff_resolution(invalid).is_err(),
+                "{invalid} must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn tiff_export_keeps_dimensions_and_rgb_pixels() {
+        let png = rasterize_svg_impl(RasterExportRequest {
+            scale: Some(2.0),
+            ..request(RasterExportFormat::Png)
+        })
+        .expect("PNG reference should encode");
+        let expected = image::load_from_memory(&png.bytes)
+            .expect("decode PNG reference")
+            .to_rgb8();
+
+        let response = rasterize_svg_impl(RasterExportRequest {
+            scale: Some(2.0),
+            css_px_per_inch: Some(96.0),
+            ..request(RasterExportFormat::Tiff)
+        })
+        .expect("TIFF export should encode");
+        assert_eq!((response.width, response.height), (128, 64));
+
+        let mut decoder =
+            tiff::decoder::Decoder::new(Cursor::new(&response.bytes)).expect("TIFF header");
+        assert_eq!(decoder.dimensions().expect("dimensions"), (128, 64));
+        assert_eq!(
+            decoder.colortype().expect("colour type"),
+            tiff::ColorType::RGB(8)
+        );
+        match decoder.read_image().expect("decode TIFF") {
+            tiff::decoder::DecodingResult::U8(pixels) => assert_eq!(pixels, expected.into_raw()),
+            _ => panic!("TIFF export should decode as 8-bit samples"),
+        }
+
+        // image's own decoder must still read the file.
+        let reread = image::load_from_memory(&response.bytes).expect("image decodes the TIFF");
+        assert_eq!((reread.width(), reread.height()), (128, 64));
+    }
+
+    #[test]
+    fn png_density_is_added_to_the_unchanged_png_encoding() {
+        let plain = rasterize_svg_impl(RasterExportRequest {
+            scale: Some(2.0),
+            ..request(RasterExportFormat::Png)
+        })
+        .expect("plain PNG should encode");
+        assert!(!plain.bytes.windows(4).any(|window| window == b"pHYs"));
+
+        let with_density = rasterize_svg_impl(RasterExportRequest {
+            scale: Some(2.0),
+            css_px_per_inch: Some(96.0),
+            ..request(RasterExportFormat::Png)
+        })
+        .expect("PNG with density should encode");
+        assert_eq!(
+            with_density.bytes,
+            png_with_physical_density(plain.bytes, 192.0).expect("add density"),
+            "the only PNG difference must be the pHYs chunk"
+        );
     }
 
     #[test]
