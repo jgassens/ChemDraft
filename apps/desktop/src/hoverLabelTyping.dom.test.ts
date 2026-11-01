@@ -3,9 +3,9 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { serializeDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { serializeDocument, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { MainWindow } from "./MainWindow";
-import { createPhase4Document, insertNativeTemplateMolecule, selectDocumentObjects } from "./documentWorkflow";
+import { createPhase4Document, insertNativeSingleBondMolecule, insertNativeTemplateMolecule, selectDocumentObjects } from "./documentWorkflow";
 import { saveKeybindingSettings } from "./keybindingSettings";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -15,6 +15,251 @@ class TestResizeObserver {
   unobserve() {}
   disconnect() {}
 }
+
+describe.each(["windows", "macos"] as const)("hover label target changes (%s shortcut platform)", platform => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let originalResizeObserver: typeof ResizeObserver | undefined;
+  let originalPlatform: PropertyDescriptor | undefined;
+
+  beforeEach(async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    saveKeybindingSettings({ scheme: "chemdraft" });
+    originalPlatform = Object.getOwnPropertyDescriptor(navigator, "platform");
+    Object.defineProperty(navigator, "platform", { value: platform === "windows" ? "Win32" : "MacIntel", configurable: true });
+    originalResizeObserver = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = TestResizeObserver as unknown as typeof ResizeObserver;
+    window.history.replaceState(null, "", "/?agentBridge=1");
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    const initial = insertNativeSingleBondMolecule(createPhase4Document("Hover target changes"), { x: 300, y: 300 });
+    await renderDocument(initial);
+  });
+
+  async function renderDocument(initial: ChemDraftDocument) {
+    await act(async () => {
+      root.render(createElement(MainWindow, {
+        initialActiveToolCommandId: "tool.bond",
+        initialCrosshairsVisible: false,
+        initialDocument: selectDocumentObjects(initial, initial.pages[0].id, []),
+        initialPaletteMode: "hidden",
+        initialRulersVisible: false,
+        nativePalette: true
+      }));
+    });
+    const rect = { x: 0, y: 0, left: 0, top: 0, right: 792, bottom: 612, width: 792, height: 612, toJSON: () => ({}) } as DOMRect;
+    for (const element of container.querySelectorAll<HTMLElement>(".page, .canvas-region")) {
+      element.getBoundingClientRect = () => rect;
+    }
+    await act(async () => { await Promise.resolve(); });
+  }
+
+  async function remountDocument(initial: ChemDraftDocument) {
+    await act(async () => { root.unmount(); });
+    root = createRoot(container);
+    await renderDocument(initial);
+  }
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+    window.history.replaceState(null, "", "/");
+    delete window.__CHEMDRAFT_AGENT__;
+    if (originalResizeObserver) globalThis.ResizeObserver = originalResizeObserver;
+    else Reflect.deleteProperty(globalThis, "ResizeObserver");
+    if (originalPlatform) Object.defineProperty(navigator, "platform", originalPlatform);
+    else Reflect.deleteProperty(navigator, "platform");
+  });
+
+  const snapshot = () => window.__CHEMDRAFT_AGENT__!.snapshot();
+  const molecule = (index = 0): MoleculeObject => {
+    const object = snapshot().document.pages[0].objects[index];
+    if (object?.type !== "molecule") throw new Error("Expected molecule");
+    return object;
+  };
+  const editor = () => container.querySelector<HTMLInputElement>('[data-atom-label-editor="true"]');
+
+  async function hoverPoint(point: { x: number; y: number }) {
+    await act(async () => {
+      const event = new MouseEvent("pointermove", { bubbles: true, clientX: point.x, clientY: point.y, buttons: 0 });
+      Object.defineProperties(event, { pointerId: { value: 7 }, pointerType: { value: "mouse" }, isPrimary: { value: true } });
+      container.querySelector(".page")!.dispatchEvent(event);
+    });
+  }
+
+  async function hoverAtom(index: number) {
+    const atom = molecule().atoms[index]!;
+    await hoverPoint(atom);
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "atom", atomId: atom.id });
+  }
+
+  async function hoverBond(objectIndex = 0) {
+    const current = molecule(objectIndex);
+    const bond = current.bonds[0]!;
+    const from = current.atoms.find(atom => atom.id === bond.fromAtomId)!;
+    const to = current.atoms.find(atom => atom.id === bond.toAtomId)!;
+    await hoverPoint({ x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 });
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond", bondId: bond.id });
+    return bond;
+  }
+
+  async function press(key: string, target: EventTarget = document.activeElement ?? document.body) {
+    await act(async () => {
+      target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+    });
+  }
+
+  async function hoverRelabel() {
+    await hoverAtom(0);
+    await press("o");
+    expect(molecule().atoms.map(atom => atom.element)).toEqual(["O", "C"]);
+    expect(editor()).toBeNull();
+    expect(document.activeElement).not.toBeInstanceOf(HTMLInputElement);
+  }
+
+  it.each(["o", "O"])("relabels the current atom for second key %s after moving from the first oxygen", async key => {
+    const before = molecule();
+    await hoverRelabel();
+    const oxygen = molecule().atoms[0]!;
+    await hoverAtom(1);
+    await press(key);
+    expect(molecule().atoms).toEqual([oxygen, { ...before.atoms[1], element: "O" }]);
+    expect(molecule().bonds).toEqual(before.bonds);
+    expect(molecule().chemistry?.formula).toBe("H2O2");
+    expect(editor()).toBeNull();
+  });
+
+  it.each([
+    ["N", "o", "O"],
+    ["C", "o", "O"],
+    ["S", "n", "N"],
+    ["S", "i", "I"],
+    ["c", "o", "O"],
+    ["N", "O", "O"],
+    ["S", "N", "N"]
+  ])("routes %s then %s onto a neighbour as %s instead of completing the first label", async (first, second, element) => {
+    const before = molecule();
+    await hoverAtom(0);
+    await press(first);
+    const labelled = molecule().atoms[0]!;
+    expect(labelled.element).toBe(first.toUpperCase());
+    await hoverAtom(1);
+    await press(second);
+    expect(molecule().atoms).toEqual([labelled, { ...before.atoms[1], element }]);
+    expect(molecule().bonds).toEqual(before.bonds);
+    expect(editor()).toBeNull();
+  });
+
+  describe.each(["empty canvas", "non-own bond"])("element completion over %s", target => {
+    it.each([
+      ["S", "i", "Si"],
+      ["C", "l", "Cl"],
+      ["B", "r", "Br"]
+    ])("continues %s with lowercase %s to form %s", async (first, second, symbol) => {
+      await remountDocument(insertNativeSingleBondMolecule(snapshot().document, { x: 450, y: 300 }));
+      const before = molecule();
+      const other = molecule(1);
+      await hoverAtom(0);
+      await press(first);
+      if (target === "non-own bond") {
+        await hoverBond(1);
+      } else {
+        await hoverPoint({ x: 650, y: 450 });
+        expect(snapshot().hoveredNativeTarget).toBeUndefined();
+      }
+      await press(second);
+      expect(editor()?.value).toBe(symbol);
+      await press("Enter");
+      expect(molecule().atoms).toEqual([{ ...before.atoms[0], element: symbol, labelLiteral: true }, before.atoms[1]]);
+      expect(molecule().bonds).toEqual(before.bonds);
+      expect(molecule(1)).toEqual(other);
+      expect(editor()).toBeNull();
+    });
+  });
+
+  it("dispatches digit 3 on the neighbouring atom just as without a prior hover relabel", async () => {
+    await hoverRelabel();
+    const before = snapshot().document;
+    const oxygen = molecule().atoms[0]!;
+    await hoverAtom(1);
+    await press("3");
+    expect(editor()).toBeNull();
+    expect(molecule().atoms[0]).toEqual(oxygen);
+    const after = molecule();
+    const activeTool = snapshot().activeToolCommandId;
+    // Remount the same chemistry to run the digit with no pending hover-label continuation.
+    await remountDocument(before);
+    await hoverAtom(1);
+    await press("3");
+    expect(editor()).toBeNull();
+    expect(molecule()).toEqual(after);
+    expect(snapshot().activeToolCommandId).toBe(activeTool);
+  });
+
+  it.each(["1", "3"])("dispatches bond digit %s on C-O just as without a prior hover relabel", async key => {
+    await hoverRelabel();
+    const before = snapshot().document;
+    await hoverBond();
+    await press(key);
+    expect(editor()).toBeNull();
+    const after = molecule();
+    await remountDocument(before);
+    await hoverBond();
+    await press(key);
+    expect(editor()).toBeNull();
+    expect(molecule()).toEqual(after);
+    if (key === "1") expect(molecule().bonds[0]!.order).toBe("single");
+  });
+
+  it.each(["2", "4", "5", "6", "7", "8"])("dispatches bond key %s after a hover relabel", async key => {
+    await hoverRelabel();
+    const before = molecule();
+    const bond = await hoverBond();
+    await press(key);
+    expect(editor()).toBeNull();
+    expect(molecule().atoms.slice(0, 2)).toEqual(before.atoms);
+    expect(molecule().atoms.filter(atom => atom.element === "O")).toHaveLength(1);
+    if (key === "2") {
+      expect(molecule().atoms).toHaveLength(2);
+      expect(molecule().bonds).toEqual([{ ...bond, order: "double" }]);
+    } else {
+      expect(molecule().atoms).toHaveLength(Number(key));
+      expect(molecule().bonds).toHaveLength(Number(key));
+      expect(molecule().bonds.find(candidate => candidate.id === bond.id)).toEqual(bond);
+      expect(molecule().bonds.every(candidate => candidate.order === "single")).toBe(true);
+      if (key === "5") expect(molecule().chemistry?.formula).toBe("C4H8O");
+    }
+  });
+
+  it("restores the pointer's bond target for a digit after relabelling its nearer atom without moving", async () => {
+    const bond = await hoverBond();
+    await press("o");
+    const before = molecule();
+    expect(before.atoms.filter(atom => atom.element === "O")).toHaveLength(1);
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "atom" });
+    await press("2");
+    expect(editor()).toBeNull();
+    expect(molecule().atoms).toEqual(before.atoms);
+    expect(molecule().bonds).toEqual([{ ...bond, order: "double" }]);
+  });
+
+  it("keeps canvas focus without mounting an editor after DOM pointer and keyboard events on the second atom (not the agent bridge)", async () => {
+    const canvas = container.querySelector<HTMLElement>(".canvas-region")!;
+    await act(async () => { canvas.focus(); });
+    expect(document.activeElement).toBe(canvas);
+    await hoverAtom(0);
+    await press("o", canvas);
+    expect(editor()).toBeNull();
+    await hoverAtom(1);
+    await press("o", canvas);
+    expect(molecule().atoms.map(atom => atom.element)).toEqual(["O", "O"]);
+    expect(editor()).toBeNull();
+    expect(document.activeElement).toBe(canvas);
+  });
+});
 
 describe("hover label typing", () => {
   let container: HTMLDivElement;
@@ -253,13 +498,14 @@ describe("hover label typing", () => {
     expect(molecule().bonds.find((candidate) => candidate.id === bond.id)!.order).toBe(bond.order);
   });
 
-  it("keeps a digit in the label, not the bond order, when drifting onto the atom's own bond", async () => {
+  it("dispatches a bond digit after drifting onto the labelled atom's own bond", async () => {
     await hover(0);
     await press("N");
     const { bond } = await hoverBond(0, 0.45);
     await press("2");
-    expect(editor()?.value).toBe("N2");
-    expect(molecule().bonds.find((candidate) => candidate.id === bond.id)!.order).toBe(bond.order);
+    expect(editor()).toBeNull();
+    expect(molecule().atoms[0]!.element).toBe("N");
+    expect(molecule().bonds.find((candidate) => candidate.id === bond.id)!.order).toBe("double");
     expectIntact();
   });
 
@@ -347,16 +593,21 @@ describe("hover label typing", () => {
     expect(molecule().bonds.find((candidate) => candidate.id === bond.id)!.order).toBe(bond.order);
   });
 
-  it("keeps a digit in the label after a drift onto a neighbour, rather than acting on the neighbour", async () => {
+  it("dispatches a digit on the neighbouring atom after a drift", async () => {
     await hover(0);
     await press("N");
     const before = molecule();
     await hover(1);
     await press("2");
-    expect(editor()?.value).toBe("N2");
-    expect(molecule().atoms[1]).toMatchObject(before.atoms[1]!);
-    expect(molecule().bonds).toEqual(before.bonds);
-    expectIntact();
+    // Digits act on the hovered atom, matching "keys act on the hovered atom", rather than making N2.
+    expect(editor()).toBeNull();
+    expect(molecule().atoms.slice(0, 6)).toEqual(before.atoms);
+    expect(molecule().bonds.slice(0, 6)).toEqual(before.bonds);
+    const carbon = before.atoms[1]!;
+    const oxygen = molecule().atoms[6]!;
+    expect(oxygen.element).toBe("O");
+    expect(molecule().bonds[6]).toMatchObject({ fromAtomId: carbon.id, toAtomId: oxygen.id, order: "double" });
+    expectIntact(1);
   });
 
   it("starts a new label for a capital element letter over a neighbour after a drift", async () => {

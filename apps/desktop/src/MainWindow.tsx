@@ -83,6 +83,7 @@ import {
   redo as redoDocumentHistory,
   undo as undoDocumentHistory,
   cssPxToPageSize,
+  elementSymbols,
   pageLayoutSourceUnit,
   type PageSizeUnit,
   type BondRef,
@@ -1646,7 +1647,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.31.12.35-codex";
+const CURRENT_BUILD_STAMP = "11.01.08.18-codex";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -3139,9 +3140,9 @@ export function MainWindow({
   }, [shortcutRegistry]);
   // The hover leaving the labelled atom (and its own bonds) does not end a hover-label continuation:
   // a pointer drifting mid-word is common on small atoms, so the next key decides
-  // (`hoverLabelContinuesForKey`). Leaving only marks that the pointer left, after which a capital
-  // element letter starts a new label wherever it lands. A click, a tool change or a key that cannot
-  // continue a label ends the continuation.
+  // (`hoverLabelContinuesForKey`). After leaving, element keys and digits act on a different hovered
+  // atom. Over a bond or empty canvas, lowercase element-symbol completion still continues.
+  // A click, a tool change or a key that cannot continue a label ends the continuation.
   const assignHoveredNativeDeleteTarget = useCallback((target: NativeMoleculeDeleteTarget | undefined) => {
     hoveredNativeDeleteTargetRef.current = target;
     const assignment = hoverLabelAssignmentRef.current;
@@ -12883,13 +12884,13 @@ export function MainWindow({
           const current = hoveredNativeDeleteTargetRef.current;
           const continuingOnAtom = assignment !== undefined && current?.kind === "atom" &&
             current.objectId === assignment.objectId && current.atomId === assignment.atomId &&
-            /^[a-z0-9]$/i.test(event.key);
+            /^[a-z0-9]$/i.test(event.key) && !Object.prototype.hasOwnProperty.call(numericBondDrawingHotkeys, event.key);
           if (hoverRetargetedForLabelRef.current && !continuingOnAtom && !activeAtomLabelEditRef.current) {
             hoverRetargetedForLabelRef.current = false;
             rederiveNativeCanvasHoverRef.current?.(documentRef.current);
           }
           // Decided once, against what the pointer is over. Re-deciding after the hover moves onto the
-          // labelled atom would read a capital element letter typed after a drift (C, drift, F) as a
+          // labelled atom would read an element letter typed after a drift (C, drift, F) as a
           // new label on that atom, and CF3 would silently become F3.
           labelContinues = assignment !== undefined &&
             hoverLabelContinuesForKey(documentRef.current, hoveredNativeDeleteTargetRef.current, assignment, event.key);
@@ -23011,11 +23012,14 @@ export function hoverTargetKeepsLabelContinuation(
 
 /**
  * Whether a letter or digit typed mid-label continues that label, wherever the pointer has drifted.
- * Lower-case letters, digits and capitals that are not elements ("M" in OMe) cannot start a label,
- * so they always continue. A capital element letter continues only while the pointer has stayed on
- * the labelled atom and its own bonds ("CF3"); once the pointer has left them, it starts a new label
- * on whatever atom or bond it is over, even the same atom again. Nothing continues once the labelled
- * atom no longer carries the label (undone, or changed some other way).
+ * Numeric bond hotkeys over a bond belong to that bond, including the labelled atom's own bonds.
+ * An element key in either case continues while the pointer has stayed on the labelled atom and
+ * its own bonds ("CF3"). After leaving, element keys in either case and all digits act on a different
+ * hovered atom. Over a bond or empty canvas, lowercase element-symbol completion ("i" in Si) still
+ * continues; other element keys over a target start a new label, even on the same atom again.
+ * Other letters ("M" in OMe, "e") continue after a drift, as do alphanumeric keys over empty canvas.
+ * Nothing continues once the labelled atom no longer carries the label (undone, or changed some
+ * other way).
  */
 export function hoverLabelContinuesForKey(
   document: ChemDraftDocument,
@@ -23026,6 +23030,9 @@ export function hoverLabelContinuesForKey(
   if (!/^[a-z0-9]$/i.test(key)) {
     return false;
   }
+  if (target?.kind === "bond" && Object.prototype.hasOwnProperty.call(numericBondDrawingHotkeys, key)) {
+    return false;
+  }
   const molecule = findDocumentObject(document, assignment.objectId);
   const atom = molecule?.type === "molecule" ? molecule.atoms.find((candidate) => candidate.id === assignment.atomId) : undefined;
   if (atom?.element !== assignment.label) {
@@ -23034,14 +23041,21 @@ export function hoverLabelContinuesForKey(
   if (!assignment.leftAtom && hoverTargetKeepsLabelContinuation(target, assignment)) {
     return true;
   }
-  const startsNewLabel = /^[A-Z]$/.test(key) && nativeElementFromKeyboardKey(key) !== undefined && target !== undefined;
+  if (target?.kind === "atom" && (target.objectId !== assignment.objectId || target.atomId !== assignment.atomId) &&
+    (nativeElementFromKeyboardKey(key) !== undefined || /^[0-9]$/.test(key))) {
+    return false;
+  }
+  if (/^[a-z]$/.test(key) && elementSymbols.some(symbol => symbol === assignment.label + key)) {
+    return true;
+  }
+  const startsNewLabel = nativeElementFromKeyboardKey(key) !== undefined && target !== undefined;
   return !startsNewLabel;
 }
 
 /**
  * The atom a label key belongs to (ChemDraft scheme), or undefined to leave the hover as it is.
  * Mid-label, a key that continues the label (`hoverLabelContinuesForKey`) goes to the atom being
- * labelled, so "CF3" never turns its 3 into a bond order and a drift onto a neighbour never sends
+ * labelled, so an open "CF3" editor keeps its 3 and a drift onto a neighbour never sends
  * "e" to the Eraser. Otherwise, over a hovered BOND, an element key, which would label an atom if
  * one were hovered, labels the bond's end nearer the pointer. Digits keep their bond-order meaning
  * and other letters keep their tool shortcuts, as they do over an atom.
