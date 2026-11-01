@@ -6,7 +6,7 @@ import { InsertTableForm } from "./InsertTableForm";
 import { readFileSync } from "node:fs";
 import type { DialogMessage } from "./dialogProtocol";
 import { parseDialogMessage } from "./dialogProtocol";
-import { measureDialogContent, measureDialogContentWhenFontsReady } from "./dialogContentFit";
+import { measureDialogContent, measureDialogContentWhenFontsReady, validDialogContentFit } from "./dialogContentFit";
 vi.mock("../window-manager", async original => ({ ...await original<typeof import("../window-manager")>(), isDesktopRuntime: () => true }));
 const host = vi.hoisted(() => ({ receive: undefined as ((message: DialogMessage) => void) | undefined, send: vi.fn(), stop: vi.fn() }));
 vi.mock("./dialogTransport", () => ({ subscribeDialogHost: async (_id: string, receive: typeof host.receive) => { host.receive = receive; return host.stop; }, sendDialogMessage: host.send }));
@@ -43,12 +43,14 @@ it.each(["macos", "windows"] as const)("reserves status space and stable row met
     const form = container.querySelector("form")!;
     expect(form.classList.contains("cd-insert-table-form")).toBe(true);
     expect(getComputedStyle(form).display).toBe("flex");
-    expect(getComputedStyle(form).minHeight).toBe("max(240px, 100vh)");
+    // The form fills the window exactly; 240 is only the native floor, never a CSS overflow.
+    expect(getComputedStyle(form).height).toBe("100vh");
+    expect(getComputedStyle(form).minHeight).toBe("0px");
     // Native minimum width leaves 444px after padding: three 90px inputs, three
     // 10px gaps and ample room for the native Style select on either platform.
     const spec = nativeSpec();
     expect(spec).toContain("min_size: (480.0, 240.0)");
-    // The window height comes from the measured content; 240 is only the floor matching the CSS.
+    // The window height comes from the measured content; 240 is only the floor.
     expect(spec).toContain("fit_content: true");
     const status = container.querySelector('[role="status"]')!;
     expect(status.textContent).toBe("");
@@ -168,13 +170,117 @@ it("accepts only a bounded content fit on ready, on both sides of the protocol",
     requestId: "request", snapshotRevision: 1, type: "ready" };
   expect(parseDialogMessage({ ...ready, data: {} })).toBeDefined();
   expect(parseDialogMessage({ ...ready, data: { contentHeight: 263, pixelRatio: 1.5 } })).toBeDefined();
-  for (const data of [{ contentHeight: 263 }, { contentHeight: 0, pixelRatio: 1 }, { contentHeight: 16385, pixelRatio: 1 },
+  expect(parseDialogMessage({ ...ready, data: { contentHeight: 4096, pixelRatio: 8 } })).toBeDefined();
+  expect(parseDialogMessage({ ...ready, data: { contentHeight: 263, pixelRatio: 0.5 } })).toBeDefined();
+  // The same caps as the native ContentFit: 4096 CSS px, a ratio of 0.5 to 8.
+  for (const data of [{ contentHeight: 263 }, { contentHeight: 0, pixelRatio: 1 }, { contentHeight: 4097, pixelRatio: 1 },
+    { contentHeight: 16384, pixelRatio: 16 }, { contentHeight: 263, pixelRatio: 0.49 }, { contentHeight: 263, pixelRatio: 8.01 },
     { contentHeight: 263, pixelRatio: 0 }, { contentHeight: 263, pixelRatio: 1, width: 480 }, { contentHeight: "263", pixelRatio: 1 }]) {
     expect(parseDialogMessage({ ...ready, data })).toBeUndefined();
   }
   expect(parseDialogMessage({ ...ready, type: "request", data: { contentHeight: 263, pixelRatio: 1 } })).toBeUndefined();
   const native = readFileSync("apps/desktop/src-tauri/src/dialog_windows.rs", "utf8");
-  expect(native).toContain("session.content_fit = ContentFit::from_ready(&message.data);");
+  expect(native).toContain("const CONTENT_FIT_MAX_HEIGHT: f64 = 4096.0;");
+  expect(native).toContain("const CONTENT_FIT_SCALE_RANGE: std::ops::RangeInclusive<f64> = 0.5..=8.0;");
+  // The native side records the window's scale with the measurement, not at reveal.
+  expect(native).toMatch(/session\.content_fit =\s+MeasuredContent::new\(ContentFit::from_ready\(&message\.data\), scale_at_ready\);/);
+});
+
+it("falls back to an empty ready, so the spec size, when the measurement is out of range", () => {
+  const form = document.createElement("form");
+  document.body.append(form);
+  try {
+    layOut(form, 263, 240);
+    vi.stubGlobal("devicePixelRatio", 16);
+    expect(measureDialogContent(form)).toBeUndefined();
+    vi.stubGlobal("devicePixelRatio", 1);
+    layOut(form, 5000, 240);
+    expect(measureDialogContent(form)).toBeUndefined();
+    expect(validDialogContentFit({ contentHeight: 263, pixelRatio: Number.NaN })).toBe(false);
+  } finally {
+    form.remove();
+    vi.unstubAllGlobals();
+  }
+});
+
+it.each(["macos", "windows"] as const)("keeps Cancel and Insert reachable in a window shorter than the content on %s", platform => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const styles = document.createElement("style");
+  styles.textContent = readFileSync("apps/desktop/src/App.css", "utf8");
+  document.head.append(styles);
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    act(() => root.render(createElement(InsertTableForm, {
+      title: "Drawing", initial: { rows: 2, columns: 2, headerRows: 1, preset: "three-line" },
+      platform, error: "A validation message long enough to wrap past the two lines the status reserves. ".repeat(4),
+      onSubmit: vi.fn(), onCancel: vi.fn(),
+    })));
+    const form = container.querySelector("form")!;
+    expect(form.classList.contains("cd-dialog-fit")).toBe(true);
+    const children = Array.from(form.children);
+    expect(children.map(child => child.className)).toEqual(["cd-dialog-fit-body", "cd-page-size-buttons cd-dialog-fit-footer"]);
+    const [body, footer] = children as HTMLElement[];
+    // Everything that can grow (title, fields that wrap, the status message) is in the body,
+    // which scrolls; the button row is outside it and never shrinks.
+    expect(body.querySelector("h2")).not.toBeNull();
+    expect(body.querySelector(".cd-page-size-fields")).not.toBeNull();
+    expect(body.querySelector('[role="status"]')).not.toBeNull();
+    expect(getComputedStyle(body).overflow).toBe("auto");
+    expect(getComputedStyle(body).minHeight).toBe("0px");
+    expect([getComputedStyle(footer).flexGrow, getComputedStyle(footer).flexShrink]).toEqual(["0", "0"]);
+    expect(Array.from(footer.querySelectorAll("button"), button => button.textContent)).toEqual(["Cancel", "Insert"]);
+    expect(body.querySelector("button")).toBeNull();
+    // The status grows with its message; it never shrinks below it and overlaps the buttons.
+    const status = getComputedStyle(body.querySelector('[role="status"]')!);
+    expect([status.flexGrow, status.flexShrink]).toEqual(["1", "0"]);
+  } finally {
+    act(() => root.unmount());
+    container.remove();
+    styles.remove();
+    vi.unstubAllGlobals();
+  }
+});
+
+it("keeps the scrolling layout in the shared dialog CSS without changing other dialogs", () => {
+  const css = readFileSync("apps/desktop/src/App.css", "utf8");
+  // Shared selectors, not Insert-Table-only ones.
+  expect(css).toMatch(/^\.cd-dialog-fit \{[^}]*height: 100vh;[^}]*\}/m);
+  expect(css).toMatch(/^\.cd-dialog-fit-body \{[^}]*overflow: auto;[^}]*\}/m);
+  expect(css).toMatch(/^\.cd-dialog-fit-footer \{[^}]*flex: none;[^}]*\}/m);
+  // Only content-fit kinds opt in; the other forms keep their look.
+  for (const file of ["PageSizeForm.tsx", "ArrangementSpacingForm.tsx", "ExportForm.tsx", "EngineInstallForm.tsx", "ToolInstallForm.tsx", "StructureTemplatePicker.tsx"]) {
+    expect(readFileSync(`apps/desktop/src/dialogs/${file}`, "utf8")).not.toContain("cd-dialog-fit");
+  }
+  expect(readFileSync("apps/desktop/src/dialogs/InsertTableForm.tsx", "utf8")).toContain("cd-dialog-fit-body");
+});
+
+it("measures a scrolling body at its natural height, then restores the layout", () => {
+  const form = document.createElement("form");
+  form.className = "cd-dialog-fit";
+  form.style.setProperty("height", "123px");
+  const body = document.createElement("div");
+  body.className = "cd-dialog-fit-body";
+  form.append(body);
+  document.body.append(form);
+  // jsdom has no layout: the form is its window's 240px unless the measurement lifts the
+  // form's height and unclips the body, when the content's natural 318px shows.
+  const unclipped = () => form.style.getPropertyValue("height") === "auto" && form.style.getPropertyValue("min-height") === "0px" &&
+    body.style.getPropertyValue("overflow") === "visible" && body.style.getPropertyValue("flex-shrink") === "0" && body.style.getPropertyValue("min-height") === "0px";
+  form.getBoundingClientRect = () => {
+    const height = unclipped() ? 318 : 240;
+    return { x: 0, y: 0, left: 0, top: 0, right: 480, bottom: height, width: 480, height, toJSON: () => ({}) };
+  };
+  Object.defineProperty(form, "scrollHeight", { configurable: true, get: () => unclipped() ? 318 : 240 });
+  try {
+    expect(measureDialogContent(form)).toEqual({ contentHeight: 318, pixelRatio: 1 });
+    expect(form.style.getPropertyValue("height")).toBe("123px");
+    expect(form.style.getPropertyValue("min-height")).toBe("");
+    expect(body.getAttribute("style") ?? "").toBe("");
+  } finally {
+    form.remove();
+  }
 });
 
 it.each(["macos", "windows"] as const)("sends ready once on %s with the form's measured height, after fonts settle", async platform => {

@@ -55,8 +55,8 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             maximizable: false,
             resizable: true,
             title: "Insert Table",
-            // Height before ready; ready carries the measured content height, which replaces
-            // it. 240 matches App.css's `min-height: max(240px, 100vh)` floor for this form.
+            // Height before ready, and the fallback when ready carries no usable measurement;
+            // ready's measured content height replaces it. 240 is the floor for this form.
             size: (480.0, 240.0),
             min_size: (480.0, 240.0),
             fit_content: true,
@@ -135,6 +135,10 @@ struct ContentFit {
     content_height: f64,
     pixel_ratio: f64,
 }
+/// A dialog form is far shorter than this; anything taller is not a measurement.
+const CONTENT_FIT_MAX_HEIGHT: f64 = 4096.0;
+/// Device pixel ratios and native scale factors outside this range are not a real display.
+const CONTENT_FIT_SCALE_RANGE: std::ops::RangeInclusive<f64> = 0.5..=8.0;
 impl ContentFit {
     fn from_ready(data: &Value) -> Option<Self> {
         serde_json::from_value::<Self>(data.clone())
@@ -142,16 +146,34 @@ impl ContentFit {
             .filter(|f| {
                 f.content_height.is_finite()
                     && f.content_height > 0.0
-                    && f.content_height <= 16384.0
+                    && f.content_height <= CONTENT_FIT_MAX_HEIGHT
                     && f.pixel_ratio.is_finite()
-                    && f.pixel_ratio > 0.0
-                    && f.pixel_ratio <= 16.0
+                    && CONTENT_FIT_SCALE_RANGE.contains(&f.pixel_ratio)
             })
     }
-    /// Logical inner height at `window_scale` (the window's scale when the form measured).
-    /// The ratio carries WebView zoom and text scaling; never below the kind's minimum.
-    fn logical_height(self, window_scale: f64, min_height: f64) -> f64 {
-        (self.content_height * self.pixel_ratio / window_scale)
+}
+/// A content-fit measurement with the window's native scale factor when `ready` (the
+/// measurement) arrived. The display scale can change before reveal (a monitor change or a
+/// scale setting), so the physical measurement converts through the scale it was taken at.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct MeasuredContent {
+    fit: ContentFit,
+    scale_at_ready: f64,
+}
+impl MeasuredContent {
+    fn new(fit: Option<ContentFit>, scale_at_ready: Option<f64>) -> Option<Self> {
+        let scale_at_ready =
+            scale_at_ready.filter(|s| s.is_finite() && CONTENT_FIT_SCALE_RANGE.contains(s))?;
+        Some(Self {
+            fit: fit?,
+            scale_at_ready,
+        })
+    }
+    /// Logical inner height: physical measurement / scale at measurement. The ratio carries
+    /// WebView zoom and text scaling; never below the kind's minimum. Placement converts it to
+    /// physical pixels at the destination's scale (the scale at reveal).
+    fn logical_height(self, min_height: f64) -> f64 {
+        (self.fit.content_height * self.fit.pixel_ratio / self.scale_at_ready)
             .ceil()
             .max(min_height)
     }
@@ -962,7 +984,7 @@ struct Session {
     receipts: HashMap<String, Message>,
     transient_until: Instant,
     pending_move: Option<(Instant, SavedPosition)>,
-    content_fit: Option<ContentFit>,
+    content_fit: Option<MeasuredContent>,
 }
 #[derive(Default)]
 struct Registry {
@@ -1359,6 +1381,12 @@ pub(crate) async fn dialog_send(
         return Err("Dialog can send only ready or a typed action".into());
     }
     let _creation = super::lock_window_creation()?;
+    // The form measured at this window's current scale; read it before taking the registry lock.
+    let scale_at_ready = if message.message_type == "ready" {
+        window.scale_factor().ok()
+    } else {
+        None
+    };
     let reveal = {
         let mut registry = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
         let session = registry
@@ -1380,7 +1408,8 @@ pub(crate) async fn dialog_send(
         }
         if reveal {
             session.ready = true;
-            session.content_fit = ContentFit::from_ready(&message.data);
+            session.content_fit =
+                MeasuredContent::new(ContentFit::from_ready(&message.data), scale_at_ready);
         }
         // Only this Rust-validated path can write the owner's private channel.
         send_owner(session, window.label(), &message)?;
@@ -1814,10 +1843,10 @@ fn place_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), Stri
         .map(|s| (s.snapshot.dialog_kind.clone(), s.content_fit))
         .ok_or("Unknown dialog window")?;
     let spec = kind_spec(&kind)?;
-    // The form measured at the window's current scale, before any move to another monitor.
+    // Logical, through the scale at measurement; finish_placement converts at the destination.
     let fitted_height = content_fit
         .filter(|_| spec.fit_content)
-        .map(|fit| fit.logical_height(scale, spec.min_size.1));
+        .map(|fit| fit.logical_height(spec.min_size.1));
     let client_size = (spec.size.0, fitted_height.unwrap_or(spec.size.1));
     let client = window.inner_size().map_err(|e| e.to_string())?;
     // Centre the frame the dialog will have: today's decorations around the fitted client.
@@ -1943,6 +1972,13 @@ fn finish_placement(
     mut measure: impl FnMut() -> Result<DialogFrame, String>,
 ) -> Result<(), String> {
     move_to(x, y)?;
+    // A fitted size comes from the webview: never ask for more than the destination work area,
+    // even before its decorations are measured.
+    let (client_width, client_height) = if fit_to_work_area {
+        (client_width.min(work.width), client_height.min(work.height))
+    } else {
+        (client_width, client_height)
+    };
     // Round up: a fitted content height truncated at 125%/150% would lose its last pixel row.
     resize(
         (client_width * scale).ceil() as u32,
@@ -3148,6 +3184,8 @@ mod tests {
             json!({}),
             json!({"contentHeight": 263, "pixelRatio": 2}),
             json!({"contentHeight": 262.5, "pixelRatio": 1.25}),
+            json!({"contentHeight": 4096, "pixelRatio": 8}),
+            json!({"contentHeight": 263, "pixelRatio": 0.5}),
         ] {
             ready.data = data;
             assert!(ready.validate().is_ok(), "{}", ready.data);
@@ -3156,8 +3194,12 @@ mod tests {
             json!({"contentHeight": 263}),
             json!({"contentHeight": 0, "pixelRatio": 1}),
             json!({"contentHeight": -5, "pixelRatio": 1}),
-            json!({"contentHeight": 16385, "pixelRatio": 1}),
+            json!({"contentHeight": 4097, "pixelRatio": 1}),
+            json!({"contentHeight": 16384, "pixelRatio": 16}),
+            json!({"contentHeight": 1e308, "pixelRatio": 1}),
             json!({"contentHeight": 263, "pixelRatio": 0}),
+            json!({"contentHeight": 263, "pixelRatio": 0.49}),
+            json!({"contentHeight": 263, "pixelRatio": 8.01}),
             json!({"contentHeight": 263, "pixelRatio": 17}),
             json!({"contentHeight": "263", "pixelRatio": 1}),
             json!({"contentHeight": 263, "pixelRatio": 1, "width": 480}),
@@ -3170,19 +3212,166 @@ mod tests {
         ready.message_type = "request".into();
         ready.data = json!({"contentHeight": 263, "pixelRatio": 1});
         assert!(ready.validate().is_err());
-        let fit = |content_height, pixel_ratio| ContentFit {
-            content_height,
-            pixel_ratio,
+        let fit = |content_height, pixel_ratio, scale| {
+            MeasuredContent::new(
+                Some(ContentFit {
+                    content_height,
+                    pixel_ratio,
+                }),
+                Some(scale),
+            )
+            .unwrap()
         };
         // Same scale: CSS px are logical px. Retina and 150% monitors measure the same content.
-        assert_eq!(fit(263.0, 1.0).logical_height(1.0, 240.0), 263.0);
-        assert_eq!(fit(263.0, 2.0).logical_height(2.0, 240.0), 263.0);
-        assert_eq!(fit(263.0, 1.5).logical_height(1.5, 240.0), 263.0);
+        assert_eq!(fit(263.0, 1.0, 1.0).logical_height(240.0), 263.0);
+        assert_eq!(fit(263.0, 2.0, 2.0).logical_height(240.0), 263.0);
+        assert_eq!(fit(263.0, 1.5, 1.5).logical_height(240.0), 263.0);
         // WebView zoom or larger text (ratio above the monitor scale) grows the window.
-        assert_eq!(fit(263.0, 1.25).logical_height(1.0, 240.0), 329.0);
-        assert_eq!(fit(263.0, 1.875).logical_height(1.5, 240.0), 329.0);
-        // Never below the kind's minimum (App.css's 240px floor for the form).
-        assert_eq!(fit(200.0, 1.0).logical_height(1.0, 240.0), 240.0);
+        assert_eq!(fit(263.0, 1.25, 1.0).logical_height(240.0), 329.0);
+        assert_eq!(fit(263.0, 1.875, 1.5).logical_height(240.0), 329.0);
+        // Never below the kind's minimum (the 240px floor for the form).
+        assert_eq!(fit(200.0, 1.0, 1.0).logical_height(240.0), 240.0);
+        // No usable scale at measurement, or no measurement: the spec size applies.
+        let measured = Some(ContentFit {
+            content_height: 263.0,
+            pixel_ratio: 2.0,
+        });
+        for scale in [
+            None,
+            Some(0.0),
+            Some(0.25),
+            Some(9.0),
+            Some(f64::NAN),
+            Some(f64::INFINITY),
+        ] {
+            assert_eq!(MeasuredContent::new(measured, scale), None, "{scale:?}");
+        }
+        assert_eq!(MeasuredContent::new(None, Some(2.0)), None);
+    }
+    #[test]
+    fn content_fit_converts_through_the_scale_at_measurement_not_at_reveal() {
+        use std::cell::RefCell;
+        // Measured on a 2x display (263 CSS px = 526 physical), revealed after the display
+        // changed to 1x, 1.5x or stayed 2x: the logical height is the same 263 every time ...
+        let measured = MeasuredContent::new(
+            ContentFit::from_ready(&json!({"contentHeight": 263, "pixelRatio": 2})),
+            Some(2.0),
+        )
+        .unwrap();
+        assert_eq!(measured.logical_height(240.0), 263.0);
+        // ... where converting with the reveal scale would have doubled it at 1x.
+        assert_eq!(
+            measured.fit.content_height * measured.fit.pixel_ratio,
+            526.0
+        );
+        // Measured at 1x, revealed at 2x: still 263 logical, not 131.5 (collapsed to the floor).
+        let measured_1x = MeasuredContent::new(
+            ContentFit::from_ready(&json!({"contentHeight": 263, "pixelRatio": 1})),
+            Some(1.0),
+        )
+        .unwrap();
+        assert_eq!(measured_1x.logical_height(240.0), 263.0);
+        // The physical client is the logical height at the destination (reveal) scale.
+        for (reveal_scale, physical) in [(1.0, 263u32), (1.5, 395), (2.0, 526)] {
+            let work = WorkArea {
+                id: "display".into(),
+                x: 0.0,
+                y: 0.0,
+                width: 1600.0,
+                height: 1000.0,
+                scale: reveal_scale,
+            };
+            let client = RefCell::new((0u32, 0u32));
+            finish_placement(
+                (100.0 * reveal_scale, 100.0 * reveal_scale, reveal_scale),
+                (480.0, measured.logical_height(240.0)),
+                &work,
+                true,
+                None,
+                |_, _| Ok(()),
+                |w, h| {
+                    *client.borrow_mut() = (w, h);
+                    Ok(())
+                },
+                || {
+                    let (w, h) = *client.borrow();
+                    Ok(DialogFrame {
+                        outer: (w, h + (28.0 * reveal_scale) as u32),
+                        client: (w, h),
+                    })
+                },
+            )
+            .unwrap();
+            assert_eq!(client.borrow().1, physical, "{reveal_scale}");
+        }
+    }
+    #[test]
+    fn absurd_content_fit_never_reaches_a_native_resize() {
+        use std::cell::RefCell;
+        // A buggy or hostile webview: rejected on the wire, and no measurement survives.
+        let mut ready = snapshot();
+        ready.dialog_kind = "insertTable".into();
+        ready.message_type = "ready".into();
+        ready.data = json!({"contentHeight": 16384, "pixelRatio": 16});
+        assert!(ready.validate().is_err());
+        assert_eq!(
+            MeasuredContent::new(ContentFit::from_ready(&ready.data), Some(2.0)),
+            None
+        );
+        // Even the largest accepted measurement, at the smallest accepted scale, and any height
+        // that got this far, is bounded by the destination work area on the very first resize.
+        let largest = MeasuredContent::new(
+            ContentFit::from_ready(&json!({"contentHeight": 4096, "pixelRatio": 8})),
+            Some(0.5),
+        )
+        .unwrap();
+        for (scale, height) in [
+            (2.0, largest.logical_height(240.0)),
+            (1.0, 262144.0),
+            (1.5, f64::MAX),
+        ] {
+            let work = WorkArea {
+                id: "display".into(),
+                x: 0.0,
+                y: 25.0,
+                width: 1440.0,
+                height: 875.0,
+                scale,
+            };
+            let resizes = RefCell::new(Vec::<(u32, u32)>::new());
+            finish_placement(
+                (0.0, 25.0 * scale, scale),
+                (480.0, height),
+                &work,
+                true,
+                None,
+                |_, _| Ok(()),
+                |w, h| {
+                    resizes.borrow_mut().push((w, h));
+                    Ok(())
+                },
+                || {
+                    let (w, h) = *resizes.borrow().last().unwrap();
+                    Ok(DialogFrame {
+                        outer: (w, h + (28.0 * scale) as u32),
+                        client: (w, h),
+                    })
+                },
+            )
+            .unwrap();
+            let resizes = resizes.borrow();
+            assert!(!resizes.is_empty());
+            for &(w, h) in resizes.iter() {
+                assert!(f64::from(w) <= (1440.0 * scale).ceil(), "{scale}: {w}");
+                assert!(
+                    f64::from(h) <= (875.0 * scale).ceil(),
+                    "{scale} {height}: {h}"
+                );
+            }
+            // And the final frame fits the work area.
+            let (_, h) = *resizes.last().unwrap();
+            assert!(f64::from(h) + f64::from((28.0 * scale) as u32) <= 875.0 * scale);
+        }
     }
     #[test]
     fn fitted_dialog_client_is_never_shorter_than_its_content_unless_the_work_area_is() {

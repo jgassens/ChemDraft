@@ -7832,16 +7832,25 @@ textarea:focus-visible,
 .cd-page-size-form h2 { font-size: 16px; margin: 0 0 12px; }
 .cd-page-size-form p { color: var(--cd-text-secondary); }
 .cd-insert-table-drawing { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-/* Match the native window's 240px budget on both WebKit and WebView2. An empty
-   status paragraph must reserve the same two lines as a validation message. */
-.cd-insert-table-form { display: flex; flex-direction: column; min-height: max(240px, 100vh); }
+/* Content-fit dialogs (`fit_content` in dialog_windows.rs): the form fills the window exactly, its
+   body scrolls and its button row is pinned, so the buttons stay reachable even when the window is
+   shorter than the content (a narrow work area wraps the fields, a long message wraps). The host
+   sizes the window to the measured natural height, so normally nothing scrolls and no band shows.
+   dialogContentFit.ts lifts these constraints while measuring. The body's 4px padding, cancelled by
+   its margin, keeps focus rings inside the scroll clip without moving anything. */
+.cd-dialog-fit { display: flex; flex-direction: column; height: 100vh; min-height: 0; }
+.cd-dialog-fit-body { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; overflow: auto; margin: -4px; padding: 4px; }
+.cd-dialog-fit-footer { flex: none; }
+/* Fixed row metrics on both WebKit and WebView2. An empty status paragraph must
+   reserve the same two lines as a validation message. */
 .cd-insert-table-form h2 { line-height: 19px; margin: 0 0 13px; }
 .cd-insert-table-form .cd-insert-table-drawing { line-height: 16px; margin: 0 0 13px; }
 .cd-insert-table-form .cd-page-size-fields label { line-height: 16px; }
 .cd-insert-table-form .cd-page-size-fields input,
 .cd-insert-table-form .cd-page-size-fields select,
 .cd-insert-table-form button { box-sizing: border-box; height: 30px; }
-.cd-insert-table-form [role="status"] { flex: 1; min-height: 32px; line-height: 16px; margin: 13px 0; }
+.cd-insert-table-form [role="status"] { flex: 1 0 auto; min-height: 32px; line-height: 16px; margin: 13px 0 0; }
+.cd-insert-table-form .cd-dialog-fit-footer { padding-top: 13px; }
 .cd-page-size-fields { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
 .cd-page-size-fields label { display: flex; flex-direction: column; gap: 4px; }
 .cd-page-size-fields input { width: 90px; }

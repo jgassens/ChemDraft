@@ -3,7 +3,7 @@ import { planObjectArrangement, moleculeAnchorForArrangement, moleculeVisualBoun
 import { snapRotationDegrees } from "./rotationSnap";
 import { snapPlacementDegrees } from "./placementSnap";
 import { projectedDoubleBondSides } from "./interaction/projectedDoubleBondSides";
-import { buildTableObject } from "@chemdraft/document-workflow-core";
+import { buildTableObject, pageConstrainedShift } from "@chemdraft/document-workflow-core";
 import { planTableLayout, tableVisualBoundsForArrangement } from "@chemdraft/layout-engine";
 import { validTableDimensions, type TableInsertDimensions } from "./dialogs/insertTableOptions";
 import { doubleBondStereoState, perceivedSpecifiedDoubleBondIds } from "./interaction/doubleBondStereo";
@@ -20948,20 +20948,9 @@ export function insertTableIntoDocument(document: ChemDraftDocument, options: Ta
 }
 
 /**
- * The shift that keeps drawn `bounds` on the page: the rule structure paste applies to its atoms
- * (scaleParsedMolfileAtoms). Each axis is clamped into [0, page size − bounds size], so bounds
- * larger than the page align their top-left with the page's top-left.
- */
-export function pageConstrainedShift(page: { width: number; height: number }, bounds: LayoutBounds): PagePoint {
-  return {
-    x: clamp(bounds.x, 0, Math.max(0, page.width - bounds.width)) - bounds.x,
-    y: clamp(bounds.y, 0, Math.max(0, page.height - bounds.height)) - bounds.y
-  };
-}
-
-/**
  * Add a new table centred on `center` and select it (Insert Table and table paste). Its drawn
- * extent, including rule strokes and fixed-column text overflow, is kept on the page.
+ * extent, including rule strokes and fixed-column text overflow, is kept on the page by the same
+ * pageConstrainedShift structure paste uses (document-workflow-core).
  */
 export function addTableCenteredOnPage(
   document: ChemDraftDocument,
