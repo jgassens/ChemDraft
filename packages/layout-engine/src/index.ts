@@ -5426,8 +5426,16 @@ const italicShear = 0.25;
 function atomLabelFontClass(fontFamily: string): "sans-serif" | "monospace" | "unknown" {
   const families = fontFamily.split(",").map(family => family.trim().replace(/^["']|["']$/g, "").toLowerCase());
   if (families.every(family => sansSerifLabelFamilies.has(family))) return "sans-serif";
-  if (families.every(family => monospaceLabelFamilies.has(family))) return "monospace";
+  // A bare generic monospace renders as Consolas on Windows, whose ink was never checked: only a
+  // stack that names Courier first is known.
+  if (families[0] !== "monospace" && families.every(family => monospaceLabelFamilies.has(family))) return "monospace";
   return "unknown";
+}
+
+/** Characters whose advance (`sansSerifAdvanceEm`, or the 0.62 em fallback, which is at least as wide)
+ * and vertical extent (`atomLabelCharacterExtent`) are known; @, %, &, Greek, dashes and the like are not. */
+function atomLabelCharacterIsCovered(character: string): boolean {
+  return character in sansSerifAdvanceEm || /^[()[\]{},;_/|.:'"*=<>!?#~^`\u2212]$/.test(character);
 }
 
 /** A character's ink above and below its baseline, in em (below positive), enclosing the Helvetica
@@ -5454,10 +5462,14 @@ function atomLabelCharacterExtent(character: string): { ascent: number; descent:
  * The box must enclose the ink of whichever font draws the label. Helvetica/Arial
  * (the advances anchored label placement uses) get glyph-tight horizontal extents;
  * a monospace family is widened to Courier's advance from the run's text anchor; any other
- * family gets the padded renderer bounds, whose extents are unknown to this module. */
+ * family, or a label with a character this module has no metrics for, gets the padded renderer
+ * bounds, whose extents are unknown to this module. */
 export function atomLabelGlyphBounds(plan: AtomLabelPlan): LayoutBounds {
   const fontClass = atomLabelFontClass(plan.fontFamily);
   if (fontClass === "unknown") return { ...plan.layout.bounds };
+  if (plan.layout.runs.some(run => [...run.text].some(character => !atomLabelCharacterIsCovered(character)))) {
+    return { ...plan.layout.bounds };
+  }
   const italic = plan.drawingStyle.atomLabelFontStyle === "italic";
   const boxes = plan.layout.runs.map(run => {
     const size = atomLabelRunFontSize(run.script, plan.drawingStyle) ?? plan.fontSizePx;

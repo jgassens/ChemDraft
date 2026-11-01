@@ -102,7 +102,7 @@ const AFM = Object.fromEntries(Object.entries(AFM_SOURCE).map(([font, lines]) =>
   }))])) as Record<keyof typeof AFM_SOURCE, Map<string, Glyph>>;
 
 const SANS_STACKS = ["Arial, Helvetica, sans-serif", "Helvetica", "Arial", "'Helvetica', sans-serif", "sans-serif"];
-const MONO_STACKS = ["Courier New, Courier, monospace", "Courier", "monospace", "'Courier New', monospace"];
+const MONO_STACKS = ["Courier New, Courier, monospace", "Courier", "'Courier New', monospace"];
 const FOREIGN_STACKS = ["Times New Roman, Times, serif", "Georgia, serif", "Menlo", "Arial, Georgia, serif",
   "Courier New, Arial, sans-serif", "system-ui", ""];
 
@@ -250,5 +250,17 @@ describe("atomLabelGlyphBounds encloses the ink of the label font", () => {
       const plan = planFor(label, { atomLabelFontFamily: fontFamily });
       expect(atomLabelGlyphBounds(plan)).toEqual(plan.layout.bounds);
     }
+  });
+
+  it.each(["La@C82", "\u0394H", "O\u2014H", "50%"])("a label with a character outside the metric tables (%j) gets the padded bounds", (label) => {
+    const plan = planFor(label, {});
+    expect(atomLabelGlyphBounds(plan)).toEqual(plan.layout.bounds);
+  });
+
+  it("treats a bare generic monospace as unknown but keeps the box when Courier is named first", () => {
+    const bare = planFor("OH", { atomLabelFontFamily: "monospace" });
+    expect(atomLabelGlyphBounds(bare)).toEqual(bare.layout.bounds);
+    const named = planFor("OH", { atomLabelFontFamily: "Courier New, monospace" });
+    expect(atomLabelGlyphBounds(named)).not.toEqual(named.layout.bounds);
   });
 });
