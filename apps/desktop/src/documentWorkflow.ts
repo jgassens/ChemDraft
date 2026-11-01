@@ -1544,11 +1544,17 @@ function nativeOrbitalPlacementAtPoint(
     }).sort((a, b) => Math.hypot(point.x - a.anchor.x, point.y - a.anchor.y) - Math.hypot(point.x - b.anchor.x, point.y - b.anchor.y));
     const anchor = target?.atom ?? orbitals[0]?.anchor ?? point;
     // Choose a visible, unoccupied direction for repeated clicks at the same node. A p
-    // orbital is an axis (180 degrees); a single lobe has a direction (360 degrees).
+    // orbital is an axis (180 degrees); a single lobe has a direction (360 degrees). A p
+    // orbital occupies both of its lobe directions, an s orbital none, and the atom's
+    // bonds always count (a lobe at rotation r points along bearing r - 90 degrees).
     const period = tool.id === "pOrbital" ? 180 : 360;
-    const angles = orbitals.filter(entry => Math.hypot(entry.anchor.x - anchor.x, entry.anchor.y - anchor.y) < 0.01)
-      .filter(entry => entry.object.type === "graphic" && entry.object.data.artToolId !== "sOrbital")
-      .map(entry => ((entry.object.rotation % period) + period) % period).sort((a, b) => a - b);
+    const occupied = orbitals.filter(entry => Math.hypot(entry.anchor.x - anchor.x, entry.anchor.y - anchor.y) < 0.01)
+      .flatMap(entry => entry.object.type !== "graphic" || entry.object.data.artToolId === "sOrbital" ? []
+        : entry.object.data.artToolId === "pOrbital" ? [entry.object.rotation, entry.object.rotation + 180] : [entry.object.rotation]);
+    if (target) {
+      occupied.push(...nativeAtomBondAngles(target.molecule, target.atom.id).map(angle => radiansToDegrees(angle) + 90));
+    }
+    const angles = occupied.map(angle => ((angle % period) + period) % period).sort((a, b) => a - b);
     let rotation = 0, gap = -1;
     angles.forEach((angle, index) => {
       const next = angles[(index + 1) % angles.length] + (index === angles.length - 1 ? period : 0);
@@ -1613,18 +1619,23 @@ function nativeOrbitalAtomAtPoint(
   return target ? { molecule: target.molecule, atom: target.atom } : undefined;
 }
 
-function nativeAtomLargestBondGapBisector(molecule: MoleculeObject, atomId: string): number | undefined {
+/** Bearings (radians, sorted) from an atom to each bonded neighbour. */
+function nativeAtomBondAngles(molecule: MoleculeObject, atomId: string): number[] {
   const atom = molecule.atoms.find((candidate) => candidate.id === atomId);
   if (!atom) {
-    return undefined;
+    return [];
   }
-  const angles = molecule.bonds.flatMap((bond) => {
+  return molecule.bonds.flatMap((bond) => {
     const neighborId = bond.fromAtomId === atomId
       ? bond.toAtomId
       : bond.toAtomId === atomId ? bond.fromAtomId : undefined;
     const neighbor = neighborId ? molecule.atoms.find((candidate) => candidate.id === neighborId) : undefined;
     return neighbor ? [Math.atan2(neighbor.y - atom.y, neighbor.x - atom.x)] : [];
   }).sort((left, right) => left - right);
+}
+
+function nativeAtomLargestBondGapBisector(molecule: MoleculeObject, atomId: string): number | undefined {
+  const angles = nativeAtomBondAngles(molecule, atomId);
   if (angles.length === 0) {
     return undefined;
   }

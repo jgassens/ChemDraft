@@ -33,6 +33,21 @@ describe("orbital nodes and overlapping axes", () => {
     graphics(doc).forEach(o=>expectNode(o,node)); expect(new Set(graphics(doc).map(o=>o.rotation%180)).size).toBe(3);
     expect(doc.pages[0].objects.find(o=>o.id===molecule.id)).toEqual(molecule);
   });
+  it("keeps a lobe off both lobes of an existing p orbital", () => {
+    const node={x:320,y:300}; const withP=insertNativeArtGraphicObject(createPhase4Document("Lobe on p"),node,"tool.pOrbital");
+    const doc=insertNativeArtGraphicObject(withP,node,"tool.lobe"); const [p,lobe]=graphics(doc);
+    expectNode(lobe,node); const away=(lobe.rotation-p.rotation+360)%180;
+    expect(Math.min(away,180-away)).toBeCloseTo(90,7);
+  });
+  it("keeps later lobes off the bonds of the atom they sit on", () => {
+    let doc=insertNativeSingleBondMolecule(createPhase4Document("Lobes on bonded atom"),{x:320,y:300});
+    const molecule=doc.pages[0].objects.find(o=>o.type==="molecule")!;
+    if(molecule.type!=="molecule") throw Error("Expected molecule"); const node=molecule.atoms[0];
+    const other=molecule.atoms[1]; const bond=(Math.atan2(other.y-node.y,other.x-node.x)*180/Math.PI+90+360)%360;
+    for(let i=0;i<2;i++)doc=insertNativeArtGraphicObject(doc,node,"tool.lobe");
+    graphics(doc).forEach(o=>{expectNode(o,node); const d=Math.abs(((o.rotation-bond)%360+540)%360-180); expect(d).toBeGreaterThan(30);});
+    expect(doc.pages[0].objects.find(o=>o.id===molecule.id)).toEqual(molecule);
+  });
   it("keeps s orbitals centred on atoms", () => {
     const doc=insertNativeSingleBondMolecule(createPhase4Document("s on atom"),{x:320,y:300});
     const molecule=doc.pages[0].objects.find(o=>o.type==="molecule")!;
