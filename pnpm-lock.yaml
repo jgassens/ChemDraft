@@ -319,6 +319,9 @@ importers:
       '@chemdraft/template-library':
         specifier: workspace:*
         version: link:../template-library
+      zod:
+        specifier: ^3.25.76
+        version: 3.25.76
 
   packages/editor-adapter:
     dependencies:

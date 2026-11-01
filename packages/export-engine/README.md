@@ -4,6 +4,25 @@ Coordinates export formats and warning reporting.
 
 Format-specific work should go through the correct adapters and compatibility packages.
 
+## Table clipboard payloads
+
+`exportTableClipboardPayloads(table, options?)` produces editable HTML, ASCII-safe RTF, and plain
+TSV strings, plus warnings for rotation and fixed columns narrower than their natural layout.
+The individual writers are `exportTableToHtml`, `exportTableToRtf`, and `exportTableToTsv`.
+HTML includes the fragment markers required by the native clipboard writer; TSV contains only rows.
+All dimensions come from `planTableLayout`, with explicit rules and no shading.
+Decimal blocks are centred in the column's inner width, or start at the inner left if too wide.
+Decimal body columns whose non-empty cells are all numbers with equal precision use right alignment
+with the layout's right inset added to the cell padding. Other decimal body columns use left
+alignment with the left inset added to the padding and a decimal tab at the block's pre-point width
+from the text start. Text without a point ends at that tab, including integers and dashes.
+HTML declares the decimal tab without inserting a tab character; RTF prefixes the text with one tab.
+Decimal headers stay centred with normal padding. HTML also declares each plain number's displayed
+precision for Excel. Adjacent runs with matching formatting are merged, plain text has no run
+wrappers, and unset or default text colours are omitted so the destination keeps automatic colour.
+The default font mode is `document`; `{ font: "inherit" }` omits font families and sizes so the
+destination chooses them. These pure writers do not access the native clipboard.
+
 PDF export uses jsPDF 4.2.1 and svg2pdf.js 2.7.0 over the same SVG geometry as the
 canvas. The app, CLI and MCP use `exportDocumentToPdf` from this package.
 

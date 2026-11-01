@@ -112,7 +112,7 @@ export class AssistantToolsController implements PluginHostAssistant {
           this.running(plugin, requestId);
           abort.signal.throwIfAborted();
           signal?.throwIfAborted();
-          if (prompted || !["insert_structures", "insert_reaction", "insert_text"].includes(input.name)) {
+          if (prompted || !["insert_structures", "insert_reaction", "insert_text", "insert_table"].includes(input.name)) {
             throw new Error("Page growth is only available once per assistant insertion.");
           }
           prompted = true;

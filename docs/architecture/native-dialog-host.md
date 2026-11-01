@@ -167,6 +167,22 @@ logical toolbar visibility. First placement centres on the owner's usable frame 
 monitor work area, using the destination monitor's scale. Placement first moves to that monitor,
 then sets client size at its DPI, measures the resulting outer frame and clamps that actual frame.
 This avoids Windows WM_DPICHANGED scaling an already destination-sized client twice.
+Kinds can opt into content-fit sizing with `fit_content` in the per-kind spec. The form is a
+shared `.cd-dialog-fit` column (App.css) that fills the window: a `.cd-dialog-fit-body` that
+scrolls (`overflow: auto`) above a pinned `.cd-dialog-fit-footer` button row, so the buttons stay
+reachable even when the window is shorter than the content. The form measures its natural height
+once after fonts are ready, with a bounded wait, lifting the column's height and the body's clip
+while it measures, and sends `contentHeight` (CSS px) and `pixelRatio` in its `ready` message.
+Both sides accept only a finite `contentHeight` of at most 4096 and a `pixelRatio` from 0.5 to 8;
+the form sends an empty `ready` otherwise and the native host rejects such a payload, so the spec
+size applies. When `ready` arrives the host records the window's native scale factor with it, and
+at reveal converts the measurement through that scale (physical height ÷ scale at measurement),
+so a display-scale change between measurement and reveal neither doubles nor collapses the
+height; placement then sizes the client at the destination's scale. The inner height is never
+below the kind's minimum, every resize, the first included, is bounded by the destination work
+area, and the result is clamped through the same move-then-resize-then-clamp placement. Reopening
+does not resize, and later content growth (fields wrapping in a narrow window, a long message)
+scrolls the body instead of triggering another measurement or resize.
 `dialog-positions.json` remembers logical
 position, monitor identity and normalized work-area offsets per kind. Removed monitors recover
 onto the owner's monitor. Genuine moves are debounced; hidden, minimized, maximized, fullscreen,

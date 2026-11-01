@@ -18,7 +18,6 @@ import { type ParsedMolfileGraph, parseMolfileGraph } from "@chemdraft/clipboard
 import { isDefaultCenteredDoubleBond, nativeBondOrderResolution, ringInteriorDoubleBondSides } from "@chemdraft/layout-engine";
 import { nativeElementFromAtomLabel, nativeSingleBondGraphMetadata } from "./atoms";
 import {
-  clamp,
   distance,
   firstPage,
   nextObjectId,
@@ -27,6 +26,7 @@ import {
 } from "./shared";
 
 import { documentDrawingDefaults, type DocumentDrawingDefaults } from "./drawingDefaults";
+import { pageConstrainedShift } from "./pageConstraint";
 
 export type NativeDoubleBondSide = NonNullable<MoleculeBond["display"]>["doubleBondSide"];
 
@@ -509,17 +509,13 @@ export function scaleParsedMolfileAtoms(
     y: atom.y + point.y - center.y
   }));
   if (!constrainToPage) return atoms;
-  const geometry = moleculeGeometryFromAtoms(atoms);
-  const boundedX = clamp(geometry.x, 0, Math.max(0, page.width - geometry.width));
-  const boundedY = clamp(geometry.y, 0, Math.max(0, page.height - geometry.height));
-  const shiftX = boundedX - geometry.x;
-  const shiftY = boundedY - geometry.y;
+  const shift = pageConstrainedShift(page, moleculeGeometryFromAtoms(atoms));
 
-  if (Math.abs(shiftX) > 0.001 || Math.abs(shiftY) > 0.001) {
+  if (shift.x !== 0 || shift.y !== 0) {
     atoms = atoms.map((atom) => ({
       ...atom,
-      x: atom.x + shiftX,
-      y: atom.y + shiftY
+      x: atom.x + shift.x,
+      y: atom.y + shift.y
     }));
   }
 
