@@ -2041,8 +2041,7 @@ describe("documents in one window", () => {
       previous.unrestoredTabs = [kept]; native.session = previous;
       await remount();
       expect(tabs()).toHaveLength(1);
-      expect(pendingPrompt?.prompt.title).toBe("1 drawing didn't open");
-      await modalButton("Cancel");
+      expect(pendingPrompt).toBeUndefined();
       await paste("Fresh work beside newly readable recovery");
       expect((await flush()).unrestoredTabs).toEqual([kept]);
     });
@@ -2054,8 +2053,7 @@ describe("documents in one window", () => {
       previous.tabs![0] = corrupt; native.session = previous;
       await remount();
       expect(tabs()).toHaveLength(1);
-      expect(pendingPrompt?.prompt.title).toBe("1 drawing didn't open");
-      await modalButton("Cancel");
+      expect(pendingPrompt).toBeUndefined();
       await paste("Fresh work beside recovery");
       expect((await flush()).unrestoredTabs).toEqual([corrupt]);
     });
@@ -2066,12 +2064,29 @@ describe("documents in one window", () => {
       await remount();
       expect(tabs()).toHaveLength(1);
       expect(bridge().snapshot().document.title).toBe("Untitled");
-      expect(pendingPrompt?.prompt.title).toBe("3 drawings didn't open");
-      await modalButton("Cancel");
+      expect(pendingPrompt).toBeUndefined();
       native.saveSession.mockClear(); await flush();
       expect(native.saveSession).not.toHaveBeenCalled();
       await paste("New run with recovery");
       expect((await flush()).unrestoredTabs).toEqual(previous.unrestoredTabs);
+    });
+
+
+    it.each([true, false])("shows the kept-drawings prompt only when not starting fresh (fresh %s)", async enabled => {
+      saveStartWithFreshDocument(enabled);
+      const previous = threeTabSession();
+      const kept = { ...previous.tabs![0]!, extraRecoveryData: { keep: true } };
+      const corrupt = { ...previous.tabs![1]!, contents: "not a document", extraRecoveryData: { keep: true } };
+      previous.tabs![1] = corrupt; previous.unrestoredTabs = [kept]; native.session = previous;
+      await remount();
+      if (enabled) {
+        expect(pendingPrompt).toBeUndefined();
+        expect(tabs()).toHaveLength(1);
+        await paste("Fresh work beside recovery");
+        expect((await flush()).unrestoredTabs).toEqual(expect.arrayContaining([kept, corrupt]));
+      } else {
+        expect(pendingPrompt?.prompt.title).toMatch(/didn't open/);
+      }
     });
   });
 

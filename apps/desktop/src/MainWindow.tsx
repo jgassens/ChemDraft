@@ -9508,7 +9508,7 @@ export function MainWindow({
           documentSessionHydratedRef.current = true;
           if (startWithFreshDocument) setSessionStartupCompleted(true);
           perfHook(() => perfCanvasReady());
-          if (unrestoredSessionTabsRef.current.length) {
+          if (unrestoredSessionTabsRef.current.length && !startWithFreshDocument) {
             keptDrawingsPromptRef.current = "notice";
             setKeptDrawingsPrompt("notice");
             return;
