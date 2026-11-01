@@ -1,7 +1,7 @@
 import { pastedStructureDepictionFromMolfile, type PastedStructureDepiction } from "@chemdraft/document-workflow-core";
 import type { Smiles2DOptions } from "@chemdraft/rdkit-adapter";
 import type { DepictionEngineAvailability } from "@chemdraft/rdkit-adapter/depiction";
-import { gatePasteDepiction, pasteDepictionHasOverlaps } from "./qualityGate";
+import { gatePasteDepiction, standardPasteDepiction } from "./qualityGate";
 
 export interface PasteDepiction {
   depiction: PastedStructureDepiction;
@@ -46,8 +46,7 @@ export async function depictInWorker(
       ...options,
       openUnspecifiedDoubleBonds: true,
       onStandardMolfile: (molfile) => {
-        const standard = fromMolfile(molfile);
-        if (!pasteDepictionHasOverlaps(standard, smiles)) onStandard(standard);
+        onStandard(standardPasteDepiction(fromMolfile(molfile)));
       }
     })), smiles, options);
   } catch (error) {

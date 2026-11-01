@@ -5415,13 +5415,39 @@ export function planMoleculeAtomLabels(
   });
 }
 
-/** The same padded label geometry used by canvas, bond clipping and SVG export. */
+/** Glyph extents at the renderer's run positions, without bond-clipping padding.
+ * SVG/canvas text uses dy=0.35em, not a vertically centred em box. Keeping the
+ * clipping envelope here used to report separated acid labels as overlapping.
+ * Helvetica/Arial advances are shared with anchored label placement; cap height
+ * and descenders conservatively enclose the sans-serif ink on both platforms. */
+export function atomLabelGlyphBounds(plan: AtomLabelPlan): LayoutBounds {
+  const boxes = plan.layout.runs.map(run => {
+    const size = atomLabelRunFontSize(run.script, plan.drawingStyle) ?? plan.fontSizePx;
+    const width = atomLabelRunAdvance(run, plan.drawingStyle);
+    // Signs occupy the middle of the em, unlike cap letters. In particular a
+    // minus must not acquire a cap-height box above a negatively charged O.
+    const ascent = run.text === "-" ? 0.31 : run.text === "+" ? 0.60 : 0.75;
+    const descent = run.text === "-" ? -0.21 : run.text === "+" ? -0.10 : /[gjpqy]/.test(run.text) ? 0.23 : 0.02;
+    return {
+      x: run.x - (run.textAnchor === "middle" ? width / 2 : run.textAnchor === "end" ? width : 0),
+      y: run.y + size * (0.35 - ascent),
+      width,
+      height: size * (ascent + descent)
+    };
+  });
+  const x = Math.min(...boxes.map(box => box.x)), y = Math.min(...boxes.map(box => box.y));
+  return { x, y, width: Math.max(...boxes.map(box => box.x + box.width)) - x,
+    height: Math.max(...boxes.map(box => box.y + box.height)) - y };
+}
+
+/** Collision boxes follow the drawn glyphs; clipping/halos retain their own padding. */
 export function moleculeLayoutLabelBoxes(object: MoleculeObject): LayoutLabelBox[] {
   const indices = new Map(object.atoms.map((atom, i) => [atom.id, i]));
-  return planMoleculeAtomLabels(object).map(plan => ({
-    atom: indices.get(plan.atom.id)!, x: plan.anchor.x + plan.layout.bounds.x,
-    y: plan.anchor.y + plan.layout.bounds.y, width: plan.layout.bounds.width, height: plan.layout.bounds.height
-  }));
+  return planMoleculeAtomLabels(object).map(plan => {
+    const bounds = atomLabelGlyphBounds(plan);
+    return { atom: indices.get(plan.atom.id)!, x: plan.anchor.x + bounds.x,
+      y: plan.anchor.y + bounds.y, width: bounds.width, height: bounds.height };
+  });
 }
 
 /** Page-axis bounds of a caption's stored frame, using the same pivot as text SVG rendering. */

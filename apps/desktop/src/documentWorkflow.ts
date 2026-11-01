@@ -1,6 +1,5 @@
 import { formulaSpansFromText } from "@chemdraft/document-workflow-core";
-import { nativeMoleculeLayoutQuality } from "./depiction2d/qualityGate";
-export { nativeMoleculeLayoutQuality } from "./depiction2d/qualityGate";
+import { nativeMoleculeLayoutQuality } from "./depiction2d/layoutQuality";
 import { planObjectArrangement, moleculeAnchorForArrangement, moleculeVisualBoundsForArrangement, textVisualBoundsForArrangement, type ArrangementLayout, type ArrangementOptions, type ArrangementItem, type LayoutBounds } from "@chemdraft/layout-engine";
 import { snapRotationDegrees } from "./rotationSnap";
 import { snapPlacementDegrees } from "./placementSnap";
