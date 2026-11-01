@@ -418,14 +418,21 @@ export function nativeAtomValidationState(
     if (atom.labelLiteral === true) {
       const spelled = nativeSingleHeavyElementLabelValence(symbol);
       if (spelled && !nativeLiteralAtomValenceComplete(spelled.element, valenceUsed + spelled.hydrogens, effectiveFormalCharge)) {
+        const total = valenceUsed + spelled.hydrogens;
+        const expected = nativeAtomValenceForCharge(spelled.element, effectiveFormalCharge);
+        const bondCount = (count: number) => `${count} bond${count === 1 ? "" : "s"}`;
+        const chargeText = effectiveFormalCharge === 0
+          ? "neutral"
+          : `${spelled.element} with charge ${effectiveFormalCharge > 0 ? "+" : ""}${effectiveFormalCharge}`;
+        const message = `${symbol} puts ${bondCount(total)} on ${spelled.element} (${valenceUsed} from bonds to other atoms + ${spelled.hydrogens} H); ${chargeText}${effectiveFormalCharge === 0 ? ` ${spelled.element}` : ""} normally makes ${expected}.`;
         return {
           atomId: atom.id,
           element: symbol,
           valenceUsed,
           formalCharge: effectiveFormalCharge,
           valid: false,
-          invalidReason: `${symbol} accounts for ${valenceUsed + spelled.hydrogens} of ${nativeAtomValenceForCharge(spelled.element, effectiveFormalCharge)} bonds.`,
-          invalidDetail: `${symbol} atom ${atom.id} accounts for ${valenceUsed + spelled.hydrogens} of ${nativeAtomValenceForCharge(spelled.element, effectiveFormalCharge)} bonds.`
+          invalidReason: message,
+          invalidDetail: `${symbol} atom ${atom.id}: ${message}`
         };
       }
     }
@@ -732,6 +739,14 @@ export function nativeAtomLabelFreeValence(
     return [...Array(nativeAtomInvalidGrowthLimit + 1).keys()]
       .find((external) => nativeLiteralAtomValenceComplete(reading.element, reading.hydrogens + external, labelCharge));
   }
+  return undefined;
+}
+
+/** The element at a label's attachment atom, when its connectivity is known. */
+export function nativeAtomLabelHeadElement(label: string, context: NativeAtomLabelContext = {}): string | undefined {
+  const reading = nativeAtomLabelReading(label, context);
+  if (reading.kind === "element" || reading.kind === "spelled") return reading.element;
+  if (reading.kind === "group") return nativeLabelGroupAttachment(reading.group).element;
   return undefined;
 }
 

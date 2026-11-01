@@ -17,13 +17,13 @@ import { installRealRdkitModuleLoader } from "../../../packages/rdkit-adapter/sr
 import { depictInWorker } from "./depiction2d/depict";
 import {
   applyEditorSaveResultWithLabelWarnings, createNativeMolfileMolecule,
-  applyNativeAtomElementTarget, applyNativeAtomLabelDraft, createNativeSavePayload, openNativeDocument
+  applyNativeAtomElementTarget, applyNativeAtomLabelDraft, commitNativeAtomLabelTarget, createNativeSavePayload, openNativeDocument
 } from "./documentWorkflow";
 
 const point = { x: 200, y: 200 };
 
 describe.each([false, true])("isotope relabelling (typed=%s)", (literal) => {
-  it.each(["N", "Cl", "D", "T", "C", "CH3"])("updates carbon-13 when relabelled to %s", (element) => {
+  it.each(["N", "Cl", "D", "T", "C"])("updates carbon-13 when relabelled to %s", (element) => {
     const document = createEmptyDocument();
     const molecule = createSmilesMolecule(document, point, {
       atoms: [{ element: "C", isotope: 13, x: 0, y: 0, charge: 0 }], bonds: []
@@ -53,6 +53,32 @@ describe.each([false, true])("isotope relabelling (typed=%s)", (literal) => {
     expect(relabelled.chemistry?.isotopeLabels).toEqual(
       element === "C" ? ["13C"] : element === "D" ? ["2H"] : element === "T" ? ["3H"] : []
     );
+  });
+
+  it("refuses to relabel carbon-13 as CH3 and keeps the isotope", () => {
+    const document = createEmptyDocument();
+    const molecule = createSmilesMolecule(document, point, {
+      atoms: [{ element: "C", isotope: 13, x: 0, y: 0, charge: 0 }], bonds: []
+    }, "[13CH4]");
+    if (molecule.type !== "molecule") throw new Error("Expected a molecule");
+    const atom = molecule.atoms[0]!;
+    atom.labelVisible = true;
+    if (literal) atom.labelLiteral = true;
+    const inserted = applyPatches(document, [
+      { op: "addObject", pageId: document.pages[0]!.id, object: molecule }
+    ]);
+    const target = { kind: "atom" as const, objectId: molecule.id, atomId: atom.id, distanceToPointer: 0 };
+    const result = literal
+      ? applyNativeAtomLabelDraft(inserted, target, "CH3", { element: "C", literal: true })
+      : applyNativeAtomElementTarget(inserted, target, "CH3");
+    expect(result).toBe(inserted);
+    const unchanged = result.pages[0]!.objects[0];
+    if (unchanged?.type !== "molecule") throw new Error("Expected a molecule");
+    expect(unchanged.atoms[0]).toMatchObject({ element: "C", isotope: 13 });
+    expect(unchanged.chemistry?.isotopeLabels).toEqual(["13C"]);
+    const refusal = commitNativeAtomLabelTarget(inserted, target, "CH3", { literal });
+    expect(refusal.document).toBe(inserted);
+    expect(refusal.refusal).toBe("Cannot relabel 13C as CH3: the label cannot keep isotope 13; clear the isotope first to relabel");
   });
 });
 
