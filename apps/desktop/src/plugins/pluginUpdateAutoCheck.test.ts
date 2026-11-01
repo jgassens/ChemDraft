@@ -314,14 +314,20 @@ describe("daily official-plugin checks", () => {
     expect(deps.check).toHaveBeenCalledOnce();
   });
 
-  it.each([undefined, "NaN", "1000000001", String(1_000_000_000 - AUTO_CHECK_INTERVAL_MS)])(
-    "is due with missing, invalid, future or day-old timestamp %s", async value => {
-      const { checker, deps } = setup();
-      if (value !== undefined) deps.storage.setItem(LAST_PLUGIN_CHECK_KEY, value);
-      await checker.automatic(context);
-      expect(deps.check).toHaveBeenCalledOnce();
-    }
-  );
+  it.each([
+    { value: undefined, due: true },
+    { value: "NaN", due: true },
+    { value: "1000000001", due: true },
+    { value: String(1_000_000_000 - AUTO_CHECK_INTERVAL_MS), due: true },
+    { value: "999999999", due: false }
+  ])("checks timestamp $value with fresh matching results (due: $due)", async ({ value, due }) => {
+    const { checker, deps, saveSuccess } = setup();
+    saveSuccess();
+    if (value === undefined) deps.storage.removeItem(LAST_PLUGIN_CHECK_KEY);
+    else deps.storage.setItem(LAST_PLUGIN_CHECK_KEY, value);
+    await checker.automatic(context);
+    expect(deps.check).toHaveBeenCalledTimes(due ? 1 : 0);
+  });
 
   it("skips checks for a recent success, then becomes due at 24 hours", async () => {
     const { checker, deps, advance, saveSuccess } = setup();
