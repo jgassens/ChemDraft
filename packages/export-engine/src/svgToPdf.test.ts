@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createImageGraphicObject } from "@chemdraft/chem-core";
 import { exportSvgToPdf } from "@chemdraft/export-engine/pdf";
 import { Resvg } from "@resvg/resvg-js";
+import { largePicturePng } from "./pdf.testUtils";
 
 beforeEach(() => {
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
@@ -16,6 +17,23 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("exportSvgToPdf", () => {
+  it.each(["ASCII", "UTF-8"])("rejects more than 20 MB of %s markup without pictures", async (encoding) => {
+    const text = encoding === "ASCII" ? "a".repeat(20 * 1024 * 1024) : "é".repeat(11 * 1024 * 1024);
+    await expect(exportSvgToPdf(`<svg><text>${text}</text></svg>`, { outputWidth: 192, outputHeight: 96 }))
+      .rejects.toThrow("Cannot export PDF: SVG exceeds 20 MB.");
+  }, 20_000);
+
+  it.each(["no mapping", "unmatched object", "nested image", "text"])("counts a large picture URI as markup with %s", async (placement) => {
+    const picture = createImageGraphicObject({ id: "picture", mimeType: "image/png",
+      dataBase64: largePicturePng().toString("base64"), center: { x: 40, y: 40 } });
+    const href = `data:image/png;base64,${picture.data.image!.dataBase64}`;
+    const image = `<g data-object-id="${placement === "unmatched object" ? "other" : "picture"}"><image href="${href}"/></g>`;
+    const contents = placement === "text" ? `<text>${href}</text>` : placement === "nested image" ? `<g>${image}</g>` : image;
+    await expect(exportSvgToPdf(`<svg>${contents}</svg>`, { outputWidth: 192, outputHeight: 96,
+      ...(placement === "no mapping" ? {} : { pictures: new Map([[picture.id, picture]]), pageSize: { width: 192, height: 96 } }) }))
+      .rejects.toThrow("Cannot export PDF: SVG exceeds 20 MB.");
+  }, 20_000);
+
   it("renders SVG text and paths as vectors at CSS pixel dimensions", async () => {
     const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="192" height="96" viewBox="0 0 192 96"><path d="M10 20 L100 20" stroke="black"/><text x="10" y="50">Spectrum</text></svg>';
     const { bytes, warnings } = await exportSvgToPdf(svg, { outputWidth: 192, outputHeight: 96, compress: false });

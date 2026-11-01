@@ -16,9 +16,9 @@ import { Resvg } from "@resvg/resvg-js";
 import { jsPDF } from "jspdf";
 import { exportDocumentToCdxml } from "@chemdraft/cdx-compat";
 import { describe, expect, it } from "vitest";
-import { exportDocumentToPdf } from "./pdf";
+import { exportDocumentToPdf, exportSvgToPdf } from "./pdf";
 import { exportDocumentToSvg } from "./svg";
-import { extractPdfPositionedTextRuns, extractPdfTextRuns, pdfFontStreams, sfntName, sfntTable, standardFontTextWidth } from "./pdf.testUtils";
+import { extractPdfPositionedTextRuns, extractPdfTextRuns, largePicturePng, pdfFontStreams, sfntName, sfntTable, standardFontTextWidth } from "./pdf.testUtils";
 import { multilineScriptedTextDocument, scriptedTextDocument } from "./scriptedText.fixture";
 import { ringHaloDocument } from "../../layout-engine/src/ringFillHalos.fixture";
 import { nativeMoleculeRings, planPageSvgRender } from "@chemdraft/layout-engine";
@@ -34,6 +34,44 @@ function filledRingFixture(): MoleculeObject {
 const timestamp = "2026-05-29T00:00:00.000Z";
 
 describe("exportDocumentToPdf", () => {
+  it.each(["document", "SVG"])("draws a paste-accepted ~16.8 MB PNG through the %s PDF caller", async (caller) => {
+    const png = largePicturePng();
+    expect(png.length).toBeGreaterThan(16_700_000);
+    expect(png.length).toBeLessThan(16_900_000);
+    const picture = createImageGraphicObject({ id: "large-picture", mimeType: "image/png",
+      dataBase64: png.toString("base64"), center: { x: 400, y: 300 } });
+    const document = createEmptyDocument();
+    const page = document.pages[0]!;
+    const frame = { ...picture, x: 100, y: 100, width: 200, height: 200 };
+    page.objects = [frame];
+    const svg = exportDocumentToSvg(document).contents;
+    expect(Buffer.byteLength(svg)).toBeGreaterThan(20 * 1024 * 1024);
+    const result = await withPdfDom(domParser => caller === "document"
+      ? exportDocumentToPdf(document, { domParser, compress: false })
+      : exportSvgToPdf(svg, { domParser, compress: false, outputWidth: page.width, outputHeight: page.height,
+        pictures: new Map([[picture.id, frame]]), pageSize: page }));
+    const pdf = Buffer.from(result.bytes).toString("latin1");
+    expect(pdf).toContain("/Subtype /Image");
+    expect(pdf).toContain("/Width 2048");
+    expect(pdf).toContain("/Height 2048");
+    expect(pdf).toMatch(/\/I\d+ Do/);
+    expect(result.warnings).toEqual([]);
+  }, 20_000);
+
+  it.each(["document", "SVG"])("rejects pictures over 25 MB with a specific error in the %s PDF caller", async (caller) => {
+    const picture = createImageGraphicObject({ id: "too-large", mimeType: "image/svg+xml",
+      dataBase64: btoa('<svg xmlns="http://www.w3.org/2000/svg"/>'), center: { x: 40, y: 40 } });
+    picture.data.image!.dataBase64 = Buffer.alloc(26 * 1024 * 1024).toString("base64");
+    picture.data.image!.mimeType = "image/png";
+    const document = createEmptyDocument();
+    const page = document.pages[0]!;
+    page.objects = [picture];
+    await expect(caller === "document" ? exportDocumentToPdf(document)
+      : exportSvgToPdf("<svg/>", { outputWidth: page.width, outputHeight: page.height,
+        pictures: new Map([[picture.id, picture]]), pageSize: page }))
+      .rejects.toThrow("Cannot export PDF: Image object too-large is 26.0 MB; the limit is 25 MB.");
+  });
+
   it("skips picture-less graphics with format-specific warnings", async () => {
     const document = createEmptyDocument();
     document.pages[0]!.objects = [{ id: "missing-picture", type: "graphic", graphicKind: "image",

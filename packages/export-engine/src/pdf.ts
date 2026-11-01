@@ -1,5 +1,6 @@
 import {
   CSS_PX_PER_INCH,
+  GraphicObjectSchema,
   type ChemDraftDocument,
   type GraphicObject
 } from "@chemdraft/chem-core";
@@ -12,6 +13,7 @@ import { preparePdfFonts } from "./pdfFonts";
 import { preparePdfHaloPaint } from "./pdfHaloPaint";
 
 const svg2pdf = resolveSvg2pdf(svg2pdfModule);
+const SVG_MARKUP_LIMIT_BYTES = 20 * 1024 * 1024;
 
 export interface PdfExportOptions {
   pageIndex?: number;
@@ -172,7 +174,20 @@ function cssPxToPdfPt(value: number): number {
 }
 
 function parseSvgElement(svg: string, domParser: DOMParser | undefined, pictures: ReadonlyMap<string, GraphicObject>): Element {
-  assertBoundedSvg(svg);
+  const pictureHrefs = new Map<string, string>();
+  let pictureByteAllowance = 0;
+  for (const [id, picture] of pictures) {
+    const result = GraphicObjectSchema.safeParse(picture);
+    if (!result.success) throw new Error(`Cannot export PDF: ${result.error.issues[0]!.message}`);
+    const image = result.data.graphicKind === "image" ? result.data.data.image : undefined;
+    if (!image) continue;
+    const href = `data:${image.mimeType};base64,${image.dataBase64}`;
+    pictureHrefs.set(id, href);
+    pictureByteAllowance += href.length;
+  }
+  // Bound parser input by markup plus validated pictures. Only references actually belonging
+  // to those pictures are deducted from the markup budget after parsing.
+  let markupBytes = assertBoundedSvg(svg, pictureByteAllowance);
   const parser = domParser ?? createDomParser();
   const parsed = parser.parseFromString(svg, "image/svg+xml");
   const parserError = parsed.getElementsByTagName("parsererror")[0];
@@ -197,6 +212,10 @@ function parseSvgElement(svg: string, domParser: DOMParser | undefined, pictures
       }
       for (const attribute of Array.from(element.attributes)) {
         const name = attribute.localName.toLowerCase();
+        if (name === "href" && isMappedPictureHref(element, attribute.value, parsed.documentElement, pictureHrefs)) {
+          // Picture data URIs are ASCII; all surrounding SVG syntax still counts as markup.
+          markupBytes -= attribute.value.length;
+        }
         if (name.startsWith("on") || attribute.name.toLowerCase() === "xml:base") {
           throw new Error("Cannot export PDF: active SVG attributes are not allowed.");
         }
@@ -214,7 +233,13 @@ function parseSvgElement(svg: string, domParser: DOMParser | undefined, pictures
     for (let child = node.lastChild; child; child = child.previousSibling) pending.push({ node: child, depth: depth + 1 });
   }
 
+  if (markupBytes > SVG_MARKUP_LIMIT_BYTES) throw new Error("Cannot export PDF: SVG exceeds 20 MB.");
   return parsed.documentElement;
+}
+
+function isMappedPictureHref(element: Element, href: string, svgRoot: Element, pictureHrefs: ReadonlyMap<string, string>): boolean {
+  if (element.localName !== "image" || element.parentElement?.parentElement !== svgRoot) return false;
+  return pictureHrefs.get(element.parentElement.getAttribute("data-object-id") ?? "") === href;
 }
 
 /** These images are skipped with a warning by the picture renderer, never handed to svg2pdf. */
@@ -238,8 +263,8 @@ function assertLocalSvgCss(value: string): void {
   }
 }
 
-function assertBoundedSvg(svg: string): void {
-  const limit = 20 * 1024 * 1024;
+function assertBoundedSvg(svg: string, pictureByteAllowance: number): number {
+  const limit = SVG_MARKUP_LIMIT_BYTES + pictureByteAllowance;
   if (typeof svg !== "string" || svg.length > limit) throw new Error("Cannot export PDF: SVG exceeds 20 MB.");
   let bytes = 0;
   for (const character of svg) {
@@ -273,6 +298,7 @@ function assertBoundedSvg(svg: string): void {
     if (depth < 0) throw new Error("Cannot export PDF: generated SVG could not be parsed.");
   }
   if (depth !== 0) throw new Error("Cannot export PDF: generated SVG could not be parsed.");
+  return bytes;
 }
 
 function createDomParser(): DOMParser {
