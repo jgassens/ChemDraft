@@ -800,6 +800,14 @@
     "returnType": "Result<(), String>"
   },
   {
+    "file": "panel_window_controls.rs",
+    "name": "hide_plugin_panel_from_main",
+    "async": true,
+    "generics": "",
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, label: String,",
+    "returnType": "Result<(), String>"
+  },
+  {
     "file": "plugin_package.rs",
     "name": "read_plugin_package",
     "async": false,
