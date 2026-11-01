@@ -87,7 +87,9 @@ describe("rigid fragment overlap repair", () => {
   });
   it("rejects the OMe swing whose turned label collides with isolated water", () => {
     const ring = polygon(6, { x: 0, y: 0 }, 105 * Math.PI / 180).map(p => ({ x: p.x * 30, y: p.y * 30 }));
-    const atoms = [...ring, { x: ring[0].x * 2, y: ring[0].y * 2 }, { x: -44.5, y: 36.5 }];
+    // Second isolated water (atom 8): ink-sized label boxes leave the base MeO label clear of atom 7, so atom 8 gives
+    // the base drawing a non-bonded label-label defect (6,8) that the 30-degree swing clears but the OMe turn does not hit.
+    const atoms = [...ring, { x: ring[0].x * 2, y: ring[0].y * 2 }, { x: -44.5, y: 36.5 }, { x: 1, y: 58.5 }];
     const bonds = [...cycle(6), { from: 0, to: 6 }];
     const molecule: MoleculeObject = {
       id: "methoxy-water", type: "molecule", x: -60, y: -60, width: 120, height: 120, rotation: 0,
@@ -139,7 +141,7 @@ describe("rigid fragment overlap repair", () => {
     const labels = vi.fn((points: readonly LayoutPoint[]) => moleculeLayoutLabelBoxes({ ...molecule,
       atoms: atoms.map((a, i) => ({ ...a, ...points[i] })) }));
     expect(evaluateLayoutQuality(atoms, bonds).hardDefects).toBe(0);
-    expect(evaluateLayoutQuality(atoms, bonds, 30, undefined, undefined, labels(atoms)).hardDefects).toBe(3);
+    expect(evaluateLayoutQuality(atoms, bonds, 30, undefined, undefined, labels(atoms)).hardDefects).toBe(2); // was 3: the (n-2,n-1) label-label contact is between bonded atoms, now exempt
     labels.mockClear();
     const snapshot = structuredClone(molecule);
     const start = performance.now();
