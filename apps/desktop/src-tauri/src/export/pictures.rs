@@ -3,8 +3,10 @@
 //! resvg is built without `raster-images`, so it never decodes a bitmap. The webview decodes each
 //! PNG picture instead (`rasterPictureDecode.ts`) and sends straight-alpha RGBA8 pixels that are
 //! checked here by size and length alone. In the SVG, the picture's `<image>` keeps its frame and
-//! z-order but carries an id and an empty stand-in SVG of the picture's pixel size, so usvg still
+//! z-order but carries an id and a blank stand-in SVG of the picture's pixel size, so usvg still
 //! resolves its placement (`preserveAspectRatio`, transforms, clipping) exactly as for any image.
+//! The stand-in holds one invisible path whose id is the picture's, so every copy of it names its
+//! picture, even where usvg has dropped the `<image>`'s own id.
 //! The tree is then rendered node by node: everything through resvg, and each stand-in from the
 //! supplied pixels with the same transform and sampling resvg would give a decoded bitmap.
 //!
@@ -12,7 +14,7 @@
 //! marker) is not drawn and gets a warning, counted per rendered copy, as do pictures the webview
 //! refused to decode or left out because the export has more than `MAX_PICTURES` of them. usvg
 //! drops the ids of copies made by reference (`<use>`, `<feImage>`), so those copies are never
-//! drawn either; they are found by shape and counted as left out.
+//! drawn either; they are found by the picture id inside their stand-in and counted as left out.
 
 use std::collections::{HashMap, HashSet};
 
@@ -30,7 +32,8 @@ const SVG_NAMESPACE: &str = "http://www.w3.org/2000/svg";
 const PLACEHOLDER_HREF_START: &str =
     "data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='";
 const PLACEHOLDER_HREF_MIDDLE: &str = "'%20height='";
-const PLACEHOLDER_HREF_END: &str = "'/%3E";
+const PLACEHOLDER_HREF_ID: &str = "'%3E%3Cpath%20id='";
+const PLACEHOLDER_HREF_END: &str = "'%20d='M0%200H1V1H0Z'%20fill='none'/%3E%3C/svg%3E";
 /// The stand-in for a PNG picture the webview neither decoded nor sent, because the export already
 /// had `MAX_PICTURES` pictures; `RasterPictureOverCountHref` is the same string.
 pub(super) const OVER_COUNT_HREF: &str = "data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='1'%20height='1'%20data-chemdraft-omitted='count'/%3E";
@@ -77,25 +80,38 @@ pub(super) struct Copies {
 pub(super) struct StandIn {
     /// Inside a `<marker>`: usvg strips ids there, so the picture can never be placed.
     in_marker: bool,
-    /// The stand-in or an ancestor is referenced by id (`<use>`, `<feImage>`). usvg strips the ids
-    /// of every copy made that way, so the copies cannot be told apart from other images by id.
-    reused: bool,
 }
 
-/// The empty SVG standing in for a picture; `rasterPicturePlaceholderHref` builds the same string.
-pub(super) fn placeholder_href(width: u32, height: u32) -> String {
+/// The blank SVG standing in for picture `id`, of the picture's pixel size: one invisible path
+/// carrying the id. `rasterPicturePlaceholderHref` builds the same string.
+pub(super) fn placeholder_href(width: u32, height: u32, id: &str) -> String {
     format!(
-        "{PLACEHOLDER_HREF_START}{width}{PLACEHOLDER_HREF_MIDDLE}{height}{PLACEHOLDER_HREF_END}"
+        "{PLACEHOLDER_HREF_START}{width}{PLACEHOLDER_HREF_MIDDLE}{height}{PLACEHOLDER_HREF_ID}{id}{PLACEHOLDER_HREF_END}"
     )
 }
 
-/// Whether `href` is exactly a stand-in written by `placeholder_href`, of any size.
-fn is_placeholder_href(href: &str) -> bool {
+/// Whether `href` is exactly the stand-in `placeholder_href` writes for picture `id`, of any size.
+fn is_placeholder_href(href: &str, id: &str) -> bool {
     let is_side = |digits: &str| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit());
     href.strip_prefix(PLACEHOLDER_HREF_START)
         .and_then(|rest| rest.strip_suffix(PLACEHOLDER_HREF_END))
+        .and_then(|rest| rest.strip_suffix(id))
+        .and_then(|rest| rest.strip_suffix(PLACEHOLDER_HREF_ID))
         .and_then(|rest| rest.split_once(PLACEHOLDER_HREF_MIDDLE))
         .is_some_and(|(width, height)| is_side(width) && is_side(height))
+}
+
+/// The picture id a stand-in names: the id of the only node of its SVG, an invisible path. usvg
+/// parses every `<image>`'s href afresh into that image's own tree (`Tree::from_data_nested`), so
+/// the id survives on every copy, whatever usvg did to the ids of the copied elements themselves.
+fn stand_in_picture_id(image: &usvg::Image) -> Option<&str> {
+    let usvg::ImageKind::SVG(tree) = image.kind() else {
+        return None;
+    };
+    match tree.root().children() {
+        [usvg::Node::Path(path)] if !path.is_visible() => Some(path.id()),
+        _ => None,
+    }
 }
 
 /// The href of an SVG `<image>` that has exactly one (in any namespace usvg reads).
@@ -111,12 +127,14 @@ fn single_image_href<'a>(node: &usvg::roxmltree::Node<'a, '_>) -> Option<&'a str
     hrefs.next().is_none().then_some(href.value())
 }
 
-/// A picture stand-in whose pixels were not supplied: a generated id and a stand-in href. An
-/// image whose id merely starts like a generated one is judged by its href like any other.
+/// A picture stand-in whose pixels were not supplied: a generated id and the stand-in href for
+/// that id. An image whose id merely starts like a generated one is judged by its href like any
+/// other.
 pub(super) fn is_unsupplied_stand_in(node: &usvg::roxmltree::Node<'_, '_>) -> bool {
-    node.attribute("id")
-        .is_some_and(|id| id.starts_with(PICTURE_ID_PREFIX))
-        && single_image_href(node).is_some_and(is_placeholder_href)
+    node.attribute("id").is_some_and(|id| {
+        id.starts_with(PICTURE_ID_PREFIX)
+            && single_image_href(node).is_some_and(|href| is_placeholder_href(href, id))
+    })
 }
 
 /// A PNG picture the webview left out because the export had more than `MAX_PICTURES`.
@@ -241,8 +259,8 @@ impl SuppliedPictures {
 
     fn expected_href(&self, id: &str) -> Option<String> {
         Some(match self.pictures.get(id)? {
-            Supplied::Decoded(pixmap) => placeholder_href(pixmap.width(), pixmap.height()),
-            Supplied::Refused(_) => placeholder_href(1, 1),
+            Supplied::Decoded(pixmap) => placeholder_href(pixmap.width(), pixmap.height(), id),
+            Supplied::Refused(_) => placeholder_href(1, 1, id),
         })
     }
 
@@ -252,14 +270,6 @@ impl SuppliedPictures {
         &self,
         document: &usvg::roxmltree::Document<'_>,
     ) -> HashMap<String, StandIn> {
-        // Every id some element links to by href, whatever the element or namespace.
-        let referenced: HashSet<&str> = document
-            .descendants()
-            .filter(|node| node.is_element())
-            .flat_map(|node| node.attributes())
-            .filter(|attr| attr.name() == "href")
-            .filter_map(|attr| attr.value().trim().strip_prefix('#'))
-            .collect();
         let mut elements: HashMap<&str, Vec<usvg::roxmltree::Node<'_, '_>>> = HashMap::new();
         for node in document.descendants().filter(|node| node.is_element()) {
             if let Some(id) = node.attribute("id") {
@@ -280,12 +290,7 @@ impl SuppliedPictures {
                         ancestor.tag_name().name() == "marker"
                             && ancestor.tag_name().namespace() == Some(SVG_NAMESPACE)
                     });
-                    let reused = node.ancestors().any(|ancestor| {
-                        ancestor
-                            .attribute("id")
-                            .is_some_and(|id| referenced.contains(id))
-                    });
-                    (id.to_string(), StandIn { in_marker, reused })
+                    (id.to_string(), StandIn { in_marker })
                 })
             })
             .collect()
@@ -329,18 +334,11 @@ impl SuppliedPictures {
         // which has no pixels for them; report them rather than show them only in some places.
         renderer.mark_subroot_pictures(root, false);
         // Copies made by reference have lost their ids, so none of the above saw them.
-        let reused: Vec<(&str, u32, u32)> = pixmaps
-            .iter()
-            .filter(|&(&id, _)| stand_ins.get(id).is_some_and(|stand_in| stand_in.reused))
-            .map(|(&id, pixmap)| (id, pixmap.width(), pixmap.height()))
-            .collect();
-        if !reused.is_empty() {
-            let mut omitted = Vec::new();
-            find_copies_by_reference(root, stand_ins, false, &reused, &mut omitted);
-            renderer
-                .copies
-                .extend(omitted.into_iter().map(|id| (id, false)));
-        }
+        renderer.copies.extend(
+            find_copies_by_reference(root, &pixmaps)
+                .into_iter()
+                .map(|id| (id.to_string(), false)),
+        );
         let mut copies: HashMap<String, Copies> = HashMap::new();
         for (id, drawn) in renderer.copies {
             let entry = copies.entry(id).or_default();
@@ -456,43 +454,66 @@ fn premultiply(rgba: &mut [u8]) {
     }
 }
 
-/// Collects, for each copy of a picture made by reference (`<use>`, `<feImage>`), the reused
-/// pictures it may be a copy of. usvg strips the ids of such copies, so one shows up only as an
-/// empty SVG image outside any picture wrapper, of a stand-in's pixel size. It is never drawn, and
-/// is blamed on every reused picture of its size, as nothing in the tree tells them apart.
-fn find_copies_by_reference(
-    parent: &usvg::Group,
-    stand_ins: &HashMap<String, StandIn>,
-    in_picture: bool,
-    reused: &[(&str, u32, u32)],
-    omitted: &mut Vec<String>,
-) {
-    for node in parent.children() {
-        match node {
-            usvg::Node::Group(group) => {
-                let in_picture = in_picture || stand_ins.contains_key(group.id());
-                find_copies_by_reference(group, stand_ins, in_picture, reused, omitted);
-            }
-            usvg::Node::Image(image) if !in_picture => {
-                if let usvg::ImageKind::SVG(tree) = image.kind() {
-                    let size = image.size();
-                    if tree.root().children().is_empty() {
-                        omitted.extend(
-                            reused
-                                .iter()
-                                .filter(|&&(_, width, height)| {
-                                    size.width() == width as f32 && size.height() == height as f32
-                                })
-                                .map(|(id, _, _)| id.to_string()),
-                        );
-                    }
+/// The pictures in `pixmaps` with at least one copy made by reference: through `<use>` or
+/// `<feImage>`, directly or inside cloned content. Such copies are never drawn. usvg 0.47 clones
+/// a `<use>` target with every `id` ignored (svgtree `parse_svg_use_element`), and moves an
+/// `<feImage>` target's own, empty, image id onto its wrapper (filter `convert_image_inner`), so
+/// a copy has no picture wrapper; its stand-in still names the picture (`stand_in_picture_id`).
+/// A link that clones nothing (`<a href>`) leaves no such image, and an image whose stand-in names
+/// no supplied picture is never counted.
+///
+/// One visit per node: a clip path, mask, filter or pattern shared by several elements is entered
+/// once (it is the same `Arc`, and its copies are the same whichever element uses it), and the
+/// trees of SVG images are not entered, as no reference reaches inside an image. The result holds
+/// at most one entry per picture.
+fn find_copies_by_reference<'p>(
+    root: &usvg::Group,
+    pixmaps: &HashMap<&'p str, &tiny_skia::Pixmap>,
+) -> HashSet<&'p str> {
+    let mut search = CopySearch {
+        pixmaps,
+        entered: HashSet::new(),
+        omitted: HashSet::new(),
+    };
+    search.visit(root, false);
+    search.omitted
+}
+
+struct CopySearch<'p, 'm> {
+    pixmaps: &'m HashMap<&'p str, &'m tiny_skia::Pixmap>,
+    /// Subroots already searched, by address; the tree outlives the search.
+    entered: HashSet<*const usvg::Group>,
+    omitted: HashSet<&'p str>,
+}
+
+impl CopySearch<'_, '_> {
+    /// `in_picture`: inside a picture wrapper, whose image is the picture itself, not a copy.
+    fn visit(&mut self, parent: &usvg::Group, in_picture: bool) {
+        for node in parent.children() {
+            match node {
+                usvg::Node::Group(group) => {
+                    let in_picture = in_picture || self.pixmaps.contains_key(group.id());
+                    self.visit(group, in_picture);
                 }
+                usvg::Node::Image(image) => {
+                    if !in_picture {
+                        let picture = stand_in_picture_id(image)
+                            .and_then(|id| self.pixmaps.get_key_value(id));
+                        if let Some((&id, _)) = picture {
+                            self.omitted.insert(id);
+                        }
+                    }
+                    // Its own tree is a stand-in or an SVG picture, and no reference reaches in.
+                    continue;
+                }
+                usvg::Node::Path(_) | usvg::Node::Text(_) => {}
             }
-            _ => {}
+            node.subroots(|subroot| {
+                if self.entered.insert(std::ptr::from_ref(subroot)) {
+                    self.visit(subroot, false);
+                }
+            });
         }
-        node.subroots(|subroot| {
-            find_copies_by_reference(subroot, stand_ins, false, reused, omitted)
-        });
     }
 }
 
@@ -974,4 +995,110 @@ fn fill_clip_path(
     paint.anti_alias = path.rendering_mode().use_shape_antialiasing();
     paint.blend_mode = mode;
     pixmap.fill_path(path.data(), &paint, rule, transform, None);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ID: &str = "chemdraft-raster-picture-0";
+
+    fn parse(body: &str) -> usvg::Tree {
+        let svg = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">{body}</svg>"#
+        );
+        usvg::Tree::from_str(&svg, &usvg::Options::default()).expect("parse the test SVG")
+    }
+
+    #[test]
+    fn a_stand_in_names_its_picture_in_its_own_tree() {
+        let href = placeholder_href(144, 72, ID);
+        // `rasterPicturePlaceholderHref(144, 72, "chemdraft-raster-picture-0")` writes the same.
+        assert_eq!(
+            href,
+            "data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='144'%20height='72'%3E%3Cpath%20id='chemdraft-raster-picture-0'%20d='M0%200H1V1H0Z'%20fill='none'/%3E%3C/svg%3E"
+        );
+        assert!(is_placeholder_href(&href, ID));
+        for other_id in ["chemdraft-raster-picture-1", "picture-0", ""] {
+            assert!(!is_placeholder_href(&href, other_id), "{other_id}");
+        }
+        let unmarked =
+            "data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='144'%20height='72'/%3E";
+        assert!(!is_placeholder_href(unmarked, ID));
+
+        // usvg keeps the path's id inside the image's own tree, and sizes the image by the SVG.
+        let tree = parse(&format!(
+            r#"<image width="10" height="5" href="{href}"/><image width="10" height="5" href="{unmarked}"/>"#
+        ));
+        let images: Vec<&usvg::Image> = tree
+            .root()
+            .children()
+            .iter()
+            .filter_map(|node| match node {
+                usvg::Node::Group(group) => match group.children() {
+                    [usvg::Node::Image(image)] => Some(image.as_ref()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(images.len(), 2);
+        assert_eq!(stand_in_picture_id(images[0]), Some(ID));
+        assert_eq!(
+            (images[0].size().width(), images[0].size().height()),
+            (144.0, 72.0)
+        );
+        assert_eq!(stand_in_picture_id(images[1]), None);
+    }
+
+    #[test]
+    fn copies_by_reference_are_found_in_one_pass_with_one_entry_per_picture() {
+        let ids: Vec<String> = (0..MAX_PICTURES)
+            .map(|index| format!("{PICTURE_ID_PREFIX}{index}"))
+            .collect();
+        // A mask that copies every picture, shared (one `Arc`) by every masked group below.
+        let mut body = String::from(
+            r#"<defs><mask id="m" maskUnits="userSpaceOnUse" x="0" y="0" width="10" height="10">"#,
+        );
+        for id in &ids {
+            body.push_str(&format!(r##"<use href="#{id}"/>"##));
+        }
+        body.push_str("</mask></defs>");
+        for id in &ids {
+            body.push_str(&format!(
+                r#"<image id="{id}" width="1" height="1" href="{}"/>"#,
+                placeholder_href(1, 1, id)
+            ));
+        }
+        // Blank SVG images of every picture's size, which are no copies of anything.
+        let blank =
+            "data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='1'%20height='1'/%3E";
+        for _ in 0..1000 {
+            body.push_str(&format!(
+                r#"<image width="1" height="1" href="{blank}"/><g mask="url(#m)"><rect width="1" height="1"/></g>"#
+            ));
+        }
+        let tree = parse(&body);
+        let pixmap = tiny_skia::Pixmap::new(1, 1).expect("a 1 × 1 pixmap");
+        let pixmaps: HashMap<&str, &tiny_skia::Pixmap> =
+            ids.iter().map(|id| (id.as_str(), &pixmap)).collect();
+
+        let mut search = CopySearch {
+            pixmaps: &pixmaps,
+            entered: HashSet::new(),
+            omitted: HashSet::new(),
+        };
+        search.visit(tree.root(), false);
+        // Every picture once, though 1000 groups draw its copy, and the shared mask entered once:
+        // the only allocations are these two sets, bounded by the pictures and distinct subroots.
+        assert_eq!(search.omitted.len(), MAX_PICTURES);
+        assert!(ids.iter().all(|id| search.omitted.contains(id.as_str())));
+        assert_eq!(search.entered.len(), 1);
+
+        // Without the mask's copies, nothing is a copy: the pictures' own images are in their
+        // wrappers, and the blank images name no picture.
+        let unused = body.replace(r#" mask="url(#m)""#, "");
+        let tree = parse(&unused);
+        assert!(find_copies_by_reference(tree.root(), &pixmaps).is_empty());
+    }
 }

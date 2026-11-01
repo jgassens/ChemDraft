@@ -70,14 +70,15 @@ describe("raster picture decoding", () => {
 
     const [picture, svgPicture, jpegPicture, xlinkPicture] = images(prepared.svg);
     expect(picture.getAttribute("id")).toBe("chemdraft-raster-picture-0");
-    expect(picture.getAttribute("href")).toBe(rasterPicturePlaceholderHref(144, 72));
+    expect(picture.getAttribute("href")).toBe(rasterPicturePlaceholderHref(144, 72, "chemdraft-raster-picture-0"));
     for (const name of ["x", "y", "width", "height", "preserveAspectRatio", "data-chemdraft-picture-frame"]) {
       expect(picture.getAttribute(name)).toBe(images(svg)[0].getAttribute(name));
     }
     // SVG pictures already draw natively; other bitmaps keep Rust's omitted-picture warning.
     expect(svgPicture.outerHTML).toBe(images(svg)[1].outerHTML);
     expect(jpegPicture.outerHTML).toBe(images(svg)[2].outerHTML);
-    expect(xlinkPicture.getAttributeNS("http://www.w3.org/1999/xlink", "href")).toBe(rasterPicturePlaceholderHref(2, 1));
+    expect(xlinkPicture.getAttributeNS("http://www.w3.org/1999/xlink", "href"))
+      .toBe(rasterPicturePlaceholderHref(2, 1, "chemdraft-raster-picture-1"));
   });
 
   it("refuses a picture over 16384 px a side before decoding it", async () => {
@@ -89,7 +90,7 @@ describe("raster picture decoding", () => {
       expect.objectContaining({ id: "chemdraft-raster-picture-1", width: 1, height: 16384 })
     ]);
     expect(decode).toHaveBeenCalledTimes(1);
-    expect(images(prepared.svg)[0].getAttribute("href")).toBe(rasterPicturePlaceholderHref(1, 1));
+    expect(images(prepared.svg)[0].getAttribute("href")).toBe(rasterPicturePlaceholderHref(1, 1, "chemdraft-raster-picture-0"));
   });
 
   it("keeps a running budget of decoded bytes across one export, 256 MiB by default", async () => {
@@ -125,7 +126,7 @@ describe("raster picture decoding", () => {
       .toEqual(["decodeFailed", "decodeFailed", "decodeFailed", "decodeFailed", 4]);
     expect(failing).toHaveBeenCalledTimes(3);
     expect(images(prepared.svg).slice(0, 4).map((image) => image.getAttribute("href")))
-      .toEqual(Array(4).fill(rasterPicturePlaceholderHref(1, 1)));
+      .toEqual([0, 1, 2, 3].map((index) => rasterPicturePlaceholderHref(1, 1, `chemdraft-raster-picture-${index}`)));
   });
 
   it("sends at most 1024 pictures and leaves the rest undecoded behind a marked stand-in", async () => {
@@ -144,7 +145,7 @@ describe("raster picture decoding", () => {
       expect(image.getAttribute("href")).toBe(RasterPictureOverCountHref);
     }
     expect(written.slice(RasterPictureMaxCount)).toHaveLength(2);
-    expect(RasterPictureOverCountHref).not.toBe(rasterPicturePlaceholderHref(1, 1));
+    expect(RasterPictureOverCountHref).not.toBe(rasterPicturePlaceholderHref(1, 1, "chemdraft-raster-picture-0"));
   });
 
   it("leaves SVGs it cannot rewrite unambiguously untouched", async () => {
@@ -166,6 +167,30 @@ describe("raster picture decoding", () => {
     const prepared = await prepareRasterPictures(svg, { decode: solidDecoder() });
     expect(prepared.pictures.map(({ id }) => id)).toEqual(["chemdraft-raster-picture-1-0"]);
     expect(images(prepared.svg)[0].getAttribute("id")).toBe("chemdraft-raster-picture-1-0");
+    expect(images(prepared.svg)[0].getAttribute("href")).toBe(rasterPicturePlaceholderHref(2, 2, "chemdraft-raster-picture-1-0"));
+  });
+
+  it("gives each stand-in a blank SVG of its picture's size whose one invisible path carries the picture's id", async () => {
+    // Rust's `placeholder_href(144, 72, "chemdraft-raster-picture-0")` is pinned to the same string.
+    expect(rasterPicturePlaceholderHref(144, 72, "chemdraft-raster-picture-0")).toBe(
+      "data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='144'%20height='72'%3E%3Cpath%20id='chemdraft-raster-picture-0'%20d='M0%200H1V1H0Z'%20fill='none'/%3E%3C/svg%3E"
+    );
+    // Two pictures of the same size still get different stand-ins, one per picture.
+    const prepared = await prepareRasterPictures(page(pngImage(pngHeader(3, 2)), pngImage(pngHeader(3, 2))), { decode: solidDecoder() });
+    const hrefs = images(prepared.svg).map((image) => image.getAttribute("href")!);
+    expect(new Set(hrefs).size).toBe(2);
+    hrefs.forEach((href, index) => {
+      const id = `chemdraft-raster-picture-${index}`;
+      expect(images(prepared.svg)[index].getAttribute("id")).toBe(id);
+      const standIn = new DOMParser().parseFromString(decodeURIComponent(href.slice(href.indexOf(",") + 1)), "image/svg+xml");
+      const root = standIn.documentElement;
+      expect([root.namespaceURI, root.getAttribute("width"), root.getAttribute("height")]).toEqual([
+        "http://www.w3.org/2000/svg", "3", "2"
+      ]);
+      expect(Array.from(root.children).map((child) => [child.localName, child.getAttribute("id"), child.getAttribute("fill")]))
+        .toEqual([["path", id, "none"]]);
+      expect(root.children[0].hasAttribute("stroke")).toBe(false);
+    });
   });
 
   it("decodes with the webview's createImageBitmap and reads straight RGBA back from a canvas", async () => {

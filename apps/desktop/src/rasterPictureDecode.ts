@@ -4,8 +4,11 @@
  * The native renderer has no bitmap decoder, by design: pictures are decoded HERE, by the webview's
  * own image decoder (WKWebView on macOS, WebView2 on Windows), and Rust receives straight-alpha
  * RGBA8 pixels it checks by length alone (`export.rs`). Each decoded picture's `<image>` keeps its
- * frame, transform and z-order in the SVG; only its href becomes an empty SVG of the picture's pixel
+ * frame, transform and z-order in the SVG; only its href becomes a blank SVG of the picture's pixel
  * size, tagged with an id, so usvg still places it and native code draws the supplied pixels there.
+ * The blank SVG holds one invisible path carrying the same id: usvg drops the `<image>`'s id on a
+ * copy made through `<use>` or `<feImage>`, but parses each copy's href afresh, so the copy still
+ * names its picture and Rust can report exactly which pictures have copies it could not draw.
  *
  * Limits, enforced before decoding and re-checked in Rust: 16384 px a side, 256 MiB of decoded
  * pixels (width × height × 4) across one export call, and 1024 pictures per call. A picture over a
@@ -61,9 +64,12 @@ export interface PreparedRasterPictures {
   pictures: NativeRasterPicture[];
 }
 
-/** The empty SVG that stands in for a picture's PNG; `export.rs` builds the same string. */
-export function rasterPicturePlaceholderHref(width: number, height: number): string {
-  return `data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='${width}'%20height='${height}'/%3E`;
+/**
+ * The blank SVG that stands in for picture `id`'s PNG: the picture's pixel size and one invisible
+ * path with the picture's id. `placeholder_href` in `export/pictures.rs` builds the same string.
+ */
+export function rasterPicturePlaceholderHref(width: number, height: number, id: string): string {
+  return `data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='${width}'%20height='${height}'%3E%3Cpath%20id='${id}'%20d='M0%200H1V1H0Z'%20fill='none'/%3E%3C/svg%3E`;
 }
 
 /** Width and height from a PNG's IHDR chunk, or undefined when the bytes do not start like a PNG. */
@@ -106,11 +112,11 @@ export async function prepareRasterPictures(
     const outcome = await encodeWithinLimits(href.base64, remainingBytes, decode);
     if ("refused" in outcome) {
       pictures.push({ id, refused: outcome.refused });
-      href.attribute.value = rasterPicturePlaceholderHref(1, 1);
+      href.attribute.value = rasterPicturePlaceholderHref(1, 1, id);
     } else {
       remainingBytes -= outcome.width * outcome.height * 4;
       pictures.push({ id, ...outcome });
-      href.attribute.value = rasterPicturePlaceholderHref(outcome.width, outcome.height);
+      href.attribute.value = rasterPicturePlaceholderHref(outcome.width, outcome.height, id);
     }
     image.setAttribute("id", id);
   }

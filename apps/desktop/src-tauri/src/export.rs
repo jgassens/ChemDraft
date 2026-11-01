@@ -1122,7 +1122,7 @@ mod tests {
     fn stand_in(id: &str, width: u32, height: u32, frame: &str) -> String {
         format!(
             r#"<image id="{id}" {frame} preserveAspectRatio="none" href="{}"/>"#,
-            pictures::placeholder_href(width, height)
+            pictures::placeholder_href(width, height, id)
         )
     }
 
@@ -1260,7 +1260,7 @@ mod tests {
                 1,
                 r#"x="0" y="60" width="20" height="20""#
             ),
-            pictures::placeholder_href(8, 8)
+            pictures::placeholder_href(8, 8, "chemdraft-raster-picture-2")
         );
         let svg = picture_page(r#"width="100" height="100""#, &body);
         let (pixels, warnings) = render_pictures(
@@ -1608,5 +1608,61 @@ mod tests {
             assert_rgba_near(&pixels, (10, 10), QUADRANTS[0]);
             assert_rgba_near(&pixels, (60, 60), WHITE);
         }
+    }
+
+    #[test]
+    fn links_and_unrelated_blank_images_are_not_counted_as_copies() {
+        // A link clones nothing, and a blank SVG image of a picture's size is no copy of it.
+        let picture = stand_in(PICTURE_ID, 8, 8, r#"x="0" y="0" width="40" height="40""#);
+        let blank =
+            |href: &str| format!(r#"<image x="50" y="50" width="40" height="40" href="{href}"/>"#);
+        let unmarked = blank(
+            "data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='8'%20height='8'/%3E",
+        );
+        let other_picture = blank(&pictures::placeholder_href(
+            8,
+            8,
+            "chemdraft-raster-picture-9",
+        ));
+        let link = |id: &str| {
+            format!(
+                r##"<a href="#{id}"><rect x="50" y="0" width="10" height="10" fill="#000000"/></a>"##
+            )
+        };
+        for body in [
+            format!(r##"<a href="#{PICTURE_ID}">{picture}</a>{unmarked}"##),
+            format!("{picture}{}{unmarked}{other_picture}", link(PICTURE_ID)),
+            format!(r#"<g id="group">{picture}</g>{}{unmarked}"#, link("group")),
+        ] {
+            let svg = picture_page(r#"width="100" height="100""#, &body);
+            let (pixels, warnings) = render_pictures(&svg, 1, vec![quadrant_picture(PICTURE_ID)]);
+            assert!(warnings.is_empty(), "{body}: {warnings:?}");
+            assert_rgba_near(&pixels, (10, 10), QUADRANTS[0]);
+            assert_rgba_near(&pixels, (60, 60), WHITE);
+        }
+    }
+
+    #[test]
+    fn each_copy_is_blamed_only_on_the_picture_it_copies() {
+        // Two pictures of the same size; only the second is copied, inside a mask.
+        let second = "chemdraft-raster-picture-1";
+        let body = format!(
+            r##"<defs><mask id="m"><rect width="100" height="100" fill="#ffffff"/></mask></defs>{}{}<g mask="url(#m)"><use href="#{second}" x="50" y="50"/></g>"##,
+            stand_in(PICTURE_ID, 8, 8, r#"x="0" y="0" width="40" height="40""#),
+            stand_in(second, 8, 8, r#"x="50" y="0" width="40" height="40""#),
+        );
+        let svg = picture_page(r#"width="100" height="100""#, &body);
+        let (pixels, warnings) = render_pictures(
+            &svg,
+            1,
+            vec![quadrant_picture(PICTURE_ID), quadrant_picture(second)],
+        );
+        assert_eq!(
+            warning_messages(&warnings),
+            ["PNG export: 1 picture was included, but not its copies inside a mask, filter, blend mode or pattern; export SVG or PDF to include every copy."]
+        );
+        assert_rgba_near(&pixels, (10, 10), QUADRANTS[0]);
+        assert_rgba_near(&pixels, (60, 10), QUADRANTS[0]);
+        assert_rgba_near(&pixels, (60, 60), WHITE);
     }
 }
