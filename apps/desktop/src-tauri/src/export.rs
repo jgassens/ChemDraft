@@ -1612,7 +1612,8 @@ mod tests {
 
     #[test]
     fn links_and_unrelated_blank_images_are_not_counted_as_copies() {
-        // A link clones nothing, and a blank SVG image of a picture's size is no copy of it.
+        // A link clones nothing, and a blank SVG image of a picture's size is no copy of it, nor
+        // is one that only hides a path with the picture's id.
         let picture = stand_in(PICTURE_ID, 8, 8, r#"x="0" y="0" width="40" height="40""#);
         let blank =
             |href: &str| format!(r#"<image x="50" y="50" width="40" height="40" href="{href}"/>"#);
@@ -1624,6 +1625,20 @@ mod tests {
             8,
             "chemdraft-raster-picture-9",
         ));
+        let forged = |size: &str, d: &str| {
+            blank(&format!(
+                "data:image/svg+xml;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(format!(
+                    "<svg xmlns='http://www.w3.org/2000/svg' {size}><path id='{PICTURE_ID}' d='{d}' fill='none'/></svg>"
+                ))
+            ))
+        };
+        let forgeries = [
+            forged("width='3' height='5'", "M0 0H2V2H0Z"),
+            forged("width='8' height='8'", "M0 0H2V2H0Z"),
+            forged("width='5' height='8'", "M0 0H1V1H0Z"),
+        ]
+        .concat();
         let link = |id: &str| {
             format!(
                 r##"<a href="#{id}"><rect x="50" y="0" width="10" height="10" fill="#000000"/></a>"##
@@ -1633,6 +1648,7 @@ mod tests {
             format!(r##"<a href="#{PICTURE_ID}">{picture}</a>{unmarked}"##),
             format!("{picture}{}{unmarked}{other_picture}", link(PICTURE_ID)),
             format!(r#"<g id="group">{picture}</g>{}{unmarked}"#, link("group")),
+            format!("{picture}{forgeries}"),
         ] {
             let svg = picture_page(r#"width="100" height="100""#, &body);
             let (pixels, warnings) = render_pictures(&svg, 1, vec![quadrant_picture(PICTURE_ID)]);
