@@ -97,7 +97,7 @@ describe.each(["macos", "windows"] as const)("existing text editing (%s)", platf
     return prevented;
   }
 
-  async function click(target: Element, count: number) {
+  async function click(target: HTMLElement | SVGElement, count: number) {
     // Mouse pointerdown.detail is zero in real browsers. Model the companion mousedown's
     // default focus action explicitly: untrusted bridge/jsdom events do not perform it.
     const prevented = await mouse(target, "pointerdown", 0);
