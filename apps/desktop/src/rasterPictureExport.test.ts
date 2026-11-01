@@ -62,7 +62,7 @@ describe("picture page raster requests", () => {
       if (mimeType === "image/png") {
         // Decoded in the webview: native code gets RGBA pixels and an empty stand-in, never the PNG.
         expect(request.svg).not.toContain(picturePngBase64);
-        expect(image.getAttribute("href")).toBe(rasterPicturePlaceholderHref(144, 72));
+        expect(image.getAttribute("href")).toBe(rasterPicturePlaceholderHref(144, 72, image.getAttribute("id") ?? ""));
         expect(request.pictures).toHaveLength(1);
         const [picture] = request.pictures;
         expect(picture).toMatchObject({ id: image.getAttribute("id"), width: 144, height: 72 });
@@ -91,7 +91,7 @@ describe("picture page raster requests", () => {
     const { request } = native.invoke.mock.calls.at(-1)![1];
     const image = new DOMParser().parseFromString(request.svg, "image/svg+xml").querySelector("image")!;
     expect(request.pictures).toEqual([{ id: image.getAttribute("id"), refused: "decodeFailed" }]);
-    expect(image.getAttribute("href")).toBe(rasterPicturePlaceholderHref(1, 1));
+    expect(image.getAttribute("href")).toBe(rasterPicturePlaceholderHref(1, 1, image.getAttribute("id") ?? ""));
     expect(request.svg).not.toContain(picturePngBase64);
   });
 
