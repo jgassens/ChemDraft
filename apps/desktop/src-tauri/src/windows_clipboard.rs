@@ -1007,25 +1007,44 @@ pub(crate) mod native {
         }
 
         #[test]
-        fn png_preparation_rejects_untrusted_density_before_opening_or_clearing() {
+        fn png_preparation_rejects_corrupt_density_before_opening_or_clearing() {
             let mut corrupt = super::super::tests::png_with_density(15118, 15118, 1);
             corrupt[50] ^= 1;
-            for png in [
-                corrupt,
-                super::super::tests::png_with_density(u32::MAX, 15118, 1),
-                super::super::tests::png_with_density(15118, u32::MAX, 1),
-            ] {
-                let reason = png_pixels_per_meter(&png).unwrap_err();
+            let reason = png_pixels_per_meter(&corrupt).unwrap_err();
+            assert_eq!(reason, "PNG density metadata has an invalid CRC.");
+            let item = ValidatedClipboardItem {
+                r#type: "image/png".into(),
+                data: ClipboardWriteData::Binary(corrupt),
+                required: true,
+            };
+            assert_eq!(prepare_write(&item).err().unwrap(), reason);
+            assert_eq!(
+                write_items(std::ptr::null_mut(), &[item]).unwrap_err(),
+                reason
+            );
+        }
+
+        #[test]
+        fn png_preparation_preserves_unsigned_density_and_declines_only_dib() {
+            for (x, y) in [(u32::MAX, 15118), (15118, u32::MAX)] {
+                let png = super::super::tests::png_with_density(x, y, 1);
+                assert_eq!(png_pixels_per_meter(&png), Ok(Some((x, y))));
                 let item = ValidatedClipboardItem {
                     r#type: "image/png".into(),
                     data: ClipboardWriteData::Binary(png),
                     required: true,
                 };
-                assert_eq!(prepare_write(&item).err().unwrap(), reason);
-                assert_eq!(
-                    write_items(std::ptr::null_mut(), &[item]).unwrap_err(),
-                    reason
-                );
+                let prepared =
+                    prepare_write(&item).expect("PNG density is valid unsigned metadata");
+                assert_eq!(prepared.target, WindowsTarget::Png);
+                assert_eq!(prepared.bytes, item.data.bytes());
+                assert!(matches!(
+                    &prepared.extras[..],
+                    [
+                        PreparedExtra::RegisteredAlias("image/png"),
+                        PreparedExtra::Dibv5(Err(reason))
+                    ] if reason == "PNG density exceeds the signed DIB range."
+                ));
             }
         }
 
