@@ -8,14 +8,47 @@ in progress rather than a changelog.
 
 # In flight
 
-Start with a fresh document preference on pref-start-fresh, based on upstream/main
-5835116c3299c786624ff0845847eabe3566c796. Scope: launch-only preference, existing session
-restore/write gates, regression tests and desktop documentation. Preserve file-open routing,
-quit behavior, canvas defaults and retained recovery data. Implementation and three independent
-reviews are complete; recovery-retention and slow-start autosave findings were fixed and re-reviewed.
-Full Vitest had three timeouts (affected suites passed isolated reruns). Native launch succeeded on
-Windows, but remaining interactive quit/relaunch checks are blocked by the unavailable computer-use
-connection; macOS is unavailable. This slice is not yet shipped.
+# ChemDraft Assistant plugin (active, branches claude/assistant-*)
+
+## Objective
+
+Add a document-aware Assistant plugin harness for local Claude Code and Codex. It can read the
+current document and selection and place results directly on the page through typed host tools.
+
+## Design decisions
+
+- The host owns CLI discovery, pinning, install, sign-in, consent, command rendering, process
+  lifetime, and local MCP; the plugin owns provider choice, prompt, transcript, and UI.
+- Results land directly, with no approval window. Send fixes the write scope: selected objects and
+  objects inserted by that request. Each request is one labelled undo entry, selects what changed,
+  and redo never calls AI.
+- A canvas overlay is allowed alongside the floating assistant panel. Consent names the receiving
+  company and says document/page content leaves the computer.
+- PRs B/C update AGENTS.md §4.4 and §12 with their corresponding behaviour.
+
+## Delivery sequence
+
+1. **PR A — runner (merged, #186):** external-tool catalog, pins, probe/install/sign-in, consent,
+   supervised runs, plugin API tools, dialog/controller, and documentation.
+2. **PR B — assistant tools + local tool server (current):** batch/write scope, direct assistant
+   writes and request transaction, document tools, shared reaction/grid layout, API 0.1.9
+   `assistant`, run-to-session binding, and the hardened loopback MCP server. Owner decisions are
+   applied: writes need no approval window; scope is the Send selection plus request insertions;
+   each request is one undo entry; provider web access is open.
+3. **PR C — panel input + canvas overlay (complete):** plugin input sections, panel action routing, and the
+   viewport prompt overlay.
+4. **Plugin repository:** `org.chemdraft.assistant`, providers, system prompt, transcript, tests,
+   and release.
+5. **PR D — catalog + docs:** official catalog entry, release URLs, agent documentation, and slice
+   closeout.
+
+## Verification
+
+- macOS and Windows probe/install/sign-in/cancel paths; no batch shims or console flash.
+- Pinned download checksum, archive-entry, signature, and rollback tests; release pin check.
+- Consent is per plugin/tool and revocable; the host accepts no plugin argv, environment, or paths.
+- Cancel/quit kills process trees (including the Windows Job Object); output limits and typed errors
+  are reported. Assistant writes obey scope, group into one undo, and select touched objects.
 
 ---
 

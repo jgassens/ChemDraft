@@ -1,22 +1,14 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 
-import {
-  createEmptyDocument,
-  type ArrowObject,
-  type ChemDraftDocument,
-  type MoleculeObject,
-  type NativeTextStyle
-} from "@chemdraft/chem-core";
+import { type ArrowObject, type ChemDraftDocument } from "@chemdraft/chem-core";
 import { exportDocumentToSvg } from "@chemdraft/export-engine";
+import { type FigureStyle } from "@chemdraft/layout-engine";
 import { analyzeStructureDetailed } from "@chemdraft/rdkit-adapter";
-import {
-  insertNativeReactionArrow,
-  insertNativeTextObject,
-  nativeTextObjectSizeForText
-} from "@chemdraft/document-workflow-core";
+import { layoutReactionScheme } from "@chemdraft/document-workflow-core";
 
 import { numericOption, parseOptions, repeatedOption, stringOption } from "../args";
+import { figureStyleHelp, figureStyleOptions, figureStyleResult, parseFigureStyle, validateFigureDpi, type FigureStyleOptions } from "../figureStyle";
 import {
   buildSmilesDocument,
   cropDocumentSvgToContent,
@@ -50,12 +42,15 @@ export interface ParsedReactionSmiles {
   products: string[];
 }
 
-interface ReactionJob {
+interface ReactionJob extends FigureStyleOptions {
   name: string;
   input: ParsedReactionSmiles;
   rxn?: string;
   out: string;
   conditions: string;
+  above: readonly string[];
+  below: readonly string[];
+  caption?: string;
   arrow: ReactionArrowKind;
   width: number;
   background: RenderBackground;
@@ -70,24 +65,31 @@ interface BatchReactionJob {
   out?: string;
   format?: ReactionOutputFormat;
   conditions?: string;
+  above?: readonly string[];
+  below?: readonly string[];
+  caption?: string;
   arrow?: ReactionArrowKind;
   width?: number;
   background?: RenderBackground;
 }
 
-interface ParsedArguments {
+interface ParsedArguments extends FigureStyleOptions {
   mode: "single" | "batch";
   jobsFile?: string;
   outDir?: string;
   format?: ReactionOutputFormat;
   job?: ReactionJob;
   conditions: string;
+  above: readonly string[];
+  below: readonly string[];
+  caption?: string;
   arrow: ReactionArrowKind;
   width: number;
   background: RenderBackground;
 }
 
 export interface RenderedReactionScheme extends ParsedReactionSmiles {
+  layouts: { smiles: string; layout?: string }[];
   document: ChemDraftDocument;
   svg: string;
   viewBox: { x: number; y: number; width: number; height: number };
@@ -105,8 +107,6 @@ export interface ReactionAgentText {
 }
 
 const REACTION_GUTTER = renderDefaults.padding;
-const PLUS_STYLE: Partial<NativeTextStyle> = { fontSizePx: 20, textAlign: "center" };
-const CONDITIONS_STYLE: Partial<NativeTextStyle> = { fontSizePx: 14, textAlign: "center" };
 const ARROW_KINDS = new Set<ReactionArrowKind>([
   "forward",
   "equilibrium",
@@ -139,7 +139,11 @@ Batch input is a JSON array of named jobs containing either "rxn" or the arrays 
 "out"; otherwise --out-dir is required and files are named from the job name (PNG by default).
 
 Options:
+${figureStyleHelp}
   --conditions <text>             Additional conditions shown above the arrow
+  --above <text>                  Label above the arrow (repeatable)
+  --below <text>                  Label below the arrow (repeatable)
+  --caption <text>                Note beneath the scheme
   --arrow <kind>                  forward|equilibrium|resonance|retrosynthesis (default: forward)
   --width <px>                    PNG width (default: ${DEFAULT_REACTION_WIDTH})
   --background <kind>             white|transparent (default: white)
@@ -152,6 +156,9 @@ Output:
   Exit 0 when every reaction succeeds, 1 when any render fails, and 2 for bad arguments.`;
 
 const reactionOptions = {
+  ...figureStyleOptions,
+  "--bond-length": { kind: "value" },
+  "--padding": { kind: "value" },
   "--rxn": { kind: "value" },
   "--reactant": { kind: "value", repeated: true },
   "--agent": { kind: "value", repeated: true },
@@ -161,6 +168,9 @@ const reactionOptions = {
   "--out-dir": { kind: "value" },
   "--format": { kind: "value" },
   "--conditions": { kind: "value" },
+  "--above": { kind: "value", repeated: true },
+  "--below": { kind: "value", repeated: true },
+  "--caption": { kind: "value" },
   "--arrow": { kind: "value" },
   "--width": { kind: "value" },
   "--background": { kind: "value" },
@@ -252,9 +262,32 @@ function repeatedReactionComponents(
   };
 }
 
+function validateReactionLabels(
+  labels: { above?: readonly string[]; below?: readonly string[]; caption?: string; conditions?: string },
+  fieldName: (field: string) => string = (field) => `--${field}`
+): void {
+  for (const field of ["above", "below"] as const) {
+    if ((labels[field]?.length ?? 0) > 6) {
+      throw new CliUsageError(`${fieldName(field)} exceeds the 6 entry limit.`);
+    }
+  }
+  if (labels.caption !== undefined) {
+    if (!labels.caption.trim()) throw new CliUsageError(`${fieldName("caption")} must be non-empty (1–300 characters).`);
+    if (labels.caption.length > 300) throw new CliUsageError(`${fieldName("caption")} exceeds the 300 character limit.`);
+  }
+  const text = [...labels.above ?? [], ...labels.below ?? [], labels.caption ?? "", labels.conditions ?? ""];
+  if (text.reduce((total, value) => total + value.length, 0) > 2000) {
+    throw new CliUsageError(`${["above", "below", "caption", "conditions"].map(fieldName).join(" + ")} exceeds the 2000 character combined limit.`);
+  }
+}
+
 function parseArguments(argv: readonly string[]): ParsedArguments | { help: true } {
   if (argv.includes("--help")) return { help: true };
   const parsed = parseOptions(argv, reactionOptions);
+  const figure = parseFigureStyle(parsed);
+  for (const flag of ["--bond-length", "--padding"]) {
+    if (parsed.options[flag] !== undefined) throw new CliUsageError(`${flag} is not supported by reaction.`);
+  }
   if (parsed.positionals.length > 0) {
     throw new CliUsageError(`Unknown argument "${parsed.positionals[0]}".`);
   }
@@ -268,7 +301,11 @@ function parseArguments(argv: readonly string[]): ParsedArguments | { help: true
   const jobsFile = stringOption(parsed, "--batch");
   const outDir = stringOption(parsed, "--out-dir");
   const requestedFormat = stringOption(parsed, "--format");
-  const conditions = stringOption(parsed, "--conditions")?.trim() ?? "";
+  const conditions = stringOption(parsed, "--conditions") ?? "";
+  const above = repeatedOption(parsed, "--above");
+  const below = repeatedOption(parsed, "--below");
+  const caption = stringOption(parsed, "--caption");
+  validateReactionLabels({ above, below, caption, conditions });
   const requestedArrow = stringOption(parsed, "--arrow");
   const arrow = requestedArrow === undefined ? "forward" : reactionArrow(requestedArrow);
   const requestedWidth = stringOption(parsed, "--width");
@@ -285,7 +322,7 @@ function parseArguments(argv: readonly string[]): ParsedArguments | { help: true
       );
     }
     const format = requestedFormat === undefined ? undefined : reactionFormat(requestedFormat);
-    return { mode: "batch", jobsFile, outDir, format, conditions, arrow, width, background };
+    return { mode: "batch", ...figure, jobsFile, outDir, format, conditions, above, below, caption, arrow, width, background };
   }
 
   if (!out) throw new CliUsageError("Single-reaction mode requires --out.");
@@ -304,16 +341,20 @@ function parseArguments(argv: readonly string[]): ParsedArguments | { help: true
   const extension = extname(out);
   return {
     mode: "single",
+    ...figure,
     conditions,
+    above, below, caption,
     arrow,
     width,
     background,
     job: {
+      ...figure,
       name: basename(out, extension) || "reaction",
       input,
       ...(rxn !== undefined ? { rxn } : {}),
       out,
       conditions,
+      above, below, caption,
       arrow,
       width,
       background
@@ -332,7 +373,7 @@ function parseBatchJob(candidate: unknown, index: number): BatchReactionJob {
   if (raw.rxn !== undefined && typeof raw.rxn !== "string") {
     throw new CliUsageError(`Batch job ${index + 1} "rxn" must be a string.`);
   }
-  for (const field of ["reactants", "agents", "products"] as const) {
+  for (const field of ["reactants", "agents", "products", "above", "below"] as const) {
     if (raw[field] !== undefined && (
       !Array.isArray(raw[field]) || !(raw[field] as unknown[]).every((entry) => typeof entry === "string")
     )) {
@@ -345,7 +386,10 @@ function parseBatchJob(candidate: unknown, index: number): BatchReactionJob {
   if (raw.conditions !== undefined && typeof raw.conditions !== "string") {
     throw new CliUsageError(`Batch job ${index + 1} "conditions" must be a string.`);
   }
-  return {
+  if (raw.caption !== undefined && typeof raw.caption !== "string") {
+    throw new CliUsageError(`Batch job ${index + 1} "caption" must be a string.`);
+  }
+  const job: BatchReactionJob = {
     name: raw.name as string,
     rxn: raw.rxn as string | undefined,
     reactants: raw.reactants as string[] | undefined,
@@ -354,16 +398,26 @@ function parseBatchJob(candidate: unknown, index: number): BatchReactionJob {
     out: raw.out as string | undefined,
     format: raw.format === undefined ? undefined : reactionFormat(raw.format, `Batch job ${index + 1} format`),
     conditions: raw.conditions as string | undefined,
+    above: raw.above as string[] | undefined,
+    below: raw.below as string[] | undefined,
+    caption: raw.caption as string | undefined,
     arrow: raw.arrow === undefined ? undefined : reactionArrow(raw.arrow, `Batch job ${index + 1} arrow`),
     width: raw.width === undefined ? undefined : positiveWidth(raw.width, `Batch job ${index + 1} width`),
     background: raw.background === undefined
       ? undefined
       : reactionBackground(raw.background, `Batch job ${index + 1} background`)
   };
+  validateReactionLabels(job, (field) => `Batch job ${index + 1} "${field}"`);
+  return job;
 }
 
 async function readReactionJobs(args: ParsedArguments): Promise<ReactionJob[]> {
   const jobs = await readBatchFile(args.jobsFile!, parseBatchJob, (job) => {
+    validateReactionLabels({
+      above: job.above ?? args.above, below: job.below ?? args.below,
+      caption: job.caption ?? args.caption, conditions: job.conditions ?? args.conditions
+    }, (field) => `Batch job "${job.name}" ${field}`);
+    if (args.style === "document" && job.width !== undefined) throw new CliUsageError(`Batch job "${job.name}" width conflicts with --style document.`);
     const hasArrays = job.reactants !== undefined || job.agents !== undefined || job.products !== undefined;
     if ((job.rxn === undefined) === !hasArrays) {
       throw new CliUsageError(
@@ -389,10 +443,15 @@ async function readReactionJobs(args: ParsedArguments): Promise<ReactionJob[]> {
         );
     return {
       name: job.name,
+      style: args.style,
+      dpi: args.dpi,
       input,
       ...(job.rxn !== undefined ? { rxn: job.rxn } : {}),
       out: job.out ?? join(args.outDir!, `${job.name}.${format}`),
-      conditions: job.conditions?.trim() ?? args.conditions,
+      conditions: job.conditions ?? args.conditions,
+      above: job.above ?? args.above,
+      below: job.below ?? args.below,
+      caption: job.caption ?? args.caption,
       arrow: job.arrow ?? args.arrow,
       width: job.width ?? args.width,
       background: job.background ?? args.background
@@ -400,25 +459,11 @@ async function readReactionJobs(args: ParsedArguments): Promise<ReactionJob[]> {
   });
 }
 
-function translateMolecule(
-  molecule: MoleculeObject,
-  id: string,
-  dx: number,
-  dy: number
-): MoleculeObject {
-  return {
-    ...molecule,
-    id,
-    x: molecule.x + dx,
-    y: molecule.y + dy,
-    atoms: molecule.atoms.map((atom) => ({ ...atom, x: atom.x + dx, y: atom.y + dy }))
-  };
-}
-
-async function depictComponent(smiles: string, index: number): Promise<BuiltSmilesDocument> {
+async function depictComponent(smiles: string, index: number, style?: FigureStyle): Promise<BuiltSmilesDocument> {
   try {
     return await buildSmilesDocument(smiles, {
       name: `reaction-component-${index + 1}`,
+      style,
       bondLength: renderDefaults.bondLength
     });
   } catch (error) {
@@ -587,8 +632,8 @@ async function agentText(smiles: string, index: number): Promise<ReactionAgentTe
     if (composition?.kind !== "composition") {
       throw new Error("RDKit composition did not return a source result.");
     }
-    if (composition.radicalElectronCount > 0 || composition.hasExplicitIsotopes) {
-      throw new Error(`SMILES contains a radical/isotope label that ChemDraft cannot yet draw: ${smiles}`);
+    if (composition.radicalElectronCount > 0) {
+      throw new Error(`SMILES contains a radical that ChemDraft cannot yet draw: ${smiles}`);
     }
     const text = reactionFormula(composition);
     if (!text) {
@@ -603,7 +648,7 @@ async function agentText(smiles: string, index: number): Promise<ReactionAgentTe
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (message.startsWith("SMILES contains a radical/isotope label")) throw error;
+    if (message.startsWith("SMILES contains a radical")) throw error;
     throw new Error(`Unable to validate reaction agent SMILES "${smiles}": ${message}`);
   }
 }
@@ -612,11 +657,16 @@ async function agentText(smiles: string, index: number): Promise<ReactionAgentTe
 export async function renderReactionScheme(
   input: string | ParsedReactionSmiles,
   options: {
+    style?: FigureStyle;
     arrow?: ReactionArrowKind;
     conditions?: string;
+    above?: readonly string[];
+    below?: readonly string[];
+    caption?: string;
     background?: RenderBackground;
   } = {}
 ): Promise<RenderedReactionScheme> {
+  validateReactionLabels(options);
   const parsed = typeof input === "string" ? parseReactionSmiles(input) : input;
   const arrow = options.arrow ?? "forward";
   if (!ARROW_KINDS.has(arrow)) reactionArrow(arrow);
@@ -628,7 +678,7 @@ export async function renderReactionScheme(
   const depictAll = async (components: readonly string[]): Promise<BuiltSmilesDocument[]> => {
     const depicted: BuiltSmilesDocument[] = [];
     for (const smiles of components) {
-      depicted.push(await depictComponent(smiles, componentIndex));
+      depicted.push(await depictComponent(smiles, componentIndex, options.style));
       componentIndex += 1;
     }
     return depicted;
@@ -640,10 +690,6 @@ export async function renderReactionScheme(
   const visible = [...reactants, ...products];
   const conditionText = [...agentTexts.map((agent) => agent.text), ...(options.conditions?.trim() ? [options.conditions.trim()] : [])]
     .join(", ");
-  const conditionSize = conditionText
-    ? nativeTextObjectSizeForText(conditionText, CONDITIONS_STYLE)
-    : { width: 0, height: 0 };
-  const plusSize = nativeTextObjectSizeForText("+", PLUS_STYLE);
   const boundsByComponent = new Map(visible.map((component) => {
     const bounds = documentVisualBounds(component.document);
     return [component, {
@@ -652,93 +698,24 @@ export async function renderReactionScheme(
       height: bounds.maxY - bounds.minY
     }] as const;
   }));
-  const maximumMoleculeHeight = Math.max(
-    renderDefaults.bondLength,
-    ...visible.map((component) => boundsByComponent.get(component)!.height)
-  );
-  const aboveCenter = Math.max(
-    maximumMoleculeHeight / 2,
-    conditionText ? conditionSize.height + REACTION_GUTTER / 2 : 0
-  );
-  const centerY = renderDefaults.padding + aboveCenter;
-  const pageHeight = centerY + maximumMoleculeHeight / 2 + renderDefaults.padding;
-  const arrowLength = Math.max(
-    renderDefaults.bondLength * 2.5,
-    conditionSize.width + REACTION_GUTTER * 2
-  );
-
-  let cursor = renderDefaults.padding;
-  let moleculeNumber = 0;
-  const molecules: MoleculeObject[] = [];
-  const plusPoints: Array<{ x: number; y: number }> = [];
-  const placeGroup = (components: readonly BuiltSmilesDocument[]): void => {
-    components.forEach((component, index) => {
-      const bounds = boundsByComponent.get(component)!;
-      molecules.push(translateMolecule(
-        component.molecule,
-        `mol_reaction_${String(moleculeNumber + 1).padStart(3, "0")}`,
-        cursor - bounds.minX,
-        centerY - bounds.height / 2 - bounds.minY
-      ));
-      moleculeNumber += 1;
-      cursor += bounds.width;
-      if (index < components.length - 1) {
-        cursor += REACTION_GUTTER;
-        plusPoints.push({ x: cursor, y: centerY - plusSize.height / 2 });
-        cursor += plusSize.width + REACTION_GUTTER;
-      }
-    });
-  };
-
-  const leftSide = arrow === "retrosynthesis" ? products : reactants;
-  const rightSide = arrow === "retrosynthesis" ? reactants : products;
-  placeGroup(leftSide);
-  cursor += REACTION_GUTTER;
-  const arrowStart = cursor;
-  const arrowEnd = arrowStart + arrowLength;
-  cursor = arrowEnd + REACTION_GUTTER;
-  placeGroup(rightSide);
-  const pageWidth = cursor + renderDefaults.padding;
-
-  const empty = createEmptyDocument({ title: "Reaction scheme" });
-  const page = empty.pages[0]!;
-  let document: ChemDraftDocument = {
-    ...empty,
-    pages: [{
-      ...page,
-      width: pageWidth,
-      height: pageHeight,
-      layout: {
-        ...page.layout,
-        presetId: "custom",
-        orientation: pageWidth >= pageHeight ? "landscape" : "portrait",
-        widthPx: pageWidth,
-        heightPx: pageHeight
-      },
-      objects: molecules
-    }],
-    selection: { objectIds: [] }
-  };
-  document = insertNativeReactionArrow(
-    document,
-    { x: arrowStart, y: centerY },
-    { x: arrowEnd, y: centerY },
-    arrow
-  );
-  for (const point of plusPoints) {
-    document = insertNativeTextObject(document, point, "+", PLUS_STYLE);
-  }
-  if (conditionText) {
-    document = insertNativeTextObject(
-      document,
-      {
-        x: (arrowStart + arrowEnd - conditionSize.width) / 2,
-        y: centerY - conditionSize.height - REACTION_GUTTER / 2
-      },
-      conditionText,
-      CONDITIONS_STYLE
-    );
-  }
+  const componentFor = (component: BuiltSmilesDocument) => ({
+    molecule: component.molecule,
+    bounds: boundsByComponent.get(component)!
+  });
+  const { document } = layoutReactionScheme({
+    style: options.style,
+    reactants: reactants.map(componentFor),
+    products: products.map(componentFor),
+    arrowKind: arrow,
+    conditionText,
+    above: options.above,
+    below: options.below,
+    caption: options.caption,
+    anchor: { x: renderDefaults.padding, y: renderDefaults.padding },
+    gutter: REACTION_GUTTER,
+    bondLength: renderDefaults.bondLength,
+    pagePadding: renderDefaults.padding
+  });
 
   const exported = exportDocumentToSvg(document, {
     background: background === "white" ? "#ffffff" : "transparent"
@@ -747,11 +724,14 @@ export async function renderReactionScheme(
     exported.contents,
     document,
     renderDefaults.padding,
-    background
+    background,
+    false,
+    options.style
   );
 
   return {
     ...parsed,
+    layouts: [...reactants, ...products].map(component => ({ smiles: component.smiles, layout: component.layout })),
     document,
     svg: cropped.svg,
     viewBox: cropped.viewBox,
@@ -770,19 +750,24 @@ async function renderReactionJob(job: ReactionJob, io: CliIo): Promise<boolean> 
   writeProgress(io, `Rendering reaction ${job.name}\u2026`);
   try {
     const rendered = await renderReactionScheme(job.input, {
+      style: job.style,
       arrow: job.arrow,
       conditions: job.conditions,
+      above: job.above,
+      below: job.below,
+      caption: job.caption,
       background: job.background
     });
     await mkdir(dirname(job.out), { recursive: true });
     const format = outputFormat(job.out);
     await writeFile(
       job.out,
-      format === "svg" ? rendered.svg : svgToPng(rendered.svg, job.width)
+      format === "svg" ? rendered.svg : svgToPng(rendered.svg, job.width, job.style, job.dpi)
     );
     writeJsonLine(io, {
       name: job.name,
       ok: true,
+      ...figureStyleResult(job, rendered.viewBox, format === "png"),
       out: job.out,
       reactants: rendered.reactants,
       agents: rendered.agents,
@@ -790,6 +775,7 @@ async function renderReactionJob(job: ReactionJob, io: CliIo): Promise<boolean> 
       products: rendered.products,
       arrow: rendered.arrow,
       conditions: rendered.conditions,
+      layouts: rendered.layouts,
       warnings: rendered.warnings
     });
     writeProgress(io, `Wrote ${job.out}`);
@@ -799,6 +785,7 @@ async function renderReactionJob(job: ReactionJob, io: CliIo): Promise<boolean> 
     writeJsonLine(io, {
       name: job.name,
       ok: false,
+      style: job.style ?? "fit",
       ...(job.rxn !== undefined ? { rxn: job.rxn } : {
         reactants: job.input.reactants,
         agents: job.input.agents,
@@ -823,6 +810,7 @@ export async function runReactionCommand(
       return cliExitCode.ok;
     }
     const jobs = parsed.mode === "single" ? [parsed.job!] : await readReactionJobs(parsed);
+    validateFigureDpi(parsed, jobs.some((job) => outputFormat(job.out) === "png"));
     let allSucceeded = true;
     for (const job of jobs) {
       if (!await renderReactionJob(job, io)) allSucceeded = false;

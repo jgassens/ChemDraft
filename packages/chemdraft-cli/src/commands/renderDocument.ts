@@ -6,7 +6,8 @@ import { assertMolfileHasKnownBondOrders } from "@chemdraft/document-workflow-co
 import { exportDocumentToSvg, type ExportWarning } from "@chemdraft/export-engine";
 import { perceiveStereoCentersFromMolfile } from "@chemdraft/ocl-adapter";
 import { numericOption, parseOptions, stringOption } from "../args";
-import { canonicalSmiles, cropDocumentSvgToContent, currentMoleculeIdentityMolfile, renderDefaults,
+import { figureStyleHelp, figureStyleOptions, figureStyleResult, parseFigureStyle, validateFigureDpi } from "../figureStyle";
+import { canonicalSmiles, cropDocumentSvgToContent, currentMoleculeIdentityMolfile, documentWithPhysicalStyle, renderDefaults,
   stereoCenterCounts, svgToPng, validateRasterWidth } from "../document";
 import { loadAgentDocument, validateDocumentOutputPath } from "../documentInput";
 import { installNodeEngines } from "../engine";
@@ -18,12 +19,15 @@ import { perceiveDoubleBondStereo } from "./stereo";
 
 export type DocumentRenderFormat = "svg" | "png" | "pdf" | "chemdraft" | "both";
 const renderDocumentOptions = {
+  ...figureStyleOptions,
+  "--bond-length": { kind: "value" },
   "--document": { kind: "value" }, "--out": { kind: "value" }, "--format": { kind: "value" },
   "--width": { kind: "value" }, "--background": { kind: "value" }, "--padding": { kind: "value" },
   "--help": { kind: "boolean" }
 } as const;
 export const renderDocumentHelp = `Render editable native JSON or a ChemDraft envelope with the shared document exporter.
 Usage: pnpm -s chemdraft render-document --document <file> --out <file>
+${figureStyleHelp}
   --format svg|png|pdf|chemdraft|both  Inferred from extension; both writes SVG and PNG
   --width <px>                       PNG width, 16–4000 (default 600)
   --background white|transparent     SVG/PNG background (default white)
@@ -60,6 +64,8 @@ export async function runRenderDocumentCommand(argv: readonly string[], io: CliI
   try {
     if (argv.includes("--help")) { io.stdout(renderDocumentHelp); return cliExitCode.ok; }
     const parsed = parseOptions(argv, renderDocumentOptions);
+    const figure = parseFigureStyle(parsed);
+    if (parsed.options["--bond-length"] !== undefined) throw new CliUsageError("--bond-length is not supported by render-document.");
     if (parsed.positionals.length) throw new CliUsageError(`Unknown argument "${parsed.positionals[0]}".`);
     const file = stringOption(parsed, "--document"), out = stringOption(parsed, "--out");
     if (!file || !out) throw new CliUsageError("Provide --document and --out.");
@@ -69,6 +75,10 @@ export async function runRenderDocumentCommand(argv: readonly string[], io: CliI
     const format = requested ?? extension;
     if (!["svg", "png", "pdf", "chemdraft", "both"].includes(format)) {
       throw new CliUsageError("--format must be svg, png, pdf, chemdraft or both (or use a matching --out extension).");
+    }
+    validateFigureDpi(figure, format === "png" || format === "both");
+    if (figure.style === "document" && (format === "pdf" || format === "chemdraft")) {
+      throw new CliUsageError("--style document requires --format svg, png or both; PDF and ChemDraft exports retain native page size.");
     }
     if (requested && format !== "both" && ["svg", "png", "pdf", "chemdraft"].includes(extension) && extension !== format) {
       throw new CliUsageError(`--format ${format} conflicts with the --out extension .${extension}.`);
@@ -86,15 +96,17 @@ export async function runRenderDocumentCommand(argv: readonly string[], io: CliI
     const paddingValue = stringOption(parsed, "--padding");
     const padding = paddingValue === undefined ? renderDefaults.padding : numericOption(paddingValue, "--padding", true);
     const opened = await loadAgentDocument(file);
-    const document = opened.document!;
+    let document = opened.document!;
     const name = basename(out);
     writeProgress(io, `Rendering document ${file}…`);
     try {
       installNodeRendering();
       const warnings: ExportWarning[] = opened.warnings.map((warning) => ({ ...warning,
         objectId: warning.sourceObjectId, severity: "warning" }));
+      if (figure.style === "document") document = await documentWithPhysicalStyle(document, warnings);
       const molecules = await moleculeResults(document, warnings);
       const files: string[] = [];
+      let physicalSize: { width: number; height: number } | undefined;
       const save = async (path: string, contents: string | Uint8Array) => {
         await mkdir(dirname(path), { recursive: true });
         await writeFile(path, contents); files.push(path);
@@ -112,23 +124,26 @@ export async function runRenderDocumentCommand(argv: readonly string[], io: CliI
       } else {
         const exported = exportDocumentToSvg(document, { background: background === "white" ? "#ffffff" : "transparent" });
         warnings.push(...exported.warnings);
-        const svg = document.pages[0]!.objects.length === 0 ? exported.contents
-          : cropDocumentSvgToContent(exported.contents, document, padding, background, true).svg;
+        const cropped = document.pages[0]!.objects.length === 0 && figure.style !== "document" ? undefined
+          : cropDocumentSvgToContent(exported.contents, document, padding, background, true, figure.style);
+        const svg = cropped?.svg ?? exported.contents;
+        physicalSize = cropped?.viewBox;
         const base = ["svg", "png"].includes(extension) ? out.slice(0, -extname(out).length) : out;
         if (format === "svg" || format === "both") await save(format === "both" ? `${base}.svg` : extension === format ? out : `${out}.svg`, svg);
-        if (format === "png" || format === "both") await save(format === "both" ? `${base}.png` : extension === format ? out : `${out}.png`, svgToPng(svg, width));
+        if (format === "png" || format === "both") await save(format === "both" ? `${base}.png` : extension === format ? out : `${out}.png`, svgToPng(svg, width, figure.style, figure.dpi));
       }
       if (format !== "chemdraft" && document.pages.length > 1) warnings.push({
         code: "export.first_page_only", severity: "warning", message: "Only the first page was rendered; other pages remain in the source document."
       });
       writeJsonLine(io, { name, ok: true, document: file, files, format,
+        ...figureStyleResult(figure, physicalSize, format === "png" || format === "both"),
         molecules: molecules.map((molecule) => ({ ...molecule,
           exportWarnings: warnings.filter((warning) => warning.objectId === undefined || warning.objectId === molecule.objectId) })),
         warnings: warnings.map((warning) => warning.message), exportWarnings: warnings });
       writeProgress(io, `Wrote ${files.join(", ")}`);
       return cliExitCode.ok;
     } catch (error) {
-      writeJsonLine(io, { name, document: file, ok: false, error: error instanceof Error ? error.message : String(error) });
+      writeJsonLine(io, { name, document: file, ok: false, ...figureStyleResult(figure), error: error instanceof Error ? error.message : String(error) });
       return cliExitCode.failed;
     }
   } catch (error) { return handleCliError(error, io, "render-document"); }

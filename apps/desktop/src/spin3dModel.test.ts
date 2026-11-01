@@ -116,6 +116,59 @@ function modelFor(mol: MoleculeObject): Spin3dDocumentModelV1 {
 }
 
 describe("spin3d model — attach / read / validate", () => {
+  it.each(["wedge", "hashed"] as const)("invalidates mirrored or reordered %s centres, preserving rigid 2D moves", style => {
+    for (const explicitHydrogen of [false, true]) {
+      const atoms: MoleculeObject["atoms"] = [
+        { id: "a0", element: "C", x: 0, y: 0, formalCharge: 0 },
+        { id: "a1", element: "F", x: 2, y: 0, formalCharge: 0 },
+        { id: "a2", element: "Cl", x: -1, y: 2, formalCharge: 0 },
+        { id: "a3", element: "Br", x: -1, y: -2, formalCharge: 0 },
+        ...(explicitHydrogen ? [{ id: "a4", element: "H", x: -0.5, y: 0, formalCharge: 0 }] : [])
+      ];
+      const bonds: MoleculeObject["bonds"] = atoms.slice(1).map((atom, i) => ({
+        id: `b${i}`, fromAtomId: "a0", toAtomId: atom.id, order: "single",
+        ...(i === 0 ? { display: { bondStyle: style } } : {})
+      }));
+      const mol = molecule(atoms, bonds);
+      const model = buildSpin3dModel({ molecule: mol, coords3d: atoms.flatMap(atom => [atom.x, -atom.y, 0]), orientation: IDENTITY_QUAT });
+      const saved = moleculeOf(deserializeDocument(serializeDocument(attachSpin3dModel(documentWith(mol), mol.id, model))));
+      const signature = conformerGraphSignature(saved);
+      expect(validSpin3dModelFor(saved)).toBeDefined();
+      const mirrored = { ...saved, atoms: saved.atoms.map(atom => ({ ...atom, x: -atom.x })) };
+      expect(conformerGraphSignature(mirrored)).not.toBe(signature);
+      expect(validSpin3dModelFor(mirrored)).toBeUndefined();
+      // Drag one ligand past another without changing graph, wedge, or the other atoms.
+      const reordered = { ...saved, atoms: saved.atoms.map(atom => atom.id === "a2"
+        ? { ...atom, x: 1, y: -3 } : atom) };
+      expect(conformerGraphSignature(reordered)).not.toBe(signature);
+      expect(validSpin3dModelFor(reordered)).toBeUndefined();
+      if (explicitHydrogen) {
+        const radialInversion = { ...saved, atoms: saved.atoms.map(atom => atom.id === "a4" ? { ...atom, x: -2 } : atom) };
+        expect(conformerGraphSignature(radialInversion)).not.toBe(signature);
+        expect(validSpin3dModelFor(radialInversion)).toBeUndefined();
+      }
+      for (const angle of [0, 0.37, Math.PI / 2, Math.PI, -2.1]) {
+        const moved = { ...saved, atoms: saved.atoms.map(atom => ({ ...atom,
+          x: 100 + atom.x * Math.cos(angle) - atom.y * Math.sin(angle),
+          y: -80 + atom.x * Math.sin(angle) + atom.y * Math.cos(angle)
+        })) };
+        expect(conformerGraphSignature(moved)).toBe(signature);
+        expect(validSpin3dModelFor(moved)).toBeDefined();
+      }
+    }
+  });
+
+  it("keeps unwedged keys invariant under reflection, including drawn double-bond stereo", () => {
+    const alkene = molecule(CHAIN_ATOMS.map((atom, i) => ({ ...atom, y: [130, 100, 100, 70][i] })),
+      CHAIN_BONDS.map((bond, i) => i === 1 ? { ...bond, order: "double" } : bond));
+    for (const mol of [molecule(), alkene]) {
+      expect(conformerGraphSignature({ ...mol, atoms: mol.atoms.map(atom => ({ ...atom, x: -atom.x })) }))
+        .toBe(conformerGraphSignature(mol));
+    }
+    expect(conformerGraphSignature({ ...alkene, atoms: alkene.atoms.map((atom, i) => i === 3 ? { ...atom, y: 130 } : atom) }))
+      .not.toBe(conformerGraphSignature(alkene));
+  });
+
   it("round-trips through compatibility.unknown without clobbering other metadata", () => {
     const mol: MoleculeObject = {
       ...molecule(),

@@ -287,6 +287,36 @@ describe("ocl-adapter — depictSmiles2D", () => {
 });
 
 describe("ocl-adapter — relayoutMolfile2D (3D Cleanup engine)", () => {
+  it.each([false, true])("carries only input either markers (input either: %s), even with degenerate geometry", (either) => {
+    const mol = OCL.Molecule.fromSmiles("CC=CC");
+    // Collinear substituents yield parity unknown without any CTfile either marker.
+    for (let atom = 0; atom < mol.getAllAtoms(); atom++) {
+      mol.setAtomX(atom, atom * 1.5);
+      mol.setAtomY(atom, 0);
+    }
+    const lines = mol.toMolfile().split("\n");
+    const counts = lines.findIndex((line) => line.includes("V2000"));
+    const bondStart = counts + 1 + mol.getAllAtoms();
+    for (let bond = 0; bond < mol.getAllBonds(); bond++) {
+      const line = lines[bondStart + bond]!;
+      lines[bondStart + bond] = `${line.slice(0, 9)}${String(either && Number(line.slice(6, 9)) === 2 ? 3 : 0).padStart(3)}${line.slice(12)}`;
+    }
+    const source = lines.join("\n");
+    const perceived = OCL.Molecule.fromMolfile(source);
+    perceived.ensureHelperArrays(OCL.Molecule.cHelperParities);
+    expect(perceived.getBondParity(1)).toBe(OCL.Molecule.cBondParityUnknown);
+    if (!either) {
+      // A fresh nondegenerate geometry would assign E/Z. Refuse that identity change;
+      // inventing an either marker to make it pass is not permitted.
+      expect(() => relayoutMolfile2D(source)).toThrow("2D re-layout unexpectedly changed the molecule's identity.");
+      return;
+    }
+    const result = relayoutMolfile2D(source);
+    expect(result.bonds.flatMap((bond, index) => bond.stereo === "either" ? [index] : [])).toEqual(either ? [1] : []);
+    const resultLines = result.molfile.split("\n");
+    expect(Number(resultLines[bondStart + 1]!.slice(9, 12))).toBe(either ? 3 : 0);
+  });
+
   /** Decalin (two fused cyclohexanes) with deliberately mangled coordinates: every atom collapsed
    *  near the origin, the shape a distorted drawing session can produce. */
   function mangledDecalinMolfile(): string {

@@ -28,7 +28,7 @@ export function createAtomLabelDraftRollback(molecule: MoleculeObject): AtomLabe
 }
 
 const atomLabelFields = new Set<string>([
-  "element", "labelVisible", "labelLiteral", "labelBondSide", "warningSuppressed", "hydrogenCount"
+  "element", "isotope", "labelVisible", "labelLiteral", "labelBondSide", "warningSuppressed", "hydrogenCount"
 ]);
 
 function sameOwnFields(first: object, second: object, except: ReadonlySet<string> = new Set()): boolean {
@@ -151,7 +151,10 @@ function moleculeDraftPayload(molecule: MoleculeObject): string {
 /** Fields written by nativeAtomWithElement and relabel's import-H cleanup. Charge is unchanged. */
 function restoreAtomLabelFields(atom: MoleculeAtom, before: MoleculeAtom): MoleculeAtom {
   const restored = { ...atom };
-  for (const key of ["element", "labelVisible", "labelLiteral", "labelBondSide", "warningSuppressed", "hydrogenCount"] as const) {
+  const fields = [
+    "element", "isotope", "labelVisible", "labelLiteral", "labelBondSide", "warningSuppressed", "hydrogenCount"
+  ] as const;
+  for (const key of fields) {
     if (Object.hasOwn(before, key)) Object.assign(restored, { [key]: before[key] });
     else delete restored[key];
   }

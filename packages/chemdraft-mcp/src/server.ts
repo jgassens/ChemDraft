@@ -28,6 +28,8 @@ import { runRenderCommand } from "../../chemdraft-cli/src/commands/render";
 import { runStereoCommand } from "../../chemdraft-cli/src/commands/stereo";
 import type { CliExitCode, CliIo, JsonLineResult } from "../../chemdraft-cli/src/output";
 
+import { FigureStyles } from "../../chemdraft-cli/src/figureStyle";
+
 export type CliCommand = (argv: readonly string[], io: CliIo) => Promise<CliExitCode>;
 type OutputFileKind = "image" | "text" | "resource";
 type OutputFile = { path: string; kind: OutputFileKind };
@@ -331,7 +333,8 @@ function exportFiles(result: Record<string, unknown>, format: string): OutputFil
   return [{ path, kind: format === "pdf" ? "resource" : "text" }];
 }
 
-const chemistryHonesty = "Radicals and isotope labels are refused rather than silently changed.";
+const chemistryHonesty = "Radicals are refused rather than silently changed; " +
+  "isotope labels and their positions are preserved.";
 
 /** Create the reusable server instance used by stdio and in-memory MCP clients. */
 export function createChemDraftMcpServer(
@@ -354,17 +357,25 @@ export function createChemDraftMcpServer(
   });
 
   server.registerTool("build_document", {
-    description: "Build editable ChemDraft native JSON from SMILES, with atom/bond ids and ring keys, sizes and centers. Use render_document after styling it.",
+    description: "Build editable ChemDraft native JSON from SMILES, with atom/bond ids and ring keys, " +
+      "sizes and centers. Use render_document after styling it. " +
+      "Isotope labels are preserved; radicals are refused. " +
+      "Exact canonical isomeric SMILES matches use built-in template layouts at default bond length " +
+      "and report layout provenance.",
     inputSchema: {
+      dpi: z.number().positive().optional(),
+      style: z.enum(FigureStyles).optional(),
       smiles: z.string().min(1),
       bondLength: z.number().positive().optional(),
       outDir: z.string().min(1).optional()
     }
-  }, async ({ smiles, bondLength, outDir }) => runTool(async () => {
+  }, async ({ style, dpi, smiles, bondLength, outDir }) => runTool(async () => {
+    if (dpi !== undefined) return errorResult("--dpi requires PNG output; build_document produces no raster.");
     const directory = await outputDirectory(runtime, outDir);
     const output = join(directory, `${slug(smiles)}.json`);
     const argv = ["--smiles", smiles, "--out", output];
     if (bondLength !== undefined) argv.push("--bond-length", String(bondLength));
+    if (style !== undefined) argv.push("--style", style);
     const outcome = await runCommand(runtime.dependencies.commands.document, argv);
     return response(runtime, outcome, succeeded(outcome) ? exportFiles(outcome.result, "json") : []);
   }));
@@ -372,6 +383,8 @@ export function createChemDraftMcpServer(
   server.registerTool("render_document", {
     description: "Render styled native JSON or a ChemDraft envelope from documentPath or inline documentJson. Reports current graph canonical SMILES, stereo counts and export warnings. SVG/PNG/PDF render the first page; ChemDraft retains all pages.",
     inputSchema: {
+      dpi: z.number().positive().optional(),
+      style: z.enum(FigureStyles).optional(),
       documentPath: z.string().min(1).optional(),
       documentJson: z.string().min(1).optional(),
       format: z.enum(["svg", "png", "pdf", "chemdraft", "both"]).optional(),
@@ -380,7 +393,7 @@ export function createChemDraftMcpServer(
       padding: z.number().nonnegative().optional(),
       outDir: z.string().min(1).optional()
     }
-  }, async ({ documentPath, documentJson, format = "png", width, background, padding, outDir }) => runTool(async () => {
+  }, async ({ style, dpi, documentPath, documentJson, format = "png", width, background, padding, outDir }) => runTool(async () => {
     if (Number(documentPath !== undefined) + Number(documentJson !== undefined) !== 1) {
       return errorResult("Provide exactly one of documentPath or documentJson.");
     }
@@ -395,6 +408,8 @@ export function createChemDraftMcpServer(
     if (width !== undefined) argv.push("--width", String(width));
     if (background !== undefined) argv.push("--background", background);
     if (padding !== undefined) argv.push("--padding", String(padding));
+    if (style !== undefined) argv.push("--style", style);
+    if (dpi !== undefined) argv.push("--dpi", String(dpi));
     const outcome = await runCommand(runtime.dependencies.commands.renderDocument, argv);
     const files = !succeeded(outcome) ? [] : format === "pdf" || format === "chemdraft"
       ? exportFiles(outcome.result, format) : visualFiles(outcome.result);
@@ -402,8 +417,10 @@ export function createChemDraftMcpServer(
   }));
 
   server.registerTool("render_structure", {
-    description: `Render a SMILES structure as PNG, SVG, or both. ${chemistryHonesty}`,
+    description: `Render a SMILES structure as PNG, SVG, or both. Exact canonical isomeric SMILES matches use built-in template layouts at default bond length and report layout provenance. ${chemistryHonesty}`,
     inputSchema: {
+      dpi: z.number().positive().optional(),
+      style: z.enum(FigureStyles).optional(),
       smiles: z.string().min(1),
       width: z.number().positive().optional(),
       background: z.enum(["white", "transparent"]).optional(),
@@ -412,7 +429,7 @@ export function createChemDraftMcpServer(
       format: z.enum(["png", "svg", "both"]).optional(),
       outDir: z.string().min(1).optional()
     }
-  }, async ({ smiles, width, background, bondLength, padding, format = "png", outDir }) => runTool(async () => {
+  }, async ({ style, dpi, smiles, width, background, bondLength, padding, format = "png", outDir }) => runTool(async () => {
     const directory = await outputDirectory(runtime, outDir);
     const output = join(directory, `${slug(smiles)}.${format === "svg" ? "svg" : "png"}`);
     const argv = ["--smiles", smiles, "--out", output, "--format", format];
@@ -420,13 +437,17 @@ export function createChemDraftMcpServer(
     if (background !== undefined) argv.push("--background", background);
     if (bondLength !== undefined) argv.push("--bond-length", String(bondLength));
     if (padding !== undefined) argv.push("--padding", String(padding));
+    if (style !== undefined) argv.push("--style", style);
+    if (dpi !== undefined) argv.push("--dpi", String(dpi));
     const outcome = await runCommand(runtime.dependencies.commands.render, argv);
     return response(runtime, outcome, succeeded(outcome) ? visualFiles(outcome.result) : []);
   }));
 
   server.registerTool("render_grid", {
-    description: `Render named SMILES entries as a PNG or SVG grid. ${chemistryHonesty}`,
+    description: `Render named SMILES entries as a PNG or SVG grid. Exact canonical isomeric SMILES matches use built-in template layouts at default bond length and report layout provenance. ${chemistryHonesty}`,
     inputSchema: {
+      dpi: z.number().positive().optional(),
+      style: z.enum(FigureStyles).optional(),
       items: z.array(z.object({ name: z.string().min(1), smiles: z.string().min(1) })).min(1),
       labels: z.enum(["none", "letters", "names"]).optional(),
       columns: z.number().int().positive().optional(),
@@ -438,6 +459,8 @@ export function createChemDraftMcpServer(
       outDir: z.string().min(1).optional()
     }
   }, async ({
+    style,
+    dpi,
     items,
     labels,
     columns,
@@ -460,18 +483,27 @@ export function createChemDraftMcpServer(
     if (gutter !== undefined) argv.push("--gutter", String(gutter));
     if (padding !== undefined) argv.push("--padding", String(padding));
     if (background !== undefined) argv.push("--background", background);
+    if (style !== undefined) argv.push("--style", style);
+    if (dpi !== undefined) argv.push("--dpi", String(dpi));
     const outcome = await runCommand(runtime.dependencies.commands.grid, argv);
     return response(runtime, outcome, succeeded(outcome) ? visualFiles(outcome.result) : []);
   }));
 
   server.registerTool("render_reaction", {
-    description: `Render a reaction as a PNG or SVG scheme. reactionSmiles splits roles on '.', while component arrays preserve each entry—including a salt containing '.'—as one molecule object. Agent labels report the formula or the recorded SMILES fallback. ${chemistryHonesty}`,
+    description: `Render a reaction as a PNG or SVG scheme. Exact canonical isomeric SMILES matches use built-in template layouts at default bond length and report layout provenance. reactionSmiles splits roles on '.', while component arrays preserve each entry—including a salt containing '.'—as one molecule object. Agent labels report the formula or the recorded SMILES fallback. ${chemistryHonesty}`,
     inputSchema: {
+      dpi: z.number().positive().optional(),
+      style: z.enum(FigureStyles).optional(),
       reactionSmiles: z.string().min(1).optional(),
       reactants: z.array(z.string().min(1)).min(1).optional(),
       agents: z.array(z.string().min(1)).optional(),
       products: z.array(z.string().min(1)).min(1).optional(),
-      conditions: z.string().optional(),
+      conditions: z.string().max(2000, "conditions exceeds the 2000 character combined limit.").optional(),
+      above: z.array(z.string().max(2000, "above exceeds the 2000 character combined limit.")).max(6, "above exceeds the 6 entry limit.").optional(),
+      below: z.array(z.string().max(2000, "below exceeds the 2000 character combined limit.")).max(6, "below exceeds the 6 entry limit.").optional(),
+      caption: z.string().min(1, "caption must be non-empty (1–300 characters).")
+        .max(300, "caption exceeds the 300 character limit.")
+        .refine((value) => value.trim().length > 0, "caption must be non-empty (1–300 characters).").optional(),
       arrow: z.enum(["forward", "equilibrium", "resonance", "retrosynthesis"]).optional(),
       width: z.number().positive().optional(),
       background: z.enum(["white", "transparent"]).optional(),
@@ -479,17 +511,24 @@ export function createChemDraftMcpServer(
       outDir: z.string().min(1).optional()
     }
   }, async ({
+    style,
+    dpi,
     reactionSmiles,
     reactants,
     agents,
     products,
     conditions,
+    above, below, caption,
     arrow,
     width,
     background,
     format = "png",
     outDir
   }) => runTool(async () => {
+    const text = [...above ?? [], ...below ?? [], caption ?? "", conditions ?? ""];
+    if (text.reduce((total, value) => total + value.length, 0) > 2000) {
+      return errorResult("above + below + caption + conditions exceeds the 2000 character combined limit.");
+    }
     const hasArrays = reactants !== undefined || agents !== undefined || products !== undefined;
     if ((reactionSmiles === undefined) === !hasArrays) {
       return errorResult("Provide exactly one of reactionSmiles or reactants/agents/products arrays.");
@@ -509,9 +548,14 @@ export function createChemDraftMcpServer(
           "--out", output
         ];
     if (conditions !== undefined) argv.push("--conditions", conditions);
+    for (const line of above ?? []) argv.push("--above", line);
+    for (const line of below ?? []) argv.push("--below", line);
+    if (caption !== undefined) argv.push("--caption", caption);
     if (arrow !== undefined) argv.push("--arrow", arrow);
     if (width !== undefined) argv.push("--width", String(width));
     if (background !== undefined) argv.push("--background", background);
+    if (style !== undefined) argv.push("--style", style);
+    if (dpi !== undefined) argv.push("--dpi", String(dpi));
     const outcome = await runCommand(runtime.dependencies.commands.reaction, argv);
     return response(runtime, outcome, succeeded(outcome) ? visualFiles(outcome.result) : []);
   }));
@@ -535,7 +579,7 @@ export function createChemDraftMcpServer(
   }));
 
   server.registerTool("name_to_structure", {
-    description: `Convert a chemical name with OPSIN, optionally rendering its structure. ${chemistryHonesty}`,
+    description: `Convert a chemical name using ChemDraft built-in templates before OPSIN, optionally rendering its structure. Use template names such as beta-cyclodextrin rather than writing host SMILES. ${chemistryHonesty}`,
     inputSchema: {
       name: z.string().min(1),
       render: z.boolean().optional(),
@@ -587,7 +631,7 @@ export function createChemDraftMcpServer(
   }));
 
   server.registerTool("export_structure", {
-    description: `Export a SMILES structure without changing its chemistry. ${chemistryHonesty}`,
+    description: `Export a SMILES structure without changing its chemistry. Exact canonical isomeric SMILES matches use built-in template layouts at default bond length and report layout provenance. ${chemistryHonesty}`,
     inputSchema: {
       smiles: z.string().min(1),
       format: z.enum(["cdxml", "pdf", "sdf", "mol", "smi"]),

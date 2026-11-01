@@ -4,6 +4,41 @@ A plugin is a TypeScript package that imports **only `@chemdraft/plugin-api`** a
 plus command handlers. Bundled examples are composed from source by the desktop build; an installable
 plugin is compiled into a verified multi-file worker package by `pnpm plugin:package`.
 
+## Assistant tools (0.1.9)
+
+Declare `document.read`, `document.write`, `selection.read`, `chemistry.compute`, `native.execute`,
+and `assistant.run` to receive `context.assistant`. Every method re-checks all six permissions;
+individual tools also check their own permissions. Declare `apiVersion: "^0.1.9"`.
+
+Keep the plugin's submit command pending for the whole run. At Send, call
+`assistant.beginRequest({ prompt, label? })`: the host captures the document tab and selection
+and opens a labelled transaction. Tools may change only that selection plus objects inserted
+earlier in the same request. Changing the selection during a run never widens its scope; an empty
+selection permits additions only. Results land directly on the page, with no approval window.
+
+`listTools()` returns the host's tool schemas. `callTool({ name, input })` executes a tool in the
+plugin's active request. For a command-line provider, call `createToolSession({ requestId })` and
+pass its `sessionId` to `tools.run` as `mcpSessionId`. The server is named `chemdraft`; the returned
+`tools` lists its names. The host allows two sessions per plugin and four concurrent tool calls.
+`closeToolSession({ sessionId })` releases one session. Ended requests, closed tabs, cancellation,
+deadlines, and unregistering the plugin prevent late writes.
+
+Always call `endRequest({ requestId })` in a `finally` block before the submit command returns.
+This closes its sessions and finishes one undo entry, leaving the changed objects selected. It
+returns `{ touchedIds, summary, split }`; `split` reports that a user edit interrupted the run's
+history entry. Undo and redo restore the recorded states exactly and never call the plugin or
+the AI again. Session ids belong to the plugin and request that created them.
+
+```ts
+const { requestId } = await context.assistant!.beginRequest({ prompt });
+try {
+  const session = await context.assistant!.createToolSession({ requestId });
+  // Start and await the provider run, using session.sessionId as mcpSessionId.
+} finally {
+  await context.assistant!.endRequest({ requestId });
+}
+```
+
 ## The one rule
 
 Runtime source may import `@chemdraft/plugin-api` and ordinary npm packages (e.g. `openchemlib`,
@@ -26,11 +61,26 @@ into core — e.g. `import type { ChemDraftDocument, DocumentPatch } from "@chem
 ```
 
 `apiVersion` in your manifest declares the SDK contract you target (`PluginApiVersion`, currently
-`0.1.7`). API 0.1.7 adds host-owned `context.chemistry.structureToName`; plugins that use it should
-declare `^0.1.7`. API 0.1.6 adds host-owned `context.recognition.recognizeStructure`; plugins that
+`0.1.17`). API 0.1.17 adds optional `MoleculeBond.stereo: "either"` for an E/Z-unspecified double bond.
+It is allowed only on double bonds; plugins must preserve it when copying bonds and must not set it on other orders.
+API 0.1.16 adds optional positive integer `isotope` mass numbers to native document atoms.
+Native molecule objects returned by `chemistry.structureFromSmiles` and passed through document
+patches also preserve isotope masses. Hydrogen-2 and hydrogen-3 use elements `D` and `T` without an
+`isotope` field; other labelled atoms (including hydrogen-1) carry the mass number in `isotope`.
+Plugins using isotope fields should declare `^0.1.16`.
+API 0.1.15 adds command-scoped 3D embedding, minimization, and flattening; plugins using
+any of those methods should declare `^0.1.15`. API 0.1.14 adds one-shot draft restoration to overlay content; plugins using it
+should declare `^0.1.14`. API 0.1.13 adds live prompt disabled state to overlay content; plugins using it
+should declare `^0.1.13`. API 0.1.12 adds overlay content and command-scoped opening; plugins that use either
+should declare `^0.1.12`. API 0.1.10 adds panel input and canvas overlays; plugins that use either should declare
+`^0.1.10`. API 0.1.8 adds host-owned `context.tools`; plugins that use it should declare `^0.1.8`.
+API 0.1.7 adds host-owned `context.chemistry.structureToName`; plugins that use it should declare
+`^0.1.7`. API 0.1.6 adds host-owned `context.recognition.recognizeStructure`; plugins that
 use it should declare `^0.1.6`. API 0.1.5 added command-scoped `context.images.requestImage`, 0.1.4 added
 `context.documents.applyPatch`, and 0.1.3 added the host-owned `context.dialogs.promptText`
-capability. Existing `^0.1.0` through `^0.1.7` packages remain compatible, each on a host at or above the version it declares.
+capability. API 0.1.9 adds `context.assistant` for request-scoped tools and MCP sessions.
+Existing `^0.1.0` through `^0.1.17` packages remain compatible, each on a host at or above the version
+it declares.
 
 ## Manifest + registration
 
@@ -80,6 +130,21 @@ const runWidget: PluginCommandHandler = async (context) => {
 Report section kinds: `text`, `keyValue`, `table`, `svg`, `chemicalName`, and `linkedFigure` (an interactive
 spectrum/structure figure with a generic primary/alternative method model).
 
+## Plugin storage
+
+Declare `plugin.storage` to use `context.storage`, a per-plugin key/value store. Desktop builds
+persist it in `app_data_dir/plugins/<pluginId>/storage.json`; the web build keeps it in memory.
+Explicit **Uninstall clears the plugin's stored settings**, including cached values in the current
+session. **Updates keep storage**, as does handing an installed plugin's id back to its bundled copy.
+Uninstall stops the plugin and removes its catalog entry before clearing storage, so pending saves
+cannot recreate it. If deletion fails, uninstall still completes and reports that the stored settings
+could not be deleted; those settings may remain on disk.
+Plugin ids cannot end in a dot (Windows strips trailing dots). If another installed or bundled
+plugin has the same id ignoring letter case, uninstall preserves their shared settings and logs why.
+Removing an empty storage folder is best-effort; a folder cleanup failure does not make deletion of
+`storage.json` fail. The plugin list and recognition-engine removal offer still update when deleting
+the settings file fails.
+
 ## One-line text prompts
 
 A plugin declaring `ui.panel` may ask for one line of text from inside one of its own command
@@ -109,6 +174,21 @@ settled). Only a prompt the user was actually shown uses up that allowance: a ca
 first — an invalid request, another of the plugin's prompts still open, or a host with no prompt UI —
 leaves it, so a corrected retry in the same invocation still works. Submit is disabled for an empty field; cancellation returns `{ status: "cancelled" }`.
 Disabling, unregistering, or terminating the plugin while its prompt is open also cancels it.
+
+## External tools (0.1.8)
+
+`context.tools` lets a plugin use host-managed AI command-line tools (`claude` and `codex`). Declare
+both `assistant.run` and `native.execute`, and `apiVersion: "^0.1.8"`. The capability is absent
+without either permission, and every method re-checks both when called. Manifest validation refuses
+`assistant.run` without `native.execute` because external tools spawn processes. The
+host obtains consent separately for each plugin and each tool, so a plugin must be prepared for
+install or run to be declined.
+
+Plugins send typed tool requests, never argv, environment variables, or file paths. The host renders
+the fixed command line and owns installation, sign-in, process lifecycle, and output limits. A
+long-running command can poll with `tools.poll` (up to one second of waiting) while its submitting
+command remains active. Stopping a run is a separate plugin command that calls `tools.cancel`; do not
+try to cancel by ending the submitting command.
 
 ## Host-owned image acquisition
 
@@ -244,6 +324,319 @@ receipt without the patch. A second proposal of the same `ref`, a forged `ref`, 
 command ends is refused. A plugin that holds `document.read` receives the insertion itself, as before.
 The official MolScribe plugin declares `document.proposePatch`, not `document.read`, and spreads
 `proposedPatch` unchanged, so it takes this path with no code change.
+
+## 3D chemistry (0.1.15)
+
+Declare `chemistry.compute` and `apiVersion: "^0.1.15"` to receive the optional
+`context.chemistry` methods `embed3d`, `minimize3d`, and `flatten3d`. They are available only while
+one of the plugin's own commands is running. They use the app's in-process RDKit WASM worker: they
+do not start a process, use the network, or require a new permission.
+
+Use this sequence for a genuine host–guest or other multi-component complex. It embeds each
+component independently, lets the plugin arrange their relative positions, then relaxes the complex
+and writes the returned native molecules through the normal patch capability:
+
+```ts
+const embedded = await context.chemistry?.embed3d?.({
+  components: [{ smiles: hostSmiles }, { smiles: guestSmiles }],
+  seed: 42
+});
+if (!embedded) throw new Error("3D chemistry is unavailable");
+
+// Arrange the guest relative to the host by changing coordinates only.
+const arranged = moveComponent(embedded.model, 1, { x: 4, y: 0, z: 0 });
+const minimized = await context.chemistry?.minimize3d?.({
+  model: arranged,
+  interfragment: true,
+  maxIters: 10_000
+});
+if (!minimized) throw new Error("3D chemistry is unavailable");
+if (minimized.clash) throw new Error("Clashing 3D model; retry with another arrangement before insertion.");
+
+const flattened = await context.chemistry?.flatten3d?.({
+  model: minimized.model,
+  view: "auto"
+});
+if (!flattened) throw new Error("3D chemistry is unavailable");
+
+// Declare document.read and document.write for this insertion sequence.
+const documents = context.documents;
+if (!documents?.applyPatch) throw new Error("Document writing is unavailable");
+const document = await documents.getActiveDocument();
+const pageId = document?.pages[0]?.id;
+if (!pageId) throw new Error("No document page is available");
+await documents.applyPatch({
+  reason: "Insert complex",
+  patch: {
+    op: "batch",
+    patches: flattened.objects.map((object) => ({ op: "addObject", pageId, object }))
+  }
+});
+```
+
+`embed3d({ components, seed? })` accepts 1–8 `{ smiles }` components and defaults `seed` to 42. It
+creates explicit hydrogens, uses ETKDGv3 per component, and puts components side by side. The plugin
+is responsible for positioning one component relative to another before minimization. It returns
+`{ model, method, warnings }`.
+`minimize3d({ model, forceField?, interfragment, maxIters? })` accepts `mmff94s` (the default),
+`mmff94`, or `uff`; `maxIters` is at most 20,000. `interfragment` is required. Set it to `true` for
+the forces between components of a complex; it is refused for a single component. The returned force
+field result names the field, reports `converged`, `not-converged`, or `setup-failed`, energy, and
+the iterations budget; it may also report the closest inter-component heavy-atom distance in Angstrom. The complete
+result is `{ model, forceField, clash, closestInterComponentHeavyAtomA?, method, warnings }`.
+`clash` is a boolean, true when the closest inter-component heavy-atom contact is below 2.2 A,
+even when the force field reports `converged` or interactions are off. Single-component models
+return `clash: false` and omit the distance. A clash adds a specific warning naming the distance
+and the two atoms. Callers must not insert a clashing model. Screen starting arrangements for
+contacts and interpenetrating rings/chains, and retry with another arrangement; local minimization
+does not search for an unthreaded geometry or guarantee that a converged structure is usable.
+`flatten3d` independently refuses contacts below 2.2 A, including plugin-edited coordinates.
+The host screens the verified model before worker dispatch, so even a cold worker cannot delay
+this refusal behind RDKit startup:
+`flatten3d refused a clashing model: closest inter-component heavy-atom contact is 1.850 A between C atom 1 (component 1) and O atom 10 (component 2); below 2.2 A. Retry with another arrangement.`
+These atom indices are one-based in the complete model; component numbers are one-based too.
+
+The model includes a host-signed `modelToken` over its atoms and bonds. A plugin may change its
+coordinates, but never its chemical graph. `flatten3d({ model, view })` accepts an orthonormal,
+row-major 3×3 rotation (nine numbers) or `"auto"`; it returns one native molecule per component,
+2D coordinates, wedges/hashes for input-specified centres, `depthByAtom`, and warnings. It uses the same
+flattening as Spin 3D and refuses a component whose stereochemistry would not survive. It returns
+`{ objects, depthByAtom, method, warnings }`: inserting them requires `document.write` and
+`documents.applyPatch`, so each call (including one batch) creates one labelled undo entry.
+Returned molecule frames use the same padded atom/label bounds as SMILES paste, without changing
+projected atoms or `depthByAtom`. Placement measures molecules by the union of their frame and atom
+extents, even for plugin-supplied objects with inconsistent frames; other objects use their existing bounds.
+The host preserves authored positions when the inserted group's combined bounds are fully inside
+the page. A group overlapping the page but sticking out is nudged by the smallest translation
+that brings the whole group inside. A group entirely outside the page is translated to the visible
+page center, clamped inside page bounds, before that commit. A group referencing any object that
+existed before the patch (including atom-anchored charges and arrows) is never moved. Relative positions are preserved and
+changed objects stay selected. Only groups needing translation can be refused as too large, atomically with
+`Plugin insertion is larger than the page; choose a larger page or a smaller drawing before inserting.`
+Colliding inserted object ids are rebased to fresh ids. All native references within the batch,
+including attachment points on superatoms and R-groups (standalone or inside molecules), follow
+the rebased objects, including self and forward insertion references. Atom and bond ids remain local
+to their molecule and unchanged; opaque strings and original source ids are preserved.
+Flatten outputs retain input atoms, including separate explicit H atoms from the input SMILES,
+and omit H atoms added only to build the 3D model. Wedges/hashes are reconciled on the retained
+graph; canonical isomeric SMILES must still match. `depthByAtom` is indexed by each returned native
+molecule's atom order, centered on that retained atom centroid and rotated into view, in Angstrom.
+It is not indexed by the model's full explicit-H atom list.
+
+Each SMILES is limited to 5,000 characters; all components together are limited to 500 heavy atoms.
+Embedding has one total budget of 15 seconds multiplied by the supplied component count;
+minimization has 60 seconds and flattening 5 seconds. Queue time counts inside that budget,
+including both the plugin queue and the app-wide worker queue; component progress never resets it.
+An assigned cold worker's module/WASM startup has its own bounded 30-second budget, excluded from
+both work timers. Readiness resumes the remaining work budget, preserving queue time already spent.
+The refusal is `<method> worker startup timed out after 30 seconds.`; work/queue expiry remains
+`<method> timed out after <seconds> seconds including queue time.`. Queueing behind another call's
+startup still counts. Warm PEG2/PEG8 Node measurements and the rationale for keeping the fixed
+five-second flatten budget are in `apps/desktop/src/chemistry3d/README.md`.
+Each plugin may run one 3D call and queue eight; further calls
+fail with `Plugin "<id>" 3D chemistry is busy: at most 1 running call and 8 queued calls are allowed.`
+The app shares at most two reusable RDKit 3D workers. Command end cancels running work and clears
+that plugin's queue; timeout or cancellation terminates the affected worker.
+Minimization checks only the tetrahedral centres and E/Z bonds explicitly specified in each
+component's signed SMILES, both before and after optimization. Unspecified sites are ignored.
+Refusals identify the component and one-based centre or bond, for example
+`Component 1: minimize3d input would change specified tetrahedral stereo at centre 2; restore the input geometry.`
+or `Component 1: minimize3d result would change specified E/Z stereo at bond 2-3; restore the input geometry.`
+Flattening checks incoming geometry by the same rule (phase `flatten3d input`), keeps specified
+stereo, and never adds wedges/hashes at unspecified tetrahedral sites. A stereogenic double bond
+without E/Z in the signed SMILES becomes a native `stereo: "either"` bond, preserving unspecified
+intent through MOL serialization and later Spin 3D flattening. Specified `/` or `\` stereo must
+survive projection and final canonical isomeric SMILES read-back. RDKit perceives potential E/Z;
+carbonyls, terminal and symmetric alkenes, small-ring double bonds, aromatic rings, and a symmetric
+TTF central double bond receive no either flag. `embed3d` and `minimize3d` also accept unspecified E/Z.
+
+Native drawing atoms have no isotope mass field. `flatten3d` therefore refuses isotopic components
+before depiction or view search:
+`Component 1 ([13CH3]CO) carries isotope labels (13C), which ChemDraft drawings cannot store yet; flatten3d refuses rather than drop them.`
+`embed3d` and `minimize3d` still accept and preserve isotopes in the 3D-only model.
+Do not call `minimize3d` for a single
+molecule: normal 2D layout (`structureFromSmiles`) is its appropriate path and does not pay for 3D.
+
+Every result records this method contract: **RDKit MinimalLib Release_2026_03_3 + patches
+0001-0008; ETKDGv3 seed; force field; nonbonded cutoff 10 A; gas phase; no counterions or solvent;
+energies rank starting geometries only and are not binding energies; a local minimum, not an
+equilibrium structure.** A plugin must never present the energy to users as meaningful.
+
+## Panel input and canvas overlays (0.1.10–0.1.14)
+
+API 0.1.10 lets a report contain interactive, host-rendered sections. Declare
+`apiVersion: "^0.1.10"`; add `ui.panel` for a panel and `ui.canvas` for a canvas overlay. Panels
+may also declare `preferredWindowSize: { width, height }`, where both values are positive integers.
+It is a preferred native-window size, not a fixed frame.
+
+Set the panel contribution's `commandId` to the command that opens it and calls
+`context.panels.showReport(panelId, report)`. The overlay's "Open …" link invokes that command;
+creating a native window alone cannot initialize plugin content. Older packages without this field
+can use an unambiguous owned menu command whose title matches the panel title (a trailing ellipsis
+is ignored). Prefer the explicit field, especially for plugins with multiple panels or menus.
+
+`PluginPanelReport.sections` adds these section kinds. Control and section ids use
+`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$` and must be unique within the report.
+
+- `prompt` has `id`, `commandId`, and optional `title`, `label`, `placeholder`, `submitLabel`
+  (default `"Send"`), `hint`, and `disabled`. Its `maxLength` is 1–20,000 (default 4,000), and
+  `rows` is 1–12 (default 3). It may have one `select`: `{ id, label, value, options,
+  commandId? }`, with 1–20 `{ value, label }` options and values no longer than 100 characters.
+- `actions` has `id`, optional `title`, and 1–8 buttons. A button has `id`, `label`, `commandId`,
+  optional JSON-serialisable `payload` (at most 4,000 characters), optional `disabled`, and a
+  `tone` of `default`, `primary`, or `danger`.
+- `image` has `dataUri`, `alt`, and optional `title`, `caption`, and positive-integer `maxWidthPx`.
+  The data URI is base64 `image/png`, `image/jpeg`, or `image/webp`, at most 1 MiB.
+
+When a user activates a control, its handler receives `context.input`. It contains `source`
+(`"panel"` or `"overlay"`), exactly the matching `panelId` or `overlayId`, `sectionId`, and
+`control` (`"prompt"`, `"select"`, or `"button"`), plus `controlId`, `text`, `selected`, or
+`payload` when that control supplies one. Treat it as invocation-scoped input, not stored UI state.
+The host takes the command id, button payload, select options, and input limits from the live report
+in the document window — never from the detached panel's message. It refuses unknown, disabled,
+foreign, or over-limit controls. The textarea itself is never disabled while an action is pending,
+because doing so would end its native input-focus lease; only Send and the select become unavailable.
+Its draft clears only after the host accepts the action.
+
+The host acknowledges a panel or overlay submission as soon as it **accepts and queues** the
+command; it does not wait for a long-running command such as an AI run. The accepted draft therefore
+clears immediately. A **host refusal** — a stale or closed panel, disabled control, too-long text,
+unknown option, or foreign command — keeps the draft and appears inline. A refusal or failure decided
+by the plugin's own command is the plugin's to report in its panel or overlay content (for example, a
+transcript line or `overlays.setStatus`); the document status line also reports command failures.
+
+The native **Plugins** menu is the `plugins` menu location. A plugin may also contribute at most one
+`canvasOverlays` entry. It requires `ui.canvas` and has an `overlay.<plugin>.<name>` id, a title of
+at most 80 characters, a base64 PNG or SVG data-URI icon of at most 64 KB, the overlay command id,
+the same `prompt` declaration, an optional `defaultCorner` (`bottom-right` by default; also
+`bottom-left`, `top-right`, or `top-left`), and optional required permissions. `context.overlays?.setStatus({
+overlayId, text })` updates its status line; text is at most 120 characters (an empty string clears
+it). Per AGENTS.md §12, this icon-plus-prompt widget is the only allowed in-viewport plugin surface:
+one declared overlay per plugin. Panels, palettes, and dialogs remain separate floating native
+windows.
+
+API **0.1.11** adds `context.overlays.setTranscript({ overlayId, entries })`; declare `^0.1.11`
+when using it. This replaces the owned overlay's conversation with at most 50 entries of
+`{ role: "user" | "assistant" | "tool" | "notice" | "error", text: string }`. Text is at most
+4,000 characters per entry; the UTF-8 JSON serialization of the entries array, including JSON
+overhead, must fit in 64 KiB. An empty array clears it. The host validates these limits and
+rechecks `ui.canvas` and ownership on every call, including calls through a worker. Plugins trim
+their transcript before sending; the host refuses an oversized transcript rather than truncating it.
+
+The small chat shows the prompt above a scrollable conversation, following new replies only when
+the reader is already at the bottom. Errors use the error style. Drag its top-edge handle upward
+to grow it while keeping its bottom edge fixed, or downward to shrink it. The default/minimum
+height is 220 px (clipped further for a smaller drawing area); height is remembered separately
+from position for each document window. Escape collapses without forgetting the height; Enter
+sends and Shift+Enter adds a newline. Overlay prompts display one row to preserve room for replies.
+Transcript updates use their own runtime subscription and never synchronize toolsets. The floating
+panel is optional; a plugin can use its canvas overlay as its complete chat UI.
+
+### Live overlay prompt state (0.1.13–0.1.14)
+
+Declare `apiVersion: "^0.1.13"` to use
+`overlays.setContent({ overlayId, sections, prompt: { disabled: true } })` while a request runs.
+The optional `prompt` object is strict: it accepts optional boolean `disabled` and, since 0.1.14,
+optional string `restoreDraft`; other keys are rejected.
+Every `setContent` call replaces this state: `prompt.disabled` overrides the declared overlay prompt,
+and omitting `prompt` or `disabled` means not disabled. Send and Enter refuse submission with an
+inline hint while busy; the textarea remains editable. The existing `ui.canvas`, ownership, section
+limits and command checks still apply. No prompt section is allowed in `sections`.
+
+```ts
+await context.overlays?.setContent({ overlayId: "overlay.prompt.main", sections: [], prompt: { disabled: true } });
+// After the run, restore sending by replacing content without a prompt override.
+await context.overlays?.setContent({ overlayId: "overlay.prompt.main", sections: [] });
+```
+
+Declare `apiVersion: "^0.1.14"` to restore a submitted draft after a request fails before sending
+(for example, declined consent):
+
+```ts
+await context.overlays?.setContent({
+  overlayId: "overlay.prompt.main", sections: [], prompt: { restoreDraft: submittedText }
+});
+```
+
+The host checks `restoreDraft.length <=` the contributed prompt's `maxLength` (at most 20,000).
+Each call restores once, only if the current draft is exactly empty. Any text typed since submission,
+including whitespace, wins. A skipped restore is consumed too: clearing later never replays it.
+Restoration does not submit, focus the prompt, or change the selection. Repeated `setContent` calls
+may request the same restoration again; an omitted restore leaves the draft alone.
+
+### Overlay content and opening (0.1.12)
+
+API **0.1.12** adds `overlays.setContent({ overlayId, sections })` and
+`overlays.open({ overlayId, focus?: boolean })`. Declare `apiVersion: "^0.1.12"` and
+`ui.canvas`; a plugin with no panel needs neither a panel contribution nor `ui.panel`.
+
+`setContent` replaces content above the transcript, using the existing report `text`, `keyValue`,
+`actions`, and `image` schemas and the same `PluginReportRenderer` as native panels. It accepts at
+most 20 sections whose JSON serialization fits in 64 KiB of UTF-8 (including image data and payloads).
+An empty list clears it. Section/button ids must be unique across this content and the permanent
+overlay prompt/select; action commands must be declared and registered by this plugin. Button
+dispatch resolves the **live** content, refusing removed or disabled controls, and sends
+`context.input = { source: "overlay", overlayId, sectionId, control: "button", controlId, payload? }`.
+Content updates have their own runtime subscription, separate from contribution/toolset updates.
+
+An overlay grows to fit content up to about 70% of the visible drawing-area height (a larger
+user-chosen height is retained), always clamped inside rulers, scrollbars and the status row.
+Clearing content restores the remembered height. Updates preserve the prompt draft and focus.
+`open` is allowed only while one of the plugin's own commands is running. It expands without
+moving focus unless `focus: true`; a menu command can use that option to focus the prompt.
+The "Open …" panel shortcut exists only if the plugin contributes a panel. An overlay contribution
+can set `showPanelLink: false` to suppress the shortcut even when a panel exists.
+
+```ts
+// Inside the plugin's menu/open command. Buttons use this plugin's registered commands.
+await context.overlays?.setContent({
+  overlayId: "overlay.prompt.main",
+  sections: [
+    { kind: "text", title: "Setup", body: "Choose an installed provider to begin." },
+    { kind: "actions", id: "setup", buttons: [
+      { id: "check", label: "Check again", commandId: "plugin.prompt.check" }
+    ] }
+  ]
+});
+await context.overlays?.open({ overlayId: "overlay.prompt.main", focus: true });
+// After setup: await context.overlays?.setContent({ overlayId: "overlay.prompt.main", sections: [] });
+```
+
+```ts
+await context.overlays?.setTranscript({
+  overlayId: "overlay.prompt.main",
+  entries: [
+    { role: "user", text: "Draw water" },
+    { role: "assistant", text: "Water is on the page." }
+  ]
+});
+```
+
+```ts
+export const manifest = parsePluginManifest({
+  id: "org.example.prompt", name: "Prompt", version: "0.1.0", apiVersion: "^0.1.10", entry: "src/index.ts",
+  permissions: ["ui.panel", "ui.canvas", "ui.menu"],
+  contributes: {
+    commands: [{ id: "plugin.prompt.send", title: "Send" }, { id: "plugin.prompt.open", title: "Open Prompt" }],
+    menus: [{ id: "menu.prompt.open", title: "Prompt…", commandId: "plugin.prompt.open", location: "plugins" }],
+    panels: [{ id: "panel.prompt.main", title: "Prompt", commandId: "plugin.prompt.open", preferredWindowSize: { width: 420, height: 560 } }],
+    canvasOverlays: [{ id: "overlay.prompt.quick", title: "Quick prompt", icon: "data:image/png;base64,...",
+      commandId: "plugin.prompt.send", prompt: { kind: "prompt", id: "quick", commandId: "plugin.prompt.send" } }]
+  },
+});
+
+const send: PluginCommandHandler = async (context) => {
+  if (context.input?.control === "prompt") await context.overlays?.setStatus({
+    overlayId: "overlay.prompt.quick", text: `Received ${context.input.text?.length ?? 0} characters`
+  });
+};
+const open: PluginCommandHandler = async (context) => {
+  await context.panels?.showReport("panel.prompt.main", {
+    title: "Prompt",
+    sections: [{ kind: "prompt", id: "message", commandId: "plugin.prompt.send" }]
+  });
+};
+```
 
 ## Direct document writes versus proposals
 

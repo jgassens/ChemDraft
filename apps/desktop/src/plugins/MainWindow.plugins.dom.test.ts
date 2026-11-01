@@ -8,12 +8,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createPhase4Document } from "../documentWorkflow";
 import { MainWindow } from "../MainWindow";
 import { ANALYSIS_WINDOW_ACTION_EVENT, type AnalysisWindowAction } from "./panelBridge";
+import * as panelBridge from "./panelBridge";
 import {
   RECOGNITION_FIXTURE_COMMAND_ID,
   RECOGNITION_FIXTURE_PANEL_ID
 } from "../testSupport/recognitionFixturePlugin";
 import type { DesktopPluginRuntime } from "./createPluginRuntime";
 import { namingInstalled, namingManifest, namingMolecule } from "./structureNamingTestFixtures";
+import { getAssistantHistoryPort } from "../assistant/historyPort";
+import { selectionBounds } from "../documentWorkflow";
 
 // No recognizer ships with the app, so a test that needs a panel-opening Analyze contribution opts in
 // to the test-only recognition fixture, standing in for an installed plugin.
@@ -214,6 +217,128 @@ function deferredResult(): { promise: Promise<unknown>; resolve(result: unknown)
 }
 
 describe("MainWindow bundled plugin integration", () => {
+  it.each([
+    ["MacIntel", true], ["Win32", true], ["MacIntel", false], ["Win32", false]
+  ] as const)("preserves in-page batches and places off-page batches with one labelled undo (%s, offPage=%s)", async (platform, offPage) => {
+    vi.spyOn(navigator, "platform", "get").mockReturnValue(platform);
+    window.history.replaceState(null, "", "/?agentBridge=1");
+    await renderMainWindow();
+    const port = getAssistantHistoryPort();
+    const before = port.read("initial")!;
+    const page = before.pages[0];
+    // Visible page-space region is x=120..520, y=160..460 at scale 1.
+    const canvas = container!.querySelector<HTMLElement>(".canvas-region")!;
+    const pageElement = container!.querySelector<HTMLElement>(".page")!;
+    vi.spyOn(canvas, "getBoundingClientRect").mockReturnValue({ left: 0, top: 0, right: 400, bottom: 300, width: 400, height: 300 } as DOMRect);
+    Object.defineProperties(canvas, { clientWidth: { configurable: true, value: 400 }, clientHeight: { configurable: true, value: 300 } });
+    vi.spyOn(pageElement, "getBoundingClientRect").mockReturnValue({ left: -120, top: -160,
+      right: page.width - 120, bottom: page.height - 160, width: page.width, height: page.height } as DOMRect);
+    const bridge = (window as Window & { __CHEMDRAFT_AGENT__?: { command(id: string): Promise<unknown> } }).__CHEMDRAFT_AGENT__!;
+    const id = "plugin.batchPlacement.insert";
+    const x = offPage ? -50 : 180;
+    const y = offPage ? -20 : 200;
+    await act(async () => bundled.runtime!.registerPlugin({ id: "org.test.batchPlacement", name: "Batch test", version: "0.0.1",
+      apiVersion: "^0.1.16", entry: "index.js", permissions: ["document.write"],
+      contributes: { commands: [{ id, title: "Insert complex", requiredPermissions: [] }] } }, {
+      commandHandlers: { [id]: context => context.documents.applyPatch!({ reason: "test 3D output", patch: {
+        op: "batch", patches: [0, 1].map(index => ({ op: "addObject" as const, pageId: page.id,
+          object: { ...namingMolecule, id: `batch_${index}`, x: x + index * 80, y,
+            atoms: namingMolecule.atoms.map(atom => ({ ...atom, x: atom.x + x + index * 80, y: atom.y + y })) } }))
+      } }) }
+    }));
+    const afterRuns = [before];
+    for (let run = 0; run < 2; run++) {
+      await act(async () => { await bundled.runtime!.host.invokeCommand(id); });
+      // Let post-insert effects and frames settle; there must be no later recenter commit.
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)); });
+      const after = port.read("initial")!;
+      expect(after.pages[0].objects).toHaveLength(before.pages[0].objects.length + (run + 1) * 2);
+      expect(after.selection.objectIds).toHaveLength(2);
+      const bounds = selectionBounds(after.pages[0].objects, after.selection.objectIds)!;
+      if (offPage) {
+        expect(bounds.centerX).toBeCloseTo(320);
+        expect(bounds.centerY).toBeCloseTo(310);
+      }
+      expect(bounds.x).toBeGreaterThanOrEqual(120);
+      expect(bounds.y).toBeGreaterThanOrEqual(160);
+      expect(bounds.x + bounds.width).toBeLessThanOrEqual(520);
+      expect(bounds.y + bounds.height).toBeLessThanOrEqual(460);
+      const objects = after.pages[0].objects.filter(object => after.selection.objectIds.includes(object.id));
+      expect(objects[1].x - objects[0].x).toBeCloseTo(80);
+      if (!offPage) {
+        expect(objects.map(object => [object.x, object.y])).toEqual([[x, y], [x + 80, y]]);
+        expect(objects.map(object => object.type === "molecule" ? object.atoms : [])).toEqual([0, 1].map(index =>
+          namingMolecule.atoms.map(atom => ({ ...atom, x: atom.x + x + index * 80, y: atom.y + y }))));
+      }
+      afterRuns.push(after);
+    }
+    for (let run = 1; run >= 0; run--) {
+      await act(async () => { await bridge.command("edit.undo"); });
+      expect(statusText()).toBe("Undid Batch test: Insert complex");
+      expect(port.read("initial")!.pages).toEqual(afterRuns[run].pages);
+      expect(port.read("initial")!.selection).toEqual(afterRuns[run].selection);
+    }
+    await act(async () => { await bridge.command("edit.redo"); });
+    expect(statusText()).toBe("Redid Batch test: Insert complex");
+    expect(port.read("initial")!.pages).toEqual(afterRuns[1].pages);
+  });
+
+  it("drops a detached report across uninstall, reinstall and closing Plugin Manager", async () => {
+    const openWindow = vi.spyOn(panelBridge, "openPluginPanelWindow").mockResolvedValue();
+    vi.spyOn(panelBridge, "hidePluginPanelWindow").mockResolvedValue();
+    const broadcastReport = vi.spyOn(panelBridge, "broadcastPluginPanelReport").mockResolvedValue();
+    await renderMainWindow();
+    await click(container!.querySelector('button[data-menu-section="plugins"]')!);
+    await click(container!.querySelector('button[data-command-id="plugins.manage"]')!);
+    const dialog = document.querySelector('[data-testid="plugin-manager-dialog"]')!;
+    expect(dialog).not.toBeNull();
+
+    const runtime = bundled.runtime!;
+    const manifest = {
+      ...namingManifest,
+      permissions: [...namingManifest.permissions],
+      contributes: namingManifest.contributes
+    };
+    const identity = { pluginId: manifest.id, panelId: "panel.namingTest.result" };
+    nativeDialog.desktop = true;
+    await act(async () => {
+      runtime.registerPlugin(manifest);
+      runtime.panels.showReport(identity.pluginId, identity.panelId, {
+        title: "install claude failed: declined", sections: []
+      });
+      runtime.panels.detachPanel(identity.pluginId, identity.panelId);
+    });
+    expect(openWindow).toHaveBeenCalledTimes(1);
+    expect(broadcastReport).toHaveBeenCalledTimes(1);
+    openWindow.mockClear();
+    broadcastReport.mockClear();
+
+    // One React batch: pruning must observe unregister synchronously, before the id exists again.
+    await act(async () => {
+      runtime.unregisterPlugin(identity.pluginId);
+      runtime.registerPlugin(manifest);
+      window.dispatchEvent(new CustomEvent(panelBridge.PLUGIN_PANEL_REQUEST_EVENT, { detail: identity }));
+    });
+    await click(dialog.querySelector(".plugin-manager-header .plugin-manager-button")!);
+    expect(document.querySelector('[data-testid="plugin-manager-dialog"]')).toBeNull();
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent(panelBridge.PLUGIN_PANEL_REQUEST_EVENT, { detail: identity }));
+    });
+    expect(runtime.panels.getDetachedPanels()).toEqual([]);
+    expect(openWindow).not.toHaveBeenCalled();
+    expect(broadcastReport).not.toHaveBeenCalled();
+
+    // Only a new showReport from the new registration may open the panel again.
+    await act(async () => {
+      runtime.panels.showReport(identity.pluginId, identity.panelId, { title: "Fresh report", sections: [] });
+      runtime.panels.detachPanel(identity.pluginId, identity.panelId);
+    });
+    expect(openWindow).toHaveBeenCalledTimes(1);
+    expect(broadcastReport).toHaveBeenCalledWith(expect.objectContaining({
+      report: { title: "Fresh report", sections: [] }
+    }));
+  });
+
   it("runs Orthonym's existing insert command from Structure and hides it on removal", async () => {
     await renderMainWindow();
     const commandId = "plugin.orthonymNaming.insertName";

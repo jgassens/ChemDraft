@@ -2,11 +2,14 @@
 import { act, createElement, StrictMode, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ShortcutPlatform } from "@chemdraft/shortcut-engine";
+import type { MessageDialogCustomButtons } from "@tauri-apps/plugin-dialog";
 import { nativePrompt, nativePromptButtons, setNativePromptProvider, useNativePrompt, type NativePromptOptions } from "./nativePrompt";
 import { save } from "./nativeFileDialog";
 
-const plugin = vi.hoisted(() => ({ native: true, message: vi.fn(), invoke: vi.fn(), save: vi.fn() }));
+const plugin = vi.hoisted(() => ({ native: true, owner: "main", message: vi.fn(), invoke: vi.fn(), save: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => plugin.native, invoke: plugin.invoke }));
+vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ label: plugin.owner }) }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ message: plugin.message, save: plugin.save }));
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -18,9 +21,133 @@ const three: NativePromptOptions = {
     { id: "save", label: "Save" }
   ]
 };
-afterEach(() => { plugin.native = true; plugin.message.mockReset(); plugin.invoke.mockReset(); plugin.save.mockReset(); document.body.innerHTML = ""; vi.restoreAllMocks(); });
+
+type NativeDialogAction = "return" | "esc" | "close" | `click:${string}`;
+function nativeDialogResult(
+  buttons: MessageDialogCustomButtons,
+  action: NativeDialogAction,
+  platform: "windows" | "macos"
+): string {
+  // rfd 0.16.0 src/backend/{win_cid,macos}/message_dialog.rs: custom clicks return Custom(title).
+  if (action.startsWith("click:")) return action.slice("click:".length);
+  // rfd win_cid/message_dialog.rs: nDefaultButton = 0 picks the first TaskDialog button.
+  // rfd macos/message_dialog.rs: NSAlert adds ok/cancel or yes/no/cancel in order; first is default.
+  if (action === "return") return buttons.ok ?? buttons.yes!;
+  if (platform === "windows") {
+    // rfd win_cid/message_dialog.rs: TDF_ALLOW_DIALOG_CANCELLATION makes Esc/close return IDCANCEL.
+    // tauri-plugin-dialog 2.7.1 src/desktop.rs show_message_dialog: Cancel becomes Custom(cancel)
+    // for OkCancelCustom and YesNoCancelCustom; otherwise it passes through as "Cancel".
+    return buttons.cancel ?? "Cancel";
+  }
+  // AppKit gives Esc to the button titled "Cancel". NSAlert has no ordinary close button;
+  // "close" models modal dismissal, whose rfd Cancel result Tauri remaps to the cancel slot.
+  if (action === "esc") return Object.values(buttons).find((label) => label === "Cancel") ?? buttons.cancel ?? "Cancel";
+  return buttons.cancel ?? "Cancel";
+}
+
+// Exact choices from the destructive prompt callers; expected layouts preserve today's macOS order.
+const destructivePrompts: { name: string; choices: NativePromptOptions["choices"]; macos: MessageDialogCustomButtons }[] = [
+  {
+    // MainWindow.tsx:9241
+    name: "Delete the kept drawing? (MainWindow.tsx)",
+    choices: [
+      { id: "delete", label: "Delete", destructive: true },
+      { id: "cancel", label: "Cancel", cancel: true }
+    ],
+    macos: { ok: "Cancel", cancel: "Delete" }
+  },
+  {
+    // MainWindow.tsx:9222
+    name: "kept drawings (MainWindow.tsx)",
+    choices: [
+      { id: "save", label: "Save Drawing…" },
+      { id: "delete", label: "Delete", destructive: true },
+      { id: "cancel", label: "Cancel", cancel: true }
+    ],
+    macos: { yes: "Save Drawing…", no: "Delete", cancel: "Cancel" }
+  },
+  {
+    // MainWindow.tsx:9413
+    name: "Save changes before quitting? (MainWindow.tsx)",
+    choices: [
+      { id: "save", label: "Save" },
+      { id: "discard", label: "Don't Save", destructive: true },
+      { id: "cancel", label: "Cancel", cancel: true }
+    ],
+    macos: { yes: "Save", no: "Don't Save", cancel: "Cancel" }
+  },
+  {
+    // MainWindow.tsx:9463
+    name: "Save changes before closing? (MainWindow.tsx)",
+    choices: [
+      { id: "save", label: "Save" },
+      { id: "discard", label: "Don't Save", destructive: true },
+      { id: "cancel", label: "Cancel", cancel: true }
+    ],
+    macos: { yes: "Save", no: "Don't Save", cancel: "Cancel" }
+  },
+  {
+    // MainWindow.tsx:20612
+    name: "Clear Overrides (MainWindow.tsx)",
+    choices: [
+      { id: "keep", label: "Keep Overrides" },
+      { id: "clear", label: "Clear Overrides", destructive: true },
+      { id: "cancel", label: "Cancel", cancel: true }
+    ],
+    macos: { yes: "Keep Overrides", no: "Clear Overrides", cancel: "Cancel" }
+  },
+  {
+    // plugins/PluginManagerDialog.tsx:226
+    name: "Remove Engine (plugins/PluginManagerDialog.tsx)",
+    choices: [
+      { id: "keep", label: "Keep Engine" },
+      { id: "remove", label: "Remove Engine", destructive: true },
+      { id: "cancel", label: "Cancel", cancel: true }
+    ],
+    macos: { yes: "Keep Engine", no: "Remove Engine", cancel: "Cancel" }
+  }
+];
+afterEach(() => { plugin.native = true; plugin.owner = "main"; plugin.message.mockReset(); plugin.invoke.mockReset(); plugin.save.mockReset(); document.body.innerHTML = ""; vi.restoreAllMocks(); });
 
 describe("nativePrompt", () => {
+  const growth: NativePromptOptions = { title: "ChemDraft Assistant", kind: "info", owner: "document",
+    message: "Olympiadane needs a page 1960 × 900 pt. Enlarge the page to fit?",
+    choices: [{ id: "enlarge", label: "Enlarge Page" }, { id: "decline", label: "Cancel", cancel: true }] };
+
+  it.each(["macos", "windows", "linux"] as const)("requires the document window as native message-box owner on %s", async platform => {
+    for (const [answer, expected] of [["Enlarge Page", "enlarge"], ["Cancel", "decline"]]) {
+      plugin.message.mockResolvedValue(answer);
+      expect(await nativePrompt(growth, undefined, undefined, undefined, platform)).toBe(expected);
+      expect(plugin.message).toHaveBeenLastCalledWith(growth.message, {
+        title: growth.title, kind: "info", buttons: { ok: "Enlarge Page", cancel: "Cancel" }
+      });
+    }
+    plugin.owner = "plugin-panel";
+    plugin.message.mockClear();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(await nativePrompt(growth, async () => "decline", undefined, undefined, platform)).toBe("decline");
+    expect(plugin.message).not.toHaveBeenCalled();
+  });
+
+  it.each(["macos", "windows"] as const)("rejects the obsolete platform-dependent three-button growth prompt on %s", platform => {
+    expect(() => nativePromptButtons({ ...growth, choices: [growth.choices[0]!,
+      // Regression: the obsolete special case silently admitted a third macOS button.
+      { id: "decline", label: "Don't enlarge", cancel: true }
+    ] } as NativePromptOptions, platform)).toThrow(/Cancel/);
+  });
+
+  it("ignores approval after cancellation while the native message box is open", async () => {
+    let answer!: (label: string) => void;
+    plugin.message.mockImplementation(() => new Promise<string>(resolve => { answer = resolve; }));
+    const stop = new AbortController();
+    const response = nativePrompt(growth, undefined, stop.signal);
+    await vi.waitFor(() => expect(plugin.message).toHaveBeenCalledOnce());
+    stop.abort();
+    expect(await response).toBe("decline");
+    answer("Enlarge Page");
+    await vi.waitFor(() => expect(plugin.invoke).toHaveBeenLastCalledWith("suspend_toolset_windows", { suspended: false }));
+  });
+
   it("reports opening only after invoking the native box, before its answer", async () => {
     const calls: string[] = [];
     let answer: (label: string) => void = () => {};
@@ -128,9 +255,9 @@ describe("nativePrompt", () => {
     });
     expect(await nativePrompt(three, undefined, controller.signal)).toBe("cancel");
     expect(plugin.message).not.toHaveBeenCalled();
-    expect(plugin.invoke.mock.calls).toEqual([
+    await vi.waitFor(() => expect(plugin.invoke.mock.calls).toEqual([
       ["suspend_toolset_windows", { suspended: true }], ["suspend_toolset_windows", { suspended: false }]
-    ]);
+    ]));
   });
 
   it("balances every overlapping native prompt independently", async () => {
@@ -183,7 +310,7 @@ describe("nativePrompt", () => {
     expect(plugin.message).toHaveBeenLastCalledWith(prompt.message, expect.objectContaining({ buttons: { ok: "OK" } }));
   });
 
-  it("never puts a destructive choice in the native default slot, regardless of input order", () => {
+  it("never puts a destructive choice in a three-choice native default slot, regardless of input order", () => {
     expect(nativePromptButtons(three)).toEqual({ yes: "Save", no: "Don't Save", cancel: "Cancel" });
     expect(nativePromptButtons({ ...three, choices: [...three.choices].reverse() })).toEqual({ yes: "Save", no: "Don't Save", cancel: "Cancel" });
     expect(nativePromptButtons({ ...three, choices: [
@@ -192,10 +319,10 @@ describe("nativePrompt", () => {
     ] })).toEqual({ yes: "Keep Engine", no: "Remove Engine", cancel: "Cancel" });
   });
 
-  it("defaults a destructive confirmation to Cancel without duplicating buttons", () => {
+  it("defaults a destructive confirmation to Cancel on macOS without duplicating buttons", () => {
     expect(nativePromptButtons({ ...three, choices: [
       { id: "remove", label: "Remove", destructive: true }, { id: "cancel", label: "Cancel", cancel: true }
-    ] })).toEqual({ ok: "Cancel", cancel: "Remove" });
+    ] }, "macos")).toEqual({ ok: "Cancel", cancel: "Remove" });
     for (const prompt of [three, { ...three, choices: [{ id: "a", label: "Use A3 Page" }, { id: "c", label: "Cancel" as const, cancel: true as const }] }]) {
       const labels = Object.values(nativePromptButtons(prompt));
       expect(new Set(labels).size).toBe(labels.length);
@@ -211,8 +338,54 @@ describe("nativePrompt", () => {
       plugin.message.mockResolvedValue(result);
       expect(await nativePrompt(prompt)).toBe(id);
       expect(plugin.message).toHaveBeenLastCalledWith(prompt.message, expect.objectContaining({
-        buttons: { ok: "Cancel", cancel: "Delete" }
+        buttons: platform === "MacIntel" ? { ok: "Cancel", cancel: "Delete" } : { ok: "Delete", cancel: "Cancel" }
       }));
+    }
+  });
+
+  describe.each(["windows", "macos"] as const)("%s native result mapping", (platform) => {
+    it.each(destructivePrompts)("preserves button layout and cancels Esc/Windows close for $name", async ({ choices, macos }) => {
+      const prompt: NativePromptOptions = { ...three, choices };
+      const expected = platform === "windows" && choices.length === 2
+        ? { ok: "Delete", cancel: "Cancel" } : macos;
+      expect(nativePromptButtons(prompt, platform)).toEqual(expected);
+      // NSAlert has no ordinary close button; only Windows has both dismissal gestures.
+      const dismissals = platform === "windows" ? ["esc", "close"] as const : ["esc"] as const;
+      for (const action of dismissals) {
+        plugin.message.mockImplementation(async (_message, { buttons }) => nativeDialogResult(buttons, action, platform));
+        expect(await nativePrompt(prompt, undefined, undefined, undefined, platform)).toBe("cancel");
+        expect(plugin.message).toHaveBeenLastCalledWith(prompt.message, expect.objectContaining({ buttons: expected }));
+      }
+    });
+
+    it("Return chooses Delete on Windows and Cancel on macOS for the two-button confirmation", async () => {
+      const prompt: NativePromptOptions = { ...three, choices: destructivePrompts[0]!.choices };
+      plugin.message.mockImplementation(async (_message, { buttons }) => nativeDialogResult(buttons, "return", platform));
+      expect(await nativePrompt(prompt, undefined, undefined, undefined, platform)).toBe(platform === "windows" ? "delete" : "cancel");
+    });
+
+    it.each(destructivePrompts)("runs only the explicitly clicked choice for $name", async ({ choices }) => {
+      const prompt: NativePromptOptions = { ...three, choices };
+      for (const choice of choices) {
+        plugin.message.mockImplementation(async (_message, { buttons }) => nativeDialogResult(buttons, `click:${choice.label}`, platform));
+        expect(await nativePrompt(prompt, undefined, undefined, undefined, platform)).toBe(choice.id);
+      }
+    });
+  });
+
+  it("keeps Cancel in the cancel slot for destructive confirmations on Windows and Linux", () => {
+    const prompt: NativePromptOptions = { ...three, choices: destructivePrompts[0]!.choices };
+    for (const platform of ["windows", "linux"] as const) {
+      expect(nativePromptButtons(prompt, platform)).toEqual({ ok: "Delete", cancel: "Cancel" });
+    }
+  });
+
+  it.each(["windows", "macos", "linux"] satisfies ShortcutPlatform[])("fails closed on unexpected native results for every destructive prompt on %s", async (platform) => {
+    for (const { choices } of destructivePrompts) {
+      for (const result of ["Ok", "", "Yes"]) {
+        plugin.message.mockResolvedValue(result);
+        expect(await nativePrompt({ ...three, choices }, undefined, undefined, undefined, platform)).toBe("cancel");
+      }
     }
   });
 

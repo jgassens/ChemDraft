@@ -10,7 +10,13 @@
  * same session cache, same engine hashes in the fingerprint. A plugin's envelope and the core Analyze
  * panel's envelope are therefore the same computation, and cannot drift.
  */
+import { RESERVED_PLUGIN_OBJECT_IDS } from "./reservedObjectIds";
+export { createChemistry3dProviders } from "../chemistry3d/client";
+export { RESERVED_PLUGIN_OBJECT_IDS } from "./reservedObjectIds";
+
 import { invoke } from "@tauri-apps/api/core";
+import { resolveStructureTemplateName } from "@chemdraft/document-workflow-core";
+import { templateMoleculeForSmiles } from "../structureTemplateInsertion";
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
 import type {
   PluginIsotopeEnvelopeRequest,
@@ -21,12 +27,15 @@ import type {
   PluginStructureFromSmilesResult
 } from "@chemdraft/plugin-api";
 import { ISOTOPE_ENVELOPE_METHOD_ID } from "@chemdraft/rdkit-adapter/constants";
+import {
+  assertMoleculeMatchesSmiles, type InspectChemicalIdentity
+} from "@chemdraft/document-workflow-core";
+import { createPasteIdentityInspector, SmilesIdentityEngineUnavailableError } from "../smilesPasteIdentity";
 
 import { analysisClient } from "../analysisClient";
-import { loadRdkitWithAppLoader } from "./rdkitAppLoader";
+import { depictSmilesOffThread } from "../depiction2d/client";
 import {
   createSmilesMolecule,
-  pastedStructureDepictionFromMolfile,
   type PastedStructureDepiction
 } from "../documentWorkflow";
 
@@ -105,7 +114,9 @@ export async function computeIsotopeEnvelopeForPlugin(
  */
 export async function structureFromSmilesForPlugin(
   request: PluginStructureFromSmilesRequest,
-  getActiveDocument: () => ChemDraftDocument | undefined
+  getActiveDocument: () => ChemDraftDocument | undefined,
+  signal?: AbortSignal,
+  inspect: InspectChemicalIdentity = createPasteIdentityInspector()
 ): Promise<PluginStructureFromSmilesResult> {
   const document = getActiveDocument();
   if (!document) {
@@ -119,45 +130,64 @@ export async function structureFromSmilesForPlugin(
   // rather than the `document.read`-checked one, so a plugin holding only `chemistry.compute` could
   // read both.
 
-  const ocl = await import("@chemdraft/ocl-adapter");
-  let depiction: PastedStructureDepiction;
+  let object: ReturnType<typeof createSmilesMolecule> | undefined;
   try {
-    const rdkit = await loadRdkitWithAppLoader(() => import("@chemdraft/rdkit-adapter"));
-    depiction = pastedStructureDepictionFromMolfile(await rdkit.generateSmiles2DMolfile(request.smiles));
-  } catch {
+    object = await templateMoleculeForSmiles(request.smiles, document,
+      pluginInsertPoint(document), RESERVED_PLUGIN_OBJECT_IDS);
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    // An unavailable canonicalizer cannot authorize substitution. Keep the existing depiction
+    // engine's fallback and error reporting for non-template input.
+  }
+  if (object && signal?.aborted) {
+    return { available: true, built: false, reason: "2D depiction cancelled." };
+  }
+
+  if (!object) {
+    let depiction: PastedStructureDepiction;
+    let warnings: string[] | undefined;
     try {
-      depiction = pastedStructureDepictionFromMolfile(ocl.depictSmiles2D(request.smiles).molfile);
+      ({ depiction, warnings } = await depictSmilesOffThread(request.smiles, { signal }));
     } catch (error) {
-      return {
-        available: true,
-        built: false,
-        reason: structureGenerationFailureReason(request.smiles, error)
-      };
+      return { available: true, built: false, reason: structureGenerationFailureReason(request.smiles, error) };
     }
+
+    if (depiction.atoms.length === 0) {
+      return { available: true, built: false, reason: "The structure came back with no atoms." };
+    }
+
+    const origin = request.origin?.trim();
+    // `reservedObjectIds` is what stops two proposals colliding. `nextObjectId` is purely
+    // document-derived and deterministic, and this function deliberately does NOT insert — the object
+    // waits in the review queue until the user accepts it. So a plugin that builds two structures
+    // before either lands got `mol_plugin_001` twice, and accepting the second threw
+    // `DocumentPatchError: object "mol_plugin_001" already exists` from `addObject`.
+    object = createSmilesMolecule(document, pluginInsertPoint(document), depiction, request.smiles, {
+      objectIdPrefix: "mol_plugin",
+      reservedObjectIds: RESERVED_PLUGIN_OBJECT_IDS,
+      styleSource: "plugin-smiles",
+      warningCode: "plugin.smiles_imported",
+      // Names the plugin, because "pasted" would be a false account of where this came from.
+      warningMessage: [origin
+        ? `Generated an editable 2D structure from SMILES supplied by ${origin}.`
+        : "Generated an editable 2D structure from SMILES supplied by a plugin.", ...(warnings ?? [])].join(" ")
+    }, { openUnspecifiedDoubleBonds: true });
   }
 
-  if (depiction.atoms.length === 0) {
-    return { available: true, built: false, reason: "The structure came back with no atoms." };
+  if (object.type !== "molecule") {
+    return { available: true, built: false, reason: "The structure builder did not return a molecule." };
   }
-
-  const origin = request.origin?.trim();
-  // `reservedObjectIds` is what stops two proposals colliding. `nextObjectId` is purely
-  // document-derived and deterministic, and this function deliberately does NOT insert — the object
-  // waits in the review queue until the user accepts it. So a plugin that builds two structures
-  // before either lands got `mol_plugin_001` twice, and accepting the second threw
-  // `DocumentPatchError: object "mol_plugin_001" already exists` from `addObject`.
-  const object = createSmilesMolecule(document, pluginInsertPoint(document), depiction, request.smiles, {
-    objectIdPrefix: "mol_plugin",
-    reservedObjectIds: RESERVED_PLUGIN_OBJECT_IDS,
-    styleSource: "plugin-smiles",
-    warningCode: "plugin.smiles_imported",
-    // Names the plugin, because "pasted" would be a false account of where this came from.
-    warningMessage: origin
-      ? `Generated an editable 2D structure from SMILES supplied by ${origin}.`
-      : "Generated an editable 2D structure from SMILES supplied by a plugin."
-  });
-
   RESERVED_PLUGIN_OBJECT_IDS.add(object.id);
+  try {
+    await assertMoleculeMatchesSmiles(object, request.smiles, inspect);
+    signal?.throwIfAborted();
+  } catch (error) {
+    RESERVED_PLUGIN_OBJECT_IDS.delete(object.id);
+    if (error instanceof SmilesIdentityEngineUnavailableError) {
+      return { available: false, reason: error.message };
+    }
+    return { available: true, built: false, reason: structureGenerationFailureReason(request.smiles, error) };
+  }
   return { available: true, built: true, object };
 }
 
@@ -173,16 +203,6 @@ function structureGenerationFailureReason(smiles: string, error: unknown): strin
     : message.split(/\r\n|\r|\n/, 1)[0].trim();
   return `No 2D structure could be generated for "${smiles}": ${specificMessage || "The depiction engine did not provide a reason."}`;
 }
-
-/**
- * Ids this runtime has minted for proposals that have not landed yet.
- *
- * Module-scoped because the collision is across CALLS, not within one. Entries are never removed: an
- * accepted object puts its id in the document, where `nextObjectId` already sees it, and a rejected
- * one leaves a gap in the numbering, which costs nothing. The set is bounded by how many structures a
- * plugin builds in a session.
- */
-const RESERVED_PLUGIN_OBJECT_IDS = new Set<string>();
 
 /**
  * Where a plugin's structure lands.
@@ -228,6 +248,9 @@ const OPSIN_ENGINE_ID = "opsin";
 export async function nameToStructureForPlugin(
   request: PluginNameToStructureRequest
 ): Promise<PluginNameToStructureResult> {
+  const template = resolveStructureTemplateName(request.name);
+  if (template) return { available: true, parsed: true, smiles: template.smiles,
+    engine: { id: "chemdraft-templates", version: "builtin" } };
   let status: OpsinStatusReply;
   try {
     status = await invoke<OpsinStatusReply>("opsin_status");

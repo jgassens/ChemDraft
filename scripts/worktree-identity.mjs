@@ -1,6 +1,6 @@
 // What the Node launchers (dev.mjs, desktop-tauri.mjs) share with run-app: the worktree label every
-// build carries (AGENTS.md §21.1), the per-worktree dev identifier that keeps a branch build from
-// impersonating the stable app (§21.2), and a PATH edit that survives Windows' env-var casing.
+// build carries (AGENTS.md §15.1), the shared dev identifier that keeps branch builds separate from
+// the stable app (§15.2), and a PATH edit that survives Windows' env-var casing.
 import { spawnSync } from "node:child_process";
 import { basename, delimiter } from "node:path";
 import { STABLE_BUNDLE_ID } from "./app-data-root.mjs";
@@ -12,22 +12,13 @@ export function git(rootDir, ...args) {
   return result.status === 0 ? result.stdout.trim() : "";
 }
 
-// Same slug rule as run-app's RUN_APP_WORKTREE_SLUG.
-export function worktreeSlug(name) {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9-]/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "");
-}
-
 export function worktreeIdentity(rootDir) {
   const branch = git(rootDir, "rev-parse", "--abbrev-ref", "HEAD");
   const folder = basename(rootDir);
   return {
     branch,
     label: `${folder}${branch ? ` [${branch}]` : ""}`,
-    devBundleId: `${STABLE_BUNDLE_ID}.dev.${worktreeSlug(folder) || "worktree"}`
+    devBundleId: `${STABLE_BUNDLE_ID}.dev`
   };
 }
 

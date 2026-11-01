@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { structureTemplates } from "@chemdraft/template-library";
 import { engineInstallFixture } from "./engineInstallTestFixtures";
+import { toolInstallFixture } from "./toolInstallTestFixtures";
 import { DIALOG_PREVIEW_MAX_BYTES, DIALOG_MAX_BYTES, parseDialogMessage, validateDialogDelivery, type DialogMessage } from "./dialogProtocol";
 
 export const snapshot = (): Extract<DialogMessage, { type: "snapshot" }> => ({ protocolVersion: 1, ownerWindowId: "main", documentTabId: "tab-1", dialogKind: "pageSize", sessionId: "session-1", requestId: "request-1", snapshotRevision: 1, type: "snapshot", data: { title: "Drawing", width: 8.5, height: 11, unit: "inch" } });
@@ -91,4 +93,42 @@ it("validates engine install snapshots, states and actions strictly within the d
   expect(parseDialogMessage({ ...message, type: "action", data: { action: ["install"] } })).toBeUndefined();
   expect(parseDialogMessage({ ...message, type: "result", data: { status: ["accepted"] } })).toBeUndefined();
   expect(parseDialogMessage({ ...message, type: "result", data: { status: "exported" } })).toBeUndefined();
+});
+
+it("validates tool install snapshots, states and actions fail closed", () => {
+  const data = toolInstallFixture();
+  const message = { ...snapshot(), dialogKind: "toolInstall", data };
+  expect(parseDialogMessage(message)).toBeDefined();
+  for (const state of [
+    { state: { status: "consent" }, buttons: ["allow", "close"] },
+    { state: { status: "installing", phase: "Downloading", bytesDone: 1, bytesTotal: 2 }, buttons: ["cancelInstall", "close"] },
+    { state: { status: "installed" }, buttons: ["close"] },
+    { state: { status: "broken", detail: "Receipt missing" }, buttons: ["install", "close"] }
+  ]) expect(parseDialogMessage({ ...message, data: { ...data, ...state } })).toBeDefined();
+  expect(parseDialogMessage({ ...message, data: { ...data, freeDiskBytes: null } })).toBeDefined();
+  for (const intent of ["download", "update", "use"]) {
+    expect(parseDialogMessage({ ...message, data: { ...data, intent } })).toBeDefined();
+  }
+  for (const action of ["install", "allow", "cancelInstall", "close"]) expect(parseDialogMessage({ ...message, type: "action", data: { action } })).toBeDefined();
+  for (const change of [
+    { publisher: "" }, { version: "x".repeat(41) }, { downloadBytes: -1 },
+    { intent: "repair" }, { intent: null }, { intent: ["update"] }, { intent: true },
+    { freeDiskBytes: -1 }, { freeDiskBytes: "unknown" },
+    { state: { status: "consent", extra: true } }, { buttons: ["install", "allow", "close"] },
+    { state: { status: "installing", phase: "Downloading", bytesDone: 1.5 }, buttons: ["cancelInstall", "close"] }
+  ]) expect(parseDialogMessage({ ...message, data: { ...data, ...change } })).toBeUndefined();
+});
+it("validates the template picker snapshot and its restricted actions", () => {
+  const message = { ...snapshot(), dialogKind: "structureTemplates", data: { title: "Drawing", templateIds: structureTemplates.map(template => template.id) } };
+  expect(parseDialogMessage(message)).toEqual(message);
+  for (const data of [{ title: "Drawing" }, { title: "", templateIds: [] }, { ...message.data, templateIds: ["unknown"] },
+    { ...message.data, templateIds: [structureTemplates[0]!.id, structureTemplates[0]!.id] }, { ...message.data, svg: "<script/>" }]) {
+    expect(parseDialogMessage({ ...message, data })).toBeUndefined();
+  }
+  expect(parseDialogMessage({ ...message, type: "action", data: { action: "insert", templateId: structureTemplates[0]!.id } })).toBeDefined();
+  for (const data of [{ action: "insert" }, { action: "insert", templateId: "../main" }, { action: "insert", templateId: "unknown" },
+    { action: "insert", templateId: structureTemplates[0]!.id, commandId: "document.new" }, { action: "apply" }]) {
+    expect(parseDialogMessage({ ...message, type: "action", data })).toBeUndefined();
+  }
+  expect(parseDialogMessage({ ...message, type: "result", data: { status: "inserted" } })).toBeDefined();
 });

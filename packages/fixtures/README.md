@@ -2,6 +2,15 @@
 
 Shared chemistry, compatibility, clipboard, and visual regression fixtures.
 
+`open-double-bonds/atom-mapped.chemdraft` is a synthetic but-2-ene document with an
+open (either) double bond drawn in trans coordinates and V2000 atom maps on all four carbons,
+for testing E/Z editing safeguards.
+
+`open-double-bonds/deuterated-open-alkene.mol` is a synthetic V2000 but-2-ene-like
+graph with an open C=C (bond stereo 3) in trans coordinates. Its two explicit H
+atoms carry `M  ISO` masses 2 and 3, exercising D/T normalization and exact isotope
+preservation when using drawn geometry or flipping E/Z.
+
 `molfile/unsupported-bond-order.mol` is a synthetic V2000 C–C–O graph with CTfile bond type 5
 (single or double) on its first bond. The native model imports that unsupported order as `unknown`;
 the SDF regression checks type-8 output, its warning, and refusal to invent a SMILES bond order.

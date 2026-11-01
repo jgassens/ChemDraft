@@ -26,7 +26,7 @@ import {
   createPhase4Document,
   insertSmilesMolecule,
   pastedStructureDepictionFromMolfile,
-  smilesPasteBondLengthPx,
+  nativeBondLengthPx,
   type PastedStructureDepiction
 } from "./documentWorkflow";
 
@@ -139,8 +139,8 @@ describe("insertSmilesMolecule — renders pasted SMILES with stereochemistry", 
     expect(molecule.bonds).toHaveLength(31);
     expect(molecule.bonds.filter(isWedge)).toHaveLength(6);
     // Pin the literal so a regressed constant cannot silently self-validate below.
-    expect(smilesPasteBondLengthPx).toBe(28);
-    expect(molecule.style.bondLengthPx).toBe(smilesPasteBondLengthPx);
+    expect(nativeBondLengthPx).toBe(22);
+    expect(molecule.style.bondLengthPx).toBe(nativeBondLengthPx);
 
     const atomById = new Map(molecule.atoms.map((atom) => [atom.id, atom]));
     const bondLengths = molecule.bonds.map((bond) => {
@@ -149,7 +149,7 @@ describe("insertSmilesMolecule — renders pasted SMILES with stereochemistry", 
       return from && to ? Math.hypot(to.x - from.x, to.y - from.y) : 0;
     });
     const meanBondLength = bondLengths.reduce((sum, length) => sum + length, 0) / bondLengths.length;
-    expect(meanBondLength).toBeCloseTo(smilesPasteBondLengthPx, 6);
+    expect(meanBondLength).toBeCloseTo(nativeBondLengthPx, 6);
 
     const page = createEmptyDocument({ now: "2026-07-22T00:00:00.000Z" }).pages[0];
     const fragments = planPageSvgRender({ ...page, objects: [molecule] }).fragments.flatMap(elementFragments);

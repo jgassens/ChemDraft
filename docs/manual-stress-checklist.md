@@ -5,10 +5,198 @@ file was consolidated (2026-10-04); `AGENTS.md` §14 still requires it. Run ever
 Windows** unless the item names one platform. `docs/windows-port-stress-test.md` records the Windows
 port's own hands-on pass.
 
+Speed runs on both platforms: follow the [timing probe protocol](architecture/perf-probe.md), including the bridge-off no-log check.
+
 Manual stress must cover tab initialization, user tab persistence, mixed states, multi-molecule
 scaling, sparse override precedence, terminal carbon labels, hidden implicit hydrogens, explicit
 hydrogens, fonts, save/reopen, undo/redo, Spin 3D, atom-label editor placement, SVG export, and ring
 selection after tab switching/closing.
+
+Canvas context menus (macOS and Windows): open the page and object menus with the mouse and keyboard;
+use arrows, Home/End, Arrange and Copy As submenus, Enter, Space, Escape and Tab, then verify canvas
+focus and drawing shortcuts return after an action or dismissal.
+Palette field input (macOS and Windows): in Drawn Structure Settings, click Target bond length,
+type 30 and press Return; the value changes, the canvas does not, and no hotkey fires. Switch to
+another app and back, then click the field again; Customize gallery search still types.
+After clicking or double-clicking Target bond length, select its text, type 26 and press Return.
+Immediately press Delete/Backspace, Cmd/Ctrl+A and digits: all edit the same focused box, with no
+document deletion, selection change or hotkey. Repeat after an ArrowUp/ArrowDown commit and its
+canvas update; clean-number Cmd/Ctrl+Z still undoes the document without leaving the box.
+With the document initially key (also immediately after leaving a previous palette edit), click
+the number and immediately press Cmd/Ctrl+A, digits and Delete/Backspace before acquisition can
+settle. Keys either reach the box or are dropped; the document must never Select All or change.
+With “No molecule”, click the disabled Chain angle box and type digits, Delete/Backspace and
+Cmd/Ctrl+A: the palette ignores them until Escape or a click elsewhere. In the Text toolbar,
+click the size dropdown and repeat: type-ahead and arrows belong to the select, Escape dismisses
+its popup, and Select All never selects canvas objects. Choosing a size keeps keys in the select.
+After each case, click a palette tool button or its background and verify tool hotkeys work again.
+While a number box or Text size select holds the keyboard, verify Save, Open, Export, View and
+Copy still work; repeat Save immediately after mouse-down, before the lease reply. During that
+pending interval, Cmd/Ctrl+A, Cut/Paste, Undo/Redo, Delete/Backspace and tool/bond typing must not
+reach the document. Cmd+Q, Cmd+H, Cmd/Ctrl+W and preferences must retain their menu behavior,
+including after a disabled-field click. Repeat on Windows with the document WebView2 focused.
+Windows menu routing: Ctrl+S saves exactly once from a held number box, the Text size select,
+the disabled Chain angle sink, and immediately after mouse-down while acquisition is pending;
+the control/sink keeps focus (a Save As chooser may take it). Repeat Save As, Open, New, Close,
+Export, Preferences and zoom/view shortcuts. Ctrl+A/C/V/X and draft Undo/Redo stay in the field;
+clean-number history keeps its existing document route. On macOS Cmd+S uses the native menu
+exactly once with a clean field; a dirty typed draft commits first and the page saves exactly once.
+With a dirty draft, Save As/Export include the value and Ctrl+Tab commits to the original tab
+before switching. From a held checkbox/slider on macOS, Cmd+= zooms, Ctrl+Tab switches tabs,
+and Cmd+W closes the document tab. Hover the disabled number box itself:
+its real wrapper shows not-allowed, even before the palette becomes key; no title means no tooltip.
+Foreground after editing: type ahead in the Text size select, dismiss its popup, then press
+Escape again with the select closed. Press M immediately: the document must receive it. Repeat
+on macOS and Windows by opening the list with a pointer, and with Space/Alt+Down where supported:
+the first Escape only dismisses the list, typing 18 and Arrow Down still act on the select,
+and a further Escape hands the keyboard back to the document.
+Tab out of the palette and a control finishing with no palette destination, on both platforms.
+Tab/click between palette controls keeps their keyboard lease. Switching apps, clicking another
+palette, or opening a native colour/select chooser must never pull focus back to the document.
+Foreground after dragging: on Windows drag the Text toolbar by its title and background, release,
+then immediately press M. The document receives it and the toolbar stays where dropped. Repeat
+a press with no movement and a drag while a keyboard lease is held: dragging ends any lease,
+and the document has the keyboard afterwards. Switching apps during the gesture must not steal
+focus. On macOS verify dragging still leaves the document key.
+Drag the palette background (including a press without movement), close it on pointerdown, switch
+apps, and click the canvas or another window: no guard may remain. With a loading/unresponsive
+palette page, editing hotkeys must recover after about one second. Rapidly click a button then a
+number box while native IPC is delayed: the old button release must not clear the new click.
+Hold Shift across a palette click and release it: document modifier state must not stay latched.
+Double- and triple-click a number box, then type 3, Delete and Backspace: the box keeps focus and
+the drawing never changes. With another app in front, clicking a palette field does NOT bring
+ChemDraft forward or take its keys, by design: floating palettes never yank focus from another app.
+Click the drawing first, then the field to edit it.
+While typing 30, the field shows 30 and applies on Return; three list-pasted molecules show one Target bond length, not Mixed.
+Type 30 in Target bond length and Tab to its slider: exactly one edit applies 30, and releasing Tab
+or leaving the slider keeps 30. Tab out of an untouched Mixed field: no edit. The first spinner
+click on an unfocused field steps once; holding ArrowUp or the spinner increases each tick without
+duplicate undo entries or backward jumps as delayed snapshots arrive, and blur adds no edit.
+Arrows/spinners leave Mixed alone until typing or moving its slider. Pointer drag/click on the
+slider applies changed values. Clicking a checkbox,
+slider or select takes the keyboard on both platforms; Delete, Backspace, arrows, Home/End and
+PageUp/PageDown never reach the drawing. Slider arrows apply each changed value once on release.
+Repeat a checkbox click, click checkbox A then B, and click a number then its slider:
+each clicked control keeps focus and Delete/Backspace stay off the drawing, even when WebKit's
+click default briefly leaves focus on the page body.
+Selects retain native type-ahead; Escape dismisses an open popup, and Escape with the popup
+closed returns the keyboard to the document, as it does in other controls. Enabled tool/command
+buttons never borrow it; disabled controls use the palette shell as their typing sink.
+Cmd/Ctrl+Z still reaches document history from non-text controls; tool hotkeys still work from
+checkboxes, sliders and colour controls. A focused number follows undo immediately unless it holds typed, uncommitted
+text. Focus Target bond length at 22, step ArrowUp three times to 23.5, then press real Cmd/Ctrl+Z
+inside the box: the document undoes once and the focused box shows 23. Choose Edit > Undo from
+the menu to reach 22.5, then Edit > Redo to return to 23: the box refreshes immediately, and Tab
+adds no edit. Repeat with a main-window text input left focused before activating the palette.
+Redo with Cmd+Shift+Z on macOS and Ctrl+Shift+Z / Ctrl+Y on Windows, and repeat after spinner
+clicks. An untouched number
+also forwards history. Type an uncommitted value: keyboard and menu undo/redo now edit only its
+text. Retype an exactly equal model value and Tab or Enter: no undo entry; type a different value:
+exactly one entry. With molecules selected, typing the value already shown adds no undo entry, even when the selected
+molecules differ by less than 0.01 px (they show one value); type a different value to set them all.
+Step to 22.5, start typing 22.5, and change
+the document's value elsewhere to 40: committing the draft must apply 22.5 once again.
+Click Bond color, Label color, Atom label background color, Custom ring fill color and Ring
+effect color: each opens its native picker on both platforms (the Windows palette may activate
+for it). Leave it open through palette snapshots; clicking the canvas dismisses it without
+changing the drawing. Open the colour popover, type a hex shorthand and press Enter: the colour
+commits once and shortcuts return. Keep two palettes open, edit a field in each in turn, and switch
+apps: their leases stay independent and the first palette can acquire focus again.
+Colour transaction regression (macOS and Windows): select a molecule, pick blue in Bond color's
+native chooser and close it, draw a new bond, then pick green and close the chooser again. The
+bond must remain and the new colour must apply to the current target. Undo green, then the bond,
+then blue as separate steps; cancelling the green pick must also preserve the bond and blue.
+Repeat with Label color, Atom label background color, Custom ring fill color, Ring effect color,
+and the colour popover's system picker. A pick commits when the chooser sends change, even without
+input blur; moving focus afterwards adds no duplicate undo step. If the chooser stays open during
+a canvas edit, that edit must end the earlier preview, so a later commit/cancel cannot erase it.
+Use real mouse/keyboard events for the native chooser and its colour grid, and separately for
+the application's colour-grid popover (synthetic input/change pairs do not cover WebKit's event
+order). Select Blueberry in macOS Colors: the drawing and well must agree before and after closing
+the panel. Repeat for an art object's fill/stroke. A grid swatch must apply on its first click.
+One Undo restores the previous colour; the next Undo removes the preceding drawing edit, never
+a second colour entry. Repeat on Windows with its actual native chooser and both grids.
+For a focus trace, directly launch this worktree's binary from a terminal using the existing
+`--chemdraft-agent-bridge` switch (or `CHEMDRAFT_AGENT_BRIDGE=1`). Save stderr's `[palette-focus]`
+lines while opening Text size by pointer, pressing Escape, typing 18, then pressing Escape again.
+The first Escape must leave type-ahead/arrows in the select; the second returns tool keys to the
+document. Repeat with Tab, a click elsewhere, and switching apps while the list is open: those
+must end the select interaction without pulling focus from the destination. The trace includes
+window activation/deactivation, lease requests/results, pending-click set/clear and hand-back
+decisions. A release with `returnFocus=true` immediately after the first Escape identifies page
+handling; an earlier `activation ... active=false reason=window` identifies native key loss.
+Repeat without the bridge switch/environment setting and confirm there are no `[palette-focus]`
+lines. Neither diagnostic mode nor synthetic bridge events replace the real-event pass.
+Text commit clicks (macOS and Windows): edit a text object with Bond or Select restored, then click empty canvas or an existing atom; that click commits only, preserves bonds and selection, and focuses SECTION.canvas-region for shortcuts; the next click works normally. Repeat Enter/Escape/Tab, toolbar actions, double-click editing, and IME composition (no mid-composition commit).
+With nothing focused, press Shift+F10: the app menu opens, never the browser menu, and mouse and keyboard input keep working.
+On Windows, right-click and press Shift+F10 in text fields (including textareas) in the document,
+dialogs, plugin panels, Preferences, and color popovers: no browser menu appears and real mouse,
+typing, and Tab input keep working. Ctrl+X/C/V/A still work in text fields. Repeat right-click on
+palettes, tooltips, and the 3D debugger; app menus and subsequent input must keep working.
+
+## Unspecified E/Z (macOS and Windows)
+
+Paste `CC=CC`, then a list containing two copies of it.
+Each stereogenic double bond keeps unspecified E/Z, shows a small (!) beside its midpoint without
+covering the bond or labels, and its hover text reads exactly "E/Z was not specified for this double
+bond. Confirm the geometry by redrawing the bond or choosing 'Use drawn geometry'." The paste status
+reads "E/Z was not specified for N double bond(s) in the pasted structure. Confirm the geometry."
+with N = 1 for the single paste and N = 2 for the list. Repeat with plain text, chemical MIME
+clipboard text, and native Paste. `C/C=C/C` keeps E and shows no notice; `CC=O` and `CC=C(C)C` have no flag.
+Select a double bond in the floating inspector: E/Z unspecified and Use drawn geometry (E)/(Z)
+each make one labelled Undo entry, keep the bond selected, and survive Undo/Redo and save/reopen.
+Verify the drawn geometry label with both E and Z drawings and unequal CIP priorities. Carbonyls,
+symmetric ends and small rings disable E/Z unspecified with a specific reason. Reapply double order
+with the bond tool or hovered-bond shortcut: the (!) disappears and the bond becomes geometry-defined.
+Move atoms, rotate and restyle first: these keep the flag and badge. SVG, PDF, CDXML exports and
+browser/system print preview contain no badge or hover text.
+
+With a real mouse, click the (!) badge with nothing selected, then with its bond selected and a
+resize handle overlapping the badge: the badge receives the click, no resize starts, and the
+popover stays open without a document/canvas blur. Repeat cold and warm opens. Focus the canvas,
+Tab to the badge, and press Enter or Space: this keyboard open focuses the first enabled action.
+A small native popover anchors below it, showing “E/Z not specified”,
+the geometry explanation, both geometry choices (correct E/Z labels), and Keep unspecified.
+Confirm and flip each record exactly one labelled Undo entry, retain bond selection, and Undo/Redo
+restore geometry and the badge. Flip moves only one end's substituents; test unequal CIP priorities,
+nearby stereocentres, conjugated bonds and charged/isotopic substituents. Keep unspecified, Escape
+and click-away change no document/history, close, and return focus to the canvas. Repeat click-away
+from a floating toolbar and keyboard Tab/Shift+Tab within the popover.
+Right-click an open bond: “Mark E/Z as unspecified” is absent. On a non-stereogenic double bond it
+remains disabled with its reason. The inspector retains its previous behavior.
+Scroll, pan or zoom the canvas and move or resize the document between monitors at 100% and
+150%/200% scaling (including negative monitor coordinates): the popover closes. Reopen it at the
+badge; mouse opens and their action buttons preserve document focus, have no taskbar entry on
+Windows, and close when switching tabs/documents. Click elsewhere in the document or press Escape
+while the popover has never had focus: it must still close. Alternate keyboard and mouse opens to
+check that the reused window resets its focus mode. Open the Art color picker afterwards and type
+in its hex/RGB inputs: those shared-popover inputs still accept keyboard focus.
+Check print and SVG/PDF/CDXML again with the popover open: neither badge nor popover is included.
+Dismiss during the first cold open, then immediately reopen from a badge. Only the newest request
+may appear or act; an older create/reveal finishing late must not hide it. Change the selection or
+switch tabs while it opens and verify that a late action cannot affect the new selection/document.
+Ring bonds refuse the flip with a reason. If retained isotope/radical properties cannot be mapped
+through a label expansion, both geometry choices refuse rather than discarding those properties.
+
+## Spin 3D (macOS and Windows)
+
+Paste `c1ccccc1.CC(C)(C)C.OCCO` as one native molecule object; with RDKit and the OCL fallback,
+check that all three fragments open apart in their drawn arrangement, stay spatially separate while
+rotating, and remain apart after flatten, save/reopen and Spin again; Copy As SMILES and formula
+must stay unchanged.
+
+## Plugin 3D chemistry (macOS and Windows)
+
+With a plugin that declares `chemistry.compute`, embed a two-component complex, arrange and minimize
+it with interfragment forces, then flatten and insert it. The components must not interpenetrate,
+flattening must retain stereochemistry, and one Undo must remove the insertion. Confirm Spin 3D is
+unchanged.
+
+Ring-fill labels: fill every ring of pyridinium, CBPQT4+ and 1,3,5-oxathiazinane with light blue
+(25%), solid blue and a vivid alternating palette (90%). Check N+, NH, O and S: each fill reaches
+every bond, without a missing box or white glyph outline. At shared-ring nitrogens each part of the
+halo must match the fill beneath it. Repeat with linear/radial gradients, shadow/glow/sketch, explicit
+label background colours and transparent backgrounds. Compare canvas, PNG, SVG and PDF on both hosts.
 
 Document window placement (macOS and Windows): move/resize, quit, and relaunch; the window must
 reopen where it was left, without flashing at the OS cascade position. With no saved frame it
@@ -215,6 +403,141 @@ it and turning as the bond swings to its other side (the overlay opens on the co
 not the drawing's layout); SVG and PDF export matching the canvas; the label editor still opening
 centred on the atom.
 
+## External tools (macOS and Windows)
+
+Install Claude Code and Codex from the dialog: confirm download progress, cancel part way through,
+then retry successfully. Confirm the consent dialog names Anthropic or OpenAI and says the page
+leaves the computer. Probe must find Homebrew, npm, WinGet, and `~/.local/bin` installs, while never
+running a `.cmd` shim. Start sign-in: it opens Terminal on macOS / a new console on Windows, then
+refresh status until it flips. Quit during a run and confirm no `claude`, `codex`, or `node` process
+remains. On Windows, confirm no console flash and that the Job Object kills child processes.
+
+## ChemDraft Assistant tools (macOS and Windows)
+
+On both platforms, stress the assistant's one-box controls:
+
+- Upgrade from a Codex installed by an older ChemDraft: Setup offers Update; it installs and works.
+- With the Main palette docked at the drawing-area top, drag the chat's top edge and its whole
+  header upward to the limit: the header stays at least 72 px below the drawing-area top. Shrink
+  the window, quit/relaunch, and verify the saved height fits the current cap. Drag down to shrink;
+  double-click the header to restore the 280 px default height, showing about three transcript lines
+  above the composer (or the available height in a small window).
+- Type or paste 4,256 characters. The full draft remains, the counter reads “4,256 / 4,000”, and
+  Enter and Send show “Your request is 4,256 characters; the limit is 4,000. Shorten it to send.”
+  without starting a request. Shorten to 4,000 and send; the complete shortened draft is submitted.
+  Check the same behavior in a plugin panel prompt.
+- During a slow request, type another draft and try Enter and Send. Both show “Wait for the current
+  request to finish, or press Stop.” The draft stays editable and no request runs automatically
+  after the first finishes. The refusal hint clears when the request ends, when the plugin re-enables
+  Send, when the draft changes, and when the document changes. Stop stays available; after completion,
+  explicitly Send the kept draft.
+- Relaunch, then expand the assistant icon before using its menu or Send. Its saved AI heading and
+  status (or setup content on first use) appear immediately. Collapse/re-expand without resetting
+  setup or conversation; initialization runs again only if plugin content is absent.
+- Click Finish setup, New conversation, Stop, and other assistant action buttons, wait for completion,
+  then type “draw aspirin”: typing goes into the prompt and the drawing tool does not change, even
+  when the activated button disappeared. Click the drawing or Tab to another control before an action
+  completes and verify completion leaves focus there. Tab to a still-mounted action without activating
+  it and verify a content update keeps focus on that button.
+- With an API 0.1.14 plugin, decline provider consent before a request is sent: the submitted text
+  returns to the empty prompt without sending. Repeat while typing a new draft during the pending
+  consent: restoration must preserve the new draft, including whitespace. Clear the draft afterward;
+  unrelated status/transcript updates must not replay the restoration. A new `setContent` restoration
+  can restore the same text once again. Immediately follow that restoration with `setContent` without
+  `restoreDraft`: an empty prompt must still receive the text, without sending. While Send is settling,
+  type and erase a new draft before the pending restoration applies: the prompt must stay empty.
+- The collapsed icon is half opaque until hovered or focused. Drag it, relaunch, and check that
+  its position remains remembered and its hover/focus feedback still works.
+
+Exercise this section once the Assistant plugin is installed. Submit an insertion request and verify
+that its objects land directly on the page (no approval window) and finish selected. One Undo removes
+the entire request; Redo restores exactly those objects and selection without starting the AI or
+making another provider/tool call. Select one existing object, then ask to edit, restyle, move, and
+delete it: each is allowed; a request targeting an unselected object is refused. Repeat with nothing
+selected: insertions work, while edits, restyles, moves, and deletes are refused.
+
+Ask to draw a methyl group (`CH3`), `Ph`, `Boc`, and `OTs`: each is one editable native molecule
+label, not a caption or placeholder. Compare rendering, formula and valence warnings with typing
+the same isolated atom label on the canvas. Unknown labels are refused with accepted examples.
+Mix groups, molecules and captions; check placement, selection, Undo/Redo, and the growth question
+when the page is full. An isolated `Ac` is an element in the native grammar and must be refused as
+a group rather than changed to acetyl.
+
+On both platforms, insert an oversized labelled molecule, a tall text block, a reaction, and a set
+that wraps past the bottom: one document-owned native box names the item and new page size;
+Verify exactly two buttons on each platform: **Enlarge Page** and **Cancel**. Enlarge Page preserves
+molecule size and grows the page, with one Undo/Redo restoring page and objects together. Cancel
+omits non-fitting items and their captions but keeps fitting ones; the assistant reports the refusal.
+Fitting calls never prompt. Esc or Cancel declines; Enlarge Page (Return where the platform makes
+it the default) enlarges, and one Undo reverses it. Closing the box must also decline; if the platform
+offers no close button, verify Esc instead. The native box is modal by design: its overlay Stop button cannot be clicked until
+the box closes. Cancel is the stop for that item. Immediately after answering, verify Stop can again
+cancel the remaining request and typing returns to the prompt.
+
+While an Assistant MCP session is open, use `lsof -iTCP -sTCP:LISTEN` on macOS or `netstat -ano` on
+Windows to confirm the listener is on `127.0.0.1` only, never a LAN address. Quit during a running
+request: no Claude/Codex CLI process remains and the listener closes. Confirm web search works; its
+consent text must say that it does and that page content can leave the computer.
+
+## Plugin panel input and canvas overlay (macOS and Windows)
+
+On both platforms with a real mouse and Japanese IME, compose in the text tool and in the assistant/plugin overlay prompt and commit with ONE Return. Click the empty page: the composed text stays committed after that one Return, and canvas keyboard shortcuts work. Repeat after launch and after closing a dialog with nothing focused.
+
+On both platforms, shrink the window to 405 px high, resize the canvas region, and move between display scales: Send stays reachable, the collapsed icon stays inside, and growing restores the remembered height; flick-drag the resize grip outside its bounds and cancel/interruption then hover (no stuck resize); double-click the header/grip (no text selection) and select text normally in the prompt and transcript.
+
+With an API 0.1.12 overlay-only plugin, use its Plugins menu command to expand and focus the
+prompt; repeat `open` without `focus: true` while drawing and verify focus stays on the drawing.
+Show setup text, key/value rows, buttons and an image above the transcript. Content should grow
+the box only as needed, up to about 70% of the drawing area, with scrolling for overflow; clearing
+it restores the user's remembered height. Repeat after resizing and moving the collapsed icon beside a ruler
+and after changing display scale. Drafts and focus survive updates. Disable/remove a button while
+clicking it: the stale control must not run. A plugin with no panel never shows an "Open …" link
+or opens a native panel on menu commands, prompt submissions, setup actions, or re-expansion.
+For a plugin that also has a panel, `showPanelLink: false` hides only the overlay's shortcut.
+
+With an API 0.1.11 chat plugin, verify the compact overlay shows the latest reply and distinguishes
+user, assistant, tool, notice, and error entries. Scroll back while replies arrive: the reader stays
+put; returning to the bottom resumes following replies. Drag the top edge up and down: the bottom
+edge stays fixed and the box cannot cross rulers, scrollbars, or the status row. Shrink the document
+window and check the box fits again. Resize, Escape, expand, then reopen the document window:
+height is remembered separately from icon/box positions. A second document window has its own size.
+Enter still sends, Shift+Enter adds a newline, and transcript updates never steal input focus.
+
+In a DEV build, open the `panel.fixture.chat` fixture panel (Fixture Plugin → Chat). Type a message
+and verify Enter sends it while Shift+Enter inserts a newline. Repeat while composing with an IME:
+the composition must not submit early. Force a host refusal (for example by making the panel stale
+or disconnecting it) and confirm the inline host refusal keeps the draft; after host acceptance, the draft
+clears. Confirm a panel report containing a prompt hides Run again. A refusal or failure from the plugin's
+own command appears in that plugin's transcript or overlay status, while command failures also reach the
+document status line. While the transcript grows, scroll
+away from its bottom and submit or receive another report: it must not pull the reader down; submit
+from the prompt and it may follow the new output. Keep typing while a report refreshes: focus and the
+draft must stay in the textarea. Also invoke a plugin contribution at location `plugins` and confirm
+its item appears and works in the native Plugins menu.
+
+Exercise an installed or DEV canvas-overlay fixture: expand and collapse its icon, type and submit a
+prompt, and check the status line. Drag it toward every viewport edge and resize the viewport; its
+frame must remain clamped inside. Quit/reopen or hide/re-show the window and confirm its position is
+remembered. Begin a drawing gesture and start an export: the overlay must be hidden in both cases
+(and absent from exported output). Press Esc from the expanded overlay: it collapses and returns
+keyboard focus to the drawing. It takes focus only when clicked or explicitly opened with
+`focus: true`, never merely when content changes. Drag the collapsed icon more than four pixels: it must move without opening; a click
+or slight pointer jitter must still expand it. Resize the box upward, then collapse: the icon returns
+to its own position. Restart and verify both positions persist independently. Shrink the drawing area
+while either mode is visible; neither mode may overlap rulers, scrollbars, or the status strip when
+next shown, and the box must fit even when the drawing area is narrower than 300 px.
+
+For a plugin that contributes both surfaces (including older Assistant packages), use its overlay's
+"Open …" button and panel menu command. Each must show a titled report in a detached window.
+Close/reopen it and repeat after restarting the app; the initial report broadcast may precede the
+new webview, so the authenticated snapshot replay must also work. With the overlay-only Assistant,
+Plugins → ChemDraft Assistant… instead expands the one box; setup and conversation stay there.
+
+On Windows specifically, confirm the detached panel has no taskbar entry, actions and report updates
+do not steal focus from the document or an actively typed prompt, and normal panel/overlay use does
+not cause a foreground flash. Repeat the focus checks on macOS and Windows with the panel and drawing
+window on separate monitors.
+
 This list is repo-wide and cumulative. Add to it when a slice ships a new interactive surface; do not
 replace it with a slice-scoped list, or the standing checklist is lost when that slice ends.
 
@@ -337,8 +660,9 @@ for each drawing, suggesting its name and extension, and writes its exact saved 
 chosen. A successful save removes only that drawing. Canceling a panel returns to the summary
 box, keeping that drawing and all unattempted ones; a failed write shows its reason in the next
 box without losing the drawing. Delete opens a second native confirmation saying “Delete the
-kept drawing? This cannot be undone.” Its default button and Escape are Cancel. Cancel returns
-to the summary; only an explicit Delete there removes the kept drawings. Floating toolbars stay
+kept drawing? This cannot be undone.” Cancel occupies the ok/default slot; Delete occupies the cancel slot.
+Escape declines except for the known Windows issue below. Cancel returns to the summary; Delete removes
+the kept drawings. Floating toolbars stay
 hidden through the entire sequence, including save panels, failed saves and both confirmation
 boxes, then return once it ends. Check there is no in-app dialog and no recovery File menu item.
 Restore a kept drawing's supported schema and relaunch: it opens normally without a prompt.
@@ -348,10 +672,14 @@ and Art toolbars open, including at 125%/150% display scale:
 
 - For every prompt below, confirm the message box uses the OS appearance, stays above the floating
   toolbars, and belongs to the document window. Every prompt with a choice shows a button labelled
-  exactly Cancel, and Escape (on macOS too) and closing the box choose it; a notice has one OK
-  button that Return dismisses. No button appears twice. Enter must never choose a destructive
-  action. Repeat in the web preview with `?agentBridge=1`:
-  the retained in-app dialog renders and its buttons and Escape produce the same outcomes.
+  exactly Cancel, and Escape (on macOS too) and closing the box choose it, except for the known Windows
+  issue below; a notice has one OK
+  button that Return dismisses. No button appears twice. A destructive single-action confirmation (Delete,
+  Clear Overrides, Remove Engine) puts Cancel in the ok/default slot and the action in the cancel slot.
+  A non-destructive single action (Enlarge Page) occupies the ok/default slot, with Cancel in the cancel slot.
+  Known pre-existing Windows issue (tracked for a separate fix): Esc on a destructive single-action confirmation currently returns the action; expect and report it.
+  Repeat in the web preview with `?agentBridge=1`: the retained in-app dialog renders and its buttons
+  and Escape produce the expected outcomes without the native Windows issue.
 - With Main, Art, Drawing and Rings toolbars visible, open a native box. All floating toolbars,
   open flyouts/popovers, tooltips and visible plugin panels disappear. Click where a toolbar was:
   nothing happens and the active drawing tool stays unchanged. Close the box: exactly the previously
@@ -498,8 +826,10 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
 - Start the install and cancel partway: no `naming-engine.partial` remains and no python or java
   process is left running (Activity Monitor / Task Manager). Then run the full install to completion.
 - Name each of these and read the result: ethanol (a PIN), aspirin, L-alanine (the stereo warning is
-  shown), a sodium salt, TEMPO (a radical). Isotope-labelled structures cannot yet be drawn; their
-  exact-match handling is covered by the real-RDKit test (`pluginStructureNaming.rdkit.test.ts`).
+  shown), a sodium salt, TEMPO (a radical). Name an isotope-labelled structure, such as CD4 or CH3OD
+  pasted as SMILES `[2H]C([2H])([2H])[2H]` or `CO[2H]`: the name must reflect the isotope or the
+  structure is declined; a name for the unlabelled molecule is a FAIL. Exact-match handling is also
+  covered by the real-RDKit test (`pluginStructureNaming.rdkit.test.ts`).
   Glycine zwitterion is declined with no name;
   `[Fe]` is declined as an unsupported element. A declined structure never shows a guessed name.
 - Select several molecules: one row each, capped at 10. Copy puts exactly the name on the clipboard
@@ -553,6 +883,7 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
 - Open a native message box and a file picker with Page Size open, including nested boxes. Verify
   it hides with the toolbars and returns in the preserved #140 stacking order, without changing
   remembered toolbar visibility or frames. Close the dialog during suspension: it must stay closed.
+- In a dialog, right-click and press Shift+F10 on non-editable content; no browser menu appears and mouse and Tab input still work. On an editable field, confirm its native menu remains available on macOS; Windows shows no browser menu and Ctrl+X/C/V/A still work.
 - Check first-field focus, invalid dimensions, valid Enter, IME composition Enter, Escape,
   title-bar close, Cmd/Ctrl+W, field-local Undo/Redo, and reload prevention. Test screen-reader labels.
 - With a dialog width/height field focused on macOS, use Cmd+A and Edit > Select All. Only that
@@ -562,6 +893,32 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
   document; reopening the document must not resurrect the dismissed dialog.
 - In the browser preview, check the same form/validation in the documented in-page fallback.
   Force native creation failure on desktop: show an error and never display the browser overlay.
+
+## Structure template picker (macOS and Windows)
+
+- Open Insert > Templates…; confirm Insert follows Edit and precedes View. Add Templates… from
+  Customize Main Toolbar, exit customization and open it there. It is absent from the default bar.
+- Confirm the picker is a separate movable, modeless window, centred over the originating drawing
+  on first open. Draw and use floating toolbars alongside it. Invoke Templates… again: the retained
+  window comes forward with its search and position intact.
+- Search `β-CD`, `beta`, `BETA cyclodextrin`, `CD`, `cucurbit[7]`, `crown`, and `pillar`; check
+  normalized substring matches, family headings/order, names, formula/synonym descriptions, and an
+  honest empty state. Pillar[n]arene and its 1,4-dimethoxy variant must be side by side.
+- Tab/Down from search into tiles; use arrows, Home/End, Enter and Space. Each activation inserts
+  once and leaves the picker open. Test IME Enter, Escape, title-bar close and Cmd/Ctrl+W; F5 and
+  Cmd/Ctrl+R must not reload. Check screen-reader names and descriptions and visible keyboard focus.
+- Insert every populated family (crowns/cryptands, cyclodextrins, cucurbiturils, calixarenes/
+  pillararenes/resorcinarenes/CTV, cyclophanes, porphyrins). Compare bond size with a newly hand-drawn
+  bond, including after changing a selected molecule's style. The template stays at default size,
+  is centred in the visible source view, remains editable and is selected. Undo once removes one
+  insertion; Redo restores it exactly. Repeat with the source tab inactive; only that tab changes.
+- Close or replace the originating tab while the picker is open or still starting: it disappears
+  and late actions cannot edit a replacement drawing. Repeat with two source tabs and two pickers.
+- Move the picker outside the document window and onto another monitor, close/reopen, and confirm
+  its saved position. Repeat with mixed DPI and a removed monitor. On Windows verify no taskbar
+  entry, document ownership, normal focus/Alt-Tab behavior, and no menu attached to utility windows.
+  On macOS verify floating toolbar usability, app deactivation, native-box suspension and restoration.
+- In the browser preview, exercise the same picker body in the documented in-page fallback.
 
 ## Native Export (macOS and Windows)
 
@@ -628,3 +985,25 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
    run, quit, turn the option OFF and relaunch: confirm the new run restores. Repeat with retained
    unrestored tabs and a corrupt outer session: recovery data must remain and corrupt reads must
    keep autosave blocked. Record native results separately for each platform.
+
+## Isotope insertion (macOS and Windows)
+
+- Paste single and list SMILES containing `[2H]`, `[3H]`, `[13CH3]c1ccccc1`,
+  `c1cc[15n]cc1` and `CC(=[18O])C`; verify isotope labels and attachment positions.
+- Type D and T as atom labels; each uses one hydrogen valence. Verify 13C displays a superscript mass.
+- Save/reopen, then export/import CDXML; isotope labels, bonds and attachment positions must survive.
+- Ask the assistant to insert `[O-][N+]#Cc1ccccc1` plus `[2H]/C=C/c1ccccc1` and product
+  `[2H]C1C(c2ccccc2)ON=C1c1ccccc1` (D at C4). Repeat with `[2H]C(=C)c1ccccc1` and
+  `[2H]C1(CC(=NO1)c1ccccc1)c1ccccc1` (D at C5), then with `[3H]` versions.
+- With a deliberately lossy depiction, single paste must insert nothing and name the identity loss;
+  list paste must skip that entry and report its SMILES and reason while retaining valid entries.
+
+## Inserted drawing defaults
+
+Draw a bond, then paste a SMILES and insert a structure through a plugin and through the
+assistant. All four must have the same bond length, line width and atom-label size. An assistant
+caption must use the atom-label size. Existing structures on the page must not change size.
+
+# Reaction labels
+
+- Ask the assistant for a two-step Sharpless-style scheme and run `pnpm -s chemdraft reaction` with `--above`, `--below`, and `--caption`. Check that reagents stack above and conditions below, close to and centred on the arrow, which is only as long as the widest line; CH2Cl2 and Ti(OiPr)4 show subscripts while step numbers, mol%, °C and h do not. Check the caption sits under the scheme and old single-string conditions still work.

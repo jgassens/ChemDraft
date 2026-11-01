@@ -1,0 +1,22 @@
+{
+  "droppedLines": 2,
+  "lines": [
+    {
+      "seq": 2,
+      "stream": "stdout",
+      "text": "{\"type\":\"message\",\"text\":\"水\"}",
+      "truncated": false
+    },
+    {
+      "seq": 3,
+      "stream": "stderr",
+      "text": "truncated warning",
+      "truncated": true
+    }
+  ],
+  "nextCursor": 4,
+  "status": {
+    "reason": "pluginUnregistered",
+    "state": "killed"
+  }
+}
