@@ -12,6 +12,7 @@ import { assistantDocumentContentUnchanged, registerAssistantHistoryPort, type A
 import { getAssistantTransactions } from "./assistant/assistantTransaction";
 import { acquireNativeUtilitySuspension } from "./nativeUtilitySuspension";
 import { loadAskToSaveBeforeQuit } from "./quitSettings";
+import { loadStartWithFreshDocument } from "./startupSettings";
 import { nativePrompt, useNativePrompt } from "./nativePrompt";
 import { useInAppModalUtilitySuspension } from "./useInAppModalUtilitySuspension";
 import { Icon } from "./icons";
@@ -2634,8 +2635,13 @@ export function MainWindow({
   const fileStateRef = useRef<NativeFileState>(fileState);
   // Successful explicit saves, per tab, including a save completed while its label editor is open.
   const documentSaveRevisionsRef = useRef(new Map<string, number>());
-  // Flips true once the startup session-restore attempt has resolved; autosave waits for it.
+  // Capture once: Preferences changes affect the next launch, never this run.
+  const [startWithFreshDocument] = useState(loadStartWithFreshDocument);
+  const skippedSessionRestoreRef = useRef(false);
+  const skippedRecoveryTabCountRef = useRef(0);
+  // Flips true once the startup session read/restore attempt has resolved; autosave waits for it.
   const documentSessionHydratedRef = useRef(false);
+  const [sessionStartupCompleted, setSessionStartupCompleted] = useState(false);
   // Autosave writes the session file only after a clean read of it. A failed read leaves this false
   // so the blank startup document can never replace a session we merely failed to decode.
   /** A shell open that failed before the session restore ran; the restore's status repeats it. */
@@ -9409,12 +9415,19 @@ export function MainWindow({
             if (raw !== undefined && raw !== null) throw new Error("Unreadable session envelope");
             return;
           }
+          skippedSessionRestoreRef.current = startWithFreshDocument;
           if (!shouldRestoreDocumentSession(envelope)) return;
           const shellOpenFailure = shellOpenFailureRef.current;
           shellOpenFailureRef.current = undefined;
           const skipped: unknown[] = [];
           const restored = [];
           for (const [candidateIndex, rawTab] of documentSessionRestoreCandidates(envelope).entries()) {
+            // Fresh startup does not install even newly readable recovery tabs. Keep their raw
+            // envelopes until the user explicitly saves/discards them or restores on a later launch.
+            if (startWithFreshDocument && envelope.unrestoredTabs?.includes(rawTab)) {
+              skipped.push(rawTab);
+              continue;
+            }
             try {
               const session = parseDocumentSessionEnvelope(rawTab, true);
               if (!session) throw new Error("Unreadable tab envelope");
@@ -9436,6 +9449,11 @@ export function MainWindow({
           unrestoredSessionTabsRef.current = skipped;
           setUnrestoredSessionTabCount(skipped.length);
           const restoreNotice = unrestoredTabsNotice(skipped.length);
+          if (startWithFreshDocument) {
+            // Decode through the same path to retain failed candidates, but install no old tabs.
+            skippedRecoveryTabCountRef.current = skipped.length;
+            return;
+          }
           if (!restored.length) {
             setStatus(`Could not restore the last session${restoreNotice}`);
             return;
@@ -9483,6 +9501,7 @@ export function MainWindow({
       .finally(async () => {
         if (active) {
           documentSessionHydratedRef.current = true;
+          if (startWithFreshDocument) setSessionStartupCompleted(true);
           perfHook(() => perfCanvasReady());
           if (unrestoredSessionTabsRef.current.length) {
             keptDrawingsPromptRef.current = "notice";
@@ -9503,7 +9522,7 @@ export function MainWindow({
     return () => {
       active = false;
     };
-  }, [installDocumentTab, snapshotDocumentTab]);
+  }, [installDocumentTab, snapshotDocumentTab, startWithFreshDocument]);
 
   // What every flush writes — the session autosave, the quit and window-close flush (macOS and
   // Windows), Save and export: the working document as it would be if an open label edit closed
@@ -9554,6 +9573,14 @@ export function MainWindow({
     try {
       snapshotDocumentTab(false);
       const flushed = documentForFlush();
+      // View changes and quitting an untouched startup blank are not new document work.
+      // The sticky pristine marker also recognizes edit-then-undo and explicit Save of a blank.
+      if (skippedSessionRestoreRef.current
+        && skippedRecoveryTabCountRef.current === unrestoredSessionTabsRef.current.length
+        && documentTabsRef.current.length === 1
+        && !nonPristineTabsRef.current.has(activeDocumentTabIdRef.current)
+        && !fileStateRef.current.path && !fileStateRef.current.dirty
+        && documentIsBlank(flushed)) return;
       const tabs = documentTabsRef.current.map((tab) => {
         const snapshot = documentTabSnapshotsRef.current.get(tab.id)!;
         const tabDocument = tab.id === activeDocumentTabIdRef.current ? flushed : snapshot.history.present;
@@ -9574,6 +9601,7 @@ export function MainWindow({
         documentTabsRef.current.findIndex((tab) => tab.id === activeDocumentTabIdRef.current));
       if (unrestoredSessionTabsRef.current.length) envelope.unrestoredTabs = unrestoredSessionTabsRef.current;
       await saveDocumentSession(envelope, { strict: options?.strict });
+      skippedSessionRestoreRef.current = false;
     } catch (error) {
       if (options?.strict) {
         throw error;
@@ -9593,7 +9621,7 @@ export function MainWindow({
       void writeDocumentSessionNow();
     }, DOCUMENT_SESSION_SAVE_DEBOUNCE_MS);
     return () => window.clearTimeout(handle);
-  }, [document, fileState, documentTabs, activeDocumentTabId, viewport, openWarningsReport, writeDocumentSessionNow]);
+  }, [document, fileState, documentTabs, activeDocumentTabId, viewport, openWarningsReport, sessionStartupCompleted, writeDocumentSessionNow]);
 
 
   // Menu Quit / Cmd+Q on macOS, or closing the document window / File ▸ Exit elsewhere: Rust asks

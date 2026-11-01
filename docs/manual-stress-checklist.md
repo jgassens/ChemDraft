@@ -1001,6 +1001,17 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
 - Select an orbital: its rotation handle should be visible without Shift or a double-click on its body. Rotate to an arbitrary angle about its node; Shift snaps and double-clicking the handle permits exact numeric entry. Direct Edit must still expose path nodes.
 - Verify existing orbitals and molecules do not move or change chemistry, and native save/reopen plus SVG/PDF export retain all overlapping shapes. Test zoomed and mixed-DPI configurations.
 
+2. **Fresh-document startup, on macOS and Windows:** with the preference OFF, create named and
+   unsaved tabs, quit, and relaunch using the approved worktree launch command; confirm restoration.
+   Toggle Start with a fresh document while editing and verify content, selection and undo/redo
+   remain intact. Quit and relaunch with it ON: confirm exactly one clean Untitled drawing, default
+   new-document view and no old history or file path. Quit this untouched blank and confirm the
+   previous session file is unchanged. Launch by opening a file and confirm no old or extra blank
+   tabs; repeat with the app running and with an invalid file. Edit and save new work during a fresh
+   run, quit, turn the option OFF and relaunch: confirm the new run restores. Repeat with retained
+   unrestored tabs and a corrupt outer session: recovery data must remain and corrupt reads must
+   keep autosave blocked. Record native results separately for each platform.
+
 ## Isotope insertion (macOS and Windows)
 
 - Paste single and list SMILES containing `[2H]`, `[3H]`, `[13CH3]c1ccccc1`,
