@@ -235,6 +235,69 @@ export function prepareLayoutTopology(atomCount: number, bonds: readonly LayoutB
  * reuse invariant geometry and score only moved-versus-stationary pairs on each trial. */
 export type LayoutGeometry = Pick<LayoutQuality, "overlappingAtoms" | "crossings" | "collinearBondOverlaps" |
   "atomBondOverlaps" | "nearestAtomPairDistance" | "nearestNonBondedAtomPairDistance">;
+export type LayoutContacts = Pick<LayoutGeometry, "overlappingAtoms" | "atomBondOverlaps" | "collinearBondOverlaps">;
+
+/** Paste's hard-contact subset, without crossings or nearest-distance diagnostics. */
+export function evaluateLayoutContacts(
+  atoms: readonly LayoutPoint[], bonds: readonly LayoutBond[], referenceBondLength?: number
+): LayoutContacts {
+  return layoutGeometry(atoms, bonds, referenceBondLength, false);
+}
+
+/** Geometry snapshot shared by full Clean Up scoring and the cheap paste contact gate.
+ * No ring perception, label planning, document construction or chemistry engine is needed. */
+export function evaluateLayoutGeometry(
+  atoms: readonly LayoutPoint[], bonds: readonly LayoutBond[], referenceBondLength?: number
+): LayoutGeometry {
+  return layoutGeometry(atoms, bonds, referenceBondLength, true);
+}
+
+function layoutGeometry(
+  atoms: readonly LayoutPoint[], bonds: readonly LayoutBond[], referenceBondLength: number | undefined, diagnostics: boolean
+): LayoutGeometry {
+  if (atoms.some(a => !Number.isFinite(a.x) || !Number.isFinite(a.y)) || bonds.some(b =>
+    !Number.isInteger(b.from) || !Number.isInteger(b.to) || b.from === b.to ||
+    b.from < 0 || b.to < 0 || b.from >= atoms.length || b.to >= atoms.length)) {
+    throw new Error("Layout quality requires finite coordinates and valid bond endpoints.");
+  }
+  const reference = referenceBondLength ?? (mean(bonds.map(b => distance(atoms[b.from], atoms[b.to]))) || 1);
+  if (!Number.isFinite(reference) || reference <= 0) throw new Error("Layout reference bond length must be positive.");
+  // Scale the orientation tolerance so the verdict is invariant under uniform scaling.
+  const epsilon = 1e-10 * reference ** 2;
+  const overlappingAtoms: [number, number][] = [];
+  let nearestAtomPairDistance = Infinity;
+  let nearestNonBondedAtomPairDistance = Infinity;
+  const bondedPairs = diagnostics ? new Set(bonds.map(b => pairKey(b.from, b.to))) : undefined;
+  atoms.forEach((a, i) => {
+    for (let j = i + 1; j < atoms.length; j++) {
+      const d = distance(a, atoms[j]) / reference;
+      if (diagnostics) {
+        nearestAtomPairDistance = Math.min(nearestAtomPairDistance, d);
+        if (!bondedPairs!.has(pairKey(i, j))) nearestNonBondedAtomPairDistance = Math.min(nearestNonBondedAtomPairDistance, d);
+      }
+      if (d < 0.5) overlappingAtoms.push([i, j]);
+    }
+  });
+  const crossings: [number, number][] = [];
+  const collinearBondOverlaps: [number, number][] = [];
+  bonds.forEach((a, i) => {
+    for (let j = i + 1; j < bonds.length; j++) {
+      const b = bonds[j];
+      const p = atoms[a.from], q = atoms[a.to], r = atoms[b.from], t = atoms[b.to];
+      if (!diagnostics && (Math.abs(cross(p, q, r)) > epsilon || Math.abs(cross(p, q, t)) > epsilon)) continue;
+      if (bondsOverlap(p, q, r, t, reference)) {
+        if (Math.abs(cross(p, q, r)) <= epsilon && Math.abs(cross(p, q, t)) <= epsilon) collinearBondOverlaps.push([i, j]);
+        else crossings.push([i, j]);
+      }
+    }
+  });
+  const atomBondOverlaps: [number, number][] = [];
+  atoms.forEach((p, i) => bonds.forEach((b, j) => {
+    if (i !== b.from && i !== b.to && atomNearBond(p, atoms[b.from], atoms[b.to], reference)) atomBondOverlaps.push([i, j]);
+  }));
+  return { overlappingAtoms, crossings, collinearBondOverlaps, atomBondOverlaps,
+    nearestAtomPairDistance, nearestNonBondedAtomPairDistance };
+}
 
 /** All distances and bond statistics are fractions of the reference (default: mean bond length).
  * Invalid/nonfinite geometry is refused rather than accidentally receiving a passing verdict. */
@@ -260,38 +323,9 @@ export function evaluateLayoutQuality(
   const minBondLength = fractions.length ? Math.min(...fractions) : 1;
   const maxBondLength = fractions.length ? Math.max(...fractions) : 1;
   const bondLengthStdDev = Math.sqrt(mean(fractions.map(length => (length - avg) ** 2)));
-  // Scale the orientation tolerance so the verdict is invariant under uniform scaling.
   const epsilon = 1e-10 * reference ** 2;
-  let overlappingAtoms: [number, number][] = [];
-  let nearestAtomPairDistance = Infinity;
-  let nearestNonBondedAtomPairDistance = Infinity;
-  const bondedPairs = new Set(bonds.map(b => pairKey(b.from, b.to)));
-  if (!geometry) atoms.forEach((a, i) => {
-    for (let j = i + 1; j < atoms.length; j++) {
-      const d = distance(a, atoms[j]) / reference;
-      nearestAtomPairDistance = Math.min(nearestAtomPairDistance, d);
-      if (!bondedPairs.has(pairKey(i, j))) nearestNonBondedAtomPairDistance = Math.min(nearestNonBondedAtomPairDistance, d);
-      if (d < 0.5) overlappingAtoms.push([i, j]);
-    }
-  });
-  let crossings: [number, number][] = [];
-  let collinearBondOverlaps: [number, number][] = [];
-  if (!geometry) bonds.forEach((a, i) => {
-    for (let j = i + 1; j < bonds.length; j++) {
-      const b = bonds[j];
-      const p = atoms[a.from], q = atoms[a.to], r = atoms[b.from], t = atoms[b.to];
-      if (bondsOverlap(p, q, r, t, reference)) {
-        if (Math.abs(cross(p, q, r)) <= epsilon && Math.abs(cross(p, q, t)) <= epsilon) collinearBondOverlaps.push([i, j]);
-        else crossings.push([i, j]);
-      }
-    }
-  });
-  let atomBondOverlaps: [number, number][] = [];
-  if (!geometry) atoms.forEach((p, i) => bonds.forEach((b, j) => {
-    if (i !== b.from && i !== b.to && atomNearBond(p, atoms[b.from], atoms[b.to], reference)) atomBondOverlaps.push([i, j]);
-  }));
-  if (geometry) ({ overlappingAtoms, crossings, collinearBondOverlaps, atomBondOverlaps,
-    nearestAtomPairDistance, nearestNonBondedAtomPairDistance } = geometry);
+  const { overlappingAtoms, crossings, collinearBondOverlaps, atomBondOverlaps,
+    nearestAtomPairDistance, nearestNonBondedAtomPairDistance } = geometry ?? evaluateLayoutGeometry(atoms, bonds, reference);
   const smallest = topology ?? prepareLayoutTopology(atoms.length, bonds);
   const rings: LayoutRingQuality[] = smallest.rings.map((ids, index) => {
     if (smallest.bridgedRingIndices.has(index) || (ids.length !== 5 && ids.length !== 6)) return { atoms: ids };
@@ -345,9 +379,60 @@ export function evaluateLayoutQuality(
       regularRings };
 }
 
-/** Negative means a is better; hard defects always outrank the soft geometry score. */
+/** Crossings can be unavoidable in cages; atom and label collisions never are acceptable. */
+export function layoutAtomAndLabelDefects(quality: LayoutQuality): number {
+  return quality.overlappingAtoms.length + quality.atomBondOverlaps.length + quality.collinearBondOverlaps.length +
+    quality.labelBondOverlaps.length + quality.labelLabelOverlaps.length;
+}
+
+/** Negative means a is better; atom/label defects outrank crossings, then soft geometry. */
 export function compareLayoutQuality(a: LayoutQuality, b: LayoutQuality): number {
-  return a.hardDefects - b.hardDefects || a.softScore - b.softScore;
+  return layoutAtomAndLabelDefects(a) - layoutAtomAndLabelDefects(b) ||
+    a.crossings.length - b.crossings.length || a.softScore - b.softScore;
+}
+
+/** Bounded local separation for a cage projection, where removing crossings is impossible.
+ * Ordinary ring/fragment repairs stay preferred. Only coordinates are proposed; the caller
+ * must read back identity and stereo before accepting any moved atom. */
+export function repairBridgedLayoutContacts(
+  atoms: readonly LayoutPoint[], bonds: readonly LayoutBond[],
+  labelBoxes: (points: readonly LayoutPoint[]) => readonly LayoutLabelBox[] = () => []
+): LayoutPoint[] | undefined {
+  // This is a small-cage fallback, not an unbounded geometry optimiser for large graphs.
+  if (atoms.length > 100) return undefined;
+  const topology = prepareLayoutTopology(atoms.length, bonds);
+  const evaluate = (points: readonly LayoutPoint[]) => evaluateLayoutQuality(points, bonds, undefined,
+    topology, undefined, labelBoxes(points));
+  let points = atoms.map(atom => ({ ...atom }));
+  let quality = evaluate(points);
+  if (!quality.hasBridgedRings || layoutAtomAndLabelDefects(quality) === 0) return undefined;
+  const reference = quality.referenceBondLength;
+  let trials = 0;
+  for (let step = 0; step < 12; step++) {
+    const contacts = new Set([...quality.overlappingAtoms.flat(), ...quality.atomBondOverlaps.map(([atom]) => atom)]);
+    let best: { points: LayoutPoint[]; quality: LayoutQuality; displacement: number } | undefined;
+    for (const atom of contacts) for (const radius of [0.08, 0.16, 0.24, 0.32]) for (let direction = 0; direction < 16; direction++) {
+      if (++trials > 1024) return undefined;
+      const angle = direction * Math.PI / 8;
+      const trial = points.map((point, i) => i !== atom ? point : ({
+        x: point.x + radius * reference * Math.cos(angle), y: point.y + radius * reference * Math.sin(angle)
+      }));
+      // Never drift far from the engine's projection, even over successive accepted moves.
+      const displacement = trial.reduce((sum, p, i) => sum + distance(p, atoms[i]) ** 2, 0) / reference ** 2;
+      if (trial.some((p, i) => distance(p, atoms[i]) > 0.5 * reference)) continue;
+      const q = evaluate(trial);
+      if (layoutAtomAndLabelDefects(q) >= layoutAtomAndLabelDefects(quality)) continue;
+      if (!best || layoutAtomAndLabelDefects(q) < layoutAtomAndLabelDefects(best.quality) ||
+          (layoutAtomAndLabelDefects(q) === layoutAtomAndLabelDefects(best.quality) && displacement < best.displacement)) {
+        best = { points: trial, quality: q, displacement };
+      }
+    }
+    if (!best) return undefined;
+    points = best.points;
+    quality = best.quality;
+    if (layoutAtomAndLabelDefects(quality) === 0) return points;
+  }
+  return undefined;
 }
 
 /** Exact distance from an axis-aligned label box to a bond centreline. */
@@ -424,7 +509,10 @@ export function prepareLayoutLabelEvaluator(
 ): (points?: readonly LayoutPoint[], labels?: readonly LayoutLabelBox[]) => LayoutLabelGeometry {
   if (!boxes.length) return () => ({ labelBondOverlaps: [], labelLabelOverlaps: [], smallestLabelBondClearance: Infinity });
   const padding = LABEL_CLEARANCE_PADDING * reference;
-  const exempt = new Set(exemptions.map(([a, b]) => pairKey(a, b)));
+  // Adjacent atom labels sit beside their own bond by design. Only non-bonded
+  // label pairs can be defects; labels still collide with unrelated bonds.
+  const exempt = new Set([...exemptions.map(([a, b]) => pairKey(a, b)),
+    ...bonds.map(({ from, to }) => pairKey(from, to))]);
   const mobileBonds = bonds.map(b => moving.has(b.from) || moving.has(b.to));
   const fixedBonds = new LayoutSpatialGrid(reference), fixedLabels = new LayoutSpatialGrid(reference);
   const fixedBondIds: number[] = [], fixedLabelIds: number[] = [];

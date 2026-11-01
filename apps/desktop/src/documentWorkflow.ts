@@ -1,4 +1,5 @@
 import { formulaSpansFromText } from "@chemdraft/document-workflow-core";
+import { nativeMoleculeLayoutQuality } from "./depiction2d/layoutQuality";
 import { planObjectArrangement, moleculeAnchorForArrangement, moleculeVisualBoundsForArrangement, textVisualBoundsForArrangement, type ArrangementLayout, type ArrangementOptions, type ArrangementItem, type LayoutBounds } from "@chemdraft/layout-engine";
 import { snapRotationDegrees } from "./rotationSnap";
 import { snapPlacementDegrees } from "./placementSnap";
@@ -134,6 +135,8 @@ import {
 } from "@chemdraft/export-engine";
 import {
   compareLayoutQuality,
+  layoutAtomAndLabelDefects,
+  repairBridgedLayoutContacts,
   compareLayoutRepairs,
   evaluateLayoutQuality,
   prepareLayoutTopology,
@@ -15101,6 +15104,24 @@ function cleanupDoubleBondGeometryExemptions(molecule: MoleculeObject): Readonly
 /** Avoid replacing an ordinary drawing for a negligible soft-geometry improvement. */
 export const MIN_CLEANUP_SOFT_SCORE_IMPROVEMENT = 0.05;
 
+export function cleanUpStructureStatus(
+  document: ChemDraftDocument, objectIds: readonly string[], changed: boolean, warnings: readonly string[] = []
+): string {
+  const label = objectIds.length === 1 ? "structure" : "structures";
+  const defective = objectIds.map(id => {
+    const molecule = findMoleculeObject(document, id);
+    return molecule ? nativeMoleculeLayoutQuality(molecule) : undefined;
+  }).find(quality => quality && layoutAtomAndLabelDefects(quality) > 0);
+  const overlap = defective?.overlappingAtoms.length ? "overlapping atoms"
+    : defective?.atomBondOverlaps.length ? "atoms overlapping bonds"
+    : defective?.collinearBondOverlaps.length ? "overlapping bonds" : "overlapping atom labels";
+  const status = changed ? `Cleaned up selected ${label}` : defective
+    ? `Clean Up couldn't fix the selected ${label}: the drawing still has ${overlap}.`
+    : `Selected ${label} already clean`;
+  const details = [...new Set(warnings)].filter(warning => warning !== status);
+  return status + (details.length ? ` — ${details.join(" ")}` : "");
+}
+
 function evaluateEngineRelayoutCandidate(
   document: ChemDraftDocument, objectId: string, relayout: NativeMoleculeRelayoutEngine,
   options: NativeEngineRelayoutOptions, conventionalOrientation = false
@@ -15156,12 +15177,12 @@ function chooseEngineRelayout(
   }).sort((a, b) => compareLayoutRepairs(a.repair, b.repair));
   const before = findMoleculeObject(document, objectId);
   const exemptDoubleBonds = before ? cleanupDoubleBondGeometryExemptions(before) : new Set<string>();
-  for (const { source, repair } of repairs) {
-    const depiction = { ...source.depiction, atoms: source.depiction.atoms.map((atom, i) => ({ ...atom, ...repair.atoms[i] })) };
+  const guardedRepair = (source: NonNullable<EngineRelayoutCandidate["repairSource"]>, points: readonly PagePoint[]) => {
+    const depiction = { ...source.depiction, atoms: source.depiction.atoms.map((atom, i) => ({ ...atom, ...points[i] })) };
     const attempt = evaluateEngineRelayoutCandidate(document, objectId, () => depiction, options, true);
-    if (!attempt.ok || attempt.candidate.quality?.hardDefects !== 0) continue;
+    if (!attempt.ok || !attempt.candidate.quality || layoutAtomAndLabelDefects(attempt.candidate.quality) !== 0) return undefined;
     const after = findMoleculeObject(attempt.candidate.document, objectId);
-    if (!before || !after) continue;
+    if (!before || !after) return undefined;
     // R/S has already passed the normal read-back/reconciliation above. A swing can also move
     // an alkene ligand across its axis; guard its drawn E/Z with the same conservative state
     // comparison used by flatten. Only aromatic/small-ring topology exempts geometry;
@@ -15170,12 +15191,28 @@ function chooseEngineRelayout(
     const actualDoubleStereo = doubleBondStereoState(after);
     if ([...doubleBondStereoState(before)].some(([id, expected]) =>
       (expected === "either" || !exemptDoubleBonds.has(id)) &&
-      expected !== 0 && actualDoubleStereo.get(id) !== expected)) continue;
-    if (attempt.candidate.quality.passes || attempt.candidate.quality.passesRelaxed) return finish(attempt.candidate);
+      expected !== 0 && actualDoubleStereo.get(id) !== expected)) return undefined;
+    return attempt.candidate;
+  };
+  for (const { source, repair } of repairs) {
+    const candidate = guardedRepair(source, repair.atoms);
+    if (!candidate) continue;
+    if (candidate.quality?.passes || candidate.quality?.passesRelaxed) return finish(candidate);
     // Terminal labels can be cleared while the fixed macrocycle retains soft distortion.
     // Compare that fully guarded, hard-clear repair with the drawing in the normal fallback;
     // a repair never gets to bypass the final atom/label veto or the improvement requirement.
-    candidates.push(attempt.candidate);
+    candidates.push(candidate);
+  }
+  // A cage may need crossings in every projection. Separate local atom contacts only after
+  // ordinary rigid repairs fail, then use exactly the same identity and R/S + E/Z guards.
+  if (!candidates.some(candidate => candidate.quality && layoutAtomAndLabelDefects(candidate.quality) === 0)) {
+    for (const candidate of [...candidates]) {
+      const source = candidate.repairSource;
+      if (!source || !candidate.quality?.hasBridgedRings) continue;
+      const points = repairBridgedLayoutContacts(source.depiction.atoms, source.bonds, source.labelBoxes);
+      const repaired = points && guardedRepair(source, points);
+      if (repaired) candidates.push(repaired);
+    }
   }
   if (!best) {
     if (!primary.ok) throw primary.error;
@@ -15184,15 +15221,15 @@ function chooseEngineRelayout(
   // A rejected placement or overlapping geometry must not outrank a usable crossing-only
   // alternative merely because its total hard-defect count is smaller.
   const usable = candidates.filter(candidate => !candidate.placementAddsHardDefects &&
-    candidate.quality?.overlappingAtoms.length === 0 && candidate.quality.atomBondOverlaps.length === 0 &&
-    candidate.quality.collinearBondOverlaps.length === 0 && candidate.quality.labelBondOverlaps.length === 0 &&
-    candidate.quality.labelLabelOverlaps.length === 0);
+    candidate.quality && layoutAtomAndLabelDefects(candidate.quality) === 0);
   if (usable.length) best = usable.reduce((a, b) => compareLayoutQuality(a.quality!, b.quality!) <= 0 ? a : b);
   // Preserve the existing bridged/cage policy; regular planar geometry may be impossible there.
   const bridged = best.quality?.hasBridgedRings;
   if (!bridged && bestRelaxed) return finish(bestRelaxed);
   const generated = best.quality;
   const drawn = best.drawnQuality;
+  // Clearing atom/label collisions is an improvement regardless of unavoidable cage crossings.
+  if (generated && drawn && usable.includes(best) && layoutAtomAndLabelDefects(drawn) > 0) return finish(best);
   const improvesOrdinary = generated && drawn && (generated.hardDefects < drawn.hardDefects ||
     (generated.hardDefects === 0 && generated.softScore <= drawn.softScore - MIN_CLEANUP_SOFT_SCORE_IMPROVEMENT));
   if (generated && drawn && (best.placementAddsHardDefects || generated.overlappingAtoms.length > 0 ||
@@ -15203,10 +15240,10 @@ function chooseEngineRelayout(
     const reason = generated.overlappingAtoms.length > 0 && generated.crossings.length > 0
       ? "put atoms on top of each other and crossed bonds"
       : generated.overlappingAtoms.length > 0 ? "put atoms on top of each other"
-      : generated.crossings.length > 0 ? "crossed bonds"
       : generated.atomBondOverlaps.length > 0 ? "put atoms on bonds"
       : generated.labelBondOverlaps.length > 0 || generated.labelLabelOverlaps.length > 0 ? "overlapped atom labels"
-      : generated.collinearBondOverlaps.length > 0 ? "overlapped bonds" : "distorted bonds or rings beyond the cleanup limits";
+      : generated.collinearBondOverlaps.length > 0 ? "overlapped bonds"
+      : generated.crossings.length > 0 ? "crossed bonds" : "distorted bonds or rings beyond the cleanup limits";
     options.warnings?.push(`Clean Up kept the drawn layout of this structure: the generated layouts ${reason}.`);
     return document;
   }
