@@ -4,7 +4,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TextObject } from "@chemdraft/chem-core";
 import { MainWindow } from "./MainWindow";
-import { createPhase4Document } from "./documentWorkflow";
+import { createPhase4Document, insertNativeTextObject } from "./documentWorkflow";
+import { beginAssistantTransaction, endAssistantTransaction, writeAssistantTransaction } from "./assistant/assistantTransaction";
 import { forceDocumentHistoryCommandId } from "./editHistoryRouting";
 import { DOM_COMMAND_EVENT } from "./window-manager";
 import { MemoryStorage } from "./testSupport/memoryStorage";
@@ -87,6 +88,94 @@ describe.each(["macos", "windows"] as const)("text edit history (%s)", platform 
     expect(texts().map(object => object.text)).toEqual(["Alpha123", "Beta"]);
     await undo(); await undo(); expect(texts().map(object => object.text)).toEqual(["Alpha"]);
     await undo(); expect(texts()).toEqual([]);
+  });
+
+  it("redoes an edit with the platform keyboard shortcut", async () => {
+    const alpha = await place("Alpha", 200); await place("Beta", 400);
+    await open(alpha); await type("Alpha123"); await pagePress(); await undo();
+    expect(texts().map(object => object.text)).toEqual(["Alpha", "Beta"]);
+    await act(async () => window.dispatchEvent(new KeyboardEvent("keydown", {
+      key: platform === "windows" ? "y" : "z", bubbles: true, cancelable: true,
+      ctrlKey: platform === "windows", metaKey: platform === "macos", shiftKey: platform === "macos"
+    })));
+    expect(texts().map(object => object.text)).toEqual(["Alpha123", "Beta"]);
+    expect(container.textContent).toContain("Redid Edit Text");
+  });
+
+  it.each([false, true])("keeps resize history linear during an open edit (typing changed: %s)", async changed => {
+    const alpha = await place("Alpha", 200); await place("Beta", 400);
+    const before = texts()[0];
+    await open(alpha);
+    if (changed) await type("Alpha123");
+    const typed = texts()[0];
+    const handle = container.querySelector(`[data-object-id="${alpha}"] [data-text-resize-edge="right"]`)!;
+    const pointer = async (target: Element, kind: string, x: number) => act(async () => {
+      const event = new MouseEvent(kind, { bubbles: true, cancelable: true, button: 0,
+        buttons: kind === "pointerup" ? 0 : 1, clientX: x, clientY: typed.y + typed.height });
+      Object.defineProperties(event, { pointerId: { value: 7 }, pointerType: { value: "mouse" }, isPrimary: { value: true } });
+      target.dispatchEvent(event);
+    });
+    const page = container.querySelector(".page")!;
+    await pointer(handle, "pointerdown", typed.x + typed.width);
+    expect(editor()).not.toBeNull();
+    await pointer(page, "pointermove", typed.x + typed.width + 40);
+    await pointer(page, "pointerup", typed.x + typed.width + 40);
+    expect(editor()).toBeNull();
+    expect(texts()[0].width).toBe(typed.width + 40);
+    await pagePress();
+    await undo(); expect(texts()[0]).toEqual(typed);
+    expect(texts().map(object => object.text)).toEqual([changed ? "Alpha123" : "Alpha", "Beta"]);
+    if (changed) {
+      await undo(); expect(texts()[0]).toEqual(before);
+      expect(container.textContent).toContain("Undid Edit Text");
+      expect(texts().map(object => object.text)).toEqual(["Alpha", "Beta"]);
+    }
+    await undo(); expect(texts().map(object => object.text)).toEqual(["Alpha"]);
+  });
+
+  it("keeps a just-placed first edit as text when resized and undoes resize before placement", async () => {
+    await command("tool.text"); await pagePress(200, 200); await type("N");
+    const typed = texts()[0];
+    const handle = container.querySelector(`[data-object-id="${typed.id}"] [data-text-resize-edge="right"]`)!;
+    const pointer = async (target: Element, kind: string, x: number) => act(async () => {
+      const event = new MouseEvent(kind, { bubbles: true, cancelable: true, button: 0,
+        buttons: kind === "pointerup" ? 0 : 1, clientX: x, clientY: typed.y + typed.height });
+      Object.defineProperties(event, { pointerId: { value: 7 }, pointerType: { value: "mouse" }, isPrimary: { value: true } });
+      target.dispatchEvent(event);
+    });
+    const page = container.querySelector(".page")!;
+    await pointer(handle, "pointerdown", typed.x + typed.width);
+    expect(editor()?.value).toBe("N");
+    await pointer(page, "pointermove", typed.x + typed.width + 40);
+    await pointer(page, "pointerup", typed.x + typed.width + 40);
+    expect(editor()).toBeNull();
+    const resized = { ...typed, width: typed.width + 40, style: { ...typed.style, textBoxSizingMode: "fixed-width" } };
+    expect(snapshot().document.pages[0].objects).toEqual([resized]);
+    await pagePress();
+    expect(snapshot().document.pages[0].objects).toEqual([resized]);
+    await undo(); expect(snapshot().document.pages[0].objects).toEqual([typed]);
+    await undo(); expect(snapshot().document.pages[0].objects).toEqual([]);
+    await redo(); expect(snapshot().document.pages[0].objects).toEqual([typed]);
+    await redo(); expect(snapshot().document.pages[0].objects).toEqual([resized]);
+  });
+
+  it("records an open edit before an assistant transaction writes", async () => {
+    const alpha = await place("Alpha", 200); await place("Beta", 400);
+    await open(alpha); await type("Alpha123");
+    await act(async () => {
+      const current = snapshot().document;
+      const tx = beginAssistantTransaction({ pluginId: "org.chemdraft.assistant", runId: "text-edit",
+        tabId: "initial", label: "Insert caption", sendSelection: current.selection });
+      try { writeAssistantTransaction(tx, insertNativeTextObject(current, { x: 500, y: 350 }, "Gamma")); }
+      finally { endAssistantTransaction(tx, { touchedIds: [] }); }
+    });
+    expect(editor()).toBeNull();
+    expect(texts().map(object => object.text)).toEqual(["Alpha123", "Beta", "Gamma"]);
+    await pagePress(); await undo();
+    expect(texts().map(object => object.text)).toEqual(["Alpha123", "Beta"]);
+    await undo(); expect(texts().map(object => object.text)).toEqual(["Alpha", "Beta"]);
+    expect(container.textContent).toContain("Undid Edit Text");
+    await undo(); expect(texts().map(object => object.text)).toEqual(["Alpha"]);
   });
 
   it.each([false, true])("adds no phantom entry for an unchanged edit (reverted typing: %s)", async reverted => {
@@ -187,6 +276,24 @@ describe.each(["macos", "windows"] as const)("text edit history (%s)", platform 
     expect(texts().map(object => object.text)).toEqual(["N"]);
     await undo(); expect(texts().map(object => object.text)).toEqual(["Alpha"]);
     expect(container.textContent).toContain("Undid Edit Text");
+  });
+
+  it("forced Undo of a just-placed first edit removes the placement without atom conversion", async () => {
+    await command("tool.text"); await pagePress(200, 200); await type("N");
+    expect(editor()?.value).toBe("N");
+    await undo();
+    expect(editor()).toBeNull();
+    expect(snapshot().document.pages[0].objects).toEqual([]);
+    await redo();
+    expect(texts().map(object => object.text)).toEqual(["N"]);
+    await undo(); expect(snapshot().document.pages[0].objects).toEqual([]);
+  });
+
+  it("forced Redo closes a just-placed first edit without atom conversion", async () => {
+    await command("tool.text"); await pagePress(200, 200); await type("N");
+    await redo(); expect(editor()).toBeNull();
+    expect(texts().map(object => object.text)).toEqual(["N"]);
+    await undo(); expect(snapshot().document.pages[0].objects).toEqual([]);
   });
 
   it("records the edit before a separate document command takes its undo baseline", async () => {
