@@ -266,7 +266,7 @@ function Harness({ runtime, onClose, onPluginsChanged, ...installProps }: {
   onInstallPackage?: (inspection: PluginPackageInspection) => Promise<void>;
   onPrepareOfficialPluginInstall?: (pluginId: string) => Promise<PreparedOfficialPluginInstall>;
   onUninstallPlugin?: (pluginId: string) => Promise<void>;
-  cachedPluginUpdateResults?: readonly PluginUpdateCheckResult[];
+  cachedPluginUpdateResults?: readonly (PluginUpdateCheckResult & { checkedAt?: number })[];
   onCheckPluginUpdates?: () => Promise<readonly PluginUpdateCheckResult[]>;
   onPreparePluginUpdate?: (offer: PluginUpdateOffer) => Promise<PreparedPluginUpdate>;
   onUpdatePlugin?: (prepared: PreparedPluginUpdate) => Promise<void>;
@@ -1446,6 +1446,31 @@ describe("PluginManagerDialog", () => {
     await vi.waitFor(() => expect(revoke).toHaveBeenCalledWith("claude", installedPluginId));
     await vi.waitFor(() => expect(document.querySelector('[data-testid="plugin-external-tool-access"]')).toBeNull());
     expect(list).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["today", "yesterday"])("shows the saved check time from %s without checking and explains daily automatic checks", async day => {
+    const checked = new Date();
+    if (day === "yesterday") checked.setDate(checked.getDate() - 1);
+    const check = vi.fn(async (): Promise<readonly PluginUpdateCheckResult[]> => []);
+    const prepare = vi.fn(async () => preparedUpdate());
+    const update = vi.fn(async () => {});
+    mount(createElement(Harness, {
+      runtime: createRuntime(), onClose: vi.fn(), onPluginsChanged: vi.fn(), installedPlugins: [installedEntry()],
+      cachedPluginUpdateResults: [{
+        status: "upToDate", pluginId: installedPluginId, installedVersion: installedManifest.version,
+        latestVersion: installedManifest.version, checkedAt: checked.getTime()
+      }],
+      onCheckPluginUpdates: check, onPreparePluginUpdate: prepare, onUpdatePlugin: update,
+      onPickPackage: vi.fn(async () => undefined), onInstallPackage: vi.fn(async () => {})
+    }));
+    await act(async () => {});
+    const time = day === "today" ? checked.toLocaleTimeString() : checked.toLocaleString();
+    expect(document.querySelector('[data-update-status="up-to-date"]')?.textContent).toContain(`Up to date (checked ${time})`);
+    expect(document.body.textContent).toContain("ChemDraft checks its trusted catalog for updates once a day (you can turn this off in Preferences) and installs nothing without your confirmation.");
+    expect(document.body.textContent).not.toContain("user-initiated");
+    expect(check).not.toHaveBeenCalled();
+    expect(prepare).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
   });
 
   it("shows cached results immediately and receives later automatic results after a manual result, keeping manual-only failures", async () => {

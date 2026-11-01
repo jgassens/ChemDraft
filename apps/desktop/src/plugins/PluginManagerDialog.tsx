@@ -29,7 +29,7 @@ import type {
   PreparedPluginUpdate
 } from "./pluginUpdates";
 import { EXPERIMENTAL_PLUGIN_NOTICE, isNetworkDownloadFailure, isOfficialPluginExperimental, OFFICIAL_PLUGIN_CATALOG } from "./pluginUpdates";
-import { installedPluginCatalogKey } from "./pluginUpdateAutoCheck";
+import { installedPluginCatalogKey, type TimedPluginUpdateCheckResult } from "./pluginUpdateAutoCheck";
 import { installSpaceStatement } from "../dialogs/engineInstallText";
 import { RecognitionInstallProgress } from "./RecognitionInstallProgress";
 import { applyEnabledPlugins, type BundledPluginDescriptor } from "./registerBundledPlugins";
@@ -79,7 +79,7 @@ export interface PluginManagerDialogProps {
   onPrepareOfficialPluginInstall?: (pluginId: string) => Promise<PreparedOfficialPluginInstall>;
   onUninstallPlugin?: (pluginId: string) => Promise<void>;
   /** Successful cached checks appear without starting another request. */
-  cachedPluginUpdateResults?: readonly PluginUpdateCheckResult[];
+  cachedPluginUpdateResults?: readonly TimedPluginUpdateCheckResult[];
   /** Host-owned update operations. All are absent outside the Tauri desktop. */
   onCheckPluginUpdates?: () => Promise<readonly PluginUpdateCheckResult[]>;
   onPreparePluginUpdate?: (offer: PluginUpdateOffer) => Promise<PreparedPluginUpdate>;
@@ -114,7 +114,7 @@ interface CatalogBoundUpdateResults {
   catalogKey: string;
   /** Each shared cache publication has a new array identity, including a manual check's cache. */
   cacheAtCheck: readonly PluginUpdateCheckResult[] | undefined;
-  results: ReadonlyMap<string, PluginUpdateCheckResult>;
+  results: ReadonlyMap<string, TimedPluginUpdateCheckResult>;
 }
 
 interface CatalogBoundPreparedUpdate {
@@ -128,7 +128,7 @@ interface PluginManagerNotice {
   catalogKey?: string;
 }
 
-const NO_PLUGIN_UPDATE_RESULTS: ReadonlyMap<string, PluginUpdateCheckResult> = new Map();
+const NO_PLUGIN_UPDATE_RESULTS: ReadonlyMap<string, TimedPluginUpdateCheckResult> = new Map();
 
 /**
  * Core-owned manager (ADR-0027) for both the plugins compiled into this build and those installed from a
@@ -455,10 +455,11 @@ export function PluginManagerDialog({
   const checkForUpdates = (): Promise<void> =>
     run({ kind: "checkUpdates" }, async () => {
       const results = await onCheckPluginUpdates!();
+      const checkedAt = Date.now();
       setUpdateResultsState({
         catalogKey: installedCatalogKey,
         cacheAtCheck: cachedPluginUpdateResults,
-        results: new Map(results.map((result) => [result.pluginId, result]))
+        results: new Map(results.map((result) => [result.pluginId, { ...result, checkedAt }]))
       });
       setNoticeState({
         catalogKey: installedCatalogKey,
@@ -825,7 +826,7 @@ export function PluginManagerDialog({
               {!installedPluginCatalogReady
                 ? "Installed plugins are still loading. Package and update actions will be available shortly."
                 : canInstall && canUpdate
-                ? "Install plugins you trust. Update checks are user-initiated and limited to ChemDraft's trusted catalog."
+                ? "Install plugins you trust. ChemDraft checks its trusted catalog for updates once a day (you can turn this off in Preferences) and installs nothing without your confirmation."
                 : "Installing and updating plugins is only available in the ChemDraft desktop app."}
             </p>
           </footer>
@@ -1213,7 +1214,7 @@ function PackageReview({
   );
 }
 
-function PluginUpdateStatus({ result }: { result: PluginUpdateCheckResult }) {
+function PluginUpdateStatus({ result }: { result: TimedPluginUpdateCheckResult }) {
   if (result.status === "available") {
     return (
       <p className="plugin-manager-update-status" data-update-status="available">
@@ -1222,9 +1223,12 @@ function PluginUpdateStatus({ result }: { result: PluginUpdateCheckResult }) {
     );
   }
   if (result.status === "upToDate") {
+    const checked = result.checkedAt === undefined ? undefined : new Date(result.checkedAt);
+    const time = checked?.toDateString() === new Date().toDateString()
+      ? checked.toLocaleTimeString() : checked?.toLocaleString();
     return (
       <p className="plugin-manager-update-status" data-update-status="up-to-date">
-        Up to date (latest trusted release: v{result.latestVersion}).
+        Up to date ({time ? `checked ${time}` : `latest trusted release: v${result.latestVersion}`}).
       </p>
     );
   }

@@ -3,12 +3,42 @@ import type { InstalledPluginCatalogEntry } from "./installPluginPackage";
 import { OFFICIAL_PLUGIN_CATALOG, type PluginUpdateCheckResult } from "./pluginUpdates";
 
 export const LAST_PLUGIN_CHECK_KEY = "chemdraft.pluginUpdates.lastCheckedAt.v1";
+export const LAST_PLUGIN_RESULTS_KEY = "chemdraft.pluginUpdates.lastResults.v1";
 export const ANNOUNCED_PLUGIN_VERSIONS_KEY = "chemdraft.pluginUpdates.announcedVersions.v1";
 type UpdateStorage = Pick<Storage, "getItem" | "setItem">;
 
 export interface CachedPluginUpdateResults {
   catalogKey: string;
+  checkedAt: number;
   results: readonly PluginUpdateCheckResult[];
+}
+
+export type TimedPluginUpdateCheckResult = PluginUpdateCheckResult & { checkedAt?: number };
+
+function isCachedResult(value: unknown): value is PluginUpdateCheckResult {
+  if (!value || typeof value !== "object") return false;
+  const result = value as Record<string, unknown>;
+  if (typeof result.pluginId !== "string" || typeof result.installedVersion !== "string") return false;
+  if (result.status === "unsupported") return true;
+  if (typeof result.latestVersion !== "string") return false;
+  if (result.status === "upToDate") return true;
+  if (result.status !== "available" || !result.offer || typeof result.offer !== "object") return false;
+  const offer = result.offer as Record<string, unknown>;
+  return ["pluginId", "pluginName", "installedVersion", "version", "releaseUrl", "packageUrl",
+    "packageName", "sourceChecksum", "publishedAt"].every(key => typeof offer[key] === "string") &&
+    typeof offer.compressedBytes === "number" && Number.isFinite(offer.compressedBytes) && offer.compressedBytes > 0 &&
+    offer.pluginId === result.pluginId && offer.installedVersion === result.installedVersion && offer.version === result.latestVersion;
+}
+
+export function readCachedPluginUpdateResults(
+  storage: UpdateStorage | undefined, catalogKey: string, now = Date.now()
+): CachedPluginUpdateResults | undefined {
+  try {
+    const value = JSON.parse(storage?.getItem(LAST_PLUGIN_RESULTS_KEY) ?? "null") as Partial<CachedPluginUpdateResults> | null;
+    if (!value || value.catalogKey !== catalogKey || typeof value.checkedAt !== "number" ||
+        autoCheckDue(value.checkedAt, now) || !Array.isArray(value.results) || !value.results.every(isCachedResult)) return undefined;
+    return { catalogKey, checkedAt: value.checkedAt, results: value.results };
+  } catch { return undefined; }
 }
 
 /** Bind offers to the installed bytes, not just the plugin version. */
@@ -91,13 +121,17 @@ export function createPluginUpdateChecker(deps: PluginUpdateCheckerDeps) {
         return [];
       }
       const results = await deps.check(installed);
+      const cache = { catalogKey, checkedAt: now(), results: results.filter(result => result.status !== "failed") };
       // A failed/unsupported source is not an answer. Manual successful checks count too.
       if (results.some(result => result.status === "available" || result.status === "upToDate")) {
-        try { deps.storage?.setItem(LAST_PLUGIN_CHECK_KEY, String(now())); }
+        try {
+          deps.storage?.setItem(LAST_PLUGIN_RESULTS_KEY, JSON.stringify(cache));
+          deps.storage?.setItem(LAST_PLUGIN_CHECK_KEY, String(cache.checkedAt));
+        }
         catch { /* An unavailable store only causes another check next launch. */ }
       }
       // Automatic failures stay out of the UI; the manager retains manual failures locally.
-      deps.onResults({ catalogKey, results: results.filter(result => result.status !== "failed") });
+      deps.onResults(cache);
       return results;
     }).finally(() => { running = undefined; });
     const entry: RunningCheck = { catalogKey, promise, cancelled: false };
@@ -144,6 +178,10 @@ export function createPluginUpdateChecker(deps: PluginUpdateCheckerDeps) {
 
   return {
     check, automatic,
+    restore: (installed: readonly InstalledPluginCatalogEntry[]) => {
+      const cache = readCachedPluginUpdateResults(deps.storage, installedPluginCatalogKey(installed), now());
+      if (cache) deps.onResults(cache);
+    },
     nextAutomaticCheckDelay: () => nextPluginUpdateAutoCheckDelay(now(), readLastPluginCheck(deps.storage), lastAttempt)
   };
 }

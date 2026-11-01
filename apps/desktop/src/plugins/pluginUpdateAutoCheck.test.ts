@@ -5,8 +5,8 @@ import { MemoryStorage } from "../testSupport/memoryStorage";
 import type { InstalledPluginCatalogEntry } from "./installPluginPackage";
 import type { PluginUpdateCheckResult, PluginUpdateOffer } from "./pluginUpdates";
 import {
-  ANNOUNCED_PLUGIN_VERSIONS_KEY, LAST_PLUGIN_CHECK_KEY, createPluginUpdateChecker,
-  installedPluginCatalogKey, nextPluginUpdateAutoCheckDelay, schedulePluginUpdateAutoCheck
+  ANNOUNCED_PLUGIN_VERSIONS_KEY, LAST_PLUGIN_CHECK_KEY, LAST_PLUGIN_RESULTS_KEY, createPluginUpdateChecker,
+  installedPluginCatalogKey, nextPluginUpdateAutoCheckDelay, readCachedPluginUpdateResults, schedulePluginUpdateAutoCheck
 } from "./pluginUpdateAutoCheck";
 
 const pluginId = "org.chemdraft.nmr.predictor";
@@ -51,6 +51,86 @@ function setup(results: readonly PluginUpdateCheckResult[] = [available], storag
 afterEach(() => vi.useRealTimers());
 
 describe("daily official-plugin checks", () => {
+  it.each(["manual", "automatic"])("persists successful %s results with their catalog and check time, replacing older results", async mode => {
+    const { checker, deps, advance } = setup([available, failed, unsupported]);
+    const run = () => mode === "manual" ? checker.check(installed) : checker.automatic(context);
+    await run();
+    expect(JSON.parse(deps.storage.getItem(LAST_PLUGIN_RESULTS_KEY)!)).toEqual({
+      catalogKey: installedPluginCatalogKey(installed), checkedAt: deps.now(), results: [available, unsupported]
+    });
+    expect(deps.storage.getItem(LAST_PLUGIN_CHECK_KEY)).toBe(String(deps.now()));
+    advance(AUTO_CHECK_INTERVAL_MS);
+    deps.check.mockResolvedValue([upToDate]);
+    await run();
+    expect(JSON.parse(deps.storage.getItem(LAST_PLUGIN_RESULTS_KEY)!)).toEqual({
+      catalogKey: installedPluginCatalogKey(installed), checkedAt: deps.now(), results: [upToDate]
+    });
+  });
+
+  it("does not persist failed checks or overwrite the last successful stored results", async () => {
+    const { checker, deps } = setup([upToDate]);
+    await checker.check(installed);
+    const saved = deps.storage.getItem(LAST_PLUGIN_RESULTS_KEY);
+    deps.check.mockResolvedValue([failed, unsupported]);
+    await checker.check(installed);
+    expect(deps.storage.getItem(LAST_PLUGIN_RESULTS_KEY)).toBe(saved);
+  });
+
+  it("restores a recent matching cache through onResults on the second launch without a network check", async () => {
+    const { checker, deps, advance } = setup([upToDate]);
+    await checker.check(installed);
+    const cache = { catalogKey: installedPluginCatalogKey(installed), checkedAt: deps.now(), results: [upToDate] };
+    advance(1000);
+    deps.onResults.mockClear();
+    deps.check.mockClear();
+    const nextLaunch = createPluginUpdateChecker(deps);
+    nextLaunch.restore(installed);
+    await nextLaunch.automatic(context);
+    expect(deps.onResults).toHaveBeenCalledExactlyOnceWith(cache);
+    expect(deps.check).not.toHaveBeenCalled();
+  });
+
+  it("loads only matching catalogs within the check interval", async () => {
+    const { checker, deps } = setup();
+    await checker.check(installed);
+    const key = installedPluginCatalogKey(installed);
+    expect(readCachedPluginUpdateResults(deps.storage, key, deps.now() + AUTO_CHECK_INTERVAL_MS - 1)?.results).toEqual([available]);
+    expect(readCachedPluginUpdateResults(deps.storage, key, deps.now() + AUTO_CHECK_INTERVAL_MS)).toBeUndefined();
+    expect(readCachedPluginUpdateResults(deps.storage, key, deps.now() - 1)).toBeUndefined();
+    for (const patch of [{ version: "0.3.0" }, { sourceChecksum: "c".repeat(64) }, { installedAt: "later" }, { stagedPath: "replacement" }]) {
+      const changedKey = installedPluginCatalogKey([{ ...installed[0]!, record: { ...installed[0]!.record, ...patch } }]);
+      expect(readCachedPluginUpdateResults(deps.storage, changedKey, deps.now())).toBeUndefined();
+    }
+    expect(readCachedPluginUpdateResults(deps.storage, installedPluginCatalogKey([]), deps.now())).toBeUndefined();
+  });
+
+  it.each([
+    "{", "null", "[]", "42", '"cache"', "{}",
+    JSON.stringify({ catalogKey: installedPluginCatalogKey(installed), checkedAt: "1000000000", results: [upToDate] }),
+    ...[null, {}, [null], [failed], [{ ...available, offer: null }], [{ ...available, offer: {} }],
+      [{ ...upToDate, latestVersion: 1 }], [{ ...unsupported, installedVersion: null }],
+      [{ ...available, offer: { ...offer, compressedBytes: "100" } }]
+    ].map(results => JSON.stringify({ catalogKey: installedPluginCatalogKey(installed), checkedAt: 1_000_000_000, results }))
+  ])("ignores malformed or wrong-shape stored results: %s", value => {
+    const { deps } = setup();
+    deps.storage.setItem(LAST_PLUGIN_RESULTS_KEY, value);
+    expect(readCachedPluginUpdateResults(deps.storage, installedPluginCatalogKey(installed), deps.now())).toBeUndefined();
+  });
+
+  it("ignores storage read and write failures while publishing fresh results", async () => {
+    const { deps } = setup();
+    vi.spyOn(deps.storage, "getItem").mockImplementation(() => { throw new Error("Storage unavailable"); });
+    vi.spyOn(deps.storage, "setItem").mockImplementation(() => { throw new Error("Storage unavailable"); });
+    const checker = createPluginUpdateChecker(deps);
+    expect(readCachedPluginUpdateResults(deps.storage, installedPluginCatalogKey(installed), deps.now())).toBeUndefined();
+    checker.restore(installed);
+    expect(deps.onResults).not.toHaveBeenCalled();
+    await checker.automatic(context);
+    expect(deps.onResults).toHaveBeenCalledWith({
+      catalogKey: installedPluginCatalogKey(installed), checkedAt: deps.now(), results: [available]
+    });
+  });
+
   it.each(["macos", "windows"])("delays the desktop check on %s by 15 seconds and checks again daily", async () => {
     vi.useFakeTimers();
     const { checker, deps, advance } = setup();
@@ -192,6 +272,7 @@ describe("daily official-plugin checks", () => {
     const { checker, deps } = setup(results);
     await checker.automatic(context);
     expect(deps.storage.getItem(LAST_PLUGIN_CHECK_KEY)).toBeNull();
+    expect(deps.storage.getItem(LAST_PLUGIN_RESULTS_KEY)).toBeNull();
     expect(deps.setStatus).not.toHaveBeenCalled();
     await checker.automatic(context);
     expect(deps.check).toHaveBeenCalledOnce();
@@ -201,7 +282,7 @@ describe("daily official-plugin checks", () => {
     const { checker, deps } = setup([failed]);
     await checker.automatic(context);
     expect(deps.log).toHaveBeenCalledWith(expect.stringContaining(pluginId), "Offline");
-    expect(deps.onResults).toHaveBeenCalledWith({ catalogKey: installedPluginCatalogKey(installed), results: [] });
+    expect(deps.onResults).toHaveBeenCalledWith({ catalogKey: installedPluginCatalogKey(installed), checkedAt: deps.now(), results: [] });
     expect(deps.setStatus).not.toHaveBeenCalled();
   });
 
@@ -228,7 +309,7 @@ describe("daily official-plugin checks", () => {
     await automatic;
     await expect(manual).resolves.toEqual([available, failed]);
     expect(deps.onResults).toHaveBeenCalledOnce();
-    expect(deps.onResults).toHaveBeenCalledWith({ catalogKey: installedPluginCatalogKey(installed), results: [available] });
+    expect(deps.onResults).toHaveBeenCalledWith({ catalogKey: installedPluginCatalogKey(installed), checkedAt: deps.now(), results: [available] });
   });
 
   it("makes no automatic request after opting out while queued behind a different-catalog manual check", async () => {
@@ -269,7 +350,7 @@ describe("daily official-plugin checks", () => {
     await automaticB;
     expect(deps.storage.getItem(LAST_PLUGIN_CHECK_KEY)).toBeNull();
     expect(deps.onResults).toHaveBeenCalledOnce();
-    expect(deps.onResults).toHaveBeenCalledWith({ catalogKey: installedPluginCatalogKey(catalogA), results: [] });
+    expect(deps.onResults).toHaveBeenCalledWith({ catalogKey: installedPluginCatalogKey(catalogA), checkedAt: deps.now(), results: [] });
     expect(deps.setStatus).not.toHaveBeenCalled();
     expect(deps.check).toHaveBeenCalledTimes(2);
     expect(deps.check).toHaveBeenLastCalledWith(installed);
@@ -277,7 +358,7 @@ describe("daily official-plugin checks", () => {
     await expect(manualB).resolves.toEqual([available]);
     expect(deps.storage.getItem(LAST_PLUGIN_CHECK_KEY)).toBe(String(deps.now()));
     expect(deps.onResults).toHaveBeenCalledTimes(2);
-    expect(deps.onResults).toHaveBeenLastCalledWith({ catalogKey: installedPluginCatalogKey(installed), results: [available] });
+    expect(deps.onResults).toHaveBeenLastCalledWith({ catalogKey: installedPluginCatalogKey(installed), checkedAt: deps.now(), results: [available] });
   });
 
   it("remembers each plugin@version across launches and announces a newer version again", async () => {

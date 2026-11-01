@@ -16,7 +16,7 @@ import { safeLocalStorage } from "../appUpdates";
 import { loadAutomaticPluginUpdates, listenForPluginUpdateSettings } from "../pluginUpdateSettings";
 import {
   createPluginUpdateChecker, hasOfficialInstalledPlugin, installedPluginCatalogKey,
-  schedulePluginUpdateAutoCheck, type CachedPluginUpdateResults
+  schedulePluginUpdateAutoCheck, type CachedPluginUpdateResults, type TimedPluginUpdateCheckResult
 } from "./pluginUpdateAutoCheck";
 import { createPluginRuntime, type DesktopPluginRuntime, type ProposalDocumentTab } from "./createPluginRuntime";
 import {
@@ -113,7 +113,7 @@ export interface PluginRuntimeView {
   installPackage: ((inspection: PluginPackageInspection) => Promise<void>) | undefined;
   prepareOfficialPluginInstall: ((pluginId: string) => Promise<PreparedOfficialPluginInstall>) | undefined;
   uninstallInstalledPlugin: ((pluginId: string) => Promise<void>) | undefined;
-  cachedPluginUpdateResults: readonly PluginUpdateCheckResult[];
+  cachedPluginUpdateResults: readonly TimedPluginUpdateCheckResult[];
   checkInstalledPluginUpdates: (() => Promise<readonly PluginUpdateCheckResult[]>) | undefined;
   prepareInstalledPluginUpdate: ((offer: PluginUpdateOffer) => Promise<PreparedPluginUpdate>) | undefined;
   updateInstalledPlugin: ((prepared: PreparedPluginUpdate) => Promise<void>) | undefined;
@@ -403,6 +403,9 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     });
   }
   const updateChecker = updateCheckerRef.current;
+  useEffect(() => {
+    if (installedPluginCatalogReady) updateChecker.restore(installedPlugins);
+  }, [installedPluginCatalogReady, installedPlugins, updateChecker]);
   const automaticUpdateContextRef = useRef({ automaticUpdates, installedPluginCatalogReady, installedPlugins, stagingFs });
   automaticUpdateContextRef.current = { automaticUpdates, installedPluginCatalogReady, installedPlugins, stagingFs };
   useEffect(() => {
@@ -435,7 +438,8 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
   }, [automaticUpdates, installedPluginCatalogReady, installedPlugins, stagingFs, updateChecker]);
 
   const cachedPluginUpdateResults = useMemo(() =>
-    updateCache?.catalogKey === installedPluginCatalogKey(installedPlugins) ? updateCache.results : [],
+    updateCache?.catalogKey === installedPluginCatalogKey(installedPlugins)
+      ? updateCache.results.map(result => ({ ...result, checkedAt: updateCache.checkedAt })) : [],
     [installedPlugins, updateCache]);
   const checkInstalledPluginUpdates = useCallback(
     (): Promise<readonly PluginUpdateCheckResult[]> => updateChecker.check(installedPlugins),
