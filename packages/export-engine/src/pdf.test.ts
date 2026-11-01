@@ -219,6 +219,35 @@ describe("exportDocumentToPdf", () => {
     expect(extractPdfTextRuns(result.bytes)).toEqual(expect.arrayContaining(["13", "CH", "D", "T"]));
   });
 
+  it("sets the leading HO as tightly as the trailing OH in PDF (ethylene glycol)", async () => {
+    const molecule: MoleculeObject = {
+      id: "glycol", type: "molecule", x: 90, y: 130, width: 125, height: 40, rotation: 0,
+      structureFormat: "smiles", structure: "OCCO", superatoms: [], rGroups: [],
+      style: { source: "chemdraft-native-drawing" },
+      atoms: [
+        { id: "o1", element: "O", x: 100, y: 140, formalCharge: 0 },
+        { id: "c1", element: "C", x: 135, y: 160, formalCharge: 0 },
+        { id: "c2", element: "C", x: 170, y: 140, formalCharge: 0 },
+        { id: "o2", element: "O", x: 205, y: 160, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "b1", fromAtomId: "o1", toAtomId: "c1", order: "single" },
+        { id: "b2", fromAtomId: "c1", toAtomId: "c2", order: "single" },
+        { id: "b3", fromAtomId: "c2", toAtomId: "o2", order: "single" }
+      ]
+    };
+    const document = applyPatch(createEmptyDocument({ now: timestamp }), { op: "addObject", pageId: "page_001", object: molecule });
+    const result = await withPdfDom((domParser) => exportDocumentToPdf(document, { domParser, compress: false }), true);
+    const runs = extractPdfPositionedTextRuns(result.bytes);
+    expect(runs.map((run) => run.text)).toEqual(expect.arrayContaining(["H", "O", "OH"]));
+    const hydrogen = runs.find((run) => run.text === "H")!;
+    const oxygen = runs.find((run) => run.text === "O")!;
+    // "OH" is one text run, so the PDF sets O and H by their advances with no space: the leading
+    // "HO" must put its O where the H's advance ends, within half a point.
+    expect(Math.abs(oxygen.x - hydrogen.x - standardFontTextWidth("H", hydrogen.fontSize))).toBeLessThan(0.5);
+    expect(oxygen.y).toBeCloseTo(hydrogen.y, 6);
+  });
+
   it.each(["left", "center", "right"] as const)("exports contiguous %s-aligned scripted formulas without whitespace runs", async (align) => {
     const fixture = scriptedTextDocument(align);
     const document = { ...fixture, pages: [{ ...fixture.pages[0], objects: fixture.pages[0].objects.slice(0, 2) }] };
