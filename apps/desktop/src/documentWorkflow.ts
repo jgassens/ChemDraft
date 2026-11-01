@@ -157,6 +157,8 @@ import {
   moleculeFillCycleKeyBondIds,
   nativeMoleculeRings,
   planBondExtension,
+  bondGrowthAngleDegrees,
+  linearBondGrowthAimDegrees,
   planFreeformBondExtension,
   nativeMultipleBondGapPx,
   nativeMoleculeBondDrawingStyle,
@@ -7136,26 +7138,43 @@ export function applySingleBondToolAtPoint(
   point: PagePoint,
   options: NativeBondToolOptions = {}
 ): ChemDraftDocument {
+  return nativeSingleBondToolAtPoint(document, point, options).document;
+}
+
+/**
+ * A bond-tool click: grows the selected molecule from the atom under `point`, or inserts a new
+ * bond. A click on an atom that only the page edge keeps from growing changes nothing and says
+ * so (`sprout-page-edge`), rather than dropping a separate bond on top of it.
+ */
+export function nativeSingleBondToolAtPoint(
+  document: ChemDraftDocument,
+  point: PagePoint,
+  options: NativeBondToolOptions = {}
+): { document: ChemDraftDocument; refusal?: NativeAtomSproutRefusal } {
   const page = firstPage(document);
   const selected = getSelectedMolecule(document);
   const extended = selected ? extendNativeCarbonChain(selected, point, page.width, page.height, options) : undefined;
 
   if (!selected) {
-    return insertNativeSingleBondMolecule(document, point, options);
+    return { document: insertNativeSingleBondMolecule(document, point, options) };
   }
 
   if (!extended) {
-    return insertNativeSingleBondMolecule(document, point, options);
+    const atomHit = findNativeMoleculeAtomHit(selected, point);
+    if (atomHit && nativeBondGrowthBlockedByPageEdge(selected, atomHit.atomId, point, page.width, page.height)) {
+      return { document, refusal: "sprout-page-edge" };
+    }
+    return { document: insertNativeSingleBondMolecule(document, point, options) };
   }
 
-  return applyPatches(
+  return { document: applyPatches(
     document,
     [
       { op: "updateObject", objectId: selected.id, changes: extended },
       { op: "setSelection", pageId: page.id, objectIds: [selected.id] }
     ],
     { now: phase4Timestamp }
-  );
+  ) };
 }
 
 export function applyFreeformSingleBondToolAtPoint(
@@ -7165,12 +7184,27 @@ export function applyFreeformSingleBondToolAtPoint(
   point: PagePoint,
   options: NativeFreeformBondGrowthOptions = {}
 ): ChemDraftDocument {
+  return nativeFreeformSingleBondToolAtPoint(document, objectId, sourceAtomId, point, options).document;
+}
+
+/**
+ * A bond-tool drag off `sourceAtomId` released at `point`. A drag that only the page edge keeps
+ * from placing a bond — an Alt/Option aim running off the page, which is never swapped for
+ * another angle — changes nothing and says so (`sprout-page-edge`).
+ */
+export function nativeFreeformSingleBondToolAtPoint(
+  document: ChemDraftDocument,
+  objectId: string,
+  sourceAtomId: string,
+  point: PagePoint,
+  options: NativeFreeformBondGrowthOptions = {}
+): { document: ChemDraftDocument; refusal?: NativeAtomSproutRefusal } {
   const page = firstPage(document);
   const molecule = page.objects.find((object): object is MoleculeObject =>
     object.id === objectId && object.type === "molecule"
   );
   if (!molecule) {
-    return document;
+    return { document };
   }
 
   // A drop on another molecule object's atom joins the two: merge that object into this one
@@ -7184,9 +7218,9 @@ export function applyFreeformSingleBondToolAtPoint(
       ? connectNativeCarbonAtoms(merged.molecule, sourceAtomId, mergedTargetAtomId, options)
       : undefined;
     if (!merged || !connected) {
-      return document;
+      return { document };
     }
-    return applyPatches(
+    return { document: applyPatches(
       document,
       [
         { op: "updateObject", objectId: molecule.id, changes: connected },
@@ -7195,36 +7229,49 @@ export function applyFreeformSingleBondToolAtPoint(
         { op: "setSelection", pageId: page.id, objectIds: [molecule.id] }
       ],
       { now: phase4Timestamp }
-    );
+    ) };
   }
 
-  const preview = previewNativeMoleculeFreeformBondGrowth(
-    molecule,
-    sourceAtomId,
-    point,
-    page.width,
-    page.height,
-    options
-  );
+  const pageBounds = { x: 0, y: 0, width: page.width, height: page.height };
+  const preview = previewNativeMoleculeFreeformBondGrowthInBounds(molecule, sourceAtomId, point, pageBounds, options);
   if (!preview) {
-    return document;
+    // Diagnostics only: the same drag with the page lifted says whether the edge alone refused it.
+    const margin = nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx * 4;
+    const unbounded = previewNativeMoleculeFreeformBondGrowthInBounds(molecule, sourceAtomId, point, {
+      x: -margin, y: -margin, width: page.width + margin * 2, height: page.height + margin * 2
+    }, options);
+    return unbounded ? { document, refusal: "sprout-page-edge" } : { document };
   }
 
   const extended = preview.targetAtomId
     ? connectNativeCarbonAtoms(molecule, preview.atomId, preview.targetAtomId, options)
     : extendNativeCarbonGraph(molecule, preview.atomId, preview.newAtomPoint, options);
   if (!extended) {
-    return document;
+    return { document };
   }
 
-  return applyPatches(
+  return { document: applyPatches(
     document,
     [
       { op: "updateObject", objectId: molecule.id, changes: extended },
       { op: "setSelection", pageId: page.id, objectIds: [molecule.id] }
     ],
     { now: phase4Timestamp }
-  );
+  ) };
+}
+
+/**
+ * The atom a bond-tool press on `molecule` at `point` may drag a new bond from: an atom under the
+ * pointer that can take another bond. It does not depend on whether a click there would grow a
+ * bond — an atom the page edge boxes in for the default directions can still be dragged off with
+ * Alt/Option toward open room; only a click (a release without dragging) reports the refusal.
+ */
+export function nativeBondDragSourceAtomId(molecule: MoleculeObject, point: PagePoint): string | undefined {
+  if (!isEditableNativeMoleculeGraph(molecule)) {
+    return undefined;
+  }
+  const atomHit = findNativeMoleculeAtomHit(molecule, point);
+  return atomHit && canGrowNativeAtom(molecule, atomHit.atomId) ? atomHit.atomId : undefined;
 }
 
 export function applyNativeBondDisplayStyleTarget(
@@ -7241,8 +7288,25 @@ export function applyNativeBondDisplayStyleTarget(
   }
 
   const bond = molecule.bonds.find((candidate) => candidate.id === target.bondId);
-  if (!bond || bond.display?.bondStyle === bondStyle) {
+  if (!bond) {
     return document;
+  }
+  if (bond.display?.bondStyle === bondStyle) {
+    return nativeBondDisplayStyleReverses(bond, bondStyle)
+      ? applyPatch(
+          document,
+          {
+            op: "updateObject",
+            objectId: molecule.id,
+            changes: refreshNativeSingleBondGraph(
+              molecule,
+              molecule.atoms,
+              molecule.bonds.map((candidate) => candidate.id === bond.id ? reversedNativeBond(candidate) : candidate)
+            )
+          },
+          { now: phase4Timestamp }
+        )
+      : document;
   }
   // Dashed bonds are dative chemistry rather than decoration, and the interchange writers cannot
   // represent a double or higher-order coordination bond without silently changing its meaning.
@@ -7260,6 +7324,29 @@ export function applyNativeBondDisplayStyleTarget(
     { op: "updateObject", objectId: molecule.id, changes: nextMolecule },
     { now: phase4Timestamp }
   );
+}
+
+/**
+ * Whether applying `bondStyle` to a bond already drawn that way reverses it rather than doing
+ * nothing: a wedge or hashed wedge clicked again with its own tool swaps its narrow end to the
+ * other atom. The narrow end marks the stereocentre, so this is a stereo edit the user asked for
+ * by clicking, and its undo restores the bond exactly. Every other style is direction-free.
+ */
+export function nativeBondDisplayStyleReverses(bond: MoleculeBond, bondStyle: NativeBondDisplayStyle): boolean {
+  return bond.display?.bondStyle === bondStyle && (bondStyle === "wedge" || bondStyle === "hashed");
+}
+
+/** The same bond drawn from its other end; a left/right double-bond side is mirrored to stay put. */
+function reversedNativeBond(bond: MoleculeBond): MoleculeBond {
+  const side = bond.display?.doubleBondSide;
+  return {
+    ...bond,
+    fromAtomId: bond.toAtomId,
+    toAtomId: bond.fromAtomId,
+    ...(bond.display && (side === "left" || side === "right")
+      ? { display: { ...bond.display, doubleBondSide: side === "left" ? "right" : "left" } }
+      : {})
+  };
 }
 
 /**
@@ -7627,7 +7714,9 @@ export function nativeSingleBondHotkeyAtAtomTarget(
   // picks the pure geometric direction — ChemDraw's hotkey behavior.
   const planned = plan ?? nativeBondGrowthPlanForAtom(molecule, target.atomId, page.width, page.height);
   if (!planned) {
-    return { document, refusal: nativeSproutFailureReason(molecule, target.atomId) };
+    return { document, refusal: nativeBondGrowthBlockedByPageEdge(molecule, target.atomId, atom, page.width, page.height)
+      ? "sprout-page-edge"
+      : nativeSproutFailureReason(molecule, target.atomId) };
   }
 
   const extended = planned.targetAtomId
@@ -7913,6 +8002,7 @@ function nativeCyclicClosurePatched(
 /** Refusal diagnostics only: these helpers never decide whether a sprout is placed. */
 export type NativeAtomSproutRefusal = NativeRingHotkeyRefusal
   | "sprout-no-free-direction"
+  | "sprout-page-edge"
   | "sprout-needs-two-valences"
   | "methylidene-needs-neutral-carbon"
   | "connection-atom-no-free-valence"
@@ -8020,14 +8110,21 @@ export function nativeRingHotkeyAttachAtAtomTarget(
   if (nativeElementFromAtomLabel(sourceAtom.element) === undefined) {
     return { document, refusal: "atom-label-not-element" };
   }
-  const direction = (plan && !plan.targetAtomId ? plan.direction : undefined)
-    ?? nativeBondGrowthPlanForAtom(molecule, target.atomId, page.width, page.height)?.direction
-    ?? { x: 0, y: -1 };
+  // On a bonded atom the ring centres on the bisector of the atom's largest open angle, as a ring
+  // tool click on the atom does: a methyl then sits at 120° to both hexagon bonds (126° on a
+  // pentagon). The growth arrow points where one new bond would go, ±120° off the parent bond, and
+  // a ring centred along it came out 60° off that exterior bisector. A bare atom has no bisector
+  // and still follows the arrow.
+  const bonded = molecule.bonds.some((bond) => bond.fromAtomId === sourceAtom.id || bond.toAtomId === sourceAtom.id);
+  const direction = bonded
+    ? undefined
+    : (plan && !plan.targetAtomId ? plan.direction : undefined)
+      ?? nativeBondGrowthPlanForAtom(molecule, target.atomId, page.width, page.height)?.direction
+      ?? { x: 0, y: -1 };
   const nativeBondLength = nativeTemplateBondLength(molecule);
-  const orientationPoint = {
-    x: sourceAtom.x + direction.x * nativeBondLength,
-    y: sourceAtom.y + direction.y * nativeBondLength
-  };
+  const orientationPoint = direction
+    ? { x: sourceAtom.x + direction.x * nativeBondLength, y: sourceAtom.y + direction.y * nativeBondLength }
+    : { x: sourceAtom.x, y: sourceAtom.y };
   const attached = attachNativeTemplateRingToAtom(molecule, target.atomId, orientationPoint, templateId);
   if (!attached) {
     return {
@@ -9575,46 +9672,136 @@ export function previewNativeMoleculeBondGrowth(
     return undefined;
   }
 
-  const drawingStyle = nativeDrawingStyleFromObjectStyle(molecule.style);
-  const extension = planBondExtension({
-    atoms: molecule.atoms,
-    bonds: molecule.bonds,
-    clickPoint: point,
-    bondLength: drawingStyle.bondLengthPx,
-    hitRadius: atomHitRadius,
-    maxBondsPerAtom: nativeAtomInvalidGrowthLimit,
-    targetBondAngleDegrees: drawingStyle.chainAngleDegrees,
-    preferredAtomId: atomHit.atomId,
-    pageBounds: { x: 0, y: 0, width: pageWidth, height: pageHeight },
-    objectBounds: {
-      x: molecule.x,
-      y: molecule.y,
-      width: molecule.width,
-      height: molecule.height
-    }
+  const pageBounds = { x: 0, y: 0, width: pageWidth, height: pageHeight };
+  const extension = connectableNativeBondGrowthPlan(molecule, point, atomHit.atomId, pageBounds, {
+    x: molecule.x,
+    y: molecule.y,
+    width: molecule.width,
+    height: molecule.height
   });
-
   if (!extension) {
     return undefined;
   }
-  if (extension.targetAtomId && !canConnectNativeAtoms(molecule, extension.sourceAtomId, extension.targetAtomId)) {
-    return undefined;
-  }
 
+  const direction = nativeBondGrowthPlacedDirection(molecule, extension);
   return {
     atomId: extension.sourceAtomId,
     targetAtomId: extension.targetAtomId,
-    direction: extension.direction,
-    candidateDirections: nativeBondGrowthCandidateDirections(
-      molecule,
-      extension.sourceAtomId,
-      extension.direction,
-      drawingStyle.chainAngleDegrees
-    ),
+    direction,
+    candidateDirections: nativeBondGrowthPlacedCandidateDirections(molecule, extension.sourceAtomId, direction, pageBounds),
     newAtomPoint: extension.newAtomPoint,
     distanceToPointer: extension.distanceToClick,
     availableBonds: atomHit.availableBonds
   };
+}
+
+/** `planBondExtension` with the molecule's own style, declining a plan that closes onto an atom it cannot bond to. */
+function connectableNativeBondGrowthPlan(
+  molecule: MoleculeObject,
+  clickPoint: PagePoint,
+  preferredAtomId: string,
+  pageBounds: { x: number; y: number; width: number; height: number },
+  objectBounds?: { x: number; y: number; width: number; height: number }
+): ReturnType<typeof planBondExtension> {
+  const drawingStyle = nativeDrawingStyleFromObjectStyle(molecule.style);
+  const extension = planBondExtension({
+    atoms: molecule.atoms,
+    bonds: molecule.bonds,
+    clickPoint,
+    bondLength: drawingStyle.bondLengthPx,
+    hitRadius: atomHitRadius,
+    maxBondsPerAtom: nativeAtomInvalidGrowthLimit,
+    targetBondAngleDegrees: drawingStyle.chainAngleDegrees,
+    preferredAtomId,
+    pageBounds,
+    ...(objectBounds ? { objectBounds } : {})
+  });
+  if (extension?.targetAtomId && !canConnectNativeAtoms(molecule, extension.sourceAtomId, extension.targetAtomId)) {
+    return undefined;
+  }
+  return extension;
+}
+
+/**
+ * The unit direction of the bond a plan actually draws: from the source atom to where the new atom
+ * lands after the page clamp (or to the atom it closes onto). At a page edge the clamp turns the
+ * planned direction, and the growth arrow must show the turned one.
+ */
+function nativeBondGrowthPlacedDirection(
+  molecule: MoleculeObject,
+  extension: NonNullable<ReturnType<typeof planBondExtension>>
+): PagePoint {
+  const source = molecule.atoms.find((atom) => atom.id === extension.sourceAtomId);
+  const length = source ? distance(source, extension.newAtomPoint) : 0;
+  return source && length > 1e-9
+    ? { x: (extension.newAtomPoint.x - source.x) / length, y: (extension.newAtomPoint.y - source.y) / length }
+    : extension.direction;
+}
+
+/**
+ * The growth arrow's options, `selectedDirection` first: each alternate the arrow offers is a
+ * direction `planBondExtension` really places when steered toward it, so at the page edge an
+ * option the clamp would cut short (the straight-through aim off an sp end) shows as the
+ * direction the bond takes instead, never as an arrow off the page.
+ */
+function nativeBondGrowthPlacedCandidateDirections(
+  molecule: MoleculeObject,
+  atomId: string,
+  selectedDirection: PagePoint,
+  pageBounds: { x: number; y: number; width: number; height: number }
+): PagePoint[] {
+  const atom = molecule.atoms.find((candidate) => candidate.id === atomId);
+  if (!atom) {
+    return [selectedDirection];
+  }
+  const chainAngleDegrees = nativeDrawingStyleFromObjectStyle(molecule.style).chainAngleDegrees;
+  const growthAngleDegrees = bondGrowthAngleDegrees(atomId, molecule.bonds, chainAngleDegrees);
+  const steeringDirections = [
+    ...nativeBondGrowthCandidateDirections(molecule, atomId, selectedDirection, growthAngleDegrees),
+    ...(growthAngleDegrees === chainAngleDegrees
+      ? []
+      : nativeBondGrowthCandidateDirections(molecule, atomId, selectedDirection, chainAngleDegrees))
+  ];
+  const steeringOffset = atomHitRadius / 2;
+  const placed = steeringDirections.flatMap((steer) => {
+    const plan = connectableNativeBondGrowthPlan(
+      molecule,
+      { x: atom.x + steer.x * steeringOffset, y: atom.y + steer.y * steeringOffset },
+      atomId,
+      pageBounds
+    );
+    return plan && plan.sourceAtomId === atomId ? [nativeBondGrowthPlacedDirection(molecule, plan)] : [];
+  });
+  return [selectedDirection, ...placed].reduce<PagePoint[]>((unique, direction) => {
+    if (!unique.some((existing) => Math.hypot(existing.x - direction.x, existing.y - direction.y) < 0.01)) {
+      unique.push(direction);
+    }
+    return unique;
+  }, []);
+}
+
+/**
+ * Whether only the page edge keeps `atomId` from growing a bond: the atom can take one, the planner
+ * finds no usable direction on the page, and it finds one once the page is lifted. Diagnostics
+ * only; the planner alone decides where a bond goes.
+ */
+function nativeBondGrowthBlockedByPageEdge(
+  molecule: MoleculeObject,
+  atomId: string,
+  clickPoint: PagePoint,
+  pageWidth: number,
+  pageHeight: number
+): boolean {
+  if (!isEditableNativeMoleculeGraph(molecule) || !canGrowNativeAtom(molecule, atomId)) {
+    return false;
+  }
+  if (connectableNativeBondGrowthPlan(molecule, clickPoint, atomId, { x: 0, y: 0, width: pageWidth, height: pageHeight })) {
+    return false;
+  }
+  const margin = nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx * 4;
+  return connectableNativeBondGrowthPlan(molecule, clickPoint, atomId, {
+    x: -margin, y: -margin, width: pageWidth + margin * 2, height: pageHeight + margin * 2
+  }) !== undefined;
 }
 
 function nativeBondGrowthCandidateDirections(
@@ -9681,6 +9868,27 @@ function largestOpenAngle(angles: readonly number[]): number | undefined {
   return gaps.sort((left, right) => right.gap - left.gap || left.midpoint - right.midpoint)[0]?.midpoint;
 }
 
+/**
+ * The aim of a bond dragged off `sourceAtom`. Off an sp end (a triple bond, or two double bonds) it
+ * stays collinear with the existing bond; elsewhere it rides the absolute 15° placement grid.
+ * Alt/Option frees the angle in both cases; `undefined` leaves the legacy unaimed behaviour.
+ */
+function freeformBondGrowthDirectionDegrees(
+  molecule: MoleculeObject,
+  sourceAtom: PagePoint & { id: string },
+  point: PagePoint,
+  placementAltKey: boolean | undefined
+): number | undefined {
+  if (placementAltKey === undefined) {
+    return undefined;
+  }
+  const aim = placementAimDegrees(sourceAtom, point);
+  if (placementAltKey) {
+    return aim;
+  }
+  return linearBondGrowthAimDegrees(sourceAtom.id, molecule.atoms, molecule.bonds) ?? snapPlacementDegrees(aim);
+}
+
 export function previewNativeMoleculeFreeformBondGrowth(
   molecule: MoleculeObject,
   sourceAtomId: string,
@@ -9688,6 +9896,18 @@ export function previewNativeMoleculeFreeformBondGrowth(
   pageWidth: number,
   pageHeight: number,
   options: NativeFreeformBondGrowthOptions = {}
+): NativeFreeformBondGrowthPreview | undefined {
+  return previewNativeMoleculeFreeformBondGrowthInBounds(
+    molecule, sourceAtomId, point, { x: 0, y: 0, width: pageWidth, height: pageHeight }, options
+  );
+}
+
+function previewNativeMoleculeFreeformBondGrowthInBounds(
+  molecule: MoleculeObject,
+  sourceAtomId: string,
+  point: PagePoint,
+  pageBounds: { x: number; y: number; width: number; height: number },
+  options: NativeFreeformBondGrowthOptions
 ): NativeFreeformBondGrowthPreview | undefined {
   if (!isEditableNativeMoleculeGraph(molecule)) {
     return undefined;
@@ -9710,15 +9930,15 @@ export function previewNativeMoleculeFreeformBondGrowth(
     sourceAtomId,
     endPoint: point,
     bondLength: drawingStyle.bondLengthPx,
-    pageBounds: { x: 0, y: 0, width: pageWidth, height: pageHeight },
+    pageBounds,
     maxBondsPerAtom: nativeAtomInvalidGrowthLimit,
     minimumBondLength: freeformMinimumBondLength,
     customLengthBreakawayDistance: freeformCustomLengthBreakawayDistance,
     forceCustomLength: options.forceCustomLength,
-    directionDegrees: options.placementAltKey === undefined
-      ? undefined
-      : snapPlacementDegrees(placementAimDegrees(sourceAtom, point), options.placementAltKey),
-    snapHitRadius: atomHitRadius
+    directionDegrees: freeformBondGrowthDirectionDegrees(molecule, sourceAtom, point, options.placementAltKey),
+    freeAngle: options.placementAltKey === true,
+    snapHitRadius: atomHitRadius,
+    targetBondAngleDegrees: drawingStyle.chainAngleDegrees
   });
   if (!extension) {
     return undefined;
