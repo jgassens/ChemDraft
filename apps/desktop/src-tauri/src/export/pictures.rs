@@ -10,7 +10,9 @@
 //!
 //! A picture copy that cannot be drawn exactly (inside a mask, filter, blend mode, pattern or
 //! marker) is not drawn and gets a warning, counted per rendered copy, as do pictures the webview
-//! refused to decode or left out because the export has more than `MAX_PICTURES` of them.
+//! refused to decode or left out because the export has more than `MAX_PICTURES` of them. usvg
+//! drops the ids of copies made by reference (`<use>`, `<feImage>`), so those copies are never
+//! drawn either; they are found by shape and counted as left out.
 
 use std::collections::{HashMap, HashSet};
 
@@ -68,6 +70,16 @@ enum Omission {
 pub(super) struct Copies {
     drawn: usize,
     omitted: usize,
+}
+
+/// Where a supplied picture's stand-in sits in the SVG.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct StandIn {
+    /// Inside a `<marker>`: usvg strips ids there, so the picture can never be placed.
+    in_marker: bool,
+    /// The stand-in or an ancestor is referenced by id (`<use>`, `<feImage>`). usvg strips the ids
+    /// of every copy made that way, so the copies cannot be told apart from other images by id.
+    reused: bool,
 }
 
 /// The empty SVG standing in for a picture; `rasterPicturePlaceholderHref` builds the same string.
@@ -235,12 +247,19 @@ impl SuppliedPictures {
     }
 
     /// The supplied pictures whose stand-in is in the SVG: exactly one SVG `<image>` with the id
-    /// and a single href equal to the expected stand-in. Maps each id to whether it is inside a
-    /// `<marker>` (usvg strips ids there, so such a picture can never be placed).
+    /// and a single href equal to the expected stand-in, each with where it sits.
     pub(super) fn find_stand_ins(
         &self,
         document: &usvg::roxmltree::Document<'_>,
-    ) -> HashMap<String, bool> {
+    ) -> HashMap<String, StandIn> {
+        // Every id some element links to by href, whatever the element or namespace.
+        let referenced: HashSet<&str> = document
+            .descendants()
+            .filter(|node| node.is_element())
+            .flat_map(|node| node.attributes())
+            .filter(|attr| attr.name() == "href")
+            .filter_map(|attr| attr.value().trim().strip_prefix('#'))
+            .collect();
         let mut elements: HashMap<&str, Vec<usvg::roxmltree::Node<'_, '_>>> = HashMap::new();
         for node in document.descendants().filter(|node| node.is_element()) {
             if let Some(id) = node.attribute("id") {
@@ -261,7 +280,12 @@ impl SuppliedPictures {
                         ancestor.tag_name().name() == "marker"
                             && ancestor.tag_name().namespace() == Some(SVG_NAMESPACE)
                     });
-                    (id.to_string(), in_marker)
+                    let reused = node.ancestors().any(|ancestor| {
+                        ancestor
+                            .attribute("id")
+                            .is_some_and(|id| referenced.contains(id))
+                    });
+                    (id.to_string(), StandIn { in_marker, reused })
                 })
             })
             .collect()
@@ -272,7 +296,7 @@ impl SuppliedPictures {
     pub(super) fn render(
         &self,
         tree: &usvg::Tree,
-        stand_ins: &HashMap<String, bool>,
+        stand_ins: &HashMap<String, StandIn>,
         transform: tiny_skia::Transform,
         canvas: &mut tiny_skia::PixmapMut<'_>,
     ) -> HashMap<String, Copies> {
@@ -280,7 +304,11 @@ impl SuppliedPictures {
             .pictures
             .iter()
             .filter_map(|(id, supplied)| match supplied {
-                Supplied::Decoded(pixmap) if stand_ins.get(id) == Some(&false) => {
+                Supplied::Decoded(pixmap)
+                    if stand_ins
+                        .get(id)
+                        .is_some_and(|stand_in| !stand_in.in_marker) =>
+                {
                     Some((id.as_str(), pixmap))
                 }
                 _ => None,
@@ -300,6 +328,19 @@ impl SuppliedPictures {
         // Pictures used by patterns, masks, clip paths or filter images are drawn there by resvg,
         // which has no pixels for them; report them rather than show them only in some places.
         renderer.mark_subroot_pictures(root, false);
+        // Copies made by reference have lost their ids, so none of the above saw them.
+        let reused: Vec<(&str, u32, u32)> = pixmaps
+            .iter()
+            .filter(|&(&id, _)| stand_ins.get(id).is_some_and(|stand_in| stand_in.reused))
+            .map(|(&id, pixmap)| (id, pixmap.width(), pixmap.height()))
+            .collect();
+        if !reused.is_empty() {
+            let mut omitted = Vec::new();
+            find_copies_by_reference(root, stand_ins, false, &reused, &mut omitted);
+            renderer
+                .copies
+                .extend(omitted.into_iter().map(|id| (id, false)));
+        }
         let mut copies: HashMap<String, Copies> = HashMap::new();
         for (id, drawn) in renderer.copies {
             let entry = copies.entry(id).or_default();
@@ -317,7 +358,7 @@ impl SuppliedPictures {
     /// webview left out for exceeding `MAX_PICTURES`, which have no entry in the request.
     pub(super) fn omission_warnings(
         &self,
-        stand_ins: &HashMap<String, bool>,
+        stand_ins: &HashMap<String, StandIn>,
         copies: &HashMap<String, Copies>,
         over_count: usize,
         label: &str,
@@ -327,7 +368,7 @@ impl SuppliedPictures {
             counts.insert(Omission::OverCount, over_count);
         }
         for (id, supplied) in &self.pictures {
-            let Some(&in_marker) = stand_ins.get(id) else {
+            let Some(&StandIn { in_marker, .. }) = stand_ins.get(id) else {
                 continue;
             };
             let omission = match supplied {
@@ -412,6 +453,46 @@ fn premultiply(rgba: &mut [u8]) {
         for channel in &mut pixel[..3] {
             *channel = ((u16::from(*channel) * alpha + 127) / 255) as u8;
         }
+    }
+}
+
+/// Collects, for each copy of a picture made by reference (`<use>`, `<feImage>`), the reused
+/// pictures it may be a copy of. usvg strips the ids of such copies, so one shows up only as an
+/// empty SVG image outside any picture wrapper, of a stand-in's pixel size. It is never drawn, and
+/// is blamed on every reused picture of its size, as nothing in the tree tells them apart.
+fn find_copies_by_reference(
+    parent: &usvg::Group,
+    stand_ins: &HashMap<String, StandIn>,
+    in_picture: bool,
+    reused: &[(&str, u32, u32)],
+    omitted: &mut Vec<String>,
+) {
+    for node in parent.children() {
+        match node {
+            usvg::Node::Group(group) => {
+                let in_picture = in_picture || stand_ins.contains_key(group.id());
+                find_copies_by_reference(group, stand_ins, in_picture, reused, omitted);
+            }
+            usvg::Node::Image(image) if !in_picture => {
+                if let usvg::ImageKind::SVG(tree) = image.kind() {
+                    let size = image.size();
+                    if tree.root().children().is_empty() {
+                        omitted.extend(
+                            reused
+                                .iter()
+                                .filter(|&&(_, width, height)| {
+                                    size.width() == width as f32 && size.height() == height as f32
+                                })
+                                .map(|(id, _, _)| id.to_string()),
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+        node.subroots(|subroot| {
+            find_copies_by_reference(subroot, stand_ins, false, reused, omitted)
+        });
     }
 }
 

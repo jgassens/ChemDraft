@@ -1587,4 +1587,26 @@ mod tests {
         assert_rgba_near(&pixels, (10, 10), QUADRANTS[0]);
         assert_rgba_near(&pixels, (60, 60), WHITE);
     }
+
+    #[test]
+    fn copies_of_a_picture_made_by_reference_are_counted_as_left_out() {
+        // usvg drops the ids of copies made through `<use>` or `<feImage>`, so they are not drawn.
+        let picture = stand_in(PICTURE_ID, 8, 8, r#"x="0" y="0" width="40" height="40""#);
+        for copy in [
+            format!(r##"<use href="#{PICTURE_ID}" x="50" y="50"/>"##),
+            format!(
+                r##"<defs><filter id="f"><feImage href="#{PICTURE_ID}"/></filter></defs><rect x="50" y="50" width="40" height="40" fill="#000000" filter="url(#f)"/>"##
+            ),
+        ] {
+            let svg = picture_page(r#"width="100" height="100""#, &format!("{picture}{copy}"));
+            let (pixels, warnings) = render_pictures(&svg, 1, vec![quadrant_picture(PICTURE_ID)]);
+            assert_eq!(
+                warning_messages(&warnings),
+                ["PNG export: 1 picture was included, but not its copies inside a mask, filter, blend mode or pattern; export SVG or PDF to include every copy."],
+                "{copy}"
+            );
+            assert_rgba_near(&pixels, (10, 10), QUADRANTS[0]);
+            assert_rgba_near(&pixels, (60, 60), WHITE);
+        }
+    }
 }
