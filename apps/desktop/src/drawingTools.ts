@@ -37,6 +37,7 @@ export interface ToolActivationResult {
   status: string;
 }
 
+const orbitalUsageHint = usageHint("click a tip or canvas", "drag to orient (Shift snaps to 15°)", "Esc selects");
 const artShapeUsageHint = usageHint("click canvas", "select object to edit", "Esc exits");
 const artPathUsageHint = usageHint("click canvas", "drag handles after selecting", "Esc exits");
 
@@ -675,10 +676,10 @@ function artDrawingToolDefinitions(): DrawingToolDefinition[] {
     ["tool.art.arc120Dashed", "Dashed One-third Arc", "export", artPathUsageHint],
     ["tool.art.arc90", "Quarter Arc", "export", artPathUsageHint],
     ["tool.art.arc90Dashed", "Dashed Quarter Arc", "export", artPathUsageHint],
-    ["tool.lobe", "Orbital Lobe", "atom", artShapeUsageHint],
-    ["tool.shadedLobe", "Shaded Orbital Lobe", "atom", artShapeUsageHint],
-    ["tool.pOrbital", "p Orbital", "atom", artShapeUsageHint],
-    ["tool.sOrbital", "s Orbital", "atom", artShapeUsageHint]
+    ["tool.lobe", "Orbital Lobe", "atom", orbitalUsageHint],
+    ["tool.shadedLobe", "Shaded Orbital Lobe", "atom", orbitalUsageHint],
+    ["tool.pOrbital", "p Orbital", "atom", orbitalUsageHint],
+    ["tool.sOrbital", "s Orbital", "atom", orbitalUsageHint]
   ] as const;
 
   return tools.map(([commandId, title, icon, usageHint]) => ({
