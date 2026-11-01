@@ -1020,3 +1020,13 @@ caption must use the atom-label size. Existing structures on the page must not c
 Text editing (macOS and Windows): edit an existing text box next to another label. Confirm only
 one copy of its text is visible while typing, rich formatting remains intact, the other label stays
 visible, and clicking away restores the updated drawing. Check Select/Text tool entry and Undo/Redo.
+
+## Formatting several text boxes
+
+Text formatting (macOS and Windows): select two or more text boxes and change font family, then
+font size. Every selected box must update regardless of creation/selection order; unselected labels
+and selected molecules must stay unchanged. Bold, Italic, Underline: if every selected box already
+has the style, the command removes it from all; otherwise it applies it to all (never per the first
+box). Superscript and Subscript apply to every selected box. Each command must undo/redo all boxes in
+one step and preserve selection. Highlight characters inside one box and confirm only that range is
+formatted.
