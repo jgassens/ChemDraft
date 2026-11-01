@@ -1894,8 +1894,7 @@ fn place_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), Stri
     // WM_DPICHANGED runs when moving between Windows monitors. Move first, set the desired
     // client size at the destination DPI, then clamp using the measured final outer frame.
     finish_placement(
-        (x, y, destination_scale),
-        client_size,
+        ((x, y, destination_scale), client_size),
         destination,
         fitted_height.is_some(),
         template_placement,
@@ -1962,8 +1961,7 @@ fn fitted_template_client(client: (u32, u32), frame: (u32, u32), work: &WorkArea
     )
 }
 fn finish_placement(
-    (x, y, scale): (f64, f64, f64),
-    (client_width, client_height): (f64, f64),
+    ((x, y, scale), (client_width, client_height)): ((f64, f64, f64), (f64, f64)),
     work: &WorkArea,
     fit_to_work_area: bool,
     template: Option<TemplatePlacement<'_>>,
@@ -2804,8 +2802,10 @@ mod tests {
             let client = RefCell::new((0, 0));
             let position = RefCell::new((0.0, 0.0));
             finish_placement(
-                (origin.0, origin.1, scale),
-                kind_spec("structureTemplates").unwrap().size,
+                (
+                    (origin.0, origin.1, scale),
+                    kind_spec("structureTemplates").unwrap().size,
+                ),
                 &work,
                 false,
                 Some(TemplatePlacement {
@@ -2865,8 +2865,10 @@ mod tests {
             let moves = RefCell::new(Vec::new());
             let sizes = RefCell::new(Vec::new());
             finish_placement(
-                (-1600.0, 0.0, work.scale),
-                kind_spec("structureTemplates").unwrap().size,
+                (
+                    (-1600.0, 0.0, work.scale),
+                    kind_spec("structureTemplates").unwrap().size,
+                ),
                 &work,
                 false,
                 Some(TemplatePlacement {
@@ -2909,8 +2911,7 @@ mod tests {
             scale: 2.0,
         };
         finish_placement(
-            (3000.0, 1000.0, 2.0),
-            (420.0, 300.0),
+            ((3000.0, 1000.0, 2.0), (420.0, 300.0)),
             &work,
             false,
             None,
@@ -3283,8 +3284,10 @@ mod tests {
             };
             let client = RefCell::new((0u32, 0u32));
             finish_placement(
-                (100.0 * reveal_scale, 100.0 * reveal_scale, reveal_scale),
-                (480.0, measured.logical_height(240.0)),
+                (
+                    (100.0 * reveal_scale, 100.0 * reveal_scale, reveal_scale),
+                    (480.0, measured.logical_height(240.0)),
+                ),
                 &work,
                 true,
                 None,
@@ -3340,8 +3343,7 @@ mod tests {
             };
             let resizes = RefCell::new(Vec::<(u32, u32)>::new());
             finish_placement(
-                (0.0, 25.0 * scale, scale),
-                (480.0, height),
+                ((0.0, 25.0 * scale, scale), (480.0, height)),
                 &work,
                 true,
                 None,
@@ -3395,8 +3397,7 @@ mod tests {
             let client = RefCell::new((0u32, 0u32));
             let position = RefCell::new((0.0, 0.0));
             finish_placement(
-                (100.0 * scale, 900.0 * scale, scale),
-                (480.0, content),
+                ((100.0 * scale, 900.0 * scale, scale), (480.0, content)),
                 &work,
                 true,
                 None,
@@ -3805,8 +3806,7 @@ mod tests {
             scale: 1.5,
         };
         finish_placement(
-            (0.0, 0.0, 1.5),
-            kind_spec("export").unwrap().size,
+            ((0.0, 0.0, 1.5), kind_spec("export").unwrap().size),
             &work,
             false,
             None,
