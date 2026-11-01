@@ -3,6 +3,7 @@ import type { ExportOptions, ExportFrame, ExportPreviewResult } from "./exportOp
 import type { DialogDelivery, DialogTransport } from "./dialogTransport";
 import type { DialogKind, EngineInstallSnapshot, EngineInstallAction, ToolInstallSnapshot, ToolInstallAction } from "./dialogProtocol";
 import { perfHook, perfProbe, sendPerfCompletion } from "../perf/runtime";
+import type { StructureTemplatesSnapshot } from "./dialogProtocol";
 
 export interface EngineInstallPresenter {
   action(action: EngineInstallAction): void | Promise<void>;
@@ -39,6 +40,7 @@ export class DialogCoordinator {
   private stopped = false;
   constructor(private transport: DialogTransport, private owner: {
     applyPageSize(tabId: string, size: PageSize): void | Promise<void>;
+    insertTemplate?(tabId: string, templateId: string): void | Promise<void>;
     applyArrangementSpacing?(tabId: string, percent: number): void | Promise<void>;
     previewArrangementSpacing?(tabId: string, percent: number): string | Promise<string>;
     onSpacingSettled?(tabId: string): void;
@@ -90,6 +92,9 @@ export class DialogCoordinator {
   async openPageSize(tabId: string, data: PageSize & { title: string }): Promise<void> {
     return this.open(tabId, "pageSize", data);
   }
+  async openStructureTemplates(tabId: string, data: StructureTemplatesSnapshot): Promise<void> {
+    return this.open(tabId, "structureTemplates", data);
+  }
   async openArrangementSpacing(tabId: string, data: SpacingSnapshot): Promise<void> {
     return this.open(tabId, "arrangementSpacing", data);
   }
@@ -134,7 +139,7 @@ export class DialogCoordinator {
     if (existing) {
       // Reuse the retained snapshot and native window, preserving its local draft and position.
       const receipt = existing.terminalRequestId ? existing.receipts.get(existing.terminalRequestId) : undefined;
-      if (existing.registration && ((kind === "engineInstall" || kind === "toolInstall") || !existing.terminalRequestId || receipt?.type === "result" && receipt.data.status === "exported")) {
+      if (existing.registration && ((kind === "engineInstall" || kind === "toolInstall" || kind === "structureTemplates") || !existing.terminalRequestId || receipt?.type === "result" && receipt.data.status === "exported")) {
         if (perfProbe) perfHook(() => perfProbe?.expectCompletion("dialog-open", existing.snapshot.sessionId));
         await this.transport.open(existing.snapshot);
         if (perfProbe) perfHook(() => sendPerfCompletion(existing.registration!.windowLabel, existing.snapshot.sessionId, "dialog-open"));
@@ -144,7 +149,7 @@ export class DialogCoordinator {
     const snapshot: Session["snapshot"] = { protocolVersion: 1, ownerWindowId: "main", documentTabId: tabId,
       dialogKind: kind, sessionId: crypto.randomUUID(), requestId: crypto.randomUUID(), snapshotRevision: 1, type: "snapshot", data } as Session["snapshot"];
     if (perfProbe) perfHook(() => perfProbe?.expectCompletion("dialog-open", snapshot.sessionId));
-    const title = kind === "engineInstall" ? "Engine installation" : kind === "toolInstall" ? "Tool installation" : kind === "export" ? "Export" : kind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size";
+    const title = kind === "structureTemplates" ? "Templates" : kind === "engineInstall" ? "Engine installation" : kind === "toolInstall" ? "Tool installation" : kind === "export" ? "Export" : kind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size";
     if (!parseDialogMessage(snapshot)) throw new Error(`Invalid ${title} snapshot`);
     const session: Session = { snapshot, engineInstall, toolInstall, receipts: new Map(), inFlight: new Map(), settled: false, ready: false,
       timer: setTimeout(() => { this.owner.onError(`${title} did not become ready. Open it again to try again.`); void this.settle(session, "error"); }, this.options.readyTimeoutMs ?? 10000) };
@@ -177,7 +182,7 @@ export class DialogCoordinator {
     const message = validateDialogDelivery(parsed, delivery.senderWindowId, session.snapshot, label);
     if (!message) return;
     if (message.type === "closed") {
-      if (message.data.reason === "error") this.owner.onError(`${parsed.dialogKind === "engineInstall" ? "Engine installation" : parsed.dialogKind === "toolInstall" ? "Tool installation" : parsed.dialogKind === "export" ? "Export" : parsed.dialogKind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size"} could not show its native window. Open it again to try again.`);
+      if (message.data.reason === "error") this.owner.onError(`${parsed.dialogKind === "structureTemplates" ? "Templates" : parsed.dialogKind === "engineInstall" ? "Engine installation" : parsed.dialogKind === "toolInstall" ? "Tool installation" : parsed.dialogKind === "export" ? "Export" : parsed.dialogKind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size"} could not show its native window. Open it again to try again.`);
       await this.settle(session, message.data.reason, false); return;
     }
     if (message.type === "ready") {
@@ -218,6 +223,28 @@ export class DialogCoordinator {
     }
     // Cancellation invalidates owner work immediately, even while a receipt is pending.
     if (message.data.action === "cancel") { await this.settle(session, "cancel"); return; }
+    if (session.snapshot.dialogKind === "structureTemplates") {
+      if (message.data.action !== "insert" || !session.snapshot.data.templateIds.includes(message.data.templateId)) return;
+      const previous = session.receipts.get(message.requestId);
+      if (previous) { await session.inFlight.get(message.requestId); if (!session.settled) await this.transport.publish(session.registration.hostId, previous); return; }
+      if (session.terminalRequestId) return;
+      session.terminalRequestId = message.requestId;
+      const receipt: DialogMessage = { ...dialogEnvelope(message), type: "result", data: { status: "inserted" } };
+      session.receipts.set(message.requestId, receipt);
+      let finish!: () => void;
+      session.inFlight.set(message.requestId, new Promise<void>(resolve => { finish = resolve; }));
+      try {
+        await this.transport.publish(session.registration.hostId, { ...dialogEnvelope(message), type: "result", data: { status: "accepted" } });
+        if (session.settled) return;
+        if (!this.owner.insertTemplate) throw new Error("Template insertion is unavailable.");
+        await this.owner.insertTemplate(message.documentTabId, message.data.templateId);
+      } catch (error) { receipt.data = { status: "error", error: String(error).slice(0, 2048) }; }
+      finally { finish(); session.inFlight.delete(message.requestId); }
+      // The host can act on the completed receipt before publish's IPC promise returns.
+      session.terminalRequestId = undefined;
+      if (!session.settled) await this.transport.publish(session.registration.hostId, receipt);
+      return;
+    }
     if (message.data.action === "preview" && "options" in message.data) {
       if (session.terminalRequestId || !this.owner.previewExport) return;
       session.previewRequestId = message.requestId;

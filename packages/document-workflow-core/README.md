@@ -16,7 +16,7 @@ desktop importers did not change.
 |---|---|
 | `drawingDefaults.ts` | Field-by-field document drawing/text defaults for newly inserted objects, falling back to the hand-drawing preset |
 | `molecule.ts` | SMILES/molfile depiction → native molecule, target bond length, double-bond sides |
-| `documentStyle.ts` | Scale the whole first page uniformly using layout-engine geometry, including pixel style overrides; preserve colours and appearance toggles and apply fixed molecule size keys |
+| `documentStyle.ts` | Scale first-page layout using layout-engine geometry, including pixel style overrides; keep picture dimensions physical, preserve colours and appearance toggles and apply fixed molecule size keys |
 | `documentInventory.ts` | Native atom/bond ids and page geometry, with rings from layout-engine |
 | `textObjects.ts` | Text object sizing, creation, insertion |
 | `reactionArrows.ts` | Reaction arrow creation and insertion |
@@ -28,6 +28,7 @@ desktop importers did not change.
 | `labelOnBondedAtom.ts` | Commit-time relabel/substituent decision using the original atom, shared label readings and valence admission |
 | `smiles.ts` | The native SMILES writer; aromatic bonds are kekulized by layout-engine's `nativeBondOrderResolution` |
 | `moleculeSmiles.ts` | Export-time SMILES: RDKit when the caller supplies it, native writer otherwise |
+| `structureTemplates.ts` | Exact normalized name lookup, injected canonical isomeric identity lookup, and authored template layout → native molecule at document bond length |
 | `graph.ts` | Graph walks over native atoms and bonds, including the longest path the SMILES writer and 2D cleanup lay a component along |
 | `shared.ts` | Ids, page access, numeric helpers |
 | `testing.ts` | Test-only hooks, served as `@chemdraft/document-workflow-core/testing` and kept out of the barrel: the longest-path work counter |
@@ -68,7 +69,8 @@ imports from `apps/` again.
 (objects, atoms, arrows/control points, graphics, captions and page size) to 22 native units per
 bond. If molecule medians differ by more than 2%, it uses their median and emits a warning naming
 that value, preserving relative geometry rather than normalizing molecules separately. Later pages
-remain unchanged. Arrows and graphics without authored strokes use the fixed document line width
+remain unchanged. Picture centres follow the page scaling, but their width and height remain at
+their physical size (96 page units per inch). Arrows and graphics without authored strokes use the fixed document line width
 (1.134 pt); authored graphic strokes scale with the page, and image styles remain unchanged.
 Text defaults to Arial, Helvetica, sans-serif at 10 pt. Explicit object/span font sizes scale with
 the page. Only whole-molecule size/geometry style keys are replaced; other styling is preserved.
@@ -126,3 +128,18 @@ arrows use their outer shafts.
 without changing existing objects. New native and SMILES molecules share its geometry and style;
 captions default to the atom-label font (15 px Arial). Explicit sizing callers such as the CLI can
 override `createSmilesMolecule`/`insertSmilesMolecule` options without changing canvas defaults.
+
+`resolveStructureTemplateName` accepts only exact normalized names or synonyms (no fuzzy matching).
+`structureTemplateForSmiles(smiles, canonicalize)` takes the same async canonical-isomeric-SMILES
+contract as `StructureNameDeps.canonicalize`; it caches template identities per function and retains
+stereo and charge distinctions. The caller owns engine loading.
+
+`structureTemplateMolecule(template, { document, centre, style?, reservedObjectIds? })` builds through
+the shared depiction path, using authored coordinates without depiction or cleanup. It flips y,
+preserves directed wedges/hashes and charges, and scales the **mean** bond length to the target
+drawing style. Style and size default to `documentDrawingDefaults(document)`, matching new native
+and SMILES molecules in that document; explicit `style` fields override those defaults, including
+bond length. The requested atom-bounds centre is retained,
+including near page edges. The function returns a molecule without mutating the document or template;
+callers insert it through their normal patch/undo path. Provenance uses existing style/source and
+compatibility metadata.

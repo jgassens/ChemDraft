@@ -107,6 +107,9 @@ importers:
       '@chemdraft/style-compat':
         specifier: workspace:*
         version: link:../../packages/style-compat
+      '@chemdraft/template-library':
+        specifier: workspace:*
+        version: link:../../packages/template-library
       '@chemdraft/toolset-registry':
         specifier: workspace:*
         version: link:../../packages/toolset-registry

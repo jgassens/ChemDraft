@@ -3,6 +3,21 @@ import type { PastedStructureDepiction } from "./documentWorkflow";
 import { depictSmilesOffThread } from "./depiction2d/client";
 import type { DepictionRequestOptions } from "@chemdraft/rdkit-adapter";
 import { SmilesIdentityEngineUnavailableError, SmilesPasteIdentityError } from "./smilesPasteIdentity";
+import { createEmptyDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { pastedStructureDepictionFromMolfile, type StructureTemplateMoleculeOptions } from "@chemdraft/document-workflow-core";
+import { templateMoleculeForSmiles } from "./structureTemplateInsertion";
+
+type TemplatePastePlacement = Pick<StructureTemplateMoleculeOptions, "document" | "centre" | "reservedObjectIds">;
+
+export interface SmilesListPasteOptions {
+  signal?: AbortSignal;
+  inspectInput?: (smiles: string, signal?: AbortSignal) => Promise<void>;
+  templatePlacement?: TemplatePastePlacement;
+}
+
+/** A valid input with no drawable atoms is an item failure, not a worker failure. */
+class EmptySmilesDepictionError extends Error {}
+const EMPTY_DEPICTION_MESSAGE = "The 2D depiction engine returned no atoms.";
 
 export function unspecifiedDoubleBondNotice(count: number): string {
   return `E/Z was not specified for ${count} double bond(s) in the pasted structure. Confirm the geometry.`;
@@ -11,11 +26,27 @@ export function unspecifiedDoubleBondNotice(count: number): string {
 /** Only unparseable text returns undefined; engine failures and chemistry refusals throw. */
 export async function depictSmilesForPaste(
   smiles: string,
-  options: DepictionRequestOptions = {}
-): Promise<{ depiction: PastedStructureDepiction; stereoCount: number; warnings?: string[] } | undefined> {
+  options: DepictionRequestOptions = {},
+  templatePlacement?: TemplatePastePlacement
+): Promise<{ depiction: PastedStructureDepiction; stereoCount: number; warnings?: string[]; molecule?: MoleculeObject } | undefined> {
+  if (smiles.trim().length === 0) return undefined;
   try {
+    // A known host must not depend on a generic coordinate generator succeeding first.
+    // Build once at document default size; insertion reuses this molecule (the grid only translates it).
+    const molecule = await templateMoleculeForSmiles(smiles,
+      templatePlacement?.document ?? createEmptyDocument(),
+      templatePlacement?.centre ?? { x: 0, y: 0 },
+      templatePlacement?.reservedObjectIds);
+    options.signal?.throwIfAborted();
+    if (molecule) {
+      templatePlacement?.reservedObjectIds?.add(molecule.id);
+      const { perceiveStereoCentersFromMolfile } = await import("@chemdraft/ocl-adapter");
+      return { molecule, depiction: pastedStructureDepictionFromMolfile(molecule.structure),
+        stereoCount: perceiveStereoCentersFromMolfile(molecule.structure)
+        .filter(centre => centre.isStereoCenter && centre.descriptor !== "unspecified").length };
+    }
     const result = await depictSmilesOffThread(smiles, { priority: "interactive", ...options });
-    if (!result.depiction.atoms.length) return undefined;
+    if (result.depiction.atoms.length === 0) throw new EmptySmilesDepictionError(EMPTY_DEPICTION_MESSAGE);
     const count = result.depiction.bonds.filter(bond => bond.stereo === "either").length;
     return count ? { ...result, warnings: [...(result.warnings ?? []), unspecifiedDoubleBondNotice(count)] } : result;
   } catch (error) {
@@ -30,9 +61,10 @@ function isSmilesChemistryRefusal(error: unknown): error is Error {
 }
 
 export interface SmilesListPasteResult {
-  entries: { smiles: string; depiction: PastedStructureDepiction }[];
+  entries: { smiles: string; depiction: PastedStructureDepiction; molecule?: MoleculeObject }[];
   skipped: number;
-  /** Per-item chemistry failures, including the input and the adapter's specific reason. */
+  skippedItems: { line: number; token: string; reason: string }[];
+  /** Per-item chemistry or empty-depiction failures, including the input and specific reason. */
   failures: SmilesListPasteFailure[];
   warnings?: string[];
 }
@@ -62,24 +94,25 @@ export function depictSmilesListForPaste(
   text: string,
   candidates: readonly SmilesListCandidate[],
   onProgress?: (completed: number, total: number) => void,
-  signal?: AbortSignal,
-  inspectInput?: (smiles: string, signal?: AbortSignal) => Promise<void>
+  options: SmilesListPasteOptions = {}
 ): Promise<SmilesListPasteResult | undefined> | undefined {
   // No promise or engine load for prose: the caller can insert its text synchronously.
   if (candidates.length < 2) return undefined;
-  return depictSmilesListCandidates(text, candidates, onProgress, signal, inspectInput);
+  return depictSmilesListCandidates(text, candidates, onProgress, options);
 }
 
 async function depictSmilesListCandidates(
   text: string,
   candidates: readonly SmilesListCandidate[],
   onProgress?: (completed: number, total: number) => void,
-  signal?: AbortSignal,
-  inspectInput?: (smiles: string, signal?: AbortSignal) => Promise<void>
+  { signal, inspectInput, templatePlacement = { document: createEmptyDocument(), centre: { x: 0, y: 0 } } }: SmilesListPasteOptions = {}
 ): Promise<SmilesListPasteResult | undefined> {
-  const entries: { smiles: string; depiction: PastedStructureDepiction }[] = [];
+  const entries: SmilesListPasteResult["entries"] = [];
   const failures: SmilesListPasteResult["failures"] = [];
   const warnings: string[] = [];
+  const handledTokens = new Set<string>();
+  const identityRefusalReasons = new Map<string, string>();
+  const placement = { ...templatePlacement, reservedObjectIds: templatePlacement.reservedObjectIds ?? new Set<string>() };
   const tokens = smilesListTokens(text);
   const firstTokenColumns = new Map<number, number>();
   for (const token of tokens) {
@@ -95,17 +128,26 @@ async function depictSmilesListCandidates(
     try {
       await inspectInput?.(candidate.token, signal);
       signal?.throwIfAborted();
-      parsed = await depictSmilesForPaste(candidate.token, { signal, priority: "background" });
+      parsed = await depictSmilesForPaste(candidate.token, { signal, priority: "background" }, placement);
     } catch (error) {
       if (error instanceof SmilesPasteIdentityError ||
         error instanceof SmilesIdentityEngineUnavailableError) {
         identityRefused = true;
         identityRefusals += 1;
-      } else if (!isSmilesChemistryRefusal(error)) throw error;
+        // The status renderer already names the token; retain the refusal's detail without
+        // repeating the whole input (which can be a large host molecule).
+        const prefix = `SMILES paste refused: chemical identity could not be verified for "${candidate.token}": `;
+        const detail = (error.message.startsWith(prefix) ? error.message.slice(prefix.length)
+          : error.message.replace(/^SMILES paste refused:\s*/, "")).replace(/\s+/g, " ").trim();
+        identityRefusalReasons.set(`${candidate.line}:${candidate.column}`,
+          detail.length > 160 ? `${detail.slice(0, 159)}…` : detail);
+      } else if (!isSmilesChemistryRefusal(error) && !(error instanceof EmptySmilesDepictionError)) throw error;
       failures.push({ input: candidate.token, error: error.message });
+      handledTokens.add(`${candidate.line}:${candidate.column}`);
     }
     if (parsed) {
-      entries.push({ smiles: candidate.token, depiction: parsed.depiction });
+      handledTokens.add(`${candidate.line}:${candidate.column}`);
+      entries.push({ smiles: candidate.token, depiction: parsed.depiction, ...(parsed.molecule ? { molecule: parsed.molecule } : {}) });
       const count = parsed.depiction.bonds.filter(bond => bond.stereo === "either").length;
       openDoubleBonds += count;
       warnings.push(...(parsed.warnings ?? []).filter(warning => warning !== unspecifiedDoubleBondNotice(count))
@@ -126,7 +168,11 @@ async function depictSmilesListCandidates(
     candidates: tokens.length, parsed: entries.length + identityRefusals, lineCount, parsedFirstTokenLines
   })) {
     if (openDoubleBonds) warnings.push(unspecifiedDoubleBondNotice(openDoubleBonds));
-    return { entries, skipped: tokens.length - entries.length - failures.length, failures, ...(warnings.length ? { warnings } : {}) };
+    const skippedItems = tokens.filter(token => !handledTokens.has(`${token.line}:${token.column}`)
+      || identityRefusalReasons.has(`${token.line}:${token.column}`))
+      .map(({ line, column, token }) => ({ line, token,
+        reason: identityRefusalReasons.get(`${line}:${column}`) ?? "not valid SMILES" }));
+    return { entries, skipped: skippedItems.length, skippedItems, failures, ...(warnings.length ? { warnings } : {}) };
   }
   // Even a list with too few valid entries must retain the reasons it was refused.
   if (failures.length > identityRefusals) throw new SmilesListPasteError(failures);

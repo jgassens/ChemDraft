@@ -61,7 +61,7 @@ describe("isotope insert paths", () => {
     const smiles = ["CC=CC", "CC=CC/C=C/C"];
     const text = smiles.join("\n");
     const parsed = (await depictSmilesListForPaste(text, smilesListCandidates(text),
-      undefined, undefined, verifySmilesPasteInput))!;
+      undefined, { inspectInput: verifySmilesPasteInput }))!;
     const document = createEmptyDocument();
     const inspector = vi.fn(inspect);
     // Match MainWindow's list path, including per-entry verification before grid placement.
@@ -255,12 +255,13 @@ describe("isotope insert paths", () => {
       expect(depict).not.toHaveBeenCalled();
       const text = `${smiles}\nCCO`;
       const parsed = await depictSmilesListForPaste(text, smilesListCandidates(text),
-        undefined, undefined, verifySmilesPasteInput);
+        undefined, { inspectInput: verifySmilesPasteInput });
       expect(parsed?.entries.map(entry => entry.smiles)).toEqual(["CCO"]);
       expect(parsed?.failures).toEqual([
         { input: smiles, error: expect.stringContaining("square-planar stereochemistry") }
       ]);
-      expect(parsed?.skipped).toBe(0);
+      // Identity-refused items are included in skippedItems and therefore count as skipped.
+      expect(parsed?.skipped).toBe(1);
       expect(depict.mock.calls.map(([input]) => input)).toEqual(["CCO"]);
       const result = await checkedSmilesGridPaste(createEmptyDocument(), point, parsed!.entries);
       expect(result.objectIds).toHaveLength(1);

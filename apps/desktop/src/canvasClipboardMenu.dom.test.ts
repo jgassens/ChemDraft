@@ -17,6 +17,8 @@ import type { MoleculeObject } from "@chemdraft/chem-core";
 import { installDomRdkitLoader } from "./testSupport/rdkitIdentity";
 import { inspectStructureOffThread } from "./depiction2d/identityClient";
 
+// These cases exercise generic depiction; template identity/layout has its own real-engine tests.
+vi.mock("./structureTemplateInsertion", () => ({ templateMoleculeForSmiles: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("./smilesListPaste", async (importOriginal) => ({
   ...await importOriginal<typeof import("./smilesListPaste")>(),
   depictSmilesForPaste: vi.fn()
@@ -163,7 +165,8 @@ describe("canvas clipboard menu and copy guard", () => {
       await act(async () => { await Promise.resolve(); });
       expect(container.querySelector('[role="status"]')?.textContent).toContain("Pasted SMILES structure");
     }, { timeout: 15_000 });
-    expect(depictSmilesForPaste).toHaveBeenCalledExactlyOnceWith("CCO");
+    expect(depictSmilesForPaste).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(depictSmilesForPaste).mock.calls[0]![0]).toBe("CCO"); // Later arguments carry the template placement.
     expect(container.querySelector('[role="status"]')?.textContent).toContain("Pasted SMILES structure");
     expect(container.querySelectorAll(".text-object")).toHaveLength(0);
     expect(container.querySelectorAll(".molecule-object")).toHaveLength(1);

@@ -234,7 +234,7 @@ row says so.
 | `art-engine` | Art visual plans: strokes, markers, arrow geometry, boolean ops | Touch molecules, own documents, copy molecule rendering math |
 | `export-engine` | SVG, PDF, CDXML writers with warnings | Report a format done that `isExportFormatImplemented` denies; diverge from the canvas |
 | `shortcut-engine`, `toolset-registry` | Shortcut registry and conflicts; toolset schemas, overrides, menu models, command-ID validation | Bind actions only in click handlers; chemistry, permissions, windows |
-| `template-library`, `style-compat` | Original templates and abbreviations; `.cds` style import into native presets | Copy proprietary templates; parse `.cds` in UI; commit user `.cds` files; claim a partial import worked |
+| `template-library`, `style-compat` | Original templates and abbreviations; `.cds` style import into native presets | Copy proprietary templates (studying them for conventions is fine, §12); parse `.cds` in UI; commit user `.cds` files; claim a partial import worked |
 | `viewport-engine` | Coordinate, zoom, pan, ruler math | Document mutation, rendering |
 | `chemistry-adapter`, `ocl-adapter` | Engine-neutral contract (incl. 3D conformers); OpenChemLib depiction, stereo, conformers | Concrete engines in the contract; collapse an unrepresentable bond order (report `aromatic`/`unknown`) |
 | `rdkit-adapter` | Real RDKit analysis and ETKDGv3 conformers on the vendored custom MinimalLib WASM (`vendor/BUILD.md`) | Load at startup unless required (§13); vendor another RDKit build without its own decision |
@@ -327,8 +327,11 @@ state. Preserve unknown objects, or warn. CDXML comes before broad CDX writing.
 ## 12. UI
 
 Familiar to chemists, original in every asset: never copy proprietary icons, templates, dialog art,
-help or menu text, sample files, command IDs, or trade dress. Menu and dense icon toolbar on top, a
-dominant page workspace, icon-first palettes owned by the document window, panels hidden until needed.
+help or menu text, sample files, command IDs, or trade dress. Studying any reference depiction,
+including another program's templates, for conventions and geometry and then drawing our own with our
+own code is allowed (owner, 2026-10-28); copying template files, coordinates, icons or art is not.
+Menu and dense icon toolbar on top, a dominant page workspace, icon-first palettes owned by the
+document window, panels hidden until needed.
 Never show fake chemistry: workspace objects are real `chem-core` objects or an honest disabled state.
 
 **Tools and dialogs float (owner rule, 2026-10-14).** Every tool palette, panel and dialog is its own native window

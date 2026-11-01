@@ -2,19 +2,23 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import * as ocl from "@chemdraft/ocl-adapter";
 import { generateSmiles2DMolfile } from "@chemdraft/rdkit-adapter";
 import { smilesListCandidates } from "@chemdraft/clipboard-adapter";
-import { SmilesListPasteError, depictSmilesForPaste, depictSmilesListForPaste } from "./smilesListPaste";
+import { SmilesListPasteError, depictSmilesForPaste, depictSmilesListForPaste, unspecifiedDoubleBondNotice } from "./smilesListPaste";
 import { depictInWorker } from "./depiction2d/depict";
 import { depictSmilesOffThread } from "./depiction2d/client";
 import { registerRdkitWasmLoader } from "./rdkitWasmLoader";
-import { applyClipboardPastePayload, createPhase4Document } from "./documentWorkflow";
-import { SmilesPasteIdentityError } from "./smilesPasteIdentity";
+import { applyClipboardPastePayload, createPhase4Document, insertSmilesMoleculeGrid, insertSmilesMoleculeGridStatus } from "./documentWorkflow";
+import { SmilesPasteIdentityError, SmilesIdentityEngineUnavailableError } from "./smilesPasteIdentity";
+import { templateMoleculeForSmiles } from "./structureTemplateInsertion";
 
+// These cases exercise generic depiction; template identity/layout has its own real-engine tests.
+vi.mock("./structureTemplateInsertion", () => ({ templateMoleculeForSmiles: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("./depiction2d/client", () => ({ depictSmilesOffThread: vi.fn() }));
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("@chemdraft/rdkit-adapter", () => ({ generateSmiles2DMolfile: vi.fn() }));
 
 beforeAll(async () => { await ocl.ensureOclResources(); });
 beforeEach(() => {
+  vi.mocked(templateMoleculeForSmiles).mockReset().mockResolvedValue(undefined);
   vi.mocked(generateSmiles2DMolfile).mockReset().mockRejectedValue(new Error("WASM unavailable"));
   vi.mocked(registerRdkitWasmLoader).mockClear();
   vi.mocked(depictSmilesOffThread).mockReset().mockImplementation((smiles) => depictInWorker(smiles, (input, options) => {
@@ -31,6 +35,8 @@ describe("depictSmilesForPaste", () => {
     vi.mocked(generateSmiles2DMolfile).mockResolvedValue(generated.molfile);
     const fallback = vi.spyOn(ocl, "depictSmiles2D");
     const result = await depictSmilesForPaste(smiles);
+    expect(depictSmilesOffThread).toHaveBeenCalledExactlyOnceWith(smiles, { priority: "interactive" });
+    expect(result?.molecule).toBeUndefined();
     expect(registerRdkitWasmLoader).toHaveBeenCalledOnce();
     expect(generateSmiles2DMolfile).toHaveBeenCalledWith(smiles, expect.objectContaining({ onStandardMolfile: expect.any(Function) }));
     expect(fallback).not.toHaveBeenCalled();
@@ -77,6 +83,12 @@ describe("depictSmilesForPaste", () => {
     expect(await depictSmilesForPaste("")).toBeUndefined();
   });
 
+  it("returns undefined for whitespace-only input without invoking the depiction worker", async () => {
+    expect(await depictSmilesForPaste("")).toBeUndefined();
+    expect(await depictSmilesForPaste("   ")).toBeUndefined();
+    expect(depictSmilesOffThread).not.toHaveBeenCalled();
+  });
+
   it("propagates a specific worker failure instead of returning a text-paste fallback", async () => {
     vi.mocked(depictSmilesOffThread).mockRejectedValueOnce(new Error("2D depiction worker exited (1)."));
     await expect(depictSmilesForPaste("CCO")).rejects.toThrow("2D depiction worker exited (1).");
@@ -91,6 +103,88 @@ describe("depictSmilesForPaste", () => {
 });
 
 describe("depictSmilesListForPaste", () => {
+  it("inspects each input before template lookup and forwards placement and cancellation together", async () => {
+    const document = createPhase4Document("Template placement");
+    const centre = { x: 150, y: 180 };
+    const reservedObjectIds = new Set<string>(["reserved"]);
+    const controller = new AbortController();
+    const order: string[] = [];
+    const inspectInput = vi.fn(async (smiles: string, signal?: AbortSignal) => {
+      expect(signal).toBe(controller.signal);
+      order.push(`inspect:${smiles}`);
+    });
+    vi.mocked(templateMoleculeForSmiles).mockImplementation(async smiles => {
+      order.push(`template:${smiles}`);
+      return undefined;
+    });
+    const text = "CCO\nCCN";
+    const result = await depictSmilesListForPaste(text, smilesListCandidates(text), undefined, {
+      signal: controller.signal, inspectInput, templatePlacement: { document, centre, reservedObjectIds }
+    });
+    expect(result?.entries).toHaveLength(2);
+    expect(order).toEqual(["inspect:CCO", "template:CCO", "inspect:CCN", "template:CCN"]);
+    expect(templateMoleculeForSmiles).toHaveBeenNthCalledWith(1, "CCO", document, centre, reservedObjectIds);
+    expect(templateMoleculeForSmiles).toHaveBeenNthCalledWith(2, "CCN", document, centre, reservedObjectIds);
+  });
+
+  it("checks cancellation after input inspection and before template lookup", async () => {
+    const controller = new AbortController();
+    const text = "CCO\nCCN";
+    await expect(depictSmilesListForPaste(text, smilesListCandidates(text), undefined, {
+      signal: controller.signal, inspectInput: async () => { controller.abort(); }
+    })).rejects.toMatchObject({ name: "AbortError" });
+    expect(templateMoleculeForSmiles).not.toHaveBeenCalled();
+    expect(depictSmilesOffThread).not.toHaveBeenCalled();
+  });
+
+  it("records an empty depiction as an item failure and continues the list", async () => {
+    vi.mocked(depictSmilesOffThread).mockResolvedValueOnce({ depiction: { atoms: [], bonds: [] }, stereoCount: 0 });
+    const text = "CCO\nCCN\nCCC";
+    const result = await depictSmilesListForPaste(text, smilesListCandidates(text));
+    expect(result?.entries.map(entry => entry.smiles)).toEqual(["CCN", "CCC"]);
+    expect(result?.failures).toEqual([{ input: "CCO", error: "The 2D depiction engine returned no atoms." }]);
+    expect(result?.skipped).toBe(0);
+    expect(result?.skippedItems).toEqual([]);
+  });
+
+  it("keeps identity-engine refusals in the per-line report with their own reason", async () => {
+    const text = "CCO\nCCN";
+    const result = await depictSmilesListForPaste(text, smilesListCandidates(text), undefined, {
+      inspectInput: async smiles => {
+        if (smiles === "CCO") throw new SmilesIdentityEngineUnavailableError("test WASM unavailable");
+      }
+    });
+    expect(result?.entries.map(entry => entry.smiles)).toEqual(["CCN"]);
+    expect(result?.skippedItems).toEqual([{ line: 1, token: "CCO",
+      reason: "the structure could not be verified because the RDKit engine did not load: test WASM unavailable" }]);
+    expect(result?.skipped).toBe(result?.skippedItems.length);
+  });
+
+  it.each([
+    [["C1CC("], "; skipped line 2: 'C1CC(' (not valid SMILES)"],
+    [["C1CC(", "C2CC(", "C3CC("], "; skipped line 2: 'C1CC(' (not valid SMILES); skipped line 3: 'C2CC(' (not valid SMILES); skipped line 4: 'C3CC(' (not valid SMILES)"],
+    [["C1CC(", "C2CC(", "C3CC(", "C4CC(", "C5CC("], "; skipped line 2: 'C1CC(' (not valid SMILES); skipped line 3: 'C2CC(' (not valid SMILES); skipped line 4: 'C3CC(' (not valid SMILES); and 2 more"],
+    [["C".repeat(40) + "1"], `; skipped line 2: '${"C".repeat(23)}…' (not valid SMILES)`]
+  ] as const)("names skipped lines and caps their status: %j", async (badTokens, suffix) => {
+    // Keep enough valid rows to qualify as a list, even when five entries are bad.
+    const text = ["CCO", ...badTokens, "CCN", "CCC", "CCCC", "CCCCC"].join("\r\n");
+    const parsed = await depictSmilesListForPaste(text, smilesListCandidates(text));
+    expect(parsed?.skipped).toBe(badTokens.length);
+    expect(parsed?.skippedItems).toEqual(badTokens.map((token, index) => ({ line: index + 2, token, reason: "not valid SMILES" })));
+    const grid = insertSmilesMoleculeGrid(createPhase4Document("Skipped lines"), { x: 100, y: 100 }, parsed!.entries);
+    const base = insertSmilesMoleculeGridStatus(grid, 0);
+    expect(insertSmilesMoleculeGridStatus(grid, parsed!.skipped, parsed!.skippedItems)).toBe(base + suffix);
+  });
+
+  it("keeps original line numbers and identifies tokens rejected before parsing", async () => {
+    const text = "CCO aspirin\n\nCCN caffeine";
+    const result = await depictSmilesListForPaste(text, smilesListCandidates(text));
+    expect(result?.skippedItems).toEqual([
+      { line: 1, token: "aspirin", reason: "not valid SMILES" },
+      { line: 3, token: "caffeine", reason: "not valid SMILES" }
+    ]);
+  });
+
   const refuseStereo = async (smiles: string) => {
     if (smiles.includes("@SP")) throw new SmilesPasteIdentityError(smiles, "unsupported stereo");
   };
@@ -100,16 +194,22 @@ describe("depictSmilesListForPaste", () => {
     "Add the CO and CS to N[Pt@SP1](N)(Cl)Cl in DMSO then stir it for an hour at room temperature"
   ])("declines prose containing a refused stereo token: %s", async text => {
     expect(await depictSmilesListForPaste(text, smilesListCandidates(text),
-      undefined, undefined, refuseStereo)).toBeUndefined();
+      undefined, { inspectInput: refuseStereo })).toBeUndefined();
   });
 
   it("recognises a two-line list of refused stereo entries", async () => {
     const text = "N[Pt@SP1](N)(Cl)Cl\nN[Pt@SP2](N)(Cl)Cl";
     const result = await depictSmilesListForPaste(text, smilesListCandidates(text),
-      undefined, undefined, refuseStereo);
+      undefined, { inspectInput: refuseStereo });
     expect(result?.entries).toEqual([]);
     expect(result?.failures.map(failure => failure.input)).toEqual(text.split("\n"));
-    expect(result?.skipped).toBe(0);
+    expect(result?.skipped).toBe(2);
+    expect(result?.skippedItems).toEqual(text.split("\n").map((token, index) => ({
+      line: index + 1, token, reason: "unsupported stereo"
+    })));
+    const grid = insertSmilesMoleculeGrid(createPhase4Document("Refused stereo"), { x: 100, y: 100 }, result!.entries);
+    expect(insertSmilesMoleculeGridStatus(grid, result!.skipped, result!.skippedItems)).toContain(
+      "; skipped line 1: 'N[Pt@SP1](N)(Cl)Cl' (unsupported stereo)");
     expect(depictSmilesOffThread).not.toHaveBeenCalled();
   });
 
@@ -120,6 +220,26 @@ describe("depictSmilesListForPaste", () => {
     const result = await depictSmilesListForPaste(text, smilesListCandidates(text));
     expect(result?.warnings).toEqual([`CCO: ${warning}`]);
   });
+
+  it("totals unspecified E/Z while keeping identity refusals and invalid lines in skipped items", async () => {
+    const text = "CC=CC\nN[Pt@SP1](N)(Cl)Cl\nC1CC(\nC/C=C/C\nCC=CC";
+    const parsed = await depictSmilesListForPaste(text, smilesListCandidates(text), undefined, { inspectInput: refuseStereo });
+    expect(parsed?.entries.map(entry => entry.smiles)).toEqual(["CC=CC", "C/C=C/C", "CC=CC"]);
+    expect(parsed?.failures).toEqual([{ input: "N[Pt@SP1](N)(Cl)Cl", error: expect.stringContaining("unsupported stereo") }]);
+    expect(parsed?.skipped).toBe(2);
+    expect(parsed?.skippedItems).toEqual([
+      { line: 2, token: "N[Pt@SP1](N)(Cl)Cl", reason: "unsupported stereo" },
+      { line: 3, token: "C1CC(", reason: "not valid SMILES" }
+    ]);
+    expect(parsed?.warnings).toEqual([unspecifiedDoubleBondNotice(2)]);
+    const grid = insertSmilesMoleculeGrid(createPhase4Document(), { x: 100, y: 100 }, parsed!.entries);
+    expect(grid.document.pages[0]!.objects.flatMap(object => object.type === "molecule"
+      ? object.bonds.filter(bond => bond.stereo === "either") : [])).toHaveLength(2);
+    const status = insertSmilesMoleculeGridStatus(grid, parsed!.skipped, parsed!.skippedItems);
+    expect(status).toContain("skipped line 2: 'N[Pt@SP1](N)(Cl)Cl' (unsupported stereo)");
+    expect(status).toContain("skipped line 3: 'C1CC(' (not valid SMILES)");
+  });
+
   it("cancels a long list before submitting later entries", async () => {
     const controller = new AbortController();
     vi.mocked(depictSmilesOffThread).mockImplementationOnce(async () => {
@@ -127,7 +247,7 @@ describe("depictSmilesListForPaste", () => {
       return { depiction: ocl.depictSmiles2D("CCO"), stereoCount: 0 };
     });
     const text = "CCO\nCCN\nCCC\nCCCC";
-    await expect(depictSmilesListForPaste(text, smilesListCandidates(text), undefined, controller.signal))
+    await expect(depictSmilesListForPaste(text, smilesListCandidates(text), undefined, { signal: controller.signal }))
       .rejects.toMatchObject({ name: "AbortError" });
     expect(depictSmilesOffThread).toHaveBeenCalledOnce();
     expect(depictSmilesOffThread).toHaveBeenCalledWith("CCO", { signal: controller.signal, priority: "background" });

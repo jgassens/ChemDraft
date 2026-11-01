@@ -1,5 +1,6 @@
 mod assistant_mcp;
 mod clipboard_formats;
+mod clipboard_images;
 mod dialog_windows;
 mod document_session;
 mod download_diagnosis;
@@ -36,6 +37,7 @@ mod windows_clipboard;
 use clipboard_formats::{
     validate_clipboard_items, ClipboardWriteItem, ClipboardWriteResult, ValidatedClipboardItem,
 };
+use clipboard_images::{ClipboardImageItem, SkippedClipboardImageItem};
 
 use std::{
     collections::HashMap,
@@ -579,6 +581,7 @@ const TOOLSET_LAYOUT_STATE_FILENAME: &str = "toolbar-state.json";
 const TOOLSET_CUSTOMIZATION_STATE_FILENAME: &str = "toolbar-layout-state.json";
 const DOCUMENT_SESSION_FILENAME: &str = "document-session.json";
 const MENU_COMMAND_IDS: &[&str] = &[
+    "template.insertDialog",
     "edit.undo",
     "edit.redo",
     "edit.selectAll",
@@ -788,6 +791,8 @@ struct ClipboardTextItem {
 struct ClipboardReadPayload {
     types: Vec<String>,
     text_items: Vec<ClipboardTextItem>,
+    image_items: Vec<ClipboardImageItem>,
+    skipped_image_items: Vec<SkippedClipboardImageItem>,
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -4850,7 +4855,7 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let text_items = pasteboard
+    let mut text_items = pasteboard
         .types()
         .map(|types| {
             types
@@ -4868,7 +4873,70 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
         })
         .unwrap_or_default();
 
-    Ok(ClipboardReadPayload { types, text_items })
+    let mut image_items = Vec::new();
+    let mut skipped_image_items = Vec::new();
+    // Picture flavors bypass the text reader. SVG text is decoded only from these bounded bytes.
+    for (sources, output_type) in [
+        (&["public.png", "public.tiff"][..], "image/png"),
+        (&["public.svg-image", "image/svg+xml"][..], "image/svg+xml"),
+    ] {
+        for &source in sources {
+            if !types.iter().any(|kind| kind == source) {
+                continue;
+            }
+            let Some(data) = pasteboard.dataForType(&NSString::from_str(source)) else {
+                skipped_image_items.push(SkippedClipboardImageItem::new(
+                    output_type,
+                    0,
+                    format!("Could not read {source} clipboard data"),
+                ));
+                continue;
+            };
+            let byte_length = data.length();
+            let result =
+                clipboard_images::check_image_byte_length(source, byte_length).and_then(|()| {
+                    let bytes = data.to_vec();
+                    match source {
+                        "public.png" => clipboard_images::png_image_item(&bytes),
+                        "public.tiff" => clipboard_images::tiff_image_item(&bytes),
+                        _ => {
+                            if let Some(text) = decode_clipboard_text_bytes(&bytes) {
+                                text_items.push(ClipboardTextItem {
+                                    r#type: source.to_string(),
+                                    text,
+                                });
+                            }
+                            clipboard_images::svg_image_item(&bytes, source)
+                        }
+                    }
+                });
+            match result {
+                Ok(item) => {
+                    if !image_items
+                        .iter()
+                        .any(|item: &ClipboardImageItem| item.r#type == output_type)
+                    {
+                        image_items.push(item);
+                    }
+                    if output_type != "image/svg+xml" {
+                        break;
+                    }
+                }
+                Err(reason) => skipped_image_items.push(SkippedClipboardImageItem::new(
+                    output_type,
+                    byte_length,
+                    reason,
+                )),
+            }
+        }
+    }
+
+    Ok(ClipboardReadPayload {
+        types,
+        text_items,
+        image_items,
+        skipped_image_items,
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -4948,7 +5016,8 @@ fn clipboard_text_for_type(
     pasteboard: &NSPasteboard,
     pasteboard_type: &objc2_app_kit::NSPasteboardType,
 ) -> Option<String> {
-    if is_opaque_clipboard_type(&pasteboard_type.to_string()) {
+    let kind = pasteboard_type.to_string();
+    if is_opaque_clipboard_type(&kind) || clipboard_images::is_image_clipboard_type(&kind) {
         return None;
     }
 
@@ -5126,6 +5195,8 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
     Ok(ClipboardReadPayload {
         types: Vec::new(),
         text_items: Vec::new(),
+        image_items: Vec::new(),
+        skipped_image_items: Vec::new(),
     })
 }
 
@@ -6305,8 +6376,23 @@ fn reinstall_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), Strin
         .map_err(|error| error.to_string())
 }
 
-/// Build the Analyze submenu: the static "Validate Selected Structure" item plus any plugin items
-/// (synced from the webview), separated. Plugin `id`s are `plugin.*` command ids routed by prefix.
+/// Shared Insert menu for the macOS application menu and Windows document-window menu.
+fn build_insert_submenu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Submenu<R>> {
+    Submenu::with_items(
+        app,
+        "Insert",
+        true,
+        &[&MenuItem::with_id(
+            app,
+            "template.insertDialog",
+            "Templates…",
+            true,
+            None::<&str>,
+        )?],
+    )
+}
+
+/// Build the Analyze submenu: core entries followed by plugin command IDs.
 fn build_analyze_submenu<R: Runtime>(
     app: &tauri::AppHandle<R>,
     plugin_items: &[PluginMenuItemInput],
@@ -6391,6 +6477,7 @@ fn create_app_menu_for_toolsets<R: Runtime>(
     let native_app_menu = create_native_app_menu(app)?;
     let page_setup_menu = create_page_setup_menu(app)?;
     let view_menu = create_view_menu(app, entries, view_state)?;
+    let insert_menu = build_insert_submenu(app)?;
     let structure_menu = Submenu::with_items(
         app,
         "Structure",
@@ -6621,6 +6708,7 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                     )?,
                 ],
             )?,
+            &insert_menu,
             &view_menu,
             &structure_menu,
             &analyze_menu,
@@ -8002,6 +8090,33 @@ fn find_menu_item_by_id<R: Runtime>(
 mod tests {
 
     use super::*;
+
+    #[test]
+    fn insert_menu_is_shared_by_both_platforms_and_follows_edit() {
+        assert!(is_routed_menu_command("template.insertDialog"));
+        assert!(!is_routed_menu_command("template.insert.beta-cyclodextrin"));
+        let source = include_str!("lib.rs");
+        let builder = source
+            .split("fn create_app_menu_for_toolsets<R: Runtime>")
+            .nth(1)
+            .unwrap()
+            .split("/// Close Window")
+            .next()
+            .unwrap();
+        assert!(builder.contains("let insert_menu = build_insert_submenu(app)?;"));
+        assert!(builder.find("\"Edit\"").unwrap() < builder.find("&insert_menu,").unwrap());
+        assert!(builder.find("&insert_menu,").unwrap() < builder.find("&view_menu,").unwrap());
+        let helper = source
+            .split("fn build_insert_submenu<R: Runtime>")
+            .nth(1)
+            .unwrap()
+            .split("fn build_analyze_submenu")
+            .next()
+            .unwrap();
+        assert!(helper.contains("\"Insert\""));
+        assert!(helper.contains("\"Templates…\""));
+        assert!(!helper.contains("#[cfg"));
+    }
 
     #[test]
     fn main_window_starts_hidden_so_setup_can_place_it_before_showing() {
@@ -10180,14 +10295,19 @@ mod tests {
             );
         }
         assert!(payload.types.iter().any(|kind| kind == "public.png"));
+        assert_eq!(payload.image_items.len(), 1);
+        assert!(payload.skipped_image_items.is_empty());
+        assert_eq!(payload.image_items[0].bytes_base64, {
+            use base64::{engine::general_purpose::STANDARD, Engine};
+            STANDARD.encode(&png)
+        });
         let pasteboard = NSPasteboard::generalPasteboard();
-        assert_eq!(
-            pasteboard
-                .dataForType(&NSString::from_str("public.png"))
-                .expect("PNG reads back")
-                .to_vec(),
-            png
-        );
+        let data = pasteboard
+            .dataForType(&NSString::from_str("public.png"))
+            .expect("PNG reads back");
+        clipboard_images::check_image_byte_length("public.png", data.length())
+            .expect("PNG fits the clipboard image limit");
+        assert_eq!(data.to_vec(), png);
     }
 
     /// Round-trips the real NSPasteboard, so it stomps the user's clipboard — run explicitly

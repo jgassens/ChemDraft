@@ -5,12 +5,12 @@ import {
   applyPatches,
   type ChemDraftDocument,
   ChemDraftSyntheticStylePreset,
-  type DocumentObject,
   type MoleculeAtom,
   type MoleculeBond,
   type MoleculeObject,
   moleculeToMolfileV2000,
   normalizeAtomIsotope,
+  nativeDrawingStyleFromObjectStyle,
   UnknownBondOrderError,
   type MoleculeTransformState
 } from "@chemdraft/chem-core";
@@ -42,6 +42,8 @@ export const nativeSingleBondDimensions = {
 } as const;
 
 export const nativeBondLengthPx = ChemDraftSyntheticStylePreset.drawing.bondLengthPx;
+
+export const perspectiveTemplateBoldWidthRatio = 0.136;
 
 const nativeMoleculePadding = 8;
 
@@ -133,6 +135,8 @@ export const SMILES_PASTE_SOURCE: SmilesMoleculeSource = {
 export interface SmilesMoleculeOptions {
   bondLengthPx?: number;
   objectStyle?: DocumentDrawingDefaults["objectStyle"];
+  /** Defaults to true for paste; authored templates keep their requested centre. */
+  constrainToPage?: boolean;
   /** Retain perceived, unassigned E/Z from the depiction. Desktop SMILES input enables this. */
   openUnspecifiedDoubleBonds?: boolean;
 }
@@ -156,14 +160,16 @@ export function createSmilesMolecule(
   smilesText: string,
   source: SmilesMoleculeSource = SMILES_PASTE_SOURCE,
   options: SmilesMoleculeOptions = {}
-): DocumentObject {
+): MoleculeObject {
   if (depiction.atoms.length === 0) {
     throw new Error("Cannot build a molecule: no atoms were generated.");
   }
   const page = firstPage(document);
-
   const defaults = documentDrawingDefaults(document);
   const bondLengthPx = options.bondLengthPx ?? defaults.bondLengthPx;
+  if (!Number.isFinite(bondLengthPx) || bondLengthPx <= 0) {
+    throw new Error("Cannot build a molecule: target bond length must be positive and finite.");
+  }
   const pseudoGraph: ParsedMolfileGraph = {
     format: "molfile-v2000",
     atoms: depiction.atoms.map((atom, index) => normalizeAtomIsotope({
@@ -188,7 +194,8 @@ export function createSmilesMolecule(
     pseudoGraph,
     point,
     page,
-    bondLengthPx
+    bondLengthPx,
+    options.constrainToPage
   ).map((atom) => ({
     id: atom.id,
     element: atom.element,
@@ -321,7 +328,14 @@ export function applyMoleculeTargetBondLength(
       const representative = representativeNativeMoleculeBondLength(object);
       const nextStyle = {
         ...object.style,
-        bondLengthPx: targetBondLengthPx
+        bondLengthPx: targetBondLengthPx,
+        // The CLI builds templates at its default length before applying --bond-length.
+        // Follow that final length only for the automatic template width; retain custom widths.
+        ...(object.style.projection === "perspective"
+          && typeof object.style.source === "string" && object.style.source.startsWith("structure-template:")
+          && representative && object.style.bondBoldWidthPx === perspectiveTemplateBoldWidthRatio * representative
+          && object.bonds.some(bond => bond.display?.bondStyle === "bold")
+          ? { bondBoldWidthPx: perspectiveTemplateBoldWidthRatio * targetBondLengthPx } : {})
       };
       const scaled = representative
         ? scaledMoleculeToTargetBondLength(object, targetBondLengthPx, representative, nextStyle)
@@ -341,6 +355,10 @@ export function applyMoleculeTargetBondLength(
 }
 
 function representativeNativeMoleculeBondLength(molecule: MoleculeObject): number | undefined {
+  // Projected distances are foreshortened; their stored length is the nominal scale.
+  if (molecule.style.projection === "perspective") {
+    return nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx;
+  }
   const atomById = new Map(molecule.atoms.map((atom) => [atom.id, atom]));
   const heavyDistances: number[] = [];
   const allDistances: number[] = [];
@@ -469,7 +487,8 @@ export function scaleParsedMolfileAtoms(
   graph: ParsedMolfileGraph,
   point: PagePoint,
   page: ChemDraftDocument["pages"][number],
-  targetBondLengthPx: number = nativeBondLengthPx
+  targetBondLengthPx: number = nativeBondLengthPx,
+  constrainToPage = true
 ): ParsedMolfileGraph["atoms"] {
   const averageBondLength = averageParsedMolfileBondLength(graph);
   const scale = averageBondLength > 0 ? targetBondLengthPx / averageBondLength : targetBondLengthPx / 1.5;
@@ -489,6 +508,7 @@ export function scaleParsedMolfileAtoms(
     x: atom.x + point.x - center.x,
     y: atom.y + point.y - center.y
   }));
+  if (!constrainToPage) return atoms;
   const geometry = moleculeGeometryFromAtoms(atoms);
   const boundedX = clamp(geometry.x, 0, Math.max(0, page.width - geometry.width));
   const boundedY = clamp(geometry.y, 0, Math.max(0, page.height - geometry.height));

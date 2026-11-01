@@ -147,7 +147,12 @@ the user asks for a particular size; do not combine document style with
    stereochemistry and, for reactions, component roles. Preserve salts and
    counterions. A drawing instruction does not authorize changing chemistry.
 2. Then obtain the SMILES, a text encoding of atoms and bonds. If only a
-   chemical name is known, use `name` or `name_to_structure`. OPSIN parses
+   chemical name is known, use `name` or `name_to_structure`. ChemDraft checks its built-in
+   structure templates before OPSIN. For hosts such as beta-cyclodextrin, β-CD,
+   cucurbit[7]uril and 18-crown-6, use the template name rather than writing SMILES.
+   Templates work without Java and supply an original layout at default bond length.
+   Only exact canonical isomeric SMILES matches receive that layout; never remove
+   stereo or charge to force a match. OPSIN parses
    systematic names, not every trivial or trade name. When it fails on a
    common name, look the compound up in PubChem and cite the CID (recipes
    11 and 12 show the lookup), or supply a systematic name and say it came
@@ -186,7 +191,7 @@ SMILES with the drawn structure exactly; a mismatch shows no name. Metals,
 charged zwitterions, and some radicals can be declined with a plain reason.
 
 The CLI and MCP cannot name a structure today: `name` and `name_to_structure`
-only convert a name to a structure through OPSIN. Do not offer a
+only convert a name to a structure using templates before OPSIN. Do not offer a
 structure-to-name result from a headless route, invent or recall one from
 memory, or claim a name that Orthonym declined. Point a user who needs a name
 to the app's Orthonym plugin.
