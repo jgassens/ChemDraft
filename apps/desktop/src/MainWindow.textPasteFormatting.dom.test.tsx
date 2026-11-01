@@ -186,8 +186,9 @@ describe.each(["macos", "windows"] as const)("text paste formatting (%s)", platf
   });
 
   it.each([
-    ["malformed", "<svg><g></svg>", "Couldn't paste the SVG: it isn't a valid SVG document."],
-    ["sanitizer-refused", "<svg><script>alert(1)</script></svg>", "Couldn't paste the SVG: it contains a <script> element that isn't allowed."]
+    ["malformed", "<svg><g></svg>", "Couldn't paste the SVG: it isn't well-formed XML: line 1, column 14: unexpected close tag."],
+    ["sanitizer-refused", '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>', "Couldn't paste the SVG: it contains a <script> element that isn't allowed."],
+    ["missing-namespace", '<svg><path d="M0 0L1 1"/></svg>', "Couldn't paste the SVG: the root must be <svg> in the SVG namespace (http://www.w3.org/2000/svg)."]
   ])("refuses %s SVG text on menu and DOM paste without inserting anything", async (_, svg, expected) => {
     await mount(nativeClipboard(svg));
     await act(async () => {

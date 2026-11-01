@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { JSDOM } from "jsdom";
 import {
   MAX_CLIPBOARD_BYTES,
   guardClipboardPayload,
@@ -16,6 +17,119 @@ import {
   smilesListTokens,
   smilesListDecision
 } from "./index";
+import type { ClipboardReadPayload, ClipboardInspectionOptions } from "./index";
+
+describe("SVG XML well-formedness", () => {
+  const window = new JSDOM("").window;
+  const parser = new window.DOMParser();
+  const namespace = 'xmlns="http://www.w3.org/2000/svg"';
+  const payloads = (text: string): ClipboardReadPayload[] => [
+    ...["text/plain", "public.utf8-plain-text", "image/svg+xml", "public.svg", "public.svg-image"].map(type => ({
+      types: [type], textItems: [{ type, text }]
+    })),
+    { types: ["image/svg+xml"], textItems: [], imageItems: [
+      { type: "image/svg+xml", bytesBase64: Buffer.from(text).toString("base64") }
+    ] }
+  ];
+
+  describe.each(["DOMParser", "headless"] as const)("%s", mode => {
+    const options: ClipboardInspectionOptions = { svgParser: mode === "DOMParser" ? parser : null };
+
+    it.each([
+      [`<svg ${namespace}><g undeclared:x="1"/></svg>`, /undeclared|unbound/i],
+      [`<svg ${namespace}><undeclared:g/></svg>`, /undeclared|unbound/i],
+      [`<svg ${namespace}>\n<!-- a -- b --></svg>`, /comment/i],
+      [`<svg ${namespace}>\n<!-- a ---></svg>`, /comment/i],
+      [`<!-- a -- b --><svg ${namespace}/>`, /comment/i],
+      [`<svg ${namespace}/><!-- a --->`, /comment/i],
+      [`<svg ${namespace} width="1" width="2"/>`, /duplicate attribute/i],
+      [`<svg ${namespace}><g></svg>`, /closing tag|close tag/i],
+      [`<svg ${namespace}><g xmlns:p="http://www.w3.org/1999/xlink"/><g p:x="1"/></svg>`, /undeclared|unbound/i],
+      [`<svg ${namespace} xmlns:p="http://www.w3.org/1999/xlink" xmlns:q="http://www.w3.org/1999/xlink" p:href="#a" q:href="#b"/>`, /duplicate attribute/i]
+    ])("refuses malformed XML on every SVG path: %s", (text, problem) => {
+      for (const payload of payloads(text)) {
+        const result = inspectClipboardPayload(payload, options);
+        expect(result).toMatchObject({ kind: "image-refused", message: expect.stringContaining("Couldn't paste the SVG: it isn't well-formed XML:") });
+        if (result.kind === "image-refused") expect(result.message).toMatch(problem);
+      }
+    });
+
+    it("keeps declared prefixes, comments, CDATA styles and escaped text as the original picture", () => {
+      const text = `<?xml version="1.0"?><svg ${namespace} xmlns:xlink="http://www.w3.org/1999/xlink"><!-- valid --><defs><path id="p"/></defs><style><![CDATA[path { fill: red; }]]></style><use xlink:href="#p"/><text>A &amp; B</text></svg>`;
+      for (const payload of payloads(text)) {
+        const result = inspectClipboardPayload(payload, options);
+        expect(result.kind).toBe("image");
+        if (result.kind === "image") expect(Buffer.from(result.image.bytesBase64, "base64").toString()).toBe(text);
+      }
+    });
+
+    it("does not offer malformed SVG as a chemistry fallback picture", () => {
+      for (const payload of payloads(`<svg ${namespace}><g undeclared:x="1"/></svg>`)) {
+        const result = inspectClipboardPayload({ ...payload, textItems: [...payload.textItems, { type: "text/plain", text: "CCO" }] }, options);
+        expect(result).toMatchObject({ kind: "smiles", text: "CCO" });
+        expect(result).not.toHaveProperty("fallbackImage");
+      }
+    });
+  });
+
+  it("uses globalThis.DOMParser by default and retains parser line numbers", () => {
+    vi.stubGlobal("DOMParser", window.DOMParser);
+    try {
+      for (const payload of payloads(`<svg ${namespace}>\n<g undeclared:x="1"/></svg>`)) {
+        expect(inspectClipboardPayload(payload)).toMatchObject({ kind: "image-refused",
+          message: expect.stringMatching(/isn't well-formed XML: line 2, column \d+:.*unbound/i) });
+      }
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each([
+    ["root", "urn:chromium-parser-error"],
+    ["nested", "http://www.w3.org/1999/xhtml"],
+    ["nested", ""]
+  ])("finds %s parsererror in any namespace (%s)", (position, errorNamespace) => {
+    const parsed = parser.parseFromString(`<svg ${namespace}/>`, "image/svg+xml");
+    const error = parsed.createElementNS(errorNamespace || null, "parsererror");
+    error.textContent = "error on line 7 at column 9: Namespace prefix x is not defined";
+    if (position === "root") parsed.replaceChild(error, parsed.documentElement);
+    else parsed.documentElement.append(error);
+    const parseFromString = vi.fn(() => parsed);
+    for (const payload of payloads(`<svg ${namespace}/>`)) {
+      expect(inspectClipboardPayload(payload, { svgParser: { parseFromString } })).toMatchObject({ kind: "image-refused",
+        message: "Couldn't paste the SVG: it isn't well-formed XML: error on line 7 at column 9: Namespace prefix x is not defined." });
+    }
+    expect(parseFromString).toHaveBeenCalledWith(expect.any(String), "image/svg+xml");
+  });
+
+  it.each(["<other/>", "<svg/>", '<svg xmlns="urn:wrong"/>'])("refuses a parsed root outside the SVG namespace: %s", text => {
+    expect(inspectClipboardPayload({ types: ["image/svg+xml"], textItems: [{ type: "image/svg+xml", text }] }, { svgParser: parser }))
+      .toMatchObject({ kind: "image-refused", message: expect.stringContaining("the root must be <svg> in the SVG namespace") });
+  });
+
+  it("retains the validation size cap before calling the XML parser", () => {
+    const parseFromString = vi.fn(() => { throw new Error("must not parse"); });
+    const text = `<svg ${namespace}>${" ".repeat(20 * 1024 * 1024)}</svg>`;
+    expect(inspectClipboardPayload({ types: ["text/plain"], textItems: [{ type: "text/plain", text }] }, { svgParser: { parseFromString } }))
+      .toMatchObject({ kind: "image-refused", message: "Couldn't paste the SVG: it exceeds the 20 MB validation limit." });
+    expect(parseFromString).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['<!DOCTYPE svg [<!ENTITY x "expanded">]>', "a document type declaration"],
+    ['<!ENTITY x "expanded">', "an entity declaration"],
+    ['<?xml-stylesheet href="external.css"?>', "a processing instruction"]
+  ])("refuses declarations before parsing: %s", (declaration, reason) => {
+    const parseFromString = vi.fn(() => { throw new Error("must not parse"); });
+    const text = declaration.startsWith("<!ENTITY")
+      ? `<svg ${namespace}>${declaration}</svg>` : `${declaration}<svg ${namespace}/>`;
+    for (const payload of payloads(text)) {
+      expect(inspectClipboardPayload(payload, { svgParser: { parseFromString } })).toMatchObject({ kind: "image-refused",
+        message: `Couldn't paste the SVG: it contains ${reason} that isn't allowed.` });
+    }
+    expect(parseFromString).not.toHaveBeenCalled();
+  });
+});
 
 describe("clipboard byte limits", () => {
   const mb = 1024 * 1024;
@@ -570,12 +684,12 @@ describe("clipboard-adapter", () => {
   });
 
   it.each([
-    ["<svg", "it isn't a valid SVG document."],
-    ["<svg><g></svg>", "it isn't a valid SVG document."],
-    ["<svg>unescaped & text</svg>", "it isn't a valid SVG document."],
-    ["<svg>&unknown;</svg>", "it isn't a valid SVG document."],
-    ["<svg>&#0;</svg>", "it isn't a valid SVG document."],
-    ['<svg width="1" width="2"/>', "it isn't a valid SVG document."],
+    ["<svg", "it isn't well-formed XML: invalid or incomplete markup."],
+    ["<svg><g></svg>", "it isn't well-formed XML: mismatched closing tag </svg>; expected </g>."],
+    ["<svg>unescaped & text</svg>", "it isn't well-formed XML: invalid or incomplete markup."],
+    ["<svg>&unknown;</svg>", "it isn't well-formed XML: invalid or incomplete markup."],
+    ["<svg>&#0;</svg>", "it isn't well-formed XML: invalid or incomplete markup."],
+    ['<svg width="1" width="2"/>', "it isn't well-formed XML: duplicate attribute 'width'."],
     ["<svg><script>alert(1)</script></svg>", "it contains a <script> element that isn't allowed."],
     ["<svg><foreignObject/></svg>", "it contains a <foreignObject> element that isn't allowed."],
     ['<svg onload="alert(1)"/>', "it contains an event handler (onload) that isn't allowed."],
@@ -766,7 +880,7 @@ describe("clipboard-adapter", () => {
     ];
     for (const payload of payloads) {
       expect(inspectClipboardPayload(payload)).toMatchObject({ kind: "image-refused",
-        message: "Couldn't paste the SVG: it isn't a valid SVG document." });
+        message: "Couldn't paste the SVG: it isn't well-formed XML: invalid or incomplete markup." });
     }
   });
 

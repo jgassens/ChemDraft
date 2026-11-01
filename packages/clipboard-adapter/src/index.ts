@@ -244,9 +244,14 @@ function clipboardTextByteLength(text: string): number {
   return bytes;
 }
 
-export function inspectClipboardPayload(payload: ClipboardReadPayload): ClipboardDetectedPayload {
+export interface ClipboardInspectionOptions {
+  /** Defaults to the browser's DOMParser. Pass null for the headless fallback. */
+  svgParser?: Pick<DOMParser, "parseFromString"> | null;
+}
+
+export function inspectClipboardPayload(payload: ClipboardReadPayload, options: ClipboardInspectionOptions = {}): ClipboardDetectedPayload {
   const bounded = guardClipboardPayload(payload);
-  const detected = inspectBoundedClipboardPayload(bounded);
+  const detected = inspectBoundedClipboardPayload(bounded, options);
   const skipped = bounded.skippedItems?.[0];
   if (skipped && (detected.kind === "empty" || detected.kind === "vector-only" || detected.kind === "cdx"
     || detected.kind === "image-refused" || (detected.kind === "cdxml" && !detected.text))) {
@@ -256,7 +261,7 @@ export function inspectClipboardPayload(payload: ClipboardReadPayload): Clipboar
   return detected;
 }
 
-function inspectBoundedClipboardPayload(payload: ClipboardReadPayload): ClipboardDetectedPayload {
+function inspectBoundedClipboardPayload(payload: ClipboardReadPayload, options: ClipboardInspectionOptions): ClipboardDetectedPayload {
   const textItems = payload.textItems
     .map((item) => ({ ...item, text: normalizeClipboardText(item.text) }))
     .filter((item) => item.text.trim().length > 0);
@@ -350,7 +355,6 @@ function inspectBoundedClipboardPayload(payload: ClipboardReadPayload): Clipboar
   // Text heuristics still need the host's chemistry parser; retain artwork in case parsing fails.
   const hasPicture = image || skippedImage || svgText;
   const pasteableSvgText = svgText;
-  const fallbackImage = !suppressPicture ? image ?? (pasteableSvgText ? svgTextImage(pasteableSvgText.text) : undefined) : undefined;
   const chemistryCandidates: ClipboardChemistryCandidate[] = [];
   if (hasPicture) {
     for (const item of textItems) {
@@ -376,6 +380,22 @@ function inspectBoundedClipboardPayload(payload: ClipboardReadPayload): Clipboar
   }
   const firstCandidate = chemistryCandidates[0];
   if (firstCandidate) {
+    let fallbackImage = !suppressPicture ? image : undefined;
+    if (!suppressPicture && !image && pasteableSvgText) {
+      const source = pasteableSvgText.text;
+      if (!svgClipboardError(source, clipboardTextByteLength(source), options) && !validateSvgImage(source).error) {
+        fallbackImage = svgTextImage(source);
+      }
+    }
+    if (image?.type === "image/svg+xml" && fallbackImage) {
+      try {
+        const binary = atob(fallbackImage.bytesBase64);
+        const source = new TextDecoder().decode(Uint8Array.from(binary, char => char.charCodeAt(0)));
+        if (svgClipboardError(source, binary.length, options) || validateSvgImage(source).error) fallbackImage = undefined;
+      } catch {
+        fallbackImage = undefined;
+      }
+    }
     return { kind: firstCandidate.kind === "smiles" ? "smiles" : "plain-text",
       text: firstCandidate.text, sourceType: firstCandidate.sourceType, warnings: [], chemistryCandidates,
       ...(fallbackImage ? { fallbackImage } : {}) };
@@ -394,7 +414,7 @@ function inspectBoundedClipboardPayload(payload: ClipboardReadPayload): Clipboar
         if (limitError) return refusedImage(limitError);
       } else {
         const source = new TextDecoder().decode(bytes);
-        const svgError = svgClipboardError(source, bytes.length);
+        const svgError = svgClipboardError(source, bytes.length, options);
         if (svgError) return refusedSvg(svgError);
         const result = validateSvgImage(source);
         if (result.error) return refusedSvg(result.error);
@@ -412,7 +432,7 @@ function inspectBoundedClipboardPayload(payload: ClipboardReadPayload): Clipboar
     if (bytes.length > MAX_IMAGE_OBJECT_BYTES) {
       return refusedSvg(`it is ${(bytes.length / (1024 * 1024)).toFixed(1)} MB; the limit is 25 MB.`);
     }
-    const svgError = svgClipboardError(pasteableSvgText.text, bytes.length);
+    const svgError = svgClipboardError(pasteableSvgText.text, bytes.length, options);
     if (svgError) return refusedSvg(svgError);
     const result = validateSvgImage(pasteableSvgText.text);
     if (result.error) return refusedSvg(result.error);
@@ -475,9 +495,16 @@ function inspectBoundedClipboardPayload(payload: ClipboardReadPayload): Clipboar
   };
 }
 
-/** Validation only: bounded lexical scanning, with no XML execution or entity expansion. */
+const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
+const XML_NAMESPACE = "http://www.w3.org/XML/1998/namespace";
+
+function xmlError(problem: string): string {
+  return `it isn't well-formed XML: ${problem.replace(/[.\s]+$/, "")}.`;
+}
+
+/** Bounded, non-executing fallback; also retains the existing nesting limit. */
 function svgDocumentError(text: string): string | undefined {
-  const invalid = "it isn't a valid SVG document.";
+  const invalid = xmlError("invalid or incomplete markup");
   if (text.length > 20 * 1024 * 1024) return "it exceeds the 20 MB validation limit.";
   let offset = 0;
   const whitespace = /[\s\uFEFF]*/y;
@@ -500,12 +527,24 @@ function svgDocumentError(text: string): string | undefined {
     offset = index + end.length;
     return true;
   };
+  const commentError = () => {
+    const end = text.indexOf("-->", offset + 4);
+    if (end < 0) return xmlError("unterminated comment");
+    const content = text.slice(offset + 4, end);
+    if (content.includes("--") || content.endsWith("-")) {
+      const line = text.slice(0, offset).split("\n").length;
+      return xmlError(`a comment contains '--' or ends with '-' (line ${line})`);
+    }
+    offset = end + 3;
+    return undefined;
+  };
   skipWhitespace();
   while (true) {
     if (text.startsWith("<?", offset)) {
       if (!skipDelimited("?>")) return invalid;
     } else if (text.startsWith("<!--", offset)) {
-      if (!skipDelimited("-->")) return invalid;
+      const error = commentError();
+      if (error) return error;
     } else if (text.startsWith("<!DOCTYPE", offset) && /\s/.test(text[offset + 9] ?? "")) {
       offset += 9;
       let quote = "";
@@ -513,7 +552,8 @@ function svgDocumentError(text: string): string | undefined {
       let ended = false;
       while (offset < text.length) {
         if (!quote && text.startsWith("<!--", offset)) {
-          if (!skipDelimited("-->")) return invalid;
+          const error = commentError();
+          if (error) return error;
           continue;
         }
         const char = text[offset++];
@@ -528,11 +568,12 @@ function svgDocumentError(text: string): string | undefined {
     } else break;
     skipWhitespace();
   }
-  const stack: string[] = [];
+  const stack: { tag: string; namespaces: Map<string, string> }[] = [];
   let rootSeen = false;
   while (offset < text.length) {
     if (text.startsWith("<!--", offset)) {
-      if (!skipDelimited("-->")) return invalid;
+      const error = commentError();
+      if (error) return error;
       continue;
     }
     if (text.startsWith("<?", offset)) {
@@ -562,14 +603,17 @@ function svgDocumentError(text: string): string | undefined {
     if (!tag) return invalid;
     if (closing) {
       skipWhitespace();
-      if (text[offset++] !== ">" || stack.pop() !== tag) return invalid;
+      const openTag = stack.pop()?.tag;
+      if (text[offset++] !== ">" || openTag !== tag) {
+        return xmlError(`mismatched closing tag </${tag}>${openTag ? `; expected </${openTag}>` : ""}`);
+      }
       continue;
     }
     const isRoot = !rootSeen;
     if (!stack.length && rootSeen) return invalid;
     if (isRoot && tag !== "svg" && !tag.endsWith(":svg")) return invalid;
-    const attributes = new Set<string>();
-    let namespace: string | undefined;
+    const attributes = new Map<string, string>();
+    const namespaces = new Map(stack.at(-1)?.namespaces ?? [["xml", XML_NAMESPACE]]);
     let selfClosed = false;
     while (true) {
       const beforeWhitespace = offset;
@@ -578,8 +622,8 @@ function svgDocumentError(text: string): string | undefined {
       if (text[offset] === ">") { offset += 1; break; }
       if (offset === beforeWhitespace) return invalid;
       const attribute = readName();
-      if (!attribute || attributes.has(attribute)) return invalid;
-      attributes.add(attribute);
+      if (!attribute) return invalid;
+      if (attributes.has(attribute)) return xmlError(`duplicate attribute '${attribute}'`);
       skipWhitespace();
       if (text[offset++] !== "=") return invalid;
       skipWhitespace();
@@ -587,14 +631,36 @@ function svgDocumentError(text: string): string | undefined {
       if (quote !== '"' && quote !== "'") return invalid;
       const end = text.indexOf(quote, offset);
       if (end < 0 || text.slice(offset, end).includes("<") || invalidXmlText(text.slice(offset, end))) return invalid;
-      if (isRoot && attribute === (tag === "svg" ? "xmlns" : `xmlns:${tag.split(":")[0]}`)) {
-        namespace = text.slice(offset, end);
+      const value = text.slice(offset, end).replace(/&#(x[\da-fA-F]+|\d+);|&(amp|lt|gt|quot|apos);/g, (_, code: string | undefined, entity: string) =>
+        code ? String.fromCodePoint(Number.parseInt(code.startsWith("x") ? code.slice(1) : code, code.startsWith("x") ? 16 : 10))
+          : ({ amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" } as Record<string, string>)[entity]);
+      attributes.set(attribute, value);
+      if (attribute === "xmlns" || attribute.startsWith("xmlns:")) {
+        const prefix = attribute === "xmlns" ? "" : attribute.slice(6);
+        if (prefix === "xmlns" || (prefix === "xml" && value !== XML_NAMESPACE) ||
+            (prefix !== "xml" && value === XML_NAMESPACE) || value === "http://www.w3.org/2000/xmlns/" || (prefix && !value)) {
+          return xmlError(`invalid namespace declaration '${attribute}'`);
+        }
+        namespaces.set(prefix, value);
       }
       offset = end + 1;
     }
-    if (isRoot && (tag !== "svg" || namespace !== undefined) && namespace !== "http://www.w3.org/2000/svg") return invalid;
+    const tagPrefix = tag.includes(":") ? tag.split(":")[0] : "";
+    if (tagPrefix && !namespaces.get(tagPrefix)) return xmlError(`undeclared namespace prefix '${tagPrefix}' on <${tag}>`);
+    const expandedAttributes = new Set<string>();
+    for (const attribute of attributes.keys()) {
+      if (attribute === "xmlns" || attribute.startsWith("xmlns:")) continue;
+      const [prefix, localName] = attribute.includes(":") ? attribute.split(":") : ["", attribute];
+      if (prefix && !namespaces.get(prefix)) return xmlError(`undeclared namespace prefix '${prefix}' on attribute '${attribute}'`);
+      const expanded = `${prefix ? namespaces.get(prefix) : ""}|${localName}`;
+      if (expandedAttributes.has(expanded)) return xmlError(`duplicate attribute '${attribute}'`);
+      expandedAttributes.add(expanded);
+    }
+    if (isRoot && (tagPrefix || namespaces.has("")) && namespaces.get(tagPrefix) !== SVG_NAMESPACE) {
+      return "the root must be <svg> in the SVG namespace (http://www.w3.org/2000/svg).";
+    }
     rootSeen = true;
-    if (!selfClosed) stack.push(tag);
+    if (!selfClosed) stack.push({ tag, namespaces });
     if (stack.length > 256) return "it exceeds the 256-level nesting limit.";
   }
   return rootSeen && stack.length === 0 ? undefined : invalid;
@@ -621,17 +687,48 @@ function invalidXmlText(text: string): boolean {
   return false;
 }
 
-function svgClipboardError(source: string, byteLength: number): string | undefined {
+function svgClipboardError(source: string, byteLength: number, options: ClipboardInspectionOptions): string | undefined {
   if (byteLength > 20 * 1024 * 1024) return "it exceeds the 20 MB validation limit.";
+  // Refuse declarations before invoking any XML parser: never allow entity expansion.
+  const declarationError = svgDeclarationError(source);
+  if (declarationError) return declarationError;
+  const parser = options.svgParser === undefined
+    ? (typeof globalThis.DOMParser === "function" ? new globalThis.DOMParser() : undefined)
+    : options.svgParser;
+  if (parser) {
+    try {
+      const document = parser.parseFromString(source, "image/svg+xml");
+      // WebKit nests parsererror inside the SVG; Chromium may make it the root.
+      const error = document.getElementsByTagNameNS("*", "parsererror")[0];
+      if (error) {
+        const detail = (error.textContent ?? "XML parsing failed").slice(0, 1000)
+          .replace(/Below is a rendering[\s\S]*/, "").replace(/\s+/g, " ").trim()
+          .replace(/^(\d+):(\d+):\s*/, "line $1, column $2: ");
+        return xmlError(detail || "XML parsing failed");
+      }
+      const root = document.documentElement;
+      if (root?.localName !== "svg" || root.namespaceURI !== SVG_NAMESPACE) {
+        return "the root must be <svg> in the SVG namespace (http://www.w3.org/2000/svg).";
+      }
+    } catch (error) {
+      return xmlError(error instanceof Error ? error.message : "XML parsing failed");
+    }
+  }
   return svgDocumentError(source) ?? svgContentError(source);
+}
+
+function svgDeclarationError(source: string): string | undefined {
+  const markup = source.replace(/<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>/g, "");
+  if (/<!DOCTYPE/i.test(markup)) return "it contains a document type declaration that isn't allowed.";
+  if (/<!ENTITY/i.test(markup)) return "it contains an entity declaration that isn't allowed.";
+  if (/<\?(?!xml\s)/i.test(markup)) return "it contains a processing instruction that isn't allowed.";
+  return undefined;
 }
 
 // Validate without rewriting: accepted picture bytes retain their original source.
 // Completeness and size are checked before this bounded, non-executing sanitizer.
 function svgContentError(source: string): string | undefined {
   const markup = source.replace(/<!--[\s\S]*?-->/g, "");
-  if (/<!DOCTYPE/i.test(markup)) return "it contains a document type declaration that isn't allowed.";
-  if (/<\?(?!xml\s)/i.test(markup)) return "it contains a processing instruction that isn't allowed.";
   const unsafeStyle = (value: string) => {
     const css = value.replace(/\/\*[\s\S]*?\*\//g, "");
     return /\\|@import\b|expression\s*\(/i.test(css) ||

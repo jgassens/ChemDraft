@@ -27,3 +27,11 @@ checks text and base64 sizes before normalization or decoding. Oversized flavors
 smaller alternatives remain available. Native `skippedItems` metadata carries the attempted byte size
 and limit; if no usable content remains, `size-refused` carries the paste status message. Hosts parsing
 private text flavors before inspection must call `guardClipboardPayload` first.
+
+SVG validation refuses DOCTYPE/ENTITY declarations and processing instructions before parsing with
+`globalThis.DOMParser` (`image/svg+xml`). Parser errors anywhere in the document produce a specific
+SVG refusal, preserving parser line numbers; the parsed root must be in the SVG namespace. Headless
+validation checks namespace bindings, duplicate attributes, tag balance and comment syntax without
+expanding entities. Tests can pass `{ svgParser }` as the second argument to `inspectClipboardPayload`,
+or `{ svgParser: null }` to exercise the headless fallback. Accepted SVG bytes are preserved, and the
+existing sanitizer and size limits apply to SVG flavors, SVG text and chemistry fallback pictures.
