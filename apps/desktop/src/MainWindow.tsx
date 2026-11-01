@@ -2421,6 +2421,8 @@ export function MainWindow({
   } | undefined>(undefined);
   const checkpointTextEditBeforeCommitRef = useRef<(beforePreview?: ChemDraftDocument) => (() => void) | undefined>(() => undefined);
   const textEditHistoryWritingRef = useRef(false);
+  // Keeps an open numeric rotate/stretch preview as its own entry; assigned where those handlers live.
+  const keepNumericInputPreviewsRef = useRef<() => void>(() => undefined);
   const textAutoConversionInProgressRef = useRef(false);
   // Only the first committed edit of each box placed by the Text tool may become an atom label.
   // Existing captions always remain text when reopened; the explicit command remains available.
@@ -7472,17 +7474,19 @@ export function MainWindow({
       textEditHistoryWritingRef.current = true;
       try { commitDocumentHistoryFrom(snapshot.document, current, "Edit Text"); }
       finally { textEditHistoryWritingRef.current = false; }
+      // The state updater that marks the file dirty is deferred; the quit prompt reads the ref now.
+      fileStateRef.current = { ...fileStateRef.current, dirty: true };
     }
   }, [commitDocumentHistoryFrom]);
 
-  const finishActiveNativeTextEdit = useCallback((finishedObjectId?: string, beforePreview?: ChemDraftDocument) => {
+  const finishActiveNativeTextEdit = useCallback((finishedObjectId?: string) => {
     // Canvas capture can close the editor before its blur arrives; use the owner's id.
     const objectId = finishedObjectId ?? activeTextEditObjectIdRef.current ?? textEditHistorySnapshotRef.current?.objectId;
     if (!objectId) return;
     settlePalettePreviewRef.current("finish text edit");
     if (activeTextEditObjectIdRef.current === objectId) activeTextEditObjectIdRef.current = undefined;
     setActiveTextEditObjectId((current) => (current === objectId ? undefined : current));
-    finalizeTextEditHistory(objectId, beforePreview);
+    finalizeTextEditHistory(objectId);
     convertCommittedText(objectId);
   }, [convertCommittedText, finalizeTextEditHistory]);
   checkpointTextEditBeforeCommitRef.current = (beforePreview) => {
@@ -7522,6 +7526,10 @@ export function MainWindow({
   }, [activeTextEditObjectId, finishActiveNativeTextEdit]);
 
   const startTextObjectEdit = useCallback((objectId: string) => {
+    // Settle any chooser or numeric preview first, so the snapshot below is the settled document
+    // and no checkpoint can fire against a half-armed session.
+    settlePalettePreviewRef.current("start text edit");
+    keepNumericInputPreviewsRef.current();
     const previous = activeTextEditObjectIdRef.current;
     if (previous && previous !== objectId) finishActiveNativeTextEdit(previous);
     const currentDocument = documentRef.current;
@@ -7530,6 +7538,8 @@ export function MainWindow({
       return;
     }
 
+    // Own the session before arming its snapshot: a checkpoint never sees a snapshot without its owner.
+    activeTextEditObjectIdRef.current = objectId;
     if (!textObjectIdsAwaitingAutoConversionRef.current.has(objectId) &&
       textEditHistorySnapshotRef.current?.objectId !== objectId) {
       textEditHistorySnapshotRef.current = {
@@ -7538,7 +7548,6 @@ export function MainWindow({
     }
     replacePresentDocument((current) => selectDocumentObject(current, objectId));
     setActiveEditorObjectId(undefined);
-    activeTextEditObjectIdRef.current = objectId;
     setActiveTextEditObjectId(objectId);
     setActiveAtomLabelEdit(undefined);
     setHoveredNativeAtom(undefined);
@@ -15857,6 +15866,11 @@ export function MainWindow({
     setStatus(changed ? "Stretch applied" : "Stretch unchanged");
     return changed;
   }, [commitLiveInputPreview, updateObjectResizeInput]);
+
+  keepNumericInputPreviewsRef.current = () => {
+    handleRotationInputKeep();
+    handleObjectResizeInputKeep();
+  };
 
   // Clears the transient interaction "chrome" — open editors, hover highlights, and in-flight
   // previews — without touching the selection. Numeric transform sessions are first kept as

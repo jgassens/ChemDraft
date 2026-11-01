@@ -2,12 +2,13 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { TextObject } from "@chemdraft/chem-core";
+import type { MoleculeObject, TextObject } from "@chemdraft/chem-core";
 import { MainWindow } from "./MainWindow";
-import { createPhase4Document, insertNativeTextObject } from "./documentWorkflow";
+import { createPhase4Document, insertNativeTextObject, selectDocumentObjects } from "./documentWorkflow";
 import { beginAssistantTransaction, endAssistantTransaction, writeAssistantTransaction } from "./assistant/assistantTransaction";
 import { forceDocumentHistoryCommandId } from "./editHistoryRouting";
-import { DOM_COMMAND_EVENT } from "./window-manager";
+import { DOM_COMMAND_EVENT, PALETTE_COMMAND_CANCEL_EVENT, PALETTE_COMMAND_COMMIT_EVENT, PALETTE_COMMAND_PREVIEW_EVENT } from "./window-manager";
+import { moleculeStructureBondColorCommandId } from "./commands";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -74,6 +75,33 @@ describe.each(["macos", "windows"] as const)("text edit history (%s)", platform 
     await act(async () => glyph.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, detail: 2 })));
     await act(async () => vi.advanceTimersByTimeAsync(100));
     expect(editor()).not.toBeNull(); expect(document.activeElement).toBe(editor());
+  }
+
+  async function glyphPress(id: string) {
+    const glyph = container.querySelector(`[data-page-svg-object-visual="${id}"] text`)!;
+    await act(async () => {
+      const event = new MouseEvent("pointerdown", { bubbles: true, cancelable: true, button: 0, buttons: 1, clientX: 100, clientY: 100 });
+      Object.defineProperties(event, { pointerId: { value: 7 }, pointerType: { value: "mouse" }, isPrimary: { value: true } });
+      glyph.dispatchEvent(event);
+    });
+    await act(async () => vi.advanceTimersByTimeAsync(100));
+  }
+  async function palette(event: string, color: string) {
+    await act(async () => window.dispatchEvent(new CustomEvent(event, { detail: { commandId: moleculeStructureBondColorCommandId(color) } })));
+  }
+  async function dragRight(id: string, dx: number) {
+    const typed = texts().find(object => object.id === id)!;
+    const handle = container.querySelector(`[data-object-id="${id}"] [data-text-resize-edge="right"]`)!;
+    const pointer = async (target: Element, kind: string, x: number) => act(async () => {
+      const event = new MouseEvent(kind, { bubbles: true, cancelable: true, button: 0,
+        buttons: kind === "pointerup" ? 0 : 1, clientX: x, clientY: typed.y + typed.height });
+      Object.defineProperties(event, { pointerId: { value: 7 }, pointerType: { value: "mouse" }, isPrimary: { value: true } });
+      target.dispatchEvent(event);
+    });
+    const page = container.querySelector(".page")!;
+    await pointer(handle, "pointerdown", typed.x + typed.width);
+    await pointer(page, "pointermove", typed.x + typed.width + dx);
+    await pointer(page, "pointerup", typed.x + typed.width + dx);
   }
   const undo = () => command(forceDocumentHistoryCommandId("edit.undo"));
   const redo = () => command(forceDocumentHistoryCommandId("edit.redo"));
@@ -319,5 +347,102 @@ describe.each(["macos", "windows"] as const)("text edit history (%s)", platform 
     expect(texts()[0].spans.every(span => span.script === "normal")).toBe(true);
     await undo(); expect(texts().map(object => object.text)).toEqual(["Alpha", "Beta"]);
     expect(container.textContent).toContain("Undid Edit Text");
+  });
+
+  it("keeps a no-op checkpoint to one Edit Text entry with no empty entry", async () => {
+    const alpha = await place("Alpha", 200); await place("Beta", 400);
+    await open(alpha); await type("Alpha123");
+    await act(async () => {
+      const current = snapshot().document;
+      const tx = beginAssistantTransaction({ pluginId: "org.chemdraft.assistant", runId: "noop", tabId: "initial", label: "No change",
+        sendSelection: current.selection });
+      try { writeAssistantTransaction(tx, current); } finally { endAssistantTransaction(tx, { touchedIds: [] }); }
+    });
+    expect(editor()?.value).toBe("Alpha123");
+    await pagePress();
+    await undo();
+    expect(container.textContent).toContain("Undid Edit Text");
+    expect(texts().map(object => object.text)).toEqual(["Alpha", "Beta"]);
+    await undo(); expect(texts().map(object => object.text)).toEqual(["Alpha"]);
+    await undo(); expect(texts()).toEqual([]);
+  });
+
+  it("redoes exactly through a checkpointed session (type, resize, type, finish)", async () => {
+    const alpha = await place("Alpha", 200); await place("Beta", 400);
+    const states = [texts()]; await open(alpha);
+    await type("Alpha1"); await dragRight(alpha, 40); await type("Alpha12");
+    await pagePress(); const final = texts();
+    await undo(); states.push(texts()); await undo(); states.push(texts()); await undo();
+    expect(texts()).toEqual(states[0]);
+    expect(texts().map(object => object.text)).toEqual(["Alpha", "Beta"]);
+    await redo(); const first = texts(); expect(first[0].text).toBe("Alpha1");
+    await redo(); expect(texts()[0].width).toBeCloseTo(first[0].width + 40, 6);
+    await redo(); expect(texts()).toEqual(final);
+    expect(texts()[0].text).toBe("Alpha12");
+    expect(states[1][0].text).toBe("Alpha1"); expect(states[2][0].text).toBe("Alpha1");
+  });
+
+  it("settles a chooser preview before a Text-tool click starts an edit", async () => {
+    const alpha = await place("Alpha", 200);
+    const molecules = () => snapshot().document.pages[0].objects.filter(object => object.type === "molecule") as MoleculeObject[];
+    await command("tool.bond");
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.click({ page: { x: 500, y: 400 } }); });
+    expect(molecules()).toHaveLength(1);
+    const original = molecules()[0].style.bondColor;
+    await command("tool.text");
+    await palette(PALETTE_COMMAND_PREVIEW_EVENT, "#123456");
+    expect(molecules()[0].style.bondColor).toBe("#123456");
+    await glyphPress(alpha);
+    expect(editor()).not.toBeNull();
+    await type("Alphax"); await pagePress();
+    await undo();
+    expect(container.textContent).toContain("Undid Edit Text");
+    expect(texts().map(object => object.text)).toEqual(["Alpha"]);
+    expect(molecules()[0].style.bondColor).toBe("#123456");
+    await undo();
+    expect(texts().map(object => object.text)).toEqual(["Alpha"]);
+    expect(molecules()[0].style.bondColor).toBe(original);
+    await palette(PALETTE_COMMAND_CANCEL_EVENT, "#123456");
+    expect(molecules()[0].style.bondColor).toBe(original);
+    await undo(); expect(molecules()).toHaveLength(0);
+    expect(texts().map(object => object.text)).toEqual(["Alpha"]);
+  });
+
+  it.each(["rotation", "resize"])("keeps an open numeric %s preview as its own entry when a text edit starts", async kind => {
+    let drawing = createPhase4Document("Numeric preview");
+    drawing.pages[0]!.objects = [{
+      id: "rect-a", type: "graphic", graphicKind: "rect", x: 100, y: 100, width: 80, height: 50, rotation: 0, style: {}, data: {}
+    }];
+    drawing = insertNativeTextObject(drawing, { x: 400, y: 300 }, "Alpha");
+    const alpha = drawing.pages[0]!.objects.find(object => object.type === "text")!.id;
+    drawing = selectDocumentObjects(drawing, drawing.pages[0]!.id, ["rect-a"]);
+    await act(async () => root.unmount()); container.innerHTML = "";
+    root = createRoot(container);
+    await act(async () => root.render(createElement(MainWindow, {
+      initialDocument: drawing, initialPaletteMode: "hidden", nativePalette: true,
+      initialRulersVisible: false, initialCrosshairsVisible: false, shortcutPlatform: platform
+    })));
+    const rect = () => snapshot().document.pages[0].objects.find(object => object.id === "rect-a")!;
+    const before = rect();
+    await act(async () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "Shift", shiftKey: true, bubbles: true })));
+    const handle = container.querySelector(kind === "rotation" ? '[data-selection-rotate-handle="true"]' : '[data-object-resize-corner]');
+    expect(handle).not.toBeNull();
+    await act(async () => handle!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
+    const input = container.querySelector<HTMLInputElement>(kind === "rotation" ? '[aria-label="Z rotation degrees"]' : '[aria-label="X stretch percent"]');
+    expect(input).not.toBeNull();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, kind === "rotation" ? "25" : "125");
+      input!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const previewed = rect();
+    expect(previewed).not.toEqual(before);
+    await open(alpha); await type("Alphax"); await pagePress();
+    await undo();
+    expect(container.textContent).toContain("Undid Edit Text");
+    expect(texts().map(object => object.text)).toEqual(["Alpha"]);
+    expect(rect()).toEqual(previewed);
+    await undo();
+    expect(rect()).toEqual(before);
+    expect(texts().map(object => object.text)).toEqual(["Alpha"]);
   });
 });
