@@ -20,7 +20,7 @@ async function flush(): Promise<void> {
   for (let i = 0; i < 20; i++) await Promise.resolve();
 }
 
-function mount(html: string, platform: ShortcutPlatform = "macos", ready: Promise<void> = Promise.resolve()) {
+function mount(html: string, platform: ShortcutPlatform = "macos", ready: Promise<void> = Promise.resolve(), palette = false) {
   const shell = document.createElement("aside");
   shell.innerHTML = html;
   document.body.append(shell);
@@ -33,16 +33,16 @@ function mount(html: string, platform: ShortcutPlatform = "macos", ready: Promis
     notify = listener;
     await ready;
     return unsubscribe;
-  });
+  }, palette);
   pointerHandlers.set(shell, listen.mock.calls.find(([type]) => type === "pointerdown")![1] as EventListener);
-  keyHandlers.set(shell, listen.mock.calls.find(([type]) => type === "keydown")![1] as EventListener);
+  keyHandlers.set(shell, (palette ? listenWindow : listen).mock.calls.find(([type]) => type === "keydown")![1] as EventListener);
   selectionHandlers.set(shell, {
     up: listenWindow.mock.calls.filter(([type]) => type === "pointerup").at(-1)?.[1] as EventListener,
     click: listen.mock.calls.find(([type]) => type === "click")?.[1] as EventListener
   });
   return { shell, request, activate: () => notify({ kind: "activated", generation: 0 }),
-    deactivate: (generation = request.mock.calls.filter(([editing]) => editing).at(-1)?.[1] ?? 0) =>
-      notify({ kind: "deactivated", generation }), unsubscribe };
+    deactivate: (generation = request.mock.calls.filter(([editing]) => editing).at(-1)?.[1] ?? 0,
+      reason?: NativePanelFocusEvent["reason"]) => notify({ kind: "deactivated", generation, reason }), unsubscribe };
 }
 
 function pointerDown(target: Element): void {
@@ -849,5 +849,266 @@ describe("panel input keyboard focus", () => {
     await flush();
     expect(wheel.defaultPrevented).toBe(false);
     expect(request).toHaveBeenCalledExactlyOnceWith(true, expect.any(Number));
+  });
+});
+
+describe.each(["macos", "windows"] as const)("palette control focus settling (%s)", (platform) => {
+  it.each(["before native loss", "after native loss"])("retains a pointer-opened macOS select through popup blur %s, Escape and typing", async blurOrder => {
+    if (platform !== "macos") return;
+    vi.useFakeTimers();
+    const { shell, request, deactivate } = mount('<select><option>14 pt</option><option>18 pt</option></select>', platform, Promise.resolve(), true);
+    const select = shell.querySelector("select")!;
+    pointerDown(select); select.focus(); await flush();
+    pointerUp(select, false); click(select);
+    await vi.runAllTimersAsync();
+    if (blurOrder === "before native loss") select.blur();
+    deactivate(); // Exact chemdraft://plugin-panel-focus event listened to by the lease.
+    if (blurOrder === "after native loss") select.blur();
+    await vi.runAllTimersAsync(); await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true]);
+    expect(shell.dataset.paletteInputFocus).toBe("held");
+    key(document.body, "Escape"); // WebKit may target body while closing the list.
+    await flush();
+    expect(document.activeElement).toBe(select);
+    expect(shell.dataset.paletteInputFocus).toBe("held");
+    const delivered: string[] = [];
+    select.addEventListener("keydown", event => { delivered.push(event.key); });
+    for (const value of ["1", "8", "ArrowDown"]) {
+      expect(key(document.activeElement!, value).defaultPrevented).toBe(false);
+    }
+    expect(delivered).toEqual(["1", "8", "ArrowDown"]);
+    expect(request.mock.calls.every(([editing]) => editing)).toBe(true);
+    key(select, "Escape"); await flush();
+    expect(shell.dataset.paletteInputFocus).toBeUndefined();
+    expect(request.mock.calls.at(-1)?.[0]).toBe(false);
+  });
+
+  it.each(["app", "outside"] as const)("ends a macOS select popup lease on real %s loss, even after window-key loss", async reason => {
+    if (platform !== "macos") return;
+    const { shell, request, deactivate, activate } = mount('<select><option>14 pt</option></select>', platform, Promise.resolve(), true);
+    const select = shell.querySelector("select")!;
+    pointerDown(select); select.focus(); await flush();
+    deactivate(); await flush();
+    deactivate(undefined, reason); await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+    activate(); await flush();
+    expect(shell.dataset.paletteInputFocus).toBeUndefined();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+  });
+
+  it.each(["pointer", "Space", "Alt+Down"])("keeps select keys after dismissing a list opened by %s, then hands back on the next Escape", async (opening) => {
+    const { shell, request } = mount('<input><select><option value="14">14 pt</option><option value="18">18 pt</option></select>', platform, Promise.resolve(), true);
+    const select = shell.querySelector("select")!;
+    const input = shell.querySelector("input")!;
+    pointerDown(opening === "pointer" ? select : input);
+    (opening === "pointer" ? select : input).focus();
+    await flush();
+    pointerUp(opening === "pointer" ? select : input, false);
+    click(opening === "pointer" ? select : input);
+    if (opening !== "pointer") {
+      select.focus(); // Tab's browser default.
+      select.dispatchEvent(new KeyboardEvent("keydown", { key: opening === "Space" ? " " : "ArrowDown",
+        altKey: opening === "Alt+Down", bubbles: true, cancelable: true }));
+    }
+    // WebKit bubbles the NSMenu dismissal Escape. WebView2 consumes that key in
+    // its popup: model that native boundary with an event that does not bubble.
+    select.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: platform === "macos", cancelable: true }));
+    await flush();
+    const acquisitions = platform === "macos" && opening !== "pointer" ? [true, true] : [true];
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual(acquisitions);
+    expect(document.activeElement).toBe(select);
+    for (const value of ["1", "8", "ArrowDown"]) expect(key(select, value).defaultPrevented).toBe(false);
+    expect(shell.dataset.paletteInputFocus).toBe("held");
+    key(select, "Escape");
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([...acquisitions, false]);
+    expect(document.activeElement).not.toBe(select);
+  });
+
+  it("does not retain a popup-dismissal Escape after a completed select pick", async () => {
+    const { shell, request } = mount('<select><option>14 pt</option><option>18 pt</option></select>', platform, Promise.resolve(), true);
+    const select = shell.querySelector("select")!;
+    pointerDown(select); select.focus();
+    await flush();
+    select.selectedIndex = 1;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    key(select, "Escape");
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+  });
+
+  it("keeps the lease for Tab to another control, then ends it when Tab leaves the palette", async () => {
+    vi.useFakeTimers();
+    const { shell, request } = mount('<input><select><option>One</option></select>', platform, Promise.resolve(), true);
+    const input = shell.querySelector("input")!;
+    const select = shell.querySelector("select")!;
+    pointerDown(input); input.focus();
+    await flush();
+    expect(key(input, "Tab").defaultPrevented).toBe(false);
+    select.focus(); // Browser Tab default (jsdom does not traverse).
+    await vi.runAllTimersAsync();
+    await flush();
+    const acquisitions = platform === "macos" ? [true, true] : [true];
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual(acquisitions);
+    expect(key(select, "Tab").defaultPrevented).toBe(false);
+    select.blur(); // No destination remains inside this palette.
+    await vi.runAllTimersAsync();
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([...acquisitions, false]);
+  });
+
+  it.each(["color", "select"])("preserves a %s chooser through native loss and accepts its later change", async (kind) => {
+    const { shell, request, deactivate } = mount(kind === "color"
+      ? '<input type="color" value="#112233">'
+      : '<select><option value="one">One</option><option value="two">Two</option></select>',
+    platform, Promise.resolve(), true);
+    const control = shell.firstElementChild as HTMLInputElement | HTMLSelectElement;
+    const blur = vi.spyOn(control, "blur");
+    const commits = vi.fn();
+    control.addEventListener("change", () => commits(control.value));
+    pointerDown(control);
+    control.focus();
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true]);
+    deactivate(); // The native chooser can be the window that took keyboard focus.
+    await flush();
+    const keepsSelect = platform === "macos" && kind === "select";
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual(keepsSelect ? [true] : [true, false]);
+    expect(blur).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(control);
+    control.value = kind === "color" ? "#abcdef" : "two";
+    control.dispatchEvent(new Event("input", { bubbles: true }));
+    control.dispatchEvent(new Event("change", { bubbles: true }));
+    await flush();
+    expect(commits).toHaveBeenCalledExactlyOnceWith(kind === "color" ? "#abcdef" : "two");
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual(keepsSelect ? [true, true] : [true, false]);
+  });
+
+  it("still blurs text entry when native focus is lost", async () => {
+    const { shell, request, deactivate } = mount('<input type="text">', platform, Promise.resolve(), true);
+    const input = shell.querySelector("input")!;
+    pointerDown(input);
+    input.focus();
+    await flush();
+    const blur = vi.spyOn(input, "blur");
+    deactivate();
+    await flush();
+    expect(blur).toHaveBeenCalledExactlyOnceWith();
+    expect(document.activeElement).not.toBe(input);
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+  });
+
+  it("restores a non-text click default that blurs after the native reply", async () => {
+    vi.useFakeTimers();
+    const { shell, request } = mount('<input type="range">', platform, Promise.resolve(), true);
+    const range = shell.querySelector("input")!;
+    let settle!: (acquired: boolean) => void;
+    request.mockImplementationOnce(() => new Promise<boolean>((resolve) => { settle = resolve; }));
+    pointerDown(range);
+    await flush();
+    pointerUp(range, false);
+    click(range);
+    settle(true);
+    await flush(); // Native reply runs between click capture and the browser's final default.
+    range.blur();
+    await vi.runAllTimersAsync();
+    await flush();
+    expect(document.activeElement).toBe(range);
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true]);
+  });
+
+  it("does not blur a colour control while its native lease reply is pending", async () => {
+    const { shell, request } = mount('<input type="color">', platform, Promise.resolve(), true);
+    const color = shell.querySelector("input")!;
+    const blur = vi.spyOn(color, "blur");
+    let settle!: (acquired: boolean) => void;
+    request.mockImplementationOnce(() => new Promise<boolean>((resolve) => { settle = resolve; }));
+    pointerDown(color);
+    color.focus(); // The native picker needs its launching control to keep DOM focus.
+    await flush();
+    expect(document.activeElement).toBe(color);
+    expect(blur).not.toHaveBeenCalled();
+    pointerUp(color, false);
+    click(color);
+    settle(true);
+    await flush();
+    expect(document.activeElement).toBe(color);
+    expect(blur).not.toHaveBeenCalled();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true]);
+  });
+
+  it.each(["same", "another"])("keeps the lease when null-relatedTarget blur returns to %s palette control", async (destination) => {
+    vi.useFakeTimers();
+    const { shell, request } = mount('<input type="number"><select><option>One</option></select>', platform, Promise.resolve(), true);
+    const input = shell.querySelector("input")!;
+    pointerDown(input);
+    input.focus();
+    await flush();
+    expect(document.activeElement).toBe(input);
+    input.blur(); // WebView2 focusout(null), then focusin: no reliable destination until settled.
+    const next = destination === "same" ? input : shell.querySelector("select")!;
+    next.focus();
+    await vi.runAllTimersAsync();
+    await flush();
+    const acquisitions = platform === "macos" && destination === "another" ? [true, true] : [true];
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual(acquisitions);
+    expect(document.activeElement).toBe(next);
+    next.blur();
+    await vi.runAllTimersAsync();
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([...acquisitions, false]);
+  });
+
+  it("releases when focus settles outside controls, including a command button", async () => {
+    vi.useFakeTimers();
+    const { shell, request } = mount('<input><button>Run</button>', platform, Promise.resolve(), true);
+    const input = shell.querySelector("input")!;
+    pointerDown(input); input.focus();
+    await flush();
+    input.blur();
+    shell.querySelector("button")!.focus();
+    await vi.runAllTimersAsync();
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+  });
+
+  it.each(["checkbox", "range", "color", "date", "radio", "file"])("requires trusted pointer intent for a %s and keeps Enter local", async (type) => {
+    const { shell, request } = mount(`<input type="${type}">`, platform, Promise.resolve(), true);
+    const input = shell.querySelector("input")!;
+    input.dispatchEvent(new MouseEvent("pointerdown", { button: 0, bubbles: true }));
+    input.focus();
+    await flush();
+    expect(request).not.toHaveBeenCalled();
+    pointerDown(input);
+    await flush();
+    key(input, "Enter");
+    await flush();
+    expect(request).toHaveBeenCalledExactlyOnceWith(true, expect.any(Number));
+    expect(document.activeElement).toBe(input);
+    key(input, "Escape");
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+    expect(document.activeElement).not.toBe(input);
+  });
+
+  it.each(["button", "submit", "reset", "image", "hidden"])("never leases a button-like/hidden input (%s), even through a label", async (type) => {
+    const { shell, request } = mount(`<label>Action<input type="${type}"></label><button>Command</button>`, platform, Promise.resolve(), true);
+    for (const target of shell.querySelectorAll<HTMLElement>("label, input, button")) {
+      pointerDown(target);
+      target.focus();
+      pointerUp(target, false);
+      click(target);
+    }
+    await flush();
+    expect(request.mock.calls.filter(([editing]) => editing)).toEqual([]);
+  });
+
+  it("leases the actual range inside a label shared with its number box", async () => {
+    const { shell, request } = mount('<label>Length<input type="number"><input type="range"></label>', platform, Promise.resolve(), true);
+    const range = shell.querySelector<HTMLInputElement>('input[type="range"]')!;
+    pointerDown(range);
+    await flush();
+    expect(request).toHaveBeenCalledExactlyOnceWith(true, expect.any(Number));
+    expect(document.activeElement).toBe(range);
   });
 });
