@@ -1,5 +1,12 @@
+export * from "./layoutQuality";
+import type { LayoutLabelBox } from "./layoutQuality";
+export * from "./layoutRepair";
 export { DocumentStyleScale, documentStylePointBounds, FigureStyles, type FigureStyle } from "./documentStyle";
 export { medianLength, representativeMoleculeBondLength, scalePageGeometry } from "./pageScale";
+export {
+  nativeTextMetrics, nativeTextCharacterWidthFactor, nativeTextSubscriptBottomEm,
+  nativeTextScriptFontScale, nativeTextSubscriptOffsetEm, nativeTextSuperscriptOffsetEm
+} from "./textMetrics";
 
 import {
   DefaultNativeDrawingStyle,
@@ -69,6 +76,7 @@ import {
   type NativeElementSymbol
 } from "./valence";
 import { formatNumber } from "./formatNumber";
+import { nativeTextScriptFontScale, nativeTextSubscriptOffsetEm, nativeTextSuperscriptOffsetEm } from "./textMetrics";
 import { nativeGroupLabelDisplay, type AtomLabelAnchor } from "./labelGrammar";
 import { moleculeSketchTickPath, type MoleculeSketchTick } from "./sketchTicks";
 
@@ -2877,6 +2885,7 @@ function nativeBondSegmentFragments(
     class: className,
     "data-bond-id": segment.bond.id,
     "data-bond-order": segment.bond.order,
+    ...(segment.bond.stereo === "either" ? { "data-bond-stereo": "either" } : {}),
     "data-bond-segment": segment.segment,
     "data-bond-style": bondStyle,
     "data-double-bond-side": segment.doubleBondSide
@@ -3501,8 +3510,13 @@ function planTextObjectSvg(object: TextObject, layerIndex: number): PageSvgEleme
     : textStyle.textAlign === "right" ? object.x + object.width : object.x;
   const y = object.y + textStyle.fontSizePx;
   const lineAdvance = textStyle.fontSizePx * textStyle.lineHeight + textStyle.paragraphSpacingPx;
+  // Preserve the established markup for wholly unscripted text. With scripts, reset each
+  // line's baseline, then move relatively within it to keep one text-anchor chunk per line.
+  const hasScripts = lines.some(line => line.some(span => span.script !== "normal"));
   const lineFragments = lines.length > 0
-    ? lines.flatMap((line, lineIndex) => textSpanLineFragments(line, lineIndex, x, lineAdvance))
+    ? lines.flatMap((line, lineIndex) => textSpanLineFragments(
+      line, lineIndex, x, lineAdvance, textStyle.fontSizePx, hasScripts ? y + lineIndex * lineAdvance : undefined
+    ))
     : [elementFragment("tspan", `text-empty-${object.id}`, { x }, [])];
 
   return elementFragment("text", `object-${object.id}`, objectAttributes(object, layerIndex, {
@@ -3524,31 +3538,44 @@ function textSpanLineFragments(
   line: TextSpan[],
   lineIndex: number,
   x: number,
-  lineAdvancePx: number
+  lineAdvancePx: number,
+  parentFontSizePx: number,
+  baselineY: number | undefined
 ): PageSvgElementFragment[] {
   if (line.length === 0) {
     return [
       elementFragment("tspan", `text-line-empty-${lineIndex}`, {
         x,
-        dy: lineIndex === 0 ? undefined : lineAdvancePx
+        ...(baselineY === undefined ? {} : { y: baselineY }),
+        dy: baselineY === undefined && lineIndex > 0 ? lineAdvancePx : undefined
       })
     ];
   }
 
-  return line.map((span, spanIndex) =>
-    elementFragment("tspan", `text-line-${lineIndex}-${spanIndex}-${span.text}`, {
+  let previousScriptOffsetPx = 0;
+  return line.map((span, spanIndex) => {
+    const fontSizePx = metadataNumber(span.style.fontSizePx);
+    const scriptOffsetEm = span.script === "subscript" ? nativeTextSubscriptOffsetEm
+      : span.script === "superscript" ? -nativeTextSuperscriptOffsetEm : 0;
+    const scriptOffsetPx = parentFontSizePx * scriptOffsetEm;
+    const relativeScriptOffsetPx = scriptOffsetPx - previousScriptOffsetPx;
+    previousScriptOffsetPx = scriptOffsetPx;
+    return elementFragment("tspan", `text-line-${lineIndex}-${spanIndex}-${span.text}`, {
       x: spanIndex === 0 ? x : undefined,
-      dy: spanIndex === 0 && lineIndex > 0 ? lineAdvancePx : undefined,
-      "baseline-shift": span.script === "normal" ? undefined : span.script === "superscript" ? "super" : "sub",
-      "font-size": span.script === "normal" ? metadataNumber(span.style.fontSizePx) : "72%",
+      ...(baselineY === undefined || spanIndex > 0 ? {} : { y: baselineY + scriptOffsetPx }),
+      dy: baselineY === undefined
+        ? (spanIndex === 0 && lineIndex > 0 ? lineAdvancePx : undefined)
+        : (spanIndex === 0 ? undefined : relativeScriptOffsetPx),
+      "font-size": span.script === "normal" ? fontSizePx
+        : `${Number((parentFontSizePx * nativeTextScriptFontScale).toFixed(6))}px`,
       fill: metadataString(span.style.color),
       "font-family": metadataString(span.style.fontFamily),
       "font-weight": metadataNumber(span.style.fontWeight),
       "font-style": metadataFontStyle(span.style.fontStyle),
       "text-decoration": metadataString(span.style.textDecoration),
       "letter-spacing": metadataNumber(span.style.letterSpacingPx)
-    }, [textFragment(`text-line-${lineIndex}-${spanIndex}-text`, span.text)])
-  );
+    }, [textFragment(`text-line-${lineIndex}-${spanIndex}-text`, span.text)]);
+  });
 }
 
 function textObjectSpanLines(object: TextObject): TextSpan[][] {
@@ -4657,7 +4684,7 @@ export function planNativeArtVisual(
 }
 
 function reactionArrowFragment(object: ArrowObject, layerIndex: number): PageSvgElementFragment {
-  const strokeWidth = typeof object.style.strokeWidth === "number" ? object.style.strokeWidth : 1.5;
+  const strokeWidth = typeof object.style.strokeWidth === "number" ? object.style.strokeWidth : defaultReactionArrowStrokeWidth;
   const start = arrowAnchorPointForObject(object, object.start, { x: object.x, y: object.y + object.height / 2 });
   const end = arrowAnchorPointForObject(object, object.end, { x: object.x + object.width, y: object.y + object.height / 2 });
   const geometry = planReactionArrowGeometry(object.arrowKind, start, end);
@@ -4771,10 +4798,47 @@ export interface ReactionArrowGeometry {
   heads: Array<{ points: readonly LayoutPoint[]; filled: boolean }>;
 }
 
-const reactionArrowHeadLengthPx = 9;
+export const reactionArrowHeadLengthPx = 9;
 const reactionArrowHeadHalfWidthPx = 4.5;
 const equilibriumShaftOffsetPx = 3;
 const retroShaftOffsetPx = 2.5;
+const defaultReactionArrowStrokeWidth = 1.5;
+
+/** Inward depth of the actual heads/chevron, including any stroked outline.
+ * Labels reserve this depth at both ends so their centre stays on the arrow midpoint. */
+export function reactionArrowHeadDepthPx(arrowKind: ArrowObject["arrowKind"]): number {
+  const length = 4 * reactionArrowHeadLengthPx;
+  const geometry = planReactionArrowGeometry(arrowKind, { x: 0, y: 0 }, { x: length, y: 0 });
+  const inwardDepth = (point: LayoutPoint, strokeRadius: number) => Math.min(point.x, length - point.x) + strokeRadius;
+  return Math.max(0,
+    ...geometry.heads.flatMap(head => head.points.map(point =>
+      inwardDepth(point, head.filled ? 0 : defaultReactionArrowStrokeWidth / 2))),
+    ...geometry.lines.filter(line => line.start.y !== line.end.y).flatMap(line =>
+      [line.start, line.end].map(point => inwardDepth(point, defaultReactionArrowStrokeWidth / 2))));
+}
+
+/** Visible vertical bounds for a horizontal reaction arrow, including its rendered stroke.
+ * Shaft-only bounds exclude heads/chevrons: labels reserve their space horizontally instead. */
+export function reactionArrowVerticalExtent(
+  arrowKind: ArrowObject["arrowKind"],
+  length: number,
+  part: "all" | "shafts" = "all"
+): { top: number; bottom: number } {
+  const geometry = planReactionArrowGeometry(arrowKind, { x: 0, y: 0 }, { x: length, y: 0 });
+  // Keep the default shared with reactionArrowFragment's round-capped shafts.
+  const strokeRadius = defaultReactionArrowStrokeWidth / 2;
+  const ranges = [
+    ...geometry.lines.filter(({ start, end }) => part === "all" || start.y === end.y).map(({ start, end }) => ({
+      top: Math.min(start.y, end.y) - strokeRadius,
+      bottom: Math.max(start.y, end.y) + strokeRadius
+    })),
+    ...(part === "shafts" ? [] : geometry.heads).map((head) => ({
+      top: Math.min(...head.points.map((point) => point.y)) - (head.filled ? 0 : strokeRadius),
+      bottom: Math.max(...head.points.map((point) => point.y)) + (head.filled ? 0 : strokeRadius)
+    }))
+  ];
+  return { top: Math.min(...ranges.map((range) => range.top)), bottom: Math.max(...ranges.map((range) => range.bottom)) };
+}
 
 /** Shared reaction-arrow geometry for the canvas renderer and SVG export: shaft lines plus head
  *  polygons per arrow kind (forward filled head, resonance double head, equilibrium harpoon pair,
@@ -4982,6 +5046,18 @@ function bondLineSegments(
   const gap = nativeMultipleBondGapPx(drawingStyle);
 
   if (bond.order === "double") {
+    if (bond.stereo === "either") {
+      // Use the centered double's clearance and separation, exchanging the far endpoints.
+      // Keep these out of the junction-miter pass so the two strokes retain their shared midpoint.
+      return [gap / 2, -gap / 2].map((offset, index) => ({
+        x1: x1 + normal.x * offset,
+        y1: y1 + normal.y * offset,
+        x2: x2 - normal.x * offset,
+        y2: y2 - normal.y * offset,
+        segment: index === 0 ? "primary" : "secondary",
+        doubleBondSide: "center"
+      }));
+    }
     if (doubleBondRendersSymmetric(fromAtom, toAtom, object, bond, ringInteriorSide)) {
       return [gap / 2, -gap / 2].map((offset, index) => ({
         x1: x1 + normal.x * offset,
@@ -5057,8 +5133,8 @@ function joinCenteredDoubleBondSegments(
   groups: readonly PageMoleculeBondSegmentGroup[],
   labeledAtoms: ReadonlySet<string>
 ): void {
-  const centeredGroups = groups.filter(({ segments }) =>
-    segments.some((segment) => segment.doubleBondSide === "center")
+  const centeredGroups = groups.filter(({ bond, segments }) =>
+    bond.stereo !== "either" && segments.some((segment) => segment.doubleBondSide === "center")
   );
   if (centeredGroups.length === 0) {
     return;
@@ -5082,7 +5158,7 @@ function joinCenteredDoubleBondSegments(
       const neighbors = (incident.get(atomId) ?? []).filter((neighbor) => neighbor !== group);
       if (labeledAtoms.has(atomId) || neighbors.some(({ bond }) => {
         const style = nativeBondDisplayStyle(bond);
-        return style === "wedge" || style === "hashed" || style === "dashed";
+        return bond.stereo === "either" || style === "wedge" || style === "hashed" || style === "dashed";
       })) {
         continue;
       }
@@ -5337,6 +5413,15 @@ export function planMoleculeAtomLabels(
     );
     return plan ? [plan] : [];
   });
+}
+
+/** The same padded label geometry used by canvas, bond clipping and SVG export. */
+export function moleculeLayoutLabelBoxes(object: MoleculeObject): LayoutLabelBox[] {
+  const indices = new Map(object.atoms.map((atom, i) => [atom.id, i]));
+  return planMoleculeAtomLabels(object).map(plan => ({
+    atom: indices.get(plan.atom.id)!, x: plan.anchor.x + plan.layout.bounds.x,
+    y: plan.anchor.y + plan.layout.bounds.y, width: plan.layout.bounds.width, height: plan.layout.bounds.height
+  }));
 }
 
 /** Page-axis bounds of a caption's stored frame, using the same pivot as text SVG rendering. */
@@ -5800,7 +5885,7 @@ export function atomLabelRunFontSize(script: AtomLabelScript, drawingStyle: Nati
     return undefined;
   }
 
-  return drawingStyle.atomLabelFontSizePx * (script === "superscript" ? 0.88 : 0.72);
+  return drawingStyle.atomLabelFontSizePx * (script === "superscript" ? 0.88 : nativeTextScriptFontScale);
 }
 
 /**
@@ -5875,7 +5960,7 @@ export function atomDisplayLabelPlacement(
           - dativeDeprotonationCount(atom, bonds, atoms, resolution)
       ));
 
-  if (element === "C" && formalCharge === 0) {
+  if (element === "C" && formalCharge === 0 && atom.isotope === undefined) {
     const terminalCarbon = atoms.length > 0 && heavyAtomNeighborCount(atom.id, resolution) === 1;
     // "Naked" means no bond at all, not zero covalent valence: a dashed (dative) bond
     // contributes no valence, so testing valenceUsed here labeled the carbon at the end of
@@ -5894,6 +5979,7 @@ export function atomDisplayLabelPlacement(
   // HO, not OH, when the bond comes from the right: chem-core's side test, the same one that
   // records a cyano label's bond side, so the drawing and the chemistry agree on "right".
   const hydrogenBeforeElement =
+    atom.isotope === undefined &&
     implicitHydrogens === "H" &&
     element !== "H" &&
     singleHeavyNeighbor !== undefined &&
@@ -5901,7 +5987,7 @@ export function atomDisplayLabelPlacement(
   return {
     label: hydrogenBeforeElement
       ? `${implicitHydrogens}${element}${chargeLabelSuffix(labelCharge)}`
-      : `${element}${implicitHydrogens}${chargeLabelSuffix(labelCharge)}`
+      : `${atom.isotope ?? ""}${element}${implicitHydrogens}${chargeLabelSuffix(labelCharge)}`
   };
 }
 

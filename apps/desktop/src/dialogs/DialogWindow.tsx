@@ -1,4 +1,6 @@
+import { isEditableTarget } from "../editableTarget";
 import { useExportPreviewEnabled } from "./useExportPreviewEnabled";
+import { perfHook, perfProbe, perfSurfaceReady } from "../perf/runtime";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { detectDialogPlatform, dialogEnvelope, sameDialog, type DialogMessage } from "./dialogProtocol";
 import { sendDialogMessage, subscribeDialogHost } from "./dialogTransport";
@@ -10,8 +12,18 @@ import { exportOptions } from "./exportOptionsValidation";
 import { EngineInstallForm } from "./EngineInstallForm";
 import { ToolInstallForm } from "./ToolInstallForm";
 const ExportForm = lazy(() => import("./ExportForm").then(module => ({ default: module.ExportForm })));
+const StructureTemplatePicker = lazy(() => import("./StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 
 export function DialogWindow({ hostId }: { hostId: string }) {
+  useEffect(() => {
+    const onMenu = (event: MouseEvent) => { if (!isEditableTarget(event.target)) event.preventDefault(); };
+    window.document.addEventListener("contextmenu", onMenu);
+    return () => window.document.removeEventListener("contextmenu", onMenu);
+  }, []);
+  return <DialogWindowContent hostId={hostId} />;
+}
+
+function DialogWindowContent({ hostId }: { hostId: string }) {
   const previewEnabled = useExportPreviewEnabled();
   const previewEnabledRef = useRef(previewEnabled);
   previewEnabledRef.current = previewEnabled;
@@ -133,7 +145,9 @@ export function DialogWindow({ hostId }: { hostId: string }) {
     if (!snapshot) return;
     if ((snapshot.dialogKind === "engineInstall" || snapshot.dialogKind === "toolInstall") && readySession.current === snapshot.sessionId) return;
     readySession.current = snapshot.sessionId;
-    void sendDialogMessage(hostId, { ...dialogEnvelope(snapshot), requestId: crypto.randomUUID(), type: "ready", data: {} }).catch(e => setError(String(e)));
+    const sending = sendDialogMessage(hostId, { ...dialogEnvelope(snapshot), requestId: crypto.randomUUID(), type: "ready", data: {} });
+    if (perfProbe) void sending.then(() => perfHook(() => perfSurfaceReady("main", snapshot.sessionId, "dialog-open"))).catch(() => undefined);
+    void sending.catch(e => setError(String(e)));
   }, [hostId, snapshot]);
   useEffect(() => {
     if (snapshot?.dialogKind !== "arrangementSpacing") return;
@@ -168,6 +182,10 @@ export function DialogWindow({ hostId }: { hostId: string }) {
     setError(undefined); setNotice(undefined);
     const requestId = crypto.randomUUID();
     pendingRequestId.current = requestId;
+    if (perfProbe) {
+      if (data.action === "export") perfHook(() => perfProbe?.expectCompletion("export-written", requestId));
+      else if (data.action === "apply") perfHook(() => perfProbe?.expectCompletion("document-commit", requestId));
+    }
     startAcceptanceDeadline();
     void sendDialogMessage(hostId, { ...dialogEnvelope(snapshot), requestId, type: "action", data }).catch(e => {
       if (cancellationRequested.current) return;
@@ -175,6 +193,10 @@ export function DialogWindow({ hostId }: { hostId: string }) {
     });
   };
   if (!snapshot) return <p role="status">{error ?? "Opening dialog…"}</p>;
+  if (snapshot.dialogKind === "structureTemplates") return <Suspense fallback={<p role="status">Opening Templates…</p>}>
+    <StructureTemplatePicker {...snapshot.data} busy={busy} error={error} onReady={reportReady}
+      onInsert={templateId => sendAction({ action: "insert", templateId })} onClose={() => sendAction({ action: "cancel" })} />
+  </Suspense>;
   if (snapshot.dialogKind === "arrangementSpacing") return <ArrangementSpacingForm {...snapshot.data} percent={percent}
     preview={preview} busy={busy} error={error} onChange={value => {
       previewRequestId.current = undefined; previewParts.current = undefined;

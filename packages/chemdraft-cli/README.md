@@ -92,7 +92,7 @@ Batch input is a JSON array of {"name":"aspirin","smiles":"CC(=O)Oc1ccccc1C(=O)O
 trimmed; blank/duplicate names, path separators, and names beginning with a dot are rejected.
 
 Options: --width <px> is the PNG width (16–4000, default 600); --background white|transparent
-defaults to white; --bond-length <px> defaults to 28 (the desktop paste value); --padding <px>
+defaults to white; --bond-length <px> defaults to 28 (the CLI figure default); --padding <px>
 defaults to 24; and --format png|svg|both normally infers the extension in single mode. One JSON
 line per structure is written to stdout and progress to stderr. stereoCenters counts specified
 centers; unspecifiedStereoCenters counts constitutional centers without a specified descriptor;
@@ -116,6 +116,11 @@ Batch jobs use the usual `{ "name": "decalin", "smiles": "C1CCC2CCCCC2C1" }` sha
 `toAtomId`, `order`, `display`), and rings (`ringKey`, `atomIds`, `bondIds`, `center: {x,y}`, `size`).
 Coordinates and ring centers are in page pixels. Ring keys are sorted bond ids joined by `|`;
 use the reported keys instead of guessing them. Atom and bond ids are local to their molecule.
+
+Unspecified stereogenic double bonds stay unspecified by default: `CC=CC` keeps native
+`stereo: "either"` and matching stored MOL markers (V2000 stereo 3 / V3000 `CFG=2`).
+`render-document` and SMILES exports retain that open E/Z; specified `C/C=C/C` stays E.
+The `E/Z unspecified for N double bond(s)` warning counts only the input's open bonds.
 
 `inputAtomIndex` is the 0-based atom token index in the supplied SMILES, including separately
 written H tokens. It is verified against RDKit's parse order and the depicted graph; unavailable
@@ -203,6 +208,10 @@ arguments.
 
 Render a reaction scheme as PNG or SVG.
 
+Use repeated `--above` and `--below` for lines above and below the arrow, and `--caption` for a note beneath the scheme. Batch jobs accept `above` and `below` arrays and a `caption` string. Formula counts are subscripted automatically; `--conditions` still appends to the agent formula line.
+
+Reaction labels allow at most 6 `--above` and 6 `--below` entries, a non-empty `--caption` of at most 300 characters, and 2000 characters combined across above, below, caption and legacy `--conditions`; batch jobs use the same caps.
+
 ~~~bash
 pnpm -s chemdraft reaction --rxn 'CC(=O)O.OCC>OS(=O)(=O)O>CC(=O)OCC' --out ester.png
 pnpm -s chemdraft reaction \
@@ -251,7 +260,7 @@ the index in the derived form). not-requested means the method was not run at al
 
 ## name
 
-Convert a chemical name with the bundled OPSIN runtime, optionally rendering the result.
+Resolve a chemical name against ChemDraft built-in structure templates first, then the bundled OPSIN runtime, optionally rendering the result. Matching is exact after case/Greek/synonym normalization, never fuzzy. Template names work without Java or OPSIN installed.
 
 ~~~bash
 pnpm -s chemdraft name --name '2-acetoxybenzoic acid' --render aspirin.png
@@ -394,3 +403,24 @@ other format writes one file per structure into --out-dir, named <job name>.<ext
 --format cdxml|pdf|sdf|mol|smi selects the output format; in single mode it normally infers it from
 --out. One JSON line per structure is written to stdout and progress to stderr. Exit 0 is used when
 every structure succeeds, 1 when any export fails, and 2 for bad arguments.
+
+Isotope labels and their positions are preserved in native documents, rendering, reaction schemes,
+and MOL V2000/V3000, SDF, SMILES and CDXML exports. D/T represent hydrogen-2/3; other isotope
+masses are stored per atom. Radical inputs remain refused by drawing and export commands.
+
+## Built-in structure template layouts
+
+Use a template name such as `beta-cyclodextrin`, `β-CD`, `cucurbit[7]uril`, or
+`18-crown-6` rather than writing SMILES for these hosts. The `name` result reports
+`source: "template" | "opsin"`; template results also carry `templateId` and
+`templateName`. Existing SMILES fields retain their meaning. `name --render` draws
+the template layout at the default document style.
+
+Coordinate-less SMILES input to `render`, `document`, `grid`, `reaction`, and
+`export` uses the authored layout only when canonical **isomeric** SMILES matches
+exactly, including stereo and charge. Results report `layout: "template:<id>"`
+(on grid cells and reaction `layouts` entries for multi-molecule figures).
+Templates use the default document bond length; ordinary SMILES sizing is unchanged.
+Stereo-free or different stereoisomers do not substitute. Native documents supplied to
+`render-document`, MOL/molfile, CDXML and drawn coordinates retain their layouts; a
+native document built from SMILES inherits the layout chosen by `document`.

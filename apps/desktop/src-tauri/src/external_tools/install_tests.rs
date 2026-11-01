@@ -6,6 +6,7 @@ use crate::local_engine::{
     download::{download_verified, DownloadClient},
     InstallErrorCode,
 };
+use crate::network_test_http::LoopbackServer;
 use sha2::{Digest, Sha256};
 use std::{
     fs,
@@ -18,7 +19,7 @@ use std::{
         OnceLock,
     },
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 struct Temp(PathBuf);
@@ -153,35 +154,20 @@ fn client() -> DownloadClient {
     )
     .unwrap()
 }
-fn serve_response(response: Vec<u8>) -> (String, thread::JoinHandle<()>) {
+fn serve_response(response: Vec<u8>) -> (String, LoopbackServer) {
     serve_response_after(response, Duration::ZERO)
 }
-fn serve_response_after(response: Vec<u8>, delay: Duration) -> (String, thread::JoinHandle<()>) {
+fn serve_response_after(response: Vec<u8>, delay: Duration) -> (String, LoopbackServer) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}/asset", listener.local_addr().unwrap());
-    listener.set_nonblocking(true).unwrap();
-    let server = thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            match listener.accept() {
-                Ok((stream, _)) => {
-                    thread::sleep(delay);
-                    crate::network_test_http::reply(stream, &response);
-                    return;
-                }
-                Err(error)
-                    if error.kind() == std::io::ErrorKind::WouldBlock
-                        && Instant::now() < deadline =>
-                {
-                    thread::sleep(Duration::from_millis(5))
-                }
-                Err(error) => panic!("loopback accept failed: {error}"),
-            }
-        }
+    let address = listener.local_addr().unwrap();
+    let url = format!("http://{address}/asset");
+    let server = LoopbackServer::spawn(listener, 1, move |stream| {
+        thread::sleep(delay);
+        crate::network_test_http::reply(stream, &response);
     });
     (url, server)
 }
-fn serve(body: &[u8], length: bool) -> (String, thread::JoinHandle<()>) {
+fn serve(body: &[u8], length: bool) -> (String, LoopbackServer) {
     let mut response = b"HTTP/1.1 200 OK\r\nConnection: close\r\n".to_vec();
     if length {
         response.extend(format!("Content-Length: {}\r\n", body.len()).as_bytes());
@@ -189,6 +175,19 @@ fn serve(body: &[u8], length: bool) -> (String, thread::JoinHandle<()>) {
     response.extend(b"\r\n");
     response.extend(body);
     serve_response(response)
+}
+
+#[test]
+fn loopback_server_stops_when_client_never_connects() {
+    let (_, server) = serve(b"unused", true);
+    server.join_unused().unwrap();
+}
+
+#[test]
+#[should_panic(expected = "loopback server did not serve a client")]
+fn loopback_server_join_requires_a_client() {
+    let (_, server) = serve(b"unused", true);
+    server.join().unwrap();
 }
 
 fn tar_gz(body: &[u8]) -> Vec<u8> {

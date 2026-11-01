@@ -40,14 +40,14 @@ describe("Export form preserves the existing export pipeline", () => {
     const expected = await exportPhase4Pdf(document, { compress, includePageGuides: !compress });
     expect(result).toEqual(expected);
   });
-  it.each(["png", "jpeg", "bmp", "gif", "tiff"] as const)("keeps %s raster input, options, bytes and warnings unchanged", async format => {
+  it.each(["png", "jpeg", "bmp", "gif", "tiff"] as const)("keeps %s raster input, bytes and warnings and supplies source density", async format => {
     const document = createPhase4Document("Raster parity");
     native.raster.mockResolvedValueOnce({ bytes: new Uint8Array([1, 2, 3]), warnings: [{ message: "Raster warning" }] });
     const raster = { scale: 3, background: "transparent" as const, jpegQuality: 83, maxDimensionPx: 4096 };
     const result = await createDialogExportResult(document, { ...exportFixture(), format, busy: false, raster });
     const transparent = format === "png";
     const svg = exportPhase4Svg(document, { includeWarnings: true, background: transparent ? "transparent" : "#ffffff" });
-    expect(rasterizeSvgNative).toHaveBeenLastCalledWith(svg.contents, format, { scale: 3, background: transparent ? "transparent" : "#ffffff", jpegQuality: 83, maxDimensionPx: 4096 });
+    expect(rasterizeSvgNative).toHaveBeenLastCalledWith(svg.contents, format, { scale: 3, cssPxPerInch: 96, background: transparent ? "transparent" : "#ffffff", jpegQuality: 83, maxDimensionPx: 4096 });
     expect(result.kind === "binary" && result.bytes).toEqual(new Uint8Array([1, 2, 3]));
     expect(result.warnings).toEqual([...svg.warnings, { message: "Raster warning" }]);
   });

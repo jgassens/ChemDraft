@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { runStereoCommand } from "./stereo";
+import { perceiveDoubleBondStereo, runStereoCommand } from "./stereo";
+import { depictSmiles2D } from "@chemdraft/ocl-adapter";
+import * as documentWorkflow from "../document";
 
 vi.setConfig({ testTimeout: 60_000 });
 
@@ -14,6 +16,29 @@ async function inspect(smiles: string) {
 }
 
 describe("chemdraft stereo", () => {
+  it.each(["CC=O", "CC=C(C)C", "C1CC=CCC1"])("warns about a stale either marker on non-stereogenic %s", async (smiles) => {
+    const depicted = await documentWorkflow.depictSmiles(smiles);
+    const lines = depictSmiles2D(smiles).molfile.split("\n");
+    const counts = lines.findIndex((line) => line.includes("V2000"));
+    const bondStart = counts + 1 + Number(lines[counts]!.slice(0, 3));
+    const bondIndex = lines.slice(bondStart).findIndex((line) => Number(line.slice(6, 9)) === 2);
+    const line = lines[bondStart + bondIndex]!;
+    lines[bondStart + bondIndex] = `${line.slice(0, 9)}  3${line.slice(12)}`;
+    const molfile = lines.join("\n");
+    const warnings: string[] = [];
+    expect(await perceiveDoubleBondStereo(molfile, warnings)).toEqual([]);
+    expect(warnings).toEqual([`Double bond ${bondIndex + 1} carries an either marker but is not stereogenic.`]);
+    const spy = vi.spyOn(documentWorkflow, "depictSmiles").mockResolvedValue({ ...depicted, molfile });
+    try {
+      const { result, output } = await inspect(smiles);
+      expect(result).toBe(0);
+      expect(output.doubleBonds).toEqual([]);
+      expect(output.specifiedCount).toBe(0);
+      expect(output.unspecifiedCount).toBe(0);
+      expect(output.warnings).toContain(warnings[0]);
+    } finally { spy.mockRestore(); }
+  });
+
   it("reports L-alanine as S", async () => {
     const { result, output } = await inspect("C[C@H](N)C(=O)O");
     expect(result).toBe(0);

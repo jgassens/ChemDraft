@@ -277,6 +277,9 @@ export function runPluginWorker(
     // `available: false` rather than the plugin having to guess from the capability's presence.
     const chemistry: PluginChemistryAPI | undefined = has("chemistry.compute")
       ? {
+          embed3d: request => call("chemistry", "embed3d", [request]) as ReturnType<NonNullable<PluginChemistryAPI["embed3d"]>>,
+          minimize3d: request => call("chemistry", "minimize3d", [request]) as ReturnType<NonNullable<PluginChemistryAPI["minimize3d"]>>,
+          flatten3d: request => call("chemistry", "flatten3d", [request]) as ReturnType<NonNullable<PluginChemistryAPI["flatten3d"]>>,
           isotopeEnvelope: (request) =>
             call("chemistry", "isotopeEnvelope", [request]) as ReturnType<PluginChemistryAPI["isotopeEnvelope"]>,
           // Present in the stub for the same reason: a worker-routed plugin must see the same shape

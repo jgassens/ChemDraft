@@ -34,6 +34,10 @@ describe("assistant catalog and schema mirrors", () => {
     expect(properties("insert_structures").items).toMatchObject({ minItems: 1, maxItems: 24 });
     expect(properties("insert_reaction").reactants).toMatchObject({ maxItems: 6 });
     expect(properties("insert_reaction").products).toMatchObject({ maxItems: 6 });
+    expect(properties("insert_reaction").above).toMatchObject({ maxItems: 6 });
+    expect(properties("insert_reaction").below).toMatchObject({ maxItems: 6 });
+    expect(properties("insert_reaction").caption).toMatchObject({ minLength: 1, maxLength: 300 });
+    expect(toolSchemas.insert_reaction.safeParse({ reactants: ["C"], products: ["C"], above: ["Ti(OiPr)4"], below: ["CH2Cl2"], caption: "note" }).success).toBe(true);
     expect(properties("render").maxDimensionPx).toMatchObject({ minimum: 256, maximum: 2048, default: 1568 });
     for (const name of ["delete_objects", "style_objects", "move_objects"] as const) {
       expect(properties(name).objectIds).toMatchObject({ minItems: 1, maxItems: 100 });
@@ -65,6 +69,9 @@ describe("assistant catalog and schema mirrors", () => {
     ["insert_reaction", { reactants: Array(7).fill("C"), products: ["C"] }],
     ["insert_reaction", { reactants: ["C"], products: ["C"], reagents: Array(4).fill("x") }],
     ["insert_reaction", { reactants: ["C"], products: ["C"], conditions: Array(4).fill("x") }],
+    ["insert_reaction", { reactants: ["C"], products: ["C"], above: Array(7).fill("x") }],
+    ["insert_reaction", { reactants: ["C"], products: ["C"], caption: "x".repeat(301) }],
+    ["insert_reaction", { reactants: ["C"], products: ["C"], caption: "" }],
     ["insert_text", { text: "x".repeat(2001) }], ["edit_structure", { objectId: "x", smiles: "C".repeat(5001) }],
     ["delete_objects", { objectIds: Array(101).fill("x") }],
     ["style_objects", { objectIds: Array(101).fill("x"), style: {} }],

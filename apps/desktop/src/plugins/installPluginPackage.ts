@@ -67,6 +67,7 @@ import {
 } from "./pluginPackageArchive";
 import type { PluginStagingFs } from "./pluginStagingFs";
 import { comparePluginVersions } from "./pluginVersion";
+import { deletePersistentPluginStorage } from "./pluginStorage";
 
 /** Stable codes for the install-level failures (the archive's own codes live in the archive module). */
 export const PluginInstallErrorCodes = {
@@ -80,6 +81,7 @@ export const PluginInstallErrorCodes = {
   UpdateVersionNotNewer: "PLUGIN_UPDATE_VERSION_NOT_NEWER",
   UpdateStateChanged: "PLUGIN_UPDATE_STATE_CHANGED",
   UpdateFailed: "PLUGIN_UPDATE_FAILED",
+  UninstallStorageDeleteFailed: "PLUGIN_UNINSTALL_STORAGE_DELETE_FAILED",
   Unsupported: "PLUGIN_INSTALL_UNSUPPORTED"
 } as const;
 
@@ -788,6 +790,8 @@ export async function uninstallPlugin(options: {
   descriptor?: PackagedPluginDescriptor;
   /** The bundled plugin this install replaced, if any — re-registered once the install is gone. */
   restores?: BundledPluginDescriptor;
+  /** Include disabled bundled plugins: they still own their stored settings. */
+  bundledPlugins?: readonly BundledPluginDescriptor[];
   /** Honored when restoring: a bundled plugin the user disabled must not come back enabled. */
   disabledIds?: ReadonlySet<string>;
 }): Promise<void> {
@@ -829,7 +833,7 @@ export async function uninstallPlugin(options: {
       console.warn(`Uninstalling "${pluginId}": could not remove ${stagedPath}.`, error);
     }
   }
-  await removeInstalledPluginRecord(fs, pluginId);
+  const remainingInstalls = await removeInstalledPluginRecord(fs, pluginId);
 
   // Consent storage is auxiliary uninstall cleanup. It must happen only after the host and catalog
   // no longer expose the plugin, and an unreadable or unwritable consent file must not resurrect a
@@ -845,6 +849,33 @@ export async function uninstallPlugin(options: {
   if (restores && !disabledIds?.has(pluginId)) {
     restores.activate?.();
     runtime.registerPlugin(restores.manifest, restores.options);
+  }
+
+  // A bundled/installed handover keeps the same plugin id and its settings. Otherwise, delete
+  // only after teardown and the catalog commit: no live worker or pending save may recreate them.
+  // Failure reports that uninstall completed but settings remain; the hook still removes its UI
+  // entry and disabled preference before surfacing this specific cleanup error.
+  if (!restores) {
+    const otherId = [
+      ...remainingInstalls.map((record) => record.id),
+      ...(options.bundledPlugins ?? []).map((plugin) => plugin.manifest.id),
+      ...runtime.host.listPlugins().map((plugin) => plugin.id)
+    ].find((id) => id !== pluginId && id.toLowerCase() === pluginId.toLowerCase());
+    if (otherId) {
+      console.warn(
+        `Uninstalling "${pluginId}": stored settings are left in place because plugin "${otherId}" ` +
+          "has the same case-insensitive storage path."
+      );
+      return;
+    }
+    try {
+      await deletePersistentPluginStorage(pluginId);
+    } catch (error) {
+      throw new PluginInstallError(
+        PluginInstallErrorCodes.UninstallStorageDeleteFailed,
+        `Plugin "${pluginId}" was uninstalled, but its stored settings could not be deleted: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
   }
 }
 

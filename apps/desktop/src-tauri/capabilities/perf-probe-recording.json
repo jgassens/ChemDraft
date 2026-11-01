@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "perf-probe-recording",
+  "description": "Bridge-gated clock and bounded timing log for measured webviews only.",
+  "windows": ["main", "toolset-*", "plugin-panel-*", "dialog-main-*", "preferences", "spin3d-debugger"],
+  "permissions": ["allow-perf-log-clock", "allow-perf-log-append"]
+}

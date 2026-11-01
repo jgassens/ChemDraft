@@ -1,0 +1,231 @@
+{
+  "schema": "chemdraft.document.v1",
+  "id": "doc_001",
+  "title": "neighboring-centers",
+  "createdAt": "2026-10-27T00:00:00.000Z",
+  "updatedAt": "2026-10-27T00:00:00.000Z",
+  "pages": [
+    {
+      "id": "page_001",
+      "width": 816,
+      "height": 1056,
+      "margin": {
+        "top": 72,
+        "right": 72,
+        "bottom": 72,
+        "left": 72
+      },
+      "layout": {
+        "presetId": "letter",
+        "orientation": "portrait",
+        "widthPx": 816,
+        "heightPx": 1056,
+        "marginTopPx": 72,
+        "marginRightPx": 72,
+        "marginBottomPx": 72,
+        "marginLeftPx": 72,
+        "sourceUnit": "inch",
+        "sourceWidth": 8.5,
+        "sourceHeight": 11
+      },
+      "objects": [
+        {
+          "id": "mol_clipboard_001",
+          "x": 81.37818069723099,
+          "y": 99.00002734551919,
+          "width": 137.24363860553802,
+          "height": 101.99994530896163,
+          "rotation": 0,
+          "style": {
+            "chainAngleDegrees": 120,
+            "bondLengthPx": 28,
+            "bondStrokeWidthPx": 2,
+            "bondBoldWidthPx": 4.8,
+            "bondColor": "#000000",
+            "bondLineCap": "butt",
+            "bondSpacingMode": "absolute",
+            "bondSpacingPercent": 18,
+            "multipleBondGapPx": 4.8,
+            "doubleBondInsetPx": 4.5,
+            "bondMarginWidthPx": 6,
+            "bondHashSpacingPx": 9,
+            "bondOverlapClearancePx": 6,
+            "atomIndicatorShowQuery": true,
+            "atomIndicatorShowStereochemistry": false,
+            "atomIndicatorShowEnhancedStereochemistry": true,
+            "atomIndicatorShowAtomNumbers": false,
+            "bondIndicatorShowQuery": true,
+            "bondIndicatorShowStereochemistry": false,
+            "bondIndicatorShowReaction": true,
+            "atomLabelFontFamily": "Arial, Helvetica, sans-serif",
+            "atomLabelFontSizePx": 15,
+            "atomLabelFontWeight": 400,
+            "atomLabelFontStyle": "normal",
+            "atomLabelColor": "#000000",
+            "atomLabelBackgroundColor": "#ffffff",
+            "atomLabelPaddingPx": 2,
+            "atomLabelBondClearancePx": 7,
+            "atomLabelAlignment": "automatic",
+            "atomLabelPlacement": "automatic",
+            "atomLabelShowTerminalCarbons": false,
+            "atomLabelHideImplicitHydrogens": false,
+            "stylePresetId": "chemdraft.synthetic",
+            "source": "clipboard-smiles"
+          },
+          "compatibility": {
+            "sourceFormat": "smiles",
+            "warnings": [
+              {
+                "code": "clipboard.smiles_imported",
+                "message": "Generated an editable 2D structure from pasted SMILES."
+              }
+            ],
+            "unknown": {
+              "smiles": "CC=CC(O)[C@H](F)Cl"
+            }
+          },
+          "type": "molecule",
+          "structureFormat": "molfile-v2000",
+          "structure": "\n  ChemDraft\n\n  8  7  0  0  1  0  0  0  0  0999 V2000\n   89.3782 -157.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  113.6262 -143.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  137.8760 -157.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  162.1240 -143.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  162.1240 -115.0000    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0\n  186.3738 -157.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0\n  210.6218 -143.0000    0.0000 F   0  0  0  0  0  0  0  0  0  0  0  0\n  186.3738 -185.0000    0.0000 Cl  0  0  0  0  0  0  0  0  0  0  0  0\n  1  2  1  0  0  0  0\n  2  3  2  3  0  0  0\n  3  4  1  0  0  0  0\n  4  5  1  0  0  0  0\n  4  6  1  0  0  0  0\n  6  7  1  6  0  0  0\n  6  8  1  0  0  0  0\nM  END\n",
+          "chemistry": {
+            "formula": "C5H8ClFO",
+            "averageMass": 138.566,
+            "exactMass": 138.02477,
+            "atomCount": 8,
+            "bondCount": 7,
+            "totalCharge": 0,
+            "radicalCount": 0,
+            "isotopeLabels": [],
+            "stereochemistry": [],
+            "warnings": []
+          },
+          "atoms": [
+            {
+              "id": "a0",
+              "element": "C",
+              "x": 89.37818069723099,
+              "y": 156.99999453089617,
+              "formalCharge": 0
+            },
+            {
+              "id": "a1",
+              "element": "C",
+              "x": 113.62616175225529,
+              "y": 143.00000546910385,
+              "formalCharge": 0
+            },
+            {
+              "id": "a2",
+              "element": "C",
+              "x": 137.87600947248785,
+              "y": 156.99999453089617,
+              "formalCharge": 0
+            },
+            {
+              "id": "a3",
+              "element": "C",
+              "x": 162.12399052751215,
+              "y": 143.00000546910385,
+              "formalCharge": 0
+            },
+            {
+              "id": "a4",
+              "element": "O",
+              "x": 162.12399052751215,
+              "y": 115.00002734551919,
+              "formalCharge": 0
+            },
+            {
+              "id": "a5",
+              "element": "C",
+              "x": 186.37383824774471,
+              "y": 156.99999453089617,
+              "formalCharge": 0
+            },
+            {
+              "id": "a6",
+              "element": "F",
+              "x": 210.621819302769,
+              "y": 143.00000546910385,
+              "formalCharge": 0
+            },
+            {
+              "id": "a7",
+              "element": "Cl",
+              "x": 186.37383824774471,
+              "y": 184.9999726544808,
+              "formalCharge": 0
+            }
+          ],
+          "bonds": [
+            {
+              "id": "b0",
+              "fromAtomId": "a0",
+              "toAtomId": "a1",
+              "order": "single"
+            },
+            {
+              "id": "b1",
+              "fromAtomId": "a1",
+              "toAtomId": "a2",
+              "order": "double",
+              "stereo": "either",
+              "display": {
+                "doubleBondSide": "left"
+              }
+            },
+            {
+              "id": "b2",
+              "fromAtomId": "a2",
+              "toAtomId": "a3",
+              "order": "single"
+            },
+            {
+              "id": "b3",
+              "fromAtomId": "a3",
+              "toAtomId": "a4",
+              "order": "single"
+            },
+            {
+              "id": "b4",
+              "fromAtomId": "a3",
+              "toAtomId": "a5",
+              "order": "single"
+            },
+            {
+              "id": "b5",
+              "fromAtomId": "a5",
+              "toAtomId": "a6",
+              "order": "single",
+              "display": {
+                "bondStyle": "hashed"
+              }
+            },
+            {
+              "id": "b6",
+              "fromAtomId": "a5",
+              "toAtomId": "a7",
+              "order": "single"
+            }
+          ],
+          "transform": {
+            "scaleX": 1,
+            "scaleY": 1,
+            "rotationDegrees": 0
+          },
+          "superatoms": [],
+          "rGroups": []
+        }
+      ],
+      "crossings": []
+    }
+  ],
+  "selection": {
+    "objectIds": []
+  },
+  "styles": {},
+  "plugins": {},
+  "compatibility": {
+    "warnings": []
+  }
+}

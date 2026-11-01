@@ -20,6 +20,8 @@ import type { ToolbarSelectionModel } from "./toolbarSelectionKind";
  * renderer looks each one up in its registry rather than reading a hardcoded `show*Controls` boolean.
  */
 export interface ToolbarWidgetState {
+  /** Selection/document/history boundary for transient native chooser values. */
+  colorContextKey?: string;
   currentTextStyle?: NativeTextStyle;
   currentTextScript?: TextSpan["script"];
   currentObjectColor?: string;

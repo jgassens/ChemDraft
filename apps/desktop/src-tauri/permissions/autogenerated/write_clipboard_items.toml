@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-write-clipboard-items"
+description = "Enables the write_clipboard_items command without any pre-configured scope."
+commands.allow = ["write_clipboard_items"]
+
+[[permission]]
+identifier = "deny-write-clipboard-items"
+description = "Denies the write_clipboard_items command without any pre-configured scope."
+commands.deny = ["write_clipboard_items"]

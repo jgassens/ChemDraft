@@ -264,16 +264,8 @@
 
 
 
-  <text data-object-id="ring-letter-mol_clipboard_001-A" data-layer-index="1" data-object-type="text" x="520.55" y="556.337" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#ffffff">
-    <tspan x="520.55">A</tspan>
-  </text>
-  <text data-object-id="ring-letter-mol_clipboard_001-B" data-layer-index="2" data-object-type="text" x="484.435" y="523.968" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#1a1a1a">
-    <tspan x="484.435">B</tspan>
-  </text>
-  <text data-object-id="ring-letter-mol_clipboard_001-C" data-layer-index="3" data-object-type="text" x="438.352" y="539.06" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#ffffff">
-    <tspan x="438.352">C</tspan>
-  </text>
-  <text data-object-id="ring-letter-mol_clipboard_001-D" data-layer-index="4" data-object-type="text" x="406.742" y="509.84" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#ffffff">
-    <tspan x="406.742">D</tspan>
-  </text>
+  <text data-object-id="ring-letter-mol_clipboard_001-A" data-layer-index="1" data-object-type="text" x="520.55" y="556.337" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#ffffff"><tspan x="520.55">A</tspan></text>
+  <text data-object-id="ring-letter-mol_clipboard_001-B" data-layer-index="2" data-object-type="text" x="484.435" y="523.968" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#1a1a1a"><tspan x="484.435">B</tspan></text>
+  <text data-object-id="ring-letter-mol_clipboard_001-C" data-layer-index="3" data-object-type="text" x="438.352" y="539.06" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#ffffff"><tspan x="438.352">C</tspan></text>
+  <text data-object-id="ring-letter-mol_clipboard_001-D" data-layer-index="4" data-object-type="text" x="406.742" y="509.84" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#ffffff"><tspan x="406.742">D</tspan></text>
 </svg>

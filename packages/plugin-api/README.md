@@ -4,6 +4,18 @@ Defines public plugin API types, Zod-backed manifest schemas, permission names, 
 
 This package must not contain app-specific implementation code or direct document mutation logic.
 
+API 0.1.17 adds optional `MoleculeBond.stereo: "either"` for E/Z-unspecified double bonds.
+Preserve it when copying bonds; it is valid only on double bonds.
+
+API 0.1.15 adds optional command-scoped `context.chemistry.embed3d`, `minimize3d`, and `flatten3d`
+methods for plugins declaring `chemistry.compute`. They run in the app's in-process RDKit WASM worker
+with no process, network, or new permission. `embed3d` makes explicit-hydrogen ETKDGv3 models for
+1–8 SMILES components (seed defaults to 42); `minimize3d` accepts only coordinate changes to the
+host-signed model and requires `interfragment`, refusing it for a single component; and `flatten3d`
+returns native 2D molecule objects with 3D-derived stereo, without inserting them. The methods are
+available only during the plugin's own command. See `docs/plugin-architecture/AUTHORING.md` for
+limits, refusal behavior, patch insertion, and the energy honesty rule.
+
 API 0.1.14 adds optional `prompt.restoreDraft` to `overlays.setContent`. The host restores it once
 per call into an empty draft only, never overwrites typed text, and never sends it. The string must
 fit the contributed prompt's `maxLength` (at most 20,000); the prompt object remains strict.
@@ -63,3 +75,6 @@ including `kind: "prompt"`; its command and optional select command must also be
 plugin. `context.overlays.setStatus({ overlayId, text })` requires `ui.canvas`, accepts at most
 120 characters, and clears the status with an empty string. Overlay commands receive
 `context.input.source = "overlay"` with the owned `overlayId`.
+
+API 0.1.16 adds optional positive integer isotope mass numbers to native document atoms.
+Native molecule objects and document patches preserve isotope masses; hydrogen-2/3 use D/T elements.

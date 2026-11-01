@@ -6,11 +6,11 @@ The native document model belongs in `packages/chem-core`. Compatibility formats
 
 Key architecture notes:
 
+- [perf-probe.md](perf-probe.md) — Bridge-gated timing logs for comparable macOS and Windows speed runs.
 - `3d-spin-flatten.md` — Spin 3D flattening and placement architecture.
+- [plugin-3d-chemistry.md](plugin-3d-chemistry.md) — Plugin 3D chemistry worker, model-token, and flattening boundary.
 - `composited-page-editor-model.md`
 - `dependency-inventory.md` — Dependency and vendored-binary inventory.
-- `external-tools.md` — Host-owned Claude Code/Codex discovery, consent, and execution.
-- `assistant-tools.md` — Document-aware Assistant tools, write scope, and local MCP transport.
 - `over-under-crossing-model.md`
 - `export-engines-build-plan.md`
 - `save-open-and-file-format.md`

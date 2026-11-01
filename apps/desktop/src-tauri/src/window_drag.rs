@@ -1,5 +1,15 @@
+use tauri::Manager;
+
 /// The invoking window is supplied by Tauri, never by a caller-provided label.
 pub(crate) fn start(window: &tauri::WebviewWindow, grab_x: f64, grab_y: f64) -> Result<(), String> {
+    // AppKit's native drag consumes mouse-up, so the page cannot clear this guard.
+    super::panel_window::end_pointer_guard(
+        window.app_handle(),
+        window.label(),
+        super::panel_window::PointerGuardEnd::Drag,
+        None,
+        0,
+    );
     compensate_before_drag(window, grab_x, grab_y)?;
     window.start_dragging().map_err(|error| error.to_string())
 }

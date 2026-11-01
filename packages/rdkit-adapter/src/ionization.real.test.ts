@@ -5,7 +5,7 @@
  * read it the way Dimorphite does — above all that the per-site index selects the atom that actually
  * ionises, which is the trap this table sets.
  */
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { buildAnalysisReport, type IonizationSite } from "@chemdraft/analysis-core";
 
@@ -44,6 +44,21 @@ async function ionization(smiles: string) {
 }
 
 describe("finding the ionizable atom", () => {
+  it("uses explicit depiction policy even while PDF export has installed a global JSDOM window", async () => {
+    vi.stubGlobal("window", { document: {} });
+    try {
+      for (const includeDepiction of [false, true]) {
+        const run = await analyzeStructure({ format: "smiles", value: "CC(=O)O", runId: "depiction-policy",
+          startedAt: "2026-10-26T00:00:00.000Z", methodIds: [IONIZATION_SITES_METHOD_ID], includeDepiction });
+        const result = run.results.find((entry) => entry.kind === "ionization");
+        expect(result?.kind).toBe("ionization");
+        if (result?.kind === "ionization") {
+          if (includeDepiction) expect(result.depiction?.atoms).toHaveLength(4);
+          else expect(result.depiction).toBeUndefined();
+        }
+      }
+    } finally { vi.unstubAllGlobals(); }
+  });
   it("puts acetic acid's site on the hydroxyl oxygen, not the carbonyl", async () => {
     // The whole reason the index semantics were verified against Dimorphite's source. Acetic acid is
     // CC(=O)O — atom 1 is the carbonyl carbon, 2 the =O, 3 the -OH. The site must be atom 3.

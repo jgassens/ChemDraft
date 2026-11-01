@@ -35,6 +35,7 @@
     "@chemdraft/rdkit-adapter": "workspace:*",
     "@chemdraft/shortcut-engine": "workspace:*",
     "@chemdraft/style-compat": "workspace:*",
+    "@chemdraft/template-library": "workspace:*",
     "@chemdraft/toolset-registry": "workspace:*",
     "@chemdraft/viewport-engine": "workspace:*",
     "@dnd-kit/core": "^6.3.1",

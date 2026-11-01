@@ -283,15 +283,16 @@ describe("the distribution records track the artifact they describe", () => {
     new URL("../../../docs/architecture/dependency-inventory.md", import.meta.url),
     "utf8"
   );
-  const patchCount = readdirSync(new URL("../vendor/patches/", import.meta.url)).filter((name) =>
+  const patches = readdirSync(new URL("../vendor/patches/", import.meta.url)).filter((name) =>
     name.endsWith(".patch")
-  ).length;
+  );
+  const patchCount = patches.length;
 
   it("records the shipped wasm hash in the dependency inventory", () => {
     expect(inventory).toContain(PINNED_RDKIT_WASM_SHA256);
   });
 
-  it("records the real patch count in both NOTICE and the inventory", () => {
+  it("records the shipped patch count in both NOTICE and the inventory", () => {
     expect(patchCount).toBeGreaterThan(0);
     expect(notice, `NOTICE does not say "${patchCount} patches"`).toContain(`${patchCount} patches`);
     expect(inventory, `the inventory does not say "${patchCount} patches"`).toContain(`${patchCount} patches`);

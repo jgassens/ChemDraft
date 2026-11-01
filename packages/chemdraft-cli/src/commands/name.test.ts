@@ -47,6 +47,23 @@ function capturedIo(): { stdout: string[]; stderr: string[]; io: { stdout: (line
 }
 
 describe("headless ChemDraft name conversion", () => {
+  it.each(["beta-cyclodextrin", "β-CD", "cucurbit[7]uril", "18-crown-6"])("resolves %s without an OPSIN runtime", async name => {
+    const capture = capturedIo();
+    expect(await runNameCommand(["--name", name], capture.io, { opsinPaths: {
+      javaPath: join(outputDirectory, "no-java"), jarPath: join(outputDirectory, "no-jar")
+    } })).toBe(0);
+    expect(JSON.parse(capture.stdout[0]!)).toMatchObject({ ok: true, source: "template",
+      templateId: expect.any(String), templateName: expect.any(String), smiles: expect.any(String) });
+  });
+
+  it("still attempts OPSIN for an unknown exact name", async () => {
+    const capture = capturedIo();
+    expect(await runNameCommand(["--name", "not-a-template"], capture.io, { opsinPaths: {
+      javaPath: join(outputDirectory, "no-java"), jarPath: join(outputDirectory, "no-jar")
+    } })).toBe(1);
+    expect(JSON.parse(capture.stdout[0]!)).toMatchObject({ ok: false, source: "opsin",
+      error: expect.stringContaining("missing bundled Java executable") });
+  });
   it("prints help", async () => {
     const capture = capturedIo();
     expect(await runNameCommand(["--help"], capture.io)).toBe(0);

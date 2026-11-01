@@ -214,7 +214,8 @@ describe("neutralisation", () => {
       interpretationOverride: "neutralized"
     });
     const composition = find(run, "rdkit.composition@neutralized");
-    expect(composition.kind === "composition" && composition.formula).toBe("[13C]CH4O2");
+    // This string is RDKit's own CalcMolFormula output with separate isotopes.
+    expect(composition.kind === "composition" && composition.formula).toBe("C[13C]H4O2");
     expect(composition.kind === "composition" && composition.hasExplicitIsotopes).toBe(true);
 
     const chiral = await analyze("C[C@H](O)C(=O)[O-]", {

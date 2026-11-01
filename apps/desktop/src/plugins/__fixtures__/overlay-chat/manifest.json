@@ -1,0 +1,72 @@
+{
+  "id": "org.chemdraft.test.overlay-chat",
+  "name": "Overlay Test Plugin",
+  "version": "0.0.1",
+  "apiVersion": "^0.1.14",
+  "entry": "entry.js",
+  "permissions": [
+    "ui.canvas",
+    "ui.menu",
+    "plugin.storage",
+    "native.execute",
+    "assistant.run"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "id": "plugin.chat.open",
+        "title": "Open"
+      },
+      {
+        "id": "plugin.chat.submit",
+        "title": "Submit"
+      },
+      {
+        "id": "plugin.chat.choose",
+        "title": "Choose"
+      },
+      {
+        "id": "plugin.chat.finish",
+        "title": "Finish"
+      },
+      {
+        "id": "plugin.chat.setup",
+        "title": "Setup"
+      },
+      {
+        "id": "plugin.chat.new",
+        "title": "New"
+      }
+    ],
+    "menus": [
+      {
+        "id": "menu.chat.open",
+        "title": "Overlay Test Plugin",
+        "commandId": "plugin.chat.open",
+        "location": "plugins"
+      }
+    ],
+    "panels": [],
+    "canvasOverlays": [
+      {
+        "id": "overlay.chat.chat",
+        "title": "Overlay Test Plugin",
+        "icon": "data:image/png;base64,YQ==",
+        "commandId": "plugin.chat.submit",
+        "prompt": {
+          "kind": "prompt",
+          "id": "chat.message",
+          "commandId": "plugin.chat.submit"
+        }
+      }
+    ]
+  },
+  "chemdraftPackage": {
+    "sdk": "@chemdraft/plugin-api",
+    "sdkVersion": "0.1.14",
+    "sourceCommit": "test-fixture",
+    "sourceTree": "clean",
+    "licenseFile": "../../../../../../LICENSE",
+    "packagedAt": "2026-10-25T00:00:00Z"
+  }
+}

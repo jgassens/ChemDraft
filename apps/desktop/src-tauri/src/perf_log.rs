@@ -1,0 +1,1393 @@
+//! Bridge-gated timing log. Clock and writer are shared by every webview in this process.
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::HashMap,
+    fs::{self, OpenOptions},
+    io::Write,
+    path::Path,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    },
+    time::{Instant, SystemTime, UNIX_EPOCH},
+};
+use tauri::Manager;
+
+const MAX_BYTES: u64 = 20 * 1024 * 1024;
+const MAX_LINE_BYTES: usize = 16 * 1024;
+// Independent webview midpoint calibrations: allow at most 10 ms of receipt clock skew.
+const COMPLETION_CLOCK_SKEW_MS: f64 = 10.0;
+
+struct Clock {
+    instant: Instant,
+    epoch_ms: f64,
+}
+pub(crate) struct PerfLog {
+    clock: Option<Clock>,
+    build_stamp: Mutex<Option<String>>,
+    writer: Mutex<()>,
+    error_reported: AtomicBool,
+    opens: Mutex<HashMap<String, NativeOpen>>,
+    created: Mutex<HashMap<String, f64>>,
+    disabled: AtomicBool,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ClockSample {
+    now: f64,
+    process_start: f64,
+    build_stamp: Option<String>,
+    native_open: Option<NativeOpen>,
+    created_at: Option<f64>,
+}
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ForwardInput {
+    input_id: String,
+    t0: f64,
+    command_id: String,
+}
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct NativeOpen {
+    target: String,
+    input_id: String,
+    t0: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    command_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shown_at: Option<f64>,
+    #[serde(default)]
+    cold: bool,
+}
+impl PerfLog {
+    /// Call at the beginning of run(), before constructing the Tauri builder. Disabled runs do
+    /// not read a clock, open a file, create a directory or install an initialization script.
+    pub(crate) fn new(enabled: bool) -> Self {
+        Self {
+            clock: enabled.then(|| Clock {
+                instant: Instant::now(),
+                epoch_ms: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs_f64()
+                    * 1000.0,
+            }),
+            writer: Mutex::new(()),
+            build_stamp: Mutex::new(None),
+            error_reported: AtomicBool::new(false),
+            opens: Mutex::new(HashMap::new()),
+            created: Mutex::new(HashMap::new()),
+            disabled: AtomicBool::new(false),
+        }
+    }
+    fn disable(&self) {
+        self.disabled.store(true, Ordering::Relaxed);
+        if let Ok(mut opens) = self.opens.lock() {
+            opens.clear();
+        }
+    }
+    fn clock(&self) -> Result<&Clock, String> {
+        if self.disabled.load(Ordering::Relaxed) {
+            return Err("Perf probe disabled for this session".into());
+        }
+        self.clock
+            .as_ref()
+            .ok_or_else(|| "Agent bridge is disabled".into())
+    }
+    fn sample(&self) -> Result<ClockSample, String> {
+        let clock = self.clock()?;
+        self.sample_at(clock.epoch_ms + clock.instant.elapsed().as_secs_f64() * 1000.0)
+    }
+    fn sample_at(&self, now: f64) -> Result<ClockSample, String> {
+        let clock = self.clock()?;
+        Ok(ClockSample {
+            now,
+            process_start: clock.epoch_ms,
+            build_stamp: self
+                .build_stamp
+                .lock()
+                .map_err(|_| "Perf stamp lock poisoned")?
+                .clone(),
+            native_open: None,
+            created_at: None,
+        })
+    }
+    pub(crate) fn window_created(&self, label: &str) {
+        if self.disabled.load(Ordering::Relaxed) {
+            return;
+        }
+        let Some(clock) = self.clock.as_ref() else {
+            return;
+        };
+        let now = clock.epoch_ms + clock.instant.elapsed().as_secs_f64() * 1000.0;
+        let Ok(mut created) = self.created.try_lock() else {
+            self.disabled.store(true, Ordering::Relaxed);
+            return;
+        };
+        if created.len() >= 256 {
+            created.clear();
+        }
+        // Labels are reused after destruction: replace the previous creation time.
+        created.insert(label.to_string(), now);
+    }
+    fn expire_open(&self, label: &str, input_id: &str) {
+        if let Ok(mut opens) = self.opens.lock() {
+            if opens
+                .get(label)
+                .is_some_and(|open| open.input_id == input_id)
+            {
+                opens.remove(label);
+            }
+        }
+    }
+    fn register_stamp(&self, source: &str, stamp: String) -> Result<(), String> {
+        self.clock()?;
+        if source != "main" || stamp.is_empty() || stamp.chars().count() > 256 {
+            return Err("Invalid perf build stamp or source window".into());
+        }
+        let mut stored = self
+            .build_stamp
+            .lock()
+            .map_err(|_| "Perf stamp lock poisoned")?;
+        if stored.as_ref().is_some_and(|previous| previous != &stamp) {
+            return Err("Perf build stamp already registered".into());
+        }
+        *stored = Some(stamp);
+        Ok(())
+    }
+    fn append(&self, directory: &Path, line: &str, max_bytes: u64) -> Result<(), String> {
+        let sample = self.sample()?; // Gate BEFORE validation, path access, mkdir and opening files.
+        let stamp = sample
+            .build_stamp
+            .ok_or("Perf build stamp not registered")?;
+        validate_line(line)?;
+        let mut record: serde_json::Value =
+            serde_json::from_str(line).map_err(|e| e.to_string())?;
+        record["buildStamp"] = stamp.into();
+        let line = serde_json::to_string(&record).map_err(|e| e.to_string())?;
+        validate_line(&line)?;
+        let bytes = line.len() as u64 + 1;
+        if bytes > max_bytes {
+            return Err("Perf record exceeds log size cap".into());
+        }
+        let _guard = self.writer.lock().map_err(|_| "Perf log lock poisoned")?;
+        fs::create_dir_all(directory).map_err(|e| e.to_string())?;
+        let path = directory.join("perf-log.jsonl");
+        let size = match fs::metadata(&path) {
+            Ok(metadata) => metadata.len(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(error) => return Err(error.to_string()),
+        };
+        if size.saturating_add(bytes) > max_bytes {
+            let rotated = directory.join("perf-log.1.jsonl");
+            self.rotate_with(&path, &rotated, |from, to| fs::rename(from, to))
+                .map_err(|e| e.to_string())?;
+        }
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .map_err(|e| e.to_string())?;
+        file.write_all(format!("{line}\n").as_bytes())
+            .map_err(|e| e.to_string())
+    }
+    fn report_error_once(&self, error: &std::io::Error) {
+        if !self.error_reported.swap(true, Ordering::Relaxed) {
+            eprintln!("Perf log rotation failed; trying copy and truncate: {error}");
+        }
+    }
+    fn rotate_with(
+        &self,
+        path: &Path,
+        rotated: &Path,
+        rename: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        // Try replacement without deleting the backup first. Windows sharing restrictions can
+        // refuse rename while still allowing copy and in-place truncation of the current log.
+        if let Err(error) = rename(path, rotated) {
+            self.report_error_once(&error);
+            fs::copy(path, rotated)?;
+            // Never truncate the current log until the backup copy has succeeded.
+            OpenOptions::new().write(true).open(path)?.set_len(0)?;
+        }
+        Ok(())
+    }
+}
+
+fn validate_line(line: &str) -> Result<(), String> {
+    if line.is_empty() || line.len() > MAX_LINE_BYTES || line.contains(['\n', '\r']) {
+        return Err("Perf record must be one JSON line of at most 16384 bytes".into());
+    }
+    let record: serde_json::Value = serde_json::from_str(line).map_err(|e| e.to_string())?;
+    let object = record.as_object().ok_or("Perf record must be an object")?;
+    let allowed = [
+        "v",
+        "kind",
+        "commandId",
+        "window",
+        "platform",
+        "buildStamp",
+        "t0",
+        "firstFrameMs",
+        "rafStartMs",
+        "windowShownMs",
+        "doneMs",
+        "doneSignal",
+        "extra",
+    ];
+    let one_of =
+        |key: &str, values: &[&str]| record[key].as_str().is_some_and(|s| values.contains(&s));
+    let number = |key: &str| {
+        record[key]
+            .as_f64()
+            .is_some_and(|n| n.is_finite() && n >= 0.0)
+    };
+    if object.keys().any(|k| !allowed.contains(&k.as_str()))
+        || record["v"] != 3
+        || !one_of(
+            "kind",
+            &[
+                "pointerdown",
+                "click",
+                "keydown",
+                "native-command",
+                "cold-launch",
+                "startup",
+                "document-open",
+                "window-shown",
+                "dialog-open",
+            ],
+        )
+        || !one_of(
+            "window",
+            &[
+                "main",
+                "palette",
+                "toolset",
+                "settings",
+                "inspector",
+                "palette-popover",
+                "dialog",
+                "plugin-panel",
+                "preferences",
+                "spin3d-debugger",
+            ],
+        )
+        || !one_of("platform", &["macos", "windows", "linux"])
+        || !record["buildStamp"]
+            .as_str()
+            .is_some_and(|s| s.len() <= 1024)
+        || !number("t0")
+        || ["firstFrameMs", "rafStartMs", "windowShownMs", "doneMs"]
+            .iter()
+            .any(|key| object.contains_key(*key) && !number(key))
+        || (object.contains_key("commandId")
+            && !record["commandId"]
+                .as_str()
+                .is_some_and(|s| s.len() <= 1024))
+        || (object.contains_key("extra") && !record["extra"].is_object())
+        || (object.contains_key("doneSignal")
+            && !one_of(
+                "doneSignal",
+                &[
+                    "document-commit",
+                    "window-shown",
+                    "window-painted",
+                    "startup-painted",
+                    "forwarded",
+                    "dialog-open",
+                    "export-written",
+                    "command-finished",
+                    "gesture-ended",
+                    "frame",
+                    "canvas-ready",
+                    "popover-shown",
+                    "no-op",
+                    "timeout",
+                    "failed",
+                ],
+            ))
+    {
+        return Err("Invalid v3 perf record".into());
+    }
+    Ok(())
+}
+
+/// Plain clock inputs and effects keep tests independent of the native window runtime.
+/// Windows lib test executables have no common-controls v6 manifest: referencing the Wry
+/// command context from a test pulls in TaskDialogIndirect and prevents the test exe loading.
+#[derive(Default)]
+struct ClockRequest {
+    build_stamp: Option<String>,
+    native_open: Option<NativeOpen>,
+    forward_input: Option<ForwardInput>,
+    disable: Option<bool>,
+}
+enum ClockEffect {
+    Forward(serde_json::Value),
+    Expire {
+        label: String,
+        input_id: String,
+        delay_ms: f64,
+    },
+    Open {
+        label: String,
+        payload: serde_json::Value,
+    },
+}
+
+// No Tauri types or clock reads: callers supply the authenticated source, observed window
+// existence and current time. The sink delivers effects, propagating transport errors in order.
+fn clock_request(
+    state: &PerfLog,
+    source: &str,
+    request: ClockRequest,
+    now: f64,
+    destination_exists: bool,
+    mut sink: impl FnMut(ClockEffect) -> Result<(), String>,
+) -> Result<ClockSample, String> {
+    state.clock()?;
+    if request.disable == Some(true) {
+        state.disable();
+        return Err("Perf probe disabled for this session".into());
+    }
+    if let Some(input) = request.forward_input {
+        if !source.starts_with("toolset-")
+            || input.input_id.is_empty()
+            || input.input_id.len() > 128
+            || !input.t0.is_finite()
+            || input.t0 < 0.0
+            || input.command_id.is_empty()
+            || input.command_id.len() > 256
+        {
+            return Err("Invalid forwarded perf input".into());
+        }
+        let mut payload = serde_json::to_value(input).map_err(|e| e.to_string())?;
+        payload["window"] = source.into();
+        sink(ClockEffect::Forward(payload))?;
+    }
+    if let Some(stamp) = request.build_stamp {
+        state.register_stamp(source, stamp)?;
+    }
+    if let Some(mut request) = request.native_open {
+        let label = native_open_label(&request.target).ok_or("Invalid perf open target")?;
+        if source != "main"
+            || request.input_id.is_empty()
+            || request.input_id.len() > 128
+            || !request.t0.is_finite()
+            || request.t0 < 0.0
+            || request.command_id.as_ref().is_some_and(|id| id.len() > 256)
+            || request
+                .shown_at
+                .is_some_and(|at| !at.is_finite() || at < request.t0)
+        {
+            return Err("Invalid perf open request".into());
+        }
+        let mut opens = state.opens.lock().map_err(|_| "Perf opens lock poisoned")?;
+        request.cold = opens
+            .get(&label)
+            .filter(|previous| previous.input_id == request.input_id)
+            .map_or_else(
+                || {
+                    !destination_exists
+                        || state
+                            .created
+                            .lock()
+                            .ok()
+                            .and_then(|created| created.get(&label).copied())
+                            .is_some_and(|created| created >= request.t0 - COMPLETION_CLOCK_SKEW_MS)
+                },
+                |previous| previous.cold,
+            );
+        // One outstanding input per destination, bounded even if windows never become ready.
+        if opens.len() >= 256 && !opens.contains_key(&label) {
+            opens.clear();
+        }
+        opens.insert(label.clone(), request.clone());
+        drop(opens);
+        sink(ClockEffect::Expire {
+            label: label.clone(),
+            input_id: request.input_id.clone(),
+            delay_ms: (120_000.0 - (now - request.t0)).clamp(0.0, 120_000.0),
+        })?;
+        if request.shown_at.is_some() {
+            sink(ClockEffect::Open {
+                label,
+                payload: serde_json::to_value(&request).map_err(|e| e.to_string())?,
+            })?;
+        }
+    }
+    let mut sample = state.sample_at(now)?;
+    sample.created_at = state
+        .created
+        .lock()
+        .map_err(|_| "Perf creation lock poisoned")?
+        .get(source)
+        .copied();
+    sample.native_open = state
+        .opens
+        .lock()
+        .map_err(|_| "Perf opens lock poisoned")?
+        .get(source)
+        .cloned();
+    Ok(sample)
+}
+
+pub(crate) struct PerfClockContext<'a> {
+    state: &'a PerfLog,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+}
+impl<'a> tauri::ipc::CommandArg<'a, tauri::Wry> for PerfClockContext<'a> {
+    fn from_command(
+        command: tauri::ipc::CommandItem<'a, tauri::Wry>,
+    ) -> Result<Self, tauri::ipc::InvokeError> {
+        let state = command
+            .message
+            .state_ref()
+            .try_get::<PerfLog>()
+            .ok_or_else(|| tauri::ipc::InvokeError::from("Perf log state unavailable"))?
+            .inner();
+        let app = command.message.webview_ref().app_handle().clone();
+        let window =
+            <tauri::WebviewWindow as tauri::ipc::CommandArg<'a, tauri::Wry>>::from_command(
+                command,
+            )?;
+        Ok(Self { state, app, window })
+    }
+}
+
+#[tauri::command]
+pub(crate) fn perf_log_clock(
+    context: PerfClockContext<'_>,
+    build_stamp: Option<String>,
+    native_open: Option<NativeOpen>,
+    forward_input: Option<ForwardInput>,
+    disable: Option<bool>,
+) -> Result<ClockSample, String> {
+    let PerfClockContext { state, app, window } = context;
+    let now = state.sample()?.now;
+    let destination_exists = native_open
+        .as_ref()
+        .and_then(|request| native_open_label(&request.target))
+        .is_some_and(|label| app.get_webview_window(&label).is_some());
+    clock_request(
+        state,
+        window.label(),
+        ClockRequest {
+            build_stamp,
+            native_open,
+            forward_input,
+            disable,
+        },
+        now,
+        destination_exists,
+        |effect| {
+            match effect {
+                ClockEffect::Forward(payload) => {
+                    // Separate diagnostic delivery. Never attach an origin to an app command/event.
+                    if let Some(main) = app.get_webview_window("main") {
+                        main.eval(format!("window.dispatchEvent(new CustomEvent('chemdraft:perf-forward', {{detail:{payload}}}));"))
+                            .map_err(|e| e.to_string())?;
+                    }
+                }
+                ClockEffect::Expire {
+                    label,
+                    input_id,
+                    delay_ms,
+                } => {
+                    let expiry_app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_secs_f64(delay_ms / 1000.0))
+                            .await;
+                        expiry_app.state::<PerfLog>().expire_open(&label, &input_id);
+                    });
+                }
+                ClockEffect::Open { label, payload } => {
+                    if let Some(destination) = app.get_webview_window(&label) {
+                        destination.eval(format!("window.dispatchEvent(new CustomEvent('chemdraft:perf-open', {{detail:{payload}}}));"))
+                            .map_err(|e| e.to_string())?;
+                    }
+                }
+            }
+            Ok(())
+        },
+    )
+}
+
+/// Diagnostic-only state query, issued after an app toggle has resolved.
+#[tauri::command]
+pub(crate) fn perf_log_window_state(
+    app: tauri::AppHandle,
+    label: String,
+) -> Result<&'static str, String> {
+    validate_window_state_target(&app.state::<PerfLog>(), &label)?;
+    let Some(window) = app.get_webview_window(&label) else {
+        return Ok("absent");
+    };
+    if window.is_minimized().map_err(|e| e.to_string())? {
+        Ok("minimized")
+    } else if window.is_visible().map_err(|e| e.to_string())? {
+        Ok("visible")
+    } else {
+        Ok("hidden")
+    }
+}
+
+fn validate_window_state_target(state: &PerfLog, label: &str) -> Result<(), String> {
+    state.clock()?;
+    if !matches!(label, "preferences" | "spin3d-debugger") {
+        return Err("Invalid perf window state target".into());
+    }
+    Ok(())
+}
+
+fn native_open_label(target: &str) -> Option<String> {
+    if matches!(target, "preferences" | "spin3d-debugger") {
+        Some(target.into())
+    } else if let Some(id) = target.strip_prefix("toolset:") {
+        (!id.is_empty() && id.len() <= 256).then(|| super::toolset_window_label(id))
+    } else if let Some(ids) = target.strip_prefix("panel:") {
+        let (plugin, panel) = ids.split_once('/')?;
+        (!plugin.is_empty() && !panel.is_empty() && ids.len() <= 512)
+            .then(|| super::plugin_panel_identity_window_label(plugin, panel))
+    } else {
+        None
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn perf_log_append(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    line: String,
+) -> Result<(), String> {
+    // Reject before even resolving app_data_dir. The state was constructed using precisely the
+    // existing agent_bridge_status env/argument parser, never renderer flags.
+    app.state::<PerfLog>().sample()?;
+    let receipt = native_paint_receipt(&app.state::<PerfLog>(), window.label(), &line)
+        .or_else(|| popover_receipt(window.label(), &line));
+    let writer_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let directory = writer_app
+            .path()
+            .app_data_dir()
+            .map_err(|e| e.to_string())?;
+        writer_app
+            .state::<PerfLog>()
+            .append(&directory, &line, MAX_BYTES)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    // Secondary windows can record already. Relay a registered destination's paint to main,
+    // or a popover's reveal to its authenticated owner, without granting general emission
+    // or perf_log_complete access to toolsets.
+    if let Some((target, payload)) = receipt {
+        if let Some(destination) = app.get_webview_window(&target) {
+            destination
+                .eval(format!(
+                    "window.dispatchEvent(new CustomEvent('chemdraft:perf-complete', {{detail:{payload}}}));"
+                ))
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn native_paint_receipt(
+    state: &PerfLog,
+    source: &str,
+    line: &str,
+) -> Option<(String, serde_json::Value)> {
+    validate_line(line).ok()?;
+    let row: serde_json::Value = serde_json::from_str(line).ok()?;
+    if row["doneSignal"] != "window-painted" {
+        return None;
+    }
+    let mut opens = state.opens.lock().ok()?;
+    let request = opens.get(source)?;
+    let t0 = row["t0"].as_f64()?;
+    let frame = t0 + row["firstFrameMs"].as_f64()?;
+    let at = t0 + row["doneMs"].as_f64()?;
+    let raf = t0 + row["rafStartMs"].as_f64()?;
+    if !at.is_finite()
+        || !frame.is_finite()
+        || !raf.is_finite()
+        || at < request.t0 - COMPLETION_CLOCK_SKEW_MS
+        || at - request.t0 > 120_000.0
+        || frame < raf
+        || frame < at
+        || frame < request.shown_at? - COMPLETION_CLOCK_SKEW_MS
+    {
+        return None;
+    }
+    let payload = serde_json::json!({ "target": request.target, "signal": "window-painted",
+        "at": at, "frameAt": frame, "rafAt": raf, "shownAt": request.shown_at, "window": source });
+    opens.remove(source);
+    Some(("main".into(), payload))
+}
+
+fn popover_receipt(source: &str, line: &str) -> Option<(String, serde_json::Value)> {
+    let owner = source.strip_prefix("toolset-popover-")?;
+    if owner.is_empty() || validate_line(line).is_err() {
+        return None;
+    }
+    let row: serde_json::Value = serde_json::from_str(line).ok()?;
+    if row["kind"] != "window-shown"
+        || row["window"] != "palette-popover"
+        || !matches!(
+            row["doneSignal"].as_str(),
+            Some("popover-shown" | "no-op" | "failed")
+        )
+    {
+        return None;
+    }
+    let flyout = row["extra"]["surface"].as_str()?;
+    if flyout.is_empty() || flyout.len() > 256 {
+        return None;
+    }
+    let t0 = row["t0"].as_f64()?;
+    let at = t0 + row["doneMs"].as_f64()?;
+    let frame = row["firstFrameMs"].as_f64().map(|elapsed| t0 + elapsed);
+    let raf = row["rafStartMs"].as_f64().map(|elapsed| t0 + elapsed);
+    if !at.is_finite()
+        || (row["doneSignal"] == "popover-shown" && frame.is_none())
+        || frame.is_some_and(|frame| !frame.is_finite() || frame < at - COMPLETION_CLOCK_SKEW_MS)
+    {
+        return None;
+    }
+    Some((
+        format!("toolset-{owner}"),
+        serde_json::json!({ "requestKey": "popover-shown", "signal": row["doneSignal"],
+            "flyoutId": flyout, "at": at, "frameAt": frame, "rafAt": raf, "window": source }),
+    ))
+}
+
+/// A completion has no command payload and cannot open windows or write arbitrary files. The
+/// source window is native-authenticated; only main<->dialog receipts may cross this seam.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct Completion {
+    target: String,
+    request_key: String,
+    signal: String,
+    at: f64,
+    frame_at: Option<f64>,
+    raf_at: Option<f64>,
+    shown_at: Option<f64>,
+}
+#[tauri::command]
+pub(crate) fn perf_log_complete(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    completion: Completion,
+) -> Result<(), String> {
+    let (target, payload) =
+        completion_receipt(&app.state::<PerfLog>(), window.label(), completion)?;
+    let destination = app
+        .get_webview_window(&target)
+        .ok_or("Perf completion window closed")?;
+    destination
+        .eval(format!(
+        "window.dispatchEvent(new CustomEvent('chemdraft:perf-complete', {{detail:{payload}}}));"
+    ))
+        .map_err(|e| e.to_string())
+}
+
+fn completion_receipt(
+    state: &PerfLog,
+    source: &str,
+    completion: Completion,
+) -> Result<(String, serde_json::Value), String> {
+    state.clock()?;
+    let Completion {
+        target,
+        request_key,
+        signal,
+        at,
+        frame_at,
+        raf_at,
+        shown_at,
+    } = completion;
+    if !valid_completion(source, &target, &request_key, &signal, at, frame_at) {
+        return Err("Invalid perf completion route or payload".into());
+    }
+    if raf_at.is_some_and(|raf| {
+        !raf.is_finite() || raf < 0.0 || frame_at.is_none_or(|frame| frame < raf)
+    }) {
+        return Err("Invalid perf rAF timestamp".into());
+    }
+    if shown_at.is_some_and(|shown| !shown.is_finite() || shown < 0.0) {
+        return Err("Invalid perf shown timestamp".into());
+    }
+    let payload = serde_json::json!({ "requestKey": request_key, "signal": signal, "at": at,
+        "frameAt": frame_at, "rafAt": raf_at, "shownAt": shown_at, "window": source });
+    Ok((target, payload))
+}
+
+fn valid_completion(
+    source: &str,
+    target: &str,
+    key: &str,
+    signal: &str,
+    at: f64,
+    frame: Option<f64>,
+) -> bool {
+    let route = (source == "main"
+        && target.starts_with("dialog-main-")
+        && matches!(signal, "export-written" | "document-commit" | "dialog-open"))
+        || (source.starts_with("dialog-main-") && target == "main" && signal == "dialog-open");
+    route
+        && !key.is_empty()
+        && key.len() <= 128
+        && key
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b':'))
+        && at.is_finite()
+        && at >= 0.0
+        && frame.is_none_or(|f| f.is_finite() && f >= 0.0 && f >= at - COMPLETION_CLOCK_SKEW_MS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        clock_request, completion_receipt, native_open_label, native_paint_receipt,
+        popover_receipt, valid_completion, validate_line, validate_window_state_target,
+        ClockEffect, ClockRequest, Completion, ForwardInput, NativeOpen, PerfLog, MAX_BYTES,
+        MAX_LINE_BYTES,
+    };
+    use std::fs;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    fn dir() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "chemdraft-perf-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+    fn line() -> String {
+        serde_json::json!({"v":3,"kind":"click","window":"main","platform":"windows","buildStamp":"test","t0":1,"firstFrameMs":2,"doneMs":3,"doneSignal":"document-commit"}).to_string()
+    }
+    #[test]
+    fn clock_disable_clears_opens_and_refuses_later_calls() {
+        let state = PerfLog::new(true);
+        state.opens.lock().unwrap().insert(
+            "preferences".into(),
+            NativeOpen {
+                target: "preferences".into(),
+                input_id: "open-1".into(),
+                t0: 1000.0,
+                command_id: None,
+                shown_at: None,
+                cold: false,
+            },
+        );
+        assert!(clock_request(
+            &state,
+            "main",
+            ClockRequest {
+                disable: Some(true),
+                ..Default::default()
+            },
+            1100.0,
+            false,
+            |_| panic!("disable must emit no effects")
+        )
+        .is_err());
+        assert!(state.opens.lock().unwrap().is_empty());
+        assert_eq!(
+            clock_request(
+                &state,
+                "main",
+                ClockRequest::default(),
+                1200.0,
+                false,
+                |_| panic!("disabled probe must emit no effects")
+            )
+            .err()
+            .as_deref(),
+            Some("Perf probe disabled for this session")
+        );
+    }
+    fn open_request(input_id: &str, shown_at: Option<f64>) -> ClockRequest {
+        ClockRequest {
+            native_open: Some(NativeOpen {
+                target: "preferences".into(),
+                input_id: input_id.into(),
+                t0: 1000.0,
+                command_id: None,
+                shown_at,
+                cold: false,
+            }),
+            ..Default::default()
+        }
+    }
+    #[test]
+    fn clock_preserves_cold_intent_on_show_and_samples_the_destination() {
+        let state = PerfLog::new(true);
+        let mut effects = Vec::new();
+        clock_request(
+            &state,
+            "main",
+            open_request("open-1", None),
+            1100.0,
+            false,
+            |effect| {
+                effects.push(effect);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(
+            matches!(effects.as_slice(), [ClockEffect::Expire { label, input_id, delay_ms }]
+            if label == "preferences" && input_id == "open-1" && *delay_ms == 119_900.0)
+        );
+        effects.clear();
+        // The destination exists now, but this is still the original cold open.
+        clock_request(
+            &state,
+            "main",
+            open_request("open-1", Some(1228.0)),
+            1250.0,
+            true,
+            |effect| {
+                effects.push(effect);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(
+            matches!(effects.as_slice(), [ClockEffect::Expire { .. }, ClockEffect::Open { label, payload }]
+            if label == "preferences" && payload["cold"] == true && payload["shownAt"] == 1228.0)
+        );
+        state
+            .created
+            .lock()
+            .unwrap()
+            .insert("preferences".into(), 1050.0);
+        let sample = clock_request(
+            &state,
+            "preferences",
+            ClockRequest::default(),
+            1300.0,
+            true,
+            |_| panic!("sampling must emit no effects"),
+        )
+        .unwrap();
+        assert_eq!(sample.now, 1300.0);
+        assert_eq!(sample.created_at, Some(1050.0));
+        assert!(sample.native_open.unwrap().cold);
+        // A window created during this input is cold even if it already exists.
+        clock_request(
+            &state,
+            "main",
+            open_request("open-2", None),
+            1400.0,
+            true,
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert!(state.opens.lock().unwrap()["preferences"].cold);
+        state
+            .created
+            .lock()
+            .unwrap()
+            .insert("preferences".into(), 500.0);
+        clock_request(
+            &state,
+            "main",
+            open_request("open-3", None),
+            1500.0,
+            true,
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert!(!state.opens.lock().unwrap()["preferences"].cold);
+    }
+    #[test]
+    fn clock_rejects_invalid_opens_before_state_or_effects_change() {
+        let state = PerfLog::new(true);
+        for (source, request) in [
+            ("preferences", open_request("input", None)),
+            ("main", open_request("", None)),
+            ("main", open_request("input", Some(999.0))),
+            ("main", open_request("input", Some(f64::NAN))),
+        ] {
+            assert!(
+                clock_request(&state, source, request, 1100.0, false, |_| panic!(
+                    "invalid open must emit no effects"
+                ))
+                .is_err()
+            );
+            assert!(state.opens.lock().unwrap().is_empty());
+        }
+        assert!(clock_request(
+            &PerfLog::new(false),
+            "main",
+            ClockRequest::default(),
+            1100.0,
+            false,
+            |_| panic!("disabled bridge must emit no effects")
+        )
+        .is_err());
+    }
+    #[test]
+    fn window_state_query_accepts_only_the_two_diagnostic_targets_when_enabled() {
+        let state = PerfLog::new(true);
+        for label in ["preferences", "spin3d-debugger"] {
+            validate_window_state_target(&state, label).unwrap();
+            assert!(validate_window_state_target(&PerfLog::new(false), label).is_err());
+        }
+        for label in ["main", "toolset-core-main", "dialog-main-export-1", ""] {
+            assert!(validate_window_state_target(&state, label).is_err());
+        }
+    }
+    #[test]
+    fn clock_forwarding_authenticates_source_and_propagates_sink_failure() {
+        let state = PerfLog::new(true);
+        for (source, input_id, t0, command_id) in [
+            ("main", "input", 1000.0, "tool.settings"),
+            ("toolset-core-main", "", 1000.0, "tool.settings"),
+            ("toolset-core-main", "input", f64::INFINITY, "tool.settings"),
+            ("toolset-core-main", "input", 1000.0, ""),
+        ] {
+            let request = ClockRequest {
+                forward_input: Some(ForwardInput {
+                    input_id: input_id.into(),
+                    t0,
+                    command_id: command_id.into(),
+                }),
+                ..Default::default()
+            };
+            assert!(
+                clock_request(&state, source, request, 1100.0, false, |_| panic!(
+                    "invalid forwarding must emit no effects"
+                ))
+                .is_err()
+            );
+        }
+        let mut effects = 0;
+        let result = clock_request(
+            &state,
+            "toolset-core-main",
+            ClockRequest {
+                forward_input: Some(ForwardInput {
+                    input_id: "input".into(),
+                    t0: 1000.0,
+                    command_id: "tool.settings".into(),
+                }),
+                build_stamp: Some("must not register".into()),
+                ..Default::default()
+            },
+            1100.0,
+            false,
+            |effect| {
+                let ClockEffect::Forward(payload) = effect else {
+                    panic!("expected forwarding")
+                };
+                assert_eq!(payload["window"], "toolset-core-main");
+                assert_eq!(payload["inputId"], "input");
+                effects += 1;
+                Err("eval failed".into())
+            },
+        );
+        assert_eq!(result.err().as_deref(), Some("eval failed"));
+        assert_eq!(effects, 1);
+        assert!(state.build_stamp.lock().unwrap().is_none());
+    }
+    #[test]
+    fn completion_receipt_validates_optional_times_without_a_window() {
+        let state = PerfLog::new(true);
+        let completion = || Completion {
+            target: "main".into(),
+            request_key: "session-1".into(),
+            signal: "dialog-open".into(),
+            at: 1100.0,
+            frame_at: Some(1150.0),
+            raf_at: Some(1120.0),
+            shown_at: Some(1050.0),
+        };
+        let (target, payload) =
+            completion_receipt(&state, "dialog-main-export-1", completion()).unwrap();
+        assert_eq!(target, "main");
+        assert_eq!(payload["window"], "dialog-main-export-1");
+        assert_eq!(payload["shownAt"], 1050.0);
+        for (raf, shown) in [(1151.0, 1050.0), (f64::NAN, 1050.0), (1120.0, -1.0)] {
+            let mut invalid = completion();
+            invalid.raf_at = Some(raf);
+            invalid.shown_at = Some(shown);
+            assert!(completion_receipt(&state, "dialog-main-export-1", invalid).is_err());
+        }
+        assert!(completion_receipt(&state, "toolset-core-main", completion()).is_err());
+    }
+    #[test]
+    fn native_paint_relays_only_the_registered_destination_and_time_range() {
+        let state = PerfLog::new(true);
+        let source = "toolset-core-drawnStructureSettings";
+        state.opens.lock().unwrap().insert(
+            source.into(),
+            NativeOpen {
+                target: "toolset:core.drawnStructureSettings".into(),
+                input_id: "input-1".into(),
+                t0: 1000.0,
+                shown_at: Some(1228.0),
+                command_id: Some("tool.settings".into()),
+                cold: true,
+            },
+        );
+        let row = serde_json::json!({"v":3,"kind":"dialog-open","window":"settings",
+            "platform":"windows","buildStamp":"test","t0":1000,"doneMs":766,
+            "firstFrameMs":810,"rafStartMs":770,"windowShownMs":228,
+            "doneSignal":"window-painted","extra":{"inputId":"input-1"}})
+        .to_string();
+        assert!(native_paint_receipt(&state, "main", &row).is_none());
+        assert!(native_paint_receipt(&state, "toolset-core-main", &row).is_none());
+        assert!(native_paint_receipt(
+            &state,
+            source,
+            &row.replace("\"doneMs\":766", "\"doneMs\":120001")
+        )
+        .is_none());
+        assert!(native_paint_receipt(
+            &state,
+            source,
+            &row.replace("\"firstFrameMs\":810", "\"firstFrameMs\":700")
+        )
+        .is_none());
+        let (target, receipt) = native_paint_receipt(&state, source, &row).unwrap();
+        assert_eq!(target, "main");
+        assert_eq!(receipt["target"], "toolset:core.drawnStructureSettings");
+        assert_eq!(receipt["at"], 1766.0);
+        assert_eq!(receipt["frameAt"], 1810.0);
+        assert_eq!(receipt["rafAt"], 1770.0);
+        assert_eq!(receipt["shownAt"], 1228.0);
+        assert!(native_paint_receipt(&state, source, &row).is_none());
+        assert_eq!(
+            native_open_label("toolset:core.drawnStructureSettings"),
+            Some(source.into())
+        );
+        assert!(native_open_label("main").is_none());
+    }
+    #[test]
+    fn cold_open_clock_payload_omits_the_not_yet_observed_show_timestamp() {
+        let request = NativeOpen {
+            target: "toolset:core.main".into(),
+            input_id: "input-1".into(),
+            t0: 1000.0,
+            command_id: None,
+            shown_at: None,
+            cold: true,
+        };
+        let payload = serde_json::to_value(request).unwrap();
+        assert!(payload.get("shownAt").is_none());
+        assert!(payload.get("commandId").is_none());
+        assert_eq!(payload["cold"], true);
+    }
+    #[test]
+    fn expired_opens_are_removed_without_removing_a_newer_open_for_the_same_window() {
+        let state = PerfLog::new(true);
+        let request = NativeOpen {
+            target: "preferences".into(),
+            input_id: "new-input".into(),
+            t0: 1000.0,
+            command_id: None,
+            shown_at: None,
+            cold: false,
+        };
+        state
+            .opens
+            .lock()
+            .unwrap()
+            .insert("preferences".into(), request);
+        state.expire_open("preferences", "old-input");
+        assert_eq!(state.opens.lock().unwrap().len(), 1);
+        state.expire_open("preferences", "new-input");
+        assert!(state.opens.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn window_creation_is_stamped_before_destination_calibration() {
+        let state = PerfLog::new(true);
+        state.window_created("toolset-core-main");
+        let created = state.created.lock().unwrap()["toolset-core-main"];
+        let calibration = state.sample().unwrap();
+        assert!(created >= calibration.process_start && created <= calibration.now);
+        let disabled = PerfLog::new(false);
+        disabled.window_created("main");
+        assert!(disabled.created.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn popover_shown_receipt_is_restricted_to_the_authenticated_owner() {
+        let row = serde_json::json!({"v":3,"kind":"window-shown","window":"palette-popover",
+            "platform":"macos","buildStamp":"test","t0":100,"doneMs":30,
+            "firstFrameMs":40,"doneSignal":"popover-shown","extra":{"surface":"arrows"}})
+        .to_string();
+        let (target, receipt) = popover_receipt("toolset-popover-core-main", &row).unwrap();
+        assert_eq!(target, "toolset-core-main");
+        assert_eq!(receipt["at"], 130.0);
+        assert_eq!(receipt["frameAt"], 140.0);
+        assert_eq!(receipt["flyoutId"], "arrows");
+        let mut cancelled: serde_json::Value = serde_json::from_str(&row).unwrap();
+        cancelled["doneSignal"] = "no-op".into();
+        cancelled.as_object_mut().unwrap().remove("firstFrameMs");
+        let (_, receipt) =
+            popover_receipt("toolset-popover-core-main", &cancelled.to_string()).unwrap();
+        assert_eq!(receipt["signal"], "no-op");
+        for source in [
+            "main",
+            "preferences",
+            "toolset-core-main",
+            "toolset-popover-",
+        ] {
+            assert!(popover_receipt(source, &row).is_none());
+        }
+        for changed in [
+            row.replace("popover-shown", "document-commit"),
+            row.replace("window-shown", "click"),
+            row.replace("palette-popover", "main"),
+        ] {
+            assert!(popover_receipt("toolset-popover-core-main", &changed).is_none());
+        }
+        for (kind, signal, role) in [
+            ("dialog-open", "dialog-open", "dialog"),
+            ("window-shown", "window-shown", "preferences"),
+        ] {
+            let row = serde_json::json!({"v":3,"kind":kind,"window":role,"platform":"windows",
+                "buildStamp":"test","t0":1,"doneSignal":signal})
+            .to_string();
+            validate_line(&row).unwrap();
+        }
+    }
+    #[test]
+    fn dialog_rows_use_only_the_main_windows_registered_stamp() {
+        let path = dir();
+        let state = PerfLog::new(true);
+        let mut dialog: serde_json::Value = serde_json::from_str(&line()).unwrap();
+        dialog["window"] = "dialog".into();
+        dialog["buildStamp"] = "secondary stamp".into();
+        let dialog = dialog.to_string();
+        assert!(state.append(&path, &dialog, MAX_BYTES).is_err());
+        assert!(!path.exists());
+        assert!(state
+            .register_stamp("dialog-main-export-1", "wrong".into())
+            .is_err());
+        state.register_stamp("main", "main stamp".into()).unwrap();
+        assert!(state.register_stamp("main", "replacement".into()).is_err());
+        state.append(&path, &dialog, MAX_BYTES).unwrap();
+        let row: serde_json::Value = serde_json::from_str(
+            fs::read_to_string(path.join("perf-log.jsonl"))
+                .unwrap()
+                .trim(),
+        )
+        .unwrap();
+        assert_eq!(row["window"], "dialog");
+        assert_eq!(row["buildStamp"], "main stamp");
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn failed_rename_copies_before_truncating_and_logging_continues() {
+        let directory = dir();
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("perf-log.jsonl");
+        let backup = directory.join("perf-log.1.jsonl");
+        let state = PerfLog::new(true);
+        state.register_stamp("main", "test".into()).unwrap();
+        let line = line();
+        state.append(&directory, &line, MAX_BYTES).unwrap();
+        fs::write(&backup, "old backup").unwrap();
+        for _ in 0..2 {
+            state
+                .rotate_with(&path, &backup, |_, _| {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "simulated Windows sharing restriction",
+                    ))
+                })
+                .unwrap();
+            assert!(state.error_reported.load(Ordering::Relaxed));
+            assert_eq!(fs::read_to_string(&backup).unwrap(), format!("{line}\n"));
+            assert_eq!(fs::metadata(&path).unwrap().len(), 0);
+            state.append(&directory, &line, MAX_BYTES).unwrap();
+        }
+        assert_eq!(fs::read_to_string(&path).unwrap(), format!("{line}\n"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn failed_fallback_preserves_current_log_for_a_later_retry() {
+        let directory = dir();
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("perf-log.jsonl");
+        let backup = directory.join("perf-log.1.jsonl");
+        fs::write(&path, "keep this log").unwrap();
+        fs::create_dir(&backup).unwrap();
+        let state = PerfLog::new(true);
+        state.register_stamp("main", "test".into()).unwrap();
+        assert!(state
+            .rotate_with(&path, &backup, |_, _| Err(std::io::Error::from(
+                std::io::ErrorKind::PermissionDenied
+            )))
+            .is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "keep this log");
+        fs::remove_dir(&backup).unwrap();
+        state
+            .rotate_with(&path, &backup, |from, to| fs::rename(from, to))
+            .unwrap();
+        assert_eq!(fs::read_to_string(&backup).unwrap(), "keep this log");
+        fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn completion_accepts_only_bounded_clock_skew_and_distinct_roles_validate() {
+        for delta in [0.0, 10.0] {
+            assert!(valid_completion(
+                "dialog-main-export-1",
+                "main",
+                "session-1",
+                "dialog-open",
+                100.0,
+                Some(100.0 - delta)
+            ));
+        }
+        for frame in [89.9, -1.0, f64::NAN, f64::INFINITY] {
+            assert!(!valid_completion(
+                "dialog-main-export-1",
+                "main",
+                "session-1",
+                "dialog-open",
+                100.0,
+                Some(frame)
+            ));
+        }
+        for role in [
+            "preferences",
+            "spin3d-debugger",
+            "toolset",
+            "settings",
+            "inspector",
+        ] {
+            validate_line(
+                &line().replace("\"window\":\"main\"", &format!("\"window\":\"{role}\"")),
+            )
+            .unwrap();
+        }
+        for (kind, signal) in [("startup", "startup-painted"), ("click", "forwarded")] {
+            validate_line(
+                &line()
+                    .replace("\"kind\":\"click\"", &format!("\"kind\":\"{kind}\""))
+                    .replace("document-commit", signal),
+            )
+            .unwrap();
+        }
+    }
+    #[test]
+    fn disabled_rejects_without_creating_directory_or_file() {
+        let path = dir();
+        let state = PerfLog::new(false);
+        assert!(state.register_stamp("main", "test".into()).is_err());
+        assert!(state.sample().is_err());
+        assert!(state.append(&path, &line(), MAX_BYTES).is_err());
+        assert!(!path.exists());
+    }
+    #[test]
+    fn appends_and_rotates_once_before_crossing_cap() {
+        let path = dir();
+        let state = PerfLog::new(true);
+        state.register_stamp("main", "test".into()).unwrap();
+        let line = line();
+        let cap = (line.len() as u64 + 1) * 2;
+        for _ in 0..7 {
+            state.append(&path, &line, cap).unwrap();
+        }
+        assert_eq!(
+            fs::read_to_string(path.join("perf-log.jsonl")).unwrap(),
+            format!("{line}\n")
+        );
+        assert_eq!(
+            fs::read_to_string(path.join("perf-log.1.jsonl")).unwrap(),
+            format!("{line}\n{line}\n")
+        );
+        assert_eq!(fs::read_dir(&path).unwrap().count(), 2);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn invalid_and_oversized_lines_never_create_files() {
+        let path = dir();
+        let state = PerfLog::new(true);
+        state.register_stamp("main", "test".into()).unwrap();
+        for bad in [
+            "{}".to_string(),
+            format!("{}\n{}", line(), line()),
+            "x".repeat(MAX_LINE_BYTES + 1),
+            line().replace("\"v\":3", "\"v\":1"),
+            line().replace("\"v\":3", "\"v\":2"),
+            line().replace("\"doneMs\":3", "\"doneMs\":-1"),
+            line().replace("\"firstFrameMs\":2", "\"rafStartMs\":-1"),
+            line().replace("\"firstFrameMs\":2", "\"windowShownMs\":\"slow\""),
+            line().replace("\"firstFrameMs\":2", "\"unknownField\":2"),
+        ] {
+            assert!(state.append(&path, &bad, MAX_BYTES).is_err(), "{bad}");
+        }
+        assert!(state.append(&path, &line(), 1).is_err());
+        assert!(!path.exists());
+    }
+    #[test]
+    fn clock_is_shared_and_monotonic() {
+        let state = PerfLog::new(true);
+        state.register_stamp("main", "test".into()).unwrap();
+        let a = state.sample().unwrap();
+        let b = state.sample().unwrap();
+        assert_eq!(a.process_start, b.process_start);
+        assert!(b.now >= a.now && a.now >= a.process_start);
+    }
+    #[test]
+    fn completion_routes_are_narrow_and_numeric() {
+        assert!(valid_completion(
+            "main",
+            "dialog-main-export-1",
+            "request-1",
+            "export-written",
+            1.0,
+            None
+        ));
+        assert!(valid_completion(
+            "dialog-main-export-1",
+            "main",
+            "session-1",
+            "dialog-open",
+            1.0,
+            Some(2.0)
+        ));
+        assert!(!valid_completion(
+            "plugin-panel-1",
+            "main",
+            "session-1",
+            "dialog-open",
+            1.0,
+            None
+        ));
+        assert!(!valid_completion(
+            "main",
+            "main",
+            "request-1",
+            "export-written",
+            1.0,
+            None
+        ));
+        assert!(!valid_completion(
+            "main",
+            "dialog-main-export-1",
+            "request-1",
+            "export-written",
+            f64::NAN,
+            None
+        ));
+        assert!(!valid_completion(
+            "main",
+            "dialog-main-export-1",
+            "request-1",
+            "export-written",
+            20.0,
+            Some(1.0)
+        ));
+    }
+}

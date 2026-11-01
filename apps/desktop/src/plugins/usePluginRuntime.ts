@@ -14,6 +14,8 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import type { PluginAppMenuItem } from "../appMenu";
 import { createPluginRuntime, type DesktopPluginRuntime, type ProposalDocumentTab } from "./createPluginRuntime";
 import {
+  PluginInstallError,
+  PluginInstallErrorCodes,
   installPluginPackage,
   loadInstalledPlugins,
   uninstallPlugin,
@@ -348,16 +350,26 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
     async (pluginId: string): Promise<void> => {
       if (!stagingFs) return;
       const entry = installedPlugins.find((candidate) => candidate.record.id === pluginId);
-      await uninstallPlugin({
-        runtime,
-        fs: stagingFs,
-        pluginId,
-        record: entry?.record,
-        descriptor: entry?.descriptor,
-        // If this install had taken its id from a bundled plugin, give it back.
-        restores: bundledPlugins.find((candidate) => candidate.manifest.id === pluginId),
-        disabledIds: loadDisabledPluginIds()
-      });
+      let cleanupError: PluginInstallError | undefined;
+      try {
+        await uninstallPlugin({
+          runtime,
+          fs: stagingFs,
+          pluginId,
+          record: entry?.record,
+          descriptor: entry?.descriptor,
+          // If this install had taken its id from a bundled plugin, give it back.
+          restores: bundledPlugins.find((candidate) => candidate.manifest.id === pluginId),
+          bundledPlugins,
+          disabledIds: loadDisabledPluginIds()
+        });
+      } catch (error) {
+        if (!(error instanceof PluginInstallError) || error.code !== PluginInstallErrorCodes.UninstallStorageDeleteFailed) {
+          throw error;
+        }
+        // The runtime and disk catalog are already uninstalled; finish the UI cleanup as well.
+        cleanupError = error;
+      }
       // A plugin can be uninstalled while disabled; clear its preference too, so a later reinstall does
       // not silently arrive already-disabled from a stale id.
       const disabled = loadDisabledPluginIds();
@@ -365,6 +377,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
         saveDisabledPluginIds(disabled);
       }
       setInstalledPlugins((current) => current.filter((candidate) => candidate.record.id !== pluginId));
+      if (cleanupError) throw cleanupError;
     },
     [bundledPlugins, installedPlugins, runtime, stagingFs]
   );

@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { moleculeToMolfileV2000 } from "@chemdraft/chem-core";
-import { ensureRdkit, compositionFromRdkitJson } from "@chemdraft/rdkit-adapter";
+import { ensureRdkit } from "../../rdkit-adapter/src/conformer";
+import { compositionFromRdkitJson } from "../../rdkit-adapter/src/composition";
 import { chargeSeparationCases } from "./chargeSeparationFixtures";
 import type { ExportWarning } from "@chemdraft/export-engine";
 import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";

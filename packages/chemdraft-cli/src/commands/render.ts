@@ -222,7 +222,7 @@ async function renderJob(
       ok: true,
       ...figureStyleResult(args, rendered.viewBox, args.format !== "svg"),
       files,
-      engine: rendered.engine,
+      engine: rendered.engine, layout: rendered.layout,
       stereoCenters: rendered.stereoCenters,
       unspecifiedStereoCenters: rendered.unspecifiedStereoCenters,
       unspecifiedDoubleBonds: rendered.unspecifiedDoubleBonds,

@@ -1,11 +1,14 @@
+import { perfHook, perfProbe } from "./perf/runtime";
 import { useEffect, useRef, useState } from "react";
 import { ColorPickerPopoverBody, symbolToolGlyph, toolbarCommandFlyoutGridStyle } from "./ToolPalette";
 import { Icon, type IconName } from "./icons";
 import { toolbarAsset, type ToolbarAssetName } from "./toolbarAssets";
 import { normalizeHexColor, objectCustomColorCommandId } from "./commands";
+import { installPaletteInputFocus } from "./plugins/pluginPanelInputFocus";
 import {
   listenForToolsetPopoverContent,
   listenForToolsetPopoverDismiss,
+  listenForBondStereoPopoverActions,
   listenForToolsetTextStyle,
   requestToolsetPopoverContent,
   requestToolsetTextStyle,
@@ -13,9 +16,11 @@ import {
   sendPaletteCommandCancel,
   sendPaletteCommandCommit,
   sendPaletteCommandPreview,
+  sendBondStereoPopoverAction,
   setCurrentWindowLogicalPosition,
   setCurrentWindowLogicalSize,
   showCurrentToolsetPopoverWindow,
+  toolsetPopoverTimestamp,
   type ToolsetArtPaintTarget,
   type ToolsetArtStylePayload,
   type ToolsetFlyoutCommandSnapshot,
@@ -34,7 +39,7 @@ import {
  * deactivating (hidesOnDeactivate). The colour picker deliberately does NOT close on every commit
  * (it commits per RGB/hex keystroke); a flyout closes the moment you pick a command.
  */
-function hidePopoverWindow() {
+function hideNativePopoverWindow() {
   void import("@tauri-apps/api/window")
     .then(({ getCurrentWindow }) => getCurrentWindow().hide())
     .catch(() => undefined);
@@ -55,9 +60,18 @@ export function PalettePopoverWindow({
   // Whether the owning palette has pushed content at least once. A prewarmed window must not reveal
   // (or answer its own mount content-request) before then — its initial state is a placeholder.
   const contentPushedRef = useRef(false);
+  const contentOpenedAt = useRef(0);
+  const latestDismissAt = useRef(-Infinity);
+  const perfShownRef = useRef<ReturnType<NonNullable<typeof perfProbe>["surfaceStarted"]>>(undefined);
   // Set the moment this popover is dismissed (Escape, click-away, a chosen flyout command) so an
   // in-flight reveal chain cannot show it again after the user has closed it.
   const dismissedRef = useRef(false);
+  const keepWindowFocusRef = useRef(false);
+  const hidePopoverWindow = () => {
+    keepWindowFocusRef.current = false;
+    hideNativePopoverWindow();
+  };
+  const closedBondStereoSessions = useRef(new Set<string>());
   // Where this open's top-left belongs (global logical). Re-asserted after every content-fit
   // resize: macOS resizes are bottom-anchored, so a height change after Rust's set_position
   // would otherwise shove the window down by the delta — the first-open misposition.
@@ -68,8 +82,16 @@ export function PalettePopoverWindow({
       : { kind: "artColor" }
   );
   const [artStyle, setArtStyle] = useState<ToolsetArtStylePayload | undefined>();
+  const contentRef = useRef(content);
+  contentRef.current = content;
+  const notifyBondStereoClose = (current = contentRef.current) => {
+    if (current.kind === "flyout" && current.flyout.variant === "bondStereo" && current.flyout.id) {
+      void sendBondStereoPopoverAction({ sessionId: current.flyout.id, action: "close" }).catch(() => undefined);
+    }
+  };
   const [artStyleTarget, setArtStyleTarget] = useState<ToolsetArtPaintTarget>("fill");
   const [fallbackColor, setFallbackColor] = useState<string | undefined>();
+  const [colorContextKey, setColorContextKey] = useState<string | undefined>();
   const [draft, setDraft] = useState<string | undefined>();
 
   const effectiveTarget: ToolsetArtPaintTarget = artStyle?.activePaintTarget ?? artStyleTarget ?? "fill";
@@ -78,6 +100,11 @@ export function PalettePopoverWindow({
     : artStyle?.values.strokeColor.value;
   const currentColor = normalizeHexColor(activeColor ?? fallbackColor) ?? "#111111";
   const value = draft ?? currentColor;
+
+  useEffect(() => {
+    const shell = shellRef.current;
+    if (shell) return installPaletteInputFocus(shell, undefined, undefined, () => keepWindowFocusRef.current);
+  }, []);
 
   useEffect(() => {
     document.documentElement.classList.add("palette-popover-window-html");
@@ -99,12 +126,31 @@ export function PalettePopoverWindow({
         return;
       }
       contentPushedRef.current = true;
+      const openedAt = payload.openedAt ?? toolsetPopoverTimestamp();
+      // Dismiss IPC and content IPC can arrive in either order. A genuine press
+      // after this open began wins even if the window had no content at the time.
+      if (latestDismissAt.current >= openedAt) {
+        notifyBondStereoClose(payload);
+        return;
+      }
+      if (payload.kind === "flyout" && payload.flyout.variant === "bondStereo" && payload.flyout.id) {
+        if (closedBondStereoSessions.current.has(payload.flyout.id)) return;
+        const current = contentRef.current;
+        // Startup replay and the owner's push can both arrive. Replaying a session
+        // must not restore focus or resurrect a popover after an action/dismissal.
+        if (current.kind === "flyout" && current.flyout.id === payload.flyout.id) return;
+      }
+      if (perfShownRef.current) perfHook(() => perfProbe?.surfaceShown(perfShownRef.current, "no-op"));
+      perfShownRef.current = perfHook(() => perfProbe?.surfaceStarted("palette-popover", undefined, payload.kind === "flyout" ? payload.flyout.flyoutId : "artColor"));
       // A fresh push is a fresh open — it may follow a dismissal.
+      contentOpenedAt.current = openedAt;
       dismissedRef.current = false;
       if (payload.anchor && typeof payload.anchor.x === "number" && typeof payload.anchor.y === "number") {
         anchorRef.current = payload.anchor;
       }
-      setContent(payload.kind === "flyout" ? { kind: "flyout", flyout: payload.flyout } : { kind: "artColor" });
+      const next: ToolsetPopoverContent = payload.kind === "flyout" ? { kind: "flyout", flyout: payload.flyout } : { kind: "artColor" };
+      contentRef.current = next;
+      setContent(next);
     })
       .then((cleanup) => {
         unlisten = cleanup;
@@ -119,6 +165,7 @@ export function PalettePopoverWindow({
     let unlisten: (() => void) | undefined;
     void listenForToolsetTextStyle((payload) => {
       setArtStyle(payload.currentArtStyle);
+      setColorContextKey(payload.colorContextKey);
       setArtStyleTarget(payload.currentArtStyle?.activePaintTarget ?? payload.currentArtStyleTarget ?? "fill");
       setFallbackColor(payload.currentTextStyle?.color);
     })
@@ -134,7 +181,7 @@ export function PalettePopoverWindow({
   // draft — the picker should reflect whatever the current object actually is.
   useEffect(() => {
     setDraft(undefined);
-  }, [currentColor]);
+  }, [currentColor, colorContextKey]);
 
   // Fit the window to whatever content it's showing, in both dimensions. Every resize
   // re-asserts the anchored position: a bottom-anchored macOS resize moves the top-left,
@@ -177,6 +224,10 @@ export function PalettePopoverWindow({
   // effect above keeps the size pixel-perfect once painting resumes.
   useEffect(() => {
     const ready = content.kind === "artColor" || (content.kind === "flyout" && content.flyout.commands.length > 0);
+    if (!ready && perfShownRef.current) {
+      perfHook(() => perfProbe?.surfaceShown(perfShownRef.current, "no-op"));
+      perfShownRef.current = undefined;
+    }
     if (!ready || (prewarm && !contentPushedRef.current)) {
       return;
     }
@@ -197,6 +248,7 @@ export function PalettePopoverWindow({
     // show() would otherwise resurrect a popover the user just clicked away from, and a superseded
     // chain's position write would move the visible window back to the old anchor.
     let cancelled = false;
+    const perfShown = perfShownRef.current;
     void (async () => {
       if (rect && rect.width > 0 && rect.height > 0) {
         await setCurrentWindowLogicalSize({ width: Math.ceil(rect.width), height: Math.ceil(rect.height) }).catch(
@@ -211,32 +263,73 @@ export function PalettePopoverWindow({
         await setCurrentWindowLogicalPosition(anchor).catch(() => undefined);
       }
       if (cancelled || dismissedRef.current) {
+        perfHook(() => perfProbe?.surfaceShown(perfShown, "no-op"));
         return;
       }
-      await showCurrentToolsetPopoverWindow().catch(() => undefined);
+      try {
+        // Rust maps other popovers to Preserve; their fields lease the keyboard.
+        // Only a deliberate E/Z keyboard reveal owns focus without a field lease.
+        const preserveFocus = content.kind === "flyout" && content.flyout.variant === "bondStereo" && !content.flyout.keyboardOpen;
+        keepWindowFocusRef.current = toolsetId === "core.bondStereo" && content.kind === "flyout" &&
+          content.flyout.variant === "bondStereo" && !!content.flyout.keyboardOpen;
+        await showCurrentToolsetPopoverWindow(preserveFocus ? "preserve" : "focus");
+        if (cancelled || dismissedRef.current) {
+          // An older reveal may complete after a fresh open. Only hide the content
+          // this chain belongs to; the new session owns the reused window now.
+          if (contentRef.current === content) hidePopoverWindow();
+          return;
+        }
+        if (content.kind === "flyout" && content.flyout.variant === "bondStereo" && content.flyout.keyboardOpen && !cancelled && !dismissedRef.current) {
+          const [{ getCurrentWindow }, { getCurrentWebview }] = await Promise.all([
+            import("@tauri-apps/api/window"), import("@tauri-apps/api/webview")
+          ]);
+          if (!cancelled && !dismissedRef.current) {
+            await getCurrentWindow().setFocus();
+            if (cancelled || dismissedRef.current) return;
+            await getCurrentWebview().setFocus();
+            if (cancelled || dismissedRef.current) return;
+            shellRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+          }
+        }
+        perfHook(() => perfProbe?.surfaceShown(perfShown, "popover-shown"));
+        if (perfShownRef.current === perfShown) perfShownRef.current = undefined;
+      } catch (error) {
+        console.warn("Toolset popover reveal failed", error);
+        // A failed nonactivating reveal must release the document's E/Z session,
+        // without hiding or closing a newer session that reused this window.
+        if (contentRef.current === content) {
+          dismissedRef.current = true;
+          notifyBondStereoClose();
+          hidePopoverWindow();
+        }
+        perfHook(() => perfProbe?.surfaceShown(perfShown, "failed"));
+        if (perfShownRef.current === perfShown) perfShownRef.current = undefined;
+      }
     })();
     return () => {
       cancelled = true;
+      keepWindowFocusRef.current = false;
+      perfHook(() => perfProbe?.surfaceShown(perfShown, "no-op"));
       window.clearTimeout(scrubTimer);
       document.body.style.backgroundColor = "";
     };
-  }, [content, prewarm]);
+  }, [content, prewarm, toolsetId]);
 
   // Safety net for a cold user-initiated open: if content never arrives (e.g. the owning palette went
   // away mid-open), show anyway so the window can't get stuck invisible. Prewarmed windows are the
   // opposite case — hidden is their correct resting state, so they get no net.
   useEffect(() => {
-    if (prewarm) {
+    if (prewarm || toolsetId === "core.bondStereo") {
       return undefined;
     }
     const fallback = window.setTimeout(() => {
-      if (contentPushedRef.current) {
+      if (contentPushedRef.current || dismissedRef.current) {
         return;
       }
       void showCurrentToolsetPopoverWindow().catch(() => undefined);
     }, 600);
     return () => window.clearTimeout(fallback);
-  }, [prewarm]);
+  }, [prewarm, toolsetId]);
 
   // Escape dismisses (and cancels any in-flight colour preview).
   useEffect(() => {
@@ -246,6 +339,7 @@ export function PalettePopoverWindow({
       }
       event.preventDefault();
       dismissedRef.current = true;
+      notifyBondStereoClose();
       void sendPaletteCommandCancel("palette.preview.cancel").catch(() => undefined);
       hidePopoverWindow();
     };
@@ -253,12 +347,40 @@ export function PalettePopoverWindow({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
+  // The owner also cancels pending/cold opens. Remember closure before a delayed
+  // snapshot arrives, so it cannot reveal a window the document already dismissed.
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listenForBondStereoPopoverActions(payload => {
+      if (payload.action !== "close") return;
+      closedBondStereoSessions.current.add(payload.sessionId);
+      if (closedBondStereoSessions.current.size > 128) {
+        closedBondStereoSessions.current.delete(closedBondStereoSessions.current.values().next().value!);
+      }
+      const current = contentRef.current;
+      if (current.kind === "flyout" && current.flyout.variant === "bondStereo" && current.flyout.id === payload.sessionId) {
+        dismissedRef.current = true;
+        hidePopoverWindow();
+      }
+    }).then(cleanup => { if (disposed) cleanup(); else unlisten = cleanup; }).catch(() => undefined);
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
+
   // Click-away dismissal: the document window and palettes broadcast a dismiss on any pointer-down
   // that isn't this popover. Hide on that signal, so a popover persists only while you use it.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
-    void listenForToolsetPopoverDismiss(() => {
+    void listenForToolsetPopoverDismiss(payload => {
+      // Remember even an out-of-order broadcast for content still in transit.
+      // Only presses before the originating open are stale, not presses before
+      // the content arrived in this webview.
+      if (payload?.requestedAt !== undefined) {
+        latestDismissAt.current = Math.max(latestDismissAt.current, payload.requestedAt);
+        if (payload.requestedAt < contentOpenedAt.current) return;
+      }
       dismissedRef.current = true;
+      notifyBondStereoClose();
       hidePopoverWindow();
     })
       .then((cleanup) => {
@@ -289,17 +411,40 @@ export function PalettePopoverWindow({
   };
 
   const chooseFlyoutCommand = (command: ToolsetFlyoutCommandSnapshot) => {
-    if (!command.enabled) {
+    if (!command.enabled || dismissedRef.current) {
       return;
     }
-    void sendPaletteCommand(command.id).catch(() => undefined);
+    if (content.kind === "flyout" && content.flyout.variant === "bondStereo" && content.flyout.id) {
+      const action = command.id === "molecule.bondStereo:flipped" ? "flipped" : "geometry";
+      void sendBondStereoPopoverAction({ sessionId: content.flyout.id, action }).catch(() => undefined);
+    } else void sendPaletteCommand(command.id).catch(() => undefined);
     dismissedRef.current = true;
     hidePopoverWindow();
   };
 
 	return (
 	  <div ref={shellRef} className="palette-popover-shell" data-popover-kind={content.kind}>
-      {content.kind === "flyout" && content.flyout.variant === "distribute" ? (
+      {content.kind === "flyout" && content.flyout.variant === "bondStereo" ? (
+        <div className="bond-stereo-popover" role="dialog" aria-label="E/Z not specified"
+          onKeyDown={event => {
+            if (event.key !== "Tab") return;
+            const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")];
+            const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+            event.preventDefault(); event.stopPropagation();
+            buttons[(index + (event.shiftKey ? buttons.length - 1 : 1)) % buttons.length]?.focus();
+          }}>
+          <strong>E/Z not specified</strong>
+          <p>This double bond's geometry wasn't given, so ChemDraft shows it as either E or Z.</p>
+          {content.flyout.commands.map(command => <button key={command.id} type="button" disabled={!command.enabled}
+            title={command.disabledReason} data-command-id={command.id} onClick={() => chooseFlyoutCommand(command)}>{command.title}</button>)}
+          <button type="button" onClick={() => {
+            if (dismissedRef.current) return;
+            dismissedRef.current = true;
+            if (content.flyout.id) void sendBondStereoPopoverAction({ sessionId: content.flyout.id, action: "keep" }).catch(() => undefined);
+            hidePopoverWindow();
+          }}>Keep unspecified</button>
+        </div>
+      ) : content.kind === "flyout" && content.flyout.variant === "distribute" ? (
         // Plain-text radio choice (Centers / Equal gaps) — icon-less, so it must NOT use the
         // icon+label grid layout below: with no icon element that grid places the lone label in
         // its narrow icon column and ellipsizes it (the "C…" / "E…" bug).
@@ -368,6 +513,7 @@ export function PalettePopoverWindow({
       ) : (
         <div className="art-color-popover" role="dialog" aria-label="Art color picker">
           <ColorPickerPopoverBody
+            contextKey={colorContextKey}
             activeColor={currentColor}
             value={value}
             onPreviewColor={previewColor}
