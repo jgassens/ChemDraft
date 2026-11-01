@@ -260,7 +260,8 @@ describe("headless ChemDraft rendering", () => {
     expect(rendered.molecule.bonds.filter((bond) => bond.display?.bondStyle === "dashed"))
       .toHaveLength(2);
     expect(rendered.svg.match(/data-bond-style="dashed"/g)).toHaveLength(2);
-    expect(rendered.svg.match(/data-atom-label="NH3"/g)).toHaveLength(2);
+    expect(rendered.svg.match(/data-atom-label="NH3"/g)).toHaveLength(1);
+    expect(rendered.svg.match(/data-atom-label="H3N"/g)).toHaveLength(1);
     expect(rendered.molecule.structure.match(/M  V30 \d+ 9 \d+ \d+/g)).toHaveLength(2);
   }, 60_000);
 
