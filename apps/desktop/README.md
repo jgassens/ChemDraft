@@ -12,6 +12,11 @@ documents for the prompt; system logout, restart, and shutdown remain non-blocki
 
 Tauri v2, Vite, React, and TypeScript desktop shell for ChemDraft.
 
+## Editing text
+
+While editing an existing text box, only the live formatted preview is shown. The saved drawing
+returns with the updated content when editing ends; other labels remain visible throughout.
+
 Plugin catalog and local engine downloads use reqwest 0.12 with both Mozilla and OS certificate
 roots, so macOS and Windows enterprise trust stores can participate without disabling certificate
 verification. Transport failures name the host and cause; diagnostics and logs remove URL credentials,

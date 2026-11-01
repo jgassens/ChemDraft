@@ -1650,7 +1650,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "11.01.10.52-codex";
+const CURRENT_BUILD_STAMP = "11.01.12.20-opus";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -20608,13 +20608,11 @@ export function MainWindow({
             const textEditId = activeTextEditObjectIdRef.current;
             const target = event.target instanceof Element ? event.target : null;
             // Capture before page/object tools can clear the edit and start a gesture.
-            // Leave editor controls and the edited glyph alone: Text may have restored
-            // Select already when the second press of a double-click reaches that glyph.
-            const editingGlyph = target?.closest("[data-page-svg-object-visual]")?.getAttribute("data-page-svg-object-visual") === textEditId
-              && (activeToolState.activeCommandId === "tool.select" || activeToolState.activeCommandId === "tool.text");
+            // Leave editor controls alone. The edited glyph is pointer-transparent while its
+            // HTML preview shows, so its second double-click press lands on the editor.
             const editingControl = target?.closest(".text-resize-handle")?.closest("[data-object-id]")?.getAttribute("data-object-id") === textEditId;
             if (textEditId && event.button === 0 && event.isPrimary !== false
-              && !isEditableTarget(event.target) && !editingGlyph && !editingControl && isCanvasDrawingPress(canvas, event)) {
+              && !isEditableTarget(event.target) && !editingControl && isCanvasDrawingPress(canvas, event)) {
               event.preventDefault();
               event.stopPropagation();
               // Keep the native IME and its editor alive until composition terminates.
@@ -20739,6 +20737,7 @@ export function MainWindow({
                   objectOverlayFragments={objectOverlayFragments}
                   objectTransformPreview={objectTransformPreview}
                   spinningObjectId={activeSpin3dState?.objectId}
+                  editingTextObjectId={activeTextEditObjectId}
                 />
                 <PageInteractionPortal target={interactionLayer}>
                 {activeNativeTemplateId && templatePreview ? (
@@ -26629,6 +26628,7 @@ function PageSvgSurfaceContent({
   objectOverlayFragments,
   objectTransformPreview,
   spinningObjectId,
+  editingTextObjectId,
   ...handlers
 }: {
   ariaLabel: string;
@@ -26640,6 +26640,8 @@ function PageSvgSurfaceContent({
   objectTransformPreview?: ObjectTransformPreviewState;
   /** The id of the molecule being spun in 3D; its drawn structure fades to a faint ghost. */
   spinningObjectId?: string;
+  /** The HTML editing preview owns this text's paint until its edit ends. */
+  editingTextObjectId?: string;
   onPointerDown(objectId: string, event: ObjectPointerEvent): void;
   onPointerMove(objectId: string, event: ObjectPointerEvent): void;
   onPointerUp(objectId: string, event: ObjectPointerEvent): void;
@@ -26691,6 +26693,7 @@ function PageSvgSurfaceContent({
           {objects.map(object => {
             const preview = previewIds.has(object.id) ? objectTransformPreview : undefined;
             const fragments = objectOverlayFragments.get(object.id)!;
+            const editingText = object.type === "text" && object.id === editingTextObjectId;
             return (
               <g
                 key={object.id}
@@ -26698,8 +26701,9 @@ function PageSvgSurfaceContent({
                 data-object-type={object.type}
                 data-layer-index={Number(fragments[0]!.attrs["data-layer-index"])}
                 opacity={object.id === spinningObjectId ? 0.1 : undefined}
+                visibility={editingText ? "hidden" : undefined}
                 transform={preview ? objectTransformPreviewSvgTransform(preview) : undefined}
-                style={{ pointerEvents: object.id === spinningObjectId ? "none" : "auto" }}
+                style={{ pointerEvents: object.id === spinningObjectId || editingText ? "none" : "auto" }}
                 onPointerDown={event => handlers.onPointerDown(object.id, event)}
                 onPointerMove={event => handlers.onPointerMove(object.id, event)}
                 onPointerUp={event => handlers.onPointerUp(object.id, event)}
