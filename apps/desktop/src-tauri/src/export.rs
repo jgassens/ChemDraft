@@ -5,6 +5,8 @@ use resvg::{tiny_skia, usvg};
 
 use crate::fonts::shared_fontdb;
 
+mod pictures;
+
 const DEFAULT_RASTER_SCALE: f64 = 1.0;
 const DEFAULT_MAX_DIMENSION_PX: u32 = 8192;
 const DEFAULT_JPEG_QUALITY: u8 = 90;
@@ -63,6 +65,10 @@ pub(crate) struct RasterExportRequest {
     /// (see `target_size`), so a request that gets clamped for `max_dimension_px` still gets a
     /// truthful density instead of one describing the unclamped size that was asked for.
     css_px_per_inch: Option<f64>,
+    /// PNG pictures decoded by the webview, keyed by the id of their stand-in `<image>`
+    /// (`rasterPictureDecode.ts`, `export/pictures.rs`). Absent when the drawing has none.
+    #[serde(default)]
+    pictures: Vec<pictures::RasterPictureInput>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -97,7 +103,7 @@ pub(crate) async fn rasterize_svg(
         })?
 }
 
-fn rasterize_svg_impl(request: RasterExportRequest) -> Result<RasterExportResponse, String> {
+fn rasterize_svg_impl(mut request: RasterExportRequest) -> Result<RasterExportResponse, String> {
     // Check UTF-8 bytes before font discovery or usvg parsing; usvg's tree limits do not
     // bound the input string (including embedded data: images).
     if request.svg.len() > MAX_SVG_BYTES {
@@ -109,6 +115,11 @@ fn rasterize_svg_impl(request: RasterExportRequest) -> Result<RasterExportRespon
         ));
     }
 
+    // Sizes, lengths and the decoded-pixel budget are checked before any pixels are unpacked.
+    let supplied_pictures = pictures::SuppliedPictures::from_request(
+        std::mem::take(&mut request.pictures),
+        request.format.label(),
+    )?;
     let options = export_svg_options();
 
     // Inspect the source XML: usvg can discard unsupported or malformed pictures.
@@ -122,8 +133,13 @@ fn rasterize_svg_impl(request: RasterExportRequest) -> Result<RasterExportRespon
         },
     )
     .map_err(|error| format!("Could not parse SVG for raster export: {error}"))?;
+    let stand_ins = supplied_pictures.find_stand_ins(&document);
     let mut inspection_budget = MAX_SVG_BYTES;
-    let contains_bitmap_pictures = contains_bitmap_pictures(&document, 0, &mut inspection_budget);
+    let contains_bitmap_pictures = document.descendants().any(|node| {
+        let id = node.attribute("id").unwrap_or_default();
+        // Supplied pictures are reported below, each with its own reason when not drawn.
+        !stand_ins.contains_key(id) && image_is_omitted_bitmap(&node, 0, &mut inspection_budget)
+    });
     let tree = usvg::Tree::from_xmltree(&document, &options)
         .map_err(|error| format!("Could not parse SVG for raster export: {error}"))?;
     let base_size = tree.size().to_int_size();
@@ -146,7 +162,17 @@ fn rasterize_svg_impl(request: RasterExportRequest) -> Result<RasterExportRespon
     }
 
     let transform = tiny_skia::Transform::from_scale(scale_x, scale_y);
-    resvg::render(&tree, transform, &mut pixmap.as_mut());
+    let drawn_pictures = if supplied_pictures.is_empty() {
+        resvg::render(&tree, transform, &mut pixmap.as_mut());
+        Default::default()
+    } else {
+        supplied_pictures.render(&tree, &stand_ins, transform, &mut pixmap.as_mut())
+    };
+    warnings.extend(supplied_pictures.omission_warnings(
+        &stand_ins,
+        &drawn_pictures,
+        request.format.label(),
+    ));
 
     let (mut bytes, encode_warnings) =
         encode_raster(&pixmap, request.format, background, request.jpeg_quality)?;
@@ -176,40 +202,57 @@ fn contains_bitmap_pictures(
     depth: usize,
     remaining_bytes: &mut usize,
 ) -> bool {
-    document.descendants().any(|node| {
-        if !node.is_element() || node.tag_name().name() != "image" {
-            return false;
-        }
-        let mut hrefs = node
-            .attributes()
-            .filter(|attr| attr.name() == "href")
-            .peekable();
-        if hrefs.peek().is_none() {
+    document
+        .descendants()
+        .any(|node| image_is_omitted_bitmap(&node, depth, remaining_bytes))
+}
+
+/// Whether `node` is an `<image>` that resvg would leave out of the raster: anything but an SVG
+/// picture whose own pictures (to a bounded depth) are all SVG.
+fn image_is_omitted_bitmap(
+    node: &usvg::roxmltree::Node<'_, '_>,
+    depth: usize,
+    remaining_bytes: &mut usize,
+) -> bool {
+    if !node.is_element() || node.tag_name().name() != "image" {
+        return false;
+    }
+    // A picture stand-in whose pixels were not supplied with this request.
+    if node
+        .attribute("id")
+        .is_some_and(|id| id.starts_with(pictures::PICTURE_ID_PREFIX))
+    {
+        return true;
+    }
+    let mut hrefs = node
+        .attributes()
+        .filter(|attr| attr.name() == "href")
+        .peekable();
+    if hrefs.peek().is_none() {
+        return true;
+    }
+    hrefs.any(|attr| {
+        // usvg 0.47 has no explicit image nesting bound. Cap inspection and
+        // warn on exhaustion so a deeper bitmap can never be missed.
+        if depth >= 32 {
             return true;
         }
-        hrefs.any(|attr| {
-            // usvg 0.47 has no explicit image nesting bound. Cap inspection and
-            // warn on exhaustion so a deeper bitmap can never be missed.
-            if depth >= 32 {
-                return true;
-            }
-            let Some(data) = decode_svg_picture(attr.value(), remaining_bytes) else {
-                return true;
-            };
-            let Ok(text) = std::str::from_utf8(&data) else {
-                return true;
-            };
-            let Ok(nested) = usvg::roxmltree::Document::parse_with_options(
-                text,
-                usvg::roxmltree::ParsingOptions {
-                    allow_dtd: true,
-                    ..Default::default()
-                },
-            ) else {
-                return true;
-            };
-            contains_bitmap_pictures(&nested, depth + 1, remaining_bytes)
-        })
+        let Some(data) = decode_svg_picture(attr.value(), remaining_bytes) else {
+            return true;
+        };
+        let Ok(text) = std::str::from_utf8(&data) else {
+            return true;
+        };
+        let Ok(nested) = usvg::roxmltree::Document::parse_with_options(
+            text,
+            usvg::roxmltree::ParsingOptions {
+                allow_dtd: true,
+                ..Default::default()
+            },
+        ) else {
+            return true;
+        };
+        contains_bitmap_pictures(&nested, depth + 1, remaining_bytes)
     })
 }
 
@@ -617,6 +660,7 @@ mod tests {
             jpeg_quality: None,
             max_dimension_px: None,
             css_px_per_inch: None,
+            pictures: Vec::new(),
         }
     }
 
@@ -1018,5 +1062,390 @@ mod tests {
         // A multi-byte char reaches the 3-length arm by byte count; it must return an
         // error rather than panic on a non-char-boundary slice.
         assert!(parse_background(Some("#\u{2603}")).is_err());
+    }
+
+    const PICTURE_ID: &str = "chemdraft-raster-picture-0";
+    /// Straight-alpha colours of the 8 × 8 test picture's quadrants: top left, top right,
+    /// bottom left, bottom right.
+    const QUADRANTS: [[u8; 4]; 4] = [
+        [255, 0, 0, 255],
+        [0, 255, 0, 255],
+        [0, 0, 255, 255],
+        [255, 255, 0, 255],
+    ];
+    const WHITE: [u8; 4] = [255; 4];
+
+    fn supplied_picture(
+        id: &str,
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+    ) -> pictures::RasterPictureInput {
+        pictures::RasterPictureInput {
+            id: id.to_string(),
+            width: Some(width),
+            height: Some(height),
+            rgba_base64: Some(base64::engine::general_purpose::STANDARD.encode(rgba)),
+            refused: None,
+        }
+    }
+
+    fn quadrant_picture(id: &str) -> pictures::RasterPictureInput {
+        let mut rgba = Vec::with_capacity(8 * 8 * 4);
+        for y in 0..8 {
+            for x in 0..8 {
+                rgba.extend_from_slice(&QUADRANTS[usize::from(y >= 4) * 2 + usize::from(x >= 4)]);
+            }
+        }
+        supplied_picture(id, 8, 8, &rgba)
+    }
+
+    fn refused_picture(
+        id: &str,
+        refusal: pictures::PictureRefusal,
+    ) -> pictures::RasterPictureInput {
+        pictures::RasterPictureInput {
+            id: id.to_string(),
+            refused: Some(refusal),
+            ..Default::default()
+        }
+    }
+
+    /// The stand-in `<image>` the webview writes for a picture of `width` × `height` pixels.
+    fn stand_in(id: &str, width: u32, height: u32, frame: &str) -> String {
+        format!(
+            r#"<image id="{id}" {frame} preserveAspectRatio="none" href="{}"/>"#,
+            pictures::placeholder_href(width, height)
+        )
+    }
+
+    fn picture_page(size: &str, body: &str) -> String {
+        format!(r#"<svg xmlns="http://www.w3.org/2000/svg" {size}>{body}</svg>"#)
+    }
+
+    fn render_pictures(
+        svg: &str,
+        scale: u32,
+        supplied: Vec<pictures::RasterPictureInput>,
+    ) -> (image::RgbaImage, Vec<RasterExportWarning>) {
+        let response = rasterize_svg_impl(RasterExportRequest {
+            svg: svg.to_string(),
+            scale: Some(f64::from(scale)),
+            pictures: supplied,
+            ..request(RasterExportFormat::Png)
+        })
+        .expect("render the picture page");
+        let pixels = image::load_from_memory(&response.bytes)
+            .expect("decode the exported page")
+            .to_rgba8();
+        (pixels, response.warnings)
+    }
+
+    #[track_caller]
+    fn assert_rgba_near(pixels: &image::RgbaImage, (x, y): (u32, u32), expected: [u8; 4]) {
+        let actual = pixels.get_pixel(x, y).0;
+        assert!(
+            actual
+                .iter()
+                .zip(expected)
+                .all(|(actual, expected)| actual.abs_diff(expected) <= 2),
+            "pixel ({x}, {y}) is {actual:?}, expected {expected:?}"
+        );
+    }
+
+    #[test]
+    fn supplied_pictures_land_on_their_frame_at_every_scale_and_rotation() {
+        let picture = stand_in(PICTURE_ID, 8, 8, r#"x="20" y="20" width="40" height="40""#);
+        let plain = picture_page(
+            r#"width="100" height="100" viewBox="0 0 100 100""#,
+            &format!("<g>{picture}</g>"),
+        );
+        // As documentStyleSvg writes it: a pt-sized root and a scale group (net scale 1 here).
+        let document_style = picture_page(
+            r#"width="75pt" height="75pt" viewBox="0 0 50 50""#,
+            &format!(r#"<g transform="scale(0.5)">{picture}</g>"#),
+        );
+        // As a rotated picture is written: rotated 90° clockwise about the frame centre.
+        let rotated = picture_page(
+            r#"width="100" height="100""#,
+            &format!(r#"<g transform="rotate(90 40 40)">{picture}</g>"#),
+        );
+        // Quadrant centres, with the quadrant expected there upright and rotated.
+        let probes = [
+            ((30, 30), 0, 2),
+            ((50, 30), 1, 0),
+            ((30, 50), 2, 3),
+            ((50, 50), 3, 1),
+        ];
+        for scale in [1, 3] {
+            for (svg, is_rotated) in [(&plain, false), (&document_style, false), (&rotated, true)] {
+                let (pixels, warnings) =
+                    render_pictures(svg, scale, vec![quadrant_picture(PICTURE_ID)]);
+                assert!(warnings.is_empty(), "{warnings:?}");
+                assert_eq!(pixels.dimensions(), (100 * scale, 100 * scale));
+                for ((x, y), upright, turned) in probes {
+                    let quadrant = if is_rotated { turned } else { upright };
+                    assert_rgba_near(&pixels, (x * scale, y * scale), QUADRANTS[quadrant]);
+                }
+                // White just outside each edge of the 20..60 frame, picture just inside.
+                assert_rgba_near(&pixels, (20 * scale - 2, 30 * scale), WHITE);
+                assert_rgba_near(&pixels, (60 * scale + 1, 30 * scale), WHITE);
+                assert_rgba_near(&pixels, (30 * scale, 20 * scale - 2), WHITE);
+                assert_rgba_near(&pixels, (30 * scale, 60 * scale + 1), WHITE);
+                let edge = QUADRANTS[if is_rotated { 2 } else { 0 }];
+                assert_rgba_near(&pixels, (20 * scale + 1, 30 * scale), edge);
+            }
+        }
+    }
+
+    #[test]
+    fn supplied_pictures_keep_their_z_order_and_the_rest_of_the_page_matches_resvg() {
+        let body = format!(
+            r##"<rect x="10" y="10" width="80" height="80" fill="#000000"/><g>{}</g><rect x="40" y="0" width="60" height="100" fill="#ff00ff"/><line x1="0" y1="95" x2="100" y2="95" stroke="#00ff00" stroke-width="2"/><text x="5" y="8" font-size="6">CH3</text>"##,
+            stand_in(PICTURE_ID, 8, 8, r#"x="20" y="20" width="40" height="40""#)
+        );
+        let svg = picture_page(r#"width="100" height="100""#, &body);
+        for scale in [1, 3] {
+            let (pixels, warnings) =
+                render_pictures(&svg, scale, vec![quadrant_picture(PICTURE_ID)]);
+            assert!(warnings.is_empty(), "{warnings:?}");
+            // Over the black rect drawn before it, under the magenta rect drawn after it.
+            assert_rgba_near(&pixels, (30 * scale, 30 * scale), QUADRANTS[0]);
+            assert_rgba_near(&pixels, (30 * scale, 50 * scale), QUADRANTS[2]);
+            assert_rgba_near(&pixels, (50 * scale, 30 * scale), [255, 0, 255, 255]);
+            assert_rgba_near(&pixels, (15 * scale, 15 * scale), [0, 0, 0, 255]);
+            // A bare horizontal line has no fill box, and must still be stroked.
+            assert_rgba_near(
+                &pixels,
+                (20 * scale, 94 * scale + scale / 2),
+                [0, 255, 0, 255],
+            );
+
+            // Off the picture, the page is what resvg draws for the same SVG on its own.
+            let (reference, _) = render_pictures(&svg, scale, Vec::new());
+            let frame = (20 * scale - 1)..(60 * scale + 1);
+            for (x, y, pixel) in pixels.enumerate_pixels() {
+                if frame.contains(&x) && frame.contains(&y) {
+                    continue;
+                }
+                let expected = reference.get_pixel(x, y).0;
+                assert!(
+                    pixel
+                        .0
+                        .iter()
+                        .zip(expected)
+                        .all(|(actual, expected)| actual.abs_diff(expected) <= 1),
+                    "pixel ({x}, {y}) is {:?}; resvg alone draws {expected:?}",
+                    pixel.0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn supplied_pictures_honour_group_opacity_alpha_and_slice_clipping() {
+        let body = format!(
+            r#"<g opacity="0.5">{}</g>{}<image id="chemdraft-raster-picture-2" x="50" y="0" width="40" height="20" preserveAspectRatio="xMidYMid slice" href="{}"/>"#,
+            stand_in(PICTURE_ID, 8, 8, r#"x="0" y="0" width="40" height="40""#),
+            stand_in(
+                "chemdraft-raster-picture-1",
+                1,
+                1,
+                r#"x="0" y="60" width="20" height="20""#
+            ),
+            pictures::placeholder_href(8, 8)
+        );
+        let svg = picture_page(r#"width="100" height="100""#, &body);
+        let (pixels, warnings) = render_pictures(
+            &svg,
+            1,
+            vec![
+                quadrant_picture(PICTURE_ID),
+                supplied_picture("chemdraft-raster-picture-1", 1, 1, &[0, 0, 255, 128]),
+                quadrant_picture("chemdraft-raster-picture-2"),
+            ],
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+        // Half-opaque red, and a half-transparent (straight alpha) blue pixel, over white.
+        assert_rgba_near(&pixels, (10, 10), [255, 128, 128, 255]);
+        assert_rgba_near(&pixels, (10, 70), [127, 127, 255, 255]);
+        // The slice covers its 40 × 20 frame with the picture's middle rows, clipped to the frame.
+        assert_rgba_near(&pixels, (55, 5), QUADRANTS[0]);
+        assert_rgba_near(&pixels, (85, 15), QUADRANTS[3]);
+        assert_rgba_near(&pixels, (55, 25), WHITE);
+    }
+
+    #[test]
+    fn omitted_picture_warnings_name_each_reason_and_skip_drawn_pictures() {
+        let id = |index: usize| format!("chemdraft-raster-picture-{index}");
+        let frame = |x: u32| format!(r#"x="{x}" y="0" width="10" height="10""#);
+        let body = format!(
+            r##"<defs><mask id="m"><rect width="100" height="100" fill="#ffffff"/></mask><pattern id="p" width="10" height="10" patternUnits="userSpaceOnUse">{}</pattern></defs>{}{}{}{}{}<g mask="url(#m)">{}</g><rect x="50" y="50" width="10" height="10" fill="url(#p)"/><image x="80" y="80" width="10" height="10" href="data:image/jpeg;base64,/9j/4AAQ"/>"##,
+            stand_in(&id(6), 8, 8, &frame(0)),
+            stand_in(&id(0), 8, 8, &frame(0)),
+            stand_in(&id(1), 1, 1, &frame(10)),
+            stand_in(&id(2), 1, 1, &frame(20)),
+            stand_in(&id(3), 1, 1, &frame(30)),
+            stand_in(&id(4), 1, 1, &frame(40)),
+            stand_in(&id(5), 8, 8, &frame(50)),
+        );
+        let svg = picture_page(r#"width="100" height="100""#, &body);
+        let (pixels, warnings) = render_pictures(
+            &svg,
+            1,
+            vec![
+                quadrant_picture(&id(0)),
+                refused_picture(&id(1), pictures::PictureRefusal::TooLarge),
+                refused_picture(&id(2), pictures::PictureRefusal::TooLarge),
+                refused_picture(&id(3), pictures::PictureRefusal::OverBudget),
+                refused_picture(&id(4), pictures::PictureRefusal::DecodeFailed),
+                quadrant_picture(&id(5)),
+                quadrant_picture(&id(6)),
+            ],
+        );
+        let messages: Vec<&str> = warnings
+            .iter()
+            .map(|warning| warning.message.as_str())
+            .collect();
+        assert_eq!(
+            messages,
+            [
+                "PNG export: PNG and other bitmap pictures are not included in image exports yet; export SVG or PDF to include them.",
+                "PNG export: 2 pictures larger than 16384 px on a side were not included; export SVG or PDF to include them.",
+                "PNG export: 1 picture was not included because the pictures in this export exceed 256 MiB once decoded; export SVG or PDF to include it.",
+                "PNG export: 1 picture could not be decoded and was not included; export SVG or PDF to include it.",
+                "PNG export: 2 pictures inside a mask, filter, blend mode, pattern or marker were not included; export SVG or PDF to include them.",
+            ]
+        );
+        assert!(warnings.iter().all(|warning| {
+            warning.code == "raster_pictures_omitted" && warning.severity == "warning"
+        }));
+        // The drawn picture is there; the masked one is not drawn at all.
+        assert_rgba_near(&pixels, (2, 2), QUADRANTS[0]);
+        assert_rgba_near(&pixels, (52, 2), WHITE);
+
+        // Stand-ins whose pixels were not sent fall back to the general warning, once.
+        let (_, unsupplied) = render_pictures(&svg, 1, Vec::new());
+        assert_eq!(unsupplied.len(), 1);
+        assert_eq!(unsupplied[0].message, messages[0]);
+    }
+
+    #[test]
+    fn supplied_picture_sizes_lengths_and_budget_are_validated_before_unpacking() {
+        let picture = |id: &str, width: Option<u32>, height: Option<u32>, rgba_base64: &str| {
+            pictures::RasterPictureInput {
+                id: id.to_string(),
+                width,
+                height,
+                rgba_base64: Some(rgba_base64.to_string()),
+                refused: None,
+            }
+        };
+        let refused = |id: &str| refused_picture(id, pictures::PictureRefusal::DecodeFailed);
+        let second = "chemdraft-raster-picture-1";
+        let full_budget = Some(8192);
+        let cases = [
+            (
+                vec![picture(PICTURE_ID, Some(2), Some(2), "AAAA")],
+                format!("picture {PICTURE_ID} does not carry 2 × 2 RGBA pixels"),
+            ),
+            (
+                vec![picture(PICTURE_ID, Some(1), Some(1), "AAAAAAA=")],
+                format!("picture {PICTURE_ID} does not carry 1 × 1 RGBA pixels"),
+            ),
+            (
+                vec![picture(PICTURE_ID, Some(1), Some(1), "!!!!!!!!")],
+                format!("picture {PICTURE_ID} is not valid base64"),
+            ),
+            (
+                vec![picture(PICTURE_ID, Some(16385), Some(1), "")],
+                format!("picture {PICTURE_ID} is 16385 × 1 px; each side must be 1 to 16384 px"),
+            ),
+            (
+                vec![picture(PICTURE_ID, None, Some(4), "")],
+                format!("picture {PICTURE_ID} is 0 × 4 px"),
+            ),
+            // Exactly the budget passes the size checks (and then fails on its empty payload).
+            (
+                vec![picture(PICTURE_ID, full_budget, full_budget, "")],
+                format!("picture {PICTURE_ID} does not carry 8192 × 8192 RGBA pixels"),
+            ),
+            (
+                vec![
+                    picture(PICTURE_ID, full_budget, full_budget, ""),
+                    picture(second, Some(1), Some(1), ""),
+                ],
+                "the pictures exceed 256 MiB of decoded pixels".to_string(),
+            ),
+            (
+                vec![refused(PICTURE_ID), refused(PICTURE_ID)],
+                format!("picture id {PICTURE_ID:?} is malformed or repeated"),
+            ),
+            (
+                vec![refused("picture-0")],
+                "picture id \"picture-0\" is malformed or repeated".to_string(),
+            ),
+            (
+                vec![pictures::RasterPictureInput {
+                    refused: Some(pictures::PictureRefusal::TooLarge),
+                    ..picture(PICTURE_ID, Some(1), Some(1), "AAAA/w==")
+                }],
+                format!("picture {PICTURE_ID} must carry either pixels or a refusal"),
+            ),
+            (
+                vec![pictures::RasterPictureInput {
+                    id: PICTURE_ID.to_string(),
+                    ..Default::default()
+                }],
+                format!("picture {PICTURE_ID} must carry either pixels or a refusal"),
+            ),
+            (
+                (0..=pictures::MAX_PICTURES)
+                    .map(|index| refused(&format!("chemdraft-raster-picture-{index}")))
+                    .collect(),
+                "1025 pictures; the limit is 1024".to_string(),
+            ),
+        ];
+        for (supplied, detail) in cases {
+            let error = rasterize_svg_impl(RasterExportRequest {
+                pictures: supplied,
+                ..request(RasterExportFormat::Png)
+            })
+            .expect_err("invalid picture data must fail the export");
+            assert!(
+                error.starts_with(
+                    "Could not export PNG: the picture data sent for raster export is invalid ("
+                ) && error.contains(&detail),
+                "{error}"
+            );
+        }
+
+        // The shape the webview sends; pictures without a stand-in in the SVG are not reported.
+        let request: RasterExportRequest = serde_json::from_value(serde_json::json!({
+            "svg": SIMPLE_SVG,
+            "format": "png",
+            "pictures": [
+                { "id": PICTURE_ID, "width": 1, "height": 1, "rgbaBase64": "AAAA/w==" },
+                { "id": "chemdraft-raster-picture-1", "refused": "tooLarge" },
+                { "id": "chemdraft-raster-picture-2", "refused": "overBudget" },
+                { "id": "chemdraft-raster-picture-3", "refused": "decodeFailed" }
+            ]
+        }))
+        .expect("the webview's picture shape deserializes");
+        assert_eq!(
+            request
+                .pictures
+                .iter()
+                .map(|picture| picture.refused)
+                .collect::<Vec<_>>(),
+            [
+                None,
+                Some(pictures::PictureRefusal::TooLarge),
+                Some(pictures::PictureRefusal::OverBudget),
+                Some(pictures::PictureRefusal::DecodeFailed)
+            ]
+        );
+        let response = rasterize_svg_impl(request).expect("valid pictures export");
+        assert!(response.warnings.is_empty());
     }
 }
