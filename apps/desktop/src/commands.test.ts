@@ -89,9 +89,6 @@ describe("fragment hotkey commands", () => {
       }
       expect(!(key in fragmentAtomDrawingHotkeys && key in fragmentBondDrawingHotkeys), `duplicate fragment key ${key}`).toBe(true);
     }
-    for (const kind of ["sulfonyl", "tertButyl"] as const) {
-      expect(Object.values(fragmentAtomDrawingHotkeys)).not.toContain(fragmentSproutCommandId(kind));
-    }
   });
   it.each(["chemdraft", "chemdraw"] as const)("keeps every fragment key free of tool/command shortcuts in %s", scheme => {
     const document = createPhase4Document();

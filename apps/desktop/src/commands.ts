@@ -199,8 +199,8 @@ export const copyAsMenuItems: ReadonlyArray<{ commandId: string; label: string }
 ];
 
 export const fragmentSproutCommands = [
-  ["cyclopropyl", "Cyclopropyl"], ["cyclobutyl", "Cyclobutyl"], ["tertButyl", "tert-Butyl"],
-  ["sulfonyl", "Sulfonyl"], ["alkyne", "Alkyne"], ["cyclopentadienyl", "Cyclopentadienyl"], ["phenyl", "Phenyl"]
+  ["cyclopropyl", "Cyclopropyl"], ["cyclobutyl", "Cyclobutyl"],
+  ["alkyne", "Alkyne"], ["cyclopentadienyl", "Cyclopentadienyl"], ["phenyl", "Phenyl"]
 ] as const;
 
 export type FragmentSproutKind = typeof fragmentSproutCommands[number][0];

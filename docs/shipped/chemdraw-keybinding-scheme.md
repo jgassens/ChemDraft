@@ -99,9 +99,8 @@ the group it stands for. Matching is case-sensitive: "OMe" is methoxy, "Ome" is 
 ## Deliberately not mapped
 
 `A`→Ac is absent: "Ac" normalizes to the element actinium, and elements win over the abbreviation
-table, so acetyl is in the table only as "COMe"/"MeCO". Sulfonyl and tert-butyl fragment
-commands have no default key and are available through Customize. Also absent: dialogs (`=`, `/`)
-and tools ChemDraft lacks (TLC plate, orbitals).
+table, so acetyl is in the table only as "COMe"/"MeCO". Also absent: dialogs (`=`, `/`) and tools
+ChemDraft lacks (TLC plate, orbitals).
 
 ## Compatibility notes
 

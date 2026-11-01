@@ -19,16 +19,15 @@ Both keyboard presets use these case-sensitive drawing keys while hovering a str
 
 | Key | Over an atom | Over a bond |
 | --- | --- | --- |
-| `v` | Cyclopropyl substituent | Fuse a 3-membered ring |
+| `g` | Cyclopropyl substituent | Fuse a 3-membered ring |
 | `u` | Cyclobutyl substituent | — |
-| `K` | tert-Butyl substituent | — |
-| `k` | Sulfonyl, –S(=O)2 | — |
 | `z` | Alkyne, –C≡CH | Fuse cyclopentadiene |
-| `j` | Cyclopentadienyl substituent | — |
-| `J` | Phenyl substituent | — |
+| `Shift+G` | Cyclopentadienyl substituent | — |
+| `Shift+J` | Phenyl substituent | — |
 
-Each substituent attaches through one new bond and is one Undo step. The sulfonyl fragment
-leaves an open attachment on sulfur, which the current valence checker marks with a warning.
+Each substituent attaches through one new bond and is one Undo step. Keys `k` and `K` over an
+atom add a carbonyl or oxo group where the current valence gate permits it in the default ChemDraft
+preset; `k` and `K` do nothing in the compatibility preset.
 Key `2` adds =O directly to S or P where the current valence gate permits it; carbon keeps its
 carbonyl behavior. Key `9` adds two methyl groups when carbon has room for both, otherwise
 attaches isopropyl through one new bond (subject to the same gate). Preferences uses ⌘, on

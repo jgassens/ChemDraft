@@ -62,12 +62,6 @@ export function nativeFragmentSproutTarget(document: ChemDraftDocument, target: 
     result = nativeRingHotkeyAttachAtAtomTarget(first.document, rootTarget, template);
     if (result.document === first.document) return rollback(document, result);
     if (kind === "cyclopentadienyl") return addDiene(document, before, moleculeAt(result.document, target)!, root.id);
-  } else if (kind === "tertButyl") {
-    result = nativeAtomSproutHotkeyTarget(first.document, rootTarget, "gemDimethyl");
-    if (result.document === first.document) return rollback(document, result);
-    const second = nativeSingleBondHotkeyAtAtomTarget(result.document, rootTarget);
-    if (second.document === result.document) return rollback(document, second);
-    result = second;
   } else if (kind === "alkyne") {
     const source = before.atoms.find(atom => atom.id === target.atomId)!;
     const offset = { x: root.x - source.x, y: root.y - source.y };
@@ -83,16 +77,6 @@ export function nativeFragmentSproutTarget(document: ChemDraftDocument, target: 
     return commitGraph(document, before, graph.atoms, graph.bonds.map(bond =>
       (bond.fromAtomId === root.id && bond.toAtomId === last.id) || (bond.toAtomId === root.id && bond.fromAtomId === last.id)
         ? { ...bond, order: "triple" } : bond));
-  } else {
-    // A sulfonyl sprout is –S(=O)2; its open attachment remains visible to validation.
-    let graph = moleculeAt(first.document, target)!;
-    graph = { ...graph, atoms: graph.atoms.map(atom => atom.id === root.id ? { ...atom, element: "S" } : atom) };
-    for (let i = 0; i < 2; i += 1) {
-      const oxygen = oxygenGraph(graph, root.id, document);
-      if (!oxygen) return { document, refusal: "sprout-no-free-direction" };
-      graph = oxygen;
-    }
-    return commitGraph(document, before, graph.atoms, graph.bonds);
   }
   const graph = moleculeAt(result.document, target)!;
   return commitGraph(document, before, graph.atoms, graph.bonds);

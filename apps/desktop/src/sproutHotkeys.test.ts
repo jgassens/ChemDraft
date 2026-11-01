@@ -108,8 +108,8 @@ describe("atom-aware numeric sprouts", () => {
 
 describe("fragment graph builders", () => {
   it.each([
-    ["cyclopropyl", 3, 4, 0], ["cyclobutyl", 4, 5, 0], ["tertButyl", 4, 4, 0],
-    ["sulfonyl", 3, 3, 2], ["alkyne", 2, 2, 0], ["cyclopentadienyl", 5, 6, 2], ["phenyl", 6, 7, 3]
+    ["cyclopropyl", 3, 4, 0], ["cyclobutyl", 4, 5, 0],
+    ["alkyne", 2, 2, 0], ["cyclopentadienyl", 5, 6, 2], ["phenyl", 6, 7, 3]
   ] as const)("builds %s atom and bond topology", (kind, atoms, bonds, doubles) => {
     const { document, target, before } = fixture("C", ["C"]);
     const result = nativeFragmentSproutTarget(document, target, kind);
@@ -131,7 +131,7 @@ describe("fragment graph builders", () => {
     expect(result.document.selection.objectIds).toEqual([before.id]);
   });
 
-  it.each(["cyclopropyl", "cyclobutyl", "tertButyl", "sulfonyl", "alkyne", "cyclopentadienyl", "phenyl"] as const)("refuses missing %s targets without partial changes", kind => {
+  it.each(["cyclopropyl", "cyclobutyl", "alkyne", "cyclopentadienyl", "phenyl"] as const)("refuses missing %s targets without partial changes", kind => {
     const { document, target } = fixture("C", ["C"]);
     expect(nativeFragmentSproutTarget(document, { ...target, objectId: "missing" }, kind)).toEqual({ document, refusal: "target-unavailable" });
   });
