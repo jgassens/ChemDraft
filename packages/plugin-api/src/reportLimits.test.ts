@@ -203,7 +203,7 @@ describe("bounded panel reports (API 0.1.18)", () => {
     }
   });
 
-  it.each([-1, 0.5, 1])("checks assignment and structure indices against atom count: %s", index => {
+  it.each([-1, 0.5])("rejects non-integer or negative atom IDs: %s", index => {
     const f = figure();
     f.spectrum.peaks[0]!.atomIndices = [index];
     expect(PluginPanelReportSchema.safeParse(report(f)).success).toBe(false);
@@ -215,6 +215,22 @@ describe("bounded panel reports (API 0.1.18)", () => {
       f.structure!.bonds = [{ from: 0, to: 0, order: 1, [key]: index }];
       expect(PluginPanelReportSchema.safeParse(report(f)).success).toBe(false);
     }
+  });
+
+  it.each(["from", "to", "peak"] as const)("names a missing atom ID in a %s reference", field => {
+    const f = figure();
+    f.structure!.atoms.push({ index: 5, x: 1, y: 1, element: "C" });
+    if (field === "peak") f.spectrum.peaks[0]!.atomIndices = [42];
+    else f.structure!.bonds = [{ from: 0, to: 5, order: 1, [field]: 42 }];
+    rejected(report(f), "atom index: 42 is missing from structure atoms");
+  });
+
+  it("resolves sparse atom IDs independently of their array positions", () => {
+    const f = figure();
+    f.structure!.atoms = [5, 0, 2].map(index => ({ index, x: index, y: 0, element: "C" }));
+    f.structure!.bonds = [{ from: 0, to: 2, order: 2 }];
+    f.spectrum.peaks = [{ ...peak(), atomIndices: [0, 2] }, { ...peak(), id: "h-5", atomIndices: [5] }];
+    expect(PluginPanelReportSchema.parse(report(f))).toEqual(report(f));
   });
 
   it("accepts non-negative assignments without geometry and rejects duplicate structure indices", () => {
@@ -256,5 +272,108 @@ describe("bounded panel reports (API 0.1.18)", () => {
     const raw = report({ kind: "actions", id: "actions", buttons: [{ id: "run", label: "Run", commandId: "plugin.test.run",
       payload: { id: "x".repeat(65), value: "x".repeat(101), solvent: "x".repeat(121), buttons: Array(9).fill(0) } }] });
     expect(PluginPanelReportSchema.safeParse(raw).success).toBe(true);
+  });
+
+  const arrayCases = [
+    { name: "sections", limit: L.sections, wrap: (a: unknown[]) => ({ title: "Test", sections: a }) },
+    { name: "peaks", limit: L.peaks, wrap: (a: unknown[]) => report({ ...figure(), spectrum: { ...figure().spectrum, peaks: a } }) },
+    { name: "rows", limit: L.tableRows, wrap: (a: unknown[]) => report({ kind: "table", columns: [], rows: a }) },
+    { name: "nested row cells", limit: L.tableColumns, wrap: (a: unknown[]) => report({ kind: "table", columns: [], rows: [a] }) },
+    { name: "nested assignments", limit: L.atomIndicesPerPeak, wrap: (a: unknown[]) => report({ ...figure(), spectrum: { ...figure().spectrum, peaks: [{ ...peak(), atomIndices: a }] } }) },
+    { name: "nested payload arrays", limit: L.tableRows, wrap: (a: unknown[]) => report({ kind: "actions", id: "actions", buttons: [{ id: "run", label: "Run", commandId: "plugin.test.run", payload: { nested: a } }] }) }
+  ];
+
+  it.each(arrayCases)("rejects an endless Symbol.iterator getter on $name without calling it", ({ wrap }) => {
+    const getter = vi.fn(function* () { while (true) yield { kind: "text", body: "unbounded" }; });
+    const iteratorGetter = vi.fn(() => getter);
+    const a: unknown[] = [];
+    Object.defineProperty(a, Symbol.iterator, { get: iteratorGetter });
+    rejected(wrap(a), "symbol keys");
+    expect(iteratorGetter).toHaveBeenCalledTimes(0);
+    expect(getter).toHaveBeenCalledTimes(0);
+  });
+
+  it.each(arrayCases)("rejects accessors, extra keys and non-plain prototypes on $name", ({ wrap }) => {
+    const getter = vi.fn(() => { throw new Error("must not execute"); });
+    const accessor = [null];
+    Object.defineProperty(accessor, 0, { get: getter, enumerable: true });
+    rejected(wrap(accessor), "accessors");
+    const extra: unknown[] = [];
+    Object.defineProperty(extra, "custom", { get: getter });
+    rejected(wrap(extra), "only array indices");
+    const exotic: unknown[] = [];
+    Object.setPrototypeOf(exotic, Object.create(Array.prototype, { [Symbol.iterator]: { get: getter } }));
+    rejected(wrap(exotic), "plain JSON array");
+    expect(getter).toHaveBeenCalledTimes(0);
+  });
+
+  it.each(arrayCases)("stops at the $name count cap before inspecting entries or iterator accessors", ({ wrap, limit }) => {
+    const getter = vi.fn(() => { throw new Error("must not execute"); });
+    const descriptorRead = vi.fn(Reflect.getOwnPropertyDescriptor);
+    const a = Array(limit + 1);
+    Object.defineProperty(a, 0, { get: getter });
+    Object.defineProperty(a, Symbol.iterator, { get: getter });
+    rejected(wrap(new Proxy(a, { getOwnPropertyDescriptor: descriptorRead })),
+      `${limit + 1} exceeds the limit of ${limit}`);
+    expect(descriptorRead.mock.calls.map(call => call[1])).toEqual(["length"]);
+    expect(getter).toHaveBeenCalledTimes(0);
+  });
+
+  it("rejects unsupported primitives, hidden data and array holes", () => {
+    for (const value of [undefined, Symbol("x"), 1n, () => null]) {
+      rejected(report({ kind: "table", columns: [], rows: [[value]] }), "JSON data");
+    }
+    const raw = report(figure());
+    Object.defineProperty(raw, "hidden", { value: 1 });
+    rejected(raw, "enumerable JSON data");
+    const rows = [""];
+    Object.defineProperty(rows, 0, { value: "", enumerable: false });
+    rejected(report({ kind: "table", columns: [], rows: [rows] }), "enumerable JSON data");
+    rejected(report({ kind: "table", columns: [], rows: [Array(1)] }), "holes");
+    rejected(report(Object.create({ kind: "text", body: "inherited" })), "plain JSON object");
+    rejected(report({ kind: "actions", id: "actions", buttons: [{ id: "run", label: "Run", commandId: "plugin.test.run", payload: { missing: undefined } }] }), "JSON data");
+  });
+
+  it("reads descriptors once and detaches a Proxy payload before Zod sees it", () => {
+    const target = { nested: { value: "original" }, list: ["original"] };
+    const get = vi.fn(Reflect.get);
+    const descriptorRead = vi.fn(Reflect.getOwnPropertyDescriptor);
+    const payload = new Proxy(target, { get, getOwnPropertyDescriptor: descriptorRead });
+    const raw = report({ kind: "actions", id: "actions", buttons: [{ id: "run", label: "Run", commandId: "plugin.test.run", payload }] });
+    const parsed = PluginPanelReportSchema.parse(raw);
+    expect(get).toHaveBeenCalledTimes(0);
+    expect(descriptorRead.mock.calls.map(call => call[1])).toEqual(["nested", "list"]);
+    target.nested.value = "changed";
+    target.list.push("x".repeat(L.serializedBytes));
+    raw.title = "Changed";
+    const section = parsed.sections[0]!;
+    expect(section.kind === "actions" && section.buttons[0]!.payload).toEqual({ nested: { value: "original" }, list: ["original"] });
+    expect(parsed.title).toBe("NMR");
+    expect(bytes(parsed)).toBeLessThan(L.serializedBytes);
+  });
+
+  it("does not let Zod probe getters even on the top-level report", async () => {
+    const getter = vi.fn(() => { throw new Error("must not execute"); });
+    const raw = report(figure());
+    Object.defineProperty(raw, "then", { get: getter, enumerable: true });
+    rejected(raw, "accessor");
+    expect(() => PluginPanelReportSchema.parse(raw)).toThrow("accessor");
+    expect((await PluginPanelReportSchema.safeParseAsync(raw)).success).toBe(false);
+    await expect(PluginPanelReportSchema.parseAsync(raw)).rejects.toThrow("accessor");
+    expect((await PluginPanelReportSchema["~standard"].validate(raw)).issues).toBeDefined();
+    expect(getter).toHaveBeenCalledTimes(0);
+  });
+
+  it("never re-reads kind or later descriptors after the first exceeded limit", () => {
+    const f = figure();
+    f.spectrum.peaks = Array(L.peaks + 1);
+    const descriptorRead = vi.fn(Reflect.getOwnPropertyDescriptor);
+    const raw = report(new Proxy(f, { getOwnPropertyDescriptor: descriptorRead }));
+    rejected(raw, `linkedFigure peaks: ${L.peaks + 1}`);
+    expect(descriptorRead.mock.calls.map(call => call[1])).toEqual(["kind", "spectrum"]);
+
+    const afterLimit = vi.fn(Reflect.getOwnPropertyDescriptor);
+    rejected(new Proxy({ title: "x".repeat(L.stringLength + 1), sections: [] }, { getOwnPropertyDescriptor: afterLimit }), "title length");
+    expect(afterLimit.mock.calls.map(call => call[1])).toEqual(["title"]);
   });
 });

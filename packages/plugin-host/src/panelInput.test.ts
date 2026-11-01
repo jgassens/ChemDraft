@@ -69,6 +69,61 @@ describe("PluginHost panel input", () => {
 });
 
 describe("PluginHost panel control ownership", () => {
+  it("rejects exotic arrays on first show and updates without calling their iterator", async () => {
+    const showPanelReport = vi.fn();
+    const host = new PluginHost({ showPanelReport });
+    const getter = vi.fn(function* () { while (true) yield { kind: "text", body: "unbounded" }; });
+    const iteratorGetter = vi.fn(() => getter);
+    const exotic: PluginPanelReport = { title: "Unbounded", sections: [] };
+    Object.defineProperty(exotic.sections, Symbol.iterator, { get: iteratorGetter });
+    let report = exotic;
+    host.registerPlugin(manifest, { commandHandlers: {
+      [commandId]: ctx => ctx.panels!.showReport(panelId, report)
+    } });
+    await expect(host.invokeCommand(commandId)).rejects.toThrow("symbol keys");
+    expect(showPanelReport).not.toHaveBeenCalled();
+    report = { title: "Valid", sections: [{ kind: "text", body: "Existing result" }] };
+    await host.invokeCommand(commandId);
+    report = exotic;
+    await expect(host.invokeCommand(commandId)).rejects.toThrow("symbol keys");
+    expect(showPanelReport).toHaveBeenCalledTimes(1);
+    expect(showPanelReport.mock.calls[0]![2]).toEqual({ title: "Valid", sections: [{ kind: "text", body: "Existing result" }] });
+    expect(iteratorGetter).toHaveBeenCalledTimes(0);
+    expect(getter).toHaveBeenCalledTimes(0);
+  });
+
+  it("forwards detached snapshots on first show and updates, including Proxy action payloads", async () => {
+    const showPanelReport = vi.fn();
+    const host = new PluginHost({ showPanelReport });
+    host.registerPlugin(manifest);
+    const panels = host.createCommandContext(manifest.id).panels!;
+    for (const title of ["First report", "Updated report"]) {
+      const target = { nested: { value: "original" }, list: ["original"] };
+      const get = vi.fn(Reflect.get);
+      const payload = new Proxy(target, { get });
+      const report: PluginPanelReport = { title, sections: [{ kind: "actions", id: "controls", buttons: [{
+        id: "send", label: "Send", commandId, payload, disabled: false, tone: "default"
+      }] }] };
+      const expected = { title, sections: [{ kind: "actions", id: "controls", buttons: [{
+        id: "send", label: "Send", commandId, payload: { nested: { value: "original" }, list: ["original"] }, disabled: false, tone: "default"
+      }] }] };
+      await panels.showReport(panelId, report);
+      expect(get).toHaveBeenCalledTimes(0);
+      const forwarded: PluginPanelReport = showPanelReport.mock.lastCall![2];
+      expect(forwarded).toEqual(expected);
+      expect(forwarded).not.toBe(report);
+      target.nested.value = "changed";
+      target.list.push("x".repeat(PluginPanelReportLimits.serializedBytes));
+      report.title = "Changed";
+      report.sections.length = 0;
+      expect(forwarded).toEqual(expected);
+      expect(new TextEncoder().encode(JSON.stringify(forwarded)).byteLength).toBeLessThan(PluginPanelReportLimits.serializedBytes);
+    }
+    expect(showPanelReport).toHaveBeenCalledTimes(2);
+    expect(showPanelReport.mock.calls[0]![2].title).toBe("First report");
+    expect(showPanelReport.mock.calls[1]![2].title).toBe("Updated report");
+  });
+
   it("rejects an oversized report through the existing command failure path before updating the panel", async () => {
     const showPanelReport = vi.fn();
     const host = new PluginHost({ showPanelReport });

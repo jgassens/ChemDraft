@@ -34,10 +34,12 @@ class ReportLimitError extends Error {
   constructor(readonly path: Path, message: string) { super(message); }
 }
 
-/** Runs BEFORE Zod's object/array parse. Never stringify the entire untrusted graph or invoke
- * getters/toJSON. Stop at the first failure, so even the
- * error response cannot become enormous. Shared references are charged on every occurrence. */
-export function panelReportLimitIssue(raw: unknown): { path: Path; message: string } | undefined {
+type ReportSnapshot = { ok: true; data: unknown } | { ok: false; issue: { path: Path; message: string } };
+
+/** Runs BEFORE schema parsing. Copy only own enumerable data into a detached, bounded graph;
+ * never read properties through getters, iterators or toJSON. Read each descriptor at most once.
+ * Stop at the first failure. Shared references are copied and charged on every occurrence. */
+export function snapshotPanelReport(raw: unknown): ReportSnapshot {
   const limits = PluginPanelReportLimits;
   const ancestors = new Set<object>();
   const totals = new Map<string, number>();
@@ -57,7 +59,7 @@ export function panelReportLimitIssue(raw: unknown): { path: Path; message: stri
     totals.set(label, sum);
     cap(sum, limit, `report total ${label}`, path);
   };
-  const visit = (value: unknown, path: Path, kind = "report"): void => {
+  const visit = (value: unknown, path: Path, kind = "report"): unknown => {
     cap(++nodes, limits.nodes, "report nodes", path);
     cap(path.length, limits.depth, "report depth", path);
     // Control payload keys are plugin-defined JSON, not report schema field names.
@@ -82,7 +84,7 @@ export function panelReportLimitIssue(raw: unknown): { path: Path; message: stri
         fail(path, `linkedFigure atom index: ${value} must be a non-negative integer`);
       }
       charge(String(value).length, path);
-    } else if (value === null || value === undefined || typeof value === "boolean") {
+    } else if (value === null || typeof value === "boolean") {
       charge(value === true ? 4 : value === false ? 5 : 4, path);
     } else if (typeof value !== "object") {
       fail(path, `${label} must be JSON data`);
@@ -90,6 +92,14 @@ export function panelReportLimitIssue(raw: unknown): { path: Path; message: stri
       if (ancestors.has(value)) fail(path, `${label} must not contain a cycle`);
       ancestors.add(value);
       if (Array.isArray(value)) {
+        // In particular, do not read value.length or iterate value: a Proxy may intercept reads,
+        // and an own Symbol.iterator can replace a short array with an unbounded stream for Zod.
+        const lengthDescriptor = Object.getOwnPropertyDescriptor(value, "length");
+        if (!lengthDescriptor || !("value" in lengthDescriptor)) return fail(path, `${label} must not contain accessors`);
+        const length: unknown = lengthDescriptor.value;
+        if (typeof length !== "number" || !Number.isInteger(length) || length < 0) {
+          return fail(path, `${label} must be a plain JSON array`);
+        }
         let limit: number = limits.tableRows;
         let aggregate: [number, string] | undefined;
         if (key === "sections") limit = limits.sections;
@@ -109,41 +119,66 @@ export function panelReportLimitIssue(raw: unknown): { path: Path; message: stri
           limit = kind === "keyValue" ? limits.keyValueRows : limits.tableRows;
           aggregate = [limit, `${kind} rows`];
         }
-        cap(value.length, limit, label, path);
-        if (aggregate) total(value.length, aggregate[0], aggregate[1], path);
-        charge(2 + Math.max(0, value.length - 1), path);
-        for (let i = 0; i < value.length; i++) {
-          const descriptor = Object.getOwnPropertyDescriptor(value, i);
-          if (descriptor && !("value" in descriptor)) fail([...path, i], `${label} must not contain accessors`);
-          visit(descriptor?.value, [...path, i], kind);
+        cap(length, limit, label, path);
+        if (aggregate) total(length, aggregate[0], aggregate[1], path);
+        charge(2 + Math.max(0, length - 1), path);
+        if (Object.getPrototypeOf(value) !== Array.prototype) fail(path, `${label} must be a plain JSON array`);
+        const fields = Reflect.ownKeys(value);
+        const copy: unknown[] = [];
+        for (const field of fields) {
+          if (typeof field !== "string") return fail(path, `${label} must not contain symbol keys`);
+          if (field === "length") continue; // Already read its descriptor above.
+          cap(field.length, limits.stringLength, `${kind} field name length`, path);
+          if (!/^(0|[1-9][0-9]*)$/.test(field) || Number(field) >= length) {
+            return fail(path, `${label} must contain only array indices`);
+          }
+          const i = Number(field);
+          const descriptor = Object.getOwnPropertyDescriptor(value, field);
+          if (!descriptor || !("value" in descriptor)) return fail([...path, i], `${label} must not contain accessors`);
+          if (!descriptor.enumerable) fail([...path, i], `${label} must be enumerable JSON data`);
+          copy[i] = visit(descriptor.value, [...path, i], kind);
         }
+        if (fields.length !== length + 1) fail(path, `${label} must not contain holes`);
+        ancestors.delete(value);
+        return copy;
       } else {
         const proto = Object.getPrototypeOf(value);
         if (proto !== Object.prototype && proto !== null) fail(path, `${label} must be a plain JSON object`);
-        const kindDescriptor = Object.getOwnPropertyDescriptor(value, "kind");
-        if (kindDescriptor && "value" in kindDescriptor && typeof kindDescriptor.value === "string"
-            && kindDescriptor.value.length <= 32) kind = kindDescriptor.value;
-        charge(2, path);
         const fields = Reflect.ownKeys(value);
         cap(fields.length, limits.objectFields, `${kind} object fields`, path);
+        const kindDescriptor = fields.includes("kind") ? Object.getOwnPropertyDescriptor(value, "kind") : undefined;
+        if (kindDescriptor?.enumerable && "value" in kindDescriptor && typeof kindDescriptor.value === "string"
+            && kindDescriptor.value.length <= 32) kind = kindDescriptor.value;
+        charge(2, path);
+        const copy: Record<string, unknown> = {};
         let emitted = 0;
         for (const field of fields) {
           if (typeof field !== "string") return fail(path, `${kind} must not contain symbol keys`);
           cap(field.length, limits.stringLength, `${kind} field name length`, path);
-          const descriptor = Object.getOwnPropertyDescriptor(value, field)!;
-          if (!("value" in descriptor)) fail([...path, field], `${kind} ${field} must not be an accessor`);
+          const descriptor = field === "kind" ? kindDescriptor : Object.getOwnPropertyDescriptor(value, field);
+          if (!descriptor || !("value" in descriptor)) return fail([...path, field], `${kind} ${field} must not be an accessor`);
           if (!descriptor.enumerable) fail([...path, field], `${kind} ${field} must be enumerable JSON data`);
-          if (descriptor.value === undefined) continue; // JSON omits optional object properties.
+          // Omit optional report fields as before; undefined inside a JSON payload is invalid.
+          if (descriptor.value === undefined && !path.includes("payload")) continue;
           charge(encoder.encode(JSON.stringify(field)).byteLength + 1 + (emitted++ > 0 ? 1 : 0), path);
-          visit(descriptor.value, [...path, field], kind);
+          // Define rather than assign so an untrusted __proto__ key cannot change the copy's prototype.
+          Object.defineProperty(copy, field, { value: visit(descriptor.value, [...path, field], kind),
+            enumerable: true, configurable: true, writable: true });
         }
+        ancestors.delete(value);
+        return copy;
       }
-      ancestors.delete(value);
     }
+    return value;
   };
-  try { visit(raw, []); } catch (error) {
-    if (error instanceof ReportLimitError) return { path: error.path, message: error.message };
+  try { return { ok: true, data: visit(raw, []) }; } catch (error) {
+    if (error instanceof ReportLimitError) return { ok: false, issue: { path: error.path, message: error.message } };
     throw error;
   }
-  return undefined;
+}
+
+/** Recheck schema-added defaults against the same budgets. */
+export function panelReportLimitIssue(raw: unknown): { path: Path; message: string } | undefined {
+  const snapshot = snapshotPanelReport(raw);
+  return snapshot.ok ? undefined : snapshot.issue;
 }

@@ -1,6 +1,6 @@
 import type { ChemDraftDocument, DocumentPatch } from "@chemdraft/chem-core";
 import { z } from "zod";
-import { panelReportLimitIssue, PluginPanelReportLimits } from "./reportLimits";
+import { panelReportLimitIssue, PluginPanelReportLimits, snapshotPanelReport } from "./reportLimits";
 export { PluginPanelReportLimits } from "./reportLimits";
 export * from "./chemistry3d";
 import type { PluginEmbed3DRequest, PluginEmbed3DResult, PluginMinimize3DRequest, PluginMinimize3DResult,
@@ -709,18 +709,16 @@ const PanelReportObjectSchema = z
     let invalidIndex = false;
     report.sections.forEach((section, sectionIndex) => {
       if (section.kind !== "linkedFigure" || !section.structure) return;
-      const count = section.structure.atoms.length;
+      const seen = new Set<number>();
       const checkIndex = (index: number, path: (string | number)[]) => {
-        if (index >= count && !invalidIndex) {
+        if (!seen.has(index) && !invalidIndex) {
           invalidIndex = true;
           ctx.addIssue({ code: z.ZodIssueCode.custom,
             path: ["sections", sectionIndex, ...path],
-            message: `linkedFigure atom index: ${index} is outside structure atom count ${count}` });
+            message: `linkedFigure atom index: ${index} is missing from structure atoms` });
         }
       };
-      const seen = new Set<number>();
       section.structure.atoms.forEach((atom, i) => {
-        checkIndex(atom.index, ["structure", "atoms", i, "index"]);
         if (seen.has(atom.index) && !invalidIndex) {
           invalidIndex = true;
           ctx.addIssue({ code: z.ZodIssueCode.custom,
@@ -738,12 +736,36 @@ const PanelReportObjectSchema = z
     });
   });
 
-// A pipe prevents Zod from parsing/copying any rejected report. Existing host .parse() calls
-// surface the specific issue through the ordinary command/capability validation failure path.
-export const PluginPanelReportSchema = z.unknown().superRefine((raw, ctx) => {
-  const issue = panelReportLimitIssue(raw);
-  if (issue) ctx.addIssue({ code: z.ZodIssueCode.custom, ...issue, fatal: true });
+// Only this trusted envelope reaches Zod; a failure never exposes the rejected input to a parser.
+const PanelReportSnapshotSchema = z.custom<ReturnType<typeof snapshotPanelReport>>().transform((snapshot, ctx) => {
+  if (!snapshot.ok) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, ...snapshot.issue, fatal: true });
+    return z.NEVER;
+  }
+  return snapshot.data;
 }).pipe(PanelReportObjectSchema);
+
+// Zod probes an object's `then`/`catch` even before a preprocess runs. Snapshot at the public
+// entry points too, so getters on the original report are never called by that type detection.
+class BoundedPanelReportSchema extends z.ZodType<z.output<typeof PanelReportObjectSchema>, z.ZodTypeDef, unknown> {
+  _parse(input: z.ParseInput) {
+    return PanelReportSnapshotSchema._parse({ ...input, data: snapshotPanelReport(input.data) });
+  }
+
+  safeParse(data: unknown, params?: Partial<z.ParseParams>): z.SafeParseReturnType<unknown, this["_output"]> {
+    return PanelReportSnapshotSchema.safeParse(snapshotPanelReport(data), params);
+  }
+
+  async safeParseAsync(data: unknown, params?: Partial<z.ParseParams>): Promise<z.SafeParseReturnType<unknown, this["_output"]>> {
+    return PanelReportSnapshotSchema.safeParseAsync(snapshotPanelReport(data), params);
+  }
+
+  ["~validate"](data: unknown) {
+    return PanelReportSnapshotSchema["~validate"](snapshotPanelReport(data));
+  }
+}
+
+export const PluginPanelReportSchema = new BoundedPanelReportSchema({});
 
 function validatePanelControlIds(sections: PluginPanelSection[], ctx: z.RefinementCtx): void {
   const ids = new Set<string>();

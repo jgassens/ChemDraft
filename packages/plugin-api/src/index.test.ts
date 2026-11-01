@@ -688,17 +688,17 @@ describe("linkedFigure panel section (ADR-0015)", () => {
           reversed: true,
           comparison: { primaryLabel: "database", alternativeLabel: "rule", alternativeMarker: "ᵣ" },
           peaks: [
-            { id: "h-0", ppm: 7.34, intensity: 2, label: "7.34", atomIndices: [0, 1] },
-            { id: "h-5", ppm: 2.43, intensity: 2, atomIndices: [2] }
+            { id: "h-0", ppm: 7.34, intensity: 2, label: "7.34", atomIndices: [0, 2] },
+            { id: "h-5", ppm: 2.43, intensity: 2, atomIndices: [5] }
           ]
         },
         structure: {
           atoms: [
             { index: 0, x: 0, y: 0, element: "C" },
-            { index: 1, x: 1.2, y: 0.4, element: "C" },
-            { index: 2, x: -0.8, y: 1.1, element: "C" }
+            { index: 2, x: 1.2, y: 0.4, element: "C" },
+            { index: 5, x: -0.8, y: 1.1, element: "C" }
           ],
-          bonds: [{ from: 0, to: 1, order: 2 }]
+          bonds: [{ from: 0, to: 2, order: 2 }]
         }
       }
     ]
@@ -730,7 +730,7 @@ describe("linkedFigure panel section (ADR-0015)", () => {
       sections: [
         {
           ...figureReport.sections[0],
-          structure: { atoms: figureReport.sections[0].structure.atoms, bonds: [{ from: 0, to: 1, order: 0 }] }
+          structure: { atoms: figureReport.sections[0].structure.atoms, bonds: [{ from: 0, to: 2, order: 0 }] }
         }
       ]
     };

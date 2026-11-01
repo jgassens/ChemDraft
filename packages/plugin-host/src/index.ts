@@ -771,6 +771,7 @@ export class PluginHost {
               if (!declared) {
                 throw new PluginHostError(`Plugin "${pluginId}" does not declare panel "${panelId}".`);
               }
+              // Every call, including an open panel's updates, forwards only the detached snapshot.
               const parsedReport = PluginPanelReportSchema.parse(report);
               requireOwnReportCommands(parsedReport);
               await this.showPanelReport?.(pluginId, panelId, parsedReport);
