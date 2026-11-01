@@ -14,7 +14,7 @@ use tauri::{Emitter, Listener};
 #[path = "palette_key_guard_state.rs"]
 mod state;
 pub(crate) use state::End;
-pub(crate) use state::{blocks_menu, keeps_palette_focus};
+pub(crate) use state::{blocks_forwarded_shortcut, blocks_menu, keeps_palette_focus};
 
 static GUARD: Mutex<state::Guard> = Mutex::new(state::Guard::new());
 const EVENT: &str = "chemdraft://palette-click-pending";

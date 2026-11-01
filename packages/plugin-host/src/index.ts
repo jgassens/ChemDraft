@@ -739,7 +739,15 @@ export class PluginHost {
           },
           setContent: async request => {
             this.requirePermission(pluginId, "ui.canvas");
-            const parsed = PluginOverlayContentRequestSchema.parse(request);
+            // Use the report boundary's bounded detached JSON snapshot BEFORE Zod sees
+            // any plugin-owned object. The action payload is an existing arbitrary-JSON
+            // envelope; it is never registered or invoked as a command.
+            const snapshot = PluginPanelReportSchema.parse({ title: "Canvas content", sections: [{
+              kind: "actions", id: "snapshot-envelope", buttons: [{ id: "snapshot", label: "Snapshot", commandId: "plugin.host.snapshot", payload: request }]
+            }] });
+            const section = snapshot.sections[0]!;
+            if (section.kind !== "actions") throw new PluginHostError("Invalid canvas content snapshot.");
+            const parsed = PluginOverlayContentRequestSchema.parse(section.buttons[0]!.payload);
             const overlay = requireOwnOverlay(parsed.overlayId);
             // Content control ids must also be distinct from the permanent composer/select.
             const report = PluginPanelReportSchema.parse({ title: overlay.title, sections: [overlay.prompt, ...parsed.sections] });

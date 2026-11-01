@@ -975,3 +975,94 @@ describe.each(["macos", "windows"] as const)("palette control focus settling (%s
     expect(document.activeElement).toBe(range);
   });
 });
+
+// The #244 generation regressions also exercise the palette installer after the panel split.
+describe("palette lease generations", () => {
+  it("attaches the native listener before requesting a lease", async () => {
+    let attach!: () => void;
+    const ready = new Promise<void>((resolve) => { attach = resolve; });
+    const { shell, request, deactivate } = mountPalette("<input>", "windows", ready);
+    pointerDown(shell.querySelector("input")!);
+    await flush();
+    expect(request).not.toHaveBeenCalled();
+    attach();
+    await flush();
+    expect(request).toHaveBeenCalledExactlyOnceWith(true, expect.any(Number));
+    deactivate();
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+  });
+
+  it.each(["macos", "windows"] as const)("cancels queued retries when the outstanding lease deactivates (%s)", async (platform) => {
+    const { shell, request, deactivate } = mountPalette("<input>", platform);
+    let complete!: (acquired: boolean) => void;
+    request.mockImplementationOnce(() => new Promise<boolean>((resolve) => { complete = resolve; }));
+    const input = shell.querySelector("input")!;
+    pointerDown(input); input.focus();
+    await flush();
+    pointerDown(input);
+    deactivate(request.mock.calls[0]![1]);
+    complete(true); // Even a stale successful reply cannot revive the queued click.
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+    expect(document.activeElement).not.toBe(input);
+    pointerDown(input);
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false, true]);
+  });
+
+  it.each(["false", "error"])("cancels queued retries when the outstanding acquisition returns %s", async (outcome) => {
+    const { shell, request } = mountPalette("<input>", "windows");
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    let complete!: () => void;
+    request.mockImplementationOnce(() => new Promise<boolean>((resolve, reject) => {
+      complete = () => outcome === "false" ? resolve(false) : reject(new Error("Focus failed"));
+    }));
+    const input = shell.querySelector("input")!;
+    pointerDown(input);
+    await flush();
+    pointerDown(input);
+    complete();
+    await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+  });
+
+
+  it.each(["macos", "windows"] as const)("native loss during palette acquisition survives a late successful reply (%s)", async platform => {
+    const { shell, request, deactivate, activate } = mountPalette("<input>", platform);
+    const input = shell.querySelector("input")!;
+    let complete!: (value: boolean) => void;
+    request.mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
+    pointerDown(input); input.focus(); await flush();
+    deactivate();
+    activate();
+    complete(true); await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, false]);
+    expect(document.activeElement).not.toBe(input);
+  });
+
+  // A macOS select transition renews a live palette generation. Ordinary repeated
+  // clicks deliberately reuse the lease on both hosts, so they cannot create a retry.
+  it("ends a pending retry on loss of its predecessor's native generation", async () => {
+    const { shell, request, deactivate } = mountPalette('<input><select><option>One</option></select>', "macos");
+    pointerDown(shell.querySelector("input")!); await flush();
+    const old = request.mock.calls[0]![1];
+    let complete!: () => void;
+    request.mockImplementationOnce(() => new Promise<boolean>(resolve => { complete = () => resolve(true); }));
+    pointerDown(shell.querySelector("select")!); await flush();
+    deactivate(old, "outside");
+    complete(); await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, true, false]);
+  });
+
+  it("ignores native deactivation tagged with an older settled lease generation", async () => {
+    const { shell, request, deactivate } = mountPalette('<input><select><option>One</option></select>', "macos");
+    pointerDown(shell.querySelector("input")!); await flush();
+    const old = request.mock.calls[0]![1];
+    pointerDown(shell.querySelector("select")!); await flush();
+    deactivate(old, "outside"); await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, true]);
+    deactivate(undefined, "outside"); await flush();
+    expect(request.mock.calls.map(([editing]) => editing)).toEqual([true, true, false]);
+  });
+});

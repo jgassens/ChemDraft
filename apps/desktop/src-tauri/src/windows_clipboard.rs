@@ -483,7 +483,17 @@ pub(crate) mod native {
                 return None;
             }
             let size = GlobalSize(handle as HGLOBAL);
-            budget.reserve(source, size).ok()?;
+            if budget.check(source, size).is_err() {
+                let pointer = GlobalLock(handle as HGLOBAL) as *const u8;
+                if !pointer.is_null() {
+                    budget.mark_chemistry(
+                        source,
+                        std::slice::from_raw_parts(pointer, size.min(8192)),
+                    );
+                    GlobalUnlock(handle as HGLOBAL);
+                }
+                return None;
+            }
             let pointer = GlobalLock(handle as HGLOBAL) as *const u8;
             if pointer.is_null() {
                 return None;
@@ -530,6 +540,7 @@ pub(crate) mod native {
                 .map_err(|reason| refused(size, reason))?;
             let pointer = GlobalLock(handle as HGLOBAL) as *const u8;
             if pointer.is_null() {
+                budget.release(size);
                 return Err(refused(
                     size,
                     format!("Could not lock {source} clipboard data"),
@@ -542,7 +553,6 @@ pub(crate) mod native {
     }
 
     fn read_images(
-        text_items: &mut Vec<ClipboardTextItem>,
         budget: &mut ClipboardReadBudget,
     ) -> (Vec<ClipboardImageItem>, Vec<SkippedClipboardImageItem>) {
         let mut items = Vec::new();
@@ -570,25 +580,53 @@ pub(crate) mod native {
             let result = image_format_bytes(id, source, kind, budget).and_then(|bytes| {
                 let item = match source {
                     PNG_FORMAT | "image/png" => png_image_item(&bytes),
-                    "image/svg+xml" => {
-                        if let Some(text) = decode_registered_text(&bytes) {
-                            text_items.push(ClipboardTextItem {
-                                r#type: kind.to_string(),
-                                text,
-                            });
-                        }
-                        svg_image_item(&bytes, source)
-                    }
+                    "image/svg+xml" => svg_image_item(&bytes, source),
                     _ => dib_image_item(&bytes, source),
                 };
-                item.map_err(|reason| SkippedClipboardImageItem::new(kind, bytes.len(), reason))
+                item.map_err(|reason| {
+                    budget.release(bytes.len());
+                    SkippedClipboardImageItem::new(kind, bytes.len(), reason)
+                })
             });
             match result {
-                Ok(item) => items.push(item),
+                Ok(item) => {
+                    items.push(item);
+                    break;
+                }
                 Err(reason) => skipped.push(reason),
             }
         }
         (items, skipped)
+    }
+
+    fn text_read_priority(id: u32, kind: &str, name: Option<&str>) -> Option<u8> {
+        if name.is_some_and(|name| is_binary_windows_format(name) || is_opaque_clipboard_type(name))
+        {
+            return None;
+        }
+        let priority = crate::clipboard_limits::text_read_priority(kind);
+        if priority != Some(2) {
+            return priority;
+        }
+        // SAFETY: read_payload holds the clipboard open. Preview at most 8 KiB,
+        // without copying the allocation or keeping the clipboard pointer.
+        unsafe {
+            let handle = GetClipboardData(id);
+            if handle.is_null() {
+                return priority;
+            }
+            let size = GlobalSize(handle as HGLOBAL);
+            let pointer = GlobalLock(handle as HGLOBAL) as *const u8;
+            if pointer.is_null() {
+                return priority;
+            }
+            let priority = crate::clipboard_limits::text_priority_with_preview(
+                kind,
+                std::slice::from_raw_parts(pointer, size.min(8192)),
+            );
+            GlobalUnlock(handle as HGLOBAL);
+            priority
+        }
     }
 
     pub(crate) fn read_payload() -> Result<ClipboardReadPayload, String> {
@@ -597,6 +635,7 @@ pub(crate) mod native {
         let mut text_items = Vec::new();
         let mut budget = ClipboardReadBudget::default();
 
+        let mut formats = Vec::new();
         let mut id = 0;
         loop {
             // SAFETY: the clipboard is open.
@@ -613,33 +652,54 @@ pub(crate) mod native {
             }
             types.push(payload_type.clone());
 
-            let text = match name.as_deref() {
-                None if id == CF_UNICODETEXT => unicode_text(&mut budget),
-                None => None,
-                Some(MDLCT_FORMAT) => format_bytes(id, &payload_type, &mut budget)
-                    .and_then(|bytes| decode_mdlct(&bytes)),
-                Some("HTML Format") => format_bytes(id, &payload_type, &mut budget)
-                    .and_then(|bytes| parse_cf_html(&bytes).ok()),
-                // SVG text is populated by read_images, after the GlobalSize guard.
-                Some(name)
-                    if crate::clipboard_images::is_image_clipboard_type(name)
-                        || is_binary_windows_format(name)
-                        || is_opaque_clipboard_type(name) =>
-                {
-                    None
+            let priority = text_read_priority(id, &payload_type, name.as_deref());
+            formats.push((id, name, payload_type, priority));
+        }
+        // Chemistry precedes artwork; formatted prose follows it. The returned text
+        // order remains the native order used by the resolver.
+        let mut image_items = Vec::new();
+        let mut skipped_image_items = Vec::new();
+        for priority in [0, 1, 2, 3] {
+            if priority == 1 {
+                (image_items, skipped_image_items) = read_images(&mut budget);
+                continue;
+            }
+            for (id, name, payload_type, read_priority) in &formats {
+                if *read_priority != Some(priority) || (!image_items.is_empty() && priority == 3) {
+                    continue;
                 }
-                Some(_) => format_bytes(id, &payload_type, &mut budget)
-                    .and_then(|bytes| decode_registered_text(&bytes)),
-            };
-            if let Some(text) = text {
-                text_items.push(ClipboardTextItem {
-                    r#type: payload_type,
-                    text,
-                });
+                let id = *id;
+                let text = match name.as_deref() {
+                    None if id == CF_UNICODETEXT => unicode_text(&mut budget),
+                    None => None,
+                    Some(MDLCT_FORMAT) => format_bytes(id, payload_type, &mut budget)
+                        .and_then(|bytes| decode_mdlct(&bytes)),
+                    Some("HTML Format") => format_bytes(id, payload_type, &mut budget)
+                        .and_then(|bytes| parse_cf_html(&bytes).ok()),
+                    // Images are handled only by read_images, after the allocation guard.
+                    Some(name)
+                        if crate::clipboard_images::is_image_clipboard_type(name)
+                            || is_binary_windows_format(name)
+                            || is_opaque_clipboard_type(name) =>
+                    {
+                        None
+                    }
+                    Some(_) => format_bytes(id, payload_type, &mut budget)
+                        .and_then(|bytes| decode_registered_text(&bytes)),
+                };
+                if let Some(text) = text {
+                    if budget.reserve(payload_type, text.len()).is_err() {
+                        budget.mark_chemistry(payload_type, text.as_bytes());
+                        continue;
+                    }
+                    text_items.push(ClipboardTextItem {
+                        r#type: payload_type.clone(),
+                        text,
+                    });
+                }
             }
         }
-
-        let (image_items, skipped_image_items) = read_images(&mut text_items, &mut budget);
+        text_items.sort_by_key(|item| types.iter().position(|kind| kind == &item.r#type));
         Ok(ClipboardReadPayload {
             types,
             text_items,

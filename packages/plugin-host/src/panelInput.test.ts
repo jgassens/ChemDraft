@@ -191,3 +191,53 @@ describe("PluginHost panel control ownership", () => {
     expect(showPanelReport).not.toHaveBeenCalled();
   });
 });
+
+describe("canvas content uses the bounded report snapshot", () => {
+  function setup() {
+    const overlayId = "overlay.chat.main";
+    const setContent = vi.fn();
+    const host = new PluginHost({ overlays: { setStatus: vi.fn(), setContent } });
+    host.registerPlugin({ ...manifest, permissions: ["ui.panel", "ui.canvas"], contributes: {
+      ...manifest.contributes, canvasOverlays: [{ id: overlayId, title: "Chat", icon: "data:image/png;base64,YQ==",
+        commandId, prompt: { kind: "prompt", id: "composer", commandId } }]
+    } });
+    return { overlayId, setContent, api: host.createCommandContext(manifest.id).overlays! };
+  }
+
+  it("rejects getters and exotic iterators before Zod reads plugin data", async () => {
+    const { overlayId, setContent, api } = setup();
+    const getter = vi.fn(() => []);
+    await expect(api.setContent({ overlayId, get sections() { return getter(); } })).rejects.toThrow(/accessor/);
+    expect(getter).not.toHaveBeenCalled();
+    const sections: [] = [];
+    const iterate = vi.fn(function* () { while (true) yield { kind: "text", body: "unbounded" }; });
+    Object.defineProperty(sections, Symbol.iterator, { get: getter.mockReturnValue(iterate) });
+    await expect(api.setContent({ overlayId, sections })).rejects.toThrow(/symbol keys/);
+    expect(getter).not.toHaveBeenCalled();
+    expect(iterate).not.toHaveBeenCalled();
+    expect(setContent).not.toHaveBeenCalled();
+  });
+
+  it("detaches nested action payloads on every update, including proxy references", async () => {
+    const { overlayId, setContent, api } = setup();
+    for (const value of ["first", "update"]) {
+      const payload = { nested: { value } };
+      const request = { overlayId, sections: [{ kind: "actions" as const, id: "send-actions", buttons: [
+        { id: "send", label: "Send", commandId, payload: new Proxy(payload, {}) }
+      ] }] };
+      await api.setContent(request);
+      payload.nested.value = "mutated";
+      expect(setContent.mock.calls.at(-1)![2][0].buttons[0].payload).toEqual({ nested: { value } });
+    }
+  });
+
+  it("bounds malformed depth before schema parsing and never forwards it", async () => {
+    const { overlayId, setContent, api } = setup();
+    let payload: object = {};
+    for (let n = 0; n < 100; n++) payload = { nested: payload };
+    await expect(api.setContent({ overlayId, sections: [{ kind: "actions", id: "send-actions", buttons: [
+      { id: "send", label: "Send", commandId, payload }
+    ] }] })).rejects.toThrow(/depth/);
+    expect(setContent).not.toHaveBeenCalled();
+  });
+});

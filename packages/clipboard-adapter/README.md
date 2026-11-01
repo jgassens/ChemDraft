@@ -23,24 +23,30 @@ If only refused image candidates remain, `image-refused` carries the native refu
 
 Clipboard reads admit at most 64 MiB per flavor and per paste, with the existing 25 MiB picture
 limit retained. The native readers check allocation/data/string lengths before copying; the adapter
-checks text and base64 sizes before normalization or decoding. Oversized flavors are skipped while
-smaller alternatives remain available. Native `skippedItems` metadata carries the attempted byte size
-and limit; if no usable content remains, `size-refused` carries the paste status message. Hosts parsing
+checks text and base64 sizes before normalization or decoding. Unused binary/container flavors are
+never fetched. Admission follows chemistry, pictures, then prose; the returned text-flavor order still determines resolution. Only retained flavors consume the
+shared total. A flavor exceeding the remaining total is skipped with a warning, allowing smaller
+alternatives. A size-skipped chemistry flavor always refuses the paste, including private selections
+and chemistry recognized in generic text; it cannot fall back to a picture or prose. Native
+`skippedItems` metadata carries that flavor's own byte size and limit; `size-refused` names it with
+the same message on native and DOM paste. Copy reserves a conservative native-size bound, including
+Windows UTF-16/CRLF and allocation overhead, so copied selections fit the paste limits. Hosts parsing
 private text flavors before inspection must call `guardClipboardPayload` first.
 
 Before validation, an unprefixed `<svg>` root without a default namespace declaration gets
-`xmlns="http://www.w3.org/2000/svg"` added to its start tag. If the document uses an `xlink:` prefix
+`xmlns="http://www.w3.org/2000/svg"` added to its start tag. If an `xlink:` use has no declaration in its scope
 and the root has no `xmlns:xlink` declaration, `xmlns:xlink="http://www.w3.org/1999/xlink"` is also
 added there. The bounded XML scanner locates the root; only its start tag is edited. Declared
-namespaces are never replaced, and prefixed roots and non-SVG default namespaces are refused.
+namespaces are never replaced. Prefixed roots bound to the SVG namespace are accepted without
+rewriting; roots outside the SVG namespace are refused.
 These declarations are included in the stored picture bytes so the SVG renders as a standalone file.
 The same handling covers SVG text, SVG image flavors and chemistry fallback pictures.
 
 SVG validation applies size limits to the namespaced text and refuses DOCTYPE/ENTITY declarations
 and processing instructions before parsing with `globalThis.DOMParser` (`image/svg+xml`). Parser
-errors anywhere in the document produce a specific SVG refusal, preserving parser line numbers;
-the parsed root must be in the SVG namespace. Headless
-validation checks namespace bindings, duplicate attributes, tag balance and comment syntax without
+errors anywhere in the document produce a specific SVG refusal, stripping browser boilerplate and
+reporting positions in the original pasted text; the parsed root must be in the SVG namespace.
+Headless validation checks namespace bindings, duplicate attributes, tag balance and comment syntax without
 expanding entities. Tests can pass `{ svgParser }` as the second argument to `inspectClipboardPayload`,
 or `{ svgParser: null }` to exercise the headless fallback. Apart from the missing root declarations,
 accepted SVG bytes are preserved, and the existing sanitizer and size limits apply to SVG flavors,

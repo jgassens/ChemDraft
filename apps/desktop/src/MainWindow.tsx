@@ -253,7 +253,7 @@ import {
 import { createRdkitAdapter } from "@chemdraft/rdkit-adapter/adapter";
 import { buildAnalysisReport, type AnalysisReport, type AnalysisRun } from "@chemdraft/analysis-core";
 import { analysisClient } from "./analysisClient";
-import { guardClipboardPayload, inspectClipboardPayload, isVectorArtworkType, looksLikeSmiles, smilesListCandidates, type ClipboardDetectedPayload, type ClipboardReadPayload } from "@chemdraft/clipboard-adapter";
+import { clipboardChemistrySizeRefusal, guardClipboardPayload, inspectClipboardPayload, isVectorArtworkType, looksLikeSmiles, smilesListCandidates, type ClipboardDetectedPayload, type ClipboardReadPayload } from "@chemdraft/clipboard-adapter";
 import { verifySmilesPaste, verifySmilesPasteInput, verifySmilesGridEntries } from "./smilesPasteIdentity";
 import {
   SmilesListPasteError, depictSmilesForPaste, depictSmilesListForPaste, smilesListFailureStatus
@@ -7266,6 +7266,8 @@ export function MainWindow({
       if (!unguardedPayload) continue;
       // The private selection parser also copies text; admit flavors before trying it.
       const payload = guardClipboardPayload(unguardedPayload);
+      const refusal = clipboardChemistrySizeRefusal(payload);
+      if (refusal) { setStatus(refusal); return; }
       const selectionPayload = payload.textItems
         .map((item) => parseSelectionClipboardPayload(item.text))
         .find((selection) => selection !== undefined);
@@ -12402,9 +12404,11 @@ export function MainWindow({
       }
 
       const selectionTypes = [CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, "text/plain"];
-      const selectionItems = guardClipboardPayload({ types: selectionTypes,
-        textItems: selectionTypes.map(type => ({ type, text: event.clipboardData!.getData(type) })) }).textItems;
-      const selectionPayload = selectionItems.map(item => parseSelectionClipboardPayload(item.text))
+      const selectionRead = guardClipboardPayload({ types: selectionTypes,
+        textItems: selectionTypes.map(type => ({ type, text: event.clipboardData!.getData(type) })) });
+      const refusal = clipboardChemistrySizeRefusal(selectionRead);
+      if (refusal) { event.preventDefault(); setStatus(refusal); return; }
+      const selectionPayload = selectionRead.textItems.map(item => parseSelectionClipboardPayload(item.text))
         .find(selection => selection !== undefined);
       if (selectionPayload) {
         event.preventDefault();

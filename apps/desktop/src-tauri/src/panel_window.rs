@@ -16,6 +16,15 @@ pub(crate) use key_guard::{
     keeps_palette_focus, observe_document_pointer_release, End as PointerGuardEnd,
 };
 
+pub(crate) fn palette_blocks_forwarded_shortcut(
+    key: &str,
+    meta: bool,
+    ctrl: bool,
+    alt: bool,
+) -> bool {
+    key_guard::blocks_forwarded_shortcut(key_guard::blocks_document(), key, meta, ctrl, alt)
+}
+
 pub(crate) fn palette_blocks_menu(document_target: bool, command: &str) -> bool {
     key_guard::blocks_menu(key_guard::blocks_document(), document_target, command)
 }

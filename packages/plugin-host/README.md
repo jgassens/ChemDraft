@@ -59,7 +59,9 @@ to the `overlays.setContent` embedding sink. Hosts replace the prompt's disabled
 an omitted prompt or disabled flag means false. Permission and ownership checks remain unchanged.
 
 API 0.1.12 adds optional `overlays.setContent(pluginId, overlayId, sections)` and
-`overlays.open(pluginId, overlayId, focus)` embedding sinks. Content is bounded to 20 existing
+`overlays.open(pluginId, overlayId, focus)` embedding sinks. Content passes through the same bounded detached JSON snapshot as panel reports before schema
+parsing, without invoking plugin getters or iterators or retaining nested payload references.
+Content is bounded to 20 existing
 text/keyValue/actions/image sections and 64 KiB UTF-8 JSON; ids must be unique alongside the overlay's
 prompt/select, and commands obey the same ownership rules as panel reports. Both methods recheck
 `ui.canvas` and ownership. `open` additionally requires a live command invocation from that plugin;

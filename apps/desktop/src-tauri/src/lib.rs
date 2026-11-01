@@ -3070,13 +3070,22 @@ fn plugin_panel_action_forward(
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PluginPanelShortcut {
     command_id: String,
+    #[serde(default)]
+    key: String,
+    #[serde(default)]
+    meta_key: bool,
+    #[serde(default)]
+    ctrl_key: bool,
+    #[serde(default)]
+    alt_key: bool,
 }
 
 impl PluginPanelShortcut {
     fn parse(payload: &serde_json::Value) -> Result<Self, String> {
         let shortcut: Self = serde_json::from_value(payload.clone())
             .map_err(|_| "Invalid panel shortcut.".to_string())?;
-        if shortcut.command_id.is_empty()
+        if shortcut.key.len() > 64
+            || shortcut.command_id.is_empty()
             || shortcut.command_id.len() > 256
             || shortcut.command_id.trim() != shortcut.command_id
             || shortcut.command_id == "document.closeTab"
@@ -3147,7 +3156,15 @@ fn plugin_panel_event_forward(
         let shortcut = PluginPanelShortcut::parse(&payload)?;
         let target = window.clone();
         return run_on_main_thread_blocking(&window, move || {
-            if !utility_windows_suspended() && panel_window::is_active(&target)? {
+            if !utility_windows_suspended()
+                && !panel_window::palette_blocks_forwarded_shortcut(
+                    &shortcut.key,
+                    shortcut.meta_key,
+                    shortcut.ctrl_key,
+                    shortcut.alt_key,
+                )
+                && panel_window::is_active(&target)?
+            {
                 return emit_command_to_main(target.app_handle(), &shortcut.document_command_id());
             }
             Ok(())
@@ -5434,17 +5451,39 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    let read_plan = types
+        .iter()
+        .map(|source| {
+            let priority = clipboard_limits::text_read_priority(source);
+            let priority = if priority == Some(2) {
+                pasteboard
+                    .dataForType(&NSString::from_str(source))
+                    .as_ref()
+                    .map_or(priority, |data| {
+                        // SAFETY: immutable retained NSData, inspected only during this call.
+                        clipboard_limits::text_priority_with_preview(source, unsafe {
+                            data.as_bytes_unchecked()
+                        })
+                    })
+            } else {
+                priority
+            };
+            (source, priority)
+        })
+        .collect::<Vec<_>>();
     let mut budget = clipboard_limits::ClipboardReadBudget::default();
     let mut text_items = Vec::new();
-    if let Some(native_types) = pasteboard.types() {
-        for pasteboard_type in native_types.to_vec() {
-            if let Some(text) = clipboard_text_for_type(&pasteboard, &pasteboard_type, &mut budget)
-            {
-                text_items.push(ClipboardTextItem {
-                    r#type: pasteboard_type.to_string(),
-                    text,
-                });
-            }
+    for (source, _) in read_plan
+        .iter()
+        .filter(|(_, priority)| *priority == Some(0))
+    {
+        if let Some(text) =
+            clipboard_text_for_type(&pasteboard, &NSString::from_str(source), &mut budget)
+        {
+            text_items.push(ClipboardTextItem {
+                r#type: source.to_string(),
+                text,
+            });
         }
     }
 
@@ -5455,6 +5494,9 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
         (&["public.png", "public.tiff"][..], "image/png"),
         (&["public.svg-image", "image/svg+xml"][..], "image/svg+xml"),
     ] {
+        if !image_items.is_empty() {
+            break;
+        }
         for &source in sources {
             if !types.iter().any(|kind| kind == source) {
                 continue;
@@ -5473,15 +5515,7 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
                 match source {
                     "public.png" => clipboard_images::png_image_item(&bytes),
                     "public.tiff" => clipboard_images::tiff_image_item(&bytes),
-                    _ => {
-                        if let Some(text) = decode_clipboard_text_bytes(&bytes) {
-                            text_items.push(ClipboardTextItem {
-                                r#type: source.to_string(),
-                                text,
-                            });
-                        }
-                        clipboard_images::svg_image_item(&bytes, source)
-                    }
+                    _ => clipboard_images::svg_image_item(&bytes, source),
                 }
             });
             match result {
@@ -5492,18 +5526,47 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
                     {
                         image_items.push(item);
                     }
-                    if output_type != "image/svg+xml" {
-                        break;
-                    }
+                    break;
                 }
-                Err(reason) => skipped_image_items.push(SkippedClipboardImageItem::new(
-                    output_type,
-                    byte_length,
-                    reason,
-                )),
+                Err(reason) => {
+                    // A failed conversion was not kept and must not penalize its fallback.
+                    // A refused reservation consumed no bytes in the first place.
+                    if !budget
+                        .skipped_items
+                        .iter()
+                        .any(|item| item.r#type == source)
+                    {
+                        budget.release(byte_length);
+                    }
+                    skipped_image_items.push(SkippedClipboardImageItem::new(
+                        output_type,
+                        byte_length,
+                        reason,
+                    ));
+                }
             }
         }
     }
+
+    for (source, priority) in read_plan
+        .iter()
+        .filter(|(_, priority)| matches!(priority, Some(2 | 3)))
+    {
+        // Formatted prose is never used when a picture wins. Plain text still supplies
+        // the existing SMILES/molfile heuristics beside pictures.
+        if !image_items.is_empty() && *priority == Some(3) {
+            continue;
+        }
+        if let Some(text) =
+            clipboard_text_for_type(&pasteboard, &NSString::from_str(source), &mut budget)
+        {
+            text_items.push(ClipboardTextItem {
+                r#type: source.to_string(),
+                text,
+            });
+        }
+    }
+    text_items.sort_by_key(|item| types.iter().position(|kind| kind == &item.r#type));
 
     Ok(ClipboardReadPayload {
         types,
@@ -5593,25 +5656,43 @@ fn clipboard_text_for_type(
     budget: &mut clipboard_limits::ClipboardReadBudget,
 ) -> Option<String> {
     let kind = pasteboard_type.to_string();
-    if is_opaque_clipboard_type(&kind) || clipboard_images::is_image_clipboard_type(&kind) {
+    if is_opaque_clipboard_type(&kind) {
         return None;
     }
+    clipboard_limits::text_read_priority(&kind)?;
 
     // AppKit may construct an NSString from data; reject huge data before requesting conversion.
     let data = pasteboard.dataForType(pasteboard_type);
     let data_length = data.as_ref().map_or(0, |data| data.length());
-    budget.check(&kind, data_length).ok()?;
+    if budget.check(&kind, data_length).is_err() {
+        if let Some(data) = &data {
+            // SAFETY: the pasteboard data is immutable and retained throughout this
+            // bounded preview; no pointer survives the call.
+            budget.mark_chemistry(&kind, unsafe { data.as_bytes_unchecked() });
+        }
+        return None;
+    }
     if let Some(text) = pasteboard.stringForType(pasteboard_type) {
         let byte_length = text.lengthOfBytesUsingEncoding(objc2_foundation::NSUTF8StringEncoding);
         if byte_length > 0 {
-            budget.reserve(&kind, byte_length.max(data_length)).ok()?;
+            if budget.reserve(&kind, byte_length).is_err() {
+                if let Some(data) = &data {
+                    // SAFETY: immutable retained NSData used only for a bounded preview.
+                    budget.mark_chemistry(&kind, unsafe { data.as_bytes_unchecked() });
+                }
+                return None;
+            }
             return Some(text.to_string());
         }
     }
 
     let data = data?;
-    budget.reserve(&kind, data.length()).ok()?;
-    decode_clipboard_text_bytes(&data.to_vec())
+    let text = decode_clipboard_text_bytes(&data.to_vec())?;
+    if budget.reserve(&kind, text.len()).is_err() {
+        budget.mark_chemistry(&kind, text.as_bytes());
+        return None;
+    }
+    Some(text)
 }
 
 #[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]

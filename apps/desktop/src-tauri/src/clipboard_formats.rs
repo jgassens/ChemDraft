@@ -127,8 +127,16 @@ fn validate_clipboard_items_with_limit(
         if data.bytes().is_empty() {
             continue;
         }
+        // Reserve a cross-platform upper bound: UTF-16 + CRLF, terminators,
+        // CF_HTML header and allocator rounding. Picture aliases are not read twice.
+        let read_size = clipboard_copy_read_bound(item_type, &data);
+        if crate::clipboard_images::is_image_clipboard_type(item_type)
+            && data.bytes().len() > crate::clipboard_images::MAX_CLIPBOARD_IMAGE_BYTES
+        {
+            return Err(size_error());
+        }
         total = total
-            .checked_add(data.bytes().len())
+            .checked_add(read_size)
             .filter(|total| *total <= limit)
             .ok_or_else(size_error)?;
 
@@ -157,6 +165,22 @@ fn validate_clipboard_items_with_limit(
         return Err("Clipboard write requires at least one non-empty item.".to_string());
     }
     Ok(validated)
+}
+
+/// Worst-case native read size on either host, including Windows UTF-16/CRLF and
+/// allocation overhead. Plain text also reserves all seven native text aliases;
+/// Windows UTF-16 + CRLF needs at most four times the input bytes. Keep copy below
+/// the paste budget even at its exact boundary.
+fn clipboard_copy_read_bound(kind: &str, data: &ClipboardWriteData) -> usize {
+    let length = data.bytes().len();
+    let bytes = if kind == "text/plain" {
+        length.saturating_mul(8)
+    } else if matches!(data, ClipboardWriteData::Text(_)) {
+        length.saturating_mul(2)
+    } else {
+        length
+    };
+    bytes.saturating_add(512)
 }
 
 pub(crate) fn clipboard_utf8<'a>(bytes: &'a [u8], kind: &str) -> Result<&'a str, String> {
@@ -328,6 +352,57 @@ mod tests {
 
     fn html(fragment: &str) -> String {
         format!("<html><head><meta charset=\"utf-8\"></head><body>{START_FRAGMENT}{fragment}{END_FRAGMENT}</body></html>")
+    }
+
+    #[test]
+    fn clipboard_selection_copy_at_total_boundary_can_be_read_back_on_both_hosts() {
+        let count = (MAX_CLIPBOARD_BYTES - 1024) / 10;
+        let request = |extra| {
+            vec![
+                item(
+                    serde_json::json!({"type": "application/x-chemdraft-selection+json", "text": "x".repeat(count + extra)}),
+                ),
+                item(serde_json::json!({"type": "text/plain", "text": "x".repeat(count)})),
+            ]
+        };
+        let items = validate_clipboard_items(request(0)).unwrap();
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| clipboard_copy_read_bound(&item.r#type, &item.data))
+                .sum::<usize>(),
+            MAX_CLIPBOARD_BYTES
+        );
+        assert!(validate_clipboard_items(request(1)).is_err());
+        // Worst-case native encodings and padding fit before any native copy on
+        // either host; Windows' Unicode flavor and macOS aliases have headroom.
+        for text_size in [count, 2 * count + 16] {
+            let mut budget = crate::clipboard_limits::ClipboardReadBudget::default();
+            assert!(budget
+                .reserve("application/x-chemdraft-selection+json", 2 * count + 16)
+                .is_ok());
+            assert!(budget.reserve("text/plain", text_size).is_ok());
+        }
+    }
+
+    #[test]
+    fn clipboard_copy_boundary_reserves_native_text_representation_and_padding() {
+        let request = || {
+            vec![item(
+                serde_json::json!({"type": "text/plain", "text": "1234"}),
+            )]
+        };
+        assert!(validate_clipboard_items_with_limit(request(), 543).is_err());
+        let items = validate_clipboard_items_with_limit(request(), 544).unwrap();
+        assert_eq!(clipboard_copy_read_bound("text/plain", &items[0].data), 544);
+        // Both host encodings, including CRLF and a terminator, fit the same measure.
+        for text in ["ascii", "\n\n\n", "é€😀"] {
+            let bound =
+                clipboard_copy_read_bound("text/plain", &ClipboardWriteData::Text(text.into()));
+            let utf16 = (text.replace("\n", "\r\n").encode_utf16().count() + 1) * 2;
+            assert!(utf16 + 16 <= bound);
+            assert!(text.len() < bound);
+        }
     }
 
     #[test]
@@ -510,8 +585,8 @@ mod tests {
                 item(serde_json::json!({"type": "private/data", "bytesBase64": "AAECAw=="})),
             ]
         };
-        assert!(validate_clipboard_items_with_limit(request(), 7).is_err());
-        assert!(validate_clipboard_items_with_limit(request(), 8).is_ok());
+        assert!(validate_clipboard_items_with_limit(request(), 1059).is_err());
+        assert!(validate_clipboard_items_with_limit(request(), 1060).is_ok());
         assert!(validate_clipboard_items_with_limit(
             vec![item(
                 serde_json::json!({"type": "binary", "bytesBase64": "A".repeat(100)})

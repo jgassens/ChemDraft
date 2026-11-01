@@ -124,7 +124,7 @@ describe.each(["macos", "windows"] as const)("text paste formatting (%s)", platf
   const status = () => container.querySelector('[role="status"]')?.textContent;
   const nativeReads = () => vi.mocked(invoke).mock.calls.filter(([command]) => command === "read_clipboard_payload");
 
-  const tooLargeMessage = "Couldn't paste: the clipboard item is too large (500.0 MB; the limit is 64 MB).";
+  const tooLargeMessage = "Couldn't paste: clipboard flavor \"text/plain\" is too large (500.0 MB; the limit is 64 MB).";
 
   it("shows the native size refusal on menu and DOM paste without inserting content", async () => {
     await mount({ types: ["text/plain"], textItems: [], skippedItems: [
@@ -147,21 +147,21 @@ describe.each(["macos", "windows"] as const)("text paste formatting (%s)", platf
     await act(async () => {
       window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "clipboard.paste" } }));
     });
-    expect(status()).toBe(tooLargeMessage);
+    expect(status()).toBe(tooLargeMessage.replace("text/plain", CHEMDRAFT_SELECTION_CLIPBOARD_TYPE));
     expect(objects()).toHaveLength(0);
     runtime.desktop = false;
     await paste({ [CHEMDRAFT_SELECTION_CLIPBOARD_TYPE]: text });
-    expect(status()).toBe(tooLargeMessage);
+    expect(status()).toBe(tooLargeMessage.replace("text/plain", CHEMDRAFT_SELECTION_CLIPBOARD_TYPE));
     expect(objects()).toHaveLength(0);
   });
 
-  it("still pastes a usable flavor beside an oversized flavor", async () => {
+  it("refuses oversized CDXML instead of pasting lower-fidelity prose", async () => {
     await mount({ ...nativeClipboard("ordinary prose"), skippedItems: [
       { type: "chemical/x-cdxml", byteLength: 500 * 1024 * 1024, limitBytes: 64 * 1024 * 1024 }
     ] });
     await paste({ "text/plain": "ordinary prose" });
-    expect(status()).toBe("Pasted editable text");
-    expect(objects()).toMatchObject([{ type: "text", text: "ordinary prose" }]);
+    expect(status()).toBe(tooLargeMessage.replace("text/plain", "chemical/x-cdxml"));
+    expect(objects()).toHaveLength(0);
   });
 
   it.each(["image/svg+xml", "public.svg-image", "text/plain"].flatMap(type => [
@@ -188,7 +188,7 @@ describe.each(["macos", "windows"] as const)("text paste formatting (%s)", platf
   });
 
   it.each([
-    ["malformed", "<svg><g></svg>", "Couldn't paste the SVG: it isn't well-formed XML: line 1, column 49: unexpected close tag."],
+    ["malformed", "<svg><g></svg>", "Couldn't paste the SVG: it isn't well-formed XML: line 1, column 14: unexpected close tag."],
     ["sanitizer-refused", '<svg><script>alert(1)</script></svg>', "Couldn't paste the SVG: it contains a <script> element that isn't allowed."],
     ["wrong-namespace", '<svg xmlns="urn:wrong"><path d="M0 0L1 1"/></svg>', "Couldn't paste the SVG: the root must be <svg> in the SVG namespace (http://www.w3.org/2000/svg)."]
   ])("refuses %s SVG text on menu and DOM paste without inserting anything", async (_, svg, expected) => {

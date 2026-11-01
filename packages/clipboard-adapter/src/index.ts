@@ -30,8 +30,10 @@ export const MAX_CLIPBOARD_BYTES = 64 * 1024 * 1024;
 
 export interface ClipboardSkippedItem {
   type: string;
-  /** Flavor size, or attempted combined size when the total budget was exceeded. */
+  /** Size of this flavor, never the running total. */
   byteLength: number;
+  /** Chemistry recognized in a generic text flavor before its bytes were skipped. */
+  chemistry?: boolean;
   limitBytes: number;
 }
 
@@ -172,11 +174,18 @@ const textLikeTypePatterns = [
   "com.apple.traditional-mac-plain-text"
 ] as const;
 
-export function clipboardSizeRefusalMessage(item: ClipboardSkippedItem): string {
-  return `Couldn't paste: the clipboard item is too large (${(item.byteLength / (1024 * 1024)).toFixed(1)} MB; the limit is ${item.limitBytes / (1024 * 1024)} MB).`;
+function clipboardFlavorName(type: string): string {
+  if ((textLikeTypePatterns as readonly string[]).includes(type)) return "text/plain";
+  if (["public.png", "PNG", "CF_DIB", "CF_DIBV5"].includes(type)) return "image/png";
+  if (["public.svg", "public.svg-image"].includes(type)) return "image/svg+xml";
+  return type;
 }
 
-/** No encoding, normalization, trimming or copies of clipboard contents during admission. */
+export function clipboardSizeRefusalMessage(item: ClipboardSkippedItem): string {
+  return `Couldn't paste: clipboard flavor "${clipboardFlavorName(item.type)}" is too large (${(item.byteLength / (1024 * 1024)).toFixed(1)} MB; the limit is ${item.limitBytes / (1024 * 1024)} MB).`;
+}
+
+/** Bound bytes before normalization/decoding; inspect only a bounded chemistry prefix. */
 export function guardClipboardPayload(payload: ClipboardReadPayload): ClipboardReadPayload {
   let total = 0;
   const skippedItems = [...payload.skippedItems ?? []];
@@ -184,20 +193,28 @@ export function guardClipboardPayload(payload: ClipboardReadPayload): ClipboardR
     if (byteLength > limitBytes || byteLength > MAX_CLIPBOARD_BYTES - total) {
       skippedItems.push(byteLength > limitBytes
         ? { type, byteLength, limitBytes }
-        : { type, byteLength: total + byteLength, limitBytes: MAX_CLIPBOARD_BYTES });
+        : { type, byteLength, limitBytes: MAX_CLIPBOARD_BYTES });
       return false;
     }
     total += byteLength;
     return true;
   };
-  const textItems = payload.textItems.filter(item => {
+  const admitText = (item: ClipboardTextItem): boolean => {
     const byteLength = clipboardTextByteLength(item.text);
-    // Check the general cap before examining even an SVG root in a huge text item.
-    if (byteLength > MAX_CLIPBOARD_BYTES) return admit(item.type, byteLength, MAX_CLIPBOARD_BYTES);
+    if (byteLength > MAX_CLIPBOARD_BYTES) {
+      const admitted = admit(item.type, byteLength, MAX_CLIPBOARD_BYTES);
+      if (typeof item.text === "string" && chemistryTextPrefix(item.text)) skippedItems[skippedItems.length - 1]!.chemistry = true;
+      return admitted;
+    }
     const picture = ["image/svg+xml", "public.svg", "public.svg-image"].includes(item.type)
       || clipboardHasSvgRoot(item.text);
-    return admit(item.type, byteLength, picture ? MAX_IMAGE_OBJECT_BYTES : MAX_CLIPBOARD_BYTES);
-  });
+    const admitted = admit(item.type, byteLength, picture ? MAX_IMAGE_OBJECT_BYTES : MAX_CLIPBOARD_BYTES);
+    if (!admitted && !picture && chemistryTextPrefix(item.text)) skippedItems[skippedItems.length - 1]!.chemistry = true;
+    return admitted;
+  };
+  const chemistryItem = (item: ClipboardTextItem) => isChemistryClipboardType(item.type)
+    || (typeof item.text === "string" && chemistryTextPrefix(item.text));
+  const chemistryItems = new Set(payload.textItems.filter(item => chemistryItem(item) && admitText(item)));
   const imageItems = payload.imageItems?.filter(item => {
     // The encoded length bounds decoding too, including excessive whitespace in invalid base64.
     const encoded = item.bytesBase64;
@@ -207,9 +224,10 @@ export function guardClipboardPayload(payload: ClipboardReadPayload): ClipboardR
     }
     return admit(item.type, byteLength, MAX_IMAGE_OBJECT_BYTES);
   });
+  const textItems = payload.textItems.filter(item => chemistryItem(item) ? chemistryItems.has(item) : admitText(item));
   const rejectedTypes = new Set(skippedItems.map(item => item.type));
   return { ...payload, textItems, imageItems, skippedItems,
-    types: payload.types.filter(type => !rejectedTypes.has(type)) };
+    types: payload.types.filter(type => !rejectedTypes.has(type) || isChemistryClipboardType(type)) };
 }
 
 // Locate SVG source without the trimming/slicing used by the ordinary format detector.
@@ -228,9 +246,10 @@ function clipboardHasSvgRoot(text: string): boolean {
   return root.test(text);
 }
 
-/** UTF-8 byte count without TextEncoder allocation; huge strings need only a rejecting lower bound. */
+/** Exact UTF-8 byte count without a TextEncoder allocation, including refused items. */
 function clipboardTextByteLength(text: string): number {
-  if (text.length > MAX_CLIPBOARD_BYTES) return text.length;
+  // A length-only admission probe can be refused before dereferencing its contents.
+  if (typeof text !== "string") return text.length;
   let bytes = 0;
   for (let i = 0; i < text.length; i += 1) {
     const unit = text.charCodeAt(i);
@@ -244,6 +263,24 @@ function clipboardTextByteLength(text: string): number {
   return bytes;
 }
 
+/** Explicit chemistry must never become a lower-fidelity paste after a size skip. */
+export function clipboardChemistrySizeRefusal(payload: ClipboardReadPayload): string | undefined {
+  const skipped = payload.skippedItems?.find(item => item.chemistry || isChemistryClipboardType(item.type));
+  return skipped ? clipboardSizeRefusalMessage(skipped) : undefined;
+}
+
+function chemistryTextPrefix(text: string): boolean {
+  // Bounded inspection: do not normalize or scan an entire refused payload.
+  const prefix = text.slice(0, 8192).trim();
+  return /<CDXML\b|"kind"\s*:\s*"chemdraft-selection"|V[23]000/.test(prefix)
+    || prefix.startsWith("$RXN") || prefix.startsWith("InChI=")
+    || (prefix.length > 1 && /^[BCNOFPSIHbcnops0-9@+\[\]().=#$*%\-\/\\]+$/.test(prefix));
+}
+
+function isChemistryClipboardType(type: string): boolean {
+  return /chemdraft-selection|cdxml|cdx|molfile|rxnfile|inchi|smiles|chemical\//i.test(type);
+}
+
 export interface ClipboardInspectionOptions {
   /** Defaults to the browser's DOMParser. Pass null for the headless fallback. */
   svgParser?: Pick<DOMParser, "parseFromString"> | null;
@@ -251,14 +288,21 @@ export interface ClipboardInspectionOptions {
 
 export function inspectClipboardPayload(payload: ClipboardReadPayload, options: ClipboardInspectionOptions = {}): ClipboardDetectedPayload {
   const bounded = guardClipboardPayload(payload);
+  const chemistryRefusal = clipboardChemistrySizeRefusal(bounded);
+  if (chemistryRefusal) return { kind: "size-refused", message: chemistryRefusal,
+    warnings: [{ code: "clipboard.too_large", message: chemistryRefusal }] };
   const detected = inspectBoundedClipboardPayload(bounded, options);
   const skipped = bounded.skippedItems?.[0];
   if (skipped && (detected.kind === "empty" || detected.kind === "vector-only" || detected.kind === "cdx"
-    || detected.kind === "image-refused" || (detected.kind === "cdxml" && !detected.text))) {
+    || (detected.kind === "image-refused" && !bounded.imageItems?.length
+      && !bounded.textItems.some(item => clipboardHasSvgRoot(item.text)))
+    || (detected.kind === "cdxml" && !detected.text))) {
     const message = clipboardSizeRefusalMessage(skipped);
     return { kind: "size-refused", message, warnings: [{ code: "clipboard.too_large", message }] };
   }
-  return detected;
+  return { ...detected, warnings: [...detected.warnings, ...(bounded.skippedItems?.map(item => ({
+    code: "clipboard.too_large", message: clipboardSizeRefusalMessage(item)
+  })) ?? [])] };
 }
 
 function inspectBoundedClipboardPayload(payload: ClipboardReadPayload, options: ClipboardInspectionOptions): ClipboardDetectedPayload {
@@ -383,7 +427,7 @@ function inspectBoundedClipboardPayload(payload: ClipboardReadPayload, options: 
     let fallbackImage = !suppressPicture ? image : undefined;
     if (!suppressPicture && !image && pasteableSvgText) {
       const source = addMissingSvgNamespaces(pasteableSvgText.text);
-      if (!svgClipboardError(source, clipboardTextByteLength(source), options) && !validateSvgImage(source).error) {
+      if (!svgClipboardError(source, clipboardTextByteLength(source), options, pasteableSvgText.text) && !validateSvgImage(source).error) {
         fallbackImage = svgTextImage(source);
       }
     }
@@ -392,7 +436,7 @@ function inspectBoundedClipboardPayload(payload: ClipboardReadPayload, options: 
         const binary = atob(fallbackImage.bytesBase64);
         const original = new TextDecoder().decode(Uint8Array.from(binary, char => char.charCodeAt(0)));
         const source = addMissingSvgNamespaces(original);
-        if (svgClipboardError(source, clipboardTextByteLength(source), options) || validateSvgImage(source).error) fallbackImage = undefined;
+        if (svgClipboardError(source, clipboardTextByteLength(source), options, original) || validateSvgImage(source).error) fallbackImage = undefined;
         else if (source !== original) fallbackImage = { ...fallbackImage, bytesBase64: svgTextImage(source).bytesBase64 };
       } catch {
         fallbackImage = undefined;
@@ -418,7 +462,7 @@ function inspectBoundedClipboardPayload(payload: ClipboardReadPayload, options: 
       } else {
         const original = new TextDecoder().decode(bytes);
         const source = addMissingSvgNamespaces(original);
-        const svgError = svgClipboardError(source, clipboardTextByteLength(source), options);
+        const svgError = svgClipboardError(source, clipboardTextByteLength(source), options, original);
         if (svgError) return refusedSvg(svgError);
         const result = validateSvgImage(source);
         if (result.error) return refusedSvg(result.error);
@@ -438,7 +482,7 @@ function inspectBoundedClipboardPayload(payload: ClipboardReadPayload, options: 
     if (byteLength > MAX_IMAGE_OBJECT_BYTES) {
       return refusedSvg(`it is ${(byteLength / (1024 * 1024)).toFixed(1)} MB; the limit is 25 MB.`);
     }
-    const svgError = svgClipboardError(source, byteLength, options);
+    const svgError = svgClipboardError(source, byteLength, options, pasteableSvgText.text);
     if (svgError) return refusedSvg(svgError);
     const result = validateSvgImage(source);
     if (result.error) return refusedSvg(result.error);
@@ -507,20 +551,20 @@ const XML_NAMESPACE = "http://www.w3.org/XML/1998/namespace";
 
 /** Discover namespaces with the bounded scanner, then edit only the root start tag. */
 function addMissingSvgNamespaces(source: string): string {
-  let root: { nameEnd: number; attributes: ReadonlyMap<string, string> } | undefined;
+  let root: { tag: string; nameEnd: number; attributes: ReadonlyMap<string, string> } | undefined;
   let usesXlink = false;
-  svgDocumentError(source, (tag, nameEnd, attributes) => {
+  svgDocumentError(source, (tag, nameEnd, attributes, namespaces) => {
     if (!root) {
-      if (tag !== "svg") return true;
-      root = { nameEnd, attributes };
+      root = { tag, nameEnd, attributes };
     }
-    usesXlink = tag.startsWith("xlink:") || [...attributes.keys()].some(name => name.startsWith("xlink:"));
-    // Missing bindings are reported after this visitor, so an unbound xlink use is
-    // discovered even when the rest of the document has not yet been scanned.
-    return usesXlink || (root.attributes.has("xmlns") && root.attributes.has("xmlns:xlink"));
+    if (!namespaces.has("xlink") && (tag.startsWith("xlink:") || [...attributes.keys()].some(name => name.startsWith("xlink:")))) {
+      usesXlink = true;
+      namespaces.set("xlink", XLINK_NAMESPACE); // Continue discovery through later scopes.
+    }
+    return false;
   });
   if (!root) return source;
-  const declarations = (root.attributes.has("xmlns") ? "" : ` xmlns="${SVG_NAMESPACE}"`)
+  const declarations = (root.tag !== "svg" || root.attributes.has("xmlns") ? "" : ` xmlns="${SVG_NAMESPACE}"`)
     + (usesXlink && !root.attributes.has("xmlns:xlink") ? ` xmlns:xlink="${XLINK_NAMESPACE}"` : "");
   return declarations ? source.slice(0, root.nameEnd) + declarations + source.slice(root.nameEnd) : source;
 }
@@ -531,7 +575,7 @@ function xmlError(problem: string): string {
 
 /** Bounded, non-executing fallback; a start-tag visitor may stop discovery early. */
 function svgDocumentError(text: string, visitStartTag?: (
-  tag: string, nameEnd: number, attributes: ReadonlyMap<string, string>
+  tag: string, nameEnd: number, attributes: ReadonlyMap<string, string>, namespaces: Map<string, string>
 ) => boolean): string | undefined {
   const invalid = xmlError("invalid or incomplete markup");
   if (text.length > 20 * 1024 * 1024) return "it exceeds the 20 MB validation limit.";
@@ -675,7 +719,7 @@ function svgDocumentError(text: string, visitStartTag?: (
       }
       offset = end + 1;
     }
-    if (visitStartTag?.(tag, nameEnd, attributes)) return undefined;
+    if (visitStartTag?.(tag, nameEnd, attributes, namespaces)) return undefined;
     const tagPrefix = tag.includes(":") ? tag.split(":")[0] : "";
     if (tagPrefix && !namespaces.get(tagPrefix)) return xmlError(`undeclared namespace prefix '${tagPrefix}' on <${tag}>`);
     const expandedAttributes = new Set<string>();
@@ -687,7 +731,7 @@ function svgDocumentError(text: string, visitStartTag?: (
       if (expandedAttributes.has(expanded)) return xmlError(`duplicate attribute '${attribute}'`);
       expandedAttributes.add(expanded);
     }
-    if (isRoot && (tag !== "svg" || (namespaces.has("") && namespaces.get("") !== SVG_NAMESPACE))) {
+    if (isRoot && (tagPrefix ? namespaces.get(tagPrefix) !== SVG_NAMESPACE : namespaces.has("") && namespaces.get("") !== SVG_NAMESPACE)) {
       return "the root must be <svg> in the SVG namespace (http://www.w3.org/2000/svg).";
     }
     rootSeen = true;
@@ -718,7 +762,7 @@ function invalidXmlText(text: string): boolean {
   return false;
 }
 
-function svgClipboardError(source: string, byteLength: number, options: ClipboardInspectionOptions): string | undefined {
+function svgClipboardError(source: string, byteLength: number, options: ClipboardInspectionOptions, original = source): string | undefined {
   if (byteLength > 20 * 1024 * 1024) return "it exceeds the 20 MB validation limit.";
   // Refuse declarations before invoking any XML parser: never allow entity expansion.
   const declarationError = svgDeclarationError(source);
@@ -733,12 +777,22 @@ function svgClipboardError(source: string, byteLength: number, options: Clipboar
       const error = document.getElementsByTagNameNS("*", "parsererror")[0];
       if (error) {
         const detail = (error.textContent ?? "XML parsing failed").slice(0, 1000)
-          .replace(/Below is a rendering[\s\S]*/, "").replace(/\s+/g, " ").trim()
+          .replace(/^\s*This page contains the following errors:\s*/i, "")
+          .replace(/Below is a rendering[\s\S]*/i, "").trim()
           .replace(/^(\d+):(\d+):\s*/, "line $1, column $2: ");
-        return xmlError(detail || "XML parsing failed");
+        const positioned = detail.replace(/line (\d+)( at|,)? column (\d+)/gi, (match, line: string, join: string, column: string) => {
+          if (source === original) return match;
+          let insertion = 0;
+          while (insertion < original.length && source[insertion] === original[insertion]) insertion++;
+          const before = original.slice(0, insertion).split("\n");
+          if (Number(line) !== before.length || Number(column) <= before.at(-1)!.length) return match;
+          const adjusted = Math.max(before.at(-1)!.length + 1, Number(column) - (source.length - original.length));
+          return `line ${line}${join ?? ""} column ${adjusted}`;
+        }).replace(/\s+/g, " ");
+        return xmlError(positioned || "XML parsing failed");
       }
       const root = document.documentElement;
-      if (root?.localName !== "svg" || root.prefix || root.namespaceURI !== SVG_NAMESPACE) {
+      if (root?.localName !== "svg" || root.namespaceURI !== SVG_NAMESPACE) {
         return "the root must be <svg> in the SVG namespace (http://www.w3.org/2000/svg).";
       }
     } catch (error) {
@@ -749,10 +803,23 @@ function svgClipboardError(source: string, byteLength: number, options: Clipboar
 }
 
 function svgDeclarationError(source: string): string | undefined {
-  const markup = source.replace(/<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>/g, "");
-  if (/<!DOCTYPE/i.test(markup)) return "it contains a document type declaration that isn't allowed.";
-  if (/<!ENTITY/i.test(markup)) return "it contains an entity declaration that isn't allowed.";
-  if (/<\?(?!xml\s)/i.test(markup)) return "it contains a processing instruction that isn't allowed.";
+  // Lex the raw input. A comment marker inside <?xml ...?> is not a comment.
+  let offset = 0;
+  while ((offset = source.indexOf("<", offset)) >= 0) {
+    const tail = source.slice(offset, offset + 10);
+    if (/^<!DOCTYPE/i.test(tail)) return "it contains a document type declaration that isn't allowed.";
+    if (/^<!ENTITY/i.test(tail)) return "it contains an entity declaration that isn't allowed.";
+    const ending = source.startsWith("<!--", offset) ? "-->" : source.startsWith("<![CDATA[", offset) ? "]]>"
+      : source.startsWith("<?", offset) ? "?>" : undefined;
+    if (source.startsWith("<?", offset) && !/^<\?xml\s/i.test(tail)) {
+      return "it contains a processing instruction that isn't allowed.";
+    }
+    if (ending) {
+      const end = source.indexOf(ending, offset + 2);
+      if (end < 0) return xmlError("invalid or incomplete markup");
+      offset = end + ending.length;
+    } else offset++;
+  }
   return undefined;
 }
 
