@@ -5706,8 +5706,9 @@ fn clipboard_text_for_type(
     clipboard_limits::text_read_priority(&kind)?;
 
     // AppKit must materialize NSData to expose its length; we cannot prevent that OS-owned
-    // allocation, nor any internal NSString conversion it performs. Reserve NSData.length
-    // before requesting conversion. Never copy NSData into a Rust Vec or build a second
+    // allocation, nor any internal NSString conversion it performs. The UTF8String native
+    // buffer used by to_string / alias comparison is another unavoidable OS-owned copy.
+    // Reserve the native size before copying. Never copy NSData into a Rust Vec or build a second
     // owned Rust text buffer: only the final String crosses into ChemDraft-owned memory.
     let data = pasteboard.dataForType(pasteboard_type);
     let data_length = data.as_ref().map_or(0, |data| data.length());
@@ -5718,31 +5719,62 @@ fn clipboard_text_for_type(
             return None;
         }
     }
-    if budget.reserve(&kind, data_length).is_err() {
-        if let Some(data) = &data {
-            // SAFETY: the pasteboard data is immutable and retained throughout this
-            // bounded preview; no pointer survives the call.
-            budget.mark_chemistry(&kind, unsafe { data.as_bytes_unchecked() });
+    let native_text = pasteboard.stringForType(pasteboard_type);
+    let utf8_length = native_text
+        .as_ref()
+        .map(|text| text.lengthOfBytesUsingEncoding(objc2_foundation::NSUTF8StringEncoding));
+    if let (Some(text), Some(byte_length)) = (native_text.as_ref(), utf8_length) {
+        // Providers may publish an NSString alias without NSData. Check lengths first,
+        // then compare whole UTF-8 buffers with one Objective-C conversion per NSString.
+        // Never issue characterAtIndex calls per character on a large paste.
+        let alias = if admitted.iter().any(|item| item.text.len() == byte_length) {
+            let pointer = text.UTF8String();
+            !pointer.is_null() && {
+                // SAFETY: NSString retains the native UTF-8 buffer for this comparison;
+                // lengthOfBytesUsingEncoding excludes the trailing NUL, including interior NULs.
+                let bytes =
+                    unsafe { std::slice::from_raw_parts(pointer.cast::<u8>(), byte_length) };
+                admitted.iter().any(|item| item.text.as_bytes() == bytes)
+            }
+        } else {
+            false
+        };
+        if alias {
+            return None;
         }
-        return None;
     }
-    if let Some(text) = pasteboard.stringForType(pasteboard_type) {
+    let utf16 = kind.contains("utf16")
+        || data.as_ref().is_some_and(|data| {
+            // SAFETY: immutable retained NSData; inspect only a bounded encoding prefix.
+            let bytes = unsafe { data.as_bytes_unchecked() };
+            looks_like_utf16_bytes(&bytes[..bytes.len().min(8192)])
+        });
+    let reservation = if utf16 {
+        let decoded_length = utf8_length.unwrap_or_else(|| {
+            data.as_ref().map_or(0, |data| {
+                // SAFETY: immutable retained NSData, measured without an owned text allocation.
+                clipboard_limits::utf16_utf8_byte_length(unsafe { data.as_bytes_unchecked() })
+            })
+        });
+        budget.reserve_utf16_allocation(&kind, data_length, decoded_length)
+    } else {
+        budget.reserve(&kind, data_length).map(|()| data_length)
+    };
+    let reserved = match reservation {
+        Ok(reserved) => reserved,
+        Err(_) => {
+            if let Some(data) = &data {
+                // SAFETY: immutable retained NSData used only for a bounded preview.
+                budget.mark_chemistry(&kind, unsafe { data.as_bytes_unchecked() });
+            }
+            return None;
+        }
+    };
+    if let Some(text) = native_text {
         let byte_length = text.lengthOfBytesUsingEncoding(objc2_foundation::NSUTF8StringEncoding);
         if byte_length > 0 {
-            // Providers can publish an NSString alias without NSData. Compare UTF-16 units
-            // in place rather than allocating another native copy of an admitted String.
-            if admitted.iter().any(|item| {
-                item.text.len() == byte_length
-                    && item
-                        .text
-                        .encode_utf16()
-                        .eq((0..text.length()).map(|index| text.characterAtIndex(index)))
-            }) {
-                budget.release(data_length);
-                return None;
-            }
             // Replace the native-size reservation before allocating the final UTF-8 String.
-            budget.release(data_length);
+            budget.release(reserved);
             if budget.reserve(&kind, byte_length).is_err() {
                 if let Some(data) = &data {
                     // SAFETY: immutable retained NSData used only for a bounded preview.
@@ -5758,7 +5790,7 @@ fn clipboard_text_for_type(
     let text = data
         .as_ref()
         .and_then(|data| decode_clipboard_text_bytes(unsafe { data.as_bytes_unchecked() }));
-    budget.release(data_length);
+    budget.release(reserved);
     let text = text?;
     if budget.reserve(&kind, text.len()).is_err() {
         budget.mark_chemistry(&kind, text.as_bytes());
@@ -8915,6 +8947,15 @@ fn find_menu_item_by_id<R: Runtime>(
 mod tests {
 
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_utf16_and_utf8_text_share_the_decoded_cap() {
+        clipboard_limits::assert_text_encoding_size_admission(
+            "public.utf16-plain-text",
+            "public.utf8-plain-text",
+        );
+    }
 
     #[test]
     fn insert_menu_is_shared_by_both_platforms_and_follows_edit() {

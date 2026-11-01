@@ -234,9 +234,11 @@ describe("canvas content uses the bounded report snapshot", () => {
     expect(getter).not.toHaveBeenCalled();
     const sections: [] = [];
     const iterate = vi.fn(function* () { while (true) yield { kind: "text", body: "unbounded" }; });
-    Object.defineProperty(sections, Symbol.iterator, { get: getter.mockReturnValue(iterate) });
+    const iteratorGetter = vi.fn(() => iterate);
+    Object.defineProperty(sections, Symbol.iterator, { get: iteratorGetter });
     await expect(api.setContent({ overlayId, sections } as unknown as Parameters<typeof api.setContent>[0])).rejects.toThrow(/symbol keys/);
     expect(getter).not.toHaveBeenCalled();
+    expect(iteratorGetter).not.toHaveBeenCalled();
     expect(iterate).not.toHaveBeenCalled();
     expect(setContent).not.toHaveBeenCalled();
   });
@@ -254,10 +256,24 @@ describe("canvas content uses the bounded report snapshot", () => {
     }
   });
 
+  it("forwards a detached 1,900-level payload and refuses a 4,002-character payload", async () => {
+    const { overlayId, setContent, api } = setup();
+    const content = (depth: number) => ({ overlayId, sections: [{ kind: "actions" as const, id: "send-actions", buttons: [
+      { id: "send", label: "Send", commandId, payload: JSON.parse("[".repeat(depth) + "]".repeat(depth)) }
+    ] }] });
+    const request = content(1_900);
+    await api.setContent(request);
+    const received = setContent.mock.calls[0]![2][0].buttons[0].payload;
+    expect(received).not.toBe(request.sections[0]!.buttons[0]!.payload);
+    expect(JSON.stringify(received)).toBe(JSON.stringify(request.sections[0]!.buttons[0]!.payload));
+    await expect(api.setContent(content(2_001))).rejects.toThrow("Panel payload must be JSON-serialisable, at most 4000 characters");
+    expect(setContent).toHaveBeenCalledTimes(1);
+  });
+
   it("bounds malformed depth before schema parsing and never forwards it", async () => {
     const { overlayId, setContent, api } = setup();
     let payload: PluginPanelPayload = {};
-    for (let n = 0; n < PluginPanelReportLimits.depth + 1; n++) payload = { nested: payload };
+    for (let n = 0; n < PluginPanelReportLimits.payloadDepth + 1; n++) payload = { nested: payload };
     await expect(api.setContent({ overlayId, sections: [{ kind: "actions", id: "send-actions", buttons: [
       { id: "send", label: "Send", commandId, payload }
     ] }] })).rejects.toThrow(/depth/);

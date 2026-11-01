@@ -224,6 +224,30 @@ describe("clipboard byte limits", () => {
   const mb = 1024 * 1024;
   const message = "Couldn't paste: clipboard flavor \"text/plain\" is too large (400.0 MB; the limit is 256 MB).";
 
+  it.each(["text/plain", "public.utf16-plain-text", "public.utf8-plain-text"])(
+    "applies the decoded UTF-8 cap to ASCII from %s without large allocations", type => {
+      // Native UTF-16 is 400/600 MiB; the adapter receives decoded 200/300 MiB text.
+      // A length-only probe exercises admission without constructing either representation.
+      for (const size of [200, 300]) {
+        const item = { type, text: { length: size * mb } as unknown as string };
+        const guarded = guardClipboardPayload({ types: [type], textItems: [item] });
+        if (size === 200) {
+          expect(guarded.textItems).toEqual([item]);
+          expect(guarded.skippedItems).toEqual([]);
+        } else {
+          expect(guarded.textItems).toEqual([]);
+          expect(guarded.skippedItems).toMatchObject([
+            { byteLength: 300 * mb, limitBytes: MAX_CLIPBOARD_TEXT_BYTES, reason: "flavor" }
+          ]);
+          expect(inspectClipboardPayload({ types: [type], textItems: [item] })).toMatchObject({
+            kind: "size-refused",
+            message: 'Couldn\'t paste: clipboard flavor "text/plain" is too large (300.0 MB; the limit is 256 MB).'
+          });
+        }
+      }
+    }
+  );
+
   it.each(["text/rtf", "NeXT TIFF v4.0 pasteboard type", "Apple PNG pasteboard type"])("keeps a 24 MB PNG beside a 50 MB sibling: %s", type => {
     const header = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/aWQAAAAASUVORK5CYII=", "base64");
     const bytes = Buffer.alloc(24 * mb); header.copy(bytes);

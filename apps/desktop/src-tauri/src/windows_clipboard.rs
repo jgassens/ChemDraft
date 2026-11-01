@@ -474,37 +474,6 @@ pub(crate) mod native {
         (length > 0).then(|| String::from_utf16_lossy(&buffer[..length as usize]))
     }
 
-    /// Copy of a clipboard handle's bytes (the clipboard still owns the handle).
-    fn format_bytes(id: u32, source: &str, budget: &mut ClipboardReadBudget) -> Option<Vec<u8>> {
-        // SAFETY: the clipboard is open; the handle stays owned by it and is only read while locked.
-        unsafe {
-            let handle = GetClipboardData(id);
-            if handle.is_null() {
-                return None;
-            }
-            let size = GlobalSize(handle as HGLOBAL);
-            if budget.reserve(source, size).is_err() {
-                let pointer = GlobalLock(handle as HGLOBAL) as *const u8;
-                if !pointer.is_null() {
-                    budget.mark_chemistry(
-                        source,
-                        std::slice::from_raw_parts(pointer, size.min(8192)),
-                    );
-                    GlobalUnlock(handle as HGLOBAL);
-                }
-                return None;
-            }
-            let pointer = GlobalLock(handle as HGLOBAL) as *const u8;
-            if pointer.is_null() {
-                budget.release(size);
-                return None;
-            }
-            let bytes = std::slice::from_raw_parts(pointer, size).to_vec();
-            GlobalUnlock(handle as HGLOBAL);
-            Some(bytes)
-        }
-    }
-
     fn is_text_alias(id: u32, admitted: &[ClipboardTextItem]) -> bool {
         // SAFETY: caller holds the clipboard open; no pointer survives GlobalUnlock.
         unsafe {
@@ -532,12 +501,60 @@ pub(crate) mod native {
         budget: &mut ClipboardReadBudget,
         decode: impl FnOnce(&[u8]) -> Option<String>,
     ) -> Option<String> {
-        let bytes = format_bytes(id, source, budget)?;
-        let text = decode(&bytes);
-        // The caller reserves the retained UTF-8 size after this allocation is dropped.
-        // Failed decoding and duplicate representations release the whole reservation too.
-        budget.release(bytes.len());
-        text
+        // Decode directly from the locked OS-owned buffer. There is no ChemDraft Vec
+        // alive alongside the decoded String, so the native and decoded reservations
+        // describe successive owned allocations rather than an unaccounted peak.
+        // SAFETY: read_payload holds the clipboard open. No borrowed bytes escape the lock.
+        unsafe {
+            let handle = GetClipboardData(id);
+            if handle.is_null() {
+                return None;
+            }
+            let size = GlobalSize(handle as HGLOBAL);
+            let pointer = GlobalLock(handle as HGLOBAL) as *const u8;
+            if pointer.is_null() {
+                return None;
+            }
+            let bytes = std::slice::from_raw_parts(pointer, size);
+            let reservation = if id == CF_UNICODETEXT {
+                budget.reserve_utf16_allocation(source, size, unicode_text_utf8_length(bytes))
+            } else if source != "chemical/x-mdl-molfile"
+                && (source.contains("utf16")
+                    || crate::looks_like_utf16_bytes(&bytes[..bytes.len().min(8192)]))
+            {
+                budget.reserve_utf16_allocation(
+                    source,
+                    size,
+                    crate::clipboard_limits::utf16_utf8_byte_length(bytes),
+                )
+            } else {
+                budget.reserve(source, size).map(|()| size)
+            };
+            let text = match reservation {
+                Ok(reserved) => {
+                    let text = decode(bytes);
+                    budget.release(reserved);
+                    text
+                }
+                Err(_) => {
+                    budget.mark_chemistry(source, bytes);
+                    None
+                }
+            };
+            GlobalUnlock(handle as HGLOBAL);
+            // The caller checks and reserves the retained UTF-8 size.
+            text
+        }
+    }
+
+    fn unicode_text_utf8_length(bytes: &[u8]) -> usize {
+        let units = bytes
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .take_while(|unit| *unit != 0);
+        char::decode_utf16(units)
+            .map(|character| character.unwrap_or(char::REPLACEMENT_CHARACTER).len_utf8())
+            .sum()
     }
 
     fn unicode_text(bytes: &[u8]) -> Option<String> {
@@ -931,6 +948,23 @@ pub(crate) mod native {
     mod tests {
         use super::*;
         use crate::clipboard_formats::{native_test_data as fixture, validate_clipboard_items};
+
+        #[test]
+        fn windows_utf16_and_utf8_text_share_the_decoded_cap() {
+            crate::clipboard_limits::assert_text_encoding_size_admission(
+                "text/plain",
+                "text/plain",
+            );
+            for text in ["ASCII", "μ界😀"] {
+                let bytes: Vec<u8> = text
+                    .encode_utf16()
+                    .chain([0])
+                    .flat_map(u16::to_le_bytes)
+                    .collect();
+                assert_eq!(unicode_text_utf8_length(&bytes), text.len());
+                assert_eq!(unicode_text(&bytes).as_deref(), Some(text));
+            }
+        }
 
         #[test]
         fn windows_preparation_refuses_markerless_html_before_opening_or_clearing() {

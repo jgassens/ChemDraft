@@ -7,6 +7,32 @@ use crate::clipboard_images::{is_image_clipboard_type, MAX_CLIPBOARD_IMAGE_BYTES
 // Ten times a full 64 MiB copy plus native representations and Office siblings.
 pub(crate) const MAX_CLIPBOARD_BYTES: usize = 1024 * 1024 * 1024;
 pub(crate) const MAX_CLIPBOARD_TEXT_BYTES: usize = 256 * 1024 * 1024;
+// Each Unicode scalar needs at most twice as many UTF-16 bytes as UTF-8 bytes
+// (ASCII is the worst case). Allow one 2-byte BOM and one 2-byte NUL terminator.
+pub(crate) const MAX_CLIPBOARD_UTF16_BYTES: usize = 2 * MAX_CLIPBOARD_TEXT_BYTES + 4;
+
+/// Measure borrowed UTF-16 without a Vec or String, matching the Windows lossy decoder.
+/// BOM and NUL terminator are representation overhead, not decoded UTF-8 text.
+pub(crate) fn utf16_utf8_byte_length(bytes: &[u8]) -> usize {
+    let (content, big_endian) = if let Some(content) = bytes.strip_prefix(&[0xfe, 0xff]) {
+        (content, true)
+    } else {
+        (bytes.strip_prefix(&[0xff, 0xfe]).unwrap_or(bytes), false)
+    };
+    let units = content
+        .chunks_exact(2)
+        .map(|pair| {
+            if big_endian {
+                u16::from_be_bytes([pair[0], pair[1]])
+            } else {
+                u16::from_le_bytes([pair[0], pair[1]])
+            }
+        })
+        .take_while(|unit| *unit != 0);
+    char::decode_utf16(units)
+        .map(|character| character.unwrap_or(char::REPLACEMENT_CHARACTER).len_utf8())
+        .sum()
+}
 
 // Exact integer rounding, shared with TypeScript: tenths of a MiB, ties rounded up.
 fn clipboard_megabytes(byte_length: usize) -> String {
@@ -74,6 +100,26 @@ pub(crate) struct ClipboardReadBudget {
 }
 
 impl ClipboardReadBudget {
+    /// Native UTF-16 and retained UTF-8 have different ceilings. Measure without copying;
+    /// reserve the larger representation before decoding, then release it after conversion.
+    pub(crate) fn reserve_utf16_allocation(
+        &mut self,
+        source: &str,
+        native_bytes: usize,
+        utf8_bytes: usize,
+    ) -> Result<usize, String> {
+        // The native preflight must never report UTF-16 bytes as decoded text size.
+        // Check the decoded cap first, including when native_bytes exceeds its bound.
+        self.check_flavor(source, utf8_bytes, MAX_CLIPBOARD_TEXT_BYTES)?;
+        // Also reject excessive allocation padding, preserving skip metadata so a
+        // refused chemistry source cannot fall back to a picture or prose.
+        self.check_flavor(source, native_bytes, MAX_CLIPBOARD_UTF16_BYTES)?;
+        let reservation = native_bytes.max(utf8_bytes);
+        self.check_total(source, reservation)?;
+        self.copied_bytes += reservation;
+        Ok(reservation)
+    }
+
     /// Reserve before copying. Rejected flavors consume no budget, allowing smaller alternatives.
     /// Only retained, successfully decoded flavors consume the shared budget.
     pub(crate) fn reserve(&mut self, source: &str, byte_length: usize) -> Result<(), String> {
@@ -144,6 +190,16 @@ impl ClipboardReadBudget {
         } else {
             MAX_CLIPBOARD_TEXT_BYTES
         };
+        self.check_flavor(source, byte_length, flavor_limit)?;
+        self.check_total(source, byte_length)
+    }
+
+    fn check_flavor(
+        &mut self,
+        source: &str,
+        byte_length: usize,
+        flavor_limit: usize,
+    ) -> Result<(), String> {
         if byte_length > flavor_limit {
             let skipped = SkippedClipboardItem {
                 r#type: source.to_string(),
@@ -157,7 +213,7 @@ impl ClipboardReadBudget {
             self.skipped_items.push(skipped);
             return Err(message);
         }
-        self.check_total(source, byte_length)
+        Ok(())
     }
 
     fn check_total(&mut self, source: &str, byte_length: usize) -> Result<(), String> {
@@ -308,6 +364,34 @@ pub(crate) fn is_admitted_text_alias(bytes: &[u8], admitted: &[crate::ClipboardT
     }
 }
 
+/// Size-only probes shared by the macOS and Windows reader tests; no large buffers.
+#[cfg(test)]
+pub(crate) fn assert_text_encoding_size_admission(utf16_source: &str, utf8_source: &str) {
+    let mib = 1024 * 1024;
+    for (source, utf16) in [(utf16_source, true), (utf8_source, false)] {
+        for size in [200 * mib, 300 * mib] {
+            let mut budget = ClipboardReadBudget::default();
+            let admission = if utf16 {
+                budget.reserve_utf16_allocation(source, 2 * size + 2, size)
+            } else {
+                budget.reserve(source, size).map(|()| size)
+            };
+            if size == 200 * mib {
+                let reserved = admission.unwrap();
+                assert_eq!(budget.copied_bytes, if utf16 { 2 * size + 2 } else { size });
+                budget.release(reserved);
+                budget.reserve(source, size).unwrap();
+                assert_eq!(budget.copied_bytes, size);
+            } else {
+                assert_eq!(admission.unwrap_err(),
+                    "Couldn't paste: clipboard flavor \"text/plain\" is too large (300.0 MB; the limit is 256 MB).");
+                assert_eq!(budget.skipped_items[0].byte_length, size);
+                assert_eq!(budget.copied_bytes, 0);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,6 +402,71 @@ mod tests {
             let chunk = bytes.min(MAX_CLIPBOARD_TEXT_BYTES);
             budget.reserve("sibling", chunk).unwrap();
             bytes -= chunk;
+        }
+    }
+
+    #[test]
+    fn text_cap_is_decoded_utf8_on_both_platforms_without_large_allocations() {
+        assert_text_encoding_size_admission("text/plain", "text/plain");
+        assert_text_encoding_size_admission("public.utf16-plain-text", "public.utf8-plain-text");
+    }
+
+    #[test]
+    fn utf16_reserves_native_size_before_copy_and_the_larger_decoded_size() {
+        let mut budget = ClipboardReadBudget::default();
+        fill_budget(&mut budget, MAX_CLIPBOARD_BYTES - 300 * 1024 * 1024);
+        assert!(budget
+            .reserve_utf16_allocation("text/plain", 400 * 1024 * 1024, 200 * 1024 * 1024)
+            .is_err());
+        assert!(matches!(
+            budget.skipped_items[0].reason,
+            ClipboardSkipReason::Total
+        ));
+        assert_eq!(
+            budget.skipped_items[0].total_byte_length,
+            Some(MAX_CLIPBOARD_BYTES + 100 * 1024 * 1024)
+        );
+        let mut budget = ClipboardReadBudget::default();
+        assert_eq!(
+            budget
+                .reserve_utf16_allocation("text/plain", 200, 300)
+                .unwrap(),
+            300
+        );
+        assert_eq!(budget.copied_bytes, 300);
+        assert_eq!(
+            budget
+                .reserve_utf16_allocation(
+                    "text/plain",
+                    MAX_CLIPBOARD_UTF16_BYTES,
+                    MAX_CLIPBOARD_TEXT_BYTES
+                )
+                .unwrap(),
+            MAX_CLIPBOARD_UTF16_BYTES
+        );
+        assert!(budget
+            .reserve_utf16_allocation("text/plain", MAX_CLIPBOARD_UTF16_BYTES + 1, 1)
+            .is_err());
+    }
+
+    #[test]
+    fn borrowed_utf16_measurement_handles_boms_unicode_and_terminators() {
+        for text in ["ASCII", "μ界😀"] {
+            for big_endian in [false, true] {
+                let mut bytes = if big_endian {
+                    vec![0xfe, 0xff]
+                } else {
+                    vec![0xff, 0xfe]
+                };
+                bytes.extend(text.encode_utf16().chain([0]).flat_map(|unit| {
+                    if big_endian {
+                        unit.to_be_bytes()
+                    } else {
+                        unit.to_le_bytes()
+                    }
+                }));
+                assert_eq!(utf16_utf8_byte_length(&bytes), text.len());
+            }
         }
     }
 

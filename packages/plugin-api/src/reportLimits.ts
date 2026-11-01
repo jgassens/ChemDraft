@@ -26,6 +26,8 @@ export const PluginPanelReportLimits = {
   serializedBytes: 128 * 1024 * 1024,
   // Also bound malformed JSON before Zod can copy it or recurse into it.
   depth: 128,
+  // A 4,000-character JSON payload can nest 2,000 empty arrays.
+  payloadDepth: 2_048,
   objectFields: 1_024,
   nodes: 2_000_000
 } as const;
@@ -63,9 +65,12 @@ export function snapshotPanelReport(
     totals.set(label, sum);
     cap(sum, limit, `report total ${label}`, path);
   };
-  const visit = (value: unknown, path: Path, kind = "report"): unknown => {
+  type Visit = { value: unknown; path: Path; kind: string };
+  function* visit({ value, path, kind }: Visit): Generator<Visit, unknown, unknown> {
     cap(++nodes, limits.nodes, "report nodes", path);
-    cap(path.length, limits.depth, "report depth", path);
+    const payloadIndex = path.indexOf("payload");
+    cap(payloadIndex < 0 ? path.length : payloadIndex, limits.depth, "report depth", path);
+    if (payloadIndex >= 0) cap(path.length - payloadIndex - 1, limits.payloadDepth, "report payload depth", path);
     // Control payload keys are plugin-defined JSON, not report schema field names.
     const key = path.includes("payload") ? undefined : path.at(-1);
     const label = kind === "table" && typeof key === "number" && path.at(-2) === "rows"
@@ -140,7 +145,7 @@ export function snapshotPanelReport(
           const descriptor = Object.getOwnPropertyDescriptor(value, field);
           if (!descriptor || !("value" in descriptor)) return fail([...path, i], `${label} must not contain accessors`);
           if (!descriptor.enumerable) fail([...path, i], `${label} must be enumerable JSON data`);
-          copy[i] = visit(descriptor.value, [...path, i], kind);
+          copy[i] = yield { value: descriptor.value, path: [...path, i], kind };
         }
         if (fields.length !== length + 1) fail(path, `${label} must not contain holes`);
         ancestors.delete(value);
@@ -166,7 +171,7 @@ export function snapshotPanelReport(
           if (descriptor.value === undefined && !path.includes("payload")) continue;
           charge(encoder.encode(JSON.stringify(field)).byteLength + 1 + (emitted++ > 0 ? 1 : 0), path);
           // Define rather than assign so an untrusted __proto__ key cannot change the copy's prototype.
-          Object.defineProperty(copy, field, { value: visit(descriptor.value, [...path, field], kind),
+          Object.defineProperty(copy, field, { value: yield { value: descriptor.value, path: [...path, field], kind },
             enumerable: true, configurable: true, writable: true });
         }
         ancestors.delete(value);
@@ -175,7 +180,18 @@ export function snapshotPanelReport(
     }
     return value;
   };
-  try { return { ok: true, data: visit(raw, []) }; } catch (error) {
+  // Resume parents after their child completes without JS call-stack recursion. Preserve
+  // ancestor tracking, descriptor reads and first-failure ordering across each suspension.
+  try {
+    const stack = [visit({ value: raw, path: [], kind: "report" })];
+    let data: unknown;
+    while (stack.length) {
+      const step = stack[stack.length - 1]!.next(data);
+      if (step.done) { data = step.value; stack.pop(); }
+      else { stack.push(visit(step.value)); data = undefined; }
+    }
+    return { ok: true, data };
+  } catch (error) {
     if (error instanceof ReportLimitError) return { ok: false, issue: { path: error.path, message: error.message } };
     throw error;
   }

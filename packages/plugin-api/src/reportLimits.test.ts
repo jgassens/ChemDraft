@@ -103,6 +103,23 @@ describe("bounded panel reports (API 0.1.18)", () => {
     expect(PluginPanelReportSchema.parse(raw)).toEqual(raw);
   });
 
+  it("accepts deeply nested action payloads within 4,000 characters", () => {
+    for (const depth of [1_900, 2_000, 2_001]) {
+      const payload = JSON.parse("[".repeat(depth) + "]".repeat(depth));
+      const raw = report({ kind: "actions", id: "actions", buttons: [
+        { id: "run", label: "Run", commandId: "plugin.test.run", payload }
+      ] });
+      if (depth <= 2_000) {
+        const parsed = PluginPanelReportSchema.parse(raw);
+        const section = parsed.sections[0]!;
+        expect(JSON.stringify(section.kind === "actions" && section.buttons[0]!.payload)).toBe(JSON.stringify(payload));
+      } else rejected(raw, "Panel payload must be JSON-serialisable, at most 4000 characters");
+    }
+    rejected(report({ kind: "actions", id: "actions", buttons: [
+      { id: "run", label: "Run", commandId: "plugin.test.run", payload: "x".repeat(4_000) }
+    ] }), "Panel payload must be JSON-serialisable, at most 4000 characters");
+  });
+
   it("preserves a 300-field action payload within the 4,000-character cap", () => {
     const payload = Object.fromEntries(Array.from({ length: 300 }, (_, i) => [`k${i}`, i]));
     expect(JSON.stringify(payload).length).toBeLessThan(4_000);
