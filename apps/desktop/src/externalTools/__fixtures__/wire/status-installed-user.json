@@ -1,0 +1,20 @@
+{
+  "authMethod": "subscription",
+  "canInstall": true,
+  "consented": true,
+  "freeDiskBytes": 8000000000,
+  "managed": {
+    "path": "C:\\ChemDraft\\external-tools\\codex.exe",
+    "version": "0.163.0"
+  },
+  "path": "/usr/local/bin/codex",
+  "pinnedDownloadBytes": 167080091,
+  "pinnedVersion": "0.163.0",
+  "probedAt": "2026-10-22T12:00:00Z",
+  "publisher": "OpenAI",
+  "signedIn": false,
+  "source": "user",
+  "state": "installed",
+  "tool": "codex",
+  "version": "0.163.0"
+}

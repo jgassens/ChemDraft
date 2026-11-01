@@ -24,6 +24,13 @@ struct DialogKindSpec {
 }
 fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
     match kind {
+        "structureTemplates" => Ok(DialogKindSpec {
+            maximizable: false,
+            resizable: true,
+            title: "Templates",
+            size: (620.0, 700.0),
+            min_size: (420.0, 360.0),
+        }),
         "pageSize" => Ok(DialogKindSpec {
             maximizable: false,
             resizable: false,
@@ -52,11 +59,18 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             size: (520.0, 480.0),
             min_size: (420.0, 380.0),
         }),
+        "toolInstall" => Ok(DialogKindSpec {
+            maximizable: false,
+            resizable: true,
+            title: "Tool installation",
+            size: (520.0, 460.0),
+            min_size: (420.0, 380.0),
+        }),
         _ => Err("Unknown dialog kind".into()),
     }
 }
 fn native_window_title(kind: &str, spec_title: &str, snapshot_title: &str) -> String {
-    if kind == "engineInstall" {
+    if kind == "engineInstall" || kind == "toolInstall" {
         snapshot_title.to_string()
     } else {
         format!("{spec_title} — {snapshot_title}")
@@ -101,6 +115,28 @@ struct SpacingSnapshot {
     title: String,
     min_percent: u32,
     max_percent: u32,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StructureTemplatesSnapshot {
+    title: String,
+    template_ids: Vec<String>,
+}
+fn template_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 80
+        && id
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+}
+#[derive(Deserialize)]
+#[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
+enum StructureTemplatesAction {
+    Insert {
+        #[serde(rename = "templateId")]
+        template_id: String,
+    },
+    Cancel,
 }
 #[derive(Deserialize)]
 #[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
@@ -216,6 +252,112 @@ impl EngineInstallSnapshot {
 #[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
 enum EngineInstallAction {
     Install {},
+    CancelInstall {},
+    Close {},
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ToolInstallSnapshot {
+    title: String,
+    tool_name: String,
+    publisher: String,
+    version: String,
+    download_host: String,
+    download_bytes: u64,
+    plugin_name: String,
+    plugin_id: String,
+    disclosure: String,
+    required_disk_bytes: u64,
+    free_disk_bytes: Option<u64>,
+    state: ToolInstallState,
+    buttons: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_present_intent")]
+    intent: Option<String>,
+}
+// Omission is allowed, but a present intent must be a string, never null.
+fn deserialize_present_intent<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    String::deserialize(deserializer).map(Some)
+}
+#[derive(Deserialize)]
+#[serde(tag = "status", rename_all = "camelCase", deny_unknown_fields)]
+enum ToolInstallState {
+    NotInstalled {},
+    Consent {},
+    Installed {},
+    Installing {
+        phase: String,
+        #[serde(rename = "bytesDone")]
+        bytes_done: Option<u64>,
+        #[serde(rename = "bytesTotal")]
+        bytes_total: Option<u64>,
+    },
+    Failed {
+        message: String,
+    },
+    Broken {
+        detail: String,
+    },
+}
+impl ToolInstallSnapshot {
+    fn valid(&self) -> bool {
+        let fields = [
+            (&self.title, 256),
+            (&self.tool_name, 80),
+            (&self.publisher, 80),
+            (&self.version, 40),
+            (&self.download_host, 128),
+            (&self.plugin_name, 128),
+            (&self.plugin_id, 256),
+            (&self.disclosure, 1024),
+        ];
+        if fields
+            .iter()
+            .any(|(s, max)| s.is_empty() || !bounded_text(s, *max))
+            || self.download_bytes > MAX_SAFE_INTEGER
+            || self.required_disk_bytes > MAX_SAFE_INTEGER
+            || self.free_disk_bytes.is_some_and(|n| n > MAX_SAFE_INTEGER)
+            || self
+                .intent
+                .as_deref()
+                .is_some_and(|intent| !matches!(intent, "download" | "update" | "use"))
+        {
+            return false;
+        }
+        let valid_state = match &self.state {
+            ToolInstallState::NotInstalled {}
+            | ToolInstallState::Consent {}
+            | ToolInstallState::Installed {} => true,
+            ToolInstallState::Failed { message } => bounded_text(message, 1024),
+            ToolInstallState::Broken { detail } => bounded_text(detail, 1024),
+            ToolInstallState::Installing {
+                phase,
+                bytes_done,
+                bytes_total,
+            } => {
+                bounded_text(phase, 128)
+                    && bytes_done.is_none_or(|n| n <= MAX_SAFE_INTEGER)
+                    && bytes_total.is_none_or(|n| n <= MAX_SAFE_INTEGER)
+            }
+        };
+        let buttons: &[&str] = match self.state {
+            ToolInstallState::NotInstalled {}
+            | ToolInstallState::Failed { .. }
+            | ToolInstallState::Broken { .. } => &["install", "close"],
+            ToolInstallState::Consent {} => &["allow", "close"],
+            ToolInstallState::Installing { .. } => &["cancelInstall", "close"],
+            ToolInstallState::Installed {} => &["close"],
+        };
+        valid_state && self.buttons == buttons
+    }
+}
+#[derive(Deserialize)]
+#[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
+enum ToolInstallAction {
+    Install {},
+    Allow {},
     CancelInstall {},
     Close {},
 }
@@ -513,20 +655,61 @@ impl Message {
             || !token(&self.request_id)
             || self.snapshot_revision == 0
             || self.snapshot_revision > 9_007_199_254_740_991
-            || (self.dialog_kind == "engineInstall"
+            || ((self.dialog_kind == "engineInstall" || self.dialog_kind == "toolInstall")
                 && serde_json::to_vec(self).map_err(|e| e.to_string())?.len() > 3400)
         {
             return Err("Invalid dialog envelope or payload limit exceeded".into());
         }
         let valid = match self.message_type.as_str() {
+            "snapshot" if self.dialog_kind == "structureTemplates" => {
+                serde_json::from_value::<StructureTemplatesSnapshot>(self.data.clone()).is_ok_and(
+                    |s| {
+                        valid_title(&s.title)
+                            && !s.title.contains('\0')
+                            && !s.template_ids.is_empty()
+                            && s.template_ids.len() <= 64
+                            && s.template_ids.iter().all(|id| template_id(id))
+                            && s.template_ids
+                                .iter()
+                                .collect::<std::collections::HashSet<_>>()
+                                .len()
+                                == s.template_ids.len()
+                    },
+                )
+            }
+            "action" if self.dialog_kind == "structureTemplates" => serde_json::from_value::<
+                StructureTemplatesAction,
+            >(self.data.clone())
+            .is_ok_and(|action| match action {
+                StructureTemplatesAction::Cancel => true,
+                StructureTemplatesAction::Insert { template_id: id } => template_id(&id),
+            }),
+            "result" if self.dialog_kind == "structureTemplates" => {
+                serde_json::from_value::<Receipt>(self.data.clone()).is_ok_and(|r| {
+                    matches!(
+                        r.status.as_str(),
+                        "accepted" | "inserted" | "cancelled" | "error"
+                    ) && optional_string_fields(&self.data, &["error"])
+                        && r.error.is_none_or(|s| s.encode_utf16().count() <= 2048)
+                })
+            }
             "snapshot" if self.dialog_kind == "engineInstall" => {
                 serde_json::from_value::<EngineInstallSnapshot>(self.data.clone())
+                    .is_ok_and(|s| s.valid())
+            }
+            "snapshot" if self.dialog_kind == "toolInstall" => {
+                serde_json::from_value::<ToolInstallSnapshot>(self.data.clone())
                     .is_ok_and(|s| s.valid())
             }
             "action" if self.dialog_kind == "engineInstall" => {
                 serde_json::from_value::<EngineInstallAction>(self.data.clone()).is_ok()
             }
-            "result" if self.dialog_kind == "engineInstall" => {
+            "action" if self.dialog_kind == "toolInstall" => {
+                serde_json::from_value::<ToolInstallAction>(self.data.clone()).is_ok()
+            }
+            "result"
+                if self.dialog_kind == "engineInstall" || self.dialog_kind == "toolInstall" =>
+            {
                 serde_json::from_value::<Receipt>(self.data.clone()).is_ok_and(|r| {
                     matches!(r.status.as_str(), "accepted" | "cancelled" | "error")
                         && optional_string_fields(&self.data, &["error"])
@@ -801,6 +984,14 @@ fn send_host(session: &Session, message: &Message) -> Result<(), String> {
 }
 /// Reserve before forwarding: request-ID dedup alone cannot prevent two distinct Apply requests.
 fn reserve_action(session: &mut Session, message: &Message) -> Result<bool, String> {
+    if message.dialog_kind == "structureTemplates"
+        && message.data["action"] == "insert"
+        && !session.snapshot.data["templateIds"]
+            .as_array()
+            .is_some_and(|ids| ids.contains(&message.data["templateId"]))
+    {
+        return Err("Unknown structure template in this dialog".into());
+    }
     if message.dialog_kind == "arrangementSpacing" && message.data["action"] == "preview" {
         return if session.terminal_request.is_none() {
             Ok(true)
@@ -827,7 +1018,7 @@ fn reserve_action(session: &mut Session, message: &Message) -> Result<bool, Stri
             .insert(message.request_id.clone(), message.clone());
         return Ok(true);
     }
-    if message.dialog_kind == "engineInstall" {
+    if message.dialog_kind == "engineInstall" || message.dialog_kind == "toolInstall" {
         let action = message.data["action"].as_str().unwrap_or_default();
         if !session.snapshot.data["buttons"]
             .as_array()
@@ -853,6 +1044,21 @@ fn reserve_action(session: &mut Session, message: &Message) -> Result<bool, Stri
         .insert(message.request_id.clone(), message.clone());
     Ok(true)
 }
+
+fn update_snapshot(session: &mut Session, message: &Message) {
+    // A failed tool install offers Retry in the same window. Its previous Install
+    // reservation must end before a new request ID can be accepted.
+    if message.dialog_kind == "toolInstall"
+        && matches!(
+            message.data["state"]["status"].as_str(),
+            Some("failed" | "broken")
+        )
+    {
+        session.terminal_request = None;
+    }
+    session.snapshot = message.clone();
+}
+
 fn register(
     registry: &mut Registry,
     message: Message,
@@ -935,6 +1141,8 @@ pub(crate) async fn dialog_open(
         session.owner_channel = Some(channel);
         session.ready
             && (session.snapshot.dialog_kind == "engineInstall"
+                || session.snapshot.dialog_kind == "toolInstall"
+                || session.snapshot.dialog_kind == "structureTemplates"
                 || session.terminal_request.is_none()
                 || session
                     .terminal_request
@@ -977,17 +1185,21 @@ pub(crate) async fn dialog_open(
     let builder = builder.parent(&window).map_err(|e| e.to_string())?;
     #[cfg(not(windows))]
     let builder = builder;
-    if let Err(error) = builder.build() {
-        REGISTRY
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .sessions
-            .remove(&registration.host_id);
-        return Err(format!(
-            "Could not create native {} window: {error}",
-            spec.title
-        ));
-    }
+    let dialog_window = match builder.build() {
+        Ok(window) => window,
+        Err(error) => {
+            REGISTRY
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .sessions
+                .remove(&registration.host_id);
+            return Err(format!(
+                "Could not create native {} window: {error}",
+                spec.title
+            ));
+        }
+    };
+    super::disable_default_context_menus(&dialog_window);
     // Owner close/quit does not wait on the construction lock. Discard a late build whose
     // registered session was already settled, rather than leaving an orphan hidden webview.
     if !REGISTRY
@@ -1143,7 +1355,7 @@ pub(crate) fn dialog_publish(
         }
         if matches!(
             message.data["status"].as_str(),
-            Some("error" | "picked" | "cancelled")
+            Some("error" | "picked" | "cancelled" | "inserted")
         ) && session.terminal_request.as_ref() == Some(&message.request_id)
         {
             session.terminal_request = None;
@@ -1152,7 +1364,7 @@ pub(crate) fn dialog_publish(
             .receipts
             .insert(message.request_id.clone(), message.clone());
     } else if message.message_type == "snapshot" {
-        session.snapshot = message.clone();
+        update_snapshot(session, &message);
     }
     send_host(session, &message)
 }
@@ -1526,12 +1738,29 @@ fn place_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), Stri
     let destination = saved
         .and_then(|s| monitors.iter().find(|m| m.id == s.monitor))
         .unwrap_or(&work);
+    let template_placement = (kind == "structureTemplates").then_some(TemplatePlacement {
+        saved,
+        owner_rect: (
+            f64::from(position.x) / destination.scale,
+            f64::from(position.y) / destination.scale,
+            f64::from(owner_size.width) / destination.scale,
+            f64::from(owner_size.height) / destination.scale,
+        ),
+    });
+    if template_placement.is_some() {
+        // The picker must also fit work areas smaller than its normal minimum. Restore a
+        // bounded minimum after measuring the destination monitor's actual decorations.
+        window
+            .set_min_size(Some(tauri::LogicalSize::new(1.0, 1.0)))
+            .map_err(|e| e.to_string())?;
+    }
     // WM_DPICHANGED runs when moving between Windows monitors. Move first, set the desired
     // client size at the destination DPI, then clamp using the measured final outer frame.
     finish_placement(
         (x, y, destination_scale),
         spec.size,
         destination,
+        template_placement,
         |x, y| {
             window
                 .set_position(tauri::PhysicalPosition::new(x as i32, y as i32))
@@ -1543,34 +1772,91 @@ fn place_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), Stri
                 .map_err(|e| e.to_string())
         },
         || {
-            window
-                .outer_size()
-                .map(|s| (s.width, s.height))
-                .map_err(|e| e.to_string())
+            let outer = window.outer_size().map_err(|e| e.to_string())?;
+            let client = window.inner_size().map_err(|e| e.to_string())?;
+            Ok(DialogFrame {
+                outer: (outer.width, outer.height),
+                client: (client.width, client.height),
+            })
         },
     )?;
+    if kind == "structureTemplates" {
+        let client = window.inner_size().map_err(|e| e.to_string())?;
+        window
+            // Keep constraints logical so Windows rescales them on later DPI changes.
+            .set_min_size(Some(tauri::LogicalSize::new(
+                (f64::from(client.width) / destination.scale).min(spec.min_size.0),
+                (f64::from(client.height) / destination.scale).min(spec.min_size.1),
+            )))
+            .map_err(|e| e.to_string())?;
+    }
     mark_transient(window.label());
     Ok(())
+}
+struct TemplatePlacement<'a> {
+    saved: Option<&'a SavedPosition>,
+    owner_rect: (f64, f64, f64, f64),
+}
+struct DialogFrame {
+    outer: (u32, u32),
+    client: (u32, u32),
+}
+// All arguments/results are physical pixels. Decoration sizes are measured after the move,
+// since Windows may replace them during WM_DPICHANGED.
+fn fitted_template_client(client: (u32, u32), frame: (u32, u32), work: &WorkArea) -> (u32, u32) {
+    let available_width = (work.width * work.scale) as u32;
+    let available_height = (work.height * work.scale) as u32;
+    (
+        client
+            .0
+            .min(available_width.saturating_sub(frame.0.saturating_sub(client.0)))
+            .max(1),
+        client
+            .1
+            .min(available_height.saturating_sub(frame.1.saturating_sub(client.1)))
+            .max(1),
+    )
 }
 fn finish_placement(
     (x, y, scale): (f64, f64, f64),
     (client_width, client_height): (f64, f64),
     work: &WorkArea,
+    template: Option<TemplatePlacement<'_>>,
     mut move_to: impl FnMut(f64, f64) -> Result<(), String>,
     mut resize: impl FnMut(u32, u32) -> Result<(), String>,
-    mut measure: impl FnMut() -> Result<(u32, u32), String>,
+    mut measure: impl FnMut() -> Result<DialogFrame, String>,
 ) -> Result<(), String> {
     move_to(x, y)?;
     resize(
         (client_width * scale) as u32,
         (client_height * scale) as u32,
     )?;
-    let (width, height) = measure()?;
+    let mut frame = measure()?;
+    if let Some(template) = template {
+        let fitted = fitted_template_client(frame.client, frame.outer, work);
+        if fitted != frame.client {
+            resize(fitted.0, fitted.1)?;
+            frame = measure()?;
+        }
+        // Re-centre using the final outer frame, rather than the initial monitor's frame.
+        // A saved position still uses the shared per-kind destination/offset policy.
+        let (x, y, _) = position_for(
+            template.saved,
+            std::slice::from_ref(work),
+            work,
+            template.owner_rect,
+            (
+                f64::from(frame.outer.0) / scale,
+                f64::from(frame.outer.1) / scale,
+            ),
+        );
+        return move_to(x, y);
+    }
     let (x, y) = work.clamp(
         x / scale,
         y / scale,
-        f64::from(width) / scale,
-        f64::from(height) / scale,
+        f64::from(frame.outer.0) / scale,
+        f64::from(frame.outer.1) / scale,
     );
     move_to(x * scale, y * scale)
 }
@@ -1806,6 +2092,51 @@ pub(crate) fn on_window_event<R: Runtime>(window: &tauri::Window<R>, event: &Win
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn structure_templates_registration_and_actions_are_bounded_on_all_platforms() {
+        let mut message = snapshot();
+        message.dialog_kind = "structureTemplates".into();
+        message.data =
+            json!({"title":"Drawing A","templateIds":["beta-cyclodextrin","pillar-5-arene"]});
+        assert!(message.validate().is_ok());
+        let spec = kind_spec("structureTemplates").unwrap();
+        assert!(spec.resizable && !spec.maximizable);
+        let mut registry = Registry::default();
+        let (registration, build) = register(&mut registry, message.clone(), false).unwrap();
+        assert!(build);
+        assert!(registration
+            .window_label
+            .starts_with("dialog-main-structureTemplates-"));
+        assert!(is_dialog_label(&registration.window_label));
+        assert!(include_str!("../capabilities/dialog-host.json")
+            .contains("dialog-main-structureTemplates-*"));
+        assert!(!register(&mut registry, message.clone(), false).unwrap().1);
+        let session = registry.sessions.get_mut(&registration.host_id).unwrap();
+        message.message_type = "action".into();
+        for data in [
+            json!({"action":"insert"}),
+            json!({"action":"insert","templateId":"../main"}),
+            json!({"action":"insert","templateId":"beta-cyclodextrin","commandId":"document.new"}),
+        ] {
+            message.data = data;
+            assert!(message.validate().is_err());
+        }
+        message.data = json!({"action":"insert","templateId":"unknown"});
+        assert!(reserve_action(session, &message).is_err());
+        message.data = json!({"action":"insert","templateId":"beta-cyclodextrin"});
+        assert!(message.validate().is_ok());
+        assert!(reserve_action(session, &message).unwrap());
+        assert!(!reserve_action(session, &message).unwrap());
+        message.request_id = "second-insert".into();
+        assert!(reserve_action(session, &message).is_err());
+        session.terminal_request = None;
+        assert!(reserve_action(session, &message).unwrap());
+        message.message_type = "snapshot".into();
+        message.data = json!({"title":"A","templateIds":["beta-cyclodextrin","beta-cyclodextrin"]});
+        assert!(message.validate().is_err());
+        message.data = json!({"title":"A","templateIds":[],"extra":true});
+        assert!(message.validate().is_err());
+    }
     fn engine_install_snapshot() -> Message {
         let mut message = snapshot();
         message.dialog_kind = "engineInstall".into();
@@ -1814,6 +2145,141 @@ mod tests {
             "requiredDiskBytes":300000000, "freeDiskBytes":1000000000,
             "state":{"status":"notInstalled"}, "buttons":["install","close"]});
         message
+    }
+    fn tool_install_snapshot() -> Message {
+        let mut message = snapshot();
+        message.dialog_kind = "toolInstall".into();
+        message.data = json!({"title":"Install Claude Code", "toolName":"Claude Code", "publisher":"Anthropic", "version":"2.0.0", "downloadHost":"downloads.example.test", "downloadBytes":125000000,
+            "pluginName":"ChemDraft Assistant", "pluginId":"org.chemdraft.assistant", "disclosure":"Use is subject to terms.", "requiredDiskBytes":500000000, "freeDiskBytes":2000000000,
+            "state":{"status":"notInstalled"}, "buttons":["install","close"]});
+        message
+    }
+    #[test]
+    fn tool_install_accepts_each_intent() {
+        for intent in ["download", "update", "use"] {
+            let mut message = tool_install_snapshot();
+            message.data["intent"] = json!(intent);
+            assert!(message.validate().is_ok(), "intent: {intent}");
+        }
+    }
+    #[test]
+    fn tool_install_accepts_absent_intent() {
+        let message = tool_install_snapshot();
+        assert!(message.data.get("intent").is_none());
+        assert!(message.validate().is_ok());
+    }
+    #[test]
+    fn tool_install_rejects_invalid_intent() {
+        for intent in [json!("unknown"), json!("Update"), json!(""), json!(42)] {
+            let mut message = tool_install_snapshot();
+            message.data["intent"] = intent.clone();
+            assert!(message.validate().is_err(), "intent: {intent}");
+        }
+    }
+    #[test]
+    fn tool_install_rejects_null_intent() {
+        let mut message = tool_install_snapshot();
+        message.data["intent"] = Value::Null;
+        assert!(message.validate().is_err());
+    }
+    #[test]
+    fn tool_install_validates_spec_buttons_labels_and_capability_matcher() {
+        let message = tool_install_snapshot();
+        assert!(message.validate().is_ok());
+        let spec = kind_spec("toolInstall").unwrap();
+        assert!(spec.resizable);
+        assert_eq!(spec.size, (520.0, 460.0));
+        assert_eq!(
+            native_window_title("toolInstall", spec.title, "Install Claude Code"),
+            "Install Claude Code"
+        );
+        let mut unknown_disk_space = message.clone();
+        unknown_disk_space.data["freeDiskBytes"] = Value::Null;
+        assert!(unknown_disk_space.validate().is_ok());
+        for action in ["install", "allow", "cancelInstall", "close"] {
+            let mut valid = message.clone();
+            valid.message_type = "action".into();
+            valid.data = json!({"action":action});
+            assert!(valid.validate().is_ok());
+        }
+        for (field, value) in [
+            ("publisher", json!("")),
+            ("version", json!("x".repeat(41))),
+            ("downloadBytes", json!(-1)),
+            ("freeDiskBytes", json!(-1)),
+            ("freeDiskBytes", json!("unknown")),
+        ] {
+            let mut invalid = message.clone();
+            invalid.data[field] = value;
+            assert!(invalid.validate().is_err());
+        }
+        let mut invalid = message.clone();
+        invalid.data["state"] = json!({"status":"consent","extra":true});
+        assert!(invalid.validate().is_err());
+        invalid = message.clone();
+        invalid.data["buttons"] = json!(["allow", "install", "close"]);
+        assert!(invalid.validate().is_err());
+        assert!(is_dialog_label("dialog-main-toolInstall-12"));
+        for label in [
+            "dialog-main-toolInstall-../main",
+            "dialog-main-toolInstall-",
+            "dialog-main-toolInstall-12-extra",
+        ] {
+            assert!(!is_dialog_label(label));
+        }
+        let capability = include_str!("../capabilities/dialog-host.json");
+        assert!(capability.contains("dialog-main-toolInstall-*"));
+    }
+    #[test]
+    fn tool_install_shared_button_contract() {
+        let rows: Vec<Value> = serde_json::from_str(include_str!(
+            "../../src/dialogs/toolInstallButtonStates.json"
+        ))
+        .unwrap();
+        for row in &rows {
+            let expected = row["buttons"].as_array().unwrap();
+            let mut reversed = expected.clone();
+            reversed.reverse();
+            let mut duplicate = expected.clone();
+            duplicate.push(json!("close"));
+            let candidates = rows.iter().map(|r| r["buttons"].clone()).chain([
+                json!([]),
+                json!(reversed),
+                json!(duplicate),
+                json!(["unknown"]),
+            ]);
+            for buttons in candidates {
+                let mut message = tool_install_snapshot();
+                message.data["state"] = row["state"].clone();
+                message.data["buttons"] = buttons.clone();
+                assert_eq!(
+                    message.validate().is_ok(),
+                    buttons == row["buttons"],
+                    "state: {}, buttons: {buttons}",
+                    row["state"]
+                );
+            }
+        }
+    }
+    #[test]
+    fn tool_install_failure_releases_reservation_for_retry() {
+        let mut registry = Registry::default();
+        let mut snapshot = tool_install_snapshot();
+        let (registration, _) = register(&mut registry, snapshot.clone(), false).unwrap();
+        let session = registry.sessions.get_mut(&registration.host_id).unwrap();
+        let mut action = snapshot.clone();
+        action.message_type = "action".into();
+        action.data = json!({"action":"install"});
+        assert!(reserve_action(session, &action).unwrap());
+        let original_action = action.clone();
+        action.request_id = "retry".into();
+        assert!(reserve_action(session, &action).is_err());
+        snapshot.data["state"] = json!({"status":"failed","message":"Download failed"});
+        assert!(snapshot.validate().is_ok());
+        update_snapshot(session, &snapshot);
+        assert!(reserve_action(session, &action).unwrap());
+        assert!(!reserve_action(session, &original_action).unwrap());
+        assert!(!reserve_action(session, &action).unwrap());
     }
     #[test]
     fn engine_install_registration_validation_ownership_and_limits() {
@@ -2111,7 +2577,7 @@ mod tests {
             .split("let builder = WebviewWindowBuilder::new(")
             .nth(1)
             .unwrap()
-            .split("if let Err(error) = builder.build()")
+            .split("let dialog_window = match builder.build()")
             .next()
             .unwrap();
         assert!(builder.contains(".minimizable(false)"));
@@ -2150,6 +2616,129 @@ mod tests {
         assert!(reserve_action(session, &action).unwrap());
     }
     #[test]
+    fn template_placement_fits_oversized_frames_at_destination_dpi_and_negative_origins() {
+        use std::cell::RefCell;
+        // Physical monitor origin, scale, work area in logical units. The first case is
+        // smaller than both the picker's default size and its normal minimum height.
+        for (origin, scale, area, expected_client, expected_position) in [
+            ((0.0, 24.0), 1.0, (500.0, 300.0), (484, 260), (0.0, 24.0)),
+            (
+                (2880.0, 0.0),
+                1.5,
+                (1000.0, 900.0),
+                (930, 1050),
+                (3037.0, 10.0),
+            ),
+            (
+                (-1600.0, -900.0),
+                2.0,
+                (800.0, 700.0),
+                (1240, 1360),
+                (-1388.0, -900.0),
+            ),
+        ] {
+            let work = WorkArea {
+                id: "destination".into(),
+                x: origin.0 / scale,
+                y: origin.1 / scale,
+                width: area.0,
+                height: area.1,
+                scale,
+            };
+            let owner_rect = (work.x + 20.0, work.y + 20.0, 800.0, 700.0);
+            let client = RefCell::new((0, 0));
+            let position = RefCell::new((0.0, 0.0));
+            finish_placement(
+                (origin.0, origin.1, scale),
+                kind_spec("structureTemplates").unwrap().size,
+                &work,
+                Some(TemplatePlacement {
+                    saved: None,
+                    owner_rect,
+                }),
+                |x, y| {
+                    *position.borrow_mut() = (x, y);
+                    Ok(())
+                },
+                |w, h| {
+                    *client.borrow_mut() = (w, h);
+                    Ok(())
+                },
+                || {
+                    let (w, h) = *client.borrow();
+                    Ok(DialogFrame {
+                        outer: (w + 16, h + 40),
+                        client: (w, h),
+                    })
+                },
+            )
+            .unwrap();
+            assert_eq!(*client.borrow(), expected_client);
+            assert!((position.borrow().0 - expected_position.0).abs() < 0.001);
+            assert!((position.borrow().1 - expected_position.1).abs() < 0.001);
+            let (x, y) = *position.borrow();
+            let (w, h) = *client.borrow();
+            assert!(x >= origin.0 && y >= origin.1);
+            assert!(x + f64::from(w + 16) <= origin.0 + area.0 * scale);
+            assert!(y + f64::from(h + 40) <= origin.1 + area.1 * scale);
+        }
+    }
+    #[test]
+    fn template_placement_restores_saved_offsets_or_centres_when_monitor_is_gone() {
+        use std::cell::RefCell;
+        let work = WorkArea {
+            id: "secondary".into(),
+            x: -800.0,
+            y: 0.0,
+            width: 800.0,
+            height: 600.0,
+            scale: 2.0,
+        };
+        for (monitor, expected_position) in [
+            ("secondary", (-1256.0, 0.0)),
+            ("disconnected", (-1488.0, 0.0)),
+        ] {
+            let saved = SavedPosition {
+                monitor: monitor.into(),
+                x: 9999.0,
+                y: 9999.0,
+                offset_x: 1.0,
+                offset_y: 0.5,
+            };
+            let client = RefCell::new((0, 0));
+            let moves = RefCell::new(Vec::new());
+            let sizes = RefCell::new(Vec::new());
+            finish_placement(
+                (-1600.0, 0.0, work.scale),
+                kind_spec("structureTemplates").unwrap().size,
+                &work,
+                Some(TemplatePlacement {
+                    saved: Some(&saved),
+                    owner_rect: (-780.0, 20.0, 700.0, 500.0),
+                }),
+                |x, y| {
+                    moves.borrow_mut().push((x, y));
+                    Ok(())
+                },
+                |w, h| {
+                    *client.borrow_mut() = (w, h);
+                    sizes.borrow_mut().push((w, h));
+                    Ok(())
+                },
+                || {
+                    let (w, h) = *client.borrow();
+                    Ok(DialogFrame {
+                        outer: (w + 16, h + 40),
+                        client: (w, h),
+                    })
+                },
+            )
+            .unwrap();
+            assert_eq!(*sizes.borrow(), [(1240, 1400), (1240, 1160)]);
+            assert_eq!(*moves.borrow(), [(-1600.0, 0.0), expected_position]);
+        }
+    }
+    #[test]
     fn placement_moves_before_destination_resize_and_clamps_the_measured_outer_frame() {
         use std::cell::RefCell;
         let calls = RefCell::new(Vec::new());
@@ -2166,6 +2755,7 @@ mod tests {
             (3000.0, 1000.0, 2.0),
             (420.0, 300.0),
             &work,
+            None,
             |x, y| {
                 calls.borrow_mut().push(format!("move:{x},{y}"));
                 if calls.borrow().len() == 1 {
@@ -2182,7 +2772,11 @@ mod tests {
             },
             || {
                 calls.borrow_mut().push("measure".into());
-                Ok(*frame.borrow())
+                let (w, h) = *frame.borrow();
+                Ok(DialogFrame {
+                    outer: (w, h),
+                    client: (w - 32, h - 80),
+                })
             },
         )
         .unwrap();
@@ -2696,12 +3290,18 @@ mod tests {
             (0.0, 0.0, 1.5),
             kind_spec("export").unwrap().size,
             &work,
+            None,
             |_, _| Ok(()),
             |w, h| {
                 sizes.borrow_mut().push((w, h));
                 Ok(())
             },
-            || Ok((780, 960)),
+            || {
+                Ok(DialogFrame {
+                    outer: (780, 960),
+                    client: (780, 930),
+                })
+            },
         )
         .unwrap();
         assert_eq!(*sizes.borrow(), [(780, 930)]);

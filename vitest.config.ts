@@ -49,6 +49,9 @@ export default defineConfig({
     }
   },
   test: {
+    // Shared CI runners, especially Windows, are slow on cold file scans and process spawns;
+    // real hangs are still caught while local runs keep Vitest's 5 s default.
+    testTimeout: process.env.CI ? 20_000 : 5_000,
     environment: "node",
     setupFiles: ["./vitest.setup.ts"],
     include: [

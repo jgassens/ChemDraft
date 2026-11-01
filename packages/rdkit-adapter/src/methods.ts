@@ -54,7 +54,7 @@ export const PINNED_RDKIT_VERSION = "2026.03.3";
 export const PINNED_PKA_MODEL_SHA256 =
   "3c3dbeceaa66d62c7860ce81c47cd8a81a5ef0f4ad069c4eee4be3def016ce4a";
 
-export const PINNED_RDKIT_WASM_SHA256 = "66dab556e9d55708ce67afbf71e9853ed5fda217a9330961722f838f38836bf0";
+export const PINNED_RDKIT_WASM_SHA256 = "b28002c9f9548639f2fabeeee5930ea2aee3032126e4a5361bd2a41fdb3f9374";
 
 const ENGINE = "rdkit-minimallib-wasm";
 
@@ -637,13 +637,16 @@ export function rdkitMethodContracts(
         engine: ENGINE,
         engineVersion,
         symbol: "JSMol::get_json",
-        parameters: { hillNotation: true, separateIsotopes: true }
+        parameters: { hillNotation: true, separateIsotopes: true, abbreviateHIsotopes: true }
       },
       defaultInterpretationId: "source",
       resultKind: "composition",
       conventions: [
-        "Hill notation: carbon, then hydrogen, then every other element alphabetically; with no carbon, all elements alphabetically",
-        "isotope-labelled atoms are written [13C] and listed before the natural-abundance atoms of the same element",
+        "Unlabelled Hill notation: carbon, then hydrogen, then other elements alphabetically; " +
+          "with no carbon, all elements alphabetically",
+        "Isotopes match RDKit CalcMolFormula(separateIsotopes=True, abbreviateHIsotopes=True): " +
+          "natural C then carbon isotopes by mass, H then hydrogen isotopes (D/T for 2/3), " +
+          "other natural elements alphabetically, then remaining isotope entries by mass and symbol",
         "implicit hydrogens are protium and never inherit their heavy atom's isotope label",
         "identical components collapse into a multiplicity, so N.N.Cl[Pt]Cl reads as 2 × H3N + Cl2Pt"
       ],

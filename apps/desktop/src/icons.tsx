@@ -1,6 +1,7 @@
 import type { SVGProps } from "react";
 
 export type IconName =
+  | "templates"
   | "arrange"
   | "arrangeOval"
   | "arrangeGridLeft"
@@ -58,6 +59,8 @@ export function Icon({ name, ...props }: IconProps) {
   };
 
   switch (name) {
+    case "templates":
+      return <svg {...common}><path d="m8 3 5 3v6l-5 3-5-3V6z" /><rect x="14" y="13" width="7" height="8" rx="1" /><path d="M14 17h7M17.5 13v8" /></svg>;
     case "close":
       return <svg {...common}><path d="m6 6 12 12M18 6 6 18" /></svg>;
     case "nextTab":

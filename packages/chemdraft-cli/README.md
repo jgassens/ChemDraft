@@ -4,6 +4,55 @@ chemdraft is the shared command-line entry point for headless ChemDraft workflow
 pnpm -s chemdraft ...; -s keeps stdout pure JSON. The package is private and its source modules
 are intended for workspace tools that need the same document and rendering path.
 
+## Fixed-scale document figures
+
+`render`, `grid`, `reaction`, `render-document`, and `document` accept `--style fit|document`.
+`fit` is the unchanged default. Use `--style document` for the fixed document style:
+
+| Setting | Physical value |
+| --- | --- |
+| Bond length | 14.4 pt |
+| Plain line width | 1.134 pt |
+| Bold bond / wedge width | 2.268 pt |
+| Double-bond spacing | 18% of bond length |
+| Hash spacing | 2.5 pt |
+| Bond margin width | 1.6 pt |
+| Chain angle | 120° |
+| Atom labels, grid captions, reaction conditions | Arial 10 pt |
+| Outer figure margin | 4 pt |
+
+Formula labels retain subscripted counts. Native preset data lives in chem-core, while layout-engine
+converts its 22 native units per bond at 14.4/22 pt per unit, including native documents drawn on the canvas.
+Grid cells grow to the largest molecule; molecules are never shrunk to fit a cell.
+
+```bash
+pnpm -s chemdraft render --smiles 'CCO' --out ethanol.svg --style document
+pnpm -s chemdraft render --smiles 'CCO' --out ethanol.png --style document --dpi 300
+pnpm -s chemdraft document --smiles 'CCO' --out ethanol.json --style document
+pnpm -s chemdraft render-document --document ethanol.json --out ethanol.svg --style document
+```
+
+Insert document-style SVG at its **natural size (100%) and never resize it**: root dimensions
+and viewBox are in points, so every bond retains its physical length. PNG uses the same SVG
+at `--dpi <n>` (default 300, range 72–1200), giving 60 pixels per bond at 300 dpi. When inserting
+PNG, set its physical size to the returned `widthPt` and `heightPt` (72 pt = 1 inch); some word
+processors ignore image resolution. `--dpi` is valid only with document style when PNG is written;
+SVG-only and build-only commands reject it with exit 2. `--width`,
+`--bond-length`, and `--padding` conflict with document style and return exit 2.
+Native building retains editable geometry; `render-document --style document` applies the preset
+only to molecule size/geometry keys, preserves all colours, appearance toggles and per-atom/per-bond
+style maps, and scales the whole first page uniformly before cropping. The scale uses the median
+bond length of each molecule; when those lengths differ by more than 2%, it uses the median across
+molecules and emits a warning naming that value. Atom coordinates, object frames, arrows and control
+points, graphics, captions and page size scale together, preserving contacts and relative placement.
+Arrows and plain graphic strokes use 1.134 pt. Text uses Arial, Helvetica, sans-serif at 10 pt
+unless an explicit object/span size is present, in which case that size scales with the page.
+This option supports SVG/PNG/both; PDF and ChemDraft exports retain their existing native page-size contract.
+
+Result lines include `style`. Document-style figures also report `widthPt` and `heightPt`,
+and PNG results report `dpi`. Build-only `document` results report the physical content size;
+the saved native coordinates and inventory retain native units.
+
 ## Common contract
 
 Commands write machine-readable JSON lines to stdout and human-readable progress to stderr. A
@@ -15,7 +64,8 @@ Batch files are JSON arrays of named jobs. Names are trimmed and must match
 ^[A-Za-z0-9][A-Za-z0-9 _-]{0,99}$; names must be unique without regard to case. A batch may contain
 at most 500 jobs. Windows device names (`CON`, `CONIN$`, `CONOUT$`, `PRN`, `AUX`, `NUL`,
 `COM1`–`COM9` and `COM¹`–`COM³`, `LPT1`–`LPT9` and `LPT¹`–`LPT³`) are rejected on every platform. Empty input is rejected; chemical input is limited to 5000 characters and 500
-heavy atoms. PNG output is limited to a width of 16–4000 pixels.
+heavy atoms. Fit-style PNG output is limited to a width of 16–4000 pixels;
+document-style PNG size follows the physical extent and DPI.
 
 User text files (batches, native documents, and the plugin trust file) accept UTF-8 with or
 without a leading byte-order mark (BOM), and BOM-marked UTF-16LE or UTF-16BE. LF and Windows
@@ -42,7 +92,7 @@ Batch input is a JSON array of {"name":"aspirin","smiles":"CC(=O)Oc1ccccc1C(=O)O
 trimmed; blank/duplicate names, path separators, and names beginning with a dot are rejected.
 
 Options: --width <px> is the PNG width (16–4000, default 600); --background white|transparent
-defaults to white; --bond-length <px> defaults to 28 (the desktop paste value); --padding <px>
+defaults to white; --bond-length <px> defaults to 28 (the CLI figure default); --padding <px>
 defaults to 24; and --format png|svg|both normally infers the extension in single mode. One JSON
 line per structure is written to stdout and progress to stderr. stereoCenters counts specified
 centers; unspecifiedStereoCenters counts constitutional centers without a specified descriptor;
@@ -66,6 +116,11 @@ Batch jobs use the usual `{ "name": "decalin", "smiles": "C1CCC2CCCCC2C1" }` sha
 `toAtomId`, `order`, `display`), and rings (`ringKey`, `atomIds`, `bondIds`, `center: {x,y}`, `size`).
 Coordinates and ring centers are in page pixels. Ring keys are sorted bond ids joined by `|`;
 use the reported keys instead of guessing them. Atom and bond ids are local to their molecule.
+
+Unspecified stereogenic double bonds stay unspecified by default: `CC=CC` keeps native
+`stereo: "either"` and matching stored MOL markers (V2000 stereo 3 / V3000 `CFG=2`).
+`render-document` and SMILES exports retain that open E/Z; specified `C/C=C/C` stays E.
+The `E/Z unspecified for N double bond(s)` warning counts only the input's open bonds.
 
 `inputAtomIndex` is the 0-based atom token index in the supplied SMILES, including separately
 written H tokens. It is verified against RDKit's parse order and the depicted graph; unavailable
@@ -153,6 +208,10 @@ arguments.
 
 Render a reaction scheme as PNG or SVG.
 
+Use repeated `--above` and `--below` for lines above and below the arrow, and `--caption` for a note beneath the scheme. Batch jobs accept `above` and `below` arrays and a `caption` string. Formula counts are subscripted automatically; `--conditions` still appends to the agent formula line.
+
+Reaction labels allow at most 6 `--above` and 6 `--below` entries, a non-empty `--caption` of at most 300 characters, and 2000 characters combined across above, below, caption and legacy `--conditions`; batch jobs use the same caps.
+
 ~~~bash
 pnpm -s chemdraft reaction --rxn 'CC(=O)O.OCC>OS(=O)(=O)O>CC(=O)OCC' --out ester.png
 pnpm -s chemdraft reaction \
@@ -201,7 +260,7 @@ the index in the derived form). not-requested means the method was not run at al
 
 ## name
 
-Convert a chemical name with the bundled OPSIN runtime, optionally rendering the result.
+Resolve a chemical name against ChemDraft built-in structure templates first, then the bundled OPSIN runtime, optionally rendering the result. Matching is exact after case/Greek/synonym normalization, never fuzzy. Template names work without Java or OPSIN installed.
 
 ~~~bash
 pnpm -s chemdraft name --name '2-acetoxybenzoic acid' --render aspirin.png
@@ -344,3 +403,24 @@ other format writes one file per structure into --out-dir, named <job name>.<ext
 --format cdxml|pdf|sdf|mol|smi selects the output format; in single mode it normally infers it from
 --out. One JSON line per structure is written to stdout and progress to stderr. Exit 0 is used when
 every structure succeeds, 1 when any export fails, and 2 for bad arguments.
+
+Isotope labels and their positions are preserved in native documents, rendering, reaction schemes,
+and MOL V2000/V3000, SDF, SMILES and CDXML exports. D/T represent hydrogen-2/3; other isotope
+masses are stored per atom. Radical inputs remain refused by drawing and export commands.
+
+## Built-in structure template layouts
+
+Use a template name such as `beta-cyclodextrin`, `β-CD`, `cucurbit[7]uril`, or
+`18-crown-6` rather than writing SMILES for these hosts. The `name` result reports
+`source: "template" | "opsin"`; template results also carry `templateId` and
+`templateName`. Existing SMILES fields retain their meaning. `name --render` draws
+the template layout at the default document style.
+
+Coordinate-less SMILES input to `render`, `document`, `grid`, `reaction`, and
+`export` uses the authored layout only when canonical **isomeric** SMILES matches
+exactly, including stereo and charge. Results report `layout: "template:<id>"`
+(on grid cells and reaction `layouts` entries for multi-molecule figures).
+Templates use the default document bond length; ordinary SMILES sizing is unchanged.
+Stereo-free or different stereoisomers do not substitute. Native documents supplied to
+`render-document`, MOL/molfile, CDXML and drawn coordinates retain their layouts; a
+native document built from SMILES inherits the layout chosen by `document`.

@@ -17,6 +17,9 @@ import {
   runPluginWorker,
   type HostToWorkerMessage,
   type PluginCommandContext,
+  type PluginEmbed3DResult,
+  type PluginCommandInput,
+  type PluginExternalToolStatus,
   type PluginCommandHandler,
   type PluginManifest,
   type PluginPanelReport,
@@ -28,6 +31,7 @@ import {
 import { createMassRegistration, massAnalyzeCommandId, massFragmentManifest } from "@chemdraft/plugin-mass-fragment";
 import { PluginHost, type RegisterPluginOptions } from "@chemdraft/plugin-host";
 import { describe, expect, it, vi } from "vitest";
+import { AssistantCapabilityPermissions } from "@chemdraft/plugin-api";
 
 import { createBundledPluginDescriptors } from "./registerBundledPlugins";
 import { PluginWorkerBridge, PluginWorkerBridgeError } from "./PluginWorkerBridge";
@@ -41,6 +45,7 @@ class FakeEndpoint {
   peer!: FakeEndpoint;
   terminated = false;
   private readonly messageListeners = new Set<MessageListener>();
+  private readonly errorListeners = new Set<(error: Error) => void>();
   private buffer: unknown[] = [];
 
   postMessage(message: unknown): void {
@@ -65,8 +70,12 @@ class FakeEndpoint {
   }
 
   addEventListener(type: string, listener: unknown): void {
+    if (type === "error") {
+      this.errorListeners.add(listener as (error: Error) => void);
+      return;
+    }
     if (type !== "message") {
-      return; // error/messageerror unused by the fake
+      return; // messageerror unused by the fake
     }
     const messageListener = listener as MessageListener;
     this.messageListeners.add(messageListener);
@@ -87,6 +96,10 @@ class FakeEndpoint {
 
   terminate(): void {
     this.terminated = true;
+  }
+
+  crash(): void {
+    for (const listener of this.errorListeners) listener(new Error("simulated worker crash"));
   }
 }
 
@@ -144,6 +157,192 @@ function startWorkerRoutedPlugin(registration: PluginWorkerRegistration): Plugin
 }
 
 describe("PluginWorkerBridge — M34 isolation boundary", () => {
+  it("delivers successful and error capability replies when the logger throws", async () => {
+    const commandId = "plugin.throwingLogger.run";
+    const manifest = parsePluginManifest({ id: "org.test.throwing-logger", name: "Throwing Logger", version: "0", apiVersion: "^0.1.16", entry: "worker.js",
+      permissions: ["chemistry.compute"], contributes: { commands: [{ id: commandId, title: "3D" }] } });
+    let shouldFail = false;
+    const { mainSide, workerSide } = linkedEndpoints();
+    runPluginWorker({ manifest, commandHandlers: { [commandId]: async context => context.chemistry!.embed3d!({ components: [{ smiles: "C" }] }) } }, asEndpoint(workerSide));
+    const throwingBridge = new PluginWorkerBridge({ pluginId: manifest.id, chemistry3dReplyLogger: () => { throw new Error("logger failed"); }, createWorker: () => asHandle(mainSide), hostApiVersion: PluginApiVersion });
+    const context = { chemistry: { embed3d: async () => {
+      if (shouldFail) throw new Error("capability failed");
+      return { ok: true };
+    } } } as unknown as PluginCommandContext;
+    try {
+      await expect(throwingBridge.invokeCommand(commandId, context)).resolves.toEqual({ ok: true });
+      shouldFail = true;
+      await expect(throwingBridge.invokeCommand(commandId, context)).rejects.toMatchObject({ message: "capability failed" });
+    } finally { throwingBridge.terminate(); }
+  });
+  it.each(["result", "error"])("drops a late capability %s after a worker restart reuses request id 1", async kind => {
+    const commandId = "plugin.restart.run";
+    const manifest = parsePluginManifest({ id: "org.test.restart", name: "Restart", version: "0", apiVersion: "^0.1.16", entry: "worker.js",
+      permissions: ["chemistry.compute"], contributes: { commands: [{ id: commandId, title: "3D" }] } });
+    const completions: { resolve(value: unknown): void; reject(error: Error): void }[] = [];
+    const replyLogger = vi.fn();
+    const context = { chemistry: { embed3d: () => new Promise((resolve, reject) => completions.push({ resolve, reject })) } } as unknown as PluginCommandContext;
+    const workers: FakeEndpoint[] = [];
+    const requests: { worker: number; requestId: number }[] = [];
+    const bridge = new PluginWorkerBridge({ pluginId: manifest.id, chemistry3dReplyLogger: replyLogger, createWorker: () => {
+      const { mainSide, workerSide } = linkedEndpoints();
+      const worker = workers.length;
+      mainSide.addEventListener("message", (event: { data: unknown }) => {
+        const message = event.data as { kind: string; requestId: number };
+        if (message.kind === "capabilityRequest") requests.push({ worker, requestId: message.requestId });
+      });
+      runPluginWorker({ manifest, commandHandlers: { [commandId]: ctx => ctx.chemistry!.embed3d!({ components: [{ smiles: "C" }] }) } }, asEndpoint(workerSide));
+      workers.push(mainSide);
+      return asHandle(mainSide);
+    } });
+    try {
+      const first = bridge.invokeCommand(commandId, context);
+      const failed = expect(first).rejects.toMatchObject({ code: PluginWorkerErrorCodes.WorkerCrashed });
+      await vi.waitFor(() => expect(completions).toHaveLength(1));
+      workers[0].crash();
+      await failed;
+      const second = bridge.invokeCommand(commandId, context);
+      const settled = second.then(value => ({ value }), error => ({ error }));
+      await vi.waitFor(() => expect(completions).toHaveLength(2));
+      expect(requests).toEqual([{ worker: 0, requestId: 1 }, { worker: 1, requestId: 1 }]);
+      if (kind === "result") completions[0].resolve({ from: "old worker" });
+      else completions[0].reject(new Error("old worker capability failed"));
+      await flush();
+      completions[1].resolve({ from: "current worker" });
+      await expect(settled).resolves.toEqual({ value: { from: "current worker" } });
+      expect(replyLogger).toHaveBeenCalledWith({
+        pluginId: manifest.id, commandRequestId: 1, requestId: 1, method: "embed3d",
+        ok: kind === "result", valueKeys: kind === "result" ? ["from"] : [], droppedAsStale: true
+      });
+      expect(replyLogger).toHaveBeenCalledWith({
+        pluginId: manifest.id, commandRequestId: 2, requestId: 1, method: "embed3d",
+        ok: true, valueKeys: ["from"], droppedAsStale: false
+      });
+    } finally { bridge.terminate(); }
+  });
+  it("round-trips every 0.1.15 3D method with chemistry.compute alone, including host validation", async () => {
+    const commandId = "plugin.threeD.run";
+    const manifest = parsePluginManifest({ id: "org.test.threeD", name: "3D", version: "0", apiVersion: "^0.1.16", entry: "worker.js",
+      permissions: ["chemistry.compute"], contributes: { commands: [{ id: commandId, title: "3D" }] } });
+    const embedded: PluginEmbed3DResult = {
+      model: { atoms: [{ element: "C", charge: 0, component: 0, addedHydrogen: false }], bonds: [], coords: [0, 0, 0],
+        components: [{ smiles: "C", atomStart: 0, atomCount: 1 }], modelToken: "host-token" },
+      method: { engine: "RDKit MinimalLib Release_2026_03_3 + patches 0001-0008", embedding: "ETKDGv3", seed: 42,
+        forceField: "none", interfragment: false, coordinateUnits: "Angstrom", energyUnits: "kcal/mol", conventions: ["test"] }, warnings: []
+    };
+    const minimized = { ...embedded, model: { ...embedded.model, coords: [1, 2, 3] }, clash: false,
+      forceField: { name: "mmff94s" as const, status: "converged" as const, energy: 1, iterationsBudget: 1000 } };
+    const flattened = { objects: [], depthByAtom: [[3]], method: embedded.method, warnings: ["test warning"] };
+    const embed3d = vi.fn(async () => embedded);
+    const minimize3d = vi.fn(async () => minimized);
+    const flatten3d = vi.fn(async () => flattened);
+    const host = new PluginHost({ embed3d, minimize3d, flatten3d });
+    const bridge = startWorkerRoutedPlugin({ manifest, commandHandlers: { [commandId]: async context => {
+      const chemistry = context.chemistry!;
+      const embed = await chemistry.embed3d!({ components: [{ smiles: "C" }], seed: 42 });
+      const minimize = await chemistry.minimize3d!({ model: embed.model, interfragment: false });
+      await expect(chemistry.minimize3d!({ model: embed.model, interfragment: "false" } as never))
+        .rejects.toThrow("minimize3d interfragment must be a boolean (true or false).");
+      const flatten = await chemistry.flatten3d!({ model: minimize.model, view: "auto" });
+      return { embed, minimize, flatten };
+    } } });
+    host.registerPlugin(manifest, delegatingOptions(manifest, bridge));
+    try {
+      await expect(host.invokeCommand(commandId)).resolves.toEqual({ embed: embedded, minimize: minimized, flatten: flattened });
+      expect(embed3d).toHaveBeenCalledWith({ components: [{ smiles: "C" }], seed: 42 }, expect.any(AbortSignal));
+      expect(minimize3d).toHaveBeenCalledOnce();
+      expect(flatten3d).toHaveBeenCalledWith({ model: minimized.model, view: "auto" }, expect.any(AbortSignal));
+    } finally { bridge.terminate(); }
+  });
+  it("round-trips overlay input and status through the real worker capability boundary", async () => {
+    const commandId = "plugin.chat.submit";
+    const overlayId = "overlay.chat.main";
+    const setStatus = vi.fn();
+    const setTranscript = vi.fn();
+    const setContent = vi.fn();
+    const open = vi.fn();
+    const manifest = parsePluginManifest({
+      id: "org.test.chat", name: "Chat", version: "0", apiVersion: "^0.1.10", entry: "worker.js",
+      permissions: ["ui.canvas"], contributes: {
+        commands: [{ id: commandId, title: "Send" }],
+        canvasOverlays: [{ id: overlayId, title: "Chat", icon: "data:image/png;base64,YQ==",
+          commandId, prompt: { kind: "prompt", id: "composer", commandId } }]
+      }
+    });
+    const bridge = startWorkerRoutedPlugin({ manifest, commandHandlers: {
+      [commandId]: async context => {
+        await context.overlays!.setStatus({ overlayId, text: "Working" });
+        await context.overlays!.setTranscript({ overlayId, entries: [{ role: "assistant", text: "Done" }] });
+        await context.overlays!.setContent({ overlayId, sections: [{ kind: "text", body: "Setup" }], prompt: { disabled: true } });
+        await expect(context.overlays!.setContent({ overlayId, sections: [], prompt: { disabled: true, label: "Busy" } } as never)).rejects.toThrow();
+        await context.overlays!.setContent({ overlayId, sections: [] });
+        await context.overlays!.open({ overlayId, focus: true });
+        await expect(context.overlays!.setContent({ overlayId: "overlay.other.main", sections: [] })).rejects.toThrow(/does not own/);
+        await expect(context.overlays!.open({ overlayId: "overlay.other.main" })).rejects.toThrow(/does not own/);
+        await expect(context.overlays!.setTranscript({ overlayId: "overlay.other.main", entries: [] }))
+          .rejects.toThrow(/does not own/);
+        await expect(context.overlays!.setTranscript({ overlayId, entries: [{ role: "error", text: "x".repeat(4001) }] }))
+          .rejects.toThrow();
+        await expect(context.overlays!.setStatus({ overlayId: "overlay.other.main", text: "Foreign" }))
+          .rejects.toThrow(/does not own/);
+        await expect(context.overlays!.setStatus({ overlayId, text: "x".repeat(121) })).rejects.toThrow();
+        await context.overlays!.setStatus({ overlayId, text: "" });
+        return context.input;
+      }
+    } });
+    const host = new PluginHost({ overlays: { setStatus, setTranscript, setContent, open } });
+    host.registerPlugin(manifest, delegatingOptions(manifest, bridge));
+    const input: PluginCommandInput = { source: "overlay", overlayId, sectionId: "composer", control: "prompt", text: "Draw water" };
+    try {
+      expect(await host.invokeCommand(commandId, { input })).toEqual(input);
+      expect(setStatus.mock.calls).toEqual([[manifest.id, overlayId, "Working"], [manifest.id, overlayId, ""]]);
+      expect(setTranscript.mock.calls).toEqual([[manifest.id, overlayId, [{ role: "assistant", text: "Done" }]]]);
+      expect(setContent.mock.calls).toEqual([
+        [manifest.id, overlayId, [{ kind: "text", body: "Setup" }], { disabled: true }],
+        [manifest.id, overlayId, [], undefined]
+      ]);
+      expect(open.mock.calls).toEqual([[manifest.id, overlayId, true]]);
+    } finally { bridge.terminate(); }
+  });
+
+  it("omits overlay stubs without ui.canvas", async () => {
+    const commandId = "plugin.chat.submit";
+    const manifest = parsePluginManifest({
+      id: "org.test.chat", name: "Chat", version: "0", apiVersion: "^0.1.10", entry: "worker.js",
+      permissions: [], contributes: { commands: [{ id: commandId, title: "Send" }] }
+    });
+    const bridge = startWorkerRoutedPlugin({ manifest, commandHandlers: {
+      [commandId]: context => context.overlays === undefined
+    } });
+    const host = new PluginHost();
+    host.registerPlugin(manifest, delegatingOptions(manifest, bridge));
+    try {
+      expect(await host.invokeCommand(commandId)).toBe(true);
+    } finally { bridge.terminate(); }
+  });
+
+  it("round-trips panel input through the host and worker, scoped to each concurrent invocation", async () => {
+    const commandId = "plugin.chat.submit";
+    const manifest = parsePluginManifest({
+      id: "org.test.chat", name: "Chat", version: "0", apiVersion: "^0.1.10", entry: "worker.js", permissions: ["ui.panel"],
+      contributes: { commands: [{ id: commandId, title: "Send" }], panels: [{ id: "panel.chat.main", title: "Chat", commandId }] }
+    });
+    const bridge = startWorkerRoutedPlugin({ manifest, commandHandlers: {
+      [commandId]: async context => { await flush(); return context.input; }
+    } });
+    const { host } = makeHost();
+    host.registerPlugin(manifest, delegatingOptions(manifest, bridge));
+    const inputs: PluginCommandInput[] = [
+      { source: "panel", panelId: "panel.chat.main", sectionId: "composer", control: "prompt", text: "Draw water", selected: "a" },
+      { source: "panel", panelId: "panel.chat.main", sectionId: "composer", control: "select", controlId: "provider", selected: "b" },
+      { source: "panel", panelId: "panel.chat.main", sectionId: "actions", control: "button", controlId: "stop", payload: { run: 1 } }
+    ];
+    try {
+      expect(await Promise.all(inputs.map(input => host.invokeCommand(commandId, { input })))).toEqual(inputs);
+      expect(await host.invokeCommand(commandId)).toBeUndefined();
+    } finally { bridge.terminate(); }
+  });
+
   it("mass analyzer: the worker path writes the same analysis record and renders the same report as in-process", async () => {
     const inProcess = makeHost();
     inProcess.host.registerPlugin(massFragmentManifest, { commandHandlers: createMassRegistration().commandHandlers });
@@ -904,5 +1103,73 @@ describe("recognition.recognizeStructure survives the worker boundary", () => {
       expect.any(AbortSignal)
     );
     bridge.terminate();
+  });
+});
+
+describe("tools survive the worker boundary", () => {
+  it("round-trips every assistant lifecycle method with Send-time request identity", async () => {
+    const manifest = parsePluginManifest({ id: "org.test.assistant-worker", name: "Assistant Worker", version: "0",
+      apiVersion: "^0.1.9", entry: "worker.js", permissions: [...AssistantCapabilityPermissions],
+      contributes: { commands: [{ id: "plugin.assistantWorker.submit", title: "Submit" }] } });
+    const assistant = {
+      listTools: vi.fn(async () => [{ name: "insert_text", description: "Insert", inputSchema: {} }]),
+      beginRequest: vi.fn(async () => ({ requestId: "req" })),
+      callTool: vi.fn(async () => ({ content: [{ type: "text" as const, text: "inserted" }] })),
+      endRequest: vi.fn(async () => ({ touchedIds: ["text"], summary: "One text", split: false })),
+      createToolSession: vi.fn(async () => ({ sessionId: "mcp", serverName: "chemdraft" as const, tools: ["insert_text"] })),
+      closeToolSession: vi.fn(async () => {}), closeAllForPlugin: vi.fn()
+    };
+    const host = new PluginHost({ assistant });
+    const bridge = startWorkerRoutedPlugin({ manifest, commandHandlers: { "plugin.assistantWorker.submit": async context => {
+      const api = context.assistant!;
+      const { requestId } = await api.beginRequest({ prompt: "caption", label: "Caption" });
+      const tools = await api.listTools();
+      const session = await api.createToolSession({ requestId });
+      const result = await api.callTool({ name: tools[0]!.name, input: { text: "caption" } });
+      await api.closeToolSession({ sessionId: session.sessionId });
+      return { result, end: await api.endRequest({ requestId }) };
+    } } });
+    host.registerPlugin(manifest, delegatingOptions(manifest, bridge));
+    await expect(host.invokeCommand("plugin.assistantWorker.submit")).resolves.toMatchObject({
+      result: { content: [{ text: "inserted" }] }, end: { touchedIds: ["text"], split: false }
+    });
+    expect(assistant.beginRequest).toHaveBeenCalledWith(expect.objectContaining({ id: manifest.id }), { prompt: "caption", label: "Caption" });
+    expect(assistant.createToolSession).toHaveBeenCalledWith(expect.objectContaining({ id: manifest.id }), { requestId: "req" });
+    expect(assistant.endRequest).toHaveBeenCalledWith(expect.objectContaining({ id: manifest.id }), { requestId: "req" });
+    bridge.terminate();
+  });
+  it("round-trips every external-tools method and omits it without assistant.run", async () => {
+    const manifest = parsePluginManifest({
+      id: "org.test.tools-worker", name: "Worker Tools", version: "0", apiVersion: "^0.1.8", entry: "x",
+      permissions: ["assistant.run", "native.execute"], contributes: { commands: [{ id: "plugin.toolsWorker.run", title: "Run" }] }
+    });
+    const statuses = import.meta.glob("../externalTools/__fixtures__/wire/status-installed-managed.json", { eager: true, import: "default" });
+    const status = Object.values(statuses)[0]! as PluginExternalToolStatus;
+    const externalTools = {
+      status: vi.fn(async () => status), install: vi.fn(async () => status),
+      signIn: vi.fn(async () => ({ launched: true, method: "terminal.command" as const })),
+      run: vi.fn(async () => ({ runId: "run", pid: 1, cwd: "/tmp", startedAt: status.probedAt })),
+      poll: vi.fn(async () => ({ lines: [], nextCursor: 0, droppedLines: 0, status: { state: "running" as const } })),
+      cancel: vi.fn(async () => undefined), clearConversation: vi.fn(async () => undefined), cancelAllForPlugin: vi.fn()
+    };
+    const registration: PluginWorkerRegistration = { manifest, commandHandlers: { "plugin.toolsWorker.run": async (context) => {
+      await context.tools!.status({ tool: "codex" }); await context.tools!.install({ tool: "codex" });
+      await context.tools!.signIn({ tool: "codex" });
+      await context.tools!.run({ tool: "codex", conversationId: "conversation_1", prompt: "p", systemPrompt: "s", mcpSessionId: "mcp" });
+      await context.tools!.poll({ runId: "run", cursor: 0 }); await context.tools!.cancel({ runId: "run" });
+      await context.tools!.clearConversation({ tool: "codex", conversationId: "conversation_1" });
+    } } };
+    const host = new PluginHost({ externalTools });
+    const bridge = startWorkerRoutedPlugin(registration);
+    host.registerPlugin(manifest, delegatingOptions(manifest, bridge));
+    await host.invokeCommand("plugin.toolsWorker.run");
+    for (const method of [externalTools.status, externalTools.install, externalTools.signIn, externalTools.run, externalTools.poll, externalTools.cancel, externalTools.clearConversation]) expect(method).toHaveBeenCalledOnce();
+    bridge.terminate();
+
+    const denied = parsePluginManifest({ ...manifest, id: "org.test.no-tools-worker", permissions: [], contributes: { commands: [{ id: "plugin.noToolsWorker.run", title: "Run" }] } });
+    const deniedBridge = startWorkerRoutedPlugin({ manifest: denied, commandHandlers: { "plugin.noToolsWorker.run": (context) => typeof context.tools } });
+    host.registerPlugin(denied, delegatingOptions(denied, deniedBridge));
+    await expect(host.invokeCommand("plugin.noToolsWorker.run")).resolves.toBe("undefined");
+    deniedBridge.terminate();
   });
 });

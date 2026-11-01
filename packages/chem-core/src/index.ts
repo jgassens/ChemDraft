@@ -1,3 +1,7 @@
+export { normalizeAtomIsotope } from "./isotopes";
+export { MAX_IMAGE_OBJECT_BYTES } from "./imageBytes";
+export { MAX_IMAGE_SIDE, MAX_IMAGE_DECODED_BYTES, imagePixelLimitError, validatePngImage, validateSvgImage, isSvgImageSource, createImageGraphicObject, readPngInfo, readSvgInfo, type CreateImageGraphicObjectOptions, type ImagePixelInfo } from "./image";
+
 export {
   AnchorSchema,
   AnnotationObjectSchema,
@@ -22,6 +26,7 @@ export {
   GraphicObjectDataSchema,
   GraphicMarkerSchema,
   GraphicObjectSchema,
+  ImageObjectDataSchema,
   GraphicObjectStyleSchema,
   GraphicPathNodeSchema,
   GraphicPaintSchema,
@@ -72,6 +77,7 @@ export {
   type GraphicObjectData,
   type GraphicMarker,
   type GraphicObject,
+  type ImageObjectData,
   type GraphicObjectStyle,
   type GraphicPathNode,
   type GraphicPaint,
@@ -147,6 +153,7 @@ export {
 
 export {
   DocumentPatchError,
+  BatchDocumentPatchSchema,
   admitParsedDocument,
   adoptDerivedDocument,
   applyPatch,
@@ -168,6 +175,10 @@ export {
 
 export {
   ChemDraftSyntheticStylePreset,
+  DOCUMENT_STYLE_UNITS_PER_PT,
+  DocumentMoleculeSizeStyle,
+  DocumentStylePreset,
+  DocumentTextStyle,
   DefaultNativeTextStyle,
   DefaultNativeDrawingStyle,
   nativeDrawingStyleFromObjectStyle,

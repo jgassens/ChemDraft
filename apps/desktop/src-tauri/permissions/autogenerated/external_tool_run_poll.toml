@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-external-tool-run-poll"
+description = "Enables the external_tool_run_poll command without any pre-configured scope."
+commands.allow = ["external_tool_run_poll"]
+
+[[permission]]
+identifier = "deny-external-tool-run-poll"
+description = "Denies the external_tool_run_poll command without any pre-configured scope."
+commands.deny = ["external_tool_run_poll"]

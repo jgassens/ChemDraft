@@ -4,7 +4,7 @@ import { applyPatches, type ChemDraftDocument, type MoleculeObject, type ViewMat
 import { planPageSvgRender } from "@chemdraft/layout-engine";
 import { depictSmiles2D, ensureOclResources, oclConformerGenerator, type Depiction2D } from "@chemdraft/ocl-adapter";
 
-import { createPhase4Document, flattenSpunMolecule } from "./documentWorkflow";
+import { createPhase4Document, flattenNativeMolecule3d, flattenSpunMolecule } from "./documentWorkflow";
 import { quatFromAxisAngle, quatToViewMatrix } from "./interaction/rotation3d";
 import { bondDepthWeights, projectSpin, spinJoinedBondFragments, type ScreenPlacement } from "./interaction/spinOverlay";
 import { projectedDoubleBondSides } from "./interaction/projectedDoubleBondSides";
@@ -67,6 +67,29 @@ beforeAll(async () => {
 });
 
 describe("flattenSpunMolecule — commit mechanics", () => {
+  it("keeps a 334-heavy-atom explicit-H graph above V2000's atom/bond limit using V3000", () => {
+    const atoms: MoleculeObject["atoms"] = [];
+    const bonds: MoleculeObject["bonds"] = [];
+    const addBond = (a: string, b: string) => bonds.push({ id: `b${bonds.length}`, fromAtomId: a, toAtomId: b, order: "single" });
+    for (let i = 0; i < 334; i++) {
+      const carbon = `c${i}`;
+      atoms.push({ id: carbon, element: "C", formalCharge: 0, x: i * 2, y: i % 2 });
+      if (i > 0) addBond(`c${i - 1}`, carbon);
+      for (let h = 0; h < (i === 0 || i === 333 ? 3 : 2); h++) {
+        const hydrogen = `h${i}_${h}`;
+        atoms.push({ id: hydrogen, element: "H", formalCharge: 0, x: i * 2 + (h === 2 ? -0.5 : 0.5), y: i % 2 + (h % 2 ? 1 : -1) });
+        addBond(carbon, hydrogen);
+      }
+    }
+    const coords = atoms.flatMap(atom => [atom.x, -atom.y, 0]);
+    const outcome = flattenNativeMolecule3d(molecule("large", atoms, bonds), coords, IDENTITY,
+      { placement: { centerX: 400, centerY: 200, scale: 1 } });
+    expect(outcome.status).toBe("committed");
+    expect(outcome.molecule?.atoms).toHaveLength(1004);
+    expect(outcome.molecule?.bonds).toHaveLength(1003);
+    expect(outcome.molecule?.structureFormat).toBe("molfile-v3000");
+    expect(outcome.molecule?.structure).toContain("M  V30 COUNTS 1004 1003");
+  }, 15000);
   it("commits an achiral flatten: geometry + molfile rewritten, graph preserved", () => {
     // Butane-ish chain with hand-authored 3D coords (no stereo → no wedges).
     const mol = molecule(

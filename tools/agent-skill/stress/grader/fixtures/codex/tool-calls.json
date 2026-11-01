@@ -1,0 +1,12 @@
+[
+  {
+    "name": "mcp__chemdraft__render_structure",
+    "input": { "smiles": "CCO", "format": "svg" },
+    "result": { "content": [{ "type": "text", "text": "{\"ok\":true,\"smiles\":\"CCO\"}" }] }
+  },
+  {
+    "name": "Bash",
+    "input": { "command": "pnpm -s chemdraft render --smiles CCO --out images/ethanol.svg" },
+    "result": { "content": [{ "type": "text", "text": "rendered" }] }
+  }
+]

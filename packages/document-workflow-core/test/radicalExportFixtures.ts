@@ -1,5 +1,5 @@
 import type { MoleculeAtom, MoleculeObject } from "@chemdraft/chem-core";
-import { ensureRdkit } from "@chemdraft/rdkit-adapter";
+import { ensureRdkit } from "../../rdkit-adapter/src/conformer";
 
 export interface AtomState {
   radicals: number;

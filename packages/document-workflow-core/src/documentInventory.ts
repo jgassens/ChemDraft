@@ -18,7 +18,7 @@ export function documentInventory(
         })),
         bonds: object.bonds.map((bond) => ({
           id: bond.id, fromAtomId: bond.fromAtomId, toAtomId: bond.toAtomId,
-          order: bond.order, display: bond.display ?? {}
+          order: bond.order, ...(bond.stereo === "either" ? { stereo: "either" as const } : {}), display: bond.display ?? {}
         })),
         rings: nativeMoleculeRings(object).map((ring) => ({
           ringKey: ring.ringKey, atomIds: ring.atomIds, bondIds: ring.bondIds,

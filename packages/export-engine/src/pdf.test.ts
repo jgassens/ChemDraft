@@ -1,25 +1,361 @@
 import {
   applyPatch,
   createEmptyDocument,
+  createImageGraphicObject,
   createCustomPageLayout,
   createPageLayout,
   type TextObject,
+  type MoleculeObject,
   type UnknownCompatibilityObject
 } from "@chemdraft/chem-core";
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { JSDOM } from "jsdom";
+import { Resvg } from "@resvg/resvg-js";
 import { jsPDF } from "jspdf";
+import { exportDocumentToCdxml } from "@chemdraft/cdx-compat";
 import { describe, expect, it } from "vitest";
 import { exportDocumentToPdf } from "./pdf";
 import { exportDocumentToSvg } from "./svg";
-import { extractPdfTextRuns, pdfFontStreams, sfntName, sfntTable } from "./pdf.testUtils";
-import { filledRingFixture, polygonPathFaces, ringFixtureFills } from "../../layout-engine/src/ringFillNotches.fixture";
+import { extractPdfPositionedTextRuns, extractPdfTextRuns, pdfFontStreams, sfntName, sfntTable, standardFontTextWidth } from "./pdf.testUtils";
+import { multilineScriptedTextDocument, scriptedTextDocument } from "./scriptedText.fixture";
+import { ringHaloDocument } from "../../layout-engine/src/ringFillHalos.fixture";
+import { nativeMoleculeRings, planPageSvgRender } from "@chemdraft/layout-engine";
+import { elementFragments } from "@chemdraft/layout-engine/testing";
+
+function filledRingFixture(): MoleculeObject {
+  const atoms = [[100, 100], [180, 100], [180, 180], [100, 180]].map(([x, y], i) => ({ id: `a${i}`, element: "C", x: x!, y: y!, formalCharge: 0 }));
+  return { id: "square", type: "molecule", x: 90, y: 90, width: 100, height: 100, rotation: 0,
+    structureFormat: "smiles", structure: "C1CCC1", superatoms: [], rGroups: [], atoms,
+    bonds: atoms.map((a, i) => ({ id: `b${i}`, fromAtomId: a.id, toAtomId: atoms[(i + 1) % 4]!.id, order: "single" })), style: {} };
+}
 
 const timestamp = "2026-05-29T00:00:00.000Z";
 
 describe("exportDocumentToPdf", () => {
+  it("skips picture-less graphics with format-specific warnings", async () => {
+    const document = createEmptyDocument();
+    document.pages[0]!.objects = [{ id: "missing-picture", type: "graphic", graphicKind: "image",
+      x: 0, y: 0, width: 1, height: 1, rotation: 0, data: {}, style: {} }];
+    const svg = exportDocumentToSvg(document);
+    expect(svg.contents).not.toContain('data-object-id="missing-picture"');
+    expect(svg.warnings).toEqual([{ code: "export.svg.picture_missing_data", severity: "warning", objectId: "missing-picture",
+      message: "SVG export: picture missing-picture has no picture data and was not drawn" }]);
+    const pdf = await withPdfDom((domParser) => exportDocumentToPdf(document, { domParser }));
+    expect(pdf.warnings).toEqual([{ code: "export.pdf.picture_missing_data", severity: "warning", objectId: "missing-picture",
+      message: "PDF export: picture missing-picture has no picture data and was not drawn" }]);
+    expect(exportDocumentToCdxml(document).warnings).toEqual([{ code: "cdxml.picture_not_saved", sourceObjectId: "missing-picture",
+      message: "CDXML export: picture missing-picture is not saved in CDXML" }]);
+  });
+
+  it("exports picture frames in SVG and embeds PNGs in PDF, warning for SVG pictures", async () => {
+    const png = Buffer.from(new Resvg('<svg xmlns="http://www.w3.org/2000/svg" width="2" height="1"><rect width="2" height="1" fill="red"/></svg>').render().asPng()).toString("base64");
+    const picture = { ...createImageGraphicObject({ id: "g12", mimeType: "image/png", dataBase64: png, center: { x: 0, y: 0 } }),
+      x: 10.12345, y: 20, width: 80, height: 40, rotation: 30 };
+    const svgPicture = { ...picture, id: "g13", data: { image: { ...picture.data.image!, mimeType: "image/svg+xml" as const,
+      dataBase64: btoa('<svg xmlns="http://www.w3.org/2000/svg"/>') } } };
+    const document = createEmptyDocument({ now: timestamp });
+    document.pages[0]!.objects = [picture, svgPicture];
+    const result = exportDocumentToSvg(document);
+    const dom = new JSDOM(result.contents, { contentType: "image/svg+xml" });
+    const image = dom.window.document.querySelector('[data-object-id="g12"] image')!;
+    expect(["x", "y", "width", "height", "preserveAspectRatio", "href"].map((name) => image.getAttribute(name)))
+      .toEqual(["10.12345", "20", "80", "40", "none", `data:image/png;base64,${png}`]);
+    expect(image.parentElement!.getAttribute("transform")).toBe("rotate(30 50.123 40)");
+    expect(result.warnings).toEqual([]);
+    dom.window.close();
+    const pdf = await withPdfDom((domParser) => exportDocumentToPdf(document, { domParser, compress: false }));
+    const content = Buffer.from(pdf.bytes).toString("latin1");
+    expect(content).toContain("/Subtype /Image");
+    expect(content).toMatch(/\/I\d+ Do/);
+    expect(content).toContain("80. 0 0 40. 10.12345");
+    expect(pdf.warnings).toEqual([{ code: "export.pdf.svg_picture_not_drawn", severity: "warning", objectId: "g13",
+      message: "PDF export: SVG picture g13 was not drawn; paste it as PNG or export SVG" }]);
+  });
+
+  it.each([1, 0.5, 2])("keeps PNGs at physical size with output page scale %s, moving their centres with the layout", async outputScale => {
+    const png = Buffer.from(new Resvg('<svg xmlns="http://www.w3.org/2000/svg" width="288" height="144"><rect width="288" height="144" fill="red"/></svg>').render().asPng()).toString("base64");
+    const document = createEmptyDocument();
+    const picture = { ...createImageGraphicObject({ id: "physical-picture", mimeType: "image/png", dataBase64: png,
+      pixelsPerMeter: { x: 5669, y: 5669 }, center: { x: 400, y: 300 } }), rotation: 30 };
+    document.pages[0]!.objects = [picture];
+    const page = document.pages[0]!;
+    const pdf = await withPdfDom(domParser => exportDocumentToPdf(document, { domParser, compress: false,
+      outputWidth: page.width * outputScale, outputHeight: page.height * outputScale }));
+    const [frame] = pdfPictureFrames(Buffer.from(pdf.bytes).toString("latin1"));
+    expect(frame.width).toBeCloseTo(144, 1);
+    expect(frame.height).toBeCloseTo(72, 1);
+    expect(frame.cx).toBeCloseTo(400 * 0.75 * outputScale, 6);
+    expect(frame.cy).toBeCloseTo((page.height - 300) * 0.75 * outputScale, 6);
+  });
+  it("exports CC=CC with either stereo as the canvas's crossed segments in SVG and painted PDF strokes", async () => {
+    const document = createEmptyDocument({ now: timestamp });
+    const molecule: MoleculeObject = {
+      id: "either-alkene", type: "molecule", x: 30, y: 30, width: 180, height: 120, rotation: 0,
+      structureFormat: "smiles", structure: "CC=CC", superatoms: [], rGroups: [],
+      style: { source: "chemdraft-native-drawing" },
+      atoms: [
+        { id: "a", element: "C", x: 30, y: 130, formalCharge: 0 },
+        { id: "b", element: "C", x: 60, y: 80, formalCharge: 0 },
+        { id: "c", element: "C", x: 120, y: 80, formalCharge: 0 },
+        { id: "d", element: "C", x: 150, y: 30, formalCharge: 0 }
+      ],
+      bonds: [
+        { id: "ab", fromAtomId: "a", toAtomId: "b", order: "single" },
+        { id: "bc", fromAtomId: "b", toAtomId: "c", order: "double", stereo: "either",
+          display: { doubleBondSide: "right" } },
+        { id: "cd", fromAtomId: "c", toAtomId: "d", order: "single" }
+      ]
+    };
+    const page = document.pages[0]!;
+    page.objects = [molecule];
+    const before = JSON.stringify(document);
+    const canvasLines = planPageSvgRender(page).fragments.flatMap(elementFragments).filter((fragment) =>
+      fragment.tag === "line" && String(fragment.attrs.class).startsWith("native-bond-line"));
+    const crossed = canvasLines.filter((line) => line.attrs["data-bond-stereo"] === "either");
+    expect(canvasLines).toHaveLength(4);
+    expect(crossed).toHaveLength(2);
+    for (const { attrs } of crossed) {
+      expect((Number(attrs.x1) + Number(attrs.x2)) / 2).toBe(90);
+      expect((Number(attrs.y1) + Number(attrs.y2)) / 2).toBe(80);
+      expect(attrs.y1).not.toBe(attrs.y2);
+    }
+
+    const svgDom = new JSDOM(exportDocumentToSvg(document).contents, { contentType: "image/svg+xml" });
+    try {
+      expect(svgDom.window.document.querySelectorAll('line[data-bond-stereo="either"]')).toHaveLength(2);
+      for (const { attrs } of canvasLines) {
+        const line = svgDom.window.document.querySelector(
+          `line[data-bond-id="${attrs["data-bond-id"]}"][data-bond-segment="${attrs["data-bond-segment"]}"]`)!;
+        expect(line).not.toBeNull();
+        for (const key of ["x1", "y1", "x2", "y2", "stroke-width"] as const) {
+          expect(Number(line.getAttribute(key))).toBeCloseTo(Number(attrs[key]), 3);
+        }
+        expect(line.getAttribute("stroke")).toBe(attrs.stroke);
+      }
+    } finally {
+      svgDom.window.close();
+    }
+
+    const result = await withPdfDom((domParser) => exportDocumentToPdf(document, { domParser, compress: false }));
+    const points = pdfDrawingPoints(Buffer.from(result.bytes).toString("latin1"));
+    const endpoints = canvasLines.flatMap(({ attrs }) => [
+      [Number(attrs.x1), Number(attrs.y1)], [Number(attrs.x2), Number(attrs.y2)]
+    ]);
+    expect(points).toHaveLength(endpoints.length);
+    // The default full-page SVG maps document pixels to points (72/96), then PDF flips Y.
+    endpoints.forEach(([x, y], index) => {
+      expect(points[index]![0]).toBeCloseTo(x! * 0.75, 6);
+      expect(points[index]![1]).toBeCloseTo((page.height - y!) * 0.75, 6);
+    });
+    expect(result.warnings).toEqual([]);
+    expect(JSON.stringify(document)).toBe(before);
+  });
+
+  it("preserves the SVG isotope label runs and superscript geometry in PDF", async () => {
+    const molecule = filledRingFixture();
+    molecule.atoms[0]!.isotope = 13;
+    molecule.atoms.push(
+      { id: "d", element: "D", x: 70, y: 100, formalCharge: 0 },
+      { id: "t", element: "T", x: 210, y: 180, formalCharge: 0 }
+    );
+    molecule.bonds.push(
+      { id: "bd", fromAtomId: "a0", toAtomId: "d", order: "single" },
+      { id: "bt", fromAtomId: "a2", toAtomId: "t", order: "single" }
+    );
+    const document = applyPatch(createEmptyDocument({ now: timestamp }), {
+      op: "addObject", pageId: "page_001", object: molecule
+    });
+    const svg = exportDocumentToSvg(document).contents;
+    const result = await withPdfDom((domParser) => exportDocumentToPdf(document, {
+      domParser: { parseFromString(source: string, mime: DOMParserSupportedType) {
+        expect(source).toBe(svg);
+        const parsed = domParser.parseFromString(source, mime);
+        const runs = [...parsed.querySelectorAll('[data-atom-label="13CH"] [data-atom-label-run]')];
+        expect(runs.map((run) => run.textContent)).toEqual(["13", "CH"]);
+        expect(Number(runs[0]!.getAttribute("y"))).toBeLessThan(Number(runs[1]!.getAttribute("y")));
+        return parsed;
+      } } as DOMParser, compress: false
+    }));
+    expect(extractPdfTextRuns(result.bytes)).toEqual(expect.arrayContaining(["13", "CH", "D", "T"]));
+  });
+
+  it.each(["left", "center", "right"] as const)("exports contiguous %s-aligned scripted formulas without whitespace runs", async (align) => {
+    const fixture = scriptedTextDocument(align);
+    const document = { ...fixture, pages: [{ ...fixture.pages[0], objects: fixture.pages[0].objects.slice(0, 2) }] };
+    const result = await withPdfDom(domParser => exportDocumentToPdf(document, { domParser }), true);
+    const runs = extractPdfPositionedTextRuns(result.bytes);
+    for (const run of runs) {
+      expect(run.text.trim().length).toBeGreaterThan(0);
+      expect(run.text).toBe(run.text.trim());
+    }
+    expect(runs.map(run => run.text)).toEqual(["H", "2", "O", "SO", "4", "2-"]);
+    const [h, two, o, so, four, charge] = runs;
+    for (const [first, second, size] of [
+      [h, two, h.fontSize], [two, o, h.fontSize * 0.72],
+      [so, four, so.fontSize], [four, charge, so.fontSize * 0.72]
+    ] as const) {
+      expect(Math.abs(second.x - first.x - standardFontTextWidth(first.text, size))).toBeLessThan(0.5);
+    }
+  });
+
+  it("keeps scripted text spacing identical across left, centre and right alignment", async () => {
+    const aligned = [];
+    for (const align of ["left", "center", "right"] as const) {
+      const result = await withPdfDom(domParser => exportDocumentToPdf(scriptedTextDocument(align), { domParser }), true);
+      aligned.push(extractPdfPositionedTextRuns(result.bytes).filter(run => run.text.trim().length > 0));
+    }
+    const left = aligned[0]!;
+    for (const runs of aligned.slice(1)) {
+      // H2O and SO4 followed immediately by a superscript charge share one anchor per line.
+      for (const start of [0, 3]) {
+        const shift = runs[start]!.x - left[start]!.x;
+        expect(shift).toBeGreaterThan(0);
+        for (let i = start; i < start + 3; i++) {
+          expect(Math.abs(runs[i]!.x - left[i]!.x - shift)).toBeLessThan(0.5);
+          if (i > start) {
+            expect(Math.abs((runs[i]!.x - runs[i - 1]!.x) - (left[i]!.x - left[i - 1]!.x))).toBeLessThan(0.5);
+          }
+        }
+      }
+    }
+  });
+
+  it("centres each line independently when only the second line has scripts", async () => {
+    const aligned = [];
+    for (const align of ["left", "center", "right"] as const) {
+      const result = await withPdfDom(domParser => exportDocumentToPdf(multilineScriptedTextDocument(align), { domParser }), true);
+      const positioned = extractPdfPositionedTextRuns(result.bytes);
+      if (align === "center") {
+        const secondLine = positioned.findIndex(run => run.text === "H");
+        // Anchoring measures the whole chunk, including inter-line SVG whitespace.
+        for (const line of [positioned.slice(0, secondLine), positioned.slice(secondLine)]) {
+          const last = line.at(-1)!;
+          const rightEdge = last.x + standardFontTextWidth(last.text, last.fontSize);
+          expect(Math.abs((line[0]!.x + rightEdge) / 2 - 225)).toBeLessThan(0.5);
+        }
+      }
+      aligned.push(positioned.filter(run => run.text.trim().length > 0));
+    }
+    const [left, center, right] = aligned;
+    expect(left!.map(run => run.text)).toEqual(["plain", "H", "2", "O"]);
+    for (const [start, end] of [[0, 1], [1, 4]]) {
+      const shift = center![start]!.x - left![start]!.x;
+      for (let i = start; i < end; i++) {
+        expect(Math.abs(center![i]!.x - left![i]!.x - shift)).toBeLessThan(0.5);
+        expect(Math.abs(right![i]!.x - left![i]!.x - 2 * shift)).toBeLessThan(0.5);
+      }
+    }
+    // Different line widths require different anchor offsets, with their baselines unchanged.
+    expect(center![0]!.x - left![0]!.x).not.toBeCloseTo(center![1]!.x - left![1]!.x, 1);
+    expect(center![1]!.y - center![0]!.y).toBeCloseTo(-28 * 0.75, 6);
+    expect(center![3]!.y).toBeCloseTo(center![1]!.y, 6);
+  });
+
+  it.each([false, true])("draws scripted formula digits and charges with positive size, offset and advance (compression=%s)", async (compress) => {
+    const result = await withPdfDom(domParser => exportDocumentToPdf(scriptedTextDocument(), { domParser, compress }));
+    const runs = extractPdfPositionedTextRuns(result.bytes).filter(run => run.text.trim().length > 0);
+    expect(runs.map(run => run.text)).toEqual([
+      "H", "2", "O", "SO", "4", "2-", "NH", "4", "+", "13", "C", "H", "2", "O",
+      "H", "2", "O", "SO", "4", "2-", "end"
+    ]);
+    const [h, sub, o, so, four, charge, nh, nhFour, plus, isotope, c, bigH, bigSub, bigO] = runs;
+    const script = (parent: typeof h, child: typeof sub, offsetEm: number, sizeRatio = 0.72) => {
+      expect(parent.fontSize).toBeCloseTo(15, 6); // 20 document px at 72/96 pt/px
+      expect(child.fontSize).toBeGreaterThan(0);
+      expect(Math.abs(child.fontSize / parent.fontSize - sizeRatio)).toBeLessThan(sizeRatio * 0.01);
+      expect(child.y - parent.y).toBeCloseTo(offsetEm * parent.fontSize, 6);
+    };
+    script(h, sub, -0.4);
+    expect(o.y).toBeCloseTo(h.y, 6);
+    const metrics = new jsPDF({ unit: "pt" });
+    const positiveAdvance = (left: typeof sub, right: typeof o) => {
+      metrics.setFont("helvetica").setFontSize(left.fontSize);
+      const width = metrics.getTextWidth(left.text);
+      expect(width).toBeGreaterThan(0);
+      expect(right.x).toBeGreaterThan(left.x + width * 0.99);
+    };
+    positiveAdvance(sub, o);
+    script(so, four, -0.4);
+    script(so, charge, 0.4);
+    positiveAdvance(four, charge);
+    script(nh, nhFour, -0.4);
+    script(nh, plus, 0.4);
+    script(c, isotope, 0.4);
+    positiveAdvance(isotope, c);
+    // A span's own 30 px size must not enlarge the script relative to its 20 px text object.
+    script(bigH, bigSub, -0.4);
+    expect(bigO.y).toBeCloseTo(bigH.y, 6);
+    expect(bigO.x).toBeGreaterThan(bigSub.x);
+    // Empty middle lines and a normal line after a superscript retain their original advance.
+    expect(runs[17].y - runs[14].y).toBeCloseTo(-56 * 0.75, 6);
+    expect(runs[20].y - runs[17].y).toBeCloseTo(-28 * 0.75, 6);
+  });
+
+  it("applies relative script shifts once across embedded-font fallback segments", async () => {
+    const document = applyPatch(createEmptyDocument({ now: timestamp }), {
+      op: "addObject", pageId: "page_001", object: {
+        id: "mixed_font_scripts", type: "text", x: 100, y: 100, width: 400, height: 80,
+        rotation: 0, style: { fontSizePx: 20, textAlign: "center" }, text: "H2⇌3+⇌−O", spans: [
+          { text: "H", script: "normal", style: {} },
+          { text: "2⇌3", script: "subscript", style: {} },
+          { text: "+⇌−", script: "superscript", style: {} },
+          { text: "O", script: "normal", style: {} }
+        ]
+      }
+    }, { now: timestamp });
+    const result = await withPdfDom(domParser => exportDocumentToPdf(document, { domParser }));
+    const runs = extractPdfPositionedTextRuns(result.bytes).filter(run => run.text.trim().length > 0);
+    expect(runs.map(run => run.text)).toEqual(["H", "2", "⇌", "3", "+", "⇌", "−", "O"]);
+    const parent = runs[0]!;
+    runs.slice(1, 7).forEach((run, index) => {
+      expect(run.y - parent.y).toBeCloseTo(index < 3 ? -6 : 6, 6);
+      expect(run.fontSize / parent.fontSize).toBeCloseTo(0.72, 6);
+    });
+    expect(runs[7]!.y).toBeCloseTo(parent.y, 6);
+    runs.slice(1).forEach((run, index) => expect(run.x).toBeGreaterThan(runs[index]!.x));
+  });
+  it.each(["pyridinium", "blue-box", "oxathiazinane"] as const)("%s PNG has no white antialias fringe around glyph halos", (name) => {
+    const { document, object } = ringHaloDocument(name, "solid");
+    const source = exportDocumentToSvg(document).contents.replace(/viewBox="[^"]*"/,
+      `viewBox="${object.x - 20} ${object.y - 20} ${object.width + 40} ${object.height + 40}"`);
+    const dom = new JSDOM(source, { contentType: "image/svg+xml" });
+    const raster = new Resvg(source, { fitTo: { mode: "width", value: 1000 } }).render();
+    const withHalos = raster.pixels;
+    dom.window.document.querySelectorAll("text").forEach((text) => text.remove());
+    const background = new Resvg(dom.serialize(), { fitTo: { mode: "width", value: 1000 } }).render().pixels;
+    const rings = nativeMoleculeRings(object);
+    const factor = Math.min(raster.width / (object.width + 40), raster.height / (object.height + 40));
+    const offsetX = (raster.width - (object.width + 40) * factor) / 2;
+    const offsetY = (raster.height - (object.height + 40) * factor) / 2;
+    let sampled = 0, brightening = 0;
+    for (let i = 0; i < background.length; i += 4) {
+      // Fully covered blue pixels exclude bonds and polygon boundaries. A black glyph can only
+      // darken them; the old paper-then-colour glyph overpainting left a bright outline here.
+      if (background[i] !== 30 || background[i + 1] !== 136 || background[i + 2] !== 229) continue;
+      const neighbors = [-3, 3, -3 * raster.width, 3 * raster.width];
+      if (!neighbors.every((offset) => background[i + offset * 4] === 30
+        && background[i + offset * 4 + 1] === 136 && background[i + offset * 4 + 2] === 229)) continue;
+      sampled++;
+      const difference = Math.max(...[0, 1, 2].map((c) => withHalos[i + c]! - background[i + c]!));
+      if (difference <= 2) continue;
+      const x = ((i / 4 % raster.width) - offsetX) / factor + object.x - 20;
+      const y = (Math.floor(i / 4 / raster.width) - offsetY) / factor + object.y - 20;
+      // Patterns and the base polygon may sample a shared ring edge on opposite sides of a
+      // pixel. Exclude every polygon boundary, including internal edges of the blue box.
+      const onBoundary = rings.some((ring) => ring.points.some((a, index) => {
+        const b = ring.points[(index + 1) % ring.points.length]!;
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const t = Math.max(0, Math.min(1, ((x - a.x) * dx + (y - a.y) * dy) / (dx * dx + dy * dy)));
+        return Math.hypot(x - a.x - t * dx, y - a.y - t * dy) < 1;
+      }));
+      if (!onBoundary) brightening = Math.max(brightening, difference);
+    }
+    expect(sampled).toBeGreaterThan(100);
+    expect(brightening).toBeLessThanOrEqual(2);
+    dom.window.close();
+  });
   it("does not count the white page background as drawing geometry", async () => {
     const document = createEmptyDocument({ now: timestamp });
     const result = await withPdfDom((domParser) => exportDocumentToPdf(document, { domParser, compress: false }));
@@ -258,46 +594,72 @@ describe("exportDocumentToPdf", () => {
     expect(new TextDecoder().decode(result.bytes.slice(0, 5))).toBe("%PDF-");
   });
 
-  it("exports the same notched ring path as SVG, with an even-odd PDF hole", async () => {
-    const object = filledRingFixture();
-    object.atoms[0]!.element = "O";
-    // Only ring atoms notch the fill, even when their authored label offset is inward.
-    Object.assign(object.atoms[1]!, { element: "N", labelLiteral: true, labelOffset: { x: -40, y: 40 } });
-    object.style.atomLabelBackgroundColor = "#ffffff";
-    const document = applyPatch(createEmptyDocument({ now: timestamp }), {
-      op: "addObject", pageId: "page_001", object
-    }, { now: timestamp });
-    const pathD = String(ringFixtureFills(object)[0]!.attrs.d);
-    const faces = polygonPathFaces(pathD);
-    expect(faces).toHaveLength(2); // A corner bite plus an interior hole.
-    const svg = exportDocumentToSvg(document).contents;
-    expect(svg).toContain(`d="${pathD}" fill-rule="evenodd"`);
-    let parsedPathD: string | null = null;
-    const result = await withPdfDom((domParser) => {
-      const trackingParser = {
-        parseFromString: (source: string, mime: DOMParserSupportedType) => {
-          const parsed = domParser.parseFromString(source, mime);
-          const fill = parsed.querySelector('[data-molecule-fill-ring="true"]')!;
-          parsedPathD = fill.getAttribute("d");
-          expect(fill.getAttribute("fill-rule")).toBe("evenodd");
-          return parsed;
+  for (const name of ["pyridinium", "blue-box", "oxathiazinane"] as const) {
+    for (const style of ["light", "solid", "vivid"] as const) {
+      it(`${name} ${style}: PDF uses the SVG polygons and clipped halo strokes`, async () => {
+        const { document, object } = ringHaloDocument(name, style);
+        const rings = nativeMoleculeRings(object);
+        const svg = exportDocumentToSvg(document).contents;
+        const result = await withPdfDom((domParser) => exportDocumentToPdf(document, {
+          domParser: { parseFromString(source: string, mime: DOMParserSupportedType) {
+            expect(source).toBe(svg);
+            const parsed = domParser.parseFromString(source, mime);
+            const fills = [...parsed.querySelectorAll("[data-molecule-fill-ring]")];
+            expect(fills.map((f) => f.getAttribute("d"))).toEqual(rings.map((r) => r.pathD));
+            expect(fills.every((f) => !f.hasAttribute("fill-rule"))).toBe(true);
+            const halos = [...parsed.querySelectorAll("[data-label-halo-ring]")];
+            expect(halos.length).toBeGreaterThan(0);
+            for (const halo of halos) {
+              const fill = fills.find((f) => f.getAttribute("data-ring-key") === halo.getAttribute("data-label-halo-ring"))!;
+              expect(halo.getAttribute("clip-path")).toMatch(/^url/);
+              expect(halo.querySelector("path")!.getAttribute("fill")).toBe(fill.getAttribute("fill"));
+            }
+            return parsed;
+          } } as DOMParser, compress: false
+        }));
+        const pdf = new TextDecoder("latin1").decode(result.bytes);
+        // Actual PDF polygon fills, clipping operators and stroked glyphs, not only input SVG.
+        expect((pdf.match(/\nW\n/g) ?? []).length).toBeGreaterThanOrEqual(rings.length);
+        expect(pdf).toContain("1 Tr");
+        expect(pdf).toContain("/SMask << /S /Luminosity");
+        const masks = [...pdf.matchAll(/\/Group << \/S \/Transparency \/CS \/DeviceGray >>\n\/Resources [^\n]+\n\/Length (\d+) >>\nstream\n/g)];
+        expect(masks.length).toBeGreaterThan(0);
+        for (const mask of masks) {
+          const start = mask.index! + mask[0].length;
+          const content = pdf.slice(start, start + Number(mask[1]));
+          expect(pdf.slice(start + Number(mask[1]))).toMatch(/^\nendstream/);
+          expect(content).toContain("1 G\n3.375 w"); // 4.5 px halo at 0.75 pt/px.
+          expect(content.match(/\bq\b/g)?.length).toBe(content.match(/\bQ\b/g)?.length);
+          expect(content).toContain("1 Tr");
         }
-      } as DOMParser;
-      return exportDocumentToPdf(document, { domParser: trackingParser, compress: false });
-    });
-    expect(parsedPathD).toBe(pathD);
-    const pdfText = new TextDecoder("latin1").decode(result.bytes);
-    // Inspect actual PDF drawing operators, not just the SVG handed to the writer.
-    const filledPaths = [...pdfText.matchAll(/((?:[-\d.]+ [-\d.]+ [ml]\n|h\n)+)f\*/g)];
-    const vertices = faces.flat();
-    const ringPath = filledPaths.find((match) => (match[1]!.match(/[ml]\n/g) ?? []).length === vertices.length);
-    expect(ringPath, "PDF must emit the notched compound path with the even-odd f* operator").toBeDefined();
-    const pdfVertices = [...ringPath![1]!.matchAll(/([-\d.]+) ([-\d.]+) [ml]/g)];
-    pdfVertices.forEach((vertex, index) => {
-      expect(Number(vertex[1])).toBeCloseTo(vertices[index]!.x, 3);
-      expect(Number(vertex[2])).toBeCloseTo(vertices[index]!.y, 3);
-    });
-    expect((ringPath![1]!.match(/h\n/g) ?? []).length).toBe(faces.length);
+        const paths = [...pdf.matchAll(/((?:[-\d.]+ [-\d.]+ [ml]\n|h\n)+)f(?:\n|$)/g)].map((m) => m[1]!);
+        for (const ring of rings) {
+          const found = paths.some((path) => {
+            const vertices = [...path.matchAll(/([-\d.]+) ([-\d.]+) [ml]/g)];
+            return vertices.length === ring.points.length && vertices.every((v, i) =>
+              Math.abs(Number(v[1]) - ring.points[i]!.x) < 0.001 && Math.abs(Number(v[2]) - ring.points[i]!.y) < 0.001);
+          });
+          expect(found, ring.ringKey).toBe(true);
+        }
+      });
+    }
+  }
+
+  it.each(["linear-gradient", "radial-gradient"] as const)("paints %s halo strokes with a PDF pattern in the same coordinate space", async (kind) => {
+    const { document, object } = ringHaloDocument("pyridinium", "solid");
+    const ring = nativeMoleculeRings(object)[0]!;
+    object.rotation = 27;
+    object.style.ringStyles = { [ring.ringKey]: { fillOpacity: 0.25, fillPaint: {
+      kind, units: "object", x1: 0, y1: 0, x2: 1, y2: 1, cx: 0.5, cy: 0.5, r: 0.5,
+      stops: [{ offset: 0, color: "#ff0000" }, { offset: 1, color: "#0000ff" }]
+    } } };
+    const result = await withPdfDom((domParser) => exportDocumentToPdf(document, { domParser, compress: false }));
+    const pdf = new TextDecoder("latin1").decode(result.bytes);
+    expect(pdf).toContain("/PatternType 1");
+    expect(pdf).toContain("/SMask << /S /Luminosity");
+    expect(pdf).toMatch(/\/Pattern cs\n\/P\d+ scn/);
+    expect(pdf).toContain(kind === "linear-gradient" ? "/ShadingType 2" : "/ShadingType 3");
+    expect(pdf).toContain("1 Tr");
   });
 
   it("uses the ChemDraft page dimensions for the PDF media box", async () => {
@@ -418,7 +780,7 @@ function documentWithText(text: string, style: TextObject["style"] = {}) {
   }, { now: timestamp });
 }
 
-async function withPdfDom<T>(callback: (domParser: DOMParser) => Promise<T>): Promise<T> {
+async function withPdfDom<T>(callback: (domParser: DOMParser) => Promise<T>, useStandardTextMetrics = false): Promise<T> {
   const dom = new JSDOM("<!doctype html><html><body></body></html>", {
     pretendToBeVisual: true
   });
@@ -453,7 +815,11 @@ async function withPdfDom<T>(callback: (domParser: DOMParser) => Promise<T>): Pr
   defineTestGlobal(writableGlobal, "navigator", dom.window.navigator);
   Object.defineProperty(dom.window.SVGElement.prototype, "getBBox", {
     configurable: true,
-    value: () => ({ x: 0, y: 0, width: 80, height: 16 })
+    value: function (this: Element) {
+      return { x: 0, y: 0, width: useStandardTextMetrics && this.tagName === "text"
+        ? standardFontTextWidth(this.textContent ?? "", parseFloat(this.getAttribute("font-size") ?? "16"))
+        : 80, height: 16 };
+    }
   });
   Object.defineProperty(dom.window.HTMLCanvasElement.prototype, "getContext", {
     configurable: true,
@@ -541,4 +907,26 @@ function pdfDrawingPoints(pdf: string): Array<[number, number]> {
     else if (op === "re") { point(n[0], n[1]); point(n[0]+n[2], n[1]+n[3]); }
   }
   return points;
+}
+
+// Read the effective image matrices from the PDF, including rotation and nested q/Q state.
+function pdfPictureFrames(pdf: string) {
+  let matrix = [1, 0, 0, 1, 0, 0];
+  const stack: number[][] = [];
+  const frames: Array<{ width: number; height: number; cx: number; cy: number }> = [];
+  const streams = [...pdf.matchAll(/stream\n([\s\S]*?)\nendstream/g)].map(match => match[1]);
+  for (const line of streams.join("\n").split("\n")) {
+    const parts = line.trim().split(/\s+/), op = parts.pop();
+    if (op === "q") stack.push([...matrix]);
+    else if (op === "Q") matrix = stack.pop() ?? [1, 0, 0, 1, 0, 0];
+    else if (op === "cm") {
+      const n = parts.map(Number), [a, b, c, d, e, f] = matrix;
+      matrix = [a*n[0]+c*n[1], b*n[0]+d*n[1], a*n[2]+c*n[3], b*n[2]+d*n[3],
+        a*n[4]+c*n[5]+e, b*n[4]+d*n[5]+f];
+    } else if (op === "Do" && /^\/I\d+$/.test(parts[0])) {
+      const [a, b, c, d, e, f] = matrix;
+      frames.push({ width: Math.hypot(a, b), height: Math.hypot(c, d), cx: e + (a + c) / 2, cy: f + (b + d) / 2 });
+    }
+  }
+  return frames;
 }

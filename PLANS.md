@@ -8,18 +8,47 @@ in progress rather than a changelog.
 
 # In flight
 
-Branch `fix/multi-text-formatting`: apply font family and size commands to every selected text
-box in one Undo step, preserving selection. Keep character-range edits scoped to their active
-editor, and leave unselected text and non-text objects unchanged. A stale range must not override
-a multi-box selection. Scope: MainWindow command routing, dedicated DOM regressions, desktop usage
-notes, the shared manual checklist, and build stamp `10.22.11.54-codex`.
+# ChemDraft Assistant plugin (active, branches claude/assistant-*)
 
-The isolated branch passes 106 relevant tests across five suites, root TypeScript checking,
-the browser production build, and whitespace checks. Regressions exercise both platform mappings,
-both selection orders, mixed selections, untouched labels, one-step Undo/Redo, and editor ranges.
-The contributor tried the combined local test build; native Windows/WebView2 and macOS hands-on
-verification of this isolated branch remains pending.
-This contribution stays in draft review until required CI and native checks pass.
+## Objective
+
+Add a document-aware Assistant plugin harness for local Claude Code and Codex. It can read the
+current document and selection and place results directly on the page through typed host tools.
+
+## Design decisions
+
+- The host owns CLI discovery, pinning, install, sign-in, consent, command rendering, process
+  lifetime, and local MCP; the plugin owns provider choice, prompt, transcript, and UI.
+- Results land directly, with no approval window. Send fixes the write scope: selected objects and
+  objects inserted by that request. Each request is one labelled undo entry, selects what changed,
+  and redo never calls AI.
+- A canvas overlay is allowed alongside the floating assistant panel. Consent names the receiving
+  company and says document/page content leaves the computer.
+- PRs B/C update AGENTS.md §4.4 and §12 with their corresponding behaviour.
+
+## Delivery sequence
+
+1. **PR A — runner (merged, #186):** external-tool catalog, pins, probe/install/sign-in, consent,
+   supervised runs, plugin API tools, dialog/controller, and documentation.
+2. **PR B — assistant tools + local tool server (current):** batch/write scope, direct assistant
+   writes and request transaction, document tools, shared reaction/grid layout, API 0.1.9
+   `assistant`, run-to-session binding, and the hardened loopback MCP server. Owner decisions are
+   applied: writes need no approval window; scope is the Send selection plus request insertions;
+   each request is one undo entry; provider web access is open.
+3. **PR C — panel input + canvas overlay (complete):** plugin input sections, panel action routing, and the
+   viewport prompt overlay.
+4. **Plugin repository:** `org.chemdraft.assistant`, providers, system prompt, transcript, tests,
+   and release.
+5. **PR D — catalog + docs:** official catalog entry, release URLs, agent documentation, and slice
+   closeout.
+
+## Verification
+
+- macOS and Windows probe/install/sign-in/cancel paths; no batch shims or console flash.
+- Pinned download checksum, archive-entry, signature, and rollback tests; release pin check.
+- Consent is per plugin/tool and revocable; the host accepts no plugin argv, environment, or paths.
+- Cancel/quit kills process trees (including the Windows Job Object); output limits and typed errors
+  are reported. Assistant writes obey scope, group into one undo, and select touched objects.
 
 ---
 

@@ -1,0 +1,1662 @@
+{
+ "version": 1,
+ "notes": "Authored by the stress-test conductor session 2026-10-22 before any run. Reference SMILES come from PubChem (CID given) unless marked 'relative'. Scoring rules are in SCORING.md and were fixed before the baseline. split: dev | heldout.",
+ "cases": [
+  {
+   "id": "S01",
+   "category": "stereochemistry",
+   "split": "dev",
+   "prompt": "Draw (S)-ibuprofen with a wedge showing the stereocentre.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "C[C@@H](C1=CC=C(C=C1)CC(C)C)C(=O)O",
+      "cid": 39912
+     }
+    ],
+    "full_stereo": true
+   },
+   "rubric": [
+    "one stereocentre drawn with a wedge or hash, not a plain bond",
+    "configuration is S",
+    "isobutyl para to the propanoic acid"
+   ]
+  },
+  {
+   "id": "S02",
+   "category": "stereochemistry",
+   "split": "dev",
+   "prompt": "draw L-alanine, show the stereocenter",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "C[C@@H](C(=O)O)N",
+      "cid": 5950
+     }
+    ],
+    "full_stereo": true
+   },
+   "rubric": [
+    "wedge or hash at the alpha carbon",
+    "S configuration"
+   ]
+  },
+  {
+   "id": "S03",
+   "category": "stereochemistry",
+   "split": "heldout",
+   "prompt": "Can you draw meso-2,3-dibromobutane for me? Wedges please.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "C[C@H]([C@H](C)Br)Br",
+      "cid": 98508
+     }
+    ],
+    "full_stereo": true
+   },
+   "rubric": [
+    "both stereocentres wedged/hashed",
+    "drawn configuration is meso (R,S), not the chiral pair"
+   ]
+  },
+  {
+   "id": "S04",
+   "category": "stereochemistry",
+   "split": "dev",
+   "prompt": "Draw (2R,3R)-tartaric acid and tell me if it's chiral.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "[C@@H]([C@H](C(=O)O)O)(C(=O)O)O",
+      "cid": 444305
+     }
+    ],
+    "full_stereo": true,
+    "answer_regex": [
+     "(?i)\\bchiral\\b"
+    ],
+    "answer_forbid_regex": [
+     "(?i)\\b(is )?achiral\\b|\\bmeso\\b(?! form| isomer is| tartaric acid is)"
+    ]
+   },
+   "rubric": [
+    "two wedged/hashed stereocentres",
+    "R,R",
+    "answer says it is chiral"
+   ]
+  },
+  {
+   "id": "S05",
+   "category": "stereochemistry",
+   "split": "dev",
+   "prompt": "draw meso-tartaric acid",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "[C@@H]([C@@H](C(=O)O)O)(C(=O)O)O",
+      "cid": 447315
+     }
+    ],
+    "full_stereo": true
+   },
+   "rubric": [
+    "two stereocentres shown",
+    "R,S (meso)"
+   ]
+  },
+  {
+   "id": "S06",
+   "category": "stereochemistry",
+   "split": "heldout",
+   "prompt": "Draw cis-2-butene.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "C/C=C\\C",
+      "cid": 5287573
+     }
+    ],
+    "full_stereo": true
+   },
+   "rubric": [
+    "both methyls on the same side of the double bond"
+   ]
+  },
+  {
+   "id": "S07",
+   "category": "stereochemistry",
+   "split": "dev",
+   "prompt": "Draw tamoxifen with the correct double bond geometry (the active Z isomer).",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "CC/C(=C(\\C1=CC=CC=C1)/C2=CC=C(C=C2)OCCN(C)C)/C3=CC=CC=C3",
+      "cid": 2733526
+     }
+    ],
+    "full_stereo": true
+   },
+   "rubric": [
+    "tetrasubstituted alkene drawn with the geometry clearly readable",
+    "Z: ethyl cis to the aminoethoxyphenyl ring per CIP",
+    "side chain O-CH2CH2-NMe2 correct"
+   ]
+  },
+  {
+   "id": "S08",
+   "category": "stereochemistry",
+   "split": "dev",
+   "prompt": "What is the configuration (R or S) of N[C@@H](Cc1ccccc1)C(=O)O, and is that the natural amino acid?",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "C1=CC=C(C=C1)C[C@@H](C(=O)O)N",
+      "cid": 6140,
+      "optional": true
+     }
+    ],
+    "answer_regex": [
+     "\\(?S\\)?[- ]|\\bS\\b",
+     "(?i)L-?phenylalanine|natural"
+    ]
+   },
+   "rubric": [
+    "answers S",
+    "identifies it as L-phenylalanine, the natural enantiomer"
+   ]
+  },
+  {
+   "id": "S09",
+   "category": "stereochemistry",
+   "split": "heldout",
+   "prompt": "Label every stereocentre in natural (−)-menthol as R or S and draw it.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "C[C@@H]1CC[C@H]([C@@H](C1)O)C(C)C",
+      "cid": 16666
+     }
+    ],
+    "full_stereo": true,
+    "answer_regex": [
+     "1R",
+     "2S",
+     "5R"
+    ]
+   },
+   "rubric": [
+    "three stereocentres wedged/hashed",
+    "labels 1R,2S,5R (or the same assignment on the drawn atoms)",
+    "OH, isopropyl and methyl on the right carbons"
+   ]
+  },
+  {
+   "id": "S10",
+   "category": "stereochemistry",
+   "split": "dev",
+   "prompt": "Draw trans-decalin with the ring-fusion hydrogens shown.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "C1CC[C@H]2CCCC[C@@H]2C1",
+      "relative": true
+     }
+    ],
+    "full_stereo": true
+   },
+   "rubric": [
+    "ring-fusion H atoms drawn explicitly",
+    "one fusion H wedged, the other hashed (trans)"
+   ]
+  },
+  {
+   "id": "S11",
+   "category": "stereochemistry",
+   "split": "dev",
+   "prompt": "Now cis-decalin, same style, fusion H's drawn.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "C1CC[C@H]2CCCC[C@H]2C1",
+      "relative": true
+     }
+    ],
+    "full_stereo": true
+   },
+   "rubric": [
+    "ring-fusion H atoms drawn explicitly",
+    "both fusion H the same (both wedge or both hash)"
+   ]
+  },
+  {
+   "id": "S12",
+   "category": "stereochemistry",
+   "split": "heldout",
+   "prompt": "Draw cis-hydrindane (cis-octahydroindene) showing the ring fusion stereo.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "C1CC[C@H]2CCC[C@H]2C1",
+      "cid": 643587
+     }
+    ],
+    "full_stereo": true
+   },
+   "rubric": [
+    "6-5 fused rings",
+    "fusion substituents both on the same face"
+   ]
+  },
+  {
+   "id": "S13",
+   "category": "stereochemistry",
+   "split": "dev",
+   "prompt": "Draw this for me: C[C@H]1CC[C@@H](C(C)C)[C@@H](O)C1",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "C[C@H]1CC[C@@H](C(C)C)[C@@H](O)C1",
+      "from_prompt": true
+     }
+    ],
+    "full_stereo": true
+   },
+   "rubric": [
+    "all three stereocentres drawn with wedges/hashes",
+    "drawing matches the given SMILES (no change of configuration)"
+   ]
+  },
+  {
+   "id": "S14",
+   "category": "stereochemistry",
+   "split": "dev",
+   "prompt": "Draw L-threonine. Which stereocentres does it have, R or S?",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "C[C@H]([C@@H](C(=O)O)N)O",
+      "cid": 6288
+     }
+    ],
+    "full_stereo": true,
+    "answer_regex": [
+     "2S",
+     "3R"
+    ]
+   },
+   "rubric": [
+    "two stereocentres wedged/hashed",
+    "states 2S,3R"
+   ]
+  },
+  {
+   "id": "S15",
+   "category": "stereochemistry",
+   "split": "heldout",
+   "prompt": "Is cis-1,2-dimethylcyclohexane chiral? Draw it with wedges.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "C[C@@H]1CCCC[C@@H]1C",
+      "cid": 16628
+     }
+    ],
+    "full_stereo": true,
+    "answer_regex": [
+     "(?i)achiral|not chiral|meso"
+    ]
+   },
+   "rubric": [
+    "both methyls on the same face (both wedge or both hash)",
+    "says achiral / meso"
+   ]
+  },
+  {
+   "id": "S16",
+   "category": "stereochemistry",
+   "split": "dev",
+   "prompt": "Draw trans-stilbene",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "C1=CC=C(C=C1)/C=C/C2=CC=CC=C2",
+      "cid": 638088
+     }
+    ],
+    "full_stereo": true
+   },
+   "rubric": [
+    "phenyls on opposite sides of the alkene"
+   ]
+  },
+  {
+   "id": "S17",
+   "category": "stereochemistry",
+   "split": "dev",
+   "prompt": "Draw (1R,2S)-ephedrine.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "C[C@@H]([C@@H](C1=CC=CC=C1)O)NC",
+      "cid": 9294
+     }
+    ],
+    "full_stereo": true
+   },
+   "rubric": [
+    "two stereocentres wedged/hashed",
+    "1R (C-OH) and 2S (C-NHMe)"
+   ]
+  },
+  {
+   "id": "S18",
+   "category": "stereochemistry",
+   "split": "heldout",
+   "prompt": "Draw (R)-penta-2,3-diene and assign its configuration.",
+   "expect": {
+    "structures": [],
+    "answer_regex": [
+     "(?i)axial|allene"
+    ]
+   },
+   "rubric": [
+    "correct allene (C=C=C with methyls on each end)",
+    "either draws the axial chirality correctly with wedges or says plainly that ChemDraft cannot encode allene axial chirality; never presents an unspecified allene as (R)"
+   ]
+  },
+  {
+   "id": "S19",
+   "category": "stereochemistry",
+   "split": "dev",
+   "prompt": "Draw (S)-naproxen and (R)-naproxen side by side, label which is which.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "C[C@@H](C1=CC2=C(C=C1)C=C(C=C2)OC)C(=O)O",
+      "cid": 156391
+     },
+     {
+      "smiles": "C[C@H](C1=CC2=C(C=C1)C=C(C=C2)OC)C(=O)O",
+      "enantiomer_of": 156391
+     }
+    ],
+    "set_match": true,
+    "full_stereo": true
+   },
+   "rubric": [
+    "both enantiomers drawn",
+    "labels match the drawn configurations",
+    "same scale for both"
+   ]
+  },
+  {
+   "id": "S20",
+   "category": "stereochemistry",
+   "split": "heldout",
+   "prompt": "Draw (5R)-carvone and tell me which smell it is.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "CC1=CC[C@H](CC1=O)C(=C)C",
+      "cid": 439570
+     }
+    ],
+    "full_stereo": true,
+    "answer_regex": [
+     "(?i)spearmint"
+    ]
+   },
+   "rubric": [
+    "one stereocentre wedged/hashed, R",
+    "says spearmint (R-carvone)"
+   ]
+  },
+  {
+   "id": "C01",
+   "category": "conformations",
+   "split": "dev",
+   "prompt": "Draw methylcyclohexane as a chair with the methyl equatorial.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "CC1CCCCC1"
+     }
+    ],
+    "drawing_kind": "chair"
+   },
+   "rubric": [
+    "a real chair conformation (not a flat hexagon)",
+    "methyl on an equatorial bond",
+    "bond angles look like a textbook chair (parallel opposite bonds)"
+   ]
+  },
+  {
+   "id": "C02",
+   "category": "conformations",
+   "split": "dev",
+   "prompt": "Draw both chair conformations of cis-1,2-dimethylcyclohexane and show the ring flip between them.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "C[C@@H]1CCCC[C@@H]1C",
+      "cid": 16628
+     }
+    ],
+    "drawing_kind": "chair"
+   },
+   "rubric": [
+    "two chairs",
+    "each chair has one methyl axial and one equatorial",
+    "an equilibrium/ring-flip arrow between them",
+    "axial and equatorial swap between the chairs"
+   ]
+  },
+  {
+   "id": "C03",
+   "category": "conformations",
+   "split": "heldout",
+   "prompt": "Draw the more stable chair of trans-1-tert-butyl-4-methylcyclohexane.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "CC1CCC(CC1)C(C)(C)C"
+     }
+    ],
+    "drawing_kind": "chair"
+   },
+   "rubric": [
+    "a chair",
+    "both substituents equatorial",
+    "1,4-trans relationship"
+   ]
+  },
+  {
+   "id": "C04",
+   "category": "conformations",
+   "split": "dev",
+   "prompt": "Draw beta-D-glucopyranose as a chair, all substituents equatorial.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "C([C@@H]1[C@H]([C@@H]([C@H]([C@@H](O1)O)O)O)O)O",
+      "cid": 64689
+     }
+    ],
+    "drawing_kind": "chair"
+   },
+   "rubric": [
+    "4C1 chair with ring O in the right position",
+    "all OH and CH2OH equatorial",
+    "anomeric OH equatorial (beta)"
+   ]
+  },
+  {
+   "id": "C05",
+   "category": "conformations",
+   "split": "dev",
+   "prompt": "Draw alpha-D-glucopyranose as a Haworth projection.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "C([C@@H]1[C@H]([C@@H]([C@H]([C@H](O1)O)O)O)O)O",
+      "cid": 79025
+     }
+    ],
+    "drawing_kind": "haworth"
+   },
+   "rubric": [
+    "flat hexagon in perspective with the front edge bold",
+    "ring O at the back right",
+    "anomeric OH down (alpha)",
+    "C2 OH down, C3 up, C4 down, CH2OH up"
+   ]
+  },
+  {
+   "id": "C06",
+   "category": "conformations",
+   "split": "heldout",
+   "prompt": "Haworth projection of beta-D-ribofuranose please",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "C([C@@H]1[C@H]([C@H]([C@@H](O1)O)O)O)O",
+      "cid": 447347
+     }
+    ],
+    "drawing_kind": "haworth"
+   },
+   "rubric": [
+    "five-membered ring in Haworth perspective",
+    "anomeric OH up (beta)",
+    "C2 and C3 OH down",
+    "CH2OH up"
+   ]
+  },
+  {
+   "id": "C07",
+   "category": "conformations",
+   "split": "dev",
+   "prompt": "Draw a Newman projection of butane looking down the C2–C3 bond in the anti conformation.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "CCCC"
+     }
+    ],
+    "drawing_kind": "newman"
+   },
+   "rubric": [
+    "front carbon as a point, back carbon as a circle",
+    "three bonds on each carbon, staggered 60 degrees apart",
+    "the two methyls 180 degrees apart"
+   ]
+  },
+  {
+   "id": "C08",
+   "category": "conformations",
+   "split": "dev",
+   "prompt": "Newman projection of ethane, eclipsed and staggered, next to each other.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "CC"
+     }
+    ],
+    "drawing_kind": "newman"
+   },
+   "rubric": [
+    "two Newman projections",
+    "one staggered, one eclipsed (back bonds offset slightly to stay visible)",
+    "labelled"
+   ]
+  },
+  {
+   "id": "C09",
+   "category": "conformations",
+   "split": "heldout",
+   "prompt": "For the E2 of meso-2,3-dibromobutane, draw the Newman projection with the two Br anti-periplanar.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "C[C@H]([C@H](C)Br)Br",
+      "cid": 98508
+     }
+    ],
+    "drawing_kind": "newman"
+   },
+   "rubric": [
+    "Newman projection down C2–C3",
+    "Br on front and Br on back carbon 180 degrees apart",
+    "the remaining H/CH3 arrangement is the meso one (methyls anti to each other as well)"
+   ]
+  },
+  {
+   "id": "C10",
+   "category": "conformations",
+   "split": "dev",
+   "prompt": "Draw D-glucose as a Fischer projection.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "C([C@H]([C@H]([C@@H]([C@H](C=O)O)O)O)O)O",
+      "cid": 107526
+     }
+    ],
+    "drawing_kind": "fischer"
+   },
+   "rubric": [
+    "vertical carbon chain, CHO at top, CH2OH at bottom",
+    "crossing horizontal lines at each stereocentre",
+    "OH pattern right, left, right, right"
+   ]
+  },
+  {
+   "id": "C11",
+   "category": "conformations",
+   "split": "dev",
+   "prompt": "Fischer projection of L-alanine",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "C[C@@H](C(=O)O)N",
+      "cid": 5950
+     }
+    ],
+    "drawing_kind": "fischer"
+   },
+   "rubric": [
+    "COOH at top, CH3 at bottom",
+    "NH2 on the left"
+   ]
+  },
+  {
+   "id": "C12",
+   "category": "conformations",
+   "split": "heldout",
+   "prompt": "Draw (2R,3R)-tartaric acid as a Fischer projection.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "[C@@H]([C@H](C(=O)O)O)(C(=O)O)O",
+      "cid": 444305
+     }
+    ],
+    "drawing_kind": "fischer"
+   },
+   "rubric": [
+    "COOH at both ends of a vertical chain",
+    "OH on opposite sides (not meso)",
+    "configuration R,R"
+   ]
+  },
+  {
+   "id": "C13",
+   "category": "conformations",
+   "split": "dev",
+   "prompt": "Draw (−)-menthol as a chair and tell me which groups are axial and which equatorial.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "C[C@@H]1CC[C@H]([C@@H](C1)O)C(C)C",
+      "cid": 16666
+     }
+    ],
+    "drawing_kind": "chair",
+    "answer_regex": [
+     "(?i)equatorial"
+    ]
+   },
+   "rubric": [
+    "a chair",
+    "OH, isopropyl and methyl all equatorial",
+    "text says all three equatorial"
+   ]
+  },
+  {
+   "id": "C14",
+   "category": "conformations",
+   "split": "dev",
+   "prompt": "Draw trans-decalin as two fused chairs.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "C1CC[C@H]2CCCC[C@@H]2C1",
+      "relative": true
+     }
+    ],
+    "drawing_kind": "chair"
+   },
+   "rubric": [
+    "two edge-fused chairs",
+    "fusion H atoms both axial, anti to each other",
+    "the overall flat, rigid shape of trans-decalin"
+   ]
+  },
+  {
+   "id": "C15",
+   "category": "conformations",
+   "split": "heldout",
+   "prompt": "Fischer projection of D-fructose (open chain).",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "C([C@H]([C@H]([C@@H](C(=O)CO)O)O)O)O",
+      "relative": false,
+      "note": "open-chain keto-D-fructose, (3S,4R,5R)"
+     }
+    ],
+    "drawing_kind": "fischer"
+   },
+   "rubric": [
+    "C2 ketone, CH2OH at both ends",
+    "OH pattern left, right, right on C3–C5"
+   ]
+  },
+  {
+   "id": "N01",
+   "category": "natural_products",
+   "split": "dev",
+   "prompt": "Draw strychnine with full stereochemistry.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "C1CN2CC3=CCO[C@H]4CC(=O)N5[C@H]6[C@H]4[C@H]3C[C@H]2[C@@]61C7=CC=CC=C75",
+      "cid": 441071
+     }
+    ],
+    "full_stereo": true
+   },
+   "rubric": [
+    "seven rings, readable without crossing bonds",
+    "all six stereocentres wedged/hashed",
+    "no clipped or overlapping labels"
+   ]
+  },
+  {
+   "id": "N02",
+   "category": "natural_products",
+   "split": "dev",
+   "prompt": "Taxol structure please, all stereocentres.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "CC1=C2[C@H](C(=O)[C@@]3([C@H](C[C@@H]4[C@]([C@H]3[C@@H]([C@@](C2(C)C)(C[C@@H]1OC(=O)[C@@H]([C@H](C5=CC=CC=C5)NC(=O)C6=CC=CC=C6)O)O)OC(=O)C7=CC=CC=C7)(CO4)OC(=O)C)O)C)OC(=O)C",
+      "cid": 36314
+     }
+    ],
+    "full_stereo": true
+   },
+   "rubric": [
+    "taxane core with oxetane",
+    "side chain (2R,3S)-N-benzoylphenylisoserine at C13",
+    "all 11 stereocentres shown",
+    "layout recognisable as the usual taxol depiction"
+   ]
+  },
+  {
+   "id": "N03",
+   "category": "natural_products",
+   "split": "heldout",
+   "prompt": "Draw morphine.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "CN1CC[C@]23[C@@H]4[C@H]1CC5=C2C(=C(C=C5)O)O[C@H]3[C@H](C=C4)O",
+      "cid": 5288826
+     }
+    ],
+    "full_stereo": true
+   },
+   "rubric": [
+    "pentacyclic morphinan with the ether bridge",
+    "five stereocentres wedged/hashed",
+    "conventional orientation (aromatic ring at left)"
+   ]
+  },
+  {
+   "id": "N04",
+   "category": "natural_products",
+   "split": "dev",
+   "prompt": "Cholesterol with the ring stereochemistry shown properly",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "C[C@H](CCCC(C)C)[C@H]1CC[C@@H]2[C@@]1(CC[C@H]3[C@H]2CC=C4[C@@]3(CC[C@@H](C4)O)C)C",
+      "cid": 5997
+     }
+    ],
+    "full_stereo": true
+   },
+   "rubric": [
+    "steroid drawn in standard orientation (A ring lower left)",
+    "angular methyls wedged",
+    "ring-fusion H at C8, C9, C14 shown",
+    "3-OH beta"
+   ]
+  },
+  {
+   "id": "N05",
+   "category": "natural_products",
+   "split": "dev",
+   "prompt": "draw testosterone",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "C[C@]12CC[C@H]3[C@H]([C@@H]1CC[C@@H]2O)CCC4=CC(=O)CC[C@]34C",
+      "cid": 6013
+     }
+    ],
+    "full_stereo": true
+   },
+   "rubric": [
+    "standard steroid orientation",
+    "enone in ring A",
+    "17-beta OH wedged",
+    "angular methyls wedged"
+   ]
+  },
+  {
+   "id": "N06",
+   "category": "natural_products",
+   "split": "heldout",
+   "prompt": "Draw estradiol with stereo.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "C[C@]12CC[C@H]3[C@H]([C@@H]1CC[C@@H]2O)CCC4=C3C=CC(=C4)O",
+      "cid": 5757
+     }
+    ],
+    "full_stereo": true
+   },
+   "rubric": [
+    "aromatic A ring",
+    "five stereocentres shown",
+    "standard orientation"
+   ]
+  },
+  {
+   "id": "N07",
+   "category": "natural_products",
+   "split": "dev",
+   "prompt": "Draw quinine, correct absolute configuration.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "COC1=CC2=C(C=CN=C2C=C1)[C@H]([C@@H]3C[C@@H]4CCN3C[C@@H]4C=C)O",
+      "cid": 3034034
+     }
+    ],
+    "full_stereo": true
+   },
+   "rubric": [
+    "quinoline with 6-OMe",
+    "quinuclidine drawn readably",
+    "four stereocentres (N may be implicit)"
+   ]
+  },
+  {
+   "id": "N08",
+   "category": "natural_products",
+   "split": "dev",
+   "prompt": "Penicillin G please",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "CC1([C@@H](N2[C@H](S1)[C@@H](C2=O)NC(=O)CC3=CC=CC=C3)C(=O)O)C",
+      "cid": 5904
+     }
+    ],
+    "full_stereo": true
+   },
+   "rubric": [
+    "fused beta-lactam/thiazolidine",
+    "three stereocentres",
+    "cis H at C5/C6"
+   ]
+  },
+  {
+   "id": "N09",
+   "category": "natural_products",
+   "split": "heldout",
+   "prompt": "Draw artemisinin, showing the peroxide bridge.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "C[C@@H]1CC[C@H]2[C@H](C(=O)O[C@H]3[C@@]24[C@H]1CC[C@](O3)(OO4)C)C",
+      "cid": 68827
+     }
+    ],
+    "full_stereo": true
+   },
+   "rubric": [
+    "O–O bridge clearly visible",
+    "seven stereocentres",
+    "no overlapping atoms in the bridged system"
+   ]
+  },
+  {
+   "id": "N10",
+   "category": "natural_products",
+   "split": "dev",
+   "prompt": "Draw erythromycin A with all the stereocentres.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "CC[C@@H]1[C@@]([C@@H]([C@H](C(=O)[C@@H](C[C@@]([C@@H]([C@H]([C@@H]([C@H](C(=O)O1)C)O[C@H]2C[C@@]([C@H]([C@@H](O2)C)O)(C)OC)C)O[C@H]3[C@@H]([C@H](C[C@H](O3)C)N(C)C)O)(C)O)C)C)O)(C)O",
+      "cid": 12560
+     }
+    ],
+    "full_stereo": true
+   },
+   "rubric": [
+    "14-membered macrolactone drawn as a large ring, not tangled",
+    "cladinose and desosamine attached at the right positions",
+    "18 stereocentres shown"
+   ]
+  },
+  {
+   "id": "N11",
+   "category": "natural_products",
+   "split": "dev",
+   "prompt": "(+)-camphor structure",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "C[C@@]12CC[C@@H](C1(C)C)CC2=O",
+      "cid": 159055
+     }
+    ],
+    "full_stereo": true
+   },
+   "rubric": [
+    "bicyclo[2.2.1] drawn with the one-carbon bridge visible",
+    "1R,4R"
+   ]
+  },
+  {
+   "id": "N12",
+   "category": "natural_products",
+   "split": "heldout",
+   "prompt": "Draw reserpine.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "CO[C@H]1[C@@H](C[C@@H]2CN3CCC4=C([C@H]3C[C@@H]2[C@@H]1C(=O)OC)NC5=C4C=CC(=C5)OC)OC(=O)C6=CC(=C(C(=C6)OC)OC)OC",
+      "cid": 5770
+     }
+    ],
+    "full_stereo": true
+   },
+   "rubric": [
+    "indole, pentacyclic yohimban core",
+    "trimethoxybenzoate ester",
+    "six stereocentres"
+   ]
+  },
+  {
+   "id": "N13",
+   "category": "natural_products",
+   "split": "heldout",
+   "prompt": "Draw tetrodotoxin",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "C([C@@]1([C@H]2[C@@H]3[C@H](N=C(N[C@@]34[C@@H]([C@@H]1O[C@]([C@H]4O)(O2)O)O)N)O)O)O",
+      "cid": 11174599
+     }
+    ],
+    "full_stereo": true
+   },
+   "rubric": [
+    "guanidinium/cyclic guanidine and ortho-ester cage",
+    "all stereocentres",
+    "cage readable"
+   ]
+  },
+  {
+   "id": "N14",
+   "category": "natural_products",
+   "split": "dev",
+   "prompt": "Draw PGE2 (prostaglandin E2) with correct stereo and alkene geometry.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "CCCCC[C@@H](/C=C/[C@H]1[C@@H](CC(=O)[C@@H]1C/C=C\\CCCC(=O)O)O)O",
+      "cid": 5280360
+     }
+    ],
+    "full_stereo": true
+   },
+   "rubric": [
+    "cyclopentanone with two chains trans",
+    "5Z and 13E alkenes",
+    "15S OH",
+    "hairpin layout of the two chains"
+   ]
+  },
+  {
+   "id": "R01",
+   "category": "reactions",
+   "split": "dev",
+   "prompt": "Make a reaction scheme for Fischer esterification of acetic acid with ethanol, H2SO4 over the arrow.",
+   "expect": {
+    "reaction": {
+     "reactants": [
+      "CC(=O)O",
+      "CCO"
+     ],
+     "products": [
+      "CCOC(C)=O"
+     ],
+     "conditions_regex": [
+      "H2SO4|H₂SO₄"
+     ]
+    }
+   },
+   "rubric": [
+    "acetic acid + ethanol → ethyl acetate",
+    "H2SO4 written over the arrow",
+    "water as by-product optional"
+   ]
+  },
+  {
+   "id": "R02",
+   "category": "reactions",
+   "split": "dev",
+   "prompt": "Diels-Alder of butadiene with maleic anhydride, show the product stereo",
+   "expect": {
+    "reaction": {
+     "reactants": [
+      "C=CC=C",
+      "O=C1OC(=O)C=C1"
+     ],
+     "products": [
+      "O=C1OC(=O)[C@H]2CC=CC[C@@H]12"
+     ],
+     "relative": true
+    }
+   },
+   "rubric": [
+    "cis-fused anhydride product (both ring-fusion H on the same face)",
+    "reactants on the left, product on the right"
+   ]
+  },
+  {
+   "id": "R03",
+   "category": "reactions",
+   "split": "heldout",
+   "prompt": "SN2 of (R)-2-bromobutane with NaOH. Show the inversion in the product.",
+   "expect": {
+    "reaction": {
+     "reactants": [
+      "CC[C@@H](C)Br"
+     ],
+     "products": [
+      "CC[C@H](C)O"
+     ],
+     "conditions_regex": [
+      "NaOH|OH"
+     ]
+    }
+   },
+   "rubric": [
+    "product is (S)-butan-2-ol",
+    "stereocentres wedged on both sides",
+    "NaOH on the arrow"
+   ]
+  },
+  {
+   "id": "R04",
+   "category": "reactions",
+   "split": "dev",
+   "prompt": "Draw the curved-arrow mechanism for acid-catalyzed hydration of 2-methylpropene.",
+   "expect": {
+    "mechanism": true
+   },
+   "rubric": [
+    "protonation of the alkene giving the tertiary carbocation",
+    "water attacking the cation",
+    "deprotonation to tert-butanol",
+    "curved arrows from electron source to sink at every step"
+   ]
+  },
+  {
+   "id": "R05",
+   "category": "reactions",
+   "split": "dev",
+   "prompt": "SN1 mechanism of tert-butyl bromide in water, with arrows.",
+   "expect": {
+    "mechanism": true
+   },
+   "rubric": [
+    "ionisation to tert-butyl cation and bromide",
+    "water attack",
+    "deprotonation",
+    "curved arrows correct in direction"
+   ]
+  },
+  {
+   "id": "R06",
+   "category": "reactions",
+   "split": "heldout",
+   "prompt": "Scheme: PhMgBr + acetone, then H3O+ workup. Conditions over and under the arrow.",
+   "expect": {
+    "reaction": {
+     "reactants": [
+      "CC(C)=O"
+     ],
+     "products": [
+      "CC(C)(O)c1ccccc1"
+     ],
+     "conditions_regex": [
+      "PhMgBr|MgBr",
+      "H3O|H₃O"
+     ]
+    }
+   },
+   "rubric": [
+    "product 2-phenylpropan-2-ol",
+    "1. PhMgBr / 2. H3O+ numbered or split above/below"
+   ]
+  },
+  {
+   "id": "R07",
+   "category": "reactions",
+   "split": "dev",
+   "prompt": "Base-catalysed aldol mechanism for acetaldehyde, curved arrows please.",
+   "expect": {
+    "mechanism": true
+   },
+   "rubric": [
+    "enolate formation by hydroxide",
+    "enolate attacking the second aldehyde",
+    "protonation of the alkoxide",
+    "product 3-hydroxybutanal"
+   ]
+  },
+  {
+   "id": "R08",
+   "category": "reactions",
+   "split": "dev",
+   "prompt": "Wittig reaction scheme: benzaldehyde + Ph3P=CH2",
+   "expect": {
+    "reaction": {
+     "reactants": [
+      "O=Cc1ccccc1"
+     ],
+     "products": [
+      "C=Cc1ccccc1"
+     ]
+    }
+   },
+   "rubric": [
+    "product styrene",
+    "Ph3P=CH2 drawn or written",
+    "Ph3PO by-product optional"
+   ]
+  },
+  {
+   "id": "R09",
+   "category": "reactions",
+   "split": "heldout",
+   "prompt": "Three-step synthesis scheme: benzene to acetophenone (AcCl, AlCl3), then NaBH4 to 1-phenylethanol, then H2SO4/heat to styrene. One scheme.",
+   "expect": {
+    "reaction": {
+     "reactants": [
+      "c1ccccc1"
+     ],
+     "products": [
+      "C=Cc1ccccc1"
+     ],
+     "intermediates": [
+      "CC(=O)c1ccccc1",
+      "CC(O)c1ccccc1"
+     ],
+     "conditions_regex": [
+      "AlCl",
+      "NaBH"
+     ]
+    }
+   },
+   "rubric": [
+    "four structures linked by three arrows in order",
+    "reagents on each arrow",
+    "same scale for all structures"
+   ]
+  },
+  {
+   "id": "R10",
+   "category": "reactions",
+   "split": "dev",
+   "prompt": "Lindlar hydrogenation of 2-butyne, draw the scheme with the right alkene geometry.",
+   "expect": {
+    "reaction": {
+     "reactants": [
+      "CC#CC"
+     ],
+     "products": [
+      "C/C=C\\C"
+     ],
+     "conditions_regex": [
+      "Lindlar|Pd"
+     ]
+    }
+   },
+   "rubric": [
+    "product cis-2-butene",
+    "H2, Lindlar on the arrow"
+   ]
+  },
+  {
+   "id": "R11",
+   "category": "reactions",
+   "split": "dev",
+   "prompt": "Bromination of cyclohexene: draw the scheme showing anti addition.",
+   "expect": {
+    "reaction": {
+     "reactants": [
+      "C1=CCCCC1"
+     ],
+     "products_any_of": [
+      "C1CC[C@H]([C@@H](C1)Br)Br",
+      "C1CC[C@@H]([C@H](C1)Br)Br"
+     ],
+     "conditions_regex": [
+      "Br"
+     ]
+    }
+   },
+   "rubric": [
+    "trans-1,2-dibromocyclohexane (one Br wedge, one hash)",
+    "racemic noted or either enantiomer acceptable"
+   ]
+  },
+  {
+   "id": "R12",
+   "category": "reactions",
+   "split": "heldout",
+   "prompt": "Curved-arrow mechanism for E2 of 2-bromo-2-methylpropane with ethoxide.",
+   "expect": {
+    "mechanism": true
+   },
+   "rubric": [
+    "ethoxide removing a beta H",
+    "arrows: base→H, C–H bond→C=C, C–Br→Br",
+    "one concerted step",
+    "product isobutylene"
+   ]
+  },
+  {
+   "id": "D01",
+   "category": "document_figures",
+   "split": "dev",
+   "prompt": "For an aromaticity exam question I need benzene, pyridine, pyrrole, furan, cyclooctatetraene and the cyclopentadienyl anion, all in the same size and style.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "c1ccccc1"
+     },
+     {
+      "smiles": "c1ccncc1"
+     },
+     {
+      "smiles": "c1cc[nH]c1"
+     },
+     {
+      "smiles": "c1ccoc1"
+     },
+     {
+      "smiles": "C1=CC=CC=CC=C1"
+     },
+     {
+      "smiles": "[cH-]1cccc1"
+     }
+    ],
+    "set_match": true,
+    "style_consistency": true
+   },
+   "rubric": [
+    "all six present",
+    "same bond length and line weight across all",
+    "the anion charge drawn",
+    "no answer hints on the student art"
+   ]
+  },
+  {
+   "id": "D02",
+   "category": "document_figures",
+   "split": "dev",
+   "prompt": "Multiple-choice question: which of these is (R)-carvone? Give me four options A–D (the R and S enantiomers and two decoys) and a separate answer key.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "CC1=CC[C@H](CC1=O)C(=C)C",
+      "cid": 439570
+     },
+     {
+      "smiles": "CC1=CC[C@@H](CC1=O)C(=C)C",
+      "cid": 16724
+     }
+    ],
+    "set_contains": true,
+    "style_consistency": true,
+    "answer_key": true
+   },
+   "rubric": [
+    "four lettered options in one grid",
+    "includes both enantiomers",
+    "answer key separate from the question image",
+    "answer key letter really is (R)"
+   ]
+  },
+  {
+   "id": "D03",
+   "category": "document_figures",
+   "split": "heldout",
+   "prompt": "Handout figure: aspirin, ibuprofen, acetaminophen and naproxen, each as its own PNG for my slides, all at the same scale.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "CC(=O)Oc1ccccc1C(=O)O"
+     },
+     {
+      "smiles": "CC(C)Cc1ccc(cc1)C(C)C(=O)O"
+     },
+     {
+      "smiles": "CC(=O)NC1=CC=C(C=C1)O"
+     },
+     {
+      "smiles": "C[C@@H](C1=CC2=C(C=C1)C=C(C=C2)OC)C(=O)O"
+     }
+    ],
+    "set_match": "constitution",
+    "style_consistency": true
+   },
+   "rubric": [
+    "four separate images",
+    "identical bond length and stroke width across files",
+    "naproxen drawn as (S) or stereo noted"
+   ]
+  },
+  {
+   "id": "D04",
+   "category": "document_figures",
+   "split": "dev",
+   "prompt": "Exam: draw all four stereoisomers of 2-bromo-3-chlorobutane, labelled with R/S, same style.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "C[C@@H](Br)[C@@H](C)Cl"
+     },
+     {
+      "smiles": "C[C@H](Br)[C@H](C)Cl"
+     },
+     {
+      "smiles": "C[C@@H](Br)[C@H](C)Cl"
+     },
+     {
+      "smiles": "C[C@H](Br)[C@@H](C)Cl"
+     }
+    ],
+    "set_match": true,
+    "full_stereo": true,
+    "style_consistency": true
+   },
+   "rubric": [
+    "four distinct stereoisomers, no duplicates",
+    "each label matches the drawn configuration",
+    "same size and style"
+   ]
+  },
+  {
+   "id": "D05",
+   "category": "document_figures",
+   "split": "dev",
+   "prompt": "Make a figure with the four DNA bases (A, T, G, C) for a handout, same style, labelled.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "Nc1ncnc2[nH]cnc12"
+     },
+     {
+      "smiles": "Cc1c[nH]c(=O)[nH]c1=O"
+     },
+     {
+      "smiles": "Nc1nc2[nH]cnc2c(=O)[nH]1"
+     },
+     {
+      "smiles": "Nc1cc[nH]c(=O)n1"
+     }
+    ],
+    "set_match": "constitution",
+    "style_consistency": true
+   },
+   "rubric": [
+    "four bases, correct tautomers (keto/amino)",
+    "labels A, T, G, C match",
+    "consistent style"
+   ]
+  },
+  {
+   "id": "D06",
+   "category": "document_figures",
+   "split": "heldout",
+   "prompt": "Handout: glucose, galactose and mannose (beta-pyranose forms), same style, labelled.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "C([C@@H]1[C@H]([C@@H]([C@H]([C@@H](O1)O)O)O)O)O",
+      "cid": 64689
+     },
+     {
+      "smiles": "C([C@@H]1[C@@H]([C@@H]([C@H]([C@@H](O1)O)O)O)O)O",
+      "note": "beta-D-galactopyranose"
+     },
+     {
+      "smiles": "C([C@@H]1[C@H]([C@@H]([C@@H]([C@@H](O1)O)O)O)O)O",
+      "note": "beta-D-mannopyranose"
+     }
+    ],
+    "set_match": true,
+    "full_stereo": true,
+    "style_consistency": true
+   },
+   "rubric": [
+    "three sugars with correct epimer differences (C4 for galactose, C2 for mannose)",
+    "same depiction type and size",
+    "labels correct"
+   ]
+  },
+  {
+   "id": "D07",
+   "category": "document_figures",
+   "split": "heldout",
+   "prompt": "I'm writing a problem set on SN2. Give me three example reactions as schemes, all in the same style and size.",
+   "expect": {
+    "reaction_count": 3,
+    "style_consistency": true
+   },
+   "rubric": [
+    "three correct SN2 reactions",
+    "consistent bond length, font and arrow style across the three",
+    "stereo inversion shown where a stereocentre reacts"
+   ]
+  },
+  {
+   "id": "D08",
+   "category": "document_figures",
+   "split": "dev",
+   "prompt": "Put cholesterol, testosterone and estradiol in one figure for a lecture slide, same orientation and scale.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "C[C@H](CCCC(C)C)[C@H]1CC[C@@H]2[C@@]1(CC[C@H]3[C@H]2CC=C4[C@@]3(CC[C@@H](C4)O)C)C",
+      "cid": 5997
+     },
+     {
+      "smiles": "C[C@]12CC[C@H]3[C@H]([C@@H]1CC[C@@H]2O)CCC4=CC(=O)CC[C@]34C",
+      "cid": 6013
+     },
+     {
+      "smiles": "C[C@]12CC[C@H]3[C@H]([C@@H]1CC[C@@H]2O)CCC4=C3C=CC(=C4)O",
+      "cid": 5757
+     }
+    ],
+    "set_match": true,
+    "full_stereo": true,
+    "style_consistency": true
+   },
+   "rubric": [
+    "all three in the same steroid orientation",
+    "same bond length",
+    "stereo complete in each"
+   ]
+  },
+  {
+   "id": "P01",
+   "category": "naming_properties",
+   "split": "dev",
+   "prompt": "What's the IUPAC name of CC(C)Cc1ccc(cc1)C(C)C(=O)O?",
+   "expect": {
+    "answer_regex": [
+     "(?i)2-\\[4-\\(2-methylpropyl\\)phenyl\\]propanoic acid|2-\\(4-isobutylphenyl\\)propanoic acid"
+    ]
+   },
+   "rubric": [
+    "correct systematic name",
+    "does not assign a stereodescriptor the SMILES lacks"
+   ]
+  },
+  {
+   "id": "P03",
+   "category": "naming_properties",
+   "split": "heldout",
+   "prompt": "Draw (2E,4Z)-hexa-2,4-dienoic acid",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "C/C=C\\C=C\\C(=O)O"
+     }
+    ],
+    "full_stereo": true
+   },
+   "rubric": [
+    "2E and 4Z geometries drawn correctly"
+   ]
+  },
+  {
+   "id": "P04",
+   "category": "naming_properties",
+   "split": "dev",
+   "prompt": "Name this compound, including R/S: C[C@H](c1ccccc1)O",
+   "expect": {
+    "answer_regex": [
+     "(?i)\\(1?R\\)-1-phenylethan-?1-ol|\\(R\\)-1-phenylethanol|\\(R\\)-α-methylbenzyl alcohol"
+    ]
+   },
+   "rubric": [
+    "(R)-1-phenylethanol"
+   ]
+  },
+  {
+   "id": "P05",
+   "category": "naming_properties",
+   "split": "dev",
+   "prompt": "Molecular formula and monoisotopic mass of caffeine?",
+   "expect": {
+    "answer_regex": [
+     "C8H10N4O2|C₈H₁₀N₄O₂",
+     "194\\.080"
+    ]
+   },
+   "rubric": [
+    "C8H10N4O2",
+    "194.0804 Da (monoisotopic), units given",
+    "computed by ChemDraft, not from memory"
+   ]
+  },
+  {
+   "id": "P06",
+   "category": "naming_properties",
+   "split": "heldout",
+   "prompt": "logP and TPSA of paracetamol?",
+   "expect": {
+    "answer_regex": [
+     "(?i)logP",
+     "(?i)TPSA|polar surface"
+    ],
+    "cli_value_match": {
+     "smiles": "CC(=O)NC1=CC=C(C=C1)O",
+     "methods": [
+      "logp",
+      "tpsa"
+     ],
+     "tolerance": 0.05
+    }
+   },
+   "rubric": [
+    "values match ChemDraft's analyze output",
+    "method named (e.g. Crippen) and units for TPSA (Å²)",
+    "labelled as calculated estimates"
+   ]
+  },
+  {
+   "id": "P07",
+   "category": "naming_properties",
+   "split": "dev",
+   "prompt": "What's the pKa of acetic acid according to your tool?",
+   "expect": {
+    "answer_regex": [
+     "(?i)pKa"
+    ]
+   },
+   "rubric": [
+    "value reported from ChemDraft's predictor with its method and interval",
+    "labelled a prediction, not an experimental value",
+    "if declined, says not computed and why"
+   ]
+  },
+  {
+   "id": "P08",
+   "category": "naming_properties",
+   "split": "dev",
+   "prompt": "m/z for [M+H]+ of morphine?",
+   "expect": {
+    "answer_regex": [
+     "286\\.14[34]"
+    ]
+   },
+   "rubric": [
+    "286.1438 (monoisotopic, [M+H]+)",
+    "says it is exact-mass arithmetic"
+   ]
+  },
+  {
+   "id": "P09",
+   "category": "naming_properties",
+   "split": "heldout",
+   "prompt": "How many stereocentres does cholesterol have, and how many stereoisomers are possible in principle?",
+   "expect": {
+    "answer_regex": [
+     "\\b8\\b|eight",
+     "\\b256\\b|2\\^8|2⁸"
+    ]
+   },
+   "rubric": [
+    "8 stereocentres",
+    "256 (2^8) stereoisomers"
+   ]
+  },
+  {
+   "id": "P10",
+   "category": "naming_properties",
+   "split": "dev",
+   "prompt": "Draw (1S,2S)-2-aminocyclohexan-1-ol.",
+   "expect": {
+    "structures": [
+     {
+      "smiles": "N[C@H]1CCCC[C@@H]1O",
+      "verify_with": "opsin"
+     }
+    ],
+    "full_stereo": true
+   },
+   "rubric": [
+    "two stereocentres, 1S,2S",
+    "trans relationship"
+   ]
+  },
+  {
+   "id": "P11",
+   "category": "naming_properties",
+   "split": "dev",
+   "prompt": "Predict the 1H NMR of ethyl acetate.",
+   "expect": {
+    "answer_regex": [
+     "(?i)ppm"
+    ]
+   },
+   "rubric": [
+    "three environments (CH3 of acetyl ~2.0, OCH2 ~4.1 quartet, CH3 ~1.2 triplet)",
+    "multiplicities labelled as first-order estimates",
+    "called a prediction"
+   ]
+  },
+  {
+   "id": "P12",
+   "category": "naming_properties",
+   "split": "heldout",
+   "prompt": "Give me the name of the compound with this SMILES: CC(=O)Oc1ccccc1C(=O)O",
+   "expect": {
+    "answer_regex": [
+     "(?i)2-acetyloxybenzoic acid|2-\\(acetyloxy\\)benzoic acid|acetylsalicylic acid|aspirin"
+    ]
+   },
+   "rubric": [
+    "systematic name or aspirin"
+   ]
+  }
+ ]
+}

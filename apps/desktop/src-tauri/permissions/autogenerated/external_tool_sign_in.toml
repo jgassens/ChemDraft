@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-external-tool-sign-in"
+description = "Enables the external_tool_sign_in command without any pre-configured scope."
+commands.allow = ["external_tool_sign_in"]
+
+[[permission]]
+identifier = "deny-external-tool-sign-in"
+description = "Denies the external_tool_sign_in command without any pre-configured scope."
+commands.deny = ["external_tool_sign_in"]

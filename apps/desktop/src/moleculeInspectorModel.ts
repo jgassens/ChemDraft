@@ -25,7 +25,8 @@ import type {
   ArtInspectorEffectValue,
   ArtInspectorMixedValue
 } from "./artInspectorModel";
-import { normalizeNativeAtomElementLabel } from "./documentWorkflow";
+import { nativeBondStereoAvailability, normalizeNativeAtomElementLabel, type BondStereoAvailability } from "./documentWorkflow";
+import type { DoubleBondStereoReader } from "./interaction/doubleBondStereo";
 
 export type MoleculeInspectorTabId = "structure" | "atom-labels" | "templates";
 export type MoleculeInspectorContext = "none" | "molecule" | "ring" | "bond" | "atom";
@@ -74,6 +75,7 @@ export interface MoleculeInspectorRingsModel {
 
 export interface MoleculeInspectorStructureModel {
   enabled: boolean;
+  bondStereo?: BondStereoAvailability;
   doubleBondPosition: ArtInspectorMixedValue<"left" | "center" | "right" | "automatic">;
   doubleBondTargetCount: number;
   doubleBondTargets: readonly MoleculeInspectorBondTarget[];
@@ -163,7 +165,8 @@ type MoleculeInspectorRingEntry = {
 
 export function createMoleculeInspectorModel(
   document: ChemDraftDocument,
-  selection: MoleculeInspectorSelectionInput = { selectedObjectIds: [] }
+  selection: MoleculeInspectorSelectionInput = { selectedObjectIds: [] },
+  perceiveDoubleBondStereo?: DoubleBondStereoReader
 ): MoleculeInspectorModel {
   const targets = resolveMoleculeInspectorTargets(document, selection);
   const targetObjects = moleculeObjectsForTargets(document, targets.moleculeObjectIds);
@@ -183,7 +186,10 @@ export function createMoleculeInspectorModel(
     targets,
     suggestedTab: suggestedTabForContext(targets.context),
     rings: createRingsModel(targetObjects, targets.ringTargets),
-    structure: createStructureModel(targetObjects, targets.atomTargets, targets.bondTargets, doubleBondTargets),
+    structure: {
+      ...createStructureModel(targetObjects, targets.atomTargets, targets.bondTargets, doubleBondTargets),
+      bondStereo: nativeBondStereoAvailability(document, targets.bondTargets, perceiveDoubleBondStereo)
+    },
     atomLabels: createAtomLabelsModel(targetObjects, targets.atomLabelTargets)
   };
 }
@@ -263,6 +269,11 @@ export function resolveMoleculeInspectorTargets(
 }
 
 export function representativeMoleculeBondLengthPx(object: MoleculeObject): number {
+  // Projected bonds are foreshortened; retain the nominal scale in settings and exports.
+  if (object.style.projection === "perspective"
+    && typeof object.style.bondLengthPx === "number" && object.style.bondLengthPx > 0) {
+    return object.style.bondLengthPx;
+  }
   const atomById = new Map(object.atoms.map((atom) => [atom.id, atom]));
   const heavyDistances: number[] = [];
   const allDistances: number[] = [];
@@ -386,6 +397,17 @@ function createStructureModel(
     const bond = objectById.get(target.objectId)?.bonds.find((candidate) => candidate.id === target.bondId);
     return bond?.order === "double" ? [bond] : [];
   });
+  const bondLengthPx = uniformValue(
+    bondEntries.length > 0 ? bondStyleEntries : moleculeEntries,
+    ({ object, style }) => bondEntries.length > 0 ? style.bondLengthPx : representativeMoleculeBondLengthPx(object),
+    fallback.bondLengthPx,
+    bondEntries.length > 0 ? Object.is : (first, second) => Math.abs(first - second) <= 0.01
+  );
+  if (bondEntries.length === 0 && bondLengthPx.value !== null) {
+    // Match the numeric field's three-decimal display precision after comparing
+    // the measured lengths, so rounding cannot hide a difference over 0.01 px.
+    bondLengthPx.value = Number(bondLengthPx.value.toFixed(3));
+  }
 
   return {
     enabled: targetCount > 0,
@@ -397,11 +419,7 @@ function createStructureModel(
     targetKind,
     values: {
       chainAngleDegrees: uniformValue(moleculeEntries, ({ style }) => style.chainAngleDegrees, fallback.chainAngleDegrees),
-      bondLengthPx: uniformValue(
-        bondEntries.length > 0 ? bondStyleEntries : moleculeEntries,
-        ({ object, style }) => bondEntries.length > 0 ? style.bondLengthPx : representativeMoleculeBondLengthPx(object),
-        fallback.bondLengthPx
-      ),
+      bondLengthPx,
       bondStrokeWidthPx: uniformValue(bondStyleEntries, ({ style }) => style.bondStrokeWidthPx, fallback.bondStrokeWidthPx),
       bondBoldWidthPx: uniformValue(bondStyleEntries, ({ style }) => style.bondBoldWidthPx, fallback.bondBoldWidthPx),
       bondColor: uniformValue(

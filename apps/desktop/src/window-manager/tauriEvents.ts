@@ -95,7 +95,10 @@ export async function listenTauriEvent<T>(eventName: string, handler: EventCallb
 
 /** The current webview window's own `listen` (events targeted at this window), with a stop that cannot fail. */
 export async function listenCurrentWindowEvent<T>(eventName: string, handler: EventCallback<T>): Promise<SafeUnlisten> {
+  // A desktop UI marker (__TAURI__) alone supplies no window metadata or native IPC.
+  // Use the same host check as isTauriHost without loading the plugin filesystem adapter here.
+  if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return () => undefined;
   const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-  const window = getCurrentWebviewWindow();
-  return safeTauriListen<T>(eventName, (wrapped) => window.listen<T>(eventName, wrapped), handler).attached;
+  const currentWindow = getCurrentWebviewWindow();
+  return safeTauriListen<T>(eventName, (wrapped) => currentWindow.listen<T>(eventName, wrapped), handler).attached;
 }

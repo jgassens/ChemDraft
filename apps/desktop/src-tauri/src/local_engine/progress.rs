@@ -99,12 +99,12 @@ pub fn approximate_size(roots: &[PathBuf]) -> u64 {
 /// Decides which progress events reach the webview. A new phase and a completed byte count always
 /// pass, so the dialog never misses a step or stalls one short of full; anything else passes at
 /// most once per `interval`.
-pub struct ProgressThrottle {
+pub struct ProgressThrottle<P = InstallPhase> {
     interval: Duration,
-    last: Option<(InstallPhase, Instant)>,
+    last: Option<(P, Instant)>,
 }
 
-impl ProgressThrottle {
+impl<P: Copy + PartialEq> ProgressThrottle<P> {
     pub fn new(interval: Duration) -> Self {
         Self {
             interval,
@@ -112,20 +112,30 @@ impl ProgressThrottle {
         }
     }
 
-    pub fn admit(&mut self, progress: &InstallProgress, now: Instant) -> bool {
+    pub fn admit_phase(&mut self, phase: P, completed: bool, now: Instant) -> bool {
         let boundary = match self.last {
             None => true,
-            Some((phase, _)) => phase != progress.phase,
-        } || progress.phase == InstallPhase::Done
-            || (progress.bytes_total.is_some() && progress.bytes_done == progress.bytes_total);
+            Some((previous, _)) => previous != phase,
+        } || completed;
         let due = self
             .last
             .is_none_or(|(_, at)| now.saturating_duration_since(at) >= self.interval);
         if boundary || due {
-            self.last = Some((progress.phase, now));
+            self.last = Some((phase, now));
             true
         } else {
             false
         }
+    }
+}
+
+impl ProgressThrottle<InstallPhase> {
+    pub fn admit(&mut self, progress: &InstallProgress, now: Instant) -> bool {
+        self.admit_phase(
+            progress.phase,
+            progress.phase == InstallPhase::Done
+                || (progress.bytes_total.is_some() && progress.bytes_done == progress.bytes_total),
+            now,
+        )
     }
 }

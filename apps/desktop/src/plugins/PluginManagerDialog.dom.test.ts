@@ -7,7 +7,12 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { MemoryStorage } from "../testSupport/memoryStorage";
-import type { InstalledPluginCatalogEntry, PluginPackageInspection } from "./installPluginPackage";
+import {
+  PluginInstallError,
+  PluginInstallErrorCodes,
+  type InstalledPluginCatalogEntry,
+  type PluginPackageInspection
+} from "./installPluginPackage";
 import type { PickedPluginPackage } from "./pickPluginPackage";
 import { buildPluginMenuItems } from "./pluginMenuModel";
 import { PluginManagerDialog } from "./PluginManagerDialog";
@@ -650,6 +655,44 @@ describe("PluginManagerDialog", () => {
       }
     }
   );
+
+  it("finishes uninstall follow-ups before showing a storage deletion failure", async () => {
+    let pending: { prompt: NativePromptOptions; resolve: (id: string) => void } | undefined;
+    onTestFinished(setNativePromptProvider((prompt) => new Promise((resolve) => { pending = { prompt, resolve }; })));
+    const runtime = createRuntime();
+    const onPluginsChanged = vi.fn();
+    const error = new PluginInstallError(
+      PluginInstallErrorCodes.UninstallStorageDeleteFailed,
+      "Plugin was uninstalled, but its stored settings could not be deleted: storage.json: permission denied"
+    );
+    function UninstallHarness() {
+      const [installed, setInstalled] = useState<readonly InstalledPluginCatalogEntry[]>([molscribeInstalled]);
+      return createElement(Harness, {
+        runtime,
+        installedPlugins: installed,
+        recognitionEngineStatus: installedEngineStatus,
+        onUninstallRecognitionEngine: vi.fn(async () => undefined),
+        onUninstallPlugin: async () => {
+          setInstalled([]);
+          throw error;
+        },
+        onClose: vi.fn(),
+        onPluginsChanged
+      });
+    }
+    mount(createElement(UninstallHarness));
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>(
+        `[data-action="uninstall-plugin"][data-plugin-id="${molscribeManifest.id}"]`
+      )!.click();
+    });
+    expect(onPluginsChanged).toHaveBeenCalledOnce();
+    expect(document.querySelector('[data-testid="molscribe-engine-row"]')).toBeNull();
+    expect(pending?.prompt.message).toContain("Also remove the recognition engine (2.5 GB)?");
+    expect(document.querySelector(".plugin-manager-error")?.textContent).toContain(error.message);
+    await act(async () => { pending!.resolve("keep"); });
+    expect(document.querySelector(".plugin-manager-error")?.textContent).toContain(error.message);
+  });
 
   it("does not offer engine removal after uninstalling MolScribe when no engine is installed", async () => {
     const runtime = createRuntime();
@@ -1378,6 +1421,30 @@ describe("PluginManagerDialog", () => {
 
     // A bundled plugin never offers Uninstall — it is not installed, it is compiled in.
     expect(document.querySelector(`[data-action="uninstall-plugin"][data-plugin-id="${pluginId}"]`)).toBeNull();
+  });
+
+  it("lists and revokes granted AI tool access for an installed plugin", async () => {
+    const runtime = createRuntime();
+    const list = vi.spyOn(runtime.externalTools, "consentList")
+      .mockResolvedValueOnce([{ tool: "claude", pluginId: installedPluginId, granted: true, at: "2026-10-22T12:00:00Z" }])
+      .mockResolvedValueOnce([]);
+    const revoke = vi.spyOn(runtime.externalTools, "consentRevoke").mockResolvedValue();
+    const entry = installedEntry();
+    mount(createElement(Harness, {
+      runtime,
+      onClose: vi.fn(),
+      onPluginsChanged: vi.fn(),
+      installedPlugins: [entry]
+    }));
+
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="plugin-external-tool-access"]')?.textContent)
+      .toContain("AI tool access: Claude Code (Anthropic): allowed"));
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>(`[data-action="revoke-external-tool-consent"][data-plugin-id="${installedPluginId}"]`)!.click();
+    });
+    await vi.waitFor(() => expect(revoke).toHaveBeenCalledWith("claude", installedPluginId));
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="plugin-external-tool-access"]')).toBeNull());
+    expect(list).toHaveBeenCalledTimes(2);
   });
 
   it("waits for the installed-plugin catalog before enabling package and update actions", async () => {
