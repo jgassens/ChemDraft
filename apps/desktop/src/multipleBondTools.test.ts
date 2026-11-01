@@ -3,8 +3,15 @@ import { describe, expect, it } from "vitest";
 import {
   applyFreeformSingleBondToolAtPoint, applyNativeMoleculeBondOrderTarget, applyNativeMoleculeBondOrderValueTarget, applySingleBondToolAtPoint,
   createPhase4Document, getSelectedMolecule, nativeBondOrderForToolCommand, nativeBondOrderTargetRefusal,
-  nativeBondStyleForToolCommand, createNativeSavePayload, openNativeDocument
+  nativeBondStyleForToolCommand, createNativeSavePayload, openNativeDocument, type NativeBondOrderTarget
 } from "./documentWorkflow";
+
+/** A full bond-order target for `bond`, with the endpoints and pointer distance the type requires. */
+function bondTarget(
+  objectId: string, bond: { id: string; fromAtomId: string; toAtomId: string }
+): NativeBondOrderTarget {
+  return { objectId, kind: "bond", bondId: bond.id, fromAtomId: bond.fromAtomId, toAtomId: bond.toAtomId, distanceToPointer: 0 };
+}
 
 /** A bond whose second atom takes three more single substituents, so it ends with four bonds (full carbon). */
 function branchedSeed() {
@@ -86,7 +93,7 @@ describe("multiple bond tool refusals", () => {
     const asSingle = applyFreeformSingleBondToolAtPoint(single, base.id, atom.id, point);
     const singleMolecule = getSelectedMolecule(asSingle)!;
     const cycled = getSelectedMolecule(applyNativeMoleculeBondOrderValueTarget(
-      asSingle, { objectId: base.id, kind: "bond", bondId: singleMolecule.bonds[1].id }, "double"))!;
+      asSingle, bondTarget(base.id, singleMolecule.bonds[1]), "double"))!;
     expect(drawn.structure).toBe("CC=C");
     expect(drawn.bonds[1].display?.doubleBondSide).toBeDefined();
     expect(drawn.bonds[1].display?.doubleBondSide).toBe(cycled.bonds[1].display?.doubleBondSide);
@@ -124,7 +131,7 @@ describe("multiple bond tool refusals", () => {
     const { document, objectId, centerId } = branchedSeed();
     const molecule = getSelectedMolecule(document)!;
     const bond = molecule.bonds.find(candidate => candidate.fromAtomId === centerId || candidate.toAtomId === centerId)!;
-    const target = { objectId, kind: "bond" as const, bondId: bond.id };
+    const target = bondTarget(objectId, bond);
     expect(applyNativeMoleculeBondOrderValueTarget(document, target, "double")).toBe(document);
     expect(nativeBondOrderTargetRefusal(document, target, "double")).toMatch(/not changed.*valence/);
   });
@@ -132,13 +139,13 @@ describe("multiple bond tool refusals", () => {
   it("tells an unchanged bond from a refused one, and refuses a dashed (dative) bond like order cycling", () => {
     const single = applySingleBondToolAtPoint(createPhase4Document("Same"), { x: 300, y: 300 });
     const molecule = getSelectedMolecule(single)!;
-    const target = { objectId: molecule.id, kind: "bond" as const, bondId: molecule.bonds[0].id };
+    const target = bondTarget(molecule.id, molecule.bonds[0]);
     expect(nativeBondOrderTargetRefusal(single, target, "single")).toBe("Bond is already single");
     expect(nativeBondOrderTargetRefusal(single, target, "double")).toBeUndefined();
 
     const dashed = applySingleBondToolAtPoint(createPhase4Document("Dative"), { x: 300, y: 300 }, { bondStyle: "dashed" });
     const dative = getSelectedMolecule(dashed)!;
-    const dashedTarget = { objectId: dative.id, kind: "bond" as const, bondId: dative.bonds[0].id };
+    const dashedTarget = bondTarget(dative.id, dative.bonds[0]);
     expect(applyNativeMoleculeBondOrderValueTarget(dashed, dashedTarget, "double")).toBe(dashed);
     expect(nativeBondOrderTargetRefusal(dashed, dashedTarget, "double")).toMatch(/dashed \(dative\) bond stays single/);
   });
@@ -194,7 +201,7 @@ describe("multiple bond tool refusals", () => {
     it("refuses to raise a bond at a hypovalent literal atom past its valence, and names the reason", () => {
       const { document, objectId } = literalCenterSeed(2);
       const molecule = getSelectedMolecule(document)!;
-      const target = { objectId, kind: "bond" as const, bondId: molecule.bonds[1].id };
+      const target = bondTarget(objectId, molecule.bonds[1]);
       expect(applyNativeMoleculeBondOrderValueTarget(document, target, "triple")).toBe(document);
       expect(nativeBondOrderTargetRefusal(document, target, "triple")).toMatch(/not changed.*valence/);
       // A double bond fills the valence exactly, so it is still offered.
@@ -205,7 +212,7 @@ describe("multiple bond tool refusals", () => {
       const { document, objectId } = withBondOrders(literalCenterSeed(2), ["single", "double", "double"]);
       const molecule = getSelectedMolecule(document)!;
       expect(molecule.bonds.map(bond => bond.order)).toEqual(["single", "double", "double"]);
-      const target = { objectId, kind: "bond" as const, bondId: molecule.bonds[1].id };
+      const target = bondTarget(objectId, molecule.bonds[1]);
       expect(applyNativeMoleculeBondOrderTarget(document, target)).toBe(document);
       expect(nativeBondOrderTargetRefusal(document, target, "triple")).toMatch(/not changed.*valence/);
     });
@@ -213,7 +220,7 @@ describe("multiple bond tool refusals", () => {
     it("still lets an over-valent atom have a bond lowered", () => {
       const { document, objectId } = withBondOrders(literalCenterSeed(2), ["single", "double", "double"]);
       const molecule = getSelectedMolecule(document)!;
-      const target = { objectId, kind: "bond" as const, bondId: molecule.bonds[1].id };
+      const target = bondTarget(objectId, molecule.bonds[1]);
       expect(nativeBondOrderTargetRefusal(document, target, "single")).toBeUndefined();
       const next = applyNativeMoleculeBondOrderValueTarget(document, target, "single");
       expect(next).not.toBe(document);
@@ -223,7 +230,7 @@ describe("multiple bond tool refusals", () => {
     it("words a lowering that leaves a typed atom short as a shortfall, not an excess", () => {
       const { document, objectId } = withBondOrders(literalCenterSeed(1), ["single", "triple"]);
       const molecule = getSelectedMolecule(document)!;
-      const target = { objectId, kind: "bond" as const, bondId: molecule.bonds[1].id };
+      const target = bondTarget(objectId, molecule.bonds[1]);
       const reason = nativeBondOrderTargetRefusal(document, target, "double");
       expect(reason).toMatch(/would leave C invalid.*3 of 4 bonds/);
       expect(reason).not.toMatch(/exceed/);
@@ -232,7 +239,7 @@ describe("multiple bond tool refusals", () => {
     it("still raises a double bond to triple on valid atoms", () => {
       const single = applySingleBondToolAtPoint(createPhase4Document("Raise"), { x: 300, y: 300 });
       const molecule = getSelectedMolecule(single)!;
-      const target = { objectId: molecule.id, kind: "bond" as const, bondId: molecule.bonds[0].id };
+      const target = bondTarget(molecule.id, molecule.bonds[0]);
       const double = applyNativeMoleculeBondOrderValueTarget(single, target, "double");
       expect(getSelectedMolecule(double)!.bonds[0].order).toBe("double");
       const triple = applyNativeMoleculeBondOrderValueTarget(double, target, "triple");
