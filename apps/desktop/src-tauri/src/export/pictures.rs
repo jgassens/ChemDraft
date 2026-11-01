@@ -8,8 +8,9 @@
 //! The tree is then rendered node by node: everything through resvg, and each stand-in from the
 //! supplied pixels with the same transform and sampling resvg would give a decoded bitmap.
 //!
-//! A picture that cannot be drawn exactly (inside a mask, filter, blend mode, pattern or marker)
-//! is not drawn at all and gets a warning, as do pictures the webview refused to decode.
+//! A picture copy that cannot be drawn exactly (inside a mask, filter, blend mode, pattern or
+//! marker) is not drawn and gets a warning, counted per rendered copy, as do pictures the webview
+//! refused to decode or left out because the export has more than `MAX_PICTURES` of them.
 
 use std::collections::{HashMap, HashSet};
 
@@ -24,6 +25,13 @@ pub(super) const MAX_PICTURES: usize = 1024;
 pub(super) const PICTURE_ID_PREFIX: &str = "chemdraft-raster-picture-";
 const MAX_PICTURE_ID_LEN: usize = 64;
 const SVG_NAMESPACE: &str = "http://www.w3.org/2000/svg";
+const PLACEHOLDER_HREF_START: &str =
+    "data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='";
+const PLACEHOLDER_HREF_MIDDLE: &str = "'%20height='";
+const PLACEHOLDER_HREF_END: &str = "'/%3E";
+/// The stand-in for a PNG picture the webview neither decoded nor sent, because the export already
+/// had `MAX_PICTURES` pictures; `RasterPictureOverCountHref` is the same string.
+pub(super) const OVER_COUNT_HREF: &str = "data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='1'%20height='1'%20data-chemdraft-omitted='count'/%3E";
 
 /// One picture of a raster export request: decoded pixels, or why the webview refused it.
 #[derive(Debug, Default, serde::Deserialize)]
@@ -45,16 +53,63 @@ pub(super) enum PictureRefusal {
     DecodeFailed,
 }
 
-/// Why a picture is missing from the raster output.
+/// Why a picture, or some copies of it, are missing from the raster output.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Omission {
     Refused(PictureRefusal),
+    OverCount,
     Unplaceable,
+    SomeCopies,
+}
+
+/// How many rendered copies of one picture were drawn and how many were left out. A picture
+/// shown again through `<use>` has one copy per place it is rendered.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct Copies {
+    drawn: usize,
+    omitted: usize,
 }
 
 /// The empty SVG standing in for a picture; `rasterPicturePlaceholderHref` builds the same string.
 pub(super) fn placeholder_href(width: u32, height: u32) -> String {
-    format!("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='{width}'%20height='{height}'/%3E")
+    format!(
+        "{PLACEHOLDER_HREF_START}{width}{PLACEHOLDER_HREF_MIDDLE}{height}{PLACEHOLDER_HREF_END}"
+    )
+}
+
+/// Whether `href` is exactly a stand-in written by `placeholder_href`, of any size.
+fn is_placeholder_href(href: &str) -> bool {
+    let is_side = |digits: &str| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit());
+    href.strip_prefix(PLACEHOLDER_HREF_START)
+        .and_then(|rest| rest.strip_suffix(PLACEHOLDER_HREF_END))
+        .and_then(|rest| rest.split_once(PLACEHOLDER_HREF_MIDDLE))
+        .is_some_and(|(width, height)| is_side(width) && is_side(height))
+}
+
+/// The href of an SVG `<image>` that has exactly one (in any namespace usvg reads).
+fn single_image_href<'a>(node: &usvg::roxmltree::Node<'a, '_>) -> Option<&'a str> {
+    if !node.is_element()
+        || node.tag_name().name() != "image"
+        || node.tag_name().namespace() != Some(SVG_NAMESPACE)
+    {
+        return None;
+    }
+    let mut hrefs = node.attributes().filter(|attr| attr.name() == "href");
+    let href = hrefs.next()?;
+    hrefs.next().is_none().then_some(href.value())
+}
+
+/// A picture stand-in whose pixels were not supplied: a generated id and a stand-in href. An
+/// image whose id merely starts like a generated one is judged by its href like any other.
+pub(super) fn is_unsupplied_stand_in(node: &usvg::roxmltree::Node<'_, '_>) -> bool {
+    node.attribute("id")
+        .is_some_and(|id| id.starts_with(PICTURE_ID_PREFIX))
+        && single_image_href(node).is_some_and(is_placeholder_href)
+}
+
+/// A PNG picture the webview left out because the export had more than `MAX_PICTURES`.
+pub(super) fn is_over_count_stand_in(node: &usvg::roxmltree::Node<'_, '_>) -> bool {
+    single_image_href(node) == Some(OVER_COUNT_HREF)
 }
 
 enum Supplied {
@@ -82,8 +137,10 @@ impl SuppliedPictures {
             )));
         }
 
-        // Check every id, size and the per-export total first, then the payload lengths, and only
-        // then unpack any pixels, so an oversized request allocates nothing.
+        // serde has already deserialized the IPC request (its base64 strings included) by the time
+        // this runs; the webview is the app's own caller. These checks bound only what follows:
+        // every id, size and the per-export total first, then the payload lengths, and only then
+        // the unpacking, so an oversized request allocates no pixel buffers.
         let mut ids = HashSet::new();
         let mut total_bytes = 0u64;
         for input in &inputs {
@@ -138,6 +195,8 @@ impl SuppliedPictures {
             let supplied = match (input.rgba_base64, input.refused) {
                 (Some(rgba_base64), _) => {
                     let (width, height) = (input.width.unwrap_or(0), input.height.unwrap_or(0));
+                    // `decode` takes the string by value, so each picture's base64 is freed as
+                    // soon as it is unpacked, and the decoded buffer becomes the pixmap in place.
                     let mut rgba = base64::Engine::decode(
                         &base64::engine::general_purpose::STANDARD,
                         rgba_base64,
@@ -196,12 +255,8 @@ impl SuppliedPictures {
                 let [node] = nodes.as_slice() else {
                     return None;
                 };
-                let is_svg_image = node.tag_name().name() == "image"
-                    && node.tag_name().namespace() == Some(SVG_NAMESPACE);
-                let mut hrefs = node.attributes().filter(|attr| attr.name() == "href");
-                let href = hrefs.next()?;
-                let expected = self.expected_href(id)?;
-                (is_svg_image && hrefs.next().is_none() && href.value() == expected).then(|| {
+                let href = single_image_href(node)?;
+                (href == self.expected_href(id)?).then(|| {
                     let in_marker = node.ancestors().any(|ancestor| {
                         ancestor.tag_name().name() == "marker"
                             && ancestor.tag_name().namespace() == Some(SVG_NAMESPACE)
@@ -213,14 +268,14 @@ impl SuppliedPictures {
     }
 
     /// Renders `tree` as `resvg::render` would, plus every placeable decoded picture.
-    /// Returns the ids of the pictures drawn.
+    /// Returns, per picture id, how many rendered copies were drawn and how many left out.
     pub(super) fn render(
         &self,
         tree: &usvg::Tree,
         stand_ins: &HashMap<String, bool>,
         transform: tiny_skia::Transform,
         canvas: &mut tiny_skia::PixmapMut<'_>,
-    ) -> HashSet<String> {
+    ) -> HashMap<String, Copies> {
         let pixmaps: HashMap<&str, &tiny_skia::Pixmap> = self
             .pictures
             .iter()
@@ -233,49 +288,60 @@ impl SuppliedPictures {
             .collect();
         if pixmaps.is_empty() {
             resvg::render(tree, transform, canvas);
-            return HashSet::new();
+            return HashMap::new();
         }
 
         let mut renderer = PictureRenderer {
             pixmaps: &pixmaps,
-            drawn: HashSet::new(),
-            unplaceable: HashSet::new(),
+            copies: Vec::new(),
         };
         let root = tree.root();
-        if renderer.can_render_children(root) {
-            renderer.render_children(root, None, transform, canvas);
-        } else {
-            resvg::render(tree, transform, canvas);
-            renderer.mark(root, None, false);
-        }
+        renderer.render_children(root, None, transform, canvas);
         // Pictures used by patterns, masks, clip paths or filter images are drawn there by resvg,
         // which has no pixels for them; report them rather than show them only in some places.
         renderer.mark_subroot_pictures(root, false);
-        let PictureRenderer {
-            drawn, unplaceable, ..
-        } = renderer;
-        drawn
-            .into_iter()
-            .filter(|id| !unplaceable.contains(id))
-            .collect()
+        let mut copies: HashMap<String, Copies> = HashMap::new();
+        for (id, drawn) in renderer.copies {
+            let entry = copies.entry(id).or_default();
+            if drawn {
+                entry.drawn += 1;
+            } else {
+                entry.omitted += 1;
+            }
+        }
+        copies
     }
 
-    /// One warning per reason, counting the pictures in the SVG that were not drawn.
+    /// One warning per reason, counting the pictures in the SVG that were not drawn, or drawn
+    /// only in some of the places they are used. `over_count` is the number of stand-ins the
+    /// webview left out for exceeding `MAX_PICTURES`, which have no entry in the request.
     pub(super) fn omission_warnings(
         &self,
         stand_ins: &HashMap<String, bool>,
-        drawn: &HashSet<String>,
+        copies: &HashMap<String, Copies>,
+        over_count: usize,
         label: &str,
     ) -> Vec<RasterExportWarning> {
         let mut counts: HashMap<Omission, usize> = HashMap::new();
+        if over_count > 0 {
+            counts.insert(Omission::OverCount, over_count);
+        }
         for (id, supplied) in &self.pictures {
-            if !stand_ins.contains_key(id) {
+            let Some(&in_marker) = stand_ins.get(id) else {
                 continue;
-            }
+            };
             let omission = match supplied {
                 Supplied::Refused(refusal) => Omission::Refused(*refusal),
-                Supplied::Decoded(_) if drawn.contains(id) => continue,
-                Supplied::Decoded(_) => Omission::Unplaceable,
+                Supplied::Decoded(_) => {
+                    let Copies { drawn, omitted } = copies.get(id).copied().unwrap_or_default();
+                    if in_marker || drawn == 0 {
+                        Omission::Unplaceable
+                    } else if omitted > 0 {
+                        Omission::SomeCopies
+                    } else {
+                        continue;
+                    }
+                }
             };
             *counts.entry(omission).or_default() += 1;
         }
@@ -283,7 +349,9 @@ impl SuppliedPictures {
             Omission::Refused(PictureRefusal::TooLarge),
             Omission::Refused(PictureRefusal::OverBudget),
             Omission::Refused(PictureRefusal::DecodeFailed),
+            Omission::OverCount,
             Omission::Unplaceable,
+            Omission::SomeCopies,
         ]
         .into_iter()
         .filter_map(|omission| {
@@ -295,10 +363,10 @@ impl SuppliedPictures {
 }
 
 fn omission_warning(label: &str, count: usize, omission: Omission) -> RasterExportWarning {
-    let (pictures, were, them) = if count == 1 {
-        ("1 picture".to_string(), "was", "it")
+    let (pictures, were, them, its) = if count == 1 {
+        ("1 picture".to_string(), "was", "it", "its")
     } else {
-        (format!("{count} pictures"), "were", "them")
+        (format!("{count} pictures"), "were", "them", "their")
     };
     let budget_mib = MAX_DECODED_PICTURE_BYTES / (1024 * 1024);
     let message = match omission {
@@ -311,8 +379,14 @@ fn omission_warning(label: &str, count: usize, omission: Omission) -> RasterExpo
         Omission::Refused(PictureRefusal::DecodeFailed) => format!(
             "{label} export: {pictures} could not be decoded and {were} not included; export SVG or PDF to include {them}."
         ),
+        Omission::OverCount => format!(
+            "{label} export: {pictures} {were} not included because this export has more than {MAX_PICTURES} pictures; export SVG or PDF to include {them}."
+        ),
         Omission::Unplaceable => format!(
             "{label} export: {pictures} inside a mask, filter, blend mode, pattern or marker {were} not included; export SVG or PDF to include {them}."
+        ),
+        Omission::SomeCopies => format!(
+            "{label} export: {pictures} {were} included, but not {its} copies inside a mask, filter, blend mode or pattern; export SVG or PDF to include every copy."
         ),
     };
     warning("raster_pictures_omitted", message)
@@ -343,8 +417,8 @@ fn premultiply(rgba: &mut [u8]) {
 
 struct PictureRenderer<'p> {
     pixmaps: &'p HashMap<&'p str, &'p tiny_skia::Pixmap>,
-    drawn: HashSet<String>,
-    unplaceable: HashSet<String>,
+    /// One entry per rendered copy of a picture, in drawing order: its id and whether it was drawn.
+    copies: Vec<(String, bool)>,
 }
 
 impl PictureRenderer<'_> {
@@ -359,18 +433,6 @@ impl PictureRenderer<'_> {
                 self.pixmaps.contains_key(child.id()) || self.contains_pictures(child)
             }
             _ => false,
-        })
-    }
-
-    /// Whether each child can be drawn on its own. `resvg::render_node` skips a node without a
-    /// layer box, which for a bare horizontal or vertical stroked line would lose the line; such
-    /// a line is stroked here instead, which is only done for a plain colour.
-    fn can_render_children(&self, group: &usvg::Group) -> bool {
-        group.children().iter().all(|node| match node {
-            usvg::Node::Path(path) if node.abs_layer_bounding_box().is_none() => path
-                .stroke()
-                .is_none_or(|stroke| matches!(stroke.paint(), usvg::Paint::Color(_))),
-            _ => true,
         })
     }
 
@@ -407,16 +469,13 @@ impl PictureRenderer<'_> {
                 let pixmaps = self.pixmaps;
                 match picture.and_then(|id| pixmaps.get(id).map(|pixmap| (id, *pixmap))) {
                     Some((id, pixmap)) => {
-                        self.drawn.insert(id.to_string());
+                        self.copies.push((id.to_string(), true));
                         draw_picture(image, pixmap, transform, canvas);
                     }
                     None => render_with_resvg(node, transform, canvas),
                 }
             }
-            usvg::Node::Path(path) if node.abs_layer_bounding_box().is_none() => {
-                stroke_degenerate_path(path, transform, canvas);
-            }
-            _ => render_with_resvg(node, transform, canvas),
+            _ => render_plain_node(node, transform, canvas),
         }
     }
 
@@ -432,7 +491,7 @@ impl PictureRenderer<'_> {
         let unsupported_effect = group.mask().is_some()
             || !group.filters().is_empty()
             || group.blend_mode() != usvg::BlendMode::Normal;
-        if unsupported_effect || !self.can_render_children(group) {
+        if unsupported_effect {
             self.mark(group, picture, false);
             render_with_resvg(node, parent_transform, canvas);
             return;
@@ -470,9 +529,12 @@ impl PictureRenderer<'_> {
         };
         let layer_transform =
             tiny_skia::Transform::from_translate(-(x as f32), -(y as f32)).pre_concat(transform);
+        let first_copy = self.copies.len();
         self.render_children(group, picture, layer_transform, &mut layer.as_mut());
         if let Some(clip) = group.clip_path() {
             if apply_clip(clip, layer_transform, &mut layer).is_none() {
+                // The layer is discarded, so the copies drawn into it are not on the canvas.
+                self.copies.truncate(first_copy);
                 self.mark(group, picture, false);
                 render_with_resvg(node, parent_transform, canvas);
                 return;
@@ -492,17 +554,12 @@ impl PictureRenderer<'_> {
         );
     }
 
-    /// Records every picture in `group` (and the enclosing `picture`) as drawn — used when nothing
-    /// of the group can be visible — or as impossible to place exactly.
+    /// Records every picture copy in `group` (and the enclosing `picture`) as drawn — used when
+    /// nothing of the group can be visible — or as impossible to place exactly.
     fn mark(&mut self, group: &usvg::Group, picture: Option<&str>, drawn: bool) {
         let mut ids: Vec<String> = picture.map(str::to_string).into_iter().collect();
         self.collect_picture_ids(group, &mut ids);
-        let target = if drawn {
-            &mut self.drawn
-        } else {
-            &mut self.unplaceable
-        };
-        target.extend(ids);
+        self.copies.extend(ids.into_iter().map(|id| (id, drawn)));
     }
 
     fn collect_picture_ids(&self, group: &usvg::Group, ids: &mut Vec<String>) {
@@ -520,12 +577,28 @@ impl PictureRenderer<'_> {
         for node in parent.children() {
             if let usvg::Node::Group(group) = node {
                 if in_subroot && self.pixmaps.contains_key(group.id()) {
-                    self.unplaceable.insert(group.id().to_string());
+                    self.copies.push((group.id().to_string(), false));
                 }
                 self.mark_subroot_pictures(group, in_subroot);
             }
             node.subroots(|subroot| self.mark_subroot_pictures(subroot, true));
         }
+    }
+}
+
+/// Draws a node that holds no supplied picture exactly as `resvg::render` would.
+fn render_plain_node(
+    node: &usvg::Node,
+    transform: tiny_skia::Transform,
+    canvas: &mut tiny_skia::PixmapMut<'_>,
+) {
+    match node {
+        // `resvg::render_node` skips a node without a layer box, which would lose a bare
+        // horizontal or vertical stroked line; it is stroked here instead.
+        usvg::Node::Path(path) if node.abs_layer_bounding_box().is_none() => {
+            stroke_degenerate_path(path, transform, canvas);
+        }
+        _ => render_with_resvg(node, transform, canvas),
     }
 }
 
@@ -585,7 +658,8 @@ fn draw_picture(
 }
 
 /// A path whose fill box has no area. resvg never fills such a path, so only its stroke shows;
-/// this matches resvg's stroke for a plain colour (`can_render_children` admits no other paint).
+/// this is resvg's `stroke_path` (resvg 0.47, src/path.rs) for every paint: plain colour,
+/// gradients, and patterns, whose tile is drawn with `render_plain_node` as resvg draws it.
 fn stroke_degenerate_path(
     path: &usvg::Path,
     transform: tiny_skia::Transform,
@@ -594,13 +668,119 @@ fn stroke_degenerate_path(
     let Some(stroke) = path.stroke().filter(|_| path.is_visible()) else {
         return;
     };
-    let usvg::Paint::Color(color) = stroke.paint() else {
-        return;
-    };
+    let pattern_pixmap;
     let mut paint = tiny_skia::Paint::default();
-    paint.set_color_rgba8(color.red, color.green, color.blue, stroke.opacity().to_u8());
+    match stroke.paint() {
+        usvg::Paint::Color(color) => {
+            paint.set_color_rgba8(color.red, color.green, color.blue, stroke.opacity().to_u8());
+        }
+        usvg::Paint::LinearGradient(gradient) => {
+            let Some(shader) = linear_gradient_shader(gradient, stroke.opacity()) else {
+                return;
+            };
+            paint.shader = shader;
+        }
+        usvg::Paint::RadialGradient(gradient) => {
+            let Some(shader) = radial_gradient_shader(gradient, stroke.opacity()) else {
+                return;
+            };
+            paint.shader = shader;
+        }
+        usvg::Paint::Pattern(pattern) => {
+            let Some((tile, tile_transform)) = render_pattern_tile(pattern, transform) else {
+                return;
+            };
+            pattern_pixmap = tile;
+            paint.shader = tiny_skia::Pattern::new(
+                pattern_pixmap.as_ref(),
+                tiny_skia::SpreadMode::Repeat,
+                tiny_skia::FilterQuality::Bicubic,
+                stroke.opacity().get(),
+                tile_transform,
+            );
+        }
+    }
     paint.anti_alias = path.rendering_mode().use_shape_antialiasing();
     canvas.stroke_path(path.data(), &paint, &stroke.to_tiny_skia(), transform, None);
+}
+
+// resvg's paint-server conversion (resvg 0.47, src/path.rs), which is private to resvg.
+
+fn linear_gradient_shader(
+    gradient: &usvg::LinearGradient,
+    opacity: usvg::Opacity,
+) -> Option<tiny_skia::Shader<'static>> {
+    let (mode, stops) = gradient_stops(gradient, opacity);
+    tiny_skia::LinearGradient::new(
+        (gradient.x1(), gradient.y1()).into(),
+        (gradient.x2(), gradient.y2()).into(),
+        stops,
+        mode,
+        gradient.transform(),
+    )
+}
+
+fn radial_gradient_shader(
+    gradient: &usvg::RadialGradient,
+    opacity: usvg::Opacity,
+) -> Option<tiny_skia::Shader<'static>> {
+    let (mode, stops) = gradient_stops(gradient, opacity);
+    tiny_skia::RadialGradient::new(
+        (gradient.fx(), gradient.fy()).into(),
+        gradient.fr().get(),
+        (gradient.cx(), gradient.cy()).into(),
+        gradient.r().get(),
+        stops,
+        mode,
+        gradient.transform(),
+    )
+}
+
+fn gradient_stops(
+    gradient: &usvg::BaseGradient,
+    opacity: usvg::Opacity,
+) -> (tiny_skia::SpreadMode, Vec<tiny_skia::GradientStop>) {
+    let mode = match gradient.spread_method() {
+        usvg::SpreadMethod::Pad => tiny_skia::SpreadMode::Pad,
+        usvg::SpreadMethod::Reflect => tiny_skia::SpreadMode::Reflect,
+        usvg::SpreadMethod::Repeat => tiny_skia::SpreadMode::Repeat,
+    };
+    let stops = gradient
+        .stops()
+        .iter()
+        .map(|stop| {
+            let color = tiny_skia::Color::from_rgba8(
+                stop.color().red,
+                stop.color().green,
+                stop.color().blue,
+                (stop.opacity() * opacity).to_u8(),
+            );
+            tiny_skia::GradientStop::new(stop.offset().get(), color)
+        })
+        .collect();
+    (mode, stops)
+}
+
+fn render_pattern_tile(
+    pattern: &usvg::Pattern,
+    transform: tiny_skia::Transform,
+) -> Option<(tiny_skia::Pixmap, tiny_skia::Transform)> {
+    let (sx, sy) = transform.pre_concat(pattern.transform()).get_scale();
+    let rect = pattern.rect();
+    let size = tiny_skia::IntSize::from_wh(
+        (rect.width() * sx).round() as u32,
+        (rect.height() * sy).round() as u32,
+    )?;
+    let mut tile = tiny_skia::Pixmap::new(size.width(), size.height())?;
+    let tile_scale = tiny_skia::Transform::from_scale(sx, sy);
+    for node in pattern.root().children() {
+        render_plain_node(node, tile_scale, &mut tile.as_mut());
+    }
+    let tile_transform = pattern
+        .transform()
+        .pre_translate(rect.x(), rect.y())
+        .pre_scale(1.0 / sx, 1.0 / sy);
+    Some((tile, tile_transform))
 }
 
 // resvg's clip-path application (resvg 0.47, src/clip.rs), which is private to resvg.

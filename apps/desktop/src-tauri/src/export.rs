@@ -115,7 +115,8 @@ fn rasterize_svg_impl(mut request: RasterExportRequest) -> Result<RasterExportRe
         ));
     }
 
-    // Sizes, lengths and the decoded-pixel budget are checked before any pixels are unpacked.
+    // serde has already deserialized the request by now; sizes, lengths and the decoded-pixel
+    // budget are checked before any pixels are unpacked.
     let supplied_pictures = pictures::SuppliedPictures::from_request(
         std::mem::take(&mut request.pictures),
         request.format.label(),
@@ -134,6 +135,10 @@ fn rasterize_svg_impl(mut request: RasterExportRequest) -> Result<RasterExportRe
     )
     .map_err(|error| format!("Could not parse SVG for raster export: {error}"))?;
     let stand_ins = supplied_pictures.find_stand_ins(&document);
+    let over_count_pictures = document
+        .descendants()
+        .filter(pictures::is_over_count_stand_in)
+        .count();
     let mut inspection_budget = MAX_SVG_BYTES;
     let contains_bitmap_pictures = document.descendants().any(|node| {
         let id = node.attribute("id").unwrap_or_default();
@@ -171,6 +176,7 @@ fn rasterize_svg_impl(mut request: RasterExportRequest) -> Result<RasterExportRe
     warnings.extend(supplied_pictures.omission_warnings(
         &stand_ins,
         &drawn_pictures,
+        over_count_pictures,
         request.format.label(),
     ));
 
@@ -218,11 +224,12 @@ fn image_is_omitted_bitmap(
         return false;
     }
     // A picture stand-in whose pixels were not supplied with this request.
-    if node
-        .attribute("id")
-        .is_some_and(|id| id.starts_with(pictures::PICTURE_ID_PREFIX))
-    {
+    if pictures::is_unsupplied_stand_in(node) {
         return true;
+    }
+    // Left out by the webview for the picture count, and reported with that reason.
+    if pictures::is_over_count_stand_in(node) {
+        return false;
     }
     let mut hrefs = node
         .attributes()
@@ -1447,5 +1454,137 @@ mod tests {
         );
         let response = rasterize_svg_impl(request).expect("valid pictures export");
         assert!(response.warnings.is_empty());
+    }
+
+    fn warning_messages(warnings: &[RasterExportWarning]) -> Vec<&str> {
+        warnings
+            .iter()
+            .map(|warning| warning.message.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn supplied_pictures_are_drawn_beside_bare_lines_with_gradient_and_pattern_strokes() {
+        // Horizontal and vertical lines have no fill box, so resvg::render_node cannot draw them
+        // on their own; every stroke paint must still be drawn, and the picture with them.
+        let defs = r##"<defs><linearGradient id="g" x1="0" y1="0" x2="100" y2="0" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#ff0000"/><stop offset="1" stop-color="#0000ff"/></linearGradient><radialGradient id="r" cx="50" cy="90" r="50" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#00ffff"/><stop offset="1" stop-color="#000000"/></radialGradient><pattern id="p" width="4" height="4" patternUnits="userSpaceOnUse"><rect width="2" height="4" fill="#00aa00"/><line x1="0" y1="3" x2="4" y2="3" stroke="url(#g)"/></pattern></defs>"##;
+        let lines = r#"<line x1="0" y1="80" x2="100" y2="80" stroke="url(#g)" stroke-width="4"/><line x1="0" y1="90" x2="100" y2="90" stroke="url(#r)" stroke-width="4"/><line x1="80" y1="0" x2="80" y2="100" stroke="url(#p)" stroke-width="4"/>"#;
+        let picture = stand_in(PICTURE_ID, 8, 8, r#"x="20" y="20" width="40" height="40""#);
+        for group in ["<g>", r#"<g opacity="0.5">"#] {
+            let svg = picture_page(
+                r#"width="100" height="100""#,
+                &format!("{defs}{group}{picture}{lines}</g>"),
+            );
+            for scale in [1, 3] {
+                let (pixels, warnings) =
+                    render_pictures(&svg, scale, vec![quadrant_picture(PICTURE_ID)]);
+                assert!(warnings.is_empty(), "{warnings:?}");
+                assert_ne!(pixels.get_pixel(30 * scale, 30 * scale).0, WHITE);
+                assert_ne!(pixels.get_pixel(50 * scale, 50 * scale).0, WHITE);
+
+                // Off the picture, the page is what resvg draws for the same SVG on its own.
+                let (reference, _) = render_pictures(&svg, scale, Vec::new());
+                for (x, y) in [(50, 80), (50, 90), (80, 10)] {
+                    assert_ne!(
+                        reference.get_pixel(x * scale, y * scale).0,
+                        WHITE,
+                        "resvg draws the line at ({x}, {y})"
+                    );
+                }
+                let frame = (20 * scale - 1)..(60 * scale + 1);
+                for (x, y, pixel) in pixels.enumerate_pixels() {
+                    if frame.contains(&x) && frame.contains(&y) {
+                        continue;
+                    }
+                    let expected = reference.get_pixel(x, y).0;
+                    assert!(
+                        pixel
+                            .0
+                            .iter()
+                            .zip(expected)
+                            .all(|(actual, expected)| actual.abs_diff(expected) <= 1),
+                        "{group} at {scale}x: pixel ({x}, {y}) is {:?}; resvg alone draws {expected:?}",
+                        pixel.0
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn svg_pictures_whose_ids_look_generated_are_drawn_without_a_warning() {
+        let red = svg_data_uri(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="#ff0000"/></svg>"##,
+        );
+        let red_picture = format!(
+            r#"<image id="chemdraft-raster-picture-7" x="0" y="0" width="10" height="10" href="{red}"/>"#
+        );
+        let with_supplied = picture_page(
+            r#"width="40" height="20""#,
+            &format!(
+                "{red_picture}{}",
+                stand_in(PICTURE_ID, 8, 8, r#"x="20" y="0" width="20" height="20""#)
+            ),
+        );
+        let (pixels, warnings) =
+            render_pictures(&with_supplied, 1, vec![quadrant_picture(PICTURE_ID)]);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_rgba_near(&pixels, (5, 5), [255, 0, 0, 255]);
+        assert_rgba_near(&pixels, (22, 2), QUADRANTS[0]);
+
+        let alone = picture_page(r#"width="40" height="20""#, &red_picture);
+        let (pixels, warnings) = render_pictures(&alone, 1, Vec::new());
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_rgba_near(&pixels, (5, 5), [255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn pictures_left_out_for_the_picture_count_are_reported_with_that_reason() {
+        let over = |x: u32| {
+            format!(
+                r#"<image x="{x}" y="0" width="10" height="10" href="{}"/>"#,
+                pictures::OVER_COUNT_HREF
+            )
+        };
+        let body = format!(
+            "{}{}{}",
+            stand_in(PICTURE_ID, 8, 8, r#"x="0" y="0" width="10" height="10""#),
+            over(10),
+            over(20)
+        );
+        let svg = picture_page(r#"width="30" height="10""#, &body);
+        let (pixels, warnings) = render_pictures(&svg, 1, vec![quadrant_picture(PICTURE_ID)]);
+        assert_eq!(
+            warning_messages(&warnings),
+            ["PNG export: 2 pictures were not included because this export has more than 1024 pictures; export SVG or PDF to include them."]
+        );
+        assert_rgba_near(&pixels, (2, 2), QUADRANTS[0]);
+        assert_rgba_near(&pixels, (15, 5), WHITE);
+
+        let (_, warnings) = render_pictures(
+            &picture_page(r#"width="30" height="10""#, &over(0)),
+            1,
+            Vec::new(),
+        );
+        assert_eq!(
+            warning_messages(&warnings),
+            ["PNG export: 1 picture was not included because this export has more than 1024 pictures; export SVG or PDF to include it."]
+        );
+    }
+
+    #[test]
+    fn a_picture_used_again_inside_a_mask_is_drawn_and_warns_only_for_the_masked_copy() {
+        let body = format!(
+            r##"<defs><mask id="m"><rect width="100" height="100" fill="#ffffff"/></mask></defs>{}<g mask="url(#m)"><use href="#{PICTURE_ID}" x="50" y="50"/></g>"##,
+            stand_in(PICTURE_ID, 8, 8, r#"x="0" y="0" width="40" height="40""#)
+        );
+        let svg = picture_page(r#"width="100" height="100""#, &body);
+        let (pixels, warnings) = render_pictures(&svg, 1, vec![quadrant_picture(PICTURE_ID)]);
+        assert_eq!(
+            warning_messages(&warnings),
+            ["PNG export: 1 picture was included, but not its copies inside a mask, filter, blend mode or pattern; export SVG or PDF to include every copy."]
+        );
+        assert_rgba_near(&pixels, (10, 10), QUADRANTS[0]);
+        assert_rgba_near(&pixels, (60, 60), WHITE);
     }
 }

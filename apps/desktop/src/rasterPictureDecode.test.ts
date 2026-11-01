@@ -5,7 +5,9 @@ import {
   decodePngPixels,
   prepareRasterPictures,
   RasterPictureDecodedBudgetBytes,
+  RasterPictureMaxCount,
   RasterPictureMaxSidePx,
+  RasterPictureOverCountHref,
   rasterPicturePlaceholderHref,
   readPngSize
 } from "./rasterPictureDecode";
@@ -126,6 +128,25 @@ describe("raster picture decoding", () => {
       .toEqual(Array(4).fill(rasterPicturePlaceholderHref(1, 1)));
   });
 
+  it("sends at most 1024 pictures and leaves the rest undecoded behind a marked stand-in", async () => {
+    expect(RasterPictureMaxCount).toBe(1024);
+    const decode = solidDecoder();
+    // The first is refused, which still counts toward the limit.
+    const svg = page(pngImage(pngHeader(16385, 1)), ...Array.from({ length: RasterPictureMaxCount + 1 }, () => pngImage(pngHeader(1, 1))));
+    const prepared = await prepareRasterPictures(svg, { decode });
+    expect(prepared.pictures).toHaveLength(RasterPictureMaxCount);
+    expect(prepared.pictures[0]).toEqual({ id: "chemdraft-raster-picture-0", refused: "tooLarge" });
+    expect(decode).toHaveBeenCalledTimes(RasterPictureMaxCount - 1);
+    const written = images(prepared.svg);
+    expect(written.slice(0, RasterPictureMaxCount).every((image) => image.hasAttribute("id"))).toBe(true);
+    for (const image of written.slice(RasterPictureMaxCount)) {
+      expect(image.hasAttribute("id")).toBe(false);
+      expect(image.getAttribute("href")).toBe(RasterPictureOverCountHref);
+    }
+    expect(written.slice(RasterPictureMaxCount)).toHaveLength(2);
+    expect(RasterPictureOverCountHref).not.toBe(rasterPicturePlaceholderHref(1, 1));
+  });
+
   it("leaves SVGs it cannot rewrite unambiguously untouched", async () => {
     const decode = solidDecoder();
     for (const svg of [
@@ -172,6 +193,14 @@ describe("raster picture decoding", () => {
     expect(bitmap.close).toHaveBeenCalled();
     expect(canvases).toEqual([expect.objectContaining({ width: 0, height: 0 })]);
 
+    // A canvas that cannot be created still releases the decoded bitmap.
+    bitmap.close.mockClear();
+    vi.stubGlobal("OffscreenCanvas", class {
+      constructor() { throw new RangeError("canvas too large"); }
+    });
+    await expect(decodePngPixels(png)).rejects.toThrow("canvas too large");
+    expect(bitmap.close).toHaveBeenCalledTimes(1);
+
     // Without OffscreenCanvas the document's canvas is used.
     vi.stubGlobal("OffscreenCanvas", undefined);
     const getContext = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(context as never);
@@ -189,6 +218,10 @@ describe("raster picture decoding", () => {
     Object.defineProperty(prototype, "toBase64", { value: undefined, configurable: true, writable: true });
     try {
       expect(bytesToBase64(bytes)).toBe(expected);
+      expect(bytesToBase64(new Uint8ClampedArray(bytes.buffer))).toBe(expected);
+      for (let length = 0; length <= 7; length += 1) {
+        expect(bytesToBase64(bytes.subarray(0, length))).toBe(Buffer.from(bytes.subarray(0, length)).toString("base64"));
+      }
     } finally {
       if (native) Object.defineProperty(prototype, "toBase64", native);
       else delete prototype.toBase64;

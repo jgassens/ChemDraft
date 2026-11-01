@@ -7,13 +7,23 @@
  * frame, transform and z-order in the SVG; only its href becomes an empty SVG of the picture's pixel
  * size, tagged with an id, so usvg still places it and native code draws the supplied pixels there.
  *
- * Limits, enforced before decoding and re-checked in Rust: 16384 px a side, and 256 MiB of decoded
- * pixels (width × height × 4) across one export call. A picture over a limit, or one that fails to
- * decode, is not drawn; Rust reports it with a warning naming the reason.
+ * Limits, enforced before decoding and re-checked in Rust: 16384 px a side, 256 MiB of decoded
+ * pixels (width × height × 4) across one export call, and 1024 pictures per call. A picture over a
+ * limit, or one that fails to decode, is not drawn; Rust reports it with a warning naming the reason.
+ * Pictures past the 1024th are neither decoded nor sent: their href becomes a marked empty SVG that
+ * Rust counts for its warning.
+ *
+ * Memory: pictures are processed one at a time; each ImageBitmap and canvas is released as soon as
+ * its pixels are read back, and each picture's RGBA is dropped once it is base64-encoded.
  */
 
 export const RasterPictureMaxSidePx = 16384;
 export const RasterPictureDecodedBudgetBytes = 256 * 1024 * 1024;
+/** Pictures sent per export call; `MAX_PICTURES` in `export/pictures.rs` is the same. */
+export const RasterPictureMaxCount = 1024;
+/** The stand-in for a picture past the count limit; `OVER_COUNT_HREF` in Rust is the same string. */
+export const RasterPictureOverCountHref =
+  "data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='1'%20height='1'%20data-chemdraft-omitted='count'/%3E";
 const RasterPictureIdPrefix = "chemdraft-raster-picture-";
 
 const SvgNamespace = "http://www.w3.org/2000/svg";
@@ -86,14 +96,20 @@ export async function prepareRasterPictures(
   for (const image of Array.from(parsed.getElementsByTagNameNS(SvgNamespace, "image"))) {
     const href = pngHref(image);
     if (!href) continue;
+    if (pictures.length >= RasterPictureMaxCount) {
+      // Counted before decoding: past the limit nothing is decoded or sent.
+      href.attribute.value = RasterPictureOverCountHref;
+      continue;
+    }
     const id = `${prefix}${pictures.length}`;
-    const outcome = await decodeWithinLimits(href.base64, remainingBytes, decode);
+    // One picture at a time: its RGBA exists only inside encodeWithinLimits.
+    const outcome = await encodeWithinLimits(href.base64, remainingBytes, decode);
     if ("refused" in outcome) {
       pictures.push({ id, refused: outcome.refused });
       href.attribute.value = rasterPicturePlaceholderHref(1, 1);
     } else {
       remainingBytes -= outcome.width * outcome.height * 4;
-      pictures.push({ id, width: outcome.width, height: outcome.height, rgbaBase64: bytesToBase64(outcome.rgba) });
+      pictures.push({ id, ...outcome });
       href.attribute.value = rasterPicturePlaceholderHref(outcome.width, outcome.height);
     }
     image.setAttribute("id", id);
@@ -102,22 +118,23 @@ export async function prepareRasterPictures(
   return { svg: new XMLSerializer().serializeToString(parsed), pictures };
 }
 
-async function decodeWithinLimits(
+/** Decodes one picture within the limits and returns its pixels as base64, or why it was refused. */
+async function encodeWithinLimits(
   base64: string,
   remainingBytes: number,
   decode: PicturePixelDecoder
-): Promise<DecodedPicturePixels | { refused: RasterPictureRefusal }> {
+): Promise<{ width: number; height: number; rgbaBase64: string } | { refused: RasterPictureRefusal }> {
   try {
     // Read the size from the first base64 characters, before decoding anything else.
     const size = base64.length % 4 === 0 ? readPngSize(base64ToBytes(base64.slice(0, PngSizeHeaderBase64Length))) : undefined;
     if (!size) return { refused: "decodeFailed" };
     if (size.width > RasterPictureMaxSidePx || size.height > RasterPictureMaxSidePx) return { refused: "tooLarge" };
     if (size.width * size.height * 4 > remainingBytes) return { refused: "overBudget" };
-    const pixels = await decode(base64ToBytes(base64));
+    const { width, height, rgba } = await decode(base64ToBytes(base64));
     // A decoder that disagrees with the IHDR (or returns the wrong amount of data) is not trusted.
-    if (pixels.width !== size.width || pixels.height !== size.height
-      || pixels.rgba.length !== size.width * size.height * 4) return { refused: "decodeFailed" };
-    return pixels;
+    if (width !== size.width || height !== size.height || rgba.length !== width * height * 4) return { refused: "decodeFailed" };
+    // Nothing keeps the RGBA once this returns, so it can be collected before the next picture.
+    return { width, height, rgbaBase64: bytesToBase64(rgba) };
   } catch {
     return { refused: "decodeFailed" };
   }
@@ -144,25 +161,28 @@ function unusedIdPrefix(svg: string): string {
 /** Decodes one PNG with the webview's image decoder and reads it back as straight-alpha RGBA8. */
 export async function decodePngPixels(png: Uint8Array<ArrayBuffer>): Promise<DecodedPicturePixels> {
   const source = await loadPicture(new Blob([png], { type: "image/png" }));
-  let canvas: OffscreenCanvas | HTMLCanvasElement;
-  let context: OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D | null;
-  if (typeof OffscreenCanvas === "function") {
-    canvas = new OffscreenCanvas(source.width, source.height);
-    context = canvas.getContext("2d", { willReadFrequently: true });
-  } else {
-    canvas = Object.assign(document.createElement("canvas"), { width: source.width, height: source.height });
-    context = canvas.getContext("2d", { willReadFrequently: true });
-  }
+  let canvas: OffscreenCanvas | HTMLCanvasElement | undefined;
   try {
+    let context: OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D | null;
+    if (typeof OffscreenCanvas === "function") {
+      canvas = new OffscreenCanvas(source.width, source.height);
+      context = canvas.getContext("2d", { willReadFrequently: true });
+    } else {
+      canvas = Object.assign(document.createElement("canvas"), { width: source.width, height: source.height });
+      context = canvas.getContext("2d", { willReadFrequently: true });
+    }
     if (!context) throw new Error("No 2D canvas is available to decode the picture.");
     context.drawImage(source.image, 0, 0);
     const { data } = context.getImageData(0, 0, source.width, source.height);
     return { width: source.width, height: source.height, rgba: data };
   } finally {
+    // Runs as soon as the pixels are read back (or anything above throws): the bitmap and the
+    // canvas backing store are released now rather than at garbage collection.
     source.release();
-    // Release the canvas backing store now rather than at garbage collection.
-    canvas.width = 0;
-    canvas.height = 0;
+    if (canvas) {
+      canvas.width = 0;
+      canvas.height = 0;
+    }
   }
 }
 
@@ -193,18 +213,36 @@ function base64ToBytes(base64: string): Uint8Array<ArrayBuffer> {
   return bytes;
 }
 
-// A multiple of 3 bytes, so each chunk encodes without padding; and few enough arguments for
-// String.fromCharCode.apply in every engine (JavaScriptCore caps arguments at 65536).
-const Base64ChunkBytes = 3 * 8192;
+const Base64Alphabet = Uint8Array.from(
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/", (char) => char.charCodeAt(0)
+);
+const Base64Pad = 0x3d;
 
+/**
+ * Standard padded base64. Uses the engine's `Uint8Array.prototype.toBase64` when present; otherwise
+ * encodes in one pass into a single ASCII buffer that becomes the string, with no chunk strings.
+ */
 export function bytesToBase64(bytes: Uint8Array | Uint8ClampedArray): string {
   const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const toBase64 = (view as { toBase64?: () => string }).toBase64;
   if (typeof toBase64 === "function") return toBase64.call(view);
-  const parts: string[] = [];
-  for (let offset = 0; offset < view.length; offset += Base64ChunkBytes) {
-    // apply takes any array-like, so the typed array is passed without copying it to an Array.
-    parts.push(btoa(String.fromCharCode.apply(null, view.subarray(offset, offset + Base64ChunkBytes) as unknown as number[])));
+  const ascii = new Uint8Array(Math.ceil(view.length / 3) * 4);
+  let out = 0;
+  let index = 0;
+  for (; index + 2 < view.length; index += 3) {
+    const triple = (view[index] << 16) | (view[index + 1] << 8) | view[index + 2];
+    ascii[out++] = Base64Alphabet[triple >>> 18];
+    ascii[out++] = Base64Alphabet[(triple >>> 12) & 63];
+    ascii[out++] = Base64Alphabet[(triple >>> 6) & 63];
+    ascii[out++] = Base64Alphabet[triple & 63];
   }
-  return parts.join("");
+  if (index < view.length) {
+    const hasSecond = index + 1 < view.length;
+    const triple = (view[index] << 16) | (hasSecond ? view[index + 1] << 8 : 0);
+    ascii[out++] = Base64Alphabet[triple >>> 18];
+    ascii[out++] = Base64Alphabet[(triple >>> 12) & 63];
+    ascii[out++] = hasSecond ? Base64Alphabet[(triple >>> 6) & 63] : Base64Pad;
+    ascii[out++] = Base64Pad;
+  }
+  return new TextDecoder().decode(ascii);
 }
