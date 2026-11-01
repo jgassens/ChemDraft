@@ -2,7 +2,29 @@ import type { MoleculeAtom, MoleculeBond } from "@chemdraft/chem-core";
 
 export { kekuleSearchWorkForTesting } from "./valence";
 
-import type { PageSvgElementFragment, PageSvgFragment } from "./index";
+import type { NativeDrawingStyle } from "@chemdraft/chem-core";
+
+import { atomLabelRunAdvance, type AtomLabelLayoutRun, type PageSvgElementFragment, type PageSvgFragment } from "./index";
+
+/**
+ * Every glyph's horizontal box (its advance, `atomLabelRunAdvance`), placed by its run's x and
+ * text-anchor the way SVG places it, letter by letter. The gap between two neighbouring boxes is
+ * what a reader sees between the letters; inside one run it is zero.
+ */
+export function atomLabelGlyphBoxes(
+  runs: readonly Pick<AtomLabelLayoutRun, "text" | "script" | "x" | "textAnchor">[],
+  drawingStyle: NativeDrawingStyle
+): { text: string; left: number; right: number }[] {
+  return runs.flatMap((run) => {
+    const advance = atomLabelRunAdvance(run, drawingStyle);
+    let left = run.textAnchor === "start" ? run.x : run.textAnchor === "end" ? run.x - advance : run.x - advance / 2;
+    return [...run.text].map((text) => {
+      const glyph = { text, left, right: left + atomLabelRunAdvance({ text, script: run.script }, drawingStyle) };
+      left = glyph.right;
+      return glyph;
+    });
+  });
+}
 
 /** Flatten a planned SVG fragment tree into its element fragments, dropping text leaves. */
 export function elementFragments(fragment: PageSvgFragment): PageSvgElementFragment[] {
