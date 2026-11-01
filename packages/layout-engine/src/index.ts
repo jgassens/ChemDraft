@@ -149,6 +149,8 @@ export interface MoleculeLayoutBond {
   id?: string;
   fromAtomId: string;
   toAtomId: string;
+  /** Read only to keep an sp atom linear (`bondGrowthAngleDegrees`); absent counts as single. */
+  order?: string;
 }
 
 export interface BondExtensionPlan {
@@ -194,7 +196,17 @@ export interface FreeformBondExtensionPlanningInput {
   snapHitRadius?: number;
   /** Placement may supply an absolute aim and keep new bonds at the standard length. */
   directionDegrees?: number;
+  /**
+   * `directionDegrees` is the user's own aim (Alt/Option), not a snap. It is kept exactly — shortened
+   * along its ray at the page edge — or the plan declines; it never gives way to another angle.
+   */
+  freeAngle?: boolean;
   standardLength?: boolean;
+  /**
+   * The style's chain angle, for the fallback when an sp end's straight-through aim cannot be drawn
+   * inside the page (defaults to 120°).
+   */
+  targetBondAngleDegrees?: number;
 }
 
 /** Absolute pointer aim in the page coordinate system, shared by placement tools. */
@@ -253,6 +265,54 @@ export interface BondHit {
   nearestTerminalAtomId?: string;
 }
 
+/**
+ * The angle a new bond makes with the bonds already on `atomId`. An atom carrying a triple bond, or
+ * two double bonds (an allene or cumulene centre), is sp and linear, so the new bond continues
+ * straight through it at 180°; any other atom takes the style's chain angle. Geometry only: the
+ * bond orders are read, never changed.
+ */
+export function bondGrowthAngleDegrees(
+  atomId: string,
+  bonds: readonly MoleculeLayoutBond[],
+  chainAngleDegrees: number = defaultTargetBondAngleDegrees
+): number {
+  let doubleBonds = 0;
+  for (const bond of bonds) {
+    if (bond.fromAtomId !== atomId && bond.toAtomId !== atomId) {
+      continue;
+    }
+    if (bond.order === "triple") {
+      return 180;
+    }
+    if (bond.order === "double") {
+      doubleBonds += 1;
+    }
+  }
+  return doubleBonds >= 2 ? 180 : chainAngleDegrees;
+}
+
+/**
+ * The absolute aim (page degrees, `placementAimDegrees` convention) that keeps a bond grown off an
+ * sp end collinear with its one existing bond, or `undefined` when `atomId` is not an sp atom
+ * (`bondGrowthAngleDegrees` below 180) or does not carry exactly one bond. A dragged bond snaps to
+ * this aim unless the user frees the angle. Geometry only: bond orders are read, never changed.
+ */
+export function linearBondGrowthAimDegrees(
+  atomId: string,
+  atoms: readonly MoleculeLayoutAtom[],
+  bonds: readonly MoleculeLayoutBond[]
+): number | undefined {
+  if (bondGrowthAngleDegrees(atomId, bonds) !== 180) {
+    return undefined;
+  }
+  const neighbors = bondedNeighbors(atoms, bonds, atomId);
+  const atom = atoms.find((candidate) => candidate.id === atomId);
+  if (!atom || neighbors.length !== 1) {
+    return undefined;
+  }
+  return placementAimDegrees(neighbors[0], atom);
+}
+
 export function planBondExtension(input: BondExtensionPlanningInput): BondExtensionPlan | undefined {
   if (input.bondLength <= 0 || input.hitRadius < 0) {
     return undefined;
@@ -263,6 +323,11 @@ export function planBondExtension(input: BondExtensionPlanningInput): BondExtens
   if (!source) {
     return undefined;
   }
+  const targetBondAngleDegrees = bondGrowthAngleDegrees(
+    source.atom.id,
+    input.bonds,
+    input.targetBondAngleDegrees ?? defaultTargetBondAngleDegrees
+  );
   const nearObject =
     input.objectBounds !== undefined && pointInsideExpandedBounds(input.clickPoint, input.objectBounds, input.hitRadius);
   if (!nearObject && source.distance > input.hitRadius) {
@@ -270,7 +335,7 @@ export function planBondExtension(input: BondExtensionPlanningInput): BondExtens
   }
 
   const neighbors = bondedNeighbors(input.atoms, input.bonds, source.atom.id);
-  const direction = extensionDirection({
+  const directionInput: ExtensionDirectionInput = {
     sourceAtom: source.atom,
     neighbors,
     clickPoint: input.clickPoint,
@@ -279,42 +344,79 @@ export function planBondExtension(input: BondExtensionPlanningInput): BondExtens
     bondLength: input.bondLength,
     pageBounds: input.pageBounds,
     maxBondsPerAtom,
-    targetBondAngleDegrees: input.targetBondAngleDegrees ?? defaultTargetBondAngleDegrees,
+    targetBondAngleDegrees,
     collisionRadius: input.collisionRadius ?? input.bondLength * 0.45
-  });
-  const plannedNewAtomPoint = clampPointToBounds({
-    x: source.atom.x + direction.x * input.bondLength,
-    y: source.atom.y + direction.y * input.bondLength
-  }, input.pageBounds);
-  const targetAtom = guidedBondTargetAtom({
-    atoms: input.atoms,
-    bonds: input.bonds,
-    sourceAtom: source.atom,
-    neighbors,
-    plannedPoint: plannedNewAtomPoint,
-    bondLength: input.bondLength,
-    hitRadius: Math.min(input.hitRadius, input.bondLength * 0.3),
-    maxBondsPerAtom,
-    targetBondAngleDegrees: input.targetBondAngleDegrees ?? defaultTargetBondAngleDegrees
-  });
-  const newAtomPoint = targetAtom ? clampPointToBounds(targetAtom, input.pageBounds) : plannedNewAtomPoint;
-  const resolvedDirection = targetAtom
-    ? normalize({
-        x: targetAtom.x - source.atom.x,
-        y: targetAtom.y - source.atom.y
-      })
-    : direction;
-
-  return {
-    sourceAtomId: source.atom.id,
-    terminalAtomId: source.atom.id,
-    neighborAtomIds: neighbors.map((neighbor) => neighbor.id),
-    neighborAtomId: neighbors[0]?.id,
-    targetAtomId: targetAtom?.id,
-    newAtomPoint,
-    direction: resolvedDirection,
-    distanceToClick: source.distance
   };
+  // Candidates best first. Each is judged where it lands AFTER the page clamp: the straight-through
+  // aim off an sp end at the page edge clamps back onto its own atom, so it gives way to the style's
+  // chain-angle candidates rather than drawing a zero-length bond (a silent extra carbon).
+  const chainAngleDegrees = input.targetBondAngleDegrees ?? defaultTargetBondAngleDegrees;
+  const candidates = [
+    ...extensionDirections(directionInput).map((direction) => ({ direction, angleDegrees: targetBondAngleDegrees })),
+    ...(targetBondAngleDegrees === chainAngleDegrees
+      ? []
+      : extensionDirections({ ...directionInput, targetBondAngleDegrees: chainAngleDegrees })
+        .map((direction) => ({ direction, angleDegrees: chainAngleDegrees })))
+  ];
+  for (const candidate of candidates) {
+    const plannedNewAtomPoint = clampPointToBounds({
+      x: source.atom.x + candidate.direction.x * input.bondLength,
+      y: source.atom.y + candidate.direction.y * input.bondLength
+    }, input.pageBounds);
+    const targetAtom = guidedBondTargetAtom({
+      atoms: input.atoms,
+      bonds: input.bonds,
+      sourceAtom: source.atom,
+      neighbors,
+      plannedPoint: plannedNewAtomPoint,
+      bondLength: input.bondLength,
+      hitRadius: Math.min(input.hitRadius, input.bondLength * 0.3),
+      maxBondsPerAtom,
+      targetBondAngleDegrees: candidate.angleDegrees
+    });
+    const newAtomPoint = targetAtom ? clampPointToBounds(targetAtom, input.pageBounds) : plannedNewAtomPoint;
+    if (!usableGrowthEndpoint(input.atoms, source.atom, newAtomPoint, input.bondLength, targetAtom !== undefined)) {
+      continue;
+    }
+    const resolvedDirection = targetAtom
+      ? normalize({
+          x: targetAtom.x - source.atom.x,
+          y: targetAtom.y - source.atom.y
+        })
+      : candidate.direction;
+
+    return {
+      sourceAtomId: source.atom.id,
+      terminalAtomId: source.atom.id,
+      neighborAtomIds: neighbors.map((neighbor) => neighbor.id),
+      neighborAtomId: neighbors[0]?.id,
+      targetAtomId: targetAtom?.id,
+      newAtomPoint,
+      direction: resolvedDirection,
+      distanceToClick: source.distance
+    };
+  }
+  // No direction leaves a visible bond inside the page: decline rather than draw one.
+  return undefined;
+}
+
+/**
+ * Whether a bond grown from `source` to `point` (already clamped to the page) is one the user can
+ * see: at least half a bond length long, and not on top of another atom unless it bonds to that
+ * atom on purpose (`bondsToExistingAtom`, a ring closure). A clamp at the page edge can shorten a
+ * planned bond to nothing; such a plan must never be committed.
+ */
+function usableGrowthEndpoint(
+  atoms: readonly MoleculeLayoutAtom[],
+  source: MoleculeLayoutAtom,
+  point: LayoutPoint,
+  bondLength: number,
+  bondsToExistingAtom: boolean
+): boolean {
+  if (distance(source, point) < bondLength * 0.5) {
+    return false;
+  }
+  return bondsToExistingAtom || nearestOtherAtomDistance(atoms, source.id, point) >= bondLength * 0.25;
 }
 
 export function planFreeformBondExtension(input: FreeformBondExtensionPlanningInput): BondExtensionPlan | undefined {
@@ -383,9 +485,23 @@ export function planFreeformBondExtension(input: FreeformBondExtensionPlanningIn
         y: source.y + pointerDirection.y * plannedLength
       };
   // Shorten aimed placement along its ray at the page edge, preserving the supplied angle.
-  const newAtomPoint = input.directionDegrees !== undefined
+  let newAtomPoint = input.directionDegrees !== undefined
     ? clampAimedEndpointToBounds(source, plannedEndPoint, input.pageBounds, minimumBondLength)
     : clampPointToBounds(plannedEndPoint, input.pageBounds);
+  // The straight-through aim off an sp end (`linearBondGrowthAimDegrees`) is a snap, not the user's
+  // aim. Where the page edge cuts it short or it lands on another atom, it gives way to the best
+  // chain-angle direction on the pointer's side, as the bond hotkey does (`planBondExtension`).
+  // A free-angle aim that happens to equal it is still the user's: it is kept or the plan declines.
+  const linearAim = input.directionDegrees !== undefined && !input.freeAngle
+    ? linearBondGrowthAimDegrees(source.id, input.atoms, input.bonds)
+    : undefined;
+  if (
+    linearAim !== undefined &&
+    angularDistance(degreesToRadians(linearAim), degreesToRadians(input.directionDegrees!)) < 1e-6 &&
+    (!newAtomPoint || !usableGrowthEndpoint(input.atoms, source, newAtomPoint, Math.min(plannedLength, input.bondLength), false))
+  ) {
+    newAtomPoint = angledFreeformFallbackPoint(input, source, maxBondsPerAtom);
+  }
   if (!newAtomPoint) {
     return undefined;
   }
@@ -405,6 +521,36 @@ export function planFreeformBondExtension(input: FreeformBondExtensionPlanningIn
     distanceToClick: pointerDistance,
     lengthMode
   };
+}
+
+/** The best chain-angle endpoint off `source` steered by the pointer that `usableGrowthEndpoint` accepts. */
+function angledFreeformFallbackPoint(
+  input: FreeformBondExtensionPlanningInput,
+  source: MoleculeLayoutAtom,
+  maxBondsPerAtom: number
+): LayoutPoint | undefined {
+  const directions = extensionDirections({
+    sourceAtom: source,
+    neighbors: bondedNeighbors(input.atoms, input.bonds, source.id),
+    clickPoint: input.endPoint,
+    atoms: input.atoms,
+    bonds: input.bonds,
+    bondLength: input.bondLength,
+    pageBounds: input.pageBounds,
+    maxBondsPerAtom,
+    targetBondAngleDegrees: input.targetBondAngleDegrees ?? defaultTargetBondAngleDegrees,
+    collisionRadius: input.bondLength * 0.45
+  });
+  for (const direction of directions) {
+    const point = clampPointToBounds({
+      x: source.x + direction.x * input.bondLength,
+      y: source.y + direction.y * input.bondLength
+    }, input.pageBounds);
+    if (usableGrowthEndpoint(input.atoms, source, point, input.bondLength, false)) {
+      return point;
+    }
+  }
+  return undefined;
 }
 
 function nearestFreeformSnapTarget(input: {
@@ -649,7 +795,8 @@ interface ExtensionDirectionInput {
   collisionRadius: number;
 }
 
-function extensionDirection(input: ExtensionDirectionInput): LayoutPoint {
+/** Growth directions for `planBondExtension`, best first; never empty. */
+function extensionDirections(input: ExtensionDirectionInput): LayoutPoint[] {
   const clickDirection = normalizeOrUndefined({
     x: input.clickPoint.x - input.sourceAtom.x,
     y: input.clickPoint.y - input.sourceAtom.y
@@ -675,7 +822,7 @@ function extensionDirection(input: ExtensionDirectionInput): LayoutPoint {
       return left.angle - right.angle;
     });
 
-  return scored[0]?.direction ?? clickDirection ?? { x: 1, y: 0 };
+  return scored.length > 0 ? scored.map((candidate) => candidate.direction) : [clickDirection ?? { x: 1, y: 0 }];
 }
 
 function directionCandidates(
@@ -5521,29 +5668,20 @@ export function atomLabelLayout(label: string, drawingStyle: NativeDrawingStyle,
   if (anchored) {
     return anchored;
   }
-  const leadingHydrogenElement = leadingImplicitHydrogenElement(label);
-  if (leadingHydrogenElement) {
+  const leadingHydrogens = leadingImplicitHydrogenElement(label);
+  if (leadingHydrogens) {
     return leadingImplicitHydrogenAtomLabelLayout(
-      leadingHydrogenElement,
+      leadingHydrogens.element,
+      leadingHydrogens.count,
       chargeRun,
       drawingStyle
     );
   }
-  // A leading hydrogen count retains its established grouped-base geometry because that label
-  // family has a separate placement contract from ordinary left-to-right body runs.
-  const preservesLeadingHydrogenGeometry = /^H\d+[A-Z][a-z]?$/.test(splitAtomLabelCharge(label).body);
-  const baseRun = preservesLeadingHydrogenGeometry
-    ? {
-        text: bodyRuns.filter((run) => run.script === "normal").map((run) => run.text).join("") || label,
-        script: "normal" as const
-      }
-    : bodyRuns.find((run) => run.script === "normal") ?? { text: label, script: "normal" as const };
-  const followingRuns = preservesLeadingHydrogenGeometry
-    ? bodyRuns.filter((run) => run.script !== "normal")
-    : bodyRuns.slice(bodyRuns.indexOf(baseRun) + 1);
+  const baseRun = bodyRuns.find((run) => run.script === "normal") ?? { text: label, script: "normal" as const };
+  const followingRuns = bodyRuns.slice(bodyRuns.indexOf(baseRun) + 1);
   // Runs before the first normal run (a typed "13C" or "2H") go to the LEFT of the base, in
   // order; they used to be dropped outright.
-  const leadingRuns = preservesLeadingHydrogenGeometry ? [] : bodyRuns.slice(0, bodyRuns.indexOf(baseRun));
+  const leadingRuns = bodyRuns.slice(0, bodyRuns.indexOf(baseRun));
   const baseWidth = atomLabelRunWidth(baseRun, drawingStyle);
   const baseHalfWidth = baseWidth / 2;
   const baseHalfHeight = drawingStyle.atomLabelFontSizePx * 0.54;
@@ -5630,54 +5768,69 @@ export function atomLabelLayout(label: string, drawingStyle: NativeDrawingStyle,
   };
 }
 
-function leadingImplicitHydrogenElement(label: string): NativeElementSymbol | undefined {
+/**
+ * "HO", "H2N", "H3C": a hydrogen count drawn before its element, as `atomDisplayLabelPlacement`
+ * writes it for a bond on the right. The element stays centred on the atom and the hydrogens,
+ * with their subscript count, sit to its left.
+ */
+function leadingImplicitHydrogenElement(label: string): { element: NativeElementSymbol; count: string } | undefined {
   const { body } = splitAtomLabelCharge(label);
-  const match = body.match(/^H([A-Z][a-z]?)$/);
-  if (!match?.[1] || match[1] === "H") {
+  const match = body.match(/^H(\d*)([A-Z][a-z]?)$/);
+  if (!match?.[2] || match[2] === "H" || match[1]?.startsWith("0") || match[1] === "1") {
     return undefined;
   }
 
-  return nativeElementFromAtomLabel(match[1]);
+  const element = nativeElementFromAtomLabel(match[2]);
+  return element ? { element, count: match[1] ?? "" } : undefined;
 }
 
 function leadingImplicitHydrogenAtomLabelLayout(
   element: NativeElementSymbol,
+  count: string,
   chargeRun: AtomLabelRun | undefined,
   drawingStyle: NativeDrawingStyle
 ): AtomLabelLayout {
   const hydrogenRun: AtomLabelRun = { text: "H", script: "normal" };
+  const countRun: AtomLabelRun | undefined = count ? { text: count, script: "subscript" } : undefined;
   const elementRun: AtomLabelRun = { text: element, script: "normal" };
-  const hydrogenWidth = atomLabelRunWidth(hydrogenRun, drawingStyle);
-  const elementWidth = atomLabelRunWidth(elementRun, drawingStyle);
-  // SVG text is anchored at the glyph baseline, while this layout helper only has an estimated
-  // advance width. Round element glyphs (especially O) extend farther left than half that estimate.
-  // Reserve their cap-width plus a small publication-style gap so a leading H reads as "HO"
-  // instead of visually running into the element.
-  const elementHalfWidth = Math.max(
-    elementWidth / 2,
-    drawingStyle.atomLabelFontSizePx * 0.38
-  );
-  const hydrogenElementGap = drawingStyle.atomLabelFontSizePx * 0.12;
-  const hydrogenRight = -elementHalfWidth - hydrogenElementGap;
-  const baseHalfHeight = drawingStyle.atomLabelFontSizePx * 0.54;
-  const runs: AtomLabelLayoutRun[] = [
-    {
-      ...hydrogenRun,
-      x: hydrogenRight,
-      y: 0,
-      textAnchor: "end"
-    },
-    {
-      ...elementRun,
-      x: 0,
-      y: 0,
-      textAnchor: "middle"
-    }
-  ];
-  let left = hydrogenRight - hydrogenWidth;
-  let right = elementHalfWidth;
+  const labelFontSize = drawingStyle.atomLabelFontSizePx;
+  // The trailing "OH", "NH2" the centred layout draws keeps the H in one text run with its element,
+  // so the font sets the two letters by their advance widths with no space between. Lay the leading
+  // runs out the same way, each ending where the next glyph's advance begins (`atomLabelRunAdvance`)
+  // with nothing added, so "HO" is exactly as tight as "OH" and "H2N" as "NH2". A fixed half-width
+  // floor and an extra 0.12 em gap here once drew "H O".
+  const elementAdvance = atomLabelRunAdvance(elementRun, drawingStyle);
+  const elementHalfWidth = Math.max(atomLabelRunWidth(elementRun, drawingStyle), elementAdvance) / 2;
+  const hydrogenWidth = Math.max(atomLabelRunWidth(hydrogenRun, drawingStyle), atomLabelRunAdvance(hydrogenRun, drawingStyle));
+  const baseHalfHeight = labelFontSize * 0.54;
   let top = -baseHalfHeight;
   let bottom = baseHalfHeight;
+  const runs: AtomLabelLayoutRun[] = [];
+  let hydrogenRight = -elementAdvance / 2;
+  if (countRun) {
+    // The count sits between H and the element at the trailing "CH3"'s subscript size and drop.
+    const countFontSize = atomLabelRunFontSize(countRun.script, drawingStyle) ?? labelFontSize;
+    const countRight = hydrogenRight;
+    const y = atomLabelScriptOffsetY(countRun.script, drawingStyle);
+    runs.push({ ...countRun, x: countRight, y, textAnchor: "end" });
+    top = Math.min(top, y - countFontSize * 0.52);
+    bottom = Math.max(bottom, y + countFontSize * 0.52);
+    hydrogenRight = countRight - atomLabelRunAdvance(countRun, drawingStyle);
+  }
+  runs.unshift({
+    ...hydrogenRun,
+    x: hydrogenRight,
+    y: 0,
+    textAnchor: "end"
+  });
+  runs.push({
+    ...elementRun,
+    x: 0,
+    y: 0,
+    textAnchor: "middle"
+  });
+  let left = hydrogenRight - hydrogenWidth;
+  let right = elementHalfWidth;
 
   if (chargeRun) {
     const fontSize = atomLabelRunFontSize(chargeRun.script, drawingStyle) ?? drawingStyle.atomLabelFontSizePx;
@@ -5862,7 +6015,7 @@ const sansSerifAdvanceEm: Readonly<Record<string, number>> = {
 };
 
 /** A run's width from `sansSerifAdvanceEm`, at its script's size and the label's weight and slant. */
-function atomLabelRunAdvance(run: AtomLabelRun, drawingStyle: NativeDrawingStyle): number {
+export function atomLabelRunAdvance(run: AtomLabelRun, drawingStyle: NativeDrawingStyle): number {
   const fontSize = atomLabelRunFontSize(run.script, drawingStyle) ?? drawingStyle.atomLabelFontSizePx;
   const weightFactor = drawingStyle.atomLabelFontWeight >= 600 ? 1.08 : 1;
   const italicFactor = drawingStyle.atomLabelFontStyle === "italic" ? 1.06 : 1;
@@ -5976,11 +6129,11 @@ export function atomDisplayLabelPlacement(
   }
 
   const singleHeavyNeighbor = singleHeavyAtomNeighbor(atom.id, resolution);
-  // HO, not OH, when the bond comes from the right: chem-core's side test, the same one that
-  // records a cyano label's bond side, so the drawing and the chemistry agree on "right".
+  // HO, H2N, H3C, not OH, NH2, CH3, when the bond comes from the right: chem-core's side test, the
+  // same one that records a cyano label's bond side, so the drawing and the chemistry agree on "right".
   const hydrogenBeforeElement =
     atom.isotope === undefined &&
-    implicitHydrogens === "H" &&
+    implicitHydrogens !== "" &&
     element !== "H" &&
     singleHeavyNeighbor !== undefined &&
     drawnLabelBondSide(atom, [singleHeavyNeighbor]) === "right";

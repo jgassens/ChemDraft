@@ -5215,7 +5215,8 @@ describe("ChemDraft desktop shell", () => {
 
     expect(markup).toContain('stroke="#b3261e"');
     expect(markup).toContain('fill="#c75c12"');
-    expect(markup).toContain('data-atom-label="NH2"');
+    // The first atom's bond leaves to its right, so its hydrogens lead the label.
+    expect(markup).toContain('data-atom-label="H2N"');
     expect(appCss).not.toMatch(/\\.native-bond-line\\s*{[^}]*stroke\\s*:/);
     expect(appCss).not.toMatch(/\\.native-atom-label\\s*{[^}]*fill\\s*:/);
   });

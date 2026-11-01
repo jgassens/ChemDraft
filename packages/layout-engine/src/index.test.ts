@@ -18,6 +18,7 @@ import {
   atomDegrees,
   atomLabelAnchorOffset,
   atomLabelLayout,
+  atomLabelRunAdvance,
   atomLabelHaloWidthPx,
   averageDefinedDepthWeights,
   bondRefKey,
@@ -33,6 +34,8 @@ import {
   nativeMoleculeRingAtPoint,
   NativeAtomLabelStyleMapKeys,
   planBondExtension,
+  bondGrowthAngleDegrees,
+  linearBondGrowthAimDegrees,
   planNativeArtVisual,
   planPageSvgRender,
   planMoleculeAtomLabels,
@@ -98,6 +101,220 @@ describe("layout-engine molecule growth planning", () => {
     expect(plan?.newAtomPoint.y).toBeCloseTo(150.718, 3);
     expect(plan?.direction.x).toBeCloseTo(0.5, 3);
     expect(plan?.direction.y).toBeCloseTo(-0.866, 3);
+  });
+
+  it("grows straight through a terminal alkyne carbon, however the click leans", () => {
+    for (const clickPoint of [{ x: 300, y: 220 }, { x: 282, y: 290 }, { x: 248, y: 212 }]) {
+      const plan = planBondExtension({
+        ...baseInput,
+        bonds: [{ fromAtomId: "atom_001", toAtomId: "atom_002", order: "triple" }],
+        clickPoint
+      });
+      expect(plan?.sourceAtomId).toBe("atom_002");
+      expect(plan?.direction.x).toBeCloseTo(1, 6);
+      expect(plan?.direction.y).toBeCloseTo(0, 6);
+      expect(plan?.newAtomPoint.x).toBeCloseTo(320, 3);
+      expect(plan?.newAtomPoint.y).toBeCloseTo(220, 3);
+    }
+  });
+
+  it.each([
+    ["a triple bond", [{ fromAtomId: "a", toAtomId: "b", order: "triple" }], 180],
+    ["two double bonds (an allene centre)", [
+      { fromAtomId: "a", toAtomId: "b", order: "double" },
+      { fromAtomId: "c", toAtomId: "a", order: "double" }
+    ], 180],
+    ["one double bond", [{ fromAtomId: "a", toAtomId: "b", order: "double" }], 120],
+    ["single and aromatic bonds", [
+      { fromAtomId: "a", toAtomId: "b", order: "single" },
+      { fromAtomId: "a", toAtomId: "c", order: "aromatic" }
+    ], 120],
+    ["bonds with no order", [{ fromAtomId: "a", toAtomId: "b" }], 120],
+    ["a triple bond elsewhere in the molecule", [
+      { fromAtomId: "a", toAtomId: "b", order: "single" },
+      { fromAtomId: "b", toAtomId: "c", order: "triple" }
+    ], 120]
+  ] as const)("gives an atom with %s a %s-degree growth angle", (_name, bonds, expected) => {
+    expect(bondGrowthAngleDegrees("a", bonds, 120)).toBe(expected);
+  });
+
+  it("keeps a non-default chain angle off an sp atom", () => {
+    expect(bondGrowthAngleDegrees("a", [{ fromAtomId: "a", toAtomId: "b", order: "single" }], 112)).toBe(112);
+    expect(bondGrowthAngleDegrees("a", [{ fromAtomId: "a", toAtomId: "b", order: "triple" }], 112)).toBe(180);
+  });
+
+  it("aims a bond dragged off an sp end straight through it, and declines anywhere else", () => {
+    const atoms = [{ id: "b", x: 0, y: 0 }, { id: "a", x: 30, y: -30 }, { id: "c", x: 60, y: -30 }];
+    const triple = [{ fromAtomId: "b", toAtomId: "a", order: "triple" }];
+    expect(linearBondGrowthAimDegrees("a", atoms, triple)).toBeCloseTo(-45, 9);
+    expect(linearBondGrowthAimDegrees("b", atoms, triple)).toBeCloseTo(135, 9);
+    expect(linearBondGrowthAimDegrees("a", atoms, [{ fromAtomId: "a", toAtomId: "b", order: "single" }])).toBeUndefined();
+    expect(linearBondGrowthAimDegrees("a", atoms, [{ fromAtomId: "a", toAtomId: "b", order: "double" }])).toBeUndefined();
+    // An allene centre already has two collinear bonds: no single straight-through aim remains.
+    expect(linearBondGrowthAimDegrees("a", atoms, [
+      { fromAtomId: "a", toAtomId: "b", order: "double" },
+      { fromAtomId: "a", toAtomId: "c", order: "double" }
+    ])).toBeUndefined();
+    expect(linearBondGrowthAimDegrees("missing", atoms, triple)).toBeUndefined();
+  });
+
+  // Ethyne flush with the right edge of an 816-wide page: the straight-through position for a third
+  // carbon lies off the page and clamps back onto the sp carbon itself.
+  const edgeEthyne = {
+    atoms: [{ id: "c1", x: 776, y: 300 }, { id: "c2", x: 816, y: 300 }],
+    bonds: [{ fromAtomId: "c1", toAtomId: "c2", order: "triple" }],
+    pageBounds: { x: 0, y: 0, width: 816, height: 1056 }
+  };
+  const turnFromParent = (point: { x: number; y: number }) => {
+    const [parent, source] = edgeEthyne.atoms;
+    const first = Math.atan2(parent!.y - source!.y, parent!.x - source!.x);
+    const second = Math.atan2(point.y - source!.y, point.x - source!.x);
+    return Math.abs(((second - first) * 180 / Math.PI + 540) % 360 - 180);
+  };
+
+  it("never grows a zero-length bond off an sp end at the page edge: it takes the chain angle instead", () => {
+    const plan = planBondExtension({
+      ...edgeEthyne,
+      clickPoint: { x: 816, y: 300 },
+      preferredAtomId: "c2",
+      bondLength: 40,
+      hitRadius: 10,
+      targetBondAngleDegrees: 120
+    });
+    expect(plan).toBeDefined();
+    expect(plan!.sourceAtomId).toBe("c2");
+    // The chain-angle position, clamped to the page like any growth at the edge: a real bond, bent.
+    expect(Math.hypot(plan!.newAtomPoint.x - 816, plan!.newAtomPoint.y - 300)).toBeGreaterThanOrEqual(20);
+    expect(turnFromParent(plan!.newAtomPoint)).toBeLessThan(150);
+    expect(plan!.newAtomPoint.x).toBeLessThanOrEqual(816);
+  });
+
+  it("still grows an sp end straight through when the page has room", () => {
+    const plan = planBondExtension({
+      ...edgeEthyne,
+      pageBounds: { x: 0, y: 0, width: 1000, height: 1056 },
+      clickPoint: { x: 816, y: 300 },
+      preferredAtomId: "c2",
+      bondLength: 40,
+      hitRadius: 10,
+      targetBondAngleDegrees: 120
+    });
+    expect(plan!.newAtomPoint.x).toBeCloseTo(856, 6);
+    expect(plan!.newAtomPoint.y).toBeCloseTo(300, 6);
+  });
+
+  it("declines rather than grow a bond with no visible length anywhere on the page", () => {
+    // A 1 px page: every direction clamps back onto the source.
+    expect(planBondExtension({
+      atoms: [{ id: "c1", x: 0, y: 0 }, { id: "c2", x: 1, y: 0 }],
+      bonds: [{ fromAtomId: "c1", toAtomId: "c2", order: "triple" }],
+      pageBounds: { x: 0, y: 0, width: 1, height: 1 },
+      clickPoint: { x: 1, y: 0 },
+      preferredAtomId: "c2",
+      bondLength: 40,
+      hitRadius: 10
+    })).toBeUndefined();
+  });
+
+  it("lets a drag's straight-through snap give way to the chain angle at the page edge", () => {
+    const linearAim = linearBondGrowthAimDegrees("c2", edgeEthyne.atoms, edgeEthyne.bonds)!;
+    expect(linearAim).toBeCloseTo(0, 9);
+    // The pointer is dragged up and right of the sp carbon, beyond the page edge.
+    const plan = planFreeformBondExtension({
+      ...edgeEthyne,
+      sourceAtomId: "c2",
+      endPoint: { x: 836, y: 265 },
+      bondLength: 40,
+      directionDegrees: linearAim,
+      minimumBondLength: 12
+    });
+    expect(plan).toBeDefined();
+    expect(Math.hypot(plan!.newAtomPoint.x - 816, plan!.newAtomPoint.y - 300)).toBeGreaterThanOrEqual(20);
+    expect(turnFromParent(plan!.newAtomPoint)).toBeLessThan(150);
+    expect(plan!.newAtomPoint.x).toBeLessThanOrEqual(816);
+    // Toward the pointer: up the page.
+    expect(plan!.newAtomPoint.y).toBeLessThan(300);
+  });
+
+  it("never swaps a free-angle (Alt/Option) aim for another angle at the page edge: it declines", () => {
+    // Horizontal alkyne ending on the right edge; the free aim runs straight through, off the page.
+    const straight = planFreeformBondExtension({
+      ...edgeEthyne,
+      sourceAtomId: "c2",
+      endPoint: { x: 856, y: 300 },
+      bondLength: 40,
+      directionDegrees: 0,
+      freeAngle: true,
+      minimumBondLength: 12
+    });
+    expect(straight).toBeUndefined();
+    // Any aim with a rightward component has no length on the page either.
+    expect(planFreeformBondExtension({
+      ...edgeEthyne,
+      sourceAtomId: "c2",
+      endPoint: { x: 836, y: 265 },
+      bondLength: 40,
+      directionDegrees: -60,
+      freeAngle: true,
+      minimumBondLength: 12
+    })).toBeUndefined();
+    // The same straight-through angle as a snap (no free angle) still falls back to the chain angle.
+    const snapped = planFreeformBondExtension({
+      ...edgeEthyne,
+      sourceAtomId: "c2",
+      endPoint: { x: 836, y: 265 },
+      bondLength: 40,
+      directionDegrees: 0,
+      minimumBondLength: 12
+    });
+    expect(snapped).toBeDefined();
+    expect(turnFromParent(snapped!.newAtomPoint)).toBeLessThan(150);
+  });
+
+  it("keeps a free-angle aim exactly when it fits on the page", () => {
+    // Up the page from the sp carbon on the right edge: 90° off the straight-through line.
+    const plan = planFreeformBondExtension({
+      ...edgeEthyne,
+      sourceAtomId: "c2",
+      endPoint: { x: 816, y: 260 },
+      bondLength: 40,
+      directionDegrees: -90,
+      freeAngle: true,
+      minimumBondLength: 12
+    });
+    expect(plan!.newAtomPoint.x).toBeCloseTo(816, 6);
+    expect(plan!.newAtomPoint.y).toBeCloseTo(260, 6);
+    // With room past the edge, the free aim straight through is kept too.
+    const roomy = planFreeformBondExtension({
+      ...edgeEthyne,
+      pageBounds: { x: 0, y: 0, width: 1000, height: 1056 },
+      sourceAtomId: "c2",
+      endPoint: { x: 856, y: 300 },
+      bondLength: 40,
+      directionDegrees: 0,
+      freeAngle: true,
+      minimumBondLength: 12
+    });
+    expect(roomy!.newAtomPoint.x).toBeCloseTo(856, 6);
+    expect(roomy!.newAtomPoint.y).toBeCloseTo(300, 6);
+  });
+
+  it("does not let a drag's straight-through snap land a bond on another atom", () => {
+    const atoms = [...edgeEthyne.atoms, { id: "x", x: 856, y: 300 }];
+    const plan = planFreeformBondExtension({
+      ...edgeEthyne,
+      atoms,
+      pageBounds: { x: 0, y: 0, width: 1000, height: 1056 },
+      sourceAtomId: "c2",
+      endPoint: { x: 836, y: 335 },
+      bondLength: 40,
+      directionDegrees: linearBondGrowthAimDegrees("c2", atoms, edgeEthyne.bonds),
+      minimumBondLength: 12,
+      snapHitRadius: 0
+    });
+    expect(plan).toBeDefined();
+    expect(Math.hypot(plan!.newAtomPoint.x - 856, plan!.newAtomPoint.y - 300)).toBeGreaterThan(10);
+    expect(turnFromParent(plan!.newAtomPoint)).toBeCloseTo(120, 6);
   });
 
   it("uses the click side to choose between the two 120-degree candidates", () => {
@@ -1781,7 +1998,8 @@ describe("layout-engine page SVG planner", () => {
 
     const labels = new Map(planMoleculeAtomLabels(molecule).map((plan) => [plan.atom.id, plan]));
 
-    expect(labels.get("atom_001")?.label).toBe("CH3");
+    // Its bond leaves to the right, so the hydrogens lead: H3C, as HO does.
+    expect(labels.get("atom_001")?.label).toBe("H3C");
     expect(labels.get("atom_002")).toBeUndefined();
     expect(labels.get("atom_003")?.label).toBe("CH2");
     expect(labels.get("atom_003")?.color).toBe("#c75c12");
@@ -1797,7 +2015,7 @@ describe("layout-engine page SVG planner", () => {
     });
   });
 
-  it("preserves established trailing-subscript and leading-hydrogen label geometry", () => {
+  it("lays out trailing-subscript labels and leading hydrogens with the element on the atom", () => {
     const drawingStyle = {
       ...ChemDraftSyntheticStylePreset.drawing,
       atomLabelPlacement: "above" as const
@@ -1852,24 +2070,31 @@ describe("layout-engine page SVG planner", () => {
           "layout": {
             "bounds": {
               "height": 22.816000000000003,
-              "width": 28.6,
-              "x": -11.3,
+              "width": 31.6648,
+              "x": -24.2498,
               "y": -10.100000000000001,
             },
             "runs": [
               {
                 "script": "normal",
-                "text": "HN",
-                "textAnchor": "middle",
-                "x": 0,
+                "text": "H",
+                "textAnchor": "end",
+                "x": -11.4198,
                 "y": 0,
               },
               {
                 "script": "subscript",
                 "text": "2",
-                "textAnchor": "start",
-                "x": 9.9,
+                "textAnchor": "end",
+                "x": -5.415,
                 "y": 5.1000000000000005,
+              },
+              {
+                "script": "normal",
+                "text": "N",
+                "textAnchor": "middle",
+                "x": 0,
+                "y": 0,
               },
             ],
           },
@@ -2081,7 +2306,10 @@ describe("layout-engine page SVG planner", () => {
     ]);
     const hydrogenRight = oxygenLabel?.layout.runs[0]?.x;
     expect(hydrogenRight).toBeDefined();
-    expect(hydrogenRight!).toBeLessThanOrEqual(-6);
+    // The H ends where the O's glyph begins (half its advance left of the atom), as in "OH": clear
+    // of the O, with no extra space between them.
+    const oxygenAdvance = atomLabelRunAdvance({ text: "O", script: "normal" }, oxygenLabel!.drawingStyle);
+    expect(hydrogenRight!).toBeCloseTo(-oxygenAdvance / 2, 6);
   });
 
   it("resolves sparse atom-label style overrides per atom", () => {
