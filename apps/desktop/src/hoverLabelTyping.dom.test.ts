@@ -3,7 +3,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { serializeDocument, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { applyPatches, serializeDocument, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { MainWindow } from "./MainWindow";
 import { createPhase4Document, insertNativeSingleBondMolecule, insertNativeTemplateMolecule, selectDocumentObjects } from "./documentWorkflow";
 import { saveKeybindingSettings } from "./keybindingSettings";
@@ -174,6 +174,75 @@ describe.each(["windows", "macos"] as const)("hover label target changes (%s sho
     expect(molecule().atoms).toEqual([after.atoms[0], before.atoms[1]]);
     await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.undo"); });
     expect(molecule()).toEqual(before);
+  });
+
+  it("keeps an isotope refusal and does not replay the key or add an undo entry", async () => {
+    const seed = snapshot().document;
+    const original = molecule();
+    const sulfur = { ...original.atoms[0]!, element: "S", isotope: 34 };
+    const oxygen = { ...original.atoms[1]!, id: "oxygen-test", element: "O", x: sulfur.x, y: sulfur.y - 40 };
+    const initial = applyPatches(seed, [{ op: "updateObject", objectId: original.id, changes: {
+      atoms: [sulfur, original.atoms[1]!, oxygen],
+      bonds: [...original.bonds, { id: "oxygen-bond-test", fromAtomId: sulfur.id, toAtomId: oxygen.id, order: "double" }]
+    } }]);
+    await remountDocument(initial);
+    const before = molecule();
+    await hoverAtom(0);
+    await typeLabel("SH");
+    await hoverAtom(1);
+    await press("N");
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Cannot relabel 34S as SH: the label cannot keep isotope 34");
+    expect(molecule()).toEqual(before);
+    expect(editor()).toBeNull();
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.undo"); });
+    expect(molecule()).toEqual(before);
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Nothing to undo");
+  });
+
+  it("preserves a successful relabel warning before the replay status", async () => {
+    const seed = snapshot().document;
+    const original = molecule();
+    const extra = { ...original.atoms[1]!, id: "extra-carbon-test", x: original.atoms[0]!.x, y: original.atoms[0]!.y - 40 };
+    const initial = applyPatches(seed, [{ op: "updateObject", objectId: original.id, changes: {
+      atoms: [...original.atoms, extra],
+      bonds: [...original.bonds.map(bond => ({ ...bond, order: "triple" as const })),
+        { id: "extra-bond-test", fromAtomId: original.atoms[0]!.id, toAtomId: extra.id, order: "single" }]
+    } }]);
+    await remountDocument(initial);
+    await hoverAtom(0);
+    await typeLabel("OMe");
+    await hoverAtom(1);
+    await press("N");
+    expect(molecule().atoms[0]).toMatchObject({ element: "OMe", labelLiteral: true });
+    expect(molecule().atoms[1]).toMatchObject({ element: "N" });
+    expect(container.querySelector('[role="status"]')?.textContent).toMatch(/Relabeled OMe: .+Set hovered atom to N/);
+  });
+
+  it("shows a successful relabel warning once when the replay sets no status", async () => {
+    const seed = snapshot().document;
+    const original = molecule();
+    const extra = { ...original.atoms[1]!, id: "extra-carbon-test", x: original.atoms[0]!.x, y: original.atoms[0]!.y - 40 };
+    const initial = applyPatches(seed, [{ op: "updateObject", objectId: original.id, changes: {
+      atoms: [...original.atoms, extra],
+      bonds: [...original.bonds.map(bond => ({ ...bond, order: "triple" as const })),
+        { id: "extra-bond-test", fromAtomId: original.atoms[0]!.id, toAtomId: extra.id, order: "single" }]
+    } }]);
+    await remountDocument(initial);
+    await hoverAtom(0);
+    await typeLabel("OMe");
+    await hoverAtom(1);
+    // Consume the replay at the canvas so no shortcut can set a new status.
+    const replay = vi.fn((event: Event) => event.stopPropagation());
+    container.querySelector(".canvas-region")!.addEventListener("keydown", replay, { once: true });
+    await press("N");
+    expect(replay).toHaveBeenCalledOnce();
+    expect((replay.mock.calls[0]![0] as KeyboardEvent).key).toBe("N");
+    expect(molecule().atoms[0]).toMatchObject({ element: "OMe", labelLiteral: true });
+    expect(molecule().atoms[1]).toEqual(original.atoms[1]);
+    expect(editor()).toBeNull();
+    const status = container.querySelector('[role="status"]')?.textContent ?? "";
+    expect(status).toMatch(/^Relabeled OMe: /);
+    expect(status.match(/Relabeled OMe:/g)).toHaveLength(1);
   });
 
   describe.each(["isComposing", "ctrlKey", "metaKey", "altKey"] as const)("hover handoff guard %s", guard => {
