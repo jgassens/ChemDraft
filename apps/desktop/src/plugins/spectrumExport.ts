@@ -209,6 +209,8 @@ export function standaloneSpectrumSvg(
   const clone = svg.cloneNode(true) as SVGSVGElement;
   clone.setAttributeNS("http://www.w3.org/2000/xmlns/", "xmlns", "http://www.w3.org/2000/svg");
   clone.removeAttribute("role");
+  // The live label appends interaction instructions after the spectrum description.
+  clone.setAttribute("aria-label", svg.getAttribute("aria-label")?.split(";")[0]?.trim() || "Predicted NMR spectrum");
   const viewBox = clone.getAttribute("viewBox")?.split(/\s+/) ?? ["0", "0", "680", "240"];
   clone.setAttribute("width", viewBox[2] ?? "680");
   clone.setAttribute("height", viewBox[3] ?? "240");

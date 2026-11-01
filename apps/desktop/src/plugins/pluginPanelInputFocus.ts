@@ -213,6 +213,14 @@ export function installPluginPanelInputFocus(
       }
       return;
     }
+    // Panel deletion never targets the drawing, regardless of selection, modifiers,
+    // repeat flags or intervening keyups. Editable controls have already kept their keys.
+    if (event.key === "Backspace" || event.key === "Delete") {
+      if (hasReportSelection()) document.getSelection()?.removeAllRanges();
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     if (hasReportSelection()) {
       if ((event.ctrlKey || event.metaKey) && !event.altKey && ["c", "a"].includes(event.key.toLowerCase())) return;
       if (["Shift", "Control", "Alt", "Meta", "AltGraph"].includes(event.key) ||

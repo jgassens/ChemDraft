@@ -242,7 +242,6 @@ describe.each(["macos", "windows"] as const)("persistent panel focus (%s)", (pla
   });
 
   it.each([
-    ["Delete", "Delete", "edit.delete"], ["Backspace", "Backspace", "edit.backspace"],
     ["x", "KeyX", "edit.cut"], ["v", "KeyV", "edit.paste"], ["z", "KeyZ", "edit.undo"]
   ])("owns held %s until keyup after ending report selection", async (value, code, command) => {
     const { shell, press, key, forward } = mount('<div class="plugin-report"><p>Report text</p></div>', platform);
@@ -263,6 +262,48 @@ describe.each(["macos", "windows"] as const)("persistent panel focus (%s)", (pla
     document.body.dispatchEvent(new KeyboardEvent("keyup", { code, bubbles: true }));
     expect(key(text, value, { code, ...modifiers }).defaultPrevented).toBe(true);
     expect(forward).toHaveBeenCalledExactlyOnceWith(command);
+  });
+
+  it.each(["Backspace", "Delete"])("never forwards %s after it clears selected table text (8.5)", async (value) => {
+    const { shell, press, key, forward } = mount('<div class="plugin-report"><table><tbody><tr><td>Report text</td></tr></tbody></table></div>', platform);
+    const text = shell.querySelector("td")!;
+    press(text);
+    await flush();
+    selectText(text);
+    expect(key(text, value).defaultPrevented).toBe(true);
+    expect(document.getSelection()!.isCollapsed).toBe(true);
+    // WebView2 can omit repeat or deliver keyup while the key is still held.
+    for (const withKeyup of [false, true]) {
+      for (const repeat of [true, false, true, false]) {
+        if (withKeyup) text.dispatchEvent(new KeyboardEvent("keyup", { code: value, bubbles: true }));
+        expect(key(text, value, { repeat }).defaultPrevented).toBe(true);
+        expect(forward).not.toHaveBeenCalled();
+      }
+    }
+    key(text, "z", platform === "macos" ? { metaKey: true } : { ctrlKey: true });
+    key(text, "b");
+    expect(forward.mock.calls).toEqual([["edit.undo"], ["tool.bond"]]);
+  });
+
+  it.each(["Backspace", "Delete"])("excludes bare and modified %s without selection while leaving input editing native", async (value) => {
+    const { shell, press, key, forward } = mount('<input value="Text"><div class="plugin-report"><p>Report text</p></div>', platform);
+    const input = shell.querySelector("input")!;
+    const text = shell.querySelector("p")!;
+    press(text);
+    await flush();
+    for (let mask = 0; mask < 16; mask++) {
+      const modifiers = { ctrlKey: !!(mask & 1), metaKey: !!(mask & 2), shiftKey: !!(mask & 4), altKey: !!(mask & 8) };
+      expect(key(text, value, modifiers).defaultPrevented).toBe(true);
+    }
+    // No keyup: a panel deletion must not reserve the key when an input gains focus.
+    press(input); input.focus();
+    await flush();
+    for (const repeat of [false, true]) {
+      // jsdom has no native editing default; uncancelled keydowns let the browser edit.
+      expect(key(input, value, { repeat }).defaultPrevented).toBe(false);
+    }
+    expect(document.activeElement).toBe(input);
+    expect(forward).not.toHaveBeenCalled();
   });
 
   it.each(["native deactivation", "window blur", "page hide", "page unload", "hidden page"])("releases consumed keys on %s before keyup", async (loss) => {
@@ -292,9 +333,10 @@ describe.each(["macos", "windows"] as const)("persistent panel focus (%s)", (pla
     press(text);
     await flush();
     expect(document.getSelection()!.isCollapsed).toBe(true);
-    key(text, "Delete");
-    key(text, "Delete", { repeat: true });
-    expect(forward.mock.calls).toEqual([["edit.delete"], ["edit.delete"]]);
+    expect(key(text, "Delete").defaultPrevented).toBe(true);
+    expect(key(text, "Delete", { repeat: true }).defaultPrevented).toBe(true);
+    key(text, "b");
+    expect(forward.mock.calls).toEqual([["tool.bond"]]);
     press(input); input.focus();
     await flush();
     for (const value of ["Delete", "b"]) {
@@ -302,7 +344,7 @@ describe.each(["macos", "windows"] as const)("persistent panel focus (%s)", (pla
       expect(key(input, value, { repeat: true }).defaultPrevented).toBe(false);
     }
     expect(document.activeElement).toBe(input);
-    expect(forward).toHaveBeenCalledTimes(2);
+    expect(forward).toHaveBeenCalledTimes(1);
   });
 
   it.each([

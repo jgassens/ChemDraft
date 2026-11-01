@@ -162,6 +162,23 @@ describe("spectrumToJcampDx", () => {
 });
 
 describe("standaloneSpectrumSvg", () => {
+  it.each(["¹H", "¹³C"])("replaces %s interaction hints with a static export description", (nucleus) => {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    const description = `Predicted ${nucleus} spectrum`;
+    const liveLabel = `${description}; scroll to zoom, drag to pan`;
+    svg.setAttribute("aria-label", liveLabel);
+    const out = standaloneSpectrumSvg(svg);
+    const exported = new DOMParser().parseFromString(out, "image/svg+xml").documentElement;
+    expect(exported.getAttribute("aria-label")).toBe(description);
+    expect(out).not.toMatch(/scroll|zoom|drag|pan/i);
+    expect(svg.getAttribute("aria-label")).toBe(liveLabel);
+  });
+
+  it("supplies a static description when the source has no label", () => {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    expect(standaloneSpectrumSvg(svg)).toContain('aria-label="Predicted NMR spectrum"');
+  });
+
   it("wraps the live svg into a self-contained, styled SVG document", () => {
     const ns = "http://www.w3.org/2000/svg";
     const svg = document.createElementNS(ns, "svg") as SVGSVGElement;
