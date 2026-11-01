@@ -4,7 +4,7 @@ import {
   type ClipboardDetectedPayload, type ClipboardReadPayload, type ClipboardTableResult
 } from "@chemdraft/clipboard-adapter";
 import {
-  applyPatches, textStyleToObjectStyle,
+  applyPatches, isSvgImageSource, textStyleToObjectStyle,
   type ChemDraftDocument, type NativeTextStyle, type TableObject
 } from "@chemdraft/chem-core";
 import { buildTableObject } from "@chemdraft/document-workflow-core";
@@ -104,7 +104,12 @@ export type TableClipboardPasteDecision =
 export function tableClipboardPasteDecision(payload: ClipboardReadPayload, parseHtml: ParseHtml): TableClipboardPasteDecision {
   const selection = payload.textItems.map(item => parseSelectionClipboardPayload(item.text)).find(Boolean);
   if (selection) return { kind: "selection", payload: selection };
-  const detected = inspectClipboardPayload(payload);
+  // Office and Google supply pictures alongside editable tables. Exclude those renditions
+  // while checking chemistry precedence, then restore picture detection if no table wins.
+  const detected = inspectClipboardPayload({
+    ...payload, imageItems: undefined, skippedImageItems: undefined,
+    textItems: payload.textItems.filter(item => !isSvgImageSource(item.text))
+  });
   // A few reagent names/header words can resemble SMILES in a prose-heavy Office table.
   // Only defer to chemistry if even the best case (every candidate parses) can qualify
   // under the same list policy used by the chemical parser.
@@ -128,10 +133,10 @@ export function tableClipboardPasteDecision(payload: ClipboardReadPayload, parse
     looksLikeSmiles(detected.text.trim()) || possibleList
   );
   if (!["plain-text", "empty", "vector-only"].includes(detected.kind) || textNeedsChemistry) {
-    return { kind: "existing", payload: detected };
+    return { kind: "existing", payload: inspectClipboardPayload(payload) };
   }
   const table = readTableClipboardPaste(payload, parseHtml);
-  return table ? { kind: "table", result: table } : { kind: "existing", payload: detected };
+  return table ? { kind: "table", result: table } : { kind: "existing", payload: inspectClipboardPayload(payload) };
 }
 
 /** Same builder, text-style conversion and centring as Insert Table; caller records one undo. */

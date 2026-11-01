@@ -9,6 +9,7 @@ import {
   insertNativeTemplateMolecule, insertNativeTextObject, insertTableIntoDocument, serializeSelectionClipboardPayload
 } from "./documentWorkflow";
 import { pasteTableIntoDocument, readTableClipboardPaste, tableClipboardPasteDecision, tableSelectionClipboardItems } from "./tableClipboardWiring";
+import { picturePngBase64 } from "./testSupport/imageFixture";
 
 const fixture = (name: string) => readFileSync(`packages/fixtures/clipboard-tables/${name}`, "utf8");
 const parseHtml = (html: string) => new JSDOM(html).window.document;
@@ -277,6 +278,26 @@ describe("paste precedence and table building", () => {
     expect(table.style).toEqual(textStyleToObjectStyle({ fontFamily: "Georgia", fontSizePx: 18, fontWeight: 700, color: "#123456" }));
     expect(built.document.selection.objectIds).toEqual([table.id]);
     expect(built.warnings).toEqual(result.result.warnings);
+  });
+
+  it("prefers an HTML table over its PNG rendition, but keeps a lone PNG on the picture path", () => {
+    const picture: ClipboardReadPayload = {
+      types: ["image/png"], textItems: [],
+      imageItems: [{ type: "image/png", bytesBase64: picturePngBase64, pixelWidth: 144, pixelHeight: 72 }]
+    };
+    const html = htmlPayload();
+    expect(tableClipboardPasteDecision({
+      ...picture, types: [...picture.types, ...html.types], textItems: html.textItems
+    }, parseHtml)).toMatchObject({ kind: "table", result: { ok: true, source: "html" } });
+    expect(tableClipboardPasteDecision(picture, parseHtml))
+      .toMatchObject({ kind: "existing", payload: { kind: "image", image: picture.imageItems![0] } });
+  });
+
+  it("prefers an HTML table with an embedded image over fallback text", () => {
+    expect(tableClipboardPasteDecision(payload({ type: "text/html", text:
+      `${fixture("word-like.html")}<img src="data:image/png;base64,${picturePngBase64}">`
+    }, { type: "text/plain", text: "fallback text" }), parseHtml))
+      .toMatchObject({ kind: "table", result: { ok: true, source: "html" } });
   });
 
   it("prefers HTML over TSV, then accepts quoted rectangular TSV", () => {
