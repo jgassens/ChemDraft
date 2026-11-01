@@ -251,7 +251,7 @@ import {
 import { createRdkitAdapter } from "@chemdraft/rdkit-adapter/adapter";
 import { buildAnalysisReport, type AnalysisReport, type AnalysisRun } from "@chemdraft/analysis-core";
 import { analysisClient } from "./analysisClient";
-import { inspectClipboardPayload, isVectorArtworkType, looksLikeSmiles, smilesListCandidates, type ClipboardDetectedPayload, type ClipboardReadPayload } from "@chemdraft/clipboard-adapter";
+import { guardClipboardPayload, inspectClipboardPayload, isVectorArtworkType, looksLikeSmiles, smilesListCandidates, type ClipboardDetectedPayload, type ClipboardReadPayload } from "@chemdraft/clipboard-adapter";
 import { verifySmilesPaste, verifySmilesPasteInput, verifySmilesGridEntries } from "./smilesPasteIdentity";
 import {
   SmilesListPasteError, depictSmilesForPaste, depictSmilesListForPaste, smilesListFailureStatus
@@ -6861,6 +6861,10 @@ export function MainWindow({
 
   const applyDetectedClipboardPayload = useCallback((detectedPayload: ClipboardDetectedPayload) => {
     smilesListPasteAbortRef.current?.abort();
+    if (detectedPayload.kind === "size-refused") {
+      setStatus(detectedPayload.message);
+      return;
+    }
     if (detectedPayload.kind === "vector-only" && detectedPayload.sourceType !== undefined && (
       !isVectorArtworkType(detectedPayload.sourceType) ||
       ["public.svg", "image/svg+xml"].includes(detectedPayload.sourceType.trim().toLowerCase())
@@ -7165,9 +7169,11 @@ export function MainWindow({
     // Prefer the native private flavor, then other native content. The event snapshot is a
     // fallback when the native clipboard was busy or empty; DataTransfer is no longer readable here.
     for (const candidate of [rawPayload, fallbackPayload]) {
-      const payload = await candidate;
+      const unguardedPayload = await candidate;
       if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
-      if (!payload) continue;
+      if (!unguardedPayload) continue;
+      // The private selection parser also copies text; admit flavors before trying it.
+      const payload = guardClipboardPayload(unguardedPayload);
       const selectionPayload = payload.textItems
         .map((item) => parseSelectionClipboardPayload(item.text))
         .find((selection) => selection !== undefined);
@@ -12272,9 +12278,11 @@ export function MainWindow({
         return;
       }
 
-      const selectionPayload =
-        parseSelectionClipboardPayload(event.clipboardData.getData(CHEMDRAFT_SELECTION_CLIPBOARD_TYPE)) ??
-        parseSelectionClipboardPayload(event.clipboardData.getData("text/plain"));
+      const selectionTypes = [CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, "text/plain"];
+      const selectionItems = guardClipboardPayload({ types: selectionTypes,
+        textItems: selectionTypes.map(type => ({ type, text: event.clipboardData!.getData(type) })) }).textItems;
+      const selectionPayload = selectionItems.map(item => parseSelectionClipboardPayload(item.text))
+        .find(selection => selection !== undefined);
       if (selectionPayload) {
         event.preventDefault();
         applySelectionClipboardPayload(selectionPayload);

@@ -423,9 +423,10 @@ pub(crate) mod native {
         ValidatedClipboardItem,
     };
     use crate::clipboard_images::{
-        check_image_byte_length, dib_image_item, png_image_item, svg_image_item,
-        ClipboardImageItem, SkippedClipboardImageItem,
+        dib_image_item, png_image_item, svg_image_item, ClipboardImageItem,
+        SkippedClipboardImageItem,
     };
+    use crate::clipboard_limits::ClipboardReadBudget;
     use crate::{is_opaque_clipboard_type, ClipboardReadPayload, ClipboardTextItem};
     use windows_sys::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND};
     use windows_sys::Win32::System::DataExchange::{
@@ -474,7 +475,7 @@ pub(crate) mod native {
     }
 
     /// Copy of a clipboard handle's bytes (the clipboard still owns the handle).
-    fn format_bytes(id: u32) -> Option<Vec<u8>> {
+    fn format_bytes(id: u32, source: &str, budget: &mut ClipboardReadBudget) -> Option<Vec<u8>> {
         // SAFETY: the clipboard is open; the handle stays owned by it and is only read while locked.
         unsafe {
             let handle = GetClipboardData(id);
@@ -482,6 +483,7 @@ pub(crate) mod native {
                 return None;
             }
             let size = GlobalSize(handle as HGLOBAL);
+            budget.reserve(source, size).ok()?;
             let pointer = GlobalLock(handle as HGLOBAL) as *const u8;
             if pointer.is_null() {
                 return None;
@@ -492,8 +494,8 @@ pub(crate) mod native {
         }
     }
 
-    fn unicode_text() -> Option<String> {
-        let bytes = format_bytes(CF_UNICODETEXT)?;
+    fn unicode_text(budget: &mut ClipboardReadBudget) -> Option<String> {
+        let bytes = format_bytes(CF_UNICODETEXT, "text/plain", budget)?;
         let units = bytes
             .chunks_exact(2)
             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
@@ -509,6 +511,7 @@ pub(crate) mod native {
         id: u32,
         source: &str,
         kind: &str,
+        budget: &mut ClipboardReadBudget,
     ) -> Result<Vec<u8>, SkippedClipboardImageItem> {
         let refused = |length, reason| SkippedClipboardImageItem::new(kind, length, reason);
         // SAFETY: read_payload holds the clipboard open. The clipboard owns the handle; the
@@ -522,7 +525,9 @@ pub(crate) mod native {
                 ));
             }
             let size = GlobalSize(handle as HGLOBAL);
-            check_image_byte_length(source, size).map_err(|reason| refused(size, reason))?;
+            budget
+                .reserve(source, size)
+                .map_err(|reason| refused(size, reason))?;
             let pointer = GlobalLock(handle as HGLOBAL) as *const u8;
             if pointer.is_null() {
                 return Err(refused(
@@ -538,6 +543,7 @@ pub(crate) mod native {
 
     fn read_images(
         text_items: &mut Vec<ClipboardTextItem>,
+        budget: &mut ClipboardReadBudget,
     ) -> (Vec<ClipboardImageItem>, Vec<SkippedClipboardImageItem>) {
         let mut items = Vec::new();
         let mut skipped = Vec::new();
@@ -561,7 +567,7 @@ pub(crate) mod native {
             if id == 0 || unsafe { IsClipboardFormatAvailable(id) } == 0 {
                 continue;
             }
-            let result = image_format_bytes(id, source, kind).and_then(|bytes| {
+            let result = image_format_bytes(id, source, kind, budget).and_then(|bytes| {
                 let item = match source {
                     PNG_FORMAT | "image/png" => png_image_item(&bytes),
                     "image/svg+xml" => {
@@ -589,6 +595,7 @@ pub(crate) mod native {
         let _clipboard = OpenedClipboard::open(std::ptr::null_mut())?;
         let mut types = Vec::new();
         let mut text_items = Vec::new();
+        let mut budget = ClipboardReadBudget::default();
 
         let mut id = 0;
         loop {
@@ -607,12 +614,12 @@ pub(crate) mod native {
             types.push(payload_type.clone());
 
             let text = match name.as_deref() {
-                None if id == CF_UNICODETEXT => unicode_text(),
+                None if id == CF_UNICODETEXT => unicode_text(&mut budget),
                 None => None,
-                Some(MDLCT_FORMAT) => format_bytes(id).and_then(|bytes| decode_mdlct(&bytes)),
-                Some("HTML Format") => {
-                    format_bytes(id).and_then(|bytes| parse_cf_html(&bytes).ok())
-                }
+                Some(MDLCT_FORMAT) => format_bytes(id, &payload_type, &mut budget)
+                    .and_then(|bytes| decode_mdlct(&bytes)),
+                Some("HTML Format") => format_bytes(id, &payload_type, &mut budget)
+                    .and_then(|bytes| parse_cf_html(&bytes).ok()),
                 // SVG text is populated by read_images, after the GlobalSize guard.
                 Some(name)
                     if crate::clipboard_images::is_image_clipboard_type(name)
@@ -621,7 +628,8 @@ pub(crate) mod native {
                 {
                     None
                 }
-                Some(_) => format_bytes(id).and_then(|bytes| decode_registered_text(&bytes)),
+                Some(_) => format_bytes(id, &payload_type, &mut budget)
+                    .and_then(|bytes| decode_registered_text(&bytes)),
             };
             if let Some(text) = text {
                 text_items.push(ClipboardTextItem {
@@ -631,12 +639,13 @@ pub(crate) mod native {
             }
         }
 
-        let (image_items, skipped_image_items) = read_images(&mut text_items);
+        let (image_items, skipped_image_items) = read_images(&mut text_items, &mut budget);
         Ok(ClipboardReadPayload {
             types,
             text_items,
             image_items,
             skipped_image_items,
+            skipped_items: budget.skipped_items,
         })
     }
 
@@ -961,8 +970,13 @@ pub(crate) mod native {
                 assert_eq!(bytes.get(..png.len()), Some(png.as_slice()));
             }
             let _clipboard = OpenedClipboard::open(owner.0).expect("open for binary readback");
-            let bytes = image_format_bytes(registered(PNG_FORMAT), PNG_FORMAT, "image/png")
-                .expect("registered PNG reads back");
+            let bytes = image_format_bytes(
+                registered(PNG_FORMAT),
+                PNG_FORMAT,
+                "image/png",
+                &mut ClipboardReadBudget::default(),
+            )
+            .expect("registered PNG reads back");
             // GlobalSize may include allocation padding after the original binary payload.
             assert_eq!(bytes.get(..png.len()), Some(png.as_slice()));
         }

@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  MAX_CLIPBOARD_BYTES,
+  guardClipboardPayload,
   detectMolfileFormat,
   extractRxnMolfileBlocks,
   inspectClipboardPayload,
@@ -14,6 +16,78 @@ import {
   smilesListTokens,
   smilesListDecision
 } from "./index";
+
+describe("clipboard byte limits", () => {
+  const mb = 1024 * 1024;
+  const message = "Couldn't paste: the clipboard item is too large (500.0 MB; the limit is 64 MB).";
+
+  it("rejects huge text before normalization, encoding, or inspecting its contents", () => {
+    const text = { length: 500 * mb, replace: vi.fn(() => { throw new Error("must not normalize"); }) } as unknown as string;
+    expect(inspectClipboardPayload({ types: ["text/plain"], textItems: [{ type: "text/plain", text }] }))
+      .toMatchObject({ kind: "size-refused", message, warnings: [{ code: "clipboard.too_large", message }] });
+    expect(text.replace).not.toHaveBeenCalled();
+  });
+
+  it("keeps the exact per-flavor boundary and skips only flavors exceeding the total", () => {
+    const text = "a".repeat(MAX_CLIPBOARD_BYTES);
+    const item = { type: "text/plain", text };
+    const bounded = guardClipboardPayload({ types: [item.type, "other"],
+      textItems: [item, { type: "other", text: "b" }] });
+    expect(bounded.textItems).toEqual([item]);
+    expect(bounded.textItems[0]).toBe(item);
+    expect(bounded.skippedItems).toEqual([{ type: "other", byteLength: MAX_CLIPBOARD_BYTES + 1, limitBytes: MAX_CLIPBOARD_BYTES }]);
+  });
+
+  it.each([["é", 33, 66], ["€", 22, 66], ["😀", 17, 68]] as const)(
+    "counts UTF-8 bytes for %s without encoding", (unit, count, bytes) => {
+      const bounded = guardClipboardPayload({ types: ["text/plain"],
+        textItems: [{ type: "text/plain", text: unit.repeat(count * mb) }] });
+      expect(bounded.textItems).toHaveLength(0);
+      expect(bounded.skippedItems).toEqual([{ type: "text/plain", byteLength: bytes * mb, limitBytes: MAX_CLIPBOARD_BYTES }]);
+    }
+  );
+
+  it("rejects large base64 images before atob or byte copies, keeping the 25 MB cap", () => {
+    const decode = vi.spyOn(globalThis, "atob").mockImplementation(() => { throw new Error("must not decode"); });
+    try {
+      const bytesBase64 = { length: 40 * mb } as unknown as string;
+      expect(inspectClipboardPayload({ types: ["image/png"], textItems: [],
+        imageItems: [{ type: "image/png", bytesBase64 }] }))
+        .toMatchObject({ kind: "size-refused", message: "Couldn't paste: the clipboard item is too large (30.0 MB; the limit is 25 MB)." });
+      expect(decode).not.toHaveBeenCalled();
+    } finally {
+      decode.mockRestore();
+    }
+  });
+
+  it("shares the total budget between text and decoded image sizes before decoding", () => {
+    const image = { type: "image/png" as const, bytesBase64: "A".repeat(32 * mb) }; // 24 MB decoded
+    const bounded = guardClipboardPayload({ types: ["text/plain", "image/png"],
+      textItems: [{ type: "text/plain", text: "x".repeat(16 * mb) }], imageItems: [image, image, image] });
+    expect(bounded.imageItems).toHaveLength(2); // 16 + 24 + 24 = 64 MB
+    expect(bounded.skippedItems).toEqual([{ type: "image/png", byteLength: 88 * mb, limitBytes: MAX_CLIPBOARD_BYTES }]);
+  });
+
+  it("caps SVG source in text before encoding it as a picture", () => {
+    expect(inspectClipboardPayload({ types: ["text/plain"], textItems: [
+      { type: "text/plain", text: "<svg>" + " ".repeat(26 * mb) + "</svg>" }
+    ] })).toMatchObject({ kind: "size-refused",
+      message: "Couldn't paste: the clipboard item is too large (26.0 MB; the limit is 25 MB)." });
+  });
+
+  it("preserves native refusal metadata and still accepts smaller alternatives", () => {
+    const skippedItems = [{ type: "chemical/x-cdxml", byteLength: 500 * mb, limitBytes: MAX_CLIPBOARD_BYTES }];
+    expect(inspectClipboardPayload({ types: ["chemical/x-cdxml"], textItems: [], skippedItems }))
+      .toMatchObject({ kind: "size-refused", message });
+    expect(inspectClipboardPayload({ types: ["chemical/x-cdxml", "text/plain"], skippedItems,
+      textItems: [{ type: "text/plain", text: "some ordinary prose" }] }))
+      .toMatchObject({ kind: "plain-text", text: "some ordinary prose" });
+    expect(inspectClipboardPayload({ types: ["text/plain", "org.opensmiles.smiles"],
+      textItems: [{ type: "text/plain", text: "x".repeat(MAX_CLIPBOARD_BYTES + 1) },
+        { type: "org.opensmiles.smiles", text: "CCO" }] }))
+      .toMatchObject({ kind: "smiles", text: "CCO" });
+  });
+});
 
 describe("SMILES list candidates", () => {
   it.each([

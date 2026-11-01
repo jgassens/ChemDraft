@@ -20,3 +20,10 @@ paste that picture through its normal image validation path after exhausting can
 chemistry flavors do not carry this fallback. An advertised but unreadable chemistry flavor blocks pictures (including SVG-source
 text and `fallbackImage`), while readable chemistry and prose retain their usual behavior.
 If only refused image candidates remain, `image-refused` carries the native refusal reason.
+
+Clipboard reads admit at most 64 MiB per flavor and per paste, with the existing 25 MiB picture
+limit retained. The native readers check allocation/data/string lengths before copying; the adapter
+checks text and base64 sizes before normalization or decoding. Oversized flavors are skipped while
+smaller alternatives remain available. Native `skippedItems` metadata carries the attempted byte size
+and limit; if no usable content remains, `size-refused` carries the paste status message. Hosts parsing
+private text flavors before inspection must call `guardClipboardPayload` first.

@@ -124,6 +124,46 @@ describe.each(["macos", "windows"] as const)("text paste formatting (%s)", platf
   const status = () => container.querySelector('[role="status"]')?.textContent;
   const nativeReads = () => vi.mocked(invoke).mock.calls.filter(([command]) => command === "read_clipboard_payload");
 
+  const tooLargeMessage = "Couldn't paste: the clipboard item is too large (500.0 MB; the limit is 64 MB).";
+
+  it("shows the native size refusal on menu and DOM paste without inserting content", async () => {
+    await mount({ types: ["text/plain"], textItems: [], skippedItems: [
+      { type: "text/plain", byteLength: 500 * 1024 * 1024, limitBytes: 64 * 1024 * 1024 }
+    ] });
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "clipboard.paste" } }));
+    });
+    expect(status()).toBe(tooLargeMessage);
+    expect(objects()).toHaveLength(0);
+    await paste({ "text/plain": "" });
+    expect(status()).toBe(tooLargeMessage);
+    expect(objects()).toHaveLength(0);
+  });
+
+  it("guards text before the private-selection parser on native and web paste", async () => {
+    const text = { length: 500 * 1024 * 1024, trim: () => { throw new Error("must not parse"); } } as unknown as string;
+    await mount({ types: [CHEMDRAFT_SELECTION_CLIPBOARD_TYPE],
+      textItems: [{ type: CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, text }] });
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "clipboard.paste" } }));
+    });
+    expect(status()).toBe(tooLargeMessage);
+    expect(objects()).toHaveLength(0);
+    runtime.desktop = false;
+    await paste({ [CHEMDRAFT_SELECTION_CLIPBOARD_TYPE]: text });
+    expect(status()).toBe(tooLargeMessage);
+    expect(objects()).toHaveLength(0);
+  });
+
+  it("still pastes a usable flavor beside an oversized flavor", async () => {
+    await mount({ ...nativeClipboard("ordinary prose"), skippedItems: [
+      { type: "chemical/x-cdxml", byteLength: 500 * 1024 * 1024, limitBytes: 64 * 1024 * 1024 }
+    ] });
+    await paste({ "text/plain": "ordinary prose" });
+    expect(status()).toBe("Pasted editable text");
+    expect(objects()).toMatchObject([{ type: "text", text: "ordinary prose" }]);
+  });
+
   it.each(["image/svg+xml", "public.svg-image", "text/plain"])("pastes SVG from %s as a picture on menu and DOM paste", async type => {
     const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><path d="M0 0L40 20"/></svg>';
     await mount({ types: [type], textItems: [{ type, text: svg }] });

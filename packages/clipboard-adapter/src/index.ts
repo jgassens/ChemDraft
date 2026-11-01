@@ -26,11 +26,21 @@ export interface ClipboardSkippedImageItem {
   reason: string;
 }
 
+export const MAX_CLIPBOARD_BYTES = 64 * 1024 * 1024;
+
+export interface ClipboardSkippedItem {
+  type: string;
+  /** Flavor size, or attempted combined size when the total budget was exceeded. */
+  byteLength: number;
+  limitBytes: number;
+}
+
 export interface ClipboardReadPayload {
   types: string[];
   textItems: ClipboardTextItem[];
   imageItems?: ClipboardImageItem[];
   skippedImageItems?: ClipboardSkippedImageItem[];
+  skippedItems?: ClipboardSkippedItem[];
 }
 
 export type ClipboardMolfileFormat = "molfile-v2000" | "molfile-v3000";
@@ -43,6 +53,11 @@ export interface ClipboardChemistryCandidate {
 }
 
 export type ClipboardDetectedPayload =
+  | {
+      kind: "size-refused";
+      message: string;
+      warnings: ClipboardTransferWarning[];
+    }
   | {
       kind: "image";
       image: ClipboardImageItem;
@@ -157,7 +172,91 @@ const textLikeTypePatterns = [
   "com.apple.traditional-mac-plain-text"
 ] as const;
 
+export function clipboardSizeRefusalMessage(item: ClipboardSkippedItem): string {
+  return `Couldn't paste: the clipboard item is too large (${(item.byteLength / (1024 * 1024)).toFixed(1)} MB; the limit is ${item.limitBytes / (1024 * 1024)} MB).`;
+}
+
+/** No encoding, normalization, trimming or copies of clipboard contents during admission. */
+export function guardClipboardPayload(payload: ClipboardReadPayload): ClipboardReadPayload {
+  let total = 0;
+  const skippedItems = [...payload.skippedItems ?? []];
+  const admit = (type: string, byteLength: number, limitBytes: number): boolean => {
+    if (byteLength > limitBytes || byteLength > MAX_CLIPBOARD_BYTES - total) {
+      skippedItems.push(byteLength > limitBytes
+        ? { type, byteLength, limitBytes }
+        : { type, byteLength: total + byteLength, limitBytes: MAX_CLIPBOARD_BYTES });
+      return false;
+    }
+    total += byteLength;
+    return true;
+  };
+  const textItems = payload.textItems.filter(item => {
+    const byteLength = clipboardTextByteLength(item.text);
+    // Check the general cap before examining even an SVG root in a huge text item.
+    if (byteLength > MAX_CLIPBOARD_BYTES) return admit(item.type, byteLength, MAX_CLIPBOARD_BYTES);
+    const picture = ["image/svg+xml", "public.svg", "public.svg-image"].includes(item.type)
+      || clipboardHasSvgRoot(item.text);
+    return admit(item.type, byteLength, picture ? MAX_IMAGE_OBJECT_BYTES : MAX_CLIPBOARD_BYTES);
+  });
+  const imageItems = payload.imageItems?.filter(item => {
+    // The encoded length bounds decoding too, including excessive whitespace in invalid base64.
+    const encoded = item.bytesBase64;
+    let byteLength = Math.floor(encoded.length * 3 / 4);
+    if (byteLength <= MAX_IMAGE_OBJECT_BYTES + 2) {
+      byteLength -= encoded.endsWith("==") ? 2 : encoded.endsWith("=") ? 1 : 0;
+    }
+    return admit(item.type, byteLength, MAX_IMAGE_OBJECT_BYTES);
+  });
+  const rejectedTypes = new Set(skippedItems.map(item => item.type));
+  return { ...payload, textItems, imageItems, skippedItems,
+    types: payload.types.filter(type => !rejectedTypes.has(type)) };
+}
+
+// Locate SVG source without the trimming/slicing used by the ordinary format detector.
+function clipboardHasSvgRoot(text: string): boolean {
+  let offset = 0;
+  while (offset < text.length) {
+    while (offset < text.length && /[\s\uFEFF]/.test(text[offset])) offset += 1;
+    const end = text.startsWith("<?", offset) ? "?>" : text.startsWith("<!--", offset) ? "-->" : undefined;
+    if (!end) break;
+    const closing = text.indexOf(end, offset + 2);
+    if (closing < 0) return false;
+    offset = closing + end.length;
+  }
+  const root = /<(?:[A-Za-z_][\w.-]*:)?svg(?=[\s/>]|$)/y;
+  root.lastIndex = offset;
+  return root.test(text);
+}
+
+/** UTF-8 byte count without TextEncoder allocation; huge strings need only a rejecting lower bound. */
+function clipboardTextByteLength(text: string): number {
+  if (text.length > MAX_CLIPBOARD_BYTES) return text.length;
+  let bytes = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const unit = text.charCodeAt(i);
+    if (unit < 0x80) bytes += 1;
+    else if (unit < 0x800) bytes += 2;
+    else if (unit >= 0xd800 && unit <= 0xdbff && text.charCodeAt(i + 1) >= 0xdc00 && text.charCodeAt(i + 1) <= 0xdfff) {
+      bytes += 4;
+      i += 1;
+    } else bytes += 3;
+  }
+  return bytes;
+}
+
 export function inspectClipboardPayload(payload: ClipboardReadPayload): ClipboardDetectedPayload {
+  const bounded = guardClipboardPayload(payload);
+  const detected = inspectBoundedClipboardPayload(bounded);
+  const skipped = bounded.skippedItems?.[0];
+  if (skipped && (detected.kind === "empty" || detected.kind === "vector-only" || detected.kind === "cdx"
+    || detected.kind === "image-refused" || (detected.kind === "cdxml" && !detected.text))) {
+    const message = clipboardSizeRefusalMessage(skipped);
+    return { kind: "size-refused", message, warnings: [{ code: "clipboard.too_large", message }] };
+  }
+  return detected;
+}
+
+function inspectBoundedClipboardPayload(payload: ClipboardReadPayload): ClipboardDetectedPayload {
   const textItems = payload.textItems
     .map((item) => ({ ...item, text: normalizeClipboardText(item.text) }))
     .filter((item) => item.text.trim().length > 0);

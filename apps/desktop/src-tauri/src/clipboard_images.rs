@@ -934,6 +934,7 @@ mod tests {
                 pixel_width: Some(2),
                 pixel_height: Some(3),
             }],
+            skipped_items: Vec::new(),
             skipped_image_items: vec![SkippedClipboardImageItem::new(
                 "image/png",
                 100,

@@ -1,6 +1,7 @@
 mod assistant_mcp;
 mod clipboard_formats;
 mod clipboard_images;
+mod clipboard_limits;
 mod dialog_windows;
 mod document_session;
 mod download_diagnosis;
@@ -788,6 +789,8 @@ struct ClipboardReadPayload {
     text_items: Vec<ClipboardTextItem>,
     image_items: Vec<ClipboardImageItem>,
     skipped_image_items: Vec<SkippedClipboardImageItem>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    skipped_items: Vec<clipboard_limits::SkippedClipboardItem>,
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -5142,23 +5145,19 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let mut text_items = pasteboard
-        .types()
-        .map(|types| {
-            types
-                .to_vec()
-                .into_iter()
-                .filter_map(|pasteboard_type| {
-                    clipboard_text_for_type(&pasteboard, &pasteboard_type).map(|text| {
-                        ClipboardTextItem {
-                            r#type: pasteboard_type.to_string(),
-                            text,
-                        }
-                    })
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    let mut budget = clipboard_limits::ClipboardReadBudget::default();
+    let mut text_items = Vec::new();
+    if let Some(native_types) = pasteboard.types() {
+        for pasteboard_type in native_types.to_vec() {
+            if let Some(text) = clipboard_text_for_type(&pasteboard, &pasteboard_type, &mut budget)
+            {
+                text_items.push(ClipboardTextItem {
+                    r#type: pasteboard_type.to_string(),
+                    text,
+                });
+            }
+        }
+    }
 
     let mut image_items = Vec::new();
     let mut skipped_image_items = Vec::new();
@@ -5180,23 +5179,22 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
                 continue;
             };
             let byte_length = data.length();
-            let result =
-                clipboard_images::check_image_byte_length(source, byte_length).and_then(|()| {
-                    let bytes = data.to_vec();
-                    match source {
-                        "public.png" => clipboard_images::png_image_item(&bytes),
-                        "public.tiff" => clipboard_images::tiff_image_item(&bytes),
-                        _ => {
-                            if let Some(text) = decode_clipboard_text_bytes(&bytes) {
-                                text_items.push(ClipboardTextItem {
-                                    r#type: source.to_string(),
-                                    text,
-                                });
-                            }
-                            clipboard_images::svg_image_item(&bytes, source)
+            let result = budget.reserve(source, byte_length).and_then(|()| {
+                let bytes = data.to_vec();
+                match source {
+                    "public.png" => clipboard_images::png_image_item(&bytes),
+                    "public.tiff" => clipboard_images::tiff_image_item(&bytes),
+                    _ => {
+                        if let Some(text) = decode_clipboard_text_bytes(&bytes) {
+                            text_items.push(ClipboardTextItem {
+                                r#type: source.to_string(),
+                                text,
+                            });
                         }
+                        clipboard_images::svg_image_item(&bytes, source)
                     }
-                });
+                }
+            });
             match result {
                 Ok(item) => {
                     if !image_items
@@ -5223,6 +5221,7 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
         text_items,
         image_items,
         skipped_image_items,
+        skipped_items: budget.skipped_items,
     })
 }
 
@@ -5302,20 +5301,27 @@ fn is_opaque_clipboard_type(pasteboard_type: &str) -> bool {
 fn clipboard_text_for_type(
     pasteboard: &NSPasteboard,
     pasteboard_type: &objc2_app_kit::NSPasteboardType,
+    budget: &mut clipboard_limits::ClipboardReadBudget,
 ) -> Option<String> {
     let kind = pasteboard_type.to_string();
     if is_opaque_clipboard_type(&kind) || clipboard_images::is_image_clipboard_type(&kind) {
         return None;
     }
 
+    // AppKit may construct an NSString from data; reject huge data before requesting conversion.
+    let data = pasteboard.dataForType(pasteboard_type);
+    let data_length = data.as_ref().map_or(0, |data| data.length());
+    budget.check(&kind, data_length).ok()?;
     if let Some(text) = pasteboard.stringForType(pasteboard_type) {
-        let text = text.to_string();
-        if !text.is_empty() {
-            return Some(text);
+        let byte_length = text.lengthOfBytesUsingEncoding(objc2_foundation::NSUTF8StringEncoding);
+        if byte_length > 0 {
+            budget.reserve(&kind, byte_length.max(data_length)).ok()?;
+            return Some(text.to_string());
         }
     }
 
-    let data = pasteboard.dataForType(pasteboard_type)?;
+    let data = data?;
+    budget.reserve(&kind, data.length()).ok()?;
     decode_clipboard_text_bytes(&data.to_vec())
 }
 
@@ -5484,6 +5490,7 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
         text_items: Vec::new(),
         image_items: Vec::new(),
         skipped_image_items: Vec::new(),
+        skipped_items: Vec::new(),
     })
 }
 
