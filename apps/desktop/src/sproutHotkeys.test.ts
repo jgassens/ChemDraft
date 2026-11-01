@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { Molecule } from "openchemlib";
 import { applyPatches, type ChemDraftDocument, type MoleculeObject, type MoleculeAtom, type MoleculeBond } from "@chemdraft/chem-core";
 import { nativeAtomValidationState, nativeBondLengthPx } from "@chemdraft/document-workflow-core";
-import { createPhase4Document, insertNativeSingleBondMolecule, insertNativeTemplateMolecule, type NativeMoleculeDeleteTarget } from "./documentWorkflow";
+import { createPhase4Document, insertNativeSingleBondMolecule, insertNativeTemplateMolecule, nativeSingleBondHotkeyAtAtomTarget, type NativeMoleculeDeleteTarget } from "./documentWorkflow";
 import { nativeBranchedHotkeyTarget, nativeFragmentSproutTarget, nativeOxoHotkeyTarget, nativeDieneFuseTarget } from "./sproutHotkeys";
 
 // Fixture and numeric regression cases promoted from the chemist's reproduction harness.
@@ -107,6 +107,19 @@ describe("atom-aware numeric sprouts", () => {
 });
 
 describe("fragment graph builders", () => {
+  it("refuses an alkyne that would extend beyond the page without changing the document", () => {
+    const { document, target, before } = fixture("C", ["C"]);
+    const edgeDocument = applyPatches(document, [{ op: "updateObject", objectId: before.id, changes: {
+      atoms: before.atoms.map(atom => ({ ...atom, x: atom.x + 499.5 }))
+    } }]);
+    expect(edgeDocument.pages[0].width).toBe(816);
+    const first = nativeSingleBondHotkeyAtAtomTarget(edgeDocument, target);
+    expect(molecule(first.document).atoms.at(-1)?.x).toBeCloseTo(810.5);
+    const result = nativeFragmentSproutTarget(edgeDocument, target, "alkyne");
+    expect(result.document).toBe(edgeDocument);
+    expect(result.refusal).toBe("sprout-page-edge");
+  });
+
   it.each([
     ["cyclopropyl", 3, 4, 0], ["cyclobutyl", 4, 5, 0],
     ["alkyne", 2, 2, 0], ["cyclopentadienyl", 5, 6, 2], ["phenyl", 6, 7, 3]

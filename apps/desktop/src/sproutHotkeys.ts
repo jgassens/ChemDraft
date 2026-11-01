@@ -68,8 +68,13 @@ export function nativeFragmentSproutTarget(document: ChemDraftDocument, target: 
     const length = Math.hypot(offset.x, offset.y);
     if (length === 0) return { document, refusal: "sprout-no-free-direction" };
     const direction = { x: offset.x / length, y: offset.y / length };
+    const endpoint = { x: root.x + offset.x, y: root.y + offset.y };
+    const page = document.pages[0];
+    const insidePage = (point: { x: number; y: number }) =>
+      point.x >= 0 && point.x <= page.width && point.y >= 0 && point.y <= page.height;
+    if (!insidePage(root) || !insidePage(endpoint)) return { document, refusal: "sprout-page-edge" };
     result = nativeSingleBondHotkeyAtAtomTarget(first.document, rootTarget, {
-      newAtomPoint: { x: root.x + offset.x, y: root.y + offset.y }, direction
+      newAtomPoint: endpoint, direction
     });
     if (result.document === first.document) return rollback(document, result);
     const graph = moleculeAt(result.document, target)!;
