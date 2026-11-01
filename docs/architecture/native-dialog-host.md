@@ -167,6 +167,12 @@ logical toolbar visibility. First placement centres on the owner's usable frame 
 monitor work area, using the destination monitor's scale. Placement first moves to that monitor,
 then sets client size at its DPI, measures the resulting outer frame and clamps that actual frame.
 This avoids Windows WM_DPICHANGED scaling an already destination-sized client twice.
+Kinds can opt into content-fit sizing with `fit_content` in the per-kind spec. The form measures
+its natural height once after fonts are ready, with a bounded wait, and sends `contentHeight` and
+`pixelRatio` in its `ready` message. At reveal, the host uses that measurement for the inner
+height, never below the kind's minimum, and clamps it to the destination work area through the
+same move-then-resize-then-clamp placement. Reopening does not resize, and later content growth
+does not trigger another measurement or resize.
 `dialog-positions.json` remembers logical
 position, monitor identity and normalized work-area offsets per kind. Removed monitors recover
 onto the owner's monitor. Genuine moves are debounced; hidden, minimized, maximized, fullscreen,
