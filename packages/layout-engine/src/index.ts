@@ -5415,23 +5415,70 @@ export function planMoleculeAtomLabels(
   });
 }
 
+const sansSerifLabelFamilies: ReadonlySet<string> = new Set(["arial", "helvetica", "sans-serif"]);
+const monospaceLabelFamilies: ReadonlySet<string> = new Set(["courier", "courier new", "monospace"]);
+/** Courier's advance, in em, for every character; Courier New and the generic monospace stacks agree. */
+const monospaceAdvanceEm = 0.6;
+/** Horizontal shear of a (possibly synthetic) italic, as run-over-rise. */
+const italicShear = 0.25;
+
+/** How a label font's glyph extents are known: Helvetica/Arial metrics, Courier metrics, or not at all. */
+function atomLabelFontClass(fontFamily: string): "sans-serif" | "monospace" | "unknown" {
+  const families = fontFamily.split(",").map(family => family.trim().replace(/^["']|["']$/g, "").toLowerCase());
+  if (families.every(family => sansSerifLabelFamilies.has(family))) return "sans-serif";
+  if (families.every(family => monospaceLabelFamilies.has(family))) return "monospace";
+  return "unknown";
+}
+
+/** A character's ink above and below its baseline, in em (below positive), enclosing the Helvetica
+ * and Courier core-14 AFM boxes, regular and bold. Signs sit mid-em, so a minus has no cap-height
+ * box above a negatively charged O; parentheses, brackets, braces, commas and Q descend; a character
+ * outside the table is given the room of an accented capital with a descender. */
+function atomLabelCharacterExtent(character: string): { ascent: number; descent: number } {
+  if (/[gjpqy]/.test(character)) return { ascent: 0.75, descent: 0.23 };
+  if (character === "Q") return { ascent: 0.75, descent: 0.15 };
+  if (/[()[\]{}]/.test(character)) return { ascent: 0.75, descent: 0.22 };
+  if (character === "," || character === ";") return { ascent: 0.75, descent: 0.17 };
+  if (character === "_") return { ascent: 0.75, descent: 0.13 };
+  if (character === "/") return { ascent: 0.75, descent: 0.08 };
+  if (character === "|") return { ascent: 0.78, descent: 0.23 };
+  if (character === "+") return { ascent: 0.62, descent: 0.03 };
+  if (character === "-" || character === "\u2212") return { ascent: 0.36, descent: -0.19 };
+  if (/^[A-Za-z0-9.:'"*=<>!?&%#@~^`]$/.test(character)) return { ascent: 0.75, descent: 0.03 };
+  return { ascent: 0.95, descent: 0.3 };
+}
+
 /** Glyph extents at the renderer's run positions, without bond-clipping padding.
  * SVG/canvas text uses dy=0.35em, not a vertically centred em box. Keeping the
  * clipping envelope here used to report separated acid labels as overlapping.
- * Helvetica/Arial advances are shared with anchored label placement; cap height
- * and descenders conservatively enclose the sans-serif ink on both platforms. */
+ * The box must enclose the ink of whichever font draws the label. Helvetica/Arial
+ * (the advances anchored label placement uses) get glyph-tight horizontal extents;
+ * a monospace family is widened to Courier's advance from the run's text anchor; any other
+ * family gets the padded renderer bounds, whose extents are unknown to this module. */
 export function atomLabelGlyphBounds(plan: AtomLabelPlan): LayoutBounds {
+  const fontClass = atomLabelFontClass(plan.fontFamily);
+  if (fontClass === "unknown") return { ...plan.layout.bounds };
+  const italic = plan.drawingStyle.atomLabelFontStyle === "italic";
   const boxes = plan.layout.runs.map(run => {
     const size = atomLabelRunFontSize(run.script, plan.drawingStyle) ?? plan.fontSizePx;
-    const width = atomLabelRunAdvance(run, plan.drawingStyle);
-    // Signs occupy the middle of the em, unlike cap letters. In particular a
-    // minus must not acquire a cap-height box above a negatively charged O.
-    const ascent = run.text === "-" ? 0.31 : run.text === "+" ? 0.60 : 0.75;
-    const descent = run.text === "-" ? -0.21 : run.text === "+" ? -0.10 : /[gjpqy]/.test(run.text) ? 0.23 : 0.02;
+    const characters = [...run.text];
+    const width = fontClass === "monospace"
+      ? characters.length * monospaceAdvanceEm * size
+      : atomLabelRunAdvance(run, plan.drawingStyle);
+    const extents = characters.map(atomLabelCharacterExtent);
+    const ascent = Math.max(...extents.map(extent => extent.ascent));
+    const descent = Math.max(...extents.map(extent => extent.descent));
+    // Ink may overhang the advance a little (a slash, a bold Courier y), and a slanted
+    // glyph leans right above its baseline and left below it.
+    const overhang = size * (fontClass === "monospace" || characters.includes("/") ? 0.02 : 0);
+    const lean = italic ? size * italicShear : 0;
+    const leftEdge = run.x - (run.textAnchor === "middle" ? width / 2 : run.textAnchor === "end" ? width : 0);
+    const left = leftEdge - overhang - lean * Math.max(0, descent);
+    const right = leftEdge + width + overhang + lean * ascent;
     return {
-      x: run.x - (run.textAnchor === "middle" ? width / 2 : run.textAnchor === "end" ? width : 0),
+      x: left,
       y: run.y + size * (0.35 - ascent),
-      width,
+      width: right - left,
       height: size * (ascent + descent)
     };
   });
