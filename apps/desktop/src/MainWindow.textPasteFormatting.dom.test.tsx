@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { readFileSync } from "node:fs";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -279,7 +280,135 @@ describe.each(["macos", "windows"] as const)("text paste formatting (%s)", platf
     expect(status()).toBe("Pasted editable text");
   });
 
+  it.each([
+    ["event", "shortcut"], ["event", "menu"], ["menu", "shortcut"], ["menu", "menu"]
+  ] as const)("undoes plain text pasted into a new empty document once (paste: %s, undo: %s), then redoes", async (route, undoRoute) => {
+    const sentence = "Please leave this note beside the drawing.";
+    await mount(nativeClipboard(sentence));
+    // Exercise File > New, rather than relying on the initial document's history.
+    const menu = async (commandId: string) => {
+      await act(async () => {
+        window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId } }));
+      });
+    };
+    await menu("document.new");
+    const empty = window.__CHEMDRAFT_AGENT__!.snapshot().document;
+    expect(empty.pages.every(page => page.objects.length === 0)).toBe(true);
+    if (route === "event") {
+      expect((await paste({ "text/plain": sentence })).defaultPrevented).toBe(true);
+    } else {
+      // The same command event is emitted by the desktop Edit > Paste menu.
+      await menu("clipboard.paste");
+    }
+    expect(nativeReads()).toHaveLength(1);
+    expect(objects()).toHaveLength(1);
+    expect(objects()[0]).toMatchObject({ type: "text", text: sentence });
+    expect(status()).toBe("Pasted editable text");
+    const pasted = window.__CHEMDRAFT_AGENT__!.snapshot().document;
+    expect(window.__CHEMDRAFT_AGENT__!.snapshot().selection.objectIds).toEqual([objects()[0]!.id]);
+    // Real key events exercise focus-sensitive Undo immediately after the paste.
+    const undoKey = new KeyboardEvent("keydown", {
+      key: "z", code: "KeyZ", bubbles: true, cancelable: true,
+      metaKey: platform === "macos", ctrlKey: platform === "windows"
+    });
+    if (undoRoute === "shortcut") {
+      await act(async () => { (document.activeElement ?? window).dispatchEvent(undoKey); });
+    } else await menu("edit.undo");
+    expect(window.__CHEMDRAFT_AGENT__!.snapshot().document).toEqual(empty);
+    if (undoRoute === "shortcut") expect(undoKey.defaultPrevented).toBe(true);
+    expect(objects()).toHaveLength(0);
+    expect(container.querySelector('[data-page-svg-object-visual][data-object-type="text"]')).toBeNull();
+    await menu("edit.redo");
+    expect(window.__CHEMDRAFT_AGENT__!.snapshot().document).toEqual(pasted);
+    expect(objects()[0]).toMatchObject({ type: "text", text: sentence });
+    expect(container.querySelector(".text-object-editor")).toBeNull();
+    expect(nativeReads()).toHaveLength(1);
+  });
+
   const clipboardBusy = "The clipboard is in use by another application.";
+
+  it.each(["native", "snapshot"] as const)("pastes a Word table once from the desktop %s path, preserving formatting and warnings", async source => {
+    // Keep the Office-shaped markup, and include a dropped image to exercise a nonempty warning.
+    const html = readFileSync("packages/fixtures/clipboard-tables/word-like.html", "utf8")
+      .replace("allyl alcohol<o:p>", 'allyl alcohol<img src="reagent.png"><o:p>');
+    const htmlType = platform === "macos" ? "public.html" : "HTML Format";
+    const nativePayload = nativeClipboard("native fallback text");
+    nativePayload.types.push(htmlType);
+    nativePayload.textItems.push({ type: htmlType, text: html });
+    await mount(source === "native" ? nativePayload : new Error(clipboardBusy));
+    // A different table in DataTransfer proves usable native content wins; the snapshot case
+    // expires DataTransfer as soon as the event handler returns, before the native rejection.
+    const event = await paste({
+      "text/html": source === "native" ? "<table><tr><td>DOM</td><td>fallback</td></tr></table>" : html,
+      "text/plain": "DOM fallback text"
+    });
+    expect(event.defaultPrevented).toBe(true);
+    expect(nativeReads()).toHaveLength(1);
+    expect(objects()).toHaveLength(1);
+    const table = objects()[0]!;
+    expect(table.type).toBe("table");
+    if (table.type !== "table") throw new Error("Expected a pasted native table");
+    expect(table.rows.map(row => row.cells.map(cell => cell.text))).toEqual([
+      ["Material", "MW (g/mol)", "Density (g/mL)"],
+      ["allyl alcohol", "58.08", "0.854"],
+      ["Ti(OiPr)4", "284.22", "0.96"],
+      ["TBHPa", "90.12", "—"]
+    ]);
+    expect(table.rows[0]!.cells[0]!.spans).toContainEqual(expect.objectContaining({ text: "Material", style: { fontWeight: 700 } }));
+    expect(table.rows[2]!.cells[0]!.spans).toContainEqual(expect.objectContaining({ text: "4", script: "subscript" }));
+    expect(table.rows[3]!.cells[0]!.spans).toContainEqual(expect.objectContaining({ text: "a", script: "superscript" }));
+    expect(table.columns[1]!.align).toBe("decimal");
+    expect(window.__CHEMDRAFT_AGENT__!.snapshot().selection.objectIds).toEqual([table.id]);
+    expect(status()).toBe("Pasted table; Images in the table were not imported.");
+    // Paste failures now use the current user-facing status wording.
+    expect(status()).not.toMatch(/Couldn't paste|Couldn't read the clipboard/);
+    expect(depictSmilesForPaste).not.toHaveBeenCalled();
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.undo"); });
+    expect(objects()).toHaveLength(0);
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.redo"); });
+    expect(objects()).toEqual([table]);
+    expect(nativeReads()).toHaveLength(1);
+  });
+
+  it("refuses an oversized private selection beside an in-cap table on menu, native and web paste", async () => {
+    const html = readFileSync("packages/fixtures/clipboard-tables/word-like.html", "utf8");
+    const htmlType = platform === "macos" ? "public.html" : "HTML Format";
+    const selection = { length: 400 * 1024 * 1024, trim: () => { throw new Error("must not parse"); } } as unknown as string;
+    const message = tooLargeMessage.replace("text/plain", CHEMDRAFT_SELECTION_CLIPBOARD_TYPE);
+    await mount({ types: [CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, htmlType],
+      textItems: [{ type: CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, text: selection }, { type: htmlType, text: html }] });
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "clipboard.paste" } }));
+    });
+    expect(status()).toBe(message);
+    expect(objects()).toHaveLength(0);
+    expect((await paste({ "text/html": html })).defaultPrevented).toBe(true);
+    expect(status()).toBe(message);
+    expect(objects()).toHaveLength(0);
+    runtime.desktop = false;
+    expect((await paste({ [CHEMDRAFT_SELECTION_CLIPBOARD_TYPE]: selection, "text/html": html })).defaultPrevented).toBe(true);
+    expect(status()).toBe(message);
+    expect(objects()).toHaveLength(0);
+  });
+
+  it("pastes an in-cap table beside a size-skipped flavor on menu, native and web paste", async () => {
+    const html = readFileSync("packages/fixtures/clipboard-tables/word-like.html", "utf8");
+    const htmlType = platform === "macos" ? "public.html" : "HTML Format";
+    const rtf = { length: 400 * 1024 * 1024, trim: () => { throw new Error("must not parse"); } } as unknown as string;
+    await mount({ types: [htmlType, "text/rtf"], textItems: [{ type: htmlType, text: html }],
+      skippedItems: [{ type: "text/rtf", byteLength: 400 * 1024 * 1024, limitBytes: 256 * 1024 * 1024, reason: "flavor" }] });
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "clipboard.paste" } }));
+    });
+    expect(objects().map(object => object.type)).toEqual(["table"]);
+    expect(status()).toBe("Pasted table");
+    await paste({ "text/html": html });
+    expect(objects().map(object => object.type)).toEqual(["table", "table"]);
+    runtime.desktop = false;
+    await paste({ "text/html": html, "text/rtf": rtf });
+    expect(objects().map(object => object.type)).toEqual(["table", "table", "table"]);
+    expect(status()).toBe("Pasted table");
+  });
 
   it("uses the synchronous DataTransfer snapshot when the native read rejects", async () => {
     await mount(clipboardBusy);

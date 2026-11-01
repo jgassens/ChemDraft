@@ -111,7 +111,12 @@ export function applyPatches(
         continue;
       }
     }
-    applyPatchInPlace(draft, patch);
+    try {
+      applyPatchInPlace(draft, patch);
+    } catch (error) {
+      if (error instanceof z.ZodError) throw new DocumentPatchError(error.message);
+      throw error;
+    }
     index += 1;
   }
   draft.updatedAt = toIsoTimestamp(options.now ?? new Date());

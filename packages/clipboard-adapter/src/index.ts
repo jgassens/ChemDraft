@@ -1618,3 +1618,12 @@ function chargeFromV2000AtomCode(code: number): number {
   }
   return 0;
 }
+
+export { readClipboardHtmlTable, readClipboardTsvTable } from "./tables";
+export type {
+  ClipboardTableAlign,
+  ClipboardTableCell,
+  ClipboardTableResult,
+  ClipboardTableSpan,
+  ClipboardTableSpec
+} from "./tables";

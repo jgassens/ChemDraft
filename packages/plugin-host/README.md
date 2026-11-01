@@ -2,7 +2,7 @@
 
 Owns plugin manifest handling, command registration, permission enforcement, plugin storage scoping, and lifecycle behavior.
 
-API 0.1.18 rejects oversized or non-finite panel reports through the existing `showReport` schema
+API 0.1.19 rejects oversized or non-finite panel reports through the existing `showReport` schema
 validation failure path, before forwarding any content to the panel. See the SDK's
 `PluginPanelReportLimits` and `docs/plugin-architecture/AUTHORING.md` for the complete limits.
 

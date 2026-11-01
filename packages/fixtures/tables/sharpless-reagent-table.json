@@ -1,0 +1,403 @@
+{
+  "schema": "chemdraft.document.v1",
+  "id": "doc-sharpless",
+  "title": "Sharpless reagent table",
+  "createdAt": "2026-01-01T00:00:00.000Z",
+  "updatedAt": "2026-01-01T00:00:00.000Z",
+  "pages": [
+    {
+      "id": "page-sharpless",
+      "width": 816,
+      "height": 1056,
+      "margin": {
+        "top": 72,
+        "right": 72,
+        "bottom": 72,
+        "left": 72
+      },
+      "layout": {
+        "presetId": "letter",
+        "orientation": "portrait",
+        "widthPx": 816,
+        "heightPx": 1056,
+        "marginTopPx": 72,
+        "marginRightPx": 72,
+        "marginBottomPx": 72,
+        "marginLeftPx": 72,
+        "sourceUnit": "inch",
+        "sourceWidth": 8.5,
+        "sourceHeight": 11
+      },
+      "objects": [
+        {
+          "id": "table-sharpless",
+          "x": 80,
+          "y": 80,
+          "width": 700,
+          "height": 200,
+          "rotation": 0,
+          "style": {},
+          "type": "table",
+          "tableVersion": 1,
+          "columns": [
+            {
+              "id": "col-material",
+              "align": "left",
+              "width": {
+                "mode": "auto"
+              },
+              "formula": "auto"
+            },
+            {
+              "id": "col-mw",
+              "align": "decimal",
+              "width": {
+                "mode": "auto"
+              },
+              "formula": "off"
+            },
+            {
+              "id": "col-density",
+              "align": "decimal",
+              "width": {
+                "mode": "auto"
+              },
+              "formula": "off"
+            },
+            {
+              "id": "col-equiv",
+              "align": "decimal",
+              "width": {
+                "mode": "auto"
+              },
+              "formula": "off"
+            },
+            {
+              "id": "col-mmol",
+              "align": "decimal",
+              "width": {
+                "mode": "auto"
+              },
+              "formula": "off"
+            },
+            {
+              "id": "col-mass",
+              "align": "decimal",
+              "width": {
+                "mode": "auto"
+              },
+              "formula": "off"
+            },
+            {
+              "id": "col-volume",
+              "align": "decimal",
+              "width": {
+                "mode": "auto"
+              },
+              "formula": "off"
+            }
+          ],
+          "rows": [
+            {
+              "id": "row-header",
+              "cells": [
+                {
+                  "text": "Material",
+                  "spans": []
+                },
+                {
+                  "text": "MW (g/mol)",
+                  "spans": []
+                },
+                {
+                  "text": "Density (g/mL)",
+                  "spans": []
+                },
+                {
+                  "text": "Equiv.",
+                  "spans": []
+                },
+                {
+                  "text": "mmol",
+                  "spans": []
+                },
+                {
+                  "text": "Mass (g)",
+                  "spans": []
+                },
+                {
+                  "text": "Volume (mL)",
+                  "spans": []
+                }
+              ]
+            },
+            {
+              "id": "row-allyl-alcohol",
+              "cells": [
+                {
+                  "text": "allyl alcohol",
+                  "spans": []
+                },
+                {
+                  "text": "58.08",
+                  "spans": []
+                },
+                {
+                  "text": "0.854",
+                  "spans": []
+                },
+                {
+                  "text": "1.00",
+                  "spans": []
+                },
+                {
+                  "text": "17.22",
+                  "spans": []
+                },
+                {
+                  "text": "1.00",
+                  "spans": []
+                },
+                {
+                  "text": "1.17",
+                  "spans": []
+                }
+              ]
+            },
+            {
+              "id": "row-titanium",
+              "cells": [
+                {
+                  "text": "Ti(OiPr)4",
+                  "spans": [
+                    {
+                      "text": "Ti(OiPr)",
+                      "script": "normal",
+                      "style": {}
+                    },
+                    {
+                      "text": "4",
+                      "script": "subscript",
+                      "style": {}
+                    }
+                  ]
+                },
+                {
+                  "text": "284.22",
+                  "spans": []
+                },
+                {
+                  "text": "0.96",
+                  "spans": []
+                },
+                {
+                  "text": "0.05",
+                  "spans": []
+                },
+                {
+                  "text": "0.861",
+                  "spans": []
+                },
+                {
+                  "text": "0.245",
+                  "spans": []
+                },
+                {
+                  "text": "0.255",
+                  "spans": []
+                }
+              ]
+            },
+            {
+              "id": "row-det",
+              "cells": [
+                {
+                  "text": "(+)-DET",
+                  "spans": []
+                },
+                {
+                  "text": "206.19",
+                  "spans": []
+                },
+                {
+                  "text": "1.204",
+                  "spans": []
+                },
+                {
+                  "text": "0.06",
+                  "spans": []
+                },
+                {
+                  "text": "1.033",
+                  "spans": []
+                },
+                {
+                  "text": "0.213",
+                  "spans": []
+                },
+                {
+                  "text": "0.177",
+                  "spans": []
+                }
+              ]
+            },
+            {
+              "id": "row-tbhp",
+              "cells": [
+                {
+                  "text": "TBHPa",
+                  "spans": [
+                    {
+                      "text": "TBHP",
+                      "script": "normal",
+                      "style": {}
+                    },
+                    {
+                      "text": "a",
+                      "script": "superscript",
+                      "style": {}
+                    }
+                  ]
+                },
+                {
+                  "text": "90.12",
+                  "spans": []
+                },
+                {
+                  "text": "—",
+                  "spans": []
+                },
+                {
+                  "text": "2.0",
+                  "spans": []
+                },
+                {
+                  "text": "34.44",
+                  "spans": []
+                },
+                {
+                  "text": "—",
+                  "spans": []
+                },
+                {
+                  "text": "6.26",
+                  "spans": []
+                }
+              ]
+            },
+            {
+              "id": "row-dichloromethane",
+              "cells": [
+                {
+                  "text": "CH2Cl2",
+                  "spans": [
+                    {
+                      "text": "CH",
+                      "script": "normal",
+                      "style": {}
+                    },
+                    {
+                      "text": "2",
+                      "script": "subscript",
+                      "style": {}
+                    },
+                    {
+                      "text": "Cl",
+                      "script": "normal",
+                      "style": {}
+                    },
+                    {
+                      "text": "2",
+                      "script": "subscript",
+                      "style": {}
+                    }
+                  ]
+                },
+                {
+                  "text": "84.93",
+                  "spans": []
+                },
+                {
+                  "text": "1.33",
+                  "spans": []
+                },
+                {
+                  "text": "—",
+                  "spans": []
+                },
+                {
+                  "text": "—",
+                  "spans": []
+                },
+                {
+                  "text": "—",
+                  "spans": []
+                },
+                {
+                  "text": "86",
+                  "spans": []
+                }
+              ]
+            }
+          ],
+          "headerRowCount": 1,
+          "caption": {
+            "text": "Table 1. Sharpless epoxidation of allyl alcohol (1.00 g basis).",
+            "spans": [
+              {
+                "text": "Table 1.",
+                "script": "normal",
+                "style": {
+                  "fontWeight": 700
+                }
+              },
+              {
+                "text": " Sharpless epoxidation of allyl alcohol (1.00 g basis).",
+                "script": "normal",
+                "style": {}
+              }
+            ]
+          },
+          "footnotes": [
+            {
+              "text": "a 5.5 M in decane.",
+              "spans": [
+                {
+                  "text": "a",
+                  "script": "superscript",
+                  "style": {}
+                },
+                {
+                  "text": " 5.5 M in decane.",
+                  "script": "normal",
+                  "style": {}
+                }
+              ]
+            }
+          ],
+          "tableStyle": {
+            "preset": "three-line",
+            "topRulePt": 1,
+            "headerRulePt": 0.5,
+            "bottomRulePt": 1,
+            "gridRulePt": 0.5,
+            "headerBold": false,
+            "cellPaddingPx": {
+              "x": 6,
+              "y": 2
+            }
+          }
+        }
+      ],
+      "crossings": []
+    }
+  ],
+  "selection": {
+    "objectIds": []
+  },
+  "styles": {},
+  "plugins": {},
+  "compatibility": {
+    "warnings": []
+  }
+}

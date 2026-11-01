@@ -28,3 +28,4 @@ Key architecture notes:
 - `ux-surfaces.md` — Metadata-only UX surface scaffold.
 - `viewport-and-rulers.md`
 - `image-acquisition.md`
+- [tables.md](tables.md) — Native table model, layout, editing, clipboard, export and agent insertion.

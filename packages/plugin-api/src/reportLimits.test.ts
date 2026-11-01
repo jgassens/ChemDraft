@@ -42,12 +42,12 @@ const syntheticReport = () => ({
   ]
 });
 
-describe("bounded panel reports (API 0.1.18)", () => {
+describe("bounded panel reports (API 0.1.19)", () => {
   it("advertises a patch-compatible API and accepts a synthetic report of realistic size", () => {
     const synthetic = syntheticReport();
-    expect(PluginApiVersion).toBe("0.1.18");
-    expect(isPluginApiVersionCompatible("^0.1.18", PluginApiVersion)).toBe(true);
-    expect(isPluginApiVersionCompatible("^0.1.18", "0.1.17")).toBe(false);
+    expect(PluginApiVersion).toBe("0.1.19");
+    expect(isPluginApiVersionCompatible("^0.1.19", PluginApiVersion)).toBe(true);
+    expect(isPluginApiVersionCompatible("^0.1.19", "0.1.18")).toBe(false);
     expect(bytes(synthetic)).toBeGreaterThan(25_448);
     expect(bytes(synthetic)).toBeLessThan(55_000);
     expect(L.serializedBytes / 25_448).toBeGreaterThan(1000);

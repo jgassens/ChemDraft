@@ -1,3 +1,5 @@
+import { helveticaAdvances, helveticaBoldAdvances } from "./textMetrics.generated";
+
 /** Explicit SVG script metrics. Offsets are in PARENT em, independent of script size.
  * WebKit/Chromium's historical sub/super placement was approximately this offset;
  * explicit sizes and coordinates also work in svg2pdf without host font metrics. */
@@ -25,4 +27,16 @@ export function nativeTextCharacterWidthFactor(character: string): number {
   if ("mwMW@#%&".includes(character)) return 0.82;
   if (/[A-Z0-9]/.test(character)) return 0.62;
   return 0.54;
+}
+
+export function textAdvanceEm(character: string, { bold = false }: { bold?: boolean } = {}): number {
+  const codePoint = character.codePointAt(0);
+  return codePoint === undefined ? 0.62 : (bold ? helveticaBoldAdvances : helveticaAdvances)[codePoint] ?? 0.62;
+}
+
+export function measureTextRun(text: string, {
+  fontSizePx, fontWeight = 400, script = "normal"
+}: { fontSizePx: number; fontWeight?: number; script?: "normal" | "subscript" | "superscript" }): number {
+  const em = [...text].reduce((sum, character) => sum + textAdvanceEm(character, { bold: fontWeight >= 600 }), 0);
+  return em * fontSizePx * (script === "normal" ? 1 : nativeTextScriptFontScale);
 }

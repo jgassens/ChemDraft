@@ -4,6 +4,7 @@ import type { AssistantToolContext } from "../assistant/AssistantToolContext";
 import { AssistantToolsController, type AssistantToolsControllerOptions } from "../assistant/AssistantToolsController";
 import { TauriAssistantMcpEngine, UnsupportedAssistantMcpEngine, type AssistantMcpEngine } from "../assistant/assistantMcpEngine";
 import { getAssistantHistoryPort } from "../assistant/historyPort";
+import { buildPluginTablePatch } from "./buildPluginTablePatch";
 import { rasterizeSvgNative } from "../nativeRasterExport";
 import { nameStructureForPlugin } from "./pluginStructureNaming";
 import { StructureNamingController } from "./StructureNamingController";
@@ -530,6 +531,11 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       options.onProposedPatchesChanged?.();
     },
     applyDocumentPatch: options.applyDocumentPatch,
+    buildTablePatch: (spec, document, selection) => {
+      const tabId = options.getActiveDocumentTab?.().id;
+      const viewport = tabId ? (options.getAssistantViewportRect ?? (id => getAssistantHistoryPort().getViewportRect?.(id)))(tabId) : undefined;
+      return buildPluginTablePatch(spec, document, selection, viewport);
+    },
     showPanelReport: (pluginId, panelId, report) => {
       controller?.showReport(pluginId, panelId, report);
     },

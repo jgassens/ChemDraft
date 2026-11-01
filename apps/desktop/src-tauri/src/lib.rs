@@ -585,6 +585,7 @@ const TOOLSET_LAYOUT_STATE_FILENAME: &str = "toolbar-state.json";
 const TOOLSET_CUSTOMIZATION_STATE_FILENAME: &str = "toolbar-layout-state.json";
 const DOCUMENT_SESSION_FILENAME: &str = "document-session.json";
 const MENU_COMMAND_IDS: &[&str] = &[
+    "table.insertDialog",
     "template.insertDialog",
     "edit.undo",
     "edit.redo",
@@ -7189,13 +7190,16 @@ fn build_insert_submenu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<
         app,
         "Insert",
         true,
-        &[&MenuItem::with_id(
-            app,
-            "template.insertDialog",
-            "Templates…",
-            true,
-            None::<&str>,
-        )?],
+        &[
+            &MenuItem::with_id(app, "table.insertDialog", "Table…", true, None::<&str>)?,
+            &MenuItem::with_id(
+                app,
+                "template.insertDialog",
+                "Templates…",
+                true,
+                None::<&str>,
+            )?,
+        ],
     )
 }
 
@@ -7283,8 +7287,8 @@ fn create_app_menu_for_toolsets<R: Runtime>(
     #[cfg(target_os = "macos")]
     let native_app_menu = create_native_app_menu(app)?;
     let page_setup_menu = create_page_setup_menu(app)?;
-    let view_menu = create_view_menu(app, entries, view_state)?;
     let insert_menu = build_insert_submenu(app)?;
+    let view_menu = create_view_menu(app, entries, view_state)?;
     let structure_menu = Submenu::with_items(
         app,
         "Structure",
@@ -8985,7 +8989,10 @@ mod tests {
             .next()
             .unwrap();
         assert!(helper.contains("\"Insert\""));
+        // Table… (tables) and Templates… (structure templates) share the Insert menu.
+        assert!(helper.contains("\"Table…\""));
         assert!(helper.contains("\"Templates…\""));
+        assert!(helper.find("\"Table…\"").unwrap() < helper.find("\"Templates…\"").unwrap());
         assert!(!helper.contains("#[cfg"));
     }
 
