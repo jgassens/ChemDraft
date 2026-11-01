@@ -552,9 +552,19 @@ pub(crate) fn return_focus_to_document<R: tauri::Runtime>(
 pub(crate) fn macos_style(
     style: objc2_app_kit::NSWindowStyleMask,
 ) -> objc2_app_kit::NSWindowStyleMask {
-    style
-        | objc2_app_kit::NSWindowStyleMask::Resizable
-        | objc2_app_kit::NSWindowStyleMask::NonactivatingPanel
+    // Resizable is a creation trait (.resizable(true)), never a late frame-view rebuild.
+    style | objc2_app_kit::NSWindowStyleMask::NonactivatingPanel
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn configure_macos_style(
+    current: objc2_app_kit::NSWindowStyleMask,
+    apply: impl FnOnce(objc2_app_kit::NSWindowStyleMask),
+) {
+    let required = macos_style(current);
+    if required != current {
+        apply(required);
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1029,7 +1039,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_keeps_resize_traits_and_adds_nonactivation() {
+    fn macos_preserves_creation_traits_and_only_adds_nonactivation() {
         use objc2_app_kit::NSWindowStyleMask;
         for original in [
             NSWindowStyleMask::Borderless,
@@ -1038,13 +1048,28 @@ mod tests {
         ] {
             let style = super::macos_style(original);
             assert!(style.contains(NSWindowStyleMask::NonactivatingPanel));
-            assert!(style.contains(NSWindowStyleMask::Resizable));
             assert_eq!(
-                style,
-                original | NSWindowStyleMask::NonactivatingPanel | NSWindowStyleMask::Resizable
+                style.contains(NSWindowStyleMask::Resizable),
+                original.contains(NSWindowStyleMask::Resizable)
             );
+            assert_eq!(style, original | NSWindowStyleMask::NonactivatingPanel);
             assert_eq!(super::macos_style(style), style);
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_style_configuration_skips_the_setter_when_the_required_bits_are_present() {
+        use objc2_app_kit::NSWindowStyleMask;
+        let original = NSWindowStyleMask::Resizable | NSWindowStyleMask::Miniaturizable;
+        let mut applied = None;
+        super::configure_macos_style(original, |style| applied = Some(style));
+        let configured = applied.expect("add nonactivation once");
+        assert_eq!(configured, original | NSWindowStyleMask::NonactivatingPanel);
+        super::configure_macos_style(configured, |_| panic!("must not call setStyleMask again"));
+        super::configure_macos_style(configured | NSWindowStyleMask::FullScreen, |_| {
+            panic!("must not rebuild an already configured fullscreen frame")
+        });
     }
 
     #[cfg(windows)]

@@ -1,131 +1,147 @@
 use objc2::{
-    msg_send,
+    define_class, msg_send,
     rc::Retained,
-    runtime::{AnyClass, AnyObject, ClassBuilder, ProtocolObject, Sel},
-    sel,
+    runtime::{AnyObject, ProtocolObject},
+    ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message,
 };
 use objc2_app_kit::{
-    NSEvent, NSEventType, NSView, NSWindow, NSWindowDidBecomeKeyNotification,
-    NSWindowDidResignKeyNotification, NSWindowStyleMask,
+    NSAutoresizingMaskOptions, NSEvent, NSEventMask, NSView, NSWindow,
+    NSWindowDidBecomeKeyNotification, NSWindowDidResignKeyNotification, NSWindowStyleMask,
+    NSWindowWillCloseNotification,
 };
-use objc2_foundation::{NSNotification, NSNotificationCenter, NSObjectProtocol, NSPoint, NSRect};
-use std::{cell::RefCell, collections::HashMap, ptr::NonNull, rc::Rc};
+use objc2_foundation::{
+    ns_string, NSNotification, NSNotificationCenter, NSObject, NSObjectProtocol, NSPoint, NSString,
+};
+use std::{cell::RefCell, collections::HashMap, ffi::c_void, ptr::NonNull};
 
-type Observers = Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>;
-type HideCallback = (String, Rc<dyn Fn()>);
+#[derive(Default)]
+struct Observers {
+    notifications: Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>,
+    clicks: Option<Retained<AnyObject>>,
+    visibility: Option<VisibilityObservation>,
+}
+
+impl Drop for Observers {
+    fn drop(&mut self) {
+        // WillClose is synchronous, unlike Tauri's queued Destroyed fallback. Remove native
+        // registrations before releasing callbacks and their captured window handles.
+        if let Some(monitor) = self.clicks.take() {
+            unsafe { NSEvent::removeMonitor(&monitor) };
+        }
+        self.visibility.take();
+        let center = NSNotificationCenter::defaultCenter();
+        for token in self.notifications.drain(..) {
+            unsafe { center.removeObserver((*token).as_ref()) };
+        }
+    }
+}
+
 thread_local! {
     static OBSERVERS: RefCell<HashMap<String, Observers>> = RefCell::default();
-    static HIDE_CALLBACKS: RefCell<HashMap<usize, HideCallback>> = RefCell::default();
-    static CLICK_CALLBACKS: RefCell<HashMap<usize, HideCallback>> = RefCell::default();
 }
 
-unsafe extern "C-unwind" fn panel_send_event(panel: &AnyObject, _: Sel, event: &NSEvent) {
-    if matches!(
-        event.r#type(),
-        NSEventType::LeftMouseDown | NSEventType::RightMouseDown | NSEventType::OtherMouseDown
-    ) {
-        let callback = CLICK_CALLBACKS.with(|callbacks| {
-            callbacks
-                .borrow()
-                .get(&(panel as *const AnyObject as usize))
-                .map(|(_, callback)| callback.clone())
-        });
-        if let Some(callback) = callback {
-            callback();
+define_class!(
+    // Our own observer is allocated with its final class. KVO alone manages the observed
+    // window's class; never replace the class of an AppKit or WebKit object.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = Box<dyn Fn()>]
+    struct PanelVisibilityObserver;
+
+    impl PanelVisibilityObserver {
+        #[unsafe(method(observeValueForKeyPath:ofObject:change:context:))]
+        unsafe fn observe_visibility(
+            &self,
+            _key: &NSString,
+            _object: &AnyObject,
+            change: &AnyObject,
+            _context: *mut c_void,
+        ) {
+            let prior: Option<Retained<AnyObject>> = unsafe {
+                msg_send![change, objectForKey: ns_string!("notificationIsPrior")]
+            };
+            if prior.is_some_and(|value| unsafe { msg_send![&value, boolValue] }) {
+                (self.ivars())();
+            }
         }
     }
-    let superclass = AnyClass::get(c"ChemDraftRestorablePanelWindow")
-        .and_then(AnyClass::superclass)
-        .expect("panel window superclass");
-    unsafe {
-        let _: () = msg_send![super(panel, superclass), sendEvent: event];
+);
+
+struct VisibilityObservation {
+    window: Retained<NSWindow>,
+    observer: Retained<PanelVisibilityObserver>,
+}
+
+impl Drop for VisibilityObservation {
+    fn drop(&mut self) {
+        // Retaining the window guarantees removal precedes deallocation.
+        unsafe {
+            let _: () = msg_send![&self.window,
+                removeObserver: &*self.observer,
+                forKeyPath: ns_string!("visible"),
+                context: std::ptr::null_mut::<c_void>()
+            ];
+        }
     }
 }
 
-unsafe extern "C-unwind" fn panel_order_out(panel: &AnyObject, _: Sel, sender: *mut AnyObject) {
-    let callback = HIDE_CALLBACKS.with(|callbacks| {
-        callbacks
-            .borrow()
-            .get(&(panel as *const AnyObject as usize))
-            .map(|(_, callback)| callback.clone())
-    });
-    if let Some(callback) = callback {
-        callback();
-    }
-    let superclass = AnyClass::get(c"ChemDraftRestorablePanelWindow")
-        .and_then(AnyClass::superclass)
-        .expect("panel window superclass");
-    unsafe {
-        let _: () = msg_send![super(panel, superclass), orderOut: sender];
-    }
-}
-
-fn install_hide_hook<R: tauri::Runtime>(
+fn observe_panel<R: tauri::Runtime>(
     window: &tauri::WebviewWindow<R>,
     panel: &NSWindow,
+    tokens: &mut Observers,
 ) -> Result<(), String> {
-    let object: &AnyObject = panel;
-    let name = c"ChemDraftRestorablePanelWindow";
-    if object.class().name() != name {
-        let original = object.class();
-        let class = if let Some(class) = AnyClass::get(name) {
-            if class.superclass() != Some(original) {
-                return Err("Panel window class changed during hide installation.".into());
-            }
-            class
-        } else {
-            let mut builder =
-                ClassBuilder::new(name, original).ok_or("Could not create panel hide hook.")?;
-            unsafe {
-                builder.add_method(
-                    sel!(orderOut:),
-                    panel_order_out as unsafe extern "C-unwind" fn(_, _, _),
-                );
-                builder.add_method(
-                    sel!(sendEvent:),
-                    panel_send_event as unsafe extern "C-unwind" fn(_, _, _),
-                );
-            }
-            builder.register()
-        };
-        unsafe {
-            AnyObject::set_class(object, class);
+    let mtm = MainThreadMarker::new().ok_or("Panel observation requires the main thread.")?;
+    let target = window.clone();
+    let observer = PanelVisibilityObserver::alloc(mtm).set_ivars(Box::new(move || {
+        // Prior notification: restore before orderOut: detaches the child window.
+        // Ignore shows (the old value is then false).
+        if target.is_visible().unwrap_or(false) {
+            let webview: &tauri::Webview<R> = target.as_ref();
+            super::super::panel_full_size::will_hide(&webview.window());
         }
+    }));
+    let observer: Retained<PanelVisibilityObserver> = unsafe { msg_send![super(observer), init] };
+    unsafe {
+        let _: () = msg_send![panel,
+            addObserver: &*observer,
+            forKeyPath: ns_string!("visible"),
+            options: 8usize, // NSKeyValueObservingOptionPrior
+            context: std::ptr::null_mut::<c_void>()
+        ];
     }
-    let target = window.clone();
-    HIDE_CALLBACKS.with(|callbacks| {
-        callbacks.borrow_mut().insert(
-            object as *const AnyObject as usize,
-            (
-                window.label().into(),
-                Rc::new(move || {
-                    let webview: &tauri::Webview<R> = target.as_ref();
-                    super::super::panel_full_size::will_hide(&webview.window());
-                }),
-            ),
-        )
+    tokens.visibility = Some(VisibilityObservation {
+        window: panel.retain(),
+        observer,
     });
+
     let target = window.clone();
-    CLICK_CALLBACKS.with(|callbacks| {
-        callbacks.borrow_mut().insert(
-            object as *const AnyObject as usize,
-            (
-                window.label().into(),
-                Rc::new(move || {
-                    // This runs only for a real native mouse-down, before the webview sees it.
-                    // Showing, restoring and publishing a report never call makeKeyWindow.
-                    if target.is_visible().unwrap_or(false)
-                        && !target.is_minimized().unwrap_or(true)
-                    {
-                        let _ = target.set_focusable(true);
-                        if let Ok(pointer) = target.ns_window() {
-                            unsafe { &*(pointer as *const NSWindow) }.makeKeyWindow();
-                        }
-                    }
-                }),
-            ),
-        );
+    let number = panel.windowNumber();
+    let callback = block2::RcBlock::new(move |event: NonNull<NSEvent>| {
+        let native = unsafe { event.as_ref() };
+        // Runs before webview dispatch, only for this window's native mouse-downs.
+        // Pass the original event through, including native resize presses.
+        if native.windowNumber() == number
+            && target.is_visible().unwrap_or(false)
+            && !target.is_minimized().unwrap_or(true)
+        {
+            let _ = target.set_focusable(true);
+            if let Ok(pointer) = target.ns_window() {
+                unsafe { &*(pointer as *const NSWindow) }.makeKeyWindow();
+            }
+        }
+        event.as_ptr()
     });
+    tokens.clicks = Some(
+        unsafe {
+            NSEvent::addLocalMonitorForEventsMatchingMask_handler(
+                NSEventMask::LeftMouseDown
+                    | NSEventMask::RightMouseDown
+                    | NSEventMask::OtherMouseDown,
+                &callback,
+            )
+        }
+        .ok_or("Could not observe panel pointer activation.")?,
+    );
     Ok(())
 }
 
@@ -138,84 +154,76 @@ pub(super) fn resize_edge(x: f64, y: f64, width: f64, height: f64) -> bool {
         && (x < edge || y < edge || x >= width - edge || y >= height - edge)
 }
 
-unsafe extern "C-unwind" fn content_hit_test(
-    view: &AnyObject,
-    _: Sel,
-    point: NSPoint,
-) -> *mut NSView {
-    let frame: NSRect = unsafe { msg_send![view, frame] };
-    let panel: Option<Retained<NSWindow>> = unsafe { msg_send![view, window] };
-    if panel.is_some_and(|panel| {
-        let style = panel.styleMask();
-        style.contains(NSWindowStyleMask::Resizable)
-            && !style.contains(NSWindowStyleMask::FullScreen)
-    }) && resize_edge(
-        point.x - frame.origin.x,
-        point.y - frame.origin.y,
-        frame.size.width,
-        frame.size.height,
-    ) {
-        return std::ptr::null_mut();
+define_class!(
+    // A new container, not a replacement class for Wry's live content view. Wry's view,
+    // tracking areas and handlers remain intact as an autoresizing child.
+    #[unsafe(super(NSView))]
+    #[thread_kind = MainThreadOnly]
+    struct PanelResizeContainer;
+
+    impl PanelResizeContainer {
+        #[unsafe(method(hitTest:))]
+        fn hit_test(&self, point: NSPoint) -> *mut NSView {
+            let frame = self.frame();
+            if self.window().is_some_and(|panel| {
+                let style = panel.styleMask();
+                style.contains(NSWindowStyleMask::Resizable)
+                    && !style.contains(NSWindowStyleMask::FullScreen)
+            }) && resize_edge(
+                point.x - frame.origin.x,
+                point.y - frame.origin.y,
+                frame.size.width,
+                frame.size.height,
+            ) {
+                // NSThemeFrame supplies native cursors and its non-activating resize loop
+                // when the content root yields the border, including descendants.
+                return std::ptr::null_mut();
+            }
+            unsafe { msg_send![super(self), hitTest: point] }
+        }
     }
-    let superclass = AnyClass::get(c"ChemDraftResizablePanelContentView")
-        .and_then(AnyClass::superclass)
-        .expect("panel content superclass");
-    unsafe { msg_send![super(view, superclass), hitTest: point] }
-}
+);
 
 pub(super) fn install_resize_hit_test<R: tauri::Runtime>(
     window: &tauri::WebviewWindow<R>,
 ) -> Result<(), String> {
-    objc2::MainThreadMarker::new().ok_or("Panel resize installation requires the main thread.")?;
+    let mtm =
+        MainThreadMarker::new().ok_or("Panel resize installation requires the main thread.")?;
     let pointer = window.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
     let panel = unsafe { pointer.as_ref() }.ok_or("Could not access native panel window.")?;
-    panel.setStyleMask(super::macos_style(panel.styleMask()));
     let content = panel
         .contentView()
         .ok_or("Could not access panel content view.")?;
-    let object: &AnyObject = &content;
-    let class_name = c"ChemDraftResizablePanelContentView";
-    if object.class().name() == class_name {
+    if content.isKindOfClass(PanelResizeContainer::class()) {
         return Ok(());
     }
-    let original = object.class();
-    let class = if let Some(class) = AnyClass::get(class_name) {
-        if class.superclass() != Some(original) {
-            return Err("Panel content view class changed during resize installation.".into());
-        }
-        class
-    } else {
-        let mut builder = ClassBuilder::new(class_name, original)
-            .ok_or("Could not create panel content hit test.")?;
-        unsafe {
-            builder.add_method(
-                sel!(hitTest:),
-                content_hit_test as unsafe extern "C-unwind" fn(_, _, _) -> _,
-            );
-        }
-        builder.register()
-    };
-    // AppKit's NSThemeFrame tracks native edge/corner resizing when its content's hitTest:
-    // returns nil. A full-window WKWebView otherwise claims those mouse-downs. Exclude only a
-    // thin logical-point band at the content root, including its webview descendants; AppKit
-    // keeps its native cursors, minimum-size constraint and non-activating resize loop.
-    // Subclass only this content instance (no ivars added), preserving Tauri's view and handlers.
-    unsafe {
-        AnyObject::set_class(object, class);
-    }
+    let container = PanelResizeContainer::alloc(mtm).set_ivars(());
+    let container: Retained<PanelResizeContainer> =
+        unsafe { msg_send![super(container), initWithFrame: content.frame()] };
+    let autoresize =
+        NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable;
+    container.setAutoresizingMask(autoresize);
+    content.setAutoresizingMask(autoresize);
+    // Supported reparenting with every original class intact. Retain content across
+    // setContentView; WebKit can pair its window KVO removal/registration normally.
+    panel.setContentView(Some(&container));
+    content.setFrame(container.bounds());
+    container.addSubview(&content);
     Ok(())
 }
 
 pub(super) fn observe<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
+    MainThreadMarker::new().ok_or("Panel observation requires the main thread.")?;
+    forget(window.label());
     let pointer = window.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
     let panel = unsafe { pointer.as_ref() }.ok_or("Could not access native panel window.")?;
-    // Only plugin panels keep native pointer activation and restore full-size frames.
-    // Palette fields acquire their temporary lease through the guarded IPC path.
-    if super::super::is_plugin_panel_window_label(window.label()) {
-        install_hide_hook(window, panel)?;
-    }
     let center = NSNotificationCenter::defaultCenter();
-    let mut tokens = Vec::new();
+    let mut tokens = Observers::default();
+    // Palette fields retain guarded input leases; only plugin panels get click activation
+    // and full-size restoration before native hides.
+    if super::super::is_plugin_panel_window_label(window.label()) {
+        observe_panel(window, panel, &mut tokens)?;
+    }
     for (name, active) in unsafe {
         [
             (NSWindowDidBecomeKeyNotification, true),
@@ -226,9 +234,8 @@ pub(super) fn observe<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> Re
         let callback = block2::RcBlock::new(move |_: NonNull<NSNotification>| {
             super::activation(&target, active);
         });
-        // Immediate delivery on the posting (main) thread tags the lease at the native
-        // transition, before a subsequent makeKeyWindow or IPC completion can run.
-        tokens.push(unsafe {
+        // Immediate delivery tags the lease before any queued IPC or focus operation.
+        tokens.notifications.push(unsafe {
             center.addObserverForName_object_queue_usingBlock(
                 Some(name),
                 Some(panel),
@@ -237,33 +244,29 @@ pub(super) fn observe<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> Re
             )
         });
     }
-    OBSERVERS.with(|observers| {
-        observers
-            .borrow_mut()
-            .insert(window.label().to_string(), tokens)
+    let target = window.clone();
+    let label = window.label().to_string();
+    let callback = block2::RcBlock::new(move |_: NonNull<NSNotification>| {
+        if super::super::is_plugin_panel_window_label(&label) {
+            let webview: &tauri::Webview<R> = target.as_ref();
+            super::super::panel_full_size::will_hide(&webview.window());
+        }
+        forget(&label);
     });
+    tokens.notifications.push(unsafe {
+        center.addObserverForName_object_queue_usingBlock(
+            Some(NSWindowWillCloseNotification),
+            Some(panel),
+            None,
+            &callback,
+        )
+    });
+    OBSERVERS.with(|observers| observers.borrow_mut().insert(window.label().into(), tokens));
     Ok(())
 }
 
 pub(super) fn forget(label: &str) {
-    CLICK_CALLBACKS.with(|callbacks| {
-        callbacks
-            .borrow_mut()
-            .retain(|_, (owner, _)| owner != label)
-    });
-    HIDE_CALLBACKS.with(|callbacks| {
-        callbacks
-            .borrow_mut()
-            .retain(|_, (owner, _)| owner != label)
-    });
-    OBSERVERS.with(|observers| {
-        if let Some(tokens) = observers.borrow_mut().remove(label) {
-            let center = NSNotificationCenter::defaultCenter();
-            for token in tokens {
-                unsafe {
-                    center.removeObserver((*token).as_ref());
-                }
-            }
-        }
-    });
+    // Drop outside the map's borrow: AppKit removal may invoke native callbacks.
+    let tokens = OBSERVERS.with(|observers| observers.borrow_mut().remove(label));
+    drop(tokens);
 }

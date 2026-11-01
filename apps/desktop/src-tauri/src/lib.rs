@@ -4536,7 +4536,11 @@ fn configure_analysis_window_traits<R: Runtime>(
     ns_window.setHidesOnDeactivate(false);
     ns_window.setCanHide(true);
     ns_window.setIgnoresMouseEvents(false);
-    ns_window.setStyleMask(panel_window::macos_style(ns_window.styleMask()));
+    // Resizable is already set by the builder. Even an unchanged style setter can rebuild
+    // the content hierarchy, so configure only the missing nonactivation bit, once.
+    panel_window::configure_macos_style(ns_window.styleMask(), |style| {
+        ns_window.setStyleMask(style);
+    });
     ns_window.setAcceptsMouseMovedEvents(true);
     Ok(())
 }
@@ -4692,6 +4696,7 @@ fn observe_hide_for_document_key_restore<R: Runtime>(app: tauri::AppHandle<R>) {
     let center = NSNotificationCenter::defaultCenter();
     let hide_app = app.clone();
     let on_hide = block2::RcBlock::new(move |_: NonNull<NSNotification>| {
+        panel_full_size::restore_all(&hide_app);
         let was_key = main_ns_window(&hide_app).is_some_and(|main| main.isKeyWindow());
         if let Ok(mut state) = DOCUMENT_KEY_AFTER_UNHIDE.lock() {
             state.will_hide(was_key);

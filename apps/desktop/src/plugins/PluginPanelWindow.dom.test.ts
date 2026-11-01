@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { EventCallback } from "@tauri-apps/api/event";
@@ -288,13 +288,17 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     const source = readFileSync(join(nativePath, "lib.rs"), "utf8");
     const command = source.split("fn set_plugin_panel_activation(")[1]!.split("/// Sent to the main window")[0]!;
     const mac = readFileSync(join(nativePath, "panel_focus_macos.rs"), "utf8");
-    const click = mac.split("CLICK_CALLBACKS.with(|callbacks| {")[2]!.split("pub(super) fn resize_edge")[0]!;
+    // Click activation moved from a live NSWindow subclass to a supported local monitor.
+    const click = mac.split("let number = panel.windowNumber();")[1]!.split("pub(super) fn resize_edge")[0]!;
     expect(click).toContain("makeKeyWindow()");
     expect(click).toContain("target.is_visible()");
     expect(click).toContain("!target.is_minimized()");
-    const sendEvent = mac.split('fn panel_send_event(')[1]!.split('fn panel_order_out(')[0]!;
-    expect(sendEvent).toContain("NSEventType::LeftMouseDown | NSEventType::RightMouseDown | NSEventType::OtherMouseDown");
-    expect(sendEvent).toContain("callback()");
+    expect(click).toContain("native.windowNumber() == number");
+    expect(click).toContain("addLocalMonitorForEventsMatchingMask_handler");
+    for (const button of ["LeftMouseDown", "RightMouseDown", "OtherMouseDown"]) {
+      expect(click).toContain(`NSEventMask::${button}`);
+    }
+    expect(click).toContain("event.as_ptr()");
     expect(mac).not.toMatch(/\.set_focus\(|activateIgnoringOtherApps|makeKeyAndOrderFront/);
     expect(command).not.toMatch(/target\.set_focus\(|makeKeyWindow/);
     expect(command).toMatch(/if !panel_window::is_active\(&target\)\?[\s\S]*return Ok\(false\)[\s\S]*webview\.set_focus\(\)/);
@@ -405,10 +409,68 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     const dispatch = source.split("async fn set_plugin_panel_input_focus(")[1]!.split("let result: Result")[0]!;
     expect(dispatch).toMatch(/if is_plugin_panel_window_label\(window.label\(\)\) \{\s*return set_plugin_panel_activation/);
     const mac = readFileSync(join(nativePath, "panel_focus_macos.rs"), "utf8");
-    expect(mac).toMatch(/if super::super::is_plugin_panel_window_label\(window.label\(\)\) \{\s*install_hide_hook\(window, panel\)\?/);
+    // Only panels observe visibility and pointer activation; palettes keep their input leases.
+    expect(mac).toMatch(/if super::super::is_plugin_panel_window_label\(window.label\(\)\) \{\s*observe_panel\(window, panel, &mut tokens\)\?/);
     const panel = readFileSync(join(nativePath, "panel_window.rs"), "utf8");
     const observe = panel.split('pub(crate) fn install_input_focus')[1]!.split('#[cfg(')[0]!;
     expect(observe).not.toContain("install_resize_hit_test");
+  });
+
+  it("never replaces live AppKit/WebKit classes, preserving their KVO and tracking-area state", () => {
+    const nativePath = join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src");
+    function check(directory: string): void {
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        const path = join(directory, entry.name);
+        if (entry.isDirectory()) check(path);
+        else if (entry.name.endsWith(".rs") && entry.name !== "macos_quit.rs") {
+          expect(readFileSync(path, "utf8"), path).not.toMatch(/\b(?:set_class|object_setClass)\b/);
+        }
+      }
+    }
+    check(nativePath);
+  });
+
+  it("pairs visibility observation and the mouse monitor with synchronous native-close cleanup", () => {
+    const nativePath = join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src");
+    const mac = readFileSync(join(nativePath, "panel_focus_macos.rs"), "utf8");
+    expect(mac).toContain("observeValueForKeyPath:ofObject:change:context:");
+    expect(mac).toContain("NSKeyValueObservingOptionPrior");
+    expect(mac).toContain("addObserver: &*observer");
+    expect(mac).toContain("removeObserver: &*self.observer");
+    expect(mac.match(/forKeyPath: ns_string!\("visible"\)/g)).toHaveLength(2);
+    expect(mac).toContain("panel_full_size::will_hide(&webview.window())");
+    expect(mac).toContain("NSWindowWillCloseNotification");
+    expect(mac).toContain("forget(&label)");
+    expect(mac).toContain("NSEvent::removeMonitor(&monitor)");
+    // Reinstall first removes the old registrations, so reloads cannot duplicate callbacks.
+    expect(mac).toContain("forget(window.label())");
+  });
+
+  it("yields the resize band through a new container while retaining Wry's content-view class", () => {
+    const mac = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src/panel_focus_macos.rs"), "utf8");
+    expect(mac).toContain("#[unsafe(super(NSView))]");
+    expect(mac).toContain("struct PanelResizeContainer");
+    expect(mac).toContain("PanelResizeContainer::alloc(mtm)");
+    expect(mac).toContain("#[unsafe(method(hitTest:))]");
+    expect(mac).toContain("return std::ptr::null_mut()");
+    expect(mac).toContain("msg_send![super(self), hitTest: point]");
+    expect(mac).toContain("panel.setContentView(Some(&container))");
+    expect(mac).toContain("container.addSubview(&content)");
+    expect(mac).toContain("content.setAutoresizingMask(autoresize)");
+    expect(mac).not.toContain("setStyleMask");
+  });
+
+  it("keeps resizing a creation trait and skips redundant AppKit style-mask setters", () => {
+    const nativePath = join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src");
+    const source = readFileSync(join(nativePath, "lib.rs"), "utf8");
+    const build = source.split("fn build_or_show_plugin_panel<")[1]!.split("fn current_plugin_panel_geometry<")[0]!;
+    expect(build.indexOf(".resizable(true)")).toBeLessThan(build.indexOf("builder.build()"));
+    const configure = source.split("fn configure_analysis_window_traits<")[1]!.split("/// Makes `child`")[0]!;
+    expect(configure).toContain("panel_window::configure_macos_style(ns_window.styleMask()");
+    const panel = readFileSync(join(nativePath, "panel_window.rs"), "utf8");
+    const style = panel.split("pub(crate) fn macos_style(")[1]!.split("pub(crate) fn install_input_focus<")[0]!;
+    expect(style).toContain("if required != current");
+    expect(style).not.toMatch(/\|\s*objc2_app_kit::NSWindowStyleMask::Resizable/);
   });
 
   it("preserves Tao's Win10 zero top inset and adapts the single existing resize overlay", () => {
