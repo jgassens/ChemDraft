@@ -82,11 +82,11 @@ describe("same-head labels on bonded atoms", () => {
     expect(applyNativeAtomLabelDraft(isotopic, target, "SH", { element: "S", literal: false })).toBe(isotopic);
     const result = commitNativeAtomLabelTarget(isotopic, target, "SH", { literal: true });
     expect(result.document).toBe(isotopic);
-    expect(result.message).toBe("Cannot relabel 34S as SH: the label cannot keep isotope 34");
+    expect(result.message).toBe("Cannot relabel 34S as SH: the label cannot keep isotope 34; clear the isotope first to relabel");
     const text = insertNativeTextObject(isotopic, molecule(isotopic).atoms[0]!, "SH");
     const converted = convertNativeTextObjectToAtomLabel(text, text.selection.objectIds[0]!);
     expect(converted.document).toBe(text);
-    expect(converted.disabledReason).toBe("Cannot relabel 34S as SH: the label cannot keep isotope 34");
+    expect(converted.disabledReason).toBe("Cannot relabel 34S as SH: the label cannot keep isotope 34; clear the isotope first to relabel");
   });
 
   it.each(["NMe2", "NHMe"])("keeps neutral N's identity, bonds and charge when relabeled %s", label => {
@@ -226,7 +226,7 @@ describe("commitNativeAtomLabelTarget", () => {
     const document = applyPatches(fixture.document, [{ op: "updateObject", objectId: original.id, changes: {
       atoms: original.atoms.map((a, i) => i === 0 ? { ...a, isotope: 13 } : a)
     } }]);
-    const message = `Cannot relabel 13C as ${label}: the label cannot keep isotope 13`;
+    const message = `Cannot relabel 13C as ${label}: the label cannot keep isotope 13; clear the isotope first to relabel`;
     expect(applyNativeAtomLabelDraft(document, fixture.target, label, { element: "C", literal: false })).toBe(document);
     const result = commitNativeAtomLabelTarget(document, fixture.target, label, { literal: true });
     expect(result.document).toBe(document);
@@ -253,7 +253,7 @@ describe("commitNativeAtomLabelTarget", () => {
       atoms: [...fixture.m.atoms.map(a => a.id === source.id ? { ...a, isotope: 13 } : a), ...blockers]
     } }]);
     const result = commitNativeAtomLabelTarget(document, target, label, { literal: true });
-    const message = `Cannot relabel 13C as ${label}: the label cannot keep isotope 13`;
+    const message = `Cannot relabel 13C as ${label}: the label cannot keep isotope 13; clear the isotope first to relabel`;
     expect(result.document).toBe(document);
     expect(result.target).toEqual(target);
     expect(result.message).toBe(message);

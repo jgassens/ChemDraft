@@ -191,7 +191,7 @@ describe.each(["windows", "macos"] as const)("hover label target changes (%s sho
     await typeLabel("SH");
     await hoverAtom(1);
     await press("N");
-    expect(container.querySelector('[role="status"]')?.textContent).toContain("Cannot relabel 34S as SH: the label cannot keep isotope 34");
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Cannot relabel 34S as SH: the label cannot keep isotope 34; clear the isotope first to relabel");
     expect(molecule()).toEqual(before);
     expect(editor()).toBeNull();
     await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.undo"); });

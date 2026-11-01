@@ -20072,7 +20072,7 @@ function atomLabelIsotopeRefusal(atom: MoleculeAtom, label: string, molecule: Mo
   const bonded = molecule.bonds.some(b => b.fromAtomId === atom.id || b.toAtomId === atom.id);
   const reading = nativeAtomLabelReading(label, { bonded, typed: literal });
   if (reading.kind === "element" || reading.kind === "heavy-hydrogen") return undefined;
-  return `Cannot relabel ${atom.isotope}${atom.element} as ${label}: the label cannot keep isotope ${atom.isotope}`;
+  return `Cannot relabel ${atom.isotope}${atom.element} as ${label}: the label cannot keep isotope ${atom.isotope}; clear the isotope first to relabel`;
 }
 
 function nativeAtomWithElement(

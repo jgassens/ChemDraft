@@ -114,7 +114,7 @@ describe.each(["macos", "windows"] as const)("same-head label input (%s)", platf
       expect(window.__CHEMDRAFT_AGENT__!.snapshot().document).toEqual(before);
     }
     expect(container.querySelector('[role="status"]')?.textContent)
-      .toContain(`Cannot relabel 13C as ${entry === "editor" ? "SH" : "Ph"}: the label cannot keep isotope 13`);
+      .toContain(`Cannot relabel 13C as ${entry === "editor" ? "SH" : "Ph"}: the label cannot keep isotope 13; clear the isotope first to relabel`);
     expect(container.querySelector('[role="status"]')?.textContent).not.toContain("Relabeled");
     if (entry === "text") {
       expect(before.pages[0].objects.find(o => o.type === "text")).toMatchObject({ text: "Ph" });
