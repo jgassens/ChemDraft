@@ -6,6 +6,8 @@ use image::{metadata::Orientation, ImageDecoder, ImageEncoder};
 use std::io::{Cursor, Write};
 
 pub(crate) const MAX_CLIPBOARD_IMAGE_BYTES: usize = 25 * 1024 * 1024;
+// A 25 MiB UTF-8 SVG may occupy twice that in UTF-16, plus BOM/terminator/GlobalSize padding.
+pub(crate) const MAX_SVG_TEXT_ALLOCATION_BYTES: usize = 2 * MAX_CLIPBOARD_IMAGE_BYTES + 32;
 const MAX_IMAGE_SIDE: u32 = 16_384;
 const MAX_DECODED_BYTES: u64 = 256 * 1024 * 1024;
 
@@ -18,6 +20,19 @@ pub(crate) struct ClipboardImageItem {
     pub(crate) pixels_per_meter: Option<(u32, u32)>,
     pub(crate) pixel_width: Option<u32>,
     pub(crate) pixel_height: Option<u32>,
+}
+
+impl ClipboardImageItem {
+    pub(crate) fn retained_byte_length(&self) -> usize {
+        self.bytes_base64.len() / 4 * 3
+            - if self.bytes_base64.ends_with("==") {
+                2
+            } else if self.bytes_base64.ends_with('=') {
+                1
+            } else {
+                0
+            }
+    }
 }
 
 fn serialize_pixels_per_meter<S: serde::Serializer>(
@@ -199,15 +214,53 @@ fn raster_item(
 }
 
 pub(crate) fn svg_image_item(bytes: &[u8], source: &str) -> Result<ClipboardImageItem, String> {
-    check_image_byte_length(source, bytes.len())?;
-    // Registered Windows text formats can include a C-string terminator/allocation padding.
-    let end = bytes
-        .iter()
-        .rposition(|byte| *byte != 0)
-        .map_or(0, |i| i + 1);
-    let bytes = &bytes[..end];
-    let text = std::str::from_utf8(bytes)
-        .map_err(|error| format!("{source} is not valid UTF-8: {error}"))?;
+    if bytes.len() > MAX_SVG_TEXT_ALLOCATION_BYTES {
+        return Err(format!(
+            "{source} encoded SVG text exceeds its allocation limit."
+        ));
+    }
+    // Accept BOM-detected UTF-16 LE/BE and registered UTF-16LE text as before.
+    // Decode before stripping byte padding: a UTF-16 ASCII character ends in a zero byte.
+    let decoded;
+    let text = if crate::looks_like_utf16_bytes(&bytes[..bytes.len().min(32)]) {
+        let (content, big_endian) = if let Some(content) = bytes.strip_prefix(&[0xfe, 0xff]) {
+            (content, true)
+        } else if let Some(content) = bytes.strip_prefix(&[0xff, 0xfe]) {
+            (content, false)
+        } else {
+            // SVG's opening ASCII markup identifies byte order even if a long label
+            // makes the complete document mostly wide-script text.
+            let prefix = &bytes[..bytes.len().min(32)];
+            let even_nulls = prefix.iter().step_by(2).filter(|byte| **byte == 0).count();
+            let odd_nulls = prefix
+                .iter()
+                .skip(1)
+                .step_by(2)
+                .filter(|byte| **byte == 0)
+                .count();
+            (bytes, even_nulls > odd_nulls)
+        };
+        if !content.len().is_multiple_of(2) && content.last() != Some(&0) {
+            return Err(format!("{source} is not valid UTF-16"));
+        }
+        let mut end = content.len() - content.len() % 2;
+        while end >= 2 && content[end - 2..end] == [0, 0] {
+            end -= 2;
+        }
+        decoded = svg_utf8_encoding_declaration(
+            crate::decode_utf16_units(&content[..end], big_endian)
+                .ok_or_else(|| format!("{source} is not valid UTF-16"))?,
+        );
+        decoded.as_str()
+    } else {
+        let end = bytes
+            .iter()
+            .rposition(|byte| *byte != 0)
+            .map_or(0, |i| i + 1);
+        std::str::from_utf8(&bytes[..end])
+            .map_err(|error| format!("{source} is not valid UTF-8: {error}"))?
+    };
+    check_image_byte_length(source, text.len())?;
     if text.trim().is_empty() || text.contains('\0') {
         return Err(format!(
             "{source} is empty or contains an interior NUL byte"
@@ -215,11 +268,40 @@ pub(crate) fn svg_image_item(bytes: &[u8], source: &str) -> Result<ClipboardImag
     }
     Ok(ClipboardImageItem {
         r#type: "image/svg+xml".to_string(),
-        bytes_base64: STANDARD.encode(bytes),
+        bytes_base64: STANDARD.encode(text.as_bytes()),
         pixels_per_meter: None,
         pixel_width: None,
         pixel_height: None,
     })
+}
+
+// The picture now contains UTF-8 bytes. Update only a UTF-16 XML declaration so a
+// browser image decoder cannot reinterpret them using the original clipboard encoding.
+fn svg_utf8_encoding_declaration(mut text: String) -> String {
+    if let Some(end) = text.find("?>").filter(|_| text.starts_with("<?xml")) {
+        if let Some(field) = text[..end].find("encoding") {
+            let tail = text[field + "encoding".len()..end].trim_start();
+            if let Some(tail) = tail.strip_prefix('=').map(str::trim_start) {
+                if let Some(quote) = tail
+                    .chars()
+                    .next()
+                    .filter(|quote| matches!(quote, '\'' | '"'))
+                {
+                    if let Some(close) = tail[1..].find(quote) {
+                        let value = &tail[1..close + 1];
+                        if matches!(
+                            value.to_ascii_lowercase().as_str(),
+                            "utf-16" | "utf-16le" | "utf-16be"
+                        ) {
+                            let start = end - tail.len() + 1;
+                            text.replace_range(start..start + value.len(), "UTF-8");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    text
 }
 
 /// Stop the encoder before it can accumulate an oversized PNG from a compressed TIFF.
@@ -526,6 +608,69 @@ mod tests {
         }
         chunk.extend_from_slice(&(!crc).to_be_bytes());
         chunk
+    }
+
+    #[test]
+    fn clipboard_svg_utf8_at_picture_limit_ignores_windows_allocation_padding() {
+        let mut bytes = b"<svg>".to_vec();
+        bytes.resize(MAX_CLIPBOARD_IMAGE_BYTES - 6, b' ');
+        bytes.extend_from_slice(b"</svg>");
+        bytes.extend_from_slice(&[0; 16]);
+        let item = svg_image_item(&bytes, "image/svg+xml").unwrap();
+        assert_eq!(item.retained_byte_length(), MAX_CLIPBOARD_IMAGE_BYTES);
+        assert_eq!(
+            STANDARD.decode(item.bytes_base64).unwrap(),
+            bytes[..MAX_CLIPBOARD_IMAGE_BYTES]
+        );
+    }
+
+    #[test]
+    fn clipboard_svg_transcode_updates_only_the_xml_encoding_declaration() {
+        for encoding in ["UTF-16", "utf-16le", "UTF-16BE"] {
+            for quote in ["\"", "'"] {
+                let text = format!("<?xml version=\"1.0\" encoding={quote}{encoding}{quote}?><svg><text>{encoding}</text></svg>");
+                let bytes = [0xff, 0xfe]
+                    .into_iter()
+                    .chain(text.encode_utf16().flat_map(u16::to_le_bytes))
+                    .collect::<Vec<_>>();
+                let item = svg_image_item(&bytes, "image/svg+xml").unwrap();
+                assert_eq!(
+                    String::from_utf8(STANDARD.decode(item.bytes_base64).unwrap()).unwrap(),
+                    text.replacen(encoding, "UTF-8", 1)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn clipboard_svg_text_accepts_utf16_boms_and_windows_registered_le() {
+        let text = format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"><text>{}</text></svg>",
+            "μ界".repeat(1024)
+        );
+        for (big_endian, bom, padding) in [(false, true, 0), (true, true, 0), (false, false, 16)] {
+            let mut bytes = if bom {
+                if big_endian {
+                    vec![0xfe, 0xff]
+                } else {
+                    vec![0xff, 0xfe]
+                }
+            } else {
+                Vec::new()
+            };
+            for unit in text.encode_utf16() {
+                bytes.extend(if big_endian {
+                    unit.to_be_bytes()
+                } else {
+                    unit.to_le_bytes()
+                });
+            }
+            bytes.extend(vec![0; padding]);
+            for source in ["public.svg-image", "image/svg+xml"] {
+                let item = svg_image_item(&bytes, source).unwrap();
+                assert_eq!(STANDARD.decode(item.bytes_base64).unwrap(), text.as_bytes());
+            }
+        }
     }
 
     #[test]

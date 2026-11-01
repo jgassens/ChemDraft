@@ -50,7 +50,7 @@ describe("bounded panel reports (API 0.1.18)", () => {
     expect(isPluginApiVersionCompatible("^0.1.18", "0.1.17")).toBe(false);
     expect(bytes(synthetic)).toBeGreaterThan(25_448);
     expect(bytes(synthetic)).toBeLessThan(55_000);
-    expect(L.serializedBytes / 25_448).toBeCloseTo(59, 0);
+    expect(L.serializedBytes / 25_448).toBeGreaterThan(1000);
     expect(PluginPanelReportSchema.parse(synthetic)).toEqual(synthetic);
   });
 
@@ -60,6 +60,75 @@ describe("bounded panel reports (API 0.1.18)", () => {
     const linked = parsed.sections.find(s => s.kind === "linkedFigure");
     expect(linked?.kind === "linkedFigure" && linked.spectrum.peaks.length).toBe(520);
     expect(parsed).toEqual(synthetic);
+  });
+
+  it("preserves a synthetic 300-heavy-atom report with every assignment and 14,400 couplings", () => {
+    const f = figure();
+    f.structure = {
+      atoms: Array.from({ length: 900 }, (_, index) => ({ index, x: index % 30, y: Math.floor(index / 30), element: index < 300 ? "C" : "H" })),
+      bonds: Array.from({ length: 1800 }, (_, index) => ({ from: index % 900, to: (index + 1) % 900, order: 1 }))
+    };
+    f.spectrum.peaks = Array.from({ length: 900 }, (_, index) => ({
+      id: String(index), ppm: index / 100, intensity: 1, atomIndices: [index],
+      couplings: Array.from({ length: 16 }, (_, j) => ({ jHz: j + 1, partnerCount: 1 }))
+    }));
+    const raw = { title: "Synthetic upper-use NMR", sections: [
+      f,
+      { kind: "table", columns: Array(20).fill("Assignment"), rows: Array(900).fill(Array(20).fill("synthetic value")) },
+      { kind: "keyValue", rows: Array(500).fill({ label: "Synthetic property", value: "value" }) },
+      { kind: "chemicalName", name: "synthetic", label: "Name", kindLabel: "Synthetic",
+        warnings: Array(900).fill({ code: "abbreviationExpanded", message: "Synthetic atom warning" }) }
+    ] };
+    expect(PluginPanelReportSchema.parse(raw)).toEqual(raw);
+  });
+
+  it("preserves a long Assistant reply, several maximum image sections and 30 sections", () => {
+    const uri = "data:image/png;base64," + "A".repeat(Math.floor((L.imageLength - 22) / 4) * 4);
+    const raw = { title: "Synthetic Assistant report", sections: [
+      { kind: "text", body: "x".repeat(100_000) },
+      ...Array.from({ length: 8 }, () => ({ kind: "image", dataUri: uri, alt: "Synthetic image" })),
+      ...Array.from({ length: 21 }, () => ({ kind: "text", body: "Synthetic detail" }))
+    ] };
+    expect(PluginPanelReportSchema.parse(raw)).toEqual(raw);
+  });
+
+  it("preserves main's assignment and SVG ceilings and a 4,000-peak sparse spectrum", () => {
+    const f = figure();
+    f.structure = undefined;
+    f.spectrum.peaks = Array.from({ length: 4000 }, (_, index) => ({
+      id: String(index), ppm: index / 100, intensity: 1,
+      atomIndices: index === 0 ? Array.from({ length: 4000 }, (_, i) => i) : [index]
+    }));
+    const raw = { title: "Synthetic main compatibility", sections: [f, { kind: "svg", svg: " ".repeat(L.svgLength) }] };
+    expect(PluginPanelReportSchema.parse(raw)).toEqual(raw);
+  });
+
+  it("snapshots realistic nested control data with 20 fields at depth 12 without sharing references", () => {
+    const payload: Record<string, unknown> = Object.fromEntries(Array.from({ length: 20 }, (_, i) => [String(i), i]));
+    let leaf = payload;
+    for (let i = 0; i < 8; i++) { const next = {}; leaf.next = next; leaf = next; }
+    const raw = report({ kind: "actions", id: "controls",
+      buttons: [{ id: "run", commandId: "plugin.test.run", label: "Run", payload }] });
+    const result = PluginPanelReportSchema.parse(raw);
+    expect(result).toMatchObject(raw);
+    const section = result.sections[0]!;
+    expect(section.kind === "actions" && section.buttons[0]!.payload).not.toBe(payload);
+  });
+
+  it("preserves every pre-existing control and label ceiling at its accepted maximum", () => {
+    const f = figure();
+    f.spectrum.solvent = "x".repeat(120);
+    f.spectrum.comparison = { primaryLabel: "Primary", alternativeLabel: "Alternative", alternativeMarker: "x".repeat(8) };
+    const raw = { title: "Synthetic controls", sections: [
+      f,
+      { kind: "prompt", id: "p".repeat(64), commandId: "plugin.test.run", maxLength: 20_000, rows: 12,
+        select: { id: "s".repeat(64), label: "Synthetic selector", value: "x".repeat(100),
+          options: Array.from({ length: 20 }, (_, i) => ({ label: String(i), value: String(i).padEnd(100, "x") })) } },
+      { kind: "actions", id: "actions", buttons: Array.from({ length: 8 }, (_, i) => ({
+        id: String(i).padEnd(64, "x"), label: "Synthetic action", commandId: "plugin.test.run", payload: "x".repeat(3998)
+      })) }
+    ] };
+    expect(PluginPanelReportSchema.parse(raw)).toMatchObject(raw);
   });
 
   it.each([
@@ -127,20 +196,20 @@ describe("bounded panel reports (API 0.1.18)", () => {
   });
 
   it("measures UTF-8 JSON including escaping and accepts exactly the byte cap, rejecting + 1", () => {
-    const raw = { title: "NMR", sections: Array.from({ length: 80 }, () => ({ kind: "text", body: "x".repeat(18_750) })) };
+    const raw = { title: "NMR", sections: Array.from({ length: 160 }, () => ({ kind: "text", body: "x".repeat(Math.ceil(L.serializedBytes / 160)) })) };
     raw.sections[0]!.body = "μ\n".repeat(100) + raw.sections[0]!.body.slice(300);
     const excess = bytes(raw) - L.serializedBytes;
-    raw.sections[79]!.body = raw.sections[79]!.body.slice(excess);
+    raw.sections[159]!.body = raw.sections[159]!.body.slice(excess);
     expect(bytes(raw)).toBe(L.serializedBytes);
     expect(PluginPanelReportSchema.safeParse(raw).success).toBe(true);
-    raw.sections[79]!.body += "x";
+    raw.sections[159]!.body += "x";
     expect(bytes(raw)).toBe(L.serializedBytes + 1);
     rejected(raw, `report serialized bytes (at least): ${L.serializedBytes + 1} exceeds the limit of ${L.serializedBytes}`);
   });
 
   it("includes schema defaults in the final serialized byte budget", () => {
     const raw = { title: "NMR", sections: [
-      ...Array.from({ length: 79 }, () => ({ kind: "text", body: "x".repeat(19_000) })),
+      ...Array.from({ length: 159 }, () => ({ kind: "text", body: "x".repeat(Math.ceil(L.serializedBytes / 159)) })),
       { kind: "prompt", id: "composer", commandId: "plugin.test.run" }
     ] };
     const text = raw.sections[0]!;
@@ -262,7 +331,7 @@ describe("bounded panel reports (API 0.1.18)", () => {
   it("bounds malformed object fields and traversal nodes at + 1", () => {
     rejected(Object.fromEntries(Array.from({ length: L.objectFields + 1 }, (_, i) => [i, 0])),
       `report object fields: ${L.objectFields + 1}`);
-    rejected({ blocks: Array(10).fill(Array(50_000).fill(0)) }, `report nodes: ${L.nodes + 1}`);
+    rejected({ blocks: Array(L.nodes / 50_000).fill(Array(50_000).fill(0)) }, `report nodes: ${L.nodes + 1}`);
     const raw = {};
     Object.defineProperty(raw, "x".repeat(L.stringLength + 1), { get() { throw new Error("must not read"); } });
     rejected(raw, `report field name length: ${L.stringLength + 1}`);

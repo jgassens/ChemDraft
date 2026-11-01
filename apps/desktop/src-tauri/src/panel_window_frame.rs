@@ -277,6 +277,23 @@ mod tests {
     }
 
     #[test]
+    fn upper_realistic_8k_panel_frame_is_preserved_without_a_fixed_size_cap() {
+        let m = Monitor {
+            identity: MonitorIdentity {
+                name: Some("Synthetic 8K".into()),
+                position: (0, 0),
+                size: (7680, 4320),
+            },
+            scale: 1.0,
+            work_area: ScreenRect::new(0.0, 0.0, 7680.0, 4320.0),
+        };
+        let frame = Frame::from_physical((0, 0), (7680, 4320), &m).unwrap();
+        let placement = frame.restore(&[m]).unwrap();
+        assert_eq!(placement.position, (0, 0));
+        assert_eq!(placement.size, (7680, 4320));
+    }
+
+    #[test]
     fn mixed_scale_frames_round_trip_without_ambiguous_absolute_logical_coordinates() {
         for origin in [(1920, 0), (-1920, -100), (0, 0)] {
             for scale in [1.0, 1.5, 2.0] {

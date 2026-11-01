@@ -1,7 +1,7 @@
 import type { ChemDraftDocument, DocumentPatch } from "@chemdraft/chem-core";
 import { z } from "zod";
 import { panelReportLimitIssue, PluginPanelReportLimits, snapshotPanelReport } from "./reportLimits";
-export { PluginPanelReportLimits } from "./reportLimits";
+export { PluginPanelReportLimits, snapshotPanelReport } from "./reportLimits";
 export * from "./chemistry3d";
 import type { PluginEmbed3DRequest, PluginEmbed3DResult, PluginMinimize3DRequest, PluginMinimize3DResult,
   PluginFlatten3DRequest, PluginFlatten3DResult } from "./chemistry3d";
@@ -30,6 +30,7 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * (including structured minimize3d clash/contact diagnostics and flatten3d clash refusal).
  * 0.1.16 adds optional isotope mass numbers to native document atoms.
  * 0.1.17 adds the optional MoleculeBond `stereo: "either"` field for E/Z-unspecified double bonds.
+ * 0.1.18 exports the parameterised detached snapshotPanelReport walk for host overlay validation.
  * 0.1.18 bounds panel report strings, arrays, aggregate counts and UTF-8 JSON size; all report numbers are finite.
  *
  * The MINOR stays at 1 for both. For a 0.x release `isPluginApiVersionCompatible` treats the minor as

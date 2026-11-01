@@ -361,7 +361,7 @@ describe("spectrum picture exports", () => {
     await expect(svgToPngBlob('<svg width="100000" height="100000"/>')).resolves.toBeNull();
     await expect(svgToPngBlob("<svg/>", Number.NaN)).resolves.toBeNull();
   });
-  it.each([2, 3])("embeds %sx96 dpi and uses the SVG CSS dimensions for rasterization", async (scale) => {
+  it.each([2, 3, 12])("embeds %sx96 dpi and uses the SVG CSS dimensions for rasterization", async (scale) => {
     vi.stubGlobal("Blob", NodeBlob);
     vi.stubGlobal("Image", class {
       onload?: () => void;
@@ -577,6 +577,20 @@ describe("saveTextFile", () => {
     expect(bridgeListeners.has(ANALYSIS_WINDOW_ACTION_RESULT_EVENT)).toBe(false);
   });
 
+  it("keeps a save request alive while the user spends three minutes choosing a filename", async () => {
+    vi.useFakeTimers();
+    (globalThis as typeof globalThis & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    window.history.replaceState(null, "", "/?window=pluginPanel");
+    const result = saveTextFile("spectrum.svg", "<svg/>", {
+      title: "SVG", formatLabel: "SVG", extensions: ["svg"], mimeType: "image/svg+xml"
+    });
+    await vi.advanceTimersByTimeAsync(180_000);
+    const request = bridgeEmit.mock.calls.at(-1)![1] as { requestId: string };
+    bridgeListeners.get(ANALYSIS_WINDOW_ACTION_RESULT_EVENT)?.({ payload: { requestId: request.requestId, result: "saved" } });
+    await expect(result).resolves.toBe("saved");
+    expect(bridgeListeners.size).toBe(0);
+  });
+
   it("times out unanswered text saves and releases the reply listener", async () => {
     vi.useFakeTimers();
     (globalThis as typeof globalThis & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
@@ -584,7 +598,7 @@ describe("saveTextFile", () => {
     const result = saveTextFile("spectrum.svg", "<svg/>", {
       title: "SVG", formatLabel: "SVG", extensions: ["svg"], mimeType: "image/svg+xml"
     });
-    await vi.advanceTimersByTimeAsync(120_001);
+    await vi.advanceTimersByTimeAsync(1_800_001);
     await expect(result).resolves.toBe("failed");
     expect(bridgeListeners.size).toBe(0);
     expect(nativeSave).not.toHaveBeenCalled();

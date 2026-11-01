@@ -21,7 +21,7 @@ chemistry flavors do not carry this fallback. An advertised but unreadable chemi
 text and `fallbackImage`), while readable chemistry and prose retain their usual behavior.
 If only refused image candidates remain, `image-refused` carries the native refusal reason.
 
-Clipboard reads admit at most 64 MiB per flavor and per paste, with the existing 25 MiB picture
+Clipboard reads admit at most 1 GiB per flavor and per paste, with the existing 25 MiB picture
 limit retained. The native readers check allocation/data/string lengths before copying; the adapter
 checks text and base64 sizes before normalization or decoding. Unused binary/container flavors are
 never fetched. Admission follows chemistry, pictures, then prose; the returned text-flavor order still determines resolution. Only retained flavors consume the
@@ -29,8 +29,10 @@ shared total. A flavor exceeding the remaining total is skipped with a warning, 
 alternatives. A size-skipped chemistry flavor always refuses the paste, including private selections
 and chemistry recognized in generic text; it cannot fall back to a picture or prose. Native
 `skippedItems` metadata carries that flavor's own byte size and limit; `size-refused` names it with
-the same message on native and DOM paste. Copy reserves a conservative native-size bound, including
-Windows UTF-16/CRLF and allocation overhead, so copied selections fit the paste limits. Hosts parsing
+the same message on native and DOM paste. Copy retains main's 64 MiB UTF-8/binary input cap. Its separate paste accounting charges retained
+UTF-8 exactly once (including Windows CRLF); native allocation preflights and aliases add no retained
+charge. Optional representations exceeding their own cap or copy total are dropped with named warnings.
+Admitted text aliases are compared before decoding or charging, so duplicate chemistry cannot refuse paste. Hosts parsing
 private text flavors before inspection must call `guardClipboardPayload` first.
 
 Before validation, an unprefixed `<svg>` root without a default namespace declaration gets

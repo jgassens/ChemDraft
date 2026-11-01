@@ -399,10 +399,10 @@ function saveFormat(options: SaveTextFileOptions): SpectrumSaveFormat | undefine
 }
 
 function spectrumSaveTarget(filename: unknown, format: unknown) {
-  if (typeof filename !== "string" || filename.length > 200) return;
+  if (typeof filename !== "string" || filename.length > 4096) return;
   filename = filename.normalize("NFC").replace(/\p{Default_Ignorable_Code_Point}/gu, "");
   if (typeof format !== "string" || !Object.hasOwn(spectrumSaveFormats, format) ||
-      typeof filename !== "string" || !filename.length || filename.length > 200 ||
+      typeof filename !== "string" || !filename.length || filename.length > 4096 ||
       /[\\/\x00-\x1f\x7f<>:"|?*]/.test(filename) || /[. ]$/.test(filename) ||
       /^(?:con|prn|aux|nul|conin\$|conout\$|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(filename)) return;
   const key = format as SpectrumSaveFormat;
@@ -473,7 +473,7 @@ export async function saveTextFileHere(
   return "saved";
 }
 
-export const MAX_SPECTRUM_TRANSFER_BYTES = 20 * 1024 * 1024;
+export const MAX_SPECTRUM_TRANSFER_BYTES = 64 * 1024 * 1024;
 
 /** Match UTF-8 replacement of unpaired surrogates without allocating an encoded copy. */
 function boundedUtf8Size(value: unknown, limit: number): number | undefined {
@@ -494,7 +494,7 @@ function boundedUtf8Size(value: unknown, limit: number): number | undefined {
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
-  if (bytes.length > MAX_SPECTRUM_TRANSFER_BYTES) throw new Error("Spectrum file exceeds 20 MB.");
+  if (bytes.length > MAX_SPECTRUM_TRANSFER_BYTES) throw new Error("Spectrum file exceeds 64 MB.");
   const chunks: string[] = [];
   for (let offset = 0; offset < bytes.length; offset += 0x8000) {
     chunks.push(String.fromCharCode(...bytes.subarray(offset, offset + 0x8000)));
@@ -582,17 +582,17 @@ async function isPng(bytes: Uint8Array): Promise<boolean> {
       if (seen.has("IDAT") || length !== 9 || bytes[offset + 16] !== 1) return false;
       const x = view.getUint32(offset + 8);
       const y = view.getUint32(offset + 12);
-      if (Math.min(x, y) < 1000 || Math.max(x, y) > 1000000) return false;
+      if (Math.min(x, y) < 1) return false;
     } else if (type === "sRGB") {
       if (seen.has("IDAT") || length !== 1 || bytes[offset + 8] > 3) return false;
     } else if (type === "eXIf") {
-      if (seen.has("IDAT") || !length || length > 65536) return false;
+      if (seen.has("IDAT") || !length || length > 1024 * 1024) return false;
     } else if (type === "gAMA") {
       if (seen.has("IDAT") || length !== 4) return false;
     } else if (type === "cHRM") {
       if (seen.has("IDAT") || length !== 32) return false;
     } else if (type === "iCCP") {
-      if (seen.has("IDAT") || length < 4 || length > 1024 * 1024) return false;
+      if (seen.has("IDAT") || length < 4 || length > 16 * 1024 * 1024) return false;
     } else if (type === "IDAT") {
       dataChunks.push(bytes.subarray(offset + 8, end - 4));
       dataSize += length;
@@ -635,7 +635,7 @@ export async function handleSpectrumWindowAction(
 ): Promise<void> {
   if (typeof payload !== "object" || payload === null) return;
   const action = payload as Record<string, unknown>;
-  if (typeof action.requestId !== "string" || !action.requestId.length || action.requestId.length > 200) return;
+  if (typeof action.requestId !== "string" || !action.requestId.length || action.requestId.length > 512) return;
   const requestId = action.requestId;
   if (action.kind === "copySpectrum") {
     let ok = false;
@@ -647,7 +647,7 @@ export async function handleSpectrumWindowAction(
         throw new Error("Invalid spectrum clipboard payload.");
       }
       const svgSize = svg === undefined ? 0 : boundedUtf8Size(svg, Math.floor((MAX_SPECTRUM_TRANSFER_BYTES - pngSize) / 2));
-      if (svgSize === undefined) throw new Error("Spectrum clipboard exceeds 20 MB.");
+      if (svgSize === undefined) throw new Error("Spectrum clipboard exceeds 64 MB.");
       if (svg !== undefined) sanitizeSpectrumSvg(svg as string);
       const png = decodeBase64(action.pngBase64 as string);
       if (!await isPng(png)) throw new Error("Invalid spectrum PNG.");

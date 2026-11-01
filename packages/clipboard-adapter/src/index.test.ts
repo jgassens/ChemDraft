@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { JSDOM } from "jsdom";
 import {
-  MAX_CLIPBOARD_BYTES,
+  MAX_CLIPBOARD_BYTES, clipboardTextByteLength,
   guardClipboardPayload,
   detectMolfileFormat,
   extractRxnMolfileBlocks,
@@ -176,20 +176,29 @@ describe("SVG XML well-formedness", () => {
       .toMatchObject({ kind: "image-refused", message: expect.stringContaining("the root must be <svg> in the SVG namespace") });
   });
 
+  it("pastes a 25 MiB SVG and 24 nested groups unchanged at main's picture limit", () => {
+    const wrapper = '<svg xmlns="http://www.w3.org/2000/svg">' + '<g>'.repeat(24);
+    const closing = '</g>'.repeat(24) + '</svg>';
+    const text = wrapper + " ".repeat(25 * 1024 * 1024 - wrapper.length - closing.length) + closing;
+    const result = inspectClipboardPayload({ types: ["image/svg+xml"], textItems: [{ type: "image/svg+xml", text }] }, { svgParser: null });
+    expect(result.kind).toBe("image");
+    if (result.kind === "image") expect(result.image.bytesBase64).toBe(Buffer.from(text).toString("base64"));
+  }, 10_000);
+
   it("retains the validation size cap before calling the XML parser", () => {
     const parseFromString = vi.fn(() => { throw new Error("must not parse"); });
-    const text = `<svg ${namespace}>${" ".repeat(20 * 1024 * 1024)}</svg>`;
+    const text = `<svg ${namespace}>${" ".repeat(25 * 1024 * 1024)}</svg>`;
     expect(inspectClipboardPayload({ types: ["text/plain"], textItems: [{ type: "text/plain", text }] }, { svgParser: { parseFromString } }))
-      .toMatchObject({ kind: "image-refused", message: "Couldn't paste the SVG: it exceeds the 20 MB validation limit." });
+      .toMatchObject({ kind: "size-refused", message: expect.stringContaining("the limit is 25 MB") });
     expect(parseFromString).not.toHaveBeenCalled();
   });
 
   it("applies the validation size cap to the namespaced text", () => {
     const parseFromString = vi.fn(() => { throw new Error("must not parse"); });
-    const text = `<svg>${" ".repeat(20 * 1024 * 1024 - 11)}</svg>`;
+    const text = `<svg>${" ".repeat(25 * 1024 * 1024 - 11)}</svg>`;
     for (const payload of payloads(text)) {
       expect(inspectClipboardPayload(payload, { svgParser: { parseFromString } }))
-        .toMatchObject({ kind: "image-refused", message: "Couldn't paste the SVG: it exceeds the 20 MB validation limit." });
+        .toMatchObject({ kind: "image-refused", message: "Couldn't paste the SVG: it exceeds the 25 MB picture limit." });
     }
     expect(parseFromString).not.toHaveBeenCalled();
   });
@@ -212,35 +221,71 @@ describe("SVG XML well-formedness", () => {
 
 describe("clipboard byte limits", () => {
   const mb = 1024 * 1024;
-  const message = "Couldn't paste: clipboard flavor \"text/plain\" is too large (500.0 MB; the limit is 64 MB).";
+  const message = "Couldn't paste: clipboard flavor \"text/plain\" is too large (1500.0 MB; the limit is 1024 MB).";
 
   it.each(["text/rtf", "NeXT TIFF v4.0 pasteboard type", "Apple PNG pasteboard type"])("keeps a 24 MB PNG beside a 50 MB sibling: %s", type => {
     const header = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/aWQAAAAASUVORK5CYII=", "base64");
     const bytes = Buffer.alloc(24 * mb); header.copy(bytes);
-    const result = inspectClipboardPayload({ types: [type, "image/png"], textItems: [{ type, text: "x".repeat(50 * mb) }],
-      imageItems: [{ type: "image/png", bytesBase64: bytes.toString("base64") }] });
-    expect(result).toMatchObject({ kind: "image", image: { type: "image/png" } });
+    const image = { type: "image/png" as const, bytesBase64: bytes.toString("base64") };
+    const result = guardClipboardPayload({ types: [type, "image/png"], textItems: [{ type, text: "x".repeat(50 * mb) }],
+      imageItems: [image] });
+    expect(result.imageItems).toEqual([image]);
+    expect(result.skippedItems).toEqual([]);
   });
 
   it.each(["application/x-chemdraft-selection+json", "chemical/x-cdxml", "chemical/x-cdx", "chemical/x-mdl-molfile", "org.opensmiles.smiles"])("refuses oversized chemistry before pictures or prose: %s", type => {
-    const bytes = 65 * mb;
-    const message = `Couldn't paste: clipboard flavor "${type}" is too large (65.0 MB; the limit is 64 MB).`;
+    const bytes = 1025 * mb;
+    const message = `Couldn't paste: clipboard flavor "${type}" is too large (1025.0 MB; the limit is 1024 MB).`;
     for (const native of [false, true]) {
       const payload: ClipboardReadPayload = { types: [type, "image/png", "text/plain"],
         textItems: [{ type: "text/plain", text: "ordinary prose" }],
         imageItems: [{ type: "image/png", bytesBase64: "AA==" }] };
       if (native) payload.skippedItems = [{ type, byteLength: bytes, limitBytes: MAX_CLIPBOARD_BYTES }];
-      else payload.textItems.push({ type, text: "x".repeat(bytes) });
+      else payload.textItems.push({ type, text: { length: bytes } as unknown as string });
       expect(inspectClipboardPayload(payload)).toMatchObject({ kind: "size-refused", message });
     }
   });
 
-  it.each(["<CDXML>", "header\n V2000", '{"kind":"chemdraft-selection"}', "InChI=1S/CH4/h1H4", "CCCCCCCC"])("keeps generic chemistry text from degrading after a size skip: %s", prefix => {
-    const text = prefix + " ".repeat(65 * mb);
+  it.each(["<CDXML>", "header\n V2000", '{"kind":"chemdraft-selection"}', "InChI=1S/CH4/h1H4", "CCCCCCCC"])("preserves native chemistry classification for size-skipped generic text: %s", prefix => {
+    const text = { length: 1025 * mb } as unknown as string;
     expect(inspectClipboardPayload({ types: ["text/plain", "image/png"], textItems: [{ type: "text/plain", text }],
+      skippedItems: [{ type: "text/plain", byteLength: 1025 * mb, limitBytes: MAX_CLIPBOARD_BYTES, chemistry: true }],
       imageItems: [{ type: "image/png", bytesBase64: "AA==" }] })).toMatchObject({ kind: "size-refused",
-      message: 'Couldn\'t paste: clipboard flavor "text/plain" is too large (65.0 MB; the limit is 64 MB).' });
+      message: 'Couldn\'t paste: clipboard flavor "text/plain" is too large (1025.0 MB; the limit is 1024 MB).' });
   });
+
+  it.each([9, 20])("admits %i MiB chemistry text once despite native text aliases", mbSize => {
+    for (const [type, prefix, kind] of [
+      ["org.opensmiles.smiles", "CC", "smiles"],
+      ["chemical/x-mdl-molfile", "header\n  ChemDraft\n\n  0  0  0  0  0  0  0  0  0  0999 V2000\nM  END\n", "molfile"],
+      ["chemical/x-cdxml", "<CDXML>", "cdxml"]
+    ]) {
+      const text = prefix + "C".repeat(mbSize * mb - prefix.length);
+      for (const aliases of [
+        ["public.utf8-plain-text", "public.utf16-plain-text", "public.plain-text", "public.text", "NSStringPboardType", "text/plain"],
+        ["text/plain"]
+      ]) {
+        const payload = { types: [type, ...aliases], textItems: [type, ...aliases].map(type => ({ type, text })) };
+        const guarded = guardClipboardPayload(payload);
+        expect(guarded.skippedItems).toEqual([]);
+        expect(guarded.textItems).toEqual([{ type, text }]);
+        const result = inspectClipboardPayload(payload);
+        expect(result.kind).toBe(kind);
+        if ("text" in result) expect(result.text).toBe(text);
+      }
+    }
+  }, 15_000);
+
+  it("accepts a 64 MiB private selection plus 25 MiB PNG and large Office siblings unchanged", () => {
+    const selection = { type: "application/x-chemdraft-selection+json", text: '{"kind":"chemdraft-selection","data":"' + "x".repeat(64 * mb - 40) + '"}' };
+    const image = { type: "image/png" as const, bytesBase64: "A".repeat(Math.floor(25 * mb / 3) * 4) };
+    const rtf = { type: "text/rtf", text: "{\\rtf1 " + "x".repeat(50 * mb) + "}" };
+    const payload = { types: [selection.type, image.type, rtf.type], textItems: [selection, rtf], imageItems: [image] };
+    const guarded = guardClipboardPayload(payload);
+    expect(guarded.skippedItems).toEqual([]);
+    expect(guarded.textItems).toEqual(payload.textItems);
+    expect(guarded.imageItems).toEqual(payload.imageItems);
+  }, 10_000);
 
   it("keeps malformed-picture errors instead of naming an unrelated skipped sibling", () => {
     expect(inspectClipboardPayload({ types: ["image/svg+xml"], textItems: [{ type: "image/svg+xml", text: "<svg><g></svg>" }],
@@ -249,25 +294,25 @@ describe("clipboard byte limits", () => {
   });
 
   it.each(["public.utf8-plain-text", "public.utf16-plain-text", "text/plain"])("uses the same native and DOM size message for %s", type => {
-    expect(inspectClipboardPayload({ types: [type], textItems: [], skippedItems: [{ type, byteLength: 500 * mb, limitBytes: MAX_CLIPBOARD_BYTES }] }))
+    expect(inspectClipboardPayload({ types: [type], textItems: [], skippedItems: [{ type, byteLength: 1500 * mb, limitBytes: MAX_CLIPBOARD_BYTES }] }))
       .toMatchObject({ kind: "size-refused", message });
   });
 
   it("rounds a skipped flavor's own size identically to native messages", () => {
     expect(inspectClipboardPayload({ types: [], textItems: [], skippedItems: [
       { type: "text/rtf", byteLength: 1.25 * mb, limitBytes: MAX_CLIPBOARD_BYTES }
-    ] })).toMatchObject({ kind: "size-refused", message: 'Couldn\'t paste: clipboard flavor "text/rtf" is too large (1.3 MB; the limit is 64 MB).' });
+    ] })).toMatchObject({ kind: "size-refused", message: 'Couldn\'t paste: clipboard flavor "text/rtf" is too large (1.3 MB; the limit is 1024 MB).' });
   });
 
   it("rejects huge text before normalization, encoding, or inspecting its contents", () => {
-    const text = { length: 500 * mb, replace: vi.fn(() => { throw new Error("must not normalize"); }) } as unknown as string;
+    const text = { length: 1500 * mb, replace: vi.fn(() => { throw new Error("must not normalize"); }) } as unknown as string;
     expect(inspectClipboardPayload({ types: ["text/plain"], textItems: [{ type: "text/plain", text }] }))
       .toMatchObject({ kind: "size-refused", message, warnings: [{ code: "clipboard.too_large", message }] });
     expect(text.replace).not.toHaveBeenCalled();
   });
 
   it("keeps the exact per-flavor boundary and skips only flavors exceeding the total", () => {
-    const text = "a".repeat(MAX_CLIPBOARD_BYTES);
+    const text = { length: MAX_CLIPBOARD_BYTES } as unknown as string;
     const item = { type: "text/plain", text };
     const bounded = guardClipboardPayload({ types: [item.type, "other"],
       textItems: [item, { type: "other", text: "b" }] });
@@ -276,14 +321,21 @@ describe("clipboard byte limits", () => {
     expect(bounded.skippedItems).toEqual([{ type: "other", byteLength: 1, limitBytes: MAX_CLIPBOARD_BYTES }]);
   });
 
-  it.each([["é", 33, 66], ["€", 22, 66], ["😀", 17, 68]] as const)(
-    "counts UTF-8 bytes for %s without encoding", (unit, count, bytes) => {
-      const bounded = guardClipboardPayload({ types: ["text/plain"],
-        textItems: [{ type: "text/plain", text: unit.repeat(count * mb) }] });
-      expect(bounded.textItems).toHaveLength(0);
-      expect(bounded.skippedItems).toEqual([{ type: "text/plain", byteLength: bytes * mb, limitBytes: MAX_CLIPBOARD_BYTES }]);
+  it.each([["é", 2], ["€", 3], ["😀", 4]] as const)(
+    "counts UTF-8 bytes for %s without encoding", (unit, bytes) => {
+      expect(clipboardTextByteLength(unit.repeat(100))).toBe(100 * bytes);
     }
   );
+
+  it("stops measuring as soon as the first code point exceeds the byte limit", () => {
+    const read = vi.spyOn(String.prototype, "charCodeAt");
+    expect(clipboardTextByteLength("界".repeat(10), 20)).toBe(21);
+    expect(read).toHaveBeenCalledTimes(7);
+    read.mockClear();
+    expect(clipboardTextByteLength("x".repeat(100), 20)).toBe(100);
+    expect(read).not.toHaveBeenCalled();
+    read.mockRestore();
+  });
 
   it("rejects large base64 images before atob or byte copies, keeping the 25 MB cap", () => {
     const decode = vi.spyOn(globalThis, "atob").mockImplementation(() => { throw new Error("must not decode"); });
@@ -301,8 +353,8 @@ describe("clipboard byte limits", () => {
   it("shares the total budget between text and decoded image sizes before decoding", () => {
     const image = { type: "image/png" as const, bytesBase64: "A".repeat(32 * mb) }; // 24 MB decoded
     const bounded = guardClipboardPayload({ types: ["text/plain", "image/png"],
-      textItems: [{ type: "text/plain", text: "x".repeat(16 * mb) }], imageItems: [image, image, image] });
-    expect(bounded.imageItems).toHaveLength(2); // 16 + 24 + 24 = 64 MB
+      textItems: [{ type: "text/plain", text: { length: 16 * mb } as unknown as string }], imageItems: Array(43).fill(image) });
+    expect(bounded.imageItems).toHaveLength(42); // Retained text + two 24 MiB images fills the envelope.
     expect(bounded.skippedItems).toEqual([{ type: "image/png", byteLength: 24 * mb, limitBytes: MAX_CLIPBOARD_BYTES }]);
   });
 
@@ -314,14 +366,14 @@ describe("clipboard byte limits", () => {
   });
 
   it("preserves native refusal metadata and still accepts smaller alternatives", () => {
-    const skippedItems = [{ type: "chemical/x-cdxml", byteLength: 500 * mb, limitBytes: MAX_CLIPBOARD_BYTES }];
+    const skippedItems = [{ type: "chemical/x-cdxml", byteLength: 1500 * mb, limitBytes: MAX_CLIPBOARD_BYTES }];
     expect(inspectClipboardPayload({ types: ["chemical/x-cdxml"], textItems: [], skippedItems }))
       .toMatchObject({ kind: "size-refused", message: message.replace("text/plain", "chemical/x-cdxml") });
     expect(inspectClipboardPayload({ types: ["chemical/x-cdxml", "text/plain"], skippedItems,
       textItems: [{ type: "text/plain", text: "some ordinary prose" }] }))
       .toMatchObject({ kind: "size-refused", message: message.replace("text/plain", "chemical/x-cdxml") });
     expect(inspectClipboardPayload({ types: ["text/plain", "org.opensmiles.smiles"],
-      textItems: [{ type: "text/plain", text: "x".repeat(MAX_CLIPBOARD_BYTES + 1) },
+      textItems: [{ type: "text/plain", text: { length: MAX_CLIPBOARD_BYTES + 1 } as unknown as string },
         { type: "org.opensmiles.smiles", text: "CCO" }] }))
       .toMatchObject({ kind: "smiles", text: "CCO" });
   });
@@ -788,11 +840,13 @@ describe("clipboard-adapter", () => {
       '<s:svg xmlns:s="https://example.invalid"/>',
       '<s:svg xmlns:s="http://www.w3.org/2000/svg"></svg>',
       "<svg>" + "<g>".repeat(257) + "</g>".repeat(257) + "</svg>",
-      "<svg>" + "x".repeat(20 * 1024 * 1024) + "</svg>"
+      "<svg>" + "x".repeat(25 * 1024 * 1024) + "</svg>"
     ]) {
       expect(inspectClipboardPayload({
         types: ["text/plain"], textItems: [{ type: "text/plain", text }]
-      })).toMatchObject({ kind: "image-refused", message: expect.stringContaining("Couldn't paste the SVG:") });
+      })).toMatchObject(Buffer.byteLength(text) > 25 * 1024 * 1024
+        ? { kind: "size-refused", message: expect.stringContaining("the limit is 25 MB") }
+        : { kind: "image-refused", message: expect.stringContaining("Couldn't paste the SVG:") });
     }
   });
 
@@ -800,11 +854,13 @@ describe("clipboard-adapter", () => {
     for (const text of [
       '<svg xmlns="https://example.invalid"/>', '<s:svg/>', '<svg><g></svg>',
       "<svg>" + "<g>".repeat(257) + "</g>".repeat(257) + "</svg>",
-      "<svg>" + "x".repeat(20 * 1024 * 1024) + "</svg>"
+      "<svg>" + "x".repeat(25 * 1024 * 1024) + "</svg>"
     ]) {
       expect(inspectClipboardPayload({ types: ["image/svg+xml"], textItems: [],
         imageItems: [{ type: "image/svg+xml", bytesBase64: Buffer.from(text).toString("base64") }] }))
-        .toMatchObject({ kind: "image-refused", message: expect.stringContaining("Couldn't paste the SVG:") });
+        .toMatchObject(Buffer.byteLength(text) > 25 * 1024 * 1024
+        ? { kind: "size-refused", message: expect.stringContaining("the limit is 25 MB") }
+        : { kind: "image-refused", message: expect.stringContaining("Couldn't paste the SVG:") });
     }
   });
 

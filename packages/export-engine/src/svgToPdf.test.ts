@@ -16,23 +16,38 @@ beforeEach(() => {
 
 afterEach(() => vi.restoreAllMocks());
 
+let syntheticLargePng: string | undefined;
+
 describe("exportSvgToPdf", () => {
-  it.each(["ASCII", "UTF-8"])("rejects more than 20 MB of %s markup without pictures", async (encoding) => {
-    const text = encoding === "ASCII" ? "a".repeat(20 * 1024 * 1024) : "é".repeat(11 * 1024 * 1024);
+  it.each(["ASCII", "UTF-8"])("rejects more than 256 MB of %s markup without pictures", async (encoding) => {
+    const text = encoding === "ASCII" ? "a".repeat(256 * 1024 * 1024) : "é".repeat(129 * 1024 * 1024);
     await expect(exportSvgToPdf(`<svg><text>${text}</text></svg>`, { outputWidth: 192, outputHeight: 96 }))
-      .rejects.toThrow("Cannot export PDF: SVG exceeds 20 MB.");
+      .rejects.toThrow("Cannot export PDF: SVG exceeds 256 MB.");
   }, 20_000);
 
-  it.each(["no mapping", "unmatched object", "nested image", "text"])("counts a large picture URI as markup with %s", async (placement) => {
+  it.each(["no mapping", "unmatched object", "nested image", "text"])("admits a large picture URI unchanged as markup with %s", async (placement) => {
     const picture = createImageGraphicObject({ id: "picture", mimeType: "image/png",
-      dataBase64: largePicturePng().toString("base64"), center: { x: 40, y: 40 } });
+      dataBase64: syntheticLargePng ??= largePicturePng().toString("base64"), center: { x: 40, y: 40 } });
     const href = `data:image/png;base64,${picture.data.image!.dataBase64}`;
     const image = `<g data-object-id="${placement === "unmatched object" ? "other" : "picture"}"><image href="${href}"/></g>`;
     const contents = placement === "text" ? `<text>${href}</text>` : placement === "nested image" ? `<g>${image}</g>` : image;
-    await expect(exportSvgToPdf(`<svg>${contents}</svg>`, { outputWidth: 192, outputHeight: 96,
+    const markup = '<svg>' + contents + '</svg>';
+    const parseFromString = vi.fn(() => { throw new Error("accepted at parser boundary"); });
+    await expect(exportSvgToPdf(markup, { outputWidth: 192, outputHeight: 96,
+      domParser: { parseFromString } as unknown as DOMParser,
       ...(placement === "no mapping" ? {} : { pictures: new Map([[picture.id, picture]]), pageSize: { width: 192, height: 96 } }) }))
-      .rejects.toThrow("Cannot export PDF: SVG exceeds 20 MB.");
+      .rejects.toThrow("accepted at parser boundary");
+    expect(parseFromString).toHaveBeenCalledWith(markup, "image/svg+xml");
   }, 20_000);
+
+  it("admits 25 MiB SVG markup unchanged, including realistic nesting and element counts", async () => {
+    const body = "<g>".repeat(24) + "<path d=\"M0 0L1 1\"/>".repeat(10_000) + "</g>".repeat(24);
+    const markup = '<svg xmlns="http://www.w3.org/2000/svg">' + body + " ".repeat(25 * 1024 * 1024 - body.length - 46) + '</svg>';
+    const parseFromString = vi.fn(() => { throw new Error("accepted at parser boundary"); });
+    await expect(exportSvgToPdf(markup, { outputWidth: 192, outputHeight: 96,
+      domParser: { parseFromString } as unknown as DOMParser })).rejects.toThrow("accepted at parser boundary");
+    expect(parseFromString).toHaveBeenCalledWith(markup, "image/svg+xml");
+  }, 10_000);
 
   it("renders SVG text and paths as vectors at CSS pixel dimensions", async () => {
     const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="192" height="96" viewBox="0 0 192 96"><path d="M10 20 L100 20" stroke="black"/><text x="10" y="50">Spectrum</text></svg>';

@@ -204,6 +204,29 @@ describe("canvas content uses the bounded report snapshot", () => {
     return { overlayId, setContent, api: host.createCommandContext(manifest.id).overlays! };
   }
 
+  it("accepts 60 KiB of overlay text unchanged", async () => {
+    const { overlayId, setContent, api } = setup();
+    const sections = [{ kind: "text" as const, body: "x".repeat(60 * 1024) }];
+    await api.setContent({ overlayId, sections });
+    expect(setContent.mock.calls[0]![2]).toEqual(sections);
+    expect(setContent.mock.calls[0]![2]).not.toBe(sections);
+  });
+
+  it("accepts image data at the overlay JSON cap and names that cap at one byte over", async () => {
+    const { overlayId, setContent, api } = setup();
+    const section = { kind: "image" as const, alt: "", dataUri: "data:image/png;base64," };
+    const overhead = Buffer.byteLength(JSON.stringify([section]));
+    section.dataUri += "A".repeat(Math.floor((64 * 1024 - overhead) / 4) * 4);
+    section.alt = "x".repeat(64 * 1024 - Buffer.byteLength(JSON.stringify([section])));
+    const sections = [section];
+    expect(Buffer.byteLength(JSON.stringify(sections))).toBe(64 * 1024);
+    await api.setContent({ overlayId, sections });
+    expect(setContent.mock.calls[0]![2]).toEqual(sections);
+    section.alt += "x";
+    await expect(api.setContent({ overlayId, sections })).rejects.toThrow("Overlay content must be at most 64 KiB of UTF-8 JSON.");
+    expect(setContent).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects getters and exotic iterators before Zod reads plugin data", async () => {
     const { overlayId, setContent, api } = setup();
     const getter = vi.fn(() => []);
@@ -234,7 +257,7 @@ describe("canvas content uses the bounded report snapshot", () => {
   it("bounds malformed depth before schema parsing and never forwards it", async () => {
     const { overlayId, setContent, api } = setup();
     let payload: object = {};
-    for (let n = 0; n < 100; n++) payload = { nested: payload };
+    for (let n = 0; n < PluginPanelReportLimits.depth + 1; n++) payload = { nested: payload };
     await expect(api.setContent({ overlayId, sections: [{ kind: "actions", id: "send-actions", buttons: [
       { id: "send", label: "Send", commandId, payload }
     ] }] })).rejects.toThrow(/depth/);

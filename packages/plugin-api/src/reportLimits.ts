@@ -1,32 +1,32 @@
 /** Independent ceilings, not an allowance to multiply every dimension together.
- * A measured report for a large drug-like molecule (about 25 KB) was 25,448 UTF-8 JSON bytes.
- * 1,500,000 bytes is ~59x that real report. The other generous ceilings accommodate larger
- * reports (including tens of thousands of sparse peaks), while aggregate budgets prevent
- * peaks x assignments, rows x cells, or multiple figures from multiplying without bound.
- * Strings are UTF-16 code units, matching existing SDK string limits; size is UTF-8 JSON.
+ * A 300-heavy-atom report can have 900 proton assignments and 14,400 couplings;
+ * Assistant reports can contain long replies and several 1 MiB images. The 128 MiB
+ * envelope leaves headroom for both, independently of individual collection caps.
+ * Existing SVG, image, assignment and coupling-per-peak limits are never tightened.
+ * Strings are UTF-16 code units; the envelope measures UTF-8 JSON including escapes.
  */
 export const PluginPanelReportLimits = {
-  stringLength: 20_000,
+  stringLength: 1_048_576,
   svgLength: 512_000,
   imageLength: 1_048_576,
-  sections: 100,
+  sections: 300,
   peaks: 50_000,
-  atomIndicesPerPeak: 1_000,
+  atomIndicesPerPeak: 4_000,
   atomIndicesTotal: 100_000,
   couplingsPerPeak: 16,
-  couplingsTotal: 10_000,
-  atoms: 5_000,
-  bonds: 10_000,
+  couplingsTotal: 160_000,
+  atoms: 10_000,
+  bonds: 20_000,
   tableRows: 50_000,
-  tableColumns: 100,
-  tableCells: 250_000,
+  tableColumns: 256,
+  tableCells: 256_000,
   keyValueRows: 5_000,
-  warnings: 1_000,
-  serializedBytes: 1_500_000,
+  warnings: 10_000,
+  serializedBytes: 128 * 1024 * 1024,
   // Also bound malformed JSON before Zod can copy it or recurse into it.
-  depth: 32,
-  objectFields: 64,
-  nodes: 500_000
+  depth: 128,
+  objectFields: 256,
+  nodes: 2_000_000
 } as const;
 
 type Path = (string | number)[];
@@ -39,8 +39,11 @@ type ReportSnapshot = { ok: true; data: unknown } | { ok: false; issue: { path: 
 /** Runs BEFORE schema parsing. Copy only own enumerable data into a detached, bounded graph;
  * never read properties through getters, iterators or toJSON. Read each descriptor at most once.
  * Stop at the first failure. Shared references are copied and charged on every occurrence. */
-export function snapshotPanelReport(raw: unknown): ReportSnapshot {
-  const limits = PluginPanelReportLimits;
+export function snapshotPanelReport(
+  raw: unknown,
+  overrides: Partial<{ [K in keyof typeof PluginPanelReportLimits]: number }> = {}
+): ReportSnapshot {
+  const limits = { ...PluginPanelReportLimits, ...overrides };
   const ancestors = new Set<object>();
   const totals = new Map<string, number>();
   const encoder = new TextEncoder();

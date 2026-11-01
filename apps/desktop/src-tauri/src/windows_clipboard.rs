@@ -264,10 +264,6 @@ pub(crate) fn png_pixels_per_meter(png: &[u8]) -> Result<Option<(u32, u32)>, Str
             let x = u32::from_be_bytes(data[0..4].try_into().unwrap());
             let y = u32::from_be_bytes(data[4..8].try_into().unwrap());
             if data[8] == 1 {
-                // BITMAPV5HEADER stores both pixels-per-metre values as signed LONGs.
-                if x > i32::MAX as u32 || y > i32::MAX as u32 {
-                    return Err("PNG density exceeds the signed DIB range.".into());
-                }
                 density = (x > 0 && y > 0).then_some((x, y));
             }
         }
@@ -359,6 +355,10 @@ pub(crate) fn png_to_dibv5(png: &[u8]) -> Result<Vec<u8>, String> {
     // resolution (older Office, WordPad) a 384 dpi Copy As PNG was 5.3x its real size.
     let (pixels_per_meter_x, pixels_per_meter_y) =
         png_pixels_per_meter(png)?.unwrap_or((2835, 2835));
+    // DIB is an optional sibling. PNG can retain the full unsigned pHYs range.
+    if pixels_per_meter_x > i32::MAX as u32 || pixels_per_meter_y > i32::MAX as u32 {
+        return Err("PNG density exceeds the signed DIB range.".into());
+    }
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(MAX_PNG_SIDE);
     limits.max_image_height = Some(MAX_PNG_SIDE);
@@ -483,7 +483,7 @@ pub(crate) mod native {
                 return None;
             }
             let size = GlobalSize(handle as HGLOBAL);
-            if budget.check(source, size).is_err() {
+            if budget.check_flavor(source, size).is_err() {
                 let pointer = GlobalLock(handle as HGLOBAL) as *const u8;
                 if !pointer.is_null() {
                     budget.mark_chemistry(
@@ -501,6 +501,27 @@ pub(crate) mod native {
             let bytes = std::slice::from_raw_parts(pointer, size).to_vec();
             GlobalUnlock(handle as HGLOBAL);
             Some(bytes)
+        }
+    }
+
+    fn is_text_alias(id: u32, admitted: &[ClipboardTextItem]) -> bool {
+        // SAFETY: caller holds the clipboard open; no pointer survives GlobalUnlock.
+        unsafe {
+            let handle = GetClipboardData(id);
+            if handle.is_null() {
+                return false;
+            }
+            let size = GlobalSize(handle as HGLOBAL);
+            let pointer = GlobalLock(handle as HGLOBAL) as *const u8;
+            if pointer.is_null() {
+                return false;
+            }
+            let alias = crate::clipboard_limits::is_admitted_text_alias(
+                std::slice::from_raw_parts(pointer, size),
+                admitted,
+            );
+            GlobalUnlock(handle as HGLOBAL);
+            alias
         }
     }
 
@@ -535,12 +556,17 @@ pub(crate) mod native {
                 ));
             }
             let size = GlobalSize(handle as HGLOBAL);
-            budget
-                .reserve(source, size)
-                .map_err(|reason| refused(size, reason))?;
+            if source == "image/svg+xml" {
+                budget.check_svg_allocation(source, size)
+            } else {
+                budget.reserve(source, size)
+            }
+            .map_err(|reason| refused(size, reason))?;
             let pointer = GlobalLock(handle as HGLOBAL) as *const u8;
             if pointer.is_null() {
-                budget.release(size);
+                if source != "image/svg+xml" {
+                    budget.release(size);
+                }
                 return Err(refused(
                     size,
                     format!("Could not lock {source} clipboard data"),
@@ -583,8 +609,16 @@ pub(crate) mod native {
                     "image/svg+xml" => svg_image_item(&bytes, source),
                     _ => dib_image_item(&bytes, source),
                 };
+                let item = item.and_then(|item| {
+                    if source == "image/svg+xml" {
+                        budget.reserve(source, item.retained_byte_length())?;
+                    }
+                    Ok(item)
+                });
                 item.map_err(|reason| {
-                    budget.release(bytes.len());
+                    if source != "image/svg+xml" {
+                        budget.release(bytes.len());
+                    }
                     SkippedClipboardImageItem::new(kind, bytes.len(), reason)
                 })
             });
@@ -669,6 +703,9 @@ pub(crate) mod native {
                     continue;
                 }
                 let id = *id;
+                if is_text_alias(id, &text_items) {
+                    continue;
+                }
                 let text = match name.as_deref() {
                     None if id == CF_UNICODETEXT => unicode_text(&mut budget),
                     None => None,
@@ -688,6 +725,13 @@ pub(crate) mod native {
                         .and_then(|bytes| decode_registered_text(&bytes)),
                 };
                 if let Some(text) = text {
+                    // A provider may use an encoding whose bounded prefix was inconclusive.
+                    if text_items
+                        .iter()
+                        .any(|item: &ClipboardTextItem| item.text == text)
+                    {
+                        continue;
+                    }
                     if budget.reserve(payload_type, text.len()).is_err() {
                         budget.mark_chemistry(payload_type, text.as_bytes());
                         continue;
@@ -1380,10 +1424,15 @@ mod tests {
             (0, max + 1),
         ] {
             let png = png_with_density(x, y, 1);
-            assert!(png_pixels_per_meter(&png)
-                .unwrap_err()
-                .contains("signed DIB"));
-            assert!(png_to_dibv5(&png).unwrap_err().contains("signed DIB"));
+            assert_eq!(
+                png_pixels_per_meter(&png),
+                Ok((x > 0 && y > 0).then_some((x, y)))
+            );
+            if x > 0 && y > 0 {
+                assert!(png_to_dibv5(&png).unwrap_err().contains("signed DIB"));
+            } else {
+                assert!(png_to_dibv5(&png).is_ok());
+            }
         }
     }
 

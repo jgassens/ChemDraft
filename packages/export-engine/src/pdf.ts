@@ -13,7 +13,7 @@ import { preparePdfFonts } from "./pdfFonts";
 import { preparePdfHaloPaint } from "./pdfHaloPaint";
 
 const svg2pdf = resolveSvg2pdf(svg2pdfModule);
-const SVG_MARKUP_LIMIT_BYTES = 20 * 1024 * 1024;
+const SVG_MARKUP_LIMIT_BYTES = 256 * 1024 * 1024;
 
 export interface PdfExportOptions {
   pageIndex?: number;
@@ -204,7 +204,7 @@ function parseSvgElement(svg: string, domParser: DOMParser | undefined, pictures
   let nodes = 0;
   while (pending.length) {
     const { node, depth } = pending.pop()!;
-    if (++nodes > 100000 || depth > 64) throw new Error("Cannot export PDF: SVG complexity limit exceeded.");
+    if (++nodes > 1_000_000 || depth > 256) throw new Error("Cannot export PDF: SVG complexity limit exceeded.");
     if (node.nodeType === 1) {
       const element = node as Element;
       if (["a", "script", "foreignobject", "use"].includes(element.localName.toLowerCase())) {
@@ -233,7 +233,7 @@ function parseSvgElement(svg: string, domParser: DOMParser | undefined, pictures
     for (let child = node.lastChild; child; child = child.previousSibling) pending.push({ node: child, depth: depth + 1 });
   }
 
-  if (markupBytes > SVG_MARKUP_LIMIT_BYTES) throw new Error("Cannot export PDF: SVG exceeds 20 MB.");
+  if (markupBytes > SVG_MARKUP_LIMIT_BYTES) throw new Error("Cannot export PDF: SVG exceeds 256 MB.");
   return parsed.documentElement;
 }
 
@@ -265,12 +265,12 @@ function assertLocalSvgCss(value: string): void {
 
 function assertBoundedSvg(svg: string, pictureByteAllowance: number): number {
   const limit = SVG_MARKUP_LIMIT_BYTES + pictureByteAllowance;
-  if (typeof svg !== "string" || svg.length > limit) throw new Error("Cannot export PDF: SVG exceeds 20 MB.");
+  if (typeof svg !== "string" || svg.length > limit) throw new Error("Cannot export PDF: SVG exceeds 256 MB.");
   let bytes = 0;
   for (const character of svg) {
     const code = character.codePointAt(0)!;
     bytes += code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
-    if (bytes > limit) throw new Error("Cannot export PDF: SVG exceeds 20 MB.");
+    if (bytes > limit) throw new Error("Cannot export PDF: SVG exceeds 256 MB.");
   }
   // Reject entities and stylesheet instructions before the XML parser can process them.
   const source = svg.replace(/^<\?xml version="1\.0" encoding="UTF-8"\?>\s*/, "");
@@ -292,7 +292,7 @@ function assertBoundedSvg(svg: string, pictureByteAllowance: number): number {
     else {
       nodes += 1;
       depth += 1;
-      if (nodes > 100000 || depth > 64) throw new Error("Cannot export PDF: SVG complexity limit exceeded.");
+      if (nodes > 1_000_000 || depth > 256) throw new Error("Cannot export PDF: SVG complexity limit exceeded.");
       if (source[offset - 1] === "/") depth -= 1;
     }
     if (depth < 0) throw new Error("Cannot export PDF: generated SVG could not be parsed.");

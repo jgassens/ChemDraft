@@ -98,8 +98,23 @@ describe("spectrum SVG sanitizer", () => {
     expect(parse).not.toHaveBeenCalled();
   });
 
+  it("preserves a synthetic upper-use spectrum with 900 peaks, long paths and 6 nesting levels", () => {
+    const path = "M0 0L1 1".repeat(50_000); // 350 KB: far beyond one 2,720-sample trace.
+    const contents = '<g>'.repeat(6) + Array.from({ length: 900 }, (_, i) =>
+      '<g class="lf-peak" data-peak-id="p' + i + '"><line x1="1" y1="1" x2="1" y2="240"/><text x="1" y="1">Synthetic</text></g>').join("")
+      + '<path class="lf-curve" d="' + path + '"/>'.repeat(1)
+      + '</g>'.repeat(6);
+    const markup = svg(contents);
+    expect(sanitizeSpectrumSvg(markup)).toBe(markup);
+  }, 10_000);
+
+  it("preserves 5 MiB of label text and paths unchanged", () => {
+    const markup = svg('<text>' + 'x'.repeat(5 * 1024 * 1024) + '</text><path d="M-1000000 1000000L0 0"/>');
+    expect(sanitizeSpectrumSvg(markup)).toBe(markup);
+  }, 10_000);
+
   it("bounds path data independently of the document size", () => {
-    expect(() => sanitizeSpectrumSvg(svg(`<path d="${"M0 0L1 1".repeat(150000)}"/>`))).toThrow("Invalid spectrum SVG");
+    expect(() => sanitizeSpectrumSvg(svg(`<path d="${"M0 0L1 1".repeat(2_500_000)}"/>`))).toThrow("Invalid spectrum SVG");
   });
 });
 
@@ -124,11 +139,11 @@ describe("shared SVG-to-PDF boundary", () => {
   });
 
   it.each([
-    () => svg("界".repeat(7 * 1024 * 1024)),
-    () => svg("<g/>".repeat(100001)),
-    () => svg("<g>".repeat(65) + "</g>".repeat(65)),
+    () => svg("界".repeat(86 * 1024 * 1024)),
+    () => svg("<g/>".repeat(1_000_001)),
+    () => svg("<g>".repeat(257) + "</g>".repeat(257)),
     () => '<!DOCTYPE svg [<!ENTITY x SYSTEM "https://attacker.invalid">]><svg/>',
-    () => svg('<![CDATA[</g></g></g>]]>' + "<g>".repeat(65) + "</g>".repeat(65))
+    () => svg('<![CDATA[</g></g></g>]]>' + "<g>".repeat(257) + "</g>".repeat(257))
   ])("bounds arbitrary SVG and rejects entities before parsing (%#)", async (markup) => {
     const parse = vi.spyOn(DOMParser.prototype, "parseFromString");
     await expect(exportSvgToPdf(markup(), { outputWidth: 680, outputHeight: 240 })).rejects.toThrow("Cannot export PDF");

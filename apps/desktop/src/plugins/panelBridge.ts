@@ -349,7 +349,7 @@ export function requestSaveTextFileFromMain(
 ): Promise<SaveTextFileResult> {
   return requestSpectrumWindowAction(
     { kind: "saveTextFile", filename, text, format },
-    "failed", isSaveResult, (reply) => reply.result, 120_000
+    "failed", isSaveResult, (reply) => reply.result, 1_800_000
   );
 }
 
@@ -374,7 +374,7 @@ export function requestSaveBinaryFileFromMain(
 ): Promise<SaveTextFileResult> {
   return requestSpectrumWindowAction(
     { kind: "saveBinaryFile", filename, bytesBase64, format },
-    "failed", isSaveResult, (reply) => reply.result, 120_000
+    "failed", isSaveResult, (reply) => reply.result, 1_800_000
   );
 }
 
@@ -924,7 +924,7 @@ function isAnalysisWindowAction(payload: unknown): payload is AnalysisWindowActi
     case "copySpectrum":
     case "saveBinaryFile":
       // Forward malformed data to the bounded document handler so the requester gets a failure.
-      return typeof candidate.requestId === "string" && candidate.requestId.length > 0 && candidate.requestId.length <= 200;
+      return typeof candidate.requestId === "string" && candidate.requestId.length > 0 && candidate.requestId.length <= 512;
     default:
       return false;
   }

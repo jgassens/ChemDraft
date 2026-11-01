@@ -124,11 +124,11 @@ describe.each(["macos", "windows"] as const)("text paste formatting (%s)", platf
   const status = () => container.querySelector('[role="status"]')?.textContent;
   const nativeReads = () => vi.mocked(invoke).mock.calls.filter(([command]) => command === "read_clipboard_payload");
 
-  const tooLargeMessage = "Couldn't paste: clipboard flavor \"text/plain\" is too large (500.0 MB; the limit is 64 MB).";
+  const tooLargeMessage = "Couldn't paste: clipboard flavor \"text/plain\" is too large (1500.0 MB; the limit is 1024 MB).";
 
   it("shows the native size refusal on menu and DOM paste without inserting content", async () => {
     await mount({ types: ["text/plain"], textItems: [], skippedItems: [
-      { type: "text/plain", byteLength: 500 * 1024 * 1024, limitBytes: 64 * 1024 * 1024 }
+      { type: "text/plain", byteLength: 1500 * 1024 * 1024, limitBytes: 1024 * 1024 * 1024 }
     ] });
     await act(async () => {
       window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "clipboard.paste" } }));
@@ -141,7 +141,7 @@ describe.each(["macos", "windows"] as const)("text paste formatting (%s)", platf
   });
 
   it("guards text before the private-selection parser on native and web paste", async () => {
-    const text = { length: 500 * 1024 * 1024, trim: () => { throw new Error("must not parse"); } } as unknown as string;
+    const text = { length: 1500 * 1024 * 1024, trim: () => { throw new Error("must not parse"); } } as unknown as string;
     await mount({ types: [CHEMDRAFT_SELECTION_CLIPBOARD_TYPE],
       textItems: [{ type: CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, text }] });
     await act(async () => {
@@ -157,7 +157,7 @@ describe.each(["macos", "windows"] as const)("text paste formatting (%s)", platf
 
   it("refuses oversized CDXML instead of pasting lower-fidelity prose", async () => {
     await mount({ ...nativeClipboard("ordinary prose"), skippedItems: [
-      { type: "chemical/x-cdxml", byteLength: 500 * 1024 * 1024, limitBytes: 64 * 1024 * 1024 }
+      { type: "chemical/x-cdxml", byteLength: 1500 * 1024 * 1024, limitBytes: 1024 * 1024 * 1024 }
     ] });
     await paste({ "text/plain": "ordinary prose" });
     expect(status()).toBe(tooLargeMessage.replace("text/plain", "chemical/x-cdxml"));

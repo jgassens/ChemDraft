@@ -1,7 +1,7 @@
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
-export const MAX_SPECTRUM_SVG_BYTES = 20 * 1024 * 1024;
-export const MAX_SPECTRUM_SVG_NODES = 50000;
-export const MAX_SPECTRUM_SVG_DEPTH = 16;
+export const MAX_SPECTRUM_SVG_BYTES = 64 * 1024 * 1024;
+export const MAX_SPECTRUM_SVG_NODES = 500_000;
+export const MAX_SPECTRUM_SVG_DEPTH = 64;
 
 // Fixed colors travel with the standalone figure instead of the app's CSS variables.
 export const STANDALONE_SPECTRUM_STYLE = [
@@ -36,7 +36,17 @@ const classes = new Set([
 ]);
 const numberPattern = "[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][+-]?\\d+)?";
 const numeric = new RegExp(`^${numberPattern}$`);
-const pathPattern = new RegExp(`^(?:[ML]\\s*${numberPattern}[ ,]+${numberPattern}\\s*)+$`);
+const pathPart = new RegExp("[ML]\\s*(" + numberPattern + ")[ ,]+(" + numberPattern + ")\\s*", "y");
+function validPath(value: string): boolean {
+  let offset = 0;
+  while (offset < value.length) {
+    pathPart.lastIndex = offset;
+    const match = pathPart.exec(value);
+    if (!match || !finiteNumber(match[1]) || !finiteNumber(match[2])) return false;
+    offset = pathPart.lastIndex;
+  }
+  return offset > 0;
+}
 
 function invalid(): never {
   throw new Error("Invalid spectrum SVG.");
@@ -111,8 +121,7 @@ export function sanitizeSpectrumSvg(markup: string): string {
             !(element.tagName === "rect" && ["width", "height"].includes(name) && value === "100%") && !finiteNumber(value)) invalid();
         if (name === "d") {
           pathBytes += value.length;
-          if (value.length > 1024 * 1024 || pathBytes > 4 * 1024 * 1024 || !pathPattern.test(value) ||
-              (value.match(new RegExp(numberPattern, "g")) ?? []).some((part) => !finiteNumber(part))) invalid();
+          if (value.length > 16 * 1024 * 1024 || pathBytes > 32 * 1024 * 1024 || !validPath(value)) invalid();
         }
       }
       if (element.tagName === "style" && element.textContent !== STANDALONE_SPECTRUM_STYLE) invalid();

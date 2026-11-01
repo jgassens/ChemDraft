@@ -3084,9 +3084,9 @@ impl PluginPanelShortcut {
     fn parse(payload: &serde_json::Value) -> Result<Self, String> {
         let shortcut: Self = serde_json::from_value(payload.clone())
             .map_err(|_| "Invalid panel shortcut.".to_string())?;
-        if shortcut.key.len() > 64
+        if shortcut.key.len() > 256
             || shortcut.command_id.is_empty()
-            || shortcut.command_id.len() > 256
+            || shortcut.command_id.len() > 4096
             || shortcut.command_id.trim() != shortcut.command_id
             || shortcut.command_id == "document.closeTab"
             || shortcut.command_id.starts_with("document.closeTab.")
@@ -3561,6 +3561,22 @@ mod plugin_panel_label_tests {
                 })
             )
             .is_err());
+        }
+    }
+
+    #[test]
+    fn panel_shortcut_length_caps_allow_real_catalog_ids_and_long_keyboard_names() {
+        use super::PluginPanelShortcut;
+        let command = format!("plugin.synthetic.{}", "a".repeat(380));
+        let payload = serde_json::json!({"commandId": command, "key": "AudioVolumeDown"});
+        let parsed = PluginPanelShortcut::parse(&payload).unwrap();
+        assert_eq!(parsed.command_id, command);
+        assert_eq!(parsed.key, "AudioVolumeDown");
+        for bad in [
+            serde_json::json!({"commandId": "x".repeat(4097)}),
+            serde_json::json!({"commandId": "edit.undo", "key": "x".repeat(257)}),
+        ] {
+            assert!(PluginPanelShortcut::parse(&bad).is_err());
         }
     }
 
@@ -5347,8 +5363,10 @@ fn write_clipboard_items_checked(
     app: &tauri::AppHandle,
     items: Vec<ClipboardWriteItem>,
 ) -> Result<ClipboardWriteResult, String> {
-    let items = validate_clipboard_items(items)?;
-    write_clipboard_items_impl(app, &items)
+    let (items, warnings) = clipboard_formats::validate_clipboard_items_with_warnings(items)?;
+    let mut result = write_clipboard_items_impl(app, &items)?;
+    result.warnings.extend(warnings);
+    Ok(result)
 }
 
 // Retain the legacy IPC signatures pinned by the command-separation test and used by the ignored
@@ -5477,9 +5495,12 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
         .iter()
         .filter(|(_, priority)| *priority == Some(0))
     {
-        if let Some(text) =
-            clipboard_text_for_type(&pasteboard, &NSString::from_str(source), &mut budget)
-        {
+        if let Some(text) = clipboard_text_for_type(
+            &pasteboard,
+            &NSString::from_str(source),
+            &mut budget,
+            &text_items,
+        ) {
             text_items.push(ClipboardTextItem {
                 r#type: source.to_string(),
                 text,
@@ -5492,7 +5513,10 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
     // Picture flavors bypass the text reader. SVG text is decoded only from these bounded bytes.
     for (sources, output_type) in [
         (&["public.png", "public.tiff"][..], "image/png"),
-        (&["public.svg-image", "image/svg+xml"][..], "image/svg+xml"),
+        (
+            &["public.svg-image", "image/svg+xml", "public.svg"][..],
+            "image/svg+xml",
+        ),
     ] {
         if !image_items.is_empty() {
             break;
@@ -5510,13 +5534,23 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
                 continue;
             };
             let byte_length = data.length();
-            let result = budget.reserve(source, byte_length).and_then(|()| {
+            let svg = output_type == "image/svg+xml";
+            let admission = if svg {
+                budget.check_svg_allocation(source, byte_length)
+            } else {
+                budget.reserve(source, byte_length)
+            };
+            let result = admission.and_then(|()| {
                 let bytes = data.to_vec();
-                match source {
+                let item = match source {
                     "public.png" => clipboard_images::png_image_item(&bytes),
                     "public.tiff" => clipboard_images::tiff_image_item(&bytes),
                     _ => clipboard_images::svg_image_item(&bytes, source),
+                }?;
+                if svg {
+                    budget.reserve(source, item.retained_byte_length())?;
                 }
+                Ok(item)
             });
             match result {
                 Ok(item) => {
@@ -5531,10 +5565,11 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
                 Err(reason) => {
                     // A failed conversion was not kept and must not penalize its fallback.
                     // A refused reservation consumed no bytes in the first place.
-                    if !budget
-                        .skipped_items
-                        .iter()
-                        .any(|item| item.r#type == source)
+                    if !svg
+                        && !budget
+                            .skipped_items
+                            .iter()
+                            .any(|item| item.r#type == source)
                     {
                         budget.release(byte_length);
                     }
@@ -5557,9 +5592,12 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
         if !image_items.is_empty() && *priority == Some(3) {
             continue;
         }
-        if let Some(text) =
-            clipboard_text_for_type(&pasteboard, &NSString::from_str(source), &mut budget)
-        {
+        if let Some(text) = clipboard_text_for_type(
+            &pasteboard,
+            &NSString::from_str(source),
+            &mut budget,
+            &text_items,
+        ) {
             text_items.push(ClipboardTextItem {
                 r#type: source.to_string(),
                 text,
@@ -5654,6 +5692,7 @@ fn clipboard_text_for_type(
     pasteboard: &NSPasteboard,
     pasteboard_type: &objc2_app_kit::NSPasteboardType,
     budget: &mut clipboard_limits::ClipboardReadBudget,
+    admitted: &[ClipboardTextItem],
 ) -> Option<String> {
     let kind = pasteboard_type.to_string();
     if is_opaque_clipboard_type(&kind) {
@@ -5664,7 +5703,14 @@ fn clipboard_text_for_type(
     // AppKit may construct an NSString from data; reject huge data before requesting conversion.
     let data = pasteboard.dataForType(pasteboard_type);
     let data_length = data.as_ref().map_or(0, |data| data.length());
-    if budget.check(&kind, data_length).is_err() {
+    if let Some(data) = &data {
+        // SAFETY: immutable retained NSData; comparison never copies or retains its pointer.
+        if clipboard_limits::is_admitted_text_alias(unsafe { data.as_bytes_unchecked() }, admitted)
+        {
+            return None;
+        }
+    }
+    if budget.check_flavor(&kind, data_length).is_err() {
         if let Some(data) = &data {
             // SAFETY: the pasteboard data is immutable and retained throughout this
             // bounded preview; no pointer survives the call.
@@ -5675,6 +5721,14 @@ fn clipboard_text_for_type(
     if let Some(text) = pasteboard.stringForType(pasteboard_type) {
         let byte_length = text.lengthOfBytesUsingEncoding(objc2_foundation::NSUTF8StringEncoding);
         if byte_length > 0 {
+            // Some providers expose NSString aliases without NSData, or use a different
+            // byte encoding. Compare native strings before any total-budget refusal.
+            if admitted.iter().any(|item| {
+                item.text.len() == byte_length
+                    && text.isEqualToString(&NSString::from_str(&item.text))
+            }) {
+                return None;
+            }
             if budget.reserve(&kind, byte_length).is_err() {
                 if let Some(data) = &data {
                     // SAFETY: immutable retained NSData used only for a bounded preview.

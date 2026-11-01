@@ -143,37 +143,171 @@ notice for analyzer commands); the worker capability error preserves the same me
 
 | Content | Maximum |
 | --- | --- |
-| Entire report, UTF-8 JSON including field names and escaping | 1,500,000 bytes |
-| Sections | 100 |
-| Each string (titles, labels, captions, method labels, nucleus, cells, text, source ids, etc.) | 20,000 UTF-16 code units |
+| Entire report, UTF-8 JSON including field names and escaping | 134,217,728 bytes (128 MiB) |
+| Sections | 300 |
+| Each string (titles, labels, captions, method labels, nucleus, cells, text, source ids, etc.) | 1,048,576 UTF-16 code units |
 | SVG / image data URI | 512,000 / 1,048,576 code units |
 | Peaks, across all linked figures | 50,000 |
-| Atom indices per peak / across the report | 1,000 / 100,000 |
-| Couplings per peak / across the report | 16 / 10,000 |
-| Structure atoms / bonds, across all figures | 5,000 / 10,000 |
+| Atom indices per peak / across the report | 4,000 / 100,000 |
+| Couplings per peak / across the report | 16 / 160,000 |
+| Structure atoms / bonds, across all figures | 10,000 / 20,000 |
 | Table rows, across tables | 50,000 |
-| Table columns / cells per row | 100 / 100 |
-| Table cells, including column headers, across tables | 250,000 |
+| Table columns / cells per row | 256 / 256 |
+| Table cells, including column headers, across tables | 256,000 |
 | Key/value rows, across sections | 5,000 |
-| Chemical-name warnings, across sections | 1,000 |
+| Chemical-name warnings, across sections | 10,000 |
 
 These are independent ceilings: a report must satisfy all of them together. Existing smaller
 limits still apply: solvent 120, alternative marker 8, control ids 64, select values 100,
 20 select options, 8 action buttons, prompt `maxLength` 20,000 and `rows` 12, and control
 payloads 4,000 serialized characters. Numbers anywhere in a report must be finite; `NaN`
 and positive/negative infinity are refused. Atom and bond endpoint indices and peak assignments
-must be non-negative integers; with structure geometry present, each must be below its atom
-count, and structure atom indices must be unique. Without geometry there is no upper reference
-bound. The SDK also refuses cycles, accessors, non-JSON objects, nesting deeper than 32,
-objects with more than 64 own fields, and traversal beyond 500,000 nodes before schema parsing.
+must be non-negative integers; with structure geometry present, each must name a declared atom
+index, and structure atom indices must be unique. Without geometry there is no upper reference
+bound. The SDK also refuses cycles, accessors, non-JSON objects, nesting deeper than 128,
+objects with more than 256 own fields, and traversal beyond 2,000,000 nodes before schema parsing.
 The byte limit applies both before parsing and after defaults are filled in; an early size error
 reports the observed lower bound as `report serialized bytes (at least)`.
 
-The byte cap was measured against the production OCL-native NMR plugin's paclitaxel report:
-25,448 UTF-8 JSON bytes, 65 peaks, 62 atoms and 68 bonds (¹H + ¹³C, median, HOSE levels
-4/3/2/1, ignoring labile hydrogens). 1,500,000 bytes gives about 59 times that report's size.
-The captured real report and a 520-peak expansion are regression fixtures; no prediction or
-scientific claim is derived by the SDK.
+The capacity tests generate synthetic data in memory: a 300-heavy-atom example expanded to
+900 explicit atoms/assignments and 14,400 coupling entries, and a long Assistant reply with
+eight near-1-MiB image sections. These test capacities, not prediction accuracy.
+
+Unreleased **0.1.18** also exports snapshotPanelReport(raw, overrides?), the bounded detached
+plain-data walk used before Zod. Overrides parameterise the existing ceilings. The overlay host
+snapshots the request directly with a 2 MiB traversal envelope, then applies
+PluginOverlayContentRequestSchema: 20 sections and 64 KiB of UTF-8 section JSON remain the
+overlay contract. It never wraps content in an action payload (whose separate limit is 4,000
+serialized characters). Getters, iterators, cycles and shared mutable references remain refused
+or detached before schema parsing.
+
+#### Unreleased 0.1.18 capacity audit
+
+Compared with origin/main a99ec512 and the reviewed branch at 6914c511. “Before” below
+means the reviewed branch; existing main ceilings are identified explicitly. MiB is 1,048,576
+bytes. These are resource ceilings, not scientific applicability or accuracy claims. Inputs
+are generated in tests, without predictor output or large committed fixtures.
+
+Passing-test keys (the quoted names are exact test names):
+
+- **NMR** — packages/plugin-api/src/reportLimits.test.ts:
+  “preserves a synthetic 300-heavy-atom report with every assignment and 14,400 couplings”.
+  The synthetic graph contains 300 heavy atoms plus 600 explicit H, 900 assigned peaks,
+  16 J entries per peak, 1,800 bonds, 900 table rows with 20 columns, 500 property rows,
+  and 900 warnings. This deliberately includes more edges and warnings than a normal report.
+- **Assistant** — same file: “preserves a long Assistant reply, several maximum image
+  sections and 30 sections” (100,000 text characters, eight near-1-MiB data URIs).
+- **Main report** — same file: “preserves main's assignment and SVG ceilings and a
+  4,000-peak sparse spectrum”.
+- **Controls** — same file: “preserves every pre-existing control and label ceiling at
+  its accepted maximum”.
+- **Graph** — same file: “snapshots realistic nested control data with 20 fields at
+  depth 12 without sharing references”.
+- **Copy** — apps/desktop/src-tauri/src/clipboard_formats.rs:
+  clipboard_embedded_25_mib_picture_selection_copies_on_both_platforms.
+- **Office** — packages/clipboard-adapter/src/index.test.ts:
+  “accepts a 64 MiB private selection plus 25 MiB PNG and large Office siblings unchanged”;
+  native counterpart clipboard_upper_realistic_selection_and_office_siblings_fit_unchanged.
+  This deliberately retains every synthetic sibling in the guard test; native readers do not
+  fetch EMF/Office containers and skip RTF/HTML once a picture wins. Normal retained native
+  payloads therefore stay much smaller than the combined advertised-format size.
+- **SVG paste** — same adapter test file: “pastes a 25 MiB SVG and 24 nested groups
+  unchanged at main's picture limit”.
+- **Spectrum** — apps/desktop/src/plugins/spectrumSvgSanitizer.test.ts:
+  “preserves a synthetic upper-use spectrum with 900 peaks, long paths and 6 nesting levels”
+  and “preserves 5 MiB of label text and paths unchanged”.
+- **PNG** — apps/desktop/src/plugins/spectrumWindowActions.test.ts:
+  “retains realistic upper PNG dimensions, inflate output, profiles, EXIF and full density values”.
+- **JCAMP** — same file: “saves a 20 MiB JCAMP payload and a 200-character filename unchanged”.
+- **PDF** — packages/export-engine/src/svgToPdf.test.ts:
+  “admits 25 MiB SVG markup unchanged, including realistic nesting and element counts”.
+  This isolates parser admission; pdf.test.ts also renders a valid generated 16.8 MiB PNG
+  through both document and shared-SVG PDF callers.
+
+| Limit | File:line | Before → after | Realistic upper content and basis | Passing test |
+| --- | --- | --- | --- | --- |
+| General report strings | packages/plugin-api/src/reportLimits.ts:9 | 20,000 → 1,048,576 UTF-16 units | 100,000-character long Assistant reply; >10x headroom | Assistant |
+| Report section count | packages/plugin-api/src/reportLimits.ts:12 | 100 → 300 | 30 text/image sections in a long conversation | Assistant |
+| Peak assignments per peak | packages/plugin-api/src/reportLimits.ts:14 | 1,000 → 4,000 | Restores main's own 4,000 ceiling; a fully overlapped assignment can name all 900 nuclei | Main report |
+| Aggregate J entries | packages/plugin-api/src/reportLimits.ts:17 | 10,000 → 160,000 | 900 peaks × main's 16 entries = 14,400; >11x headroom | NMR |
+| Structure atoms / bonds | packages/plugin-api/src/reportLimits.ts:18 | 5,000 / 10,000 → 10,000 / 20,000 | 900 explicit atoms / 1,800 edges; >11x each; main allowed 4,000 / 8,000 | NMR |
+| Table columns / row cells | packages/plugin-api/src/reportLimits.ts:21 | 100 → 256 | 20 assignment/method columns; >12x | NMR |
+| Aggregate table cells including headers | packages/plugin-api/src/reportLimits.ts:22 | 250,000 → 256,000 | 900 × 20 + headers = 18,020; >14x | NMR |
+| Warning count | packages/plugin-api/src/reportLimits.ts:24 | 1,000 → 10,000 | One warning for every explicit atom, 900; >11x | NMR |
+| Total report UTF-8 JSON including defaults and escaping | packages/plugin-api/src/reportLimits.ts:25 | 1,500,000 → 128 MiB | A long reply with several near-1-MiB images; eight maximum images also pass (main's individual image cap retained) | Assistant; exact 128 MiB acceptance test |
+| Snapshot nesting / own fields / nodes | packages/plugin-api/src/reportLimits.ts:27 | 32 / 64 / 500,000 → 128 / 256 / 2,000,000 | Real schema/control graph about 12 levels / 20 fields; complete 900-peak report has well below 200,000 nodes | Graph; NMR |
+| Overlay snapshot | packages/plugin-host/src/index.ts:745 | 4,000-character action envelope → direct 2 MiB request walk | Main overlay contract remains 20 sections / 64 KiB section JSON plus 20,000-character draft | “accepts 60 KiB of overlay text unchanged”; “accepts image data at the overlay JSON cap and names that cap at one byte over” |
+| Clipboard retained total / text flavor / native allocation preflight | apps/desktop/src-tauri/src/clipboard_limits.rs:8; packages/clipboard-adapter/src/index.ts:30 | 64 MiB → 1 GiB | Main copy input was 64 MiB; 64 MiB selection + 25 MiB PNG + 20 MiB CDXML + two 50 MiB Office siblings fit; >10x main's copy envelope | Office |
+| Copy charges | apps/desktop/src-tauri/src/clipboard_formats.rs:226 | 2× JSON/CDXML/HTML, 8× plain text, +512/item → actual retained UTF-8, Windows CRLF included | 24–25 MiB embedded picture creates 32–34 MiB selection JSON; UTF-16, GlobalSize padding and macOS aliases are preflights/alternatives, not repeated retained charges | Copy; clipboard_copy_charges_retained_utf8_once_and_windows_crlf_exactly |
+| Duplicate chemistry aliases | apps/desktop/src-tauri/src/clipboard_limits.rs:236; packages/clipboard-adapter/src/index.ts:203 | Every alias charged → admitted aliases compared before admission and not charged again | 9 / 20 MiB SMILES, molfile or CDXML with six macOS aliases or Windows plain text | “admits 9 MiB chemistry text once despite native text aliases”; 20 MiB variant; clipboard_large_chemistry_aliases_are_not_read_or_charged_twice |
+| UTF-16 SVG allocation preflight | apps/desktop/src-tauri/src/clipboard_images.rs:10 | 25 MiB raw → 50 MiB + 32 bytes raw; decoded picture stays 25 MiB UTF-8 | Main's accepted 25 MiB decoded SVG may use 50 MiB of UTF-16 plus BOM, terminator and GlobalSize padding | clipboard_svg_utf16_allocation_accepts_main_25_mib_decoded_picture_limit; clipboard_svg_text_accepts_utf16_boms_and_windows_registered_le; clipboard_svg_utf8_at_picture_limit_ignores_windows_allocation_padding |
+| SVG text validation | packages/clipboard-adapter/src/index.ts:590 | 20 MiB → main's 25 MiB picture ceiling | A 25 MiB SVG picture accepted by main | SVG paste |
+| Shared SVG-to-PDF markup | packages/export-engine/src/pdf.ts:16 | 20 MiB → 256 MiB, plus validated mapped picture bytes | 25 MiB SVG picture / mixed document; >10x | PDF |
+| Shared PDF nodes / nesting | packages/export-engine/src/pdf.ts:207 | 100,000 / 64 → 1,000,000 / 256 | 10,000 path elements / 24 nested drawing groups; ≥10x | PDF |
+| Spectrum transfer (UTF-8, binary, base64 decoded bytes, clipboard sum) | apps/desktop/src/plugins/spectrumExport.ts:476 | 20 MiB → 64 MiB | Typical 900-peak JCAMP is tens of KiB; 20 MiB synthetic file passes; 5 MiB SVG plus PNG and two SVG flavors fits main's 64 MiB copy input | JCAMP; exact remaining-budget UTF-8 tests |
+| Spectrum SVG UTF-8 | apps/desktop/src/plugins/spectrumSvgSanitizer.ts:2 | 20 MiB → 64 MiB | 900 peaks, comparison traces, labels and paths; 5 MiB synthetic text passes unchanged | Spectrum |
+| Spectrum SVG nodes / nesting | apps/desktop/src/plugins/spectrumSvgSanitizer.ts:3 | 50,000 / 16 → 500,000 / 64 | Fewer than 10,000 nodes / 6 levels for 900 peaks | Spectrum |
+| Individual / aggregate spectrum path characters | apps/desktop/src/plugins/spectrumSvgSanitizer.ts:124 | 1 / 4 MiB → 16 / 32 MiB | A trace samples about 2,720 positions; test accepts a 400,000-character path (50,000 synthetic M/L pairs) unchanged | Spectrum |
+| Spectrum filenames | apps/desktop/src/plugins/spectrumExport.ts:402 | 200 → 4,096 UTF-16 units | Generated names are about 30 characters; 200-character proposed filename passes with >20x headroom. This is a default-name proposal; the native Save dialog selects the final OS-valid path | JCAMP |
+| Spectrum request IDs and forwarding | apps/desktop/src/plugins/spectrumExport.ts:638; apps/desktop/src/plugins/panelBridge.ts:927 | 200 → 512 characters | Generated correlation IDs are about 30 characters; >10x | JCAMP uses a 200-character request ID |
+| PNG EXIF / ICC metadata | apps/desktop/src/plugins/spectrumExport.ts:589 | 64 KiB / 1 MiB → 1 / 16 MiB | 64 KiB EXIF and 512 KiB ICC profile exceed ordinary spectrum metadata; ≥16x / 32x | PNG |
+| PNG density | apps/desktop/src/plugins/spectrumExport.ts:585 | 1,000–1,000,000 → positive u32 pHYs range | 3,840 dpi = about 151,181 pixels/metre; test also preserves 1 and u32::MAX | PNG |
+| DIB density | apps/desktop/src-tauri/src/windows_clipboard.rs:359 | Above signed i32 refused whole PNG copy → only optional DIB declines | PNG pHYs is unsigned; any positive u32 survives in PNG; signed LONG is DIB's actual wire limit | density_fits_signed_dib_fields_without_changing_valid_values |
+| Save-response deadline | apps/desktop/src/plugins/panelBridge.ts:352 | 120 seconds → 30 minutes | A user may take several minutes in the native Save dialog; >10x a two-minute choice | “keeps a save request alive while the user spends three minutes choosing a filename” |
+| Native forwarded shortcut key / command ID | apps/desktop/src-tauri/src/lib.rs:3087 | 64 / 256 → 256 / 4,096 bytes | Browser key names about 15 bytes; fully namespaced plugin IDs up to a few hundred bytes | panel_shortcut_length_caps_allow_real_catalog_ids_and_long_keyboard_names |
+
+Limits judged sufficient without a further change:
+
+| Limit and location | Value / why sufficient | Passing realistic-upper test |
+| --- | --- | --- |
+| Report SVG / image URI, reportLimits.ts:10 | 512,000 / 1,048,576 characters: exactly main's individual limits | Main report; Assistant |
+| Report peaks / aggregate assignments, reportLimits.ts:13 | 50,000 / 100,000: ≥55x / 111x a 900-nucleus report; peak cap already exceeds main's 4,000 | NMR; Main report |
+| Couplings per peak, reportLimits.ts:16 | 16: exactly main's existing schema | NMR |
+| Table / key-value rows, reportLimits.ts:20 | 50,000 / 5,000: ≥55x 900 shift rows / 10x 500 properties | NMR |
+| Prompt/control limits in plugin-api/src/index.ts | Solvent 120, marker 8, IDs 64, select value 100, options 20, buttons 8, prompt maxLength 20,000, rows 12, payload 4,000 serialized characters: all exactly main's contract | Controls |
+| Overlay sections / bytes in plugin-api/src/index.ts:802 | 20 / 64 KiB: exactly main; snapshot no longer tightens them | Overlay boundary tests above |
+| Copy input, clipboard_formats.rs:8 | 64 MiB UTF-8/binary: exactly main; mandatory selection gets priority; optional representations may be dropped with warnings. Standalone required PNG retains main's 64 MiB copy allowance for other applications; optional PNG siblings use the 25 MiB paste cap | Copy; clipboard_optional_total_overflow_keeps_the_mandatory_selection; clipboard_required_picture_copy_retains_mains_64_mib_input_cap |
+| Picture bytes, clipboard_images.rs:8 and TS chem-core constant | 25 MiB: exactly main; now also used by SVG text scanner | Copy; Office; SVG paste |
+| Clipboard SVG nesting, clipboard-adapter/src/index.ts:748 | 256: >10x 24 groups in a complex drawing; sanitizer allowlist adds no independent content-size cap | SVG paste |
+| PNG/DIB dimensions and RGBA decode, clipboard_images.rs:9; windows_clipboard.rs:282 | 16,384 per side / 256 MiB RGBA: exactly main's native image bounds | bounds_png_ihdr_before_any_decoder_allocation; PNG |
+| Spectrum raster / PNG pixel and inflate bounds, spectrumExport.ts:264,576 | 16,384 per side / 64 Mi pixels = 256 MiB RGBA, matching main's native bound. Inflate must equal IHDR scanline bytes including filter bytes, not an independent smaller cap | PNG; “embeds 12x96 dpi and uses the SVG CSS dimensions for rasterization”; overlong-inflate refusal tests |
+| Spectrum SVG finite numeric magnitude, spectrumSvgSanitizer.ts:137 | ±1,000,000: drawing coordinates are normally below 10,000; no chemistry value is clamped | Spectrum accepts both numeric endpoints |
+| PNG IHDR, pHYs, sRGB, gAMA, cHRM, IEND fixed lengths; CRC and IDAT consistency | PNG wire grammar, not content ceilings; strict checks do not alter valid image bytes | PNG; “preserves rasterizer PNG chunks, split IDATs, RGB and print density” |
+| Panel frame geometry, panel_window_frame.rs:5,148 | Minimum 280×200 logical pixels, maximum current monitor work area; no fixed large-window cap or document/report truncation | upper_realistic_8k_panel_frame_is_preserved_without_a_fixed_size_cap; existing clamp/minimum tests |
+| PDF physical page, pdf.ts:75 | 14,400 pt / 200 inches per side: exactly main and jsPDF's supported maximum | “accepts the maximum 200-inch PDF page without silently reducing it” |
+| Copy response deadline, panelBridge.ts:367 | 10 seconds: no user dialog; normal copy completes in under a second; synthetic 8 MP PNG validation fits in about two seconds on this host | Spectrum copy tests and existing timeout test |
+| Existing panel/proposal action deadlines, panelBridge.ts:53,410 | 10 seconds, unchanged relative to main for these existing routes; user save dialogs use the enlarged deadline above | panelBridge.test.ts success/timeout/cleanup tests |
+| Test-only deadlines and render bounds | No new production limit: existing 4,000-peak / 128,000-line render stress case passes; expensive byte/image tests have explicit 10–20 second test timeouts, never application deadlines | LinkedFigureView.dom.test.ts stress case; pdf.test.ts generated-picture tests |
+
+Changed test expectations and reasons:
+
+- Clipboard refusal messages now say 1,024 MB rather than 64 MB (the existing UI label; values use binary MiB). Refusal probes use
+  1,025/1,500 MiB length metadata to avoid allocating strings beyond the JavaScript VM's
+  maximum string length. Exact UTF-8/early-stop counting is tested separately at small budgets.
+- The synthetic exact-total admission case now fills 1 GiB with 42 × 24 MiB pictures and
+  16 MiB text; the next picture is refused. Oversized SVG is refused at the existing 25 MiB
+  picture admission gate, while namespace-expanded SVG uses a consistent SVG picture-limit error.
+- The old “every 20 MiB SVG fails” expectations now test 25 MiB picture overflow; a full
+  25 MiB accepted SVG regression sits beside them.
+- Copy budget tests no longer expect 512 bytes of invented overhead or 8× plain text.
+  They assert exact UTF-8/CRLF charges, preserve first-duplicate and empty-item behavior,
+  admit 24/25 MiB embedded pictures, and test both optional own-cap and total-budget drops.
+- Report exact-byte/default/node tests use the exported ceilings. Aggregate J/table tests
+  still refuse at +1 after successfully accepting their new exact ceilings; realistic
+  acceptance tests cover every report dimension alongside these refusals.
+- UTF-16 SVG tests preserve decoded markup and labels. A UTF-16 XML encoding declaration
+  alone changes to UTF-8 to describe the converted picture bytes; literal label text is unchanged.
+- Panel token assertions were restored from 8f4f30c8 without changing their meaning.
+  Module resets isolate page tokens between panel and palette test pages; each still
+  verifies one registration, monotonically increasing generations, reinstall, Escape,
+  native deactivation and cleanup behavior.
+- Generic PDF overflow tests now use 256 MiB. Previously refused 20+ MiB picture URIs
+  must reach the parser unchanged; separate document/shared-SVG tests render a real,
+  synthetically generated 16.8 MiB PNG.
+- Spectrum oversize/profile/filename/request-ID tests follow the enlarged ceilings.
+  Positive density endpoints 1 and u32::MAX now pass; only the optional DIB sibling
+  refuses density outside its signed wire range. Save timeout tests now wait 30 minutes
+  of fake time, with a passing three-minute user-choice test beside them.
 
 ## Plugin storage
 

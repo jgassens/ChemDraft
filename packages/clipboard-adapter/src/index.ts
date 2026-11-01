@@ -26,7 +26,8 @@ export interface ClipboardSkippedImageItem {
   reason: string;
 }
 
-export const MAX_CLIPBOARD_BYTES = 64 * 1024 * 1024;
+// At least 10x main's 64 MiB copy envelope, including Office representations.
+export const MAX_CLIPBOARD_BYTES = 1024 * 1024 * 1024;
 
 export interface ClipboardSkippedItem {
   type: string;
@@ -199,7 +200,11 @@ export function guardClipboardPayload(payload: ClipboardReadPayload): ClipboardR
     total += byteLength;
     return true;
   };
+  const admittedText = new Set<string>();
   const admitText = (item: ClipboardTextItem): boolean => {
+    // Aliases are compared before measuring or charging; only successfully admitted text
+    // can suppress a duplicate. Keep the first flavor, which the resolver already prefers.
+    if (isTextLikeType(item.type) && admittedText.has(item.text)) return false;
     const byteLength = clipboardTextByteLength(item.text);
     if (byteLength > MAX_CLIPBOARD_BYTES) {
       const admitted = admit(item.type, byteLength, MAX_CLIPBOARD_BYTES);
@@ -207,9 +212,10 @@ export function guardClipboardPayload(payload: ClipboardReadPayload): ClipboardR
       return admitted;
     }
     const picture = ["image/svg+xml", "public.svg", "public.svg-image"].includes(item.type)
-      || clipboardHasSvgRoot(item.text);
+      || (typeof item.text === "string" && clipboardHasSvgRoot(item.text));
     const admitted = admit(item.type, byteLength, picture ? MAX_IMAGE_OBJECT_BYTES : MAX_CLIPBOARD_BYTES);
-    if (!admitted && !picture && chemistryTextPrefix(item.text)) skippedItems[skippedItems.length - 1]!.chemistry = true;
+    if (!admitted && !picture && typeof item.text === "string" && chemistryTextPrefix(item.text)) skippedItems[skippedItems.length - 1]!.chemistry = true;
+    if (admitted) admittedText.add(item.text);
     return admitted;
   };
   const chemistryItem = (item: ClipboardTextItem) => isChemistryClipboardType(item.type)
@@ -246,10 +252,11 @@ function clipboardHasSvgRoot(text: string): boolean {
   return root.test(text);
 }
 
-/** Exact UTF-8 byte count without a TextEncoder allocation, including refused items. */
-function clipboardTextByteLength(text: string): number {
+/** UTF-8 bytes without an allocation; stop at the first byte over the admission ceiling.
+ * For a refused value the result is a lower bound, sufficient for refusal and diagnostics. */
+export function clipboardTextByteLength(text: string, limit = MAX_CLIPBOARD_BYTES): number {
   // A length-only admission probe can be refused before dereferencing its contents.
-  if (typeof text !== "string") return text.length;
+  if (typeof text !== "string" || text.length > limit) return text.length;
   let bytes = 0;
   for (let i = 0; i < text.length; i += 1) {
     const unit = text.charCodeAt(i);
@@ -259,6 +266,7 @@ function clipboardTextByteLength(text: string): number {
       bytes += 4;
       i += 1;
     } else bytes += 3;
+    if (bytes > limit) return bytes;
   }
   return bytes;
 }
@@ -278,7 +286,8 @@ function chemistryTextPrefix(text: string): boolean {
 }
 
 function isChemistryClipboardType(type: string): boolean {
-  return /chemdraft-selection|cdxml|cdx|molfile|rxnfile|inchi|smiles|chemical\//i.test(type);
+  return type.includes("chemdraft-selection") || isCdxmlType(type) || isCdxType(type) || isSmilesType(type)
+    || /(?:molfile|rxnfile|inchi|chemical\/)/i.test(type);
 }
 
 export interface ClipboardInspectionOptions {
@@ -480,7 +489,7 @@ function inspectBoundedClipboardPayload(payload: ClipboardReadPayload, options: 
     const source = addMissingSvgNamespaces(pasteableSvgText.text);
     const byteLength = clipboardTextByteLength(source);
     if (byteLength > MAX_IMAGE_OBJECT_BYTES) {
-      return refusedSvg(`it is ${(byteLength / (1024 * 1024)).toFixed(1)} MB; the limit is 25 MB.`);
+      return refusedSvg("it exceeds the 25 MB picture limit.");
     }
     const svgError = svgClipboardError(source, byteLength, options, pasteableSvgText.text);
     if (svgError) return refusedSvg(svgError);
@@ -578,7 +587,7 @@ function svgDocumentError(text: string, visitStartTag?: (
   tag: string, nameEnd: number, attributes: ReadonlyMap<string, string>, namespaces: Map<string, string>
 ) => boolean): string | undefined {
   const invalid = xmlError("invalid or incomplete markup");
-  if (text.length > 20 * 1024 * 1024) return "it exceeds the 20 MB validation limit.";
+  if (text.length > MAX_IMAGE_OBJECT_BYTES) return "it exceeds the 25 MB picture limit.";
   let offset = 0;
   const whitespace = /[\s\uFEFF]*/y;
   const name = /[A-Za-z_][\w.-]*(?::[A-Za-z_][\w.-]*)?/y;
@@ -763,7 +772,7 @@ function invalidXmlText(text: string): boolean {
 }
 
 function svgClipboardError(source: string, byteLength: number, options: ClipboardInspectionOptions, original = source): string | undefined {
-  if (byteLength > 20 * 1024 * 1024) return "it exceeds the 20 MB validation limit.";
+  if (byteLength > MAX_IMAGE_OBJECT_BYTES) return "it exceeds the 25 MB picture limit.";
   // Refuse declarations before invoking any XML parser: never allow entity expansion.
   const declarationError = svgDeclarationError(source);
   if (declarationError) return declarationError;

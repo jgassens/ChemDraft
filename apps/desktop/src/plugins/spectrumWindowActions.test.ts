@@ -184,7 +184,7 @@ describe("document-window spectrum actions", () => {
     for (const invalid of [
       png(header, gamma, gamma, imageData, imageEnd),
       png(header, imageData, profile, imageEnd),
-      png(header, chunk("iCCP", new Uint8Array(1024 * 1024 + 1)), imageData, imageEnd)
+      png(header, chunk("iCCP", new Uint8Array(16 * 1024 * 1024 + 1)), imageData, imageEnd)
     ]) {
       const isolated = fakes();
       await handleSpectrumWindowAction({ ...copy, pngBase64: base64(invalid) }, isolated);
@@ -192,6 +192,31 @@ describe("document-window spectrum actions", () => {
       expect(isolated.respondCopy).toHaveBeenCalledWith("copy-1", false);
     }
   });
+
+  it("retains realistic upper PNG dimensions, inflate output, profiles, EXIF and full density values", async () => {
+    const width = 4096, height = 2048; // 8 MP / 32 MiB RGBA, larger than a 4x spectrum.
+    const hdr = ihdr((_data, view) => { view.setUint32(0, width); view.setUint32(4, height); });
+    const data = chunk("IDAT", deflateSync(new Uint8Array(height * (1 + width * 4))));
+    const bytes = png(hdr, phys(151181), chunk("iCCP", new Uint8Array(512 * 1024)), chunk("eXIf", new Uint8Array(64 * 1024)), data, imageEnd);
+    const dependencies = fakes();
+    await handleSpectrumWindowAction({ ...save, bytesBase64: base64(bytes) }, dependencies);
+    expect(dependencies.saveBinary).toHaveBeenCalledWith("spectrum.png", bytes, expect.any(Object));
+    for (const density of [1, 0xffffffff]) {
+      const pngData = png(header, phys(density), imageData, imageEnd);
+      await handleSpectrumWindowAction({ ...save, bytesBase64: base64(pngData) }, dependencies);
+      expect(dependencies.saveBinary).toHaveBeenLastCalledWith("spectrum.png", pngData, expect.any(Object));
+    }
+  }, 10_000);
+
+  it("saves a 20 MiB JCAMP payload and a 200-character filename unchanged", async () => {
+    const dependencies = fakes();
+    const text = "##TITLE=Synthetic upper-use JCAMP\n" + "1, 1\n".repeat(4 * 1024 * 1024);
+    const filename = "x".repeat(196) + ".jdx";
+    const requestId = "x".repeat(200);
+    await handleSpectrumWindowAction({ kind: "saveTextFile", requestId, filename, format: "jcamp", text }, dependencies);
+    expect(dependencies.saveText).toHaveBeenCalledWith(filename, text, expect.any(Object));
+    expect(dependencies.respondSave).toHaveBeenCalledWith(requestId, "saved");
+  }, 10_000);
 
   it.each([
     pngBytes.slice(0, 33),
@@ -212,8 +237,8 @@ describe("document-window spectrum actions", () => {
     png(header, imageData, imageEnd, new Uint8Array([1])),
     png(header, chunk("tEXt", new TextEncoder().encode("payload")), imageData, imageEnd),
     png(header, chunk("acTL", new Uint8Array(8)), imageData, imageEnd),
-    png(header, phys(0), imageData, imageEnd), png(header, phys(1), imageData, imageEnd),
-    png(header, phys(11339, 0), imageData, imageEnd), png(header, phys(0xffffffff), imageData, imageEnd),
+    png(header, phys(0), imageData, imageEnd),
+    png(header, phys(11339, 0), imageData, imageEnd),
     png(header, phys(11339, 11339, 0), imageData, imageEnd),
     png(header, chunk("pHYs", new Uint8Array(8)), imageData, imageEnd),
     png(header, phys(11339), phys(11339), imageData, imageEnd),
@@ -222,7 +247,7 @@ describe("document-window spectrum actions", () => {
     png(header, phys(11339).map((byte, index) => index === 20 ? byte ^ 1 : byte), imageData, imageEnd),
     png(header, chunk("sRGB", new Uint8Array([4])), imageData, imageEnd),
     png(header, chunk("eXIf", new Uint8Array()), imageData, imageEnd),
-    png(header, chunk("eXIf", new Uint8Array(65537)), imageData, imageEnd),
+    png(header, chunk("eXIf", new Uint8Array(1024 * 1024 + 1)), imageData, imageEnd),
     png(header, new Uint8Array([0x7f, 0xff, 0xff, 0xff, 73, 68, 65, 84]), imageEnd)
   ])("rejects malformed PNG structure, CRC, dimensions, chunks and density for copy and save (%#)", async (bytes) => {
     const dependencies = fakes();
@@ -384,7 +409,7 @@ describe("document-window spectrum actions", () => {
   it.each([
     { filename: "../file.png" }, { filename: "C:\\file.png" }, { filename: "file\u0000.png" },
     { filename: 3 }, { filename: "" }, { filename: "CON.png" }, { filename: "file:stream.png" },
-    { filename: "file.png " }, { filename: "x".repeat(201) }, { filename: ".." },
+    { filename: "file.png " }, { filename: "x".repeat(4097) }, { filename: ".." },
     { filename: "CONIN$.png" }, { filename: "conout$.png" },
     { filename: "COM¹.png" }, { filename: "com².png" }, { filename: "LPT³.png" },
     { filename: "COM\u200b¹.png" }, { format: "pdf" },
@@ -456,7 +481,7 @@ describe("document-window spectrum actions", () => {
 
   it("ignores unknown actions or invalid request identifiers", async () => {
     const dependencies = fakes();
-    for (const payload of [null, false, {}, { ...copy, kind: "exec" }, { ...copy, requestId: 3 }, { ...copy, requestId: "" }, { ...copy, requestId: "x".repeat(201) }]) {
+    for (const payload of [null, false, {}, { ...copy, kind: "exec" }, { ...copy, requestId: 3 }, { ...copy, requestId: "" }, { ...copy, requestId: "x".repeat(513) }]) {
       await handleSpectrumWindowAction(payload, dependencies);
     }
     expect(dependencies.writeClipboard).not.toHaveBeenCalled();
