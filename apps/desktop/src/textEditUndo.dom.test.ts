@@ -107,6 +107,7 @@ describe.each(["macos", "windows"] as const)("text edit history (%s)", platform 
     const before = texts()[0];
     await open(alpha);
     if (changed) await type("Alpha123");
+    const textarea = editor();
     const typed = texts()[0];
     const handle = container.querySelector(`[data-object-id="${alpha}"] [data-text-resize-edge="right"]`)!;
     const pointer = async (target: Element, kind: string, x: number) => act(async () => {
@@ -120,9 +121,13 @@ describe.each(["macos", "windows"] as const)("text edit history (%s)", platform 
     expect(editor()).not.toBeNull();
     await pointer(page, "pointermove", typed.x + typed.width + 40);
     await pointer(page, "pointerup", typed.x + typed.width + 40);
-    expect(editor()).toBeNull();
+    expect(editor()).toBe(textarea);
     expect(texts()[0].width).toBe(typed.width + 40);
+    const resized = texts()[0];
+    await type(`${typed.text}4`);
     await pagePress();
+    await undo(); expect(texts()[0]).toEqual(resized);
+    expect(container.textContent).toContain("Undid Edit Text");
     await undo(); expect(texts()[0]).toEqual(typed);
     expect(texts().map(object => object.text)).toEqual([changed ? "Alpha123" : "Alpha", "Beta"]);
     if (changed) {
@@ -133,7 +138,7 @@ describe.each(["macos", "windows"] as const)("text edit history (%s)", platform 
     await undo(); expect(texts().map(object => object.text)).toEqual(["Alpha"]);
   });
 
-  it("keeps a just-placed first edit as text when resized and undoes resize before placement", async () => {
+  it("keeps a just-placed edit open through resize and converts only when it finishes", async () => {
     await command("tool.text"); await pagePress(200, 200); await type("N");
     const typed = texts()[0];
     const handle = container.querySelector(`[data-object-id="${typed.id}"] [data-text-resize-edge="right"]`)!;
@@ -148,15 +153,19 @@ describe.each(["macos", "windows"] as const)("text edit history (%s)", platform 
     expect(editor()?.value).toBe("N");
     await pointer(page, "pointermove", typed.x + typed.width + 40);
     await pointer(page, "pointerup", typed.x + typed.width + 40);
-    expect(editor()).toBeNull();
+    expect(editor()?.value).toBe("N");
     const resized = { ...typed, width: typed.width + 40, style: { ...typed.style, textBoxSizingMode: "fixed-width" } };
     expect(snapshot().document.pages[0].objects).toEqual([resized]);
     await pagePress();
-    expect(snapshot().document.pages[0].objects).toEqual([resized]);
+    const converted = snapshot().document.pages[0].objects;
+    expect(converted).toHaveLength(1);
+    expect(converted[0]).toMatchObject({ type: "molecule", atoms: [{ element: "N" }] });
+    await undo(); expect(snapshot().document.pages[0].objects).toEqual([resized]);
     await undo(); expect(snapshot().document.pages[0].objects).toEqual([typed]);
     await undo(); expect(snapshot().document.pages[0].objects).toEqual([]);
     await redo(); expect(snapshot().document.pages[0].objects).toEqual([typed]);
     await redo(); expect(snapshot().document.pages[0].objects).toEqual([resized]);
+    await redo(); expect(snapshot().document.pages[0].objects).toEqual(converted);
   });
 
   it("records an open edit before an assistant transaction writes", async () => {
@@ -169,9 +178,12 @@ describe.each(["macos", "windows"] as const)("text edit history (%s)", platform 
       try { writeAssistantTransaction(tx, insertNativeTextObject(current, { x: 500, y: 350 }, "Gamma")); }
       finally { endAssistantTransaction(tx, { touchedIds: [] }); }
     });
-    expect(editor()).toBeNull();
+    expect(editor()?.value).toBe("Alpha123");
     expect(texts().map(object => object.text)).toEqual(["Alpha123", "Beta", "Gamma"]);
+    await type("Alpha1234");
     await pagePress(); await undo();
+    expect(texts().map(object => object.text)).toEqual(["Alpha123", "Beta", "Gamma"]);
+    await undo();
     expect(texts().map(object => object.text)).toEqual(["Alpha123", "Beta"]);
     await undo(); expect(texts().map(object => object.text)).toEqual(["Alpha", "Beta"]);
     expect(container.textContent).toContain("Undid Edit Text");
@@ -299,7 +311,10 @@ describe.each(["macos", "windows"] as const)("text edit history (%s)", platform 
   it("records the edit before a separate document command takes its undo baseline", async () => {
     const alpha = await place("Alpha", 200); await place("Beta", 400);
     await open(alpha); await type("CH2Cl2"); await command("style.formulaText");
-    expect(editor()).toBeNull(); expect(texts()[0].spans.some(span => span.script === "subscript")).toBe(true);
+    expect(editor()?.value).toBe("CH2Cl2"); expect(texts()[0].spans.some(span => span.script === "subscript")).toBe(true);
+    const formatted = texts()[0];
+    await type("CH2Cl2 caption"); await pagePress();
+    await undo(); expect(texts()[0]).toEqual(formatted);
     await undo(); expect(texts()[0].text).toBe("CH2Cl2");
     expect(texts()[0].spans.every(span => span.script === "normal")).toBe(true);
     await undo(); expect(texts().map(object => object.text)).toEqual(["Alpha", "Beta"]);
