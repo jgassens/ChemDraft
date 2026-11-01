@@ -20567,13 +20567,11 @@ export function MainWindow({
             const textEditId = activeTextEditObjectIdRef.current;
             const target = event.target instanceof Element ? event.target : null;
             // Capture before page/object tools can clear the edit and start a gesture.
-            // Leave editor controls and the edited glyph alone: Text may have restored
-            // Select already when the second press of a double-click reaches that glyph.
-            const editingGlyph = target?.closest("[data-page-svg-object-visual]")?.getAttribute("data-page-svg-object-visual") === textEditId
-              && (activeToolState.activeCommandId === "tool.select" || activeToolState.activeCommandId === "tool.text");
+            // Leave editor controls alone. The edited glyph is pointer-transparent while its
+            // HTML preview shows, so its second double-click press lands on the editor.
             const editingControl = target?.closest(".text-resize-handle")?.closest("[data-object-id]")?.getAttribute("data-object-id") === textEditId;
             if (textEditId && event.button === 0 && event.isPrimary !== false
-              && !isEditableTarget(event.target) && !editingGlyph && !editingControl && isCanvasDrawingPress(canvas, event)) {
+              && !isEditableTarget(event.target) && !editingControl && isCanvasDrawingPress(canvas, event)) {
               event.preventDefault();
               event.stopPropagation();
               // Keep the native IME and its editor alive until composition terminates.

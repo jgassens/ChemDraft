@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MainWindow } from "./MainWindow";
 import { createPhase4Document, insertNativeTextObject, selectDocumentObjects } from "./documentWorkflow";
 import { saveKeybindingSettings } from "./keybindingSettings";
+import { DOM_COMMAND_EVENT } from "./window-manager";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 class TestResizeObserver { observe() {} unobserve() {} disconnect() {} }
@@ -64,6 +65,13 @@ describe.each(["macos", "windows"] as const)("existing text editing (%s)", platf
     }
   }
 
+  async function menu(commandId: string) {
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId } }));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+  }
+
   const snapshot = () => window.__CHEMDRAFT_AGENT__!.snapshot();
   const editor = () => container.querySelector<HTMLTextAreaElement>(".text-object-editor");
   function glyph() {
@@ -89,7 +97,7 @@ describe.each(["macos", "windows"] as const)("existing text editing (%s)", platf
     return prevented;
   }
 
-  async function click(target: SVGElement, count: number) {
+  async function click(target: Element, count: number) {
     // Mouse pointerdown.detail is zero in real browsers. Model the companion mousedown's
     // default focus action explicitly: untrusted bridge/jsdom events do not perform it.
     const prevented = await mouse(target, "pointerdown", 0);
@@ -170,10 +178,75 @@ describe.each(["macos", "windows"] as const)("existing text editing (%s)", platf
     await click(target, 1);
     expect(snapshot().activeToolCommandId).toBe("tool.select");
     const firstEditor = editor();
-    await click(target, 2);
+    // The glyph is pointer-transparent while editing, so the real second press hits the editor.
+    await mouse(firstEditor!, "pointerdown", 0);
+    await mouse(firstEditor!, "mousedown", 2);
+    await mouse(firstEditor!, "pointerup", 0);
+    await mouse(firstEditor!, "mouseup", 2);
     expect(editor()).toBe(firstEditor);
-    await mouse(target, "dblclick", 2);
+    await mouse(firstEditor!, "dblclick", 2);
     expectEditing();
+  });
+
+  it("moving the edit from text A to text B restores A's drawing and hides only B's", async () => {
+    await mount("tool.text", false, true);
+    const idA = objectId;
+    const idB = snapshot().document.pages[0].objects.find(object => object.id !== idA)!.id;
+    const visual = (id: string) => container.querySelector<SVGGElement>(`[data-page-svg-object-visual="${id}"]`)!;
+    await click(glyph(), 1);
+    expectEditing(2);
+    expect(visual(idA).getAttribute("visibility")).toBe("hidden");
+    await act(async () => editor()!.blur());
+    objectId = idB;
+    const textB = visual(idB).querySelector<SVGElement>("text")!;
+    textB.setAttribute("tabindex", "-1");
+    await click(textB.querySelector<SVGElement>("tspan") ?? textB, 1);
+    expect(editor()?.closest("[data-object-id]")?.getAttribute("data-object-id")).toBe(idB);
+    expect(visual(idB).getAttribute("visibility")).toBe("hidden");
+    expect(visual(idA).getAttribute("visibility")).not.toBe("hidden");
+    expect(visual(idA).style.pointerEvents).toBe("auto");
+    expect(visual(idA).textContent).toContain("Reaction conditions");
+  });
+
+  it("shows the saved drawing with the document's text after Undo and Redo once an edit ends", async () => {
+    await mount("tool.select");
+    const visual = () => container.querySelector<SVGGElement>(`[data-page-svg-object-visual="${objectId}"]`)!;
+    const target = glyph();
+    await click(target, 1);
+    await click(target, 2);
+    await mouse(target, "dblclick", 2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+    const input = editor()!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, "Updated conditions");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    // Ending the edit with a press on empty canvas is the commit path that records history.
+    for (const type of ["pointerdown", "pointerup"]) {
+      await act(async () => {
+        const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0,
+          buttons: type === "pointerdown" ? 1 : 0, clientX: 500, clientY: 450 });
+        Object.defineProperties(event, { pointerId: { value: 9 }, pointerType: { value: "mouse" }, isPrimary: { value: true } });
+        container.querySelector(".page")!.dispatchEvent(event);
+      });
+    }
+    expect(editor()).toBeNull();
+    expect(visual().textContent).toContain("Updated conditions");
+    // Typing replaces the present document without a history entry, so Undo/Redo may be no-ops
+    // here; either way the saved drawing must be visible and match the document's text.
+    const expectSavedDrawing = () => {
+      expect(editor()).toBeNull();
+      expect(container.querySelector(".text-object-edit-preview")).toBeNull();
+      expect(visual().getAttribute("visibility")).not.toBe("hidden");
+      expect(visual().style.pointerEvents).toBe("auto");
+      const saved = snapshot().document.pages[0].objects.find(object => object.id === objectId) as { text?: string };
+      expect(visual().textContent).toContain(saved.text);
+    };
+    await menu("edit.undo");
+    expectSavedDrawing();
+    await menu("edit.redo");
+    expectSavedDrawing();
+    expect(visual().textContent).toContain("Updated conditions");
   });
 
   it.each(["command", "T"])("creates a second text after activating Text by %s with text selected", async activation => {

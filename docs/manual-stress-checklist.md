@@ -1,9 +1,5 @@
 # Manual stress checklist
 
-Text editing (macOS and Windows): edit an existing text box next to another label. Confirm only
-one copy of its text is visible while typing, rich formatting remains intact, the other label stays
-visible, and clicking away restores the updated drawing. Check Select/Text tool entry and Undo/Redo.
-
 The standing hands-on checklist for interactive surfaces. It moved here from `AGENTS.md` §20 when that
 file was consolidated (2026-10-04); `AGENTS.md` §14 still requires it. Run every item on **macOS and
 Windows** unless the item names one platform. `docs/windows-port-stress-test.md` records the Windows
@@ -1000,3 +996,9 @@ caption must use the atom-label size. Existing structures on the page must not c
 # Reaction labels
 
 - Ask the assistant for a two-step Sharpless-style scheme and run `pnpm -s chemdraft reaction` with `--above`, `--below`, and `--caption`. Check that reagents stack above and conditions below, close to and centred on the arrow, which is only as long as the widest line; CH2Cl2 and Ti(OiPr)4 show subscripts while step numbers, mol%, °C and h do not. Check the caption sits under the scheme and old single-string conditions still work.
+
+## Text editing
+
+Text editing (macOS and Windows): edit an existing text box next to another label. Confirm only
+one copy of its text is visible while typing, rich formatting remains intact, the other label stays
+visible, and clicking away restores the updated drawing. Check Select/Text tool entry and Undo/Redo.
