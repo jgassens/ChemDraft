@@ -1,7 +1,8 @@
 import type { MoleculeAtom, MoleculeObject } from "@chemdraft/chem-core";
 import {
   nativeAtomBondOrderUsage, nativeAtomChargeSupportsValence, nativeAtomLabelFreeValence,
-  nativeAtomLabelContextInMolecule, nativeAtomLabelReading, type NativeAtomLabelReading
+  nativeAtomLabelContextInMolecule, nativeAtomLabelHeadElement, nativeAtomLabelReading,
+  nativeAtomValidationState, type NativeAtomLabelReading
 } from "./atoms";
 
 /** The validation/ring-template admission measure, including Kekulé orders and radicals. */
@@ -28,11 +29,23 @@ export function labelOnBondedAtom(
   // The typed reading: the label as written, bond on its left. A substituent keeps it whichever
   // side it lands on (its side is recorded so), so a cyano label's free valence is the cyano group's.
   const context = { bonded: bondCount > 0, bondSide: "left" as const };
-  const reading = nativeAtomLabelReading(label, context).kind;
+  const typed = nativeAtomLabelReading(label, context);
+  const reading = typed.kind;
   // An attached label is a new neutral atom; the source retains its own charge.
   const freeValence = nativeAtomLabelFreeValence(label, 0, context);
   const base = { bondCount, external, reading, freeValence };
   if (bondCount < 2) return { ...base, kind: "unchanged" };
+  const sourceContext = nativeAtomLabelContextInMolecule(atom, molecule, true);
+  const sourceHead = nativeAtomLabelHeadElement(atom.element, sourceContext);
+  const sameHead = sourceHead !== undefined && sourceHead === nativeAtomLabelHeadElement(label, context);
+  // A spelled H count can complete a higher valence than its minimum free valence (SH at S(IV)).
+  // An explicit same-head heteroatom composite edits that head even when invalid (PPh2 with two
+  // solid bonds); ordinary validation still flags it, without adding P or changing the charge.
+  if (sameHead && ((typed.kind === "spelled" && nativeAtomValidationState(
+    { ...atom, element: label, labelLiteral: true }, molecule.bonds, atom.formalCharge, molecule.atoms
+  ).valid) || (typed.kind === "group" && typed.group.kind === "composite" && typed.group.head !== "C"))) {
+    return { ...base, kind: "relabel" };
+  }
   if (freeValence !== undefined && freeValence === external) return { ...base, kind: "relabel" };
   const reason = reading === "generic" ? "generic" : reading === "heavy-hydrogen" ? "heavy-hydrogen"
     : freeValence === 1 ? "one-bond" : undefined;
@@ -40,7 +53,6 @@ export function labelOnBondedAtom(
 
   // #83 distinguishes an imported element (Ac/Pr/Ts/Ar) from the typed group spelling,
   // and a cyano label's recorded bond side from the side its current geometry suggests.
-  const sourceContext = nativeAtomLabelContextInMolecule(atom, molecule, true);
   const source = nativeAtomLabelReading(atom.element, sourceContext);
   const sourceFree = nativeAtomLabelFreeValence(atom.element, atom.formalCharge, sourceContext);
   const supports = source.kind === "element"

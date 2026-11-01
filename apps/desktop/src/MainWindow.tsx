@@ -1466,7 +1466,9 @@ type AtomLabelEditOptions = {
 function documentHasAtomLabelDraft(document: ChemDraftDocument, state: AtomLabelEditState): boolean {
   const object = findDocumentObject(document, state.objectId);
   const atom = object?.type === "molecule" ? object.atoms.find(a => a.id === state.atomId) : undefined;
-  return atom?.labelLiteral === true && (!state.draft.trim() || atom.element === normalizeNativeAtomElementLabel(state.draft));
+  // An isotope refusal keeps the original atom as the preview while the editor still owns it.
+  return (atom?.labelLiteral === true && (!state.draft.trim() || atom.element === normalizeNativeAtomElementLabel(state.draft))) ||
+    (atom?.isotope !== undefined && documentOwnsAtomLabelDraft(document, state));
 }
 
 function atomLabelEditStart(state: AtomLabelEditState) {
@@ -1677,7 +1679,7 @@ function tableClipboardDecisionBeforePicture(payload: ClipboardReadPayload) {
   return tableClipboardPasteDecision(payload, html => new DOMParser().parseFromString(html, "text/html"));
 }
 
-const CURRENT_BUILD_STAMP = "11.01.14.16-codex";
+const CURRENT_BUILD_STAMP = "11.01.14.37-codex";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -2469,6 +2471,7 @@ export function MainWindow({
   const previousAtomLabelEditRef = useRef<AtomLabelEditState | undefined>(undefined);
   const cancelledAtomLabelEditRef = useRef<AtomLabelEditState | undefined>(undefined);
   const finalizedAtomLabelEditRef = useRef<AtomLabelEditState | undefined>(undefined);
+  const hoverLabelHandoffRef = useRef<{ result?: ReturnType<typeof finishedAtomLabelDraft> } | undefined>(undefined);
   const [textStyleDefaults, setTextStyleDefaults] = useState<NativeTextStyle>(DefaultNativeTextStyle);
   const [activeTableCellState, setActiveTableCell] = useState<ActiveTableCell>();
   const [tableCellEdit, setTableCellEdit] = useState<ActiveTableText>();
@@ -4482,7 +4485,7 @@ export function MainWindow({
     const split = result.target.kind === "atom" && result.target.atomId !== target.atomId;
     const nextDocument = split ? selectDocumentObject(result.document, target.objectId) : result.document;
     if (nextDocument === currentDocument) {
-      setStatus(`Cannot label hovered atom ${label}`);
+      setStatus(result.refusal ?? (result.message ? "" : `Cannot label hovered atom ${label}`));
       return;
     }
 
@@ -6515,7 +6518,7 @@ export function MainWindow({
     } else {
       replacePresentDocument(result.document);
     }
-    if (changed && "message" in result && result.message) setStatus(result.message);
+    if ("message" in result && result.message && (changed || ("refusal" in result && result.refusal))) setStatus(result.message);
     else if (changed) setStatus(`Labeled atom ${normalizeNativeAtomElementLabel(state.draft)}`);
     else setStatus("");
     return result;
@@ -12466,6 +12469,7 @@ export function MainWindow({
     const kept = atomLabelEditKeepsSelectionRef.current;
     atomLabelEditKeepsSelectionRef.current = undefined;
     const result = !cancelled && !finalized ? finalizeAtomLabelDraft(previous) : undefined;
+    if (hoverLabelHandoffRef.current) hoverLabelHandoffRef.current.result = result;
     if (result && kept && !previous.startedFromHover && result.target.kind === "atom") setSelectedNativeMoleculePart(result.target);
     if (activeAtomLabelEdit) {
       if (result) {
@@ -13144,11 +13148,27 @@ export function MainWindow({
       // input's text default and deliver this key once through the ordinary canvas shortcut path.
       event.preventDefault();
       event.stopPropagation();
+      const handoff: { result?: ReturnType<typeof finishedAtomLabelDraft> } = {};
+      hoverLabelHandoffRef.current = handoff;
       flushSync(() => finishAtomLabelEdit(edit, "commit"));
-      canvas.dispatchEvent(new KeyboardEvent("keydown", {
-        key: event.key, code: event.code, shiftKey: event.shiftKey, repeat: event.repeat,
-        location: event.location, bubbles: true, cancelable: true
-      }));
+      hoverLabelHandoffRef.current = undefined;
+      const result = handoff.result;
+      if (result && "refusal" in result && result.refusal) return;
+      const warning = result && "message" in result && result.message && result.document !== result.baseline &&
+        result.target.kind === "atom" && result.target.atomId === edit.atomId ? result.message : undefined;
+      const statusBeforeReplay = statusRef.current;
+      flushSync(() => {
+        canvas.dispatchEvent(new KeyboardEvent("keydown", {
+          key: event.key, code: event.code, shiftKey: event.shiftKey, repeat: event.repeat,
+          location: event.location, bubbles: true, cancelable: true
+        }));
+      });
+      if (warning) {
+        const replayStatus = statusRef.current;
+        setStatus(replayStatus && replayStatus !== statusBeforeReplay && replayStatus !== warning
+          ? `${warning}. ${replayStatus}`
+          : warning);
+      }
     };
     window.addEventListener("keydown", handOffHoverLabelKey, true);
     return () => window.removeEventListener("keydown", handOffHoverLabelKey, true);
