@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { PluginPanelReportLimits, PluginPanelReportSchema, type PluginCommandContext, type PluginCommandInput, type PluginPanelReport } from "@chemdraft/plugin-api";
+import { PluginPanelReportLimits, PluginPanelReportSchema, type PluginCommandContext, type PluginCommandInput, type PluginPanelPayload, type PluginPanelReport } from "@chemdraft/plugin-api";
 import { PluginHost } from "./index";
 
 const commandId = "plugin.chat.submit";
@@ -235,7 +235,7 @@ describe("canvas content uses the bounded report snapshot", () => {
     const sections: [] = [];
     const iterate = vi.fn(function* () { while (true) yield { kind: "text", body: "unbounded" }; });
     Object.defineProperty(sections, Symbol.iterator, { get: getter.mockReturnValue(iterate) });
-    await expect(api.setContent({ overlayId, sections })).rejects.toThrow(/symbol keys/);
+    await expect(api.setContent({ overlayId, sections } as unknown as Parameters<typeof api.setContent>[0])).rejects.toThrow(/symbol keys/);
     expect(getter).not.toHaveBeenCalled();
     expect(iterate).not.toHaveBeenCalled();
     expect(setContent).not.toHaveBeenCalled();
@@ -256,7 +256,7 @@ describe("canvas content uses the bounded report snapshot", () => {
 
   it("bounds malformed depth before schema parsing and never forwards it", async () => {
     const { overlayId, setContent, api } = setup();
-    let payload: object = {};
+    let payload: PluginPanelPayload = {};
     for (let n = 0; n < PluginPanelReportLimits.depth + 1; n++) payload = { nested: payload };
     await expect(api.setContent({ overlayId, sections: [{ kind: "actions", id: "send-actions", buttons: [
       { id: "send", label: "Send", commandId, payload }
