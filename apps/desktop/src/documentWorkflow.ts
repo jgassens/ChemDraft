@@ -20294,7 +20294,22 @@ function nativeBondOrderRefusalReason(
     return priorState.valid && nextInvalid;
   };
   const broken = [fromAtom, toAtom].find(breaks);
-  return broken ? `${broken.element} would exceed its valence with a ${order} bond` : undefined;
+  if (!broken) return undefined;
+  // Say "exceed" only when the change really adds valence; a lowering that leaves a typed atom
+  // short, or an aromatic ring unresolvable, is named by the validator's own reason.
+  const { warningSuppressed: _brokenSuppressed, ...brokenBare } = nextAtomById.get(broken.id)!;
+  const brokenState = nativeAtomValidationState(brokenBare, nextBonds, brokenBare.formalCharge, nextAtoms, afterResolution);
+  const priorBroken = baseline.atoms.find((candidate) => candidate.id === broken.id);
+  const priorBrokenState = priorBroken
+    ? nativeAtomValidationState(
+      (({ warningSuppressed: _w, ...bare }) => bare)(priorBroken),
+      baseline.bonds, priorBroken.formalCharge, baseline.atoms, beforeResolution)
+    : undefined;
+  const addsValence = baseline !== molecule || !priorBrokenState || brokenState.valenceUsed > priorBrokenState.valenceUsed;
+  if (addsValence || !brokenState.invalidReason) {
+    return `${broken.element} would exceed its valence with a ${order} bond`;
+  }
+  return `a ${order} bond would leave ${broken.element} invalid: ${brokenState.invalidReason}`;
 }
 
 function canGrowNativeAtom(molecule: MoleculeObject, atomId: string): boolean {

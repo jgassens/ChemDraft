@@ -220,6 +220,15 @@ describe("multiple bond tool refusals", () => {
       expect(getSelectedMolecule(next)!.bonds[1].order).toBe("single");
     });
 
+    it("words a lowering that leaves a typed atom short as a shortfall, not an excess", () => {
+      const { document, objectId } = withBondOrders(literalCenterSeed(1), ["single", "triple"]);
+      const molecule = getSelectedMolecule(document)!;
+      const target = { objectId, kind: "bond" as const, bondId: molecule.bonds[1].id };
+      const reason = nativeBondOrderTargetRefusal(document, target, "double");
+      expect(reason).toMatch(/would leave C invalid.*3 of 4 bonds/);
+      expect(reason).not.toMatch(/exceed/);
+    });
+
     it("still raises a double bond to triple on valid atoms", () => {
       const single = applySingleBondToolAtPoint(createPhase4Document("Raise"), { x: 300, y: 300 });
       const molecule = getSelectedMolecule(single)!;
