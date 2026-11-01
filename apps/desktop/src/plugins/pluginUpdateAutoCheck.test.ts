@@ -45,7 +45,11 @@ function setup(results: readonly PluginUpdateCheckResult[] = [available], storag
   const deps = {
     storage, check: vi.fn(async () => results), onResults: vi.fn(), setStatus: vi.fn(), log: vi.fn(), now: () => at
   };
-  return { deps, checker: createPluginUpdateChecker(deps), advance: (ms: number) => { at += ms; } };
+  const saveSuccess = (checkedAt = at) => {
+    storage.setItem(LAST_PLUGIN_CHECK_KEY, String(checkedAt));
+    storage.setItem(LAST_PLUGIN_RESULTS_KEY, JSON.stringify({ catalogKey: installedPluginCatalogKey(installed), checkedAt, results: [upToDate] }));
+  };
+  return { deps, checker: createPluginUpdateChecker(deps), saveSuccess, advance: (ms: number) => { at += ms; } };
 }
 
 afterEach(() => vi.useRealTimers());
@@ -88,6 +92,75 @@ describe("daily official-plugin checks", () => {
     await nextLaunch.automatic(context);
     expect(deps.onResults).toHaveBeenCalledExactlyOnceWith(cache);
     expect(deps.check).not.toHaveBeenCalled();
+  });
+
+  it("checks after the startup delay when an older build saved only a recent timestamp", async () => {
+    vi.useFakeTimers();
+    const { checker, deps } = setup();
+    deps.storage.setItem(LAST_PLUGIN_CHECK_KEY, String(deps.now() - 60 * 60 * 1000));
+    checker.restore(installed);
+    expect(deps.onResults).not.toHaveBeenCalled();
+    expect(checker.nextAutomaticCheckDelay(installed)).toBe(AUTO_CHECK_DELAY_MS);
+    const stop = schedulePluginUpdateAutoCheck(() => checker.automatic(context), () => checker.nextAutomaticCheckDelay(installed));
+    await vi.advanceTimersByTimeAsync(AUTO_CHECK_DELAY_MS - 1);
+    expect(deps.check).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(deps.check).toHaveBeenCalledExactlyOnceWith(installed);
+    const cache = { catalogKey: installedPluginCatalogKey(installed), checkedAt: deps.now(), results: [available] };
+    expect(JSON.parse(deps.storage.getItem(LAST_PLUGIN_RESULTS_KEY)!)).toEqual(cache);
+    expect(deps.onResults).toHaveBeenCalledExactlyOnceWith(cache);
+    stop();
+  });
+
+  it("checks a changed catalog despite a recent successful check of another plugin set", async () => {
+    const { checker, deps, saveSuccess } = setup();
+    saveSuccess();
+    const changed = [{ ...installed[0]!, record: { ...installed[0]!.record, version: "0.2.0" } }];
+    expect(checker.nextAutomaticCheckDelay(changed)).toBe(AUTO_CHECK_DELAY_MS);
+    await checker.automatic({ ...context, installed: changed });
+    expect(deps.check).toHaveBeenCalledExactlyOnceWith(changed);
+  });
+
+  it.each(["{", "{}", JSON.stringify([upToDate]), JSON.stringify({ results: [upToDate] })])(
+    "checks despite a recent timestamp when saved results are malformed or old format: %s", async value => {
+      const { checker, deps, saveSuccess } = setup();
+      saveSuccess();
+      deps.storage.setItem(LAST_PLUGIN_RESULTS_KEY, value);
+      expect(checker.nextAutomaticCheckDelay(installed)).toBe(AUTO_CHECK_DELAY_MS);
+      await checker.automatic(context);
+      expect(deps.check).toHaveBeenCalledOnce();
+    }
+  );
+
+  it("checks when cached results expire before a more recent check timestamp", async () => {
+    const { checker, deps, saveSuccess, advance } = setup();
+    saveSuccess(deps.now() - AUTO_CHECK_INTERVAL_MS + AUTO_CHECK_DELAY_MS);
+    deps.storage.setItem(LAST_PLUGIN_CHECK_KEY, String(deps.now()));
+    expect(checker.nextAutomaticCheckDelay(installed)).toBe(AUTO_CHECK_DELAY_MS);
+    await checker.automatic(context);
+    expect(deps.check).not.toHaveBeenCalled();
+    advance(AUTO_CHECK_DELAY_MS);
+    await checker.automatic(context);
+    expect(deps.check).toHaveBeenCalledOnce();
+  });
+
+  it("bounds failed no-cache attempts per catalog for the interval, including after switching back", async () => {
+    const { checker, deps, advance } = setup([failed]);
+    deps.storage.setItem(LAST_PLUGIN_CHECK_KEY, String(deps.now() - 60 * 60 * 1000));
+    await checker.automatic(context);
+    expect(deps.storage.getItem(LAST_PLUGIN_RESULTS_KEY)).toBeNull();
+    expect(checker.nextAutomaticCheckDelay(installed)).toBe(AUTO_CHECK_INTERVAL_MS);
+    advance(AUTO_CHECK_INTERVAL_MS - 1);
+    await checker.automatic(context);
+    expect(deps.check).toHaveBeenCalledOnce();
+    const changed = [{ ...installed[0]!, record: { ...installed[0]!.record, version: "0.2.0" } }];
+    expect(checker.nextAutomaticCheckDelay(changed)).toBe(AUTO_CHECK_DELAY_MS);
+    await checker.automatic({ ...context, installed: changed });
+    await checker.automatic(context);
+    expect(deps.check).toHaveBeenCalledTimes(2);
+    advance(1);
+    await checker.automatic(context);
+    expect(deps.check).toHaveBeenCalledTimes(3);
   });
 
   it("loads only matching catalogs within the check interval", async () => {
@@ -134,7 +207,7 @@ describe("daily official-plugin checks", () => {
   it.each(["macos", "windows"])("delays the desktop check on %s by 15 seconds and checks again daily", async () => {
     vi.useFakeTimers();
     const { checker, deps, advance } = setup();
-    const stop = schedulePluginUpdateAutoCheck(() => checker.automatic(context), checker.nextAutomaticCheckDelay);
+    const stop = schedulePluginUpdateAutoCheck(() => checker.automatic(context), () => checker.nextAutomaticCheckDelay(installed));
     await vi.advanceTimersByTimeAsync(AUTO_CHECK_DELAY_MS - 1);
     expect(deps.check).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
@@ -157,12 +230,12 @@ describe("daily official-plugin checks", () => {
 
   it("schedules a recent persisted success at its due time after a skipped launch attempt", async () => {
     vi.useFakeTimers();
-    const { checker, deps, advance } = setup();
+    const { checker, deps, advance, saveSuccess } = setup();
     const remaining = 60 * 60 * 1000;
-    deps.storage.setItem(LAST_PLUGIN_CHECK_KEY, String(deps.now() - AUTO_CHECK_INTERVAL_MS + remaining));
+    saveSuccess(deps.now() - AUTO_CHECK_INTERVAL_MS + remaining);
     await checker.automatic(context);
     expect(deps.check).not.toHaveBeenCalled();
-    const stop = schedulePluginUpdateAutoCheck(() => checker.automatic(context), checker.nextAutomaticCheckDelay);
+    const stop = schedulePluginUpdateAutoCheck(() => checker.automatic(context), () => checker.nextAutomaticCheckDelay(installed));
     advance(remaining - 1);
     await vi.advanceTimersByTimeAsync(remaining - 1);
     expect(deps.check).not.toHaveBeenCalled();
@@ -174,10 +247,10 @@ describe("daily official-plugin checks", () => {
 
   it("does not postpone the due time when the effect reschedules", async () => {
     vi.useFakeTimers();
-    const { checker, deps, advance } = setup();
+    const { checker, deps, advance, saveSuccess } = setup();
     const remaining = 60 * 60 * 1000;
-    deps.storage.setItem(LAST_PLUGIN_CHECK_KEY, String(deps.now() - AUTO_CHECK_INTERVAL_MS + remaining));
-    const schedule = () => schedulePluginUpdateAutoCheck(() => checker.automatic(context), checker.nextAutomaticCheckDelay);
+    saveSuccess(deps.now() - AUTO_CHECK_INTERVAL_MS + remaining);
+    const schedule = () => schedulePluginUpdateAutoCheck(() => checker.automatic(context), () => checker.nextAutomaticCheckDelay(installed));
     const stop = schedule();
     advance(remaining / 2);
     await vi.advanceTimersByTimeAsync(remaining / 2);
@@ -191,10 +264,10 @@ describe("daily official-plugin checks", () => {
 
   it("recomputes the deadline after a skipped timer attempt", async () => {
     vi.useFakeTimers();
-    const { checker, deps, advance } = setup();
-    const stop = schedulePluginUpdateAutoCheck(() => checker.automatic(context), checker.nextAutomaticCheckDelay);
+    const { checker, deps, advance, saveSuccess } = setup();
+    const stop = schedulePluginUpdateAutoCheck(() => checker.automatic(context), () => checker.nextAutomaticCheckDelay(installed));
     // Another successful check changes the deadline while the launch timer is pending.
-    deps.storage.setItem(LAST_PLUGIN_CHECK_KEY, String(deps.now()));
+    saveSuccess();
     advance(AUTO_CHECK_DELAY_MS);
     await vi.advanceTimersByTimeAsync(AUTO_CHECK_DELAY_MS);
     expect(deps.check).not.toHaveBeenCalled();
@@ -251,8 +324,9 @@ describe("daily official-plugin checks", () => {
   );
 
   it("skips checks for a recent success, then becomes due at 24 hours", async () => {
-    const { checker, deps, advance } = setup();
-    deps.storage.setItem(LAST_PLUGIN_CHECK_KEY, String(deps.now()));
+    const { checker, deps, advance, saveSuccess } = setup();
+    saveSuccess();
+    expect(checker.nextAutomaticCheckDelay(installed)).toBe(AUTO_CHECK_INTERVAL_MS);
     await checker.automatic(context);
     advance(AUTO_CHECK_INTERVAL_MS - 1);
     await checker.automatic(context);

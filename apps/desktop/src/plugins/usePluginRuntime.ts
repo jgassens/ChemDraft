@@ -434,7 +434,7 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
       return isTauriHost() && !!current.stagingFs && current.automaticUpdates && loadAutomaticPluginUpdates() &&
         current.installedPluginCatalogReady &&
         installedPluginCatalogKey(current.installedPlugins) === installedPluginCatalogKey(installedPlugins);
-    }), updateChecker.nextAutomaticCheckDelay);
+    }), () => updateChecker.nextAutomaticCheckDelay(installedPlugins));
   }, [automaticUpdates, installedPluginCatalogReady, installedPlugins, stagingFs, updateChecker]);
 
   const cachedPluginUpdateResults = useMemo(() =>

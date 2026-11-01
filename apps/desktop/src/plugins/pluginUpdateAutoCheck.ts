@@ -92,7 +92,12 @@ export function createPluginUpdateChecker(deps: PluginUpdateCheckerDeps) {
   const now = deps.now ?? Date.now;
   const log = deps.log ?? console.warn;
   const announced = readAnnouncements(deps.storage);
-  let lastAttempt: number | undefined;
+  const lastAttempts = new Map<string, number>();
+  const lastSuccess = (catalogKey: string, at: number) => {
+    const checkedAt = readLastPluginCheck(deps.storage);
+    const cache = readCachedPluginUpdateResults(deps.storage, catalogKey, at);
+    return cache && !autoCheckDue(checkedAt, at) ? Math.min(checkedAt!, cache.checkedAt) : undefined;
+  };
   interface RunningCheck {
     catalogKey: string;
     promise: Promise<readonly PluginUpdateCheckResult[]>;
@@ -148,13 +153,14 @@ export function createPluginUpdateChecker(deps: PluginUpdateCheckerDeps) {
   }, isEligible: () => boolean = () => true): Promise<void> => {
     if (!context.isDesktop || !context.enabled || !context.catalogReady || !hasOfficialInstalledPlugin(context.installed)) return;
     const at = now();
-    if (!autoCheckDue(readLastPluginCheck(deps.storage), at) || !autoCheckDue(lastAttempt, at)) return;
+    const catalogKey = installedPluginCatalogKey(context.installed);
+    if (!autoCheckDue(lastSuccess(catalogKey, at), at) || !autoCheckDue(lastAttempts.get(catalogKey), at)) return;
     // Also bound retries in this session if all sources fail or persistence is unavailable.
-    lastAttempt = at;
+    lastAttempts.set(catalogKey, at);
     try {
       const results = await check(context.installed, () => {
         if (!isEligible()) return false;
-        lastAttempt = now();
+        lastAttempts.set(catalogKey, now());
         return true;
       });
       const messages: string[] = [];
@@ -182,7 +188,10 @@ export function createPluginUpdateChecker(deps: PluginUpdateCheckerDeps) {
       const cache = readCachedPluginUpdateResults(deps.storage, installedPluginCatalogKey(installed), now());
       if (cache) deps.onResults(cache);
     },
-    nextAutomaticCheckDelay: () => nextPluginUpdateAutoCheckDelay(now(), readLastPluginCheck(deps.storage), lastAttempt)
+    nextAutomaticCheckDelay: (installed: readonly InstalledPluginCatalogEntry[]) => {
+      const at = now(), catalogKey = installedPluginCatalogKey(installed);
+      return nextPluginUpdateAutoCheckDelay(at, lastSuccess(catalogKey, at), lastAttempts.get(catalogKey));
+    }
   };
 }
 
