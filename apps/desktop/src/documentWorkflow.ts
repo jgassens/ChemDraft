@@ -4,6 +4,9 @@ import { planObjectArrangement, moleculeAnchorForArrangement, moleculeVisualBoun
 import { snapRotationDegrees } from "./rotationSnap";
 import { snapPlacementDegrees } from "./placementSnap";
 import { projectedDoubleBondSides } from "./interaction/projectedDoubleBondSides";
+import { buildTableObject, pageConstrainedShift } from "@chemdraft/document-workflow-core";
+import { planTableLayout, tableVisualBoundsForArrangement } from "@chemdraft/layout-engine";
+import { validTableDimensions, type TableInsertDimensions } from "./dialogs/insertTableOptions";
 import { doubleBondStereoState, perceivedSpecifiedDoubleBondIds } from "./interaction/doubleBondStereo";
 import type { storedCoordinatesMatchStereo } from "@chemdraft/ocl-adapter";
 import type { DoubleBondStereoReader } from "./interaction/doubleBondStereo";
@@ -13085,6 +13088,9 @@ export function documentObjectInteractionBounds(
   object: DocumentObject,
   objects: readonly DocumentObject[]
 ): ObjectBounds {
+  if (object.type === "table") {
+    return tableVisualBoundsForArrangement(object);
+  }
   if (object.type === "mechanism-arrow") {
     let snapshot = mechanismBoundsSnapshots.get(objects);
     if (!snapshot) {
@@ -14720,8 +14726,9 @@ function transformOtherObjectAroundPointPatches(
   const newCenter = Math.abs(degrees) >= 0.05
     ? rotatePointAround(scaledCenter, center, degrees * Math.PI / 180)
     : scaledCenter;
-  const nextWidth = object.width * scaleX;
-  const nextHeight = object.height * scaleY;
+  const tableLayout = object.type === "table" ? planTableLayout(object) : undefined;
+  const nextWidth = tableLayout?.width ?? object.width * scaleX;
+  const nextHeight = tableLayout?.height ?? object.height * scaleY;
   const nextX = newCenter.x - nextWidth / 2;
   const nextY = newCenter.y - nextHeight / 2;
 
@@ -21155,4 +21162,42 @@ function normalizeAngle(angle: number): number {
 function normalizeSignedAngle(angle: number): number {
   const normalized = normalizeAngle(angle);
   return normalized > Math.PI ? normalized - Math.PI * 2 : normalized;
+}
+
+/** Build an empty native table using the same text-style conversion as the text tool. */
+export function insertTableIntoDocument(document: ChemDraftDocument, options: TableInsertDimensions & {
+  preset: "three-line" | "grid"; center: { x: number; y: number }; newId: (prefix: string) => string;
+  textStyle?: Partial<NativeTextStyle>;
+}): ChemDraftDocument {
+  if (!validTableDimensions(options)) throw new Error("Invalid table dimensions");
+  const page = firstPage(document);
+  const blankRow = () => Array.from({ length: options.columns }, () => "");
+  const { object } = buildTableObject({
+    columns: Array.from({ length: options.columns }, () => ({ align: "left" })),
+    headerRows: Array.from({ length: options.headerRows }, blankRow),
+    rows: Array.from({ length: options.rows - options.headerRows }, blankRow),
+    style: { preset: options.preset }
+  }, { id: options.newId("table"), x: 0, y: 0, newId: options.newId,
+    style: textStyleToObjectStyle(options.textStyle ?? {}) });
+  return addTableCenteredOnPage(document, object, options.center);
+}
+
+/**
+ * Add a new table centred on `center` and select it (Insert Table and table paste). Its drawn
+ * extent, including rule strokes and fixed-column text overflow, is kept on the page by the same
+ * pageConstrainedShift structure paste uses (document-workflow-core).
+ */
+export function addTableCenteredOnPage(
+  document: ChemDraftDocument,
+  table: Extract<DocumentObject, { type: "table" }>,
+  center: PagePoint
+): ChemDraftDocument {
+  const page = firstPage(document);
+  const centered = { ...table, x: center.x - table.width / 2, y: center.y - table.height / 2 };
+  const shift = pageConstrainedShift(page, tableVisualBoundsForArrangement(centered));
+  const placed = shift.x === 0 && shift.y === 0 ? centered : { ...centered, x: centered.x + shift.x, y: centered.y + shift.y };
+  return applyPatches(document, [
+    { op: "addObject", pageId: page.id, object: placed },
+    { op: "setSelection", pageId: page.id, objectIds: [placed.id] }
+  ], { now: phase4Timestamp });
 }

@@ -51,6 +51,7 @@ export interface DocumentSessionEnvelope {
   pristine?: boolean;
   view?: DocumentSessionView;
   openWarnings?: OpenWarningsReport;
+  saveWarnings?: OpenWarningsReport;
 }
 
 export interface DocumentSessionView {
@@ -102,7 +103,9 @@ function parseSessionWarnings(raw: unknown): OpenWarningsReport | undefined {
         typeof warning.code === "string" && typeof warning.message === "string" &&
         (warning.sourceObjectId === undefined || typeof warning.sourceObjectId === "string") &&
         stringList(warning.atomIds) && stringList(warning.bondIds))) return undefined;
-  return raw as unknown as OpenWarningsReport;
+  // Every operation other than save denotes an open report in legacy sessions.
+  return { displayName: raw.displayName, sourceLabel: raw.sourceLabel, warnings: raw.warnings,
+    ...(raw.operation === "save" ? { operation: "save" } : {}) };
 }
 
 export function buildDocumentTabsSession(
@@ -223,6 +226,7 @@ export function parseDocumentSessionEnvelope(raw: unknown, nested = false): Pars
   }
   const view = candidate.view === undefined ? undefined : parseSessionView(candidate.view);
   const warnings = candidate.openWarnings === undefined ? undefined : parseSessionWarnings(candidate.openWarnings);
+  const saveWarnings = parseSessionWarnings(candidate.saveWarnings);
   if (candidate.pristine !== undefined && typeof candidate.pristine !== "boolean") return undefined;
   if (candidate.unrestoredTabs !== undefined && !Array.isArray(candidate.unrestoredTabs)) return undefined;
   const parsed: DocumentSessionEnvelope = {
@@ -238,7 +242,8 @@ export function parseDocumentSessionEnvelope(raw: unknown, nested = false): Pars
     ...(Array.isArray(candidate.unrestoredTabs) ? { unrestoredTabs: candidate.unrestoredTabs } : {}),
     ...(typeof candidate.pristine === "boolean" ? { pristine: candidate.pristine } : {}),
     ...(view ? { view } : {}),
-    ...(warnings ? { openWarnings: warnings } : {})
+    ...(warnings ? { openWarnings: warnings } : {}),
+    ...(saveWarnings ? { saveWarnings } : {})
   };
   rawSessionTabs.set(parsed, raw);
   return parsed;

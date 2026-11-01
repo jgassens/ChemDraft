@@ -105,7 +105,7 @@ export function migrateDocument(candidate: unknown): ChemDraftDocument {
     return result.document;
   }
 
-  const migrated = migrateLegacyGraphicObjects(migrateLegacyPageLayouts(candidate));
+  const migrated = migrateLegacyTableObjects(migrateLegacyGraphicObjects(migrateLegacyPageLayouts(candidate)));
   if (migrated !== candidate) {
     const migratedResult = validateDocument(migrated);
     if (migratedResult.ok) {
@@ -116,10 +116,17 @@ export function migrateDocument(candidate: unknown): ChemDraftDocument {
   const detail = formatValidationIssues(result.issues);
   // Strict schemas reject keys written by newer builds (e.g. labelLiteral). Name that case so a
   // one-way-door file reads as a version problem, not corruption.
-  const newerVersionHint = /unrecognized key/i.test(detail)
+  const newerVersionHint = result.issues.some((issue) => /unrecognized key/i.test(issue.message) ||
+    (issue.path.endsWith(".type") && /discriminator/i.test(issue.message)) ||
+    (issue.path.endsWith(".tableVersion") && /literal/i.test(issue.message)))
     ? " The file may have been saved by a newer version of ChemDraft."
     : "";
   throw new Error(`Unsupported or invalid ChemDraft document: ${detail}${newerVersionHint}`);
+}
+
+// tableVersion is the hook for future table-shape changes.
+export function migrateLegacyTableObjects(candidate: unknown): unknown {
+  return candidate;
 }
 
 export function cloneDocument(document: ChemDraftDocument): ChemDraftDocument {

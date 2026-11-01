@@ -1,3 +1,13 @@
+import { applyTableCommand, applyTableFontCommand, applyTableObjectEdit, createTableCommands, createTableInsertAction, parseTableInsertCommandId, resolveActiveTableCell, selectedTable, tableInsertCommandId, tableInspectorSnapshot, type ActiveTableCell, type TableInsertDimensions } from "./tableCommands";
+import { TableCellEditor, TableColumnResizers, type TableCellEditorHandle } from "./tableCellEditor";
+import { tableCellAtPoint, tableEditingContent, tableTextAtPoint, type TableEditingAction } from "./tableInteraction";
+import type { ActiveTableText } from "./tableCommands";
+import { tableValidationMessage } from "./tableCommands";
+import { tableCellElementId } from "@chemdraft/layout-engine";
+import { insertTableIntoDocument, parseSelectionClipboardPayload } from "./documentWorkflow";
+import { pasteTableIntoDocument, readTableClipboardPaste, stripClipboardPictures, tableClipboardPasteDecision, tableClipboardResultOutranksPicture, tableSelectionClipboardItems } from "./tableClipboardWiring";
+import type { ClipboardReadPayload, ClipboardTableResult } from "@chemdraft/clipboard-adapter";
+import type { InsertTableOptions } from "./dialogs/dialogProtocol";
 import { paletteFocusDiagnostic } from "./paletteFocusDiagnostic";
 import { installMainWindowPalettePendingKeys } from "./palettePendingKeys";
 import { nextObjectId, structureTemplateLayoutMessage } from "@chemdraft/document-workflow-core";
@@ -29,8 +39,13 @@ import {
 } from "./graphicHandleGeometry";
 import {
   activeOpenWarnings,
+  describeOpenWarningTarget,
+  fileWarningReports,
+  fileWarningsTooltip,
   NO_OPEN_WARNINGS_REASON,
   OPEN_WARNINGS_LIST_ID,
+  openWarningsHeading,
+  restoreSessionWarningReports,
   TOGGLE_OPEN_WARNINGS_COMMAND_ID,
   warningCountLabel,
   type OpenWarningSelection,
@@ -107,9 +122,12 @@ import {
   type NativeTextStyle,
   type ObjectReorderPlacement,
   type TextObject,
+  type TableObject,
+  type TableRichText,
   type TextSpan
 } from "@chemdraft/chem-core";
-import { tryNativeSingleBondGraphSmiles } from "@chemdraft/document-workflow-core";
+import { tryNativeSingleBondGraphSmiles, setTableCell, formatTableCellFormula, insertTableRows,
+  setTableCaption, setTableFootnotes } from "@chemdraft/document-workflow-core";
 import { atomLabelDraftDocumentUnchanged, createAtomLabelDraftRollback, documentOwnsAtomLabelDraft, recordAtomLabelDraftRollback, restoreAtomLabelDraft, type AtomLabelDraftState } from "./atomLabelDraft";
 import type { EditorSaveResult } from "@chemdraft/editor-adapter";
 import { sha256Utf8Hex } from "@chemdraft/cdx-compat";
@@ -231,6 +249,7 @@ import {
   planMoleculeAtomLabels,
   recordedLabelBondSide,
   planPageSvgRender,
+  planTableLayout,
   planNativeArtVisual,
   placementAimDegrees,
   sameBondRef,
@@ -256,7 +275,7 @@ import {
 import { createRdkitAdapter } from "@chemdraft/rdkit-adapter/adapter";
 import { buildAnalysisReport, type AnalysisReport, type AnalysisRun } from "@chemdraft/analysis-core";
 import { analysisClient } from "./analysisClient";
-import { inspectClipboardPayload, looksLikeSmiles, smilesListCandidates, type ClipboardDetectedPayload, type ClipboardReadPayload } from "@chemdraft/clipboard-adapter";
+import { inspectClipboardPayload, looksLikeSmiles, smilesListCandidates, type ClipboardDetectedPayload } from "@chemdraft/clipboard-adapter";
 import { verifySmilesPaste, verifySmilesPasteInput, verifySmilesGridEntries } from "./smilesPasteIdentity";
 import {
   SmilesListPasteError, depictSmilesForPaste, depictSmilesListForPaste, smilesListFailureStatus
@@ -632,7 +651,6 @@ import {
   selectedLayerObjectIds,
   selectedMoleculeObjectIds,
   selectedVisualEffectObjectIds,
-  parseSelectionClipboardPayload,
   pasteSelectionClipboardPayload,
   rotateNativeMoleculeParts,
   rotateDocumentObject,
@@ -1660,7 +1678,12 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "11.01.12.55-opus";
+// The shared decision retains pictures when a table is refused or only holds a figure caption.
+function tableClipboardDecisionBeforePicture(payload: ClipboardReadPayload) {
+  return tableClipboardPasteDecision(payload, html => new DOMParser().parseFromString(html, "text/html"));
+}
+
+const CURRENT_BUILD_STAMP = "11.01.13.40-opus";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -2373,6 +2396,7 @@ export function MainWindow({
     assistantViewportRect?: import("./assistant/AssistantToolContext").AssistantRect;
     parts: NativeMoleculeSelectionPart[];
     warnings?: OpenWarningsReport;
+    saveWarnings?: OpenWarningsReport;
     status: string;
     pageFit?: ImportedPageFitPromptState;
   }>());
@@ -2452,6 +2476,36 @@ export function MainWindow({
   const cancelledAtomLabelEditRef = useRef<AtomLabelEditState | undefined>(undefined);
   const finalizedAtomLabelEditRef = useRef<AtomLabelEditState | undefined>(undefined);
   const [textStyleDefaults, setTextStyleDefaults] = useState<NativeTextStyle>(DefaultNativeTextStyle);
+  const [activeTableCellState, setActiveTableCell] = useState<ActiveTableCell>();
+  const [tableCellEdit, setTableCellEdit] = useState<ActiveTableText>();
+  const tableCellEditRef = useRef(tableCellEdit); tableCellEditRef.current = tableCellEdit;
+  const tableCellEditorRef = useRef<TableCellEditorHandle>(null);
+  const [tableResizePreview, setTableResizePreview] = useState<TableObject>();
+  const activeTableCell = resolveActiveTableCell(selectedTable(document), activeTableCellState);
+  // Context-menu commands can arrive before React renders the right-click's state update.
+  // Both native command dispatch and inline menu clicks read this synchronous target.
+  const activeTableCellRef = useRef(activeTableCell);
+  activeTableCellRef.current = activeTableCell;
+  useEffect(() => {
+    setActiveTableCell(current => current?.tableId === activeTableCell?.tableId &&
+      current?.rowId === activeTableCell?.rowId && current?.columnId === activeTableCell?.columnId ? current : activeTableCell);
+  }, [activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId]);
+  useEffect(() => {
+    if (tableCellEdit && (tableCellEdit.tableId !== activeTableCell?.tableId ||
+      (!("kind" in tableCellEdit) && (tableCellEdit.rowId !== activeTableCell?.rowId ||
+        tableCellEdit.columnId !== activeTableCell?.columnId)))) {
+      setTableCellEdit(undefined);
+    }
+    setTableResizePreview(undefined);
+  }, [activeDocumentTabId, activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId]);
+  useEffect(() => { setTableCellEdit(undefined); }, [activeDocumentTabId]);
+  const currentTable = useMemo(() => tableInspectorSnapshot(document, activeTableCell),
+    [document, activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId]);
+  const tableActions = useMemo(() => createTableCommands(document, activeTableCell),
+    [document, activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId]);
+  const insertTableFromDialogRef = useRef<(tabId: string, options: InsertTableOptions) => Promise<void>>(async () => {});
+  const insertTableCommandRef = useRef<(dimensions: TableInsertDimensions, tabId?: string, preset?: "three-line" | "grid") => void>(() => {});
+
   const [activeToolState, setActiveToolState] = useState(() => createActiveToolState(initialActiveToolCommandId));
   const compoundLayoutsEnabled = useCompoundLayoutTools();
   const [unfilteredToolsetRegistry, setToolsetRegistry] = useState<DesktopToolsetRegistry>(() => desktopToolsetRegistry);
@@ -2589,16 +2643,21 @@ export function MainWindow({
     height: 0
   }));
   const [status, setStatus] = useState("Blank native document");
-  // What the last file open reported, so the status line can still list it after its own text has
-  // moved on. Replacing the document drops it (resetDocumentHistory); an open sets it again.
+  // Keep import findings and the latest save findings independent for this tab.
+  // Replacing the document drops both (resetDocumentHistory).
   const [openWarningsReport, setOpenWarningsReport] = useState<OpenWarningsReport | undefined>();
+  const [saveWarningsReport, setSaveWarningsReport] = useState<OpenWarningsReport | undefined>();
   const [openWarningsListOpen, setOpenWarningsListOpen] = useState(false);
-  const openWarnings = activeOpenWarnings(openWarningsReport);
+  const warningReports = fileWarningReports(openWarningsReport, saveWarningsReport);
+  const openWarnings: OpenWarningsReport | undefined = warningReports[0];
+  const fileWarningCount = warningReports.reduce((count, report) => count + report.warnings.length, 0);
   const openWarningsListShown = openWarningsListOpen && openWarnings !== undefined;
   const tabWarningsRef = useRef(openWarningsReport);
   tabWarningsRef.current = openWarningsReport;
+  const tabSaveWarningsRef = useRef<OpenWarningsReport | undefined>(saveWarningsReport);
+  tabSaveWarningsRef.current = saveWarningsReport;
   const tabPageFitRef = useRef<ImportedPageFitPromptState | undefined>(undefined);
-  const openWarningsRef = useRef(openWarnings);
+  const openWarningsRef = useRef<OpenWarningsReport | undefined>(openWarnings);
   openWarningsRef.current = openWarnings;
   const [exportDialog, setExportDialog] = useState<ExportDialogState | undefined>();
   const [exportError, setExportError] = useState<string>();
@@ -2995,6 +3054,7 @@ export function MainWindow({
       analysisReport,
       analysisBusy,
       false,
+      currentTable,
       colorContextKey
     )
   );
@@ -3008,6 +3068,7 @@ export function MainWindow({
     analysisReport,
     analysisBusy,
     false,
+    currentTable,
     colorContextKey
   );
   const activeEditorMolecule =
@@ -3037,7 +3098,11 @@ export function MainWindow({
       literal: true, beforeAtom: activeAtomLabelEdit.beforeAtom, beforeMolecule: activeAtomLabelEdit.beforeMolecule
     });
   }, [document, activeAtomLabelEdit]);
-  const labelDisplayPage = useMemo(() => planDisplayPage(activePage, atomLabelPreview), [activePage, atomLabelPreview]);
+  const labelDisplayPage = useMemo(() => {
+    const page = planDisplayPage(activePage, atomLabelPreview);
+    return tableResizePreview ? { ...page, objects: page.objects.map(object =>
+      object.id === tableResizePreview.id ? tableResizePreview : object) } : page;
+  }, [activePage, atomLabelPreview, tableResizePreview]);
   // The double-bond hover plan changes SVG geometry only, as before label previews.
   // Object views keep real bond metadata for selection chrome and interaction.
   const plannedDisplayPage = useMemo(() => planDisplayPage(labelDisplayPage, undefined, nativeDoubleBondSidePreview),
@@ -3153,13 +3218,14 @@ export function MainWindow({
   const shellCommandSpecs = useMemo(
     () => applyKeybindingSchemeToCommands(
       allShellCommands(document, selectedMolecule, {
+        activeTableCell,
         availability: { canUndo, canRedo, hasMultipleTabs: documentTabs.length > 1, hasOpenWarnings: openWarnings !== undefined },
         registry: toolsetRegistry,
         compoundLayoutsEnabled
       }),
       keybindingScheme
     ),
-    [canRedo, canUndo, document, documentTabs.length, keybindingScheme, openWarnings, selectedMolecule, toolsetRegistry, compoundLayoutsEnabled]
+    [activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId, canRedo, canUndo, document, documentTabs.length, keybindingScheme, openWarnings, selectedMolecule, toolsetRegistry, compoundLayoutsEnabled]
   );
   const shellCommandsById = useMemo(
     () => createShellCommandMap(shellCommandSpecs),
@@ -3330,7 +3396,10 @@ export function MainWindow({
     fileStateRef.current = nextFileState;
     setFileState(nextFileState);
     tabWarningsRef.current = undefined;
+    tabSaveWarningsRef.current = undefined;
+    openWarningsRef.current = undefined;
     setOpenWarningsReport(undefined);
+    setSaveWarningsReport(undefined);
     setOpenWarningsListOpen(false);
   }, [installDocumentHistory]);
   const replacePresentDocument = useCallback((
@@ -3757,6 +3826,7 @@ export function MainWindow({
         analysisReportForBroadcast,
         analysisBusy,
         analysisReportIsStale,
+        currentTable,
         colorContextKey
       )
     ).catch(() => undefined);
@@ -3767,6 +3837,7 @@ export function MainWindow({
     activeArtPaintTarget,
     analysisBusy,
     analysisReportIsStale,
+    currentTable,
     analysisReportForBroadcast,
     currentArtStyle,
     currentMoleculeInspector,
@@ -6704,6 +6775,9 @@ export function MainWindow({
   const clearStampInteractionState = useCallback(() => {
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
+    setTableCellEdit(undefined);
+    tableCellEditRef.current = undefined;
+    setTableResizePreview(undefined);
     setActiveGraphicTransformObjectId(undefined);
     setSelectedGraphicPathNode(undefined);
     setActiveAtomLabelEdit(undefined);
@@ -6760,9 +6834,9 @@ export function MainWindow({
     setStatus(selectToolStatusLabel());
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange, switchToSelectTool]);
 
-  const resetPasteUiState = useCallback((editTextObjectId?: string) => {
+  const resetPasteUiState = useCallback(() => {
     setActiveEditorObjectId(undefined);
-    setActiveTextEditObjectId(editTextObjectId);
+    setActiveTextEditObjectId(undefined);
     setActiveAtomLabelEdit(undefined);
     setHoveredNativeAtom(undefined);
     setSelectedNativeMoleculePart(undefined);
@@ -6784,7 +6858,10 @@ export function MainWindow({
       setStatus(result.status);
       return;
     }
-    resetPasteUiState(result.editTextObjectId);
+    // Keep the inserted object selected, like other canvas pastes. Auto-focusing
+    // its textarea routes the first Undo to an empty browser text history instead
+    // of the document entry we just recorded. Double-click still opens the editor.
+    resetPasteUiState();
     setStatus(result.status);
   }, [commitDocumentChange, pastePointForViewport, resetPasteUiState, textStyleDefaults, viewportCentrePagePoint]);
 
@@ -6884,6 +6961,21 @@ export function MainWindow({
     }
   }, [commitDocumentChange, pastePointForViewport, resetPasteUiState]);
 
+  const applyTableClipboardResult = useCallback((parsed: ClipboardTableResult) => {
+    smilesListPasteAbortRef.current?.abort();
+    if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
+    if (!parsed.ok) { setStatus(parsed.reason); return; }
+    try {
+      const result = pasteTableIntoDocument(documentRef.current, parsed, pastePointForViewport(), textStyleDefaults,
+        prefix => `${prefix}-${crypto.randomUUID()}`);
+      commitDocumentChange(result.document, "Paste table");
+      resetPasteUiState();
+      setStatus(["Pasted table", ...result.warnings].join("; "));
+    } catch (error) {
+      setStatus(tableValidationMessage(error));
+    }
+  }, [commitDocumentChange, pastePointForViewport, resetPasteUiState, textStyleDefaults]);
+
   // Prepare and verify the whole list before committing. Unsuccessful attempts leave fallback
   // handling to the caller, so another text flavor can still supply readable chemistry.
   const renderPastedSmilesList = useCallback((text: string, signal: AbortSignal, pictureFallback = false):
@@ -6962,7 +7054,7 @@ export function MainWindow({
     });
   }, [commitDocumentChange, pastePointForViewport, resetPasteUiState]);
 
-  const applyDetectedClipboardPayload = useCallback((detectedPayload: ClipboardDetectedPayload) => {
+  const applyDetectedClipboardPayload = useCallback((detectedPayload: ClipboardDetectedPayload, rawPayload?: ClipboardReadPayload) => {
     smilesListPasteAbortRef.current?.abort();
     if (detectedPayload.kind === "inchi") {
       applySyncClipboardPayload({ kind: "plain-text", text: detectedPayload.text, sourceType: detectedPayload.sourceType, warnings: [] });
@@ -6970,18 +7062,33 @@ export function MainWindow({
       return;
     }
     if (detectedPayload.kind === "plain-text" || detectedPayload.kind === "smiles") {
+      const pasteAsTable = () => {
+        // Plain text gets its existing chemical parse first, including tabular SMILES lists.
+        // Picture heuristics can label plain text as SMILES; explicit chemistry has no candidates.
+        const table = (detectedPayload.kind === "plain-text" || detectedPayload.chemistryCandidates) && rawPayload
+          ? readTableClipboardPaste(stripClipboardPictures(rawPayload), html => new DOMParser().parseFromString(html, "text/html"))
+          : undefined;
+        if (!table || (detectedPayload.fallbackImage && !tableClipboardResultOutranksPicture(table))) return false;
+        applyTableClipboardResult(table);
+        return true;
+      };
       const pasteFallbackImage = () => {
         if (!detectedPayload.fallbackImage) return false;
+        if (pasteAsTable()) return true;
         const image = detectedPayload.fallbackImage;
         applySyncClipboardPayload(inspectClipboardPayload({ types: [image.type], textItems: [], imageItems: [image] }));
         return true;
       };
-      const pasteAsText = () => applySyncClipboardPayload(detectedPayload.kind === "smiles" && !/\s/.test(detectedPayload.text.trim())
-        ? { kind: "plain-text", text: detectedPayload.text, sourceType: detectedPayload.sourceType, warnings: [] }
-        : { ...detectedPayload, kind: "plain-text" });
+      const pasteAsText = () => {
+        if (pasteAsTable()) return true;
+        applySyncClipboardPayload(detectedPayload.kind === "smiles" && !/\s/.test(detectedPayload.text.trim())
+          ? { kind: "plain-text", text: detectedPayload.text, sourceType: detectedPayload.sourceType, warnings: [] }
+          : { ...detectedPayload, kind: "plain-text" });
+        return false;
+      };
       const finishSingleFallback = ({ reason, failed }: Awaited<ReturnType<typeof renderPastedSmiles>>) => {
         if (failed) return;
-        pasteAsText();
+        if (pasteAsText()) return;
         if (reason) {
           setStatus(reason.startsWith("the structure could not be verified")
             ? `SMILES pasted as text: ${reason}`
@@ -6989,7 +7096,8 @@ export function MainWindow({
         }
       };
       const finishListFallback = (result: Awaited<ReturnType<typeof renderPastedSmilesList>>) => {
-        if (!result || result.pasteAsText) pasteAsText();
+        // Includes engine-unavailable and SmilesListPasteError fallbacks from the list renderer.
+        if ((!result || result.pasteAsText) && pasteAsText()) return;
         if (result?.status) setStatus(result.status);
       };
       const chemistryCandidates = detectedPayload.chemistryCandidates;
@@ -7043,7 +7151,7 @@ export function MainWindow({
       return;
     }
     applySyncClipboardPayload(detectedPayload);
-  }, [applySyncClipboardPayload, renderPastedSmiles, renderPastedSmilesList]);
+  }, [applySyncClipboardPayload, applyTableClipboardResult, renderPastedSmiles, renderPastedSmilesList]);
 
   const applySelectionClipboardPayload = useCallback((payload: NonNullable<ReturnType<typeof createSelectionClipboardPayload>>) => {
     smilesListPasteAbortRef.current?.abort();
@@ -7118,7 +7226,8 @@ export function MainWindow({
       return;
     }
 
-    const didWrite = await writeClipboardTextItems(selectionClipboardTextItems(payload));
+    const tableCopy = tableSelectionClipboardItems(payload);
+    const didWrite = await writeClipboardTextItems(tableCopy?.items ?? selectionClipboardTextItems(payload));
     if (!didWrite) {
       setStatus(mode === "copy" ? "Copy failed: clipboard unavailable" : "Cut canceled: clipboard unavailable");
       return;
@@ -7129,11 +7238,11 @@ export function MainWindow({
 
     if (mode === "cut") {
       deleteSelectionAfterClipboardCut(payload, wholeObjectIds);
-      setStatus("Cut ChemDraft selection");
+      setStatus(["Cut ChemDraft selection", ...(tableCopy?.warnings ?? [])].join("; "));
       return;
     }
 
-    setStatus("Copied ChemDraft selection");
+    setStatus(["Copied ChemDraft selection", ...(tableCopy?.warnings ?? [])].join("; "));
   }, [deleteSelectionAfterClipboardCut]);
 
   const performCopyAs = useCallback(async (commandId: string) => {
@@ -7264,17 +7373,19 @@ export function MainWindow({
       const payload = await candidate;
       if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
       if (!payload) continue;
-      const selectionPayload = payload.textItems
-        .map((item) => parseSelectionClipboardPayload(item.text))
-        .find((selection) => selection !== undefined);
-      if (selectionPayload) {
-        applySelectionClipboardPayload(selectionPayload);
+      const decision = tableClipboardDecisionBeforePicture(payload);
+      if (decision.kind === "selection") {
+        applySelectionClipboardPayload(decision.payload);
+        return;
+      }
+      if (decision.kind === "table") {
+        applyTableClipboardResult(decision.result);
         return;
       }
 
-      const detectedPayload = inspectClipboardPayload(payload);
+      const detectedPayload = decision.payload;
       if (detectedPayload.kind !== "empty") {
-        applyDetectedClipboardPayload(detectedPayload);
+        applyDetectedClipboardPayload(detectedPayload, payload);
         return;
       }
     }
@@ -7288,7 +7399,7 @@ export function MainWindow({
     setStatus(readFailure !== undefined
       ? `Couldn't read the clipboard: ${readFailure}`
       : "Couldn't paste: the clipboard contains no supported drawing or text content.");
-  }, [applyDetectedClipboardPayload, applySelectionClipboardPayload]);
+  }, [applyDetectedClipboardPayload, applySelectionClipboardPayload, applyTableClipboardResult]);
 
   const updateTextObjectContent = useCallback((objectId: string, text: string) => {
     replacePresentDocument((current) => updateNativeTextObjectText(current, objectId, text));
@@ -7385,7 +7496,84 @@ export function MainWindow({
     startTextObjectEdit(objectId);
   }, [activeToolState.activeCommandId, startTextObjectEdit]);
 
+  const startTableCellEdit = useCallback((table: TableObject, cell: ActiveTableText) => {
+    clearScheduledTextEditorFocus();
+    setActiveTextEditObjectId(undefined);
+    setActiveAtomLabelEdit(undefined);
+    setActiveEditorObjectId(undefined);
+    replacePresentDocument(current => selectDocumentObject(current, table.id));
+    if (!("kind" in cell)) setActiveTableCell(cell);
+    tableCellEditRef.current = cell;
+    setTableCellEdit(cell);
+    scheduleInlineEditorFocus(() => pageRef.current?.querySelector<HTMLTextAreaElement>("[data-table-cell-editor] textarea")?.focus({ preventScroll: true }));
+    setStatus("kind" in cell ? `Editing table ${cell.kind}` : "Editing table cell");
+  }, [clearScheduledTextEditorFocus, replacePresentDocument, scheduleInlineEditorFocus]);
+
+  const commitTableObject = useCallback((table: TableObject, label: string) => {
+    commitDocumentChange(current => applyTableObjectEdit(current, table), label);
+    setStatus(label);
+  }, [commitDocumentChange]);
+
+  const finishTableCellEdit = useCallback((value: TableRichText, action: TableEditingAction) => {
+    const cell = tableCellEditRef.current;
+    let table = selectedTable(documentRef.current);
+    if (!cell || !table || table.id !== cell.tableId) return;
+    if ("kind" in cell) {
+      const original = tableEditingContent(table, cell)?.value;
+      if (original && action.kind !== "cancel" && JSON.stringify(original) !== JSON.stringify(value)) {
+        const edit = cell.kind === "caption" ? setTableCaption(table, value)
+          : setTableFootnotes(table, table.footnotes.map((note, index) =>
+            index === cell.index ? value : note));
+        commitTableObject(edit.table, edit.label);
+      }
+      clearScheduledTextEditorFocus();
+      tableCellEditRef.current = undefined;
+      setTableCellEdit(undefined);
+      canvasRegionRef.current?.focus({ preventScroll: true });
+      return;
+    }
+    const row = table.rows.find(item => item.id === cell.rowId);
+    const column = table.columns.findIndex(item => item.id === cell.columnId);
+    if (!row || column < 0) return;
+    if (action.kind !== "cancel") {
+      const original = row.cells[column];
+      if (JSON.stringify({ text: original.text, spans: original.spans }) !== JSON.stringify(value)) {
+        const edit = setTableCell(table, cell.rowId, cell.columnId, value);
+        commitTableObject(edit.table, edit.label);
+        table = edit.table;
+        if ((original.formula ?? table.columns[column].formula) === "auto") {
+          const formatted = formatTableCellFormula(table, cell.rowId, cell.columnId);
+          if (formatted) { commitTableObject(formatted.table, formatted.label); table = formatted.table; }
+        }
+      }
+    }
+    let next = action.kind === "commit" ? action.next : undefined;
+    if (action.kind === "commit" && action.insertRow) {
+      const inserted = insertTableRows(table, table.rows.length, 1, prefix => `${prefix}-${crypto.randomUUID()}`);
+      commitTableObject(inserted.table, inserted.label);
+      next = { tableId: table.id, rowId: inserted.table.rows.at(-1)!.id, columnId: table.columns[0].id };
+    }
+    clearScheduledTextEditorFocus();
+    tableCellEditRef.current = next;
+    setTableCellEdit(next);
+    if (next) setActiveTableCell(next);
+    else canvasRegionRef.current?.focus({ preventScroll: true });
+  }, [clearScheduledTextEditorFocus, commitTableObject]);
+
+  const handleTableDoubleClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    if (activeToolState.activeCommandId !== "tool.select" || isEditableTarget(event.target)) return;
+    const owner = (event.target as Element).closest("[data-page-svg-object-visual]")?.getAttribute("data-page-svg-object-visual");
+    const table = documentRef.current.pages[0].objects.find(object => object.id === owner);
+    const rect = pageRef.current?.getBoundingClientRect();
+    if (table?.type !== "table" || !rect) return;
+    const cell = tableTextAtPoint(table, { x: (event.clientX - rect.left) / viewportRef.current.scale,
+      y: (event.clientY - rect.top) / viewportRef.current.scale });
+    if (!cell) return;
+    event.preventDefault(); event.stopPropagation(); startTableCellEdit(table, cell);
+  }, [activeToolState.activeCommandId, startTableCellEdit]);
+
   const applyTextStyleCommand = useCallback((commandId: string): boolean => {
+    if (tableCellEditorRef.current?.applyCommand(commandId)) return true;
     const currentDocument = documentRef.current;
     const toolbarStyleTarget = toolbarStyleTargetRef.current;
     const snapshotTextSelection = toolbarStyleTarget?.textRange;
@@ -7468,6 +7656,18 @@ export function MainWindow({
       ...current,
       ...stylePatch
     }));
+
+    try {
+      const tableFontResult = applyTableFontCommand(currentDocument, commandId);
+      if (tableFontResult) {
+        commitDocumentChange(tableFontResult.document, tableFontResult.label);
+        setStatus(tableFontResult.label);
+        return true;
+      }
+    } catch (error) {
+      setStatus(tableValidationMessage(error));
+      return true;
+    }
 
     if (stylePatch.color) {
       const selectedColor = stylePatch.color;
@@ -8699,6 +8899,11 @@ export function MainWindow({
     if (nextHistory.present.selection.objectIds.length === 0) {
       toolbarStyleTargetRef.current = undefined;
     }
+    const tableWasEditing = Boolean(tableCellEditRef.current);
+    setTableCellEdit(undefined);
+    tableCellEditRef.current = undefined;
+    setTableResizePreview(undefined);
+    if (tableWasEditing) canvasRegionRef.current?.focus({ preventScroll: true });
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(undefined);
     setActiveGraphicTransformObjectId(undefined);
@@ -8841,7 +9046,8 @@ export function MainWindow({
       scrollLeft: canvas?.scrollLeft ?? 0, scrollTop: canvas?.scrollTop ?? 0,
       assistantViewportRect: assistantHistoryPort.getViewportRect?.(activeDocumentTabIdRef.current),
       parts: selectedNativeMoleculePartsRef.current,
-      warnings: tabWarningsRef.current, status: statusRef.current, pageFit: tabPageFitRef.current
+      warnings: tabWarningsRef.current, saveWarnings: tabSaveWarningsRef.current,
+      status: statusRef.current, pageFit: tabPageFitRef.current
     });
   }, [assistantHistoryPort]);
 
@@ -8865,8 +9071,10 @@ export function MainWindow({
     selectedNativeMoleculePartRef.current = snapshot.parts.at(-1);
     setSelectedNativeMoleculeParts(snapshot.parts);
     tabWarningsRef.current = snapshot.warnings;
-    openWarningsRef.current = activeOpenWarnings(snapshot.warnings);
+    tabSaveWarningsRef.current = snapshot.saveWarnings;
+    openWarningsRef.current = fileWarningReports(snapshot.warnings, snapshot.saveWarnings)[0];
     setOpenWarningsReport(snapshot.warnings);
+    setSaveWarningsReport(snapshot.saveWarnings);
     setOpenWarningsListOpen(false);
     tabPageFitRef.current = snapshot.pageFit;
     setPageFitPrompt(snapshot.pageFit);
@@ -9252,6 +9460,7 @@ export function MainWindow({
     const coordinator = new DialogCoordinator(nativeDialogTransport, {
       insertTemplate: (tabId, id) => dispatchTemplateRef.current(tabId, id),
       applyPageSize: (tabId, size) => applyPageSizeToTabRef.current(tabId, size),
+      insertTable: (tabId, options) => insertTableFromDialogRef.current(tabId, options),
       previewArrangementSpacing: (tabId, percent) => previewSpacingRef.current(tabId, percent),
       applyArrangementSpacing: (tabId, percent) => applySpacingRef.current(tabId, percent),
       onSpacingSettled: tabId => { nativeSpacingSourcesRef.current.delete(tabId); }, onError: setStatus,
@@ -9440,7 +9649,8 @@ export function MainWindow({
               const resolved = await resolveOpenResultDocument(opened);
               if (!resolved) throw new Error(formatOpenFailure(opened.warnings));
               const history = createDocumentHistory(normalizeCommittedDocument(admitParsedDocument(resolved.document)));
-              restored.push({ session, opened, resolved, history, candidateIndex, id: crypto.randomUUID() });
+              const reports = restoreSessionWarningReports(session);
+              restored.push({ session, opened, resolved, history, reports, candidateIndex, id: crypto.randomUUID() });
             } catch {
               skipped.push(rawTab);
             }
@@ -9472,17 +9682,18 @@ export function MainWindow({
             documentTabSnapshotsRef.current.clear();
             nonPristineTabsRef.current.clear();
           }
-          for (const { id, session, resolved, opened, history } of restored) {
+          for (const { id, session, resolved, opened, history, reports } of restored) {
             if (session.pristine !== true || session.path || session.dirty || !session.blank) nonPristineTabsRef.current.add(id);
             const savePathNotice = restoredSavePathNotice(session);
             documentTabSnapshotsRef.current.set(id, {
               history, file: restoredDocumentFileState(session),
               viewport: session.view?.viewport ?? createViewportState(),
               scrollLeft: session.view?.scrollLeft ?? 0, scrollTop: session.view?.scrollTop ?? 0, parts: [],
-              warnings: session.openWarnings ?? {
+              warnings: reports.warnings ?? (reports.saveWarnings ? undefined : {
                 displayName: session.displayName, sourceLabel: openSourceLabel(resolved.source, resolved.statusSourceLabel),
                 warnings: opened.warnings
-              },
+              }),
+              saveWarnings: reports.saveWarnings,
               status: `${shellOpenFailure ? `${shellOpenFailure} — ` : ""}Restored last session — ${session.displayName}${session.dirty ? " (unsaved changes)" : ""}${restoreNotice}${savePathNotice ? `. ${savePathNotice}` : ""}`
             });
           }
@@ -9599,7 +9810,8 @@ export function MainWindow({
             snapshot.file.path ? nativePathBasename(snapshot.file.path) : tab.title, documentIsBlank(tabDocument)),
           pristine: !nonPristineTabsRef.current.has(tab.id),
           view: { viewport: snapshot.viewport, scrollLeft: snapshot.scrollLeft, scrollTop: snapshot.scrollTop },
-          openWarnings: snapshot.warnings
+          openWarnings: snapshot.warnings,
+          saveWarnings: snapshot.saveWarnings
         };
       });
       const envelope = buildDocumentTabsSession(tabs,
@@ -9626,7 +9838,7 @@ export function MainWindow({
       void writeDocumentSessionNow();
     }, DOCUMENT_SESSION_SAVE_DEBOUNCE_MS);
     return () => window.clearTimeout(handle);
-  }, [document, fileState, documentTabs, activeDocumentTabId, viewport, openWarningsReport, sessionStartupCompleted, writeDocumentSessionNow]);
+  }, [document, fileState, documentTabs, activeDocumentTabId, viewport, openWarningsReport, saveWarningsReport, sessionStartupCompleted, writeDocumentSessionNow]);
 
 
   // Menu Quit / Cmd+Q on macOS, or closing the document window / File ▸ Exit elsewhere: Rust asks
@@ -9951,15 +10163,23 @@ export function MainWindow({
       const currentDocument = savingTabId === activeDocumentTabIdRef.current ? documentRef.current :
         documentTabSnapshotsRef.current.get(savingTabId)?.history.present;
       const nextFileState = { path: path ?? savingFileState.path, dirty: currentDocument !== savingDocument };
+      const displayName = path ? nativePathBasename(path) : payload.filename;
+      const warningsReport: OpenWarningsReport | undefined = payload.warnings.length > 0 ? {
+        operation: "save", displayName, sourceLabel: "ChemDraft CDXML envelope", warnings: payload.warnings
+      } : undefined;
       if (savingTabId === activeDocumentTabIdRef.current) {
         fileStateRef.current = nextFileState;
         setFileState(nextFileState);
-        setStatus(formatSaveStatus(path ? nativePathBasename(path) : payload.filename, payload.warnings));
+        tabSaveWarningsRef.current = warningsReport;
+        openWarningsRef.current = activeOpenWarnings(tabWarningsRef.current) ?? warningsReport;
+        setSaveWarningsReport(warningsReport);
+        setOpenWarningsListOpen(false);
+        setStatus(formatSaveStatus(displayName, payload.warnings));
       } else {
         const snapshot = documentTabSnapshotsRef.current.get(savingTabId);
         if (snapshot) documentTabSnapshotsRef.current.set(savingTabId, {
-          ...snapshot, file: nextFileState,
-          status: formatSaveStatus(path ? nativePathBasename(path) : payload.filename, payload.warnings)
+          ...snapshot, file: nextFileState, saveWarnings: warningsReport,
+          status: formatSaveStatus(displayName, payload.warnings)
         });
       }
       const tabs = documentTabsRef.current.map((tab) => tab.id === savingTabId
@@ -10366,6 +10586,37 @@ export function MainWindow({
     []
   );
 
+  insertTableCommandRef.current = (dimensions, tabId = activeDocumentTabIdRef.current, preset = "three-line") => {
+    const active = tabId === activeDocumentTabIdRef.current;
+    const snapshot = active ? undefined : documentTabSnapshotsRef.current.get(tabId);
+    const source = active ? documentHistoryRef.current.present : snapshot?.history.present;
+    if (!source) throw new Error("The originating drawing is closed");
+    if (active && isSnapshotSessionActive()) throw new Error("Finish the current drawing gesture, then insert the table again.");
+    const page = source.pages[0];
+    const canvas = canvasRegionRef.current;
+    const pageRect = pageRef.current?.getBoundingClientRect();
+    const canvasRect = canvas?.getBoundingClientRect();
+    const center = active && canvas && pageRect && canvasRect && canvas.clientWidth && canvas.clientHeight
+      ? { x: (canvasRect.left + canvas.clientWidth / 2 - pageRect.left) / viewportRef.current.scale,
+          y: (canvasRect.top + canvas.clientHeight / 2 - pageRect.top) / viewportRef.current.scale }
+      : { x: page.width / 2, y: page.height / 2 };
+    const next = insertTableIntoDocument(source, { ...dimensions, preset, center, textStyle: textStyleDefaults,
+      newId: prefix => `${prefix}-${crypto.randomUUID()}` });
+    if (active) {
+      commitDocumentChange(next, "Insert table");
+      setStatus("Inserted table");
+    } else if (snapshot) {
+      const present = normalizeCommittedDocument(next);
+      documentUndoLabelsRef.current.set(present, "Insert table");
+      for (const listener of assistantUserEditListenersRef.current) listener(tabId);
+      documentTabSnapshotsRef.current.set(tabId, { ...snapshot,
+        history: { past: boundedHistoryPast([...snapshot.history.past, source], present), present, future: [] },
+        file: { ...snapshot.file, dirty: true }, status: "Inserted table" });
+      nonPristineTabsRef.current.add(tabId);
+      setDocumentTabs([...documentTabsRef.current]);
+    }
+  };
+
   const coreCommandBindingsRef = useRef<Map<string, { spec: CommandSpec; run: () => Promise<void> }>>(
     new Map()
   );
@@ -10384,6 +10635,35 @@ export function MainWindow({
         }
       });
     };
+
+    tableActions.forEach(action => register(action, async () => {
+      if (action.id === "table.insertDialog") {
+        const coordinator = dialogCoordinatorRef.current;
+        if (!coordinator) {
+          setStatus("Insert Table could not open: the dialog host is unavailable."); return;
+        }
+        const tabId = activeDocumentTabIdRef.current;
+        const title = documentTabsRef.current.find(tab => tab.id === tabId)?.title ?? "Untitled";
+        await coordinator.openInsertTable(tabId, { title: title.slice(0, 256), rows: 6, columns: 4, headerRows: 1, preset: "three-line" });
+      } else {
+        const editing = tableCellEditRef.current;
+        if (editing) {
+          const commit = tableCellEditorRef.current?.commit();
+          if (commit === "composing") {
+            setStatus("Finish typing in the table first.");
+            return;
+          }
+          if (commit === false) return;
+        }
+        try {
+          const result = applyTableCommand(documentRef.current, action.id, activeTableCellRef.current,
+            prefix => `${prefix}-${crypto.randomUUID()}`, editing);
+          if (result) { commitDocumentChange(result.document, result.label); setStatus(result.label); }
+        } catch (error) {
+          setStatus(tableValidationMessage(error));
+        }
+      }
+    }));
 
     templateInsertActions.forEach(action => register(action, () => {
       const tabId = templateCommandTargetRef.current ?? activeDocumentTabIdRef.current;
@@ -11074,6 +11354,7 @@ export function MainWindow({
 
     return bindings;
   }, [
+    tableActions, activeTableCell,
     activateDocumentTab,
     newDocumentTab,
     cycleDocumentTab,
@@ -11149,6 +11430,15 @@ export function MainWindow({
       syncCoreCommands: createCoreCommandRegistrar(commandRegistry, () => coreCommandBindingsRef.current)
     };
   }, []);
+
+  insertTableFromDialogRef.current = async (tabId, options) => {
+    const commandId = tableInsertCommandId(options.rows, options.columns, options.headerRows);
+    if (registry.has(commandId)) throw new Error("Table insertion is already running");
+    registry.register(createTableInsertAction(options.rows, options.columns, options.headerRows), () => {
+      insertTableCommandRef.current(options, tabId, options.preset);
+    });
+    try { await registry.invoke(commandId); } finally { registry.unregister(commandId); }
+  };
 
   dispatchTemplateRef.current = async (tabId, id) => {
     templateCommandTargetRef.current = tabId;
@@ -11778,6 +12068,12 @@ export function MainWindow({
     }
     if (keptDrawingsPromptRef.current || quitInteractionRef.current) return;
     if (closeTabPromptRef.current && commandId.startsWith("document.")) return;
+    const tableDimensions = parseTableInsertCommandId(commandId);
+    if (tableDimensions) {
+      await insertTableFromDialogRef.current(activeDocumentTabIdRef.current, { ...tableDimensions, preset: "three-line" });
+      return;
+    }
+
     if (commandId === convertTextToAtomLabelCommandId) {
       const disabledReason = selectedTextToAtomLabelDisabledReason(documentRef.current);
       if (disabledReason) {
@@ -12383,7 +12679,8 @@ export function MainWindow({
         return false;
       }
 
-      const didWrite = writeClipboardDataTransfer(event.clipboardData, selectionClipboardTextItems(payload));
+      const tableCopy = tableSelectionClipboardItems(payload);
+      const didWrite = writeClipboardDataTransfer(event.clipboardData, tableCopy?.items ?? selectionClipboardTextItems(payload));
       if (!didWrite) {
         setStatus(mode === "copy" ? "Copy failed: clipboard unavailable" : "Cut canceled: clipboard unavailable");
         return false;
@@ -12394,11 +12691,11 @@ export function MainWindow({
       selectionClipboardPasteStateRef.current = initialSelectionClipboardPasteState(payload, mode);
       if (mode === "cut") {
         deleteSelectionAfterClipboardCut(payload, wholeObjectIds);
-        setStatus("Cut ChemDraft selection");
+        setStatus(["Cut ChemDraft selection", ...(tableCopy?.warnings ?? [])].join("; "));
         return true;
       }
 
-      setStatus("Copied ChemDraft selection");
+      setStatus(["Copied ChemDraft selection", ...(tableCopy?.warnings ?? [])].join("; "));
       return true;
     };
 
@@ -12431,27 +12728,37 @@ export function MainWindow({
         return;
       }
 
+      event.preventDefault();
       const selectionPayload =
         parseSelectionClipboardPayload(event.clipboardData.getData(CHEMDRAFT_SELECTION_CLIPBOARD_TYPE)) ??
         parseSelectionClipboardPayload(event.clipboardData.getData("text/plain"));
       if (selectionPayload) {
-        event.preventDefault();
         applySelectionClipboardPayload(selectionPayload);
         return;
       }
 
       const domPayload = clipboardPayloadFromDataTransfer(event.clipboardData);
-      event.preventDefault();
-      // WKWebView and WebView2 may hide private flavors in DataTransfer. Prefer the native read.
+      // WKWebView and WebView2 cannot expose the natively written private ChemDraft flavor
+      // through DataTransfer. Read natively before a text/plain fallback can lose formatting;
+      // pasteClipboard makes the same table decision on the native payload, then on this snapshot.
       if (isDesktopRuntime()) {
         void pasteClipboard(domPayload);
         return;
       }
       void domPayload.then((payload) => {
         if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
-        const detectedPayload = inspectClipboardPayload(payload);
+        const decision = tableClipboardDecisionBeforePicture(payload);
+        if (decision.kind === "selection") {
+          applySelectionClipboardPayload(decision.payload);
+          return;
+        }
+        if (decision.kind === "table") {
+          applyTableClipboardResult(decision.result);
+          return;
+        }
+        const detectedPayload = decision.payload;
         if (detectedPayload.kind !== "empty") {
-          applyDetectedClipboardPayload(detectedPayload);
+          applyDetectedClipboardPayload(detectedPayload, payload);
         } else if (selectionClipboardPayloadRef.current) {
           applySelectionClipboardPayload(selectionClipboardPayloadRef.current);
         }
@@ -12468,7 +12775,7 @@ export function MainWindow({
       window.removeEventListener("cut", handleCut);
       window.removeEventListener("paste", handlePaste);
     };
-  }, [applyDetectedClipboardPayload, applySelectionClipboardPayload, copySelectionToClipboard, deleteSelectionAfterClipboardCut, pasteClipboard]);
+  }, [applyDetectedClipboardPayload, applySelectionClipboardPayload, applyTableClipboardResult, copySelectionToClipboard, deleteSelectionAfterClipboardCut, pasteClipboard]);
 
   const clearFreehandArtPreview = useCallback(() => {
     if (freehandArtPreviewFrameRef.current !== undefined) {
@@ -12921,6 +13228,17 @@ export function MainWindow({
         event.preventDefault();
       }
 
+      if (tableCellEditRef.current) return;
+      if (event.key === "Enter" && !event.ctrlKey && !event.metaKey && !event.altKey &&
+        !event.shiftKey && !event.defaultPrevented && !shouldIgnoreShortcutTarget(event.target, event.key) &&
+        !isBlockedByModalDialog(event.target)) {
+        const table = selectedTable(documentRef.current);
+        const cell = resolveActiveTableCell(table, activeTableCellState);
+        if (table && cell) {
+          event.preventDefault(); startTableCellEdit(table, cell); return;
+        }
+      }
+
       // An open modal dialog owns the keyboard. MainWindow also has a capture-phase Escape listener, so
       // its global handlers must opt out explicitly; propagation control inside a dialog is too late.
       // A key the canvas never sees (in a dialog or another text field) ends a hover-label
@@ -13224,6 +13542,8 @@ export function MainWindow({
     selectedNativeMoleculePart,
     assignHoveredNativeDeleteTarget,
     shortcutRegistry,
+    activeTableCellState,
+    startTableCellEdit,
     startAtomLabelEdit,
     switchToSelectTool,
     syncPathArtPreview,
@@ -16782,7 +17102,9 @@ export function MainWindow({
             ? "Rotated selection"
             : groupTransform.mode === "projected-plane-tilt"
               ? "3D rotate applied"
-              : "Resized selection"
+              : groupTransform.objectIds.some(id =>
+                findDocumentObject(groupTransform.startDocument, id)?.type === "table")
+                ? "Tables keep their size when scaled" : "Resized selection"
         );
       }
       groupTransformDragRef.current = null;
@@ -16894,7 +17216,7 @@ export function MainWindow({
         const changed = commitObjectResize(objectResizeDrag, point);
         const object = findDocumentObject(documentRef.current, objectResizeDrag.objectId);
         const targetLabel = objectResizeDrag.target ? "selected molecule fragment" : documentObjectTransformLabel(object);
-        setStatus(changed
+        setStatus(object?.type === "table" ? "Tables keep their size when scaled" : changed
           ? objectResizeDrag.stretching ? `Stretched ${targetLabel}` : `Resized ${targetLabel}`
           : `${capitalizeLabel(targetLabel)} size unchanged`);
       }
@@ -19246,6 +19568,20 @@ export function MainWindow({
 
     event.preventDefault();
     event.stopPropagation();
+    if (object.type === "table") {
+      // Commit before changing cells: contextmenu can also arrive without a pointerdown/blur.
+      const commit = tableCellEditorRef.current?.commit();
+      if (commit === "composing") {
+        setStatus("Finish typing in the table first.");
+        return;
+      }
+      if (commit === false) return;
+      // Notes/whitespace keep this table's active cell, or resolve its default body cell.
+      const cell = (point ? tableCellAtPoint(object, point) : undefined)
+        ?? resolveActiveTableCell(object, activeTableCellRef.current);
+      activeTableCellRef.current = cell;
+      setActiveTableCell(cell);
+    }
     if (!preserveMultiSelection && !preserveFragmentSelection) {
       replacePresentDocument((current) => selectDocumentObject(current, objectId));
     }
@@ -19739,7 +20075,7 @@ export function MainWindow({
         const changed = commitObjectResize(objectResizeDrag, point);
         const object = findDocumentObject(documentRef.current, objectResizeDrag.objectId);
         const label = documentObjectTransformLabel(object);
-        setStatus(changed
+        setStatus(object?.type === "table" ? "Tables keep their size when scaled" : changed
           ? objectResizeDrag.stretching ? `Stretched ${label}` : `Resized ${label}`
           : `${capitalizeLabel(label)} size unchanged`);
       }
@@ -20849,6 +21185,7 @@ export function MainWindow({
                 onPointerCancel={handlePagePointerCancel}
                 onPointerLeave={handlePagePointerLeave}
                 onContextMenu={handlePageContextMenu}
+                onDoubleClickCapture={handleTableDoubleClick}
               >
                 {crosshairsVisible ? (
                   <CrosshairOverlay
@@ -20868,8 +21205,25 @@ export function MainWindow({
                   objectTransformPreview={objectTransformPreview}
                   spinningObjectId={activeSpin3dState?.objectId}
                   editingTextObjectId={activeTextEditObjectId}
+                  editingTableCell={tableCellEdit && !("kind" in tableCellEdit) ? tableCellEdit : undefined}
                 />
                 <PageInteractionPortal target={interactionLayer}>
+                {(() => {
+                  const table = selectedTable(document);
+                  if (!table || activeToolState.activeCommandId !== "tool.select") return null;
+                  const editingCell = tableCellEdit && tableEditingContent(table, tableCellEdit)
+                    ? tableCellEdit : undefined;
+                  return <>
+                    <TableColumnResizers key={`${activeDocumentTabId}:${table.id}`} table={tableResizePreview ?? table} scale={viewport.scale}
+                      onPreview={setTableResizePreview} onCommit={commitTableObject} />
+                    {editingCell ? <TableCellEditor key={`${activeDocumentTabId}:${JSON.stringify(editingCell)}`}
+                      ref={tableCellEditorRef} document={document} table={table} cell={editingCell} scale={viewport.scale}
+                      platform={shortcutPlatform} renderText={object => <TextObjectContent object={object} noWrap />}
+                      resolveShortcut={event => shortcutRegistry.resolve({ key: event.key, shiftKey: event.shiftKey,
+                        metaKey: event.metaKey, ctrlKey: event.ctrlKey, altKey: event.altKey })}
+                      onFinish={finishTableCellEdit} onHistoryCommand={restoreDocumentHistory} onError={setStatus} /> : null}
+                  </>;
+                })()}
                 {activeNativeTemplateId && templatePreview ? (
                   <NativeTemplateGhostOverlay
                     plan={templatePreview}
@@ -21300,7 +21654,8 @@ export function MainWindow({
             Positioned apart, a long status or a branch build's long stamp ran one into the other. */}
         <div ref={statusRowRef} className="status-row" data-status-row>
           <div className="status-row-main">
-            <span data-status-message role="status" aria-live="polite" className="status-message">
+            <span data-status-message role="status" aria-live="polite" className="status-message"
+              title={fileWarningsTooltip(warningReports)}>
               {interactive3dWorkspace
                 ? [
                     interactive3dWorkspace.status,
@@ -21318,14 +21673,14 @@ export function MainWindow({
                 aria-haspopup="dialog"
                 aria-expanded={openWarningsListShown}
                 aria-controls={openWarningsListShown ? OPEN_WARNINGS_LIST_ID : undefined}
-                title={openWarningsListShown ? "Hide the warnings from opening this document" : "Show the warnings from opening this document"}
+                title={`${openWarningsListShown ? "Hide" : "Show"} the warnings from ${warningReports.length > 1 ? "opening and saving" : openWarnings.operation === "save" ? "saving" : "opening"} this document`}
                 // Keep keyboard focus where it was (the canvas), so tool shortcuts work straight after.
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => {
                   void invokeCommandRef.current(TOGGLE_OPEN_WARNINGS_COMMAND_ID);
                 }}
               >
-                {warningCountLabel(openWarnings.warnings.length)}
+                {warningCountLabel(fileWarningCount)}
               </button>
             ) : null}
             {statusModifierHint ? (
@@ -21337,8 +21692,8 @@ export function MainWindow({
           </div>
         </div>
         {openWarningsListShown && openWarnings ? (
-          <OpenWarningsList
-            report={openWarnings}
+          <FileWarningsList
+            reports={warningReports}
             document={document}
             onShow={showOpenWarningTarget}
             onClose={() => setOpenWarningsListOpen(false)}
@@ -21361,6 +21716,7 @@ export function MainWindow({
         }} /> : null}
       {objectContextMenu ? (
         <ObjectLayerContextMenu
+          tableActions={selectedTable(document) ? tableActions : []}
           layoutActions={compoundLayoutsEnabled ? layerActions.filter(action => isCompoundLayoutCommand(action.id)) : []}
           bondStereoActions={(() => {
             const targets = currentMoleculeInspector.targets.bondTargets;
@@ -24533,6 +24889,7 @@ function ArtStyleQaLayer({
 
 export function ObjectLayerContextMenu({
   layoutActions = [],
+  tableActions = [],
   bondStereoActions = [],
   objectId,
   objectIndex,
@@ -24547,6 +24904,7 @@ export function ObjectLayerContextMenu({
   onDismiss = () => {}
 }: {
   layoutActions?: readonly CommandSpec[];
+  tableActions?: readonly CommandSpec[];
   bondStereoActions?: readonly CommandSpec[];
   objectId: string;
   objectIndex: number;
@@ -24572,6 +24930,23 @@ export function ObjectLayerContextMenu({
   // the right edge would clip it and slides up when the bottom would.
   const [copyAsOpen, setCopyAsOpen] = useState(false);
   const [arrangeOpen, setArrangeOpen] = useState(false);
+  const [tableAlignOpen, setTableAlignOpen] = useState(false);
+  const tableAlignParentRef = useRef<HTMLDivElement | null>(null);
+  const tableAlignFlyoutRef = useRef<HTMLDivElement | null>(null);
+  const [tableAlignStyle, setTableAlignStyle] = useState<CSSProperties>({});
+  useLayoutEffect(() => {
+    const parent = tableAlignParentRef.current, flyout = tableAlignFlyoutRef.current;
+    if (!tableAlignOpen || !parent || !flyout) return;
+    const rect = parent.getBoundingClientRect(), menuRect = flyout.getBoundingClientRect();
+    setTableAlignStyle({
+      ...(rect.right + menuRect.width + 8 > window.innerWidth ? { right: "100%" } : { left: "100%" }),
+      top: `${-Math.max(0, rect.top + menuRect.height + 8 - window.innerHeight)}px`
+    });
+  }, [tableAlignOpen, clampedPosition]);
+  const tableRowColumnIds = ["table.row.insertAbove", "table.row.insertBelow", "table.row.delete",
+    "table.column.insertLeft", "table.column.insertRight", "table.column.delete"];
+  const tableRowColumnActions = tableActions.filter(action => tableRowColumnIds.includes(action.id));
+  const tableAlignActions = tableActions.filter(action => action.id.startsWith("table.column.align."));
   const arrangeParentRef = useRef<HTMLDivElement | null>(null);
   const arrangeFlyoutRef = useRef<HTMLDivElement | null>(null);
   const pendingSubmenuFocusRef = useRef(false);
@@ -24613,7 +24988,7 @@ export function ObjectLayerContextMenu({
   }, [copyAsOpen, clampedPosition]);
 
   const onMenuKeyDown = useCanvasContextMenuKeyboard(menuRef, onDismiss, onFocusReturn, pendingSubmenuFocusRef, () => {
-    setArrangeOpen(false); setCopyAsOpen(false);
+    setArrangeOpen(false); setCopyAsOpen(false); setTableAlignOpen(false);
   });
   return (
     <div
@@ -24632,14 +25007,48 @@ export function ObjectLayerContextMenu({
         event.stopPropagation();
       }}
     >
+      {tableRowColumnActions.map(action => (
+        <button type="button" role="menuitem" className="object-context-menu-item" key={action.id}
+          data-command-id={action.id} disabled={action.enabled === false} title={action.disabledReason}
+          onClick={() => onInvoke(action.id)}>{action.title}</button>
+      ))}
+      {tableAlignActions.length > 0 ? <>
+        <div className="object-context-menu-submenu" ref={tableAlignParentRef}
+          onPointerEnter={() => { setArrangeOpen(false); setCopyAsOpen(false); setTableAlignOpen(true); }}
+          onPointerLeave={() => setTableAlignOpen(false)}>
+          <button type="button" role="menuitem" aria-haspopup="menu" aria-expanded={tableAlignOpen}
+            aria-controls={tableAlignOpen ? "canvas-table-align-menu" : undefined}
+            disabled={tableAlignActions.every(action => action.enabled === false)}
+            className="object-context-menu-item object-context-menu-submenu-trigger"
+            onClick={() => {
+              setArrangeOpen(false); setCopyAsOpen(false); setTableAlignOpen(open => !open);
+            }}>
+            <span>Align Column</span><span aria-hidden="true">›</span>
+          </button>
+          {tableAlignOpen ? <div id="canvas-table-align-menu" role="menu" aria-label="Align Column"
+            className="object-context-menu object-context-menu-flyout"
+            ref={tableAlignFlyoutRef} style={tableAlignStyle}>
+            {tableAlignActions.map(action => <button type="button" role="menuitem" key={action.id}
+              className="object-context-menu-item" data-command-id={action.id}
+              disabled={action.enabled === false} title={action.disabledReason}
+              onClick={() => onInvoke(action.id)}>
+              {({ left: "Left", center: "Centre", right: "Right", decimal: "Decimal" } as
+                Record<string, string>)[action.id.split(".").at(-1)!]}
+            </button>)}
+          </div> : null}
+        </div>
+        <div className="object-context-menu-separator" role="separator" />
+      </> : null}
       {layoutActions.length > 0 ? (
         <div className="object-context-menu-submenu" ref={arrangeParentRef}
-          onPointerEnter={() => { setCopyAsOpen(false); setArrangeOpen(true); }}
+          onPointerEnter={() => { setTableAlignOpen(false); setCopyAsOpen(false); setArrangeOpen(true); }}
           onPointerLeave={() => setArrangeOpen(false)}>
           <button type="button" role="menuitem" aria-haspopup="menu" aria-expanded={arrangeOpen}
             aria-controls={arrangeOpen ? "canvas-arrange-menu" : undefined}
             className="object-context-menu-item object-context-menu-submenu-trigger" data-context-submenu="arrange"
-            onClick={() => { setCopyAsOpen(false); setArrangeOpen(open => !open); }}>
+            onClick={() => {
+              setTableAlignOpen(false); setCopyAsOpen(false); setArrangeOpen(open => !open);
+            }}>
             <span>Arrange</span><span aria-hidden="true" className="object-context-menu-submenu-chevron">›</span>
           </button>
           {arrangeOpen ? (
@@ -24679,7 +25088,7 @@ export function ObjectLayerContextMenu({
       <div
         className="object-context-menu-submenu"
         ref={copyAsParentRef}
-        onPointerEnter={() => { setArrangeOpen(false); setCopyAsOpen(true); }}
+        onPointerEnter={() => { setTableAlignOpen(false); setArrangeOpen(false); setCopyAsOpen(true); }}
         onPointerLeave={() => setCopyAsOpen(false)}
       >
         <button
@@ -24690,7 +25099,7 @@ export function ObjectLayerContextMenu({
           aria-controls={copyAsOpen ? "canvas-copy-as-menu" : undefined}
           className="object-context-menu-item object-context-menu-submenu-trigger"
           data-context-submenu="copy-as"
-          onClick={() => { setArrangeOpen(false); setCopyAsOpen((open) => !open); }}
+          onClick={() => { setTableAlignOpen(false); setArrangeOpen(false); setCopyAsOpen((open) => !open); }}
         >
           <span>Copy As</span>
           <span aria-hidden="true" className="object-context-menu-submenu-chevron">›</span>
@@ -26760,6 +27169,7 @@ function PageSvgSurfaceContent({
   objectTransformPreview,
   spinningObjectId,
   editingTextObjectId,
+  editingTableCell,
   ...handlers
 }: {
   ariaLabel: string;
@@ -26773,6 +27183,7 @@ function PageSvgSurfaceContent({
   spinningObjectId?: string;
   /** The HTML editing preview owns this text's paint until its edit ends. */
   editingTextObjectId?: string;
+  editingTableCell?: ActiveTableCell;
   onPointerDown(objectId: string, event: ObjectPointerEvent): void;
   onPointerMove(objectId: string, event: ObjectPointerEvent): void;
   onPointerUp(objectId: string, event: ObjectPointerEvent): void;
@@ -26825,6 +27236,7 @@ function PageSvgSurfaceContent({
             const preview = previewIds.has(object.id) ? objectTransformPreview : undefined;
             const fragments = objectOverlayFragments.get(object.id)!;
             const editingText = object.type === "text" && object.id === editingTextObjectId;
+            const tableLayout = object.type === "table" ? planTableLayout(object) : undefined;
             return (
               <g
                 key={object.id}
@@ -26856,12 +27268,22 @@ function PageSvgSurfaceContent({
                   </svg>
                 ) : (
                   <>
-                    {object.type === "bracket" || object.type === "reaction-arrow" ? (
-                      <rect x={object.x} y={object.y} width={object.width} height={object.height}
-                        transform={projectedPlaneSvgTransformForObject(object)}
+                    {object.type === "table" || object.type === "bracket" || object.type === "reaction-arrow" ? (
+                      <rect x={object.x} y={object.y}
+                        width={tableLayout?.width ?? object.width}
+                        height={tableLayout?.height ?? object.height}
+                        data-table-hit-target={object.type === "table" ? object.id : undefined}
+                        transform={object.type === "table" ? String(fragments[0].attrs.transform ?? "")
+                          : projectedPlaneSvgTransformForObject(object)}
                         fill="transparent" pointerEvents="all" />
                     ) : null}
-                    {fragments.map(fragment => renderStaticPageSvgFragment(fragment))}
+                    {fragments.map(fragment => {
+                      const prefix = editingTableCell?.tableId === object.id
+                        ? `${tableCellElementId(object.id, editingTableCell.rowId,
+                          editingTableCell.columnId)}-line-` : undefined;
+                      return renderStaticPageSvgFragment(prefix ? { ...fragment, children: fragment.children.filter(child =>
+                        child.kind === "text" || !String(child.attrs.id ?? "").startsWith(prefix)) } : fragment);
+                    })}
                   </>
                 )}
               </g>
@@ -30867,9 +31289,10 @@ function formatSvgNumber(value: number): number {
   return Number(value.toFixed(3));
 }
 
-function TextObjectContent({ editing = false, object }: { editing?: boolean; object: TextObject }) {
+function TextObjectContent({ editing = false, object, noWrap = false }: { editing?: boolean; object: TextObject; noWrap?: boolean }) {
   return (
-    <span className={["text-object-content", editing ? "text-object-edit-preview" : ""].filter(Boolean).join(" ")}>
+    <span className={["text-object-content", editing ? "text-object-edit-preview" : ""].filter(Boolean).join(" ")}
+      style={noWrap ? { whiteSpace: "pre", overflowWrap: "normal" } : undefined}>
       {textObjectSpansForRendering(object).map((span, index) => (
         <span
           className="text-object-run"
@@ -31615,6 +32038,62 @@ function openBrowserUtilityWindow(windowKind: string): boolean {
     "popup,width=960,height=720"
   );
   return opened !== null;
+}
+
+/** One list and focus boundary, with import findings before the latest save findings. */
+function FileWarningsList({ reports, document, onShow, onClose }: {
+  reports: readonly OpenWarningsReport[];
+  document: ChemDraftDocument;
+  onShow: (selection: OpenWarningSelection, label: string) => void;
+  onClose: () => void;
+}) {
+  if (reports.length === 1) {
+    return <OpenWarningsList report={reports[0]!} document={document} onShow={onShow} onClose={onClose} />;
+  }
+  const heading = reports.map(openWarningsHeading).join("; ");
+  const keepFocus = (event: ReactMouseEvent) => event.preventDefault();
+  return (
+    <div id={OPEN_WARNINGS_LIST_ID} className="open-warnings-list" data-open-warnings-list role="dialog" aria-label={heading}>
+      <div className="open-warnings-header">
+        <h2 className="open-warnings-heading">Open and save warnings</h2>
+        <button type="button" className="open-warnings-close" aria-label="Close the warnings list" onMouseDown={keepFocus} onClick={onClose}>
+          ×
+        </button>
+      </div>
+      <div className="open-warnings-items">
+        {reports.map((report, reportIndex) => (
+          <section key={reportIndex} aria-label={openWarningsHeading(report)}>
+            <div className="open-warnings-header">
+              <h3 className="open-warnings-heading">{openWarningsHeading(report)}</h3>
+            </div>
+            <ol className="open-warnings-items">
+              {report.warnings.map((warning, index) => {
+                const target = describeOpenWarningTarget(document, warning);
+                const selection = target.selection;
+                return (
+                  <li key={index} className="open-warnings-item" data-open-warning-row data-warning-code={warning.code}>
+                    <p className="open-warnings-message">{warning.message}</p>
+                    <div className="open-warnings-meta">
+                      <span className={target.missing ? "open-warnings-target missing" : "open-warnings-target"} data-open-warning-target>
+                        {target.label}
+                      </span>
+                      <code className="open-warnings-code">{warning.code}</code>
+                      {selection ? (
+                        <button type="button" className="open-warnings-show" data-open-warning-show
+                          onMouseDown={keepFocus} onClick={() => onShow(selection, target.label)}>
+                          Show
+                        </button>
+                      ) : null}
+                    </div>
+                  </li>
+                );
+              })}
+            </ol>
+          </section>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function agentBridgeDocumentPayloadFromHash(): { contents: string; displayName: string; path?: string } | undefined {

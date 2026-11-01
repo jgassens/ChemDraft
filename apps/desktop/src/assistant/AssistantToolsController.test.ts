@@ -70,6 +70,31 @@ function setup() {
 afterEach(() => vi.useRealTimers());
 
 describe("assistant write structural sharing", () => {
+  it("groups insert_table and a later scoped edit into one request transaction", async () => {
+    const s = setup();
+    try {
+      const { requestId } = await s.controller.beginRequest(s.plugin, { prompt: "Table of measured values" });
+      const before = s.context.getDocument()!;
+      const inserted = await s.controller.callTool(s.plugin, { name: "insert_table", input: {
+        columns: [{ header: "Formula" }, { header: "Mass (g)", align: "decimal" }],
+        rows: [["H2O", "18.015"]], besideObjectId: s.molecule.id
+      } });
+      expect(inserted.isError, JSON.stringify(inserted)).not.toBe(true);
+      const id = (inserted.structuredContent!.objectIds as string[])[0]!;
+      expect(s.context.getDocument()!.selection.objectIds).toContain(id);
+      const edited = await s.controller.callTool(s.plugin, { name: "style_objects", input: {
+        objectIds: [id], style: { color: "#112233" }
+      } });
+      expect(edited.isError, JSON.stringify(edited)).not.toBe(true);
+      await s.controller.endRequest(s.plugin, { requestId });
+      expect(s.history).toHaveLength(1);
+      expect(s.history[0]!.before).toBe(before);
+      expect(s.history[0]!.label).toBe("ChemDraft Assistant: Table of measured values");
+      expect(s.history[0]!.after.pages[0]!.objects.find(object => object.id === id)).toMatchObject({
+        type: "table", style: { color: "#112233" }
+      });
+    } finally { await s.finish(); }
+  });
   it.each([1, 5000])("inserts a caption without copying or comparing unchanged graphs (%i molecules, 20 atoms each)", async count => {
     const s = setup();
     const document = s.context.getDocument()!;

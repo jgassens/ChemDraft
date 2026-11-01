@@ -61,13 +61,14 @@ into core — e.g. `import type { ChemDraftDocument, DocumentPatch } from "@chem
 ```
 
 `apiVersion` in your manifest declares the SDK contract you target (`PluginApiVersion`, currently
-`0.1.17`). API 0.1.17 adds optional `MoleculeBond.stereo: "either"` for an E/Z-unspecified double bond.
+`0.1.18`). API 0.1.17 adds optional `MoleculeBond.stereo: "either"` for an E/Z-unspecified double bond.
 It is allowed only on double bonds; plugins must preserve it when copying bonds and must not set it on other orders.
 API 0.1.16 adds optional positive integer `isotope` mass numbers to native document atoms.
 Native molecule objects returned by `chemistry.structureFromSmiles` and passed through document
 patches also preserve isotope masses. Hydrogen-2 and hydrogen-3 use elements `D` and `T` without an
 `isotope` field; other labelled atoms (including hydrogen-1) carry the mass number in `isotope`.
 Plugins using isotope fields should declare `^0.1.16`.
+API 0.1.18 adds command-scoped `documents.insertTable`; plugins using it should declare `^0.1.18`.
 API 0.1.15 adds command-scoped 3D embedding, minimization, and flattening; plugins using
 any of those methods should declare `^0.1.15`. API 0.1.14 adds one-shot draft restoration to overlay content; plugins using it
 should declare `^0.1.14`. API 0.1.13 adds live prompt disabled state to overlay content; plugins using it
@@ -79,8 +80,15 @@ API 0.1.7 adds host-owned `context.chemistry.structureToName`; plugins that use 
 use it should declare `^0.1.6`. API 0.1.5 added command-scoped `context.images.requestImage`, 0.1.4 added
 `context.documents.applyPatch`, and 0.1.3 added the host-owned `context.dialogs.promptText`
 capability. API 0.1.9 adds `context.assistant` for request-scoped tools and MCP sessions.
-Existing `^0.1.0` through `^0.1.17` packages remain compatible, each on a host at or above the version
+Existing `^0.1.0` through `^0.1.18` packages remain compatible, each on a host at or above the version
 it declares.
+
+| API version | Additive capability | Permission |
+| --- | --- | --- |
+| 0.1.18 | `documents.insertTable(spec)` | `document.write`, during the plugin's own command |
+| 0.1.17 | Optional bond `stereo: "either"` for E/Z-unspecified double bonds | No new permission |
+| 0.1.16 | Optional atom `isotope` fields | No new permission |
+| 0.1.15 | `chemistry.embed3d`, `minimize3d`, `flatten3d` | `chemistry.compute`, during the plugin's own command |
 
 ## Manifest + registration
 
@@ -653,12 +661,49 @@ const receipt = await context.documents.applyPatch?.({
 ```
 
 `applyPatch` is absent without `document.write`, and a retained method reference rejects after the
-command invocation ends. It accepts **insertion only** — `addObject` and `addAnnotation`, both of which
-refuse an id that already exists. Any other op (`removeObject`, `updateObject`, `moveObject`,
-`updatePageLayout`, `setSelection`, …) is refused with an error naming the op: changing or removing what
-is already in the document is not deterministic insertion of user input, so it goes through
-`proposePatch` and the user's review. The direct write is one undo entry labelled with the plugin and command; it
-does not open the proposal review tray/window.
+command invocation ends. It may insert objects and annotations, and update, move, remove, or reorder
+only objects selected when that command started plus its accepted insertions. Flat batches of
+1–256 operations are atomic. The direct write is one undo entry labelled with the plugin and command;
+it does not open the proposal review tray/window. Assistant writes join one transaction per request.
+
+### Native tables (0.1.18)
+
+Declare `document.write` and `apiVersion: "^0.1.18"`. The optional
+`context.documents.insertTable(spec: PluginTableSpec)` validates untrusted input with the shared
+table builder, places it beside the command's selection (or at the viewport centre), and uses the
+same command-scoped direct-patch path. It returns `AppliedPatchReceipt`, leaves the native table
+selected, and creates one undo entry labelled **Insert table**. The inserted table is in scope for
+later `applyPatch` calls during that command. A retained method rejects after the command ends.
+
+```ts
+import type { PluginCommandContext, PluginTableSpec } from "@chemdraft/plugin-api";
+
+export async function insertMeasuredValues(context: PluginCommandContext) {
+  const spec: PluginTableSpec = {
+    columns: [{ header: "Formula" }, { header: "Mass (g)", align: "decimal" }],
+    rows: [["H2O", "18.015"], ["CO2", "44.01"]],
+    caption: "Measured values",
+    footnotes: ["Values supplied by the user."],
+    style: { preset: "three-line", headerBold: true }
+  };
+  return context.documents.insertTable!(spec);
+}
+```
+
+`PluginTableSpec` accepts column `header`, `align`, `widthPx`, and `formula` (`auto` or `off`),
+body `rows`, optional explicit `headerRows`, `caption`, `footnotes`, and `style` (`preset`,
+`headerBold`, `fontFamily`, `fontSizePx`). A cell is a string or `{ text, spans?, formula? }`;
+spans accept `text`, `script` (`normal`, `subscript`, `superscript`), `bold`, and `italic`, and their
+text must concatenate to the cell text. Limits are 64 columns, 500 total rows including headers,
+2,000 characters per cell, and 50 footnotes. Invalid input rejects with the same typed validation
+errors as patches; ragged rows name the row, and cell errors carry their row/column path.
+
+Plain strings in text columns receive formula subscripts automatically; decimal columns default
+to formula formatting off. Put numbers in decimal columns and units in headers. Tables never compute
+values. The assistant's `insert_table` tool accepts this same spec plus optional `besideObjectId`
+(placement to its right, using the same host placement rules as `insert_text`). It joins the request's
+single undo transaction, and its table is in scope for later tools in that request. `listTools()` and
+MCP tool sessions advertise the schema automatically.
 
 Use `applyPatch` only when the user supplied the input and the result is deterministic, such as a
 name-to-structure command acting on text entered in the host prompt. Use `proposePatch` for uncertain
