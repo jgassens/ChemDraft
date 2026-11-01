@@ -20278,17 +20278,20 @@ function nativeBondOrderRefusalReason(
     if (!priorAtom) return nextInvalid;
     // The baseline excuses a problem the atom already had, never a result past its valence: a
     // hypovalent literal atom (three bonds on a typed "C") is flagged before the addition, yet
-    // a double bond from it would still make a pentavalent carbon.
+    // a double bond from it would still make a pentavalent carbon. The same holds when the change
+    // is a RAISED order on an existing bond (baseline === molecule), judged against the atom's own
+    // bond-order sum; lowering an order only reduces valence, so it is never refused here.
+    const { warningSuppressed: _warningSuppressed, ...bare } = priorAtom;
+    const priorState = nativeAtomValidationState(bare, baseline.bonds, bare.formalCharge, baseline.atoms, beforeResolution);
     const nextElement = nativeElementFromAtomLabel(nextBare.element);
-    if (baseline !== molecule && nextInvalid && nextElement &&
+    const raisesValence = baseline !== molecule || nextState.valenceUsed > priorState.valenceUsed;
+    if (raisesValence && nextInvalid && nextElement &&
       !nativeAtomChargeSupportsValence(nextElement, nextState.valenceUsed, nextBare.formalCharge)) {
       return true;
     }
-    const { warningSuppressed: _warningSuppressed, ...bare } = priorAtom;
     // The proposed graph has already invalidated import-time hints. Judging it against the old
     // H count would refuse ordinary edits such as converting imported ethane to ethene.
-    return nativeAtomValidationState(bare, baseline.bonds, bare.formalCharge, baseline.atoms, beforeResolution).valid &&
-      nextInvalid;
+    return priorState.valid && nextInvalid;
   };
   const broken = [fromAtom, toAtom].find(breaks);
   return broken ? `${broken.element} would exceed its valence with a ${order} bond` : undefined;

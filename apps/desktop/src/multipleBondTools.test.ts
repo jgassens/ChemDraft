@@ -1,7 +1,7 @@
 import { nativeAtomValidationState } from "@chemdraft/document-workflow-core";
 import { describe, expect, it } from "vitest";
 import {
-  applyFreeformSingleBondToolAtPoint, applyNativeMoleculeBondOrderValueTarget, applySingleBondToolAtPoint,
+  applyFreeformSingleBondToolAtPoint, applyNativeMoleculeBondOrderTarget, applyNativeMoleculeBondOrderValueTarget, applySingleBondToolAtPoint,
   createPhase4Document, getSelectedMolecule, nativeBondOrderForToolCommand, nativeBondOrderTargetRefusal,
   nativeBondStyleForToolCommand, createNativeSavePayload, openNativeDocument
 } from "./documentWorkflow";
@@ -173,5 +173,61 @@ describe("multiple bond tool refusals", () => {
     expect(after.bonds).toHaveLength(3);
     expect(after.bonds[2].order).toBe("double");
     expect(nativeAtomValidationState(afterCenter, after.bonds, 0, after.atoms)).toMatchObject({ valid: true, valenceUsed: 4 });
+  });
+  describe("changing the order of an existing bond", () => {
+    /** The seed with the given bond orders written straight into the molecule (the bonds' order in the list). */
+    function withBondOrders(seed: ReturnType<typeof literalCenterSeed>, orders: Array<"single" | "double" | "triple">) {
+      return {
+        ...seed,
+        document: {
+          ...seed.document,
+          pages: seed.document.pages.map(page => ({
+            ...page,
+            objects: page.objects.map(object => object.id === seed.objectId && object.type === "molecule"
+              ? { ...object, bonds: object.bonds.map((bond, index) => ({ ...bond, order: orders[index] ?? bond.order })) }
+              : object)
+          }))
+        }
+      };
+    }
+
+    it("refuses to raise a bond at a hypovalent literal atom past its valence, and names the reason", () => {
+      const { document, objectId } = literalCenterSeed(2);
+      const molecule = getSelectedMolecule(document)!;
+      const target = { objectId, kind: "bond" as const, bondId: molecule.bonds[1].id };
+      expect(applyNativeMoleculeBondOrderValueTarget(document, target, "triple")).toBe(document);
+      expect(nativeBondOrderTargetRefusal(document, target, "triple")).toMatch(/not changed.*valence/);
+      // A double bond fills the valence exactly, so it is still offered.
+      expect(nativeBondOrderTargetRefusal(document, target, "double")).toBeUndefined();
+    });
+
+    it("refuses the same raise through order cycling, even on an atom that is already over valence", () => {
+      const { document, objectId } = withBondOrders(literalCenterSeed(2), ["single", "double", "double"]);
+      const molecule = getSelectedMolecule(document)!;
+      expect(molecule.bonds.map(bond => bond.order)).toEqual(["single", "double", "double"]);
+      const target = { objectId, kind: "bond" as const, bondId: molecule.bonds[1].id };
+      expect(applyNativeMoleculeBondOrderTarget(document, target)).toBe(document);
+      expect(nativeBondOrderTargetRefusal(document, target, "triple")).toMatch(/not changed.*valence/);
+    });
+
+    it("still lets an over-valent atom have a bond lowered", () => {
+      const { document, objectId } = withBondOrders(literalCenterSeed(2), ["single", "double", "double"]);
+      const molecule = getSelectedMolecule(document)!;
+      const target = { objectId, kind: "bond" as const, bondId: molecule.bonds[1].id };
+      expect(nativeBondOrderTargetRefusal(document, target, "single")).toBeUndefined();
+      const next = applyNativeMoleculeBondOrderValueTarget(document, target, "single");
+      expect(next).not.toBe(document);
+      expect(getSelectedMolecule(next)!.bonds[1].order).toBe("single");
+    });
+
+    it("still raises a double bond to triple on valid atoms", () => {
+      const single = applySingleBondToolAtPoint(createPhase4Document("Raise"), { x: 300, y: 300 });
+      const molecule = getSelectedMolecule(single)!;
+      const target = { objectId: molecule.id, kind: "bond" as const, bondId: molecule.bonds[0].id };
+      const double = applyNativeMoleculeBondOrderValueTarget(single, target, "double");
+      expect(getSelectedMolecule(double)!.bonds[0].order).toBe("double");
+      const triple = applyNativeMoleculeBondOrderValueTarget(double, target, "triple");
+      expect(getSelectedMolecule(triple)!.bonds[0].order).toBe("triple");
+    });
   });
 });
