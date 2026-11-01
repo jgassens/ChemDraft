@@ -5,7 +5,7 @@ import type { ChemDraftDocument, TextObject } from "@chemdraft/chem-core";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MainWindow } from "./MainWindow";
-import { createPhase4Document, insertNativeSingleBondMolecule, insertNativeTextObject, selectDocumentObjects } from "./documentWorkflow";
+import { createPhase4Document, insertNativeSingleBondMolecule, insertNativeTextObject, selectDocumentObjects, updateNativeTextObjectStyle } from "./documentWorkflow";
 import { saveKeybindingSettings } from "./keybindingSettings";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -50,10 +50,11 @@ describe.each(["macos", "windows"] as const)("multiple selected text formatting 
     delete window.__CHEMDRAFT_AGENT__;
   });
 
-  async function mount(tool = "tool.select", selected = false, withSecondText = false, selectBoth: boolean | "reverse" = false) {
+  async function mount(tool = "tool.select", selected = false, withSecondText = false, selectBoth: boolean | "reverse" = false, boldFirst = false) {
     let doc = insertNativeTextObject(createPhase4Document("Text editing"), { x: 200, y: 200 }, "Reaction conditions");
     objectId = doc.pages[0].objects.find(object => object.type === "text")!.id;
     if (withSecondText) doc = insertNativeTextObject(doc, { x: 400, y: 300 }, "Other label");
+    if (boldFirst) doc = updateNativeTextObjectStyle(doc, objectId, { fontWeight: 700 });
     const selectedIds = selectBoth
       ? doc.pages[0].objects.filter(object => object.type === "text").map(object => object.id)
       : selected ? [objectId] : [];
@@ -95,6 +96,31 @@ describe.each(["macos", "windows"] as const)("multiple selected text formatting 
     await command("edit.redo");
     await command("edit.redo");
     expect(snapshot().document.pages).toEqual(sized.pages);
+  });
+
+  it("makes every box bold when only some are bold, then removes bold when all are", async () => {
+    await mount("tool.select", true, true, true, true);
+    const command = async (id: string) => { await act(async () => { await window.__CHEMDRAFT_AGENT__!.command(id); }); };
+    const weights = () => texts(snapshot().document).map(object => object.style.fontWeight);
+    expect(weights()[0]).toBe(700);
+    expect(weights()[1]).not.toBe(700);
+    await command("text.bold");
+    expect(weights()).toEqual([700, 700]);
+    await command("text.bold");
+    expect(weights().every(weight => weight !== 700)).toBe(true);
+  });
+
+  it("applies subscript to every selected box and undoes all in one step", async () => {
+    await mount("tool.select", true, true, true);
+    const original = snapshot().document;
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("text.script.subscript"); });
+    const after = snapshot().document;
+    for (const object of texts(after)) {
+      expect(object.spans?.every(span => span.script === "subscript")).toBe(true);
+    }
+    expect(after.selection).toEqual(original.selection);
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.undo"); });
+    expect(snapshot().document.pages).toEqual(original.pages);
   });
 
   it("keeps an unselected text box unchanged", async () => {

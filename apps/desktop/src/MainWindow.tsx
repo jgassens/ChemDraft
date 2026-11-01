@@ -7400,13 +7400,23 @@ export function MainWindow({
     const textScript = textScriptForCommand(commandId);
     if (textScript) {
       if (selected) {
+        const multiple = selectedTextObjects.length > 1;
         const currentScript = hasSelectedTextRange && selectedTextRange
           ? textScriptForTextRange(selected, selectedTextRange)
           : textScriptForTextObject(selected);
-        const nextScript = textScript === "normal" || currentScript !== textScript ? textScript : "normal";
-        const changed = commitDocumentChange(hasSelectedTextRange && selectedTextRange
-          ? updateNativeTextObjectScriptRange(currentDocument, selected.id, selectedTextRange, nextScript)
-          : updateNativeTextObjectScript(currentDocument, selected.id, nextScript));
+        // With several boxes the toggle turns off only when every box already has the script.
+        const alreadyApplied = multiple
+          ? selectedTextObjects.every((object) => textScriptForTextObject(object) === textScript)
+          : currentScript === textScript;
+        const nextScript = textScript === "normal" || !alreadyApplied ? textScript : "normal";
+        const changed = commitDocumentChange(multiple
+          ? selectedTextObjects.reduce(
+            (nextDocument, object) => updateNativeTextObjectScript(nextDocument, object.id, nextScript),
+            currentDocument
+          )
+          : hasSelectedTextRange && selectedTextRange
+            ? updateNativeTextObjectScriptRange(currentDocument, selected.id, selectedTextRange, nextScript)
+            : updateNativeTextObjectScript(currentDocument, selected.id, nextScript));
         setActiveTextEditObjectId((current) => current === selected.id ? current : undefined);
         setActiveEditorObjectId(undefined);
         setStatus(changed ? "Updated selected text script" : "Selected text script unchanged");
@@ -7420,7 +7430,17 @@ export function MainWindow({
     const currentStyle = selected
       ? nativeTextStyleFromObjectStyle(selected.style)
       : textStyleDefaults;
-    const stylePatch = textStylePatchForCommand(commandId, currentStyle);
+    let resolvedPatch = textStylePatchForCommand(commandId, currentStyle);
+    if (resolvedPatch && selectedTextObjects.length > 1) {
+      // Toggles (bold, italic, underline): remove only when every box already has the style,
+      // otherwise apply it to all. Non-toggle commands produce the same patch for every box.
+      const patches = selectedTextObjects.map((object) =>
+        JSON.stringify(textStylePatchForCommand(commandId, nativeTextStyleFromObjectStyle(object.style))));
+      if (patches.some((patch) => patch !== patches[0])) {
+        resolvedPatch = textStylePatchForCommand(commandId, undefined);
+      }
+    }
+    const stylePatch = resolvedPatch;
 
     if (!stylePatch) {
       return false;

@@ -1,10 +1,5 @@
 # Manual stress checklist
 
-Text formatting (macOS and Windows): select two or more text boxes and change font family, then
-font size. Every selected box must update regardless of creation/selection order; unselected labels
-and selected molecules must stay unchanged. Each command must undo/redo all boxes in one step and
-preserve selection. Highlight characters inside one box and confirm only that range is formatted.
-
 The standing hands-on checklist for interactive surfaces. It moved here from `AGENTS.md` §20 when that
 file was consolidated (2026-10-04); `AGENTS.md` §14 still requires it. Run every item on **macOS and
 Windows** unless the item names one platform. `docs/windows-port-stress-test.md` records the Windows
@@ -1001,3 +996,13 @@ caption must use the atom-label size. Existing structures on the page must not c
 # Reaction labels
 
 - Ask the assistant for a two-step Sharpless-style scheme and run `pnpm -s chemdraft reaction` with `--above`, `--below`, and `--caption`. Check that reagents stack above and conditions below, close to and centred on the arrow, which is only as long as the widest line; CH2Cl2 and Ti(OiPr)4 show subscripts while step numbers, mol%, °C and h do not. Check the caption sits under the scheme and old single-string conditions still work.
+
+## Formatting several text boxes
+
+Text formatting (macOS and Windows): select two or more text boxes and change font family, then
+font size. Every selected box must update regardless of creation/selection order; unselected labels
+and selected molecules must stay unchanged. Bold, Italic, Underline: if every selected box already
+has the style, the command removes it from all; otherwise it applies it to all (never per the first
+box). Superscript and Subscript apply to every selected box. Each command must undo/redo all boxes in
+one step and preserve selection. Highlight characters inside one box and confirm only that range is
+formatted.
