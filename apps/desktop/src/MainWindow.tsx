@@ -531,6 +531,7 @@ import {
   nativeMoleculeUnmodeledMetalElements,
   applyNativeMoleculeEngineRelayout,
   prepareNativeMoleculeEngineRelayout,
+  cleanUpStructureStatus,
   type NativeMoleculeRelayoutEngine,
   cleanUpNativeMolecules2d,
   moleculeHasFusedRingSystem,
@@ -4680,8 +4681,8 @@ export function MainWindow({
       setObjectContextMenu(undefined);
     };
     const targetLabel = targetObjectIds.length === 1 ? "structure" : "structures";
-    const cleanedStatus = (changed: boolean) =>
-      changed ? `Cleaned up selected ${targetLabel}` : `Selected ${targetLabel} already clean`;
+    const cleanedStatus = (changed: boolean, warnings: readonly string[] = []) =>
+      cleanUpStructureStatus(documentRef.current, targetObjectIds, changed, warnings);
 
     // The polygon+tree pass idealises single-ring components in place. Anything with more than
     // one ring per component (fused, bridged, spiro, several rings joined through chains or a
@@ -4739,7 +4740,7 @@ export function MainWindow({
           return;
         }
         const changed = commitDocumentChange(() => prepared);
-        setStatus(cleanedStatus(changed) + (warnings.length ? ` — ${[...new Set(warnings)].join(" ")}` : ""));
+        setStatus(cleanedStatus(changed, warnings));
       } catch (error) {
         setStatus(`Clean up failed: ${error instanceof Error ? error.message : String(error)}`);
       }

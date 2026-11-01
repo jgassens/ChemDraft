@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { compareLayoutQuality, evaluateLayoutQuality, prepareLayoutLabelEvaluator, labelBoxBondDistance,
-  LABEL_CLEARANCE_PADDING, MAX_BRIDGE_STRETCH, type LayoutPoint, type LayoutLabelBox } from "./layoutQuality";
+  LABEL_CLEARANCE_PADDING, MAX_BRIDGE_STRETCH, layoutAtomAndLabelDefects, type LayoutPoint, type LayoutLabelBox } from "./layoutQuality";
 import { testMoleculeFromSmiles } from "./testing";
-import { moleculeLayoutLabelBoxes, planMoleculeAtomLabels } from "./index";
+import { atomLabelGlyphBounds, moleculeLayoutLabelBoxes, planMoleculeAtomLabels } from "./index";
 import type { MoleculeObject } from "@chemdraft/chem-core";
 
 const polygon = (n: number): LayoutPoint[] => Array.from({ length: n }, (_, i) => ({
@@ -11,6 +11,16 @@ const polygon = (n: number): LayoutPoint[] => Array.from({ length: n }, (_, i) =
 const cycle = (n: number) => Array.from({ length: n }, (_, from) => ({ from, to: (from + 1) % n }));
 
 describe("2D layout quality", () => {
+  it("ranks every atom and label defect ahead of any number of cage crossings", () => {
+    const clear = evaluateLayoutQuality(polygon(6), cycle(6));
+    const crossingOnly = { ...clear, crossings: [[0, 1], [1, 2], [2, 3]] as [number, number][], hardDefects: 3 };
+    for (const field of ["overlappingAtoms", "atomBondOverlaps", "collinearBondOverlaps", "labelBondOverlaps", "labelLabelOverlaps"] as const) {
+      const overlapping = { ...clear, [field]: [[0, 1]], hardDefects: 1 };
+      expect(layoutAtomAndLabelDefects(overlapping)).toBe(1);
+      expect(compareLayoutQuality(crossingOnly, overlapping)).toBeLessThan(0);
+    }
+    expect(compareLayoutQuality(clear, crossingOnly)).toBeLessThan(0);
+  });
   it("rechecks stationary attachment labels against stationary bonds and labels", () => {
     const atoms = [{ x: 0, y: 0 }, { x: 30, y: 0 }, { x: -20, y: 0 }, { x: -20, y: 30 }];
     const bonds = [{ from: 0, to: 1 }, { from: 2, to: 3 }];
@@ -45,6 +55,8 @@ describe("2D layout quality", () => {
             labelBondOverlaps.push([box.atom, j]);
         });
         labels.slice(i + 1).forEach(other => {
+          // Directly bonded labels are exempt from label-label overlap checks.
+          if (bonds.some(b => (b.from === box.atom && b.to === other.atom) || (b.to === box.atom && b.from === other.atom))) return;
           if (box.x <= other.x + other.width + padding && other.x <= box.x + box.width + padding &&
               box.y <= other.y + other.height + padding && other.y <= box.y + box.height + padding)
             labelLabelOverlaps.push([box.atom, other.atom]);
@@ -87,9 +99,19 @@ describe("2D layout quality", () => {
     const boxes = moleculeLayoutLabelBoxes(molecule);
     expect(boxes.map(box => box.atom)).toEqual([1, 2, 3, 4]);
     expect(plans.at(-1)!.fontSizePx).toBe(23);
-    expect(boxes).toEqual(plans.map(plan => ({ atom: molecule.atoms.indexOf(plan.atom),
-      x: plan.anchor.x + plan.layout.bounds.x, y: plan.anchor.y + plan.layout.bounds.y,
-      width: plan.layout.bounds.width, height: plan.layout.bounds.height })));
+    // Quality checks use glyph extents, which remain inside the renderer's padded clipping bounds.
+    expect(boxes).toEqual(plans.map(plan => {
+      const bounds = atomLabelGlyphBounds(plan);
+      return { atom: molecule.atoms.indexOf(plan.atom), x: plan.anchor.x + bounds.x, y: plan.anchor.y + bounds.y,
+        width: bounds.width, height: bounds.height };
+    }));
+    plans.forEach((plan, i) => {
+      const box = boxes[i], bounds = plan.layout.bounds;
+      expect(box.x).toBeGreaterThanOrEqual(plan.anchor.x + bounds.x);
+      expect(box.y).toBeGreaterThanOrEqual(plan.anchor.y + bounds.y);
+      expect(box.x + box.width).toBeLessThanOrEqual(plan.anchor.x + bounds.x + bounds.width);
+      expect(box.y + box.height).toBeLessThanOrEqual(plan.anchor.y + bounds.y + bounds.height);
+    });
   });
   it("counts padded label/bond and label/label contacts as hard defects, excluding incident bonds", () => {
     const atoms = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0.5, y: 1 }];
@@ -112,8 +134,8 @@ describe("2D layout quality", () => {
     const raw = evaluateLayoutQuality(atoms, bonds, 1, undefined, undefined, boxes);
     // Reversing the exemption's indices must not change which single pair is exempted.
     const exempt = evaluateLayoutQuality(atoms, bonds, 1, undefined, undefined, boxes, [[3, 2]]);
-    expect(raw.labelLabelOverlaps).toEqual([[0, 2], [0, 3], [2, 3]]);
-    expect(exempt.labelLabelOverlaps).toEqual([[0, 2], [0, 3]]);
+    expect(raw.labelLabelOverlaps).toEqual([[0, 3], [2, 3]]); // Bonded atoms 0 and 2 are exempt.
+    expect(exempt.labelLabelOverlaps).toEqual([[0, 3]]); // The declared exemption also removes 2 and 3.
     expect(exempt.labelBondOverlaps).toEqual(raw.labelBondOverlaps);
     expect(exempt.labelBondOverlaps).toContainEqual([3, 0]);
     expect(exempt.smallestLabelBondClearance).toBe(raw.smallestLabelBondClearance);
