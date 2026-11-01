@@ -20944,9 +20944,36 @@ export function insertTableIntoDocument(document: ChemDraftDocument, options: Ta
     style: { preset: options.preset }
   }, { id: options.newId("table"), x: 0, y: 0, newId: options.newId,
     style: textStyleToObjectStyle(options.textStyle ?? {}) });
-  const centered = { ...object, x: options.center.x - object.width / 2, y: options.center.y - object.height / 2 };
+  return addTableCenteredOnPage(document, object, options.center);
+}
+
+/**
+ * The shift that keeps drawn `bounds` on the page: the rule structure paste applies to its atoms
+ * (scaleParsedMolfileAtoms). Each axis is clamped into [0, page size − bounds size], so bounds
+ * larger than the page align their top-left with the page's top-left.
+ */
+export function pageConstrainedShift(page: { width: number; height: number }, bounds: LayoutBounds): PagePoint {
+  return {
+    x: clamp(bounds.x, 0, Math.max(0, page.width - bounds.width)) - bounds.x,
+    y: clamp(bounds.y, 0, Math.max(0, page.height - bounds.height)) - bounds.y
+  };
+}
+
+/**
+ * Add a new table centred on `center` and select it (Insert Table and table paste). Its drawn
+ * extent, including rule strokes and fixed-column text overflow, is kept on the page.
+ */
+export function addTableCenteredOnPage(
+  document: ChemDraftDocument,
+  table: Extract<DocumentObject, { type: "table" }>,
+  center: PagePoint
+): ChemDraftDocument {
+  const page = firstPage(document);
+  const centered = { ...table, x: center.x - table.width / 2, y: center.y - table.height / 2 };
+  const shift = pageConstrainedShift(page, tableVisualBoundsForArrangement(centered));
+  const placed = shift.x === 0 && shift.y === 0 ? centered : { ...centered, x: centered.x + shift.x, y: centered.y + shift.y };
   return applyPatches(document, [
-    { op: "addObject", pageId: page.id, object: centered },
-    { op: "setSelection", pageId: page.id, objectIds: [centered.id] }
+    { op: "addObject", pageId: page.id, object: placed },
+    { op: "setSelection", pageId: page.id, objectIds: [placed.id] }
   ], { now: phase4Timestamp });
 }

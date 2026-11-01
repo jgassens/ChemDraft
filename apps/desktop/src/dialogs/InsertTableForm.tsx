@@ -1,11 +1,20 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { detectDialogPlatform, validInsertTableOptions, type DialogPlatform, type InsertTableOptions } from "./dialogProtocol";
 
-export function InsertTableForm({ title, initial, onSubmit, onCancel, busy = false, error,
+export function InsertTableForm({ title, initial, onSubmit, onCancel, onReady, busy = false, error,
   platform = detectDialogPlatform() }: {
   title: string; initial: InsertTableOptions; onSubmit(options: InsertTableOptions): void; onCancel(): void;
+  /** Once, after the form commits, with its root: the native host fits the window to this content. */
+  onReady?(form: HTMLFormElement): void;
   busy?: boolean; error?: string; platform?: DialogPlatform;
 }) {
+  const form = useRef<HTMLFormElement>(null);
+  const readyReported = useRef(false);
+  useEffect(() => {
+    if (readyReported.current || !form.current) return;
+    readyReported.current = true;
+    onReady?.(form.current);
+  }, [onReady]);
   const [rows, setRows] = useState(String(initial.rows));
   const [columns, setColumns] = useState(String(initial.columns));
   const [headerRows, setHeaderRows] = useState(String(initial.headerRows));
@@ -13,7 +22,7 @@ export function InsertTableForm({ title, initial, onSubmit, onCancel, busy = fal
   const composing = useRef(false);
   const options = { rows: Number(rows), columns: Number(columns), headerRows: Number(headerRows), preset };
   const valid = [rows, columns, headerRows].every(value => value.trim() !== "") && validInsertTableOptions(options);
-  return <form className="cd-page-size-form cd-insert-table-form" aria-label="Insert Table" aria-busy={busy}
+  return <form ref={form} className="cd-page-size-form cd-insert-table-form" aria-label="Insert Table" aria-busy={busy}
     onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }}
     onKeyDown={event => {
       if (composing.current || event.nativeEvent.isComposing || event.keyCode === 229) return;

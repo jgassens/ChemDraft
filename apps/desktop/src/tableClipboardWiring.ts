@@ -4,14 +4,14 @@ import {
   type ClipboardDetectedPayload, type ClipboardReadPayload, type ClipboardTableResult
 } from "@chemdraft/clipboard-adapter";
 import {
-  applyPatches, isSvgImageSource, textStyleToObjectStyle,
+  isSvgImageSource, textStyleToObjectStyle,
   type ChemDraftDocument, type NativeTextStyle, type TableObject
 } from "@chemdraft/chem-core";
 import { buildTableObject } from "@chemdraft/document-workflow-core";
 import { exportTableClipboardPayloads } from "@chemdraft/export-engine";
 import type { ClipboardWriteTextItem } from "./clipboard";
 import {
-  CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, moveDocumentObject, parseSelectionClipboardPayload, serializeSelectionClipboardPayload,
+  addTableCenteredOnPage, CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, parseSelectionClipboardPayload, serializeSelectionClipboardPayload,
   type ChemDraftSelectionClipboardPayload
 } from "./documentWorkflow";
 
@@ -158,7 +158,7 @@ export function tableClipboardPasteDecision(payload: ClipboardReadPayload, parse
     ? { kind: "table", result: table } : { kind: "existing", payload: existing };
 }
 
-/** Same builder, text-style conversion and centring as Insert Table; caller records one undo. */
+/** Same builder, text-style conversion and on-page centring as Insert Table; caller records one undo. */
 export function pasteTableIntoDocument(
   document: ChemDraftDocument,
   parsed: Extract<ClipboardTableResult, { ok: true }>,
@@ -169,16 +169,5 @@ export function pasteTableIntoDocument(
   const { object } = buildTableObject(parsed.spec, {
     id: newId("table"), x: 0, y: 0, newId, style: textStyleToObjectStyle(textStyle)
   });
-  const page = document.pages[0];
-  const position = object.width > page.width || object.height > page.height
-    ? { x: 0, y: 0 }
-    : { x: center.x - object.width / 2, y: center.y - object.height / 2 };
-  const inserted = applyPatches(document, [
-    { op: "addObject", pageId: page.id, object },
-    { op: "setSelection", pageId: page.id, objectIds: [object.id] }
-  ]);
-  return {
-    document: moveDocumentObject(inserted, object.id, position),
-    warnings: [...parsed.warnings]
-  };
+  return { document: addTableCenteredOnPage(document, object, center), warnings: [...parsed.warnings] };
 }

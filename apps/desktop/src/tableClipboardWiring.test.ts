@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { deserializeDocument, textStyleToObjectStyle, type TableObject } from "@chemdraft/chem-core";
 import type { ClipboardReadPayload } from "@chemdraft/clipboard-adapter";
 import { exportTableClipboardPayloads } from "@chemdraft/export-engine";
+import { tableVisualBoundsForArrangement } from "@chemdraft/layout-engine";
 import {
   CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, createPhase4Document, createSelectionClipboardPayload,
   insertNativeTemplateMolecule, insertNativeTextObject, insertTableIntoDocument, serializeSelectionClipboardPayload
@@ -238,29 +239,92 @@ describe("paste precedence and table building", () => {
     expect(table.rows[3].cells[2].text).toBe("1.204");
   });
 
-  it("centers tables when possible and keeps them within page edges", () => {
+  it("centers tables when possible and keeps their drawn extent within page edges", () => {
     const parsed = readTableClipboardPaste(htmlPayload("excel-like.html"), parseHtml);
     if (!parsed?.ok) throw new Error("Expected parsed table");
     const document = createPhase4Document();
     const page = document.pages[0];
     const wide = { ...parsed, spec: { ...parsed.spec, columns: parsed.spec.columns.map(column => ({ ...column, widthPx: 90 })) } };
-    const paste = (center: { x: number; y: number }) =>
-      pasteTableIntoDocument(document, wide, center, {}, ids()).document.pages[0].objects[0] as TableObject;
-    const left = paste({ x: 0, y: page.height / 2 });
-    expect(left.width).toBeLessThanOrEqual(page.width);
-    expect(left.x).toBe(0);
-    expect(left.x + left.width).toBeLessThanOrEqual(page.width);
-    const bottomRight = paste({ x: page.width, y: page.height });
+    const paste = (center: { x: number; y: number }, spec = wide) => {
+      const built = pasteTableIntoDocument(document, spec, center, {}, ids()).document;
+      const table = built.pages[0].objects[0] as TableObject;
+      expect(built.pages[0].objects).toHaveLength(1);
+      expect(built.selection).toEqual({ pageId: page.id, objectIds: [table.id] });
+      return { table, drawn: tableVisualBoundsForArrangement(table) };
+    };
+    const onPage = ({ drawn }: { drawn: { x: number; y: number; width: number; height: number } }) => {
+      expect(drawn.x).toBeGreaterThanOrEqual(-1e-9);
+      expect(drawn.y).toBeGreaterThanOrEqual(-1e-9);
+      expect(drawn.x + drawn.width).toBeLessThanOrEqual(page.width + 1e-9);
+      expect(drawn.y + drawn.height).toBeLessThanOrEqual(page.height + 1e-9);
+    };
+    // Each page edge and corner: rule strokes, not just the stored frame, stay on the page.
+    // (Was `left.x === 0`: the frame edge now sits half a rule stroke inside the page edge.)
+    for (const center of [
+      { x: 0, y: page.height / 2 }, { x: page.width, y: page.height / 2 }, { x: page.width / 2, y: 0 },
+      { x: page.width / 2, y: page.height }, { x: 0, y: 0 }, { x: page.width, y: page.height },
+      { x: -200, y: page.height + 300 }
+    ]) {
+      const placed = paste(center);
+      onPage(placed);
+      expect(placed.table.width).toBeLessThanOrEqual(page.width);
+    }
+    expect(paste({ x: 0, y: page.height / 2 }).drawn.x).toBeCloseTo(0);
+    const right = paste({ x: page.width, y: page.height / 2 }).drawn;
+    expect(right.x + right.width).toBeCloseTo(page.width);
+    const bottomRight = paste({ x: page.width, y: page.height }).drawn;
     expect(bottomRight.x + bottomRight.width).toBeCloseTo(page.width);
     expect(bottomRight.y + bottomRight.height).toBeCloseTo(page.height);
-    const middle = paste({ x: page.width / 2, y: page.height / 2 });
+    const middle = paste({ x: page.width / 2, y: page.height / 2 }).table;
     expect(middle.x + middle.width / 2).toBeCloseTo(page.width / 2);
     expect(middle.y + middle.height / 2).toBeCloseTo(page.height / 2);
+    // Fixed narrow columns let text overflow the stored frame; that overflow stays on the page too.
+    const overflowing = { ...wide, spec: { ...wide.spec, columns: wide.spec.columns.map(column => ({ ...column, widthPx: 12 })) } };
+    const narrow = paste({ x: page.width - 5, y: page.height / 2 }, overflowing);
+    expect(narrow.drawn.x + narrow.drawn.width).toBeGreaterThan(narrow.table.x + narrow.table.width + 10);
+    onPage(narrow);
+    expect(narrow.drawn.x + narrow.drawn.width).toBeCloseTo(page.width);
     const oversized = { ...wide, spec: { ...wide.spec, columns: wide.spec.columns.map(column => ({ ...column, widthPx: 500 })) } };
-    const large = pasteTableIntoDocument(document, oversized, { x: page.width / 2, y: page.height / 2 }, {}, ids())
-      .document.pages[0].objects[0] as TableObject;
-    expect(large.width).toBeGreaterThan(page.width);
-    expect({ x: large.x, y: large.y }).toEqual({ x: 0, y: 0 });
+    for (const center of [{ x: page.width / 2, y: page.height / 2 }, { x: page.width, y: page.height }, { x: -50, y: -50 }]) {
+      const large = paste(center, oversized);
+      expect(large.table.width).toBeGreaterThan(page.width);
+      // Wider than the page: its drawn left edge aligns with the page's (was the frame's at
+      // (0, 0), which left half a rule stroke off the page); it still fits vertically.
+      expect(large.drawn.x).toBeCloseTo(0);
+      expect(large.table.x).toBeGreaterThanOrEqual(0);
+      expect(large.table.x).toBeLessThan(1);
+      expect(large.drawn.y).toBeGreaterThanOrEqual(-1e-9);
+      expect(large.drawn.y + large.drawn.height).toBeLessThanOrEqual(page.height + 1e-9);
+    }
+    // Larger than the page on both axes: the drawn top-left aligns with the page's top-left.
+    const tall = { ...oversized, spec: { ...oversized.spec, rows: Array.from({ length: 80 }, (_, index) =>
+      oversized.spec.columns.map(() => `row ${index}`)) } };
+    for (const center of [{ x: page.width, y: page.height }, { x: -50, y: -50 }]) {
+      const large = paste(center, tall);
+      expect(large.drawn.height).toBeGreaterThan(page.height);
+      expect(large.drawn.x).toBeCloseTo(0);
+      expect(large.drawn.y).toBeCloseTo(0);
+    }
+  });
+
+  it("keeps Insert Table on the page by the same rule as paste", () => {
+    const document = createPhase4Document();
+    const page = document.pages[0];
+    for (const center of [{ x: page.width, y: page.height }, { x: 0, y: 0 }, { x: page.width + 400, y: -400 }]) {
+      const inserted = insertTableIntoDocument(document, { rows: 8, columns: 6, headerRows: 1, preset: "grid", center,
+        newId: ids() });
+      const table = inserted.pages[0].objects[0] as TableObject;
+      const drawn = tableVisualBoundsForArrangement(table);
+      expect(inserted.selection.objectIds).toEqual([table.id]);
+      expect(drawn.x).toBeGreaterThanOrEqual(-1e-9);
+      expect(drawn.y).toBeGreaterThanOrEqual(-1e-9);
+      expect(drawn.x + drawn.width).toBeLessThanOrEqual(page.width + 1e-9);
+      expect(drawn.y + drawn.height).toBeLessThanOrEqual(page.height + 1e-9);
+    }
+    const middle = insertTableIntoDocument(document, { rows: 3, columns: 3, headerRows: 1, preset: "three-line",
+      center: { x: 400, y: 500 }, newId: ids() }).pages[0].objects[0] as TableObject;
+    expect(middle.x + middle.width / 2).toBeCloseTo(400);
+    expect(middle.y + middle.height / 2).toBeCloseTo(500);
   });
 
   it.each(["word-like.html", "excel-like.html", "google-docs-like.html", "google-sheets-like.html", "word-like.cfhtml.txt"])("pastes the lone table in %s before artwork/text", name => {

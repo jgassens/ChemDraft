@@ -4,6 +4,8 @@ import { validExportOptions } from "./exportOptionsValidation";
 import { validInsertTableOptions, type InsertTableOptions } from "./insertTableOptions";
 export { validInsertTableOptions, type InsertTableOptions } from "./insertTableOptions";
 import { structureTemplateById } from "@chemdraft/template-library";
+import { validDialogContentFit, type DialogContentFit } from "./dialogContentFit";
+export type { DialogContentFit } from "./dialogContentFit";
 export const DIALOG_PROTOCOL_VERSION = 1;
 export const DIALOG_MAX_BYTES = 16 * 1024;
 export const DIALOG_PREVIEW_MAX_BYTES = 5 * 1024 * 1024;
@@ -72,7 +74,8 @@ export type DialogSnapshot = DialogEnvelope & (
   | { dialogKind: "structureTemplates"; type: "snapshot"; data: StructureTemplatesSnapshot }
 );
 export type DialogMessage = DialogSnapshot | (DialogEnvelope & (
-  | { type: "request" | "ready"; data: Record<string, never> }
+  | { type: "request"; data: Record<string, never> }
+  | { type: "ready"; data: Record<string, never> | DialogContentFit }
   | { type: "action"; data: ({ action: "apply" } & (PageSize | InsertTableOptions)) | { action: "apply" | "preview"; percent: number } | { action: "insert"; templateId: string } | { action: "cancel" } | { action: EngineInstallAction | ToolInstallAction } | { action: "export" | "chooseDestination" | "preview"; options: ExportOptions } }
   | { type: "preview"; data: SpacingPreview }
   | { type: "result"; data: { status: "accepted" | "applied" | "inserted" | "progress" | ExportDialogResult["status"] | "preview" | "frame"; preview?: ExportPreviewResult; frame?: ExportFrame; error?: string; destinationPath?: string; filename?: string; notice?: string } }
@@ -108,7 +111,8 @@ export function parseDialogMessage(value: unknown): DialogMessage | undefined {
           Array.isArray(d.templateIds) && d.templateIds.length > 0 && d.templateIds.length <= 64 && new Set(d.templateIds).size === d.templateIds.length &&
           d.templateIds.every(id => typeof id === "string" && !!structureTemplateById(id)); break;
         case "action": valid = d.action === "cancel" ? keys(d, ["action"]) : d.action === "insert" && keys(d, ["action", "templateId"]) && typeof d.templateId === "string" && !!structureTemplateById(d.templateId); break;
-        case "request": case "ready": valid = keys(d, []); break;
+        case "request": valid = keys(d, []); break;
+        case "ready": valid = keys(d, []) || validDialogContentFit(d); break;
         case "closed": valid = keys(d, ["reason"]) && reasons.has(d.reason as DialogCloseReason); break;
         case "result": valid = keys(d, ["status"], ["error"]) && ["accepted", "inserted", "cancelled", "error"].includes(String(d.status)) &&
           (d.error === undefined || typeof d.error === "string" && d.error.length <= 2048); break;
@@ -120,7 +124,8 @@ export function parseDialogMessage(value: unknown): DialogMessage | undefined {
         (value.dialogKind === "insertTable" ? keys(d, ["title", "rows", "columns", "headerRows", "preset"]) && validInsertTableOptions(d) : value.dialogKind === "engineInstall" ? validEngineInstallSnapshot(d) : value.dialogKind === "toolInstall" ? validToolInstallSnapshot(d) : value.dialogKind === "pageSize" ? keys(d, ["title", "width", "height", "unit"]) && validPageSize(d) :
           value.dialogKind === "arrangementSpacing" ? keys(d, ["title", "minPercent", "maxPercent"]) && validSpacingPercent(d.minPercent) && validSpacingPercent(d.maxPercent) && d.minPercent <= 100 && d.maxPercent >= 100 :
           keys(d, ["title", "options"], ["frame"]) && validExportOptions(d.options) && (d.frame === undefined || validExportFrame(d.frame))); break;
-      case "request": case "ready": valid = keys(d, []); break;
+      case "request": valid = keys(d, []); break;
+      case "ready": valid = keys(d, []) || validDialogContentFit(d); break;
       case "action": valid = value.dialogKind === "engineInstall" ? keys(d, ["action"]) && typeof d.action === "string" && ["install", "cancelInstall", "close"].includes(d.action) : value.dialogKind === "toolInstall" ? keys(d, ["action"]) && typeof d.action === "string" && ["install", "allow", "cancelInstall", "close"].includes(d.action) : d.action === "cancel" ? keys(d, ["action"]) : value.dialogKind === "pageSize"
         ? d.action === "apply" && keys(d, ["action", "width", "height", "unit"]) && validPageSize(d)
         : value.dialogKind === "insertTable" ? d.action === "apply" && keys(d, ["action", "rows", "columns", "headerRows", "preset"]) && validInsertTableOptions(d)

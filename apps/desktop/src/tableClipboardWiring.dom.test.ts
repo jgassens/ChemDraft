@@ -7,6 +7,7 @@ import { deserializeDocument, type ChemDraftDocument, type TableObject } from "@
 import { ensureOclResources } from "@chemdraft/ocl-adapter";
 import { installDomRdkitLoader } from "./testSupport/rdkitIdentity";
 import { exportTableClipboardPayloads } from "@chemdraft/export-engine";
+import { tableVisualBoundsForArrangement } from "@chemdraft/layout-engine";
 import { MainWindow } from "./MainWindow";
 import { CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, createPhase4Document, createSelectionClipboardPayload, insertNativeTextObject } from "./documentWorkflow";
 import { readClipboardPayload, writeClipboardTextItems } from "./clipboard";
@@ -141,6 +142,33 @@ describe("MainWindow table clipboard wiring", () => {
     expect(container.textContent).toContain("Undid Paste table");
     await command("edit.redo");
     expect(snapshot().document.pages[0].objects[1]).toEqual(table);
+  });
+
+  it.each([
+    ["right", { x: 815, y: 528 }], ["left", { x: 1, y: 528 }], ["top", { x: 408, y: 1 }], ["bottom", { x: 408, y: 1055 }]
+  ])("keeps a table pasted at the %s page edge fully on the page, selected, and one undo step", async (_edge, pointer) => {
+    const before = insertNativeTextObject(createPhase4Document(), { x: 20, y: 20 }, "Existing");
+    await render(before);
+    const canvasRegion = container.querySelector<HTMLElement>(".canvas-region")!;
+    canvasRegion.getBoundingClientRect = () => ({ x: 0, y: 0, left: 0, top: 0, right: 816, bottom: 1056,
+      width: 816, height: 1056, toJSON: () => ({}) });
+    await act(async () => {
+      window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, cancelable: true, clientX: pointer.x, clientY: pointer.y }));
+    });
+    vi.mocked(readClipboardPayload).mockResolvedValue(clipboard(readFileSync("packages/fixtures/clipboard-tables/word-like.html", "utf8")));
+    await command("clipboard.paste");
+    const page = snapshot().document.pages[0];
+    expect(page.objects).toHaveLength(2);
+    const table = page.objects[1] as TableObject;
+    const drawn = tableVisualBoundsForArrangement(table);
+    expect(drawn.x).toBeGreaterThanOrEqual(-1e-9);
+    expect(drawn.y).toBeGreaterThanOrEqual(-1e-9);
+    expect(drawn.x + drawn.width).toBeLessThanOrEqual(page.width + 1e-9);
+    expect(drawn.y + drawn.height).toBeLessThanOrEqual(page.height + 1e-9);
+    expect(snapshot().selection.objectIds).toEqual([table.id]);
+    await command("edit.undo");
+    expect(snapshot().document.pages[0].objects).toEqual(before.pages[0].objects);
+    expect(container.textContent).toContain("Undid Paste table");
   });
 
   it.each([

@@ -21,6 +21,9 @@ struct DialogKindSpec {
     title: &'static str,
     size: (f64, f64),
     min_size: (f64, f64),
+    // Content-fit: `ready` carries the form's measured height; reveal sets the inner height to it
+    // (never below `min_size.1`, clamped to the work area) and keeps it as the minimum height.
+    fit_content: bool,
 }
 fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
     match kind {
@@ -30,6 +33,7 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             title: "Templates",
             size: (620.0, 700.0),
             min_size: (420.0, 360.0),
+            fit_content: false,
         }),
         "pageSize" => Ok(DialogKindSpec {
             maximizable: false,
@@ -37,6 +41,7 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             title: "Custom Page Size",
             size: (420.0, 300.0),
             min_size: (360.0, 260.0),
+            fit_content: false,
         }),
         "arrangementSpacing" => Ok(DialogKindSpec {
             maximizable: false,
@@ -44,17 +49,17 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             title: "Adjust arrangement spacing",
             size: (540.0, 600.0),
             min_size: (360.0, 260.0),
+            fit_content: false,
         }),
         "insertTable" => Ok(DialogKindSpec {
             maximizable: false,
             resizable: true,
             title: "Insert Table",
-            // App.css, 13px form font (normal line heights rounded up): 36 padding
-            // + 19 heading + 13 collapsed heading/drawing margin + 16 drawing
-            // + 13 margin + (16 label + 4 gap + 30 control) + (26 margins + 32 status)
-            // + 30 buttons = 235px; 5px font-metric margin. Ready carries no size.
+            // Height before ready; ready carries the measured content height, which replaces
+            // it. 240 matches App.css's `min-height: max(240px, 100vh)` floor for this form.
             size: (480.0, 240.0),
             min_size: (480.0, 240.0),
+            fit_content: true,
         }),
         "export" => Ok(DialogKindSpec {
             maximizable: false,
@@ -62,6 +67,7 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             title: "Export",
             size: (520.0, 620.0),
             min_size: (420.0, 360.0),
+            fit_content: false,
         }),
         "engineInstall" => Ok(DialogKindSpec {
             maximizable: false,
@@ -69,6 +75,7 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             title: "Engine installation",
             size: (520.0, 480.0),
             min_size: (420.0, 380.0),
+            fit_content: false,
         }),
         "toolInstall" => Ok(DialogKindSpec {
             maximizable: false,
@@ -76,6 +83,7 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             title: "Tool installation",
             size: (520.0, 460.0),
             min_size: (420.0, 380.0),
+            fit_content: false,
         }),
         _ => Err("Unknown dialog kind".into()),
     }
@@ -119,6 +127,34 @@ enum Action {
         unit: String,
     },
     Cancel,
+}
+/// `ready` data from a content-fit form: CSS height × device pixel ratio = physical pixels.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ContentFit {
+    content_height: f64,
+    pixel_ratio: f64,
+}
+impl ContentFit {
+    fn from_ready(data: &Value) -> Option<Self> {
+        serde_json::from_value::<Self>(data.clone())
+            .ok()
+            .filter(|f| {
+                f.content_height.is_finite()
+                    && f.content_height > 0.0
+                    && f.content_height <= 16384.0
+                    && f.pixel_ratio.is_finite()
+                    && f.pixel_ratio > 0.0
+                    && f.pixel_ratio <= 16.0
+            })
+    }
+    /// Logical inner height at `window_scale` (the window's scale when the form measured).
+    /// The ratio carries WebView zoom and text scaling; never below the kind's minimum.
+    fn logical_height(self, window_scale: f64, min_height: f64) -> f64 {
+        (self.content_height * self.pixel_ratio / window_scale)
+            .ceil()
+            .max(min_height)
+    }
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -877,7 +913,11 @@ impl Message {
                             })
                     })
             }
-            "request" | "ready" => self.data.as_object().is_some_and(|d| d.is_empty()),
+            "request" => self.data.as_object().is_some_and(|d| d.is_empty()),
+            "ready" => {
+                self.data.as_object().is_some_and(|d| d.is_empty())
+                    || ContentFit::from_ready(&self.data).is_some()
+            }
             "result" => serde_json::from_value::<Receipt>(self.data.clone()).is_ok_and(|r| {
                 matches!(
                     r.status.as_str(),
@@ -922,6 +962,7 @@ struct Session {
     receipts: HashMap<String, Message>,
     transient_until: Instant,
     pending_move: Option<(Instant, SavedPosition)>,
+    content_fit: Option<ContentFit>,
 }
 #[derive(Default)]
 struct Registry {
@@ -1162,6 +1203,7 @@ fn register(
             receipts: HashMap::new(),
             transient_until: Instant::now() + Duration::from_millis(500),
             pending_move: None,
+            content_fit: None,
         },
     );
     Ok((registration, true))
@@ -1338,6 +1380,7 @@ pub(crate) async fn dialog_send(
         }
         if reveal {
             session.ready = true;
+            session.content_fit = ContentFit::from_ready(&message.data);
         }
         // Only this Rust-validated path can write the owner's private channel.
         send_owner(session, window.label(), &message)?;
@@ -1761,20 +1804,27 @@ fn place_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), Stri
     let owner_size = owner.inner_size().map_err(|e| e.to_string())?;
     let frame = window.outer_size().map_err(|e| e.to_string())?;
     let scale = window.scale_factor().map_err(|e| e.to_string())?;
-    let size = (
-        f64::from(frame.width) / scale,
-        f64::from(frame.height) / scale,
-    );
     let positions = read_positions(app);
-    let kind = REGISTRY
+    let (kind, content_fit) = REGISTRY
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .sessions
         .values()
         .find(|s| s.registration.window_label == window.label())
-        .map(|s| s.snapshot.dialog_kind.clone())
+        .map(|s| (s.snapshot.dialog_kind.clone(), s.content_fit))
         .ok_or("Unknown dialog window")?;
     let spec = kind_spec(&kind)?;
+    // The form measured at the window's current scale, before any move to another monitor.
+    let fitted_height = content_fit
+        .filter(|_| spec.fit_content)
+        .map(|fit| fit.logical_height(scale, spec.min_size.1));
+    let client_size = (spec.size.0, fitted_height.unwrap_or(spec.size.1));
+    let client = window.inner_size().map_err(|e| e.to_string())?;
+    // Centre the frame the dialog will have: today's decorations around the fitted client.
+    let size = (
+        f64::from(frame.width) / scale,
+        f64::from(frame.height) / scale + client_size.1 - f64::from(client.height) / scale,
+    );
     let saved = positions.get(&kind).filter(|p| {
         [p.x, p.y, p.offset_x, p.offset_y]
             .iter()
@@ -1804,9 +1854,10 @@ fn place_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), Stri
             f64::from(owner_size.height) / destination.scale,
         ),
     });
-    if template_placement.is_some() {
-        // The picker must also fit work areas smaller than its normal minimum. Restore a
-        // bounded minimum after measuring the destination monitor's actual decorations.
+    let fits_work_area = template_placement.is_some() || fitted_height.is_some();
+    if fits_work_area {
+        // The picker, and a fitted dialog, must also fit work areas smaller than its normal
+        // minimum. Restore a bounded minimum after measuring the destination's decorations.
         window
             .set_min_size(Some(tauri::LogicalSize::new(1.0, 1.0)))
             .map_err(|e| e.to_string())?;
@@ -1815,8 +1866,9 @@ fn place_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), Stri
     // client size at the destination DPI, then clamp using the measured final outer frame.
     finish_placement(
         (x, y, destination_scale),
-        spec.size,
+        client_size,
         destination,
+        fitted_height.is_some(),
         template_placement,
         |x, y| {
             window
@@ -1837,13 +1889,19 @@ fn place_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), Stri
             })
         },
     )?;
-    if kind == "structureTemplates" {
+    if fits_work_area {
         let client = window.inner_size().map_err(|e| e.to_string())?;
+        let client_height = f64::from(client.height) / destination.scale;
         window
             // Keep constraints logical so Windows rescales them on later DPI changes.
+            // A fitted dialog never shrinks below its content (or the work area, if smaller).
             .set_min_size(Some(tauri::LogicalSize::new(
                 (f64::from(client.width) / destination.scale).min(spec.min_size.0),
-                (f64::from(client.height) / destination.scale).min(spec.min_size.1),
+                if fitted_height.is_some() {
+                    client_height
+                } else {
+                    client_height.min(spec.min_size.1)
+                },
             )))
             .map_err(|e| e.to_string())?;
     }
@@ -1878,23 +1936,27 @@ fn finish_placement(
     (x, y, scale): (f64, f64, f64),
     (client_width, client_height): (f64, f64),
     work: &WorkArea,
+    fit_to_work_area: bool,
     template: Option<TemplatePlacement<'_>>,
     mut move_to: impl FnMut(f64, f64) -> Result<(), String>,
     mut resize: impl FnMut(u32, u32) -> Result<(), String>,
     mut measure: impl FnMut() -> Result<DialogFrame, String>,
 ) -> Result<(), String> {
     move_to(x, y)?;
+    // Round up: a fitted content height truncated at 125%/150% would lose its last pixel row.
     resize(
-        (client_width * scale) as u32,
-        (client_height * scale) as u32,
+        (client_width * scale).ceil() as u32,
+        (client_height * scale).ceil() as u32,
     )?;
     let mut frame = measure()?;
-    if let Some(template) = template {
+    if fit_to_work_area || template.is_some() {
         let fitted = fitted_template_client(frame.client, frame.outer, work);
         if fitted != frame.client {
             resize(fitted.0, fitted.1)?;
             frame = measure()?;
         }
+    }
+    if let Some(template) = template {
         // Re-centre using the final outer frame, rather than the initial monitor's frame.
         // A saved position still uses the shared per-kind destination/offset policy.
         let (x, y, _) = position_for(
@@ -2709,6 +2771,7 @@ mod tests {
                 (origin.0, origin.1, scale),
                 kind_spec("structureTemplates").unwrap().size,
                 &work,
+                false,
                 Some(TemplatePlacement {
                     saved: None,
                     owner_rect,
@@ -2769,6 +2832,7 @@ mod tests {
                 (-1600.0, 0.0, work.scale),
                 kind_spec("structureTemplates").unwrap().size,
                 &work,
+                false,
                 Some(TemplatePlacement {
                     saved: Some(&saved),
                     owner_rect: (-780.0, 20.0, 700.0, 500.0),
@@ -2812,6 +2876,7 @@ mod tests {
             (3000.0, 1000.0, 2.0),
             (420.0, 300.0),
             &work,
+            false,
             None,
             |x, y| {
                 calls.borrow_mut().push(format!("move:{x},{y}"));
@@ -3059,6 +3124,131 @@ mod tests {
         assert!(message.validate().is_err());
         assert!(is_dialog_label("dialog-main-arrangementSpacing-12"));
         assert!(!is_dialog_label("dialog-main-arrangementSpacing-../main"));
+    }
+    #[test]
+    fn only_insert_table_fits_its_window_to_the_measured_content() {
+        for kind in [
+            "structureTemplates",
+            "pageSize",
+            "arrangementSpacing",
+            "insertTable",
+            "export",
+            "engineInstall",
+            "toolInstall",
+        ] {
+            assert_eq!(kind_spec(kind).unwrap().fit_content, kind == "insertTable");
+        }
+    }
+    #[test]
+    fn ready_content_fit_is_typed_bounded_and_converted_through_the_pixel_ratio() {
+        let mut ready = snapshot();
+        ready.dialog_kind = "insertTable".into();
+        ready.message_type = "ready".into();
+        for data in [
+            json!({}),
+            json!({"contentHeight": 263, "pixelRatio": 2}),
+            json!({"contentHeight": 262.5, "pixelRatio": 1.25}),
+        ] {
+            ready.data = data;
+            assert!(ready.validate().is_ok(), "{}", ready.data);
+        }
+        for data in [
+            json!({"contentHeight": 263}),
+            json!({"contentHeight": 0, "pixelRatio": 1}),
+            json!({"contentHeight": -5, "pixelRatio": 1}),
+            json!({"contentHeight": 16385, "pixelRatio": 1}),
+            json!({"contentHeight": 263, "pixelRatio": 0}),
+            json!({"contentHeight": 263, "pixelRatio": 17}),
+            json!({"contentHeight": "263", "pixelRatio": 1}),
+            json!({"contentHeight": 263, "pixelRatio": 1, "width": 480}),
+        ] {
+            ready.data = data;
+            assert!(ready.validate().is_err(), "{}", ready.data);
+            assert_eq!(ContentFit::from_ready(&ready.data), None);
+        }
+        // A request still carries nothing.
+        ready.message_type = "request".into();
+        ready.data = json!({"contentHeight": 263, "pixelRatio": 1});
+        assert!(ready.validate().is_err());
+        let fit = |content_height, pixel_ratio| ContentFit {
+            content_height,
+            pixel_ratio,
+        };
+        // Same scale: CSS px are logical px. Retina and 150% monitors measure the same content.
+        assert_eq!(fit(263.0, 1.0).logical_height(1.0, 240.0), 263.0);
+        assert_eq!(fit(263.0, 2.0).logical_height(2.0, 240.0), 263.0);
+        assert_eq!(fit(263.0, 1.5).logical_height(1.5, 240.0), 263.0);
+        // WebView zoom or larger text (ratio above the monitor scale) grows the window.
+        assert_eq!(fit(263.0, 1.25).logical_height(1.0, 240.0), 329.0);
+        assert_eq!(fit(263.0, 1.875).logical_height(1.5, 240.0), 329.0);
+        // Never below the kind's minimum (App.css's 240px floor for the form).
+        assert_eq!(fit(200.0, 1.0).logical_height(1.0, 240.0), 240.0);
+    }
+    #[test]
+    fn fitted_dialog_client_is_never_shorter_than_its_content_unless_the_work_area_is() {
+        use std::cell::RefCell;
+        for (scale, content, area_height) in [
+            (1.0, 263.0, 1000.0),
+            (1.25, 263.0, 1000.0),
+            (1.5, 263.0, 1000.0),
+            (2.0, 263.0, 1000.0),
+            (1.25, 329.0, 1000.0),
+            (1.5, 600.0, 400.0),
+        ] {
+            let work = WorkArea {
+                id: "display".into(),
+                x: 0.0,
+                y: 0.0,
+                width: 1600.0,
+                height: area_height,
+                scale,
+            };
+            let client = RefCell::new((0u32, 0u32));
+            let position = RefCell::new((0.0, 0.0));
+            finish_placement(
+                (100.0 * scale, 900.0 * scale, scale),
+                (480.0, content),
+                &work,
+                true,
+                None,
+                |x, y| {
+                    *position.borrow_mut() = (x, y);
+                    Ok(())
+                },
+                |w, h| {
+                    *client.borrow_mut() = (w, h);
+                    Ok(())
+                },
+                || {
+                    let (w, h) = *client.borrow();
+                    let decorations = (2.0 * scale) as u32;
+                    let title_bar = (28.0 * scale) as u32;
+                    Ok(DialogFrame {
+                        outer: (w + decorations, h + title_bar),
+                        client: (w, h),
+                    })
+                },
+            )
+            .unwrap();
+            let (w, h) = *client.borrow();
+            let title_bar = f64::from((28.0 * scale) as u32);
+            assert!(f64::from(w) >= 480.0 * scale);
+            if content * scale + title_bar <= area_height * scale {
+                // The window holds all of the content: the buttons are never cut off.
+                assert!(f64::from(h) >= content * scale, "{scale} {content}: {h}");
+                // And no more than a rounding pixel: no empty band below the buttons.
+                assert!(
+                    f64::from(h) < content * scale + 1.0,
+                    "{scale} {content}: {h}"
+                );
+            } else {
+                // Clamped to the screen, with the whole frame inside the work area.
+                assert_eq!(f64::from(h) + title_bar, (area_height * scale).floor());
+            }
+            let (_, y) = *position.borrow();
+            assert!(y >= 0.0);
+            assert!(y + f64::from(h) + title_bar <= area_height * scale + 0.001);
+        }
     }
     #[test]
     fn insert_table_registers_and_validates_typed_payloads() {
@@ -3429,6 +3619,7 @@ mod tests {
             (0.0, 0.0, 1.5),
             kind_spec("export").unwrap().size,
             &work,
+            false,
             None,
             |_, _| Ok(()),
             |w, h| {
