@@ -4635,6 +4635,12 @@ function nativeTextObjectToAtomLabelDisabledReason(
       ? "Atom labels cannot be empty"
       : "This molecule cannot be edited with the atom-label editor";
   }
+  const target = candidate.target;
+  const atom = target.kind === "atom" ? candidate.molecule.atoms.find(a => a.id === target.atomId) : undefined;
+  const label = normalizeNativeAtomElementLabel(candidate.text.text);
+  if (atom && labelOnBondedAtom(label, atom, candidate.molecule).kind !== "substituent") {
+    return atomLabelIsotopeRefusal(atom, label, candidate.molecule, true);
+  }
   return undefined;
 }
 
@@ -4673,6 +4679,9 @@ export function convertNativeTextObjectToAtomLabel(
   }
   const page = firstPage(document);
   const labeled = commitNativeAtomLabelTarget(document, target, text.text, { literal: true });
+  if (labeled.refusal) {
+    return { document, target, disabledReason: labeled.refusal, message: `Text kept: ${labeled.refusal}` };
+  }
   return {
     document: applyPatches(labeled.document, [
       { op: "removeObject", objectId },
@@ -9432,6 +9441,7 @@ export function applyNativeAtomElementTarget(
   if (!atom || normalizedElement.length === 0) {
     return document;
   }
+  if (atomLabelIsotopeRefusal(atom, normalizedElement, molecule, literal)) return document;
 
   const restoredSide = options.labelBondSide;
   if (
@@ -9537,7 +9547,7 @@ export function commitNativeAtomLabelTarget(
   target: NativeMoleculeDeleteTarget,
   label: string,
   options: { literal?: boolean; beforeAtom?: MoleculeAtom; beforeMolecule?: MoleculeObject } = {}
-): { document: ChemDraftDocument; target: NativeMoleculeDeleteTarget; message?: string } {
+): { document: ChemDraftDocument; target: NativeMoleculeDeleteTarget; message?: string; refusal?: string } {
   const page = firstPage(document);
   const molecule = page.objects.find((object): object is MoleculeObject => object.id === target.objectId && object.type === "molecule");
   const atom = target.kind === "atom" ? molecule?.atoms.find(a => a.id === target.atomId) : undefined;
@@ -9546,11 +9556,16 @@ export function commitNativeAtomLabelTarget(
   const beforeMolecule = options.beforeMolecule ?? molecule;
   const normalized = normalizeNativeAtomElementLabel(label);
   const decision = labelOnBondedAtom(normalized, beforeAtom, beforeMolecule);
-  const relabel = () => applyNativeAtomElementTarget(document, target, label, options);
-  if (decision.kind !== "substituent") return {
-    document: relabel(), target,
-    ...(decision.reason === "source-valence" ? { message: `Relabeled ${normalized}: the original ${beforeAtom.element} atom cannot take another bond` } : {})
+  const relabel = (reason?: string) => {
+    const refusal = atomLabelIsotopeRefusal(beforeAtom, normalized, beforeMolecule, options.literal === true);
+    if (refusal) return { document, target, message: refusal, refusal };
+    return {
+      document: applyNativeAtomElementTarget(document, target, label, options), target,
+      ...(reason ? { message: `Relabeled ${normalized}: ${reason}` } : {})
+    };
   };
+  if (decision.kind !== "substituent") return relabel(decision.reason === "source-valence"
+    ? `the original ${beforeAtom.element} atom cannot take another bond` : undefined);
   const atoms = molecule.atoms.map(a => a.id === atom.id ? { ...beforeAtom, x: a.x, y: a.y } : a);
   const source = atoms.find(a => a.id === atom.id)!;
   const style = nativeDrawingStyleFromObjectStyle(molecule.style);
@@ -9562,7 +9577,7 @@ export function commitNativeAtomLabelTarget(
   });
   const pageMolecules = page.objects.filter((o): o is MoleculeObject => o.type === "molecule");
   if (!placement || pageMolecules.some(m => m.atoms.some(a => Math.hypot(a.x - placement.newAtomPoint.x, a.y - placement.newAtomPoint.y) < style.bondLengthPx * 0.5))) {
-    return { document: relabel(), target, message: `Relabeled ${normalized}: no clear substituent position on the page` };
+    return relabel("no clear substituent position on the page");
   }
   // The substituent keeps the reading the user typed — the label as written, bond on its left — on
   // whichever side the open position puts its bond: a cyano label ("CN", "SCN") placed to the
@@ -9592,7 +9607,7 @@ export function commitNativeAtomLabelTarget(
   const nextMolecule = refreshNativeSingleBondGraph({ ...molecule, style: nextStyle }, [...atoms, newAtom], [...molecule.bonds, bond]);
   const declined = substituentLosesTypedReading(nextMolecule, newAtom.id, source, decision);
   if (declined) {
-    return { document: relabel(), target, message: `Relabeled ${normalized}: ${declined}` };
+    return relabel(declined);
   }
   return {
     document: applyPatch(document, { op: "updateObject", objectId: molecule.id, changes: nextMolecule }, { now: phase4Timestamp }),
@@ -20265,6 +20280,14 @@ function connectNativeCarbonAtoms(
   ];
 
   return refreshNativeSingleBondGraph(molecule, molecule.atoms, bonds);
+}
+
+function atomLabelIsotopeRefusal(atom: MoleculeAtom, label: string, molecule: MoleculeObject, literal: boolean): string | undefined {
+  if (atom.isotope === undefined) return undefined;
+  const bonded = molecule.bonds.some(b => b.fromAtomId === atom.id || b.toAtomId === atom.id);
+  const reading = nativeAtomLabelReading(label, { bonded, typed: literal });
+  if (reading.kind === "element" || reading.kind === "heavy-hydrogen") return undefined;
+  return `Cannot relabel ${atom.isotope}${atom.element} as ${label}: the label cannot keep isotope ${atom.isotope}; clear the isotope first to relabel`;
 }
 
 function nativeAtomWithElement(
