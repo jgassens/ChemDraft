@@ -6,6 +6,15 @@ use crate::clipboard_images::{is_image_clipboard_type, MAX_CLIPBOARD_IMAGE_BYTES
 
 // Ten times a full 64 MiB copy plus native representations and Office siblings.
 pub(crate) const MAX_CLIPBOARD_BYTES: usize = 1024 * 1024 * 1024;
+pub(crate) const MAX_CLIPBOARD_TEXT_BYTES: usize = 256 * 1024 * 1024;
+
+// Exact integer rounding, shared with TypeScript: tenths of a MiB, ties rounded up.
+fn clipboard_megabytes(byte_length: usize) -> String {
+    let mib = 1024 * 1024;
+    let whole = byte_length / mib;
+    let tenths = ((byte_length % mib) * 10 + mib / 2) / mib;
+    format!("{}.{}", whole + tenths / 10, tenths % 10)
+}
 
 fn clipboard_flavor_name(kind: &str) -> &str {
     match kind {
@@ -44,16 +53,15 @@ impl SkippedClipboardItem {
     fn message(&self) -> String {
         if let ClipboardSkipReason::Total = self.reason {
             return format!(
-                "Couldn't paste: the clipboard contents are too large ({:.1} MB in total; the limit is {} MB).",
-                (self.total_byte_length.expect("total refusal records attempted total") as f64 * 10.0
-                    / (1024.0 * 1024.0)).round() / 10.0,
+                "Couldn't paste: the clipboard contents are too large ({} MB in total; the limit is {} MB).",
+                clipboard_megabytes(self.total_byte_length.unwrap_or(self.byte_length)),
                 self.limit_bytes / (1024 * 1024)
             );
         }
         format!(
-            "Couldn't paste: clipboard flavor \"{}\" is too large ({:.1} MB; the limit is {} MB).",
+            "Couldn't paste: clipboard flavor \"{}\" is too large ({} MB; the limit is {} MB).",
             clipboard_flavor_name(&self.r#type),
-            (self.byte_length as f64 * 10.0 / (1024.0 * 1024.0)).round() / 10.0,
+            clipboard_megabytes(self.byte_length),
             self.limit_bytes / (1024 * 1024)
         )
     }
@@ -95,17 +103,6 @@ impl ClipboardReadBudget {
         }
     }
 
-    /// Preflight NSData before asking AppKit to interpret it as NSString. The eventual read
-    /// reserves once using the retained text's UTF-8 size.
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    pub(crate) fn check(&mut self, source: &str, byte_length: usize) -> Result<(), String> {
-        self.check_with_total(source, byte_length, true)
-    }
-
-    pub(crate) fn check_flavor(&mut self, source: &str, byte_length: usize) -> Result<(), String> {
-        self.check_with_total(source, byte_length, false)
-    }
-
     pub(crate) fn check_svg_allocation(
         &mut self,
         source: &str,
@@ -128,33 +125,51 @@ impl ClipboardReadBudget {
         Err(message)
     }
 
-    fn check_with_total(
+    /// SVG may be UTF-16. Reserve its native allocation before decoding, then replace
+    /// that reservation with the retained UTF-8 picture size (which still has a 25 MiB cap).
+    pub(crate) fn reserve_svg_allocation(
         &mut self,
         source: &str,
         byte_length: usize,
-        include_total: bool,
     ) -> Result<(), String> {
+        self.check_svg_allocation(source, byte_length)?;
+        self.check_total(source, byte_length)?;
+        self.copied_bytes += byte_length;
+        Ok(())
+    }
+
+    fn check(&mut self, source: &str, byte_length: usize) -> Result<(), String> {
         let flavor_limit = if is_image_clipboard_type(source) {
             MAX_CLIPBOARD_IMAGE_BYTES
         } else {
-            MAX_CLIPBOARD_BYTES
+            MAX_CLIPBOARD_TEXT_BYTES
         };
-        let total = self.copied_bytes.saturating_add(byte_length);
-        let refusal = if byte_length > flavor_limit {
-            Some((flavor_limit, ClipboardSkipReason::Flavor, None))
-        } else if include_total && total > MAX_CLIPBOARD_BYTES {
-            Some((MAX_CLIPBOARD_BYTES, ClipboardSkipReason::Total, Some(total)))
-        } else {
-            None
-        };
-        if let Some((limit_bytes, reason, total_byte_length)) = refusal {
+        if byte_length > flavor_limit {
             let skipped = SkippedClipboardItem {
                 r#type: source.to_string(),
                 byte_length,
-                limit_bytes,
+                limit_bytes: flavor_limit,
                 chemistry: false,
-                reason,
-                total_byte_length,
+                reason: ClipboardSkipReason::Flavor,
+                total_byte_length: None,
+            };
+            let message = skipped.message();
+            self.skipped_items.push(skipped);
+            return Err(message);
+        }
+        self.check_total(source, byte_length)
+    }
+
+    fn check_total(&mut self, source: &str, byte_length: usize) -> Result<(), String> {
+        let total = self.copied_bytes.saturating_add(byte_length);
+        if total > MAX_CLIPBOARD_BYTES {
+            let skipped = SkippedClipboardItem {
+                r#type: source.to_string(),
+                byte_length,
+                limit_bytes: MAX_CLIPBOARD_BYTES,
+                chemistry: false,
+                reason: ClipboardSkipReason::Total,
+                total_byte_length: Some(total),
             };
             let message = skipped.message();
             self.skipped_items.push(skipped);
@@ -297,13 +312,46 @@ pub(crate) fn is_admitted_text_alias(bytes: &[u8], admitted: &[crate::ClipboardT
 mod tests {
     use super::*;
 
+    // Fill the paste total with individually admissible flavors, never a >256 MiB text item.
+    fn fill_budget(budget: &mut ClipboardReadBudget, mut bytes: usize) {
+        while bytes > 0 {
+            let chunk = bytes.min(MAX_CLIPBOARD_TEXT_BYTES);
+            budget.reserve("sibling", chunk).unwrap();
+            bytes -= chunk;
+        }
+    }
+
+    #[test]
+    fn clipboard_rounding_matches_shared_typescript_table_without_panics() {
+        let cases: Vec<(usize, String)> = serde_json::from_str(include_str!(
+            "../../../../packages/clipboard-adapter/src/clipboardSizeRounding.json"
+        ))
+        .unwrap();
+        for (byte_length, expected) in cases {
+            assert_eq!(clipboard_megabytes(byte_length), expected);
+            for reason in [ClipboardSkipReason::Flavor, ClipboardSkipReason::Total] {
+                let item = SkippedClipboardItem {
+                    r#type: "text/plain".into(),
+                    byte_length,
+                    limit_bytes: MAX_CLIPBOARD_TEXT_BYTES,
+                    chemistry: false,
+                    reason,
+                    total_byte_length: None,
+                };
+                // A total item without total_byte_length falls back to byte_length, never panics.
+                assert!(item.message().contains(&format!("({expected} MB")));
+            }
+        }
+    }
+
     #[test]
     fn clipboard_svg_utf16_allocation_accepts_main_25_mib_decoded_picture_limit() {
         for source in ["public.svg-image", "image/svg+xml", "public.svg"] {
             let mut budget = ClipboardReadBudget::default();
-            budget
-                .check_svg_allocation(source, 2 * MAX_CLIPBOARD_IMAGE_BYTES + 16)
-                .unwrap();
+            let allocation = 2 * MAX_CLIPBOARD_IMAGE_BYTES + 16;
+            budget.reserve_svg_allocation(source, allocation).unwrap();
+            assert_eq!(budget.copied_bytes, allocation);
+            budget.release(allocation);
             budget.reserve(source, MAX_CLIPBOARD_IMAGE_BYTES).unwrap();
             assert_eq!(budget.copied_bytes, MAX_CLIPBOARD_IMAGE_BYTES);
             assert!(budget
@@ -313,6 +361,21 @@ mod tests {
                 )
                 .is_err());
         }
+    }
+
+    #[test]
+    fn clipboard_svg_allocation_total_is_reserved_before_conversion() {
+        let mut budget = ClipboardReadBudget::default();
+        fill_budget(&mut budget, MAX_CLIPBOARD_BYTES - 1024 * 1024);
+        assert!(budget
+            .reserve_svg_allocation("public.svg-image", 2 * 1024 * 1024)
+            .is_err());
+        assert_eq!(budget.copied_bytes, MAX_CLIPBOARD_BYTES - 1024 * 1024);
+        assert!(matches!(
+            budget.skipped_items[0].reason,
+            ClipboardSkipReason::Total
+        ));
+        budget.reserve("text/plain", 1024 * 1024).unwrap();
     }
 
     #[test]
@@ -331,9 +394,7 @@ mod tests {
                     text,
                 }];
                 // Simulate a nearly full budget: duplicate aliases still bypass admission entirely.
-                budget
-                    .reserve("other", MAX_CLIPBOARD_BYTES - admitted[0].text.len())
-                    .unwrap();
+                fill_budget(&mut budget, MAX_CLIPBOARD_BYTES - admitted[0].text.len());
                 assert!(is_admitted_text_alias(
                     admitted[0].text.as_bytes(),
                     &admitted
@@ -384,11 +445,9 @@ mod tests {
     }
 
     #[test]
-    fn clipboard_size_messages_round_half_up_like_dom_to_fixed() {
+    fn clipboard_size_messages_round_half_up_like_dom_integer_arithmetic() {
         let mut budget = ClipboardReadBudget::default();
-        budget
-            .reserve("text/plain", MAX_CLIPBOARD_BYTES - 1024 * 1024)
-            .unwrap();
+        fill_budget(&mut budget, MAX_CLIPBOARD_BYTES - 1024 * 1024);
         assert_eq!(budget.reserve("text/rtf", 5 * 1024 * 1024 / 4), Err(
             "Couldn't paste: the clipboard contents are too large (1024.3 MB in total; the limit is 1024 MB).".into()));
         let metadata = serde_json::to_value(&budget.skipped_items[0]).unwrap();
@@ -403,13 +462,19 @@ mod tests {
     #[test]
     fn clipboard_own_cap_refusal_keeps_flavor_size_and_limit_even_when_total_is_full() {
         let mut budget = ClipboardReadBudget::default();
-        budget.reserve("text/plain", MAX_CLIPBOARD_BYTES).unwrap();
+        fill_budget(&mut budget, MAX_CLIPBOARD_BYTES);
         assert_eq!(budget.reserve("PNG", 30 * 1024 * 1024), Err(
             "Couldn't paste: clipboard flavor \"image/png\" is too large (30.0 MB; the limit is 25 MB).".into()));
         let metadata = serde_json::to_value(&budget.skipped_items[0]).unwrap();
         assert_eq!(metadata["reason"], "flavor");
         assert!(metadata.get("totalByteLength").is_none());
         assert_eq!(budget.copied_bytes, MAX_CLIPBOARD_BYTES);
+        assert_eq!(budget.reserve("text/plain", 400 * 1024 * 1024), Err(
+            "Couldn't paste: clipboard flavor \"text/plain\" is too large (400.0 MB; the limit is 256 MB).".into()));
+        assert_eq!(
+            budget.skipped_items[1].limit_bytes,
+            MAX_CLIPBOARD_TEXT_BYTES
+        );
     }
 
     #[test]
@@ -436,8 +501,8 @@ mod tests {
             "public.utf8-plain-text",
             "public.utf16-plain-text",
         ] {
-            assert_eq!(ClipboardReadBudget::default().reserve(source, 1500 * 1024 * 1024), Err(
-                "Couldn't paste: clipboard flavor \"text/plain\" is too large (1500.0 MB; the limit is 1024 MB).".into()));
+            assert_eq!(ClipboardReadBudget::default().reserve(source, 400 * 1024 * 1024), Err(
+                "Couldn't paste: clipboard flavor \"text/plain\" is too large (400.0 MB; the limit is 256 MB).".into()));
         }
         for source in ["public.png", "PNG", "image/png"] {
             assert_eq!(ClipboardReadBudget::default().reserve(source, 30 * 1024 * 1024), Err(
@@ -486,12 +551,8 @@ mod tests {
             assert_eq!(text_read_priority(kind), Some(0));
         }
         let mut budget = ClipboardReadBudget::default();
-        assert!(
-            budget.reserve("PNG", 24 * 1024 * 1024).is_ok()
-                && budget
-                    .reserve("private", MAX_CLIPBOARD_BYTES - 64 * 1024 * 1024)
-                    .is_ok()
-        );
+        budget.reserve("PNG", 24 * 1024 * 1024).unwrap();
+        fill_budget(&mut budget, MAX_CLIPBOARD_BYTES - 64 * 1024 * 1024);
         assert!(budget.reserve("text/rtf", 50 * 1024 * 1024).is_err());
         assert_eq!(budget.skipped_items[0].byte_length, 50 * 1024 * 1024);
         assert_eq!(budget.skipped_items[0].message(), "Couldn't paste: the clipboard contents are too large (1034.0 MB in total; the limit is 1024 MB).");
@@ -504,18 +565,24 @@ mod tests {
     fn clipboard_native_lengths_are_checked_without_allocating_the_payload() {
         // The length comes from GlobalSize, NSData.length, or NSString's UTF-8 byte length.
         for source in ["text/plain", "public.utf8-plain-text", "chemical/x-cdxml"] {
-            for length in [MAX_CLIPBOARD_BYTES + 1, 1500 * 1024 * 1024, usize::MAX] {
+            for length in [MAX_CLIPBOARD_TEXT_BYTES + 1, 400 * 1024 * 1024, usize::MAX] {
                 let mut budget = ClipboardReadBudget::default();
                 assert!(budget.reserve(source, length).is_err());
                 assert_eq!(budget.copied_bytes, 0);
                 assert_eq!(budget.skipped_items[0].byte_length, length);
-                assert_eq!(budget.skipped_items[0].limit_bytes, MAX_CLIPBOARD_BYTES);
+                assert_eq!(
+                    budget.skipped_items[0].limit_bytes,
+                    MAX_CLIPBOARD_TEXT_BYTES
+                );
                 assert!(budget.reserve(source, 42).is_ok());
             }
             let mut budget = ClipboardReadBudget::default();
-            assert!(budget.reserve(source, MAX_CLIPBOARD_BYTES).is_ok());
+            assert!(budget.reserve(source, MAX_CLIPBOARD_TEXT_BYTES).is_ok());
             assert!(budget.reserve(source, 0).is_ok());
-            assert!(budget.reserve(source, 1).is_err());
+            assert!(budget.reserve(source, 1).is_ok());
+            assert!(budget
+                .reserve(source, MAX_CLIPBOARD_TEXT_BYTES + 1)
+                .is_err());
         }
     }
 
@@ -525,12 +592,7 @@ mod tests {
         assert!(budget
             .reserve("public.png", MAX_CLIPBOARD_IMAGE_BYTES)
             .is_ok());
-        assert!(budget
-            .reserve(
-                "text/plain",
-                MAX_CLIPBOARD_BYTES - MAX_CLIPBOARD_IMAGE_BYTES
-            )
-            .is_ok());
+        fill_budget(&mut budget, MAX_CLIPBOARD_BYTES - MAX_CLIPBOARD_IMAGE_BYTES);
         assert!(budget.reserve("image/svg+xml", 1).is_err());
         assert_eq!(budget.skipped_items[0].byte_length, 1);
         assert_eq!(budget.skipped_items[0].limit_bytes, MAX_CLIPBOARD_BYTES);
@@ -541,10 +603,15 @@ mod tests {
     #[test]
     fn clipboard_nsdata_preflight_does_not_double_charge_string_conversion() {
         let mut budget = ClipboardReadBudget::default();
-        assert!(budget.check("public.text", MAX_CLIPBOARD_BYTES).is_ok());
-        assert!(budget.reserve("public.text", MAX_CLIPBOARD_BYTES).is_ok());
-        assert!(budget.check("public.text", 1).is_err());
-        assert_eq!(budget.copied_bytes, MAX_CLIPBOARD_BYTES);
+        budget
+            .reserve("public.text", MAX_CLIPBOARD_TEXT_BYTES)
+            .unwrap();
+        budget.release(MAX_CLIPBOARD_TEXT_BYTES);
+        budget
+            .reserve("public.text", MAX_CLIPBOARD_TEXT_BYTES / 2)
+            .unwrap();
+        assert_eq!(budget.copied_bytes, MAX_CLIPBOARD_TEXT_BYTES / 2);
+        assert!(budget.skipped_items.is_empty());
     }
 
     #[test]
@@ -561,9 +628,9 @@ mod tests {
             assert!(budget.reserve(source, MAX_CLIPBOARD_IMAGE_BYTES).is_ok());
         }
         assert_eq!(
-            ClipboardReadBudget::default().reserve("text/plain", 1500 * 1024 * 1024),
+            ClipboardReadBudget::default().reserve("text/plain", 400 * 1024 * 1024),
             Err(
-                "Couldn't paste: clipboard flavor \"text/plain\" is too large (1500.0 MB; the limit is 1024 MB)."
+                "Couldn't paste: clipboard flavor \"text/plain\" is too large (400.0 MB; the limit is 256 MB)."
                     .to_string()
             )
         );

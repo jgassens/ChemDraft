@@ -28,6 +28,7 @@ export interface ClipboardSkippedImageItem {
 
 // At least 10x main's 64 MiB copy envelope, including Office representations.
 export const MAX_CLIPBOARD_BYTES = 1024 * 1024 * 1024;
+export const MAX_CLIPBOARD_TEXT_BYTES = 256 * 1024 * 1024;
 
 export interface ClipboardSkippedItem {
   type: string;
@@ -186,11 +187,19 @@ function clipboardFlavorName(type: string): string {
   return type;
 }
 
+// Exact integer rounding, shared with native: tenths of a MiB, ties rounded up.
+function clipboardMegabytes(byteLength: number): string {
+  const mib = 1024 * 1024;
+  const whole = Math.floor(byteLength / mib);
+  const tenths = Math.floor(((byteLength % mib) * 10 + mib / 2) / mib);
+  return `${whole + Math.floor(tenths / 10)}.${tenths % 10}`;
+}
+
 export function clipboardSizeRefusalMessage(item: ClipboardSkippedItem): string {
   if (item.reason === "total") {
-    return `Couldn't paste: the clipboard contents are too large (${((item.totalByteLength ?? item.byteLength) / (1024 * 1024)).toFixed(1)} MB in total; the limit is ${item.limitBytes / (1024 * 1024)} MB).`;
+    return `Couldn't paste: the clipboard contents are too large (${clipboardMegabytes(item.totalByteLength ?? item.byteLength)} MB in total; the limit is ${item.limitBytes / (1024 * 1024)} MB).`;
   }
-  return `Couldn't paste: clipboard flavor "${clipboardFlavorName(item.type)}" is too large (${(item.byteLength / (1024 * 1024)).toFixed(1)} MB; the limit is ${item.limitBytes / (1024 * 1024)} MB).`;
+  return `Couldn't paste: clipboard flavor "${clipboardFlavorName(item.type)}" is too large (${clipboardMegabytes(item.byteLength)} MB; the limit is ${item.limitBytes / (1024 * 1024)} MB).`;
 }
 
 /** Bound bytes before normalization/decoding; inspect only a bounded chemistry prefix. */
@@ -213,14 +222,14 @@ export function guardClipboardPayload(payload: ClipboardReadPayload): ClipboardR
     // can suppress a duplicate. Keep the first flavor, which the resolver already prefers.
     if (isTextLikeType(item.type) && admittedText.has(item.text)) return false;
     const byteLength = clipboardTextByteLength(item.text);
-    if (byteLength > MAX_CLIPBOARD_BYTES) {
-      const admitted = admit(item.type, byteLength, MAX_CLIPBOARD_BYTES);
+    if (byteLength > MAX_CLIPBOARD_TEXT_BYTES) {
+      const admitted = admit(item.type, byteLength, MAX_CLIPBOARD_TEXT_BYTES);
       if (typeof item.text === "string" && chemistryTextPrefix(item.text)) skippedItems[skippedItems.length - 1]!.chemistry = true;
       return admitted;
     }
     const picture = ["image/svg+xml", "public.svg", "public.svg-image"].includes(item.type)
       || (typeof item.text === "string" && clipboardHasSvgRoot(item.text));
-    const admitted = admit(item.type, byteLength, picture ? MAX_IMAGE_OBJECT_BYTES : MAX_CLIPBOARD_BYTES);
+    const admitted = admit(item.type, byteLength, picture ? MAX_IMAGE_OBJECT_BYTES : MAX_CLIPBOARD_TEXT_BYTES);
     if (!admitted && !picture && typeof item.text === "string" && chemistryTextPrefix(item.text)) skippedItems[skippedItems.length - 1]!.chemistry = true;
     if (admitted) admittedText.add(item.text);
     return admitted;
@@ -261,7 +270,7 @@ function clipboardHasSvgRoot(text: string): boolean {
 
 /** UTF-8 bytes without an allocation; stop at the first byte over the admission ceiling.
  * For a refused value the result is a lower bound, sufficient for refusal and diagnostics. */
-export function clipboardTextByteLength(text: string, limit = MAX_CLIPBOARD_BYTES): number {
+export function clipboardTextByteLength(text: string, limit = MAX_CLIPBOARD_TEXT_BYTES): number {
   // A length-only admission probe can be refused before dereferencing its contents.
   if (typeof text !== "string" || text.length > limit) return text.length;
   let bytes = 0;

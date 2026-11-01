@@ -483,7 +483,7 @@ pub(crate) mod native {
                 return None;
             }
             let size = GlobalSize(handle as HGLOBAL);
-            if budget.check_flavor(source, size).is_err() {
+            if budget.reserve(source, size).is_err() {
                 let pointer = GlobalLock(handle as HGLOBAL) as *const u8;
                 if !pointer.is_null() {
                     budget.mark_chemistry(
@@ -496,6 +496,7 @@ pub(crate) mod native {
             }
             let pointer = GlobalLock(handle as HGLOBAL) as *const u8;
             if pointer.is_null() {
+                budget.release(size);
                 return None;
             }
             let bytes = std::slice::from_raw_parts(pointer, size).to_vec();
@@ -525,16 +526,30 @@ pub(crate) mod native {
         }
     }
 
-    fn unicode_text(budget: &mut ClipboardReadBudget) -> Option<String> {
-        let bytes = format_bytes(CF_UNICODETEXT, "text/plain", budget)?;
+    fn decode_format(
+        id: u32,
+        source: &str,
+        budget: &mut ClipboardReadBudget,
+        decode: impl FnOnce(&[u8]) -> Option<String>,
+    ) -> Option<String> {
+        let bytes = format_bytes(id, source, budget)?;
+        let text = decode(&bytes);
+        // The caller reserves the retained UTF-8 size after this allocation is dropped.
+        // Failed decoding and duplicate representations release the whole reservation too.
+        budget.release(bytes.len());
+        text
+    }
+
+    fn unicode_text(bytes: &[u8]) -> Option<String> {
         let units = bytes
             .chunks_exact(2)
             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-            .take_while(|unit| *unit != 0)
-            .collect::<Vec<_>>();
-        // Lossy: one unpaired surrogate (a truncated emoji) used to fail the whole decode, leaving
-        // `text/plain` listed with no text — and a paste that silently did nothing.
-        Some(String::from_utf16_lossy(&units)).filter(|text| !text.is_empty())
+            .take_while(|unit| *unit != 0);
+        // Preserve the existing lossy-surrogate behavior without an intermediate Vec<u16>.
+        let text: String = char::decode_utf16(units)
+            .map(|character| character.unwrap_or(char::REPLACEMENT_CHARACTER))
+            .collect();
+        (!text.is_empty()).then_some(text)
     }
 
     /// Check the allocation size before copying image bytes, including SVG used as text.
@@ -557,16 +572,14 @@ pub(crate) mod native {
             }
             let size = GlobalSize(handle as HGLOBAL);
             if source == "image/svg+xml" {
-                budget.check_svg_allocation(source, size)
+                budget.reserve_svg_allocation(source, size)
             } else {
                 budget.reserve(source, size)
             }
             .map_err(|reason| refused(size, reason))?;
             let pointer = GlobalLock(handle as HGLOBAL) as *const u8;
             if pointer.is_null() {
-                if source != "image/svg+xml" {
-                    budget.release(size);
-                }
+                budget.release(size);
                 return Err(refused(
                     size,
                     format!("Could not lock {source} clipboard data"),
@@ -609,6 +622,10 @@ pub(crate) mod native {
                     "image/svg+xml" => svg_image_item(&bytes, source),
                     _ => dib_image_item(&bytes, source),
                 };
+                // Replace the SVG allocation reservation even when conversion fails.
+                if source == "image/svg+xml" {
+                    budget.release(bytes.len());
+                }
                 let item = item.and_then(|item| {
                     if source == "image/svg+xml" {
                         budget.reserve(source, item.retained_byte_length())?;
@@ -707,12 +724,16 @@ pub(crate) mod native {
                     continue;
                 }
                 let text = match name.as_deref() {
-                    None if id == CF_UNICODETEXT => unicode_text(&mut budget),
+                    None if id == CF_UNICODETEXT => {
+                        decode_format(id, payload_type, &mut budget, unicode_text)
+                    }
                     None => None,
-                    Some(MDLCT_FORMAT) => format_bytes(id, payload_type, &mut budget)
-                        .and_then(|bytes| decode_mdlct(&bytes)),
-                    Some("HTML Format") => format_bytes(id, payload_type, &mut budget)
-                        .and_then(|bytes| parse_cf_html(&bytes).ok()),
+                    Some(MDLCT_FORMAT) => {
+                        decode_format(id, payload_type, &mut budget, decode_mdlct)
+                    }
+                    Some("HTML Format") => decode_format(id, payload_type, &mut budget, |bytes| {
+                        parse_cf_html(bytes).ok()
+                    }),
                     // Images are handled only by read_images, after the allocation guard.
                     Some(name)
                         if crate::clipboard_images::is_image_clipboard_type(name)
@@ -721,8 +742,7 @@ pub(crate) mod native {
                     {
                         None
                     }
-                    Some(_) => format_bytes(id, payload_type, &mut budget)
-                        .and_then(|bytes| decode_registered_text(&bytes)),
+                    Some(_) => decode_format(id, payload_type, &mut budget, decode_registered_text),
                 };
                 if let Some(text) = text {
                     // A provider may use an encoding whose bounded prefix was inconclusive.

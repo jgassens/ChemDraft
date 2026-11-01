@@ -21,11 +21,13 @@ chemistry flavors do not carry this fallback. An advertised but unreadable chemi
 text and `fallbackImage`), while readable chemistry and prose retain their usual behavior.
 If only refused image candidates remain, `image-refused` carries the native refusal reason.
 
-Clipboard reads admit at most 1 GiB per flavor and per paste, with the existing 25 MiB picture
+Clipboard reads admit at most 256 MiB per text flavor and 1 GiB per paste, with the existing 25 MiB picture
 limit retained. The native readers check allocation/data/string lengths before copying; the adapter
 checks text and base64 sizes before normalization or decoding. Unused binary/container flavors are
-never fetched. Admission follows chemistry, pictures, then prose; the returned text-flavor order still determines resolution. Only retained flavors consume the
-shared total. A flavor exceeding the remaining total is skipped with a warning, allowing smaller
+never fetched. Admission follows chemistry, pictures, then prose; the returned text-flavor order
+still determines resolution. Native allocation sizes reserve the shared total before copying or
+conversion; successful conversions replace that reservation with the retained UTF-8 size. Only
+retained flavors consume the shared total. A flavor exceeding the remaining total is skipped with a warning, allowing smaller
 alternatives. A size-skipped chemistry flavor always refuses the paste, including private selections
 and chemistry recognized in generic text; it cannot fall back to a picture or prose. Native
 `skippedItems` metadata carries that flavor's own byte size, limit, and refusal reason. Total-budget

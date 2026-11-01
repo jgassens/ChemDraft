@@ -10,6 +10,7 @@ export const PluginPanelReportLimits = {
   svgLength: 512_000,
   imageLength: 1_048_576,
   sections: 300,
+  // Per-figure caps; the serialized envelope bounds multi-figure totals.
   peaks: 50_000,
   atomIndicesPerPeak: 4_000,
   atomIndicesTotal: 100_000,
@@ -25,7 +26,7 @@ export const PluginPanelReportLimits = {
   serializedBytes: 128 * 1024 * 1024,
   // Also bound malformed JSON before Zod can copy it or recurse into it.
   depth: 128,
-  objectFields: 256,
+  objectFields: 1_024,
   nodes: 2_000_000
 } as const;
 
@@ -108,11 +109,11 @@ export function snapshotPanelReport(
         if (key === "sections") limit = limits.sections;
         if (key === "buttons") limit = 8;
         if (key === "options") limit = 20;
-        if (key === "peaks") { limit = limits.peaks; aggregate = [limits.peaks, "peaks"]; }
+        if (key === "peaks") { limit = limits.peaks; }
         if (key === "atomIndices") { limit = limits.atomIndicesPerPeak; aggregate = [limits.atomIndicesTotal, "atom indices"]; }
         if (key === "couplings") { limit = limits.couplingsPerPeak; aggregate = [limits.couplingsTotal, "couplings"]; }
-        if (key === "atoms") { limit = limits.atoms; aggregate = [limits.atoms, "structure atoms"]; }
-        if (key === "bonds") { limit = limits.bonds; aggregate = [limits.bonds, "structure bonds"]; }
+        if (key === "atoms") { limit = limits.atoms; }
+        if (key === "bonds") { limit = limits.bonds; }
         if (key === "warnings") { limit = limits.warnings; aggregate = [limits.warnings, "warnings"]; }
         if (key === "columns" || (kind === "table" && typeof key === "number" && path.at(-2) === "rows")) {
           limit = limits.tableColumns;

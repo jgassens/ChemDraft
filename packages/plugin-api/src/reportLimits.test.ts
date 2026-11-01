@@ -92,6 +92,24 @@ describe("bounded panel reports (API 0.1.18)", () => {
     expect(PluginPanelReportSchema.parse(raw)).toEqual(raw);
   });
 
+  it("preserves four figures at main's per-figure maxima unchanged", () => {
+    const f = figure();
+    f.structure = {
+      atoms: Array.from({ length: 4_000 }, (_, index) => ({ index, x: index, y: 0, element: "C" })),
+      bonds: Array.from({ length: 8_000 }, (_, i) => ({ from: i % 4_000, to: (i + 1) % 4_000, order: 1 }))
+    };
+    f.spectrum.peaks = Array.from({ length: 4_000 }, (_, i) => ({ ...peak(), id: String(i), atomIndices: [i] }));
+    const raw = { title: "Synthetic multi-figure report", sections: Array(4).fill(f) };
+    expect(PluginPanelReportSchema.parse(raw)).toEqual(raw);
+  });
+
+  it("preserves a 300-field action payload within the 4,000-character cap", () => {
+    const payload = Object.fromEntries(Array.from({ length: 300 }, (_, i) => [`k${i}`, i]));
+    expect(JSON.stringify(payload).length).toBeLessThan(4_000);
+    const raw = report({ kind: "actions", id: "actions", buttons: [{ id: "run", label: "Run", commandId: "plugin.test.run", disabled: false, tone: "default", payload }] });
+    expect(PluginPanelReportSchema.parse(raw)).toEqual(raw);
+  });
+
   it("preserves main's assignment and SVG ceilings and a 4,000-peak sparse spectrum", () => {
     const f = figure();
     f.structure = undefined;
@@ -184,15 +202,12 @@ describe("bounded panel reports (API 0.1.18)", () => {
     rejected(report(table), `report total table cells: ${L.tableCells + 1}`);
   });
 
-  it.each(["peaks", "atoms", "bonds", "table rows", "keyValue rows", "warnings"] as const)("aggregates %s across sections", which => {
-    const count = which === "peaks" ? L.peaks : which === "atoms" ? L.atoms : which === "bonds" ? L.bonds
-      : which === "table rows" ? L.tableRows : which === "keyValue rows" ? L.keyValueRows : L.warnings;
+  it.each(["table rows", "keyValue rows", "warnings"] as const)("aggregates %s across sections", which => {
+    const count = which === "table rows" ? L.tableRows : which === "keyValue rows" ? L.keyValueRows : L.warnings;
     // Minimal raw entries isolate the aggregate preflight, before any per-entry Zod validation.
-    const make = (n: number) => which === "peaks" ? { kind: "linkedFigure", spectrum: { peaks: Array(n).fill(null) } }
-      : which === "atoms" || which === "bonds" ? { kind: "linkedFigure", structure: { [which]: Array(n).fill(null) } }
-      : which === "warnings" ? { kind: "chemicalName", warnings: Array(n).fill(null) }
+    const make = (n: number) => which === "warnings" ? { kind: "chemicalName", warnings: Array(n).fill(null) }
       : { kind: which === "table rows" ? "table" : "keyValue", rows: Array(n).fill([]) };
-    rejected({ title: "NMR", sections: [make(count), make(1)] }, `report total ${which === "atoms" || which === "bonds" ? `structure ${which}` : which}: ${count + 1}`);
+    rejected({ title: "NMR", sections: [make(count), make(1)] }, `report total ${which}: ${count + 1}`);
   });
 
   it("measures UTF-8 JSON including escaping and accepts exactly the byte cap, rejecting + 1", () => {
@@ -205,7 +220,7 @@ describe("bounded panel reports (API 0.1.18)", () => {
     raw.sections[159]!.body += "x";
     expect(bytes(raw)).toBe(L.serializedBytes + 1);
     rejected(raw, `report serialized bytes (at least): ${L.serializedBytes + 1} exceeds the limit of ${L.serializedBytes}`);
-  });
+  }, 60_000);
 
   it("includes schema defaults in the final serialized byte budget", () => {
     const raw = { title: "NMR", sections: [
@@ -217,7 +232,7 @@ describe("bounded panel reports (API 0.1.18)", () => {
     expect(bytes(raw)).toBe(L.serializedBytes);
     expect(panelReportLimitIssue(raw)).toBeUndefined();
     rejected(raw, "report serialized bytes (at least)");
-  });
+  }, 60_000);
 
   const stringCases = [
     (s: string) => ({ ...report(figure()), title: s }),

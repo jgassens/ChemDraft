@@ -124,15 +124,15 @@ describe.each(["macos", "windows"] as const)("text paste formatting (%s)", platf
   const status = () => container.querySelector('[role="status"]')?.textContent;
   const nativeReads = () => vi.mocked(invoke).mock.calls.filter(([command]) => command === "read_clipboard_payload");
 
-  const tooLargeMessage = "Couldn't paste: clipboard flavor \"text/plain\" is too large (1500.0 MB; the limit is 1024 MB).";
+  const tooLargeMessage = "Couldn't paste: clipboard flavor \"text/plain\" is too large (400.0 MB; the limit is 256 MB).";
 
   it.each([
-    { reason: "flavor" as const, byteLength: 1500 * 1024 * 1024, totalByteLength: undefined, message: tooLargeMessage },
+    { reason: "flavor" as const, byteLength: 400 * 1024 * 1024, totalByteLength: undefined, message: tooLargeMessage },
     { reason: "total" as const, byteLength: 1.25 * 1024 * 1024, totalByteLength: 1024.25 * 1024 * 1024,
       message: "Couldn't paste: the clipboard contents are too large (1024.3 MB in total; the limit is 1024 MB)." }
   ])("shows the $reason refusal as status when the only usable flavor is refused", async ({ reason, byteLength, totalByteLength, message }) => {
     await mount({ types: ["text/plain"], textItems: [], skippedItems: [
-      { type: "text/plain", byteLength, limitBytes: 1024 * 1024 * 1024, reason, totalByteLength }
+      { type: "text/plain", byteLength, limitBytes: (reason === "total" ? 1024 : 256) * 1024 * 1024, reason, totalByteLength }
     ] });
     await act(async () => {
       window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "clipboard.paste" } }));
@@ -144,8 +144,17 @@ describe.each(["macos", "windows"] as const)("text paste formatting (%s)", platf
     expect(objects()).toHaveLength(0);
   });
 
+  it("shows the 256 MB own-cap refusal for a 400 MiB DOM plain-text paste", async () => {
+    await mount();
+    runtime.desktop = false;
+    const text = { length: 400 * 1024 * 1024, trim: () => { throw new Error("must not parse"); } } as unknown as string;
+    await paste({ "text/plain": text });
+    expect(status()).toBe(tooLargeMessage);
+    expect(objects()).toHaveLength(0);
+  });
+
   it("guards text before the private-selection parser on native and web paste", async () => {
-    const text = { length: 1500 * 1024 * 1024, trim: () => { throw new Error("must not parse"); } } as unknown as string;
+    const text = { length: 400 * 1024 * 1024, trim: () => { throw new Error("must not parse"); } } as unknown as string;
     await mount({ types: [CHEMDRAFT_SELECTION_CLIPBOARD_TYPE],
       textItems: [{ type: CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, text }] });
     await act(async () => {
@@ -161,7 +170,7 @@ describe.each(["macos", "windows"] as const)("text paste formatting (%s)", platf
 
   it("refuses oversized CDXML instead of pasting lower-fidelity prose", async () => {
     await mount({ ...nativeClipboard("ordinary prose"), skippedItems: [
-      { type: "chemical/x-cdxml", byteLength: 1500 * 1024 * 1024, limitBytes: 1024 * 1024 * 1024 }
+      { type: "chemical/x-cdxml", byteLength: 400 * 1024 * 1024, limitBytes: 256 * 1024 * 1024 }
     ] });
     await paste({ "text/plain": "ordinary prose" });
     expect(status()).toBe(tooLargeMessage.replace("text/plain", "chemical/x-cdxml"));

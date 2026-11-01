@@ -5536,17 +5536,22 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
             let byte_length = data.length();
             let svg = output_type == "image/svg+xml";
             let admission = if svg {
-                budget.check_svg_allocation(source, byte_length)
+                budget.reserve_svg_allocation(source, byte_length)
             } else {
                 budget.reserve(source, byte_length)
             };
             let result = admission.and_then(|()| {
-                let bytes = data.to_vec();
+                // SAFETY: NSData is retained and immutable; decode directly without a byte copy.
+                let bytes = unsafe { data.as_bytes_unchecked() };
                 let item = match source {
-                    "public.png" => clipboard_images::png_image_item(&bytes),
-                    "public.tiff" => clipboard_images::tiff_image_item(&bytes),
-                    _ => clipboard_images::svg_image_item(&bytes, source),
-                }?;
+                    "public.png" => clipboard_images::png_image_item(bytes),
+                    "public.tiff" => clipboard_images::tiff_image_item(bytes),
+                    _ => clipboard_images::svg_image_item(bytes, source),
+                };
+                if svg {
+                    budget.release(byte_length);
+                }
+                let item = item?;
                 if svg {
                     budget.reserve(source, item.retained_byte_length())?;
                 }
@@ -5700,7 +5705,10 @@ fn clipboard_text_for_type(
     }
     clipboard_limits::text_read_priority(&kind)?;
 
-    // AppKit may construct an NSString from data; reject huge data before requesting conversion.
+    // AppKit must materialize NSData to expose its length; we cannot prevent that OS-owned
+    // allocation, nor any internal NSString conversion it performs. Reserve NSData.length
+    // before requesting conversion. Never copy NSData into a Rust Vec or build a second
+    // owned Rust text buffer: only the final String crosses into ChemDraft-owned memory.
     let data = pasteboard.dataForType(pasteboard_type);
     let data_length = data.as_ref().map_or(0, |data| data.length());
     if let Some(data) = &data {
@@ -5710,7 +5718,7 @@ fn clipboard_text_for_type(
             return None;
         }
     }
-    if budget.check_flavor(&kind, data_length).is_err() {
+    if budget.reserve(&kind, data_length).is_err() {
         if let Some(data) = &data {
             // SAFETY: the pasteboard data is immutable and retained throughout this
             // bounded preview; no pointer survives the call.
@@ -5721,14 +5729,20 @@ fn clipboard_text_for_type(
     if let Some(text) = pasteboard.stringForType(pasteboard_type) {
         let byte_length = text.lengthOfBytesUsingEncoding(objc2_foundation::NSUTF8StringEncoding);
         if byte_length > 0 {
-            // Some providers expose NSString aliases without NSData, or use a different
-            // byte encoding. Compare native strings before any total-budget refusal.
+            // Providers can publish an NSString alias without NSData. Compare UTF-16 units
+            // in place rather than allocating another native copy of an admitted String.
             if admitted.iter().any(|item| {
                 item.text.len() == byte_length
-                    && text.isEqualToString(&NSString::from_str(&item.text))
+                    && item
+                        .text
+                        .encode_utf16()
+                        .eq((0..text.length()).map(|index| text.characterAtIndex(index)))
             }) {
+                budget.release(data_length);
                 return None;
             }
+            // Replace the native-size reservation before allocating the final UTF-8 String.
+            budget.release(data_length);
             if budget.reserve(&kind, byte_length).is_err() {
                 if let Some(data) = &data {
                     // SAFETY: immutable retained NSData used only for a bounded preview.
@@ -5740,8 +5754,12 @@ fn clipboard_text_for_type(
         }
     }
 
-    let data = data?;
-    let text = decode_clipboard_text_bytes(&data.to_vec())?;
+    // SAFETY: immutable NSData remains retained for the entire borrowed decode.
+    let text = data
+        .as_ref()
+        .and_then(|data| decode_clipboard_text_bytes(unsafe { data.as_bytes_unchecked() }));
+    budget.release(data_length);
+    let text = text?;
     if budget.reserve(&kind, text.len()).is_err() {
         budget.mark_chemistry(&kind, text.as_bytes());
         return None;
@@ -5761,7 +5779,7 @@ fn decode_clipboard_text_bytes(bytes: &[u8]) -> Option<String> {
         }
     }
 
-    if let Ok(text) = String::from_utf8(bytes.to_vec()) {
+    if let Ok(text) = std::str::from_utf8(bytes) {
         // ChemDraw-style flavors end in a C-string terminator; strip it. An INTERIOR null is
         // different — text never contains one, so its presence means these bytes are binary.
         let text = text.trim_end_matches('\0');
@@ -5865,17 +5883,15 @@ fn decode_utf16_units(content: &[u8], big_endian: bool) -> Option<String> {
         return None;
     }
 
-    let units = content
-        .chunks_exact(2)
-        .map(|chunk| {
-            if big_endian {
-                u16::from_be_bytes([chunk[0], chunk[1]])
-            } else {
-                u16::from_le_bytes([chunk[0], chunk[1]])
-            }
-        })
-        .collect::<Vec<_>>();
-    String::from_utf16(&units)
+    let units = content.chunks_exact(2).map(|chunk| {
+        if big_endian {
+            u16::from_be_bytes([chunk[0], chunk[1]])
+        } else {
+            u16::from_le_bytes([chunk[0], chunk[1]])
+        }
+    });
+    char::decode_utf16(units)
+        .collect::<Result<String, _>>()
         .ok()
         .filter(|text| !text.is_empty() && text_is_plausible_clipboard_text(text))
 }
