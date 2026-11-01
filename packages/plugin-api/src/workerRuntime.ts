@@ -37,6 +37,7 @@ import type {
 } from "./index";
 import {
   PLUGIN_WORKER_PROTOCOL_VERSION,
+  supportsPluginTableInsertion,
   PluginWorkerErrorCodes,
   asHostToWorkerMessage,
   toPluginWorkerErrorPayload,
@@ -173,7 +174,11 @@ export function runPluginWorker(
       ...(has("document.write")
         ? {
             applyPatch: (patch: Parameters<NonNullable<PluginDocumentAPI["applyPatch"]>>[0]) =>
-              call("documents", "applyPatch", [patch]) as ReturnType<NonNullable<PluginDocumentAPI["applyPatch"]>>
+              call("documents", "applyPatch", [patch]) as ReturnType<NonNullable<PluginDocumentAPI["applyPatch"]>>,
+            ...(supportsPluginTableInsertion(registration.manifest.apiVersion) ? {
+              insertTable: (spec: Parameters<NonNullable<PluginDocumentAPI["insertTable"]>>[0]) =>
+                call("documents", "insertTable", [spec]) as ReturnType<NonNullable<PluginDocumentAPI["insertTable"]>>
+            } : {})
           }
         : {})
     };

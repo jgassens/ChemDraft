@@ -35,6 +35,24 @@ MPL-2.0 Eigen) say so in their own entries. Full terms are
 vendored alongside each artifact; the complete inventory, including build provenance
 and artifact hashes, is in docs/architecture/dependency-inventory.md.
 
+Adobe Core 14 font metrics (derived Helvetica and Symbol advance widths)
+  Copyright (c) 1985, 1987, 1989, 1990, 1997 Adobe Systems Incorporated.  All Rights Reserved.
+  Copyright (c) 1985, 1987, 1989, 1990, 1997 Adobe Systems Incorporated. All rights reserved.
+  Used by layout-engine for headless table text measurement and atom-label layout.
+  Only derived advance widths per Unicode code point are redistributed; no AFM
+  files or font outlines are bundled. Modified by
+  packages/layout-engine/scripts/generate-text-metrics.mjs. The original notices
+  and unmodified Adobe permission paragraph are retained in
+  packages/layout-engine/src/textMetrics.generated.ts.
+
+This file and the 14 PostScript(R) AFM files it accompanies may be used, copied,
+and distributed for any purpose and without charge, with or without modification,
+provided that all copyright notices are retained; that the AFM files are not
+distributed without this file; that all modifications to this file or any of
+the AFM files are prominently noted in the modified file(s); and that this
+paragraph is not modified. Adobe Systems has no responsibility or obligation
+to support the use of the AFM files.
+
 Noto Sans 2.015 (primary regular, bold, italic, bold-italic PDF fonts)
   SIL Open Font License 1.1.
   Copyright 2022 The Noto Project Authors (https://github.com/notofonts/latin-greek-cyrillic)

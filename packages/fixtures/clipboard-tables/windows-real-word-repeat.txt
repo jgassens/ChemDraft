@@ -1,0 +1,7 @@
+Table 1. Solvent properties
+Solvent	bp (°C)	Density (g/mL)
+CH2Cl2	39.6	1.33
+Ethanol	78.37	0.7914
+Mercury	356.7	13.546
+Water	100	1
+a Densities at 20 °C.
