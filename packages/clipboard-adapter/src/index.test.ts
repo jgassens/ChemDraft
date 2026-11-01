@@ -36,6 +36,40 @@ describe("SVG XML well-formedness", () => {
     const options: ClipboardInspectionOptions = { svgParser: mode === "DOMParser" ? parser : null };
 
     it.each([
+      ['<svg><path d="M0 0L1 1"/></svg>', `<svg ${namespace}><path d="M0 0L1 1"/></svg>`],
+      ['<svg><use xlink:href="#p"/></svg>', `<svg ${namespace} xmlns:xlink="http://www.w3.org/1999/xlink"><use xlink:href="#p"/></svg>`],
+      [`<svg ${namespace}><use xlink:href="#p"/></svg>`, `<svg xmlns:xlink="http://www.w3.org/1999/xlink" ${namespace}><use xlink:href="#p"/></svg>`],
+      ['<svg xlink:href="#p"/>', `<svg ${namespace} xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="#p"/>`],
+      ['<?xml version="1.0"?><!-- <svg/> --><svg title="xmlns=\'unchanged\' >"><g xmlns="http://www.w3.org/2000/svg"/></svg>',
+        `<?xml version="1.0"?><!-- <svg/> --><svg ${namespace} title="xmlns='unchanged' >"><g xmlns="http://www.w3.org/2000/svg"/></svg>`],
+      ['<svg><!-- xlink:href --><text>xlink:href</text><![CDATA[xlink:href]]></svg>',
+        `<svg ${namespace}><!-- xlink:href --><text>xlink:href</text><![CDATA[xlink:href]]></svg>`]
+    ])("stores missing namespaces in the picture on every SVG path: %s", (text, expected) => {
+      for (const payload of payloads(text)) {
+        const result = inspectClipboardPayload(payload, options);
+        expect(result.kind).toBe("image");
+        if (result.kind === "image") expect(Buffer.from(result.image.bytesBase64, "base64").toString()).toBe(expected);
+        const fallback = inspectClipboardPayload({ ...payload,
+          textItems: [...payload.textItems, { type: "text/plain", text: "CCO" }] }, options);
+        expect(fallback).toMatchObject({ kind: "smiles", fallbackImage: { type: "image/svg+xml" } });
+        if (fallback.kind === "smiles") expect(Buffer.from(fallback.fallbackImage!.bytesBase64, "base64").toString()).toBe(expected);
+      }
+    });
+
+    it.each([
+      ["<svg><script>alert(1)</script></svg>", /it contains a <script> element/],
+      ["<svg><g></svg>", /it isn't well-formed XML:/],
+      ['<svg xmlns="urn:wrong"/>', /the root must be <svg> in the SVG namespace/],
+      ['<svg xmlns=""/>', /the root must be <svg> in the SVG namespace/],
+      ['<foo:svg xmlns:foo="http://www.w3.org/2000/svg"/>', /the root must be <svg> in the SVG namespace/],
+      ['<svg xmlns:xlink="urn:wrong"><use xlink:href="#p"/></svg>', /it contains an XML namespace that isn't allowed/]
+    ])("retains specific refusals without replacing declared namespaces: %s", (text, problem) => {
+      for (const payload of payloads(text)) {
+        expect(inspectClipboardPayload(payload, options)).toMatchObject({ kind: "image-refused", message: expect.stringMatching(problem) });
+      }
+    });
+
+    it.each([
       [`<svg ${namespace}><g undeclared:x="1"/></svg>`, /undeclared|unbound/i],
       [`<svg ${namespace}><undeclared:g/></svg>`, /undeclared|unbound/i],
       [`<svg ${namespace}>\n<!-- a -- b --></svg>`, /comment/i],
@@ -102,7 +136,7 @@ describe("SVG XML well-formedness", () => {
     expect(parseFromString).toHaveBeenCalledWith(expect.any(String), "image/svg+xml");
   });
 
-  it.each(["<other/>", "<svg/>", '<svg xmlns="urn:wrong"/>'])("refuses a parsed root outside the SVG namespace: %s", text => {
+  it.each(["<other/>", '<svg xmlns="urn:wrong"/>'])("refuses a parsed root outside the SVG namespace: %s", text => {
     expect(inspectClipboardPayload({ types: ["image/svg+xml"], textItems: [{ type: "image/svg+xml", text }] }, { svgParser: parser }))
       .toMatchObject({ kind: "image-refused", message: expect.stringContaining("the root must be <svg> in the SVG namespace") });
   });
@@ -112,6 +146,16 @@ describe("SVG XML well-formedness", () => {
     const text = `<svg ${namespace}>${" ".repeat(20 * 1024 * 1024)}</svg>`;
     expect(inspectClipboardPayload({ types: ["text/plain"], textItems: [{ type: "text/plain", text }] }, { svgParser: { parseFromString } }))
       .toMatchObject({ kind: "image-refused", message: "Couldn't paste the SVG: it exceeds the 20 MB validation limit." });
+    expect(parseFromString).not.toHaveBeenCalled();
+  });
+
+  it("applies the validation size cap to the namespaced text", () => {
+    const parseFromString = vi.fn(() => { throw new Error("must not parse"); });
+    const text = `<svg>${" ".repeat(20 * 1024 * 1024 - 11)}</svg>`;
+    for (const payload of payloads(text)) {
+      expect(inspectClipboardPayload(payload, { svgParser: { parseFromString } }))
+        .toMatchObject({ kind: "image-refused", message: "Couldn't paste the SVG: it exceeds the 20 MB validation limit." });
+    }
     expect(parseFromString).not.toHaveBeenCalled();
   });
 
@@ -621,8 +665,6 @@ describe("clipboard-adapter", () => {
     for (const text of [
       "<svg/>",
       '<?xml version="1.0"?><!-- prolog --><svg></svg>',
-      '<s:svg xmlns:s="http://www.w3.org/2000/svg"/>',
-      '<s:svg width="1" xmlns:s="http://www.w3.org/2000/svg"><s:g><s:path d="M0 0"/></s:g></s:svg>',
       '<svg><!-- </svg> --><![CDATA[</svg>]]></svg>',
       '<svg title="a > b"><g/></svg><!-- after -->',
       " \uFEFF <?xml version=\"1.0\"?>\n<!-- comment -->\n<svg class=\"spectrum\"></svg>",
@@ -633,7 +675,8 @@ describe("clipboard-adapter", () => {
         textItems: [{ type: "public.utf8-plain-text", text }]
       });
       expect(result).toMatchObject({ kind: "image", sourceType: "public.utf8-plain-text", image: { type: "image/svg+xml" } });
-      if (result.kind === "image") expect(Buffer.from(result.image.bytesBase64, "base64").toString("utf8")).toBe(text);
+      const expected = text.includes('xmlns="') ? text : text.replace("<svg", '<svg xmlns="http://www.w3.org/2000/svg"');
+      if (result.kind === "image") expect(Buffer.from(result.image.bytesBase64, "base64").toString("utf8")).toBe(expected);
     }
   });
 
@@ -813,7 +856,7 @@ describe("clipboard-adapter", () => {
 
   it("retains a fallback picture for heuristic SMILES candidates without asserting parse success", () => {
     const png = { type: "image/png" as const, bytesBase64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/aWQAAAAASUVORK5CYII=" };
-    const svg = { type: "image/svg+xml" as const, bytesBase64: "PHN2Zy8+" };
+    const svg = { type: "image/svg+xml" as const, bytesBase64: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>').toString("base64") };
     for (const image of [png, svg]) {
       const result = inspectClipboardPayload({ types: ["text/plain", image.type], imageItems: [svg, image],
         textItems: [{ type: "text/plain", text: "PNG" }] });
@@ -832,7 +875,7 @@ describe("clipboard-adapter", () => {
   });
 
   it("chooses supported SMILES-list candidates before pictures and retains the fallback", () => {
-    const image = { type: "image/svg+xml" as const, bytesBase64: "PHN2Zy8+" };
+    const image = { type: "image/svg+xml" as const, bytesBase64: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>').toString("base64") };
     for (const text of ["CCO\nCCN", "CCO CCN", "1. CCO\n2. CCN", "CCO ethanol\nCCN ethylamine",
       '["CCO","CCN"]', '"CCO","CCN"', "CCO;CCN", "CCO,CCN"]) {
       expect(inspectClipboardPayload({ types: ["text/plain"], imageItems: [image],
@@ -907,7 +950,8 @@ describe("clipboard-adapter", () => {
     ]) {
       const result = inspectClipboardPayload({ types: ["text/plain"], textItems: [{ type: "text/plain", text }] });
       expect(result).toMatchObject({ kind: "image", image: { type: "image/svg+xml" } });
-      if (result.kind === "image") expect(Buffer.from(result.image.bytesBase64, "base64").toString("utf8")).toBe(text);
+      const expected = text.includes('xmlns="') ? text : text.replace("<svg", '<svg xmlns="http://www.w3.org/2000/svg"');
+      if (result.kind === "image") expect(Buffer.from(result.image.bytesBase64, "base64").toString("utf8")).toBe(expected);
     }
     for (const text of ["This mentions <svg in a sentence", "<svgish/>", "<!-- comment --><other><svg/></other>"]) {
       expect(inspectClipboardPayload({ types: ["text/plain"], textItems: [{ type: "text/plain", text }] }))

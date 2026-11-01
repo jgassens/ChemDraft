@@ -382,7 +382,7 @@ function inspectBoundedClipboardPayload(payload: ClipboardReadPayload, options: 
   if (firstCandidate) {
     let fallbackImage = !suppressPicture ? image : undefined;
     if (!suppressPicture && !image && pasteableSvgText) {
-      const source = pasteableSvgText.text;
+      const source = addMissingSvgNamespaces(pasteableSvgText.text);
       if (!svgClipboardError(source, clipboardTextByteLength(source), options) && !validateSvgImage(source).error) {
         fallbackImage = svgTextImage(source);
       }
@@ -390,8 +390,10 @@ function inspectBoundedClipboardPayload(payload: ClipboardReadPayload, options: 
     if (image?.type === "image/svg+xml" && fallbackImage) {
       try {
         const binary = atob(fallbackImage.bytesBase64);
-        const source = new TextDecoder().decode(Uint8Array.from(binary, char => char.charCodeAt(0)));
-        if (svgClipboardError(source, binary.length, options) || validateSvgImage(source).error) fallbackImage = undefined;
+        const original = new TextDecoder().decode(Uint8Array.from(binary, char => char.charCodeAt(0)));
+        const source = addMissingSvgNamespaces(original);
+        if (svgClipboardError(source, clipboardTextByteLength(source), options) || validateSvgImage(source).error) fallbackImage = undefined;
+        else if (source !== original) fallbackImage = { ...fallbackImage, bytesBase64: svgTextImage(source).bytesBase64 };
       } catch {
         fallbackImage = undefined;
       }
@@ -401,6 +403,7 @@ function inspectBoundedClipboardPayload(payload: ClipboardReadPayload, options: 
       ...(fallbackImage ? { fallbackImage } : {}) };
   }
   if (image && !suppressPicture) {
+    let pastedImage = image;
     try {
       const binary = atob(image.bytesBase64);
       if (binary.length > MAX_IMAGE_OBJECT_BYTES) {
@@ -413,30 +416,33 @@ function inspectBoundedClipboardPayload(payload: ClipboardReadPayload, options: 
         const limitError = imagePixelLimitError(image.pixelWidth ?? result.info!.pixelWidth, image.pixelHeight ?? result.info!.pixelHeight);
         if (limitError) return refusedImage(limitError);
       } else {
-        const source = new TextDecoder().decode(bytes);
-        const svgError = svgClipboardError(source, bytes.length, options);
+        const original = new TextDecoder().decode(bytes);
+        const source = addMissingSvgNamespaces(original);
+        const svgError = svgClipboardError(source, clipboardTextByteLength(source), options);
         if (svgError) return refusedSvg(svgError);
         const result = validateSvgImage(source);
         if (result.error) return refusedSvg(result.error);
         const info = result.info;
         const limitError = imagePixelLimitError(image.pixelWidth ?? info?.pixelWidth ?? 0, image.pixelHeight ?? info?.pixelHeight ?? 0);
         if (limitError) return refusedImage(limitError);
+        if (source !== original) pastedImage = { ...image, bytesBase64: svgTextImage(source).bytesBase64 };
       }
     } catch {
       return refusedImage(`the ${image.type === "image/png" ? "PNG" : "SVG"} has invalid data.`);
     }
-    return { kind: "image", image, sourceType: image.type, warnings: [] };
+    return { kind: "image", image: pastedImage, sourceType: image.type, warnings: [] };
   }
   if (pasteableSvgText && !suppressPicture) {
-    const bytes = new TextEncoder().encode(pasteableSvgText.text);
-    if (bytes.length > MAX_IMAGE_OBJECT_BYTES) {
-      return refusedSvg(`it is ${(bytes.length / (1024 * 1024)).toFixed(1)} MB; the limit is 25 MB.`);
+    const source = addMissingSvgNamespaces(pasteableSvgText.text);
+    const byteLength = clipboardTextByteLength(source);
+    if (byteLength > MAX_IMAGE_OBJECT_BYTES) {
+      return refusedSvg(`it is ${(byteLength / (1024 * 1024)).toFixed(1)} MB; the limit is 25 MB.`);
     }
-    const svgError = svgClipboardError(pasteableSvgText.text, bytes.length, options);
+    const svgError = svgClipboardError(source, byteLength, options);
     if (svgError) return refusedSvg(svgError);
-    const result = validateSvgImage(pasteableSvgText.text);
+    const result = validateSvgImage(source);
     if (result.error) return refusedSvg(result.error);
-    return { kind: "image", sourceType: pasteableSvgText.type, warnings: [], image: svgTextImage(pasteableSvgText.text) };
+    return { kind: "image", sourceType: pasteableSvgText.type, warnings: [], image: svgTextImage(source) };
   }
   if (skippedImage && !suppressPicture) return refusedImage(skippedImage.reason);
   if (firstPlainText && !looksLikeSvgDocument(firstPlainText.text)) {
@@ -496,14 +502,37 @@ function inspectBoundedClipboardPayload(payload: ClipboardReadPayload, options: 
 }
 
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
+const XLINK_NAMESPACE = "http://www.w3.org/1999/xlink";
 const XML_NAMESPACE = "http://www.w3.org/XML/1998/namespace";
+
+/** Discover namespaces with the bounded scanner, then edit only the root start tag. */
+function addMissingSvgNamespaces(source: string): string {
+  let root: { nameEnd: number; attributes: ReadonlyMap<string, string> } | undefined;
+  let usesXlink = false;
+  svgDocumentError(source, (tag, nameEnd, attributes) => {
+    if (!root) {
+      if (tag !== "svg") return true;
+      root = { nameEnd, attributes };
+    }
+    usesXlink = tag.startsWith("xlink:") || [...attributes.keys()].some(name => name.startsWith("xlink:"));
+    // Missing bindings are reported after this visitor, so an unbound xlink use is
+    // discovered even when the rest of the document has not yet been scanned.
+    return usesXlink || (root.attributes.has("xmlns") && root.attributes.has("xmlns:xlink"));
+  });
+  if (!root) return source;
+  const declarations = (root.attributes.has("xmlns") ? "" : ` xmlns="${SVG_NAMESPACE}"`)
+    + (usesXlink && !root.attributes.has("xmlns:xlink") ? ` xmlns:xlink="${XLINK_NAMESPACE}"` : "");
+  return declarations ? source.slice(0, root.nameEnd) + declarations + source.slice(root.nameEnd) : source;
+}
 
 function xmlError(problem: string): string {
   return `it isn't well-formed XML: ${problem.replace(/[.\s]+$/, "")}.`;
 }
 
-/** Bounded, non-executing fallback; also retains the existing nesting limit. */
-function svgDocumentError(text: string): string | undefined {
+/** Bounded, non-executing fallback; a start-tag visitor may stop discovery early. */
+function svgDocumentError(text: string, visitStartTag?: (
+  tag: string, nameEnd: number, attributes: ReadonlyMap<string, string>
+) => boolean): string | undefined {
   const invalid = xmlError("invalid or incomplete markup");
   if (text.length > 20 * 1024 * 1024) return "it exceeds the 20 MB validation limit.";
   let offset = 0;
@@ -601,6 +630,7 @@ function svgDocumentError(text: string): string | undefined {
     if (closing) offset += 1;
     const tag = readName();
     if (!tag) return invalid;
+    const nameEnd = offset;
     if (closing) {
       skipWhitespace();
       const openTag = stack.pop()?.tag;
@@ -645,6 +675,7 @@ function svgDocumentError(text: string): string | undefined {
       }
       offset = end + 1;
     }
+    if (visitStartTag?.(tag, nameEnd, attributes)) return undefined;
     const tagPrefix = tag.includes(":") ? tag.split(":")[0] : "";
     if (tagPrefix && !namespaces.get(tagPrefix)) return xmlError(`undeclared namespace prefix '${tagPrefix}' on <${tag}>`);
     const expandedAttributes = new Set<string>();
@@ -656,7 +687,7 @@ function svgDocumentError(text: string): string | undefined {
       if (expandedAttributes.has(expanded)) return xmlError(`duplicate attribute '${attribute}'`);
       expandedAttributes.add(expanded);
     }
-    if (isRoot && (tagPrefix || namespaces.has("")) && namespaces.get(tagPrefix) !== SVG_NAMESPACE) {
+    if (isRoot && (tag !== "svg" || (namespaces.has("") && namespaces.get("") !== SVG_NAMESPACE))) {
       return "the root must be <svg> in the SVG namespace (http://www.w3.org/2000/svg).";
     }
     rootSeen = true;
@@ -707,7 +738,7 @@ function svgClipboardError(source: string, byteLength: number, options: Clipboar
         return xmlError(detail || "XML parsing failed");
       }
       const root = document.documentElement;
-      if (root?.localName !== "svg" || root.namespaceURI !== SVG_NAMESPACE) {
+      if (root?.localName !== "svg" || root.prefix || root.namespaceURI !== SVG_NAMESPACE) {
         return "the root must be <svg> in the SVG namespace (http://www.w3.org/2000/svg).";
       }
     } catch (error) {
