@@ -20,6 +20,29 @@ function graph(element: string, doubleBond = false): MoleculeObject {
 }
 
 describe("same-head label decisions", () => {
+  it("explains literal-label valence with bond orders, stated hydrogens, and charge", () => {
+    const over = graph("S");
+    over.atoms.push({ id: "d", element: "C", formalCharge: 0, x: 80, y: 80 });
+    over.bonds[1]!.order = "double";
+    over.bonds.push({ id: "ad", fromAtomId: "a", toAtomId: "d", order: "single" });
+    expect(nativeAtomValidationState({ ...over.atoms[0]!, element: "SH", labelLiteral: true }, over.bonds, 0, over.atoms))
+      .toMatchObject({
+        invalidReason: "SH puts 5 bonds on S (4 from bonds to other atoms + 1 H); neutral S normally makes 2.",
+        invalidDetail: "SH atom a: SH puts 5 bonds on S (4 from bonds to other atoms + 1 H); neutral S normally makes 2."
+      });
+
+    const under = graph("C");
+    under.atoms = [under.atoms[0]!];
+    under.bonds = [];
+    expect(nativeAtomValidationState({ ...under.atoms[0]!, element: "CH3", labelLiteral: true }, [], 0, under.atoms))
+      .toMatchObject({ invalidReason: "CH3 puts 3 bonds on C (0 from bonds to other atoms + 3 H); neutral C normally makes 4." });
+
+    const charged = graph("C");
+    charged.atoms[0]!.formalCharge = 1;
+    expect(nativeAtomValidationState({ ...charged.atoms[0]!, element: "CH3", labelLiteral: true }, charged.bonds, 1, charged.atoms))
+      .toMatchObject({ invalidReason: "CH3 puts 5 bonds on C (2 from bonds to other atoms + 3 H); C with charge +1 normally makes 3." });
+  });
+
   it.each(["P", "PH"])("relabels %s as PPh2 without hiding the solid-bond valence warning", element => {
     const m = graph(element), source = m.atoms[0]!;
     expect(labelOnBondedAtom("PPh2", source, m)).toMatchObject({ kind: "relabel", external: 2 });

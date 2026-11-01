@@ -418,14 +418,21 @@ export function nativeAtomValidationState(
     if (atom.labelLiteral === true) {
       const spelled = nativeSingleHeavyElementLabelValence(symbol);
       if (spelled && !nativeLiteralAtomValenceComplete(spelled.element, valenceUsed + spelled.hydrogens, effectiveFormalCharge)) {
+        const total = valenceUsed + spelled.hydrogens;
+        const expected = nativeAtomValenceForCharge(spelled.element, effectiveFormalCharge);
+        const bondCount = (count: number) => `${count} bond${count === 1 ? "" : "s"}`;
+        const chargeText = effectiveFormalCharge === 0
+          ? "neutral"
+          : `${spelled.element} with charge ${effectiveFormalCharge > 0 ? "+" : ""}${effectiveFormalCharge}`;
+        const message = `${symbol} puts ${bondCount(total)} on ${spelled.element} (${valenceUsed} from bonds to other atoms + ${spelled.hydrogens} H); ${chargeText}${effectiveFormalCharge === 0 ? ` ${spelled.element}` : ""} normally makes ${expected}.`;
         return {
           atomId: atom.id,
           element: symbol,
           valenceUsed,
           formalCharge: effectiveFormalCharge,
           valid: false,
-          invalidReason: `${symbol} accounts for ${valenceUsed + spelled.hydrogens} of ${nativeAtomValenceForCharge(spelled.element, effectiveFormalCharge)} bonds.`,
-          invalidDetail: `${symbol} atom ${atom.id} accounts for ${valenceUsed + spelled.hydrogens} of ${nativeAtomValenceForCharge(spelled.element, effectiveFormalCharge)} bonds.`
+          invalidReason: message,
+          invalidDetail: `${symbol} atom ${atom.id}: ${message}`
         };
       }
     }
