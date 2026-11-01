@@ -83,6 +83,10 @@ with consumers such as Export. Requests can focus the webview only while the pan
 active; they cannot activate a panel after the user has switched windows. A newly built panel whose
 native focus/resize hooks fail is destroyed and its open request fails.
 
+The document window hides a panel through `hide_plugin_panel_from_main`, which restores a
+full-size panel's normal frame on the main thread before hiding it. That command is granted to the
+main window only (`capabilities/plugin-panel-hide.json`).
+
 Analysis windows hold no dialog, filesystem, or clipboard permission
 (`capabilities/plugin-panel.json`), and must not gain one. Anything that needs
 one is performed by the main window on the window's behalf:

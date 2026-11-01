@@ -70,7 +70,9 @@ fn only_the_document_window_can_hide_panels_on_their_behalf() {
         "plugin-panel-x",
         "preferences",
         "toolset-core-main",
-        "dialog-export",
+        "dialog-main-engineInstall-1",
+        "toolset-popover-core-art",
+        "toolset-tooltip",
         "spin3d-debugger",
     ] {
         assert_shipped_access(label, &command, false);

@@ -605,15 +605,6 @@ export function listenForPluginPanelRequests(handler: (identity: PluginPanelIden
   return listenForPanelIdentityEvent(PLUGIN_PANEL_REQUEST_EVENT, handler);
 }
 
-export async function hideCurrentPanelWindow(): Promise<void> {
-  if (!isDesktopRuntime()) {
-    return;
-  }
-
-  const { getCurrentWindow } = await import("@tauri-apps/api/window");
-  await getCurrentWindow().hide();
-}
-
 /** Hide a panel window from the MAIN window (plugin disabled/uninstalled, panel closed
  *  programmatically). Mirrors the Rust `plugin-panel-<request.panelId>` label scheme. The native
  *  command restores an enlarged panel's normal frame on the main thread before hiding it; a raw

@@ -7993,12 +7993,13 @@ fn install_toolset_input_focus<R: Runtime>(window: &tauri::WebviewWindow<R>) -> 
 /// window-creating commands are `async` (a tokio worker — required for WebView2 on Windows), so every
 /// raw NSWindow call they reach must be marshalled. Tauri runs the closure inline when already on the
 /// main thread, so this is also safe to call from there (the result is sent before `recv` blocks).
-fn run_on_main_thread_blocking<R: Runtime, T: Send + 'static>(
-    window: &tauri::WebviewWindow<R>,
+fn run_on_main_thread_blocking<R: Runtime, M: Manager<R>, T: Send + 'static>(
+    window: &M,
     task: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, String> {
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
     window
+        .app_handle()
         .run_on_main_thread(move || {
             let _ = sender.send(task());
         })

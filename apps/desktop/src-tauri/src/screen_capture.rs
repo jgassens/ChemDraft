@@ -492,7 +492,7 @@ impl<R: Runtime> HiddenChemDraftWindows<R> {
     fn hide(app: &AppHandle<R>) -> Self {
         let on_main = app.clone();
         let (windows, key) =
-            run_on_main_thread_and_wait(app, move || hide_visible_windows(&on_main))
+            crate::run_on_main_thread_blocking(app, move || hide_visible_windows(&on_main))
                 .unwrap_or_else(|error| {
                     eprintln!("Could not hide ChemDraft windows for screen capture: {error}");
                     (Vec::new(), None)
@@ -546,22 +546,6 @@ fn hide_each_after_restore<W>(
         }
     }
     hidden
-}
-
-/// Runs `task` on the main thread and waits for its result. Tauri runs it inline when already on
-/// the main thread, so this is safe from either thread.
-fn run_on_main_thread_and_wait<R: Runtime, T: Send + 'static>(
-    app: &AppHandle<R>,
-    task: impl FnOnce() -> T + Send + 'static,
-) -> Result<T, String> {
-    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-    app.run_on_main_thread(move || {
-        let _ = sender.send(task());
-    })
-    .map_err(|error| error.to_string())?;
-    receiver
-        .recv()
-        .map_err(|_| "The main thread dropped a screen capture task.".to_string())
 }
 
 /// The order hidden windows come back in: every window but the one that should end up key, then
@@ -636,7 +620,8 @@ impl<R: Runtime> Drop for HiddenChemDraftWindows<R> {
             return;
         }
         // The capture command is async, so this runs on a runtime thread; AppKit calls belong on
-        // the main thread. The closure is queued behind the earlier `hide()` messages.
+        // the main thread. The restore closure is queued behind the hide task, which `hide()` waited on
+        // the main thread to finish, so it always runs after the windows are hidden.
         let fallback = windows.clone();
         if let Err(error) = self
             .app
@@ -880,7 +865,7 @@ mod tests {
             .nth(1)
             .and_then(|rest| rest.split("\n    }\n}").next())
             .expect("hide body");
-        assert!(hide.contains("run_on_main_thread_and_wait(app"), "{hide}");
+        assert!(hide.contains("run_on_main_thread_blocking(app"), "{hide}");
         assert!(
             !hide.contains("before_hide") && !hide.contains(".hide()"),
             "{hide}"
