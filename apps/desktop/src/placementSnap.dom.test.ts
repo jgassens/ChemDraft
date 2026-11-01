@@ -195,6 +195,26 @@ describe.each(["macos", "windows"] as const)("placement pointer handlers on %s",
     await undoOnce(before);
   });
 
+  it.each([["tool.wedgeBond", "wedge", "solid wedge bond"], ["tool.hashedBond", "hashed", "hashed wedge bond"]] as const)(
+    "%s clicked on its own %s bond reverses it in one labelled undo step", async (tool, style, label) => {
+      await mount(tool, insertNativeSingleBondMolecule(createPhase4Document("Reverse wedge"), { x: 240, y: 240 }, { bondStyle: style }));
+      const before = molecules(current());
+      const [bond] = before[0].bonds;
+      const from = before[0].atoms.find((atom) => atom.id === bond.fromAtomId)!;
+      const to = before[0].atoms.find((atom) => atom.id === bond.toAtomId)!;
+      const midpoint = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
+      const wrapper = container.querySelector<HTMLElement>(`[data-object-id="${before[0].id}"]`)!;
+      await pointer("pointerdown", midpoint, wrapper);
+      await pointer("pointerup", midpoint, wrapper);
+      const reversed = molecules(current())[0].bonds[0];
+      expect(reversed).toMatchObject({ id: bond.id, fromAtomId: bond.toAtomId, toAtomId: bond.fromAtomId, display: { bondStyle: style } });
+      expect(molecules(current())[0].atoms).toEqual(before[0].atoms);
+      expect(container.querySelector("[data-status-message]")?.textContent).toContain(`Reversed ${label}`);
+      await undoOnce(before);
+      expect(container.querySelector("[data-status-message]")?.textContent).toBe(`Undid Reverse ${label}`);
+    }
+  );
+
   it.each([false, true])("keeps long atom drags custom length (Alt: %s), with preview matching commit", async (alt) => {
     await mount("tool.bond", insertNativeSingleBondMolecule(createPhase4Document("Long drag"), { x: 240, y: 240 }));
     const before = molecules(current());

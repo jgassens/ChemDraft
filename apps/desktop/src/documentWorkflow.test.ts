@@ -136,6 +136,10 @@ import {
   stereoPerceptionMolfile,
   applySingleBondToolAtPoint,
   applySingleBondToolAtNativeAtom,
+  nativeSingleBondHotkeyAtAtomTarget,
+  nativeSingleBondToolAtPoint,
+  nativeFreeformSingleBondToolAtPoint,
+  nativeBondDragSourceAtomId,
   cleanUpNativeMolecules2d,
   cleanUpSelectedNativeMolecule2d,
   moleculeHasFusedRingSystem,
@@ -6651,8 +6655,9 @@ describe("Phase 4 document workflow", () => {
 
     expect(atom).toMatchObject({ element: "C", labelVisible: true });
     // A hotkey relabel is an ordinary implicit-hydrogen atom: the explicit terminal carbon
-    // draws its hydrogens ("CH3"), unlike a text-typed literal label.
-    expect(atomDisplayLabel(atom, nextMolecule.bonds, undefined, nextMolecule.atoms)).toBe("CH3");
+    // draws its hydrogens, unlike a text-typed literal label; with its bond on the right they
+    // lead ("H3C").
+    expect(atomDisplayLabel(atom, nextMolecule.bonds, undefined, nextMolecule.atoms)).toBe("H3C");
     expect(nextMolecule.chemistry).toMatchObject({ formula: "C2H6", atomCount: 2, bondCount: 1 });
   });
 
@@ -17021,7 +17026,8 @@ describe("aromatic bond orders: one count for the formula, the label and the val
       const pastedNitrogen = pasted.atoms.find((atom) => atom.element === "N")!;
       expect(pasted.atoms).toHaveLength(2);
       expect(pastedNitrogen.hydrogenCount).toBeUndefined();
-      expect(atomDisplayLabel(pastedNitrogen, pasted.bonds, undefined, pasted.atoms)).toBe("NH2");
+      // Its one bond leaves to the right, so the hydrogens lead: H2N, two of them, no stale count.
+      expect(atomDisplayLabel(pastedNitrogen, pasted.bonds, undefined, pasted.atoms)).toBe("H2N");
       expect(pasted.chemistry?.formula).toBe("CH5N");
       const states = nativeMoleculeInvalidAtomStates(pasted);
       expect(states.some((state) => state.invalidReason?.includes("NumHydrogens"))).toBe(false);
@@ -18191,5 +18197,341 @@ describe("2D engine cleanup candidate gate", () => {
     expect(after.atoms.map(a => [a.id, a.element])).toEqual(before.atoms.map(a => [a.id, a.element]));
     expect(after.bonds.map(b => b.order)).toEqual(before.bonds.map(b => b.order));
     expect(warnings).toEqual([]);
+  });
+});
+
+describe("terminal geometry by hotkey and tool click", () => {
+  function terminalMolecule(document: ChemDraftDocument): MoleculeObject {
+    const object = document.pages[0].objects.find((candidate) => candidate.type === "molecule");
+    if (!object || object.type !== "molecule") throw new Error("Missing terminal-geometry molecule");
+    return object;
+  }
+  function terminalAtom(molecule: MoleculeObject, id: string): MoleculeAtom {
+    const found = molecule.atoms.find((candidate) => candidate.id === id);
+    if (!found) throw new Error(`Missing atom ${id}`);
+    return found;
+  }
+  function seededBond(order: "single" | "double" | "triple", rotationDegrees = 0): ChemDraftDocument {
+    const inserted = insertNativeSingleBondMolecule(createPhase4Document("Terminal geometry"), { x: 300, y: 300 });
+    let molecule = terminalMolecule(inserted);
+    // Turn the bond about its first atom so the cases do not all lean on one page direction.
+    const [pivot, end] = molecule.atoms;
+    const radians = rotationDegrees * Math.PI / 180;
+    const turned = applyPatch(inserted, { op: "updateObject", objectId: molecule.id, changes: {
+      atoms: [pivot!, {
+        ...end!,
+        x: pivot!.x + (end!.x - pivot!.x) * Math.cos(radians) - (end!.y - pivot!.y) * Math.sin(radians),
+        y: pivot!.y + (end!.x - pivot!.x) * Math.sin(radians) + (end!.y - pivot!.y) * Math.cos(radians)
+      }]
+    } });
+    molecule = terminalMolecule(turned);
+    const bond = molecule.bonds[0]!;
+    return applyNativeMoleculeBondOrderValueTarget(turned, {
+      objectId: molecule.id, kind: "bond", bondId: bond.id,
+      fromAtomId: bond.fromAtomId, toAtomId: bond.toAtomId, distanceToPointer: 0
+    }, order);
+  }
+  const atomTarget = (molecule: MoleculeObject, atomId = "atom_002") =>
+    ({ objectId: molecule.id, kind: "atom" as const, atomId, distanceToPointer: 0 });
+  function separationDegrees(origin: MoleculeAtom, left: MoleculeAtom, right: MoleculeAtom): number {
+    const first = Math.atan2(left.y - origin.y, left.x - origin.x);
+    const second = Math.atan2(right.y - origin.y, right.x - origin.x);
+    return Math.abs(((second - first) * 180 / Math.PI + 540) % 360 - 180);
+  }
+
+  // Toluene, methylcyclohexane and methylcyclopentane drawn from a C–C bond: the methyl sits on the
+  // ring's exterior bisector, 120° from both hexagon bonds or 126° from both pentagon bonds.
+  const ringCases = [
+    ["single", "benzene", 6],
+    ["single", "cyclohexane", 6],
+    ["single", "cyclopentane", 5],
+    ["double", "cyclohexane", 6],
+    ["double", "cyclopentane", 5]
+  ] as const;
+  for (const method of ["hotkey", "tool click"] as const) {
+    for (const rotation of [0, 37, -90]) {
+      it.each(ringCases)(`${method} on a %s bond turned ${rotation}°: %s bisects the exterior angle`, (order, template, size) => {
+        const document = seededBond(order, rotation);
+        const before = terminalMolecule(document);
+        const source = terminalAtom(before, "atom_002");
+        const after = terminalMolecule(method === "hotkey"
+          ? applyNativeRingAttachAtAtomTarget(document, atomTarget(before), template)
+          : applyNativeTemplateToolAtTarget(document, atomTarget(before), source, template));
+        expect(after.atoms).toHaveLength(before.atoms.length + size - 1);
+        expect(after.bonds).toHaveLength(before.bonds.length + size);
+        expect(after.bonds.find((bond) => bond.id === before.bonds[0]!.id)).toEqual(before.bonds[0]);
+        const ringNeighbors = after.bonds
+          .filter((bond) => bond.id !== before.bonds[0]!.id && (bond.fromAtomId === source.id || bond.toAtomId === source.id))
+          .map((bond) => terminalAtom(after, bond.fromAtomId === source.id ? bond.toAtomId : bond.fromAtomId));
+        expect(ringNeighbors).toHaveLength(2);
+        const exteriorHalf = 90 + 180 / size;
+        const angles = ringNeighbors
+          .map((neighbor) => separationDegrees(terminalAtom(after, source.id), terminalAtom(after, "atom_001"), neighbor));
+        expect(angles).toEqual([expect.closeTo(exteriorHalf, 1), expect.closeTo(exteriorHalf, 1)]);
+      });
+    }
+  }
+
+  it("keeps the exterior bisector when the hotkey commits a displayed growth arrow", () => {
+    const document = seededBond("single");
+    const before = terminalMolecule(document);
+    const source = terminalAtom(before, "atom_002");
+    const parent = terminalAtom(before, "atom_001");
+    const arrow = Math.atan2(parent.y - source.y, parent.x - source.x) + 2 * Math.PI / 3;
+    const after = terminalMolecule(applyNativeRingAttachAtAtomTarget(document, atomTarget(before), "cyclohexane", {
+      newAtomPoint: { x: source.x + Math.cos(arrow) * 40, y: source.y + Math.sin(arrow) * 40 },
+      direction: { x: Math.cos(arrow), y: Math.sin(arrow) }
+    }));
+    const neighbors = after.bonds
+      .filter((bond) => bond.id !== before.bonds[0]!.id && (bond.fromAtomId === source.id || bond.toAtomId === source.id))
+      .map((bond) => terminalAtom(after, bond.fromAtomId === source.id ? bond.toAtomId : bond.fromAtomId));
+    expect(neighbors.map((neighbor) => separationDegrees(source, parent, neighbor)))
+      .toEqual([expect.closeTo(120, 1), expect.closeTo(120, 1)]);
+  });
+
+  for (const method of ["hotkey 1", "single-bond tool click"] as const) {
+    it.each([0, 37, -90])(`${method}: ethyne turned %s° grows propyne straight through the sp carbon`, (rotation) => {
+      const document = seededBond("triple", rotation);
+      const before = terminalMolecule(document);
+      const after = terminalMolecule(method === "hotkey 1"
+        ? applySingleBondToolAtNativeAtom(document, atomTarget(before))
+        : applySingleBondToolAtPoint(document, terminalAtom(before, "atom_002")));
+      expect(after.atoms).toHaveLength(3);
+      expect(after.bonds.map((bond) => bond.order)).toEqual(["triple", "single"]);
+      expect(after.chemistry?.formula).toBe("C3H4");
+      expect(separationDegrees(terminalAtom(after, "atom_002"), terminalAtom(after, "atom_001"), terminalAtom(after, "atom_003")))
+        .toBeCloseTo(180, 1);
+    });
+  }
+
+  it.each(["single", "double"] as const)("hotkey 1 still grows a %s-bond end at the chain angle", (order) => {
+    const document = seededBond(order);
+    const after = terminalMolecule(applySingleBondToolAtNativeAtom(document, atomTarget(terminalMolecule(document))));
+    expect(separationDegrees(terminalAtom(after, "atom_002"), terminalAtom(after, "atom_001"), terminalAtom(after, "atom_003")))
+      .toBeCloseTo(120, 1);
+  });
+
+  it("offers only the straight-through direction on an alkyne end's growth arrow", () => {
+    const document = seededBond("triple");
+    const molecule = terminalMolecule(document);
+    const source = terminalAtom(molecule, "atom_002");
+    const parent = terminalAtom(molecule, "atom_001");
+    const preview = previewNativeMoleculeBondGrowth(molecule, source, document.pages[0].width, document.pages[0].height)!;
+    expect(preview.candidateDirections).toHaveLength(1);
+    const away = Math.atan2(source.y - parent.y, source.x - parent.x);
+    expect(preview.direction.x).toBeCloseTo(Math.cos(away), 6);
+    expect(preview.direction.y).toBeCloseTo(Math.sin(away), 6);
+  });
+
+  // A bond dragged off atom_002, one bond length out, with the pointer `bondAngleDegrees` from the
+  // existing bond to atom_001; `altKey` is Alt/Option, the placement tools' free-angle modifier on
+  // both platforms. Returns the absolute page aims of the pointer and of the bond that landed.
+  function dragFromEnd(document: ChemDraftDocument, bondAngleDegrees: number, altKey: boolean) {
+    const before = terminalMolecule(document);
+    const source = terminalAtom(before, "atom_002");
+    const parent = terminalAtom(before, "atom_001");
+    const length = Math.hypot(source.x - parent.x, source.y - parent.y);
+    const pointerAim = Math.atan2(parent.y - source.y, parent.x - source.x) * 180 / Math.PI + bondAngleDegrees;
+    const radians = pointerAim * Math.PI / 180;
+    const point = { x: source.x + Math.cos(radians) * length, y: source.y + Math.sin(radians) * length };
+    const after = terminalMolecule(applyFreeformSingleBondToolAtPoint(document, before.id, source.id, point, { placementAltKey: altKey }));
+    const grown = terminalAtom(after, "atom_003");
+    const aim = Math.atan2(grown.y - source.y, grown.x - source.x) * 180 / Math.PI;
+    const turn = (degrees: number) => ((degrees % 360) + 540) % 360 - 180;
+    return { after, source, parent, grown, length, pointerAim: turn(pointerAim), aim: turn(aim) };
+  }
+
+  it.each([0, 37, -90])("a drag off an ethyne end turned %s° and aimed 140° from it snaps collinear", (rotation) => {
+    const { after, grown, source, parent, length } = dragFromEnd(seededBond("triple", rotation), 140, false);
+    expect(after.bonds.map((bond) => bond.order)).toEqual(["triple", "single"]);
+    expect(after.chemistry?.formula).toBe("C3H4");
+    expect(separationDegrees(source, parent, grown)).toBeCloseTo(180, 6);
+    expect(Math.hypot(grown.x - source.x, grown.y - source.y)).toBeCloseTo(length, 6);
+  });
+
+  // Ethyne flush with the right edge of the 816-wide page (atoms at x 776 and 816): the
+  // straight-through position lies off the page and would clamp back onto the sp carbon itself, a
+  // zero-length bond and an invisible extra carbon.
+  const seededBondLength = (() => {
+    const [first, second] = terminalMolecule(seededBond("triple", 0)).atoms;
+    return Math.hypot(second!.x - first!.x, second!.y - first!.y);
+  })();
+  function edgeEthyne(): ChemDraftDocument {
+    const document = seededBond("triple", 0);
+    expect(document.pages[0].width).toBe(816);
+    const molecule = terminalMolecule(document);
+    return applyPatch(document, { op: "updateObject", objectId: molecule.id, changes: {
+      atoms: molecule.atoms.map((atom) => ({ ...atom, x: atom.id === "atom_001" ? 776 : 816, y: 300 }))
+    } });
+  }
+  function expectVisibleBondOffEdge(after: MoleculeObject) {
+    const source = terminalAtom(after, "atom_002");
+    const grown = terminalAtom(after, "atom_003");
+    expect(after.bonds.map((bond) => bond.order)).toEqual(["triple", "single"]);
+    expect(after.chemistry?.formula).toBe("C3H4");
+    expect(Math.hypot(grown.x - source.x, grown.y - source.y)).toBeGreaterThanOrEqual(seededBondLength * 0.5);
+    expect(grown.x).toBeLessThanOrEqual(816);
+    expect(separationDegrees(source, terminalAtom(after, "atom_001"), grown)).toBeLessThan(150);
+  }
+
+  it("hotkey 1 on an ethyne end at the page edge grows a visible angled bond, never a zero-length one", () => {
+    const document = edgeEthyne();
+    expectVisibleBondOffEdge(terminalMolecule(applySingleBondToolAtNativeAtom(document, atomTarget(terminalMolecule(document)))));
+  });
+
+  it("a drag off an ethyne end at the page edge grows a visible angled bond, never a zero-length one", () => {
+    const document = edgeEthyne();
+    const before = terminalMolecule(document);
+    const after = terminalMolecule(applyFreeformSingleBondToolAtPoint(
+      document, before.id, "atom_002", { x: 836, y: 265 }, { placementAltKey: false }
+    ));
+    expectVisibleBondOffEdge(after);
+    expect(terminalAtom(after, "atom_003").y).toBeLessThan(300);
+  });
+
+  // Ethyne tucked into the bottom-right corner of the page, its bond running up and left: the
+  // straight-through position and both chain-angle positions all clamp to under half a bond.
+  function cornerEthyne(): ChemDraftDocument {
+    const document = seededBond("triple", 0);
+    const { width, height } = document.pages[0];
+    expect(width).toBe(816);
+    const molecule = terminalMolecule(document);
+    const leg = seededBondLength / Math.SQRT2;
+    return applyPatch(document, { op: "updateObject", objectId: molecule.id, changes: {
+      atoms: molecule.atoms.map((atom) => atom.id === "atom_001"
+        ? { ...atom, x: width - leg, y: height - leg }
+        : { ...atom, x: width, y: height })
+    } });
+  }
+
+  it("hotkey 1 on an ethyne end boxed in by the page edge adds nothing and says the page edge blocks it", () => {
+    const document = cornerEthyne();
+    const before = terminalMolecule(document);
+    expect(previewNativeMoleculeBondGrowth(before, terminalAtom(before, "atom_002"), document.pages[0].width, document.pages[0].height))
+      .toBeUndefined();
+    const result = nativeSingleBondHotkeyAtAtomTarget(document, atomTarget(before));
+    expect(result.document).toBe(document);
+    expect(result.refusal).toBe("sprout-page-edge");
+  });
+
+  it("a bond-tool click on an ethyne end boxed in by the page edge adds no bond and says the page edge blocks it", () => {
+    const document = cornerEthyne();
+    const selected = selectDocumentObject(document, terminalMolecule(document).id);
+    const point = terminalAtom(terminalMolecule(selected), "atom_002");
+    const result = nativeSingleBondToolAtPoint(selected, point);
+    expect(result.document).toBe(selected);
+    expect(result.refusal).toBe("sprout-page-edge");
+    expect(applySingleBondToolAtPoint(selected, point)).toBe(selected);
+  });
+
+  it("the growth arrow at the page edge previews the direction the placed bond takes", () => {
+    const document = edgeEthyne();
+    const before = terminalMolecule(document);
+    const source = terminalAtom(before, "atom_002");
+    const preview = previewNativeMoleculeBondGrowth(before, source, document.pages[0].width, document.pages[0].height)!;
+    const grown = terminalAtom(terminalMolecule(applySingleBondToolAtNativeAtom(document, atomTarget(before))), "atom_003");
+    const length = Math.hypot(grown.x - source.x, grown.y - source.y);
+    const placed = { x: (grown.x - source.x) / length, y: (grown.y - source.y) / length };
+    expect(preview.direction.x).toBeCloseTo(placed.x, 6);
+    expect(preview.direction.y).toBeCloseTo(placed.y, 6);
+    expect(preview.candidateDirections[0]!.x).toBeCloseTo(placed.x, 6);
+    expect(preview.candidateDirections[0]!.y).toBeCloseTo(placed.y, 6);
+    // No option points off the page: the source sits on its right edge.
+    for (const direction of preview.candidateDirections) {
+      expect(direction.x).toBeLessThan(1e-6);
+    }
+  });
+
+  it("a drag off an ethyne end at the page edge falls back to the style's chain angle", () => {
+    // The ethyne stands upright 0.4 bond lengths below the top edge, so the straight-through aim
+    // clamps to under half a bond; a 105° chain angle keeps the fallback bond on the page.
+    const inserted = seededBond("triple", 0);
+    const molecule = terminalMolecule(inserted);
+    const document = applyPatch(inserted, { op: "updateObject", objectId: molecule.id, changes: {
+      style: { ...molecule.style, chainAngleDegrees: 105 },
+      atoms: molecule.atoms.map((atom) => ({
+        ...atom, x: 400, y: atom.id === "atom_001" ? seededBondLength * 1.4 : seededBondLength * 0.4
+      }))
+    } });
+    const after = terminalMolecule(applyFreeformSingleBondToolAtPoint(
+      document, molecule.id, "atom_002", { x: 440, y: 0 }, { placementAltKey: false }
+    ));
+    const source = terminalAtom(after, "atom_002");
+    const grown = terminalAtom(after, "atom_003");
+    expect(after.bonds.map((bond) => bond.order)).toEqual(["triple", "single"]);
+    expect(grown.x).toBeGreaterThan(source.x);
+    expect(grown.y).toBeGreaterThanOrEqual(0);
+    expect(Math.hypot(grown.x - source.x, grown.y - source.y)).toBeCloseTo(seededBondLength, 6);
+    expect(separationDegrees(source, terminalAtom(after, "atom_001"), grown)).toBeCloseTo(105, 6);
+  });
+
+  it("a bond-tool press on an ethyne end boxed in by the page edge can still start an Alt/Option drag inward", () => {
+    const document = cornerEthyne();
+    const selected = selectDocumentObject(document, terminalMolecule(document).id);
+    const before = terminalMolecule(selected);
+    const source = terminalAtom(before, "atom_002");
+    const { width, height } = selected.pages[0];
+    // No default click growth here, yet the press still picks the atom as a drag source.
+    expect(previewNativeMoleculeBondGrowth(before, source, width, height)).toBeUndefined();
+    expect(nativeBondDragSourceAtomId(before, source)).toBe("atom_002");
+    // Released without dragging, the click still refuses with the page-edge reason.
+    expect(nativeSingleBondToolAtPoint(selected, source).refusal).toBe("sprout-page-edge");
+    // Dragged straight left with Alt/Option, along the bottom edge: room, and the aim is kept.
+    const result = nativeFreeformSingleBondToolAtPoint(
+      selected, before.id, "atom_002", { x: source.x - seededBondLength, y: source.y }, { placementAltKey: true }
+    );
+    expect(result.refusal).toBeUndefined();
+    const after = terminalMolecule(result.document);
+    const grown = terminalAtom(after, "atom_003");
+    expect(after.bonds.map((bond) => bond.order)).toEqual(["triple", "single"]);
+    expect(grown.y).toBeCloseTo(source.y, 6);
+    expect(source.x - grown.x).toBeCloseTo(seededBondLength, 6);
+  });
+
+  it("a bond-tool press on an atom with no free valence is not a drag source", () => {
+    const document = cornerEthyne();
+    const molecule = terminalMolecule(document);
+    const saturated: MoleculeObject = { ...molecule, atoms: molecule.atoms.map((atom) =>
+      atom.id === "atom_002" ? { ...atom, element: "OMe" } : atom
+    ) };
+    // A one-bond group label already on a bond takes no more; a press there never starts a bond drag.
+    expect(nativeBondDragSourceAtomId(saturated, terminalAtom(saturated, "atom_002"))).toBeUndefined();
+  });
+
+  it("an Alt/Option drag off an ethyne end at the page edge never swaps the aim for another angle", () => {
+    const document = selectDocumentObject(edgeEthyne(), terminalMolecule(edgeEthyne()).id);
+    const molecule = terminalMolecule(document);
+    // Straight through, past the right edge: the user's own aim, so it is refused, not bent.
+    const free = nativeFreeformSingleBondToolAtPoint(
+      document, molecule.id, "atom_002", { x: 816 + seededBondLength, y: 300 }, { placementAltKey: true }
+    );
+    expect(free.document).toBe(document);
+    expect(free.refusal).toBe("sprout-page-edge");
+    // Up and right, past the edge: still refused rather than redirected.
+    const upRight = nativeFreeformSingleBondToolAtPoint(
+      document, molecule.id, "atom_002", { x: 836, y: 265 }, { placementAltKey: true }
+    );
+    expect(upRight.document).toBe(document);
+    expect(upRight.refusal).toBe("sprout-page-edge");
+    // Default mode, same drag: the straight-through snap still gives way to the chain angle.
+    const snapped = nativeFreeformSingleBondToolAtPoint(
+      document, molecule.id, "atom_002", { x: 836, y: 265 }, { placementAltKey: false }
+    );
+    expect(snapped.refusal).toBeUndefined();
+    expectVisibleBondOffEdge(terminalMolecule(snapped.document));
+  });
+
+  it("a drag off an ethyne end with Alt/Option follows the pointer", () => {
+    const { aim, pointerAim, grown, source, parent } = dragFromEnd(seededBond("triple", 37), 140, true);
+    expect(aim).toBeCloseTo(pointerAim, 6);
+    expect(separationDegrees(source, parent, grown)).toBeCloseTo(140, 6);
+  });
+
+  it.each(["single", "double"] as const)("a drag off a %s-bond end keeps the 15° placement grid; Alt/Option frees it", (order) => {
+    const snapped = dragFromEnd(seededBond(order, 37), 140, false);
+    expect(snapped.aim / 15).toBeCloseTo(Math.round(snapped.pointerAim / 15), 6);
+    expect(snapped.aim).not.toBeCloseTo(snapped.pointerAim, 1);
+    const free = dragFromEnd(seededBond(order, 37), 140, true);
+    expect(free.aim).toBeCloseTo(free.pointerAim, 6);
   });
 });
