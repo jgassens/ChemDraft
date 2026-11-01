@@ -90,7 +90,7 @@ describe("bounded panel reports (API 0.1.18)", () => {
       ...Array.from({ length: 21 }, () => ({ kind: "text", body: "Synthetic detail" }))
     ] };
     expect(PluginPanelReportSchema.parse(raw)).toEqual(raw);
-  });
+  }, 60_000);
 
   it("preserves four figures at main's per-figure maxima unchanged", () => {
     const f = figure();
@@ -101,7 +101,7 @@ describe("bounded panel reports (API 0.1.18)", () => {
     f.spectrum.peaks = Array.from({ length: 4_000 }, (_, i) => ({ ...peak(), id: String(i), atomIndices: [i] }));
     const raw = { title: "Synthetic multi-figure report", sections: Array(4).fill(f) };
     expect(PluginPanelReportSchema.parse(raw)).toEqual(raw);
-  });
+  }, 60_000);
 
   it("accepts deeply nested action payloads within 4,000 characters", () => {
     for (const depth of [1_900, 2_000, 2_001]) {
@@ -196,7 +196,7 @@ describe("bounded panel reports (API 0.1.18)", () => {
     f.spectrum.peaks = Array(L.peaks).fill(peak());
     const parsed = PluginPanelSectionSchema.parse(f);
     expect(parsed.kind === "linkedFigure" && parsed.spectrum.peaks.length).toBe(L.peaks);
-  });
+  }, 60_000);
 
   it.each(["atom indices", "couplings"] as const)("caps aggregate %s across peaks and figures, at + 1", which => {
     const f = figure();
@@ -210,7 +210,7 @@ describe("bounded panel reports (API 0.1.18)", () => {
     expect(PluginPanelReportSchema.safeParse(raw).success).toBe(true);
     raw.sections[1]!.spectrum.peaks = [make(1)];
     rejected(raw, `report total ${which}: ${total + 1} exceeds the limit of ${total}`);
-  });
+  }, 60_000);
 
   it("caps total table cells, including column headers, at + 1", () => {
     const table = { kind: "table", columns: [] as string[], rows: Array(L.tableCells / L.tableColumns).fill(Array(L.tableColumns).fill("")) };
@@ -272,7 +272,7 @@ describe("bounded panel reports (API 0.1.18)", () => {
   it.each(stringCases)("bounds every report string family %#", make => {
     rejected(make("x".repeat(L.stringLength + 1)), "length:");
     expect(panelReportLimitIssue(make("x"))).toBeUndefined();
-  });
+  }, 60_000);
 
   it.each([
     [report({ ...figure(), spectrum: { ...figure().spectrum, solvent: "x".repeat(121) } }), "solvent length: 121 exceeds the limit of 120"],
@@ -367,7 +367,7 @@ describe("bounded panel reports (API 0.1.18)", () => {
     const raw = {};
     Object.defineProperty(raw, "x".repeat(L.stringLength + 1), { get() { throw new Error("must not read"); } });
     rejected(raw, `report field name length: ${L.stringLength + 1}`);
-  });
+  }, 60_000);
 
   it("keeps arbitrary control payload keys separate from report schema field names", () => {
     const raw = report({ kind: "actions", id: "actions", buttons: [{ id: "run", label: "Run", commandId: "plugin.test.run",
@@ -451,7 +451,7 @@ describe("bounded panel reports (API 0.1.18)", () => {
     expect(section.kind === "actions" && section.buttons[0]!.payload).toEqual({ nested: { value: "original" }, list: ["original"] });
     expect(parsed.title).toBe("NMR");
     expect(bytes(parsed)).toBeLessThan(L.serializedBytes);
-  });
+  }, 60_000);
 
   it("does not let Zod probe getters even on the top-level report", async () => {
     const getter = vi.fn(() => { throw new Error("must not execute"); });

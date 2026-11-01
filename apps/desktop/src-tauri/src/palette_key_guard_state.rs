@@ -165,10 +165,13 @@ pub(crate) fn keeps_palette_focus(label: &str, held: bool) -> bool {
 
 /// AppKit supplies charactersIgnoringModifiers, including private-use function keys.
 pub(super) fn editing_key(key: &str, command: bool, control: bool, alt: bool) -> bool {
-    if matches!(
-        key,
-        "Backspace" | "Delete" | "\u{8}" | "\u{7f}" | "\u{f728}"
-    ) {
+    // Panel IPC uses browser key names; normalize them to AppKit equivalents.
+    let key = match key {
+        "Backspace" => "\u{8}",
+        "Delete" => "\u{f728}",
+        _ => key,
+    };
+    if matches!(key, "\u{8}" | "\u{7f}" | "\u{f728}") {
         return true;
     }
     if command || control {

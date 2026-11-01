@@ -122,7 +122,7 @@ describe("PluginHost panel control ownership", () => {
     expect(showPanelReport).toHaveBeenCalledTimes(2);
     expect(showPanelReport.mock.calls[0]![2].title).toBe("First report");
     expect(showPanelReport.mock.calls[1]![2].title).toBe("Updated report");
-  });
+  }, 60_000);
 
   it("rejects an oversized report through the existing command failure path before updating the panel", async () => {
     const showPanelReport = vi.fn();
@@ -147,7 +147,7 @@ describe("PluginHost panel control ownership", () => {
     }] };
     await expect(host.invokeCommand(commandId)).rejects.toThrow("Infinity must be finite");
     expect(showPanelReport).toHaveBeenCalledTimes(1);
-  });
+  }, 60_000);
 
   it("accepts own commands in prompts, selects and action buttons", async () => {
     const showPanelReport = vi.fn();

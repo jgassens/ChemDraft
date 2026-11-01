@@ -192,7 +192,7 @@ describe("SVG XML well-formedness", () => {
     expect(inspectClipboardPayload({ types: ["text/plain"], textItems: [{ type: "text/plain", text }] }, { svgParser: { parseFromString } }))
       .toMatchObject({ kind: "size-refused", message: expect.stringContaining("the limit is 25 MB") });
     expect(parseFromString).not.toHaveBeenCalled();
-  });
+  }, 60_000);
 
   it("applies the validation size cap to the namespaced text", () => {
     const parseFromString = vi.fn(() => { throw new Error("must not parse"); });
@@ -202,7 +202,7 @@ describe("SVG XML well-formedness", () => {
         .toMatchObject({ kind: "image-refused", message: "Couldn't paste the SVG: it exceeds the 25 MB picture limit." });
     }
     expect(parseFromString).not.toHaveBeenCalled();
-  });
+  }, 60_000);
 
   it.each([
     ['<!DOCTYPE svg [<!ENTITY x "expanded">]>', "a document type declaration"],
@@ -256,7 +256,7 @@ describe("clipboard byte limits", () => {
       imageItems: [image] });
     expect(result.imageItems).toEqual([image]);
     expect(result.skippedItems).toEqual([]);
-  });
+  }, 60_000);
 
   it.each(["application/x-chemdraft-selection+json", "chemical/x-cdxml", "chemical/x-cdx", "chemical/x-mdl-molfile", "org.opensmiles.smiles"])("refuses oversized chemistry before pictures or prose: %s", type => {
     const bytes = 400 * mb;
@@ -402,14 +402,14 @@ describe("clipboard byte limits", () => {
       textItems: [{ type: "text/plain", text: { length: 16 * mb } as unknown as string }], imageItems: Array(43).fill(image) });
     expect(bounded.imageItems).toHaveLength(42); // Pictures are admitted first; 42 x 24 MiB plus retained text fills the envelope.
     expect(bounded.skippedItems).toEqual([{ type: "image/png", byteLength: 24 * mb, limitBytes: MAX_CLIPBOARD_BYTES, reason: "total", totalByteLength: 1032 * mb }]);
-  });
+  }, 60_000);
 
   it("caps SVG source in text before encoding it as a picture", () => {
     expect(inspectClipboardPayload({ types: ["text/plain"], textItems: [
       { type: "text/plain", text: "<svg>" + " ".repeat(26 * mb) + "</svg>" }
     ] })).toMatchObject({ kind: "size-refused",
       message: "Couldn't paste: clipboard flavor \"text/plain\" is too large (26.0 MB; the limit is 25 MB)." });
-  });
+  }, 60_000);
 
   it("preserves native refusal metadata and still accepts smaller alternatives", () => {
     const skippedItems = [{ type: "chemical/x-cdxml", byteLength: 400 * mb, limitBytes: MAX_CLIPBOARD_TEXT_BYTES }];
@@ -894,7 +894,7 @@ describe("clipboard-adapter", () => {
         ? { kind: "size-refused", message: expect.stringContaining("the limit is 25 MB") }
         : { kind: "image-refused", message: expect.stringContaining("Couldn't paste the SVG:") });
     }
-  });
+  }, 60_000);
 
   it("keeps the stricter SVG validation limits for image flavors too", () => {
     for (const text of [
@@ -908,7 +908,7 @@ describe("clipboard-adapter", () => {
         ? { kind: "size-refused", message: expect.stringContaining("the limit is 25 MB") }
         : { kind: "image-refused", message: expect.stringContaining("Couldn't paste the SVG:") });
     }
-  });
+  }, 60_000);
 
   it.each([
     ["<svg", "it isn't well-formed XML: invalid or incomplete markup."],

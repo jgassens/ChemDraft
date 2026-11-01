@@ -184,7 +184,7 @@ impl ClipboardReadBudget {
         Ok(())
     }
 
-    fn check(&mut self, source: &str, byte_length: usize) -> Result<(), String> {
+    pub(crate) fn check(&mut self, source: &str, byte_length: usize) -> Result<(), String> {
         let flavor_limit = if is_image_clipboard_type(source) {
             MAX_CLIPBOARD_IMAGE_BYTES
         } else {
