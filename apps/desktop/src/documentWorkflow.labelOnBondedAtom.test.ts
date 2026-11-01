@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { Molecule } from "openchemlib";
-import { applyPatches, nativeDrawingStyleFromObjectStyle, type MoleculeObject } from "@chemdraft/chem-core";
+import { applyPatches, nativeDrawingStyleFromObjectStyle, type MoleculeAtom, type MoleculeBond, type MoleculeObject } from "@chemdraft/chem-core";
 import { nativeAtomLabelReading, nativeAtomValidationState, nativeBondOrderResolution, nativeLabelBondSide } from "@chemdraft/document-workflow-core";
 import { atomDisplayLabelPlacement } from "@chemdraft/layout-engine";
 import {
-  commitNativeAtomLabelTarget, convertNativeTextObjectToAtomLabel, createPhase4Document,
-  insertNativeTemplateMolecule, insertNativeTextObject
+  applyNativeAtomElementTarget, applyNativeAtomLabelDraft, commitNativeAtomLabelTarget,
+  convertNativeTextObjectToAtomLabel, createPhase4Document, insertNativeSingleBondMolecule,
+  insertNativeTemplateMolecule, insertNativeTextObject, nativeBondLengthPx
 } from "./documentWorkflow";
 
 function molecule(d: ReturnType<typeof createPhase4Document>) {
@@ -16,6 +17,153 @@ function setup(template: "benzene" | "cyclohexane" = "cyclohexane") {
   const m = molecule(document);
   return { document, m, target: { objectId: m.id, kind: "atom" as const, atomId: m.atoms[0]!.id, distanceToPointer: 0 } };
 }
+
+// Two bond-length-spaced neighbours, matching the reported label-edit reproductions.
+function bondedLabelFixture(element: string, neighbors: string[], orders?: MoleculeBond["order"][]) {
+  const seed = insertNativeSingleBondMolecule(createPhase4Document(), { x: 300, y: 300 });
+  const original = molecule(seed);
+  const source: MoleculeAtom = { id: "atom_001", element, formalCharge: 0, x: 300, y: 300 };
+  const atoms = [source, ...neighbors.map((neighbor, i) => ({
+    id: `atom_00${i + 2}`, element: neighbor, formalCharge: 0,
+    x: source.x + nativeBondLengthPx * Math.cos([Math.PI, -Math.PI / 3][i]!),
+    y: source.y + nativeBondLengthPx * Math.sin([Math.PI, -Math.PI / 3][i]!)
+  }))];
+  const bonds: MoleculeBond[] = neighbors.map((_neighbor, i) => ({
+    id: `bond_00${i + 1}`, fromAtomId: source.id, toAtomId: atoms[i + 1]!.id, order: orders?.[i] ?? "single"
+  }));
+  const document = applyPatches(seed, [{ op: "updateObject", objectId: original.id, changes: { atoms, bonds } }]);
+  return { document, target: { objectId: original.id, kind: "atom" as const, atomId: source.id, distanceToPointer: 0 } };
+}
+
+function expectSameAtom(before: MoleculeObject, after: MoleculeObject, label: string) {
+  expect(after.atoms.map(a => a.id)).toEqual(before.atoms.map(a => a.id));
+  expect(after.bonds).toEqual(before.bonds);
+  expect(after.atoms[0]).toMatchObject({ ...before.atoms[0], element: label });
+  expect(after.atoms.slice(1)).toEqual(before.atoms.slice(1));
+}
+
+describe("same-head labels on bonded atoms", () => {
+  it.each([false, true])("keeps the original P when PH is edited to PPh2 (stored PH: %s)", literal => {
+    const fixture = bondedLabelFixture("P", ["Fe", "C"]);
+    const document = literal ? applyNativeAtomElementTarget(fixture.document, fixture.target, "PH", { literal: true }) : fixture.document;
+    const before = molecule(document);
+    const result = commitNativeAtomLabelTarget(document, fixture.target, "PPh2", { literal: true });
+    const after = molecule(result.document);
+    expectSameAtom(before, after, "PPh2");
+    expect(result.target).toEqual(fixture.target);
+    expect(result.message).toBeUndefined();
+    // Four solid bonds at neutral P remain flagged; relabelling must not change charge or the metal bond.
+    expect(nativeAtomValidationState(after.atoms[0]!, after.bonds, 0, after.atoms).valid).toBe(false);
+    expect(after.chemistry?.warnings?.some(w => w.code === "chemistry.invalid_valence")).toBe(true);
+    expect(canonicalLabelGraph(after).getIDCode()).toBe(Molecule.fromSmiles("[Fe]P(C)(c1ccccc1)c1ccccc1").getIDCode());
+  });
+
+  it("preserves charge and bond stereo for a valid same-head PPh2 edit", () => {
+    const { document, target } = bondedLabelFixture("P", ["C", "C"]);
+    const original = molecule(document);
+    const charged = applyPatches(document, [{ op: "updateObject", objectId: original.id, changes: {
+      atoms: original.atoms.map((atom, i) => i === 0 ? { ...atom, formalCharge: 1 } : atom),
+      bonds: original.bonds.map((bond, i) => i === 0 ? { ...bond, display: { bondStyle: "wedge" as const } } : bond)
+    } }]);
+    const after = molecule(commitNativeAtomLabelTarget(charged, target, "PPh2", { literal: true }).document);
+    expectSameAtom(molecule(charged), after, "PPh2");
+    expect(nativeAtomValidationState(after.atoms[0]!, after.bonds, 1, after.atoms).valid).toBe(true);
+    expect(after.chemistry?.formula).toBe("C14H16P");
+    expect(after.chemistry?.totalCharge).toBe(1);
+    expect(Molecule.fromSmiles(after.structure).toSmiles()).toBe(Molecule.fromSmiles("C[P+](C)(c1ccccc1)c1ccccc1").toSmiles());
+  });
+
+  it("declines a same-head label that cannot represent the original isotope", () => {
+    const { document, target } = bondedLabelFixture("S", ["C", "O"], ["single", "double"]);
+    const original = molecule(document);
+    const isotopic = applyPatches(document, [{ op: "updateObject", objectId: original.id, changes: {
+      atoms: original.atoms.map((atom, i) => i === 0 ? { ...atom, isotope: 34 } : atom)
+    } }]);
+    expect(applyNativeAtomLabelDraft(isotopic, target, "SH", { element: "S", literal: false })).toBe(isotopic);
+    const result = commitNativeAtomLabelTarget(isotopic, target, "SH", { literal: true });
+    expect(result.document).toBe(isotopic);
+    expect(result.message).toBe("Cannot relabel 34S as SH: the label cannot keep isotope 34");
+    const text = insertNativeTextObject(isotopic, molecule(isotopic).atoms[0]!, "SH");
+    const converted = convertNativeTextObjectToAtomLabel(text, text.selection.objectIds[0]!);
+    expect(converted.document).toBe(text);
+    expect(converted.disabledReason).toBe("Cannot relabel 34S as SH: the label cannot keep isotope 34");
+  });
+
+  it.each(["NMe2", "NHMe"])("keeps neutral N's identity, bonds and charge when relabeled %s", label => {
+    const { document, target } = bondedLabelFixture("N", ["C", "C"]);
+    const before = molecule(document);
+    const draft = applyNativeAtomLabelDraft(document, target, label, { element: "N", literal: false });
+    const result = commitNativeAtomLabelTarget(draft, target, label, {
+      literal: true, beforeAtom: before.atoms[0], beforeMolecule: before
+    });
+    const after = molecule(result.document);
+    expectSameAtom(before, after, label);
+    expect(result.target).toEqual(target);
+    expect(nativeAtomValidationState(after.atoms[0]!, after.bonds, 0, after.atoms).valid).toBe(false);
+    expect(after.chemistry?.warnings?.some(w => w.code === "chemistry.invalid_valence")).toBe(true);
+  });
+
+  it("keeps S(=O)'s identity when relabeled SMe", () => {
+    const { document, target } = bondedLabelFixture("S", ["C", "O"], ["single", "double"]);
+    const after = molecule(commitNativeAtomLabelTarget(document, target, "SMe", { literal: true }).document);
+    expectSameAtom(molecule(document), after, "SMe");
+    expect(canonicalLabelGraph(after).getIDCode()).toBe(Molecule.fromSmiles("CS(=O)C").getIDCode());
+  });
+
+  it.each([["O", "OMe", 1], ["O", "OEt", 1], ["N", "NO2", 0]] as const)(
+    "attaches table abbreviation %s → %s without relabeling its head", (element, label, charge) => {
+      const fixture = bondedLabelFixture(element, ["C", "C"]);
+      const original = molecule(fixture.document);
+      // O needs its ordinary oxonium charge to admit a third bond.
+      const document = applyPatches(fixture.document, [{ op: "updateObject", objectId: original.id, changes: {
+        atoms: original.atoms.map((a, i) => i === 0 ? { ...a, formalCharge: charge } : a)
+      } }]);
+      const before = molecule(document);
+      const result = commitNativeAtomLabelTarget(document, fixture.target, label, { literal: true });
+      const after = molecule(result.document);
+      expect(after.atoms.slice(0, before.atoms.length)).toEqual(before.atoms);
+      expect(after.bonds.slice(0, before.bonds.length)).toEqual(before.bonds);
+      expect(after.atoms).toHaveLength(before.atoms.length + 1);
+      expect(after.atoms.at(-1)).toMatchObject({ element: label, formalCharge: 0 });
+      expect(result.message).toContain(`Attached ${label} as a substituent`);
+    }
+  );
+
+  it("still attaches Ph to an isotopic carbon", () => {
+    const { document, target } = bondedLabelFixture("C", ["C", "C"]);
+    const before = molecule(document);
+    const isotopic = applyPatches(document, [{ op: "updateObject", objectId: before.id, changes: {
+      atoms: before.atoms.map((atom, i) => i === 0 ? { ...atom, isotope: 13 } : atom)
+    } }]);
+    const after = molecule(commitNativeAtomLabelTarget(isotopic, target, "Ph", { literal: true }).document);
+    expect(after.atoms.slice(0, 3)).toEqual(molecule(isotopic).atoms);
+    expect(after.atoms[3]).toMatchObject({ element: "Ph" });
+  });
+
+  it.each(["editor", "hover", "text"] as const)("SH keeps CH3-S(=O) in place through %s", entry => {
+    const fixture = bondedLabelFixture("C", ["C", "O"], ["single", "double"]);
+    const document = applyNativeAtomElementTarget(fixture.document, fixture.target, "S");
+    const before = molecule(document);
+    let after: MoleculeObject;
+    if (entry === "text") {
+      const text = insertNativeTextObject(document, before.atoms[0]!, "SH");
+      const result = convertNativeTextObjectToAtomLabel(text, text.selection.objectIds[0]!);
+      expect(result.disabledReason).toBeUndefined();
+      expect(result.document.pages[0].objects).toHaveLength(1);
+      after = molecule(result.document);
+    } else {
+      const draft = applyNativeAtomLabelDraft(document, fixture.target, "SH", { element: "S", literal: false });
+      after = molecule(commitNativeAtomLabelTarget(entry === "editor" ? draft : document, fixture.target, "SH", {
+        literal: entry === "editor", beforeAtom: before.atoms[0], beforeMolecule: before
+      }).document);
+    }
+    expectSameAtom(before, after, "SH");
+    expect(nativeAtomValidationState(after.atoms[0]!, after.bonds, 0, after.atoms).valid).toBe(true);
+    expect(after.chemistry?.formula).toBe("CH4OS");
+    expect(Molecule.fromSmiles(after.structure).toSmiles()).toBe(Molecule.fromSmiles("C[SH]=O").toSmiles());
+    expect(Molecule.fromSmiles(after.structure).getMolecularFormula().formula).toBe("CH4OS");
+  });
+});
 
 /** Test-only expansion from the shared reading/table into OCL. The native writer still warns
  * for unexpanded group labels; this checks the chemical graph the label actually names. */
@@ -51,6 +199,74 @@ function canonicalLabelGraph(m: MoleculeObject) {
 }
 
 describe("commitNativeAtomLabelTarget", () => {
+  it.each([
+    ["NH2", "NC1CCCCC1"], ["NO2", "[O-][N+](=O)C1CCCCC1"],
+    ["CF3", "FC(F)(F)C1CCCCC1"], ["COOH", "O=C(O)C1CCCCC1"],
+    ["CN", "N#CC1CCCCC1"], ["NMe2", "CN(C)C1CCCCC1"],
+    ["OH", "OC1CCCCC1"], ["OMe", "COC1CCCCC1"]
+  ])("retains %s substituent attachment and chemistry on bonded carbon", (label, smiles) => {
+    const { document, m, target } = setup();
+    const result = commitNativeAtomLabelTarget(document, target, label, { literal: true });
+    const after = molecule(result.document);
+    expect(after.atoms.slice(0, m.atoms.length)).toEqual(m.atoms);
+    expect(after.bonds.slice(0, m.bonds.length)).toEqual(m.bonds);
+    expect(after.atoms).toHaveLength(m.atoms.length + 1);
+    expect(after.bonds).toHaveLength(m.bonds.length + 1);
+    expect(after.atoms.at(-1)).toMatchObject({ element: label, formalCharge: 0 });
+    expect(result.target).toMatchObject({ atomId: after.atoms.at(-1)!.id });
+    expect(result.message).toContain(`Attached ${label} as a substituent`);
+    const actual = canonicalLabelGraph(after), expected = Molecule.fromSmiles(smiles);
+    expect(actual.getIDCode()).toBe(expected.getIDCode());
+    expect(actual.getMolecularFormula().formula).toBe(expected.getMolecularFormula().formula);
+  });
+
+  it.each(["SH", "Ac", "Pr", "Ts"])("refuses %s on a one-bond 13C without losing the isotope or text", label => {
+    const fixture = bondedLabelFixture("C", ["C"]);
+    const original = molecule(fixture.document);
+    const document = applyPatches(fixture.document, [{ op: "updateObject", objectId: original.id, changes: {
+      atoms: original.atoms.map((a, i) => i === 0 ? { ...a, isotope: 13 } : a)
+    } }]);
+    const message = `Cannot relabel 13C as ${label}: the label cannot keep isotope 13`;
+    expect(applyNativeAtomLabelDraft(document, fixture.target, label, { element: "C", literal: false })).toBe(document);
+    const result = commitNativeAtomLabelTarget(document, fixture.target, label, { literal: true });
+    expect(result.document).toBe(document);
+    expect(result.message).toBe(message);
+    expect(result.refusal).toBe(message);
+    const text = insertNativeTextObject(document, molecule(document).atoms[0]!, label);
+    const converted = convertNativeTextObjectToAtomLabel(text, text.selection.objectIds[0]!);
+    expect(converted.document).toBe(text);
+    expect(converted.disabledReason).toBe(message);
+    expect(converted.message).toBe(`Text kept: ${message}`);
+  });
+
+  it.each(["crowded", "declined"] as const)("keeps the isotope and text when a substituent is %s", failure => {
+    const fixture = setup("benzene");
+    const source = fixture.m.atoms[4]!;
+    const target = { ...fixture.target, atomId: source.id };
+    const label = failure === "crowded" ? "Ph" : "CH2CN";
+    const length = nativeDrawingStyleFromObjectStyle(fixture.m.style).bondLengthPx;
+    const blockers = failure === "crowded" ? Array.from({ length: 24 }, (_, i) => ({
+      ...source, id: `blocker${i}`, element: "C",
+      x: source.x + length * Math.cos(i * Math.PI / 12), y: source.y + length * Math.sin(i * Math.PI / 12)
+    })) : [];
+    const document = applyPatches(fixture.document, [{ op: "updateObject", objectId: fixture.m.id, changes: {
+      atoms: [...fixture.m.atoms.map(a => a.id === source.id ? { ...a, isotope: 13 } : a), ...blockers]
+    } }]);
+    const result = commitNativeAtomLabelTarget(document, target, label, { literal: true });
+    const message = `Cannot relabel 13C as ${label}: the label cannot keep isotope 13`;
+    expect(result.document).toBe(document);
+    expect(result.target).toEqual(target);
+    expect(result.message).toBe(message);
+    expect(result.refusal).toBe(message);
+    const text = insertNativeTextObject(document, source, label);
+    const textId = text.selection.objectIds[0]!;
+    const converted = convertNativeTextObjectToAtomLabel(text, textId);
+    expect(converted.document).toBe(text);
+    expect(converted.disabledReason).toBe(message);
+    expect(converted.message).toBe(`Text kept: ${message}`);
+    expect(converted.document.pages[0].objects.find(o => o.id === textId)).toMatchObject({ type: "text", text: label });
+  });
+
   it("inherits every per-atom label style without changing the source entries", () => {
     const { document, m, target } = setup();
     const values = {

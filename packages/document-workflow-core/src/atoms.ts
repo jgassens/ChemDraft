@@ -735,6 +735,14 @@ export function nativeAtomLabelFreeValence(
   return undefined;
 }
 
+/** The element at a label's attachment atom, when its connectivity is known. */
+export function nativeAtomLabelHeadElement(label: string, context: NativeAtomLabelContext = {}): string | undefined {
+  const reading = nativeAtomLabelReading(label, context);
+  if (reading.kind === "element" || reading.kind === "spelled") return reading.element;
+  if (reading.kind === "group") return nativeLabelGroupAttachment(reading.group).element;
+  return undefined;
+}
+
 /** The bond ceiling the drawing tools grow any atom to; a group never needs more. */
 const nativeAtomInvalidGrowthLimit = 8;
 

@@ -1442,7 +1442,9 @@ type AtomLabelEditOptions = {
 function documentHasAtomLabelDraft(document: ChemDraftDocument, state: AtomLabelEditState): boolean {
   const object = findDocumentObject(document, state.objectId);
   const atom = object?.type === "molecule" ? object.atoms.find(a => a.id === state.atomId) : undefined;
-  return atom?.labelLiteral === true && (!state.draft.trim() || atom.element === normalizeNativeAtomElementLabel(state.draft));
+  // An isotope refusal keeps the original atom as the preview while the editor still owns it.
+  return (atom?.labelLiteral === true && (!state.draft.trim() || atom.element === normalizeNativeAtomElementLabel(state.draft))) ||
+    (atom?.isotope !== undefined && documentOwnsAtomLabelDraft(document, state));
 }
 
 function atomLabelEditStart(state: AtomLabelEditState) {
@@ -1648,7 +1650,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "11.01.08.00-codex";
+const CURRENT_BUILD_STAMP = "11.01.10.10-codex";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -4402,7 +4404,7 @@ export function MainWindow({
     const split = result.target.kind === "atom" && result.target.atomId !== target.atomId;
     const nextDocument = split ? selectDocumentObject(result.document, target.objectId) : result.document;
     if (nextDocument === currentDocument) {
-      setStatus(`Cannot label hovered atom ${label}`);
+      setStatus(result.refusal ?? (result.message ? "" : `Cannot label hovered atom ${label}`));
       return;
     }
 
@@ -6435,7 +6437,7 @@ export function MainWindow({
     } else {
       replacePresentDocument(result.document);
     }
-    if (changed && "message" in result && result.message) setStatus(result.message);
+    if ("message" in result && result.message && (changed || ("refusal" in result && result.refusal))) setStatus(result.message);
     else if (changed) setStatus(`Labeled atom ${normalizeNativeAtomElementLabel(state.draft)}`);
     else setStatus("");
     return result;
