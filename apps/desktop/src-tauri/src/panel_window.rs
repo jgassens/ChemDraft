@@ -1,19 +1,88 @@
-//! Non-activating presentation with persistent focus after native pointer activation.
+//! Non-activating utilities: persistent panel activation and temporary palette input leases.
 
 use std::{collections::HashMap, sync::Mutex};
 use tauri::{Emitter, Manager};
 
 #[path = "panel_focus_lease.rs"]
 mod focus_lease;
+#[path = "panel_focus_return.rs"]
+mod focus_return;
 #[path = "panel_window_installation.rs"]
 mod installation;
+#[path = "palette_key_guard.rs"]
+mod key_guard;
 pub(crate) use installation::finish_installation;
+pub(crate) use key_guard::{
+    keeps_palette_focus, observe_document_pointer_release, End as PointerGuardEnd,
+};
+
+pub(crate) fn palette_blocks_menu(document_target: bool, command: &str) -> bool {
+    key_guard::blocks_menu(key_guard::blocks_document(), document_target, command)
+}
+
+/// Pointer observation alone does not alter window styles or input leases.
+pub(crate) fn install_pointer_guard<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+) -> Result<(), String> {
+    key_guard::install(window)
+}
 #[cfg(target_os = "macos")]
 #[path = "panel_focus_macos.rs"]
 mod macos;
 
 #[derive(Default)]
-pub(crate) struct PanelFocusState(Mutex<HashMap<String, focus_lease::Lease>>);
+pub(crate) struct PanelFocusState(Mutex<HashMap<String, InputFocusState>>);
+
+// Keep palette leases independent of the native-activation gate required by plugin panels.
+enum InputFocusState {
+    Palette(focus_lease::Lease),
+    Panel(focus_lease::PanelActivation),
+}
+
+impl InputFocusState {
+    fn new(label: &str) -> Self {
+        if super::is_plugin_panel_window_label(label) {
+            Self::Panel(focus_lease::PanelActivation::default())
+        } else {
+            Self::Palette(focus_lease::Lease::default())
+        }
+    }
+
+    fn reset(&mut self) {
+        match self {
+            Self::Palette(lease) => lease.reset(),
+            Self::Panel(panel) => panel.reset(),
+        }
+    }
+
+    fn epoch(&self) -> u64 {
+        match self {
+            Self::Palette(lease) => lease.epoch,
+            Self::Panel(panel) => panel.epoch,
+        }
+    }
+
+    fn is_held(&self) -> bool {
+        match self {
+            Self::Palette(lease) => lease.is_held(),
+            Self::Panel(panel) => panel.is_held(),
+        }
+    }
+
+    fn is_current(&self, generation: u64, epoch: u64) -> bool {
+        match self {
+            Self::Palette(lease) => lease.is_current(generation, epoch),
+            Self::Panel(panel) => panel.is_current(generation, epoch),
+        }
+    }
+
+    fn acquired(&mut self, generation: u64, epoch: u64, focused: bool) -> bool {
+        match self {
+            Self::Palette(lease) => lease.acquired(generation, epoch, focused),
+            Self::Panel(panel) => panel.acquired(generation, epoch, focused),
+        }
+    }
+}
 
 pub(crate) fn is_active<R: tauri::Runtime>(
     window: &tauri::WebviewWindow<R>,
@@ -40,14 +109,151 @@ pub(crate) fn is_active<R: tauri::Runtime>(
     window.is_focused().map_err(|error| error.to_string())
 }
 
+pub(crate) fn end_pointer_guard<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    label: &str,
+    why: PointerGuardEnd,
+    sequence: Option<u64>,
+    before: u64,
+) {
+    key_guard::end(app, label, why, sequence, before);
+}
+
+/// Hiding is terminal even when a select popup already resigned key status.
+/// Invalidate native acquisition and notify the still-mounted page before hiding.
+pub(crate) fn end_for_hide<R: tauri::Runtime>(app: &tauri::AppHandle<R>, label: &str) {
+    key_guard::end(app, label, PointerGuardEnd::Hide, None, 0);
+    if let Some(window) = app.get_webview_window(label) {
+        activation_with_reason(&window, false, "hide");
+    }
+}
+
+pub(crate) fn holds_input_focus<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> bool {
+    window
+        .state::<PanelFocusState>()
+        .0
+        .lock()
+        .unwrap()
+        .get(window.label())
+        .is_some_and(InputFocusState::is_held)
+}
+
+/// A release is explicit: native deactivation, teardown and rejected acquisitions do not
+/// ask for focus. Recheck the lease and native destination when queued work actually runs.
+pub(crate) fn return_focus_after_interaction<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    requested: bool,
+) -> Result<(), String> {
+    let held = holds_input_focus(window);
+    let log_skip = |app_active, source_focused| {
+        let reason = focus_return::skip_reason(requested, held, app_active, source_focused)
+            .unwrap_or("document-unavailable");
+        super::palette_focus_log(format_args!(
+            "hand-back label={} result=skipped reason={reason}",
+            window.label()
+        ));
+    };
+    #[cfg(windows)]
+    {
+        if let Some(document) = window
+            .app_handle()
+            .get_webview_window(super::MAIN_WINDOW_LABEL)
+        {
+            if focus_return::should_return(
+                requested,
+                held,
+                super::foreground_belongs_to_app(),
+                true,
+            ) {
+                // The HWND pair is rechecked inside, including native chooser ownership.
+                return_focus_to_document(
+                    window.hwnd().map_err(|error| error.to_string())?.0,
+                    &document,
+                    window.label(),
+                )?;
+            } else {
+                log_skip(super::foreground_belongs_to_app(), true);
+            }
+        } else {
+            log_skip(super::foreground_belongs_to_app(), true);
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::{NSApplication, NSWindow};
+        let marker =
+            objc2::MainThreadMarker::new().ok_or("Panel focus requires the main thread.")?;
+        let pointer = window.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
+        let panel = unsafe { pointer.as_ref() }.ok_or("Could not access native panel window.")?;
+        if focus_return::should_return(
+            requested,
+            held,
+            NSApplication::sharedApplication(marker).isActive(),
+            panel.isKeyWindow(),
+        ) {
+            if let Some(document) = window
+                .app_handle()
+                .get_webview_window(super::MAIN_WINDOW_LABEL)
+            {
+                // makeKeyWindow resigns the palette without activating a background app.
+                super::focus_native_document_window(&document)?;
+                let webview: &tauri::Webview<R> = document.as_ref();
+                webview.set_focus().map_err(|error| error.to_string())?;
+                super::palette_focus_log(format_args!(
+                    "hand-back label={} result=returned reason=explicit-release",
+                    window.label()
+                ));
+            } else {
+                log_skip(true, true);
+            }
+        } else {
+            log_skip(
+                NSApplication::sharedApplication(marker).isActive(),
+                panel.isKeyWindow(),
+            );
+        }
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        if focus_return::should_return(
+            requested,
+            held,
+            super::foreground_belongs_to_app(),
+            window.is_focused().unwrap_or(false),
+        ) {
+            super::focus_main_document_window_impl(
+                window.app_handle(),
+                super::MainWindowFocusMode::OnlyIfAppActive,
+            )?;
+            super::palette_focus_log(format_args!(
+                "hand-back label={} result=returned reason=explicit-release",
+                window.label()
+            ));
+        } else {
+            log_skip(
+                super::foreground_belongs_to_app(),
+                window.is_focused().unwrap_or(false),
+            );
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn reset_for_webview<R: tauri::Runtime>(window: &tauri::Window<R>) {
+    key_guard::end(
+        window.app_handle(),
+        window.label(),
+        PointerGuardEnd::Destroy,
+        None,
+        0,
+    );
     window
         .state::<PanelFocusState>()
         .0
         .lock()
         .unwrap()
         .entry(window.label().to_string())
-        .or_default()
+        .or_insert_with(|| InputFocusState::new(window.label()))
         .reset();
     let _ = window.set_focusable(false);
 }
@@ -56,6 +262,7 @@ pub(crate) fn reset_for_webview<R: tauri::Runtime>(window: &tauri::Window<R>) {
 struct FocusEvent {
     kind: &'static str,
     generation: u64,
+    reason: &'static str,
 }
 
 // Read synchronously during page registration, before any asynchronous focus IPC.
@@ -67,8 +274,8 @@ pub(crate) fn page_token<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) ->
         .lock()
         .unwrap()
         .entry(window.label().to_string())
-        .or_default()
-        .epoch
+        .or_insert_with(|| InputFocusState::new(window.label()))
+        .epoch()
         .to_string()
 }
 
@@ -77,12 +284,29 @@ pub(crate) fn request<R: tauri::Runtime>(
     generation: u64,
     page_token: &str,
     editing: bool,
+    select_interaction: bool,
 ) -> Option<u64> {
     let state = window.state::<PanelFocusState>();
     let mut leases = state.0.lock().unwrap();
-    let lease = leases.entry(window.label().to_string()).or_default();
+    let lease = leases
+        .entry(window.label().to_string())
+        .or_insert_with(|| InputFocusState::new(window.label()));
     let epoch = page_token.parse().ok()?;
-    lease.request(generation, epoch, editing).then_some(epoch)
+    let accepted = match lease {
+        InputFocusState::Panel(panel) => panel.request(generation, epoch, editing),
+        InputFocusState::Palette(lease) => {
+            let accepted = lease.request(generation, epoch, editing);
+            if accepted {
+                lease.select_interaction =
+                    cfg!(target_os = "macos") && editing && select_interaction;
+            }
+            accepted
+        }
+    };
+    if !accepted {
+        return None;
+    }
+    Some(epoch)
 }
 
 pub(crate) fn acquired<R: tauri::Runtime>(
@@ -97,7 +321,7 @@ pub(crate) fn acquired<R: tauri::Runtime>(
         .lock()
         .unwrap()
         .entry(window.label().to_string())
-        .or_default()
+        .or_insert_with(|| InputFocusState::new(window.label()))
         .acquired(generation, epoch, focused)
 }
 
@@ -118,30 +342,103 @@ pub(crate) fn is_current<R: tauri::Runtime>(
 // Called synchronously from WM_ACTIVATE/WM_ACTIVATEAPP or AppKit key notifications,
 // never from WebView2 child focus messages or delayed Tauri Focused events.
 pub(crate) fn activation<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>, active: bool) {
-    let generation = {
+    activation_with_reason(window, active, "window");
+}
+
+fn activation_with_reason<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    active: bool,
+    reason: &'static str,
+) {
+    super::palette_focus_log(format_args!(
+        "activation label={} active={active} reason={reason}",
+        window.label()
+    ));
+    if !active {
+        key_guard::end(
+            window.app_handle(),
+            window.label(),
+            PointerGuardEnd::Deactivated,
+            None,
+            0,
+        );
+    }
+    let (generation, preserve_select) = {
         let state = window.state::<PanelFocusState>();
         let mut leases = state.0.lock().unwrap();
-        let lease = leases.entry(window.label().to_string()).or_default();
-        if active {
-            lease.activate();
-        } else {
-            lease.deactivate();
+        let lease = leases
+            .entry(window.label().to_string())
+            .or_insert_with(|| InputFocusState::new(window.label()));
+        match lease {
+            InputFocusState::Panel(panel) => {
+                if active {
+                    panel.activate();
+                } else {
+                    panel.deactivate();
+                }
+                (Some(panel.generation), false)
+            }
+            InputFocusState::Palette(lease) => {
+                let preserve_select = !active && reason == "window" && lease.suspend_select();
+                let generation = if active || preserve_select {
+                    Some(lease.generation)
+                } else {
+                    lease.deactivate()
+                };
+                (generation, preserve_select)
+            }
         }
-        lease.generation
     };
-    if !active {
-        let _ = window.set_focusable(false);
+    if let Some(generation) = generation {
+        if !active && !preserve_select {
+            let _ = window.set_focusable(false);
+        }
+        let event = FocusEvent {
+            kind: if active { "activated" } else { "deactivated" },
+            generation,
+            reason,
+        };
+        if let Err(error) = window.emit_to(window.label(), "chemdraft://plugin-panel-focus", event)
+        {
+            eprintln!("Could not notify panel focus: {error}");
+        }
     }
-    let event = FocusEvent {
-        kind: if active { "activated" } else { "deactivated" },
-        generation,
-    };
-    if let Err(error) = window.emit_to(window.label(), "chemdraft://plugin-panel-focus", event) {
-        eprintln!("Could not notify panel focus: {error}");
+}
+
+// Key resignation alone cannot distinguish an AppKit popup from leaving the
+// palette. The native pointer monitor and app notification supply those explicit
+// terminal transitions, including when the select has already lost key status.
+#[cfg(target_os = "macos")]
+pub(super) fn end_select_interactions<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    except: Option<&str>,
+    reason: &'static str,
+) {
+    for (label, window) in app.webview_windows() {
+        if except == Some(label.as_str()) {
+            continue;
+        }
+        let select = app
+            .state::<PanelFocusState>()
+            .0
+            .lock()
+            .unwrap()
+            .get(&label)
+            .is_some_and(|state| matches!(state, InputFocusState::Palette(lease) if lease.select_interaction));
+        if select {
+            activation_with_reason(&window, false, reason);
+        }
     }
 }
 
 pub(crate) fn forget<R: tauri::Runtime>(window: &tauri::Window<R>) {
+    key_guard::end(
+        window.app_handle(),
+        window.label(),
+        PointerGuardEnd::Destroy,
+        None,
+        0,
+    );
     window
         .state::<PanelFocusState>()
         .0
@@ -158,6 +455,89 @@ mod geometry;
 
 #[cfg(any(windows, target_os = "macos", test))]
 const RESIZE_ZONE_LOGICAL_PX: f64 = 6.0;
+/// SetActiveWindow changes activation only within our UI thread; unlike tao's set_focus it
+/// never calls SetForegroundWindow or synthesizes Alt. A late IPC is dropped in the background.
+#[cfg(windows)]
+pub(crate) fn focus_if_app_active(hwnd: windows_sys::Win32::Foundation::HWND) -> bool {
+    use windows_sys::Win32::{
+        System::Threading::GetCurrentProcessId,
+        UI::WindowsAndMessaging::{
+            GetForegroundWindow, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
+        },
+    };
+    // windows-sys gates this user32 entry point behind the otherwise unused keyboard feature.
+    #[link(name = "user32")]
+    extern "system" {
+        fn SetActiveWindow(
+            hwnd: windows_sys::Win32::Foundation::HWND,
+        ) -> windows_sys::Win32::Foundation::HWND;
+    }
+    unsafe {
+        // Preserve Tao's visible/non-minimized gate, including utility suspension for dialogs.
+        if hwnd.is_null() || IsWindowVisible(hwnd) == 0 || IsIconic(hwnd) != 0 {
+            return false;
+        }
+        let foreground = GetForegroundWindow();
+        let mut process = 0;
+        let known =
+            !foreground.is_null() && GetWindowThreadProcessId(foreground, &mut process) != 0;
+        geometry::with_owned_foreground(known.then_some(process), GetCurrentProcessId(), || {
+            SetActiveWindow(hwnd);
+        }) && GetForegroundWindow() == hwnd
+    }
+}
+
+/// Toolbar-style hand-back, without Tao's force_window_active / synthetic Alt fallback.
+/// Called when a lease ends, a non-lease pointer gesture completes or idle activation settles. Activation alone
+/// is not enough: keyboard focus must also leave the panel's WebView2 child HWND.
+#[cfg(windows)]
+pub(crate) fn return_focus_to_document<R: tauri::Runtime>(
+    panel: windows_sys::Win32::Foundation::HWND,
+    document: &tauri::WebviewWindow<R>,
+    label: &str,
+) -> Result<(), String> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, IsIconic, IsWindowVisible, SetForegroundWindow,
+    };
+    let owner = document.hwnd().map_err(|error| error.to_string())?.0;
+    let foreground = unsafe { GetForegroundWindow() };
+    // Do not take focus from another ChemDraft panel/dialog either.
+    if !geometry::foreground_can_return_to_document(
+        foreground as usize,
+        panel as usize,
+        owner as usize,
+    ) {
+        super::palette_focus_log(format_args!(
+            "hand-back label={label} result=skipped reason=another-window-focused"
+        ));
+        return Ok(());
+    }
+    // SetActiveWindow alone can leave the palette as the foreground window after a
+    // WebView2 select or Tao drag. Transfer foreground explicitly, only from our exact
+    // source/document pair. Do not use Tao's force activation/synthetic Alt fallback.
+    let returned = unsafe {
+        super::foreground_belongs_to_app()
+            && GetForegroundWindow() == foreground
+            && IsWindowVisible(owner) != 0
+            && IsIconic(owner) == 0
+            && (foreground == owner || SetForegroundWindow(owner) != 0)
+            && GetForegroundWindow() == owner
+    };
+    if returned {
+        let webview: &tauri::Webview<R> = document.as_ref();
+        webview.set_focus().map_err(|error| error.to_string())?;
+    }
+    super::palette_focus_log(format_args!(
+        "hand-back label={label} result={} reason={}",
+        if returned { "returned" } else { "skipped" },
+        if returned {
+            "explicit-release"
+        } else {
+            "foreground-changed-or-document-unavailable"
+        }
+    ));
+    Ok(())
+}
 
 #[cfg(target_os = "macos")]
 pub(crate) fn macos_style(
@@ -169,18 +549,27 @@ pub(crate) fn macos_style(
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
+pub(crate) fn install_input_focus<R: tauri::Runtime>(
     window: &tauri::WebviewWindow<R>,
 ) -> Result<(), String> {
-    macos::install_resize_hit_test(window)?;
+    key_guard::install(window)?;
     macos::observe(window)
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
-pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
-    _window: &tauri::WebviewWindow<R>,
+pub(crate) fn install_input_focus<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
 ) -> Result<(), String> {
-    Ok(())
+    key_guard::install(window)
+}
+
+#[cfg(not(windows))]
+pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    macos::install_resize_hit_test(window)?;
+    install_input_focus(window)
 }
 
 #[cfg(windows)]
@@ -192,23 +581,30 @@ fn extended_style(style: isize) -> isize {
     (style | (WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW) as isize) & !(WS_EX_APPWINDOW as isize)
 }
 
+/// Focus observation is shared by resizable reports, tool palettes and colour popovers.
+/// It must not depend on a resize overlay (popovers do not have one).
 #[cfg(windows)]
-pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
+pub(crate) fn install_input_focus<R: tauri::Runtime>(
     window: &tauri::WebviewWindow<R>,
 ) -> Result<(), String> {
     use windows_sys::Win32::UI::{
-        Shell::{RemoveWindowSubclass, SetWindowSubclass},
+        Shell::SetWindowSubclass,
         WindowsAndMessaging::{GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE},
     };
+    key_guard::install(window)?;
     let hwnd = window.hwnd().map_err(|error| error.to_string())?.0;
-    let parent = hwnd as usize;
-    let panel = window.clone();
-    let hide_panel = window.clone();
-    let data = Box::into_raw(Box::new(PanelSubclass {
-        activation: std::rc::Rc::new(move |active| activation(&panel, active)),
-        will_hide: std::rc::Rc::new(move || {
-            let webview: &tauri::Webview<R> = hide_panel.as_ref();
-            super::panel_full_size::will_hide(&webview.window());
+    let target = window.clone();
+    let drag_target = window.clone();
+    let data = Box::into_raw(Box::new(FocusObserver {
+        activation: std::rc::Rc::new(move |active| activation(&target, active)),
+        drag_finished: std::rc::Rc::new(move || {
+            // The palette's title/background press ended its lease without returning focus.
+            // Hand back only after Tao's drag loop; guard any newer lease or foreground owner.
+            if drag_target.label().starts_with("toolset-") {
+                if let Err(error) = return_focus_after_interaction(&drag_target, true) {
+                    eprintln!("Could not return palette keyboard focus after drag: {error}");
+                }
+            }
         }),
     }));
     unsafe {
@@ -217,6 +613,81 @@ pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
             GWL_EXSTYLE,
             extended_style(GetWindowLongPtrW(hwnd, GWL_EXSTYLE)),
         );
+        if SetWindowSubclass(hwnd, Some(focus_subclass), 2, data as usize) == 0 {
+            drop(Box::from_raw(data));
+            return Err(format!(
+                "Could not observe utility window focus: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+struct FocusObserver {
+    activation: std::rc::Rc<dyn Fn(bool)>,
+    drag_finished: std::rc::Rc<dyn Fn()>,
+}
+
+#[cfg(windows)]
+unsafe extern "system" fn focus_subclass(
+    hwnd: windows_sys::Win32::Foundation::HWND,
+    message: u32,
+    wparam: usize,
+    lparam: isize,
+    id: usize,
+    data: usize,
+) -> isize {
+    use windows_sys::Win32::UI::{
+        Shell::{DefSubclassProc, RemoveWindowSubclass},
+        WindowsAndMessaging::{
+            WA_INACTIVE, WM_ACTIVATE, WM_ACTIVATEAPP, WM_EXITSIZEMOVE, WM_NCDESTROY,
+        },
+    };
+    // Observe focus without overriding mouse activation. Palettes keep WS_EX_NOACTIVATE,
+    // but WebView2 must be allowed to activate them for a native colour picker. Forcing
+    // MA_NOACTIVATE here (newly installed on palettes) prevents that popup from opening.
+    // Ordinary command clicks still return focus through the guarded pointer hand-back.
+    // Observe genuine top-level loss synchronously, including during acquisition.
+    // WebView2 child focus transitions are not lease boundaries.
+    if message == WM_ACTIVATE || (message == WM_ACTIVATEAPP && wparam == 0) {
+        let active = message == WM_ACTIVATE && (wparam & 0xffff) != WA_INACTIVE as usize;
+        let notify = (*(data as *const FocusObserver)).activation.clone();
+        notify(active);
+    }
+    if message == WM_NCDESTROY {
+        RemoveWindowSubclass(hwnd, Some(focus_subclass), id);
+        let result = DefSubclassProc(hwnd, message, wparam, lparam);
+        drop(Box::from_raw(data as *mut FocusObserver));
+        return result;
+    }
+    // Clone before invoking Tao: nested message handling can destroy the observer.
+    let drag_finished = (message == WM_EXITSIZEMOVE)
+        .then(|| (*(data as *const FocusObserver)).drag_finished.clone());
+    let result = DefSubclassProc(hwnd, message, wparam, lparam);
+    if let Some(drag_finished) = drag_finished {
+        drag_finished();
+    }
+    result
+}
+
+#[cfg(windows)]
+pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+) -> Result<(), String> {
+    use windows_sys::Win32::UI::Shell::{RemoveWindowSubclass, SetWindowSubclass};
+    install_input_focus(window)?;
+    let hwnd = window.hwnd().map_err(|error| error.to_string())?.0;
+    let parent = hwnd as usize;
+    let hide_panel = window.clone();
+    let data = Box::into_raw(Box::new(PanelSubclass {
+        will_hide: std::rc::Rc::new(move || {
+            let webview: &tauri::Webview<R> = hide_panel.as_ref();
+            super::panel_full_size::will_hide(&webview.window());
+        }),
+    }));
+    unsafe {
         if SetWindowSubclass(hwnd, Some(resize_subclass), 1, data as usize) == 0 {
             drop(Box::from_raw(data));
             return Err(format!(
@@ -245,7 +716,6 @@ pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
 
 #[cfg(windows)]
 struct PanelSubclass {
-    activation: std::rc::Rc<dyn Fn(bool)>,
     will_hide: std::rc::Rc<dyn Fn()>,
 }
 
@@ -380,9 +850,9 @@ unsafe extern "system" fn resize_subclass(
     use windows_sys::Win32::UI::{
         Shell::{DefSubclassProc, RemoveWindowSubclass},
         WindowsAndMessaging::{
-            HTCLIENT, MA_ACTIVATE, SWP_HIDEWINDOW, WA_INACTIVE, WINDOWPOS, WM_ACTIVATE,
-            WM_ACTIVATEAPP, WM_DPICHANGED, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_NCHITTEST,
-            WM_SETTINGCHANGE, WM_SHOWWINDOW, WM_SIZE, WM_WINDOWPOSCHANGING,
+            HTCLIENT, MA_ACTIVATE, SWP_HIDEWINDOW, WINDOWPOS, WM_DPICHANGED, WM_MOUSEACTIVATE,
+            WM_NCDESTROY, WM_NCHITTEST, WM_SETTINGCHANGE, WM_SHOWWINDOW, WM_SIZE,
+            WM_WINDOWPOSCHANGING,
         },
     };
     // This also covers core:window hide calls from the panel or document webview. Restore before
@@ -403,13 +873,6 @@ unsafe extern "system" fn resize_subclass(
     if message == WM_NCHITTEST {
         // Share the overlay's geometry and bypass Tao's broad HTTOP client strip.
         return panel_resize_hit(hwnd, lparam).map_or(HTCLIENT as isize, |hit| hit as isize);
-    }
-    // A top-level deactivation is genuine even during acquisition. WebView2's
-    // transient child blur is not WM_ACTIVATE, and must never release a lease.
-    if message == WM_ACTIVATE || (message == WM_ACTIVATEAPP && wparam == 0) {
-        let active = message == WM_ACTIVATE && (wparam & 0xffff) != WA_INACTIVE as usize;
-        let notify = (*(data as *const PanelSubclass)).activation.clone();
-        notify(active);
     }
     if message == WM_NCDESTROY {
         RemoveWindowSubclass(hwnd, Some(resize_subclass), id);

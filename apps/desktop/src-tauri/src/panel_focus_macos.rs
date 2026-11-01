@@ -209,7 +209,11 @@ pub(super) fn install_resize_hit_test<R: tauri::Runtime>(
 pub(super) fn observe<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
     let pointer = window.ns_window().map_err(|error| error.to_string())? as *mut NSWindow;
     let panel = unsafe { pointer.as_ref() }.ok_or("Could not access native panel window.")?;
-    install_hide_hook(window, panel)?;
+    // Only plugin panels keep native pointer activation and restore full-size frames.
+    // Palette fields acquire their temporary lease through the guarded IPC path.
+    if super::super::is_plugin_panel_window_label(window.label()) {
+        install_hide_hook(window, panel)?;
+    }
     let center = NSNotificationCenter::defaultCenter();
     let mut tokens = Vec::new();
     for (name, active) in unsafe {

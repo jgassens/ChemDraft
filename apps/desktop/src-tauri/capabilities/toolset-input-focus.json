@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "toolset-input-focus",
+  "description": "Allow tool palettes and their colour popovers to borrow keyboard focus through the authenticated per-window input lease. Native caller validation excludes the tooltip and empty labels.",
+  "windows": ["toolset-*"],
+  "permissions": [
+    "allow-register-plugin-panel-input-focus",
+    "allow-set-plugin-panel-input-focus"
+  ]
+}

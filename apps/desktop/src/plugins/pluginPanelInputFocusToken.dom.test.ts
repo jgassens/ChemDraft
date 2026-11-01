@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { expect, it, vi } from "vitest";
-import { installPluginPanelInputFocus } from "./pluginPanelInputFocus";
+import { installPluginPanelInputFocus, type NativePanelFocusEvent } from "./pluginPanelInputFocus";
 import type { CommandSpec } from "../commands";
 
 const { invoke, commands } = vi.hoisted(() => ({
@@ -30,7 +30,11 @@ it("registers once per page and sends its token with acquisitions and releases a
   shell.innerHTML = "<input>";
   document.body.append(shell);
   const listen = vi.spyOn(shell, "addEventListener");
-  const subscribe = async () => () => undefined;
+  let nativeFocus!: (event: NativePanelFocusEvent) => void;
+  const subscribe = async (listener: typeof nativeFocus) => {
+    nativeFocus = listener;
+    return () => undefined;
+  };
   const shortcuts = { resolve: () => undefined, forward: () => undefined };
   let cleanup = installPluginPanelInputFocus(shell, undefined, "windows", subscribe, shortcuts);
   try {
@@ -72,6 +76,14 @@ it("registers once per page and sends its token with acquisitions and releases a
     expect(invoke.mock.calls.filter(([command]) => command === "register_plugin_panel_input_focus")).toHaveLength(1);
     expect(invoke).toHaveBeenLastCalledWith("set_plugin_panel_input_focus", {
       editing: true, generation: expect.any(Number), pageToken: "opaque-page-token"
+    });
+    // Native loss ends the panel activation episode without returning focus.
+    // Pointer classification/hand-back metadata is reserved for palette leases.
+    const generation = invoke.mock.calls.at(-1)![1]!.generation;
+    nativeFocus({ kind: "deactivated", generation });
+    await flush();
+    expect(invoke).toHaveBeenLastCalledWith("set_plugin_panel_input_focus", {
+      editing: false, generation: expect.any(Number), pageToken: "opaque-page-token"
     });
   } finally {
     cleanup();

@@ -286,7 +286,7 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
   it("uses an AppKit key-window operation only for native panel clicks instead of Tao activation", () => {
     const nativePath = join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src");
     const source = readFileSync(join(nativePath, "lib.rs"), "utf8");
-    const command = source.split("async fn set_plugin_panel_input_focus(")[1]!.split("/// Sent to the main window")[0]!;
+    const command = source.split("fn set_plugin_panel_activation(")[1]!.split("/// Sent to the main window")[0]!;
     const mac = readFileSync(join(nativePath, "panel_focus_macos.rs"), "utf8");
     const click = mac.split("CLICK_CALLBACKS.with(|callbacks| {")[2]!.split("pub(super) fn resize_edge")[0]!;
     expect(click).toContain("makeKeyWindow()");
@@ -304,7 +304,7 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
   it("keeps Windows pointer activation and refuses delayed input focus after the panel loses foreground", () => {
     const nativePath = join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src");
     const source = readFileSync(join(nativePath, "lib.rs"), "utf8");
-    const command = source.split("async fn set_plugin_panel_input_focus(")[1]!.split("/// Sent to the main window")[0]!;
+    const command = source.split("fn set_plugin_panel_activation(")[1]!.split("/// Sent to the main window")[0]!;
     expect(command).toMatch(/if !panel_window::is_active\(&target\)\?[\s\S]*return Ok\(false\)[\s\S]*webview\.set_focus\(\)/);
     expect(command).not.toContain("target.set_focus()");
     const release = command.split("if !editing {")[1]!.split("let result =")[0]!;
@@ -315,7 +315,7 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     expect(active).toContain("!window.is_visible()");
     expect(active).toContain("window.is_minimized()");
     expect(active).toMatch(/#\[cfg\(windows\)\][\s\S]*GetForegroundWindow\(\)\s*== window\.hwnd\(\)/);
-    expect(panel).not.toMatch(/SetActiveWindow\(|SetForegroundWindow\(|SendInput\(|return_focus_to_document/);
+    expect(active.split("pub(crate) fn end_pointer_guard")[0]!).not.toMatch(/SetActiveWindow\(|SetForegroundWindow\(|SendInput\(|return_focus_to_document/);
     const resizeSubclass = panel.split("unsafe extern \"system\" fn resize_subclass")[1]!
       .split("unsafe extern \"system\" fn")[0]!;
     expect(resizeSubclass).toMatch(/if message == WM_MOUSEACTIVATE \{[\s\S]*return MA_ACTIVATE as isize;/);
@@ -323,6 +323,92 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     const overlaySubclass = panel.split("unsafe extern \"system\" fn overlay_subclass")[1]!
       .split("unsafe fn panel_resize_hit")[0]!;
     expect(overlaySubclass).toMatch(/if message == WM_MOUSEACTIVATE \{\s*return SendMessageW\(parent, message, wparam, lparam\);/);
+  });
+
+  it("uses an AppKit key-window operation instead of Tao activation for palette input focus", () => {
+    const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src/lib.rs"), "utf8");
+    const command = source.split("async fn set_plugin_panel_input_focus(")[1]!.split("fn set_plugin_panel_activation(")[0]!;
+    const mac = command.split('#[cfg(target_os = "macos")]')[1]!.split('#[cfg(windows)]')[0]!;
+    expect(mac).toContain("makeKeyWindow()");
+    expect(mac).not.toMatch(/\.set_focus\(|activateIgnoringOtherApps|makeKeyAndOrderFront/);
+    expect(command).toContain("run_on_main_thread_blocking");
+  });
+
+  it("uses guarded thread-local activation for Windows palette input, release and drag completion", () => {
+    const nativePath = join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src");
+    const source = readFileSync(join(nativePath, "lib.rs"), "utf8");
+    const command = source.split("async fn set_plugin_panel_input_focus(")[1]!.split("fn set_plugin_panel_activation(")[0]!;
+    const windows = command.split('#[cfg(windows)]')[1]?.split('#[cfg(not(any(')[0] ?? "";
+    expect(windows).toContain("if !panel_window::focus_if_app_active(hwnd)");
+    expect(windows).toContain("return Ok(false)");
+    expect(windows).not.toContain("target.set_focus()");
+    expect(command).toContain("WindowsAndMessaging::GetForegroundWindow()");
+    // Release now delegates to the shared interaction helper. Guard both the command
+    // branch and the helper's Windows path against Tao's forced activation fallback.
+    const release = command.split("result.map(|_| held)")[1]!;
+    const compactRelease = release.replace(/\s+/g, "");
+    const returnFocusCall = "panel_window::return_focus_after_interaction(&target, return_focus.unwrap_or(false)".replace(/\s+/g, "");
+    expect(compactRelease).toContain(returnFocusCall);
+    const returnFocusIndex = compactRelease.indexOf(returnFocusCall);
+    const nonFocusableIndex = compactRelease.indexOf(".set_focusable(false)");
+    expect(returnFocusIndex).toBeGreaterThanOrEqual(0);
+    expect(nonFocusableIndex).toBeGreaterThan(returnFocusIndex);
+    // A hand-back error must not skip making the palette non-focusable.
+    expect(compactRelease.slice(returnFocusIndex + returnFocusCall.length, nonFocusableIndex)).not.toMatch(/\?|returnErr/);
+    expect(release).not.toMatch(/focus_main_document_window_impl|(?:main|document)\.set_focus\(/);
+    const panel = readFileSync(join(nativePath, "panel_window.rs"), "utf8");
+    const interactionReturn = panel.split("pub(crate) fn return_focus_after_interaction<")[1]!
+      .split("pub(crate) fn reset_for_webview<")[0]!;
+    const windowsReturn = interactionReturn.split('#[cfg(target_os = "macos")]')[0]!;
+    expect(windowsReturn).toContain("focus_return::should_return(");
+    expect(windowsReturn).toContain("return_focus_to_document(");
+    expect(windowsReturn).not.toMatch(/focus_main_document_window_impl|(?:main|document)\.set_focus\(/);
+    const focus = panel.split("pub(crate) fn focus_if_app_active(")[1]!.split('#[cfg(target_os')[0]!;
+    expect(focus).toContain("GetForegroundWindow()");
+    expect(focus).toContain("IsWindowVisible(hwnd) == 0");
+    expect(focus).toContain("IsIconic(hwnd) != 0");
+    expect(focus).toContain("GetWindowThreadProcessId");
+    expect(focus).toContain("with_owned_foreground");
+    expect(focus).toContain("SetActiveWindow(hwnd)");
+    // SetForegroundWindow is allowed only to move the foreground from ChemDraft's own palette to its own document window while ChemDraft owns the foreground;
+    // it must never be used to take the foreground from another app, and synthetic input is never allowed.
+    expect(panel).not.toMatch(/SendInput\(/);
+    const handBackStart = panel.indexOf("pub(crate) fn return_focus_to_document<");
+    expect(handBackStart).toBeGreaterThanOrEqual(0);
+    const handBackEnd = panel.indexOf("\n}\n", handBackStart) + 2;
+    const handBackBody = panel.slice(handBackStart, handBackEnd);
+    expect(panel.replace(handBackBody, "")).not.toMatch(/SetForegroundWindow\(/);
+    expect(handBackBody.match(/SetForegroundWindow\(owner\)/g)).toHaveLength(1);
+    const setForegroundIndex = handBackBody.indexOf("SetForegroundWindow(owner)");
+    const appForegroundGuardIndex = handBackBody.indexOf("super::foreground_belongs_to_app()");
+    expect(appForegroundGuardIndex).toBeGreaterThanOrEqual(0);
+    expect(appForegroundGuardIndex).toBeLessThan(setForegroundIndex);
+    const foregroundWindowGuardIndex = handBackBody.indexOf("GetForegroundWindow() == foreground");
+    expect(foregroundWindowGuardIndex).toBeGreaterThanOrEqual(0);
+    expect(foregroundWindowGuardIndex).toBeLessThan(setForegroundIndex);
+    const handBack = panel.split("pub(crate) fn return_focus_to_document<")[1]!.split('#[cfg(target_os')[0]!;
+    expect(handBack).toContain("foreground_can_return_to_document");
+    expect(handBack).toContain("webview.set_focus()");
+    // Panel resize presses retain activation. Palette drag completion still hands back.
+    const observer = panel.split('unsafe extern "system" fn focus_subclass')[1]!
+      .split('pub(crate) fn install_resize_hit_test')[0]!;
+    expect(observer).toContain("message == WM_EXITSIZEMOVE");
+    expect(observer.split("let result = DefSubclassProc").at(-1)!).toContain("drag_finished()");
+    const install = panel.split("let drag_target = window.clone()")[1]!.split("struct FocusObserver")[0]!;
+    expect(install).toContain('drag_target.label().starts_with("toolset-")');
+    expect(install).toContain("return_focus_after_interaction(&drag_target, true)");
+  });
+
+  it("separates native panel activation from palette leases before either can change focus", () => {
+    const nativePath = join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src");
+    const source = readFileSync(join(nativePath, "lib.rs"), "utf8");
+    const dispatch = source.split("async fn set_plugin_panel_input_focus(")[1]!.split("let result: Result")[0]!;
+    expect(dispatch).toMatch(/if is_plugin_panel_window_label\(window.label\(\)\) \{\s*return set_plugin_panel_activation/);
+    const mac = readFileSync(join(nativePath, "panel_focus_macos.rs"), "utf8");
+    expect(mac).toMatch(/if super::super::is_plugin_panel_window_label\(window.label\(\)\) \{\s*install_hide_hook\(window, panel\)\?/);
+    const panel = readFileSync(join(nativePath, "panel_window.rs"), "utf8");
+    const observe = panel.split('pub(crate) fn install_input_focus')[1]!.split('#[cfg(')[0]!;
+    expect(observe).not.toContain("install_resize_hit_test");
   });
 
   it("preserves Tao's Win10 zero top inset and adapts the single existing resize overlay", () => {
@@ -363,7 +449,7 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     const nativePath = join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src");
     const source = readFileSync(join(nativePath, "lib.rs"), "utf8");
     const pageLoad = source.split(".on_page_load(")[1]!.split(".on_menu_event(")[0]!;
-    expect(pageLoad).toContain("is_plugin_panel_window_label(webview.label())");
+    expect(pageLoad).toContain("is_input_focus_window_label(webview.label())");
     expect(pageLoad).toContain("PageLoadEvent::Started");
     expect(pageLoad).toContain("panel_window::reset_for_webview(&webview.window())");
     const panel = readFileSync(join(nativePath, "panel_window.rs"), "utf8");
@@ -371,7 +457,7 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     expect(reset).toContain(".reset()");
     expect(reset).toContain("set_focusable(false)");
     // The pure Rust regression also exercises generation reuse and an old UI task's epoch.
-    const command = source.split("async fn set_plugin_panel_input_focus(")[1]!.split("/// Sent to the main window")[0]!;
+    const command = source.split("fn set_plugin_panel_activation(")[1]!.split("/// Sent to the main window")[0]!;
     expect(command).toContain("panel_window::is_current(&target, generation, epoch)");
   });
 

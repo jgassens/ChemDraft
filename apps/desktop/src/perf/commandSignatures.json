@@ -420,7 +420,7 @@
     "name": "set_plugin_panel_input_focus",
     "async": true,
     "generics": "",
-    "parameters": "window: tauri::WebviewWindow, page_token: String, editing: bool, generation: u64,",
+    "parameters": "window: tauri::WebviewWindow, page_token: String, editing: bool, generation: u64, click_sequence: Option<u64>, pointer_before: Option<u64>, return_focus: Option<bool>, select_interaction: Option<bool>,",
     "returnType": "Result<bool, String>"
   },
   {
@@ -461,14 +461,6 @@
     "async": false,
     "generics": "",
     "parameters": "app: tauri::AppHandle, toolset_id: String",
-    "returnType": "Result<(), String>"
-  },
-  {
-    "file": "lib.rs",
-    "name": "set_toolset_window_focusable",
-    "async": false,
-    "generics": "",
-    "parameters": "app: tauri::AppHandle, toolset_id: String, focusable: bool,",
     "returnType": "Result<(), String>"
   },
   {
@@ -524,7 +516,7 @@
     "name": "route_toolset_command",
     "async": false,
     "generics": "",
-    "parameters": "app: tauri::AppHandle, command_id: String",
+    "parameters": "app: tauri::AppHandle, window: tauri::WebviewWindow, command_id: String, preserve_input_focus: Option<bool>, commit: Option<bool>,",
     "returnType": "Result<(), String>"
   },
   {
@@ -614,6 +606,14 @@
     "generics": "",
     "parameters": "",
     "returnType": "AgentBridgeStatus"
+  },
+  {
+    "file": "lib.rs",
+    "name": "palette_focus_diagnostic",
+    "async": false,
+    "generics": "",
+    "parameters": "window: tauri::WebviewWindow, line: String",
+    "returnType": "Result<(), String>"
   },
   {
     "file": "lib.rs",
