@@ -9,7 +9,8 @@
     "@chemdraft/export-engine": "workspace:*",
     "@chemdraft/layout-engine": "workspace:*",
     "@chemdraft/rdkit-adapter": "workspace:*",
-    "@chemdraft/template-library": "workspace:*"
+    "@chemdraft/template-library": "workspace:*",
+    "zod": "^3.25.76"
   },
   "exports": {
     ".": {

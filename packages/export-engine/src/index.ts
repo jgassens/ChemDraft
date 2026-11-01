@@ -25,5 +25,13 @@ export type {
 } from "./results";
 export type { PdfExportOptions } from "./pdf";
 export { documentStyleSvg, exportDocumentToSvg, type SvgExportOptions, type SvgExportResult } from "./svg";
+export {
+  exportTableClipboardPayloads,
+  exportTableToHtml,
+  exportTableToRtf,
+  exportTableToTsv,
+  type TableClipboardOptions,
+  type TableClipboardPayloads
+} from "./tableClipboard";
 
 export type ExportFormat = ExportFormatId;

@@ -548,6 +548,7 @@ fn tool_deadlines_preserve_reads_and_allow_bounded_confirmation() {
         ("tools/call", "insert_structures", 480),
         ("tools/call", "insert_reaction", 480),
         ("tools/call", "insert_text", 480),
+        ("tools/call", "insert_table", 480),
         ("tools/call", "edit_structure", 480),
         ("tools/call", "delete_objects", 480),
         ("tools/call", "style_objects", 480),
