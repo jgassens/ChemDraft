@@ -2,6 +2,7 @@ import { formulaSpansFromText } from "@chemdraft/document-workflow-core";
 import { planObjectArrangement, moleculeAnchorForArrangement, moleculeVisualBoundsForArrangement, textVisualBoundsForArrangement, type ArrangementLayout, type ArrangementOptions, type ArrangementItem, type LayoutBounds } from "@chemdraft/layout-engine";
 import { snapRotationDegrees } from "./rotationSnap";
 import { snapPlacementDegrees } from "./placementSnap";
+import { nativeTemplateForToolCommand as sharedTemplateForToolCommand } from "./ringTemplates";
 import { projectedDoubleBondSides } from "./interaction/projectedDoubleBondSides";
 import { doubleBondStereoState, perceivedSpecifiedDoubleBondIds } from "./interaction/doubleBondStereo";
 import type { storedCoordinatesMatchStereo } from "@chemdraft/ocl-adapter";
@@ -1419,20 +1420,7 @@ export function nativeBondStyleForToolCommand(commandId: string): NativeBondTool
 }
 
 export function nativeTemplateForToolCommand(commandId: string): NativeMoleculeTemplateId | undefined {
-  switch (commandId) {
-    case "tool.cyclopentane":
-      return "cyclopentane";
-    case "tool.cyclohexane":
-      return "cyclohexane";
-    case "tool.benzene":
-      return "benzene";
-    case "tool.chairCyclohexaneA":
-      return "chairCyclohexaneA";
-    case "tool.chairCyclohexaneB":
-      return "chairCyclohexaneB";
-    default:
-      return undefined;
-  }
+  return sharedTemplateForToolCommand(commandId);
 }
 
 export function nativeArtToolForCommand(commandId: string): NativeArtToolDefinition | undefined {

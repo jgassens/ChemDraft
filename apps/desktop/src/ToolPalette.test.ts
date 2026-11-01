@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CommandSpec } from "./commands";
 import { TOOLBAR_FLYOUT_HOLD_MS, ToolPalette } from "./ToolPalette";
 import type { ToolbarPaletteItemModel } from "./toolsets";
+import { getToolsetItemGroups } from "./toolsets";
 
 const bondCommand: CommandSpec = {
   id: "tool.bond",
@@ -129,6 +130,26 @@ describe("ToolPalette schema-backed items", () => {
   afterEach(() => {
     vi.useRealTimers();
     document.body.innerHTML = "";
+  });
+
+  it.each(["cyclopropane", "cyclobutane", "cyclopentane", "cyclohexane", "cycloheptane", "cyclooctane"])("opens the ring dropdown and invokes %s exactly once", async name => {
+    vi.useFakeTimers();
+    const ring = getToolsetItemGroups("core.main").flat().find(item => item.id === "tool.benzene")!;
+    const { button, host, root, onInvoke } = await renderSchemaPalette(ring);
+    try {
+      await act(async () => {
+        button.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+      });
+      const menu = host.querySelector<HTMLElement>('[data-command-flyout-menu="ring-templates"]')!;
+      expect(menu.getAttribute("role")).toBe("menu");
+      expect(menu.querySelectorAll('[role="menuitem"]')).toHaveLength(9);
+      const choice = menu.querySelector<HTMLButtonElement>(`[data-command-id="tool.${name}"]`)!;
+      await act(async () => { choice.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+      expect(onInvoke).toHaveBeenCalledExactlyOnceWith(`tool.${name}`);
+      expect(menu.hidden).toBe(true);
+    } finally {
+      await act(async () => root.unmount());
+    }
   });
 
   it("invokes the primary command exactly once before the flyout hold threshold", async () => {

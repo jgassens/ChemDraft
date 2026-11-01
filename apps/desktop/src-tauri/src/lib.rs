@@ -6768,6 +6768,10 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                         }),
                     )?,
                     &PredefinedMenuItem::separator(app)?,
+                    #[cfg(not(target_os = "macos"))]
+                    &preferences_menu_item(app)?,
+                    #[cfg(not(target_os = "macos"))]
+                    &PredefinedMenuItem::separator(app)?,
                     // macOS: Sparkle's check. Windows: the Tauri updater flow in the webview
                     // (appUpdates.ts). Linux has no update channel yet, so no item there.
                     #[cfg(any(target_os = "macos", windows))]
@@ -7073,6 +7077,8 @@ fn create_native_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Resul
         &[
             &PredefinedMenuItem::about(app, None, Some(about_metadata))?,
             &PredefinedMenuItem::separator(app)?,
+            &preferences_menu_item(app)?,
+            &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::services(app, None)?,
             &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::hide(app, None)?,
@@ -7139,19 +7145,21 @@ fn create_page_setup_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Resul
     )
 }
 
-fn create_view_menu<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    entries: &[ToolbarMenuEntry],
-    view_state: ViewMenuState,
-) -> tauri::Result<Submenu<R>> {
-    let preferences = MenuItem::with_id(
+fn preferences_menu_item<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<MenuItem<R>> {
+    MenuItem::with_id(
         app,
         PREFERENCES_TOGGLE_COMMAND_ID,
         "Preferences…",
         true,
         Some("CmdOrCtrl+,"),
-    )?;
-    let preferences_separator = PredefinedMenuItem::separator(app)?;
+    )
+}
+
+fn create_view_menu<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    entries: &[ToolbarMenuEntry],
+    view_state: ViewMenuState,
+) -> tauri::Result<Submenu<R>> {
     // Real checked state (from JS), not a hardcoded true — otherwise a full-menu rebuild would
     // re-check these while the feature is off, desyncing the menu from the document.
     let scheme = current_keybinding_scheme(app);
@@ -7207,8 +7215,6 @@ fn create_view_menu<R: Runtime>(
         "View",
         true,
         &[
-            &preferences,
-            &preferences_separator,
             &show_rulers,
             &show_crosshairs,
             &separator,

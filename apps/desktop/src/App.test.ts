@@ -1924,7 +1924,7 @@ describe("ChemDraft desktop shell", () => {
     expect(registry.resolve({ key: "1" })).toBe("atom.addSingleBondToHoveredAtom");
     expect(registry.resolve({ key: "2" })).toBe("bond.setHoveredBondOrder.double");
     expect(registry.resolve({ key: "3" })).toBe("bond.setHoveredBondOrder.triple");
-    expect(registry.resolve({ key: "k" })).toBe("atom.addCarbonylToHoveredAtom");
+    expect(registry.resolve({ key: "k" })).toBeUndefined();
     expect(registry.resolve({ key: "k", metaKey: true, shiftKey: true })).toBe(structureCleanupCommandId);
     expect(registry.resolve({ key: "+" })).toBe("tool.plus");
     expect(registry.resolve({ key: "-" })).toBe("tool.minus");
@@ -2059,7 +2059,8 @@ describe("ChemDraft desktop shell", () => {
     // Unbound keys show no shortcut at all — not the stale ChemDraft key.
     expect(tooltipFor("tool.lasso")?.shortcut).toBeNull();
     expect(tooltipFor("tool.lasso")?.shortcutLabel).toBeNull();
-    expect(tooltipFor("tool.cyclopentane")?.shortcut).toBeNull();
+    expect(items.some(item => item.id === "tool.cyclopentane")).toBe(false);
+    expect(tooltipFor("tool.benzene")?.shortcutLabel).toBe("J");
 
     // The default scheme still shows the ChemDraft keys.
     const chemdraftItems = getToolsetItemGroups(
@@ -2402,7 +2403,7 @@ describe("ChemDraft desktop shell", () => {
       expect.objectContaining({ id: "bond.setHoveredBondOrder.single" }),
       expect.objectContaining({ id: "bond.setHoveredBondOrder.double", shortcut: "2" }),
       expect.objectContaining({ id: "bond.setHoveredBondOrder.triple", shortcut: "3" }),
-      expect.objectContaining({ id: "atom.addCarbonylToHoveredAtom", shortcut: "K" }),
+      expect.objectContaining({ id: "atom.addCarbonylToHoveredAtom" }),
       expect.objectContaining({ id: "atom.addPositiveChargeToHoveredAtom" }),
       expect.objectContaining({ id: "atom.addNegativeChargeToHoveredAtom" })
     ]));
@@ -2431,7 +2432,7 @@ describe("ChemDraft desktop shell", () => {
     expect(hoveredNativeTargetShortcutCommand(bondTarget, "1")).toBe("bond.setHoveredBondOrder.single");
     expect(hoveredNativeTargetShortcutCommand(bondTarget, "2")).toBe("bond.setHoveredBondOrder.double");
     expect(hoveredNativeTargetShortcutCommand(bondTarget, "3")).toBe("bond.setHoveredBondOrder.triple");
-    expect(hoveredNativeTargetShortcutCommand(atomTarget, "k")).toBe("atom.addCarbonylToHoveredAtom");
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "k")).toBe("atom.sproutFragmentAtHoveredAtom.sulfonyl");
     expect(hoveredNativeTargetShortcutCommand(atomTarget, "c")).toBe("atom.setHoveredElement.C");
     expect(hoveredNativeTargetShortcutCommand(atomTarget, "t")).toBeUndefined();
     expect(hoveredNativeTargetShortcutCommand(bondTarget, "c")).toBeUndefined();
@@ -2489,10 +2490,10 @@ describe("ChemDraft desktop shell", () => {
     expect(hoveredNativeTargetShortcutCommand(atomTarget, "S", "chemdraw")).toBe("atom.setHoveredElement.Si");
     expect(hoveredNativeTargetShortcutCommand(atomTarget, "w", "chemdraw")).toBe("atom.setHoveredElement.N");
     expect(hoveredNativeTargetShortcutCommand(atomTarget, "q", "chemdraw")).toBe("atom.setHoveredElement.O");
-    // Carbonyl sits on "2" over an atom; "k" (ChemDraw: sulfonyl, unsupported) does nothing.
+    // Carbonyl uses 2; fragment keys are shared by both presets.
     expect(hoveredNativeTargetShortcutCommand(atomTarget, "1", "chemdraw")).toBe("atom.addSingleBondToHoveredAtom");
     expect(hoveredNativeTargetShortcutCommand(atomTarget, "2", "chemdraw")).toBe("atom.addCarbonylToHoveredAtom");
-    expect(hoveredNativeTargetShortcutCommand(atomTarget, "k", "chemdraw")).toBeUndefined();
+    expect(hoveredNativeTargetShortcutCommand(atomTarget, "k", "chemdraw")).toBe("atom.sproutFragmentAtHoveredAtom.sulfonyl");
     // The numeric sprout row and its "a" aliases.
     expect(hoveredNativeTargetShortcutCommand(atomTarget, "3", "chemdraw")).toBe("atom.attachRingToHoveredAtom.benzene");
     expect(hoveredNativeTargetShortcutCommand(atomTarget, "a", "chemdraw")).toBe("atom.attachRingToHoveredAtom.benzene");
@@ -4235,7 +4236,7 @@ describe("ChemDraft desktop shell", () => {
     const eyedropperCommand = getToolsetCommandSpecs().find((command) => command.id === "tool.art.eyedropper");
     const measureCommand = getToolsetCommandSpecs().find((command) => command.id === "tool.art.measure");
 
-    expect(assetCommands.length).toBeGreaterThanOrEqual(50);
+    expect(assetCommands.length).toBeGreaterThanOrEqual(48);
     expect(assetCommands.every((command) => command.category)).toBe(true);
     expect(assetCommands.some((command) => command.description?.includes("toolset action"))).toBe(false);
     expect(eyedropperCommand).toMatchObject({

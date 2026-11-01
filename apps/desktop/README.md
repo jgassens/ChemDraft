@@ -12,6 +12,28 @@ documents for the prompt; system logout, restart, and shutdown remain non-blocki
 
 Tauri v2, Vite, React, and TypeScript desktop shell for ChemDraft.
 
+Ring templates are grouped under the benzene button in Main and Structure. Long-press or
+press Arrow Down for saturated 3–8-membered rings, benzene and the two chair cyclohexanes.
+
+Both keyboard presets use these case-sensitive drawing keys while hovering a structure:
+
+| Key | Over an atom | Over a bond |
+| --- | --- | --- |
+| `v` | Cyclopropyl substituent | Fuse a 3-membered ring |
+| `u` | Cyclobutyl substituent | — |
+| `K` | tert-Butyl substituent | — |
+| `k` | Sulfonyl, –S(=O)2 | — |
+| `z` | Alkyne, –C≡CH | Fuse cyclopentadiene |
+| `j` | Cyclopentadienyl substituent | — |
+| `J` | Phenyl substituent | — |
+
+Each substituent attaches through one new bond and is one Undo step. The sulfonyl fragment
+leaves an open attachment on sulfur, which the current valence checker marks with a warning.
+Key `2` adds =O directly to S or P where the current valence gate permits it; carbon keeps its
+carbonyl behavior. Key `9` adds two methyl groups when carbon has room for both, otherwise
+attaches isopropyl through one new bond (subject to the same gate). Preferences uses ⌘, on
+macOS and Ctrl+, on Windows.
+
 Plugin catalog and local engine downloads use reqwest 0.12 with both Mozilla and OS certificate
 roots, so macOS and Windows enterprise trust stores can participate without disabling certificate
 verification. Transport failures name the host and cause; diagnostics and logs remove URL credentials,

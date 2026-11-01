@@ -143,6 +143,38 @@ export const coreDrawingToolDefinitions = [
     usageHint: usageHint("click atom to edit its label", "type an element symbol", "Esc exits")
   },
   {
+    commandId: "tool.cyclopropane",
+    title: "Cyclopropane Template",
+    kind: "ring",
+    category: "structure",
+    icon: "ring3",
+    usageHint: usageHint("click canvas, atom, or bond", "attach at an atom or fuse at a bond", "Esc exits")
+  },
+  {
+    commandId: "tool.cyclobutane",
+    title: "Cyclobutane Template",
+    kind: "ring",
+    category: "structure",
+    icon: "ring4",
+    usageHint: usageHint("click canvas, atom, or bond", "attach at an atom or fuse at a bond", "Esc exits")
+  },
+  {
+    commandId: "tool.cycloheptane",
+    title: "Cycloheptane Template",
+    kind: "ring",
+    category: "structure",
+    icon: "ring7",
+    usageHint: usageHint("click canvas, atom, or bond", "attach at an atom or fuse at a bond", "Esc exits")
+  },
+  {
+    commandId: "tool.cyclooctane",
+    title: "Cyclooctane Template",
+    kind: "ring",
+    category: "structure",
+    icon: "ring8",
+    usageHint: usageHint("click canvas, atom, or bond", "attach at an atom or fuse at a bond", "Esc exits")
+  },
+  {
     commandId: "tool.cyclopentane",
     title: "Cyclopentane Template",
     kind: "ring",

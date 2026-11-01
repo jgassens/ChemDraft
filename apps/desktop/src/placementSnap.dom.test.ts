@@ -157,7 +157,7 @@ describe.each(["macos", "windows"] as const)("placement pointer handlers on %s",
     await undoOnce([]);
   });
 
-  it.each(["tool.cyclohexane", "tool.benzene"])("snaps %s aim, allows Alt mid-drag, and commits the preview", async (tool) => {
+  it.each(["tool.cyclohexane", "tool.benzene", "tool.cycloheptane", "tool.cyclooctane"])("snaps %s aim, allows Alt mid-drag, and commits the preview", async (tool) => {
     await mount(tool);
     const start = { x: 300, y: 300 };
     await pointer("pointerdown", start);
