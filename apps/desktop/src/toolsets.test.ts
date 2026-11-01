@@ -85,16 +85,11 @@ function registry(toolsets: ToolsetDefinition[]): DesktopToolsetRegistry {
 }
 
 describe("desktop toolset mapping", () => {
-  it("exposes distinct double and triple bond buttons beside Single Bond", () => {
-    const items = getToolsetItemGroups("core.main").flat();
-    const index = items.findIndex(item => item.id === "tool.bond");
-    expect(items.slice(index, index + 3).map(item => item.id)).toEqual(["tool.bond", "tool.doubleBond", "tool.tripleBond"]);
-    for (const order of ["double", "triple"]) {
-      expect(items.find(item => item.id === `tool.${order}Bond`)).toMatchObject({
-        icon: `${order}Bond`, submenu: null,
-        primary: { type: "command", command: { id: `tool.${order}Bond` } }
-      });
-    }
+  it("keeps Double Bond and Triple Bond off the default Main toolbar", () => {
+    const ids = getToolsetItemGroups("core.main").flat().map(item => item.id);
+    expect(ids).toContain("tool.bond");
+    expect(ids).not.toContain("tool.doubleBond");
+    expect(ids).not.toContain("tool.tripleBond");
   });
   it("maps legacy command items to schema-backed palette items", () => {
     const item = getToolsetItemGroups("core.legacy", registry([legacyToolset]))[0][0];
@@ -478,7 +473,7 @@ describe("migrateLegacyMainToolbarLayoutState", () => {
       "tool.text",
       "core.main.divider.1"
     ]);
-    expect(items.slice(5, 10).map((item) => item.id)).toEqual(["tool.chain", "tool.bond", "tool.doubleBond", "tool.tripleBond", "tool.wedgeBond"]);
+    expect(items.slice(5, 8).map((item) => item.id)).toEqual(["tool.chain", "tool.bond", "tool.wedgeBond"]);
   });
 
   it("applies a legacy addition at its section-relative position after flattening", () => {

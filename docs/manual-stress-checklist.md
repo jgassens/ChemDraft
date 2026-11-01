@@ -977,7 +977,7 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
 
 ## Direct multiple-bond tools (Windows and macOS)
 
-- On Main, activate Double Bond and Triple Bond; verify distinct icons and active highlight.
+- On a fresh profile, confirm the default Main toolbar does not show Double Bond or Triple Bond. Add both from Customize Main Toolbar, then activate each; verify distinct icons and active highlight.
 - Click and drag on empty page, extend from an atom, connect atoms and separate molecules, and click an existing bond to set its order. Confirm the requested order, normal snapping/Alt behavior, and one Undo/Redo step per gesture.
 - Refuse growth or order changes that exceed available valence; retain existing atoms, bonds and coordinates. Check save/reopen and SVG/MOL export. Switch back to Single Bond and wedge/hash/dashed/bold tools.
 - Repeat in native Windows/WebView2 and macOS, including customized Main layouts, reset, and narrow palettes; verify browser fallback.
