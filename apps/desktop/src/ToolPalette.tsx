@@ -1,3 +1,4 @@
+import { paletteFocusDiagnostic } from "./paletteFocusDiagnostic";
 import {
   Fragment,
   useCallback,
@@ -6,6 +7,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type InputHTMLAttributes,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode
@@ -16,6 +18,7 @@ import { SortableContext, rectSortingStrategy, useSortable } from "@dnd-kit/sort
 import { CSS } from "@dnd-kit/utilities";
 import type { ToolsetGridLayout } from "@chemdraft/toolset-registry";
 import type { CommandSpec } from "./commands";
+import { PALETTE_INPUT_FOCUS_CANCEL_EVENT, PALETTE_INPUT_FOCUS_COMMIT_EVENT } from "./plugins/pluginPanelInputFocus";
 import {
   ToolbarWidgetStateContext,
   TOOLBAR_WIDGET_IDS,
@@ -798,6 +801,313 @@ function TextToolbarStyleControls() {
 
 const MOLECULE_INSPECTOR_TABS = ["structure", "atom-labels", "templates"] as const;
 
+function MoleculeInspectorNumericControl({
+  label, value, mixed, range, commandId, disabled, onCommit, onPreview, onCancel
+}: {
+  label: string;
+  value: number | null | undefined;
+  mixed: boolean | undefined;
+  range: { min: number; max: number; step: number };
+  commandId: (value: number) => string;
+  disabled: boolean;
+  onCommit: (commandId: string) => void;
+  onPreview: (commandId: string) => void;
+  onCancel: (() => void) | undefined;
+}) {
+  const effectiveValue = value ?? range.min;
+  const modelText = mixed ? "" : formatInspectorNumber(effectiveValue);
+  // Only typed, uncommitted text protects a draft. Focus alone must not hide undo updates.
+  const [draft, setDraft] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const dirty = useRef(false);
+  const setTypedDraft = (typed: boolean) => {
+    dirty.current = typed;
+    // The window's native key listener reads this after React's handler, including
+    // commits whose formatted text is unchanged and therefore cause no render.
+    if (inputRef.current) inputRef.current.dataset.paletteNumberDraft = String(typed);
+  };
+  const pendingCommit = useRef<number | undefined>(undefined);
+  const committedValues = useRef(new Set<number>());
+  const [sliderDraft, setSliderDraft] = useState<number | null>(null);
+  const sliderChanged = useRef<number | undefined>(undefined);
+  const sliderPreviewedValues = useRef(new Set<number>());
+  useEffect(() => {
+    // Ignore only outstanding own echoes, which can arrive late/out of order during a hold.
+    // Once the latest commit is acknowledged, earlier values must follow undo/redo again.
+    const ownEcho = !mixed && value != null && committedValues.current.delete(value);
+    if (!ownEcho || value === pendingCommit.current) {
+      pendingCommit.current = undefined;
+      committedValues.current.clear();
+    }
+    if (!dirty.current && !ownEcho) setDraft(null);
+  }, [value, mixed]);
+  useEffect(() => {
+    // Snapshots can acknowledge this gesture's previews late or out of order.
+    // Keep the latest draft and pending commit until release in either case.
+    if (!mixed && value != null && sliderPreviewedValues.current.has(value)) return;
+    // An unpreviewed value or Mixed state supersedes the pending gesture.
+    setSliderDraft(null);
+    sliderChanged.current = undefined;
+    sliderPreviewedValues.current.clear();
+  }, [value, mixed]);
+  const revert = () => {
+    setTypedDraft(false);
+    pendingCommit.current = undefined;
+    committedValues.current.clear();
+    setDraft(null);
+  };
+  useEffect(() => {
+    const input = inputRef.current;
+    const cancel = () => {
+      setTypedDraft(false);
+      pendingCommit.current = undefined;
+      committedValues.current.clear();
+      setDraft(null);
+    };
+    input?.addEventListener(PALETTE_INPUT_FOCUS_CANCEL_EVENT, cancel);
+    return () => input?.removeEventListener(PALETTE_INPUT_FOCUS_CANCEL_EVENT, cancel);
+  }, []);
+  const commit = (rawValue: string) => {
+    setTypedDraft(false);
+    if (rawValue.trim() === "") {
+      // Clearing a field or leaving an unedited Mixed field must never apply 0.
+      revert();
+      return;
+    }
+    const parsed = Number(rawValue);
+    if (Number.isFinite(parsed)) {
+      const next = Number(formatInspectorNumber(Math.max(range.min, Math.min(range.max, parsed))));
+      // Keep steps local until the document's asynchronous snapshot catches up. Reverting
+      // here makes a held arrow (or native spin button) start every tick at the old model.
+      setDraft(formatInspectorNumber(next));
+      // Only an outstanding own commit supersedes the model. Display rounding must not
+      // hide a normalization edit, and an outside change invalidates earlier commits.
+      if (next !== (pendingCommit.current ?? (mixed ? undefined : value))) {
+        committedValues.current.add(next);
+        pendingCommit.current = next;
+        onCommit(commandId(next));
+      }
+    } else {
+      revert();
+    }
+  };
+  useEffect(() => {
+    const input = inputRef.current;
+    // App shortcuts settle the same draft as blur, without surrendering the control lease.
+    const settle = () => { if (input && dirty.current) commit(input.value); };
+    input?.addEventListener(PALETTE_INPUT_FOCUS_COMMIT_EVENT, settle);
+    return () => input?.removeEventListener(PALETTE_INPUT_FOCUS_COMMIT_EVENT, settle);
+  });
+  const commitSlider = () => {
+    const next = sliderChanged.current;
+    sliderChanged.current = undefined;
+    sliderPreviewedValues.current.clear();
+    setSliderDraft(null);
+    if (next !== undefined) onCommit(commandId(next));
+  };
+
+  return (
+    <label className="molecule-inspector-field molecule-inspector-number-field">
+      <span>{label}</span>
+      <input
+        ref={inputRef}
+        type="number"
+        min={range.min}
+        max={range.max}
+        step={range.step}
+        value={draft ?? modelText}
+        placeholder={mixed ? "Mixed" : undefined}
+        disabled={disabled}
+        aria-label={label}
+        data-palette-control="true"
+        data-palette-number-draft={dirty.current ? "true" : "false"}
+        onPointerDown={(event) => {
+          event.stopPropagation();
+        }}
+        onChange={(event) => {
+          const inputType = (event.nativeEvent as InputEvent).inputType;
+          // Native stepping notifications have no text inputType, including notifications
+          // after an arrow key or pointer release. They commit and leave no typed draft.
+          if (!inputType) {
+            if (mixed && (draft ?? modelText) === "") {
+              // Native spin buttons step a blank field to min. Mixed has no starting value.
+              event.currentTarget.value = "";
+              return;
+            }
+            commit(event.currentTarget.value);
+            return;
+          }
+          // Only text entry (including paste and IME) starts a draft. Native history may
+          // modify an existing draft, but must never turn a clean step into typed text.
+          if (!dirty.current && !inputType.startsWith("insert") && !inputType.startsWith("delete")) {
+            event.currentTarget.value = draft ?? modelText;
+            return;
+          }
+          setTypedDraft(true);
+          setDraft(event.currentTarget.value);
+        }}
+        onBlur={(event) => {
+          if (dirty.current) {
+            commit(event.currentTarget.value);
+          }
+          revert();
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            commit(event.currentTarget.value);
+          } else if (event.key === "Escape") {
+            revert();
+            onCancel?.();
+          } else if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+            event.preventDefault();
+            if (mixed && event.currentTarget.value === "") return;
+            const previous = event.currentTarget.value;
+            if (event.key === "ArrowUp") {
+              event.currentTarget.stepUp();
+            } else {
+              event.currentTarget.stepDown();
+            }
+            if (event.currentTarget.value !== previous) commit(event.currentTarget.value);
+          }
+        }}
+      />
+      <input
+        type="range"
+        min={range.min}
+        max={range.max}
+        step={range.step}
+        value={sliderDraft ?? effectiveValue}
+        disabled={disabled}
+        aria-label={`${label} slider`}
+        data-palette-control="true"
+        onPointerDown={(event) => event.stopPropagation()}
+        onChange={(event) => {
+          const next = Number(event.currentTarget.value);
+          if (next === (sliderDraft ?? effectiveValue)) return;
+          sliderChanged.current = next;
+          sliderPreviewedValues.current.add(next);
+          setSliderDraft(next);
+          onPreview(commandId(next));
+        }}
+        onPointerUp={(event) => {
+          event.stopPropagation();
+          commitSlider();
+        }}
+        onKeyUp={commitSlider}
+        onBlur={() => {
+          commitSlider();
+          setSliderDraft(null);
+        }}
+      />
+    </label>
+  );
+}
+
+const PALETTE_COLOR_ECHO_TIMEOUT_MS = 1000;
+
+/** React's color onChange is a live input notification. Only the native change
+ * ends a chooser pick; WebKit's Colors panel need not blur its owning input. */
+function PaletteColorInput({ value, contextKey: explicitContextKey, onPreviewColor, onCommitColor, onKeyDownCapture, ...props }: Omit<
+  InputHTMLAttributes<HTMLInputElement>, "type" | "value" | "onChange" | "onBlur"
+> & { value: string; contextKey?: string; onPreviewColor: (color: string) => void; onCommitColor: (color: string) => void }) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const pendingColor = useRef<string | undefined>(undefined);
+  const settledColor = useRef(value);
+  const awaitingColorEcho = useRef<string | undefined>(undefined);
+  const { colorContextKey } = useToolbarWidgetState();
+  const contextKey = explicitContextKey ?? colorContextKey;
+  const previousContext = useRef(contextKey);
+  const latestModel = useRef(value);
+  latestModel.current = value;
+  const echoTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // Retain only an outstanding echo, never ownership of the model. A matching
+  // preview still needs a native change/blur commit, but no longer pins the value.
+  const [localColor, setLocalColor] = useState(value);
+  const followModel = () => {
+    clearTimeout(echoTimer.current);
+    awaitingColorEcho.current = undefined;
+    pendingColor.current = undefined;
+    settledColor.current = latestModel.current;
+    setLocalColor(latestModel.current);
+  };
+  const retainUntilEcho = (color: string) => {
+    clearTimeout(echoTimer.current);
+    awaitingColorEcho.current = color === value ? undefined : color;
+    // IPC can be dropped/rejected. Never leave a chooser pinned to a value the
+    // document did not accept, including when the model prop never changes.
+    if (awaitingColorEcho.current !== undefined) {
+      echoTimer.current = setTimeout(followModel, PALETTE_COLOR_ECHO_TIMEOUT_MS);
+    }
+    setLocalColor(color);
+  };
+  useEffect(() => {
+    if (previousContext.current !== contextKey) {
+      previousContext.current = contextKey;
+      followModel();
+      return;
+    }
+    if (awaitingColorEcho.current !== undefined) {
+      if (value !== awaitingColorEcho.current) return;
+      clearTimeout(echoTimer.current);
+      awaitingColorEcho.current = undefined;
+      setLocalColor(value);
+      return;
+    }
+    // An acknowledged preview no longer shields the input from undo, redo or
+    // another surface's edit. Forget its pending commit before following props.
+    followModel();
+  }, [value, contextKey]);
+  useEffect(() => () => clearTimeout(echoTimer.current), []);
+  const preview = (color: string) => {
+    retainUntilEcho(color);
+    if (color === (pendingColor.current ?? settledColor.current)) return;
+    pendingColor.current = color;
+    onPreviewColor(color);
+  };
+  const commit = (color: string) => {
+    retainUntilEcho(color);
+    if (pendingColor.current === undefined && color === settledColor.current) return;
+    // Some choosers send change without a preceding input notification.
+    if (pendingColor.current !== color) onPreviewColor(color);
+    pendingColor.current = undefined;
+    settledColor.current = color;
+    onCommitColor(color);
+  };
+  useEffect(() => {
+    const input = inputRef.current!;
+    const change = () => {
+      paletteFocusDiagnostic(`chooser change value=${input.value} prop=${value} retainedOverride=${awaitingColorEcho.current !== undefined && awaitingColorEcho.current !== value}`);
+      commit(input.value);
+    };
+    // The lease handler may blur before the popover sees Escape, including when
+    // the key targets body. Discard first so the blur fallback cannot commit.
+    const discard = followModel;
+    input.addEventListener("change", change);
+    input.addEventListener(PALETTE_INPUT_FOCUS_CANCEL_EVENT, discard);
+    return () => {
+      input.removeEventListener("change", change);
+      input.removeEventListener(PALETTE_INPUT_FOCUS_CANCEL_EVENT, discard);
+    };
+  });
+  return <input {...props} ref={inputRef} type="color" value={localColor}
+    onKeyDownCapture={(event) => {
+      if (event.key === "Escape") {
+        followModel();
+      }
+      onKeyDownCapture?.(event);
+    }}
+    onChange={(event) => {
+      // A native change is handled at the target, before React's delegated event.
+      if (event.nativeEvent.type === "input") {
+        paletteFocusDiagnostic(`chooser input value=${event.currentTarget.value} prop=${value} retainedOverride=${awaitingColorEcho.current !== undefined && awaitingColorEcho.current !== value}`);
+        preview(event.currentTarget.value);
+      }
+    }}
+    onBlur={(event) => { if (pendingColor.current !== undefined) commit(event.currentTarget.value); }}
+  />;
+}
+
 function MoleculeInspectorControls({ ringOnly = false }: { ringOnly?: boolean }) {
   const {
     currentMoleculeInspector,
@@ -986,71 +1296,18 @@ function MoleculeInspectorControls({ ringOnly = false }: { ringOnly?: boolean })
     commandId: (value: number) => string,
     disabled: boolean
   ) => {
-    const effectiveValue = valueOrFallback(value, range.min);
-    const parseInputValue = (rawValue: string): number | undefined => {
-      const trimmed = rawValue.trim();
-      if (trimmed === "") {
-        // Empty (cleared, or an unedited "Mixed") field: Number("") is 0, which would
-        // silently stamp 0 onto every target. Treat blank as "leave unchanged".
-        return undefined;
-      }
-      const parsed = Number(trimmed);
-      return Number.isFinite(parsed) ? parsed : undefined;
-    };
-    const commitValue = (rawValue: string) => {
-      const nextValue = parseInputValue(rawValue);
-      if (nextValue !== undefined) {
-        invokeOrCommit(commandId(nextValue));
-      }
-    };
     return (
-      <label className="molecule-inspector-field molecule-inspector-number-field">
-        <span>{label}</span>
-        <input
-          type="number"
-          min={range.min}
-          max={range.max}
-          step={range.step}
-          value={mixed ? "" : formatInspectorNumber(effectiveValue)}
-          placeholder={mixed ? "Mixed" : undefined}
-          disabled={disabled}
-          aria-label={label}
-          data-palette-control="true"
-          onPointerDown={(event) => event.stopPropagation()}
-          onChange={(event) => {
-            const nextValue = parseInputValue(event.currentTarget.value);
-            if (nextValue !== undefined) {
-              previewCommand(commandId(nextValue));
-            }
-          }}
-          onBlur={(event) => commitValue(event.currentTarget.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              commitValue(event.currentTarget.value);
-            }
-            if (event.key === "Escape") {
-              onCancel?.();
-            }
-          }}
-        />
-        <input
-          type="range"
-          min={range.min}
-          max={range.max}
-          step={range.step}
-          value={effectiveValue}
-          disabled={disabled}
-          aria-label={`${label} slider`}
-          data-palette-control="true"
-          onPointerDown={(event) => event.stopPropagation()}
-          onChange={(event) => previewCommand(commandId(Number(event.currentTarget.value)))}
-          onPointerUp={(event) => {
-            event.stopPropagation();
-            invokeOrCommit(commandId(Number(event.currentTarget.value)));
-          }}
-          onKeyUp={(event) => invokeOrCommit(commandId(Number(event.currentTarget.value)))}
-        />
-      </label>
+      <MoleculeInspectorNumericControl
+        label={label}
+        value={value}
+        mixed={mixed}
+        range={range}
+        commandId={commandId}
+        disabled={disabled}
+        onCommit={invokeOrCommit}
+        onPreview={previewCommand}
+        onCancel={onCancel}
+      />
     );
   };
 
@@ -1067,15 +1324,14 @@ function MoleculeInspectorControls({ ringOnly = false }: { ringOnly?: boolean })
         <span>{label}</span>
         <span className="molecule-inspector-color-input">
           <span className="toolbar-color-trigger-swatch" style={{ "--current-color": mixed ? "#8a949e" : color } as CSSProperties} />
-          <input
-            type="color"
+          <PaletteColorInput
             value={color}
             disabled={disabled}
             aria-label={label}
             data-palette-control="true"
             onPointerDown={(event) => event.stopPropagation()}
-            onChange={(event) => previewCommand(commandId(event.currentTarget.value))}
-            onBlur={(event) => invokeOrCommit(commandId(event.currentTarget.value))}
+            onPreviewColor={(color) => previewCommand(commandId(color))}
+            onCommitColor={(color) => invokeOrCommit(commandId(color))}
           />
         </span>
       </label>
@@ -1135,15 +1391,14 @@ function MoleculeInspectorControls({ ringOnly = false }: { ringOnly?: boolean })
           </button>
           <label className="molecule-inspector-color-input" title="Custom ring fill color">
             <span className="toolbar-color-trigger-swatch" style={{ "--current-color": currentColor } as CSSProperties} />
-            <input
-              type="color"
+            <PaletteColorInput
               value={currentColor}
               disabled={!selected}
               aria-label="Custom ring fill color"
               data-palette-control="true"
               onPointerDown={(event) => event.stopPropagation()}
-              onChange={(event) => applyColor(event.currentTarget.value, false)}
-              onBlur={(event) => applyColor(event.currentTarget.value, true)}
+              onPreviewColor={(color) => applyColor(color, false)}
+              onCommitColor={(color) => applyColor(color, true)}
             />
           </label>
         </div>
@@ -1183,15 +1438,14 @@ function MoleculeInspectorControls({ ringOnly = false }: { ringOnly?: boolean })
           <div className="molecule-inspector-effect-controls" data-visible-effect-kind={visibleEffectKind}>
             <label className="molecule-inspector-color-input" title="Ring effect color">
               <span className="toolbar-color-trigger-swatch" style={{ "--current-color": currentEffectColor } as CSSProperties} />
-              <input
-                type="color"
+              <PaletteColorInput
                 value={currentEffectColor}
                 disabled={!selected}
                 aria-label="Ring effect color"
                 data-palette-control="true"
                 onPointerDown={(event) => event.stopPropagation()}
-                onChange={(event) => applyEffectColor(event.currentTarget.value, false)}
-                onBlur={(event) => applyEffectColor(event.currentTarget.value, true)}
+                onPreviewColor={(color) => applyEffectColor(color, false)}
+                onCommitColor={(color) => applyEffectColor(color, true)}
               />
             </label>
             {slider("Effect", effectOpacity, (value) => moleculeRingEffectOpacityCommandId(ringKey, visibleEffectKind, value))}
@@ -1262,7 +1516,8 @@ function MoleculeInspectorControls({ ringOnly = false }: { ringOnly?: boolean })
       {numericControl("Margin width", structure?.values.bondMarginWidthPx.value, structure?.values.bondMarginWidthPx.mixed, moleculeStructureNumberRanges.bondMarginWidthPx, moleculeStructureBondMarginWidthCommandId, structureDisabled)}
       {numericControl("Hash spacing", structure?.values.bondHashSpacingPx.value, structure?.values.bondHashSpacingPx.mixed, moleculeStructureNumberRanges.bondHashSpacingPx, moleculeStructureBondHashSpacingCommandId, structureDisabled)}
       {numericControl("Double-bond inset", structure?.values.doubleBondInsetPx.value, structure?.values.doubleBondInsetPx.mixed, moleculeStructureNumberRanges.doubleBondInsetPx, moleculeStructureDoubleBondInsetCommandId, structureDisabled)}
-      <label className="molecule-inspector-field molecule-inspector-select-field">
+      <label className="molecule-inspector-field molecule-inspector-select-field"
+        title={structure?.doubleBondDisabledReason ?? (structure ? undefined : "Select a double bond")}>
         <span>Double-bond position</span>
         <select
           aria-label="Double-bond position"
@@ -1478,15 +1733,14 @@ function MoleculeInspectorControls({ ringOnly = false }: { ringOnly?: boolean })
                   "--current-color": normalizeHexColor(atomLabels?.values.backgroundColor.value ?? "#ffffff") ?? "#ffffff"
                 } as CSSProperties}
               />
-              <input
-                type="color"
+              <PaletteColorInput
                 value={normalizeHexColor(atomLabels?.values.backgroundColor.value ?? "#ffffff") ?? "#ffffff"}
                 disabled={atomLabelsDisabled}
                 aria-label="Atom label background color"
                 data-palette-control="true"
                 onPointerDown={(event) => event.stopPropagation()}
-                onChange={(event) => previewCommand(moleculeAtomLabelBackgroundColorCommandId(event.currentTarget.value))}
-                onBlur={(event) => invokeOrCommit(moleculeAtomLabelBackgroundColorCommandId(event.currentTarget.value))}
+                onPreviewColor={(color) => previewCommand(moleculeAtomLabelBackgroundColorCommandId(color))}
+                onCommitColor={(color) => invokeOrCommit(moleculeAtomLabelBackgroundColorCommandId(color))}
               />
             </span>
           : null}
@@ -1821,7 +2075,8 @@ function ArtToolbarStyleControls() {
       ? `${label} applies to ${supportedCount} of ${selectedCount} selected graphics`
       : label;
   const strokeWidthControl = supportsStrokeWidth ? (
-    <label className="toolbar-control-label art-stroke-width-control art-stroke-control">
+    <label className="toolbar-control-label art-stroke-width-control art-stroke-control"
+      title={supportTitle("Stroke width", strokeSupportedCount, supportsStrokeAll)}>
       <select
         className="toolbar-select"
         value={strokeWidthCommandId}
@@ -1841,7 +2096,8 @@ function ArtToolbarStyleControls() {
     </label>
   ) : null;
   const strokeDashControl = supportsDash && effectiveArtStyleTarget === "stroke" ? (
-    <label className="toolbar-control-label art-stroke-dash-control art-stroke-control">
+    <label className="toolbar-control-label art-stroke-dash-control art-stroke-control"
+      title={supportTitle("Dash pattern", dashSupportedCount, supportsDashAll)}>
       <select
         className="toolbar-select"
         value={strokeDashCommandId}
@@ -2141,7 +2397,8 @@ function ArtToolbarStyleControls() {
       applySliderPercent(nextPercent, true);
     };
     return (
-      <label className="art-inspector-slider" data-art-inspector-slider={sliderKey}>
+      <label className="art-inspector-slider" data-art-inspector-slider={sliderKey}
+        title={`${supportTitle(label, supportedCount)}: ${percent}%`}>
         <span className="art-inspector-slider-header">
           <span className="art-inspector-slider-label">{shortLabel}</span>
           <span className="art-inspector-slider-value">{percent}%</span>
@@ -2688,7 +2945,8 @@ function ArtToolbarStyleControls() {
       {showAdvancedStrokeControls && (supportsLineEnds || supportsCorners) ? (
       <div className="art-inspector-row art-inspector-stroke-row">
         {showAdvancedStrokeControls && supportsLineEnds ? (
-        <label className="toolbar-control-label art-stroke-cap-control art-stroke-control">
+        <label className="toolbar-control-label art-stroke-cap-control art-stroke-control"
+          title={supportTitle("Line ends", lineEndsSupportedCount, supportsLineEndsAll)}>
           <span className="art-stroke-control-label">Line ends</span>
           <select
             className="toolbar-select"
@@ -2709,7 +2967,8 @@ function ArtToolbarStyleControls() {
         </label>
         ) : null}
         {showAdvancedStrokeControls && supportsCorners ? (
-        <label className="toolbar-control-label art-stroke-join-control art-stroke-control">
+        <label className="toolbar-control-label art-stroke-join-control art-stroke-control"
+          title={supportTitle("Corners", cornersSupportedCount, supportsCornersAll)}>
           <span className="art-stroke-control-label">Corners</span>
           <select
             className="toolbar-select"
@@ -2998,11 +3257,13 @@ function ColorPickerControl({
 export function ColorPickerPopoverBody({
   activeColor,
   value,
+  contextKey,
   onCommitColor,
   onPreviewColor
 }: {
   activeColor?: string;
   value: string;
+  contextKey?: string;
   onCommitColor: (color: string) => void;
   onPreviewColor: (color: string) => void;
 }) {
@@ -3010,12 +3271,14 @@ export function ColorPickerPopoverBody({
   const normalizedActiveColor = normalizeHexColor(activeColor ?? value) ?? normalizedValue;
   const [tab, setTab] = useState<ColorPickerTab>("color");
   const [hexInput, setHexInput] = useState(normalizedValue.toUpperCase());
+  const settledHex = useRef<string | undefined>(undefined);
   const draftRgb = useMemo(() => hexToRgbColor(normalizedValue) ?? { r: 17, g: 17, b: 17 }, [normalizedValue]);
   const draftCmyk = useMemo(() => rgbToCmykColor(draftRgb), [draftRgb]);
   const palettes = useMemo(() => colorPickerPaletteSets(), []);
 
   useEffect(() => {
     setHexInput(normalizedValue.toUpperCase());
+    settledHex.current = undefined;
   }, [normalizedValue]);
 
   const previewColor = (color: string) => {
@@ -3045,6 +3308,7 @@ export function ColorPickerPopoverBody({
     }
 
     setHexInput(normalized.toUpperCase());
+    settledHex.current = normalized;
     onPreviewColor(normalized);
     onCommitColor(normalized);
   };
@@ -3096,7 +3360,8 @@ export function ColorPickerPopoverBody({
       setHexInput(normalizedValue.toUpperCase());
       return;
     }
-    if (normalized !== normalizedValue) {
+    // Enter can release the input lease and blur before React publishes the new colour.
+    if (normalized !== normalizedValue && normalized !== settledHex.current) {
       applyAndCommitColor(normalized);
     } else {
       setHexInput(normalized.toUpperCase());
@@ -3135,12 +3400,15 @@ export function ColorPickerPopoverBody({
             />
             <label className="color-wheel-control">
               <span className="visually-hidden">System color wheel</span>
-              <input
+              <PaletteColorInput
                 className="color-wheel-input"
-                type="color"
-                value={normalizedValue}
+                contextKey={contextKey}
+                // The popover draft is optimistic too; only the model colour
+                // acknowledges a native chooser pick (or supplies its fallback).
+                value={normalizedActiveColor}
                 aria-label="System color wheel"
-                onChange={(event) => applyAndCommitColor(event.currentTarget.value)}
+                onPreviewColor={previewColor}
+                onCommitColor={commitColor}
               />
               <span className="color-wheel-face" aria-hidden="true">
                 <span className="color-wheel-current" style={{ "--picker-color": normalizedValue } as CSSProperties} />
