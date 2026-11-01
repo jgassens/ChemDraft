@@ -3,8 +3,9 @@ import { isDesktopRuntime } from "../window-manager";
 
 /** One plugin menu item shaped for the Rust native-menu bridge (ADR-0016). */
 export interface NativePluginMenuItem {
-  /** The `plugin.*` command id — the native menu routes clicks back by this prefix. */
+  /** Plugin command id, or an explicitly core-routed dynamic command id. */
   id: string;
+  coreRouted?: boolean;
   label: string;
   enabled: boolean;
   location: PluginAppMenuItem["location"];
@@ -20,6 +21,7 @@ export function pluginItemsForNativeMenu(
   return items
     .map((item) => ({
       id: item.command.commandId,
+      ...(item.command.coreRouted ? { coreRouted: true } : {}),
       label: item.command.label,
       enabled: item.command.enabled,
       location: item.location
