@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { compareLayoutQuality, evaluateLayoutQuality, prepareLayoutLabelEvaluator, labelBoxBondDistance,
-  LABEL_CLEARANCE_PADDING, MAX_BRIDGE_STRETCH, type LayoutPoint, type LayoutLabelBox } from "./layoutQuality";
+  LABEL_CLEARANCE_PADDING, MAX_BRIDGE_STRETCH, layoutAtomAndLabelDefects, type LayoutPoint, type LayoutLabelBox } from "./layoutQuality";
 import { testMoleculeFromSmiles } from "./testing";
 import { moleculeLayoutLabelBoxes, planMoleculeAtomLabels } from "./index";
 import type { MoleculeObject } from "@chemdraft/chem-core";
@@ -11,6 +11,16 @@ const polygon = (n: number): LayoutPoint[] => Array.from({ length: n }, (_, i) =
 const cycle = (n: number) => Array.from({ length: n }, (_, from) => ({ from, to: (from + 1) % n }));
 
 describe("2D layout quality", () => {
+  it("ranks every atom and label defect ahead of any number of cage crossings", () => {
+    const clear = evaluateLayoutQuality(polygon(6), cycle(6));
+    const crossingOnly = { ...clear, crossings: [[0, 1], [1, 2], [2, 3]] as [number, number][], hardDefects: 3 };
+    for (const field of ["overlappingAtoms", "atomBondOverlaps", "collinearBondOverlaps", "labelBondOverlaps", "labelLabelOverlaps"] as const) {
+      const overlapping = { ...clear, [field]: [[0, 1]], hardDefects: 1 };
+      expect(layoutAtomAndLabelDefects(overlapping)).toBe(1);
+      expect(compareLayoutQuality(crossingOnly, overlapping)).toBeLessThan(0);
+    }
+    expect(compareLayoutQuality(clear, crossingOnly)).toBeLessThan(0);
+  });
   it("rechecks stationary attachment labels against stationary bonds and labels", () => {
     const atoms = [{ x: 0, y: 0 }, { x: 30, y: 0 }, { x: -20, y: 0 }, { x: -20, y: 30 }];
     const bonds = [{ from: 0, to: 1 }, { from: 2, to: 3 }];

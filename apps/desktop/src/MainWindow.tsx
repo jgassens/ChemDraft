@@ -510,6 +510,7 @@ import {
   nativeMoleculeUnmodeledMetalElements,
   applyNativeMoleculeEngineRelayout,
   prepareNativeMoleculeEngineRelayout,
+  cleanUpStructureStatus,
   type NativeMoleculeRelayoutEngine,
   cleanUpNativeMolecules2d,
   moleculeHasFusedRingSystem,
@@ -1646,7 +1647,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "10.31.12.35-codex";
+const CURRENT_BUILD_STAMP = "11.01.09.00-codex";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -4517,8 +4518,8 @@ export function MainWindow({
       setObjectContextMenu(undefined);
     };
     const targetLabel = targetObjectIds.length === 1 ? "structure" : "structures";
-    const cleanedStatus = (changed: boolean) =>
-      changed ? `Cleaned up selected ${targetLabel}` : `Selected ${targetLabel} already clean`;
+    const cleanedStatus = (changed: boolean, warnings: readonly string[] = []) =>
+      cleanUpStructureStatus(documentRef.current, targetObjectIds, changed, warnings);
 
     // The polygon+tree pass idealises single-ring components in place. Anything with more than
     // one ring per component (fused, bridged, spiro, several rings joined through chains or a
@@ -4576,7 +4577,7 @@ export function MainWindow({
           return;
         }
         const changed = commitDocumentChange(() => prepared);
-        setStatus(cleanedStatus(changed) + (warnings.length ? ` — ${[...new Set(warnings)].join(" ")}` : ""));
+        setStatus(cleanedStatus(changed, warnings));
       } catch (error) {
         setStatus(`Clean up failed: ${error instanceof Error ? error.message : String(error)}`);
       }

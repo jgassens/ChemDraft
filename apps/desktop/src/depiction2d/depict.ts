@@ -1,6 +1,7 @@
 import { pastedStructureDepictionFromMolfile, type PastedStructureDepiction } from "@chemdraft/document-workflow-core";
 import type { Smiles2DOptions } from "@chemdraft/rdkit-adapter";
 import type { DepictionEngineAvailability } from "@chemdraft/rdkit-adapter/depiction";
+import { gatePasteDepiction, pasteDepictionHasOverlaps } from "./qualityGate";
 
 export interface PasteDepiction {
   depiction: PastedStructureDepiction;
@@ -41,11 +42,14 @@ export async function depictInWorker(
         input = normalized;
       } finally { molecule?.delete(); }
     }
-    return fromMolfile(await generateMolfile(input, {
+    return gatePasteDepiction(fromMolfile(await generateMolfile(input, {
       ...options,
       openUnspecifiedDoubleBonds: true,
-      onStandardMolfile: (molfile) => onStandard(fromMolfile(molfile))
-    }));
+      onStandardMolfile: (molfile) => {
+        const standard = fromMolfile(molfile);
+        if (!pasteDepictionHasOverlaps(standard, smiles)) onStandard(standard);
+      }
+    })), smiles, options);
   } catch (error) {
     if (!ocl) throw error;
     if (options.rdkitLoadFailure !== undefined) warnings.push(`RDKit failed to load: ${options.rdkitLoadFailure}; used OpenChemLib fallback.`);
@@ -60,7 +64,7 @@ export async function depictInWorker(
       throw error;
     }
     try {
-      return fromMolfile(fallback.molfile);
+      return gatePasteDepiction(fromMolfile(fallback.molfile), smiles, options);
     } catch {
       // Large OCL coordinates can overflow V2000. Keep the existing structured fallback.
       const depiction: PastedStructureDepiction = {
@@ -74,7 +78,7 @@ export async function depictInWorker(
       } catch {
         stereoCount = fallback.bonds.filter((bond) => bond.wedge !== null).length;
       }
-      return { depiction, stereoCount, ...(warnings.length ? { warnings: [...warnings] } : {}) };
+      return gatePasteDepiction({ depiction, stereoCount, ...(warnings.length ? { warnings: [...warnings] } : {}) }, smiles, options);
     }
   }
 }

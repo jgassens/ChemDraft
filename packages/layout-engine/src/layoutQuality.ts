@@ -345,9 +345,60 @@ export function evaluateLayoutQuality(
       regularRings };
 }
 
-/** Negative means a is better; hard defects always outrank the soft geometry score. */
+/** Crossings can be unavoidable in cages; atom and label collisions never are acceptable. */
+export function layoutAtomAndLabelDefects(quality: LayoutQuality): number {
+  return quality.overlappingAtoms.length + quality.atomBondOverlaps.length + quality.collinearBondOverlaps.length +
+    quality.labelBondOverlaps.length + quality.labelLabelOverlaps.length;
+}
+
+/** Negative means a is better; atom/label defects outrank crossings, then soft geometry. */
 export function compareLayoutQuality(a: LayoutQuality, b: LayoutQuality): number {
-  return a.hardDefects - b.hardDefects || a.softScore - b.softScore;
+  return layoutAtomAndLabelDefects(a) - layoutAtomAndLabelDefects(b) ||
+    a.crossings.length - b.crossings.length || a.softScore - b.softScore;
+}
+
+/** Bounded local separation for a cage projection, where removing crossings is impossible.
+ * Ordinary ring/fragment repairs stay preferred. Only coordinates are proposed; the caller
+ * must read back identity and stereo before accepting any moved atom. */
+export function repairBridgedLayoutContacts(
+  atoms: readonly LayoutPoint[], bonds: readonly LayoutBond[],
+  labelBoxes: (points: readonly LayoutPoint[]) => readonly LayoutLabelBox[] = () => []
+): LayoutPoint[] | undefined {
+  // This is a small-cage fallback, not an unbounded geometry optimiser for large graphs.
+  if (atoms.length > 100) return undefined;
+  const topology = prepareLayoutTopology(atoms.length, bonds);
+  const evaluate = (points: readonly LayoutPoint[]) => evaluateLayoutQuality(points, bonds, undefined,
+    topology, undefined, labelBoxes(points));
+  let points = atoms.map(atom => ({ ...atom }));
+  let quality = evaluate(points);
+  if (!quality.hasBridgedRings || layoutAtomAndLabelDefects(quality) === 0) return undefined;
+  const reference = quality.referenceBondLength;
+  let trials = 0;
+  for (let step = 0; step < 12; step++) {
+    const contacts = new Set([...quality.overlappingAtoms.flat(), ...quality.atomBondOverlaps.map(([atom]) => atom)]);
+    let best: { points: LayoutPoint[]; quality: LayoutQuality; displacement: number } | undefined;
+    for (const atom of contacts) for (const radius of [0.08, 0.16, 0.24, 0.32]) for (let direction = 0; direction < 16; direction++) {
+      if (++trials > 1024) return undefined;
+      const angle = direction * Math.PI / 8;
+      const trial = points.map((point, i) => i !== atom ? point : ({
+        x: point.x + radius * reference * Math.cos(angle), y: point.y + radius * reference * Math.sin(angle)
+      }));
+      // Never drift far from the engine's projection, even over successive accepted moves.
+      const displacement = trial.reduce((sum, p, i) => sum + distance(p, atoms[i]) ** 2, 0) / reference ** 2;
+      if (trial.some((p, i) => distance(p, atoms[i]) > 0.5 * reference)) continue;
+      const q = evaluate(trial);
+      if (layoutAtomAndLabelDefects(q) >= layoutAtomAndLabelDefects(quality)) continue;
+      if (!best || layoutAtomAndLabelDefects(q) < layoutAtomAndLabelDefects(best.quality) ||
+          (layoutAtomAndLabelDefects(q) === layoutAtomAndLabelDefects(best.quality) && displacement < best.displacement)) {
+        best = { points: trial, quality: q, displacement };
+      }
+    }
+    if (!best) return undefined;
+    points = best.points;
+    quality = best.quality;
+    if (layoutAtomAndLabelDefects(quality) === 0) return points;
+  }
+  return undefined;
 }
 
 /** Exact distance from an axis-aligned label box to a bond centreline. */
