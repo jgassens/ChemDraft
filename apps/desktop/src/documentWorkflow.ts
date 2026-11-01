@@ -157,6 +157,9 @@ import {
   moleculeFillCycleKeyBondIds,
   nativeMoleculeRings,
   planBondExtension,
+  ringAttachmentFallbackPoints,
+  ringAttachmentIsClear,
+  layoutPointsFitBounds,
   bondGrowthAngleDegrees,
   linearBondGrowthAimDegrees,
   planFreeformBondExtension,
@@ -3077,43 +3080,57 @@ export type NativeTemplateFallbackReason =
   | "double-bond-overfill"
   | "bond-cannot-accept";
 
-/** Compute the placement a template click would make, without mutating the document. */
+/** Compute a previewable plan; refused placements have no preview. */
 export function planNativeTemplatePlacement(
   document: ChemDraftDocument,
   placement: { point: PagePoint; target?: NativeMoleculeDeleteTarget },
   templateId: NativeMoleculeTemplateId
 ): NativeTemplatePlacementPlan | undefined {
+  return nativeTemplatePlacementResult(document, placement, templateId).plan;
+}
+
+/** Resolve a template click, retaining the reason when page bounds refuse its placement. */
+export function nativeTemplatePlacementResult(
+  document: ChemDraftDocument,
+  placement: { point: PagePoint; target?: NativeMoleculeDeleteTarget },
+  templateId: NativeMoleculeTemplateId
+): { plan?: NativeTemplatePlacementPlan; refusal?: "sprout-page-edge" } {
   const { point, target } = placement;
   if (target) {
     const molecule = firstPage(document).objects.find((object): object is MoleculeObject =>
       object.id === target.objectId && object.type === "molecule"
     );
     if (!molecule || !isEditableNativeMoleculeGraph(molecule)) {
-      return standaloneNativeTemplateFallbackPlan(document, point, templateId, "structure-not-editable");
+      return { plan: standaloneNativeTemplateFallbackPlan(document, point, templateId, "structure-not-editable") };
     }
 
     if (target.kind === "atom") {
       const atom = molecule.atoms.find((candidate) => candidate.id === target.atomId);
       if (!atom) {
-        return standaloneNativeTemplateFallbackPlan(document, point, templateId, "target-unavailable");
+        return { plan: standaloneNativeTemplateFallbackPlan(document, point, templateId, "target-unavailable") };
       }
     }
 
+    const attachment = target.kind === "atom"
+      ? attachNativeTemplateRingToAtomOnPage(molecule, target.atomId, point, templateId, firstPage(document))
+      : undefined;
+    // A page-blocked attachment is refused, never turned into a separate ring elsewhere.
+    if (attachment?.refusal) return { refusal: attachment.refusal };
     const nextMolecule = target.kind === "bond"
       ? fuseNativeTemplateRingToBond(molecule, target.bondId, point, templateId)
-      : attachNativeTemplateRingToAtom(molecule, target.atomId, point, templateId);
+      : attachment?.molecule;
     if (!nextMolecule) {
-      return standaloneNativeTemplateFallbackPlan(
+      return { plan: standaloneNativeTemplateFallbackPlan(
         document,
         point,
         templateId,
         nativeRingTargetFailureValenceReason(molecule, target)
           ?? (target.kind === "bond" ? "bond-cannot-accept" : "target-unavailable")
-      );
+      ) };
     }
     const valenceRefusal = nativeRingPlacementValenceRefusal(molecule, nextMolecule, target);
     if (valenceRefusal) {
-      return standaloneNativeTemplateFallbackPlan(document, point, templateId, valenceRefusal);
+      return { plan: standaloneNativeTemplateFallbackPlan(document, point, templateId, valenceRefusal) };
     }
 
     const existingAtomIds = new Set(molecule.atoms.map((atom) => atom.id));
@@ -3127,24 +3144,24 @@ export function planNativeTemplatePlacement(
     const kind = target.kind === "atom"
       ? "attach-atom"
       : addedAtomIds.length < fusedNewAtoms ? "fused-closure" : "fuse-bond";
-    return {
+    return { plan: {
       kind,
       templateId,
       molecule: nextMolecule,
       objectId: molecule.id,
       addedAtomIds,
       addedBondIds
-    };
+    } };
   }
 
   const molecule = createNativeTemplateMolecule(document, point, templateId);
-  return {
+  return { plan: {
     kind: "standalone",
     templateId,
     molecule,
     addedAtomIds: molecule.atoms.map((atom) => atom.id),
     addedBondIds: molecule.bonds.map((bond) => bond.id)
-  };
+  } };
 }
 
 /** Why a ring placement is refused for valence: the outcome {@link nativeRingPlacementValenceRefusal} reports. */
@@ -3712,6 +3729,53 @@ function nativeClosureExceedsDegreeCap(molecule: MoleculeObject, newBonds: reado
     bump(bond.toAtomId);
   });
   return molecule.atoms.some((atom) => (degree.get(atom.id) ?? 0) > 3);
+}
+
+/** Keep the preferred attachment exactly when it fits; otherwise try complete alternate rings. */
+function attachNativeTemplateRingToAtomOnPage(
+  molecule: MoleculeObject,
+  atomId: string,
+  point: PagePoint,
+  templateId: NativeMoleculeTemplateId,
+  page: ChemDraftDocument["pages"][number]
+): { molecule?: MoleculeObject; refusal?: "sprout-page-edge" } {
+  const preferred = attachNativeTemplateRingToAtom(molecule, atomId, point, templateId);
+  // Preserve the existing geometry/valence refusals (including separate-placement tool fallbacks).
+  if (!preferred || nativeRingPlacementValenceRefusal(molecule, preferred, {
+    objectId: molecule.id, kind: "atom", atomId, distanceToPointer: 0
+  })) return { molecule: preferred };
+
+  const existingAtomIds = new Set(molecule.atoms.map((atom) => atom.id));
+  const pageBounds = { x: 0, y: 0, width: page.width, height: page.height };
+  const fits = (candidate: MoleculeObject) => layoutPointsFitBounds(
+    candidate.atoms.filter((atom) => !existingAtomIds.has(atom.id)),
+    pageBounds
+  );
+  if (fits(preferred)) return { molecule: preferred };
+
+  const growthDirection = nativeBondGrowthPlanForAtom(molecule, atomId, page.width, page.height)?.direction;
+  const candidates = ringAttachmentFallbackPoints({
+    atoms: molecule.atoms,
+    bonds: molecule.bonds,
+    sourceAtomId: atomId,
+    bondLength: nativeTemplateBondLength(molecule),
+    pageBounds,
+    targetBondAngleDegrees: nativeDrawingStyleFromObjectStyle(molecule.style).chainAngleDegrees,
+    growthDirection
+  });
+  const existingBondIds = new Set(molecule.bonds.map((bond) => bond.id));
+  for (const candidatePoint of candidates) {
+    const candidate = attachNativeTemplateRingToAtom(molecule, atomId, candidatePoint, templateId);
+    if (candidate && fits(candidate) && ringAttachmentIsClear({
+      atoms: molecule.atoms,
+      bonds: molecule.bonds,
+      addedAtoms: candidate.atoms.filter((atom) => !existingAtomIds.has(atom.id)),
+      addedBonds: candidate.bonds.filter((bond) => !existingBondIds.has(bond.id)),
+      sourceAtomId: atomId,
+      bondLength: nativeTemplateBondLength(molecule)
+    })) return { molecule: candidate };
+  }
+  return { refusal: "sprout-page-edge" };
 }
 
 function attachNativeTemplateRingToAtom(
@@ -7993,7 +8057,6 @@ function nativeCyclicClosurePatched(
 /** Refusal diagnostics only: these helpers never decide whether a sprout is placed. */
 export type NativeAtomSproutRefusal = NativeRingHotkeyRefusal
   | "sprout-no-free-direction"
-  | "sprout-page-edge"
   | "sprout-needs-two-valences"
   | "methylidene-needs-neutral-carbon"
   | "connection-atom-no-free-valence"
@@ -8048,6 +8111,7 @@ export type NativeRingHotkeyResult = {
  */
 export type NativeRingHotkeyRefusal =
   | NativeTemplateFallbackReason
+  | "sprout-page-edge"
   | "atom-label-not-element"
   | "ring-geometry-unavailable";
 
@@ -8116,7 +8180,9 @@ export function nativeRingHotkeyAttachAtAtomTarget(
   const orientationPoint = direction
     ? { x: sourceAtom.x + direction.x * nativeBondLength, y: sourceAtom.y + direction.y * nativeBondLength }
     : { x: sourceAtom.x, y: sourceAtom.y };
-  const attached = attachNativeTemplateRingToAtom(molecule, target.atomId, orientationPoint, templateId);
+  const attachment = attachNativeTemplateRingToAtomOnPage(molecule, target.atomId, orientationPoint, templateId, page);
+  if (attachment.refusal) return { document, refusal: attachment.refusal };
+  const attached = attachment.molecule;
   if (!attached) {
     return {
       document,

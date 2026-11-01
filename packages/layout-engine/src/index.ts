@@ -1,5 +1,6 @@
 export * from "./layoutQuality";
 import type { LayoutLabelBox } from "./layoutQuality";
+import { bondsOverlap } from "./layoutQuality";
 export * from "./layoutRepair";
 export { DocumentStyleScale, documentStylePointBounds, FigureStyles, type FigureStyle } from "./documentStyle";
 export {
@@ -404,6 +405,120 @@ export function planBondExtension(input: BondExtensionPlanningInput): BondExtens
   }
   // No direction leaves a visible bond inside the page: decline rather than draw one.
   return undefined;
+}
+
+/**
+ * Alternate ring-centre aims after an attachment's preferred aim does not fit the page.
+ * Try the widest open-angle bisector, then the former chain-growth aim and the remaining
+ * scored growth directions before narrower gaps. These are aims, never clamped ring vertices.
+ */
+export function ringAttachmentFallbackPoints(input: {
+  atoms: readonly MoleculeLayoutAtom[];
+  bonds: readonly MoleculeLayoutBond[];
+  sourceAtomId: string;
+  bondLength: number;
+  pageBounds: LayoutBounds;
+  targetBondAngleDegrees: number;
+  growthDirection?: LayoutPoint;
+}): LayoutPoint[] {
+  const sourceAtom = input.atoms.find((atom) => atom.id === input.sourceAtomId);
+  if (!sourceAtom) return [];
+  const neighbors = bondedNeighbors(input.atoms, input.bonds, sourceAtom.id);
+  const angles = neighbors.map((neighbor) => normalizeAngle(angleBetweenPoints(sourceAtom, neighbor)))
+    .sort((left, right) => left - right);
+  const gaps = angles.map((angle, index) => {
+    const next = angles[(index + 1) % angles.length]!;
+    const gap = (index === angles.length - 1 ? next + Math.PI * 2 : next) - angle;
+    return { gap, midpoint: normalizeAngle(angle + gap / 2) };
+  }).sort((left, right) => right.gap - left.gap || left.midpoint - right.midpoint);
+  const directions = extensionDirections({
+    ...input,
+    sourceAtom,
+    neighbors,
+    clickPoint: sourceAtom,
+    maxBondsPerAtom: Number.POSITIVE_INFINITY,
+    collisionRadius: input.bondLength * 0.45
+  });
+  const candidates = [
+    ...gaps.filter(({ gap }) => gap === gaps[0]?.gap).map(({ midpoint }) => midpoint),
+    ...(input.growthDirection ? [angleFromDirection(input.growthDirection)] : []),
+    ...directions.map(angleFromDirection),
+    ...gaps.map(({ midpoint }) => midpoint),
+    // A bare atom has no angular gaps; allow its ring to face each page direction.
+    ...(neighbors.length === 0 ? [-Math.PI / 2, 0, Math.PI / 2, Math.PI] : [])
+  ];
+  return uniqueAngles(candidates).map((angle) => ({
+    x: sourceAtom.x + Math.cos(angle) * input.bondLength,
+    y: sourceAtom.y + Math.sin(angle) * input.bondLength
+  }));
+}
+
+/** Whole-geometry page check: attachments must fit without clamping or distorting any vertex. */
+export function layoutPointsFitBounds(points: readonly LayoutPoint[], bounds: LayoutBounds): boolean {
+  return points.every((point) => pointInsideExpandedBounds(point, bounds, 0));
+}
+
+/** Only judge added geometry: existing overlaps must not veto a new ring elsewhere. */
+export function ringAttachmentIsClear(input: {
+  atoms: readonly MoleculeLayoutAtom[];
+  bonds: readonly MoleculeLayoutBond[];
+  addedAtoms: readonly MoleculeLayoutAtom[];
+  addedBonds: readonly MoleculeLayoutBond[];
+  sourceAtomId: string;
+  bondLength: number;
+}): boolean {
+  // Match the growth planner's collision radius (rather than accepting near-duplicate atoms).
+  if (input.addedAtoms.some((point) =>
+    nearestOtherAtomDistance(input.atoms, input.sourceAtomId, point) < input.bondLength * 0.45
+  )) return false;
+
+  const atomById = new Map([...input.atoms, ...input.addedAtoms].map((atom) => [atom.id, atom]));
+  // A narrow gap can wrap the new ring around an existing small ring: no atom is too close and no
+  // bond crosses, yet the existing atoms sit inside the new polygon.
+  const newRing = addedRingPolygon(atomById, input.addedBonds, input.sourceAtomId);
+  if (newRing && input.atoms.some((atom) =>
+    atom.id !== input.sourceAtomId && pointInPolygon(atom, newRing)
+  )) return false;
+
+  return input.addedBonds.every((added) => input.bonds.every((existing) => {
+    const from = atomById.get(added.fromAtomId);
+    const to = atomById.get(added.toAtomId);
+    const existingFrom = atomById.get(existing.fromAtomId);
+    const existingTo = atomById.get(existing.toAtomId);
+    // bondsOverlap permits a shared endpoint but rejects crossings and collinear overlap.
+    return from !== undefined && to !== undefined && existingFrom !== undefined && existingTo !== undefined
+      && !bondsOverlap(from, to, existingFrom, existingTo, input.bondLength);
+  }));
+}
+
+/** The new ring's vertices in order, walked from the source atom; undefined unless it is one simple cycle. */
+function addedRingPolygon(
+  atomById: ReadonlyMap<string, MoleculeLayoutAtom>,
+  addedBonds: readonly MoleculeLayoutBond[],
+  sourceAtomId: string
+): LayoutPoint[] | undefined {
+  const neighbors = new Map<string, string[]>();
+  for (const bond of addedBonds) {
+    neighbors.set(bond.fromAtomId, [...(neighbors.get(bond.fromAtomId) ?? []), bond.toAtomId]);
+    neighbors.set(bond.toAtomId, [...(neighbors.get(bond.toAtomId) ?? []), bond.fromAtomId]);
+  }
+  if (!neighbors.has(sourceAtomId) || [...neighbors.values()].some((ids) => ids.length !== 2)) {
+    return undefined;
+  }
+  const ids = [sourceAtomId];
+  let previous = sourceAtomId;
+  let current = neighbors.get(sourceAtomId)![0]!;
+  while (current !== sourceAtomId) {
+    if (ids.includes(current)) return undefined;
+    ids.push(current);
+    const next = neighbors.get(current)!.find((id) => id !== previous);
+    if (next === undefined) return undefined;
+    previous = current;
+    current = next;
+  }
+  if (ids.length < 3 || ids.length !== neighbors.size) return undefined;
+  const points = ids.map((id) => atomById.get(id));
+  return points.every((point) => point !== undefined) ? (points as LayoutPoint[]) : undefined;
 }
 
 /**

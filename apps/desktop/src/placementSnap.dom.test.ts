@@ -3,7 +3,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ChemDraftDocument, MoleculeObject, Point } from "@chemdraft/chem-core";
+import { applyPatch, createCustomPageLayout, type ChemDraftDocument, type MoleculeObject, type Point } from "@chemdraft/chem-core";
 import { nativeBondLengthPx } from "@chemdraft/document-workflow-core";
 import { MainWindow } from "./MainWindow";
 import { applyNativeChainTool, applySingleBondToolAtPoint, createPhase4Document, insertNativeSingleBondMolecule } from "./documentWorkflow";
@@ -175,6 +175,62 @@ describe.each(["macos", "windows"] as const)("placement pointer handlers on %s",
     await pointer("pointerup", pointAt(start, 43), page(), !alt);
     expect(molecules(current())[0]).toEqual(preview);
     await undoOnce([]);
+  });
+
+  function edgeRingSeed() {
+    const seed = insertNativeSingleBondMolecule(createPhase4Document("Ring at page edge"), { x: 761, y: 300 });
+    const molecule = molecules(seed)[0];
+    return applyPatch(seed, { op: "updateObject", objectId: molecule.id, changes: {
+      atoms: molecule.atoms.map((atom, index) => ({ ...atom, x: index === 0 ? 761 : 783, y: 300 }))
+    } });
+  }
+
+  it.each([
+    ["3", 7, "C7H8"], ["6", 7, "C7H14"], ["7", 6, "C6H12"]
+  ] as const)("hover hotkey %s fits its entire ring at the page edge in one undo step", async (key, atomCount, formula) => {
+    await mount("tool.bond", edgeRingSeed());
+    const before = molecules(current());
+    const source = before[0].atoms[1];
+    const wrapper = container.querySelector<HTMLElement>(`[data-object-id="${before[0].id}"]`)!;
+    await pointer("pointermove", source, wrapper);
+    await act(async () => window.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })));
+    const after = molecules(current())[0];
+    expect(after.atoms).toHaveLength(atomCount);
+    expect(after.chemistry?.formula).toBe(formula);
+    expect(after.atoms.slice(0, 2)).toEqual(before[0].atoms);
+    for (const atom of after.atoms) {
+      expect(atom.x).toBeGreaterThanOrEqual(0);
+      expect(atom.x).toBeLessThanOrEqual(current().pages[0].width);
+      expect(atom.y).toBeGreaterThanOrEqual(0);
+      expect(atom.y).toBeLessThanOrEqual(current().pages[0].height);
+    }
+    await undoOnce(before);
+  });
+
+  it.each(["hotkey", "tool click"] as const)("reports the page-edge refusal for a blocked ring %s, without an undo entry", async (method) => {
+    const seed = edgeRingSeed();
+    const molecule = molecules(seed)[0];
+    const positioned = applyPatch(seed, { op: "updateObject", objectId: molecule.id, changes: {
+      atoms: molecule.atoms.map((atom) => ({ ...atom, y: 11 }))
+    } });
+    await mount(method === "hotkey" ? "tool.bond" : "tool.benzene", { ...positioned, pages: positioned.pages.map((page) => ({
+      ...page, height: 22,
+      layout: createCustomPageLayout(page.width / 96, 22 / 96, "inch", { top: 0, right: 0, bottom: 0, left: 0 })
+    })) });
+    const before = current();
+    const wrapper = container.querySelector<HTMLElement>(`[data-object-id="${molecule.id}"]`)!;
+    const source = molecules(before)[0].atoms[1];
+    if (method === "hotkey") {
+      await pointer("pointermove", source, wrapper);
+      await act(async () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "3", bubbles: true, cancelable: true })));
+    } else {
+      await pointer("pointerdown", source, wrapper);
+      await pointer("pointerup", source, wrapper);
+      expect(container.querySelector(".native-template-ghost-surface")).toBeNull();
+    }
+    expect(current()).toEqual(before);
+    expect(container.querySelector("[data-status-message]")?.textContent).toContain("the page edge blocks every direction");
+    expect(container.querySelector('[data-can-undo="true"]')).toBeNull();
   });
 
   it.each(["tool.cyclohexane", "tool.benzene"])("snaps %s aim, allows Alt mid-drag, and commits the preview", async (tool) => {

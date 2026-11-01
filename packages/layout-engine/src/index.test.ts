@@ -36,6 +36,8 @@ import {
   planBondExtension,
   bondGrowthAngleDegrees,
   linearBondGrowthAimDegrees,
+  ringAttachmentFallbackPoints,
+  ringAttachmentIsClear,
   planNativeArtVisual,
   planPageSvgRender,
   planMoleculeAtomLabels,
@@ -79,6 +81,93 @@ describe("native subscript ink", () => {
 });
 
 describe("layout-engine molecule growth planning", () => {
+  it("orders ring fallbacks by widest gap, chain aim, then other directions before narrow gaps", () => {
+    const points = ringAttachmentFallbackPoints({
+      atoms: [{ id: "source", x: 783, y: 300 }, { id: "left", x: 761, y: 300 }, { id: "up", x: 783, y: 278 }],
+      bonds: [{ fromAtomId: "source", toAtomId: "left" }, { fromAtomId: "source", toAtomId: "up" }],
+      sourceAtomId: "source", bondLength: 22, targetBondAngleDegrees: 120,
+      pageBounds: baseInput.pageBounds,
+      growthDirection: { x: 0.5, y: Math.sqrt(3) / 2 }
+    });
+    const angles = points.map((point) => Math.atan2(point.y - 300, point.x - 783) * 180 / Math.PI);
+    expect(angles[0]).toBeCloseTo(45, 6);
+    expect(angles[1]).toBeCloseTo(60, 6);
+    expect(angles.findIndex((angle) => Math.abs(angle + 135) < 1e-6)).toBeGreaterThan(1);
+  });
+
+  const ringAtoms = [
+    { id: "source", x: 0, y: 0 },
+    { id: "a", x: 11, y: -Math.sqrt(3) * 11 },
+    { id: "b", x: 33, y: -Math.sqrt(3) * 11 },
+    { id: "c", x: 44, y: 0 },
+    { id: "d", x: 33, y: Math.sqrt(3) * 11 },
+    { id: "e", x: 11, y: Math.sqrt(3) * 11 }
+  ];
+  const ringBonds = ringAtoms.map((atom, index) => ({
+    fromAtomId: atom.id, toAtomId: ringAtoms[(index + 1) % ringAtoms.length].id
+  }));
+  const clearRingInput = {
+    atoms: [ringAtoms[0], { id: "parent", x: -22, y: 0 }],
+    bonds: [{ fromAtomId: "source", toAtomId: "parent" }],
+    addedAtoms: ringAtoms.slice(1), addedBonds: ringBonds,
+    sourceAtomId: "source", bondLength: 22
+  };
+
+  it("accepts a clean ring with bonds meeting existing geometry at the source", () => {
+    expect(ringAttachmentIsClear(clearRingInput)).toBe(true);
+  });
+
+  it.each([11, 22, 44])("uses the growth clearance threshold at bond length %s", (bondLength) => {
+    const scale = bondLength / 22;
+    const atoms = clearRingInput.atoms.map((atom) => ({ ...atom, x: atom.x * scale, y: atom.y * scale }));
+    const addedAtoms = clearRingInput.addedAtoms.map((atom) => ({ ...atom, x: atom.x * scale, y: atom.y * scale }));
+    const obstacle = { id: "obstacle", x: addedAtoms[0].x, y: addedAtoms[0].y - bondLength * 0.44 };
+    expect(ringAttachmentIsClear({ ...clearRingInput, atoms: [...atoms, obstacle], addedAtoms, bondLength })).toBe(false);
+    expect(ringAttachmentIsClear({ ...clearRingInput, atoms: [...atoms, { ...obstacle,
+      y: addedAtoms[0].y - bondLength * 0.46 }], addedAtoms, bondLength })).toBe(true);
+  });
+
+  it("rejects a ring bond crossing an existing bond even with well-separated atoms", () => {
+    expect(ringAttachmentIsClear({
+      ...clearRingInput,
+      atoms: [...clearRingInput.atoms, { id: "top", x: 22, y: -44 }, { id: "bottom", x: 22, y: 44 }],
+      bonds: [...clearRingInput.bonds, { fromAtomId: "top", toAtomId: "bottom" }]
+    })).toBe(false);
+  });
+
+  it("rejects a ring that wraps around an existing atom without crossing any bond", () => {
+    expect(ringAttachmentIsClear({
+      ...clearRingInput,
+      atoms: [...clearRingInput.atoms, { id: "inner", x: 22, y: 0 }]
+    })).toBe(false);
+  });
+
+  it("rejects a hexagon drawn around a cyclopropane at a narrow gap", () => {
+    // Source at the top edge; its cyclopropane neighbours leave a ~60 degree gap that the hexagon fills.
+    const bondLength = 22;
+    const atoms = [
+      { id: "source", x: 0, y: 0 },
+      { id: "p1", x: 11, y: -bondLength * 0.5 },
+      { id: "p2", x: 11, y: bondLength * 0.5 },
+      { id: "cp", x: 33, y: 0 }
+    ];
+    const bonds = [
+      { fromAtomId: "source", toAtomId: "p1" }, { fromAtomId: "source", toAtomId: "p2" },
+      { fromAtomId: "p1", toAtomId: "p2" }, { fromAtomId: "p2", toAtomId: "cp" }
+    ];
+    expect(ringAttachmentIsClear({
+      atoms, bonds, addedAtoms: clearRingInput.addedAtoms, addedBonds: ringBonds,
+      sourceAtomId: "source", bondLength
+    })).toBe(false);
+  });
+
+  it("rejects a collinear overlapping bond at the shared source", () => {
+    expect(ringAttachmentIsClear({
+      ...clearRingInput,
+      atoms: [ringAtoms[0], { id: "parent", x: 22, y: -Math.sqrt(3) * 22 }]
+    })).toBe(false);
+  });
+
   it("reports atom degrees from native molecule graph edges", () => {
     expect(atomDegrees(baseInput.atoms, baseInput.bonds)).toEqual(new Map([
       ["atom_001", 1],
