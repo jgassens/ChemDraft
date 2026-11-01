@@ -5562,13 +5562,98 @@ export function planMoleculeAtomLabels(
   });
 }
 
-/** The same padded label geometry used by canvas, bond clipping and SVG export. */
+const sansSerifLabelFamilies: ReadonlySet<string> = new Set(["arial", "helvetica", "sans-serif"]);
+const monospaceLabelFamilies: ReadonlySet<string> = new Set(["courier", "courier new", "monospace"]);
+/** Courier's advance, in em, for every character; Courier New and the generic monospace stacks agree. */
+const monospaceAdvanceEm = 0.6;
+/** Horizontal shear of a (possibly synthetic) italic, as run-over-rise. */
+const italicShear = 0.25;
+
+/** How a label font's glyph extents are known: Helvetica/Arial metrics, Courier metrics, or not at all. */
+function atomLabelFontClass(fontFamily: string): "sans-serif" | "monospace" | "unknown" {
+  const families = fontFamily.split(",").map(family => family.trim().replace(/^["']|["']$/g, "").toLowerCase());
+  if (families.every(family => sansSerifLabelFamilies.has(family))) return "sans-serif";
+  // A bare generic monospace renders as Consolas on Windows, whose ink was never checked: only a
+  // stack that names Courier first is known.
+  if (families[0] !== "monospace" && families.every(family => monospaceLabelFamilies.has(family))) return "monospace";
+  return "unknown";
+}
+
+/** Characters whose advance (`sansSerifAdvanceEm`, or the 0.62 em fallback, which is at least as wide)
+ * and vertical extent (`atomLabelCharacterExtent`) are known; @, %, &, Greek, dashes and the like are not. */
+function atomLabelCharacterIsCovered(character: string): boolean {
+  return character in sansSerifAdvanceEm || /^[()[\]{},;_/|.:'"*=<>!?#~^`\u2212]$/.test(character);
+}
+
+/** A character's ink above and below its baseline, in em (below positive), enclosing the Helvetica
+ * and Courier core-14 AFM boxes, regular and bold. Signs sit mid-em, so a minus has no cap-height
+ * box above a negatively charged O; parentheses, brackets, braces, commas and Q descend; a character
+ * outside the table is given the room of an accented capital with a descender. */
+function atomLabelCharacterExtent(character: string): { ascent: number; descent: number } {
+  if (/[gjpqy]/.test(character)) return { ascent: 0.75, descent: 0.23 };
+  if (character === "Q") return { ascent: 0.75, descent: 0.15 };
+  if (/[()[\]{}]/.test(character)) return { ascent: 0.75, descent: 0.22 };
+  if (character === "," || character === ";") return { ascent: 0.75, descent: 0.17 };
+  if (character === "_") return { ascent: 0.75, descent: 0.13 };
+  if (character === "/") return { ascent: 0.75, descent: 0.08 };
+  if (character === "|") return { ascent: 0.78, descent: 0.23 };
+  if (character === "+") return { ascent: 0.62, descent: 0.03 };
+  if (character === "-" || character === "\u2212") return { ascent: 0.36, descent: -0.19 };
+  if (/^[A-Za-z0-9.:'"*=<>!?&%#@~^`]$/.test(character)) return { ascent: 0.75, descent: 0.03 };
+  return { ascent: 0.95, descent: 0.3 };
+}
+
+/** Glyph extents at the renderer's run positions, without bond-clipping padding.
+ * SVG/canvas text uses dy=0.35em, not a vertically centred em box. Keeping the
+ * clipping envelope here used to report separated acid labels as overlapping.
+ * The box must enclose the ink of whichever font draws the label. Helvetica/Arial
+ * (the advances anchored label placement uses) get glyph-tight horizontal extents;
+ * a monospace family is widened to Courier's advance from the run's text anchor; any other
+ * family, or a label with a character this module has no metrics for, gets the padded renderer
+ * bounds, whose extents are unknown to this module. */
+export function atomLabelGlyphBounds(plan: AtomLabelPlan): LayoutBounds {
+  const fontClass = atomLabelFontClass(plan.fontFamily);
+  if (fontClass === "unknown") return { ...plan.layout.bounds };
+  if (plan.layout.runs.some(run => [...run.text].some(character => !atomLabelCharacterIsCovered(character)))) {
+    return { ...plan.layout.bounds };
+  }
+  const italic = plan.drawingStyle.atomLabelFontStyle === "italic";
+  const boxes = plan.layout.runs.map(run => {
+    const size = atomLabelRunFontSize(run.script, plan.drawingStyle) ?? plan.fontSizePx;
+    const characters = [...run.text];
+    const width = fontClass === "monospace"
+      ? characters.length * monospaceAdvanceEm * size
+      : atomLabelRunAdvance(run, plan.drawingStyle);
+    const extents = characters.map(atomLabelCharacterExtent);
+    const ascent = Math.max(...extents.map(extent => extent.ascent));
+    const descent = Math.max(...extents.map(extent => extent.descent));
+    // Ink may overhang the advance a little (a slash, a bold Courier y), and a slanted
+    // glyph leans right above its baseline and left below it.
+    const overhang = size * (fontClass === "monospace" || characters.includes("/") ? 0.02 : 0);
+    const lean = italic ? size * italicShear : 0;
+    const leftEdge = run.x - (run.textAnchor === "middle" ? width / 2 : run.textAnchor === "end" ? width : 0);
+    const left = leftEdge - overhang - lean * Math.max(0, descent);
+    const right = leftEdge + width + overhang + lean * ascent;
+    return {
+      x: left,
+      y: run.y + size * (0.35 - ascent),
+      width: right - left,
+      height: size * (ascent + descent)
+    };
+  });
+  const x = Math.min(...boxes.map(box => box.x)), y = Math.min(...boxes.map(box => box.y));
+  return { x, y, width: Math.max(...boxes.map(box => box.x + box.width)) - x,
+    height: Math.max(...boxes.map(box => box.y + box.height)) - y };
+}
+
+/** Collision boxes follow the drawn glyphs; clipping/halos retain their own padding. */
 export function moleculeLayoutLabelBoxes(object: MoleculeObject): LayoutLabelBox[] {
   const indices = new Map(object.atoms.map((atom, i) => [atom.id, i]));
-  return planMoleculeAtomLabels(object).map(plan => ({
-    atom: indices.get(plan.atom.id)!, x: plan.anchor.x + plan.layout.bounds.x,
-    y: plan.anchor.y + plan.layout.bounds.y, width: plan.layout.bounds.width, height: plan.layout.bounds.height
-  }));
+  return planMoleculeAtomLabels(object).map(plan => {
+    const bounds = atomLabelGlyphBounds(plan);
+    return { atom: indices.get(plan.atom.id)!, x: plan.anchor.x + bounds.x,
+      y: plan.anchor.y + bounds.y, width: bounds.width, height: bounds.height };
+  });
 }
 
 /** Page-axis bounds of a caption's stored frame, using the same pivot as text SVG rendering. */

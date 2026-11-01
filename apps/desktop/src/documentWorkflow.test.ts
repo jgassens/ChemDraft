@@ -4626,9 +4626,9 @@ describe("Phase 4 document workflow", () => {
         .map(b => ({ from: ids.get(b.fromAtomId)!, to: ids.get(b.toAtomId)! }));
       const q = layoutEngine.evaluateLayoutQuality(after.atoms, bonds, target, undefined, undefined,
         layoutEngine.moleculeLayoutLabelBoxes(after));
-      // Record the unexempted final contacts at default font size: only two Zn/donor pairs.
+      // Glyph extents no longer touch for the Zn/donor pairs at default font size.
       expect(q.labelLabelOverlaps.map(pair => pair.map(i => after.atoms[i].id)))
-        .toEqual([["atom_008", "atom_009"], ["atom_008", "atom_014"]]);
+        .toEqual([]);
       expect(q.labelBondOverlaps).toEqual([]);
       expect(q.overlappingAtoms).toEqual([]);
       expect(q.atomBondOverlaps).toEqual([]);

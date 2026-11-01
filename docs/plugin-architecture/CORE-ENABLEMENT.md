@@ -42,6 +42,7 @@ these against its own UI; the shapes are the reference implementation.
 | `recognitionAgreement.ts` | Agreement levels, the disagreement warnings, and the host's capped tier. The review never looks a recognition up by plugin-echoed text: the plugin host attaches its own record (warnings, tier, source image, SMILES, MOL) to the queued proposal. |
 | `recognitionPreview.ts` | Draws the molecule a recognition proposal would insert with the host's own SVG exporter, from the validated patch object — never plugin-supplied markup — and hands it to the review as an `<img>` data URI. |
 | `pluginUpdates.ts` | The compiled-in official plugin catalog plus shared release validation, native download, and pre-install/update package inspection. Plugins never supply these URLs. |
+| `pluginUpdateAutoCheck.ts` + `../pluginUpdateSettings.ts` | Daily desktop checks of installed official plugins, a default-on live preference, catalog-bound cached results and once-per-version status notices. Downloads and installs still require explicit action. |
 | `pluginMenuModel.ts` | Maps host menu contributions → web menu items. |
 | `nativePluginMenu.ts` | Syncs plugin menu items into the Tauri native menu. |
 | `selectionSnapshot.ts` | Builds the immutable selection snapshot, emitting a lossless V2000 molfile at the boundary (ADR-0019). |
