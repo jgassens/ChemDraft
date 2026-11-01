@@ -1,10 +1,9 @@
 import type { DocumentObject } from "@chemdraft/chem-core";
 import { moleculeVisualBoundsForArrangement, textVisualBoundsForArrangement } from "@chemdraft/layout-engine";
-import { smilesPasteBondLengthPx } from "@chemdraft/document-workflow-core";
 import type { AssistantRect } from "./AssistantToolContext";
 
 export const ASSISTANT_MARGIN = 36;
-export const ASSISTANT_GAP = 2 * smilesPasteBondLengthPx;
+export const ASSISTANT_GAP = 56;
 export const RELATIVE_GAP = 12;
 export type RelativeSide = "above" | "below" | "left" | "right";
 export interface PlacementResult { rect: AssistantRect; fits: boolean }

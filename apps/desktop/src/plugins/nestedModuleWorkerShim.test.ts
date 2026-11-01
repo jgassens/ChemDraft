@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import ts from "typescript";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { pluginWorkerBootstrapUrl } from "./pluginWorkerBootstrap";
 import { defaultPluginWorkerFactories } from "./registerBundledPlugins";
@@ -148,9 +149,17 @@ describe("plugin worker bootstrap", () => {
     expect(bootstrap).toContain('include_str!("../../src/plugins/workers/nestedModuleWorkerShim.js")');
     expect(bootstrap).toContain("entry.searchParams.delete('__chemdraft_worker_bootstrap')");
     const bundled = readFileSync(new URL("./workers/windowsMassFragmentPluginWorker.ts", import.meta.url), "utf8");
-    expect(bundled).toContain('installNestedModuleWorkerShim("windows");');
-    expect(bundled).toContain('await import("./massFragmentPluginWorker")');
-    expect(bundled.indexOf('installNestedModuleWorkerShim("windows");')).toBeLessThan(bundled.indexOf('await import("./massFragmentPluginWorker")'));
+    const source = ts.createSourceFile("windowsMassFragmentPluginWorker.ts", bundled, ts.ScriptTarget.Latest, true);
+    const imports = source.statements.filter(ts.isImportDeclaration)
+      .map(statement => (statement.moduleSpecifier as ts.StringLiteral).text);
+    expect(imports[0]).toBe("./installWindowsWorkerShim");
+    expect(imports).toContain("../../workers/massFragmentRuntime");
+    expect(imports.indexOf("./installWindowsWorkerShim")).toBeLessThan(imports.indexOf("../../workers/massFragmentRuntime"));
+    const installer = readFileSync(new URL("./workers/installWindowsWorkerShim.ts", import.meta.url), "utf8");
+    const installerSource = ts.createSourceFile("installWindowsWorkerShim.ts", installer, ts.ScriptTarget.Latest, true);
+    // The call must execute at module evaluation, not be hidden in a function or async callback.
+    expect(installerSource.statements.filter(ts.isExpressionStatement).map(statement => statement.expression.getText(installerSource)))
+      .toContain('installNestedModuleWorkerShim("windows")');
   });
 
   it("wraps a worker created during bundled plugin module evaluation", async () => {

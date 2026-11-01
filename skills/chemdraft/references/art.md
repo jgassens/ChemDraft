@@ -28,6 +28,7 @@ with ring letters is not the style, and pale pastel tints undersell it.
 |---|---|
 | Shaded, coloured or gradient ring interiors | `molecule.style.ringStyles[ringKey]`: `fillColor`, `fillOpacity`, `fillPaint`, `visualEffects`; drawn under the bonds |
 | Bold, wedge, hashed, dashed bonds | `bond.display.bondStyle`; a wedge's narrow end is at `fromAtomId`; `bond.display.doubleBondSide`: `left` \| `right` \| `center`; unset is automatic: a double bond that is not in a ring draws centred when it joins C to an atom other than C or H (C=O, C=N, C=S) or ends on a terminal heteroatom (S=O, P=O); other double bonds, such as ring bonds and C=C, sit to one side |
+| E/Z-unspecified double bond | `bond.stereo: "either"`, allowed only when `bond.order` is `"double"`; MOL V2000 exports bond stereo 3 and V3000 exports `CFG=2`. Visible CDXML has a plain double bond with a warning; ChemDraft’s own embedded payload preserves the field. |
 | Per-bond colour and weight | `molecule.style.bondColors`, `bondStrokeWidths`, `bondBoldWidths`, `bondHashSpacings`, `bondLineCaps` (maps keyed by bond id) |
 | Per-atom label look | `atomLabelColors`, `atomLabelFontSizes`, `atomLabelFontWeights`, `atomLabelFontStyles`, `atomLabelBackgroundColors`, `atomLabelPlacements`, `atomLabelShowTerminalCarbonsByAtomId`, `atomLabelHideImplicitHydrogensByAtomId` (maps keyed by atom id) |
 | Whole-molecule look | `molecule.style` keys such as `bondColor`, `bondStrokeWidthPx`, `atomLabelColor`, `atomLabelFontFamily`, `atomLabelFontSizePx`, `atomLabelBackgroundColor`, `visualEffects` |
@@ -39,6 +40,12 @@ with ring letters is not the style, and pale pastel tints undersell it.
 | Brackets | `bracket` objects: `square`, `round`, `curly`, `polymer` |
 | Shadow, glow, hand-sketched strokes | `visualEffects: [{kind: "shadow" | "glow" | "sketch", ...}]` on graphics, molecules and single rings |
 | Stacking order | the order of `page.objects`: earlier objects are drawn underneath |
+
+CLI `document` and MCP `build_document` preserve the input's unspecified E/Z by default,
+with matching native flags and stored MOL markers. `CC=CC` stays `CC=CC` through
+`render-document` / `render_document` and SMILES export; `C/C=C/C` stays E. In a mixed
+structure, only the input's unspecified stereogenic double bonds get `stereo: "either"`.
+The `E/Z unspecified for N double bond(s)` warning reports those open bonds.
 
 Gradients are `fillPaint` objects: `{kind: "solid", color, opacity}`,
 `{kind: "linear-gradient", units: "object", x1, y1, x2, y2, stops}` or
@@ -161,12 +168,16 @@ Run it for both and require identical `summary.inchiKey` and
 
 - Coordinates are page pixels; y grows downward. Atom `x`/`y` and ring
   `center` are in the same space.
-- A `text` object draws its baseline at `y + fontSizePx`; with
+- A `text` object draws its baseline at `y + fontSizePx`. With
   `textAlign: "center"` its centre is `x + width / 2`. To centre a capital
   letter on a point `(cx, cy)`: `x = cx - w/2`, `y = cy - 0.64 * fontSizePx`.
 - Give every added object a box (`x`, `y`, `width`, `height`) that covers
   what it draws: the PNG/SVG crop is computed from those boxes, and an
   object left at `0,0` with size 0 drags the crop to the page corner.
+- Reaction-label subscript ink ends at its **0.4 em** baseline offset unless the span contains
+  a descender (`g j p q y Q ( ) [ ] { } , ; | _`), which adds **0.72 × 0.21 em** descent.
+  Normal text keeps full descent and cap height. At 14 px, Sharpless above labels use line height
+  **1.236**; numbered `1. NaBH4, MeOH` / `2. H3O+` uses **1.43552**.
 - Moving atoms changes only the drawing, but check the chemistry again.
 
 ## Patterns

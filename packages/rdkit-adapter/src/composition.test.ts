@@ -60,7 +60,10 @@ describe("hillFormula", () => {
     expect(hillFormula([{ symbol: "Na", count: 1 }])).toBe("Na");
   });
 
-  it("writes isotope labels before the natural-abundance atoms of the same element", () => {
+  // RDKit 2026.03.5 CalcMolFormula(separateIsotopes=True, abbreviateHIsotopes=True)
+  // puts natural carbon first and abbreviates hydrogen-2/3. The old expectations reversed C
+  // and [13C], and emitted [2H]/[3H], so they disagreed with RDKit and native document metadata.
+  it("writes natural carbon before its isotope labels", () => {
     expect(
       hillFormula([
         { symbol: "C", count: 1 },
@@ -68,7 +71,7 @@ describe("hillFormula", () => {
         { symbol: "H", count: 4 },
         { symbol: "O", count: 2 }
       ])
-    ).toBe("[13C]CH4O2");
+    ).toBe("C[13C]H4O2");
   });
 
   it("orders several labels of one element by ascending mass number", () => {
@@ -78,7 +81,7 @@ describe("hillFormula", () => {
         { symbol: "H", count: 2, isotope: 3 },
         { symbol: "H", count: 3, isotope: 2 }
       ])
-    ).toBe("[2H]3[3H]2H");
+    ).toBe("HD3T2");
   });
 
   it("returns an empty string for an empty tally", () => {
@@ -109,6 +112,30 @@ describe("connectedComponents", () => {
 });
 
 describe("compositionFromRdkitJson", () => {
+  // Literal reference formulas from RDKit 2026.03.5, with separateIsotopes=True and
+  // abbreviateHIsotopes=True. JSON fields below transcribe its atom/isotope/H counts.
+  it.each([
+    ["[13CH3]C(=O)O", [{ isotope: 13, impHs: 3 }, {}, { z: 8 }, { z: 8, impHs: 1 }],
+      "C[13C]H4O2"],
+    ["[2H]C([2H])([2H])O", [{ z: 1, isotope: 2 }, {}, { z: 1, isotope: 2 },
+      { z: 1, isotope: 2 }, { z: 8, impHs: 1 }], "CHD3O"],
+    ["[3H]C([3H])O", [{ z: 1, isotope: 3 }, { impHs: 1 }, { z: 1, isotope: 3 },
+      { z: 8, impHs: 1 }], "CH2T2O"],
+    ["[2H][2H]", [{ z: 1, isotope: 2 }, { z: 1, isotope: 2 }], "D2"],
+    ["[2H]O[3H]", [{ z: 1, isotope: 2 }, { z: 8 }, { z: 1, isotope: 3 }], "DTO"],
+    ["[2H]C([3H])([2H])[3H]", [{ z: 1, isotope: 2 }, {}, { z: 1, isotope: 3 },
+      { z: 1, isotope: 2 }, { z: 1, isotope: 3 }], "CD2T2"],
+    ["[13CH4]", [{ isotope: 13, impHs: 4 }], "[13C]H4"],
+    ["O=[13C]=O", [{ z: 8 }, { isotope: 13 }, { z: 8 }], "[13C]O2"],
+    ["[13CH3][13CH3]", [{ isotope: 13, impHs: 3 }, { isotope: 13, impHs: 3 }], "[13C]2H6"],
+    ["[15NH2]CC(=O)O", [{ z: 7, isotope: 15, impHs: 2 }, { impHs: 2 }, {},
+      { z: 8 }, { z: 8, impHs: 1 }], "C2H5O2[15N]"],
+    ["[18OH]C(=O)c1ccccc1", [{ z: 8, isotope: 18, impHs: 1 }, {}, { z: 8 }, {},
+      ...Array.from({ length: 5 }, () => ({ impHs: 1 }))], "C7H6O[18O]"]
+  ] as const)("matches RDKit's isotope formula for %s", (_smiles, atoms, formula) => {
+    expect(compositionFromRdkitJson(json([...atoms])).formula).toBe(formula);
+  });
+
   it("counts implicit hydrogens as protium, never inheriting the heavy atom's label", () => {
     // [13CH3]C(=O)O — the labelled carbon carries three implicit hydrogens, and those hydrogens are
     // ordinary protium. Applying the label to the element's whole tally would invent [13C]H3.
@@ -119,7 +146,7 @@ describe("compositionFromRdkitJson", () => {
       )
     );
 
-    expect(composition.formula).toBe("[13C]CH4O2");
+    expect(composition.formula).toBe("C[13C]H4O2");
     expect(composition.hasExplicitIsotopes).toBe(true);
     expect(composition.elements).toContainEqual({ symbol: "H", count: 4 });
     expect(composition.elements).toContainEqual({ symbol: "C", count: 1, isotope: 13 });

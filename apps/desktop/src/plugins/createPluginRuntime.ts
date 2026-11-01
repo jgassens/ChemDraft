@@ -1,10 +1,10 @@
 import { PluginStructureToNameRequestSchema } from "@chemdraft/plugin-api";
+import { inspectStructureOffThread } from "../depiction2d/identityClient";
 import type { AssistantToolContext } from "../assistant/AssistantToolContext";
 import { AssistantToolsController, type AssistantToolsControllerOptions } from "../assistant/AssistantToolsController";
 import { TauriAssistantMcpEngine, UnsupportedAssistantMcpEngine, type AssistantMcpEngine } from "../assistant/assistantMcpEngine";
 import { getAssistantHistoryPort } from "../assistant/historyPort";
 import { rasterizeSvgNative } from "../nativeRasterExport";
-import { loadRdkitWithAppLoader } from "./rdkitAppLoader";
 import { nameStructureForPlugin } from "./pluginStructureNaming";
 import { StructureNamingController } from "./StructureNamingController";
 import { TauriStructureNamingEngine, type StructureNamingEngine } from "./structureNamingEngine";
@@ -56,8 +56,11 @@ import { TauriExternalToolsEngine, UnsupportedExternalToolsEngine, type External
 import {
   computeIsotopeEnvelopeForPlugin,
   nameToStructureForPlugin,
+  createChemistry3dProviders,
   structureFromSmilesForPlugin
 } from "./pluginChemistry";
+import { chemistry3dReplyLogRequestedFromWindow } from "../chemistry3d/client";
+import { configureChemistry3dReplyLogger } from "./PluginWorkerBridge";
 
 /** Serves an isotope envelope to a plugin holding `chemistry.compute`. */
 export type DesktopIsotopeEnvelopeProvider = (
@@ -86,6 +89,8 @@ function freezeOverlayContent(sections: CanvasOverlayContentSection[]): readonly
 }
 
 export interface DesktopPluginRuntimeOptions {
+  /** Optional injection seam; default providers use the existing in-process conformer worker. */
+  chemistry3d?: import("../chemistry3d/client").Chemistry3dProviders;
   /** Reads the current active document. Called on demand; must reflect the latest state. */
   getActiveDocument: () => ChemDraftDocument | undefined;
   /**
@@ -246,6 +251,10 @@ export interface ProposalDocumentTab {
 }
 
 export function createPluginRuntime(options: DesktopPluginRuntimeOptions): DesktopPluginRuntime {
+  configureChemistry3dReplyLogger(
+    chemistry3dReplyLogRequestedFromWindow() ? reply => console.info("[chemistry3d reply]", reply) : undefined
+  );
+  const chemistry3d = options.chemistry3d ?? createChemistry3dProviders();
   const now = options.now ?? (() => new Date());
   const envelopeProvider =
     options.computeIsotopeEnvelope === undefined ? computeIsotopeEnvelopeForPlugin : options.computeIsotopeEnvelope;
@@ -253,10 +262,11 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     options.convertNameToStructure === undefined ? nameToStructureForPlugin : options.convertNameToStructure;
   // Bound to the runtime's own document getter: layout needs the page it is being placed on, and a
   // plugin must not be able to name a different document than the one the host is showing.
+  let structureSignal: AbortSignal | undefined;
   const structureProvider =
     options.buildStructureFromSmiles === undefined
       ? (request: PluginStructureFromSmilesRequest) =>
-          structureFromSmilesForPlugin(request, options.getActiveDocument)
+          structureFromSmilesForPlugin(request, options.getActiveDocument, structureSignal)
       : options.buildStructureFromSmiles;
   const nowIso = (): string => {
     const value = now();
@@ -306,7 +316,10 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     }),
     readDocument: options.getAssistantDocument ?? (tabId => getAssistantHistoryPort().read(tabId)),
     transactions: options.assistantTransactions,
-    createContext: options.assistantContext ?? (({ getDocument }) => ({
+    createContext: options.assistantContext ?? (({ getDocument }) => {
+      // These services live for the assistant request, beyond the command that begins it. The
+      // controller owns tool cancellation but exposes no signal here; never capture a command's.
+      return ({
       getViewportRect: options.getAssistantViewportRect ?? (tabId => getAssistantHistoryPort().getViewportRect?.(tabId)),
       now: options.now ?? (() => new Date()),
       render: (svg, settings) => rasterizeSvgNative(svg, "png", settings),
@@ -315,22 +328,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
         structureFromSmiles: request => options.buildStructureFromSmiles === null ?
           Promise.resolve({ available: false, reason: "Structure layout engine unavailable." }) :
           options.buildStructureFromSmiles ? options.buildStructureFromSmiles(request) : structureFromSmilesForPlugin(request, getDocument),
-        inspectStructure: async (_format, value) => {
-          const rdkit = await loadRdkitWithAppLoader(() => import("@chemdraft/rdkit-adapter"));
-          const module = await rdkit.ensureRdkit();
-          const molecule = module.get_mol(value, JSON.stringify({ removeHs: false }));
-          if (!molecule) return { valid: false, reason: "RDKit could not parse the structure." };
-          try {
-            const jsonMol = molecule as typeof molecule & { get_json?(): string };
-            const canonicalSmiles = molecule.get_smiles?.();
-            if (!jsonMol.get_json || !canonicalSmiles) throw new Error("RDKit structure inspection is unavailable.");
-            const graph = JSON.parse(jsonMol.get_json()) as Parameters<typeof rdkit.compositionFromRdkitJson>[0];
-            const composition = rdkit.compositionFromRdkitJson(graph);
-            return { valid: true, canonicalSmiles, formula: composition.formula, warnings: [],
-              heavyAtoms: graph.molecules.reduce((count, mol) => count + mol.atoms.filter(atom =>
-                (atom.z ?? graph.defaults?.atom?.z ?? 6) !== 1).length, 0) };
-          } finally { molecule.delete(); }
-        },
+        inspectStructure: inspectStructureOffThread,
         structureToName: async request => {
           const engine = options.structureNamingEngine ?? new TauriStructureNamingEngine();
           const status = await engine.status();
@@ -341,10 +339,10 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
           return nameStructureForPlugin(molecule, engine, status, options.namingCanonicalizer);
         }
       }
-    }))
+    }); })
   });
-  const namingInvocations = new Map<symbol, { pluginId: string; stop: AbortController }>();
-  let namingFrame: symbol[] | undefined;
+  const commandInvocations = new Map<symbol, { pluginId: string; stop: AbortController }>();
+  let commandFrame: symbol[] | undefined;
   let armedSelectionWarnings: string[] | undefined;
   let readingSelectionWarnings: string[] | undefined;
   const proposalTabs = new Map<string, string>();
@@ -362,14 +360,14 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
       const tabId = options.getActiveDocumentTab?.().id;
       if (tabId) runningTabCommands.set(tabId, (runningTabCommands.get(tabId) ?? 0) + 1);
       const tokens: symbol[] = [];
-      const previousFrame = namingFrame;
-      namingFrame = tokens;
+      const previousFrame = commandFrame;
+      commandFrame = tokens;
       try {
         const call = super.invokeCommand<Result>(commandId, invokeOptions);
-        namingFrame = previousFrame;
+        commandFrame = previousFrame;
         return await call;
       } finally {
-        for (const token of tokens) { namingInvocations.get(token)?.stop.abort(); namingInvocations.delete(token); }
+        for (const token of tokens) { commandInvocations.get(token)?.stop.abort(); commandInvocations.delete(token); }
         if (tabId) {
           const remaining = (runningTabCommands.get(tabId) ?? 1) - 1;
           if (remaining > 0) runningTabCommands.set(tabId, remaining);
@@ -380,24 +378,36 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
     }
 
     override unregisterPlugin(pluginId: string): void {
-      for (const [token, invocation] of namingInvocations) {
-        if (invocation.pluginId === pluginId) { invocation.stop.abort(); namingInvocations.delete(token); }
+      for (const [token, invocation] of commandInvocations) {
+        if (invocation.pluginId === pluginId) { invocation.stop.abort(); commandInvocations.delete(token); }
       }
       super.unregisterPlugin(pluginId);
     }
 
     override createCommandContext(pluginId: string, invocationToken?: symbol, input?: PluginCommandInput): PluginCommandContext {
       const context = super.createCommandContext(pluginId, invocationToken, input);
+      if (invocationToken && commandFrame) {
+        commandFrame.push(invocationToken);
+        commandInvocations.set(invocationToken, { pluginId, stop: new AbortController() });
+      }
+      const commandSignal = invocationToken ? commandInvocations.get(invocationToken)?.stop.signal : undefined;
+      // The host validates permissions and parses synchronously before calling the provider.
+      // Arm only that synchronous span, so concurrent commands retain independent signals.
+      const withStructureSignal = <T,>(call: () => T): T => {
+        const previous = structureSignal;
+        structureSignal = commandSignal;
+        try { return call(); } finally { structureSignal = previous; }
+      };
+      if (context.chemistry?.structureFromSmiles) {
+        const build = context.chemistry.structureFromSmiles;
+        context.chemistry.structureFromSmiles = request => withStructureSignal(() => build(request));
+      }
       const permissions = ["chemistry.compute", "native.execute", "selection.read"] as const;
       if (context.chemistry && (isTauriHost() || options.structureNamingEngine) && permissions.every(permission => this.hasPermission(pluginId, permission))) {
-        if (invocationToken && namingFrame) {
-          namingFrame.push(invocationToken);
-          namingInvocations.set(invocationToken, { pluginId, stop: new AbortController() });
-        }
         const documentKey = options.getActiveDocumentKey?.() ?? documentIdentityKey(options.getActiveDocument());
         context.chemistry.structureToName = async request => {
           for (const permission of permissions) this.requirePermission(pluginId, permission);
-          const invocation = invocationToken ? namingInvocations.get(invocationToken) : undefined;
+          const invocation = invocationToken ? commandInvocations.get(invocationToken) : undefined;
           if (!invocation || invocation.pluginId !== pluginId || invocation.stop.signal.aborted) throw new Error("Structure naming is available only during this plugin command invocation.");
           const parsed = PluginStructureToNameRequestSchema.parse(request);
           if (documentKey !== (options.getActiveDocumentKey?.() ?? documentIdentityKey(options.getActiveDocument()))) throw new Error("The active document changed during the naming command.");
@@ -455,6 +465,7 @@ export function createPluginRuntime(options: DesktopPluginRuntimeOptions): Deskt
   const notifyCanvasOverlayStatus = () => canvasOverlayStatusListeners.forEach((listener) => listener());
   const readSelection = options.getSelection;
   const host = new DesktopPluginHost({
+    ...chemistry3d,
     commandRegistry: options.commandRegistry,
     overlays: {
       setContent: (pluginId, overlayId, sections, prompt) => {

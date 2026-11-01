@@ -195,6 +195,34 @@ unpublished structures; the disclosure is shown verbatim. The accepted actions a
 The document coordinator owns opening, progress updates and closure; plugins receive only the
 typed callback and do not receive native window or download authority.
 
+## Structure templates
+
+`template.insertDialog` opens the modeless `structureTemplates` kind, labelled
+`dialog-main-structureTemplates-<slot>`, through the same opaque-host route in `App.tsx`.
+It starts at 620 × 700 logical pixels (minimum 420 × 360), resizes, and inherits document ownership,
+first centring, per-kind position persistence, utility suspension, focus and originating-tab dismissal
+on both platforms. Reopening shows and focuses the retained window without resetting its search.
+Browser builds use the same `StructureTemplatePicker` body in an in-page fallback.
+
+The snapshot contains only the drawing title and a bounded, unique list of template IDs. Actions
+are `insert` with a template ID, and `cancel`; there are no arbitrary command strings, SVG markup,
+paths or document capabilities. TypeScript validates IDs against the built-in registry; Rust validates
+their syntax and checks each insertion against the retained snapshot's allowlist. Insert requests
+are reserved and deduplicated through the shared private transport. An `inserted` receipt releases
+the reservation for the next insertion without closing the window; errors allow an explicit retry.
+The owner dispatches `template.insert.<id>` into its command registry in the originating tab's context,
+including when another tab is active. Each insertion adds/selects one molecule through document
+patches at the fixed document bond length, centred in that tab's visible page area, with one labelled
+Undo entry. Closing/replacing the source tab invalidates the session.
+
+The picker body loads lazily. It builds thumbnails from trusted built-in layouts through
+`structureTemplateMolecule`, the layout-engine visual bounds and export-engine SVG renderer. SVGs
+are isolated image data URLs rather than live HTML; neither RDKit nor another chemistry engine is
+loaded. Search is normalized, case/Greek-insensitive substring matching over names and synonyms;
+exact-name resolution elsewhere is unchanged. Family order comes from template-library. A fixed
+two-column grid pairs each pillar[n]arene and dimethoxy variant. Search receives initial focus;
+Down enters the tiles, arrows/Home/End move focus, Enter/Space insert, and Escape/Cmd-or-Ctrl+W close.
+
 ## Adding a later kind
 
 Add a discriminated payload/action adapter and validators in TypeScript and Rust, a lazy trusted

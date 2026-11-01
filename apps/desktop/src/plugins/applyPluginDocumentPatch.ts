@@ -1,7 +1,9 @@
 import {
   applyPatch,
+  type Anchor,
   type ApplyPatchOptions,
   type ChemDraftDocument,
+  type CompatibilityWarning,
   type DocumentObject,
   type DocumentPatch
 } from "@chemdraft/chem-core";
@@ -11,6 +13,12 @@ import {
   type NormalizedProposedDocumentPatch
 } from "@chemdraft/plugin-api";
 import { writePatchOps } from "@chemdraft/plugin-host";
+import { selectionBounds, translateInsertedDocumentObjects } from "../documentWorkflow";
+
+export interface PluginPatchPlacementOptions extends ApplyPatchOptions {
+  /** Page-space visible rectangle, read when the write actually commits (after gesture gating). */
+  insertionTarget?: { pageId: string; bounds?: { x: number; y: number; width: number; height: number } };
+}
 
 export interface AppliedPluginDocumentPatch {
   document: ChemDraftDocument;
@@ -19,17 +27,53 @@ export interface AppliedPluginDocumentPatch {
 
 /**
  * Apply a validated plugin patch through chem-core, then select surviving inserted and changed objects.
- * Both patch operations are assembled before the caller commits the returned document, so the desktop
- * records exactly one history entry for the command.
+ * Insertion, placement and selection are assembled before the caller commits the returned document,
+ * so the desktop records exactly one history entry per plugin applyPatch call.
  */
 export function applyPluginDocumentPatch(
   document: ChemDraftDocument,
   proposed: NormalizedProposedDocumentPatch,
-  options: ApplyPatchOptions = {}
+  options: PluginPatchPlacementOptions = {}
 ): AppliedPluginDocumentPatch {
   const now = options.now ?? new Date();
   proposed = rebasePluginPatch(document, proposed, false);
-  const patched = applyPatch(document, proposed.patch, { ...options, now });
+  let patched = applyPatch(document, proposed.patch, { ...options, now });
+  const inserted = new Set(writePatchOps(proposed.patch).flatMap(op => op.op === "addObject" ? [op.object.id] :
+    op.op === "addAnnotation" ? [op.annotation.id] : []));
+  const existingIds = new Set(document.pages.flatMap(page => page.objects.map(object => object.id)));
+  // Placement, insertion and selection are all prepared before the ONE history commit.
+  // Measure the surviving inserted group after all batch edits, and preserve its relative layout.
+  for (const page of patched.pages) {
+    const objects = page.objects.filter(object => inserted.has(object.id));
+    // Moving even one member away from an existing anchor can detach a charge or warp an
+    // arrow. Preserve the entire authored group, including off-page and oversized groups.
+    if (objects.some(object => referencesExistingObject(object, existingIds))) continue;
+    const bounds = pluginInsertionBounds(objects);
+    if (!bounds) continue;
+    const outside = bounds.x < 0 || bounds.y < 0 || bounds.x + bounds.width > page.width || bounds.y + bounds.height > page.height;
+    if (!outside) continue;
+    if (bounds.width > page.width || bounds.height > page.height) {
+      throw new Error("Plugin insertion is larger than the page; choose a larger page or a smaller drawing before inserting.");
+    }
+    const overlaps = bounds.x < page.width && bounds.y < page.height &&
+      bounds.x + bounds.width > 0 && bounds.y + bounds.height > 0;
+    // Keep partially visible drawings as close as possible to their authored position.
+    let x = Math.max(0, Math.min(page.width - bounds.width, bounds.x));
+    let y = Math.max(0, Math.min(page.height - bounds.height, bounds.y));
+    if (!overlaps) {
+      const target = options.insertionTarget?.pageId === page.id ? options.insertionTarget : undefined;
+      const visible = target?.bounds;
+      const left = Math.max(0, visible?.x ?? 0);
+      const top = Math.max(0, visible?.y ?? 0);
+      const right = Math.min(page.width, visible ? visible.x + visible.width : page.width);
+      const bottom = Math.min(page.height, visible ? visible.y + visible.height : page.height);
+      const centerX = right > left ? (left + right) / 2 : page.width / 2;
+      const centerY = bottom > top ? (top + bottom) / 2 : page.height / 2;
+      x = Math.max(0, Math.min(page.width - bounds.width, centerX - bounds.width / 2));
+      y = Math.max(0, Math.min(page.height - bounds.height, centerY - bounds.height / 2));
+    }
+    patched = translateInsertedDocumentObjects(patched, objects.map(object => object.id), x - bounds.x, y - bounds.y);
+  }
   const touched = new Set<string>();
   for (const op of writePatchOps(proposed.patch)) {
     switch (op.op) {
@@ -65,6 +109,52 @@ export function applyPluginDocumentPatch(
     document: selected,
     receipt: AppliedPatchReceiptSchema.parse({ applied: true, objectIds })
   };
+}
+
+/** Keep existing object bounds, but never trust a molecule frame to enclose its atoms. */
+function pluginInsertionBounds(objects: readonly DocumentObject[]) {
+  const bounds = selectionBounds(objects, objects.map(object => object.id));
+  if (!bounds) return undefined;
+  let left = bounds.x;
+  let top = bounds.y;
+  let right = bounds.x + bounds.width;
+  let bottom = bounds.y + bounds.height;
+  for (const object of objects) {
+    if (object.type !== "molecule") continue;
+    for (const atom of object.atoms) {
+      left = Math.min(left, atom.x);
+      top = Math.min(top, atom.y);
+      right = Math.max(right, atom.x);
+      bottom = Math.max(bottom, atom.y);
+    }
+  }
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+/** Native placement references only; opaque chemistry, text and plugin metadata are not anchors. */
+function referencesExistingObject(object: DocumentObject, existingIds: ReadonlySet<string>): boolean {
+  const references: Array<string | undefined> = [];
+  switch (object.type) {
+    case "reaction-arrow":
+      references.push(object.start.objectId, object.end.objectId, ...object.labels);
+      break;
+    case "mechanism-arrow":
+      references.push(object.source.objectId, object.target.objectId);
+      break;
+    case "electron-mark": references.push(object.anchor.objectId); break;
+    case "reaction":
+      references.push(...object.components.map(component => component.objectId), ...object.conditionsTextObjectIds);
+      break;
+    case "bracket": references.push(...object.containedObjectIds); break;
+    case "group": references.push(...object.childObjectIds); break;
+    case "annotation": references.push(...object.targetObjectIds); break;
+    case "superatom": references.push(...object.metadata.attachmentPoints.map(anchor => anchor.objectId)); break;
+    case "r-group-label": references.push(...object.display.attachmentPoints.map(anchor => anchor.objectId)); break;
+    case "molecule":
+      references.push(...[...object.superatoms, ...object.rGroups].flatMap(group => group.attachmentPoints.map(anchor => anchor.objectId)));
+      break;
+  }
+  return references.some(id => id !== undefined && existingIds.has(id));
 }
 
 /**
@@ -125,8 +215,24 @@ function rebasePluginPatch(
     if (op.op === "addObject") reservedIds.add(op.object.id);
     if (op.op === "addAnnotation") reservedIds.add(op.annotation.id);
   }
+  // Allocate every insertion first: native references can point to the insertion itself or to a
+  // later batch member. Operation targets still follow batch order (an earlier edit targets the
+  // original object, while an edit after its colliding insertion targets the new object).
+  const insertionIds = new Map<string, string>();
+  let needsReferenceRemap = false;
+  const allocatedOps = ops.map(op => {
+    if (op.op !== "addObject" && op.op !== "addAnnotation") return op;
+    const insertion = rebaseInsertion(op);
+    const originalId = op.op === "addObject" ? op.object.id : op.annotation.id;
+    const id = insertion.op === "addObject" ? insertion.object.id : insertion.annotation.id;
+    needsReferenceRemap ||= originalId !== id;
+    if (!insertionIds.has(originalId)) insertionIds.set(originalId, id);
+    existingIds.add(id);
+    reservedIds.add(id);
+    return insertion;
+  });
   const remappedIds = new Map<string, string>();
-  const rebasedOps = ops.map((op): DocumentPatch => {
+  const rebasedOps = allocatedOps.map((op, index): DocumentPatch => {
     const remap = (id: string): string => remappedIds.get(id) ?? id;
     if (op.op !== "addObject" && op.op !== "addAnnotation") {
       if ("objectId" in op) {
@@ -145,15 +251,16 @@ function rebasePluginPatch(
       if (op.op === "clearCrossingOverride") return { ...op, bonds: [bondRef(op.bonds[0]), bondRef(op.bonds[1])] };
       return op;
     }
-    // Native object references follow prior insertions; atom/bond ids and opaque metadata stay intact.
-    const insertion = rebaseInsertion(remappedIds.size === 0 ? op : op.op === "addObject"
-      ? { ...op, object: remapObjectReferences(op.object, remap) as DocumentObject }
-      : { ...op, annotation: remapObjectReferences(op.annotation, remap) as typeof op.annotation });
-    const id = insertion.op === "addObject" ? insertion.object.id : insertion.annotation.id;
-    const originalId = op.op === "addObject" ? op.object.id : op.annotation.id;
+    const original = ops[index]!;
+    if (original.op !== "addObject" && original.op !== "addAnnotation") throw new Error("Expected an allocated insertion.");
+    const originalId = original.op === "addObject" ? original.object.id : original.annotation.id;
+    const id = op.op === "addObject" ? op.object.id : op.annotation.id;
+    const referenceId = (reference: string) => reference === originalId ? id :
+      remappedIds.get(reference) ?? insertionIds.get(reference) ?? reference;
+    const insertion = !needsReferenceRemap ? op : op.op === "addObject"
+      ? { ...op, object: remapObjectReferences(op.object, referenceId) as DocumentObject }
+      : { ...op, annotation: remapObjectReferences(op.annotation, referenceId) as typeof op.annotation };
     remappedIds.set(originalId, id);
-    existingIds.add(id);
-    reservedIds.add(id);
     return insertion;
   });
   if (patch.op === "batch") return { ...proposed, patch: { op: "batch", patches: rebasedOps } };
@@ -178,9 +285,29 @@ function rebasePluginPatch(
   }
 }
 
-/** Remap only native object references, never arbitrary strings in chemistry or plugin metadata. */
+/**
+ * All native object references in chem-core/schemas.ts, including structured warning references.
+ * Atom/bond ids (anchors, bond endpoints, labelBondSide) are molecule-local and never rebased here;
+ * their owning objectId changes. Provenance originalId, chemistry strings and opaque data stay intact.
+ * Inspect fields rather than `type`: updateObject changes may omit the discriminant.
+ */
 function remapObjectReferences(object: Partial<DocumentObject>, remap: (id: string) => string): Partial<DocumentObject> {
+  const anchor = (value: Anchor): Anchor => ({ ...value,
+    ...(value.objectId === undefined ? {} : { objectId: remap(value.objectId) })
+  });
+  const warnings = (values: CompatibilityWarning[] = []) => values.map(value => ({ ...value,
+    ...(value.objectId === undefined ? {} : { objectId: remap(value.objectId) })
+  }));
+  const attachments = <T extends { attachmentPoints: Anchor[]; warnings: CompatibilityWarning[] }>(value: T): T =>
+    ({ ...value, attachmentPoints: (value.attachmentPoints ?? []).map(anchor), warnings: warnings(value.warnings) });
   const next = { ...object };
+  if (next.compatibility) next.compatibility = { ...next.compatibility, warnings: warnings(next.compatibility.warnings) };
+  if ("warnings" in next && next.warnings) next.warnings = warnings(next.warnings);
+  if ("chemistry" in next && next.chemistry) next.chemistry = { ...next.chemistry, warnings: warnings(next.chemistry.warnings) };
+  if ("metadata" in next && next.metadata) next.metadata = attachments(next.metadata);
+  if ("display" in next && next.display) next.display = attachments(next.display);
+  if ("superatoms" in next && next.superatoms) next.superatoms = next.superatoms.map(attachments);
+  if ("rGroups" in next && next.rGroups) next.rGroups = next.rGroups.map(attachments);
   if ("components" in next && next.components) next.components = next.components.map((c) => ({ ...c, objectId: remap(c.objectId) }));
   if ("conditionsTextObjectIds" in next && next.conditionsTextObjectIds) next.conditionsTextObjectIds = next.conditionsTextObjectIds.map(remap);
   if ("containedObjectIds" in next && next.containedObjectIds) next.containedObjectIds = next.containedObjectIds.map(remap);
@@ -189,8 +316,8 @@ function remapObjectReferences(object: Partial<DocumentObject>, remap: (id: stri
   if ("labels" in next && next.labels) next.labels = next.labels.map(remap);
   for (const key of ["start", "end", "source", "target", "anchor"] as const) {
     if (key in next) {
-      const anchor = (next as Partial<Record<typeof key, { objectId?: string }>>)[key];
-      if (anchor?.objectId) Object.assign(next, { [key]: { ...anchor, objectId: remap(anchor.objectId) } });
+      const value = (next as Partial<Record<typeof key, Anchor>>)[key];
+      if (value) Object.assign(next, { [key]: anchor(value) });
     }
   }
   return next;

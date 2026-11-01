@@ -282,10 +282,26 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     expect(windows).toContain("return Ok(false)");
     expect(windows).not.toContain("target.set_focus()");
     expect(command).toContain("WindowsAndMessaging::GetForegroundWindow()");
-    const release = command.split("if was_focused {")[1]!.split('#[cfg(not(windows))]')[0]!;
-    expect(release).toContain("panel_window::return_focus_to_document(");
-    expect(release).not.toMatch(/focus_main_document_window_impl|main\.set_focus\(/);
+    // Release now delegates to the shared interaction helper. Guard both the command
+    // branch and the helper's Windows path against Tao's forced activation fallback.
+    const release = command.split("result.map(|_| held)")[1]!;
+    const compactRelease = release.replace(/\s+/g, "");
+    const returnFocusCall = "panel_window::return_focus_after_interaction(&target, return_focus.unwrap_or(false)".replace(/\s+/g, "");
+    expect(compactRelease).toContain(returnFocusCall);
+    const returnFocusIndex = compactRelease.indexOf(returnFocusCall);
+    const nonFocusableIndex = compactRelease.indexOf(".set_focusable(false)");
+    expect(returnFocusIndex).toBeGreaterThanOrEqual(0);
+    expect(nonFocusableIndex).toBeGreaterThan(returnFocusIndex);
+    // A hand-back error must not skip making the palette non-focusable.
+    expect(compactRelease.slice(returnFocusIndex + returnFocusCall.length, nonFocusableIndex)).not.toMatch(/\?|returnErr/);
+    expect(release).not.toMatch(/focus_main_document_window_impl|(?:main|document)\.set_focus\(/);
     const panel = readFileSync(join(nativePath, "panel_window.rs"), "utf8");
+    const interactionReturn = panel.split("pub(crate) fn return_focus_after_interaction<")[1]!
+      .split("pub(crate) fn reset_for_webview<")[0]!;
+    const windowsReturn = interactionReturn.split('#[cfg(target_os = "macos")]')[0]!;
+    expect(windowsReturn).toContain("focus_return::should_return(");
+    expect(windowsReturn).toContain("return_focus_to_document(");
+    expect(windowsReturn).not.toMatch(/focus_main_document_window_impl|(?:main|document)\.set_focus\(/);
     const focus = panel.split("pub(crate) fn focus_if_app_active(")[1]!.split('#[cfg(target_os')[0]!;
     expect(focus).toContain("GetForegroundWindow()");
     expect(focus).toContain("IsWindowVisible(hwnd) == 0");
@@ -293,10 +309,24 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     expect(focus).toContain("GetWindowThreadProcessId");
     expect(focus).toContain("with_owned_foreground");
     expect(focus).toContain("SetActiveWindow(hwnd)");
-    expect(panel).not.toMatch(/SetForegroundWindow\(|SendInput\(/);
+    // SetForegroundWindow is allowed only to move the foreground from ChemDraft's own palette to its own document window while ChemDraft owns the foreground;
+    // it must never be used to take the foreground from another app, and synthetic input is never allowed.
+    expect(panel).not.toMatch(/SendInput\(/);
+    const handBackStart = panel.indexOf("pub(crate) fn return_focus_to_document<");
+    expect(handBackStart).toBeGreaterThanOrEqual(0);
+    const handBackEnd = panel.indexOf("\n}\n", handBackStart) + 2;
+    const handBackBody = panel.slice(handBackStart, handBackEnd);
+    expect(panel.replace(handBackBody, "")).not.toMatch(/SetForegroundWindow\(/);
+    expect(handBackBody.match(/SetForegroundWindow\(owner\)/g)).toHaveLength(1);
+    const setForegroundIndex = handBackBody.indexOf("SetForegroundWindow(owner)");
+    const appForegroundGuardIndex = handBackBody.indexOf("super::foreground_belongs_to_app()");
+    expect(appForegroundGuardIndex).toBeGreaterThanOrEqual(0);
+    expect(appForegroundGuardIndex).toBeLessThan(setForegroundIndex);
+    const foregroundWindowGuardIndex = handBackBody.indexOf("GetForegroundWindow() == foreground");
+    expect(foregroundWindowGuardIndex).toBeGreaterThanOrEqual(0);
+    expect(foregroundWindowGuardIndex).toBeLessThan(setForegroundIndex);
     const handBack = panel.split("pub(crate) fn return_focus_to_document<")[1]!.split('#[cfg(target_os')[0]!;
     expect(handBack).toContain("foreground_can_return_to_document");
-    expect(handBack).toContain("if focus_if_app_active(owner)");
     expect(handBack).toContain("webview.set_focus()");
     expect(panel).toContain("WM_NCLBUTTONDOWN | WM_NCMBUTTONDOWN | WM_NCRBUTTONDOWN");
     expect(panel).toContain("WM_ENTERSIZEMOVE | WM_EXITSIZEMOVE");
@@ -340,7 +370,7 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     const nativePath = join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src");
     const source = readFileSync(join(nativePath, "lib.rs"), "utf8");
     const pageLoad = source.split(".on_page_load(")[1]!.split(".on_menu_event(")[0]!;
-    expect(pageLoad).toContain("is_plugin_panel_window_label(webview.label())");
+    expect(pageLoad).toContain("is_input_focus_window_label(webview.label())");
     expect(pageLoad).toContain("PageLoadEvent::Started");
     expect(pageLoad).toContain("panel_window::reset_for_webview(&webview.window())");
     const panel = readFileSync(join(nativePath, "panel_window.rs"), "utf8");
@@ -376,11 +406,18 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
       pointer?.({ target: select, isTrusted: true, button: 0 } as unknown as Event);
       select.focus();
     });
-    expect(tauriInvoke).toHaveBeenCalledWith("set_plugin_panel_input_focus", { editing: true, generation: expect.any(Number), pageToken: "page-token" });
+    // Pointer acquisitions carry classification metadata; Escape has no pointer fallback.
+    expect(tauriInvoke).toHaveBeenCalledWith("set_plugin_panel_input_focus", {
+      editing: true, generation: expect.any(Number), pageToken: "page-token",
+      clickSequence: undefined, pointerBefore: expect.any(Number), returnFocus: false
+    });
     await act(async () => {
       select.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
     });
-    expect(tauriInvoke).toHaveBeenLastCalledWith("set_plugin_panel_input_focus", { editing: false, generation: expect.any(Number), pageToken: "page-token" });
+    expect(tauriInvoke).toHaveBeenLastCalledWith("set_plugin_panel_input_focus", {
+      editing: false, generation: expect.any(Number), pageToken: "page-token",
+      clickSequence: undefined, pointerBefore: undefined, returnFocus: true
+    });
     expect(container!.querySelector(".plugin-panel-shell")).not.toBeNull();
   });
 

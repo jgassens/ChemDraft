@@ -13,7 +13,12 @@ import {
   type DesktopPluginRuntime
 } from "./createPluginRuntime";
 import type { ExternalToolConsent } from "../externalTools/externalToolsEngine";
-import type { InstalledPluginCatalogEntry, PluginPackageInspection } from "./installPluginPackage";
+import {
+  PluginInstallError,
+  PluginInstallErrorCodes,
+  type InstalledPluginCatalogEntry,
+  type PluginPackageInspection
+} from "./installPluginPackage";
 import { keepFocusInsideDialog } from "./PluginImageRequestDialog";
 import type { PickedPluginPackage } from "./pickPluginPackage";
 import { loadDisabledPluginIds, saveDisabledPluginIds } from "./pluginPreferences";
@@ -57,6 +62,7 @@ function requiresRecognitionEngine(pluginId: string | undefined): boolean {
 }
 
 export interface PluginManagerDialogProps {
+  onShown?: () => void;
   runtime: DesktopPluginRuntime;
   bundledPlugins: readonly BundledPluginDescriptor[];
   /** Plugins installed from a package (M36). Empty where installing is unsupported (browser build, tests). */
@@ -155,6 +161,7 @@ export function PluginManagerDialog({
   onUninstallRecognitionEngine,
   onShowRecognitionScreenCaptures,
   onClose,
+  onShown,
   onPluginsChanged
 }: PluginManagerDialogProps) {
   const titleId = useId();
@@ -176,6 +183,12 @@ export function PluginManagerDialog({
   const busy = busyOperation !== undefined;
   const backdropPressStartedRef = useRef(false);
   const dialogRef = useRef<HTMLElement>(null);
+  const shownRef = useRef(false);
+  useEffect(() => {
+    if (shownRef.current) return;
+    shownRef.current = true;
+    onShown?.();
+  }, [onShown]);
 
   const installedCatalogKey = installedPluginCatalogKey(installedPlugins);
   const pendingUpdate =
@@ -387,7 +400,16 @@ export function PluginManagerDialog({
         pluginName: installedPlugins.find((entry) => entry.record.id === pluginId)?.manifest.name ?? pluginId
       },
       async () => {
-        await onUninstallPlugin!(pluginId);
+        let cleanupError: PluginInstallError | undefined;
+        try {
+          await onUninstallPlugin!(pluginId);
+        } catch (error) {
+          if (!(error instanceof PluginInstallError) || error.code !== PluginInstallErrorCodes.UninstallStorageDeleteFailed) {
+            throw error;
+          }
+          // Uninstall already committed; finish the same follow-ups as a successful removal.
+          cleanupError = error;
+        }
         onPluginsChanged?.();
         if (
           requiresRecognitionEngine(pluginId) &&
@@ -396,6 +418,7 @@ export function PluginManagerDialog({
         ) {
           setEngineRemovalOfferBytes(recognitionEngineStatus.installed?.diskBytes ?? 0);
         }
+        if (cleanupError) throw cleanupError;
       }
     );
 

@@ -185,25 +185,11 @@
 
 
 
-  <text data-object-id="ring-letter-A" data-layer-index="1" data-object-type="text" x="334.197" y="531.804" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#ffffff">
-    <tspan x="334.197">A</tspan>
-  </text>
-  <text data-object-id="ring-letter-B" data-layer-index="2" data-object-type="text" x="382.692" y="537.804" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#1a1a1a">
-    <tspan x="382.692">B</tspan>
-  </text>
-  <text data-object-id="ring-letter-C" data-layer-index="3" data-object-type="text" x="406.942" y="573.804" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#ffffff">
-    <tspan x="406.942">C</tspan>
-  </text>
-  <text data-object-id="ring-letter-D" data-layer-index="4" data-object-type="text" x="431.191" y="531.804" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#ffffff">
-    <tspan x="431.191">D</tspan>
-  </text>
-  <text data-object-id="ring-letter-E" data-layer-index="5" data-object-type="text" x="409.383" y="494.489" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#1a1a1a">
-    <tspan x="409.383">E</tspan>
-  </text>
-  <text data-object-id="ring-letter-F" data-layer-index="6" data-object-type="text" x="460.437" y="575.804" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#ffffff">
-    <tspan x="460.437">F</tspan>
-  </text>
-  <text data-object-id="ring-letter-G" data-layer-index="7" data-object-type="text" x="469.617" y="536.416" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#1a1a1a">
-    <tspan x="469.617">G</tspan>
-  </text>
+  <text data-object-id="ring-letter-A" data-layer-index="1" data-object-type="text" x="334.197" y="531.804" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#ffffff"><tspan x="334.197">A</tspan></text>
+  <text data-object-id="ring-letter-B" data-layer-index="2" data-object-type="text" x="382.692" y="537.804" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#1a1a1a"><tspan x="382.692">B</tspan></text>
+  <text data-object-id="ring-letter-C" data-layer-index="3" data-object-type="text" x="406.942" y="573.804" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#ffffff"><tspan x="406.942">C</tspan></text>
+  <text data-object-id="ring-letter-D" data-layer-index="4" data-object-type="text" x="431.191" y="531.804" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#ffffff"><tspan x="431.191">D</tspan></text>
+  <text data-object-id="ring-letter-E" data-layer-index="5" data-object-type="text" x="409.383" y="494.489" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#1a1a1a"><tspan x="409.383">E</tspan></text>
+  <text data-object-id="ring-letter-F" data-layer-index="6" data-object-type="text" x="460.437" y="575.804" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#ffffff"><tspan x="460.437">F</tspan></text>
+  <text data-object-id="ring-letter-G" data-layer-index="7" data-object-type="text" x="469.617" y="536.416" font-family="Times New Roman, Times, serif" font-size="20" font-weight="700" font-style="italic" text-decoration="none" letter-spacing="0" text-anchor="middle" fill="#1a1a1a"><tspan x="469.617">G</tspan></text>
 </svg>

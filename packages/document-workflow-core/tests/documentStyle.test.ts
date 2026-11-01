@@ -153,7 +153,10 @@ describe("applyDocumentStyle", () => {
         ...source.style, strokeWidth: source.style.strokeWidth === undefined
           ? DocumentMoleculeSizeStyle.bondStrokeWidthPx : 4
       });
-      expect(graphic.width).toBe(40);
+      expect(graphic.width).toBe(source.graphicKind === "image" ? 80 : 40);
+      expect(graphic.height).toBe(source.graphicKind === "image" ? 40 : 20);
+      expect(graphic.x + graphic.width / 2).toBe((source.x + source.width / 2) / 2);
+      expect(graphic.y + graphic.height / 2).toBe((source.y + source.height / 2) / 2);
     }
     expect(document).toEqual(original);
   });

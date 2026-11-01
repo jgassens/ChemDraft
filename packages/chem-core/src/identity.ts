@@ -26,11 +26,8 @@
  *   - WL is a 2D-graph hash; it does not by itself distinguish stereoisomers.
  *     That is exactly why the stereo-marker fingerprint and the engine layer
  *     exist alongside it.
- *   - Isotopes and radicals are not fields on `MoleculeAtom`; they are read from
- *     `molecule.chemistry` metadata, recorded with `isotopeRadicalSource` so the
- *     diff is honest about provenance.
- *     TODO(chem-core): upgrade isotope/radical capture to a native V3000 parse of
- *     `molecule.structure` once a first-party molfile parser lands.
+ *   - Isotopes come from native atoms (including D/T); radical totals retain the
+ *     metadata provenance recorded by `isotopeRadicalSource`.
  *   - Stereo markers are keyed by WL atom invariants, so symmetric environments
  *     can collide; such cases are deferred to the perceived-stereo engine layer.
  */
@@ -55,19 +52,20 @@ export type IsotopeRadicalSource = "metadata" | "none";
 export interface MoleculeGraphIdentity {
   atomCount: number;
   bondCount: number;
-  /** Sorted multiset of `"element:formalCharge"`. */
+  /** Sorted multiset of element, charge, and explicit isotope. */
   atomMultiset: string[];
   /** Sorted multiset of bond orders. */
   bondOrderMultiset: string[];
   /** Sum of formal charges over atoms. */
   netCharge: number;
-  /** Hash of the sorted Weisfeiler-Lehman atom colors. */
+  /** Hash of sorted Weisfeiler-Lehman atom colors; edge labels include explicit either intent. */
   connectivitySignature: string;
   /** Display-level stereo markers, canonicalized and sorted. */
   stereoMarkers: StereoMarkerFingerprint[];
-  /** Sorted isotope labels (metadata-backed in Phase 1A). */
+  /** Sorted isotope labels from the native graph, including duplicates. */
   isotopeLabels: string[];
   radicalCount: number;
+  /** Radical metadata provenance; isotope labels always come from native atoms. */
   isotopeRadicalSource: IsotopeRadicalSource;
 }
 
@@ -133,7 +131,9 @@ function fnv1a(input: string): string {
 }
 
 function atomInitialColor(atom: MoleculeAtom): string {
-  return `${atom.element}:${atom.formalCharge ?? 0}`;
+  const element = atom.element === "D" || atom.element === "T" ? "H" : atom.element;
+  const isotope = atom.element === "D" ? 2 : atom.element === "T" ? 3 : atom.isotope;
+  return `${element}:${atom.formalCharge ?? 0}${isotope === undefined ? "" : `:${isotope}`}`;
 }
 
 /**
@@ -149,8 +149,9 @@ function weisfeilerLehmanColors(
   const adjacency = new Map<string, Array<{ neighbor: string; order: string }>>();
   atoms.forEach((atom) => adjacency.set(atom.id, []));
   bonds.forEach((bond) => {
-    adjacency.get(bond.fromAtomId)?.push({ neighbor: bond.toAtomId, order: bond.order });
-    adjacency.get(bond.toAtomId)?.push({ neighbor: bond.fromAtomId, order: bond.order });
+    const order = bond.stereo === "either" ? `${bond.order}:either` : bond.order;
+    adjacency.get(bond.fromAtomId)?.push({ neighbor: bond.toAtomId, order });
+    adjacency.get(bond.toAtomId)?.push({ neighbor: bond.fromAtomId, order });
   });
 
   let colors = new Map(atoms.map((atom) => [atom.id, atomInitialColor(atom)] as const));
@@ -215,7 +216,9 @@ export function snapshotChemicalIdentity(
     netCharge,
     connectivitySignature,
     stereoMarkers,
-    isotopeLabels: [...(chemistry?.isotopeLabels ?? [])].sort(),
+    isotopeLabels: atoms.flatMap((atom) => atom.element === "D" ? ["2H"] :
+      atom.element === "T" ? ["3H"] : atom.isotope === undefined ? [] :
+        [`${atom.isotope}${atom.element}`]).sort(),
     radicalCount: chemistry?.radicalCount ?? 0,
     isotopeRadicalSource: chemistry ? "metadata" : "none"
   };

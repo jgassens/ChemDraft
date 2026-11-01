@@ -3,7 +3,8 @@
 // element knowledge or an engine live here.
 
 import { beforeAll, describe, expect, it } from "vitest";
-import { compositionFromRdkitJson, ensureRdkit, type RdkitJson } from "@chemdraft/rdkit-adapter";
+import { ensureRdkit } from "../../rdkit-adapter/src/conformer";
+import { compositionFromRdkitJson, type RdkitJson } from "../../rdkit-adapter/src/composition";
 import { installNodeRdkitModuleLoader } from "@chemdraft/rdkit-adapter/node";
 import {
   abbreviationBondedSpellings,

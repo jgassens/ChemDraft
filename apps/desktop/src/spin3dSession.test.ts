@@ -52,6 +52,10 @@ import {
   selectDocumentObjects
 } from "./documentWorkflow";
 import { MainWindow } from "./MainWindow";
+import * as documentWorkflow from "./documentWorkflow";
+import * as fragmentPlacement from "./interaction/spinFragmentPlacement";
+import { initialViewQuaternion, medianBondLength3d, overlayScale, projectSpin } from "./interaction/spinOverlay";
+import { quatToViewMatrix } from "./interaction/rotation3d";
 
 function installDomMocks() {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -83,16 +87,20 @@ function installDomMocks() {
   svgPrototype.hasPointerCapture ??= vi.fn(() => true);
 }
 
-function conformerResult(status: NonNullable<Generate3DConformerResult["forceField"]>["status"]): Generate3DConformerResult {
+function conformerResult(
+  status: NonNullable<Generate3DConformerResult["forceField"]>["status"],
+  coords = new Float64Array([0, 0, 0, 1, 0.5, 0.25])
+): Generate3DConformerResult {
+  const atomCount = coords.length / 3;
   return {
     mapping: {
-      coords3dByOriginalAtom: new Float64Array([0, 0, 0, 1, 0.5, 0.25]),
-      originalToEngineAtom: [0, 1],
-      engineToOriginalAtom: [0, 1],
+      coords3dByOriginalAtom: coords,
+      originalToEngineAtom: Array.from({ length: atomCount }, (_, i) => i),
+      engineToOriginalAtom: Array.from({ length: atomCount }, (_, i) => i),
       generatedHydrogenEngineAtoms: []
     },
-    originalAtomCount: 2,
-    generatedAtomCount: 2,
+    originalAtomCount: atomCount,
+    generatedAtomCount: atomCount,
     hydrogens: { added: false, explicitInputHydrogensPreserved: false },
     embed: { status: "ok" },
     forceField: { name: "UFF", status, iterations: 1 },
@@ -206,6 +214,7 @@ function selectedObjectBounds(bridge: ChemDraftAgentBridge): { x: number; y: num
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   delete window[AGENT_BRIDGE_GLOBAL_NAME];
   window.history.replaceState({}, "", "/");
   document.body.innerHTML = "";
@@ -213,6 +222,137 @@ afterEach(() => {
 });
 
 describe("Spin 3D session state", () => {
+  it("recomputes single-fragment refined placement and flattens exactly as main", async () => {
+    const initial = createSelectedMoleculeDocument();
+    const original = initial.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule")!;
+    const molecule: MoleculeObject = {
+      ...original,
+      atoms: [{ x: 300, y: 300 }, { x: 330, y: 300 }, { x: 318, y: 327 }].map((point, i) => ({
+        ...point, id: `a${i}`, element: "O", formalCharge: 0
+      })),
+      bonds: [[0, 1], [1, 2]].map(([a, b], i) => ({ id: `b${i}`, fromAtomId: `a${a}`, toAtomId: `a${b}`, order: "single" }))
+    };
+    const fixture = { ...initial, pages: initial.pages.map((page) => ({ ...page, objects: [molecule] })) };
+    const embedded = new Float64Array([-0, 0, 0, 1, 0.5, 0.25, 0.3, 1.4, -0.2]);
+    // Both shape and median bond length change; a uniform scale cannot reveal the old
+    // hot-swap error. The refined placement and flatten equality below fail on 02d521a7.
+    const refined = new Float64Array([1, -0.4, 0.3, 3.2, 1.1, 0.6, -1.4, 2.5, -1]);
+    const pairs: [number, number][] = [[0, 1], [1, 2]];
+    const placement = {
+      centerX: molecule.atoms.reduce((sum, atom) => sum + atom.x, 0) / molecule.atoms.length,
+      centerY: molecule.atoms.reduce((sum, atom) => sum + atom.y, 0) / molecule.atoms.length,
+      scale: overlayScale(molecule.atoms, refined, pairs)
+    };
+    expect(placement.scale).not.toBe(overlayScale(molecule.atoms, embedded, pairs));
+    const orientation = initialViewQuaternion(embedded);
+    const expected = documentWorkflow.flattenSpunMolecule(fixture, molecule.id, refined, quatToViewMatrix(orientation), { placement });
+    expect(expected.status).toBe("committed");
+    const flatten = vi.spyOn(documentWorkflow, "flattenSpunMolecule");
+    const applyFragments = vi.spyOn(fragmentPlacement, "applySpinFragmentArrangement");
+    const { bridge, container, root } = await renderMainWindow(fixture);
+    try {
+      await act(async () => { await bridge.command("structure.spin3d"); });
+      await act(async () => { conformerMock.handlers?.onEmbedded(conformerResult("converged", embedded)); });
+      await act(async () => { conformerMock.handlers?.onRefined(conformerResult("converged", refined)); });
+      // An independent projection with main's recomputed scale must be the live view.
+      const expectedPositions = projectSpin(refined, pairs, orientation, placement).atoms
+        .map((atom) => ({ x: atom.sx, y: atom.sy })).sort((a, b) => a.x - b.x);
+      const actualPositions = [...container.querySelectorAll('[data-spin3d-overlay="true"] [data-atom-label]')]
+        .map((label) => {
+          const match = /translate\(([^ ]+) ([^)]+)\)/.exec(label.getAttribute("transform")!)!;
+          return { x: Number(match[1]), y: Number(match[2]) };
+        }).sort((a, b) => a.x - b.x);
+      expect.soft(actualPositions).toEqual(expectedPositions);
+      await commitSpinOverlay(container, bridge);
+      expect(flatten).toHaveBeenCalledTimes(1);
+      const [, , actualCoords, actualView, actualOptions] = flatten.mock.calls[0];
+      expect(actualCoords).toBe(refined);
+      if (!(actualCoords instanceof Float64Array)) throw new Error("Expected the untouched refined coordinate buffer.");
+      expect(new Uint8Array(actualCoords.buffer)).toEqual(new Uint8Array(refined.buffer));
+      expect(actualView).toEqual(quatToViewMatrix(orientation));
+      expect.soft(actualOptions?.placement).toEqual(placement);
+      expect.soft(flatten.mock.results[0].value).toEqual(expected);
+      expect(applyFragments).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => { root.unmount(); });
+    }
+  });
+
+  it("separates disconnected fragments at both engine stages and reopens the committed arrangement", async () => {
+    const initial = createSelectedMoleculeDocument();
+    const original = initial.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule")!;
+    const molecule: MoleculeObject = {
+      ...original,
+      x: 200, y: 300, width: 80, height: 30,
+      atoms: [0, 1, 2].flatMap((fragment) => [0, 1].map((atom) => ({
+        id: `f${fragment}a${atom}`, element: "O", formalCharge: 0, x: 200 + fragment * 25 + atom * 30, y: 300
+      }))),
+      bonds: [0, 1, 2].map((fragment) => ({
+        id: `f${fragment}b`, fromAtomId: `f${fragment}a0`, toAtomId: `f${fragment}a1`, order: "single"
+      }))
+    };
+    const fixture = { ...initial, pages: initial.pages.map((page) => ({ ...page, objects: [molecule] })) };
+    const result = conformerResult("converged", new Float64Array([0, 0, 0, 1, 0.5, 0.25, 0, 0, 0, 1, 0.5, 0.25, 0, 0, 0, 1, 0.5, 0.25]));
+    // Non-uniform refinement: lengths, directions and the median all change. Crowded
+    // opening centres need expansion, but the refined spheres fit the stored targets.
+    const refined = conformerResult("converged", new Float64Array([
+      0, 0, 0, 1.5, 0.3, 0.7, 0, 0, 0, 1.8, 0.8, -0.3, 0, 0, 0, 2, -0.2, 0.9
+    ]));
+    const pairs: [number, number][] = [[0, 1], [2, 3], [4, 5]];
+    expect(medianBondLength3d(refined.mapping.coords3dByOriginalAtom, pairs))
+      .not.toBe(medianBondLength3d(result.mapping.coords3dByOriginalAtom, pairs));
+    const flatten = vi.spyOn(documentWorkflow, "flattenSpunMolecule");
+    const { bridge, container, root } = await renderMainWindow(fixture);
+    const labelPositions = () => [...container.querySelectorAll('[data-spin3d-overlay="true"] [data-atom-label]')]
+      .map((label) => {
+        const match = /translate\(([^ ]+) ([^)]+)\)/.exec(label.getAttribute("transform")!)!;
+        return { x: Number(match[1]), y: Number(match[2]) };
+      }).sort((a, b) => a.x - b.x);
+    try {
+      await act(async () => { await bridge.command("structure.spin3d"); });
+      let openingCenters: { x: number; y: number }[] = [];
+      for (const handler of ["onEmbedded", "onRefined"] as const) {
+        const stage = handler === "onEmbedded" ? result : refined;
+        await act(async () => { conformerMock.handlers?.[handler](stage); });
+        const positions = labelPositions();
+        expect(positions).toHaveLength(6);
+        expect(positions[2].x - positions[1].x).toBeGreaterThan(20);
+        expect(positions[4].x - positions[3].x).toBeGreaterThan(20);
+        const centers = [0, 2, 4].map((i) => ({ x: (positions[i].x + positions[i + 1].x) / 2, y: (positions[i].y + positions[i + 1].y) / 2 }));
+        if (handler === "onEmbedded") openingCenters = centers;
+        else centers.forEach((center, i) => {
+          // Fails on e5233125: recomputing the crowded arrangement expands it by a
+          // different amount for the new shapes. Opening page targets prevent that jump.
+          expect(center.x).toBeCloseTo(openingCenters[i].x, 8);
+          expect(center.y).toBeCloseTo(openingCenters[i].y, 8);
+        });
+      }
+      const before = labelPositions();
+      await commitSpinOverlay(container, bridge);
+      expect(container.querySelector('[data-spin3d-overlay="true"]')).toBeNull();
+      expect(flatten).toHaveBeenCalledTimes(1);
+      // Fails on 02d521a7: even though its centres stay still, its scale is the
+      // embedded scale. The same refined ScreenPlacement must reach flatten and overlay.
+      expect(flatten.mock.calls[0][4]?.placement?.scale).toBe(overlayScale(molecule.atoms, refined.mapping.coords3dByOriginalAtom, pairs));
+      const committed = bridge.snapshot().document.pages[0].objects.find((object): object is MoleculeObject => object.type === "molecule")!;
+      const flattenedPositions = committed.atoms.map(({ x, y }) => ({ x, y })).sort((a, b) => a.x - b.x);
+      flattenedPositions.forEach((position, i) => {
+        expect(position.x).toBeCloseTo(before[i].x, 8);
+        expect(position.y).toBeCloseTo(before[i].y, 8);
+      });
+      await act(async () => { await bridge.command("structure.spin3d"); });
+      expect(conformerMock.client.generate).toHaveBeenCalledTimes(1);
+      const reopened = labelPositions();
+      expect(reopened).toHaveLength(6);
+      reopened.forEach((position, i) => {
+        expect(position.x).toBeCloseTo(before[i].x, 8);
+        expect(position.y).toBeCloseTo(before[i].y, 8);
+      });
+    } finally {
+      await act(async () => { root.unmount(); });
+    }
+  });
+
   it("cancels the transient spin overlay before document undo mutates history", async () => {
     const { bridge, container, root } = await renderMainWindow();
     try {

@@ -29,7 +29,7 @@ import {
   sourceInterpretation
 } from "@chemdraft/rdkit-adapter/constants";
 
-import type { AnalysisWorkRequest, AnalysisWorkResponse } from "./analysisWorker";
+import type { AnalysisWorkRequest, AnalysisWorkResponse } from "./analysisWorkerRuntime";
 
 /**
  * Refuse anything larger than this many heavy atoms. Enforced in the adapter, which is the only layer

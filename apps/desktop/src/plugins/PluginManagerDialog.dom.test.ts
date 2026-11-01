@@ -7,7 +7,12 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { MemoryStorage } from "../testSupport/memoryStorage";
-import type { InstalledPluginCatalogEntry, PluginPackageInspection } from "./installPluginPackage";
+import {
+  PluginInstallError,
+  PluginInstallErrorCodes,
+  type InstalledPluginCatalogEntry,
+  type PluginPackageInspection
+} from "./installPluginPackage";
 import type { PickedPluginPackage } from "./pickPluginPackage";
 import { buildPluginMenuItems } from "./pluginMenuModel";
 import { PluginManagerDialog } from "./PluginManagerDialog";
@@ -650,6 +655,44 @@ describe("PluginManagerDialog", () => {
       }
     }
   );
+
+  it("finishes uninstall follow-ups before showing a storage deletion failure", async () => {
+    let pending: { prompt: NativePromptOptions; resolve: (id: string) => void } | undefined;
+    onTestFinished(setNativePromptProvider((prompt) => new Promise((resolve) => { pending = { prompt, resolve }; })));
+    const runtime = createRuntime();
+    const onPluginsChanged = vi.fn();
+    const error = new PluginInstallError(
+      PluginInstallErrorCodes.UninstallStorageDeleteFailed,
+      "Plugin was uninstalled, but its stored settings could not be deleted: storage.json: permission denied"
+    );
+    function UninstallHarness() {
+      const [installed, setInstalled] = useState<readonly InstalledPluginCatalogEntry[]>([molscribeInstalled]);
+      return createElement(Harness, {
+        runtime,
+        installedPlugins: installed,
+        recognitionEngineStatus: installedEngineStatus,
+        onUninstallRecognitionEngine: vi.fn(async () => undefined),
+        onUninstallPlugin: async () => {
+          setInstalled([]);
+          throw error;
+        },
+        onClose: vi.fn(),
+        onPluginsChanged
+      });
+    }
+    mount(createElement(UninstallHarness));
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>(
+        `[data-action="uninstall-plugin"][data-plugin-id="${molscribeManifest.id}"]`
+      )!.click();
+    });
+    expect(onPluginsChanged).toHaveBeenCalledOnce();
+    expect(document.querySelector('[data-testid="molscribe-engine-row"]')).toBeNull();
+    expect(pending?.prompt.message).toContain("Also remove the recognition engine (2.5 GB)?");
+    expect(document.querySelector(".plugin-manager-error")?.textContent).toContain(error.message);
+    await act(async () => { pending!.resolve("keep"); });
+    expect(document.querySelector(".plugin-manager-error")?.textContent).toContain(error.message);
+  });
 
   it("does not offer engine removal after uninstalling MolScribe when no engine is installed", async () => {
     const runtime = createRuntime();

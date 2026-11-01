@@ -19,7 +19,7 @@ function setup() {
   page.objects = [translateObject(existing, 36 - bounds.x, 36 - bounds.y)];
   let index = 0;
   context.chemistry.structureFromSmiles = async () => {
-    // Synthetic 16-member macrocycle; depiction retains the document's 28px bond length.
+    // Synthetic 16-member macrocycle; depiction retains the document's 22px bond length.
     const count = index++ % 2 ? 14 : 16;
     const object = createSmilesMolecule(context.getDocument()!, { x: 0, y: 0 }, {
       atoms: Array.from({ length: count }, (_, i) => ({ element: "C", charge: 0,
@@ -113,7 +113,7 @@ describe("assistant page-aware arrangement", () => {
       expect(label.y - molecule.y - molecule.height).toBeCloseTo(8);
       const object = objects[i]!;
       if (object.type !== "molecule") throw new Error("molecule required");
-      expect(Math.hypot(object.atoms[0]!.x - object.atoms[1]!.x, object.atoms[0]!.y - object.atoms[1]!.y)).toBeCloseTo(28);
+      expect(Math.hypot(object.atoms[0]!.x - object.atoms[1]!.x, object.atoms[0]!.y - object.atoms[1]!.y)).toBeCloseTo(22);
     }
   });
 

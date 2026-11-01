@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE CDXML SYSTEM "http://www.cambridgesoft.com/xml/cdxml.dtd">
+<CDXML CreationProgram="ChemDraft">
+  <colortable>
+    <color r="1" g="1" b="1"/>
+    <color r="0" g="0" b="0"/>
+    <color r="1" g="0" b="0"/>
+    <color r="1" g="1" b="0"/>
+    <color r="0" g="1" b="0"/>
+    <color r="0" g="1" b="1"/>
+    <color r="0" g="0" b="1"/>
+    <color r="1" g="0" b="1"/>
+  </colortable>
+  <page id="page_001" BoundingBox="0 0 612 792">
+    <fragment id="1" BoundingBox="69.7497 64.127 155.2503 160.873">
+      <n id="2" p="117.75 130.6869"/>
+      <n id="3" p="107.25 148.873"/>
+      <n id="4" p="86.2498 148.873"/>
+      <n id="5" p="75.7497 130.6869"/>
+      <n id="6" p="86.2498 112.5007"/>
+      <n id="7" p="107.25 112.5007"/>
+      <n id="8" p="117.75 94.3131"/>
+      <n id="9" p="138.7502 94.3131"/>
+      <n id="10" p="149.2503 76.127"/>
+      <b id="11" B="2" E="3" Order="1"/>
+      <b id="12" B="3" E="4" Order="1"/>
+      <b id="13" B="4" E="5" Order="1"/>
+      <b id="14" B="5" E="6" Order="1"/>
+      <b id="15" B="6" E="7" Order="1"/>
+      <b id="16" B="7" E="8" Order="1"/>
+      <b id="17" B="8" E="9" Order="2" DoublePosition="Left"/>
+      <b id="18" B="9" E="10" Order="1"/>
+      <b id="19" B="7" E="2" Order="1"/>
+    </fragment>
+  </page>
+</CDXML>

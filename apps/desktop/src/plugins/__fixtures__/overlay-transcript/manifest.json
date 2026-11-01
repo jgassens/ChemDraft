@@ -1,0 +1,67 @@
+{
+  "id": "org.chemdraft.test.overlay-transcript",
+  "name": "Transcript Test Plugin",
+  "version": "0.0.1",
+  "apiVersion": "^0.1.14",
+  "entry": "entry.js",
+  "permissions": [
+    "ui.canvas",
+    "ui.menu",
+    "plugin.storage",
+    "ui.panel",
+    "native.execute",
+    "assistant.run"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "id": "plugin.transcript.open",
+        "title": "Open"
+      },
+      {
+        "id": "plugin.transcript.submit",
+        "title": "Submit"
+      }
+    ],
+    "menus": [
+      {
+        "id": "menu.transcript.open",
+        "title": "Panel Test Plugin",
+        "commandId": "plugin.transcript.open",
+        "location": "plugins"
+      }
+    ],
+    "panels": [
+      {
+        "id": "panel.transcript.chat",
+        "title": "Panel Test Plugin",
+        "commandId": "plugin.transcript.open",
+        "preferredWindowSize": {
+          "width": 440,
+          "height": 640
+        }
+      }
+    ],
+    "canvasOverlays": [
+      {
+        "id": "overlay.transcript.chat",
+        "title": "Panel Test Plugin",
+        "icon": "data:image/png;base64,YQ==",
+        "commandId": "plugin.transcript.submit",
+        "prompt": {
+          "kind": "prompt",
+          "id": "transcript.message",
+          "commandId": "plugin.transcript.submit"
+        }
+      }
+    ]
+  },
+  "chemdraftPackage": {
+    "sdk": "@chemdraft/plugin-api",
+    "sdkVersion": "0.1.14",
+    "sourceCommit": "test-fixture",
+    "sourceTree": "clean",
+    "licenseFile": "../../../../../../LICENSE",
+    "packagedAt": "2026-10-25T00:00:00Z"
+  }
+}
