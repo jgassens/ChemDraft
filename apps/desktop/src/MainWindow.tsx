@@ -1673,7 +1673,7 @@ function tableClipboardDecisionBeforePicture(payload: ClipboardReadPayload) {
   return tableClipboardPasteDecision(payload, html => new DOMParser().parseFromString(html, "text/html"));
 }
 
-const CURRENT_BUILD_STAMP = "11.01.12.00-codex";
+const CURRENT_BUILD_STAMP = "11.01.13.40-codex";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -2411,6 +2411,10 @@ export function MainWindow({
   closeTabPromptRef.current = closeTabPrompt;
   const [activeEditorObjectId, setActiveEditorObjectId] = useState<string | undefined>();
   const [activeTextEditObjectId, setActiveTextEditObjectId] = useState<string | undefined>();
+  const textEditHistorySnapshotRef = useRef<{
+    objectId: string; document: ChemDraftDocument; documentIdentity: number;
+  } | undefined>(undefined);
+  const finishTextEditBeforeCommitRef = useRef<() => void>(() => undefined);
   // Only the first committed edit of each box placed by the Text tool may become an atom label.
   // Existing captions always remain text when reopened; the explicit command remains available.
   // A second placement can end an earlier edit before React observes it, so pending ids cannot be
@@ -3429,6 +3433,8 @@ export function MainWindow({
     undoLabel?: string
   ): boolean => {
     if (quitMutationFrozenRef.current) throw new Error("Quit is completing; the pending edit was not applied.");
+    // A separate command takes its baseline after the inline text session is recorded.
+    finishTextEditBeforeCommitRef.current();
     let changed = false;
     installDocumentHistory((currentHistory) => {
       const nextDocument = typeof nextDocumentOrUpdate === "function"
@@ -7421,10 +7427,34 @@ export function MainWindow({
     }
   }, [commitDocumentChange]);
 
-  // Catch-all for text conversion: a text edit can end through MANY paths (Escape,
-  // blur, a tool switch, clicking elsewhere — some of which clear the state from canvas pointer
-  // handlers before any blur fires, and WKWebView's focus timing makes blur-only commits
-  // unreliable). Whichever path ends the first edit of a newly placed object converts it.
+  const finalizeTextEditHistory = useCallback((objectId: string) => {
+    const snapshot = textEditHistorySnapshotRef.current;
+    if (!snapshot || snapshot.objectId !== objectId) return;
+    // Disarm before installing history: late blur, effects and tab cleanup are idempotent.
+    textEditHistorySnapshotRef.current = undefined;
+    if (snapshot.documentIdentity !== documentIdentityRef.current) return;
+    const current = documentRef.current;
+    if (!assistantDocumentContentUnchanged(snapshot.document, current)) {
+      commitDocumentHistoryFrom(snapshot.document, current, "Edit Text");
+    }
+  }, [commitDocumentHistoryFrom]);
+
+  const finishActiveNativeTextEdit = useCallback((finishedObjectId?: string) => {
+    // Canvas capture can close the editor before its blur arrives; use the owner's id.
+    const objectId = finishedObjectId ?? activeTextEditObjectIdRef.current ?? textEditHistorySnapshotRef.current?.objectId;
+    if (!objectId) return;
+    if (activeTextEditObjectIdRef.current === objectId) activeTextEditObjectIdRef.current = undefined;
+    setActiveTextEditObjectId((current) => (current === objectId ? undefined : current));
+    finalizeTextEditHistory(objectId);
+    convertCommittedText(objectId);
+  }, [convertCommittedText, finalizeTextEditHistory]);
+  finishTextEditBeforeCommitRef.current = () => {
+    const snapshot = textEditHistorySnapshotRef.current;
+    if (snapshot) finishActiveNativeTextEdit(snapshot.objectId);
+  };
+
+  // Catch every state-only close (tool switches, selection handlers). Explicit finishers commit
+  // synchronously before another edit, history navigation or tab installs a different baseline.
   const previousTextEditObjectIdRef = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (pendingTextPlaceholderObjectIdRef.current !== activeTextEditObjectId) {
@@ -7432,33 +7462,27 @@ export function MainWindow({
     }
     const previous = previousTextEditObjectIdRef.current;
     previousTextEditObjectIdRef.current = activeTextEditObjectId;
-    if (!previous || previous === activeTextEditObjectId) {
-      return;
-    }
-    convertCommittedText(previous);
-  }, [activeTextEditObjectId, convertCommittedText]);
-
-  const finishActiveNativeTextEdit = useCallback((finishedObjectId?: string) => {
-    // The editor's blur passes its own object id: a click-away clears activeTextEditObjectId in a
-    // canvas pointer handler BEFORE the blur fires, so relying on the state alone silently
-    // skipped the commit-time conversion for the most natural gesture.
-    const objectId = finishedObjectId ?? activeTextEditObjectId;
-    setActiveTextEditObjectId((current) => (current === objectId ? undefined : current));
-    if (!objectId) {
-      return;
-    }
-    convertCommittedText(objectId);
-  }, [activeTextEditObjectId, convertCommittedText]);
+    if (previous && previous !== activeTextEditObjectId) finishActiveNativeTextEdit(previous);
+  }, [activeTextEditObjectId, finishActiveNativeTextEdit]);
 
   const startTextObjectEdit = useCallback((objectId: string) => {
+    const previous = activeTextEditObjectIdRef.current;
+    if (previous && previous !== objectId) finishActiveNativeTextEdit(previous);
     const currentDocument = documentRef.current;
     const object = findDocumentObject(currentDocument, objectId);
     if (object?.type !== "text") {
       return;
     }
 
+    if (!textObjectIdsAwaitingAutoConversionRef.current.has(objectId) &&
+      textEditHistorySnapshotRef.current?.objectId !== objectId) {
+      textEditHistorySnapshotRef.current = {
+        objectId, document: atomLabelHistorySnapshot(currentDocument), documentIdentity: documentIdentityRef.current
+      };
+    }
     replacePresentDocument((current) => selectDocumentObject(current, objectId));
     setActiveEditorObjectId(undefined);
+    activeTextEditObjectIdRef.current = objectId;
     setActiveTextEditObjectId(objectId);
     setActiveAtomLabelEdit(undefined);
     setHoveredNativeAtom(undefined);
@@ -7468,7 +7492,7 @@ export function MainWindow({
     setNativeDoubleBondSidePreview(undefined);
     focusTextObjectEditor(objectId);
     setStatus("Editing text");
-  }, [assignHoveredNativeDeleteTarget, focusTextObjectEditor, replacePresentDocument]);
+  }, [assignHoveredNativeDeleteTarget, atomLabelHistorySnapshot, finishActiveNativeTextEdit, focusTextObjectEditor, replacePresentDocument]);
 
   const handleTextDoubleClick = useCallback((objectId: string, event: ObjectMouseEvent) => {
     if (activeToolState.activeCommandId !== "tool.select" && activeToolState.activeCommandId !== "tool.text") {
@@ -7559,6 +7583,8 @@ export function MainWindow({
   const applyTextStyleCommand = useCallback((commandId: string): boolean => {
     if (tableCellEditorRef.current?.applyCommand(commandId)) return true;
     const currentDocument = documentRef.current;
+    // Formatting belongs to the open session, like typing. Outside an editor it is its own entry.
+    const changeText = activeTextEditObjectIdRef.current ? replacePresentDocument : commitDocumentChange;
     const toolbarStyleTarget = toolbarStyleTargetRef.current;
     const snapshotTextSelection = toolbarStyleTarget?.textRange;
     const activeTextObject = activeTextEditObjectId
@@ -7591,7 +7617,7 @@ export function MainWindow({
           ? textScriptForTextRange(selected, selectedTextRange)
           : textScriptForTextObject(selected);
         const nextScript = textScript === "normal" || currentScript !== textScript ? textScript : "normal";
-        const changed = commitDocumentChange(hasSelectedTextRange && selectedTextRange
+        const changed = changeText(hasSelectedTextRange && selectedTextRange
           ? updateNativeTextObjectScriptRange(currentDocument, selected.id, selectedTextRange, nextScript)
           : updateNativeTextObjectScript(currentDocument, selected.id, nextScript));
         setActiveTextEditObjectId((current) => current === selected.id ? current : undefined);
@@ -7646,7 +7672,7 @@ export function MainWindow({
       const colorResult = applyToolbarColorToSelection(currentDocument, selectedColor, colorSelection);
 
       if (colorResult.targetedSelection) {
-        const changed = commitDocumentChange(colorResult.document);
+        const changed = changeText(colorResult.document);
         setActiveTextEditObjectId((current) => selected && current === selected.id ? current : undefined);
         setActiveEditorObjectId(undefined);
         setStatus(changed ? "Updated selected color" : "Selected color unchanged");
@@ -7658,7 +7684,7 @@ export function MainWindow({
     }
 
     if (selected) {
-      const changed = commitDocumentChange(hasSelectedTextRange && selectedTextRange
+      const changed = changeText(hasSelectedTextRange && selectedTextRange
         ? updateNativeTextObjectStyleRange(currentDocument, selected.id, selectedTextRange, stylePatch as Record<string, unknown>)
         : updateNativeTextObjectStyle(currentDocument, selected.id, stylePatch));
       setActiveTextEditObjectId((current) => current === selected.id ? current : undefined);
@@ -7669,7 +7695,7 @@ export function MainWindow({
 
     setStatus("Updated text defaults");
     return true;
-  }, [activeTextEditObjectId, commitDocumentChange, selectedNativeMoleculePart, textStyleDefaults]);
+  }, [activeTextEditObjectId, commitDocumentChange, replacePresentDocument, selectedNativeMoleculePart, textStyleDefaults]);
 
   const selectedMoleculeRingTargets = useCallback((): NativeMoleculeRingTarget[] => {
     return currentMoleculeInspector.rings.selectedRings.map((ring) => ({
@@ -8827,6 +8853,9 @@ export function MainWindow({
       return;
     }
 
+    // Focused editors retain native typing undo, as atom-label editors do. A document-level
+    // navigation (including a forced palette command) records and closes the live session first.
+    finishActiveNativeTextEdit();
     let nextHistory: DocumentHistory | undefined;
     let undoLabel: string | undefined;
     installDocumentHistory((history) => {
@@ -8878,7 +8907,7 @@ export function MainWindow({
           ? "Undid last document change"
           : "Redid document change"
     );
-  }, [assignHoveredNativeDeleteTarget, atomLabelHistorySnapshot, cancelSpin3dSession, installDocumentHistory]);
+  }, [assignHoveredNativeDeleteTarget, atomLabelHistorySnapshot, cancelSpin3dSession, finishActiveNativeTextEdit, installDocumentHistory]);
 
   const cancelDocumentTabSessions = useCallback(() => {
     // Settle chooser edits before choosing a rollback snapshot. Otherwise the
@@ -8985,7 +9014,7 @@ export function MainWindow({
       tabEditFinishersRef.current.finalizeAtomLabelDraft(labelEdit);
       activeAtomLabelEditRef.current = undefined;
     }
-    const textEdit = activeTextEditObjectIdRef.current;
+    const textEdit = activeTextEditObjectIdRef.current ?? textEditHistorySnapshotRef.current?.objectId;
     if (finishDrafts && textEdit) {
       tabEditFinishersRef.current.finishActiveNativeTextEdit(textEdit);
       activeTextEditObjectIdRef.current = undefined;
@@ -9310,7 +9339,7 @@ export function MainWindow({
         activeAtomLabelEditRef.current = undefined;
         setActiveAtomLabelEdit(undefined);
       }
-      const textEdit = activeTextEditObjectIdRef.current;
+      const textEdit = activeTextEditObjectIdRef.current ?? textEditHistorySnapshotRef.current?.objectId;
       if (textEdit) {
         tabEditFinishersRef.current.finishActiveNativeTextEdit(textEdit);
         activeTextEditObjectIdRef.current = undefined;
