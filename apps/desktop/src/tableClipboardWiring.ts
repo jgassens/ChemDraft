@@ -100,16 +100,31 @@ export type TableClipboardPasteDecision =
   | { kind: "table"; result: ClipboardTableResult }
   | { kind: "existing"; payload: ClipboardDetectedPayload };
 
+/** Exclude picture renditions from chemistry detection and HTML/TSV table reads. */
+export function stripClipboardPictures(payload: ClipboardReadPayload): ClipboardReadPayload {
+  return {
+    ...payload, imageItems: undefined, skippedImageItems: undefined,
+    textItems: payload.textItems.filter(item => !isSvgImageSource(item.text))
+  };
+}
+
+/** A failed read or an image layout retaining only a caption row must yield to a picture. */
+export function tableClipboardResultOutranksPicture(result: ClipboardTableResult): boolean {
+  if (!result.ok) return false;
+  if (!result.warnings.includes("Images in the table were not imported.")) return true;
+  const populatedRows = [...(result.spec.headerRows ?? []), ...result.spec.rows].filter(row =>
+    row.some(cell => (typeof cell === "string" ? cell : cell.text).trim() !== ""));
+  return populatedRows.length > 1;
+}
+
 /** Keep native and chemical precedence; plausible SMILES text uses the existing parser first. */
 export function tableClipboardPasteDecision(payload: ClipboardReadPayload, parseHtml: ParseHtml): TableClipboardPasteDecision {
   const selection = payload.textItems.map(item => parseSelectionClipboardPayload(item.text)).find(Boolean);
   if (selection) return { kind: "selection", payload: selection };
   // Office and Google supply pictures alongside editable tables. Exclude those renditions
   // while checking chemistry precedence, then restore picture detection if no table wins.
-  const detected = inspectClipboardPayload({
-    ...payload, imageItems: undefined, skippedImageItems: undefined,
-    textItems: payload.textItems.filter(item => !isSvgImageSource(item.text))
-  });
+  const stripped = stripClipboardPictures(payload);
+  const detected = inspectClipboardPayload(stripped);
   // A few reagent names/header words can resemble SMILES in a prose-heavy Office table.
   // Only defer to chemistry if even the best case (every candidate parses) can qualify
   // under the same list policy used by the chemical parser.
@@ -135,8 +150,12 @@ export function tableClipboardPasteDecision(payload: ClipboardReadPayload, parse
   if (!["plain-text", "empty", "vector-only"].includes(detected.kind) || textNeedsChemistry) {
     return { kind: "existing", payload: inspectClipboardPayload(payload) };
   }
-  const table = readTableClipboardPaste(payload, parseHtml);
-  return table ? { kind: "table", result: table } : { kind: "existing", payload: inspectClipboardPayload(payload) };
+  const table = readTableClipboardPaste(stripped, parseHtml);
+  const existing = inspectClipboardPayload(payload);
+  const hasPicture = existing.kind === "image" ||
+    ((existing.kind === "plain-text" || existing.kind === "smiles") && !!existing.fallbackImage);
+  return table && (!hasPicture || tableClipboardResultOutranksPicture(table))
+    ? { kind: "table", result: table } : { kind: "existing", payload: existing };
 }
 
 /** Same builder, text-style conversion and centring as Insert Table; caller records one undo. */

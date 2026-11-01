@@ -5,8 +5,7 @@ import type { ActiveTableText } from "./tableCommands";
 import { tableValidationMessage } from "./tableCommands";
 import { tableCellElementId } from "@chemdraft/layout-engine";
 import { insertTableIntoDocument, parseSelectionClipboardPayload } from "./documentWorkflow";
-import { pasteTableIntoDocument, readTableClipboardPaste, tableClipboardPasteDecision, tableSelectionClipboardItems } from "./tableClipboardWiring";
-import { isSvgImageSource } from "@chemdraft/chem-core";
+import { pasteTableIntoDocument, readTableClipboardPaste, stripClipboardPictures, tableClipboardPasteDecision, tableClipboardResultOutranksPicture, tableSelectionClipboardItems } from "./tableClipboardWiring";
 import type { ClipboardReadPayload, ClipboardTableResult } from "@chemdraft/clipboard-adapter";
 import type { InsertTableOptions } from "./dialogs/dialogProtocol";
 import { nextObjectId, structureTemplateLayoutMessage } from "@chemdraft/document-workflow-core";
@@ -1665,16 +1664,9 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-// Office copies include a picture of their table. Decide editable table/chemistry precedence
-// without picture flavors first, then restore the full picture-aware detection for other content.
+// The shared decision retains pictures when a table is refused or only holds a figure caption.
 function tableClipboardDecisionBeforePicture(payload: ClipboardReadPayload) {
-  const decision = tableClipboardPasteDecision({
-    ...payload, imageItems: undefined, skippedImageItems: undefined,
-    textItems: payload.textItems.filter(item => !isSvgImageSource(item.text))
-  }, html => new DOMParser().parseFromString(html, "text/html"));
-  return decision.kind === "existing"
-    ? { ...decision, payload: inspectClipboardPayload(payload) }
-    : decision;
+  return tableClipboardPasteDecision(payload, html => new DOMParser().parseFromString(html, "text/html"));
 }
 
 const CURRENT_BUILD_STAMP = "11.01.08.00-codex";
@@ -6966,9 +6958,9 @@ export function MainWindow({
         // Plain text gets its existing chemical parse first, including tabular SMILES lists.
         // Picture heuristics can label plain text as SMILES; explicit chemistry has no candidates.
         const table = (detectedPayload.kind === "plain-text" || detectedPayload.chemistryCandidates) && rawPayload
-          ? readTableClipboardPaste(rawPayload, html => new DOMParser().parseFromString(html, "text/html"))
+          ? readTableClipboardPaste(stripClipboardPictures(rawPayload), html => new DOMParser().parseFromString(html, "text/html"))
           : undefined;
-        if (!table) return false;
+        if (!table || (detectedPayload.fallbackImage && !tableClipboardResultOutranksPicture(table))) return false;
         applyTableClipboardResult(table);
         return true;
       };

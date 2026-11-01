@@ -161,6 +161,76 @@ describe("picture paste and canvas", () => {
     expect(read).toHaveBeenCalledTimes(route === "event" ? 0 : 2);
   });
 
+  it.each(["menu", "event"])("pastes a figure layout table as its PNG through %s, including after chemistry declines", async route => {
+    await render();
+    const html = '<table><tr><td><img src="figure.png"></td></tr><tr><td>Figure 1. Reaction scheme.</td></tr></table>';
+    const list = vi.spyOn(smilesPaste, "depictSmilesListForPaste").mockResolvedValue(undefined);
+    const read = vi.spyOn(clipboard, "readClipboardPayload");
+    for (const text of ["Figure 1. Reaction scheme.", "CCO\tCCN\nCCC\tCCCC"]) {
+      const payload: ClipboardReadPayload = { ...nativeImage,
+        types: [...nativeImage.types, "text/html", "text/plain"],
+        textItems: [{ type: "text/html", text: html }, { type: "text/plain", text }]
+      };
+      if (route === "menu") {
+        read.mockResolvedValue(payload);
+        await command("clipboard.paste");
+      } else {
+        const file = new File([Uint8Array.from(atob(picturePngBase64), char => char.charCodeAt(0))], "figure.png", { type: "image/png" });
+        const event = new Event("paste", { bubbles: true, cancelable: true });
+        Object.defineProperty(event, "clipboardData", { value: {
+          types: [...payload.types, "Files"], files: [file],
+          getData: (type: string) => payload.textItems.find(item => item.type === type)?.text ?? ""
+        } });
+        await act(async () => {
+          window.dispatchEvent(event);
+          await new Promise(resolve => setTimeout(resolve, 30));
+        });
+        expect(event.defaultPrevented).toBe(true);
+      }
+      const objects = snapshot().pages[0]!.objects;
+      expect(objects).toHaveLength(1);
+      expect(objects[0]).toMatchObject({ type: "graphic", graphicKind: "image", data: { image: { mimeType: "image/png" } } });
+      expect(snapshot().selection.objectIds).toEqual([objects[0]!.id]);
+      expect(container.querySelector('[role="status"]')?.textContent).not.toContain("Images in the table");
+      await command("edit.undo");
+      expect(container.querySelector('[role="status"]')?.textContent).toBe("Undid Paste Picture");
+      expect(snapshot().pages[0]!.objects).toHaveLength(0);
+    }
+    expect(list).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { html: "<p><img></p><table>", text: "fallback text", chemistry: false },
+    { html: "<p><img></p><table>", text: "CCO\tCCN\nCCC\tCCCC", chemistry: true },
+    { html: undefined, text: "CCO\tCCN\nCCC\tCCCC\tCCCCC", chemistry: true }
+  ])("pastes a PNG when a table read fails ($text)", async ({ html, text, chemistry }) => {
+    await render();
+    const textItems = [...(html ? [{ type: "text/html", text: html }] : []), { type: "text/plain", text }];
+    vi.spyOn(clipboard, "readClipboardPayload").mockResolvedValue({ ...nativeImage,
+      types: [...nativeImage.types, ...textItems.map(item => item.type)], textItems });
+    const list = vi.spyOn(smilesPaste, "depictSmilesListForPaste").mockResolvedValue(undefined);
+    await command("clipboard.paste");
+    expect(list).toHaveBeenCalledTimes(chemistry ? 1 : 0);
+    expect(snapshot().pages[0]!.objects).toHaveLength(1);
+    expect(snapshot().pages[0]!.objects[0]).toMatchObject({ type: "graphic", graphicKind: "image" });
+    await command("edit.undo");
+    expect(container.querySelector('[role="status"]')?.textContent).toBe("Undid Paste Picture");
+    expect(snapshot().pages[0]!.objects).toHaveLength(0);
+  });
+
+  it("excludes tabbed SVG text from the table read after chemistry declines", async () => {
+    await render();
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="144" height="72">\t<title>Figure</title>\n<rect width="144" height="72"/>\t</svg>';
+    vi.spyOn(clipboard, "readClipboardPayload").mockResolvedValue({ ...nativeImage,
+      types: [...nativeImage.types, "text/plain", "public.text"],
+      textItems: [{ type: "text/plain", text: svg }, { type: "public.text", text: "CCO CCN" }] });
+    const list = vi.spyOn(smilesPaste, "depictSmilesListForPaste").mockResolvedValue(undefined);
+    await command("clipboard.paste");
+    expect(list).toHaveBeenCalledOnce();
+    expect(snapshot().pages[0]!.objects).toHaveLength(1);
+    expect(snapshot().pages[0]!.objects[0]).toMatchObject({ type: "graphic", graphicKind: "image", data: { image: { mimeType: "image/png" } } });
+  });
+
   it("inserts a native picture at physical size at the viewport centre, selected, as one Paste Picture undo", async () => {
     await render();
     vi.spyOn(clipboard, "readClipboardPayload").mockResolvedValue(nativeImage);

@@ -196,6 +196,20 @@ describe("MainWindow table clipboard wiring", () => {
     expect(container.querySelector('[role="status"]')?.textContent).toContain("2001 characters");
   });
 
+  it.each([
+    { html: "<p><img></p><table>", text: "fallback text", reason: "The HTML table has no readable rows." },
+    { html: "", text: "CCO\tCCN\nCCC\tCCCC\tCCCCC",
+      reason: "The tab-separated table has rows with different numbers of columns; copy a rectangular table." }
+  ])("preserves the table error without a picture ($reason)", async ({ html, text, reason }) => {
+    await render();
+    const before = snapshot().document;
+    vi.mocked(depictSmilesListForPaste).mockResolvedValue(undefined);
+    vi.mocked(readClipboardPayload).mockResolvedValue(clipboard(html, text));
+    await command("clipboard.paste");
+    expect(snapshot().document).toEqual(before);
+    expect(container.querySelector('[role="status"]')?.textContent).toBe(reason);
+  });
+
   it("reports total-character and span refusals without pasting fallback text", async () => {
     await render();
     const before = snapshot().document;

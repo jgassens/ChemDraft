@@ -293,6 +293,55 @@ describe("paste precedence and table building", () => {
       .toMatchObject({ kind: "existing", payload: { kind: "image", image: picture.imageItems![0] } });
   });
 
+  it.each([
+    "word-like.html", "excel-like.html", "google-docs-like.html", "google-sheets-like.html",
+    "word-office-notes.html", "excel-overflow-notes.html"
+  ])("keeps the real data table in %s ahead of a PNG rendition", name => {
+    const raw = htmlPayload(name);
+    expect(tableClipboardPasteDecision({ ...raw, types: [...raw.types, "image/png"],
+      imageItems: [{ type: "image/png", bytesBase64: picturePngBase64, pixelWidth: 144, pixelHeight: 72 }]
+    }, parseHtml)).toMatchObject({ kind: "table", result: { ok: true, source: "html" } });
+  });
+
+  it.each([
+    '<tr><td><img src="figure.png"></td><td></td></tr>',
+    '<tr><td><img src="figure.png"></td><td>Figure 1. Reaction scheme.</td></tr>',
+    '<tr><td colspan="2"><img src="figure.png"></td></tr><tr><td colspan="2">Figure 1. Reaction scheme.</td></tr>',
+    '<tr><td><img src="figure.png"></td><td></td></tr><tr><td>Figure 1.</td><td>Reaction scheme.</td></tr>'
+  ])("prefers a PNG to an image layout table retaining only a caption row: %s", rows => {
+    const raw = payload({ type: "text/html", text: `<table>${rows}</table>` });
+    const parsed = readTableClipboardPaste(raw, parseHtml);
+    expect(parsed).toMatchObject({ ok: true, warnings: expect.arrayContaining(["Images in the table were not imported."]) });
+    expect(tableClipboardPasteDecision(raw, parseHtml)).toEqual({ kind: "table", result: parsed });
+    expect(tableClipboardPasteDecision({ ...raw, types: [...raw.types, "image/png"],
+      imageItems: [{ type: "image/png", bytesBase64: picturePngBase64, pixelWidth: 144, pixelHeight: 72 }]
+    }, parseHtml)).toMatchObject({ kind: "existing", payload: { kind: "image" } });
+  });
+
+  it("keeps a real data table with dropped images ahead of a PNG", () => {
+    const raw = payload({ type: "text/html", text: fixture("word-like.html").replace("allyl alcohol", 'allyl alcohol<img src="figure.png">') });
+    expect(tableClipboardPasteDecision({ ...raw, types: [...raw.types, "image/png"],
+      imageItems: [{ type: "image/png", bytesBase64: picturePngBase64, pixelWidth: 144, pixelHeight: 72 }]
+    }, parseHtml)).toMatchObject({ kind: "table", result: { ok: true,
+      warnings: ["Images in the table were not imported."] } });
+  });
+
+  it("yields a failed HTML table read to a PNG, but preserves the same error without a picture", () => {
+    const raw = payload({ type: "text/html", text: "<p><img></p><table>" });
+    expect(tableClipboardPasteDecision(raw, parseHtml)).toEqual({ kind: "table",
+      result: { ok: false, reason: "The HTML table has no readable rows." } });
+    expect(tableClipboardPasteDecision({ ...raw, types: [...raw.types, "image/png"],
+      imageItems: [{ type: "image/png", bytesBase64: picturePngBase64, pixelWidth: 144, pixelHeight: 72 }]
+    }, parseHtml)).toMatchObject({ kind: "existing", payload: { kind: "image" } });
+  });
+
+  it("does not read SVG text with tabs as a tab-separated table", () => {
+    const raw = payload({ type: "text/plain", text:
+      '<svg xmlns="http://www.w3.org/2000/svg" width="144" height="72">\t<title>Figure</title>\n<rect width="144" height="72"/>\t</svg>' });
+    expect(tableClipboardPasteDecision(raw, parseHtml))
+      .toMatchObject({ kind: "existing", payload: { kind: "image", image: { type: "image/svg+xml" } } });
+  });
+
   it("prefers an HTML table with an embedded image over fallback text", () => {
     expect(tableClipboardPasteDecision(payload({ type: "text/html", text:
       `${fixture("word-like.html")}<img src="data:image/png;base64,${picturePngBase64}">`
