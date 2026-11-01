@@ -9,6 +9,7 @@ import * as rdkitDepiction from "@chemdraft/rdkit-adapter/depiction";
 import { smilesListCandidates } from "@chemdraft/clipboard-adapter";
 import { pastedStructureDepictionFromMolfile, stereoPerceptionMolfile } from "@chemdraft/document-workflow-core";
 import { ensureRdkit, generateSmiles2DMolfile, resetRdkitForTesting } from "../../../packages/rdkit-adapter/src/conformer";
+import { DEPICTION_DEADLINE_MS } from "../../../packages/rdkit-adapter/src/depictionWorkerClient";
 import { createRdkit2DRelayouts } from "../../../packages/rdkit-adapter/src/relayout2d";
 import { installRealRdkitModuleLoader } from "../../../packages/rdkit-adapter/src/testing";
 import { depictInWorker } from "./depiction2d/depict";
@@ -135,10 +136,28 @@ describe("bridged cage paste quality (real engines)", () => {
   }, 60_000);
 
   it("repairs the cage through the real worker transport within its layout deadline", async () => {
-    const { depictSmilesOffThread } = await vi.importActual<typeof import("./depiction2d/client")>("./depiction2d/client");
+    const nodeEntry = "./test/depictionNodeClient.mjs";
+    const { createNodeDepictionClient } = await import(/* @vite-ignore */ nodeEntry);
+    let warmup: Awaited<ReturnType<typeof depictSmilesForPaste>>;
+    const depictSmilesOffThread = createNodeDepictionClient({ warmupSmiles: cage,
+      onWarmup: (result: typeof warmup) => { warmup = result; } });
     const pasted = await depictSmilesOffThread(cage);
+    expect(warmup!.warnings ?? []).toEqual([]);
     expect(layoutEngine.layoutAtomAndLabelDefects(quality(insert(pasted.depiction).pages[0].objects[0] as MoleculeObject))).toBe(0);
     expect(pasted.warnings ?? []).toEqual([]);
+  }, 60_000);
+
+  it("publishes the standard cage on a real-worker deadline and replaces the worker", async () => {
+    const nodeEntry = "./test/depictionNodeClient.mjs";
+    const { createNodeDepictionClient } = await import(/* @vite-ignore */ nodeEntry);
+    // Suppress the first worker's final result, after allowing its real standard result through.
+    const depict = createNodeDepictionClient({ warmupSmiles: cage, holdFirstResult: true });
+    const fallback = await depict(cage);
+    expect(fallback.warnings).toContain(`2D depiction exceeded its ${DEPICTION_DEADLINE_MS} ms layout deadline; used the standard layout.`);
+    expect(atomDefects(quality(insert(fallback.depiction).pages[0].objects[0] as MoleculeObject))).toBeGreaterThan(0);
+    const repaired = await depict(cage);
+    expect(layoutEngine.layoutAtomAndLabelDefects(quality(insert(repaired.depiction).pages[0].objects[0] as MoleculeObject))).toBe(0);
+    expect(repaired.warnings ?? []).toEqual([]);
   }, 60_000);
 
   it("keeps an unfixable drawing and never calls its unchanged status already clean", async () => {

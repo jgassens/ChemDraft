@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="246.882" height="209.503" viewBox="283.809 424.681 246.882 209.503" role="img" aria-label="morphine">
-  <rect x="283.809" y="424.681" width="246.882" height="209.503" fill="#ffffff" />
+<svg xmlns="http://www.w3.org/2000/svg" width="246.747" height="209.503" viewBox="283.944 424.681 246.747 209.503" role="img" aria-label="morphine">
+  <rect x="283.944" y="424.681" width="246.747" height="209.503" fill="#ffffff" />
   <path data-object-id="ring-fill-mol_clipboard_001-B" data-layer-index="0" data-object-type="graphic" d="M 443.9731 483.0903 L 415.1946 483.0903 L 400.8054 508.0124 L 409.6979 535.3826 L 435.988 547.0878 L 442.231 516.6114 Z" stroke="#fdd835" stroke-opacity="0" stroke-width="0.5" stroke-linecap="round" stroke-linejoin="round" stroke-miterlimit="4" fill="#fdd835" fill-opacity="0.9" />
   <path data-object-id="mol_clipboard_001" data-layer-index="1" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-atom-count="24" data-bond-count="28" data-style-preset-id="chemdraft.synthetic" data-molecule-fill="true" data-molecule-fill-ring="true" data-ring-key="b1|b2|b20|b3|b4|b5" d="M 434.676 491.908 L 417.113 486.413 L 413.092 504.369 L 400.805 508.012 L 415.195 483.09 L 443.973 483.09 Z" fill="#43a047" fill-opacity="0.9" stroke="none" pointer-events="none" />
   <path data-object-id="mol_clipboard_001" data-layer-index="1" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-atom-count="24" data-bond-count="28" data-style-preset-id="chemdraft.synthetic" data-molecule-fill="true" data-molecule-fill-ring="true" data-ring-key="b10|b11|b12|b24|b8|b9" d="M 435.988 547.088 L 438.996 575.709 L 415.715 592.625 L 389.424 580.918 L 386.416 552.299 L 409.698 535.383 Z" fill="#e53935" fill-opacity="0.9" stroke="none" pointer-events="none" />
@@ -56,7 +56,7 @@
     <line data-bond-id="b12" data-bond-order="double" data-bond-segment="secondary" data-double-bond-side="right" x1="416.534" y1="586.097" x2="432.534" y2="574.471" stroke="#000000" stroke-width="2" stroke-linecap="butt" />
   </g>
   <g data-object-id="mol_clipboard_001" data-layer-index="1" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-atom-count="24" data-bond-count="28" data-style-preset-id="chemdraft.synthetic" data-bond-layer-id="b13">
-    <line data-bond-id="b13" data-bond-order="single" data-bond-segment="primary" x1="389.424" y1="580.918" x2="373.843" y2="592.239" stroke="#000000" stroke-width="2" stroke-linecap="butt" />
+    <line data-bond-id="b13" data-bond-order="single" data-bond-segment="primary" x1="389.424" y1="580.918" x2="373.978" y2="592.141" stroke="#000000" stroke-width="2" stroke-linecap="butt" />
   </g>
   <g data-object-id="mol_clipboard_001" data-layer-index="1" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-atom-count="24" data-bond-count="28" data-style-preset-id="chemdraft.synthetic" data-bond-layer-id="b14">
     <line data-bond-id="b14" data-bond-order="single" data-bond-segment="primary" x1="386.416" y1="552.299" x2="369.784" y2="540.214" stroke="#000000" stroke-width="2" stroke-linecap="butt" />
@@ -75,7 +75,7 @@
     <line data-bond-id="b18" data-bond-order="double" data-bond-segment="secondary" data-double-bond-side="left" x1="376.527" y1="462.966" x2="396.305" y2="462.966" stroke="#000000" stroke-width="2" stroke-linecap="butt" />
   </g>
   <g data-object-id="mol_clipboard_001" data-layer-index="1" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-atom-count="24" data-bond-count="28" data-style-preset-id="chemdraft.synthetic" data-bond-layer-id="b19">
-    <polygon data-bond-id="b19" data-bond-order="single" data-bond-segment="primary" data-bond-style="wedge" points="357.638,483.09 336.559,480.139 336.559,486.041" fill="#000000" stroke="none" />
+    <polygon data-bond-id="b19" data-bond-order="single" data-bond-segment="primary" data-bond-style="wedge" points="357.638,483.09 336.694,480.158 336.694,486.022" fill="#000000" stroke="none" />
   </g>
   <g data-object-id="mol_clipboard_001" data-layer-index="1" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-atom-count="24" data-bond-count="28" data-style-preset-id="chemdraft.synthetic" data-bond-layer-id="b20">
     <line data-bond-id="b20" data-bond-order="single" data-bond-segment="primary" x1="443.973" y1="483.09" x2="439.789" y2="487.058" stroke="#000000" stroke-width="2" stroke-linecap="butt" />
@@ -137,18 +137,18 @@
     <text data-atom-label-run="normal" x="0" y="0" dy="0.35em" text-anchor="middle">N</text>
   </g>
   <g data-object-id="mol_clipboard_001" data-layer-index="1" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-atom-count="24" data-bond-count="28" data-style-preset-id="chemdraft.synthetic" transform="translate(366.143 597.834)" data-atom-label="HO" fill="#000000" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="400" font-style="normal">
-    <text x="-7.5" y="0" dy="0.35em" text-anchor="end" fill="#ffffff" stroke="#ffffff" stroke-width="4.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">H</text>
+    <text x="-5.835" y="0" dy="0.35em" text-anchor="end" fill="#ffffff" stroke="#ffffff" stroke-width="4.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">H</text>
     <text x="0" y="0" dy="0.35em" text-anchor="middle" fill="#ffffff" stroke="#ffffff" stroke-width="4.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">O</text>
-    <text data-atom-label-run="normal" x="-7.5" y="0" dy="0.35em" text-anchor="end">H</text>
+    <text data-atom-label-run="normal" x="-5.835" y="0" dy="0.35em" text-anchor="end">H</text>
     <text data-atom-label-run="normal" x="0" y="0" dy="0.35em" text-anchor="middle">O</text>
   </g>
   <g data-object-id="mol_clipboard_001" data-layer-index="1" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-atom-count="24" data-bond-count="28" data-style-preset-id="chemdraft.synthetic" transform="translate(363.134 535.383)" data-atom-label="O" fill="#ffffff" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="400" font-style="normal">
     <text data-atom-label-run="normal" x="0" y="0" dy="0.35em" text-anchor="middle">O</text>
   </g>
   <g data-object-id="mol_clipboard_001" data-layer-index="1" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-atom-count="24" data-bond-count="28" data-style-preset-id="chemdraft.synthetic" transform="translate(328.859 483.09)" data-atom-label="HO" fill="#000000" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="400" font-style="normal">
-    <text x="-7.5" y="0" dy="0.35em" text-anchor="end" fill="#ffffff" stroke="#ffffff" stroke-width="4.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">H</text>
+    <text x="-5.835" y="0" dy="0.35em" text-anchor="end" fill="#ffffff" stroke="#ffffff" stroke-width="4.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">H</text>
     <text x="0" y="0" dy="0.35em" text-anchor="middle" fill="#ffffff" stroke="#ffffff" stroke-width="4.5" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true">O</text>
-    <text data-atom-label-run="normal" x="-7.5" y="0" dy="0.35em" text-anchor="end">H</text>
+    <text data-atom-label-run="normal" x="-5.835" y="0" dy="0.35em" text-anchor="end">H</text>
     <text data-atom-label-run="normal" x="0" y="0" dy="0.35em" text-anchor="middle">O</text>
   </g>
   <g data-object-id="mol_clipboard_001" data-layer-index="1" data-object-type="molecule" data-chem-primitive="connected-carbon-chain" data-atom-count="24" data-bond-count="28" data-style-preset-id="chemdraft.synthetic" transform="translate(419.084 461.031)" data-atom-label="H" fill="#000000" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="400" font-style="normal">

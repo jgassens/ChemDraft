@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { applyPatches, ChemDraftDocumentSchema } from "@chemdraft/chem-core";
+import { applyPatches, ChemDraftDocumentSchema, moleculeToMolfileV3000, type ChemDraftDocument } from "@chemdraft/chem-core";
+import { depictSmiles2D, perceiveStereoCentersFromMolfile } from "@chemdraft/ocl-adapter";
 import {
   applyNativeBondDisplayStyleTarget,
   applyNativeMoleculeBondOrderTarget,
@@ -94,5 +95,85 @@ describe("desktop bond order changes with E/Z-unspecified stereo", () => {
     expect(shared.order).toBe("single");
     expect(shared).not.toHaveProperty("stereo");
     expect(ChemDraftDocumentSchema.safeParse(changed).success).toBe(true);
+  });
+});
+
+describe("a same-tool click reverses a wedge or hashed wedge", () => {
+  // CC(Cl)C(Cl)C: atoms 1 and 2 (zero-based) are both stereocentres, so moving the narrow end of
+  // the bond between them moves the specified centre from one to the other.
+  function dichlorobutane() {
+    const document = insertNativeMolfileMolecule(
+      createPhase4Document(), { x: 220, y: 220 }, depictSmiles2D("CC(Cl)C(Cl)C").molfile, "molfile-v2000"
+    );
+    const molecule = getSelectedMolecule(document)!;
+    const centres = molecule.atoms.filter(atom => atom.element === "C" &&
+      molecule.bonds.filter(bond => bond.fromAtomId === atom.id || bond.toAtomId === atom.id).length === 3);
+    const bond = molecule.bonds.find(candidate =>
+      centres.some(atom => atom.id === candidate.fromAtomId) && centres.some(atom => atom.id === candidate.toAtomId))!;
+    const target = {
+      objectId: molecule.id, kind: "bond" as const, bondId: bond.id,
+      fromAtomId: bond.fromAtomId, toAtomId: bond.toAtomId, distanceToPointer: 0
+    };
+    return { document, target, bond };
+  }
+
+  function descriptors(document: ChemDraftDocument, atomIds: readonly string[]) {
+    const molecule = getSelectedMolecule(document)!;
+    const perceived = perceiveStereoCentersFromMolfile(
+      moleculeToMolfileV3000(molecule, { fromDocFrame: true, kekuleBondOrders: new Map() }).contents
+    );
+    return atomIds.map(id => perceived[molecule.atoms.findIndex(atom => atom.id === id)]!.descriptor);
+  }
+
+  function bondById(document: ChemDraftDocument, id: string) {
+    return getSelectedMolecule(document)!.bonds.find(candidate => candidate.id === id)!;
+  }
+
+  it.each(["wedge", "hashed"] as const)("moves the %s's narrow end and with it the specified stereocentre", style => {
+    const { document, target, bond } = dichlorobutane();
+    const styled = applyNativeBondDisplayStyleTarget(document, target, style);
+    const first = bondById(styled, bond.id);
+    expect(first.display?.bondStyle).toBe(style);
+    const [narrow, wide] = [first.fromAtomId, first.toAtomId];
+    const [before] = [descriptors(styled, [narrow, wide])];
+    expect(before[0]).toMatch(/^[RS]$/);
+    expect(before[1]).toBe("unspecified");
+
+    const reversed = applyNativeBondDisplayStyleTarget(styled, target, style);
+    const flipped = bondById(reversed, bond.id);
+    expect(flipped).toMatchObject({ fromAtomId: wide, toAtomId: narrow, order: first.order, display: first.display });
+    const after = descriptors(reversed, [narrow, wide]);
+    expect(after[0]).toBe("unspecified");
+    expect(after[1]).toMatch(/^[RS]$/);
+    // The same document change records one undo step: one updateObject on the one molecule, its
+    // atoms and every other bond untouched.
+    const beforeMolecule = getSelectedMolecule(styled)!;
+    const afterMolecule = getSelectedMolecule(reversed)!;
+    expect(afterMolecule.atoms).toEqual(beforeMolecule.atoms);
+    expect(afterMolecule.bonds.filter(candidate => candidate.id !== bond.id))
+      .toEqual(beforeMolecule.bonds.filter(candidate => candidate.id !== bond.id));
+    expect(afterMolecule.chemistry?.formula).toBe(beforeMolecule.chemistry?.formula);
+
+    // Reversing again restores the first drawing exactly, descriptor included.
+    const restored = applyNativeBondDisplayStyleTarget(reversed, target, style);
+    expect(bondById(restored, bond.id)).toEqual(first);
+    expect(descriptors(restored, [narrow, wide])).toEqual(before);
+  });
+
+  it("gives a wedge and a hashed wedge on the same narrow end opposite descriptors", () => {
+    const { document, target, bond } = dichlorobutane();
+    const wedge = applyNativeBondDisplayStyleTarget(document, target, "wedge");
+    const hashed = applyNativeBondDisplayStyleTarget(wedge, target, "hashed");
+    const narrow = bondById(wedge, bond.id).fromAtomId;
+    expect(bondById(hashed, bond.id).fromAtomId).toBe(narrow);
+    const [wedgeDescriptor] = descriptors(wedge, [narrow]);
+    const [hashedDescriptor] = descriptors(hashed, [narrow]);
+    expect(new Set([wedgeDescriptor, hashedDescriptor])).toEqual(new Set(["R", "S"]));
+  });
+
+  it.each(["bold", "dashed"] as const)("leaves a %s bond alone when its own style is applied again", style => {
+    const { document, target } = dichlorobutane();
+    const styled = applyNativeBondDisplayStyleTarget(document, target, style);
+    expect(applyNativeBondDisplayStyleTarget(styled, target, style)).toBe(styled);
   });
 });

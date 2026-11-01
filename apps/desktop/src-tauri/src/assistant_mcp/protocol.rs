@@ -50,8 +50,8 @@ pub fn deadline(method: &str, params: &Value) -> Duration {
             // Allow preparation, the host's 300s human decision cap, and the write gate.
             // Keep the client templates in external_tools/catalog.rs in step with this budget.
             Some(
-                "insert_structures" | "insert_reaction" | "insert_text" | "edit_structure"
-                | "delete_objects" | "style_objects" | "move_objects",
+                "insert_structures" | "insert_reaction" | "insert_text" | "insert_table"
+                | "edit_structure" | "delete_objects" | "style_objects" | "move_objects",
             ) => 480,
             _ => 120,
         }
