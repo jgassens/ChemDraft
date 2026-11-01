@@ -24,6 +24,58 @@ mod install_cleanup_tests;
 const ABC_SHA: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 const EMPTY_SHA: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
+#[test]
+fn redirected_download_honours_proxy_exclusion_and_names_failing_destination() {
+    use std::net::TcpListener;
+
+    let direct = TcpListener::bind("127.0.0.1:0").unwrap();
+    let direct_address = direct.local_addr().unwrap();
+    let closed = TcpListener::bind("127.0.0.1:0").unwrap();
+    let proxy_address = closed.local_addr().unwrap();
+    drop(closed);
+    let server = crate::network_test_http::LoopbackServer::spawn(direct, 2, move |stream| {
+        crate::network_test_http::reply(stream, format!("HTTP/1.1 302 Found\r\nLocation: https://localhost:{}/asset?sig=secret-signature\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", proxy_address.port()).as_bytes());
+    });
+    // The same matcher used for NO_PROXY, without mutating process-global environment in tests.
+    let builder = || {
+        reqwest::blocking::Client::builder().no_proxy().proxy(
+            reqwest::Proxy::all(format!("http://{proxy_address}"))
+                .unwrap()
+                .no_proxy(reqwest::NoProxy::from_string("127.0.0.1")),
+        )
+    };
+    let url = format!("http://{direct_address}/start");
+    let raw_error = builder().build().unwrap().get(&url).send().unwrap_err();
+    assert_eq!(raw_error.url().unwrap().host_str(), Some("127.0.0.1"),
+        "reqwest 0.12.28 reports the initial URL on redirect connection failure; revisit the diagnostic workaround if upgraded");
+    let io = install::SystemInstallIo::<Stub>::from_builder(builder()).unwrap();
+    let error = io
+        .download(
+            Download {
+                url: &url,
+                sha256: ABC_SHA,
+                size: None,
+                phase: InstallPhase::DownloadingUv,
+            },
+            &std::env::temp_dir().join("chemdraft-failed-redirect-must-not-create-asset"),
+            &AtomicBool::new(false),
+            &|_: InstallProgress| {},
+        )
+        .unwrap_err();
+    // Stop after both client calls, so ignoring NO_PROXY fails promptly without an accept deadline.
+    assert_eq!(
+        server.join_served_count().unwrap(),
+        2,
+        "initial request did not bypass proxy: expected two direct connections"
+    );
+    assert_eq!(error.code, InstallErrorCode::Network);
+    assert_eq!(
+        error.message,
+        "Couldn't reach localhost: the proxy refused the connection or needs sign-in."
+    );
+    assert!(!error.message.contains("secret-signature"));
+}
+
 fn shell_command(script: &str) -> (PathBuf, Vec<OsString>) {
     if cfg!(windows) {
         (

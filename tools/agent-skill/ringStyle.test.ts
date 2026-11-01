@@ -33,7 +33,7 @@ interface RingStyle {
   identityVerifier(identity: (doc: Json) => Identity[], doc: Json, molId: string, inchiKey?: (smiles: string) => string):
     { reference: Identity; verify(mol: Json): string | null };
   collisions(svg: string, nearPx?: number, incident?: ((label: Json, bondId: string) => boolean) | null): { kind: string; a: Json; b: { text: string }; gapPx: number }[];
-  fillsUnderLabels(svg: string, ringAtomsByKey: Map<string, Set<string>>, atoms?: Json[], tolerancePx?: number): Json[];
+  invalidRingFillPaths(svg: string, ringAtomsByKey: Map<string, Set<string>>, atoms?: Json[], tolerancePx?: number): Json[];
   atomsWithDrawnLabels(mol: Json): Json[];
   LIMITS: Record<string, number>;
   letterColour(fill: string, opacity?: number): string;
@@ -92,8 +92,9 @@ const letterObjects = (doc: Json) => doc.pages[0].objects.filter((o: Json) => o.
 function ringAtomsFromDocument(mol: Json): Map<string, Set<string>> {
   return new Map(Object.keys(mol.style.ringStyles).map((ringKey) => {
     const bonds = new Set(ringKey.split("|"));
-    return [ringKey, new Set(mol.bonds.filter((bond: Json) => bonds.has(bond.id))
+    const atomIds = [...new Set(mol.bonds.filter((bond: Json) => bonds.has(bond.id))
       .flatMap((bond: Json) => [bond.fromAtomId, bond.toAtomId]))];
+    return [ringKey, new Set(ringPolygon(mol, { atomIds, bondIds: [...bonds] }).map((atom) => atom.id))];
   }));
 }
 function inside(point: { x: number; y: number }, poly: { x: number; y: number }[]): boolean {
@@ -106,7 +107,7 @@ function inside(point: { x: number; y: number }, poly: { x: number; y: number }[
 }
 
 /** Atom positions of a ring in cycle order, from the build's ring record. */
-function ringPolygon(mol: Json, ring: Json): { x: number; y: number }[] {
+function ringPolygon(mol: Json, ring: Json): { id: string; x: number; y: number }[] {
   const bonds = ring.bondIds.map((id: string) => mol.bonds.find((b: Json) => b.id === id));
   const order = [ring.atomIds[0]];
   while (order.length < ring.atomIds.length) {
@@ -238,7 +239,7 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", { timeout: 30
     expect(rotated.pages[0]!.objects.filter((o) => o.type !== "group")).toEqual(rotatedFlat.pages[0]!.objects);
   });
 
-  it("matches the real 14459a46 SVG/PNG artwork and chemistry golden", async () => {
+  it("matches branch-rendered SVG/PNG artwork and the original chemistry golden", async () => {
     const golden = join(fixtures, "golden-14459a46");
     const identities = JSON.parse(read(join(golden, "identity.json")));
     // Embedded CTABs are checked by the identity golden; decoration IDs now include the molecule.
@@ -258,8 +259,8 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", { timeout: 30
           expect(code, stderr.join("\n") + stdout.join("\n")).toBe(0);
           const previous = read(join(golden, base + ".svg"));
           expect(artworkSvg(read(out + ".svg")), base).toBe(artworkSvg(previous));
-          // Rasterize the actual old SVG with this host's fonts, so macOS and Windows can both
-          // compare the old and current picture without cross-platform font substitutions.
+          // Rasterize the captured SVG with this host's fonts, so macOS and Windows can both
+          // compare the captured and current picture without cross-platform font substitutions.
           expect(readFileSync(out + ".png").equals(Buffer.from(svgToPng(previous, 600))), base).toBe(true);
           expect(JSON.parse(stdout[0]!).molecules, base).toEqual(
             identities.find((row: Json) => row.name === name && row.kind === kind).molecules);
@@ -385,7 +386,7 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", { timeout: 30
     }
   }, 60_000);
 
-  it("letters paclitaxel by the taxane convention and gives non-ring labels on a fill contrast without a halo", () => {
+  it("letters paclitaxel by the taxane convention and gives every label on a fill contrast without a halo", () => {
     const { build, doc } = fixture("paclitaxel");
     const { carbon, picture, report } = ringStyle.style(structuredClone(doc), build, { convention: "taxane" });
     const ring = (L: string) => report.letters.find((l: Json) => l.letter === L);
@@ -397,33 +398,18 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", { timeout: 30
     // The three phenyls are pendant, not core: plain.
     expect(report.unlettered).toHaveLength(3);
     expect(report.unlettered.every((r: string) => /aromatic/.test(r))).toBe(true);
-    // C15's gem-dimethyl cannot leave ring B's fill. These are non-ring labels, so they retain
-    // that fill under them and get its luminance contrast with a transparent per-atom background.
+    // Ring O and the two inward methyl labels now share the fill luminance rule.
     expect(report.layout.stuck).toHaveLength(2);
-    const fillB = ring("B").fill;
-    const originalBackground = molecule(doc).style.atomLabelBackgroundColor;
-    const ringAtomIds = new Set<string>(build.rings.flatMap((r: Json) => r.atomIds as string[]));
     for (const [copy, list] of [[carbon, report.labelsOnFills.carbon], [picture, report.labelsOnFills.picture]] as const) {
-      const stuck = report.layout.stuck.map((x: Json) => x.group.split(" ")[0]);
-      expect(list.map((l: Json) => l.atom).sort()).toEqual(stuck.sort());
       const style = molecule(copy).style;
+      expect(list.some((l: Json) => l.label === "O" && l.on === "D")).toBe(true);
       for (const l of list) {
-        expect(l.on).toBe("B");
-        expect(ringAtomIds.has(l.atom)).toBe(false);
-        expect(l.colour).toBe(ringStyle.letterColour(fillB, 0.9));
+        expect(l.colour).toBe(ringStyle.letterColour(ring(l.on).fill, 0.9));
         expect(style.atomLabelColors[l.atom]).toBe(l.colour);
         expect(style.atomLabelBackgroundColors[l.atom]).toBe("transparent");
       }
-      expect(Object.keys(style.atomLabelColors).sort()).toEqual(stuck.sort());
-      expect(style.atomLabelBackgroundColor).toBe(originalBackground);
-      expect(Object.keys(style.atomLabelBackgroundColors).sort()).toEqual(stuck.sort());
-      // Ring-atom labels remain at the molecule's normal colour and default background.
-      for (const id of ringAtomIds) {
-        expect(style.atomLabelColors[id]).toBeUndefined();
-        expect(style.atomLabelBackgroundColors[id]).toBeUndefined();
-      }
+      expect(Object.keys(style.atomLabelColors).sort()).toEqual(list.map((l: Json) => l.atom).sort());
     }
-    expect(report.labelsOnFills.picture.map((l: Json) => l.label)).toEqual(["Me", "Me"]);
   });
 
   it("leaves pendant rings plain unless asked, and turns a substituent with rotate", () => {
@@ -463,55 +449,40 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", { timeout: 30
     expect(found.map((c) => [c.kind, [c.a.text, c.b.text].sort().join("/")])).toEqual([["label-label", "CH3/H"]]);
   });
 
-  it("finds the oxetane O under its own real pre-notch fill, and accepts the real notched render", () => {
+  it("accepts real full-polygon fills and rejects holes, extra vertices and evenodd notches", () => {
     const doc = JSON.parse(read(join(fixtures, "paclitaxel-doc.json")));
-    const mol = molecule(doc), ringAtoms = ringAtomsFromDocument(mol);
-    const preNotch = read(join(fixtures, "paclitaxel-prenotch.svg"));
-    // Real renderer output has an anchor and label text, but intentionally no atom id on this group.
-    const oxygenGroup = [...preNotch.matchAll(/<g\s[^>]*data-atom-label="O"[^>]*>[\s\S]*?<\/g>/g)]
-      .find((group) => group[0].includes("translate(561.689 571.538)"));
-    expect(oxygenGroup).toBeDefined();
-    expect(oxygenGroup).not.toContain("data-atom-id");
-
-    const oxetane = "b49|b50|b64|b9";
-    expect(ringStyle.fillsUnderLabels(preNotch, ringAtoms, mol.atoms))
-      .toEqual(expect.arrayContaining([expect.objectContaining({ label: "O", ring: oxetane })]));
-    expect(ringStyle.fillsUnderLabels(read(join(fixtures, "paclitaxel-notched.svg")), ringAtoms, mol.atoms)).toEqual([]);
+    const mol = molecule(doc), rings = ringAtomsFromDocument(mol);
+    const svg = read(join(fixtures, "paclitaxel-filled.svg"));
+    expect(ringStyle.invalidRingFillPaths(svg, rings, mol.atoms)).toEqual([]);
+    const replace = (svg: string, change: (tag: string) => string) => svg.replace(/<path\s[^>]*data-molecule-fill-ring="true"[^>]*>/, change);
+    for (const broken of [
+      replace(svg, (tag) => tag.replace(/ d="([^"]*)"/, (all, d) => ` d="${d} M 1 1 L 2 1 L 2 2 Z"`)),
+      replace(svg, (tag) => tag.replace("<path ", `<path fill-rule="evenodd" `)),
+      replace(svg, (tag) => tag.replace(/ d="M [^ ]+ [^ ]+/, ` d="M 0 0`))
+    ]) {
+      expect(ringStyle.invalidRingFillPaths(broken, rings, mol.atoms)).toEqual([
+        expect.objectContaining({ failure: expect.stringContaining("not the plain ring polygon") })
+      ]);
+    }
   });
 
-  it("fails closed when the real notched render is missing the oxetane O label group", () => {
-    const doc = JSON.parse(read(join(fixtures, "paclitaxel-doc.json")));
-    const mol = molecule(doc), ringAtoms = ringAtomsFromDocument(mol);
-    const notched = read(join(fixtures, "paclitaxel-notched.svg"));
-    const oxygenGroup = [...notched.matchAll(/<g\s[^>]*data-atom-label="O"[^>]*>[\s\S]*?<\/g>/g)]
-      .find((group) => group[0].includes("translate(561.689 571.538)"));
-    expect(oxygenGroup).toBeDefined();
-
-    const withoutOxygen = notched.replace(oxygenGroup![0], "");
-    expect(ringStyle.fillsUnderLabels(withoutOxygen, ringAtoms, mol.atoms)).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        missing: true,
-        atom: "a51",
-        label: "O",
-        ring: "b49|b50|b64|b9",
-        failure: "fill under a label: could not find the rendered label of ring atom a51 (O) to check it"
-      })
-    ]));
-  });
-
-  it("pairs a ring label at its document labelOffset anchor", () => {
-    const ring = "b0|b1|b2";
-    const svg = `<svg><path data-molecule-fill-ring="true" data-ring-key="${ring}" d="M 0 0 L 20 0 L 20 20 L 0 20 Z"/><g data-atom-label="O" transform="translate(30 10)" font-size="15"><text text-anchor="middle">O</text></g></svg>`;
-    const atoms = [{ id: "a0", element: "O", x: 10, y: 10, labelOffset: { x: 20, y: 0 } }];
-    expect(ringStyle.fillsUnderLabels(svg, new Map([[ring, new Set(["a0"])]]), atoms)).toEqual([]);
-  });
-
-  it.each(["above", "below"] as const)("pairs a ring label at its %s placement anchor", (placement) => {
-    const ring = "b0|b1|b2";
-    const offset = 15.35 * (placement === "above" ? -1 : 1);
-    const svg = `<svg><path data-molecule-fill-ring="true" data-ring-key="${ring}" d="M 100 100 L 120 100 L 120 120 L 100 120 Z"/><g data-atom-label="O" transform="translate(10 ${10 + offset})" font-size="15"><text text-anchor="middle">O</text></g></svg>`;
-    const atoms = [{ id: "a0", element: "O", x: 10, y: 10, labelPlacement: placement, labelFontSizePx: 15, labelPaddingPx: 2 }];
-    expect(ringStyle.fillsUnderLabels(svg, new Map([[ring, new Set(["a0"])]]), atoms)).toEqual([]);
+  it("rejects bow-tie fills and accepts either cyclic direction from any starting vertex", () => {
+    const atoms = [
+      { id: "a0", x: 0, y: 0 }, { id: "a1", x: 20, y: 0 },
+      { id: "a2", x: 20, y: 20 }, { id: "a3", x: 0, y: 20 }
+    ];
+    const rings = new Map([["square", new Set(atoms.map((atom) => atom.id))]]);
+    const svg = (d: string) => `<path data-molecule-fill-ring="true" data-ring-key="square" d="${d}"/>`;
+    expect(ringStyle.invalidRingFillPaths(svg("M 0 0 L 20 20 L 20 0 L 0 20 Z"), rings, atoms)).toEqual([
+      expect.objectContaining({ failure: expect.stringContaining("not the plain ring polygon") })
+    ]);
+    for (const direction of [atoms, [...atoms].reverse()]) {
+      for (let start = 0; start < atoms.length; start++) {
+        const points = [...direction.slice(start), ...direction.slice(0, start)];
+        const d = points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ") + " Z";
+        expect(ringStyle.invalidRingFillPaths(svg(d), rings, atoms)).toEqual([]);
+      }
+    }
   });
 
   it("requires every renderer-labeled ring carbon for the fill check", () => {
@@ -908,7 +879,7 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", { timeout: 30
         expect(result.withoutKey).toMatch(/^reads .*\[H\]/);
       }, 180_000);
 
-      it("checks real notched fills for labeled carbons and above/below atom labels", async () => {
+      it("checks real plain fills for labeled carbons and above/below atom labels", async () => {
         const result = await runRingStyleChild<Json>(`
           const ringPath = (mol) => {
             const adjacent = new Map(mol.atoms.map((atom) => [atom.id, []]));
@@ -965,8 +936,8 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", { timeout: 30
               expectedLabel,
               target: target.id,
               shown: atoms.filter((atom) => atom.labelShown).map((atom) => atom.id),
-              notched: ringStyle.fillsUnderLabels(svg, rings, atoms),
-              restored: ringStyle.fillsUnderLabels(replaceFillPath(svg, ring, ringPath(mol)), rings, atoms)
+              plain: ringStyle.invalidRingFillPaths(svg, rings, atoms),
+              damaged: ringStyle.invalidRingFillPaths(replaceFillPath(svg, ring, ringPath(mol) + " M 0 0 L 1 0 L 1 1 Z"), rings, atoms)
             };
           };
           return [
@@ -979,10 +950,9 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", { timeout: 30
           ];
         `, cliCheckout!);
         for (const entry of result) {
-          expect(entry.notched, entry.name).toEqual([]);
-          expect(entry.notched.some((hit: Json) => hit.missing), entry.name).toBe(false);
+          expect(entry.plain, entry.name).toEqual([]);
           expect(entry.shown, entry.name).toContain(entry.target);
-          expect(entry.restored.some((hit: Json) => !hit.missing && hit.label.includes(entry.expectedLabel)), entry.name).toBe(true);
+          expect(entry.damaged[0].failure, entry.name).toContain("not the plain ring polygon");
         }
       }, 180_000);
     });
@@ -1072,7 +1042,7 @@ describe("ring-style.mjs (Nicolaou-style rings for any molecule)", { timeout: 30
       const fake = join(dir, "fake-checkout");
       mkdirSync(join(fake, "node_modules", "tsx", "dist"), { recursive: true });
       mkdirSync(join(fake, "packages", "chemdraft-cli", "src"), { recursive: true });
-      writeFileSync(join(fake, "node_modules", "tsx", "dist", "cli.mjs"), 'process.stderr.write("Cannot find module zod\\n"); process.exit(3);\n');
+      writeFileSync(join(fake, "node_modules", "tsx", "dist", "loader.mjs"), 'process.stderr.write("Cannot find module zod\\n"); process.exit(3);\n');
       writeFileSync(join(fake, "packages", "chemdraft-cli", "src", "cli.ts"), "");
       const result = await runRingStyleChild<string>(`
         try {

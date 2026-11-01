@@ -1,3 +1,5 @@
+import { MAX_IMAGE_OBJECT_BYTES, normalizeAtomIsotope, isSvgImageSource, readSvgInfo, validatePngImage, validateSvgImage, imagePixelLimitError } from "@chemdraft/chem-core";
+
 export type ClipboardPayloadKind = "svg" | "png" | "text/plain" | "smiles" | "mol" | "rxn" | "cdxml" | "cdx";
 
 export interface ClipboardTransferWarning {
@@ -10,16 +12,53 @@ export interface ClipboardTextItem {
   text: string;
 }
 
+export interface ClipboardImageItem {
+  type: "image/png" | "image/svg+xml";
+  bytesBase64: string;
+  pixelsPerMeter?: { x: number; y: number };
+  pixelWidth?: number;
+  pixelHeight?: number;
+}
+
+export interface ClipboardSkippedImageItem {
+  type: string;
+  byteLength: number;
+  reason: string;
+}
+
 export interface ClipboardReadPayload {
   types: string[];
   textItems: ClipboardTextItem[];
+  imageItems?: ClipboardImageItem[];
+  skippedImageItems?: ClipboardSkippedImageItem[];
 }
 
 export type ClipboardMolfileFormat = "molfile-v2000" | "molfile-v3000";
 
+/** A text heuristic to try with the host chemistry parser, not an assertion of validity. */
+export interface ClipboardChemistryCandidate {
+  kind: "smiles" | "smiles-list";
+  sourceType: string;
+  text: string;
+}
+
 export type ClipboardDetectedPayload =
   | {
+      kind: "image";
+      image: ClipboardImageItem;
+      sourceType?: string;
+      warnings: ClipboardTransferWarning[];
+    }
+  | {
+      kind: "image-refused";
+      message: string;
+      warnings: ClipboardTransferWarning[];
+    }
+  | {
       kind: "plain-text";
+      /** For heuristic SMILES lists: picture to paste if host chemistry parsing fails. */
+      fallbackImage?: ClipboardImageItem;
+      chemistryCandidates?: ClipboardChemistryCandidate[];
       text: string;
       sourceType?: string;
       warnings: ClipboardTransferWarning[];
@@ -33,6 +72,11 @@ export type ClipboardDetectedPayload =
     }
   | {
       kind: "smiles";
+      /** For text heuristics only: paste this picture if host chemistry parsing fails.
+       * Omitted when an unreadable advertised chemistry flavor blocks pictures.
+       * The host must validate it through the ordinary picture paste path. */
+      fallbackImage?: ClipboardImageItem;
+      chemistryCandidates?: ClipboardChemistryCandidate[];
       text: string;
       sourceType?: string;
       warnings: ClipboardTransferWarning[];
@@ -73,6 +117,7 @@ export type ClipboardDetectedPayload =
 export interface ParsedClipboardAtom {
   id: string;
   element: string;
+  isotope?: number;
   x: number;
   y: number;
   formalCharge: number;
@@ -83,6 +128,7 @@ export interface ParsedClipboardBond {
   fromAtomId: string;
   toAtomId: string;
   order: "single" | "double" | "triple" | "aromatic" | "unknown";
+  stereo?: "either";
   /** Wedge/hash stereo from the source molfile (V2000 stereo 1=up→wedge, 6=down→hashed;
    *  V3000 CFG=1→wedge, CFG=3→hashed). The narrow end of the wedge is `fromAtomId`.
    *  "dashed" is not stereo: it marks a coordination (dative) bond, type 9. */
@@ -192,6 +238,98 @@ export function inspectClipboardPayload(payload: ClipboardReadPayload): Clipboar
     };
   }
 
+  const firstPlainText =
+    textItems.find((item) => isTextLikeType(item.type)) ??
+    textItems.find((item) => !isMarkupType(item.type));
+  const svgText = payload.textItems.find((item) => looksLikeSvgDocument(item.text));
+  const image = payload.imageItems?.find((item) => item.type === "image/png") ?? payload.imageItems?.[0];
+  const skippedImage = payload.skippedImageItems?.[0];
+  // Unreadable advertised chemistry blocks only pictures, including a heuristic fallback.
+  const suppressPicture = payload.types.some((type) => isCdxmlType(type) || isCdxType(type)
+    || isSmilesType(type) || /(?:molfile|rxnfile|inchi|chemical\/)/i.test(type));
+  // Text heuristics still need the host's chemistry parser; retain artwork in case parsing fails.
+  const hasPicture = image || skippedImage || svgText;
+  const fallbackImage = !suppressPicture ? image ?? (svgText ? svgTextImage(svgText.text) : undefined) : undefined;
+  const chemistryCandidates: ClipboardChemistryCandidate[] = [];
+  if (hasPicture) {
+    for (const item of textItems) {
+      if (looksLikeSvgDocument(item.text)) continue;
+      if (looksLikeSmilesStrict(item.text)) {
+        chemistryCandidates.push({ kind: "smiles", text: item.text, sourceType: item.type });
+      }
+      const tokens = smilesListTokens(item.text);
+      const candidates = smilesListCandidates(item.text);
+      const firstTokenColumns = new Map<number, number>();
+      for (const token of tokens) {
+        if (!firstTokenColumns.has(token.line)) firstTokenColumns.set(token.line, token.column);
+      }
+      if (smilesListDecision({
+        candidates: tokens.length,
+        parsed: candidates.length,
+        lineCount: item.text.split(/\r\n|\r|\n/).filter((line) => line.trim().length > 0).length,
+        parsedFirstTokenLines: candidates.filter((candidate) => candidate.column === firstTokenColumns.get(candidate.line)).length
+      })) {
+        chemistryCandidates.push({ kind: "smiles-list", text: item.text, sourceType: item.type });
+      }
+    }
+  }
+  const firstCandidate = chemistryCandidates[0];
+  if (firstCandidate) {
+    return { kind: firstCandidate.kind === "smiles" ? "smiles" : "plain-text",
+      text: firstCandidate.text, sourceType: firstCandidate.sourceType, warnings: [], chemistryCandidates,
+      ...(fallbackImage ? { fallbackImage } : {}) };
+  }
+  if (image && !suppressPicture) {
+    try {
+      const binary = atob(image.bytesBase64);
+      if (binary.length > MAX_IMAGE_OBJECT_BYTES) {
+        return refusedImage(`${image.type === "image/png" ? "PNG" : "SVG"} is ${(binary.length / (1024 * 1024)).toFixed(1)} MB; the limit is 25 MB.`);
+      }
+      const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+      if (image.type === "image/png") {
+        const result = validatePngImage(bytes);
+        if (result.error) return refusedImage(result.error);
+        const limitError = imagePixelLimitError(image.pixelWidth ?? result.info!.pixelWidth, image.pixelHeight ?? result.info!.pixelHeight);
+        if (limitError) return refusedImage(limitError);
+      } else {
+        const result = validateSvgImage(new TextDecoder().decode(bytes));
+        if (result.error) return refusedImage(result.error);
+        const info = result.info;
+        const limitError = imagePixelLimitError(image.pixelWidth ?? info?.pixelWidth ?? 0, image.pixelHeight ?? info?.pixelHeight ?? 0);
+        if (limitError) return refusedImage(limitError);
+      }
+    } catch {
+      return refusedImage(`the ${image.type === "image/png" ? "PNG" : "SVG"} has invalid data.`);
+    }
+    return { kind: "image", image, sourceType: image.type, warnings: [] };
+  }
+  if (svgText && !suppressPicture) {
+    const bytes = new TextEncoder().encode(svgText.text);
+    if (bytes.length > MAX_IMAGE_OBJECT_BYTES) {
+      return refusedImage(`SVG is ${(bytes.length / (1024 * 1024)).toFixed(1)} MB; the limit is 25 MB.`);
+    }
+    const result = validateSvgImage(svgText.text);
+    if (result.error) return refusedImage(result.error);
+    return { kind: "image", sourceType: svgText.type, warnings: [], image: svgTextImage(svgText.text) };
+  }
+  if (skippedImage && !suppressPicture) return refusedImage(skippedImage.reason);
+  if (firstPlainText && !looksLikeSvgDocument(firstPlainText.text)) {
+    return {
+      kind: "plain-text",
+      text: firstPlainText.text,
+      sourceType: firstPlainText.type,
+      warnings: []
+    };
+  }
+
+  const cdxmlType = payload.types.find(isCdxmlType);
+  if (cdxmlType) {
+    return { kind: "cdxml", text: "", sourceType: cdxmlType, warnings: [{
+      code: "clipboard.cdxml_not_implemented",
+      message: "The clipboard contains CDXML, but CDXML paste parsing is not implemented yet."
+    }] };
+  }
+
   const cdxType = payload.types.find(isCdxType);
   if (cdxType) {
     return {
@@ -203,18 +341,6 @@ export function inspectClipboardPayload(payload: ClipboardReadPayload): Clipboar
           message: "The clipboard contains a CDX payload, but best-effort CDX paste parsing is not implemented yet."
         }
       ]
-    };
-  }
-
-  const firstPlainText =
-    textItems.find((item) => isTextLikeType(item.type)) ??
-    textItems.find((item) => !isMarkupType(item.type));
-  if (firstPlainText) {
-    return {
-      kind: "plain-text",
-      text: firstPlainText.text,
-      sourceType: firstPlainText.type,
-      warnings: []
     };
   }
 
@@ -241,6 +367,24 @@ export function inspectClipboardPayload(payload: ClipboardReadPayload): Clipboar
       }
     ]
   };
+}
+
+function refusedImage(reason: string): ClipboardDetectedPayload {
+  const message = reason.startsWith("Couldn't paste the picture:") ? reason : `Couldn't paste the picture: ${reason}`;
+  return { kind: "image-refused", message: /[.!?]$/.test(message) ? message : `${message}.`, warnings: [] };
+}
+
+function svgTextImage(text: string): ClipboardImageItem {
+  const bytes = new TextEncoder().encode(text);
+  const chunks: string[] = [];
+  for (let offset = 0; offset < bytes.length; offset += 8192) {
+    chunks.push(String.fromCharCode(...bytes.subarray(offset, offset + 8192)));
+  }
+  return { type: "image/svg+xml", bytesBase64: btoa(chunks.join("")), ...readSvgInfo(text) };
+}
+
+function looksLikeSvgDocument(text: string): boolean {
+  return isSvgImageSource(text);
 }
 
 export function parseMolfileGraph(molfile: string): ParsedMolfileGraph {
@@ -366,6 +510,20 @@ export function isCdxType(type: string): boolean {
   );
 }
 
+// CTfile V2000 default isotope masses (the reference for its signed mass-difference field),
+// not rounded standard atomic weights: notably Cl=35 and Br=79. Unlisted symbols are declined.
+const mdlDefaultMass: Readonly<Record<string, number>> = {
+  H: 1, He: 4, Li: 7, Be: 9, B: 11, C: 12, N: 14, O: 16, F: 19, Ne: 20,
+  Na: 23, Mg: 24, Al: 27, Si: 28, P: 31, S: 32, Cl: 35, Ar: 40, K: 39, Ca: 40,
+  Sc: 45, Ti: 48, V: 51, Cr: 52, Mn: 55, Fe: 56, Co: 59, Ni: 58, Cu: 63, Zn: 64,
+  Ga: 69, Ge: 74, As: 75, Se: 80, Br: 79, Kr: 84, Rb: 85, Sr: 88, Y: 89, Zr: 90,
+  Nb: 93, Mo: 98, Ru: 102, Rh: 103, Pd: 106, Ag: 107, Cd: 114, In: 115, Sn: 120,
+  Sb: 121, Te: 130, I: 127, Xe: 132, Cs: 133, Ba: 138, La: 139, Ce: 140,
+  Pr: 141, Nd: 142, Sm: 152, Eu: 153, Gd: 158, Tb: 159, Dy: 164, Ho: 165,
+  Er: 166, Tm: 169, Yb: 174, Lu: 175, Hf: 180, Ta: 181, W: 184, Re: 187,
+  Os: 192, Ir: 193, Pt: 195, Au: 197, Hg: 202, Tl: 205, Pb: 208, Bi: 209
+};
+
 function parseV2000Molfile(molfile: string): ParsedMolfileGraph {
   const lines = molfile.split("\n");
   const countsLineIndex = findV2000CountsLineIndex(lines);
@@ -374,13 +532,12 @@ function parseV2000Molfile(molfile: string): ParsedMolfileGraph {
   }
 
   const countsLine = lines[countsLineIndex] ?? "";
-  const counts = countsLine.match(/^\s*(\d+)\s+(\d+)/);
+  const counts = parseV2000CountsLine(countsLine);
   if (!counts) {
     throw new Error("V2000 molfile is missing its atom/bond counts line.");
   }
 
-  const atomCount = Number(counts[1]);
-  const bondCount = Number(counts[2]);
+  const { atomCount, bondCount } = counts;
   const atomStartIndex = countsLineIndex + 1;
   const atomLines = lines.slice(atomStartIndex, atomStartIndex + atomCount);
   const bondLines = lines.slice(atomStartIndex + atomCount, atomStartIndex + atomCount + bondCount);
@@ -388,11 +545,17 @@ function parseV2000Molfile(molfile: string): ParsedMolfileGraph {
   // presence of ANY M CHG line means every atom-block charge must be treated as zero.
   const atomBlockCharges = new Map<number, number>();
   const chgLineCharges = new Map<number, number>();
+  const massDifferences = new Map<number, number>();
+  const isotopeMasses = new Map<number, number>();
   let sawChgLine = false;
   const warnings: ClipboardTransferWarning[] = [];
 
   const atoms = atomLines.map((line, index): ParsedClipboardAtom => {
-    const { x, y, element, chargeCode } = parseV2000AtomLine(line);
+    const { x, y, element, chargeCode, massDifference } = parseV2000AtomLine(line);
+    if (!Number.isInteger(massDifference)) {
+      throw new Error(`V2000 atom ${index + 1} has an invalid mass difference.`);
+    }
+    if (massDifference !== 0) massDifferences.set(index + 1, massDifference);
     if (!Number.isFinite(x) || !Number.isFinite(y)) {
       throw new Error(`V2000 atom ${index + 1} has invalid coordinates.`);
     }
@@ -432,12 +595,31 @@ function parseV2000Molfile(molfile: string): ParsedMolfileGraph {
       fromAtomId: atomId(fromIndex),
       toAtomId: atomId(toIndex),
       order: bondOrderFromMolfile(orderCode),
+      ...(orderCode === 2 && stereoCode === 3 ? { stereo: "either" as const } : {}),
       ...(bondStyle ? { bondStyle } : {})
     };
   });
 
   for (const line of lines.slice(atomStartIndex + atomCount + bondCount)) {
+    if (line.trim() === "M  END") break;
     const fields = line.trim().split(/\s+/);
+    if (fields[0] === "M" && fields[1] === "ISO") {
+      const pairCount = Number(fields[2]);
+      if (!Number.isInteger(pairCount) || pairCount < 1 || pairCount > 8) {
+        throw new Error("V2000 M ISO line has an invalid entry count.");
+      }
+      for (let index = 0; index < pairCount; index += 1) {
+        const atomIndex = Number(fields[3 + index * 2]);
+        const mass = Number(fields[4 + index * 2]);
+        if (!Number.isInteger(atomIndex) || !atoms[atomIndex - 1]) {
+          throw new Error("V2000 M ISO line has an invalid atom reference.");
+        }
+        // Validate even an entry subsequently superseded by another property line.
+        normalizeAtomIsotope({ ...atoms[atomIndex - 1]!, isotope: mass });
+        isotopeMasses.set(atomIndex, mass);
+      }
+      continue;
+    }
     if (fields[0] !== "M" || fields[1] !== "CHG") {
       continue;
     }
@@ -458,6 +640,26 @@ function parseV2000Molfile(molfile: string): ParsedMolfileGraph {
   atoms.forEach((atom, index) => {
     const i = index + 1;
     atom.formalCharge = sawChgLine ? (chgLineCharges.get(i) ?? 0) : (atomBlockCharges.get(i) ?? 0);
+    // M ISO overrides the mass-difference field only on atoms named in an entry.
+    let mass = isotopeMasses.get(i);
+    const difference = massDifferences.get(i);
+    if (mass === undefined && difference !== undefined) {
+      const reference = mdlDefaultMass[atom.element];
+      if (reference === undefined) {
+        warnings.push({
+          code: "clipboard.isotope_default_mass_unknown",
+          message: `Atom ${i} (${atom.element}) has mass difference ${difference}; ` +
+            "its MDL default mass is unknown."
+        });
+      } else {
+        mass = reference + difference;
+      }
+    }
+    if (mass !== undefined) {
+      const normalized = normalizeAtomIsotope({ ...atom, isotope: mass });
+      Object.assign(atom, normalized);
+      if (normalized.isotope === undefined) delete atom.isotope;
+    }
   });
 
   if (atoms.length === 0) {
@@ -526,6 +728,7 @@ function parseV3000Molfile(molfile: string): ParsedMolfileGraph {
   const bonds: ParsedClipboardBond[] = [];
 
   for (const line of lines) {
+    if (line === "M  END") break;
     if (line === "BEGIN ATOM") {
       section = "atom";
       continue;
@@ -554,13 +757,15 @@ function parseV3000Molfile(molfile: string): ParsedMolfileGraph {
       }
 
       const chargeMatch = line.match(/\bCHG=(-?\d+)\b/);
-      atoms.push({
+      const massMatch = line.match(/\bMASS=([^\s]+)/);
+      atoms.push(normalizeAtomIsotope({
         id: atomId(index),
         element,
+        ...(massMatch ? { isotope: Number(massMatch[1]) } : {}),
         x,
         y,
         formalCharge: chargeMatch ? Number(chargeMatch[1]) : 0
-      });
+      }));
     }
 
     if (section === "bond") {
@@ -587,6 +792,7 @@ function parseV3000Molfile(molfile: string): ParsedMolfileGraph {
         fromAtomId: atomId(fromIndex),
         toAtomId: atomId(toIndex),
         order: bondOrderFromMolfile(orderCode),
+        ...(orderCode === 2 && cfg === 2 ? { stereo: "either" as const } : {}),
         ...(bondStyle ? { bondStyle } : {})
       });
     }
@@ -630,8 +836,8 @@ export function looksLikeInchi(text: string): boolean {
  * token, length ≥ 2, only SMILES grammar characters, and at least one ASCII letter
  * (an element). This NEVER asserts validity (that needs a real parser); the app layer
  * confirms by attempting an OpenChemLib depiction and falls back to plain text on
- * failure. Deliberately not used by `inspectClipboardPayload` — it stays conservative
- * and only classifies plain text as SMILES once the app has actually parsed it.
+ * failure. `inspectClipboardPayload` uses the stricter pre-filter only when a picture
+ * would otherwise hide a plain-text chemistry candidate; the host must still parse it.
  */
 export function looksLikeSmiles(text: string): boolean {
   const token = text.trim();
@@ -707,12 +913,31 @@ export function smilesListDecision(input: {
     || (input.lineCount >= 2 && input.parsedFirstTokenLines === input.lineCount));
 }
 
+function parseV2000CountsLine(line: string): { atomCount: number; bondCount: number } | undefined {
+  // CTfile counts are aaabbb: two right-justified 3-character integers, with no
+  // separator when both reach 100 (e.g. 266267). Always try these columns first.
+  const atoms = line.slice(0, 3).trim();
+  const bonds = line.slice(3, 6).trim();
+  if (/^\d+$/.test(atoms) && /^\d+$/.test(bonds)) {
+    return { atomCount: Number(atoms), bondCount: Number(bonds) };
+  }
+
+  // Some writers omit padding. Accept separate, at-most-three-digit fields only:
+  // a longer digit run may contain adjacent fixed-width counts and must not be split.
+  const short = line.match(/^\s*(\d{1,3})\s+(\d{1,3})(?=\s|$)/);
+  return short ? { atomCount: Number(short[1]), bondCount: Number(short[2]) } : undefined;
+}
+
 function findV2000CountsLineIndex(lines: readonly string[]): number {
   // A V2000 counts line is "aaabbb...  V2000" (atoms, bonds, then 9 more fields + tag).
   // Requiring either the explicit V2000 tag or the full 6+ field shape avoids mis-reading
   // ordinary two-number text (e.g. "42 17 results found") as a counts line.
   return lines.findIndex((line) =>
-    /^\s*\d+\s+\d+/.test(line) && (/\bV2000\b/.test(line) || line.trim().split(/\s+/).length >= 6)
+    parseV2000CountsLine(line) !== undefined && (
+      /\bV2000\b/.test(line) || line.trim().split(/\s+/).length >= 6 ||
+      // Count the remaining fields separately when aaa and bbb abut.
+      /^(?:\s+\d+){4,}\s*$/.test(line.slice(6))
+    )
   );
 }
 
@@ -771,13 +996,16 @@ function bondId(index: number): string {
 // magnitude ≥100 (e.g. "-123.4567-123.4567") abut with no separator, and atom indices ≥100
 // in bond lines ("100200") abut too — both break a naive whitespace split. Parse by column
 // offset, falling back to whitespace only for non-conforming writers that under-pad.
-function parseV2000AtomLine(line: string): { x: number; y: number; element: string; chargeCode: number } {
+function parseV2000AtomLine(line: string): {
+  x: number; y: number; element: string; chargeCode: number; massDifference: number
+} {
   if (line.length >= 34) {
     // x[0,10) y[10,20) z[20,30) symbol[31,34) … charge[36,39)
     return {
       x: Number(line.slice(0, 10)),
       y: Number(line.slice(10, 20)),
       element: line.slice(31, 34).trim() || "C",
+      massDifference: Number(line.slice(34, 36).trim() || "0"),
       chargeCode: Number(line.slice(36, 39).trim() || "0")
     };
   }
@@ -786,6 +1014,7 @@ function parseV2000AtomLine(line: string): { x: number; y: number; element: stri
     x: Number(fields[0]),
     y: Number(fields[1]),
     element: fields[3] ?? "C",
+    massDifference: Number(fields[4] ?? "0"),
     chargeCode: Number(fields[5] ?? "0")
   };
 }

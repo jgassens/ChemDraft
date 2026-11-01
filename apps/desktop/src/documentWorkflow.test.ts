@@ -1,9 +1,11 @@
+import { defaultCases, bondDepiction, insertionDocument, expectDrawingDefaults } from "./drawingDefaults.testHelpers";
 import { hitToleranceForScale } from "./interaction/hitTest";
 import { rawMolfileFixture } from "@chemdraft/layout-engine/testing";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { projectGraphicObjectPoint } from "@chemdraft/art-engine";
-import { atomDisplayLabel, mechanismArrowGeometry, nativeMoleculeRings, resolvePageAnchorPoint } from "@chemdraft/layout-engine";
+import { atomDisplayLabel, mechanismArrowGeometry, nativeMoleculeRings, representativeMoleculeBondLength, resolvePageAnchorPoint } from "@chemdraft/layout-engine";
 import * as layoutEngine from "@chemdraft/layout-engine";
+import { doubleBondStereoState } from "./interaction/doubleBondStereo";
 import {
   aromaticFixtures,
   type AromaticFixture,
@@ -40,7 +42,6 @@ import {
   type MoleculeAtom,
   type MoleculeBond,
   type MoleculeObject,
-  type TextSpan,
   type PlusObject,
   type TextObject,
   type ViewMatrix,
@@ -55,7 +56,6 @@ import {
   insertSmilesMolecule,
   insertSmilesMoleculeGrid,
   insertSmilesMoleculeGridStatus,
-  smilesPasteBondLengthPx,
   type PastedStructureDepiction,
   pastedStructureDepictionFromMolfile,
   applyImportedPageFitRecommendation,
@@ -106,6 +106,7 @@ import {
   applyFreeformSingleBondToolAtPoint,
   applyNativeBondDisplayStyleTarget,
   applyNativeAtomSproutTarget,
+  commitNativeAtomLabelTarget,
   applyNativeCarbonylAtAtomTarget,
   applyNativeRingAttachAtAtomTarget,
   applyNativeRingFuseAtBondTarget,
@@ -131,6 +132,7 @@ import {
   applyDocumentObjectProjectedPlaneTilt,
   planNativeTemplatePlacement,
   applyNativeMoleculeEngineRelayout,
+  prepareNativeMoleculeEngineRelayout,
   stereoPerceptionMolfile,
   applySingleBondToolAtPoint,
   applySingleBondToolAtNativeAtom,
@@ -140,6 +142,8 @@ import {
   createNativeArtGraphicObject,
   createNativeFreehandGraphicObject,
   createNativeSavePayload,
+  createNativeTextObject,
+  createNativeTemplateMolecule,
   createNativeSingleBondMolecule,
   createNativeMolfileMolecule,
   createPhase4Document,
@@ -172,7 +176,6 @@ import {
   applyNativeChainTool,
   applyReactionArrowToolAtPoint,
   bracketKindForToolCommand,
-  formulaSpansFromText,
   insertNativeBracket,
   insertNativeReactionArrow,
   planNativeChainVertices,
@@ -1178,9 +1181,9 @@ describe("SMILES molecule grid", () => {
       expect(object.x + object.width / 2).toBeCloseTo(24 + (index % 3 + 0.5) * cellWidth);
       expect(object.y + object.height / 2).toBeCloseTo(24 + (Math.floor(index / 3) + 0.5) * cellHeight);
       if (object.type !== "molecule") throw new Error("Expected a molecule");
-      expect(object.style.bondLengthPx).toBe(smilesPasteBondLengthPx);
+      expect(object.style.bondLengthPx).toBe(nativeBondLengthPx);
       expect(Math.hypot(object.atoms[1].x - object.atoms[0].x, object.atoms[1].y - object.atoms[0].y))
-        .toBeCloseTo(smilesPasteBondLengthPx);
+        .toBeCloseTo(nativeBondLengthPx);
     });
     expectContainedAndSeparated(result.document);
     expect(insertSmilesMoleculeGridStatus(result, 2)).toBe("Pasted 6 SMILES structures in a 3 × 2 grid; 2 tokens skipped");
@@ -2015,95 +2018,6 @@ describe("Phase 4 document workflow", () => {
     // re-resolve once per added carbon (3 carbons cost 15 here, 22 carbons 110).
     expect(short.work).toBe(oneResolution);
     expect(long.work).toBe(oneResolution);
-  });
-
-  it("classifies a long digit run in linear time", () => {
-    // The body pattern used to offer two ways to match a digit — `[A-Z][a-z]?\d*` and a standalone
-    // `\d+` — so an n-digit run had 2^(n-1) parses. A trailing character that fails the match sent
-    // the engine through all of them: pasting a 40-digit label froze the app outright.
-    const pathological = `C${"1".repeat(40)}!-`;
-    const started = performance.now();
-    expect(formulaSpansFromText(pathological).map((span) => span.text).join("")).toBe(pathological);
-    expect(performance.now() - started).toBeLessThan(100);
-
-    // Same language as before: the shapes that were formulas still are.
-    // A leading coefficient stays normal text; only a digit run *after* an element or a closing
-    // bracket is a count.
-    expect(formulaSpansFromText("2H2O").map((span) => `${span.text}:${span.script}`)).toEqual([
-      "2H:normal",
-      "2:subscript",
-      "O:normal"
-    ]);
-    expect(formulaSpansFromText("(CH3)3C+").at(-1)).toMatchObject({ text: "+", script: "superscript" });
-    expect(formulaSpansFromText("Fe(CN)63-").at(-1)).toMatchObject({ text: "3-", script: "superscript" });
-    // And a bare sign is still not a charge.
-    expect(formulaSpansFromText("-")).toEqual([{ text: "-", script: "normal", style: {} }]);
-  });
-
-  it("formats formula text spans with subscripts and a superscript charge", () => {
-    expect(formulaSpansFromText("H2O")).toEqual([
-      { text: "H", script: "normal", style: {} },
-      { text: "2", script: "subscript", style: {} },
-      { text: "O", script: "normal", style: {} }
-    ]);
-    expect(formulaSpansFromText("C6H12O6")).toEqual([
-      { text: "C", script: "normal", style: {} },
-      { text: "6", script: "subscript", style: {} },
-      { text: "H", script: "normal", style: {} },
-      { text: "12", script: "subscript", style: {} },
-      { text: "O", script: "normal", style: {} },
-      { text: "6", script: "subscript", style: {} }
-    ]);
-    expect(formulaSpansFromText("SO42-")).toEqual([
-      { text: "SO", script: "normal", style: {} },
-      { text: "4", script: "subscript", style: {} },
-      { text: "2-", script: "superscript", style: {} }
-    ]);
-    expect(formulaSpansFromText("Ca2+")).toEqual([
-      { text: "Ca", script: "normal", style: {} },
-      { text: "2+", script: "superscript", style: {} }
-    ]);
-    expect(formulaSpansFromText("plain")).toEqual([
-      { text: "plain", script: "normal", style: {} }
-    ]);
-  });
-
-  it("separates a charge magnitude from an atom count in common ions", () => {
-    // "Ca2+" and "NH4+" are spelled the same way but the digit means different things: a lone
-    // element symbol takes the digit as its charge, a polyatomic body keeps it as a count.
-    const scripts = (formula: string) =>
-      formulaSpansFromText(formula).map((span) => `${span.text}:${span.script}`);
-
-    expect(scripts("NH4+")).toEqual(["NH:normal", "4:subscript", "+:superscript"]);
-    expect(scripts("NO3-")).toEqual(["NO:normal", "3:subscript", "-:superscript"]);
-    expect(scripts("ClO4-")).toEqual(["ClO:normal", "4:subscript", "-:superscript"]);
-    expect(scripts("MnO4-")).toEqual(["MnO:normal", "4:subscript", "-:superscript"]);
-    expect(scripts("PO43-")).toEqual(["PO:normal", "4:subscript", "3-:superscript"]);
-    expect(scripts("Ca2+")).toEqual(["Ca:normal", "2+:superscript"]);
-    expect(scripts("Fe3+")).toEqual(["Fe:normal", "3+:superscript"]);
-    expect(scripts("Na+")).toEqual(["Na:normal", "+:superscript"]);
-
-    // A trailing hyphen on a prefix is not a charge.
-    expect(scripts("trans-")).toEqual(["trans-:normal"]);
-    expect(scripts("Boc-")).toEqual(["Boc-:normal"]);
-    expect(scripts("tert-")).toEqual(["tert-:normal"]);
-  });
-
-  it("preserves source span styling when reformatting a formula", () => {
-    const styled: TextSpan[] = [
-      { text: "H2", script: "normal", style: { color: "#b3261e", fontWeight: 700 } },
-      { text: "O", script: "normal", style: { color: "#1b5e20" } }
-    ];
-    const spans = formulaSpansFromText("H2O", styled);
-
-    expect(spans.map((span) => `${span.text}:${span.script}`)).toEqual([
-      "H:normal",
-      "2:subscript",
-      "O:normal"
-    ]);
-    expect(spans[0].style).toMatchObject({ color: "#b3261e", fontWeight: 700 });
-    expect(spans[1].style).toMatchObject({ color: "#b3261e", fontWeight: 700 });
-    expect(spans[2].style).toMatchObject({ color: "#1b5e20" });
   });
 
   it("applies formula formatting to selected text objects only", () => {
@@ -3597,7 +3511,7 @@ describe("Phase 4 document workflow", () => {
     expect(cleanedMolecule.bonds).toEqual(molecule.bonds);
     expect(cleanedMolecule.structure).toBe(molecule.structure);
     cleanedMolecule.bonds.forEach((bond) => {
-      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
+      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeDrawingStyleFromObjectStyle(resizedMolecule.style).bondLengthPx, 2);
     });
     expect(moleculeAngleDegrees(cleanedMolecule, "atom_001", "atom_002", "atom_003")).toBeCloseTo(120, 2);
   });
@@ -4085,7 +3999,7 @@ describe("Phase 4 document workflow", () => {
       rotationDegrees: 0
     });
     cleanedMolecule.bonds.forEach((bond) => {
-      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
+      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeDrawingStyleFromObjectStyle(stretchedMolecule.style).bondLengthPx, 2);
     });
     expect(moleculeAngleDegrees(cleanedMolecule, "atom_001", "atom_002", "atom_003")).toBeCloseTo(120, 2);
   });
@@ -4125,7 +4039,7 @@ describe("Phase 4 document workflow", () => {
         rotationDegrees: 0
       });
       molecule.bonds.forEach((bond) => {
-        expect(moleculeBondLength(molecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
+        expect(moleculeBondLength(molecule, bond.id)).toBeCloseTo(nativeDrawingStyleFromObjectStyle(moleculeById(distorted, molecule.id).style).bondLengthPx, 2);
       });
       expect(moleculeAngleDegrees(molecule, "atom_001", "atom_002", "atom_003")).toBeCloseTo(120, 2);
     });
@@ -4152,7 +4066,7 @@ describe("Phase 4 document workflow", () => {
       rotationDegrees: 0
     });
     cleanedMolecule.bonds.forEach((bond) => {
-      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
+      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeDrawingStyleFromObjectStyle(moleculeById(distorted, molecule.id).style).bondLengthPx, 2);
     });
   });
 
@@ -4692,6 +4606,60 @@ describe("Phase 4 document workflow", () => {
       });
     });
 
+    it("2D metal placement clears substituent crossings while allowing only its metal/donor label contacts", () => {
+      const { document, molecule } = zincTetrakisImidazoleFixture();
+      const target = nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx;
+      const shrunk = applyPatches(document, [{ op: "updateObject", objectId: molecule.id,
+        changes: { atoms: molecule.atoms.map(atom => ({ ...atom,
+          x: 200 + (atom.x - 200) * 2 / 3, y: 150 + (atom.y - 150) * 2 / 3 })) } }]);
+      const warnings: string[] = [];
+      const result = applyNativeMoleculeEngineRelayout(shrunk, molecule.id, relayoutMolfile2D,
+        { targetBondLengthPx: target, warnings });
+      expect(result).not.toBe(shrunk);
+      const after = moleculeById(result, molecule.id);
+      const ids = new Map(after.atoms.map((atom, i) => [atom.id, i]));
+      const bonds = after.bonds.filter(b => b.display?.bondStyle !== "dashed")
+        .map(b => ({ from: ids.get(b.fromAtomId)!, to: ids.get(b.toAtomId)! }));
+      const q = layoutEngine.evaluateLayoutQuality(after.atoms, bonds, target, undefined, undefined,
+        layoutEngine.moleculeLayoutLabelBoxes(after));
+      // Record the unexempted final contacts at default font size: only two Zn/donor pairs.
+      expect(q.labelLabelOverlaps.map(pair => pair.map(i => after.atoms[i].id)))
+        .toEqual([["atom_008", "atom_009"], ["atom_008", "atom_014"]]);
+      expect(q.labelBondOverlaps).toEqual([]);
+      expect(q.overlappingAtoms).toEqual([]);
+      expect(q.atomBondOverlaps).toEqual([]);
+      expect(q.collinearBondOverlaps).toEqual([]);
+      expect(q.crossings).toEqual([]);
+      expect(warnings).toEqual([]);
+      expect(after.atoms.map(({ x: _x, y: _y, ...atom }) => atom))
+        .toEqual(molecule.atoms.map(({ x: _x, y: _y, ...atom }) => atom));
+      // Cleanup chooses double-bond label sides; bond identity and dative styling stay intact.
+      const bondIdentity = (m: MoleculeObject) => m.bonds.map(bond => ({ ...bond,
+        display: { ...bond.display, doubleBondSide: undefined } }));
+      expect(bondIdentity(after)).toEqual(bondIdentity(molecule));
+    });
+
+    it("2D metal placement still refuses a non-metal ligand label collision", () => {
+      const { document, molecule } = zincTetrakisImidazoleFixture();
+      const target = nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx;
+      // This non-donor N is in the ligand skeleton; enlarging it must not gain a metal exemption.
+      const crowded = applyPatches(document, [{ op: "updateObject", objectId: molecule.id,
+        changes: { style: { ...molecule.style, atomLabelFontSizes: { atom_012: 80 } } } }]);
+      const placed = moleculeById(applyNativeMoleculeEngineRelayout(document, molecule.id, relayoutMolfile2D,
+        { targetBondLengthPx: target }), molecule.id);
+      const labeled = { ...placed, style: moleculeById(crowded, molecule.id).style };
+      const ids = new Map(labeled.atoms.map((atom, i) => [atom.id, i]));
+      const q = layoutEngine.evaluateLayoutQuality(labeled.atoms, labeled.bonds
+        .filter(b => b.display?.bondStyle !== "dashed")
+        .map(b => ({ from: ids.get(b.fromAtomId)!, to: ids.get(b.toAtomId)! })), target, undefined, undefined,
+      layoutEngine.moleculeLayoutLabelBoxes(labeled));
+      expect(q.labelLabelOverlaps.some(pair => pair.every(i => labeled.atoms[i].element !== "Zn"))).toBe(true);
+      const warnings: string[] = [];
+      expect(applyNativeMoleculeEngineRelayout(crowded, molecule.id, relayoutMolfile2D,
+        { targetBondLengthPx: target, warnings })).toBe(crowded);
+      expect(warnings).toEqual(["Clean Up kept the drawn layout of this structure: the generated layouts overlapped atom labels."]);
+    });
+
     it("2D cleanup of a chelate is a fixed point as well: the metal stays where it was drawn and a second run reproduces the first", () => {
       const { document, molecule } = zincTpaSplayedFixture();
       const styleBondLength = nativeDrawingStyleFromObjectStyle(molecule.style).bondLengthPx;
@@ -5064,7 +5032,7 @@ describe("Phase 4 document workflow", () => {
     expect(cleanedMolecule.bonds.find((bond) => bond.id === "bond_002")?.order).toBe("triple");
     expect(cleanedMolecule.structure).toBe(selectedMolecule(stretched).structure);
     cleanedMolecule.bonds.forEach((bond) => {
-      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
+      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeDrawingStyleFromObjectStyle(selectedMolecule(stretched).style).bondLengthPx, 2);
     });
     expect(moleculeAngleDegrees(cleanedMolecule, "atom_001", "atom_002", "atom_003")).toBeCloseTo(180, 3);
   });
@@ -5085,7 +5053,7 @@ describe("Phase 4 document workflow", () => {
     expect(cleanedMolecule.chemistry?.formula).toBe("C3H4");
     expect(cleanedMolecule.bonds).toEqual(selectedMolecule(allene).bonds);
     cleanedMolecule.bonds.forEach((bond) => {
-      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
+      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeDrawingStyleFromObjectStyle(selectedMolecule(stretched).style).bondLengthPx, 2);
     });
     expect(moleculeAngleDegrees(cleanedMolecule, "atom_001", "atom_002", "atom_003")).toBeCloseTo(180, 2);
   });
@@ -5118,7 +5086,7 @@ describe("Phase 4 document workflow", () => {
     expect(cleanedMolecule.bonds).toEqual(closedMolecule.bonds);
     expect(cleanedMolecule.structure).toBe("C1CCCCC1");
     cleanedMolecule.bonds.forEach((bond) => {
-      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
+      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeDrawingStyleFromObjectStyle(selectedMolecule(distorted).style).bondLengthPx, 2);
     });
     expect(moleculeAngleDegrees(cleanedMolecule, "atom_002", "atom_001", "atom_006")).toBeCloseTo(120, 2);
     expect(nativeMoleculeTransformState(cleanedMolecule)).toEqual({
@@ -5176,7 +5144,7 @@ describe("Phase 4 document workflow", () => {
     expect(cleanedMolecule.bonds).toEqual(selectedMolecule(cyclohexene).bonds);
     expect(cleanedMolecule.structure).toBe("C1=CCCCC1");
     cleanedMolecule.bonds.forEach((bond) => {
-      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeBondLengthPx, 2);
+      expect(moleculeBondLength(cleanedMolecule, bond.id)).toBeCloseTo(nativeDrawingStyleFromObjectStyle(selectedMolecule(distorted).style).bondLengthPx, 2);
     });
     expect(moleculeAngleDegrees(cleanedMolecule, "atom_002", "atom_001", "atom_006")).toBeCloseTo(120, 2);
     expect(nativeMoleculeTransformState(cleanedMolecule)).toEqual({
@@ -15918,7 +15886,7 @@ describe("PR #7 review regression fixes", () => {
 
     expect(bondLength(next, "bond_001")).toBeCloseTo(96, 6);
     expect(bondLength(next, "bond_003")).toBeCloseTo(untouchedBefore, 6);
-    expect(next.style.bondLengthPx).toBeUndefined();
+    expect(next.style.bondLengthPx).toBe(representativeMoleculeBondLength(next));
     expect(next.style.bondLengths).toEqual({ bond_001: 96 });
     expect(next.bonds.map((bond) => bond.id)).toEqual(molecule.bonds.map((bond) => bond.id));
   });
@@ -17633,5 +17601,595 @@ describe("ring placement valence guard", () => {
     const fused = bondPlan(document, molecule, "gb1", "cyclohexane");
     expect(fused).toMatchObject({ kind: "fuse-bond" });
     expect(fused?.fallbackReason).toBeUndefined();
+  });
+});
+
+
+describe("resized molecule drawing size", () => {
+  function fixture() {
+    const seed = insertNativeTemplateMolecule(createPhase4Document("Resize style"), { x: 360, y: 320 }, "cyclohexane");
+    const molecule = selectedMolecule(seed);
+    return applyPatch(seed, { op: "updateObject", objectId: molecule.id, changes: {
+      style: { ...molecule.style, bondStrokeWidthPx: 1.7, atomLabelFontSizePx: 17,
+        bondColor: "#123456", bondStrokeWidths: { bond_001: 2.1 } }
+    } });
+  }
+
+  const resizePaths = ["object", "parts", "selection"] as const;
+  describe.each(resizePaths)("%s resize", path => {
+    it.each([2.5, 0.6])("updates only the measured style length at %sx in one undo step", factor => {
+      const seed = fixture();
+      const original = selectedMolecule(seed);
+      const document = insertNativeSingleBondMolecule(seed, { x: 650, y: 600 });
+      const untouched = selectedMolecule(document);
+      const resized = path === "object"
+        ? resizeNativeMoleculeObject(document, original.id, { x: factor, y: factor })
+        : path === "parts"
+          ? resizeNativeMoleculeParts(document, { objectId: original.id, kind: "parts",
+              atomIds: original.atoms.map(atom => atom.id), bondIds: [] }, { x: factor, y: factor })
+          : scaleDocumentObjectsAroundPoint(document, [original.id], { x: 360, y: 320 }, factor, factor);
+      const molecule = resized.pages[0]!.objects.find(object => object.id === original.id) as MoleculeObject;
+      const measured = representativeMoleculeBondLength(molecule)!;
+      expect(measured).toBeCloseTo(representativeMoleculeBondLength(original)! * factor, 2);
+      expect(molecule.style).toEqual({ ...original.style, bondLengthPx: measured });
+      expect(resized.pages[0]!.objects.find(object => object.id === untouched.id)).toEqual(untouched);
+      expect(molecule.bonds).toEqual(original.bonds);
+      expect(molecule.chemistry).toEqual(original.chemistry);
+      // MainWindow commits the complete resize result as one history snapshot.
+      const history = { past: [document], present: resized, future: [] };
+      const restored = undo(history);
+      expect(restored.present).toEqual(document);
+      expect(redo(restored).present).toEqual(resized);
+    });
+
+    it("measures nonuniform stretches and partial selections rather than multiplying the old style", () => {
+      const seed = fixture();
+      const original = selectedMolecule(seed);
+      const resized = path === "object"
+        ? resizeNativeMoleculeObject(seed, original.id, { x: 2.5, y: 0.6 })
+        : path === "parts"
+          ? resizeNativeMoleculeParts(seed, { objectId: original.id, kind: "bond", bondId: "bond_001" }, { x: 2.5, y: 0.6 })
+          : scaleDocumentObjectsAroundPoint(seed, [original.id], { x: 360, y: 320 }, 2.5, 0.6);
+      const molecule = selectedMolecule(resized);
+      expect(molecule.style).toEqual({ ...original.style, bondLengthPx: representativeMoleculeBondLength(molecule) });
+    });
+  });
+
+  it.each([2.5, 0.6])("keeps the growth length truthful after an inspector bond resize of %sx", factor => {
+    const seed = fixture();
+    const original = selectedMolecule(seed);
+    const targetLength = representativeMoleculeBondLength(original)! * factor;
+    const resized = applyMoleculeTargetBondLengthToBonds(seed,
+      original.bonds.map(bond => ({ objectId: original.id, bondId: bond.id })), targetLength);
+    const molecule = selectedMolecule(resized);
+    expect(molecule.style).toEqual({ ...original.style,
+      bondLengths: Object.fromEntries(original.bonds.map(bond => [bond.id, targetLength])),
+      bondLengthPx: representativeMoleculeBondLength(molecule) });
+    expect(molecule.bonds).toEqual(original.bonds);
+    expect(undo({ past: [seed], present: resized, future: [] }).present).toEqual(seed);
+  });
+
+  describe.each([2.5, 0.6])("additions after %sx corner resize", factor => {
+    it.each(["cyclohexane", "chairCyclohexaneA", "chairCyclohexaneB"] as const)(
+      "keeps %s atom attachment at the resized size", templateId => {
+        const seed = fixture();
+        const original = selectedMolecule(seed);
+        const resized = resizeNativeMoleculeObject(seed, original.id, { x: factor, y: factor });
+        const molecule = selectedMolecule(resized);
+        const measured = representativeMoleculeBondLength(molecule)!;
+        expect(molecule.style).toEqual({ ...original.style, bondLengthPx: measured });
+        const source = molecule.atoms[0]!;
+        for (const result of [
+          applyNativeTemplateToolAtTarget(resized, moleculeAtomTarget(molecule, source.id), source, templateId),
+          applyNativeRingAttachAtAtomTarget(resized, moleculeAtomTarget(molecule, source.id), templateId)
+        ]) {
+          const attached = selectedMolecule(result);
+          const added = attached.bonds.filter(bond => !molecule.bonds.some(old => old.id === bond.id));
+          expect(added).toHaveLength(6);
+          for (const bond of added) expect(Math.abs(bondLength(attached, bond.id) - measured)).toBeLessThan(0.1);
+          expect(attached.style).toEqual(molecule.style);
+        }
+      }
+    );
+
+    it.each(["bond", "sprout", "cyclic", "chain", "label", "carbonyl", "freeform"] as const)(
+      "sizes the %s addition from the resized molecule", tool => {
+        const seed = fixture();
+        const original = selectedMolecule(seed);
+        const resized = resizeNativeMoleculeObject(seed, original.id, { x: factor, y: factor });
+        const molecule = selectedMolecule(resized);
+        const source = molecule.atoms[0]!;
+        const target = moleculeAtomTarget(molecule, source.id);
+        const measured = representativeMoleculeBondLength(molecule)!;
+        const point = { x: source.x, y: source.y - measured };
+        const result = tool === "bond" ? applySingleBondToolAtPoint(resized, source)
+          : tool === "sprout" ? applyNativeAtomSproutTarget(resized, target, "wedge")
+          : tool === "cyclic" ? applyNativeAtomSproutTarget(resized, target, "cyclic")
+          : tool === "chain" ? applyNativeChainTool(resized, source, { x: source.x, y: source.y - measured * 3 }, target)
+          : tool === "label" ? commitNativeAtomLabelTarget(resized, target, "OMe").document
+          : tool === "carbonyl" ? applyNativeCarbonylAtAtomTarget(resized, target)
+          : applyFreeformSingleBondToolAtPoint(resized, molecule.id, source.id, point);
+        const grown = selectedMolecule(result);
+        const added = grown.bonds.filter(bond => !molecule.bonds.some(old => old.id === bond.id));
+        expect(added.length).toBeGreaterThan(0);
+        for (const bond of added) expect(Math.abs(bondLength(grown, bond.id) - measured)).toBeLessThan(0.1);
+        if (tool === "freeform") {
+          const preview = previewNativeMoleculeFreeformBondGrowth(molecule, source.id, point, 1000, 1000)!;
+          expect(Math.abs(preview.length - measured)).toBeLessThan(0.1);
+          expect(preview.lengthAngstrom).toBeCloseTo(1.56, 2);
+        }
+      }
+    );
+
+    it("snaps a dragged endpoint to the resized length", () => {
+      const seed = insertNativeSingleBondMolecule(createPhase4Document("Resized snap"), { x: 360, y: 320 });
+      const resized = resizeNativeMoleculeObject(seed, selectedMolecule(seed).id, { x: factor, y: factor });
+      const molecule = selectedMolecule(resized);
+      const anchor = molecule.atoms[0]!;
+      const dragged = molecule.atoms[1]!;
+      const measured = representativeMoleculeBondLength(molecule)!;
+      const unit = { x: (dragged.x - anchor.x) / measured, y: (dragged.y - anchor.y) / measured };
+      const delta = snapNativeMoleculePartDragDelta(molecule, { objectId: molecule.id, kind: "atom", atomId: dragged.id },
+        { x: unit.x * 2, y: unit.y * 2 });
+      expect(Math.hypot(dragged.x + delta.x - anchor.x, dragged.y + delta.y - anchor.y)).toBeCloseTo(measured, 2);
+    });
+  });
+
+  it("keeps the spiro ghost at the same atom and orientation as a nearby click on a shrunk molecule", () => {
+    const seed = fixture();
+    const resized = resizeNativeMoleculeObject(seed, selectedMolecule(seed).id, { x: 0.6, y: 0.6 });
+    const molecule = selectedMolecule(resized);
+    const atom = molecule.atoms[0]!;
+    const target = moleculeAtomTarget(molecule, atom.id);
+    const click = { x: atom.x, y: atom.y + 6 };
+    expect(findNativeMoleculeAtomHit(molecule, click)?.atomId).toBe(atom.id);
+    // Successful hover plans are cached per target while the pointer moves inside its hit area.
+    const ghost = planNativeTemplatePlacement(resized, { point: atom, target }, "cyclohexane")!;
+    const committed = selectedMolecule(applyNativeTemplateToolAtTarget(resized, target, click, "cyclohexane"));
+    expect(ghost.kind).toBe("attach-atom");
+    expect(committed.atoms).toEqual(ghost.molecule.atoms);
+    expect(committed.bonds).toEqual(ghost.molecule.bonds);
+  });
+});
+
+describe("document drawing defaults for native insertions", () => {
+  it.each(["cyclohexane", "benzene", "chairCyclohexaneA", "chairCyclohexaneB"] as const)(
+    "attaches and fuses %s at the actual bond length after a corner-handle resize", templateId => {
+      const document = createPhase4Document("Geometrically resized attachment");
+      document.styles.drawing = { bondLengthPx: 22 };
+      const inserted = insertNativeSingleBondMolecule(document, { x: 360, y: 320 });
+      const original = selectedMolecule(inserted);
+      const originalLength = representativeMoleculeBondLength(original)!;
+      // Ring attachment also handles imported molecules whose drawing style is stale.
+      const resized = resizeNativeMoleculeObject(inserted, original.id, { x: 2.5, y: 2.5 });
+      const truthful = selectedMolecule(resized);
+      const stale = applyPatch(resized, { op: "updateObject", objectId: truthful.id, changes: { style: original.style } });
+      const molecule = selectedMolecule(stale);
+      const measuredLength = representativeMoleculeBondLength(molecule)!;
+      expect(originalLength).toBeCloseTo(22, 2);
+      expect(measuredLength).toBeCloseTo(originalLength * 2.5, 6);
+      expect(measuredLength).toBeCloseTo(55, 1);
+      expect(molecule.style.bondLengthPx).toBe(22);
+      expect(molecule.style).toEqual(original.style);
+
+      const atomTarget = moleculeAtomTarget(molecule, "atom_001");
+      const bondTarget = moleculeBondTarget(molecule, "bond_001");
+      const results = [
+        applyNativeTemplateToolAtTarget(stale, atomTarget, moleculeAtom(molecule, "atom_001"), templateId),
+        applyNativeTemplateToolAtTarget(stale, bondTarget, moleculeBondMidpoint(molecule, "bond_001"), templateId),
+        applyNativeRingAttachAtAtomTarget(stale, atomTarget, templateId),
+        applyNativeRingFuseAtBondTarget(stale, bondTarget, templateId)
+      ];
+      for (const result of results) {
+        const attached = selectedMolecule(result);
+        const addedBonds = attached.bonds.filter(bond => !molecule.bonds.some(existing => existing.id === bond.id));
+        expect(attached.atoms).toHaveLength(molecule.atoms.length + (addedBonds.length === 6 ? 5 : 4));
+        expect(addedBonds.length).toBeGreaterThanOrEqual(5);
+        for (const bond of addedBonds) {
+          expect(Math.abs(bondLength(attached, bond.id) - measuredLength)).toBeLessThan(0.1);
+        }
+        expect(attached.style).toEqual(molecule.style);
+        expect(attached.atoms.slice(0, molecule.atoms.length)).toEqual(molecule.atoms);
+      }
+    }
+  );
+  it("uses custom defaults for adapter fallback and chemical-text clipboard placeholders", () => {
+    const document = insertionDocument(defaultCases[1]!);
+    const existing = structuredClone(document.pages[0]!.objects);
+    const fallback = selectedMolecule(insertAdapterFallbackMolecule(document));
+    const clipboard = selectedMolecule(applyClipboardPastePayload(document, {
+      kind: "smiles", text: "CCO", warnings: []
+    }, { x: 350, y: 350 }).document);
+    for (const molecule of [fallback, clipboard]) {
+      expect(molecule.style).toEqual({
+        ...DefaultNativeDrawingStyle, ...defaultCases[1]!,
+        source: molecule === fallback ? "editor-adapter-fallback" : "clipboard-chemical-text"
+      });
+    }
+    expect(document.pages[0]!.objects).toEqual(existing);
+  });
+  describe.each([
+    { targetLength: 30, documentLength: 22 },
+    { targetLength: 28, documentLength: 22 },
+    { targetLength: 22, documentLength: 30 }
+  ])("attachments at $targetLength px with $documentLength px document defaults", ({ targetLength, documentLength }) => {
+    it.each(["cyclohexane", "benzene", "chairCyclohexaneA", "chairCyclohexaneB"] as const)(
+      "uses the target's geometry and preserves its style for atom and bond anchored %s", templateId => {
+        const document = createPhase4Document("Attachment defaults");
+        document.styles.drawing = { bondLengthPx: targetLength };
+        // Benzene needs a terminal atom: an aromatic spiro junction would exceed valence.
+        const inserted = templateId === "benzene"
+          ? insertNativeSingleBondMolecule(document, { x: 360, y: 320 })
+          : insertNativeTemplateMolecule(document, { x: 360, y: 320 }, "cyclohexane");
+        const seed = { ...inserted, styles: { ...inserted.styles, drawing: { bondLengthPx: documentLength } } };
+        const molecule = selectedMolecule(seed);
+        const original = structuredClone(molecule);
+        const atomTarget = moleculeAtomTarget(molecule, "atom_001");
+        const bondTarget = moleculeBondTarget(molecule, "bond_001");
+        const results = [
+          applyNativeTemplateToolAtTarget(seed, atomTarget, moleculeAtom(molecule, "atom_001"), templateId),
+          applyNativeTemplateToolAtTarget(seed, bondTarget, moleculeBondMidpoint(molecule, "bond_001"), templateId),
+          applyNativeRingAttachAtAtomTarget(seed, atomTarget, templateId),
+          applyNativeRingFuseAtBondTarget(seed, bondTarget, templateId)
+        ];
+        for (const result of results) {
+          const attached = selectedMolecule(result);
+          const addedBonds = attached.bonds.filter(bond => !molecule.bonds.some(existing => existing.id === bond.id));
+          expect(addedBonds).toHaveLength(attached.atoms.length - molecule.atoms.length + 1);
+          expect(addedBonds.length).toBeGreaterThan(0);
+          for (const bond of addedBonds) {
+            const from = moleculeAtom(attached, bond.fromAtomId);
+            const to = moleculeAtom(attached, bond.toAtomId);
+            expect(Math.abs(Math.hypot(to.x - from.x, to.y - from.y) - targetLength)).toBeLessThan(0.05);
+          }
+          expect(attached.style).toEqual(original.style);
+        }
+        expect(selectedMolecule(seed)).toEqual(original);
+      }
+    );
+  });
+  it.each(defaultCases)("uses $bondLengthPx px for new molecules and leaves existing objects intact", style => {
+    const document = insertionDocument(style);
+    const existing = structuredClone(document.pages[0]!.objects);
+    const single = insertSmilesMolecule(document, { x: 350, y: 350 }, bondDepiction, "CO");
+    expectDrawingDefaults(single.pages[0]!.objects.at(-1), style);
+    expect(single.pages[0]!.objects.slice(0, 2)).toEqual(existing);
+    const grid = insertSmilesMoleculeGrid(document, { x: 350, y: 350 }, [
+      { smiles: "CO", depiction: bondDepiction }, { smiles: "CO", depiction: bondDepiction }
+    ]).document;
+    grid.pages[0]!.objects.slice(2).forEach(object => expectDrawingDefaults(object, style));
+    expect(grid.pages[0]!.objects.slice(0, 2)).toEqual(existing);
+    const firstBond = createNativeSingleBondMolecule(document, { x: 350, y: 350 });
+    expectDrawingDefaults(firstBond, style);
+    const inserted = applyPatches(document, [{ op: "addObject", pageId: document.pages[0]!.id, object: firstBond }]);
+    expect(inserted.pages[0]!.objects.slice(0, 2)).toEqual(existing);
+    for (const template of ["cyclohexane", "chairCyclohexaneA", "benzene"] as const) {
+      expectDrawingDefaults(createNativeTemplateMolecule(document, { x: 350, y: 350 }, template), style);
+    }
+    const chain = applyNativeChainTool(document, { x: 350, y: 350 }, { x: 450, y: 400 });
+    expectDrawingDefaults(chain.pages[0]!.objects.at(-1), style);
+    expect(chain.pages[0]!.objects.slice(0, 2)).toEqual(existing);
+    const molfile = moleculeToMolfileV2000(firstBond, { fromDocFrame: true,
+      kekuleBondOrders: layoutEngine.nativeBondOrderResolution(firstBond.atoms, firstBond.bonds).kekuleOrders }).contents;
+    const pastedMolfile = createNativeMolfileMolecule(document, { x: 350, y: 350 }, molfile, "molfile-v2000");
+    expectDrawingDefaults(pastedMolfile, style);
+    const withTypedText = applyPatch(document, { op: "addObject", pageId: document.pages[0]!.id,
+      object: { ...createNativeTextObject(document, { x: 350, y: 350 }, "N"), id: "typed" } });
+    const typed = convertNativeTextObjectToAtom(withTypedText, "typed", { skipAtomLabel: true });
+    expectDrawingDefaults(typed.pages[0]!.objects.at(-1), style);
+    expect(typed.pages[0]!.objects.slice(0, 2)).toEqual(existing);
+    expect(document.pages[0]!.objects).toEqual(existing);
+  });
+});
+
+describe("2D engine cleanup candidate gate", () => {
+  const chain = (points: [number, number][]): PastedStructureDepiction => ({
+    atoms: points.map(([x, y]) => ({ element: "C", charge: 0, x, y })),
+    bonds: points.slice(1).map((_, i) => ({ from: i, to: i + 1, order: "single", wedge: null }))
+  });
+  const good = chain([[0, 0], [1, 0], [2, 0], [3, 0]]);
+  const overlap = chain([[0, 0], [1, 0], [2, 0], [0.3, 0]]);
+  const fixture = () => {
+    const document = insertSmilesMolecule(createPhase4Document("Quality gate"), { x: 400, y: 400 }, good, "CCCC");
+    return { document, molecule: selectedMolecule(document) };
+  };
+
+  it("keeps a passing primary unchanged and never invokes an alternate", async () => {
+    const { document, molecule } = fixture();
+    const alternate = vi.fn(() => overlap);
+    const options = { targetBondLengthPx: 22, alternateRelayouts: [alternate] };
+    const chosen = applyNativeMoleculeEngineRelayout(document, molecule.id, () => good, options);
+    expect(chosen).toEqual(applyNativeMoleculeEngineRelayout(document, molecule.id, () => good));
+    expect(alternate).not.toHaveBeenCalled();
+    const load = vi.fn(async () => [alternate]);
+    expect(await prepareNativeMoleculeEngineRelayout(document, molecule.id, () => good, load, options)).toEqual(chosen);
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it("skips failed/mismapped alternates and stops at the first passing one", () => {
+    const { document, molecule } = fixture();
+    const passing = vi.fn(() => chain([[0, 0], [0, 1], [1, 1], [1, 2]]));
+    const unused = vi.fn(() => good);
+    const warnings: string[] = [];
+    const chosen = applyNativeMoleculeEngineRelayout(document, molecule.id, () => overlap, {
+      targetBondLengthPx: 22, warnings,
+      alternateRelayouts: [() => { throw new Error("engine failed"); },
+        () => ({ ...good, atoms: good.atoms.slice(1) }),
+        () => ({ ...good, atoms: good.atoms.map(a => ({ ...a, element: "N" })) }), passing, unused]
+    });
+    expect(passing).toHaveBeenCalledOnce();
+    expect(unused).not.toHaveBeenCalled();
+    expect(warnings).toEqual([]);
+    expect(chosen).toEqual(applyNativeMoleculeEngineRelayout(document, molecule.id, passing));
+    expect(chosen.selection).toEqual(document.selection);
+  });
+
+  it("retains the exact drawing with a specific warning when it has fewer hard defects", () => {
+    const { document, molecule } = fixture();
+    const warnings: string[] = [];
+    const chosen = applyNativeMoleculeEngineRelayout(document, molecule.id, () => overlap, {
+      targetBondLengthPx: 22, warnings, alternateRelayouts: [() => { throw new Error("unavailable"); }]
+    });
+    expect(chosen).toBe(document);
+    expect(warnings).toEqual(["Clean Up kept the drawn layout of this structure: the generated layouts put atoms on top of each other."]);
+  });
+
+  it("survives an alternate loader failure and still protects the original drawing", async () => {
+    const { document, molecule } = fixture();
+    const warnings: string[] = [];
+    expect(await prepareNativeMoleculeEngineRelayout(document, molecule.id, () => overlap,
+      async () => { throw new Error("RDKit unavailable"); }, { targetBondLengthPx: 22, warnings })).toBe(document);
+    expect(warnings).toContain("Clean Up could not load alternate layouts: RDKit unavailable");
+    expect(warnings).toContainEqual(expect.stringMatching(/^Clean Up kept the drawn layout/));
+  });
+
+  it("protects a collision-free ordinary drawing when every candidate still fails the soft limits", () => {
+    const { document, molecule } = fixture();
+    const warnings: string[] = [];
+    const distorted = chain([[0, 0], [0.6, 0], [1.6, 0], [2.6, 0]]);
+    expect(applyNativeMoleculeEngineRelayout(document, molecule.id, () => distorted,
+      { targetBondLengthPx: 22, warnings })).toBe(document);
+    expect(warnings).toEqual(["Clean Up kept the drawn layout of this structure: the generated layouts distorted bonds or rings beyond the cleanup limits."]);
+  });
+
+  it("commits the best collision-free soft improvement only when it clears the fixed margin", () => {
+    const original = chain([[0, 0], [0.6, 0], [1.6, 0], [2.6, 0]]);
+    const document = insertSmilesMolecule(createPhase4Document("Soft score margin"), { x: 400, y: 400 }, original, "CCCC");
+    const molecule = selectedMolecule(document);
+    const marginal = chain([[0, 0], [0.61, 0], [1.61, 0], [2.61, 0]]);
+    const improved = chain([[0, 0], [0.8, 0], [1.8, 0], [2.8, 0]]);
+    const warnings: string[] = [];
+    expect(layoutEngine.evaluateLayoutQuality(improved.atoms, improved.bonds).passesRelaxed).toBe(false);
+    expect(applyNativeMoleculeEngineRelayout(document, molecule.id, () => marginal,
+      { targetBondLengthPx: 22, warnings })).toBe(document);
+    expect(warnings).toContainEqual(expect.stringMatching(/^Clean Up kept the drawn layout/));
+    warnings.length = 0;
+    const chosen = applyNativeMoleculeEngineRelayout(document, molecule.id, () => marginal,
+      { targetBondLengthPx: 22, warnings, alternateRelayouts: [() => improved] });
+    expect(chosen).not.toBe(document);
+    expect(chosen).toEqual(applyNativeMoleculeEngineRelayout(document, molecule.id, () => improved,
+      { targetBondLengthPx: 22 }));
+    expect(warnings).toEqual([]);
+  });
+
+  it("refuses a hard-defect reduction that still overlaps atoms", () => {
+    const bad = chain([[0, 0], [1, 0], [0.1, 0], [0.2, 0]]);
+    const document = insertSmilesMolecule(createPhase4Document("Hard defects"), { x: 400, y: 400 }, bad, "CCCC");
+    const molecule = selectedMolecule(document);
+    expect(layoutEngine.evaluateLayoutQuality(bad.atoms, bad.bonds).hardDefects).toBeGreaterThan(1);
+    expect(layoutEngine.evaluateLayoutQuality(overlap.atoms, overlap.bonds).overlappingAtoms).toHaveLength(1);
+    const warnings: string[] = [];
+    const chosen = applyNativeMoleculeEngineRelayout(document, molecule.id, () => overlap, { targetBondLengthPx: 22, warnings });
+    // Fewer collisions still leave unreadable atoms; preserve the original exactly.
+    expect(chosen).toBe(document);
+    expect(warnings).toEqual(["Clean Up kept the drawn layout of this structure: the generated layouts put atoms on top of each other."]);
+    const lessDistorted = chain([[0, 0], [0.8, 0], [1.8, 0], [2.8, 0]]);
+    const withoutDefects = applyNativeMoleculeEngineRelayout(document, molecule.id, () => overlap,
+      { targetBondLengthPx: 22, alternateRelayouts: [() => lessDistorted] });
+    expect(withoutDefects).toEqual(applyNativeMoleculeEngineRelayout(document, molecule.id, () => lessDistorted,
+      { targetBondLengthPx: 22 }));
+  });
+
+  it("refuses a hard-defect reduction that still places atoms on overlapping bonds", () => {
+    const bad = chain([[0, 0], [1, 0], [0.1, 0], [0.2, 0]]);
+    const candidate = chain([[0, 0], [1.08, 0], [0.54, 0], [0.54, 0.92]]);
+    const document = insertSmilesMolecule(createPhase4Document("Bond contacts"), { x: 400, y: 400 }, bad, "CCCC");
+    const molecule = selectedMolecule(document);
+    const quality = layoutEngine.evaluateLayoutQuality(candidate.atoms, candidate.bonds);
+    expect(quality.overlappingAtoms).toHaveLength(0);
+    expect(quality.atomBondOverlaps.length).toBeGreaterThan(0);
+    expect(quality.collinearBondOverlaps.length).toBeGreaterThan(0);
+    const warnings: string[] = [];
+    const chosen = applyNativeMoleculeEngineRelayout(document, molecule.id, () => candidate, { targetBondLengthPx: 22, warnings });
+    expect(chosen).toBe(document);
+    expect(warnings).toEqual(["Clean Up kept the drawn layout of this structure: the generated layouts put atoms on bonds."]);
+  });
+
+  const linkedRings = (stretch: number): PastedStructureDepiction => {
+    const hexagon = Array.from({ length: 6 }, (_, i) => ({ element: "C", charge: 0,
+      x: Math.cos(i * Math.PI / 3), y: Math.sin(i * Math.PI / 3) }));
+    const ringBonds = Array.from({ length: 6 }, (_, from) => ({ from, to: (from + 1) % 6,
+      order: "single" as const, wedge: null }));
+    return { atoms: [...hexagon, ...hexagon.map(a => ({ ...a, x: a.x + 2 + stretch }))],
+      bonds: [...ringBonds, ...ringBonds.map(b => ({ ...b, from: b.from + 6, to: b.to + 6 })),
+        { from: 0, to: 9, order: "single", wedge: null }] };
+  };
+
+  const pendantPhenyl = (degrees: number): PastedStructureDepiction => {
+    const source = linkedRings(1);
+    const angle = degrees * Math.PI / 180;
+    return { atoms: [...source.atoms.map((a, i) => i < 6 ? a : { ...a,
+      x: 1 + (a.x - 1) * Math.cos(angle) - a.y * Math.sin(angle),
+      y: (a.x - 1) * Math.sin(angle) + a.y * Math.cos(angle)
+    }), { element: "C", charge: 0, x: 1.5, y: Math.sqrt(3) / 2 }],
+    bonds: [...source.bonds, { from: 1, to: 12, order: "single", wedge: null }] };
+  };
+
+  it("tries every unmodified strict candidate before a passing rigid repair", () => {
+    const strict = pendantPhenyl(0), colliding = pendantPhenyl(35);
+    const document = insertSmilesMolecule(createPhase4Document("Rigid repair priority"), { x: 400, y: 400 }, strict, "CC1CCCCC1C1CCCCC1");
+    const molecule = selectedMolecule(document);
+    const alternate = vi.fn(() => strict);
+    const warnings: string[] = [];
+    const chosen = applyNativeMoleculeEngineRelayout(document, molecule.id, () => colliding,
+      { targetBondLengthPx: 22, alternateRelayouts: [alternate], warnings });
+    expect(alternate).toHaveBeenCalledOnce();
+    // Alternate winners now receive a conventional rotation; the primary remains untouched.
+    const orientation = layoutEngine.conventionalLayoutOrientations(strict.atoms, strict.bonds, -1)[0];
+    const oriented = { ...strict, atoms: strict.atoms.map((atom, i) => ({ ...atom, ...orientation.atoms[i] })) };
+    expect(chosen).toEqual(applyNativeMoleculeEngineRelayout(document, molecule.id, () => oriented, { targetBondLengthPx: 22 }));
+    const repaired = applyNativeMoleculeEngineRelayout(document, molecule.id, () => colliding,
+      { targetBondLengthPx: 22, warnings });
+    expect(repaired).not.toBe(document);
+    const after = selectedMolecule(repaired);
+    const indices = new Map(after.atoms.map((a, i) => [a.id, i]));
+    expect(layoutEngine.evaluateLayoutQuality(after.atoms, after.bonds.map(b => ({
+      from: indices.get(b.fromAtomId)!, to: indices.get(b.toAtomId)!
+    }))).passes).toBe(true);
+    expect(warnings).toEqual([]);
+  });
+
+  it("rejects passing rigid repairs when stereo cannot be read back", () => {
+    const strict = pendantPhenyl(0), colliding = pendantPhenyl(35);
+    const document = insertSmilesMolecule(createPhase4Document("Rigid repair stereo"), { x: 400, y: 400 }, strict, "CC1CCCCC1C1CCCCC1");
+    const molecule = selectedMolecule(document);
+    const reference = stereoPerceptionMolfile(molecule);
+    let rejectedRepairs = 0;
+    const perceiveStereo = (molfile: string) => {
+      const depiction = pastedStructureDepictionFromMolfile(molfile);
+      const repaired = molfile !== reference && layoutEngine.evaluateLayoutQuality(depiction.atoms, depiction.bonds).hardDefects === 0;
+      if (repaired) rejectedRepairs++;
+      return depiction.atoms.map((_, i) => ({ isStereoCenter: i === 0,
+        descriptor: repaired ? "unspecified" as const : "R" as const }));
+    };
+    const warnings: string[] = [];
+    const chosen = applyNativeMoleculeEngineRelayout(document, molecule.id, () => colliding,
+      { targetBondLengthPx: 22, perceiveStereo, warnings });
+    expect(rejectedRepairs).toBeGreaterThan(0);
+    expect(chosen).toBe(document);
+    expect(warnings).toEqual(["Clean Up kept the drawn layout of this structure: the generated layouts put atoms on top of each other."]);
+  });
+
+  it("rejects a geometrically passing repair that changes drawn E/Z", () => {
+    const alkene = (points: [number, number][]): PastedStructureDepiction => {
+      const depiction = chain(points);
+      return { ...depiction, bonds: depiction.bonds.map((b, i) => ({ ...b, order: i === 1 ? "double" : "single" })) };
+    };
+    const h = Math.sin(Math.PI / 9), w = Math.cos(Math.PI / 9);
+    const trans = alkene([[-w, -h], [0, 0], [1, 0], [1 + w, h]]);
+    const cis = alkene([[-w, -h], [0, 0], [1, 0], [1 + w, -h]]);
+    const colliding = alkene([[-w, -h], [0, 0], [1, 0], [-0.7, -0.4]]);
+    const document = insertSmilesMolecule(createPhase4Document("Rigid repair E/Z"), { x: 400, y: 400 }, trans, "C/C=C/C");
+    const molecule = selectedMolecule(document);
+    // Inject a passing geometry to exercise the integration boundary independently of the
+    // fragment search. Its altered alkene must never be accepted just for passing quality.
+    const search = vi.spyOn(layoutEngine, "repairLayoutOverlaps").mockReturnValue([{
+      atoms: [...cis.atoms], quality: layoutEngine.evaluateLayoutQuality(cis.atoms, cis.bonds),
+      kind: "substituent swing", pivot: 2, movedAtoms: [3], angleDegrees: -40
+    }]);
+    try {
+      const warnings: string[] = [];
+      const chosen = applyNativeMoleculeEngineRelayout(document, molecule.id, () => colliding,
+        { targetBondLengthPx: 22, warnings });
+      expect(search).toHaveBeenCalledOnce();
+      expect(chosen).toBe(document);
+      expect(warnings).toEqual(["Clean Up kept the drawn layout of this structure: the generated layouts put atoms on top of each other."]);
+    } finally { search.mockRestore(); }
+  });
+
+  it.each([
+    { name: "benzene Kekulé", size: 6, kekule: true, exempt: true },
+    { name: "cyclohexene", size: 6, kekule: false, exempt: true },
+    { name: "cycloheptene", size: 7, kekule: false, exempt: true },
+    { name: "cyclooctene", size: 8, kekule: false, exempt: false }
+  ])("uses only ring topology for the $name repair geometry exemption", ({ size, kekule, exempt }) => {
+    const radius = 1 / (2 * Math.sin(Math.PI / size));
+    const regular: PastedStructureDepiction = {
+      atoms: Array.from({ length: size }, (_, i) => ({ element: "C", charge: 0,
+        x: radius * Math.cos(2 * Math.PI * i / size), y: radius * Math.sin(2 * Math.PI * i / size) })),
+      bonds: Array.from({ length: size }, (_, from) => ({ from, to: (from + 1) % size,
+        order: from === 0 || (kekule && from % 2 === 0) ? "double" : "single", wedge: null }))
+    };
+    // Reflect only one ligand across the tested double bond, giving it the opposite sign.
+    // The proposed repair restores a regular ring; no engine decides whether it is exempt.
+    const a = regular.atoms[0], b = regular.atoms[1], ligand = regular.atoms[size - 1];
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const projection = ((ligand.x - a.x) * dx + (ligand.y - a.y) * dy) / (dx * dx + dy * dy);
+    const original = { ...regular, atoms: regular.atoms.map((atom, i) => i !== size - 1 ? atom : {
+      ...atom, x: 2 * (a.x + projection * dx) - atom.x, y: 2 * (a.y + projection * dy) - atom.y
+    }) };
+    const document = insertSmilesMolecule(createPhase4Document("Ring topology repair"), { x: 400, y: 400 },
+      original, kekule ? "C1=CC=CC=C1" : `C1=${"C".repeat(size - 1)}1`);
+    const molecule = selectedMolecule(document);
+    const candidate = { ...molecule, atoms: molecule.atoms.map((atom, i) => ({
+      ...atom, x: regular.atoms[i].x, y: -regular.atoms[i].y
+    })) };
+    const doubleId = molecule.bonds[0].id;
+    expect(doubleBondStereoState(molecule).get(doubleId)).toBe(-1);
+    expect(doubleBondStereoState(candidate).get(doubleId)).toBe(1);
+    const colliding = { ...regular, atoms: regular.atoms.map((atom, i) => i === size - 2 ? regular.atoms[size - 3] : atom) };
+    const search = vi.spyOn(layoutEngine, "repairLayoutOverlaps").mockReturnValue([{
+      atoms: [...regular.atoms], quality: layoutEngine.evaluateLayoutQuality(regular.atoms, regular.bonds),
+      kind: "substituent swing", pivot: 0, movedAtoms: [size - 1], angleDegrees: 40
+    }]);
+    try {
+      const warnings: string[] = [];
+      const chosen = applyNativeMoleculeEngineRelayout(document, molecule.id, () => colliding,
+        { targetBondLengthPx: 22, warnings });
+      expect(search).toHaveBeenCalledOnce();
+      if (exempt) {
+        expect(chosen).not.toBe(document);
+        expect(doubleBondStereoState(selectedMolecule(chosen)).get(doubleId))
+          .toBe(doubleBondStereoState(candidate).get(doubleId));
+        expect(warnings).toEqual([]);
+      } else {
+        expect(chosen).toBe(document);
+        expect(warnings).toContainEqual(expect.stringMatching(/^Clean Up kept the drawn layout/));
+      }
+    } finally { search.mockRestore(); }
+  });
+
+  it("ranks relaxed candidates by soft score, commits ties with the original, and still prefers a later strict pass", () => {
+    const relaxed = linkedRings(1.3);
+    const worseRelaxed = linkedRings(1.5);
+    const strict = linkedRings(1);
+    const document = insertSmilesMolecule(createPhase4Document("Bridge cleanup"), { x: 400, y: 400 }, relaxed, "C1CCCCC1C1CCCCC1");
+    const molecule = selectedMolecule(document);
+    const warnings: string[] = [];
+    const selectedRelaxed = applyNativeMoleculeEngineRelayout(document, molecule.id, () => worseRelaxed,
+      { targetBondLengthPx: 22, warnings, alternateRelayouts: [() => relaxed] });
+    expect(selectedRelaxed).not.toBe(document);
+    expect(selectedRelaxed).toEqual(applyNativeMoleculeEngineRelayout(document, molecule.id, () => relaxed, { targetBondLengthPx: 22 }));
+    expect(warnings).toEqual([]);
+    const selectedStrict = applyNativeMoleculeEngineRelayout(document, molecule.id, () => relaxed,
+      { targetBondLengthPx: 22, alternateRelayouts: [() => worseRelaxed, () => strict] });
+    expect(selectedStrict).toEqual(applyNativeMoleculeEngineRelayout(document, molecule.id, () => strict, { targetBondLengthPx: 22 }));
+  });
+
+  it("still refuses the only candidate when its atom mapping cannot be trusted", () => {
+    const { document, molecule } = fixture();
+    expect(() => applyNativeMoleculeEngineRelayout(document, molecule.id, () => ({ ...good, atoms: [] }),
+      { targetBondLengthPx: 22 })).toThrow(/atoms/);
+  });
+
+  it("still cleans up a bridged graph when a perfect polygon layout is impossible", () => {
+    const source = testMoleculeFromSmiles("C1CC2CCC1C2"); // norbornane
+    const base = createPhase4Document("Cage cleanup");
+    const molecule: MoleculeObject = {
+      ...createNativeSingleBondMolecule(base, { x: 400, y: 400 }), ...source,
+      atoms: source.atoms.map(a => ({ ...a, x: a.x * 30 + 400, y: a.y * 30 + 400 }))
+    };
+    const document = applyPatches(base, [
+      { op: "addObject", pageId: base.pages[0].id, object: molecule },
+      { op: "setSelection", pageId: base.pages[0].id, objectIds: [molecule.id] }
+    ]);
+    const before = selectedMolecule(document);
+    const warnings: string[] = [];
+    const chosen = applyNativeMoleculeEngineRelayout(document, before.id, relayoutMolfile2D, { targetBondLengthPx: 22, warnings });
+    const after = selectedMolecule(chosen);
+    expect(after.atoms).not.toEqual(before.atoms);
+    expect(after.atoms.map(a => [a.id, a.element])).toEqual(before.atoms.map(a => [a.id, a.element]));
+    expect(after.bonds.map(b => b.order)).toEqual(before.bonds.map(b => b.order));
+    expect(warnings).toEqual([]);
   });
 });

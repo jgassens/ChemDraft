@@ -1,5 +1,14 @@
 # Shipped slices
 
+## Agent skill: one document style for structures, and structure naming (2026-10-22)
+
+Fixed-scale `--style document` on `render`, `grid`, `reaction`, `render-document`, and
+`document`, plus the MCP `style` parameter, sets 14.4 pt bonds, 1.134 pt lines, and Arial 10 pt
+labels. SVG is sized in pt; PNG uses `--dpi`. The agent skill defaults document figures to this
+style and requires natural-size insertion: never scale a structure. It also documents
+structure-to-name through the app plugin and its exact read-back check; the CLI and MCP cannot name
+a structure yet.
+
 ## Structure to name (Orthonym) (2026-10-21)
 
 Name from Structure (jgassens/ChemDraft#165; PR TBD) names a drawn molecule with the optional,

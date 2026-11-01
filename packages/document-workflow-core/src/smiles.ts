@@ -503,9 +503,9 @@ function nativeAtomSmiles(atom: MoleculeAtom | undefined, implicitHydrogens = 0)
     return `[${spelled.element}${hydrogens}${smilesChargeSuffix(atom.formalCharge)}]`;
   }
 
-  if (atom.formalCharge !== 0 || (atom.markRadicals ?? 0) > 0) {
+  if (atom.isotope !== undefined || atom.formalCharge !== 0 || (atom.markRadicals ?? 0) > 0) {
     const hydrogens = implicitHydrogens > 0 ? `H${implicitHydrogens === 1 ? "" : implicitHydrogens}` : "";
-    return `[${element}${hydrogens}${smilesChargeSuffix(atom.formalCharge)}]`;
+    return `[${atom.isotope ?? ""}${element}${hydrogens}${smilesChargeSuffix(atom.formalCharge)}]`;
   }
 
   if (element === "H") {
@@ -544,7 +544,8 @@ function nativeAtomSmilesById(
     const needsSpelledHydrogens = element !== undefined &&
       element !== "H" &&
       atom.labelLiteral !== true &&
-      (atom.formalCharge !== 0 || (atom.markRadicals ?? 0) > 0 || !smilesOrganicSubset.has(element));
+      (atom.isotope !== undefined || atom.formalCharge !== 0 ||
+        (atom.markRadicals ?? 0) > 0 || !smilesOrganicSubset.has(element));
     // The dative-deprotonation rule (a pyrrole-type N–H donating to a metal) never reaches
     // this spelling: it applies only to a neutral nitrogen, which is organic-subset and written
     // bare, and the dative bond itself is written as a single bond, so a parser already gives

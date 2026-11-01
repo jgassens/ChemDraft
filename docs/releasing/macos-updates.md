@@ -5,6 +5,9 @@ day and presents Sparkle's native update offer when a newer version is available
 silently install updates. A user can start the same visible check at any time from
 **File > Check for Updates…**.
 
+- [ ] Run `node scripts/pin-external-tools.mjs --check` before a release; refresh pins if it differs.
+- [ ] For any pin bump, run that check on both macOS and Windows; each run checks only its host platform.
+
 ## Why installed plugins survive
 
 Sparkle replaces `ChemDraft.app`. Installed plugin packages are not stored inside that bundle; the

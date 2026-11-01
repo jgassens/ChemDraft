@@ -144,6 +144,16 @@ describe("StructureRecognitionInstallDialog", () => {
     expect(document.querySelector('[role="alert"]')?.textContent).toContain(expected);
   });
 
+  it.each([
+    ["Couldn't reach github.com: the connection timed out.", "Couldn't reach github.com: the connection timed out."],
+    ["", "The recognition engine could not be downloaded. Check your connection and try again."],
+    ["offline", "The recognition engine could not be downloaded. Check your connection and try again."],
+    ["Couldn't reach github.com: https://user:password@github.com/asset?sig=secret#fragment", "Couldn't reach github.com: https://github.com/asset"]
+  ])("shows a safe native network diagnostic or fallback (%s)", (message, expected) => {
+    renderDialog(request({ error: { code: "network", message } }));
+    expect(document.querySelector('[role="alert"]')?.textContent).toBe(expected);
+  });
+
   it("withholds Install for an unsupported computer", () => {
     renderDialog(
       request({

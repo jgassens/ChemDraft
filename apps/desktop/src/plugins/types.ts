@@ -1,4 +1,4 @@
-import type { PluginPanelReport } from "@chemdraft/plugin-api";
+import type { PluginCanvasOverlayContribution, PluginPanelReport } from "@chemdraft/plugin-api";
 
 /**
  * Desktop-owned view state for a contributed panel. Plugins never provide UI components; they push a
@@ -10,6 +10,7 @@ export interface OpenPluginPanel {
   pluginId: string;
   panelId: string;
   title: string;
+  preferredWindowSize?: { width: number; height: number };
   report: PluginPanelReport;
   /** From the panel contribution; enables a host-rendered "Run again" action when present. */
   commandId?: string;
@@ -21,4 +22,10 @@ export interface PluginDiagnostic {
   code: string;
   message: string;
   at: string;
+}
+
+/** A declarative overlay paired with its owning plugin. Statuses are keyed by overlay id. */
+export interface RegisteredCanvasOverlay {
+  pluginId: string;
+  overlay: PluginCanvasOverlayContribution;
 }

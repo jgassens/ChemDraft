@@ -13,6 +13,8 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 import {
   moleculeToMolfileV2000,
+  serializeDocument,
+  deserializeDocument,
   type MoleculeAtom,
   type MoleculeBond,
   type MoleculeObject
@@ -22,6 +24,7 @@ import {
   ensureOclResources,
   oclConformerGenerator,
   perceiveStereoCentersFromMolfile,
+  perceiveDoubleBondStereoFromMolfile,
   type Depiction2D
 } from "@chemdraft/ocl-adapter";
 import { nativeBondOrderResolution, planPageSvgRender } from "@chemdraft/layout-engine";
@@ -33,6 +36,9 @@ import {
   flattenSpunMolecule,
   insertSmilesMolecule,
   reconcileFlattenedStereo,
+  attachSpin3dModelFromConformer,
+  validSpin3dModelFor,
+  spin3dModelCoordsForMolecule,
   type PastedStructureDepiction,
   type StereoPerceiver
 } from "./documentWorkflow";
@@ -369,6 +375,55 @@ describe("flattenSpunMolecule — stereo preserved end-to-end (real perceiver)",
     await ensureOclResources();
   }, 120_000);
 
+  it.each(["CC(O)CC", "C[C@H](O)C(O)CC"])(
+    "spin → flatten → reopen never wedges an open tetrahedral centre: %s", async (smiles) => {
+      const { document, molId, start } = placeSmiles(smiles);
+      const intent = perceiveStereoCentersFromMolfile(mf(start));
+      const assigned = new Set(start.atoms.flatMap((atom, i) =>
+        intent[i]?.descriptor === "R" || intent[i]?.descriptor === "S" ? [atom.id] : []));
+      const coords = (await oclConformerGenerator.generate3DConformer({ molfile: mf(start) }, { optimize: "auto" }))
+        .mapping.coords3dByOriginalAtom;
+      let committed = 0;
+      for (let attempt = 0; attempt < 30 && committed < 4; attempt++) {
+        // Keep the historical reproducers' seeded orientation stream unchanged.
+        const orientation = quatFromAxisAngle([1, 2, 3], 0.3 + attempt * 0.1);
+        const outcome = flattenSpunMolecule(document, molId, coords, quatToViewMatrix(orientation), {
+          stereoCenterAtomIds: new Set(start.atoms.filter((_, i) => intent[i]?.isStereoCenter).map(a => a.id)),
+          perceiveDoubleBondStereo: perceiveDoubleBondStereoFromMolfile, perceiveStereo: perceiveStereoCentersFromMolfile
+        });
+        if (outcome.status !== "committed") continue;
+        committed++;
+        const reopened = deserializeDocument(serializeDocument(attachSpin3dModelFromConformer(
+          outcome.document, molId, { coords3d: coords, orientation })));
+        const flat = molOf(reopened, molId);
+        expect(isoSmiles(flat)).toBe(isoSmiles(start));
+        expect(flat.atoms).toHaveLength(start.atoms.length);
+        expect(flat.bonds).toHaveLength(start.bonds.length);
+        for (const marker of flat.bonds.filter(b => ["wedge", "hashed"].includes(b.display?.bondStyle ?? ""))) {
+          expect(assigned.has(marker.fromAtomId)).toBe(true);
+        }
+        const model = validSpin3dModelFor(flat)!;
+        expect(Array.from(spin3dModelCoordsForMolecule(model, flat)!)).toEqual(Array.from(coords));
+        expect(perceiveStereoCentersFromMolfile(mf(flat))).toEqual(intent);
+      }
+      expect(committed).toBe(4);
+    }, 120_000);
+
+  it("refuses when read-back gains an assignment at a previously open atom", () => {
+    const { document, molId, start } = placeSmiles("CC(O)CC");
+    const initial = start.atoms.map(() => ({ isStereoCenter: false, descriptor: "unspecified" as const }));
+    const gained = initial.map((entry, i): PerceivedAtom => i === 1
+      ? { isStereoCenter: true, descriptor: "R" } : entry);
+    const reader = scriptedReader([initial, gained]);
+    const coords = start.atoms.flatMap(atom => [atom.x, -atom.y, 0]);
+    const outcome = flattenSpunMolecule(document, molId, coords, quatToViewMatrix({ x: 0, y: 0, z: 0, w: 1 }), {
+      perceiveDoubleBondStereo: perceiveDoubleBondStereoFromMolfile, perceiveStereo: reader.read
+    });
+    expect(outcome.status).toBe("refused");
+    expect(outcome.refusalReasons.join("; ")).toContain("open tetrahedral");
+    expect(outcome.document).toBe(document);
+  });
+
   // strychnine + fenchol historically corrupted on 100% of committed views; menthol is a control.
   for (const [name, smiles] of Object.entries({
     strychnine: "O=C1C[C@H]2OCC=C3CN4CC[C@]56[C@H]4C[C@H]3[C@@H]2[C@@H]5N1c1ccccc16",
@@ -390,7 +445,7 @@ describe("flattenSpunMolecule — stereo preserved end-to-end (real perceiver)",
         const viewMatrix = quatToViewMatrix(randomQuat());
         const outcome = flattenSpunMolecule(document, molId, coords, viewMatrix, {
           stereoCenterAtomIds: centerIds,
-          perceiveStereo: perceiveStereoCentersFromMolfile
+          perceiveDoubleBondStereo: perceiveDoubleBondStereoFromMolfile, perceiveStereo: perceiveStereoCentersFromMolfile
         });
         if (outcome.status !== "committed") continue;
         committed += 1;

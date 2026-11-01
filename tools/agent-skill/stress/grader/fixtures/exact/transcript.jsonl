@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","session_id":"fixture"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool-1","name":"mcp__chemdraft__render_structure","input":{"smiles":"C[C@@H](N)C(=O)O","format":"svg"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool-1","content":[{"type":"text","text":"{\"ok\":true,\"smiles\":\"C[C@@H](N)C(=O)O\"}"}]}]}}
+{"type":"result","subtype":"success","result":"L-alanine, with its specified stereocentre."}

@@ -1,3 +1,4 @@
+import { z } from "zod";
 import {
   ChemDraftDocumentSchema,
   DocumentObjectSchema,
@@ -20,6 +21,7 @@ import { clearChangedAtomHydrogenHints, dropOrphanedHydrogenHints } from "./hydr
 export type ObjectReorderPlacement = "front" | "back" | "forward" | "backward";
 
 export type DocumentPatch =
+  | { op: "batch"; patches: DocumentPatch[] }
   | { op: "addObject"; pageId: string; object: DocumentObject }
   | { op: "removeObject"; objectId: string }
   | { op: "updateObject"; objectId: string; changes: Partial<DocumentObject> }
@@ -32,6 +34,14 @@ export type DocumentPatch =
   | { op: "setSelection"; pageId?: string; objectIds: string[] }
   | { op: "addAnnotation"; pageId: string; annotation: AnnotationObject }
   | { op: "removeAnnotation"; annotationId: string };
+
+/** A batch is bounded and flat; leaf operations are validated by the patch engine. */
+export const BatchDocumentPatchSchema = z.object({
+  op: z.literal("batch"),
+  patches: z.array(z.object({ op: z.string().min(1) }).passthrough().refine(
+    (patch) => patch.op !== "batch", "Nested batch patches are not allowed."
+  )).min(1).max(256)
+}).strict();
 
 export interface ApplyPatchOptions {
   now?: Date | string;
@@ -77,6 +87,12 @@ export function applyPatches(
   if (patches.length === 0) {
     return document;
   }
+  // Validate batches before creating a draft, then use the existing atomic engine.
+  patches = patches.flatMap((patch) => {
+    if (patch.op !== "batch") return [patch];
+    BatchDocumentPatchSchema.parse(patch);
+    return patch.patches;
+  });
   const base = engineDocuments.has(document) ? document : cloneDocument(document);
   const draft = createDraft(base);
   for (let index = 0; index < patches.length; ) {
@@ -263,6 +279,8 @@ function deepFreezeNew(value: unknown): void {
 
 function applyPatchInPlace(next: ChemDraftDocument, patch: DocumentPatch): void {
   switch (patch.op) {
+    case "batch":
+      throw new DocumentPatchError("Nested batch patches are not allowed.");
     case "addObject":
       addObject(next, patch.pageId, patch.object);
       break;

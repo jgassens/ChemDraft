@@ -14,7 +14,8 @@ import { dirname, join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, describe, expect, it } from "vitest";
-import { createEmptyDocument, serializeDocument } from "@chemdraft/chem-core";
+import { createEmptyDocument, serializeDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
 import { metalHydrogenLossCases, preservedRadicalExportCases, radicalExportCases, readAtomStates } from "../../document-workflow-core/test/radicalExportFixtures";
 import { chargeSeparationCases } from "../../document-workflow-core/test/chargeSeparationFixtures";
 
@@ -77,6 +78,53 @@ afterEach(async () => {
 });
 
 describe("ChemDraft MCP server", () => {
+  it("checks built-in templates before OPSIN for name_to_structure", async () => {
+    const client = await connect();
+    const tools = await client.listTools();
+    expect(tools.tools.find(tool => tool.name === "name_to_structure")?.description).toContain("templates before OPSIN");
+    const result = await client.callTool({ name: "name_to_structure", arguments: { name: "β-CD" } });
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    expect(jsonPayload(result.content)).toMatchObject({ ok: true, source: "template", templateId: "beta-cyclodextrin" });
+    const rendered = await client.callTool({ name: "render_structure", arguments: {
+      smiles: jsonPayload(result.content).smiles, format: "svg"
+    } });
+    expect(rendered.isError, JSON.stringify(rendered)).not.toBe(true);
+    expect(jsonPayload(rendered.content)).toMatchObject({ ok: true, layout: "template:beta-cyclodextrin" });
+  }, 60_000);
+  it("rejects DPI on every tool format that produces no PNG", async () => {
+    const client = await connect();
+    const cases = [
+      { name: "build_document", args: { smiles: "CC" } },
+      { name: "render_structure", args: { smiles: "CC", format: "svg" } },
+      { name: "render_grid", args: { items: [{ name: "a", smiles: "CC" }], format: "svg" } },
+      { name: "render_reaction", args: { reactants: ["CC"], products: ["CC"], format: "svg" } },
+      ...["svg", "pdf", "chemdraft"].map((format) => ({ name: "render_document",
+        args: { documentJson: serializeDocument(createEmptyDocument()), format } }))
+    ];
+    for (const { name, args } of cases) {
+      const error = await client.callTool({ name, arguments: { ...args, style: "document", dpi: 300 } });
+      expect(error.isError, name).toBe(true);
+      expect(textBlocks(error.content).join("\n"), name).toMatch(/--dpi requires PNG output/);
+    }
+  });
+  it("renders document style at its natural point size and surfaces conflicts", async () => {
+    const client = await connect();
+    const result = await client.callTool({ name: "render_structure", arguments: {
+      smiles: "CCO", style: "document", format: "svg"
+    } });
+    expect(result.isError).not.toBe(true);
+    const svg = textBlocks(result.content).find((text) => text.startsWith("<svg"))!;
+    expect(svg).toMatch(/width="[\d.]+pt" height="[\d.]+pt"/);
+    expect(jsonPayload(result.content)).toMatchObject({ style: "document", widthPt: expect.any(Number), heightPt: expect.any(Number) });
+    for (const args of [{ style: "document", width: 600 }, { style: "document", bondLength: 22 },
+      { style: "document", padding: 4 }, { dpi: 300 }, { style: "document", dpi: 1201 }]) {
+      const error = await client.callTool({ name: "render_structure", arguments: { smiles: "CC", ...args } });
+      expect(error.isError).toBe(true);
+      expect(textBlocks(error.content).join("\n")).toMatch(/--style|--dpi/);
+    }
+    // This is the first real render and pays cold engine/module-worker loading. Match the
+    // existing real-render budget below; the worker still enforces its own layout deadline.
+  }, 60_000);
   it.each(chargeSeparationCases)("renders neutral-drawn $name with an info note", async ({ molecule, smiles }) => {
     const document = createEmptyDocument();
     document.pages[0]!.objects = [molecule];
@@ -137,6 +185,10 @@ describe("ChemDraft MCP server", () => {
         reactants: expect.any(Object),
         agents: expect.any(Object),
         products: expect.any(Object),
+        above: expect.objectContaining({ maxItems: 6, items: expect.objectContaining({ maxLength: 2000 }) }),
+        below: expect.objectContaining({ maxItems: 6, items: expect.objectContaining({ maxLength: 2000 }) }),
+        caption: expect.objectContaining({ minLength: 1, maxLength: 300 }),
+        conditions: expect.objectContaining({ maxLength: 2000 }),
         format: expect.any(Object),
         background: expect.any(Object)
       }
@@ -168,6 +220,67 @@ describe("ChemDraft MCP server", () => {
       .toContain("not-requested");
     expect(result.tools.find((tool) => tool.name === "check_stereo")!.description)
       .toContain("E/Z");
+  });
+
+  it.each([
+    { smiles: "CC=CC", expected: [1] },
+    { smiles: "C/C=C/C", expected: [] },
+    { smiles: "CC=CC/C=C/C", expected: [1] }
+  ])("build_document preserves input E/Z through default render/export: $smiles", async ({ smiles, expected }) => {
+    const client = await connect();
+    const result = await client.callTool({ name: "build_document", arguments: { smiles } });
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+    const nativeJson = textBlocks(result.content)[1]!;
+    const molecule = JSON.parse(nativeJson).pages[0].objects[0] as MoleculeObject;
+    const eitherIndices = (bonds: readonly { stereo?: string }[]) =>
+      bonds.flatMap((bond, index) => bond.stereo === "either" ? [index] : []);
+    expect(eitherIndices(molecule.bonds)).toEqual(expected);
+    expect(eitherIndices(parseMolfileGraph(molecule.structure).bonds)).toEqual(expected);
+    expect(molecule.structure).toContain(`  2  3  2  ${expected.length ? 3 : 0}`);
+    const rendered = await client.callTool({ name: "render_document", arguments: {
+      documentJson: nativeJson, format: "svg"
+    } });
+    expect(rendered.isError, JSON.stringify(rendered)).not.toBe(true);
+    expect(jsonPayload(rendered.content).molecules).toEqual([
+      expect.objectContaining({ canonicalSmiles: smiles, unspecifiedDoubleBonds: expected.length })
+    ]);
+    const exported = await client.callTool({ name: "export_structure", arguments: { smiles, format: "smi" } });
+    expect(exported.isError, JSON.stringify(exported)).not.toBe(true);
+    expect(textBlocks(exported.content)[1]!.split("\t")[0]).toBe(smiles);
+  }, 60_000);
+
+  it.each([
+    { labels: { above: Array(7).fill("x") }, field: "above", limit: "6 entry limit" },
+    { labels: { below: Array(7).fill("x") }, field: "below", limit: "6 entry limit" },
+    { labels: { caption: "x".repeat(301) }, field: "caption", limit: "300 character limit" },
+    { labels: { caption: "" }, field: "caption", limit: "non-empty" },
+    { labels: { caption: " \t" }, field: "caption", limit: "non-empty" },
+    { labels: { conditions: "x".repeat(2001) }, field: "conditions", limit: "2000 character combined limit" },
+    { labels: { above: ["x".repeat(2001)] }, field: "above", limit: "2000 character combined limit" },
+    { labels: { below: ["x".repeat(2001)] }, field: "below", limit: "2000 character combined limit" },
+    { labels: { above: ["x".repeat(900)], below: ["x".repeat(900)], caption: "x".repeat(100), conditions: "x".repeat(101) }, field: "above + below + caption + conditions", limit: "2000 character combined limit" }
+  ])("rejects reaction labels exceeding $field $limit before invoking the CLI", async ({ labels, field, limit }) => {
+    let called = false;
+    const client = await connect({ commands: { reaction: async () => { called = true; return 0; } } });
+    const result = await client.callTool({ name: "render_reaction", arguments: { reactionSmiles: "CCO>>CCO", ...labels } });
+    expect(result.isError).toBe(true);
+    const error = textBlocks(result.content).join("\n");
+    expect(error).toContain(field);
+    expect(error).toContain(limit);
+    expect(called).toBe(false);
+  });
+
+  it("accepts reaction labels at the count, caption and combined length limits", async () => {
+    let called = false;
+    const client = await connect({ commands: { reaction: async (_argv, io) => {
+      called = true; io.stdout(JSON.stringify({ name: "reaction", ok: true })); return 0;
+    } } });
+    const result = await client.callTool({ name: "render_reaction", arguments: {
+      reactionSmiles: "CCO>>CCO", above: Array(6).fill("x".repeat(100)), below: Array(6).fill("x".repeat(100)),
+      caption: "x".repeat(300), conditions: "x".repeat(500)
+    } });
+    expect(result.isError).not.toBe(true);
+    expect(called).toBe(true);
   });
 
   it("builds inline native JSON and renders inline/path inputs with isolated output directories", async () => {
@@ -218,8 +331,8 @@ describe("ChemDraft MCP server", () => {
     expect(result.isError).not.toBe(true);
     expect(JSON.stringify(result.content)).toContain('"type":"image"');
     expect(JSON.stringify(result.content)).toContain('"mimeType":"image/png"');
-    // The first real render in this file, so it pays the cold engine load; like every other real
-    // render here it gets a generous timeout (it overran the 5 s default on the Windows runner).
+    // Real renders can pay cold engine/module-worker loading after idle teardown; retain the
+    // generous Windows test budget separately from the worker's layout deadline.
   }, 60_000);
 
   it("forwards the newly exposed options using the CLI's exact flag names", async () => {
@@ -259,6 +372,7 @@ describe("ChemDraft MCP server", () => {
         reactants: ["CCO"],
         agents: [],
         products: ["CC=O"],
+        above: ["catalyst", "reagent"], below: ["CH2Cl2"], caption: "note",
         format: "svg",
         background: "transparent"
       }
@@ -277,7 +391,8 @@ describe("ChemDraft MCP server", () => {
       "--padding", "7", "--gutter", "11", "--background", "transparent"
     ]));
     expect(calls.grid?.find((value) => value.endsWith(".svg"))).toBeDefined();
-    expect(calls.reaction).toEqual(expect.arrayContaining(["--background", "transparent"]));
+    expect(calls.reaction).toEqual(expect.arrayContaining(["--background", "transparent", "--above", "catalyst", "reagent", "--below", "CH2Cl2", "--caption", "note"]));
+    expect(calls.reaction?.slice(calls.reaction.indexOf("--above"), calls.reaction.indexOf("--above") + 4)).toEqual(["--above", "catalyst", "--above", "reagent"]);
     expect(calls.reaction?.find((value) => value.endsWith(".svg"))).toBeDefined();
     expect(calls.nmr).toEqual(expect.arrayContaining(["--statistic", "mean", "--ignore-labile"]));
     expect(calls.name).toContain("--allow-ambiguous");

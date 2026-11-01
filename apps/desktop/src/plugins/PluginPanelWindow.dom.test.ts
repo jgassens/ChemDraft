@@ -10,6 +10,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { AnalysisReport } from "@chemdraft/analysis-core";
+import type { PluginPanelReport } from "@chemdraft/plugin-api";
 import {
   ANALYSIS_WINDOW_ACTION_EVENT,
   ANALYSIS_WINDOW_ACTION_RESULT_EVENT,
@@ -20,16 +21,19 @@ import {
   PLUGIN_DIAGNOSTICS_WINDOW_ID,
   VALIDATION_RESULT_WINDOW_ID,
   broadcastPluginPanelReport,
+  broadcastPluginPanelReportCleared,
   broadcastPluginPanelStaleness,
   broadcastAnalysisWindowSnapshot,
   listenForPluginPanelReruns,
   openPluginPanelWindow,
   PLUGIN_PANEL_CLOSED_EVENT,
+  PLUGIN_PANEL_ACTION_EVENT,
   PLUGIN_PANEL_REPORT_EVENT,
   PLUGIN_PANEL_REQUEST_EVENT,
   PLUGIN_PANEL_STALENESS_EVENT,
   PLUGIN_PANEL_RERUN_EVENT,
   PROPOSAL_DECISION_TIMEOUT_MS,
+  respondToPluginPanelAction,
   parsePluginPanelWindowId,
   pluginPanelWindowId,
   type PluginPanelReportPayload
@@ -174,6 +178,25 @@ const INSPECTOR_REPORT: AnalysisReport = {
 };
 
 describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
+  it("forgets a hidden webview's report and rejects late replay after its owner is unregistered", async () => {
+    await mountWindow();
+    await broadcast(reportPayload());
+    expect(container!.textContent).toContain("Analysis Result");
+    await act(async () => {
+      await broadcastPluginPanelReportCleared({ pluginId: PLUGIN_ID, panelId: PANEL_ID, revision: 2 });
+    });
+    expect(container!.textContent).not.toContain("Analysis Result");
+    await broadcast(reportPayload());
+    expect(container!.textContent).toContain("Waiting for plugin content");
+    await broadcast(reportPayload({ revision: 3 }));
+    expect(container!.textContent).toContain("Analysis Result");
+    // An out-of-order clear cannot erase a newer report.
+    await act(async () => {
+      await broadcastPluginPanelReportCleared({ pluginId: PLUGIN_ID, panelId: PANEL_ID, revision: 2 });
+    });
+    expect(container!.textContent).toContain("Analysis Result");
+  });
+
   const contentEvents = [
     PLUGIN_PANEL_REPORT_EVENT,
     ANALYSIS_WINDOW_SNAPSHOT_EVENT,
@@ -259,10 +282,26 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     expect(windows).toContain("return Ok(false)");
     expect(windows).not.toContain("target.set_focus()");
     expect(command).toContain("WindowsAndMessaging::GetForegroundWindow()");
-    const release = command.split("if was_focused {")[1]!.split('#[cfg(not(windows))]')[0]!;
-    expect(release).toContain("panel_window::return_focus_to_document(");
-    expect(release).not.toMatch(/focus_main_document_window_impl|main\.set_focus\(/);
+    // Release now delegates to the shared interaction helper. Guard both the command
+    // branch and the helper's Windows path against Tao's forced activation fallback.
+    const release = command.split("result.map(|_| held)")[1]!;
+    const compactRelease = release.replace(/\s+/g, "");
+    const returnFocusCall = "panel_window::return_focus_after_interaction(&target, return_focus.unwrap_or(false)".replace(/\s+/g, "");
+    expect(compactRelease).toContain(returnFocusCall);
+    const returnFocusIndex = compactRelease.indexOf(returnFocusCall);
+    const nonFocusableIndex = compactRelease.indexOf(".set_focusable(false)");
+    expect(returnFocusIndex).toBeGreaterThanOrEqual(0);
+    expect(nonFocusableIndex).toBeGreaterThan(returnFocusIndex);
+    // A hand-back error must not skip making the palette non-focusable.
+    expect(compactRelease.slice(returnFocusIndex + returnFocusCall.length, nonFocusableIndex)).not.toMatch(/\?|returnErr/);
+    expect(release).not.toMatch(/focus_main_document_window_impl|(?:main|document)\.set_focus\(/);
     const panel = readFileSync(join(nativePath, "panel_window.rs"), "utf8");
+    const interactionReturn = panel.split("pub(crate) fn return_focus_after_interaction<")[1]!
+      .split("pub(crate) fn reset_for_webview<")[0]!;
+    const windowsReturn = interactionReturn.split('#[cfg(target_os = "macos")]')[0]!;
+    expect(windowsReturn).toContain("focus_return::should_return(");
+    expect(windowsReturn).toContain("return_focus_to_document(");
+    expect(windowsReturn).not.toMatch(/focus_main_document_window_impl|(?:main|document)\.set_focus\(/);
     const focus = panel.split("pub(crate) fn focus_if_app_active(")[1]!.split('#[cfg(target_os')[0]!;
     expect(focus).toContain("GetForegroundWindow()");
     expect(focus).toContain("IsWindowVisible(hwnd) == 0");
@@ -270,10 +309,24 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     expect(focus).toContain("GetWindowThreadProcessId");
     expect(focus).toContain("with_owned_foreground");
     expect(focus).toContain("SetActiveWindow(hwnd)");
-    expect(panel).not.toMatch(/SetForegroundWindow\(|SendInput\(/);
+    // SetForegroundWindow is allowed only to move the foreground from ChemDraft's own palette to its own document window while ChemDraft owns the foreground;
+    // it must never be used to take the foreground from another app, and synthetic input is never allowed.
+    expect(panel).not.toMatch(/SendInput\(/);
+    const handBackStart = panel.indexOf("pub(crate) fn return_focus_to_document<");
+    expect(handBackStart).toBeGreaterThanOrEqual(0);
+    const handBackEnd = panel.indexOf("\n}\n", handBackStart) + 2;
+    const handBackBody = panel.slice(handBackStart, handBackEnd);
+    expect(panel.replace(handBackBody, "")).not.toMatch(/SetForegroundWindow\(/);
+    expect(handBackBody.match(/SetForegroundWindow\(owner\)/g)).toHaveLength(1);
+    const setForegroundIndex = handBackBody.indexOf("SetForegroundWindow(owner)");
+    const appForegroundGuardIndex = handBackBody.indexOf("super::foreground_belongs_to_app()");
+    expect(appForegroundGuardIndex).toBeGreaterThanOrEqual(0);
+    expect(appForegroundGuardIndex).toBeLessThan(setForegroundIndex);
+    const foregroundWindowGuardIndex = handBackBody.indexOf("GetForegroundWindow() == foreground");
+    expect(foregroundWindowGuardIndex).toBeGreaterThanOrEqual(0);
+    expect(foregroundWindowGuardIndex).toBeLessThan(setForegroundIndex);
     const handBack = panel.split("pub(crate) fn return_focus_to_document<")[1]!.split('#[cfg(target_os')[0]!;
     expect(handBack).toContain("foreground_can_return_to_document");
-    expect(handBack).toContain("if focus_if_app_active(owner)");
     expect(handBack).toContain("webview.set_focus()");
     expect(panel).toContain("WM_NCLBUTTONDOWN | WM_NCMBUTTONDOWN | WM_NCRBUTTONDOWN");
     expect(panel).toContain("WM_ENTERSIZEMOVE | WM_EXITSIZEMOVE");
@@ -317,7 +370,7 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     const nativePath = join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src");
     const source = readFileSync(join(nativePath, "lib.rs"), "utf8");
     const pageLoad = source.split(".on_page_load(")[1]!.split(".on_menu_event(")[0]!;
-    expect(pageLoad).toContain("is_plugin_panel_window_label(webview.label())");
+    expect(pageLoad).toContain("is_input_focus_window_label(webview.label())");
     expect(pageLoad).toContain("PageLoadEvent::Started");
     expect(pageLoad).toContain("panel_window::reset_for_webview(&webview.window())");
     const panel = readFileSync(join(nativePath, "panel_window.rs"), "utf8");
@@ -353,11 +406,18 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
       pointer?.({ target: select, isTrusted: true, button: 0 } as unknown as Event);
       select.focus();
     });
-    expect(tauriInvoke).toHaveBeenCalledWith("set_plugin_panel_input_focus", { editing: true, generation: expect.any(Number), pageToken: "page-token" });
+    // Pointer acquisitions carry classification metadata; Escape has no pointer fallback.
+    expect(tauriInvoke).toHaveBeenCalledWith("set_plugin_panel_input_focus", {
+      editing: true, generation: expect.any(Number), pageToken: "page-token",
+      clickSequence: undefined, pointerBefore: expect.any(Number), returnFocus: false
+    });
     await act(async () => {
       select.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
     });
-    expect(tauriInvoke).toHaveBeenLastCalledWith("set_plugin_panel_input_focus", { editing: false, generation: expect.any(Number), pageToken: "page-token" });
+    expect(tauriInvoke).toHaveBeenLastCalledWith("set_plugin_panel_input_focus", {
+      editing: false, generation: expect.any(Number), pageToken: "page-token",
+      clickSequence: undefined, pointerBefore: undefined, returnFocus: true
+    });
     expect(container!.querySelector(".plugin-panel-shell")).not.toBeNull();
   });
 
@@ -688,6 +748,122 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     await mountWindow();
     await broadcast(reportPayload({ commandId: undefined }));
     expect(container!.querySelector(".plugin-panel-run-again")).toBeNull();
+  });
+
+  it("routes prompt actions through the document window and shows its refusal", async () => {
+    await mountWindow();
+    const received: unknown[] = [];
+    const onAction = (event: Event) => {
+      const action = (event as CustomEvent<{ id: string; request: unknown }>).detail;
+      received.push(action.request);
+      void respondToPluginPanelAction(action.id, { ok: false, reason: "The assistant is busy." });
+    };
+    window.addEventListener(PLUGIN_PANEL_ACTION_EVENT, onAction);
+    try {
+      await broadcast(reportPayload({ report: {
+        title: "Assistant",
+        sections: [{ kind: "prompt", id: "ask", commandId: "plugin.exampleAnalyzer.run", submitLabel: "Send", maxLength: 4000, rows: 3, disabled: false }]
+      } }));
+      const textarea = container!.querySelector<HTMLTextAreaElement>("textarea")!;
+      const send = container!.querySelector<HTMLButtonElement>(".plugin-report-action-primary")!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, "Draw aspirin");
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+        send.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await Promise.resolve();
+      });
+      expect(received).toEqual([{ panelId: PANEL_ID, sectionId: "ask", control: "prompt", text: "Draw aspirin" }]);
+      expect(container!.textContent).toContain("The assistant is busy.");
+    } finally {
+      window.removeEventListener(PLUGIN_PANEL_ACTION_EVENT, onAction);
+    }
+  });
+
+  it("tells the reader when the document window does not answer a prompt", async () => {
+    vi.useFakeTimers();
+    try {
+      await mountWindow();
+      await broadcast(reportPayload({ report: {
+        title: "Assistant",
+        sections: [{ kind: "prompt", id: "ask", commandId: "plugin.exampleAnalyzer.run", submitLabel: "Send", maxLength: 4000, rows: 3, disabled: false }]
+      } }));
+      await act(async () => {
+        const textarea = container!.querySelector("textarea")!;
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, "Draw benzene");
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      const send = container!.querySelector<HTMLButtonElement>(".plugin-report-action-primary")!;
+      await act(async () => {
+        send.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      expect(container!.textContent).toContain("ChemDraft did not answer; try again.");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("hides Run again for reports with a prompt and keeps it for output-only reports", async () => {
+    await mountWindow();
+    await broadcast(reportPayload({ report: {
+      title: "Assistant",
+      sections: [{ kind: "prompt", id: "ask", commandId: "plugin.exampleAnalyzer.run", maxLength: 4000, rows: 3, submitLabel: "Send", disabled: false }]
+    } }));
+    expect(container!.querySelector(".plugin-panel-run-again")).toBeNull();
+    await broadcast(reportPayload({ revision: 2 }));
+    expect(container!.querySelector(".plugin-panel-run-again")).not.toBeNull();
+  });
+
+  it("follows replacement output only at the bottom or after the reader submits", async () => {
+    await mountWindow();
+    const assistantReport: PluginPanelReport = {
+      title: "Assistant",
+      sections: [{ kind: "prompt", id: "ask", commandId: "plugin.exampleAnalyzer.run", maxLength: 4000, rows: 3, submitLabel: "Send", disabled: false }]
+    };
+    await broadcast(reportPayload({ report: assistantReport }));
+    const content = container!.querySelector<HTMLDivElement>(".plugin-panel-content")!;
+    Object.defineProperties(content, {
+      scrollHeight: { configurable: true, value: 1000 },
+      clientHeight: { configurable: true, value: 100 },
+      scrollTop: { configurable: true, writable: true, value: 900 }
+    });
+    await broadcast(reportPayload({ revision: 2, report: assistantReport }));
+    expect(content.scrollTop).toBe(1000);
+
+    content.scrollTop = 120;
+    await broadcast(reportPayload({ revision: 3, report: assistantReport }));
+    expect(content.scrollTop).toBe(120);
+
+    const onAction = (event: Event) => {
+      const action = (event as CustomEvent<{ id: string }>).detail;
+      void respondToPluginPanelAction(action.id, { ok: true });
+    };
+    window.addEventListener(PLUGIN_PANEL_ACTION_EVENT, onAction);
+    try {
+      const textarea = container!.querySelector<HTMLTextAreaElement>("textarea")!;
+      const send = container!.querySelector<HTMLButtonElement>(".plugin-report-action-primary")!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, "Continue");
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+        send.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await Promise.resolve();
+      });
+      await broadcast(reportPayload({ revision: 4, report: assistantReport }));
+      expect(content.scrollTop).toBe(1000);
+    } finally {
+      window.removeEventListener(PLUGIN_PANEL_ACTION_EVENT, onAction);
+    }
+  });
+
+  it("keeps a prompt textarea focused when its report is replaced", async () => {
+    await mountWindow();
+    const prompt = { kind: "prompt" as const, id: "ask", commandId: "plugin.exampleAnalyzer.run", maxLength: 4000, rows: 3, submitLabel: "Send", disabled: false };
+    await broadcast(reportPayload({ report: { title: "Assistant", sections: [prompt, { kind: "text", body: "Working" }] } }));
+    const textarea = container!.querySelector<HTMLTextAreaElement>("textarea")!;
+    textarea.focus();
+    await broadcast(reportPayload({ revision: 2, report: { title: "Assistant", sections: [prompt, { kind: "text", body: "Done" }] } }));
+    expect(container!.querySelector("textarea")).toBe(textarea);
+    expect(document.activeElement).toBe(textarea);
   });
 
   it("shows the staleness banner for the current revision and clears it for a newer report", async () => {

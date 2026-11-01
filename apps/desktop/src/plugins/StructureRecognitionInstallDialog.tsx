@@ -7,7 +7,7 @@ import { EXPERIMENTAL_PLUGIN_NOTICE } from "./pluginUpdates";
 import { RecognitionInstallProgress } from "./RecognitionInstallProgress";
 import type { OpenStructureRecognitionInstall } from "./StructureRecognitionController";
 import type { StructureRecognitionInstallError } from "./structureRecognitionEngine";
-import { installSpaceStatement } from "../dialogs/engineInstallText";
+import { engineNetworkErrorMessage, installSpaceStatement } from "../dialogs/engineInstallText";
 import { formatGigabytes } from "./structureRecognitionInstallProgress";
 
 export interface StructureRecognitionInstallDialogProps {
@@ -172,7 +172,7 @@ export function recognitionInstallErrorMessage(
         status.freeDiskBytes
       )} is free.`;
     case "network":
-      return "The recognition engine could not be downloaded. Check your connection and try again.";
+      return engineNetworkErrorMessage(error.message, "recognition");
     case "checksumMismatch":
       return "The downloaded recognition engine did not pass its integrity check. Nothing was installed.";
     case "cancelled":

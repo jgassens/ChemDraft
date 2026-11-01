@@ -25,6 +25,8 @@ Every render flag, with its default or requirement:
 | `--out` | Required in single mode; image filename or base for `both` |
 | `--out-dir` | Required in batch mode; incompatible with single mode |
 | `--format` | `png`, `svg`, `both`; infer single `.png`/`.svg`, batch defaults to `png` |
+| `--style` | `fit` (default) or document fixed physical style |
+| `--dpi` | Document-style PNG resolution, 72–1200; default 300 |
 | `--width` | PNG width, default 600 px; 16–4000 |
 | `--background` | `white` (default) or `transparent` |
 | `--bond-length` | Depicted bond length, default 28 px; positive |
@@ -36,10 +38,13 @@ pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render --smiles
 pnpm -s --config.shell-emulator=true --dir "$checkout" chemdraft render --batch "$scratch/choices.json" --out-dir "$scratch/choices" --format both --width 600
 ```
 
-SVG is vector artwork for rescaling; PNG is a raster image useful for
-inspection and document software. `--width` sets raster resolution, not
-the molecule's chemical geometry. Keep the same width across separate
-choices in one question; a grid also keeps a common bond-length scale.
+For a figure placed in a Word document, handout, exam, report or slide, use
+`--style document` with SVG and insert it at 100%. Never scale, zoom, stretch
+or crop it; change the surrounding layout instead, and keep every structure
+in that document at the same scale. Document-style SVG reports `widthPt` and
+`heightPt`. If SVG is unavailable, render PNG with `--style document --dpi
+300` and insert it at that reported physical size. `--width` is only for a
+one-off `--style fit` image requested at a particular size.
 Use `--background transparent` for slide backgrounds; view on the actual
 slide background to check contrast. `both` writes `.svg` and `.png`.
 Check label masks too: a transparent canvas does not ensure that atom-label
@@ -63,6 +68,8 @@ and gutter within the default page width; specify `--columns` for an exam layout
 | `--out` | Required `.png` or `.svg`; extension selects format |
 | `--columns` | Positive integer; default automatic |
 | `--labels` | `none`, `letters` (default), `names` |
+| `--style` | `fit` (default) or document fixed physical style |
+| `--dpi` | Document-style PNG resolution, 72–1200; default 300 |
 | `--width` | PNG width, default 600 px; ignored for SVG |
 | `--gutter` | Space between cells, default 32 px; nonnegative |
 | `--padding` | Margin around content, default 24 px; nonnegative |
@@ -108,12 +115,22 @@ reaction feasibility, or balance the equation.
 | `--out` | Required single-mode `.png`/`.svg`; extension selects format |
 | `--batch` | Named reaction jobs file |
 | `--conditions` | Additional text; default empty |
+| `--above` | Repeated lines above the arrow |
+| `--below` | Repeated lines below the arrow |
+| `--caption` | Note under the scheme |
 | `--arrow` | `forward` (default), `equilibrium`, `resonance`, `retrosynthesis` |
+| `--style` | `fit` (default) or document fixed physical style |
+| `--dpi` | Document-style PNG resolution, 72–1200; default 300 |
 | `--width` | PNG width, default 1000 px; 16–4000 |
 | `--background` | `white` (default) or `transparent` |
 | `--out-dir` | Batch directory; needed for jobs without `out` |
 | `--format` | Batch `png` (default) or `svg` when jobs omit `out` |
 | `--help` | Print help and exit |
+
+For example: `pnpm -s chemdraft reaction --reactant 'CCO' --product 'CCO' --above 'Ti(OiPr)4 (5 mol%)' --above '(+)-DET (6 mol%)' --above 't-BuOOH' --below 'CH2Cl2' --below '−20 °C' --below '4 h' --caption 'Sharpless-style example' --out scheme.svg`.
+Use above for reagents and catalysts, below for solvent, temperature and time; formula subscripts are automatic. MCP `render_reaction` accepts `above` and `below` string arrays and a `caption` string.
+Captions are not formula-formatted; mechanism names such as SN2 are never subscripted.
+Reaction labels (CLI, batch and MCP) allow at most 6 above and 6 below entries, a non-empty caption of at most 300 characters, and 2000 characters combined across above, below, caption and legacy conditions.
 
 Retrosynthesis puts products (the target) on the left and reactants
 (precursors) on the right: target ⇒ precursors. Other kinds use reactants
@@ -128,7 +145,7 @@ Reaction batch shape:
 ]
 ```
 
-Each job may override `out`, `format`, `conditions`, `arrow`, `width`,
+Each job may override `out`, `format`, `conditions`, `above`, `below`, `caption`, `arrow`, `width`,
 `background`. An explicit `out` extension selects that job's format.
 Role arrays preserve dot-joined salts. Use one scheme per step for a
 multi-step synthesis, then place the verified steps in order in the document.

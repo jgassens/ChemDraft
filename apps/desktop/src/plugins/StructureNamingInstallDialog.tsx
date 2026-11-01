@@ -4,7 +4,7 @@ import type { PhaseInfo } from "./structureRecognitionInstallProgress";
 import type { StructureNamingInstallProgress } from "./structureNamingEngine";
 import type { DialogCoordinator } from "../dialogs/DialogCoordinator";
 import type { EngineInstallSnapshot } from "../dialogs/dialogProtocol";
-import { installSpaceStatement } from "../dialogs/engineInstallText";
+import { engineNetworkErrorMessage, installSpaceStatement } from "../dialogs/engineInstallText";
 import type { StructureNamingController, OpenStructureNamingInstall } from "./StructureNamingController";
 
 export const NAMING_ENGINE_DISCLOSURE = "Downloads about 100 MB and uses about 0.3 GB once installed. Runs only on this computer. Downloaded parts: Orthonym (MIT); the centres jar (BSD-2-Clause, with LGPL-2.1-or-later and GPL-2.0-with-Classpath-Exception parts).";
@@ -34,7 +34,8 @@ export function namingInstallSnapshot(controller: StructureNamingController, req
   const run = controller.getInstallRun();
   const progress = run?.progress ?? request.status.progress;
   const phase = NAMING_INSTALL_PROFILE.phases[progress?.phase === "done" ? "verifying" : progress?.phase ?? "checkingDisk"];
-  const state: EngineInstallSnapshot["state"] = run?.error ? { status: "failed", message: bounded(run.error.message, 1000) }
+  const state: EngineInstallSnapshot["state"] = run?.error ? { status: "failed", message: bounded(
+    run.error.code === "network" ? engineNetworkErrorMessage(run.error.message, "naming") : run.error.message, 1000) }
     : controller.getStatus()?.state === "installed" ? { status: "installed" }
     : request.installing ? { status: "installing", phase: phase.name, step: phase.step, steps: 5,
       bytesDone: diskBytes(progress?.bytesDone), bytesTotal: diskBytes(progress?.bytesTotal), estimated: progress?.estimated ?? false }

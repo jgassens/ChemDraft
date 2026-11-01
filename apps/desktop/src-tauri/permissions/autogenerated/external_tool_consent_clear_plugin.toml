@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-external-tool-consent-clear-plugin"
+description = "Enables the external_tool_consent_clear_plugin command without any pre-configured scope."
+commands.allow = ["external_tool_consent_clear_plugin"]
+
+[[permission]]
+identifier = "deny-external-tool-consent-clear-plugin"
+description = "Denies the external_tool_consent_clear_plugin command without any pre-configured scope."
+commands.deny = ["external_tool_consent_clear_plugin"]

@@ -3,6 +3,8 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { PluginDiagnosticsPanel } from "./PluginDiagnosticsPanel";
 import { PluginReportRenderer } from "./PluginReportRenderer";
+import { requestPluginPanelAction } from "./panelBridge";
+import type { PluginPanelActionHandler } from "./pluginPanelActionTypes";
 import type { OpenPluginPanel, PluginDiagnostic } from "./types";
 
 export interface PluginPanelSurfaceProps {
@@ -147,6 +149,17 @@ function OpenPanelView({
   onRunAgain: (commandId: string) => void;
 }) {
   const runCommandId = panel.commandId;
+  const onAction = async (request: Parameters<PluginPanelActionHandler>[0]) => {
+    try {
+      const result = await requestPluginPanelAction({ panelId: panel.panelId, ...request });
+      if (result.ok) return { ok: true } as const;
+      if (result.reason === "timeout") return { ok: false, message: "ChemDraft did not answer; try again." } as const;
+      if (result.reason === "unavailable") return { ok: false, message: "ChemDraft could not receive this action; try again." } as const;
+      return { ok: false, message: result.reason } as const;
+    } catch {
+      return { ok: false, message: "ChemDraft could not receive this action; try again." } as const;
+    }
+  };
   const panelRef = useRef<HTMLElement | null>(null);
   const headerRef = useRef<HTMLElement | null>(null);
   const [offset, setOffset] = useState<PanelOffset>({ x: 0, y: 0 });
@@ -263,7 +276,7 @@ function OpenPanelView({
               {expanded ? "Collapse" : "Expand"}
             </button>
           ) : null}
-          {runCommandId ? (
+          {runCommandId && !panel.report.sections.some((section) => section.kind === "prompt") ? (
             <button type="button" className="plugin-panel-run-again" onClick={() => onRunAgain(runCommandId)}>
               Run again
             </button>
@@ -278,7 +291,7 @@ function OpenPanelView({
           This result may be out of date — the structure changed since it was computed. Run again to refresh.
         </div>
       ) : null}
-      <PluginReportRenderer report={panel.report} />
+      <PluginReportRenderer report={panel.report} onAction={onAction} />
     </section>
   );
 }

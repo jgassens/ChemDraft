@@ -2,8 +2,8 @@
 
 `.github/workflows/windows-release.yml` builds ChemDraft's x64 NSIS installer on a GitHub-hosted
 Windows runner. SignPath Foundation can Authenticode-sign that CI artifact after the owner completes
-the account setup below. The existing [Windows VM release path](windows-updates.md#existing-windows-vm-path)
-remains available.
+the account setup below. This workflow is the only Windows release path; the
+[Windows VM path](windows-updates.md#windows-vm-path-retired) is retired for releases.
 
 There are two independent signatures, in this order:
 

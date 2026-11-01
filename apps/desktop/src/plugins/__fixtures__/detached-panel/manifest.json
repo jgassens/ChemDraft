@@ -1,0 +1,65 @@
+{
+  "id": "org.chemdraft.test.detached-panel",
+  "name": "Panel Test Plugin",
+  "version": "0.0.1",
+  "apiVersion": "^0.1.14",
+  "entry": "entry.js",
+  "permissions": [
+    "ui.canvas",
+    "ui.menu",
+    "plugin.storage",
+    "ui.panel"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "id": "plugin.paneltest.open",
+        "title": "Open"
+      },
+      {
+        "id": "plugin.paneltest.submit",
+        "title": "Submit"
+      }
+    ],
+    "menus": [
+      {
+        "id": "menu.paneltest.open",
+        "title": "Panel Test Plugin",
+        "commandId": "plugin.paneltest.open",
+        "location": "plugins"
+      }
+    ],
+    "panels": [
+      {
+        "id": "panel.paneltest.chat",
+        "title": "Panel Test Plugin",
+        "commandId": "plugin.paneltest.open",
+        "preferredWindowSize": {
+          "width": 440,
+          "height": 640
+        }
+      }
+    ],
+    "canvasOverlays": [
+      {
+        "id": "overlay.paneltest.chat",
+        "title": "Panel Test Plugin",
+        "icon": "data:image/png;base64,YQ==",
+        "commandId": "plugin.paneltest.submit",
+        "prompt": {
+          "kind": "prompt",
+          "id": "paneltest.message",
+          "commandId": "plugin.paneltest.submit"
+        }
+      }
+    ]
+  },
+  "chemdraftPackage": {
+    "sdk": "@chemdraft/plugin-api",
+    "sdkVersion": "0.1.14",
+    "sourceCommit": "test-fixture",
+    "sourceTree": "clean",
+    "licenseFile": "../../../../../../LICENSE",
+    "packagedAt": "2026-10-25T00:00:00Z"
+  }
+}

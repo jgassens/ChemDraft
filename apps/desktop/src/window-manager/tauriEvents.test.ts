@@ -1,8 +1,45 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import type { Event, EventCallback, UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { safeTauriListen, UNLISTEN_ATTEMPTS } from "./tauriEvents";
+import { listenCurrentWindowEvent, safeTauriListen, UNLISTEN_ATTEMPTS } from "./tauriEvents";
+
+vi.mock("@tauri-apps/api/webviewWindow", () => ({ getCurrentWebviewWindow: vi.fn() }));
+
+describe("current-window listener host boundary", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.resetAllMocks();
+  });
+
+  it.each([undefined, {}, { __TAURI__: {} }])("does not access a native window without Tauri internals (%j)", async (window) => {
+    vi.stubGlobal("window", window);
+    const handler = vi.fn();
+    const stop = await listenCurrentWindowEvent("chemdraft://flush-before-quit", handler);
+    expect(() => { stop(); stop(); }).not.toThrow();
+    expect(getCurrentWebviewWindow).not.toHaveBeenCalled();
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("attaches and cleans up the current window listener inside Tauri", async () => {
+    vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
+    const unlisten = vi.fn();
+    const listen = vi.fn(async (_name: string, handler: EventCallback<string>) => {
+      handler({ event: "test", id: 1, payload: "native" });
+      return unlisten;
+    });
+    vi.mocked(getCurrentWebviewWindow).mockReturnValue({ listen } as unknown as ReturnType<typeof getCurrentWebviewWindow>);
+    const handler = vi.fn();
+    const stop = await listenCurrentWindowEvent<string>("test", handler);
+    expect(listen).toHaveBeenCalledOnce();
+    expect(listen.mock.calls[0]?.[0]).toBe("test");
+    expect(handler).toHaveBeenCalledWith({ event: "test", id: 1, payload: "native" });
+    stop();
+    stop();
+    expect(unlisten).toHaveBeenCalledOnce();
+  });
+});
 
 /**
  * Tauri 2.11.2 as the page sees it: `listen()` resolves on the IPC reply, while the script that puts

@@ -2582,7 +2582,18 @@ describe("ChemDraft desktop shell", () => {
     // restoring each document tab normalizes it through the same funnel once more.
     // Modeless Page Size and arrangement spacing also commit into inactive tab histories
     // through this funnel; each must normalize the document it installs.
+    // Assistant pushes/amendments share prepareDocumentCommit with ordinary edits, so they
+    // record label bond sides while retaining one request entry, including in inactive tabs.
     expect(mainWindowSource.match(/normalizeCommittedDocument\(/g)).toHaveLength(10);
+    expect(mainWindowSource).toMatch(/const prepareDocumentCommit = useCallback\([\s\S]*?const present = normalizeCommittedDocument\(nextDocument\);/);
+    expect(mainWindowSource).toContain("const present = prepareDocumentCommit(nextDocument, undoLabel);");
+    const assistantHistorySource = mainWindowSource.slice(
+      mainWindowSource.indexOf("const assistantHistoryPort ="),
+      mainWindowSource.indexOf("const assistantTransactions =")
+    );
+    expect(assistantHistorySource).toContain("const present = prepareDocumentCommit(document, label);");
+    expect(assistantHistorySource).toContain("const present = labelled(after, label);");
+    expect(assistantHistorySource).toContain("present: labelled(after, label)");
     expect(mainWindowSource).not.toContain("reconcileNativeChargeMarks(");
     // A cancelled label edit, or one that ends on its starting text, puts back the record it
     // started with, not the drawing's side: at the keystroke that brings it back, at the close,
@@ -5161,7 +5172,8 @@ describe("ChemDraft desktop shell", () => {
     );
 
     expect(markup).toContain('data-object-type="text"');
-    expect(markup).toContain('baseline-shift="super"');
+    expect(markup).toContain('font-size="12.96px"');
+    expect(markup).not.toContain('baseline-shift="super"');
     expect(markup).toContain('fill="#b3261e"');
   });
 

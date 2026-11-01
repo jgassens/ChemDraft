@@ -11,6 +11,8 @@ import type { AnalysisResult, AnalysisRun } from "@chemdraft/analysis-core";
 
 // Real RDKit ETKDGv3 3D conformer engine (custom MinimalLib WASM — see vendor/BUILD.md).
 export * from "./conformer";
+export * from "./relayout2d";
+export * from "./depictionWorkerClient";
 
 // Real RDKit structure analysis: composition, masses, identifiers, and named descriptors, each behind
 // a method contract (PLANS.md §9 Release 1). Replaces the fixture-backed placeholder that shipped ten

@@ -1,7 +1,27 @@
 import { describe, expect, it } from "vitest";
 import { createEmptyDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { testMoleculeFromSmiles } from "@chemdraft/layout-engine/testing";
-import { createSmilesMolecule, insertSmilesMolecule, type PastedStructureDepiction } from "../src/index";
+import { applyMoleculeTargetBondLength, createSmilesMolecule, insertSmilesMolecule, type PastedStructureDepiction } from "../src/index";
+
+describe("molecule sizing uses the nominal length only for projections", () => {
+  it.each([undefined, "perspective"])("resizes a molecule with projection %s", projection => {
+    const document = createEmptyDocument();
+    const object = createSmilesMolecule(document, { x: 200, y: 200 }, {
+      atoms: [0, 1, 2].map(x => ({ element: "C", x, y: 0, charge: 0 })),
+      bonds: [{ from: 0, to: 1, order: "single", wedge: null }, { from: 1, to: 2, order: "single", wedge: null }]
+    }, "CCC", undefined, { bondLengthPx: 12 });
+    // Real measured bonds disagree with the nominal style. Imports must continue
+    // using their measured median; projections alone retain foreshortening.
+    object.style = { ...object.style, bondLengthPx: 24, ...(projection ? { projection } : {}) };
+    document.pages[0]!.objects = [object];
+    const resized = applyMoleculeTargetBondLength(document, [object.id], 36).pages[0]!.objects[0] as MoleculeObject;
+    const first = resized.atoms[0]!, second = resized.atoms[1]!;
+    expect(Math.hypot(first.x - second.x, first.y - second.y)).toBeCloseTo(projection ? 18 : 36, 9);
+    expect(resized.style.bondLengthPx).toBe(36);
+    expect(resized.style.projection).toBe(projection);
+    expect(object.style.bondLengthPx).toBe(24);
+  });
+});
 
 function depiction(smiles: string): PastedStructureDepiction {
   const graph = testMoleculeFromSmiles(smiles);

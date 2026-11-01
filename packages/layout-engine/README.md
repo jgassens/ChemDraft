@@ -90,6 +90,16 @@ type-4 bond does not), and `porphyrinoid` / `fusedPyrroleLadder` builders.
 
 Layout must not change chemical identity.
 
+`DocumentStylePreset` and `DocumentTextStyle` are native style data in `@chemdraft/chem-core`.
+`DocumentStyleScale` and point conversion stay here in `src/documentStyle.ts`. Native coordinates
+use 22 units per bond; the physical scale is 14.4/22 pt per unit. Canvas plans and exporters use those same dimensions,
+including the explicit bold/wedge width; export-engine wraps cropped SVG content in one scale
+transform and writes its root dimensions and viewBox in points. CLI fitting remains the default. Labels and text use the Arial, Helvetica, sans-serif font stack.
+`scalePageGeometry` scales every object frame, atom, arrow endpoint/control point, graphic geometry,
+text position and explicit text size, and page dimensions together. Molecule colours, appearance
+toggles remain unchanged; pixel-valued molecule styles, per-atom/per-bond maps and visual-effect
+dimensions scale with the page.
+
 ## Selection arrangement
 
 `planObjectArrangement` plans translation-only Circle, Oval, Grid, Row and Column layouts.

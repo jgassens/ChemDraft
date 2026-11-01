@@ -14,6 +14,7 @@ pub(crate) struct FileOps<'a> {
     prefix: &'static str,
     cancel: Option<&'a AtomicBool>,
     running: Option<&'a RunningChild>,
+    failed: fn(io::Error) -> InstallError,
 }
 
 #[derive(Debug)]
@@ -52,14 +53,36 @@ impl<'a> FileOps<'a> {
             prefix: "[chemdraft test]",
             cancel: None,
             running: None,
+            failed: shared_failed,
         }
     }
 
     pub(crate) fn new<S: EngineSpec>(cancel: Option<&'a AtomicBool>) -> Self {
         Self {
-            prefix: S::LOG_PREFIX,
+            failed: failed::<S>,
+            ..Self::with_prefix(S::LOG_PREFIX, cancel)
+        }
+    }
+
+    pub(crate) fn with_prefix(prefix: &'static str, cancel: Option<&'a AtomicBool>) -> Self {
+        Self {
+            prefix,
             cancel,
             running: None,
+            failed: shared_failed,
+        }
+    }
+
+    pub(crate) fn failed(&self, error: io::Error) -> InstallError {
+        (self.failed)(error)
+    }
+
+    pub(crate) fn with_cancel<'b>(&'b self, cancel: &'b AtomicBool) -> FileOps<'b> {
+        FileOps {
+            prefix: self.prefix,
+            cancel: Some(cancel),
+            running: self.running,
+            failed: self.failed,
         }
     }
 
@@ -248,6 +271,14 @@ impl<'a> FileOps<'a> {
     }
 }
 
+fn shared_failed(error: io::Error) -> InstallError {
+    if error.get_ref().is_some_and(|error| error.is::<Cancelled>()) {
+        super::download::cancelled()
+    } else {
+        InstallError::failed(format!("Installation file operation failed: {error}"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,6 +287,7 @@ mod tests {
             prefix: "[test engine]",
             cancel,
             running: None,
+            failed: shared_failed,
         }
     }
     #[cfg(windows)]

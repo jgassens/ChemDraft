@@ -1,0 +1,10 @@
+// Deploys site/ to chemdraft.ai via npx wrangler@4 deploy --config cloudflare/wrangler.jsonc
+{
+  "name": "chemdraft-website",
+  "compatibility_date": "2026-10-01",
+  "assets": { "directory": "../site", "not_found_handling": "404-page" },
+  "routes": [
+    { "pattern": "chemdraft.ai", "custom_domain": true },
+    { "pattern": "www.chemdraft.ai", "custom_domain": true }
+  ]
+}
