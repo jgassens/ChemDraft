@@ -90,8 +90,8 @@ describe.each(["windows", "macos"] as const)("hover label target changes (%s sho
     });
   }
 
-  async function hoverAtom(index: number) {
-    const atom = molecule().atoms[index]!;
+  async function hoverAtom(index: number, objectIndex = 0) {
+    const atom = molecule(objectIndex).atoms[index]!;
     await hoverPoint(atom);
     expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "atom", atomId: atom.id });
   }
@@ -107,10 +107,186 @@ describe.each(["windows", "macos"] as const)("hover label target changes (%s sho
   }
 
   async function press(key: string, target: EventTarget = document.activeElement ?? document.body) {
+    const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
     await act(async () => {
-      target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+      target.dispatchEvent(event);
     });
+    // jsdom has no text-editing default; apply it only when the editor allowed the key.
+    if (!event.defaultPrevented && target instanceof HTMLInputElement && key.length === 1) {
+      const start = target.selectionStart ?? target.value.length;
+      const end = target.selectionEnd ?? start;
+      const value = target.value.slice(0, start) + key + target.value.slice(end);
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(target, value);
+        target.dispatchEvent(new Event("input", { bubbles: true }));
+        target.setSelectionRange(start + key.length, start + key.length);
+      });
+    }
   }
+
+  async function typeLabel(label: string) {
+    for (const key of label) await press(key);
+    expect(editor()?.value).toBe(label);
+    expect(document.activeElement).toBe(editor());
+  }
+
+  async function addEthanes(count = 1) {
+    let current = snapshot().document;
+    for (let index = 1; index <= count; index++) {
+      current = insertNativeSingleBondMolecule(current, { x: 300 + index * 150, y: 300 });
+    }
+    await remountDocument(current);
+  }
+
+  it.each(["M", "e"])("keeps OMe on the first atom after drifting to its neighbour before %s", async driftBefore => {
+    const before = molecule();
+    await hoverAtom(0);
+    await press("O");
+    if (driftBefore === "M") await hoverAtom(1);
+    await press("M");
+    expect(editor()?.value).toBe("OM");
+    if (driftBefore === "e") await hoverAtom(1);
+    await press("e");
+    expect(editor()?.value).toBe("OMe");
+    expect(snapshot().activeToolCommandId).toBe("tool.bond");
+    await press("Enter");
+    expect(molecule().atoms).toEqual([{ ...before.atoms[0], element: "OMe", labelLiteral: true }, before.atoms[1]]);
+    expect(molecule().bonds).toEqual(before.bonds);
+    expect(snapshot().activeToolCommandId).toBe("tool.bond");
+    expect(editor()).toBeNull();
+  });
+
+  it("commits OMe before routing N to the neighbouring atom in the same molecule", async () => {
+    const before = molecule();
+    await hoverAtom(0);
+    await typeLabel("OMe");
+    await hoverAtom(1);
+    await press("N");
+    const after = molecule();
+    expect(after.atoms).toEqual([
+      { ...before.atoms[0], element: "OMe", labelLiteral: true },
+      { ...before.atoms[1], element: "N" }
+    ]);
+    expect(after.bonds).toEqual(before.bonds);
+    expect(snapshot().activeToolCommandId).toBe("tool.bond");
+    expect(editor()).toBeNull();
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.undo"); });
+    expect(molecule().atoms).toEqual([after.atoms[0], before.atoms[1]]);
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.undo"); });
+    expect(molecule()).toEqual(before);
+  });
+
+  describe.each(["isComposing", "ctrlKey", "metaKey", "altKey"] as const)("hover handoff guard %s", guard => {
+    it.each(["N", "5"])("leaves the editor open for %s over a neighbouring atom", async key => {
+      await hoverAtom(0);
+      await typeLabel("OMe");
+      await hoverAtom(1);
+      const before = snapshot().document;
+      const input = editor()!;
+      const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, [guard]: true });
+      // Dispatch only the key: composition/text defaults belong to the input and browser.
+      await act(async () => { input.dispatchEvent(event); });
+      expect(event.defaultPrevented).toBe(false);
+      expect(editor()).toBe(input);
+      expect(input.value).toBe("OMe");
+      expect(document.activeElement).toBe(input);
+      expect(snapshot().document).toEqual(before);
+      expect(snapshot().activeToolCommandId).toBe("tool.bond");
+      // The same target still accepts a plain element key once the guard is gone.
+      await press("N");
+      expect(editor()).toBeNull();
+      expect(molecule().atoms.map(atom => atom.element)).toEqual(["OMe", "N"]);
+    });
+  });
+
+  it.each([["OMe", "N", "N"], ["CF3", "o", "O"]])(
+    "commits hover %s before routing %s to another ethane as %s",
+    async (label, key, element) => {
+      await addEthanes();
+      const before = molecule();
+      const other = molecule(1);
+      await hoverAtom(0);
+      await typeLabel(label);
+      await hoverAtom(0, 1);
+      await press(key);
+      expect(molecule().atoms).toEqual([{ ...before.atoms[0], element: label, labelLiteral: true }, before.atoms[1]]);
+      expect(molecule().bonds).toEqual(before.bonds);
+      expect(molecule(1).atoms).toEqual([{ ...other.atoms[0], element }, other.atoms[1]]);
+      expect(molecule(1).bonds).toEqual(other.bonds);
+      expect(editor()).toBeNull();
+      // Each action owns one undo entry, and the handoff key runs only once.
+      await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.undo"); });
+      expect(molecule().atoms[0]!.element).toBe(label);
+      expect(molecule(1)).toEqual(other);
+      await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.undo"); });
+      expect(molecule()).toEqual(before);
+    }
+  );
+
+  it("commits OMe before dispatching digit 5 on another ethane just as without a pending label", async () => {
+    await addEthanes();
+    await hoverAtom(0);
+    await typeLabel("OMe");
+    await hoverAtom(0, 1);
+    await press("5");
+    expect(editor()).toBeNull();
+    expect(molecule().atoms[0]).toMatchObject({ element: "OMe", labelLiteral: true });
+    const after = molecule(1);
+    const labelled = molecule();
+    const activeTool = snapshot().activeToolCommandId;
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.undo"); });
+    expect(molecule()).toEqual(labelled);
+    const beforeDigit = snapshot().document;
+    await remountDocument(beforeDigit);
+    await hoverAtom(0, 1);
+    await press("5");
+    expect(molecule(1)).toEqual(after);
+    expect(snapshot().activeToolCommandId).toBe(activeTool);
+    expect(editor()).toBeNull();
+  });
+
+  it("keeps OMe, CF3 and NO2 separate when typed over three ethanes", async () => {
+    await addEthanes(2);
+    for (const [index, label] of ["OMe", "CF3", "NO2"].entries()) {
+      await hoverAtom(0, index);
+      await typeLabel(label);
+    }
+    await press("Enter");
+    expect([0, 1, 2].map(index => molecule(index).atoms[0]!.element)).toEqual(["OMe", "CF3", "NO2"]);
+    expect(editor()).toBeNull();
+  });
+
+  it.each(["empty canvas", "own bond", "another bond"])("continues a multi-letter hover label over %s", async target => {
+    await addEthanes();
+    const other = molecule(1);
+    await hoverAtom(0);
+    await typeLabel("OM");
+    if (target === "empty canvas") await hoverPoint({ x: 650, y: 450 });
+    else await hoverBond(target === "own bond" ? 0 : 1);
+    await press("e");
+    expect(editor()?.value).toBe("OMe");
+    await press("Enter");
+    expect(molecule().atoms[0]).toMatchObject({ element: "OMe", labelLiteral: true });
+    expect(molecule(1)).toEqual(other);
+  });
+
+  it("keeps typing in an explicitly opened label editor over another atom", async () => {
+    await addEthanes();
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("tool.atom"); });
+    const atom = molecule().atoms[0]!;
+    await act(async () => {
+      const event = new MouseEvent("pointerdown", { bubbles: true, button: 0, buttons: 1, clientX: atom.x, clientY: atom.y });
+      Object.defineProperties(event, { pointerId: { value: 7 }, pointerType: { value: "mouse" }, isPrimary: { value: true } });
+      container.querySelector(`[data-object-id="${molecule().id}"]`)!.dispatchEvent(event);
+    });
+    expect(editor()).not.toBeNull();
+    await typeLabel("OMe");
+    const other = molecule(1);
+    await hoverAtom(0, 1);
+    await press("N");
+    expect(editor()?.value).toBe("OMeN");
+    expect(molecule(1)).toEqual(other);
+  });
 
   async function hoverRelabel() {
     await hoverAtom(0);

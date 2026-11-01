@@ -1649,7 +1649,7 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-const CURRENT_BUILD_STAMP = "11.01.08.58-codex";
+const CURRENT_BUILD_STAMP = "11.01.10.15-codex";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -12803,6 +12803,37 @@ export function MainWindow({
   }, [releaseGesturePointer]);
 
   useEffect(() => {
+    const handOffHoverLabelKey = (event: KeyboardEvent) => {
+      const edit = activeAtomLabelEditRef.current;
+      const target = hoveredNativeDeleteTargetRef.current;
+      const canvas = canvasRegionRef.current;
+      if (!edit?.startedFromHover || !canvas || target?.kind !== "atom" ||
+          (target.objectId === edit.objectId && target.atomId === edit.atomId) ||
+          !(event.target instanceof HTMLInputElement) || !event.target.matches('[data-atom-label-editor="true"]') ||
+          event.defaultPrevented || event.isComposing || event.keyCode === 229 ||
+          event.metaKey || event.ctrlKey || event.altKey ||
+          (nativeElementFromKeyboardKey(event.key) === undefined && !/^[0-9]$/.test(event.key)) ||
+          isBlockedByModalDialog(event.target)) {
+        return;
+      }
+      // Only element keys (either case) and digits act on a different hovered atom, matching
+      // hoverLabelContinuesForKey. Other letters keep typing here ("M" and "e" in OMe).
+      // Capture before the input stops propagation. Finish exactly as Enter does, including its
+      // history/selection layout effect, before the new action gets its own undo entry. Prevent the
+      // input's text default and deliver this key once through the ordinary canvas shortcut path.
+      event.preventDefault();
+      event.stopPropagation();
+      flushSync(() => finishAtomLabelEdit(edit, "commit"));
+      canvas.dispatchEvent(new KeyboardEvent("keydown", {
+        key: event.key, code: event.code, shiftKey: event.shiftKey, repeat: event.repeat,
+        location: event.location, bubbles: true, cancelable: true
+      }));
+    };
+    window.addEventListener("keydown", handOffHoverLabelKey, true);
+    return () => window.removeEventListener("keydown", handOffHoverLabelKey, true);
+  }, [finishAtomLabelEdit]);
+
+  useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       // WebKit reports the typed character during IME composition; WebView2 uses Process/229.
       // Neither is a canvas shortcut or hover-label continuation until composition commits.
@@ -12990,12 +13021,11 @@ export function MainWindow({
       if (!event.metaKey && !event.ctrlKey && !event.altKey) {
         const assignment = hoverLabelAssignmentRef.current;
         let labelContinues = false;
-        // A label key belongs to an atom. Mid-label, a key that continues the label goes to the atom
-        // being labelled wherever the pointer has drifted (its bond, a neighbour, empty canvas); with
-        // the pointer resting on a bond (easy on a zigzag chain, whose bond zones crowd the atoms),
-        // an element key labels the bond's end nearer the pointer. Hovering that atom first keeps
-        // every key on the atom path, so no letter falls through to a tool shortcut mid-label
-        // ("e" = Eraser).
+        // Over a different atom, element keys (either case) and digits act on that atom; other
+        // letters continue the original label ("M" and "e" in OMe), even after pointer drift.
+        // Other continuations follow hoverLabelContinuesForKey. Over a bond, an element key that
+        // doesn't continue labels its nearer end. Retarget continuing letters to the labelled
+        // atom so they never fall through to a tool shortcut ("e" = Eraser).
         if (keybindingSchemeRef.current === "chemdraft") {
           // A key that doesn't continue the label ends it: re-derive the hover from the pointer first.
           const current = hoveredNativeDeleteTargetRef.current;
@@ -13006,9 +13036,9 @@ export function MainWindow({
             hoverRetargetedForLabelRef.current = false;
             rederiveNativeCanvasHoverRef.current?.(documentRef.current);
           }
-          // Decided once, against what the pointer is over. Re-deciding after the hover moves onto the
-          // labelled atom would read an element letter typed after a drift (C, drift, F) as a
-          // new label on that atom, and CF3 would silently become F3.
+          // Decide against the pointer's current target before retargeting: element keys (either
+          // case) and digits act on a different atom; non-element letters continue the label there.
+          // Preserve that decision when the hover moves to the atom being labelled.
           labelContinues = assignment !== undefined &&
             hoverLabelContinuesForKey(documentRef.current, hoveredNativeDeleteTargetRef.current, assignment, event.key);
           const labelAtom = hoverLabelAtomTargetForKey(
@@ -23069,11 +23099,11 @@ export function hoverLabelContinuesForKey(
 
 /**
  * The atom a label key belongs to (ChemDraft scheme), or undefined to leave the hover as it is.
- * Mid-label, a key that continues the label (`hoverLabelContinuesForKey`) goes to the atom being
- * labelled, so an open "CF3" editor keeps its 3 and a drift onto a neighbour never sends
- * "e" to the Eraser. Otherwise, over a hovered BOND, an element key, which would label an atom if
- * one were hovered, labels the bond's end nearer the pointer. Digits keep their bond-order meaning
- * and other letters keep their tool shortcuts, as they do over an atom.
+ * Over a different hovered atom, element keys (either case) and digits act on that atom; other
+ * letters continue the original label, keeping "M" and "e" in OMe out of tool shortcuts.
+ * Other continuations follow `hoverLabelContinuesForKey`. Over a hovered bond, an element key
+ * that doesn't continue labels the nearer end. Digits keep their bond-order meaning there;
+ * letters that don't continue or label an atom keep their tool shortcuts.
  */
 export function hoverLabelAtomTargetForKey(
   document: ChemDraftDocument,
