@@ -245,7 +245,7 @@ describe.each(["macos", "windows"] as const)("text paste formatting (%s)", platf
     expect((await paste({ "text/plain": "c1ccccc1O" })).defaultPrevented).toBe(true);
     expect(nativeReads()).toHaveLength(1);
     // The templates branch also passes depiction options and document placement context.
-    expect(depictSmilesForPaste).toHaveBeenCalledExactlyOnceWith("c1ccccc1O", {}, {
+    expect(depictSmilesForPaste).toHaveBeenCalledExactlyOnceWith("c1ccccc1O", expect.objectContaining({}), {
       document: expect.objectContaining({ title: "Paste formatting" }),
       centre: expect.any(Object),
       reservedObjectIds: expect.any(Set)

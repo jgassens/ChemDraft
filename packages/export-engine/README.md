@@ -7,6 +7,12 @@ Format-specific work should go through the correct adapters and compatibility pa
 PDF export uses jsPDF 4.2.1 and svg2pdf.js 2.7.0 over the same SVG geometry as the
 canvas. The app, CLI and MCP use `exportDocumentToPdf` from this package.
 
+Embedded picture frames retain their physical size at 72/96 points per page unit in physical SVG
+and PDF output, including document-style SVG and resized physical output pages. Their centres follow
+the surrounding layout. Explicit SVG pixel dimensions (without `outputUnit`) scale pictures with
+the whole page for raster sampling and previews. Document-style SVG crops expand when needed to
+include the physical picture frame.
+
 Filled-ring label halos use the shared SVG composite paint (paper plus clipped ring fills).
 PDF converts that paint to a tiling pattern and applies it through a glyph soft mask, preserving
 gradients and opacity without a white outline. These documents use PDF 1.4 transparency; unfilled
