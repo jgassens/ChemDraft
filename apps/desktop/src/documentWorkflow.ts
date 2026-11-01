@@ -20271,10 +20271,19 @@ function nativeBondOrderRefusalReason(
   const breaks = (atom: MoleculeAtom): boolean => {
     // A dismissed badge must not license the edit: judge the bare arithmetic.
     const { warningSuppressed: _nextSuppressed, ...nextBare } = nextAtomById.get(atom.id)!;
-    const nextInvalid = !nativeAtomValidationState(nextBare, nextBonds, nextBare.formalCharge, nextAtoms, afterResolution).valid;
+    const nextState = nativeAtomValidationState(nextBare, nextBonds, nextBare.formalCharge, nextAtoms, afterResolution);
+    const nextInvalid = !nextState.valid;
     const priorAtom = baseline.atoms.find((candidate) => candidate.id === atom.id);
     // An atom the tool just created has no earlier state: it is judged only as it ends up.
     if (!priorAtom) return nextInvalid;
+    // The baseline excuses a problem the atom already had, never a result past its valence: a
+    // hypovalent literal atom (three bonds on a typed "C") is flagged before the addition, yet
+    // a double bond from it would still make a pentavalent carbon.
+    const nextElement = nativeElementFromAtomLabel(nextBare.element);
+    if (baseline !== molecule && nextInvalid && nextElement &&
+      !nativeAtomChargeSupportsValence(nextElement, nextState.valenceUsed, nextBare.formalCharge)) {
+      return true;
+    }
     const { warningSuppressed: _warningSuppressed, ...bare } = priorAtom;
     // The proposed graph has already invalidated import-time hints. Judging it against the old
     // H count would refuse ordinary edits such as converting imported ethane to ethene.

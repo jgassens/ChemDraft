@@ -1,3 +1,4 @@
+import { nativeAtomValidationState } from "@chemdraft/document-workflow-core";
 import { describe, expect, it } from "vitest";
 import {
   applyFreeformSingleBondToolAtPoint, applyNativeMoleculeBondOrderValueTarget, applySingleBondToolAtPoint,
@@ -17,6 +18,32 @@ function branchedSeed() {
     });
   }
   return { document, objectId: first.id, centerId: center.id };
+}
+
+/** A bond whose second atom (a typed, literal carbon) takes `extra` more single substituents. */
+function literalCenterSeed(extra: number) {
+  let document = applySingleBondToolAtPoint(createPhase4Document("Literal"), { x: 300, y: 300 });
+  const first = getSelectedMolecule(document)!;
+  const center = first.atoms[1];
+  for (const degrees of [-60, 60].slice(0, extra)) {
+    const radians = degrees * Math.PI / 180;
+    document = applyFreeformSingleBondToolAtPoint(document, first.id, center.id, {
+      x: center.x + Math.cos(radians) * 40, y: center.y + Math.sin(radians) * 40
+    });
+  }
+  return {
+    document: {
+      ...document,
+      pages: document.pages.map(page => ({
+        ...page,
+        objects: page.objects.map(object => object.id === first.id && object.type === "molecule"
+          ? { ...object, atoms: object.atoms.map(atom => atom.id === center.id ? { ...atom, labelLiteral: true as const } : atom) }
+          : object)
+      }))
+    },
+    objectId: first.id,
+    centerId: center.id
+  };
 }
 
 describe.each(["double", "triple"] as const)("%s bond drawing", order => {
@@ -114,5 +141,37 @@ describe("multiple bond tool refusals", () => {
     const dashedTarget = { objectId: dative.id, kind: "bond" as const, bondId: dative.bonds[0].id };
     expect(applyNativeMoleculeBondOrderValueTarget(dashed, dashedTarget, "double")).toBe(dashed);
     expect(nativeBondOrderTargetRefusal(dashed, dashedTarget, "double")).toMatch(/dashed \(dative\) bond stays single/);
+  });
+
+  it("refuses a multiple bond that would exceed valence at a hypovalent literal atom, leaving the document alone", () => {
+    // A typed C with three single bonds is already flagged (3 of 4), but a double bond would make it five.
+    const { document, objectId, centerId } = literalCenterSeed(2);
+    const molecule = getSelectedMolecule(document)!;
+    const center = molecule.atoms.find(atom => atom.id === centerId)!;
+    expect(molecule.bonds).toHaveLength(3);
+    expect(nativeAtomValidationState(center, molecule.bonds, 0, molecule.atoms).valid).toBe(false);
+    for (const bondOrder of ["double", "triple"] as const) {
+      const reasons: string[] = [];
+      const next = applyFreeformSingleBondToolAtPoint(document, objectId, centerId, { x: center.x - 40, y: center.y + 5 }, {
+        bondOrder, onRefusal: reason => reasons.push(reason)
+      });
+      expect(next).toBe(document);
+      expect(reasons).toEqual([expect.stringMatching(/valence/)]);
+    }
+  });
+
+  it("still lets a hypovalent literal atom take a double bond that fills its valence", () => {
+    const { document, objectId, centerId } = literalCenterSeed(1);
+    const center = getSelectedMolecule(document)!.atoms.find(atom => atom.id === centerId)!;
+    const reasons: string[] = [];
+    const next = applyFreeformSingleBondToolAtPoint(document, objectId, centerId, { x: center.x - 40, y: center.y + 5 }, {
+      bondOrder: "double", onRefusal: reason => reasons.push(reason)
+    });
+    const after = getSelectedMolecule(next)!;
+    const afterCenter = after.atoms.find(atom => atom.id === centerId)!;
+    expect(reasons).toEqual([]);
+    expect(after.bonds).toHaveLength(3);
+    expect(after.bonds[2].order).toBe("double");
+    expect(nativeAtomValidationState(afterCenter, after.bonds, 0, after.atoms)).toMatchObject({ valid: true, valenceUsed: 4 });
   });
 });
