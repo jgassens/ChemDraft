@@ -36,6 +36,10 @@ export interface ClipboardSkippedItem {
   /** Chemistry recognized in a generic text flavor before its bytes were skipped. */
   chemistry?: boolean;
   limitBytes: number;
+  /** Missing on older native payloads, which used the per-flavor message. */
+  reason?: "flavor" | "total";
+  /** Attempted retained total including this flavor, for a total refusal. */
+  totalByteLength?: number;
 }
 
 export interface ClipboardReadPayload {
@@ -183,6 +187,9 @@ function clipboardFlavorName(type: string): string {
 }
 
 export function clipboardSizeRefusalMessage(item: ClipboardSkippedItem): string {
+  if (item.reason === "total") {
+    return `Couldn't paste: the clipboard contents are too large (${((item.totalByteLength ?? item.byteLength) / (1024 * 1024)).toFixed(1)} MB in total; the limit is ${item.limitBytes / (1024 * 1024)} MB).`;
+  }
   return `Couldn't paste: clipboard flavor "${clipboardFlavorName(item.type)}" is too large (${(item.byteLength / (1024 * 1024)).toFixed(1)} MB; the limit is ${item.limitBytes / (1024 * 1024)} MB).`;
 }
 
@@ -193,8 +200,8 @@ export function guardClipboardPayload(payload: ClipboardReadPayload): ClipboardR
   const admit = (type: string, byteLength: number, limitBytes: number): boolean => {
     if (byteLength > limitBytes || byteLength > MAX_CLIPBOARD_BYTES - total) {
       skippedItems.push(byteLength > limitBytes
-        ? { type, byteLength, limitBytes }
-        : { type, byteLength, limitBytes: MAX_CLIPBOARD_BYTES });
+        ? { type, byteLength, limitBytes, reason: "flavor" }
+        : { type, byteLength, limitBytes: MAX_CLIPBOARD_BYTES, reason: "total", totalByteLength: total + byteLength });
       return false;
     }
     total += byteLength;

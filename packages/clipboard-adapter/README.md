@@ -28,8 +28,10 @@ never fetched. Admission follows chemistry, pictures, then prose; the returned t
 shared total. A flavor exceeding the remaining total is skipped with a warning, allowing smaller
 alternatives. A size-skipped chemistry flavor always refuses the paste, including private selections
 and chemistry recognized in generic text; it cannot fall back to a picture or prose. Native
-`skippedItems` metadata carries that flavor's own byte size and limit; `size-refused` names it with
-the same message on native and DOM paste. Copy retains main's 64 MiB UTF-8/binary input cap. Its separate paste accounting charges retained
+`skippedItems` metadata carries that flavor's own byte size, limit, and refusal reason. Total-budget
+refusals also carry the attempted total including that flavor. `size-refused` reports the flavor's
+size for its own cap or the attempted total for the paste cap, with identical native and DOM text.
+Copy retains main's 64 MiB UTF-8/binary input cap. Its separate paste accounting charges retained
 UTF-8 exactly once (including Windows CRLF); native allocation preflights and aliases add no retained
 charge. Optional representations exceeding their own cap or copy total are dropped with named warnings.
 Admitted text aliases are compared before decoding or charging, so duplicate chemistry cannot refuse paste. Hosts parsing

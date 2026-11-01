@@ -126,17 +126,21 @@ describe.each(["macos", "windows"] as const)("text paste formatting (%s)", platf
 
   const tooLargeMessage = "Couldn't paste: clipboard flavor \"text/plain\" is too large (1500.0 MB; the limit is 1024 MB).";
 
-  it("shows the native size refusal on menu and DOM paste without inserting content", async () => {
+  it.each([
+    { reason: "flavor" as const, byteLength: 1500 * 1024 * 1024, totalByteLength: undefined, message: tooLargeMessage },
+    { reason: "total" as const, byteLength: 1.25 * 1024 * 1024, totalByteLength: 1024.25 * 1024 * 1024,
+      message: "Couldn't paste: the clipboard contents are too large (1024.3 MB in total; the limit is 1024 MB)." }
+  ])("shows the $reason refusal as status when the only usable flavor is refused", async ({ reason, byteLength, totalByteLength, message }) => {
     await mount({ types: ["text/plain"], textItems: [], skippedItems: [
-      { type: "text/plain", byteLength: 1500 * 1024 * 1024, limitBytes: 1024 * 1024 * 1024 }
+      { type: "text/plain", byteLength, limitBytes: 1024 * 1024 * 1024, reason, totalByteLength }
     ] });
     await act(async () => {
       window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "clipboard.paste" } }));
     });
-    expect(status()).toBe(tooLargeMessage);
+    expect(status()).toBe(message);
     expect(objects()).toHaveLength(0);
     await paste({ "text/plain": "" });
-    expect(status()).toBe(tooLargeMessage);
+    expect(status()).toBe(message);
     expect(objects()).toHaveLength(0);
   });
 

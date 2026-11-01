@@ -298,10 +298,22 @@ describe("clipboard byte limits", () => {
       .toMatchObject({ kind: "size-refused", message });
   });
 
-  it("rounds a skipped flavor's own size identically to native messages", () => {
+  it("rounds a skipped flavor's attempted total identically to native messages", () => {
     expect(inspectClipboardPayload({ types: [], textItems: [], skippedItems: [
-      { type: "text/rtf", byteLength: 1.25 * mb, limitBytes: MAX_CLIPBOARD_BYTES }
-    ] })).toMatchObject({ kind: "size-refused", message: 'Couldn\'t paste: clipboard flavor "text/rtf" is too large (1.3 MB; the limit is 1024 MB).' });
+      { type: "text/rtf", byteLength: 1.25 * mb, limitBytes: MAX_CLIPBOARD_BYTES, reason: "total", totalByteLength: 1024.25 * mb }
+    ] })).toMatchObject({ kind: "size-refused", message: "Couldn't paste: the clipboard contents are too large (1024.3 MB in total; the limit is 1024 MB)." });
+  });
+
+  it("records DOM total overflow with the same reason, total and message as native metadata", () => {
+    const bounded = guardClipboardPayload({ types: ["text/plain", "text/rtf"], textItems: [
+      { type: "text/plain", text: { length: 1023 * mb } as unknown as string },
+      { type: "text/rtf", text: { length: 1.25 * mb } as unknown as string }
+    ] });
+    expect(bounded.skippedItems).toEqual([{ type: "text/rtf", byteLength: 1.25 * mb,
+      limitBytes: MAX_CLIPBOARD_BYTES, reason: "total", totalByteLength: 1024.25 * mb }]);
+    // No usable representation remains after native decoding fails or a DOM flavor is discarded.
+    expect(inspectClipboardPayload({ types: [], textItems: [], skippedItems: bounded.skippedItems }))
+      .toMatchObject({ kind: "size-refused", message: "Couldn't paste: the clipboard contents are too large (1024.3 MB in total; the limit is 1024 MB)." });
   });
 
   it("rejects huge text before normalization, encoding, or inspecting its contents", () => {
@@ -318,7 +330,7 @@ describe("clipboard byte limits", () => {
       textItems: [item, { type: "other", text: "b" }] });
     expect(bounded.textItems).toEqual([item]);
     expect(bounded.textItems[0]).toBe(item);
-    expect(bounded.skippedItems).toEqual([{ type: "other", byteLength: 1, limitBytes: MAX_CLIPBOARD_BYTES }]);
+    expect(bounded.skippedItems).toEqual([{ type: "other", byteLength: 1, limitBytes: MAX_CLIPBOARD_BYTES, reason: "total", totalByteLength: MAX_CLIPBOARD_BYTES + 1 }]);
   });
 
   it.each([["é", 2], ["€", 3], ["😀", 4]] as const)(
@@ -355,7 +367,7 @@ describe("clipboard byte limits", () => {
     const bounded = guardClipboardPayload({ types: ["text/plain", "image/png"],
       textItems: [{ type: "text/plain", text: { length: 16 * mb } as unknown as string }], imageItems: Array(43).fill(image) });
     expect(bounded.imageItems).toHaveLength(42); // Retained text + two 24 MiB images fills the envelope.
-    expect(bounded.skippedItems).toEqual([{ type: "image/png", byteLength: 24 * mb, limitBytes: MAX_CLIPBOARD_BYTES }]);
+    expect(bounded.skippedItems).toEqual([{ type: "image/png", byteLength: 24 * mb, limitBytes: MAX_CLIPBOARD_BYTES, reason: "total", totalByteLength: 1032 * mb }]);
   });
 
   it("caps SVG source in text before encoding it as a picture", () => {

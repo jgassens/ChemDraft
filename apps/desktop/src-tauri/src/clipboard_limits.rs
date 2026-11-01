@@ -23,15 +23,33 @@ fn clipboard_flavor_name(kind: &str) -> &str {
 
 #[derive(Clone, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) enum ClipboardSkipReason {
+    Flavor,
+    Total,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct SkippedClipboardItem {
     pub(crate) r#type: String,
     pub(crate) byte_length: usize,
     pub(crate) limit_bytes: usize,
     pub(crate) chemistry: bool,
+    pub(crate) reason: ClipboardSkipReason,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) total_byte_length: Option<usize>,
 }
 
 impl SkippedClipboardItem {
     fn message(&self) -> String {
+        if let ClipboardSkipReason::Total = self.reason {
+            return format!(
+                "Couldn't paste: the clipboard contents are too large ({:.1} MB in total; the limit is {} MB).",
+                (self.total_byte_length.expect("total refusal records attempted total") as f64 * 10.0
+                    / (1024.0 * 1024.0)).round() / 10.0,
+                self.limit_bytes / (1024 * 1024)
+            );
+        }
         format!(
             "Couldn't paste: clipboard flavor \"{}\" is too large ({:.1} MB; the limit is {} MB).",
             clipboard_flavor_name(&self.r#type),
@@ -102,6 +120,8 @@ impl ClipboardReadBudget {
             byte_length,
             limit_bytes,
             chemistry: false,
+            reason: ClipboardSkipReason::Flavor,
+            total_byte_length: None,
         };
         let message = item.message();
         self.skipped_items.push(item);
@@ -121,18 +141,20 @@ impl ClipboardReadBudget {
         };
         let total = self.copied_bytes.saturating_add(byte_length);
         let refusal = if byte_length > flavor_limit {
-            Some((byte_length, flavor_limit))
+            Some((flavor_limit, ClipboardSkipReason::Flavor, None))
         } else if include_total && total > MAX_CLIPBOARD_BYTES {
-            Some((byte_length, MAX_CLIPBOARD_BYTES))
+            Some((MAX_CLIPBOARD_BYTES, ClipboardSkipReason::Total, Some(total)))
         } else {
             None
         };
-        if let Some((byte_length, limit_bytes)) = refusal {
+        if let Some((limit_bytes, reason, total_byte_length)) = refusal {
             let skipped = SkippedClipboardItem {
                 r#type: source.to_string(),
                 byte_length,
                 limit_bytes,
                 chemistry: false,
+                reason,
+                total_byte_length,
             };
             let message = skipped.message();
             self.skipped_items.push(skipped);
@@ -368,7 +390,26 @@ mod tests {
             .reserve("text/plain", MAX_CLIPBOARD_BYTES - 1024 * 1024)
             .unwrap();
         assert_eq!(budget.reserve("text/rtf", 5 * 1024 * 1024 / 4), Err(
-            "Couldn't paste: clipboard flavor \"text/rtf\" is too large (1.3 MB; the limit is 1024 MB).".into()));
+            "Couldn't paste: the clipboard contents are too large (1024.3 MB in total; the limit is 1024 MB).".into()));
+        let metadata = serde_json::to_value(&budget.skipped_items[0]).unwrap();
+        assert_eq!(metadata["reason"], "total");
+        assert_eq!(metadata["byteLength"], 5 * 1024 * 1024 / 4);
+        assert_eq!(
+            metadata["totalByteLength"],
+            MAX_CLIPBOARD_BYTES + 1024 * 1024 / 4
+        );
+    }
+
+    #[test]
+    fn clipboard_own_cap_refusal_keeps_flavor_size_and_limit_even_when_total_is_full() {
+        let mut budget = ClipboardReadBudget::default();
+        budget.reserve("text/plain", MAX_CLIPBOARD_BYTES).unwrap();
+        assert_eq!(budget.reserve("PNG", 30 * 1024 * 1024), Err(
+            "Couldn't paste: clipboard flavor \"image/png\" is too large (30.0 MB; the limit is 25 MB).".into()));
+        let metadata = serde_json::to_value(&budget.skipped_items[0]).unwrap();
+        assert_eq!(metadata["reason"], "flavor");
+        assert!(metadata.get("totalByteLength").is_none());
+        assert_eq!(budget.copied_bytes, MAX_CLIPBOARD_BYTES);
     }
 
     #[test]
@@ -453,7 +494,7 @@ mod tests {
         );
         assert!(budget.reserve("text/rtf", 50 * 1024 * 1024).is_err());
         assert_eq!(budget.skipped_items[0].byte_length, 50 * 1024 * 1024);
-        assert_eq!(budget.skipped_items[0].message(), "Couldn't paste: clipboard flavor \"text/rtf\" is too large (50.0 MB; the limit is 1024 MB).");
+        assert_eq!(budget.skipped_items[0].message(), "Couldn't paste: the clipboard contents are too large (1034.0 MB in total; the limit is 1024 MB).");
         assert!(budget.reserve("text/plain", 40 * 1024 * 1024).is_ok());
         budget.release(40 * 1024 * 1024); // An undecodable flavor was discarded.
         assert!(budget.reserve("text/plain", 40 * 1024 * 1024).is_ok());
