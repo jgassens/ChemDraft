@@ -61,7 +61,9 @@ into core — e.g. `import type { ChemDraftDocument, DocumentPatch } from "@chem
 ```
 
 `apiVersion` in your manifest declares the SDK contract you target (`PluginApiVersion`, currently
-`0.1.17`). API 0.1.17 adds optional `MoleculeBond.stereo: "either"` for an E/Z-unspecified double bond.
+`0.1.18`). API 0.1.18 bounds panel reports: strings, collection sizes, aggregate work and UTF-8 JSON
+size are validated before a report is forwarded to the renderer (see [Panel report limits](#panel-report-limits)).
+API 0.1.17 adds optional `MoleculeBond.stereo: "either"` for an E/Z-unspecified double bond.
 It is allowed only on double bonds; plugins must preserve it when copying bonds and must not set it on other orders.
 API 0.1.16 adds optional positive integer `isotope` mass numbers to native document atoms.
 Native molecule objects returned by `chemistry.structureFromSmiles` and passed through document
@@ -79,7 +81,7 @@ API 0.1.7 adds host-owned `context.chemistry.structureToName`; plugins that use 
 use it should declare `^0.1.6`. API 0.1.5 added command-scoped `context.images.requestImage`, 0.1.4 added
 `context.documents.applyPatch`, and 0.1.3 added the host-owned `context.dialogs.promptText`
 capability. API 0.1.9 adds `context.assistant` for request-scoped tools and MCP sessions.
-Existing `^0.1.0` through `^0.1.17` packages remain compatible, each on a host at or above the version
+Existing `^0.1.0` through `^0.1.18` packages remain compatible, each on a host at or above the version
 it declares.
 
 ## Manifest + registration
@@ -129,6 +131,49 @@ const runWidget: PluginCommandHandler = async (context) => {
 
 Report section kinds: `text`, `keyValue`, `table`, `svg`, `chemicalName`, and `linkedFigure` (an interactive
 spectrum/structure figure with a generic primary/alternative method model).
+
+### Panel report limits
+
+API 0.1.18 rejects an entire report when any limit is exceeded; it never truncates content.
+`PluginPanelReportLimits` exports the ceilings. `panels.showReport` validates before forwarding
+anything to a panel, preserving the previous report on failure. Its rejected promise carries a
+specific Zod issue, for example `linkedFigure peaks: 50001 exceeds the limit of 50000`.
+The existing command failure path displays the error in the desktop status line (and analyzer
+notice for analyzer commands); the worker capability error preserves the same message.
+
+| Content | Maximum |
+| --- | --- |
+| Entire report, UTF-8 JSON including field names and escaping | 1,500,000 bytes |
+| Sections | 100 |
+| Each string (titles, labels, captions, method labels, nucleus, cells, text, source ids, etc.) | 20,000 UTF-16 code units |
+| SVG / image data URI | 512,000 / 1,048,576 code units |
+| Peaks, across all linked figures | 50,000 |
+| Atom indices per peak / across the report | 1,000 / 100,000 |
+| Couplings per peak / across the report | 16 / 10,000 |
+| Structure atoms / bonds, across all figures | 5,000 / 10,000 |
+| Table rows, across tables | 50,000 |
+| Table columns / cells per row | 100 / 100 |
+| Table cells, including column headers, across tables | 250,000 |
+| Key/value rows, across sections | 5,000 |
+| Chemical-name warnings, across sections | 1,000 |
+
+These are independent ceilings: a report must satisfy all of them together. Existing smaller
+limits still apply: solvent 120, alternative marker 8, control ids 64, select values 100,
+20 select options, 8 action buttons, prompt `maxLength` 20,000 and `rows` 12, and control
+payloads 4,000 serialized characters. Numbers anywhere in a report must be finite; `NaN`
+and positive/negative infinity are refused. Atom and bond endpoint indices and peak assignments
+must be non-negative integers; with structure geometry present, each must be below its atom
+count, and structure atom indices must be unique. Without geometry there is no upper reference
+bound. The SDK also refuses cycles, accessors, non-JSON objects, nesting deeper than 32,
+objects with more than 64 own fields, and traversal beyond 500,000 nodes before schema parsing.
+The byte limit applies both before parsing and after defaults are filled in; an early size error
+reports the observed lower bound as `report serialized bytes (at least)`.
+
+The byte cap was measured against the production OCL-native NMR plugin's paclitaxel report:
+25,448 UTF-8 JSON bytes, 65 peaks, 62 atoms and 68 bonds (¹H + ¹³C, median, HOSE levels
+4/3/2/1, ignoring labile hydrogens). 1,500,000 bytes gives about 59 times that report's size.
+The captured real report and a 520-peak expansion are regression fixtures; no prediction or
+scientific claim is derived by the SDK.
 
 ## Plugin storage
 

@@ -4,6 +4,10 @@ Defines public plugin API types, Zod-backed manifest schemas, permission names, 
 
 This package must not contain app-specific implementation code or direct document mutation logic.
 
+API 0.1.18 bounds panel reports with `PluginPanelReportLimits`: finite numbers, bounded strings,
+collections and aggregate counts, and at most 1,500,000 UTF-8 JSON bytes. Oversized reports are rejected
+whole before schema parsing; see `docs/plugin-architecture/AUTHORING.md` for the limits and measurement.
+
 API 0.1.17 adds optional `MoleculeBond.stereo: "either"` for E/Z-unspecified double bonds.
 Preserve it when copying bonds; it is valid only on double bonds.
 

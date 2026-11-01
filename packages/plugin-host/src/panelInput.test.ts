@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { PluginPanelReportSchema, type PluginCommandContext, type PluginCommandInput } from "@chemdraft/plugin-api";
+import { PluginPanelReportLimits, PluginPanelReportSchema, type PluginCommandContext, type PluginCommandInput, type PluginPanelReport } from "@chemdraft/plugin-api";
 import { PluginHost } from "./index";
 
 const commandId = "plugin.chat.submit";
@@ -69,6 +69,31 @@ describe("PluginHost panel input", () => {
 });
 
 describe("PluginHost panel control ownership", () => {
+  it("rejects an oversized report through the existing command failure path before updating the panel", async () => {
+    const showPanelReport = vi.fn();
+    const host = new PluginHost({ showPanelReport });
+    let report: PluginPanelReport = { title: "Valid", sections: [{ kind: "text", body: "Existing result" }] };
+    host.registerPlugin(manifest, { commandHandlers: {
+      [commandId]: ctx => ctx.panels!.showReport(panelId, report)
+    } });
+    await host.invokeCommand(commandId);
+    expect(showPanelReport).toHaveBeenCalledTimes(1);
+    report = { title: "Oversized", sections: [{
+      kind: "linkedFigure", spectrum: { nucleus: "1H", domain: { min: 0, max: 12 },
+        peaks: Array(PluginPanelReportLimits.peaks + 1).fill({ id: "p", ppm: 1, intensity: 1, atomIndices: [] }) }
+    }] };
+    await expect(host.invokeCommand(commandId)).rejects.toThrow(
+      "linkedFigure peaks: 50001 exceeds the limit of 50000"
+    );
+    expect(showPanelReport).toHaveBeenCalledTimes(1);
+    expect(showPanelReport.mock.calls[0]![2].title).toBe("Valid");
+    report = { title: "Non-finite", sections: [{
+      kind: "linkedFigure", spectrum: { nucleus: "1H", domain: { min: 0, max: Infinity }, peaks: [] }
+    }] };
+    await expect(host.invokeCommand(commandId)).rejects.toThrow("Infinity must be finite");
+    expect(showPanelReport).toHaveBeenCalledTimes(1);
+  });
+
   it("accepts own commands in prompts, selects and action buttons", async () => {
     const showPanelReport = vi.fn();
     const host = new PluginHost({ showPanelReport });

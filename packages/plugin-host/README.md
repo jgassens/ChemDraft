@@ -2,6 +2,10 @@
 
 Owns plugin manifest handling, command registration, permission enforcement, plugin storage scoping, and lifecycle behavior.
 
+API 0.1.18 rejects oversized or non-finite panel reports through the existing `showReport` schema
+validation failure path, before forwarding any content to the panel. See the SDK's
+`PluginPanelReportLimits` and `docs/plugin-architecture/AUTHORING.md` for the complete limits.
+
 This package validates trusted manifests, registers command-backed plugin contributions, enforces declared permissions, scopes plugin storage, queues proposed document patches for host/user approval, and forwards `document.write` patches only from the owning plugin's active command invocation. Image acquisition is similarly limited to an `image.read` plugin's active command and enforces the 25 MB / 8192-pixel host limits before bytes reach plugin code.
 
 API 0.1.17 adds optional `MoleculeBond.stereo: "either"` for E/Z-unspecified double bonds.
