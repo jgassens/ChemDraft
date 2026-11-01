@@ -11,7 +11,7 @@ import {
   CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, createPhase4Document, createSelectionClipboardPayload,
   insertNativeTemplateMolecule, insertNativeTextObject, insertTableIntoDocument, serializeSelectionClipboardPayload
 } from "./documentWorkflow";
-import { pasteTableIntoDocument, readTableClipboardPaste, tableClipboardPasteDecision, tableSelectionClipboardItems } from "./tableClipboardWiring";
+import { clipboardWriteNotices, pasteTableIntoDocument, readTableClipboardPaste, tableClipboardPasteDecision, tableSelectionClipboardItems } from "./tableClipboardWiring";
 import { picturePngBase64 } from "./testSupport/imageFixture";
 
 const fixture = (name: string) => readFileSync(`packages/fixtures/clipboard-tables/${name}`, "utf8");
@@ -31,12 +31,31 @@ describe("table-only copy", () => {
     const result = tableSelectionClipboardItems(selection)!;
     const table = selection.objects[0] as TableObject;
     const exported = exportTableClipboardPayloads(table);
+    // Only the private selection is required; the interoperable renditions are optional.
     expect(result).toEqual({ items: [
-      { type: CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, text: serializeSelectionClipboardPayload(selection) },
-      { type: "text/html", text: exported.html }, { type: "text/rtf", text: exported.rtf },
-      { type: "text/plain", text: exported.tsv }
+      { type: CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, text: serializeSelectionClipboardPayload(selection), required: true },
+      { type: "text/html", text: exported.html, required: false }, { type: "text/rtf", text: exported.rtf, required: false },
+      { type: "text/plain", text: exported.tsv, required: false }
     ], warnings: exported.warnings });
     expect(selection.objects[0]).toEqual(table);
+  });
+
+  it("keeps the selection required and the renditions optional, in format order", () => {
+    const copy = tableSelectionClipboardItems(createSelectionClipboardPayload(selectedTable())!)!;
+    expect(copy.items.map(item => [item.type, item.required])).toEqual([
+      [CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, true], ["text/html", false], ["text/rtf", false], ["text/plain", false]
+    ]);
+  });
+
+  it("reports what a successful copy dropped or could not write, and nothing for a failed one", () => {
+    const dropped = "Dropped optional Clipboard item \"text/html\" exceeds its 67108864-byte cap or the 67108864-byte copy budget.";
+    expect(clipboardWriteNotices({ ok: true, written: [CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, "text/plain"],
+      failed: [{ type: "text/rtf", reason: "Could not write clipboard data for type text/rtf." }], warnings: [dropped] }))
+      .toEqual([dropped, "text/rtf was not copied: Could not write clipboard data for type text/rtf."]);
+    expect(clipboardWriteNotices({ ok: true, written: [CHEMDRAFT_SELECTION_CLIPBOARD_TYPE], failed: [], warnings: [] })).toEqual([]);
+    // A failed copy reports itself; its per-item failures are not "left out" of a copy.
+    expect(clipboardWriteNotices({ ok: false, written: [], failed: [{ type: CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, reason: "busy" }],
+      warnings: [] })).toEqual([]);
   });
 
   it("declines empty, text, molecule, mixed and molecule-fragment selections", () => {
@@ -73,8 +92,8 @@ describe("table-only copy", () => {
     document.selection = { pageId: document.pages[0].id, objectIds: tables.map(table => table.id) };
     const copy = tableSelectionClipboardItems(createSelectionClipboardPayload(document)!)!;
     const bytes = copy.items.map(item => new TextEncoder().encode(item.text).length);
-    // Every item is required. The native writer keeps main's 64 MiB copy envelope for them
-    // (clipboard_formats.rs); Windows CRLF is charged only against the 1 GiB paste total.
+    // All four fit main's 64 MiB copy envelope (clipboard_formats.rs), so none is dropped; Windows
+    // CRLF is charged only against the 1 GiB paste total.
     expect(bytes.reduce((sum, size) => sum + size, 0)).toBeLessThan(64 * 1024 * 1024);
     expect(copy.items.map(item => item.type)).toEqual([CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, "text/html", "text/rtf", "text/plain"]);
     expect(copy.items[1].text.match(/<tr\b/g)).toHaveLength(2000);

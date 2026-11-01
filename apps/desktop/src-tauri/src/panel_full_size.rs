@@ -175,12 +175,7 @@ pub(super) fn set<R: Runtime>(
     height: f64,
 ) -> Result<Status, String> {
     let state = window.state::<State>();
-    let already_enabled = state
-        .0
-        .lock()
-        .unwrap()
-        .get(window.label())
-        .is_some_and(|s| s.normal.is_some());
+    let already_enabled = is_enlarged(window);
     if enabled == already_enabled {
         return Ok(Status { enabled });
     }
@@ -260,6 +255,32 @@ pub(super) fn will_hide<R: Runtime>(window: &tauri::Window<R>) {
         );
     }
 }
+
+pub(super) fn is_enlarged<R: Runtime>(window: &tauri::Window<R>) -> bool {
+    window
+        .state::<State>()
+        .0
+        .lock()
+        .unwrap()
+        .get(window.label())
+        .is_some_and(|state| state.normal.is_some())
+}
+
+/// Each of ChemDraft's own hide paths calls this before hiding a window, so an enlarged plugin
+/// panel returns to its normal frame first. macOS has no hide hook short of replacing a live
+/// AppKit class; the visibility observation in panel_focus_macos.rs is only a backstop for hides
+/// ChemDraft does not make itself.
+#[cfg(target_os = "macos")]
+pub(super) fn before_hide<R: Runtime>(window: &tauri::WebviewWindow<R>) {
+    if super::is_plugin_panel_window_label(window.label()) {
+        let webview: &tauri::Webview<R> = window.as_ref();
+        will_hide(&webview.window());
+    }
+}
+
+/// The panel's window procedure already restores on every hide (panel_window.rs).
+#[cfg(not(target_os = "macos"))]
+pub(super) fn before_hide<R: Runtime>(_window: &tauri::WebviewWindow<R>) {}
 
 pub(super) fn restore_all<R: Runtime>(app: &tauri::AppHandle<R>) {
     for (label, window) in app.webview_windows() {

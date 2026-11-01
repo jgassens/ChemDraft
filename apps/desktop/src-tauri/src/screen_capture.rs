@@ -493,7 +493,11 @@ impl<R: Runtime> HiddenChemDraftWindows<R> {
             let visible = window.is_visible().unwrap_or(false);
             let minimized = window.is_minimized().unwrap_or(false);
             let focused = window.is_focused().unwrap_or(false);
-            if visible && !minimized && window.hide().is_ok() {
+            if !visible || minimized {
+                continue;
+            }
+            crate::panel_full_size::before_hide(&window);
+            if window.hide().is_ok() {
                 if focused {
                     key = Some(window.label().to_string());
                 }

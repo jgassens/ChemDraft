@@ -2042,6 +2042,7 @@ async fn suspend_toolset_windows(
                     continue;
                 }
                 panel_window::end_for_hide(window.app_handle(), window.label());
+                panel_full_size::before_hide(&window);
                 if let Err(error) = window.hide() {
                     // A failed acquisition must undo its own temporary hides; JS will not release
                     // an acquisition that rejected and will use the in-app fallback instead.
@@ -4697,7 +4698,7 @@ fn observe_hide_for_document_key_restore<R: Runtime>(app: tauri::AppHandle<R>) {
     let center = NSNotificationCenter::defaultCenter();
     let hide_app = app.clone();
     let on_hide = block2::RcBlock::new(move |_: NonNull<NSNotification>| {
-        panel_full_size::restore_all(&hide_app);
+        // Hiding the app keeps enlarged panels enlarged; quit and panel hide/close restore them.
         let was_key = main_ns_window(&hide_app).is_some_and(|main| main.isKeyWindow());
         if let Ok(mut state) = DOCUMENT_KEY_AFTER_UNHIDE.lock() {
             state.will_hide(was_key);
@@ -5497,10 +5498,22 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
         .collect::<Vec<_>>();
     let mut budget = clipboard_limits::ClipboardReadBudget::default();
     let mut text_items = Vec::new();
-    for (source, _) in read_plan
+    let mut image_items = Vec::new();
+    let mut skipped_image_items = Vec::new();
+    let priorities = read_plan
         .iter()
-        .filter(|(_, priority)| *priority == Some(0))
-    {
+        .map(|(_, priority)| *priority)
+        .collect::<Vec<_>>();
+    // Chemistry precedes artwork; plain text, then HTML and RTF follow it, beside a picture too.
+    for step in clipboard_limits::clipboard_read_steps(&priorities) {
+        let source = match step {
+            clipboard_limits::ClipboardReadStep::Pictures => {
+                (image_items, skipped_image_items) =
+                    clipboard_picture_items(&pasteboard, &types, &mut budget);
+                continue;
+            }
+            clipboard_limits::ClipboardReadStep::Text(index) => read_plan[index].0,
+        };
         if let Some(text) = clipboard_text_for_type(
             &pasteboard,
             &NSString::from_str(source),
@@ -5513,7 +5526,23 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
             });
         }
     }
+    text_items.sort_by_key(|item| types.iter().position(|kind| kind == &item.r#type));
 
+    Ok(ClipboardReadPayload {
+        types,
+        text_items,
+        image_items,
+        skipped_image_items,
+        skipped_items: budget.skipped_items,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn clipboard_picture_items(
+    pasteboard: &NSPasteboard,
+    types: &[String],
+    budget: &mut clipboard_limits::ClipboardReadBudget,
+) -> (Vec<ClipboardImageItem>, Vec<SkippedClipboardImageItem>) {
     let mut image_items = Vec::new();
     let mut skipped_image_items = Vec::new();
     // Picture flavors bypass the text reader. SVG text is decoded only from these bounded bytes.
@@ -5593,37 +5622,7 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
             }
         }
     }
-
-    for (source, priority) in read_plan
-        .iter()
-        .filter(|(_, priority)| matches!(priority, Some(2 | 3)))
-    {
-        // Formatted prose is never used when a picture wins. Plain text still supplies
-        // the existing SMILES/molfile heuristics beside pictures.
-        if !image_items.is_empty() && *priority == Some(3) {
-            continue;
-        }
-        if let Some(text) = clipboard_text_for_type(
-            &pasteboard,
-            &NSString::from_str(source),
-            &mut budget,
-            &text_items,
-        ) {
-            text_items.push(ClipboardTextItem {
-                r#type: source.to_string(),
-                text,
-            });
-        }
-    }
-    text_items.sort_by_key(|item| types.iter().position(|kind| kind == &item.r#type));
-
-    Ok(ClipboardReadPayload {
-        types,
-        text_items,
-        image_items,
-        skipped_image_items,
-        skipped_items: budget.skipped_items,
-    })
+    (image_items, skipped_image_items)
 }
 
 #[cfg(target_os = "macos")]

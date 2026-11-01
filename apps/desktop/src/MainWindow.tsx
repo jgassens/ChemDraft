@@ -4,8 +4,8 @@ import { tableCellAtPoint, tableEditingContent, tableTextAtPoint, type TableEdit
 import type { ActiveTableText } from "./tableCommands";
 import { tableValidationMessage } from "./tableCommands";
 import { tableCellElementId } from "@chemdraft/layout-engine";
-import { insertTableIntoDocument, parseSelectionClipboardPayload } from "./documentWorkflow";
-import { pasteTableIntoDocument, readTableClipboardPaste, stripClipboardPictures, tableClipboardPasteDecision, tableClipboardResultOutranksPicture, tableSelectionClipboardItems, type TableClipboardPasteDecision } from "./tableClipboardWiring";
+import { insertTableIntoDocument } from "./documentWorkflow";
+import { clipboardWriteNotices, pasteTableIntoDocument, readTableClipboardPaste, stripClipboardPictures, tableClipboardPasteDecision, tableClipboardResultOutranksPicture, tableSelectionClipboardItems, type TableClipboardPasteDecision } from "./tableClipboardWiring";
 import type { ClipboardReadPayload, ClipboardTableResult } from "@chemdraft/clipboard-adapter";
 import type { InsertTableOptions } from "./dialogs/dialogProtocol";
 import { paletteFocusDiagnostic } from "./paletteFocusDiagnostic";
@@ -7253,7 +7253,10 @@ export function MainWindow({
     }
 
     const tableCopy = tableSelectionClipboardItems(payload);
-    const didWrite = await writeClipboardTextItems(tableCopy?.items ?? selectionClipboardTextItems(payload));
+    // A table's HTML, RTF and text are optional; keep the writer's result so a dropped one is shown.
+    const result = await writeClipboardItems(tableCopy?.items ?? selectionClipboardTextItems(payload));
+    // As writeClipboardTextItems: a browser accepts a plain-text fallback when richer formats fail.
+    const didWrite = result.ok || (!isDesktopRuntime() && result.written.includes("text/plain"));
     if (!didWrite) {
       setStatus(mode === "copy" ? "Copy failed: clipboard unavailable" : "Cut canceled: clipboard unavailable");
       return;
@@ -7261,14 +7264,15 @@ export function MainWindow({
 
     selectionClipboardPayloadRef.current = payload;
     selectionClipboardPasteStateRef.current = initialSelectionClipboardPasteState(payload, mode);
+    const notices = [...(tableCopy?.warnings ?? []), ...clipboardWriteNotices(result)];
 
     if (mode === "cut") {
       deleteSelectionAfterClipboardCut(payload, wholeObjectIds);
-      setStatus(["Cut ChemDraft selection", ...(tableCopy?.warnings ?? [])].join("; "));
+      setStatus(["Cut ChemDraft selection", ...notices].join("; "));
       return;
     }
 
-    setStatus(["Copied ChemDraft selection", ...(tableCopy?.warnings ?? [])].join("; "));
+    setStatus(["Copied ChemDraft selection", ...notices].join("; "));
   }, [deleteSelectionAfterClipboardCut]);
 
   const performCopyAs = useCallback(async (commandId: string) => {
@@ -12725,18 +12729,9 @@ export function MainWindow({
       }
 
       event.preventDefault();
-      const selectionTypes = [CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, "text/plain"];
-      const selectionRead = guardClipboardPayload({ types: selectionTypes,
-        textItems: selectionTypes.map(type => ({ type, text: event.clipboardData!.getData(type) })) });
-      const refusal = clipboardChemistrySizeRefusal(selectionRead);
-      if (refusal) { setStatus(refusal); return; }
-      const selectionPayload = selectionRead.textItems.map(item => parseSelectionClipboardPayload(item.text))
-        .find(selection => selection !== undefined);
-      if (selectionPayload) {
-        applySelectionClipboardPayload(selectionPayload);
-        return;
-      }
-
+      // Snapshot every flavor now; DataTransfer is unreadable once this handler returns. Nothing is
+      // applied before the complete read is size-guarded: guardedClipboardPasteDecision makes the
+      // menu's decision (chemistry refusal, then the private selection, tables, everything else).
       const domPayload = clipboardPayloadFromDataTransfer(event.clipboardData);
       // WKWebView and WebView2 cannot expose the natively written private ChemDraft flavor
       // through DataTransfer. Read natively before a text/plain fallback can lose formatting;

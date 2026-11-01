@@ -1067,9 +1067,18 @@ mod tests {
         let configured = applied.expect("add nonactivation once");
         assert_eq!(configured, original | NSWindowStyleMask::NonactivatingPanel);
         super::configure_macos_style(configured, |_| panic!("must not call setStyleMask again"));
-        super::configure_macos_style(configured | NSWindowStyleMask::FullScreen, |_| {
-            panic!("must not rebuild an already configured fullscreen frame")
+        // The function sees only the mask. A full-screen mask that already carries nonactivation
+        // gets no setter call; one that lacks it gains only that bit, keeping FullScreen.
+        let full_screen = original | NSWindowStyleMask::FullScreen;
+        super::configure_macos_style(full_screen | NSWindowStyleMask::NonactivatingPanel, |_| {
+            panic!("must not call setStyleMask on a configured full-screen mask")
         });
+        let mut applied = None;
+        super::configure_macos_style(full_screen, |style| applied = Some(style));
+        assert_eq!(
+            applied,
+            Some(full_screen | NSWindowStyleMask::NonactivatingPanel)
+        );
     }
 
     #[cfg(windows)]

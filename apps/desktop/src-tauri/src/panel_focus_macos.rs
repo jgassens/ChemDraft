@@ -2,9 +2,10 @@ use objc2::{
     define_class, msg_send,
     rc::Retained,
     runtime::{AnyObject, ProtocolObject},
-    ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message,
+    sel, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message,
 };
 use objc2_app_kit::{
+    NSApplication, NSApplicationDidUnhideNotification, NSApplicationWillHideNotification,
     NSAutoresizingMaskOptions, NSEvent, NSEventMask, NSView, NSWindow,
     NSWindowDidBecomeKeyNotification, NSWindowDidResignKeyNotification, NSWindowStyleMask,
     NSWindowWillCloseNotification,
@@ -12,7 +13,16 @@ use objc2_app_kit::{
 use objc2_foundation::{
     ns_string, NSNotification, NSNotificationCenter, NSObject, NSObjectProtocol, NSPoint, NSString,
 };
-use std::{cell::RefCell, collections::HashMap, ffi::c_void, ptr::NonNull};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    ffi::c_void,
+    ptr::NonNull,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Once,
+    },
+};
 
 #[derive(Default)]
 struct Observers {
@@ -40,11 +50,50 @@ thread_local! {
     static OBSERVERS: RefCell<HashMap<String, Observers>> = RefCell::default();
 }
 
+// NSKeyValueObserving.h: deliver the old and new values (NSKeyValueChangeOldKey/NewKey) in the
+// change dictionary, after the change.
+const NS_KEY_VALUE_OBSERVING_OPTION_NEW: usize = 0x01;
+const NS_KEY_VALUE_OBSERVING_OPTION_OLD: usize = 0x02;
+
+// Hiding the app (Cmd+H) orders every panel out but keeps enlarged panels enlarged, so the
+// visibility backstop stands aside from the app's will-hide until it unhides.
+static APP_HIDDEN: AtomicBool = AtomicBool::new(false);
+
+fn observe_app_hide_once() {
+    static REGISTERED: Once = Once::new();
+    REGISTERED.call_once(|| {
+        let center = NSNotificationCenter::defaultCenter();
+        for (name, hidden) in unsafe {
+            [
+                (NSApplicationWillHideNotification, true),
+                (NSApplicationDidUnhideNotification, false),
+            ]
+        } {
+            let callback = block2::RcBlock::new(move |_: NonNull<NSNotification>| {
+                APP_HIDDEN.store(hidden, Ordering::SeqCst);
+            });
+            // Process-lifetime observers, like the document's own app-hide observer.
+            std::mem::forget(unsafe {
+                center.addObserverForName_object_queue_usingBlock(Some(name), None, None, &callback)
+            });
+        }
+    });
+}
+
+/// A BOOL value from a key-value change dictionary; `None` when absent or not a number.
+fn change_flag(change: &AnyObject, key: &NSString) -> Option<bool> {
+    let value: Option<Retained<AnyObject>> = unsafe { msg_send![change, objectForKey: key] };
+    value
+        .filter(|value| unsafe { msg_send![&**value, respondsToSelector: sel!(boolValue)] })
+        .map(|value| unsafe { msg_send![&value, boolValue] })
+}
+
 define_class!(
     // Our own observer is allocated with its final class. KVO alone manages the observed
     // window's class; never replace the class of an AppKit or WebKit object.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
+    #[name = "ChemDraftPanelVisibilityObserver"]
     #[ivars = Box<dyn Fn()>]
     struct PanelVisibilityObserver;
 
@@ -57,10 +106,11 @@ define_class!(
             change: &AnyObject,
             _context: *mut c_void,
         ) {
-            let prior: Option<Retained<AnyObject>> = unsafe {
-                msg_send![change, objectForKey: ns_string!("notificationIsPrior")]
-            };
-            if prior.is_some_and(|value| unsafe { msg_send![&value, boolValue] }) {
+            // AppKit does not document `visible` as observable, so a re-order may notify too.
+            // Act only on a real visible -> hidden change, never while the panel stays visible.
+            if change_flag(change, ns_string!("old")) == Some(true)
+                && change_flag(change, ns_string!("new")) == Some(false)
+            {
                 (self.ivars())();
             }
         }
@@ -91,13 +141,18 @@ fn observe_panel<R: tauri::Runtime>(
     tokens: &mut Observers,
 ) -> Result<(), String> {
     let mtm = MainThreadMarker::new().ok_or("Panel observation requires the main thread.")?;
+    observe_app_hide_once();
     let target = window.clone();
     let observer = PanelVisibilityObserver::alloc(mtm).set_ivars(Box::new(move || {
-        // Prior notification: restore before orderOut: detaches the child window.
-        // Ignore shows (the old value is then false).
-        if target.is_visible().unwrap_or(false) {
-            let webview: &tauri::Webview<R> = target.as_ref();
-            super::super::panel_full_size::will_hide(&webview.window());
+        // A backstop only: ChemDraft's own hide paths restore first (panel_full_size::before_hide).
+        // For any other hide, restore an enlarged panel once it is really hidden.
+        let webview: &tauri::Webview<R> = target.as_ref();
+        let window = webview.window();
+        if !APP_HIDDEN.load(Ordering::SeqCst)
+            && !target.is_visible().unwrap_or(true)
+            && super::super::panel_full_size::is_enlarged(&window)
+        {
+            super::super::panel_full_size::will_hide(&window);
         }
     }));
     let observer: Retained<PanelVisibilityObserver> = unsafe { msg_send![super(observer), init] };
@@ -105,7 +160,7 @@ fn observe_panel<R: tauri::Runtime>(
         let _: () = msg_send![panel,
             addObserver: &*observer,
             forKeyPath: ns_string!("visible"),
-            options: 8usize, // NSKeyValueObservingOptionPrior
+            options: NS_KEY_VALUE_OBSERVING_OPTION_OLD | NS_KEY_VALUE_OBSERVING_OPTION_NEW,
             context: std::ptr::null_mut::<c_void>()
         ];
     }
@@ -119,8 +174,16 @@ fn observe_panel<R: tauri::Runtime>(
     let callback = block2::RcBlock::new(move |event: NonNull<NSEvent>| {
         let native = unsafe { event.as_ref() };
         // Runs before webview dispatch, only for this window's native mouse-downs.
-        // Pass the original event through, including native resize presses.
+        // Pass the original event through, including native resize presses. Never take key
+        // status from an app-modal session (an alert or open panel), where the panel's
+        // sendEvent: never ran before this monitor replaced it.
+        let outside_modal = MainThreadMarker::new().is_some_and(|mtm| {
+            NSApplication::sharedApplication(mtm)
+                .modalWindow()
+                .is_none()
+        });
         if native.windowNumber() == number
+            && outside_modal
             && target.is_visible().unwrap_or(false)
             && !target.is_minimized().unwrap_or(true)
         {
@@ -159,6 +222,7 @@ define_class!(
     // tracking areas and handlers remain intact as an autoresizing child.
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
+    #[name = "ChemDraftPanelResizeContainer"]
     struct PanelResizeContainer;
 
     impl PanelResizeContainer {
@@ -204,11 +268,25 @@ pub(super) fn install_resize_hit_test<R: tauri::Runtime>(
         NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable;
     container.setAutoresizingMask(autoresize);
     content.setAutoresizingMask(autoresize);
+    // Re-parenting resigns a first responder inside the moved view, such as the webview Wry
+    // made first responder. Remember it and hand it back once the view is in the container.
+    let responder = panel.firstResponder();
     // Supported reparenting with every original class intact. Retain content across
     // setContentView; WebKit can pair its window KVO removal/registration normally.
     panel.setContentView(Some(&container));
     content.setFrame(container.bounds());
     container.addSubview(&content);
+    if let Some(responder) = responder {
+        let inside = responder
+            .downcast_ref::<NSView>()
+            .is_some_and(|view| view.isDescendantOf(&content));
+        let current = panel
+            .firstResponder()
+            .is_some_and(|current| Retained::as_ptr(&current) == Retained::as_ptr(&responder));
+        if inside && !current {
+            panel.makeFirstResponder(Some(&responder));
+        }
+    }
     Ok(())
 }
 

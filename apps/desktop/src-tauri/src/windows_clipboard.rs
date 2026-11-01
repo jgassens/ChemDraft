@@ -56,7 +56,7 @@ fn image_read_formats(png_id: u32, mime_png_id: u32, svg_id: u32) -> [(&'static 
 /// and `FileName` (an 8.3 path), which the text fallback used to turn into a junk text object — and
 /// the formats Office renders on demand: fetching those makes Excel/Word/PowerPoint serialize the
 /// whole selection again (WM_RENDERFORMAT) while ChemDraft's thread waits, for nothing it can use.
-const NON_TEXT_FORMATS: [&str; 39] = [
+const NON_TEXT_FORMATS: [&str; 40] = [
     PNG_FORMAT,
     CDX_FORMAT,
     "Embed Source",
@@ -95,7 +95,9 @@ const NON_TEXT_FORMATS: [&str; 39] = [
     "JFIF",
     "GIF",
     "Link Preview Format",
+    // Word's second copies of its RTF, rendered on demand; "Rich Text Format" carries it once.
     "Rich Text Format Without Objects",
+    "RTF As Text",
 ];
 
 /// Name prefixes of the same kind: Excel's binary workbook formats, Office drawing formats, and the
@@ -144,6 +146,19 @@ pub(crate) fn is_binary_windows_format(name: &str) -> bool {
             .iter()
             .any(|prefix| name.starts_with(prefix))
         || crate::clipboard_images::is_image_clipboard_type(name) && name != "image/svg+xml"
+}
+
+/// The shared admission priority of a format, before any preview of its bytes. Binary and opaque
+/// registered formats are never read; HTML Format and Rich Text Format are (see
+/// `clipboard_limits::clipboard_read_steps`).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn windows_text_read_priority(payload_type: &str, name: Option<&str>) -> Option<u8> {
+    if name
+        .is_some_and(|name| is_binary_windows_format(name) || crate::is_opaque_clipboard_type(name))
+    {
+        return None;
+    }
+    crate::clipboard_limits::text_read_priority(payload_type)
 }
 
 /// Accept decoded clipboard text only if it could be something a person copied: plausible (no
@@ -426,7 +441,7 @@ pub(crate) mod native {
         dib_image_item, png_image_item, svg_image_item, ClipboardImageItem,
         SkippedClipboardImageItem,
     };
-    use crate::clipboard_limits::ClipboardReadBudget;
+    use crate::clipboard_limits::{ClipboardReadBudget, ClipboardReadStep};
     use crate::{is_opaque_clipboard_type, ClipboardReadPayload, ClipboardTextItem};
     use windows_sys::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND};
     use windows_sys::Win32::System::DataExchange::{
@@ -668,11 +683,7 @@ pub(crate) mod native {
     }
 
     fn text_read_priority(id: u32, kind: &str, name: Option<&str>) -> Option<u8> {
-        if name.is_some_and(|name| is_binary_windows_format(name) || is_opaque_clipboard_type(name))
-        {
-            return None;
-        }
-        let priority = crate::clipboard_limits::text_read_priority(kind);
+        let priority = windows_text_read_priority(kind, name);
         if priority != Some(2) {
             return priority;
         }
@@ -723,61 +734,62 @@ pub(crate) mod native {
             let priority = text_read_priority(id, &payload_type, name.as_deref());
             formats.push((id, name, payload_type, priority));
         }
-        // Chemistry precedes artwork; formatted prose follows it. The returned text
-        // order remains the native order used by the resolver.
+        // Chemistry precedes artwork; plain text, then HTML and RTF follow it, beside a picture
+        // too. The returned text order remains the native order used by the resolver.
         let mut image_items = Vec::new();
         let mut skipped_image_items = Vec::new();
-        for priority in [0, 1, 2, 3] {
-            if priority == 1 {
-                (image_items, skipped_image_items) = read_images(&mut budget);
+        let priorities = formats
+            .iter()
+            .map(|(_, _, _, priority)| *priority)
+            .collect::<Vec<_>>();
+        for step in crate::clipboard_limits::clipboard_read_steps(&priorities) {
+            let index = match step {
+                ClipboardReadStep::Pictures => {
+                    (image_items, skipped_image_items) = read_images(&mut budget);
+                    continue;
+                }
+                ClipboardReadStep::Text(index) => index,
+            };
+            let (id, name, payload_type, _) = &formats[index];
+            let id = *id;
+            if is_text_alias(id, &text_items) {
                 continue;
             }
-            for (id, name, payload_type, read_priority) in &formats {
-                if *read_priority != Some(priority) || (!image_items.is_empty() && priority == 3) {
+            let text = match name.as_deref() {
+                None if id == CF_UNICODETEXT => {
+                    decode_format(id, payload_type, &mut budget, unicode_text)
+                }
+                None => None,
+                Some(MDLCT_FORMAT) => decode_format(id, payload_type, &mut budget, decode_mdlct),
+                Some("HTML Format") => decode_format(id, payload_type, &mut budget, |bytes| {
+                    parse_cf_html(bytes).ok()
+                }),
+                // Images are handled only by read_images, after the allocation guard.
+                Some(name)
+                    if crate::clipboard_images::is_image_clipboard_type(name)
+                        || is_binary_windows_format(name)
+                        || is_opaque_clipboard_type(name) =>
+                {
+                    None
+                }
+                Some(_) => decode_format(id, payload_type, &mut budget, decode_registered_text),
+            };
+            if let Some(text) = text {
+                // A provider may use an encoding whose bounded prefix was inconclusive.
+                if text_items
+                    .iter()
+                    .any(|item: &ClipboardTextItem| item.text == text)
+                {
                     continue;
                 }
-                let id = *id;
-                if is_text_alias(id, &text_items) {
+                if budget.reserve(payload_type, text.len()).is_err() {
+                    budget.mark_chemistry(payload_type, text.as_bytes());
                     continue;
                 }
-                let text = match name.as_deref() {
-                    None if id == CF_UNICODETEXT => {
-                        decode_format(id, payload_type, &mut budget, unicode_text)
-                    }
-                    None => None,
-                    Some(MDLCT_FORMAT) => {
-                        decode_format(id, payload_type, &mut budget, decode_mdlct)
-                    }
-                    Some("HTML Format") => decode_format(id, payload_type, &mut budget, |bytes| {
-                        parse_cf_html(bytes).ok()
-                    }),
-                    // Images are handled only by read_images, after the allocation guard.
-                    Some(name)
-                        if crate::clipboard_images::is_image_clipboard_type(name)
-                            || is_binary_windows_format(name)
-                            || is_opaque_clipboard_type(name) =>
-                    {
-                        None
-                    }
-                    Some(_) => decode_format(id, payload_type, &mut budget, decode_registered_text),
-                };
-                if let Some(text) = text {
-                    // A provider may use an encoding whose bounded prefix was inconclusive.
-                    if text_items
-                        .iter()
-                        .any(|item: &ClipboardTextItem| item.text == text)
-                    {
-                        continue;
-                    }
-                    if budget.reserve(payload_type, text.len()).is_err() {
-                        budget.mark_chemistry(payload_type, text.as_bytes());
-                        continue;
-                    }
-                    text_items.push(ClipboardTextItem {
-                        r#type: payload_type.clone(),
-                        text,
-                    });
-                }
+                text_items.push(ClipboardTextItem {
+                    r#type: payload_type.clone(),
+                    text,
+                });
             }
         }
         text_items.sort_by_key(|item| types.iter().position(|kind| kind == &item.r#type));
@@ -1258,6 +1270,65 @@ mod tests {
                 .as_deref(),
             Some("application/x-chemdraft-selection+json")
         );
+    }
+
+    #[test]
+    fn office_table_html_and_rtf_are_read_beside_its_picture() {
+        use crate::clipboard_limits::{clipboard_read_steps, ClipboardReadStep};
+        const CF_BITMAP: u32 = 2;
+        // Word's and Excel's table formats (abridged), in the order Office registers them.
+        for (formats, expected) in [
+            (
+                &[
+                    (0xC001, Some("Object Descriptor")),
+                    (0xC002, Some("Rich Text Format")),
+                    (0xC003, Some("HTML Format")),
+                    (0xC004, Some("Rich Text Format Without Objects")),
+                    (0xC005, Some("RTF As Text")),
+                    (CF_UNICODETEXT, None),
+                    (0xC006, Some("PNG")),
+                    (CF_ENHMETAFILE, None),
+                    (0xC007, Some("Embed Source")),
+                ][..],
+                ["pictures", "text/plain", "text/rtf", "text/html"],
+            ),
+            (
+                &[
+                    (0xC011, Some("DataObject")),
+                    (0xC012, Some("Biff12")),
+                    (CF_ENHMETAFILE, None),
+                    (CF_BITMAP, None),
+                    (0xC013, Some("HTML Format")),
+                    (0xC014, Some("Rich Text Format")),
+                    (CF_UNICODETEXT, None),
+                    (0xC015, Some("PNG")),
+                    (CF_DIB, None),
+                    (0xC016, Some("XML Spreadsheet")),
+                ][..],
+                ["pictures", "text/plain", "text/html", "text/rtf"],
+            ),
+        ] {
+            let read = formats
+                .iter()
+                .filter_map(|(id, name)| {
+                    let kind = payload_type_for_format(*id, *name)?;
+                    let priority = windows_text_read_priority(&kind, *name);
+                    Some((kind, priority))
+                })
+                .collect::<Vec<_>>();
+            let priorities = read
+                .iter()
+                .map(|(_, priority)| *priority)
+                .collect::<Vec<_>>();
+            let steps = clipboard_read_steps(&priorities)
+                .into_iter()
+                .map(|step| match step {
+                    ClipboardReadStep::Pictures => "pictures",
+                    ClipboardReadStep::Text(index) => read[index].0.as_str(),
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(steps, expected);
+        }
     }
 
     #[test]

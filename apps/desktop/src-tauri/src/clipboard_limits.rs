@@ -264,6 +264,37 @@ pub(crate) fn text_priority_with_preview(kind: &str, bytes: &[u8]) -> Option<u8>
     Some(priority)
 }
 
+/// One admission step of a native reader: a text flavor (an index into the reader's own
+/// flavor list) or the picture pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClipboardReadStep {
+    Text(usize),
+    Pictures,
+}
+
+/// The admission order both native readers follow: explicit chemistry, pictures, plain text,
+/// then HTML and RTF. Formatted text is read beside an admitted picture as well: Word and Excel
+/// publish a table as HTML + RTF + a picture rendition, and the paste's shared table decision,
+/// not the reader, chooses between them. Each flavor still meets its own cap and the total,
+/// reserved before it is copied. Flavors the paste never uses (`None`) are never read.
+pub(crate) fn clipboard_read_steps(priorities: &[Option<u8>]) -> Vec<ClipboardReadStep> {
+    let mut steps = Vec::new();
+    for pass in [0, 1, 2, 3] {
+        if pass == 1 {
+            steps.push(ClipboardReadStep::Pictures);
+            continue;
+        }
+        steps.extend(
+            priorities
+                .iter()
+                .enumerate()
+                .filter(|(_, priority)| **priority == Some(pass))
+                .map(|(index, _)| ClipboardReadStep::Text(index)),
+        );
+    }
+    steps
+}
+
 /// Read explicit chemistry first, pictures next, then prose/rich text. Keep the original
 /// text-flavor order in the returned payload: it is the resolver's tie-break, not read order.
 pub(crate) fn text_read_priority(kind: &str) -> Option<u8> {
@@ -276,6 +307,9 @@ pub(crate) fn text_read_priority(kind: &str) -> Option<u8> {
             "chromium internal source rfh token",
             "next tiff v4.0 pasteboard type",
             "apple png pasteboard type",
+            // Legacy names AppKit bridges to public.html and public.rtf: the same bytes again.
+            "apple html pasteboard type",
+            "next rich text format v1.0 pasteboard type",
             "public.pdf",
             "com.adobe.pdf",
             "ns pdf pboardtype",
@@ -699,6 +733,12 @@ mod tests {
         ] {
             assert_eq!(text_read_priority(kind), Some(0));
         }
+        for kind in [
+            "Apple HTML pasteboard type",
+            "NeXT Rich Text Format v1.0 pasteboard type",
+        ] {
+            assert_eq!(text_read_priority(kind), None, "{kind}");
+        }
         let mut budget = ClipboardReadBudget::default();
         budget.reserve("PNG", 24 * 1024 * 1024).unwrap();
         fill_budget(&mut budget, MAX_CLIPBOARD_BYTES - 64 * 1024 * 1024);
@@ -708,6 +748,131 @@ mod tests {
         assert!(budget.reserve("text/plain", 40 * 1024 * 1024).is_ok());
         budget.release(40 * 1024 * 1024); // An undecodable flavor was discarded.
         assert!(budget.reserve("text/plain", 40 * 1024 * 1024).is_ok());
+    }
+
+    /// Walk a reader's flavor list in the shared step order, reserving each size the way the
+    /// readers do (before copying), and return what was admitted.
+    fn admit_in_read_order(
+        flavors: &[(&str, Option<u8>, usize)],
+        picture: Option<(&str, usize)>,
+    ) -> (Vec<String>, ClipboardReadBudget) {
+        let priorities = flavors
+            .iter()
+            .map(|(_, priority, _)| *priority)
+            .collect::<Vec<_>>();
+        let mut budget = ClipboardReadBudget::default();
+        let mut admitted = Vec::new();
+        for step in clipboard_read_steps(&priorities) {
+            let (source, bytes) = match step {
+                ClipboardReadStep::Pictures => match picture {
+                    Some(picture) => picture,
+                    None => continue,
+                },
+                ClipboardReadStep::Text(index) => (flavors[index].0, flavors[index].2),
+            };
+            if budget.reserve(source, bytes).is_ok() {
+                admitted.push(source.to_string());
+            }
+        }
+        (admitted, budget)
+    }
+
+    #[test]
+    fn clipboard_office_table_html_and_rtf_are_read_beside_its_picture_within_caps() {
+        let mib = 1024 * 1024;
+        // A Word/Excel table on macOS: HTML + RTF + plain text + a picture, plus flavors the
+        // paste never uses.
+        let kinds = [
+            "public.html",
+            "Apple HTML pasteboard type",
+            "public.rtf",
+            "NeXT Rich Text Format v1.0 pasteboard type",
+            "com.apple.flat-rtfd",
+            "public.utf8-plain-text",
+            "public.png",
+            "public.tiff",
+            "com.adobe.pdf",
+            "com.microsoft.Excel.sheet",
+        ];
+        let priorities = kinds
+            .iter()
+            .map(|kind| text_priority_with_preview(kind, b"Material\tMW"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            clipboard_read_steps(&priorities),
+            [
+                ClipboardReadStep::Pictures,
+                ClipboardReadStep::Text(5),
+                ClipboardReadStep::Text(0),
+                ClipboardReadStep::Text(2),
+            ]
+        );
+        // Explicit chemistry still precedes the picture; nothing unread ever becomes a step.
+        assert_eq!(
+            clipboard_read_steps(&[None, Some(3), Some(0), None, Some(2)]),
+            [
+                ClipboardReadStep::Text(2),
+                ClipboardReadStep::Pictures,
+                ClipboardReadStep::Text(4),
+                ClipboardReadStep::Text(1),
+            ]
+        );
+
+        let flavors = [
+            ("public.html", Some(3), 50 * mib),
+            ("public.rtf", Some(3), 50 * mib),
+            ("public.utf8-plain-text", Some(2), mib),
+        ];
+        let (admitted, budget) = admit_in_read_order(&flavors, Some(("public.png", 25 * mib)));
+        assert_eq!(
+            admitted,
+            [
+                "public.png",
+                "public.utf8-plain-text",
+                "public.html",
+                "public.rtf"
+            ]
+        );
+        assert!(budget.skipped_items.is_empty());
+
+        // Each flavor keeps its own cap: an oversized RTF is refused, its HTML sibling still read.
+        let flavors = [
+            ("public.html", Some(3), 50 * mib),
+            ("public.rtf", Some(3), 300 * mib),
+        ];
+        let (admitted, budget) = admit_in_read_order(&flavors, Some(("public.png", 25 * mib)));
+        assert_eq!(admitted, ["public.png", "public.html"]);
+        assert!(matches!(
+            budget.skipped_items[0].reason,
+            ClipboardSkipReason::Flavor
+        ));
+        assert_eq!(budget.copied_bytes, 75 * mib);
+
+        // The 1 GiB total is checked before copying formatted text beside the picture too.
+        let flavors = [
+            ("text/html", Some(3), 200 * mib),
+            ("text/rtf", Some(3), 200 * mib),
+            ("sibling-1", Some(2), 256 * mib),
+            ("sibling-2", Some(2), 256 * mib),
+            ("sibling-3", Some(2), 256 * mib),
+        ];
+        let (admitted, budget) = admit_in_read_order(&flavors, Some(("image/png", 25 * mib)));
+        assert_eq!(
+            admitted,
+            [
+                "image/png",
+                "sibling-1",
+                "sibling-2",
+                "sibling-3",
+                "text/html"
+            ]
+        );
+        assert_eq!(budget.skipped_items[0].r#type, "text/rtf");
+        assert!(matches!(
+            budget.skipped_items[0].reason,
+            ClipboardSkipReason::Total
+        ));
+        assert!(budget.copied_bytes <= MAX_CLIPBOARD_BYTES);
     }
 
     #[test]

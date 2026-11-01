@@ -434,7 +434,13 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     const nativePath = join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src");
     const mac = readFileSync(join(nativePath, "panel_focus_macos.rs"), "utf8");
     expect(mac).toContain("observeValueForKeyPath:ofObject:change:context:");
-    expect(mac).toContain("NSKeyValueObservingOptionPrior");
+    // Old and new values, after the change: only a real visible -> hidden change restores.
+    expect(mac).not.toContain("notificationIsPrior");
+    expect(mac).toContain("options: NS_KEY_VALUE_OBSERVING_OPTION_OLD | NS_KEY_VALUE_OBSERVING_OPTION_NEW");
+    expect(mac).toMatch(/change_flag\(change, ns_string!\("old"\)\) == Some\(true\)\s*&& change_flag\(change, ns_string!\("new"\)\) == Some\(false\)/);
+    expect(mac).toMatch(/!APP_HIDDEN\.load\(Ordering::SeqCst\)\s*&& !target\.is_visible\(\)\.unwrap_or\(true\)\s*&& super::super::panel_full_size::is_enlarged\(&window\)/);
+    // Cmd+H orders panels out too; the backstop stands aside from will-hide until unhide.
+    expect(mac).toMatch(/\(NSApplicationWillHideNotification, true\),\s*\(NSApplicationDidUnhideNotification, false\)/);
     expect(mac).toContain("addObserver: &*observer");
     expect(mac).toContain("removeObserver: &*self.observer");
     expect(mac.match(/forKeyPath: ns_string!\("visible"\)/g)).toHaveLength(2);
@@ -444,6 +450,41 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     expect(mac).toContain("NSEvent::removeMonitor(&monitor)");
     // Reinstall first removes the old registrations, so reloads cannot duplicate callbacks.
     expect(mac).toContain("forget(window.label())");
+  });
+
+  it("restores an enlarged panel on ChemDraft's own hides, keeps it on app hide, and never activates under a modal", () => {
+    const nativePath = join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src");
+    const source = readFileSync(join(nativePath, "lib.rs"), "utf8");
+    // Utility suspension (file pickers) and screen capture restore before their own hides.
+    expect(source).toMatch(/panel_window::end_for_hide\(window\.app_handle\(\), window\.label\(\)\);\s*panel_full_size::before_hide\(&window\);\s*if let Err\(error\) = window\.hide\(\)/);
+    const capture = readFileSync(join(nativePath, "screen_capture.rs"), "utf8");
+    expect(capture).toMatch(/crate::panel_full_size::before_hide\(&window\);\s*if window\.hide\(\)\.is_ok\(\)/);
+    // Closing (CloseRequested) and the panel's own hide command restore explicitly too.
+    expect(source).toMatch(/if let WindowEvent::CloseRequested \{ api, \.\. \} = event \{\s*panel_full_size::will_hide\(window\);/);
+    const controls = readFileSync(join(nativePath, "panel_window_controls.rs"), "utf8");
+    expect(controls).toMatch(/panel_full_size::set\(window, false, 0\.0, 0\.0\)\?;\s*window\.hide\(\)/);
+    // Cmd+H keeps enlarged panels as they were; quit still restores every panel.
+    const appHide = source.split("fn observe_hide_for_document_key_restore<")[1]!.split("\n}\n")[0]!;
+    expect(appHide).not.toContain("restore_all");
+    expect(source).toMatch(/WindowEvent::Destroyed => \{[\s\S]*?panel_full_size::restore_all\(window\.app_handle\(\)\)/);
+    const sizes = readFileSync(join(nativePath, "panel_full_size.rs"), "utf8");
+    expect(sizes).toMatch(/#\[cfg\(target_os = "macos"\)\]\s*pub\(super\) fn before_hide/);
+    expect(sizes).toMatch(/#\[cfg\(not\(target_os = "macos"\)\)\]\s*pub\(super\) fn before_hide<R: Runtime>\(_window: &tauri::WebviewWindow<R>\) \{\}/);
+    const mac = readFileSync(join(nativePath, "panel_focus_macos.rs"), "utf8");
+    const click = mac.split("let number = panel.windowNumber();")[1]!.split("pub(super) fn resize_edge")[0]!;
+    expect(click).toMatch(/NSApplication::sharedApplication\(mtm\)\s*\.modalWindow\(\)\s*\.is_none\(\)/);
+    expect(click).toMatch(/native\.windowNumber\(\) == number\s*&& outside_modal/);
+    // Our Objective-C classes carry a ChemDraft prefix.
+    expect(mac).toContain('#[name = "ChemDraftPanelVisibilityObserver"]');
+    expect(mac).toContain('#[name = "ChemDraftPanelResizeContainer"]');
+  });
+
+  it("gives Wry's first responder back after moving its view into the resize container", () => {
+    const mac = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src/panel_focus_macos.rs"), "utf8");
+    const install = mac.split("pub(super) fn install_resize_hit_test<")[1]!.split("pub(super) fn observe<")[0]!;
+    expect(install.indexOf("let responder = panel.firstResponder();")).toBeLessThan(install.indexOf("panel.setContentView(Some(&container))"));
+    expect(install.indexOf("container.addSubview(&content)")).toBeLessThan(install.indexOf("panel.makeFirstResponder(Some(&responder))"));
+    expect(install).toContain("view.isDescendantOf(&content)");
   });
 
   it("yields the resize band through a new container while retaining Wry's content-view class", () => {

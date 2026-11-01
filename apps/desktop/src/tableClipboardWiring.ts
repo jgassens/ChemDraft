@@ -9,7 +9,7 @@ import {
 } from "@chemdraft/chem-core";
 import { buildTableObject } from "@chemdraft/document-workflow-core";
 import { exportTableClipboardPayloads } from "@chemdraft/export-engine";
-import type { ClipboardWriteTextItem } from "./clipboard";
+import type { ClipboardWriteResult, ClipboardWriteTextItem } from "./clipboard";
 import {
   addTableCenteredOnPage, CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, parseSelectionClipboardPayload, serializeSelectionClipboardPayload,
   type ChemDraftSelectionClipboardPayload
@@ -58,10 +58,18 @@ function remapRtfReferences(text: string, fontIndex: number, colorOffset: number
   });
 }
 
-/** Selection payload objects are in page order; a molecule fragment makes this ineligible too. */
+/** A table copy item; only the private selection is required (see tableSelectionClipboardItems). */
+export type TableClipboardWriteItem = ClipboardWriteTextItem & { required: boolean };
+
+/**
+ * Selection payload objects are in page order; a molecule fragment makes this ineligible too.
+ * Only the private selection is required. HTML, RTF and text are interoperable renditions: when
+ * one does not fit the native copy budget the writer drops it with a warning instead of refusing
+ * the whole copy, the way the paste side declines an oversized DIB beside a usable PNG.
+ */
 export function tableSelectionClipboardItems(
   payload: ChemDraftSelectionClipboardPayload
-): { items: ClipboardWriteTextItem[]; warnings: string[] } | undefined {
+): { items: TableClipboardWriteItem[]; warnings: string[] } | undefined {
   if (!payload.objects.length || !payload.objects.every((object): object is TableObject => object.type === "table")) return undefined;
   const exports = payload.objects.map(table => exportTableClipboardPayloads(table));
   const start = "<!--StartFragment-->", end = "<!--EndFragment-->";
@@ -71,13 +79,24 @@ export function tableSelectionClipboardItems(
     + firstHtml.slice(firstHtml.indexOf(end));
   return {
     items: [
-      { type: CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, text: serializeSelectionClipboardPayload(payload) },
-      { type: "text/html", text: html },
-      { type: "text/rtf", text: joinRtf(exports.map(item => item.rtf)) },
-      { type: "text/plain", text: exports.map(item => item.tsv).join("\n\n") }
+      { type: CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, text: serializeSelectionClipboardPayload(payload), required: true },
+      { type: "text/html", text: html, required: false },
+      { type: "text/rtf", text: joinRtf(exports.map(item => item.rtf)), required: false },
+      { type: "text/plain", text: exports.map(item => item.tsv).join("\n\n"), required: false }
     ],
     warnings: exports.flatMap(item => item.warnings)
   };
+}
+
+/**
+ * What a successful copy left out, for the status line: the writer's warnings (an optional
+ * format dropped over the copy budget) and any optional format it could not write.
+ */
+export function clipboardWriteNotices(result: ClipboardWriteResult): string[] {
+  return [
+    ...result.warnings,
+    ...(result.ok ? result.failed.map(failure => `${failure.type} was not copied: ${failure.reason}`) : [])
+  ];
 }
 
 /**

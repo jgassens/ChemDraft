@@ -529,6 +529,48 @@ mod tests {
     }
 
     #[test]
+    fn clipboard_table_copy_keeps_the_selection_and_format_order_when_a_rendition_overflows() {
+        // A table copy: the private selection is required; HTML, RTF and text are optional.
+        for windows in [false, true] {
+            let (items, warnings) = validate_clipboard_items_for_platform(
+                vec![
+                    item(serde_json::json!({
+                        "type":"application/x-chemdraft-selection+json","text":"s".repeat(40)
+                    })),
+                    item(
+                        serde_json::json!({"type":"text/html","text":"h".repeat(40),"required":false}),
+                    ),
+                    item(serde_json::json!({
+                        "type":"text/rtf","text":format!("{{\\rtf1 {}}}", "r".repeat(23)),"required":false
+                    })),
+                    item(
+                        serde_json::json!({"type":"text/plain","text":"t".repeat(10),"required":false}),
+                    ),
+                ],
+                100,
+                windows,
+            )
+            .unwrap();
+            assert_eq!(
+                items
+                    .iter()
+                    .map(|item| item.r#type.as_str())
+                    .collect::<Vec<_>>(),
+                [
+                    "application/x-chemdraft-selection+json",
+                    "text/html",
+                    "text/plain"
+                ]
+            );
+            assert_eq!(warnings.len(), 1);
+            assert!(
+                warnings[0].starts_with("Dropped optional Clipboard item \"text/rtf\"")
+                    && warnings[0].contains("100-byte copy budget")
+            );
+        }
+    }
+
+    #[test]
     fn cf_html_has_golden_ascii_and_utf8_byte_offsets() {
         for (fragment, end_html, end_fragment) in [
             ("<table><tr><td>A</td></tr></table>", 238, 206),
