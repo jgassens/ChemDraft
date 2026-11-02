@@ -1729,7 +1729,7 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(opened.document?.pages[0].objects.map((object) => object.type)).toEqual([
       "molecule",
       "molecule",
-      "graphic",
+      "bracket",
       "unknown-compatibility-object"
     ]);
     expect(opened.document?.pages[0].crossings).toEqual([{
@@ -1741,7 +1741,7 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     }]);
     expect(opened.warnings.map((item) => item.code)).toEqual(
       expect.arrayContaining([
-        "cdxml.object_import_unsupported"
+        "cdxml.bracket_group_preserved"
       ])
     );
     expect(opened.warnings.map((item) => item.code)).not.toContain("cdxml.bond_display_unsupported");
@@ -1756,14 +1756,14 @@ describe("CDXML-compatible ChemDraft envelope", () => {
       "molecule",
       "molecule",
       "molecule",
-      "graphic",
+      "bracket",
       "unknown-compatibility-object"
     ]);
     expect((opened.document?.pages[0].objects[0] as TextObject | undefined)?.text).toBe("DIPEA, DMSO");
     // The FullHead reaction arrow imports as an editable art arrow tagged with its chemical identity.
     expect((opened.document?.pages[0].objects[1] as GraphicObject | undefined)?.data.artToolId).toBe("reactionArrow");
     expect(opened.warnings.map((item) => item.code)).not.toContain("cdxml.bond_display_unsupported");
-    expect(opened.warnings.map((item) => item.code)).toContain("cdxml.object_import_unsupported");
+    expect(opened.warnings.map((item) => item.code)).toContain("cdxml.bracket_group_preserved");
   });
 
   it("exports native crossing overrides as visible reciprocal CrossingBonds and coherent Z values", () => {

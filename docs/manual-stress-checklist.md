@@ -15,6 +15,7 @@ selection after tab switching/closing.
 Canvas context menus (macOS and Windows): open the page and object menus with the mouse and keyboard;
 use arrows, Home/End, Arrange and Copy As submenus, Enter, Space, Escape and Tab, then verify canvas
 focus and drawing shortcuts return after an action or dismissal.
+Brackets (macOS and Windows): drag square/round pairs in both directions, including over a molecule; verify matching sides, both selected, one labelled Undo/Redo, and Escape cancellation. Right-click either side, mark a repeat unit, edit n to m (Enter/blur commits once; Escape cancels), then duplicate, copy/paste, save/reopen and compare canvas/SVG/PDF placement. Check SMILES/MOL repeat-unit warnings and CDXML label/connectivity limitations.
 Palette field input (macOS and Windows): in Drawn Structure Settings, click Target bond length,
 type 30 and press Return; the value changes, the canvas does not, and no hotkey fires. Switch to
 another app and back, then click the field again; Customize gallery search still types.

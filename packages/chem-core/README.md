@@ -4,6 +4,12 @@ Owns the native document model, schema versions, migrations, validation, seriali
 
 This package must not import UI, Tauri, Ketcher, RDKit, plugin loading, or filesystem APIs.
 
+Each `BracketObject` is one glyph. Optional `side` (`open`/`close`), `pairId`, and `repeatUnit`
+fields extend the existing v1 schema additively, like image payloads. Old documents need no
+migration: an absent side keeps the original opening glyph, and no repeat label is added.
+Pairs share an opaque `pairId`; the closing member's existing `label` field carries the repeat
+subscript. Drawing and label placement belong to layout-engine.
+
 Pictures are `graphicKind: "image"` graphics with an embedded `data.image` payload (PNG or SVG,
 base64, positive integer pixel dimensions, optional pixels-per-meter density). The decoded payload
 limit is `MAX_IMAGE_OBJECT_BYTES` (25 MiB). Their frame uses the same top-level `x`, `y`, `width`,

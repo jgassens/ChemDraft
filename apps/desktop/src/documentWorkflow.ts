@@ -1,4 +1,6 @@
+import { bracketVisualBounds } from "@chemdraft/layout-engine";
 import { formulaSpansFromText } from "@chemdraft/document-workflow-core";
+import { repeatUnitExportWarnings } from "@chemdraft/export-engine";
 import { nativeMoleculeLayoutQuality } from "./depiction2d/layoutQuality";
 import { planObjectArrangement, moleculeAnchorForArrangement, moleculeVisualBoundsForArrangement, textVisualBoundsForArrangement, type ArrangementLayout, type ArrangementOptions, type ArrangementItem, type LayoutBounds } from "@chemdraft/layout-engine";
 import { snapRotationDegrees } from "./rotationSnap";
@@ -4922,7 +4924,8 @@ export function convertNativeTextObjectToAtom(
 
 const bracketKindByToolCommandId: ReadonlyMap<string, BracketObject["bracketKind"]> = new Map([
   ["tool.bracket", "curly"],
-  ["tool.squareBracket", "square"]
+  ["tool.squareBracket", "square"],
+  ["tool.roundBracket", "round"]
 ]);
 
 export function bracketKindForToolCommand(commandId: string): BracketObject["bracketKind"] | undefined {
@@ -4931,37 +4934,51 @@ export function bracketKindForToolCommand(commandId: string): BracketObject["bra
 
 export const nativeBracketDefaultSize = { width: 16, height: 64 } as const;
 
-/** Click placement: a default-size bracket centered on the click point, clamped to the page. */
+/** One glyph per native object; both members are added and selected in one patch batch. */
 export function insertNativeBracket(
   document: ChemDraftDocument,
   point: PagePoint,
-  bracketKind: BracketObject["bracketKind"]
+  bracketKind: BracketObject["bracketKind"],
+  end?: PagePoint
 ): ChemDraftDocument {
   const page = firstPage(document);
-  const { width, height } = nativeBracketDefaultSize;
+  const left = clamp(end ? Math.min(point.x, end.x) : point.x - 40, 0, page.width - 2);
+  const top = clamp(end ? Math.min(point.y, end.y) : point.y - nativeBracketDefaultSize.height / 2, 0, page.height - 2);
+  const boxWidth = Math.min(Math.max(end ? Math.abs(end.x - point.x) : 80, 2), page.width - left);
+  const height = Math.min(Math.max(end ? Math.abs(end.y - point.y) : nativeBracketDefaultSize.height, 2), page.height - top);
+  const width = Math.min(nativeBracketDefaultSize.width, boxWidth / 3);
+  const containedObjectIds = page.objects.filter(object => object.type !== "bracket" &&
+    object.x >= left && object.y >= top && object.x + object.width <= left + boxWidth &&
+    object.y + object.height <= top + height).map(object => object.id);
+  const allocateId = pendingObjectIdAllocator(document);
   const object: BracketObject = {
-    id: nextObjectId(document, "bracket"),
+    id: allocateId("bracket"),
     type: "bracket",
-    x: clamp(point.x - width / 2, 0, Math.max(0, page.width - width)),
-    y: clamp(point.y - height / 2, 0, Math.max(0, page.height - height)),
+    x: left,
+    y: top,
     width,
     height,
     rotation: 0,
     style: {},
     bracketKind,
-    containedObjectIds: [],
+    side: "open",
+    containedObjectIds,
     compatibility: {
       sourceFormat: "chemdraft-native",
       warnings: [],
       unknown: {}
     }
   };
+  const closing: BracketObject = { ...object, id: allocateId("bracket"),
+    x: left + boxWidth - width, side: "close", pairId: object.id };
+  object.pairId = object.id;
 
   return applyPatches(
     document,
     [
       { op: "addObject", pageId: page.id, object },
-      { op: "setSelection", pageId: page.id, objectIds: [object.id] }
+      { op: "addObject", pageId: page.id, object: closing },
+      { op: "setSelection", pageId: page.id, objectIds: [object.id, closing.id] }
     ],
     { now: phase4Timestamp }
   );
@@ -14560,6 +14577,8 @@ export function duplicateSelectedDocumentObjects(
     patches.push({ op: "addObject", pageId: page.id, object: duplicateGroup });
   }
 
+  remapCopiedBracketPairs(duplicates, duplicateIdByOriginalId);
+
   // The copies of what was selected at the top level: a nested group's copy is reached through its
   // parent's, as the original was.
   const selectionIds = [
@@ -14759,6 +14778,17 @@ export function parseSelectionClipboardPayload(
   }
 }
 
+function remapCopiedBracketPairs(objects: DocumentObject[], idMap: ReadonlyMap<string, string>) {
+  const pairs = new Map<string, string>();
+  for (const object of objects) if (object.type === "bracket") {
+    if (object.pairId) {
+      const pairId = pairs.get(object.pairId) ?? object.id;
+      pairs.set(object.pairId, pairId); object.pairId = pairId;
+    }
+    object.containedObjectIds = object.containedObjectIds.map(id => idMap.get(id) ?? id);
+  }
+}
+
 export function pasteSelectionClipboardPayload(
   document: ChemDraftDocument,
   payload: ChemDraftSelectionClipboardPayload,
@@ -14824,6 +14854,8 @@ export function pasteSelectionClipboardPayload(
     idBySourceId.set(group.id, pastedGroup.id);
     patches.push({ op: "addObject", pageId: page.id, object: pastedGroup });
   }
+
+  remapCopiedBracketPairs([...pastedById.values()], idBySourceId);
 
   const selectedIds = payload.selectionIds
     .map((sourceId) => idBySourceId.get(sourceId))
@@ -19716,6 +19748,7 @@ export function analysisSubjectKey(molecule: MoleculeObject): string {
  * Keep this import on demand: copying a drawing must not load RDKit at application startup.
  */
 export async function copyAsSmiles(document: ChemDraftDocument, warningsOut?: string[]): Promise<string | undefined> {
+  reportRepeatUnitExportWarnings(document, "SMILES", warningsOut);
   const molecules = copyAsScopeMolecules(document);
   if (molecules.length === 0) {
     return undefined;
@@ -19747,6 +19780,7 @@ export function copyAsMolfile(
   flavor: "v2000" | "v3000",
   warningsOut?: string[]
 ): string | undefined {
+  reportRepeatUnitExportWarnings(document, "MOL", warningsOut);
   const scoped = copyAsMergedMolecule(copyAsScopeMolecules(document));
   if (!scoped) {
     return undefined;
@@ -19766,6 +19800,12 @@ export function copyAsMolfile(
 
 const copyAsPagePaddingPx = 16;
 
+function reportRepeatUnitExportWarnings(document: ChemDraftDocument, format: string, warningsOut?: string[]) {
+  const messages = repeatUnitExportWarnings(document, format).map(warning => warning.message);
+  if (messages.length && !warningsOut) throw new Error(messages.join(" "));
+  warningsOut?.push(...messages);
+}
+
 /**
  * A temporary document holding only the copy scope, translated onto a page fitted to its bounds —
  * so a copied SVG/PNG/CDXML frames the selection instead of reproducing a mostly-empty page.
@@ -19780,6 +19820,7 @@ export function copyAsScopedDocument(document: ChemDraftDocument): ChemDraftDocu
   const bounds = objects.map((object): ObjectBounds => {
     // Preserve the exact legacy crop for unrotated objects, including stored frames
     // that differ from their ink bounds (labels, table overflow and art effects).
+    if (object.type === "bracket") return bracketVisualBounds(object);
     if (object.rotation === 0) return object;
     if (object.type === "graphic") return documentObjectVisualBounds(object, page.objects);
     if (object.type === "text") return textVisualBoundsForArrangement(object);

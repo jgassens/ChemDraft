@@ -1,4 +1,5 @@
 import type { ExportFormatId } from "./formats";
+export { repeatUnitExportWarnings } from "./repeatUnits";
 
 export { exportDocumentToCdxml, type CdxmlTextExportOptions } from "./cdxml";
 export {

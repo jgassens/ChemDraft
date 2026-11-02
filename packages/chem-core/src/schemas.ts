@@ -622,6 +622,10 @@ export const TableObjectSchema = TableObjectShapeSchema.superRefine(refineTable)
 export const BracketObjectSchema = BaseObjectSchema.extend({
   type: z.literal("bracket"),
   bracketKind: degradingEnum(["square", "round", "curly", "polymer", "unknown"]),
+  // Additive v1 fields: an absent side remains the original opening glyph.
+  side: z.enum(["open", "close"]).optional(),
+  pairId: IdSchema.optional(),
+  repeatUnit: z.boolean().optional(),
   label: z.string().optional(),
   containedObjectIds: z.array(IdSchema).default([])
 }).strict();

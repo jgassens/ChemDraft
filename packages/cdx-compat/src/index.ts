@@ -15,6 +15,7 @@ import {
   type Anchor,
   type ArrowObject,
   type BondRef,
+  type BracketObject,
   type ChemDraftDocument,
   type CompatibilityWarning,
   type CrossingOverride,
@@ -28,9 +29,10 @@ import {
   type MoleculeObject,
   type Point,
   type TextObject,
-  type TableObject
+  type TableObject,
+  type UnknownCompatibilityObject
 } from "@chemdraft/chem-core";
-import { measureTextRun, planTableLayout } from "@chemdraft/layout-engine";
+import { bracketLabelPlan, measureTextRun, planTableLayout } from "@chemdraft/layout-engine";
 import { bondedElementLabelMeaning } from "@chemdraft/template-library";
 import { planMoleculeAtomLabels } from "@chemdraft/layout-engine";
 import { sha256Hex, utf8Bytes, utf8String } from "./sha256";
@@ -493,6 +495,7 @@ function buildVisiblePageChildren(page: DocumentPage, warnings: CompatibilityCon
   const visibleChildren = page.objects
     .map((object) => exportVisibleObject(object, context, allocator, warnings, objectsById, fonts))
     .filter((child) => child.length > 0);
+  visibleChildren.push(...exportBracketPairs(page, context, allocator, warnings));
   return visibleChildren.length > 0 ? `\n${visibleChildren.map((child) => indent(child, 4)).join("\n")}\n  ` : "";
 }
 
@@ -523,9 +526,16 @@ function exportVisibleObject(
     return exportGraphicObject(object, context.ids, allocator, warnings);
   }
   if (object.type === "bracket") {
+    if (canExportBracketGlyph(object) && (!object.repeatUnit || exportableBracketPair(object, objectsById))) {
+      const raw = object.compatibility?.unknown.cdxmlBracket;
+      if (isRecord(raw) && isRecord(raw.attributes) && hasUnmappedBracketStyle(raw.attributes)) warnings.push({
+        code: "cdxml.bracket_style_payload_only", sourceObjectId: object.id,
+        message: "Unsupported original bracket styling is preserved only in the ChemDraft payload; the default native glyph style is written to visible CDXML." });
+      return exportBracketGlyph(object, context.ids, allocator);
+    }
     warnings.push({
       code: "cdxml.bracket_payload_only",
-      message: `Native ${object.bracketKind} brackets have no CDXML equivalent; the exported file keeps only a placeholder graphic, and the bracket is preserved exactly only in the embedded ChemDraft payload.`,
+      message: `CDXML mapping for this ${object.bracketKind} bracket's shape or transform is unsupported; only a placeholder graphic is written, and the bracket is preserved exactly in the embedded ChemDraft payload.`,
       sourceObjectId: object.id
     });
     return exportGraphicObject({
@@ -564,6 +574,64 @@ function exportVisibleObject(
     sourceObjectId: object.id
   });
   return "";
+}
+
+function canExportBracketGlyph(object: BracketObject): boolean {
+  return (object.bracketKind === "square" || object.bracketKind === "round") && object.rotation === 0 &&
+    !(Number(object.style.tiltXDegrees) || Number(object.style.tiltYDegrees));
+}
+
+function hasUnmappedBracketStyle(attributes: Record<string, unknown>): boolean {
+  return Object.keys(attributes).some(key => !["id", "GraphicType", "BracketType", "BoundingBox", "LineWidth"].includes(key)) ||
+    (attributes.LineWidth !== undefined && Number(attributes.LineWidth) !== cssPxToCdxml(1.5));
+}
+
+function exportableBracketPair(object: BracketObject, objects: ReadonlyMap<string, DocumentObject>): boolean {
+  const pair = [...objects.values()].filter((item): item is BracketObject => item.type === "bracket" &&
+    !!object.pairId && item.pairId === object.pairId);
+  return pair.length === 2 && pair.every(item => canExportBracketGlyph(item) && item.bracketKind === object.bracketKind &&
+    !!item.repeatUnit === !!object.repeatUnit) && pair.some(item => item.side === "open") && pair.some(item => item.side === "close");
+}
+
+function exportBracketGlyph(object: BracketObject, ids: Map<string, string>, allocator: IdAllocator): string {
+  // A reversed horizontal box reverses the single glyph's opening direction.
+  const box = object.side === "close" ? { ...object, x: object.x + object.width, width: -object.width } : object;
+  return `<graphic id="${idFor(ids, object.id, allocator)}" GraphicType="Bracket" BracketType="${object.bracketKind === "round" ? "Round" : "Square"}" BoundingBox="${formatBoundingBox(box)}" LineWidth="${formatNumber(cssPxToCdxml(1.5))}"/>`;
+}
+
+function exportBracketPairs(page: DocumentPage, context: VisibleExportContext, allocator: IdAllocator,
+  warnings: CompatibilityConversionWarning[]): string[] {
+  const pairs = new Map<string, BracketObject[]>();
+  for (const object of page.objects) if (object.type === "bracket" && canExportBracketGlyph(object) && object.pairId) {
+    const pair = pairs.get(object.pairId) ?? []; pair.push(object); pairs.set(object.pairId, pair);
+  }
+  const groups: string[] = [];
+  const objectsById = new Map(page.objects.map(object => [object.id, object]));
+  for (const pair of pairs.values()) {
+    if (!exportableBracketPair(pair[0], objectsById)) continue;
+    const closing = pair.find(object => object.side === "close")!;
+    const requestedMembers = [...new Set(pair.flatMap(object => object.containedObjectIds))];
+    const contained = requestedMembers
+      .filter(id => page.objects.some(object => object.id === id && object.type === "molecule"));
+    if (contained.length !== requestedMembers.length) warnings.push({ code: "cdxml.bracket_membership_payload_only", sourceObjectId: closing.id,
+      message: "Bracket membership for missing or non-molecule objects is preserved only in the ChemDraft payload; visible CDXML membership includes whole molecule objects only." });
+    const members = contained.map(id => idFor(context.ids, id, allocator));
+    const repeat = pair.some(object => object.repeatUnit);
+    const attrs = [`id="${allocator.next()}"`, ...(members.length ? [`BracketedObjectIDs="${members.join(" ")}"`] : []),
+      ...(repeat ? ['BracketUsage="SRU"'] : [])];
+    const attachments = pair.map(object => `<bracketattachment id="${allocator.next()}" GraphicID="${idFor(context.ids, object.id, allocator)}"/>`);
+    groups.push(`<bracketedgroup ${attrs.join(" ")}>${attachments.join("")}</bracketedgroup>`);
+    if (repeat) {
+      const label = bracketLabelPlan(closing)!;
+      // Standard visible text, without inventing a repeat-label association attribute.
+      groups.push(`<t id="${allocator.next()}" p="${formatPoint({ x: closing.x + label.x, y: closing.y + label.y })}"><s size="${formatNumber(cssPxToCdxml(label.fontSize))}">${escapeXmlText(label.text)}</s></t>`);
+      warnings.push({ code: "cdxml.repeat_label_payload_only", sourceObjectId: closing.id,
+        message: "The SRU bracket and its label text are visible CDXML, but the editable repeat-label association is preserved only in the ChemDraft payload; a verified CDXML repeat-label mapping is not yet implemented." });
+      warnings.push({ code: "cdxml.repeat_connectivity_not_represented", sourceObjectId: closing.id,
+        message: "Repeat-unit brackets carry whole-object membership only. Polymer crossing bonds and head-to-tail connectivity are not represented; the drawn molecular graph is unchanged." });
+    }
+  }
+  return groups;
 }
 
 function createVisibleExportContext(page: DocumentPage): VisibleExportContext {
@@ -1620,6 +1688,7 @@ function importPageObjects(
   colorTable: CdxmlColorTable
 ): { objects: DocumentObject[]; crossings: CrossingOverride[] } {
   const objects: DocumentObject[] = [];
+  const bracketGroups: XmlElementView[] = [];
   const context: ImportPageContext = {
     warnings,
     bondRefsByCdxmlId: new Map(),
@@ -1650,6 +1719,10 @@ function importPageObjects(
     }
     if (element.name === "graphic") {
       return single(importGraphic(element, pageIndex, objectIndex, context));
+    }
+    if (element.name === "bracketedgroup") {
+      bracketGroups.push(element);
+      return { objects: [], rootIds: [] };
     }
     if (element.name === "arrow") {
       return single(importArrowGraphic(element, pageIndex, objectIndex, context));
@@ -1719,6 +1792,44 @@ function importPageObjects(
       continue;
     }
     objects.push(...importElement(element).objects);
+  }
+  for (const group of bracketGroups) {
+    const attachments = childElements(group, "bracketattachment");
+    const pair = attachments.map(attachment => objects.find((object): object is BracketObject =>
+      object.type === "bracket" && object.compatibility?.originalId === attachment.attributes.GraphicID));
+    if (pair.length !== 2 || pair.some(object => !object) || pair[0] === pair[1]) {
+      warnings.push({ code: "cdxml.bracket_group_preserved", message: "Unsupported bracket group membership or attachment count was preserved as an unknown compatibility object." });
+      objects.push(importUnknownCompatibilityObject(group, pageIndex, objectIndex++));
+      continue;
+    }
+    const repeatUnit = group.attributes.BracketUsage === "SRU";
+    const unsupportedUsage = group.attributes.BracketUsage && !repeatUnit;
+    const crossing = attachments.some(attachment => childElements(attachment, "crossingbond").length > 0);
+    const containedIds = splitCdxmlIdList(group.attributes.BracketedObjectIDs);
+    const containedObjects = containedIds.map(id => objects.find(object => object.compatibility?.originalId === id));
+    const extraData = Object.keys(group.attributes).some(key => !["id", "BracketedObjectIDs", "BracketUsage"].includes(key)) ||
+      group.children.some(child => { const element = elementView(child); return element && element.name !== "bracketattachment"; }) ||
+      attachments.some(attachment => Object.keys(attachment.attributes).some(key => !["id", "GraphicID"].includes(key)));
+    const unsupported = unsupportedUsage || crossing || extraData || containedObjects.some(object => !object) ||
+      (pair as BracketObject[]).some(bracket => bracket.side !== "open" && bracket.side !== "close") ||
+      pair[0]!.side === pair[1]!.side;
+    const pairId = `cdxml_bracket_pair_${pageIndex + 1}_${objectIndex++}`;
+    for (const bracket of pair as BracketObject[]) {
+      bracket.pairId = pairId;
+      bracket.containedObjectIds = containedObjects.flatMap(object => object ? [object.id] : []);
+      if (repeatUnit) {
+        bracket.repeatUnit = true;
+        // Do not invent an n beside independently preserved label text (which may say m).
+        if (bracket.side === "close") bracket.label = "";
+      }
+      bracket.compatibility!.unknown.bracketedGroup = group;
+    }
+    if (repeatUnit) warnings.push({ code: "cdxml.repeat_label_unassociated",
+      message: "Imported SRU brackets without interpreting their repeat label. Separate label text is retained independently because its repeat-label association is unsupported." });
+    if (unsupported) {
+      warnings.push({ code: "cdxml.bracket_semantics_preserved", message: "Unsupported bracket usage, atom membership or crossing-bond attachments were preserved as an unknown compatibility object; they were not interpreted as polymer chemistry." });
+      objects.push(importUnknownCompatibilityObject(group, pageIndex, objectIndex++));
+    }
   }
   return {
     objects,
@@ -2623,12 +2734,28 @@ function importGraphic(
   pageIndex: number,
   objectIndex: number,
   context: ImportPageContext
-): GraphicObject | ArrowObject | undefined {
+): GraphicObject | ArrowObject | BracketObject | UnknownCompatibilityObject | undefined {
   if (element.attributes.SupersededBy) {
     return undefined;
   }
 
   const box = parseBoundingBox(element.attributes.BoundingBox);
+  if (element.attributes.GraphicType === "Bracket" && !["Square", "Round"].includes(element.attributes.BracketType)) {
+    context.warnings.push({ code: "cdxml.bracket_type_preserved",
+      message: `Unsupported CDXML bracket type "${element.attributes.BracketType ?? "unspecified"}" was preserved as an unknown compatibility object.` });
+    return importUnknownCompatibilityObject(element, pageIndex, objectIndex);
+  }
+  if (element.attributes.GraphicType === "Bracket" && ["Square", "Round"].includes(element.attributes.BracketType)) {
+    const [x1, , x2] = (element.attributes.BoundingBox ?? "").split(/\s+/).map(Number);
+    if (hasUnmappedBracketStyle(element.attributes)) {
+      context.warnings.push({ code: "cdxml.bracket_style_preserved", sourceObjectId: `cdxml_bracket_${pageIndex + 1}_${objectIndex}`,
+        message: "Bracket styling that has no native mapping was preserved in compatibility metadata; the default native glyph style is displayed." });
+    }
+    return { id: `cdxml_bracket_${pageIndex + 1}_${objectIndex}`, type: "bracket", ...box, rotation: 0, style: {},
+      bracketKind: element.attributes.BracketType === "Round" ? "round" : "square", side: x1 > x2 ? "close" : "open",
+      containedObjectIds: [], compatibility: { sourceFormat: "cdxml", originalId: element.attributes.id,
+        warnings: [], unknown: { cdxmlBracket: element } } };
+  }
   if (element.attributes.GraphicType === "Line" && element.attributes.ArrowType) {
     // ArrowType="HalfHead" is a single-barbed (fishhook) arrow: one electron, not two. Mapping it
     // onto a full reaction arrow asserted different chemistry, and a re-export then laundered it to
@@ -3085,7 +3212,7 @@ function unionObjectBounds(
   return { x: left, y: top, width: right - left, height: bottom - top };
 }
 
-function importUnknownCompatibilityObject(element: XmlElementView, pageIndex: number, objectIndex: number): DocumentObject {
+function importUnknownCompatibilityObject(element: XmlElementView, pageIndex: number, objectIndex: number): UnknownCompatibilityObject {
   return {
     id: `cdxml_unknown_${pageIndex + 1}_${objectIndex}`,
     type: "unknown-compatibility-object",
