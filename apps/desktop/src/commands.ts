@@ -201,7 +201,46 @@ export const copyAsMenuItems: ReadonlyArray<{ commandId: string; label: string }
   { commandId: "clipboard.copyAs.png", label: "PNG" }
 ];
 
+export const fragmentSproutCommands = [
+  ["cyclopropyl", "Cyclopropyl"], ["cyclobutyl", "Cyclobutyl"],
+  ["alkyne", "Alkyne"], ["cyclopentadienyl", "Cyclopentadienyl"], ["phenyl", "Phenyl"]
+] as const;
+
+export type FragmentSproutKind = typeof fragmentSproutCommands[number][0];
+
+export function fragmentSproutCommandId(kind: FragmentSproutKind): string {
+  return `atom.sproutFragmentAtHoveredAtom.${kind}`;
+}
+
+export function fragmentSproutKindForCommand(commandId: string): FragmentSproutKind | undefined {
+  return fragmentSproutCommands.find(([kind]) => fragmentSproutCommandId(kind) === commandId)?.[0];
+}
+
+// Case-sensitive keys must stay free of tool/command shortcuts in BOTH presets.
+// In particular, v selects in the default preset and j selects benzene in the alternate preset.
+export const fragmentAtomDrawingHotkeys: Readonly<Record<string, string>> = {
+  g: fragmentSproutCommandId("cyclopropyl"),
+  u: fragmentSproutCommandId("cyclobutyl"),
+  z: fragmentSproutCommandId("alkyne"),
+  G: fragmentSproutCommandId("cyclopentadienyl"),
+  J: fragmentSproutCommandId("phenyl")
+};
+
+export const fragmentBondDrawingHotkeys: Readonly<Record<string, string>> = {
+  g: "bond.fuseRingAtHoveredBond.cyclopropane",
+  z: "bond.fuseDieneAtHoveredBond"
+};
+
 export const editActions: CommandSpec[] = [
+  ...fragmentSproutCommands.map(([kind, label]): CommandSpec => ({
+    id: fragmentSproutCommandId(kind), title: `Sprout ${label} at Hovered Atom`,
+    icon: "bond", source: "core", category: "edit", description: `Attach a ${label} fragment to the hovered atom`
+  })),
+  { id: "bond.fuseRingAtHoveredBond.cyclopropane", title: "Fuse 3-Membered Ring at Hovered Bond",
+    icon: "ring3", source: "core", category: "edit", description: "Fuse a cyclopropane onto the hovered bond" },
+  { id: "bond.fuseDieneAtHoveredBond", title: "Fuse Cyclopentadiene at Hovered Bond",
+    icon: "ring", source: "core", category: "edit", description: "Fuse a cyclopentadiene onto the hovered bond" },
+
   {
     id: "atom.addSingleBondToHoveredAtom",
     title: "Add Single Bond to Hovered Atom",
@@ -287,11 +326,11 @@ export const editActions: CommandSpec[] = [
   },
   {
     id: "atom.sproutGemDimethylAtHoveredAtom",
-    title: "Add gem-Dimethyl to Hovered Atom",
+    title: "Add gem-Dimethyl or Isopropyl to Hovered Atom",
     icon: "bond",
     source: "core",
     category: "edit",
-    description: "Grow two methyl groups from the hovered atom"
+    description: "Grow two methyl groups, or attach isopropyl when carbon has fewer than two free valences"
   },
   {
     id: "atom.addCyclicBondToHoveredAtom",
@@ -399,12 +438,12 @@ export const editActions: CommandSpec[] = [
   },
   {
     id: "atom.addCarbonylToHoveredAtom",
-    title: "Add Carbonyl to Hovered Carbon",
+    title: "Add Carbonyl or Oxo to Hovered Atom",
     icon: "bond",
     source: "core",
     shortcut: "K",
     category: "edit",
-    description: "Grow a neutral C=O from the hovered native carbon atom"
+    description: "Add C=O at carbon, or add =O directly at sulfur or phosphorus"
   },
   {
     id: "atom.addPositiveChargeToHoveredAtom",

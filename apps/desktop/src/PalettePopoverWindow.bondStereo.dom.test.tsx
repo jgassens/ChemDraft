@@ -196,7 +196,7 @@ async function open(keyboardOpen = false) {
         { id: "molecule.bondStereo:flipped", title: "Use the other geometry (E)", enabled: true, active: false }
       ] } }));
   expect(native.show).toHaveBeenCalledTimes(1);
-  expect(native.show).toHaveBeenCalledWith(keyboardOpen ? "focus" : "preserve");
+  expect(native.show).toHaveBeenCalledWith(keyboardOpen ? "focus" : "preserve", "flyout");
   expect(container.querySelector('[role="dialog"]')?.getAttribute("aria-label")).toBe("E/Z not specified");
   expect(container.querySelector("p")?.textContent).toBe("This double bond's geometry wasn't given, so ChemDraft shows it as either E or Z.");
   return [...container.querySelectorAll("button")];
@@ -281,7 +281,7 @@ describe("open-bond native popover body", () => {
       await act(async () => native.content?.({ toolsetId: "core.art", kind: "artColor" }));
       // Keep the shared transport default: Rust maps non-E/Z reveals to Preserve,
       // so the color field borrows the keyboard through its input lease.
-      expect(native.show).toHaveBeenCalledWith("focus");
+      expect(native.show).toHaveBeenCalledWith("focus", "artColor");
       const input = container.querySelector<HTMLInputElement>('input[type="text"]')!;
       expect(input).not.toBeNull();
       await act(async () => input.focus());

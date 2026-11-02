@@ -4319,6 +4319,9 @@ async fn open_toolset_popover(
         // popover away from its anchor. An explicit LogicalPosition set is the final word in
         // both the warm and cold paths.
         configure_toolset_popover_window(&window, focus_mode)?;
+        window
+            .set_title(toolset_popover_title(&label, &kind))
+            .map_err(|error| error.to_string())?;
         set_window_global_logical_position(&window, x, y)?;
         return Ok(());
     }
@@ -4362,6 +4365,16 @@ async fn prewarm_toolset_tooltip(app: tauri::AppHandle) -> Result<(), String> {
     build_toolset_tooltip_window(&app)
 }
 
+fn toolset_popover_title(label: &str, kind: &str) -> &'static str {
+    if label == toolset_popover_window_label("core.bondStereo") {
+        "E/Z not specified"
+    } else if kind == "artColor" {
+        "ChemDraft color picker"
+    } else {
+        "ChemDraft tools"
+    }
+}
+
 /// The actual builder configuration is also the test seam for native creation.
 /// `parent` is an owner on Windows (not a child HWND). Keep macOS popovers unparented:
 /// AppKit child windows can reveal hidden/prewarmed windows and alter their level/Spaces behavior.
@@ -4379,12 +4392,7 @@ fn toolset_popover_window_config(
             format!("/?window=toolsetPopover&toolsetId={toolset_id}&kind={kind}{prewarm_param}")
                 .into(),
         ),
-        title: if toolset_id == "core.bondStereo" {
-            "E/Z not specified"
-        } else {
-            "ChemDraft color picker"
-        }
-        .into(),
+        title: toolset_popover_title(&toolset_popover_window_label(toolset_id), kind).into(),
         #[cfg(windows)]
         parent: Some(MAIN_WINDOW_LABEL.into()),
         #[cfg(not(windows))]
@@ -4624,17 +4632,28 @@ fn raise_among_owned_windows<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Re
 fn show_toolset_popover_window(
     window: tauri::WebviewWindow,
     focus_mode: Option<ToolsetPopoverFocusMode>,
+    kind: Option<String>,
 ) -> Result<(), String> {
+    if !window.label().starts_with("toolset-popover-") {
+        return Err("Only toolset popovers may reveal popover content".into());
+    }
     if utility_windows_suspended() {
         return Ok(());
+    }
+    // The page owns the live content, including a prewarmed/reused Art window switching
+    // between its colour picker and command flyouts. Titles are fixed native strings.
+    if let Some(kind) = kind {
+        window
+            .set_title(toolset_popover_title(window.label(), &kind))
+            .map_err(|error| error.to_string())?;
     }
     let focus_mode =
         effective_toolset_popover_focus_mode(window.label(), focus_mode.unwrap_or_default());
     configure_toolset_popover_window(&window, focus_mode)?;
     #[cfg(target_os = "macos")]
     if focus_mode == ToolsetPopoverFocusMode::Preserve {
-        // Tao's show() calls makeKeyAndOrderFront. Order this NonactivatingPanel
-        // front without making it key, even when the real mouse granted activation.
+        // TaoWindow subclasses NSWindow; focusable(false) guards canBecomeKeyWindow.
+        // Use orderFront rather than show's makeKeyAndOrderFront to keep the document key.
         let target = window.clone();
         run_on_main_thread_blocking(&window, move || {
             configure_toolset_utility_window_on_main_thread(&target, true)
@@ -6782,6 +6801,10 @@ fn create_app_menu_for_toolsets<R: Runtime>(
                         }),
                     )?,
                     &PredefinedMenuItem::separator(app)?,
+                    #[cfg(not(target_os = "macos"))]
+                    &preferences_menu_item(app)?,
+                    #[cfg(not(target_os = "macos"))]
+                    &PredefinedMenuItem::separator(app)?,
                     // macOS: Sparkle's check. Windows: the Tauri updater flow in the webview
                     // (appUpdates.ts). Linux has no update channel yet, so no item there.
                     #[cfg(any(target_os = "macos", windows))]
@@ -7087,6 +7110,8 @@ fn create_native_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Resul
         &[
             &PredefinedMenuItem::about(app, None, Some(about_metadata))?,
             &PredefinedMenuItem::separator(app)?,
+            &preferences_menu_item(app)?,
+            &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::services(app, None)?,
             &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::hide(app, None)?,
@@ -7153,19 +7178,21 @@ fn create_page_setup_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Resul
     )
 }
 
-fn create_view_menu<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    entries: &[ToolbarMenuEntry],
-    view_state: ViewMenuState,
-) -> tauri::Result<Submenu<R>> {
-    let preferences = MenuItem::with_id(
+fn preferences_menu_item<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<MenuItem<R>> {
+    MenuItem::with_id(
         app,
         PREFERENCES_TOGGLE_COMMAND_ID,
         "Preferences…",
         true,
         Some("CmdOrCtrl+,"),
-    )?;
-    let preferences_separator = PredefinedMenuItem::separator(app)?;
+    )
+}
+
+fn create_view_menu<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    entries: &[ToolbarMenuEntry],
+    view_state: ViewMenuState,
+) -> tauri::Result<Submenu<R>> {
     // Real checked state (from JS), not a hardcoded true — otherwise a full-menu rebuild would
     // re-check these while the feature is off, desyncing the menu from the document.
     let scheme = current_keybinding_scheme(app);
@@ -7221,8 +7248,6 @@ fn create_view_menu<R: Runtime>(
         "View",
         true,
         &[
-            &preferences,
-            &preferences_separator,
             &show_rulers,
             &show_crosshairs,
             &separator,
@@ -7418,7 +7443,7 @@ fn configure_toolset_utility_window_on_main_thread<R: Runtime>(
         | NSWindowStyleMask::UtilityWindow
         | NSWindowStyleMask::NonactivatingPanel;
     ns_window.setStyleMask(style);
-    ns_window.setLevel(toolset_utility_window_level());
+    ns_window.setLevel(toolset_utility_window_level(window.label()));
     ns_window.setHidesOnDeactivate(toolset_window_hides_on_deactivate());
     ns_window.setCanHide(true);
     ns_window.setIgnoresMouseEvents(false);
@@ -7437,7 +7462,7 @@ fn configure_toolset_utility_window_on_main_thread<R: Runtime>(
     window
         .set_focusable(toolset_window_focusable())
         .map_err(|error| error.to_string())?;
-    // A hidden pre-warm build (the popover's first creation) sets its NSPanel traits here but must
+    // A hidden pre-warm build (the popover's first creation) sets its utility traits here but must
     // NOT be ordered front yet — it reveals itself once its webview has painted real content, so the
     // user never sees a blank window loading. Every other caller shows immediately.
     if order_front {
@@ -7606,8 +7631,16 @@ fn toolset_window_focusable() -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn toolset_utility_window_level() -> NSWindowLevel {
-    NSFloatingWindowLevel
+fn toolset_utility_window_level(label: &str) -> NSWindowLevel {
+    // AppKit can bring the clicked palette forward when the opening mouse press ends.
+    // orderFront only wins within a level: popovers need their own higher level on every
+    // creation/reuse/reveal, so palette clicks and focus leases cannot cover them.
+    // Windows keeps its existing document ownership and nonactivating HWND_TOP raise.
+    if label.starts_with("toolset-popover-") {
+        NSFloatingWindowLevel + 1
+    } else {
+        NSFloatingWindowLevel
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -9545,6 +9578,8 @@ mod tests {
     fn keyboard_popovers_and_color_picker_inputs_remain_focusable() {
         for (toolset, kind, prewarm) in [
             ("core.bondStereo", "flyout", false),
+            ("core.main", "flyout", false),
+            ("core.main", "artColor", true),
             ("core.art", "artColor", false),
             ("core.art", "artColor", true),
         ] {
@@ -9556,6 +9591,16 @@ mod tests {
                 ToolsetPopoverFocusMode::Focus,
             );
             assert!(config.focusable);
+            assert_eq!(
+                config.title,
+                if toolset == "core.bondStereo" {
+                    "E/Z not specified"
+                } else if kind == "artColor" {
+                    "ChemDraft color picker"
+                } else {
+                    "ChemDraft tools"
+                }
+            );
             assert!(!config.focus);
             assert!(!config.visible);
             #[cfg(windows)]
@@ -9563,6 +9608,24 @@ mod tests {
             #[cfg(not(windows))]
             assert_eq!(config.parent, None);
         }
+    }
+
+    #[test]
+    fn reused_popover_titles_follow_content() {
+        let art = toolset_popover_window_label("core.art");
+        assert_eq!(
+            toolset_popover_title(&art, "artColor"),
+            "ChemDraft color picker"
+        );
+        assert_eq!(toolset_popover_title(&art, "flyout"), "ChemDraft tools");
+        assert_eq!(
+            toolset_popover_title(&art, "artColor"),
+            "ChemDraft color picker"
+        );
+        assert_eq!(
+            toolset_popover_title(&toolset_popover_window_label("core.bondStereo"), "flyout"),
+            "E/Z not specified"
+        );
     }
 
     #[test]
@@ -9587,8 +9650,17 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn toolset_utility_windows_float_above_document_windows() {
-        expect_true(toolset_utility_window_level() > objc2_app_kit::NSNormalWindowLevel);
+    fn toolset_popover_level_stays_above_palettes_after_release() {
+        let palette_level = toolset_utility_window_level(&toolset_window_label("core.main"));
+        assert_eq!(palette_level, NSFloatingWindowLevel);
+        assert!(palette_level > objc2_app_kit::NSNormalWindowLevel);
+        for toolset in ["core.main", "core.art", "core.bondStereo"] {
+            assert!(
+                toolset_utility_window_level(&toolset_popover_window_label(toolset))
+                    > palette_level,
+                "{toolset}: click ordering within the palette level must never cover a popover"
+            );
+        }
     }
 
     #[cfg(target_os = "macos")]

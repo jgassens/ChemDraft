@@ -50,6 +50,7 @@ describe("document window shortcuts", () => {
       hasSelection: true,
       hasSelectedMolecule: true,
       toolbars: [],
+      platform,
       keybindingScheme: scheme
     });
 
@@ -67,6 +68,8 @@ describe("document window shortcuts", () => {
       return resolved === item.commandId ? [] : [`${item.accelerator} → ${resolved ?? "nothing"} (menu: ${item.commandId})`];
     });
     expect(unbound).toEqual([]);
+    expect(registry.resolve({ key: ",", ...(platform === "macos" ? { metaKey: true } : { ctrlKey: true }) }))
+      .toBe("view.togglePreferences");
   });
 });
 

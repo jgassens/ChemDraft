@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { dismissToolsetPopovers, listenForToolsetPopoverDismiss, listenForToolsetPopoverContent, setToolsetPopoverContent,
-  TOOLSET_POPOVER_DISMISS_EVENT, toolsetPopoverTimestamp } from "./index";
+  TOOLSET_POPOVER_DISMISS_EVENT, toolsetPopoverTimestamp, openToolsetPopoverWindow, listenForToolsetPopoverRelease } from "./index";
 
 const transport = vi.hoisted(() => ({
   emit: vi.fn(async (_event: string, _payload?: unknown) => {}),
@@ -14,10 +14,28 @@ vi.mock("@tauri-apps/api/event", () => ({
     return () => { transport.receive = undefined; };
   })
 }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => {}) }));
 
 const host = window as typeof window & { __TAURI__?: unknown };
 beforeEach(() => { host.__TAURI__ = {}; vi.clearAllMocks(); });
 afterEach(() => { delete host.__TAURI__; });
+
+it("forwards the captured opening release once even if the button stops propagation", async () => {
+  const handler = vi.fn();
+  const stop = await listenForToolsetPopoverRelease(handler);
+  await openToolsetPopoverWindow("core.main", "flyout", 10, 20);
+  const button = document.createElement("button"); document.body.append(button);
+  button.addEventListener("pointerup", event => event.stopPropagation());
+  button.dispatchEvent(new Event("pointerup", { bubbles: true }));
+  await vi.waitFor(() => expect(transport.emit).toHaveBeenCalledWith("chemdraft://toolset-popover-release",
+    { toolsetId: "core.main", releasedAt: expect.any(Number) }));
+  button.dispatchEvent(new Event("pointerup", { bubbles: true }));
+  expect(transport.emit).toHaveBeenCalledTimes(1);
+  const payload = transport.emit.mock.calls[0][1];
+  transport.receive?.({ event: "chemdraft://toolset-popover-release", id: 1, payload });
+  expect(handler).toHaveBeenCalledWith(payload);
+  button.remove(); stop();
+});
 
 it("transports the original press timestamp through emit and listen without restamping on delivery", async () => {
   const handler = vi.fn();
