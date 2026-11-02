@@ -101,6 +101,7 @@ describe.each(["macos", "windows"] as const)("text paste formatting (%s)", platf
   });
 
   async function mount(payload: ClipboardReadPayload | string | Error = nativeClipboard("")) {
+    const expectNativeToolsetProbe = runtime.desktop;
     vi.mocked(invoke).mockImplementation(async command => {
       if (command === "read_clipboard_payload") {
         if (typeof payload === "string" || payload instanceof Error) throw payload;
@@ -120,6 +121,13 @@ describe.each(["macos", "windows"] as const)("text paste formatting (%s)", platf
       nativePalette: true,
       shortcutPlatform: platform
     })));
+    if (expectNativeToolsetProbe) {
+      // The desktop probe falls back in jsdom and can otherwise overwrite a later paste status.
+      await vi.waitFor(() => {
+        expect(container.querySelector('[role="status"]')?.textContent, "Native toolset startup probe did not settle")
+          .toContain("Native toolset windows unavailable; using in-window toolbars");
+      }, { timeout: 5_000 });
+    }
   }
 
   const objects = () => window.__CHEMDRAFT_AGENT__!.snapshot().document.pages[0]!.objects;
