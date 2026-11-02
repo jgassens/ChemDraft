@@ -25,6 +25,7 @@ import {
   applyPatches,
   nativeDrawingStyleFromObjectStyle,
   createDocumentHistory,
+  createCustomPageLayout,
   deserializeDocument,
   inchesToCssPx,
   moleculeToMolfileV2000,
@@ -131,6 +132,7 @@ import {
   applyNativeTemplateToolAtTarget,
   applyDocumentObjectProjectedPlaneTilt,
   planNativeTemplatePlacement,
+  nativeTemplatePlacementResult,
   applyNativeMoleculeEngineRelayout,
   prepareNativeMoleculeEngineRelayout,
   stereoPerceptionMolfile,
@@ -2168,12 +2170,12 @@ describe("Phase 4 document workflow", () => {
     expect(orbitalLobeTip(lobe).y).toBeCloseTo(atom.y, 6);
   });
 
-  it("keeps open-space orbital placement unchanged and holds lobe tips through snapped-drag and typed rotations", () => {
+  it("places open-space lobes from their tip and holds lobe tips through snapped-drag and typed rotations", () => {
     const blank = createPhase4Document("Lobe Rotation");
     const openSpaceLobe = createNativeArtGraphicObject(blank, { x: 400, y: 320 }, "tool.lobe");
     if (!openSpaceLobe) throw new Error("Expected orbital lobe.");
     expect(openSpaceLobe.x + openSpaceLobe.width / 2).toBeCloseTo(400, 6);
-    expect(openSpaceLobe.y + openSpaceLobe.height / 2).toBeCloseTo(320, 6);
+    expect(openSpaceLobe.y + openSpaceLobe.height).toBeCloseTo(320, 6);
     expect(openSpaceLobe.rotation).toBe(0);
 
     for (const commandId of ["tool.lobe", "tool.shadedLobe"]) {
@@ -18287,6 +18289,276 @@ describe("terminal geometry by hotkey and tool click", () => {
       .map((bond) => terminalAtom(after, bond.fromAtomId === source.id ? bond.toAtomId : bond.fromAtomId));
     expect(neighbors.map((neighbor) => separationDegrees(source, parent, neighbor)))
       .toEqual([expect.closeTo(120, 1), expect.closeTo(120, 1)]);
+  });
+
+  function edgeRingBond(y = 300): ChemDraftDocument {
+    const document = seededBond("single");
+    const molecule = terminalMolecule(document);
+    expect(document.pages[0].width).toBe(816);
+    return applyPatch(document, { op: "updateObject", objectId: molecule.id, changes: {
+      atoms: molecule.atoms.map((atom) => ({ ...atom, x: atom.id === "atom_001" ? 761 : 783, y }))
+    } });
+  }
+
+  for (const method of ["hotkey", "tool click"] as const) {
+    it.each([
+      ["3", "benzene"],
+      ["6", "cyclohexane"],
+      ["7", "cyclopentane"]
+    ] as const)(`${method} %s: refuses the %s ring 33 units from the right page edge and leaves the document unchanged`, (_key, template) => {
+      // No turn of the ring fits the page with every angle at the source at 90 degrees or more.
+      const document = edgeRingBond();
+      const snapshot = structuredClone(document);
+      const before = terminalMolecule(document);
+      const source = terminalAtom(before, "atom_002");
+      if (method === "hotkey") {
+        expect(nativeRingHotkeyAttachAtAtomTarget(document, atomTarget(before), template))
+          .toEqual({ document, refusal: "sprout-page-edge" });
+      } else {
+        expect(applyNativeTemplateToolAtTarget(document, atomTarget(before), source, template)).toBe(document);
+      }
+      expect(document).toEqual(snapshot);
+    });
+  }
+
+  // The right carbon of an ethane drawn left to right, `edge` units from the page's right edge.
+  function ethaneAtRightEdge(edge: number): ChemDraftDocument {
+    const seed = edgeRingBond();
+    const molecule = terminalMolecule(seed);
+    return applyPatch(seed, { op: "updateObject", objectId: molecule.id, changes: {
+      atoms: molecule.atoms.map((atom) => ({ ...atom, x: atom.id === "atom_001" ? 816 - edge - 22 : 816 - edge }))
+    } });
+  }
+  // Angles, in degrees, between the old bond and each of the two new ring bonds at the source.
+  function attachmentAngles(after: MoleculeObject): number[] {
+    const source = terminalAtom(after, "atom_002");
+    return after.bonds
+      .filter((bond) => bond.id !== "bond_001" && (bond.fromAtomId === source.id || bond.toAtomId === source.id))
+      .map((bond) => terminalAtom(after, bond.fromAtomId === source.id ? bond.toAtomId : bond.fromAtomId))
+      .map((neighbor) => separationDegrees(source, terminalAtom(after, "atom_001"), neighbor));
+  }
+
+  // A hexagon needs about 38 units of room to sit turned, with its two bonds at the source 90 and
+  // 150 degrees from the old bond (a pentagon sits at 126 and 126). Nearer the edge no turn gives
+  // every angle at the source 90 degrees or more, so the ring is refused and nothing changes.
+  // Coordinates are rounded to 0.1, so the angles are checked to half a degree.
+  const ringAtEdgeCases = [
+    ["3", "benzene", 6, 38.5, [90, 150]],
+    ["6", "cyclohexane", 6, 38.5, [90, 150]],
+    ["7", "cyclopentane", 5, 38.5, [126, 126]]
+  ] as const;
+  const ringRefusedAtEdgeCases = [
+    ["3", "benzene", 28.5], ["3", "benzene", 21.5],
+    ["6", "cyclohexane", 28.5], ["6", "cyclohexane", 21.5],
+    ["7", "cyclopentane", 28.5], ["7", "cyclopentane", 21.5]
+  ] as const;
+  for (const method of ["hotkey", "tool click"] as const) {
+    it.each(ringAtEdgeCases)(`${method} %s: %s attaches on the page about one bond from the right edge (%s units, angles %j)`, (_key, template, size, edge, expectedAngles) => {
+      const document = ethaneAtRightEdge(edge);
+      const before = terminalMolecule(document);
+      const source = terminalAtom(before, "atom_002");
+      const result = method === "hotkey"
+        ? nativeRingHotkeyAttachAtAtomTarget(document, atomTarget(before), template)
+        : { document: applyNativeTemplateToolAtTarget(document, atomTarget(before), source, template), refusal: undefined };
+      expect(result.refusal).toBeUndefined();
+      const after = terminalMolecule(result.document);
+      expect(after.atoms).toHaveLength(size + 1);
+      expect(after.bonds).toHaveLength(size + 1);
+      expect(after.atoms.slice(0, 2)).toEqual(before.atoms);
+      expect(after.bonds[0]).toEqual(before.bonds[0]);
+      const { width, height } = document.pages[0];
+      for (const atom of after.atoms) {
+        expect(atom.x).toBeGreaterThanOrEqual(0);
+        expect(atom.x).toBeLessThanOrEqual(width);
+        expect(atom.y).toBeGreaterThanOrEqual(0);
+        expect(atom.y).toBeLessThanOrEqual(height);
+      }
+      const angles = attachmentAngles(after).sort((left, right) => left - right);
+      expect(angles).toHaveLength(2);
+      angles.forEach((angle, index) => expect(angle).toBeCloseTo(expectedAngles[index]!, 0));
+      for (const angle of angles) expect(angle).toBeGreaterThanOrEqual(90 - 0.5);
+    });
+
+    it.each(ringRefusedAtEdgeCases)(`${method} %s: %s is refused about one bond from the right edge (%s units) and the document is unchanged`, (_key, template, edge) => {
+      const document = ethaneAtRightEdge(edge);
+      const snapshot = structuredClone(document);
+      const before = terminalMolecule(document);
+      const source = terminalAtom(before, "atom_002");
+      if (method === "hotkey") {
+        expect(nativeRingHotkeyAttachAtAtomTarget(document, atomTarget(before), template))
+          .toEqual({ document, refusal: "sprout-page-edge" });
+      } else {
+        expect(applyNativeTemplateToolAtTarget(document, atomTarget(before), source, template)).toBe(document);
+      }
+      expect(document).toEqual(snapshot);
+    });
+  }
+
+  it.each(["hotkey", "tool click"] as const)("%s refuses a ring one bond from the edge when atoms block every turn", (method) => {
+    const seed = ethaneAtRightEdge(21.5);
+    const molecule = terminalMolecule(seed);
+    const source = terminalAtom(molecule, "atom_002");
+    const document = applyPatch(seed, { op: "updateObject", objectId: molecule.id, changes: {
+      atoms: [...molecule.atoms,
+        { id: "atom_003", element: "C", x: source.x, y: source.y - 22, formalCharge: 0 },
+        { id: "atom_004", element: "C", x: source.x, y: source.y + 22, formalCharge: 0 }]
+    } });
+    const snapshot = structuredClone(document);
+    const target = atomTarget(terminalMolecule(document));
+    for (const template of ["benzene", "cyclohexane", "cyclopentane"] as const) {
+      if (method === "hotkey") {
+        expect(nativeRingHotkeyAttachAtAtomTarget(document, target, template))
+          .toEqual({ document, refusal: "sprout-page-edge" });
+      } else {
+        expect(applyNativeTemplateToolAtTarget(document, target, source, template)).toBe(document);
+      }
+    }
+    expect(document).toEqual(snapshot);
+  });
+
+  it.each(["hotkey", "tool click"] as const)("%s routes a rotated ring around atoms blocking the turns that pass the angle rule", (method) => {
+    // 38.5 units from the edge: the +/-30 turns reach 90 degrees, so only clearance can reject them.
+    const seed = ethaneAtRightEdge(38.5);
+    const molecule = terminalMolecule(seed);
+    const attach = (document: ChemDraftDocument) => {
+      const before = terminalMolecule(document);
+      const source = terminalAtom(before, "atom_002");
+      return method === "hotkey"
+        ? nativeRingHotkeyAttachAtAtomTarget(document, atomTarget(before), "cyclohexane")
+        : { document: applyNativeTemplateToolAtTarget(document, atomTarget(before), source, "cyclohexane"), refusal: undefined };
+    };
+    const withObstacle = (document: ChemDraftDocument, atom: { x: number; y: number }, id: string) => {
+      const current = terminalMolecule(document);
+      return applyPatch(document, { op: "updateObject", objectId: current.id, changes: {
+        atoms: [...current.atoms, { id, element: "C", x: atom.x, y: atom.y, formalCharge: 0 }]
+      } });
+    };
+    const ringAtoms = (document: ChemDraftDocument) => terminalMolecule(document).atoms.filter((atom) => atom.id !== "atom_001" && atom.id !== "atom_002");
+    const first = attach(seed);
+    expect(first.refusal).toBeUndefined();
+    const firstAtoms = ringAtoms(first.document);
+    expect(firstAtoms).toHaveLength(5);
+    // Block the first placement's far atom: the mirrored turn must be used instead.
+    const blockedOnce = withObstacle(seed, firstAtoms[2]!, "atom_900");
+    const second = attach(blockedOnce);
+    expect(second.refusal).toBeUndefined();
+    const secondAtoms = ringAtoms(second.document).filter((atom) => atom.id !== "atom_900");
+    expect(secondAtoms).toHaveLength(5);
+    expect(secondAtoms.some((atom) => Math.hypot(atom.x - firstAtoms[2]!.x, atom.y - firstAtoms[2]!.y) < 1)).toBe(false);
+    // Block the second placement too: no turn is both 90 degrees and clear, so the ring is refused.
+    const blockedTwice = withObstacle(blockedOnce, secondAtoms[2]!, "atom_901");
+    const snapshot = structuredClone(blockedTwice);
+    const target = atomTarget(terminalMolecule(blockedTwice));
+    if (method === "hotkey") {
+      expect(nativeRingHotkeyAttachAtAtomTarget(blockedTwice, target, "cyclohexane"))
+        .toEqual({ document: blockedTwice, refusal: "sprout-page-edge" });
+    } else {
+      expect(applyNativeTemplateToolAtTarget(blockedTwice, target, terminalAtom(terminalMolecule(blockedTwice), "atom_002"), "cyclohexane")).toBe(blockedTwice);
+    }
+    expect(blockedTwice).toEqual(snapshot);
+    expect(molecule.atoms).toHaveLength(2);
+  });
+
+  it.each(["hotkey", "tool click"] as const)("%s refuses a ring near the top and right edges when no turn reaches 90 degrees", (method) => {
+    // 20 units from the top, 33 from the right: every turn that fits the page leaves an angle under 90.
+    const document = edgeRingBond(20);
+    const snapshot = structuredClone(document);
+    const before = terminalMolecule(document);
+    const source = terminalAtom(before, "atom_002");
+    if (method === "hotkey") {
+      expect(nativeRingHotkeyAttachAtAtomTarget(document, atomTarget(before), "benzene"))
+        .toEqual({ document, refusal: "sprout-page-edge" });
+    } else {
+      expect(applyNativeTemplateToolAtTarget(document, atomTarget(before), source, "benzene")).toBe(document);
+    }
+    expect(document).toEqual(snapshot);
+  });
+
+  it.each(["hotkey", "tool click"] as const)("%s refuses a ring at a two-bond atom near the page edge when no turn reaches 90 degrees", (method) => {
+    const seed = edgeRingBond();
+    const molecule = terminalMolecule(seed);
+    const document = applyPatch(seed, { op: "updateObject", objectId: molecule.id, changes: {
+      atoms: [...molecule.atoms, { id: "atom_003", element: "C", x: 783, y: 278, formalCharge: 0 }],
+      bonds: [...molecule.bonds, { id: "bond_002", fromAtomId: "atom_002", toAtomId: "atom_003", order: "single" }]
+    } });
+    const snapshot = structuredClone(document);
+    const before = terminalMolecule(document);
+    const source = terminalAtom(before, "atom_002");
+    // The widest gap overflows; the narrow gap and every turn that fits leave an angle under 90.
+    if (method === "hotkey") {
+      expect(nativeRingHotkeyAttachAtAtomTarget(document, atomTarget(before), "cyclohexane"))
+        .toEqual({ document, refusal: "sprout-page-edge" });
+    } else {
+      expect(applyNativeTemplateToolAtTarget(document, atomTarget(before), source, "cyclohexane")).toBe(document);
+    }
+    expect(document).toEqual(snapshot);
+  });
+
+  for (const method of ["hotkey", "tool click"] as const) {
+    it.each([[-23, -1], [839, 817]])(`${method} allows an existing source outside the page when every new atom fits (%s, %s)`, (parentX, sourceX) => {
+      const seed = edgeRingBond();
+      const molecule = terminalMolecule(seed);
+      const document = applyPatch(seed, { op: "updateObject", objectId: molecule.id, changes: {
+        atoms: molecule.atoms.map((atom) => ({ ...atom, x: atom.id === "atom_001" ? parentX : sourceX }))
+      } });
+      const before = terminalMolecule(document);
+      const source = terminalAtom(before, "atom_002");
+      const after = terminalMolecule(method === "hotkey"
+        ? applyNativeRingAttachAtAtomTarget(document, atomTarget(before), "cyclohexane")
+        : applyNativeTemplateToolAtTarget(document, atomTarget(before), source, "cyclohexane"));
+      expect(after.atoms).toHaveLength(7);
+      expect(after.chemistry?.formula).toBe("C7H14");
+      expect(after.atoms.slice(0, 2)).toEqual(before.atoms);
+      expect(after.bonds[0]).toEqual(before.bonds[0]);
+      expect(after.atoms.slice(2).every((atom) => atom.x >= 0 && atom.x <= 816
+        && atom.y >= 0 && atom.y <= document.pages[0].height)).toBe(true);
+    });
+  }
+
+  it.each(["atom overlap", "bond crossing"] as const)("refuses page-fitting fallbacks blocked by %s", (obstruction) => {
+    const seed = edgeRingBond();
+    const molecule = terminalMolecule(seed);
+    const obstacles: MoleculeAtom[] = obstruction === "atom overlap"
+      // Atoms to the right, above and below: a ring turned to fit the page still lands on one.
+      ? [{ id: "atom_003", element: "C", x: 805, y: 300, formalCharge: 0 },
+        { id: "atom_004", element: "C", x: 783, y: 278, formalCharge: 0 },
+        { id: "atom_005", element: "C", x: 783, y: 322, formalCharge: 0 }]
+      : [{ id: "atom_003", element: "C", x: 800, y: 200, formalCharge: 0 },
+        { id: "atom_004", element: "C", x: 800, y: 400, formalCharge: 0 }];
+    const document = applyPatch(seed, { op: "updateObject", objectId: molecule.id, changes: {
+      atoms: [...molecule.atoms, ...obstacles],
+      bonds: [...molecule.bonds, ...(obstruction === "bond crossing"
+        ? [{ id: "bond_002", fromAtomId: "atom_003", toAtomId: "atom_004", order: "single" as const }] : [])]
+    } });
+    const snapshot = structuredClone(document);
+    const target = atomTarget(molecule);
+    const point = terminalAtom(molecule, "atom_002");
+    expect(nativeRingHotkeyAttachAtAtomTarget(document, target, "cyclohexane"))
+      .toEqual({ document, refusal: "sprout-page-edge" });
+    expect(nativeTemplatePlacementResult(document, { point, target }, "cyclohexane"))
+      .toEqual({ refusal: "sprout-page-edge" });
+    expect(planNativeTemplatePlacement(document, { point, target }, "cyclohexane")).toBeUndefined();
+    expect(applyNativeTemplateToolAtTarget(document, target, point, "cyclohexane")).toBe(document);
+    expect(document).toEqual(snapshot);
+  });
+
+  it.each(["benzene", "cyclohexane", "cyclopentane"] as const)("refuses %s with the existing page-edge reason when no orientation fits", (template) => {
+    const seed = edgeRingBond(11);
+    const before = terminalMolecule(seed);
+    const positioned = applyPatch(seed, { op: "updateObject", objectId: before.id, changes: {
+      atoms: before.atoms.map((atom) => ({ ...atom, x: atom.id === "atom_001" ? 0 : 22 }))
+    } });
+    const document = { ...positioned, pages: positioned.pages.map((page) => ({
+      ...page, width: 22, height: 22,
+      layout: createCustomPageLayout(22 / 96, 22 / 96, "inch", { top: 0, right: 0, bottom: 0, left: 0 })
+    })) };
+    const snapshot = structuredClone(document);
+    const target = atomTarget(terminalMolecule(document));
+    const result = nativeRingHotkeyAttachAtAtomTarget(document, target, template);
+    expect(result.refusal).toBe("sprout-page-edge");
+    expect(result.document).toBe(document);
+    expect(applyNativeTemplateToolAtTarget(document, target, terminalAtom(terminalMolecule(document), "atom_002"), template)).toBe(document);
+    expect(document).toEqual(snapshot);
   });
 
   for (const method of ["hotkey 1", "single-bond tool click"] as const) {

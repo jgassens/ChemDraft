@@ -531,6 +531,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-sparkle-updater",
  "tauri-plugin-updater",
+ "tiff",
  "tokio",
  "windows-sys 0.61.2",
 ]

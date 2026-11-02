@@ -33,6 +33,11 @@ carbonyl behavior. Key `9` adds two methyl groups when carbon has room for both,
 attaches isopropyl through one new bond (subject to the same gate). Preferences uses ⌘, on
 macOS and Ctrl+, on Windows.
 
+## Editing text
+
+While editing an existing text box, only the live formatted preview is shown. The saved drawing
+returns with the updated content when editing ends; other labels remain visible throughout.
+
 Plugin catalog and local engine downloads use reqwest 0.12 with both Mozilla and OS certificate
 roots, so macOS and Windows enterprise trust stores can participate without disabling certificate
 verification. Transport failures name the host and cause; diagnostics and logs remove URL credentials,
@@ -87,3 +92,35 @@ keeping at least 12 document pixels between visible compound bounds and preservi
 Adjust spacing opens a movable native window on desktop, previewing distances while retaining molecule sizes. Save is one Undo step;
 Cancel/Escape makes no change. Toolbar/context items are hidden and direct commands refuse
 while the setting is off. Existing drawing/export behavior is unchanged by enabling the setting.
+
+## Format selected text boxes
+
+Select several text boxes, then choose a font or size to apply it to all selected boxes in one
+Undo step. Unselected labels and non-text objects keep their formatting. When editing inside
+a text box with characters highlighted, formatting applies only to those characters.
+
+Orbital tools remain active after placement. Click a lobe tip or p-orbital centre to join
+new orbital art at that node; repeated clicks choose an unused direction. Drag from the
+node to choose an arbitrary angle, holding Shift for 15-degree steps. Escape returns
+to Selection. Selected orbitals show a rotation handle immediately; double-click the
+handle for numeric entry, or use Direct Edit to change path nodes. Orbital joins are
+visual alignment and do not create or alter chemical bonds.
+
+## Startup preference
+
+Preferences > Startup offers **Start with a fresh document**, off by default. It opens one
+clean Untitled drawing on the next application launch instead of restoring the previous tabs.
+Changing it leaves the current drawings and their undo histories intact. Explicit startup files
+and later OS file-open requests still use the normal Open flow; an untouched blank is replaced.
+
+The saved session is read and validated even when restoration is skipped. A corrupt outer session
+continues to block autosave, and retained unrestored tabs remain available through the existing
+recovery controls. An untouched startup blank (including viewport or selection changes) does not
+replace the previous session, even on quit. Editing, explicitly saving, opening a file, creating
+additional tabs, or explicitly saving/discarding retained recovery tabs allows the normal autosave
+and quit flush to replace it. Once replaced, later blank documents follow normal session rules.
+Turning the option off cannot recover an older session after new work has replaced it.
+
+The preference uses the same localStorage mechanism as other boolean preferences. It is captured
+synchronously once by the document window before its asynchronous session read; no live document
+broadcast is needed for a next-launch-only option. No native command or session migration is added.
