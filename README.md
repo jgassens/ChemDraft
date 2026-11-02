@@ -103,3 +103,9 @@ Read `PLAN.md` and `AGENTS.md` before making changes. In short:
 ## Dependency Notes
 
 The initial dependency inventory is recorded in `docs/architecture/dependency-inventory.md`.
+
+Name-to-structure preserves built-in template lookup, then tries local OPSIN, then the offline
+Wikidata dictionary for trivial/trade names and CAS registry numbers. Dictionary matches carry
+`source: "dictionary"` and `matchedName` or `matchedCas`; OPSIN matches carry `source: "opsin"`.
+CLI `name` and MCP `name_to_structure` return this provenance in JSON. No online lookup is used.
+The dictionary loads only on the first OPSIN parse miss; engine failures remain distinct.

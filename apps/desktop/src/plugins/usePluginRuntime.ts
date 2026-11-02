@@ -1,3 +1,4 @@
+import { nameToStructureForPlugin } from "./pluginChemistry";
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
 import type {
   AppliedPatchReceipt,
@@ -89,6 +90,8 @@ export interface PluginRuntimeProviders {
   commandRegistry?: CommandRegistry;
   /** Storage backend factory (the desktop passes the disk-backed one); defaults to in-memory. */
   createStorage?: (pluginId: string) => PluginStorage;
+  /** Names the source of a successful name conversion in the document status line. */
+  onNameResolutionStatus?: (text: string | undefined) => void;
   /** Quiet update notices use the document window status line. */
   onPluginUpdateStatus?: (text: string) => void;
   /** Fired whenever the proposed-patch queue changes (new, accepted, rejected). */
@@ -169,6 +172,14 @@ export function usePluginRuntime(providers: PluginRuntimeProviders): PluginRunti
   } | null>(null);
   if (ownerRef.current === null) {
     const runtime = createPluginRuntime({
+      convertNameToStructure: async request => {
+        const result = await nameToStructureForPlugin(request);
+        if (result.available && result.parsed) {
+          const match = result.matchedName ?? result.matchedCas;
+          providersRef.current.onNameResolutionStatus?.(`Name to Structure: ${result.source === "dictionary" ? `Wikidata dictionary (${match})` : result.engine.id === "chemdraft-templates" ? "built-in template" : "OPSIN"}.`);
+        } else providersRef.current.onNameResolutionStatus?.(undefined);
+        return result;
+      },
       getActiveDocument: () => providersRef.current.getActiveDocument(),
       getActiveDocumentKey: providers.getActiveDocumentKey
         ? () => providersRef.current.getActiveDocumentKey?.()

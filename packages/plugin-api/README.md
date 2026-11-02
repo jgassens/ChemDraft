@@ -84,3 +84,6 @@ plugin. `context.overlays.setStatus({ overlayId, text })` requires `ui.canvas`, 
 
 API 0.1.16 adds optional positive integer isotope mass numbers to native document atoms.
 Native molecule objects and document patches preserve isotope masses; hydrogen-2/3 use D/T elements.
+
+API 0.1.21 adds optional name-to-structure `source`, `matchedName` and `matchedCas` provenance.
+API 0.1.20 adds optional `tableStyle.autoColumnMinEm`, the minimum auto column width in em.

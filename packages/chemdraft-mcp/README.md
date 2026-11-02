@@ -98,3 +98,9 @@ SMILES drawing tools inherit exact canonical isomeric template matching from the
 and report `layout: "template:<id>"` (per cell/component for grids/reactions).
 Stereo and charge must match; template drawings use the default document bond length.
 `render_document` preserves the coordinates in its native JSON input.
+
+Name-to-structure preserves built-in template lookup, then tries local OPSIN, then the offline
+Wikidata dictionary for trivial/trade names and CAS registry numbers. Dictionary matches carry
+`source: "dictionary"` and `matchedName` or `matchedCas`; OPSIN matches carry `source: "opsin"`.
+CLI `name` and MCP `name_to_structure` return this provenance in JSON. No online lookup is used.
+The dictionary loads only on the first OPSIN parse miss; engine failures remain distinct.

@@ -538,3 +538,13 @@ A.6 Stax2 API 4.2.2 -- BSD-2-Clause (Simplified BSD), (c) 2010- FasterXML.com
     CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
     ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
     POSSIBILITY OF SUCH DAMAGE.
+
+Offline name dictionary lookup
+  Portions adapted from Octet Draw (https://github.com/SamChemMan/Octet-Draw),
+  Copyright 2026 Sam Ellis, licensed under the Apache License, Version 2.0.
+  Modified for ChemDraft: injected lazy loading, OPSIN-first resolution and provenance.
+
+Wikidata chemical names and structures
+  Data licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/).
+  Source: https://www.wikidata.org, snapshot 27 October 2026.
+  See data/names/NOTICE.txt. This data licence is separate from the lookup code licence.
