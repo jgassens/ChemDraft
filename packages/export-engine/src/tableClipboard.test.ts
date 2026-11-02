@@ -655,7 +655,10 @@ describe("table clipboard payloads", () => {
     input.columns[0].width = { mode: "fixed", px: 30 };
     const layout = planTableLayout(input);
     expect(layout.columns[0].contentWidth).toBeLessThan(30);
-    expect(planTableLayout({ ...input, columns: [{ ...input.columns[0], width: { mode: "auto" } }] }).columns[0].width).toBeGreaterThan(30);
+    expect(planTableLayout({ ...input, columns: [{ ...input.columns[0], width: { mode: "auto" } }] }).columns[0].width).toBe(layout.columns[0].contentWidth);
+    const empty = { ...input, rows: input.rows.map(row => ({ ...row, cells: row.cells.map(() => ({ text: "", spans: [] })) })),
+      columns: [{ ...input.columns[0], width: { mode: "auto" as const } }] };
+    expect(planTableLayout(empty).columns[0].width).toBeGreaterThan(30);
     const output = exportTableClipboardPayloads(input);
     expect(output.warnings).toEqual([]);
     expect(output.html).toContain('width="30"');

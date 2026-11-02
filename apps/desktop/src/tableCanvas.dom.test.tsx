@@ -132,13 +132,26 @@ describe("native tables on the canvas", () => {
     const editor = container.querySelector<HTMLTextAreaElement>("[data-table-cell-editor] textarea");
     expect(editor).not.toBeNull();
     await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(editor, "edited");
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(editor, "1");
       editor!.dispatchEvent(new Event("input", { bubbles: true }));
       editor!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
     });
     const edited = window.__CHEMDRAFT_AGENT__!.snapshot().document.pages[0].objects[0] as typeof table;
-    expect(edited.rows[2].cells[0].text).toBe("edited");
+    expect(edited.rows[2].cells[0].text).toBe("1");
     expect(edited.rows.flatMap(row => row.cells).filter(cell => cell.text !== "")).toHaveLength(1);
+    const editedLayout = planTableLayout(edited);
+    expect(editedLayout.columns[0].width).toBe(editedLayout.columns[0].contentWidth);
+    expect(editedLayout.columns[0].width).toBeLessThan(minimum);
+    const editedBox = editedLayout.cells.find(cell => cell.rowIndex === 2 && cell.columnIndex === 0)!.box;
+    expect(editedBox.width).toBeGreaterThan(5);
+    const editedX = (editedBox.x + 5) * scale, editedY = (editedBox.y + editedBox.height / 2) * scale;
+    const editedHit = container.querySelector("[data-table-hit-target]")!;
+    for (let i = 0; i < 2; i++) {
+      await pointer(editedHit, "pointerdown", editedX, editedY);
+      await pointer(container.querySelector(".page")!, "pointerup", editedX, editedY);
+    }
+    await act(async () => editedHit.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, detail: 2, clientX: editedX, clientY: editedY })));
+    expect(container.querySelector<HTMLTextAreaElement>("[data-table-cell-editor] textarea")?.value).toBe("1");
   });
 
   it("leaves the empty bounding-box corners outside a 45-degree table hit rect", async () => {

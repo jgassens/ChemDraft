@@ -19,25 +19,38 @@ function smallTable(align: TableObject["columns"][number]["align"], texts: strin
 }
 
 describe("table layout and SVG", () => {
-  it("floors auto columns at three em plus padding without changing wide or fixed columns", () => {
+  it("floors only all-empty auto columns, including when other columns have header or body text", () => {
     const minimum = Math.ceil((3 * style.fontSizePx + 2 * table.tableStyle.cellPaddingPx.x) * 2) / 2;
     const empty = { ...table, caption: undefined, footnotes: [], headerRowCount: 0,
       columns: table.columns.map(column => ({ ...column, width: { mode: "auto" as const } })),
       rows: table.rows.map(row => ({ ...row, cells: row.cells.map(() => ({ text: "", spans: [] })) })) };
     expect(planTableLayout(empty).columns.map(column => column.width)).toEqual(empty.columns.map(() => minimum));
-    expect(planTableLayout(smallTable("left", ["i"])).columns[0].width).toBe(minimum);
+    for (const value of ["1", " "]) {
+      const measured = measureTextRun(value, { fontSizePx: style.fontSizePx, fontWeight: style.fontWeight });
+      expect(planTableLayout(smallTable("left", [value])).columns[0].width)
+        .toBe(Math.ceil((measured * 1.04 + 2 * table.tableStyle.cellPaddingPx.x) * 2) / 2);
+    }
+    const mixed = { ...empty, headerRowCount: 1, rows: empty.rows.map((row, index) => ({ ...row,
+      cells: row.cells.map((cell, col) => ({ ...cell, text: index === 0 && col === 1 ? "1" : index === 1 && col === 2 ? "1" : "" })) })) };
+    const mixedLayout = planTableLayout(mixed);
+    expect(mixedLayout.columns[0].width).toBe(minimum);
+    expect(mixedLayout.columns[1].width).toBe(mixedLayout.columns[1].contentWidth);
+    expect(mixedLayout.columns[2].width).toBe(mixedLayout.columns[2].contentWidth);
+    expect(mixedLayout.columns.slice(3).every(column => column.width === minimum)).toBe(true);
     const text = "A long text that exceeds the minimum";
     const measured = measureTextRun(text, { fontSizePx: style.fontSizePx, fontWeight: style.fontWeight });
     expect(planTableLayout(smallTable("left", [text])).columns[0].width)
       .toBe(Math.ceil((measured * 1.04 + 2 * table.tableStyle.cellPaddingPx.x) * 2) / 2);
-    expect(planTableLayout(smallTable("left", [""], 10)).columns[0].width).toBe(10);
+    for (const value of ["", "1"]) expect(planTableLayout(smallTable("left", [value], 10)).columns[0].width).toBe(10);
   });
 
-  it("centers the decimal block when an auto column is floored", () => {
+  it("uses the natural width and original centering for decimal text", () => {
     const layout = planTableLayout(smallTable("decimal", ["1.2", ".3"]));
     const column = layout.columns[0], block = column.decimalBlock!;
-    const minimum = Math.ceil((3 * style.fontSizePx + 2 * table.tableStyle.cellPaddingPx.x) * 2) / 2;
-    expect(column.width).toBe(minimum);
+    const pre = measureTextRun("1", { fontSizePx: style.fontSizePx });
+    const post = measureTextRun(".2", { fontSizePx: style.fontSizePx });
+    expect(column.width).toBe(Math.ceil(((pre + post) * 1.04 + 2 * table.tableStyle.cellPaddingPx.x) * 2) / 2);
+    expect(column.decimalAnchorX).toBeCloseTo(column.x + table.tableStyle.cellPaddingPx.x + (column.width - 2 * table.tableStyle.cellPaddingPx.x - pre - post) / 2 + pre);
     expect(block.insetLeft).toBeGreaterThan(0);
     expect(block.insetLeft).toBeCloseTo(block.insetRight);
     expect(column.decimalAnchorX! + (block.postWidth - block.preWidth) / 2).toBeCloseTo(column.x + column.width / 2);
@@ -81,7 +94,7 @@ describe("table layout and SVG", () => {
         109,
         109,
         134,
-        66,
+        64.5,
         69.5,
         85,
         119.5,
