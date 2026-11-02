@@ -490,6 +490,7 @@ import {
   applyNativeTemplateToolAtTarget,
   applyNativeTemplateToolAtPoint,
   planNativeTemplatePlacement,
+  nativeTemplatePlacementResult,
   applyNativeTemplatePlacementPlan,
   type NativeTemplatePlacementPlan,
   type NativeTemplateFallbackReason,
@@ -14335,7 +14336,7 @@ export function MainWindow({
     target?: NativeMoleculeDeleteTarget
   ) => {
     const currentDocument = documentRef.current;
-    const plan = planNativeTemplatePlacement(currentDocument, { point, target }, templateId);
+    const { plan, refusal } = nativeTemplatePlacementResult(currentDocument, { point, target }, templateId);
     const nextDocument = plan
       ? applyNativeTemplatePlacementPlan(currentDocument, plan)
       : currentDocument;
@@ -14356,7 +14357,9 @@ export function MainWindow({
     templatePreviewKeyRef.current = undefined;
     templatePreviewTargetKeyRef.current = undefined;
     templatePreviewPlanRef.current = undefined;
-    setStatus(nativeTemplateStatusForApplication(templateId, target, changed, plan?.fallbackReason));
+    setStatus(refusal
+      ? `Cannot add ${nativeTemplateStatusLabel(templateId)} here: ${nativeTemplateFallbackReasonText(refusal)}`
+      : nativeTemplateStatusForApplication(templateId, target, changed, plan?.fallbackReason));
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange]);
 
   const startNativePlacementDrag = useCallback((
