@@ -80,6 +80,13 @@ function expectSchemeInsideViewBox(rendered: RenderedReactionScheme): void {
 }
 
 describe("chemdraft reaction", () => {
+  it("uses moderate chemistry-symbol widths for reaction labels shared with MCP", async () => {
+    const rendered = await renderReactionScheme("CCO>>CCO", { above: ["⇌≡≈′⁺⁻₂"] });
+    const label = rendered.document.pages[0]!.objects.find(object => object.type === "text" && object.text === "⇌≡≈′⁺⁻₂")!;
+    expect(label).toMatchObject({ text: "⇌≡≈′⁺⁻₂", width: 71.09, height: 24 });
+    expect(rendered.svg).toContain("⇌≡≈′⁺⁻₂");
+    expectSchemeInsideViewBox(rendered);
+  });
   it("renders repeated labels and caption from flags and batch jobs", async () => {
     const stdout: string[] = [];
     const io = { stdout: (line: string) => stdout.push(line), stderr: () => undefined };

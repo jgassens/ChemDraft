@@ -107,6 +107,9 @@ Measurement uses that same block style.
 `src/textObjects.ts` reuses the renderer's **72%** script font size and existing sizing conventions:
 **6 px** horizontal / **4 px** vertical padding, minimum box **36 × 24 px**, dimensions rounded to
 **0.01 px**. Padding follows the line box vertically, matching the renderer's baseline origin.
+Line widths delegate to layout-engine's Core14 span measurement, floored at the previous
+character-factor estimate. Text-change sizing can also take preserved spans; it keeps the plain
+text sizing floor so smaller script/size overrides cannot narrow boxes compared with prior behavior.
 At small font sizes a label's frame (minimum text-object height) can overlap the arrow's click area; the text itself keeps its clearance.
 `layout-engine/src/textMetrics.ts` owns the shared width factors, **0.21 em** descent, **0.716 em**
 cap height and the renderer's script metrics: **0.72** font scale and an explicit **0.4 parent em**
