@@ -1013,6 +1013,32 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
   confirm no closed or newly reopened Export receives focus. Switch to another app before the
   picker completes and confirm ChemDraft does not take foreground.
 
+## Orbital overlap and rotation
+
+- On Windows/WebView2 and macOS, select Lobe, Shaded Lobe, p Orbital and s Orbital. Click repeatedly without reselecting the tool; each press/release adds one object and Escape returns to Selection.
+- Connect two lobes at their pointed ends, then place three p orbitals at a common centre. Repeat on molecule atoms, across rotated/overlapping orbitals and near page edges. New clicks choose an unused direction and drags set the exact angle.
+- Drag from the node to aim freely; hold Shift for 15-degree steps. Preview and release must match. Cancel a page-started and object-started drag; the pre-gesture document must return. Undo/Redo each placement once.
+- Select an orbital: its rotation handle should be visible without Shift or a double-click on its body. Rotate to an arbitrary angle about its node; Shift snaps and double-clicking the handle permits exact numeric entry. Direct Edit must still expose path nodes.
+- Verify existing orbitals and molecules do not move or change chemistry, and native save/reopen plus SVG/PDF export retain all overlapping shapes. Test zoomed and mixed-DPI configurations.
+
+2. **Fresh-document startup, on macOS and Windows:** with the preference OFF, create named and
+   unsaved tabs, quit, and relaunch using the approved worktree launch command; confirm restoration.
+   Toggle Start with a fresh document while editing and verify content, selection and undo/redo
+   remain intact. Quit and relaunch with it ON: confirm exactly one clean Untitled drawing, default
+   new-document view and no old history or file path. Quit this untouched blank and confirm the
+   previous session file is unchanged. Launch by opening a file and confirm no old or extra blank
+   tabs; repeat with the app running and with an invalid file. Edit and save new work during a fresh
+   run, quit, turn the option OFF and relaunch: confirm the new run restores. Repeat with retained
+   unrestored tabs and a corrupt outer session: recovery data must remain and corrupt reads must
+   keep autosave blocked. Record native results separately for each platform.
+
+## Direct multiple-bond tools (Windows and macOS)
+
+- On a fresh profile, confirm the default Main toolbar does not show Double Bond or Triple Bond. Add both from Customize Main Toolbar, then activate each; verify distinct icons and active highlight.
+- Click and drag on empty page, extend from an atom, connect atoms and separate molecules, and click an existing bond to set its order. Confirm the requested order, normal snapping/Alt behavior, and one Undo/Redo step per gesture.
+- Refuse growth or order changes that exceed available valence; retain existing atoms, bonds and coordinates. Check save/reopen and SVG/MOL export. Switch back to Single Bond and wedge/hash/dashed/bold tools.
+- Repeat in native Windows/WebView2 and macOS, including customized Main layouts, reset, and narrow palettes; verify browser fallback.
+
 ## Isotope insertion (macOS and Windows)
 
 - Paste single and list SMILES containing `[2H]`, `[3H]`, `[13CH3]c1ccccc1`,
@@ -1047,3 +1073,19 @@ caption must use the atom-label size. Existing structures on the page must not c
 - Drag every edge and corner from 6 px inside the border. Use Full size, then Esc: the
   exact previous frame returns. Repeat across monitors with different scaling.
 - Hover over peaks and verify no empty tooltip appears.
+
+## Text editing
+
+Text editing (macOS and Windows): edit an existing text box next to another label. Confirm only
+one copy of its text is visible while typing, rich formatting remains intact, the other label stays
+visible, and clicking away restores the updated drawing. Check Select/Text tool entry and Undo/Redo.
+
+## Formatting several text boxes
+
+Text formatting (macOS and Windows): select two or more text boxes and change font family, then
+font size. Every selected box must update regardless of creation/selection order; unselected labels
+and selected molecules must stay unchanged. Bold, Italic, Underline: if every selected box already
+has the style, the command removes it from all; otherwise it applies it to all (never per the first
+box). Superscript and Subscript apply to every selected box. Each command must undo/redo all boxes in
+one step and preserve selection. Highlight characters inside one box and confirm only that range is
+formatted.

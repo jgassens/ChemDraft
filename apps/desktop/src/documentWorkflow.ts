@@ -727,7 +727,10 @@ function artArcTool(
 }
 
 export interface NativeBondToolOptions {
+  bondOrder?: NativeBondOrderValue;
   bondStyle?: NativeBondDisplayStyle;
+  /** Told why the tool refused to place the bond, so the caller can say so instead of guessing. */
+  onRefusal?: (reason: string) => void;
 }
 
 export interface NativeFreeformBondGrowthOptions extends NativeBondToolOptions {
@@ -984,7 +987,7 @@ export function createNativeSingleBondMolecule(
     id: "bond_001",
     fromAtomId: leftAtom.id,
     toAtomId: rightAtom.id,
-    order: "single",
+    order: options.bondOrder ?? "single",
     ...nativeBondDisplayObject(options.bondStyle)
   }] satisfies MoleculeBond[];
   const geometry = moleculeGeometryFromAtoms(atoms);
@@ -1409,9 +1412,15 @@ export function applyNativeChainTool(
   );
 }
 
+export function nativeBondOrderForToolCommand(commandId: string): NativeBondOrderValue {
+  return commandId === "tool.doubleBond" ? "double" : commandId === "tool.tripleBond" ? "triple" : "single";
+}
+
 export function nativeBondStyleForToolCommand(commandId: string): NativeBondToolStyle | undefined {
   switch (commandId) {
     case "tool.bond":
+    case "tool.doubleBond":
+    case "tool.tripleBond":
       return "solid";
     case "tool.wedgeBond":
       return "wedge";
@@ -1498,10 +1507,34 @@ export function createNativeArtGraphicObject(
   };
 }
 
+export function nativeArtToolIsOrbital(commandId: string): boolean {
+  return ["tool.lobe", "tool.shadedLobe", "tool.pOrbital", "tool.sOrbital"].includes(commandId);
+}
+
+/** The node shared by lobes, in page coordinates; no persistent chemical attachment. */
+export function nativeOrbitalAnchorPoint(object: DocumentObject): PagePoint | undefined {
+  if (object.type !== "graphic" || !(nativeArtToolIsOrbital(String(object.style.artToolCommandId)) ||
+      ["lobe", "shadedLobe", "pOrbital", "sOrbital"].includes(String(object.data.artToolId)))) return undefined;
+  const offset = (object.data.artToolId === "lobe" || object.data.artToolId === "shadedLobe")
+    ? nativeOrbitalLobeTip(object, object.rotation)
+    : { x: object.width / 2, y: object.height / 2 };
+  return { x: object.x + offset.x, y: object.y + offset.y };
+}
+
+/** Aim about the same node used for snapping and subsequent rotation. */
+export function aimNativeOrbitalPlacement(document: ChemDraftDocument, objectId: string, point: PagePoint, shiftKey = false): ChemDraftDocument {
+  const object = findDocumentObject(document, objectId);
+  const anchor = object && nativeOrbitalAnchorPoint(object);
+  if (!object || !anchor || Math.hypot(point.x - anchor.x, point.y - anchor.y) < 1) return document;
+  const angle = radiansToDegrees(Math.atan2(point.y - anchor.y, point.x - anchor.x)) + 90;
+  const rotation = shiftKey ? Math.round(angle / 15) * 15 : angle;
+  return rotateDocumentObject(document, objectId, rotation - object.rotation);
+}
+
 type NativeOrbitalPlacement = Pick<GraphicObject, "x" | "y" | "rotation">;
 
 /**
- * Place orbital art at the atom under the pointer, without creating a persistent anchor.
+ * Place orbital art at a molecule atom or an existing orbital node, without a persistent anchor.
  *
  * A single lobe's local tip is at the bottom centre of its frame, and a p orbital's
  * coincident lobe nodes are at its frame centre. The angle is chosen from the largest
@@ -1512,20 +1545,49 @@ function nativeOrbitalPlacementAtPoint(
   point: PagePoint,
   tool: NativeArtToolDefinition
 ): NativeOrbitalPlacement | undefined {
-  if (tool.id !== "lobe" && tool.id !== "shadedLobe" && tool.id !== "pOrbital") {
+  if (!nativeArtToolIsOrbital(tool.commandId)) {
     return undefined;
   }
 
   const target = nativeOrbitalAtomAtPoint(document, point);
-  if (!target) {
-    return undefined;
+  const existingNodeOnAtom = target && firstPage(document).objects.some(object => {
+    const node = nativeOrbitalAnchorPoint(object);
+    return node && Math.hypot(node.x - target.atom.x, node.y - target.atom.y) < 0.01;
+  });
+  if (!target || existingNodeOnAtom) {
+    const orbitals = firstPage(document).objects.flatMap(object => {
+      const anchor = nativeOrbitalAnchorPoint(object);
+      return anchor && Math.hypot(point.x - anchor.x, point.y - anchor.y) <= 12 ? [{ object, anchor }] : [];
+    }).sort((a, b) => Math.hypot(point.x - a.anchor.x, point.y - a.anchor.y) - Math.hypot(point.x - b.anchor.x, point.y - b.anchor.y));
+    const anchor = target?.atom ?? orbitals[0]?.anchor ?? point;
+    // Choose a visible, unoccupied direction for repeated clicks at the same node. A p
+    // orbital is an axis (180 degrees); a single lobe has a direction (360 degrees). A p
+    // orbital occupies both of its lobe directions, an s orbital none, and the atom's
+    // bonds always count (a lobe at rotation r points along bearing r - 90 degrees).
+    const period = tool.id === "pOrbital" ? 180 : 360;
+    const occupied = orbitals.filter(entry => Math.hypot(entry.anchor.x - anchor.x, entry.anchor.y - anchor.y) < 0.01)
+      .flatMap(entry => entry.object.type !== "graphic" || entry.object.data.artToolId === "sOrbital" ? []
+        : entry.object.data.artToolId === "pOrbital" ? [entry.object.rotation, entry.object.rotation + 180] : [entry.object.rotation]);
+    if (target) {
+      occupied.push(...nativeAtomBondAngles(target.molecule, target.atom.id).map(angle => radiansToDegrees(angle) + 90));
+    }
+    const angles = occupied.map(angle => ((angle % period) + period) % period).sort((a, b) => a - b);
+    let rotation = 0, gap = -1;
+    angles.forEach((angle, index) => {
+      const next = angles[(index + 1) % angles.length] + (index === angles.length - 1 ? period : 0);
+      if (next - angle > gap) { gap = next - angle; rotation = (angle + gap / 2) % period; }
+    });
+    const tip = tool.id === "lobe" || tool.id === "shadedLobe"
+      ? rotatePointAround({ x: tool.width / 2, y: tool.height }, { x: tool.width / 2, y: tool.height / 2 }, degreesToRadians(rotation))
+      : { x: tool.width / 2, y: tool.height / 2 };
+    return { x: anchor.x - tip.x, y: anchor.y - tip.y, rotation };
   }
 
   const gapBisector = nativeAtomLargestBondGapBisector(target.molecule, target.atom.id);
-  if (tool.id === "pOrbital") {
+  if (tool.id === "pOrbital" || tool.id === "sOrbital") {
     // The p-orbital's local axis is vertical. Its axis, unlike a single lobe's direction,
     // is perpendicular to the unoccupied-gap bisector.
-    const rotation = gapBisector === undefined ? 0 : radiansToDegrees(gapBisector + Math.PI);
+    const rotation = tool.id === "sOrbital" || gapBisector === undefined ? 0 : radiansToDegrees(gapBisector + Math.PI);
     return {
       x: target.atom.x - tool.width / 2,
       y: target.atom.y - tool.height / 2,
@@ -1574,18 +1636,23 @@ function nativeOrbitalAtomAtPoint(
   return target ? { molecule: target.molecule, atom: target.atom } : undefined;
 }
 
-function nativeAtomLargestBondGapBisector(molecule: MoleculeObject, atomId: string): number | undefined {
+/** Bearings (radians, sorted) from an atom to each bonded neighbour. */
+function nativeAtomBondAngles(molecule: MoleculeObject, atomId: string): number[] {
   const atom = molecule.atoms.find((candidate) => candidate.id === atomId);
   if (!atom) {
-    return undefined;
+    return [];
   }
-  const angles = molecule.bonds.flatMap((bond) => {
+  return molecule.bonds.flatMap((bond) => {
     const neighborId = bond.fromAtomId === atomId
       ? bond.toAtomId
       : bond.toAtomId === atomId ? bond.fromAtomId : undefined;
     const neighbor = neighborId ? molecule.atoms.find((candidate) => candidate.id === neighborId) : undefined;
     return neighbor ? [Math.atan2(neighbor.y - atom.y, neighbor.x - atom.x)] : [];
   }).sort((left, right) => left - right);
+}
+
+function nativeAtomLargestBondGapBisector(molecule: MoleculeObject, atomId: string): number | undefined {
+  const angles = nativeAtomBondAngles(molecule, atomId);
   if (angles.length === 0) {
     return undefined;
   }
@@ -7164,6 +7231,22 @@ export function nativeSingleBondToolAtPoint(
     if (atomHit && nativeBondGrowthBlockedByPageEdge(selected, atomHit.atomId, point, page.width, page.height)) {
       return { document, refusal: "sprout-page-edge" };
     }
+    // A requested multiple bond at an atom must fail as a whole when valence refuses it.
+    if (options.bondOrder && options.bondOrder !== "single") {
+      const preview = previewNativeMoleculeBondGrowth(selected, point, page.width, page.height);
+      if (atomHit || preview) {
+        // With a preview, extendNativeCarbonChain already named its reason; without one, say why.
+        if (!preview && atomHit) {
+          const element = selected.atoms.find(atom => atom.id === atomHit.atomId)?.element ?? "the atom";
+          options.onRefusal?.(!isEditableNativeMoleculeGraph(selected)
+            ? "this molecule cannot be edited as a native graph"
+            : atomHit.availableBonds <= 0
+              ? `${element} has no available valence`
+              : `there is no room to place a bond from ${element}`);
+        }
+        return { document };
+      }
+    }
     return { document: insertNativeSingleBondMolecule(document, point, options) };
   }
 
@@ -7218,6 +7301,7 @@ export function nativeFreeformSingleBondToolAtPoint(
       ? connectNativeCarbonAtoms(merged.molecule, sourceAtomId, mergedTargetAtomId, options)
       : undefined;
     if (!merged || !connected) {
+      if (!merged) options.onRefusal?.("those molecules cannot be merged into one");
       return { document };
     }
     return { document: applyPatches(
@@ -7240,7 +7324,12 @@ export function nativeFreeformSingleBondToolAtPoint(
     const unbounded = previewNativeMoleculeFreeformBondGrowthInBounds(molecule, sourceAtomId, point, {
       x: -margin, y: -margin, width: page.width + margin * 2, height: page.height + margin * 2
     }, options);
-    return unbounded ? { document, refusal: "sprout-page-edge" } : { document };
+    if (unbounded) return { document, refusal: "sprout-page-edge" };
+    options.onRefusal?.(nativeAtomGrowRefusalReason(molecule, sourceAtomId) ??
+      (isEditableNativeMoleculeGraph(molecule)
+        ? "there is no room to place that bond"
+        : "this molecule cannot be edited as a native graph"));
+    return { document };
   }
 
   const extended = preview.targetAtomId
@@ -8977,6 +9066,28 @@ export function applyNativeMoleculeBondOrderValueTarget(
     { op: "updateObject", objectId: molecule.id, changes: nextMolecule },
     { now: phase4Timestamp }
   );
+}
+
+/**
+ * Why {@link applyNativeMoleculeBondOrderValueTarget} would leave the document alone, as a
+ * status-line sentence; undefined when it would change the bond.
+ */
+export function nativeBondOrderTargetRefusal(
+  document: ChemDraftDocument,
+  target: NativeBondOrderTarget,
+  order: NativeBondOrderValue
+): string | undefined {
+  const molecule = firstPage(document).objects.find((object): object is MoleculeObject =>
+    object.id === target.objectId && object.type === "molecule"
+  );
+  const bond = molecule?.bonds.find((candidate) => candidate.id === target.bondId);
+  if (!molecule || !bond) return "Bond order not changed: the bond no longer exists";
+  if (!isEditableNativeMoleculeGraph(molecule)) {
+    return "Bond order not changed: this molecule cannot be edited as a native graph";
+  }
+  if (order === bond.order && bond.stereo !== "either") return `Bond is already ${order}`;
+  const reason = nativeBondOrderRefusalReason(molecule, bond, order);
+  return reason ? `Bond order not changed: ${reason}` : undefined;
 }
 
 export type BondStereoValue = "either" | "geometry" | "flipped";
@@ -19851,7 +19962,9 @@ function extendNativeCarbonGraph(
   newAtomPoint: PagePoint,
   options: NativeBondToolOptions = {}
 ): MoleculeObject | undefined {
-  if (!canGrowNativeAtom(molecule, sourceAtomId)) {
+  const growRefusal = nativeAtomGrowRefusalReason(molecule, sourceAtomId);
+  if (growRefusal) {
+    options.onRefusal?.(growRefusal);
     return undefined;
   }
 
@@ -19874,7 +19987,30 @@ function extendNativeCarbonGraph(
     }
   ];
 
-  return refreshNativeSingleBondGraph(molecule, atoms, bonds);
+  const orderedBonds = nativeBondsWithToolOrder(molecule, { ...molecule, atoms, bonds }, options);
+  return orderedBonds ? refreshNativeSingleBondGraph(molecule, atoms, orderedBonds) : undefined;
+}
+
+/**
+ * Give the bond a tool just added the tool's order, through the same path as order cycling so a
+ * double bond also stores its side. Returns the bonds unchanged for a single bond; reports the
+ * reason through `onRefusal` and returns undefined when the order would break an endpoint.
+ */
+function nativeBondsWithToolOrder(
+  baseline: MoleculeObject,
+  molecule: MoleculeObject,
+  options: NativeBondToolOptions
+): MoleculeBond[] | undefined {
+  const order = options.bondOrder ?? "single";
+  const addedBond = molecule.bonds[molecule.bonds.length - 1];
+  if (order === "single") return molecule.bonds;
+  const refusal = nativeBondOrderRefusalReason(molecule, addedBond, order, baseline);
+  if (refusal) {
+    options.onRefusal?.(refusal);
+    return undefined;
+  }
+  return molecule.bonds.map(bond =>
+    bond.id === addedBond.id ? nativeBondWithOrderAndDisplay(molecule, bond, order) : bond);
 }
 
 /**
@@ -20276,7 +20412,9 @@ function connectNativeCarbonAtoms(
   targetAtomId: string,
   options: NativeBondToolOptions = {}
 ): MoleculeObject | undefined {
-  if (!canConnectNativeAtoms(molecule, sourceAtomId, targetAtomId)) {
+  const connectRefusal = nativeAtomsConnectRefusalReason(molecule, sourceAtomId, targetAtomId);
+  if (connectRefusal) {
+    options.onRefusal?.(connectRefusal);
     return undefined;
   }
 
@@ -20291,7 +20429,8 @@ function connectNativeCarbonAtoms(
     }
   ];
 
-  return refreshNativeSingleBondGraph(molecule, molecule.atoms, bonds);
+  const orderedBonds = nativeBondsWithToolOrder(molecule, { ...molecule, bonds }, options);
+  return orderedBonds ? refreshNativeSingleBondGraph(molecule, molecule.atoms, orderedBonds) : undefined;
 }
 
 function atomLabelIsotopeRefusal(atom: MoleculeAtom, label: string, molecule: MoleculeObject, literal: boolean): string | undefined {
@@ -20423,25 +20562,41 @@ function canSetNativeBondOrder(
   bond: MoleculeBond,
   order: MoleculeBond["order"]
 ): boolean {
+  return nativeBondOrderRefusalReason(molecule, bond, order) === undefined;
+}
+
+/**
+ * Why a bond cannot take `order`, in words for the status line; undefined when it can. For a bond
+ * a tool has just added, pass the molecule as it was before the addition as `baseline`, so the
+ * endpoints are judged against what they were rather than against the single bond just added.
+ */
+function nativeBondOrderRefusalReason(
+  molecule: MoleculeObject,
+  bond: MoleculeBond,
+  order: MoleculeBond["order"],
+  baseline: MoleculeObject = molecule
+): string | undefined {
   if (order !== "single" && order !== "double" && order !== "triple") {
-    return false;
+    return `a ${order} bond cannot be set with this tool`;
   }
 
   const atomById = new Map(molecule.atoms.map((atom) => [atom.id, atom]));
   const fromAtom = atomById.get(bond.fromAtomId);
   const toAtom = atomById.get(bond.toAtomId);
   if (!fromAtom || !toAtom) {
-    return false;
+    return "the bond's atoms are missing";
   }
 
-  if (!nativeElementFromAtomLabel(fromAtom.element) || !nativeElementFromAtomLabel(toAtom.element)) {
-    return false;
+  for (const atom of [fromAtom, toAtom]) {
+    if (!nativeElementFromAtomLabel(atom.element)) {
+      return `${atom.element} is not a plain element, so its bond order is left alone`;
+    }
   }
   // The dashed style is the dative style, and dative means single: the dashed tool refuses a
   // double or triple bond for that reason, so a dashed bond may not be raised past single
   // either — a "dashed double" would draw as a dative bond and export as a covalent double.
   if (bond.display?.bondStyle === "dashed" && !isDativeBond({ ...bond, order })) {
-    return false;
+    return `a dashed (dative) bond stays single, not ${order}`;
   }
 
   // Judge the change by the validator the badges use, on the bonds as they WOULD be: the order
@@ -20456,24 +20611,63 @@ function canSetNativeBondOrder(
   const nextBonds = molecule.bonds.map((candidate) => (candidate.id === bond.id ? { ...candidate, order } : candidate));
   const nextAtoms = clearChangedAtomHydrogenHints(molecule, molecule.atoms, nextBonds);
   const nextAtomById = new Map(nextAtoms.map((atom) => [atom.id, atom]));
-  const beforeResolution = nativeBondOrderResolution(molecule.atoms, molecule.bonds);
+  const beforeResolution = nativeBondOrderResolution(baseline.atoms, baseline.bonds);
   const afterResolution = nativeBondOrderResolution(nextAtoms, nextBonds);
   const breaks = (atom: MoleculeAtom): boolean => {
     // A dismissed badge must not license the edit: judge the bare arithmetic.
-    const { warningSuppressed: _warningSuppressed, ...bare } = atom;
     const { warningSuppressed: _nextSuppressed, ...nextBare } = nextAtomById.get(atom.id)!;
+    const nextState = nativeAtomValidationState(nextBare, nextBonds, nextBare.formalCharge, nextAtoms, afterResolution);
+    const nextInvalid = !nextState.valid;
+    const priorAtom = baseline.atoms.find((candidate) => candidate.id === atom.id);
+    // An atom the tool just created has no earlier state: it is judged only as it ends up.
+    if (!priorAtom) return nextInvalid;
+    // The baseline excuses a problem the atom already had, never a result past its valence: a
+    // hypovalent literal atom (three bonds on a typed "C") is flagged before the addition, yet
+    // a double bond from it would still make a pentavalent carbon. The same holds when the change
+    // is a RAISED order on an existing bond (baseline === molecule), judged against the atom's own
+    // bond-order sum; lowering an order only reduces valence, so it is never refused here.
+    const { warningSuppressed: _warningSuppressed, ...bare } = priorAtom;
+    const priorState = nativeAtomValidationState(bare, baseline.bonds, bare.formalCharge, baseline.atoms, beforeResolution);
+    const nextElement = nativeElementFromAtomLabel(nextBare.element);
+    const raisesValence = baseline !== molecule || nextState.valenceUsed > priorState.valenceUsed;
+    if (raisesValence && nextInvalid && nextElement &&
+      !nativeAtomChargeSupportsValence(nextElement, nextState.valenceUsed, nextBare.formalCharge)) {
+      return true;
+    }
     // The proposed graph has already invalidated import-time hints. Judging it against the old
     // H count would refuse ordinary edits such as converting imported ethane to ethene.
-    return nativeAtomValidationState(bare, molecule.bonds, bare.formalCharge, molecule.atoms, beforeResolution).valid &&
-      !nativeAtomValidationState(nextBare, nextBonds, nextBare.formalCharge, nextAtoms, afterResolution).valid;
+    return priorState.valid && nextInvalid;
   };
-  return !breaks(fromAtom) && !breaks(toAtom);
+  const broken = [fromAtom, toAtom].find(breaks);
+  if (!broken) return undefined;
+  // Say "exceed" only when the change really adds valence; a lowering that leaves a typed atom
+  // short, or an aromatic ring unresolvable, is named by the validator's own reason.
+  const { warningSuppressed: _brokenSuppressed, ...brokenBare } = nextAtomById.get(broken.id)!;
+  const brokenState = nativeAtomValidationState(brokenBare, nextBonds, brokenBare.formalCharge, nextAtoms, afterResolution);
+  const priorBroken = baseline.atoms.find((candidate) => candidate.id === broken.id);
+  const priorBrokenState = priorBroken
+    ? nativeAtomValidationState(
+      (({ warningSuppressed: _w, ...bare }) => bare)(priorBroken),
+      baseline.bonds, priorBroken.formalCharge, baseline.atoms, beforeResolution)
+    : undefined;
+  const addsValence = baseline !== molecule || !priorBrokenState || brokenState.valenceUsed > priorBrokenState.valenceUsed;
+  if (addsValence || !brokenState.invalidReason) {
+    return `${broken.element} would exceed its valence with a ${order} bond`;
+  }
+  return `a ${order} bond would leave ${broken.element} invalid: ${brokenState.invalidReason}`;
 }
 
 function canGrowNativeAtom(molecule: MoleculeObject, atomId: string): boolean {
+  return nativeAtomGrowRefusalReason(molecule, atomId) === undefined;
+}
+
+function nativeAtomGrowRefusalReason(molecule: MoleculeObject, atomId: string): string | undefined {
   const valenceUsage = atomBondOrderUsageMap(molecule.atoms, molecule.bonds);
   const atom = molecule.atoms.find((candidate) => candidate.id === atomId);
-  return atom !== undefined && nativeAtomAvailableBondCount(atom, valenceUsage.get(atomId) ?? 0, molecule) > 0;
+  if (!atom) return "the atom to grow from is missing";
+  return nativeAtomAvailableBondCount(atom, valenceUsage.get(atomId) ?? 0, molecule) > 0
+    ? undefined
+    : `${atom.element} has no available valence`;
 }
 
 function canConnectNativeAtoms(
@@ -20481,32 +20675,36 @@ function canConnectNativeAtoms(
   sourceAtomId: string,
   targetAtomId: string
 ): boolean {
+  return nativeAtomsConnectRefusalReason(molecule, sourceAtomId, targetAtomId) === undefined;
+}
+
+function nativeAtomsConnectRefusalReason(
+  molecule: MoleculeObject,
+  sourceAtomId: string,
+  targetAtomId: string
+): string | undefined {
   if (sourceAtomId === targetAtomId) {
-    return false;
+    return "an atom cannot bond to itself";
   }
 
-  const atomIds = new Set(molecule.atoms.map((atom) => atom.id));
-  if (!atomIds.has(sourceAtomId) || !atomIds.has(targetAtomId)) {
-    return false;
+  const atomById = new Map(molecule.atoms.map((atom) => [atom.id, atom]));
+  const sourceAtom = atomById.get(sourceAtomId);
+  const targetAtom = atomById.get(targetAtomId);
+  if (!sourceAtom || !targetAtom) {
+    return "an atom to connect is missing";
   }
 
   if (molecule.bonds.some((bond) =>
     (bond.fromAtomId === sourceAtomId && bond.toAtomId === targetAtomId) ||
     (bond.fromAtomId === targetAtomId && bond.toAtomId === sourceAtomId)
   )) {
-    return false;
+    return "those atoms are already bonded";
   }
 
   const valenceUsage = atomBondOrderUsageMap(molecule.atoms, molecule.bonds);
-  const atomById = new Map(molecule.atoms.map((atom) => [atom.id, atom]));
-  const sourceAtom = atomById.get(sourceAtomId);
-  const targetAtom = atomById.get(targetAtomId);
-  return (
-    sourceAtom !== undefined &&
-    targetAtom !== undefined &&
-    nativeAtomAvailableBondCount(sourceAtom, valenceUsage.get(sourceAtomId) ?? 0, molecule) > 0 &&
-    nativeAtomAvailableBondCount(targetAtom, valenceUsage.get(targetAtomId) ?? 0, molecule) > 0
-  );
+  const full = [sourceAtom, targetAtom].find((atom) =>
+    nativeAtomAvailableBondCount(atom, valenceUsage.get(atom.id) ?? 0, molecule) <= 0);
+  return full ? `${full.element} has no available valence` : undefined;
 }
 
 function deleteNativeCarbonAtom(
