@@ -44,6 +44,27 @@ describe("sprout refusal diagnostics", () => {
       .toBe("Cannot add carbonyl or oxo to hovered atom: that atom has no free valence");
   });
 
+  it.each([["CP", "PH2"], ["CPC", "PH"], ["C1CC[PH]C1", "PH"]])("a second oxo on %s is refused exactly like the %s label path", (smiles, label) => {
+    const document = insertSmilesMolecule(createPhase4Document("Phosphorus oxo limit"), { x: 300, y: 300 }, depictSmiles2D(smiles), smiles);
+    const molecule = document.pages[0].objects[0] as MoleculeObject;
+    const phosphorus = molecule.atoms.find(atom => atom.element === "P")!;
+    const target = { objectId: molecule.id, kind: "atom" as const, atomId: phosphorus.id, distanceToPointer: 0 };
+    const labelled = applyPatches(document, [{ op: "updateObject", objectId: molecule.id, changes: {
+      atoms: molecule.atoms.map(atom => atom.id === phosphorus.id ? { ...atom, element: label, labelLiteral: true } : atom)
+    } }]);
+    const reference = nativeOxoHotkeyTarget(labelled, target);
+    const first = nativeOxoHotkeyTarget(document, target);
+    expect(reference.refusal).toBeUndefined();
+    expect(first.refusal).toBeUndefined();
+    const referenceRefusal = nativeOxoHotkeyTarget(reference.document, target);
+    expect(referenceRefusal).toEqual({ document: reference.document, refusal: "atom-no-free-valence" });
+    const result = nativeOxoHotkeyTarget(first.document, target);
+    expect(result.refusal).toBe(referenceRefusal.refusal);
+    expect(result.document).toBe(first.document);
+    expect(`Cannot add carbonyl or oxo to hovered atom: ${nativeTemplateFallbackReasonText(result.refusal!)}`)
+      .toBe("Cannot add carbonyl or oxo to hovered atom: that atom has no free valence");
+  });
+
   it.each(hotkeys)("%s names a missing target and an uneditable structure", (_kind, apply) => {
     const { document, molecule, target } = seed();
     const missing = apply(document, { ...target, objectId: "missing" });

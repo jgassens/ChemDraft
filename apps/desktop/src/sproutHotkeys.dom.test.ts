@@ -168,6 +168,31 @@ describe.each([
     expect(molecule()).toEqual(after);
   });
 
+  it("hovering plain phosphorus in CP and pressing 2 retains both H, refuses another oxo, and undoes exactly", async () => {
+    const initial = insertSmilesMolecule(createPhase4Document("Phosphorus oxo key"), { x: 300, y: 300 }, depictSmiles2D("CP"), "CP");
+    await renderEthane(initial);
+    const before = molecule();
+    const phosphorusIndex = before.atoms.findIndex(atom => atom.element === "P");
+    expect(before.atoms[phosphorusIndex].labelLiteral).toBeUndefined();
+    await hoverAtom(phosphorusIndex);
+    expect((await press("2")).defaultPrevented).toBe(true);
+    const after = molecule();
+    expect(after.atoms).toHaveLength(before.atoms.length + 1);
+    expect(Molecule.fromSmiles(after.structure).getIDCode()).toBe(Molecule.fromSmiles("C[PH2]=O").getIDCode());
+    expect(after.chemistry?.formula).toBe("CH5OP");
+    expect(Molecule.fromSmiles(after.structure).getMolecularFormula().formula).toBe("CH5OP");
+    expect(container.querySelector("[data-status-message]")?.textContent).toContain("Added carbonyl or oxo");
+    await hoverAtom(phosphorusIndex);
+    await press("2");
+    expect(molecule()).toEqual(after);
+    expect(container.querySelector("[data-status-message]")?.textContent)
+      .toContain("Cannot add carbonyl or oxo to hovered atom: that atom has no free valence");
+    await press("z", platform === "macos" ? { metaKey: true } : { ctrlKey: true });
+    expect(molecule()).toEqual(before);
+    await press("z", platform === "macos" ? { metaKey: true, shiftKey: true } : { ctrlKey: true, shiftKey: true });
+    expect(molecule()).toEqual(after);
+  });
+
   it("draws C–C, hover-types terminal S, ends continuation with the Bond toolbar, then adds undoable oxos", async () => {
     await renderEthane(createPhase4Document("Hover-typed terminal sulfur"), true);
     await pointer("pointerdown", { x: 300, y: 300 });

@@ -130,6 +130,41 @@ describe("atom-aware numeric sprouts", () => {
     expect(nativeOxoHotkeyTarget(labelled, target)).toEqual({ document: labelled, refusal: "atom-no-free-valence" });
   });
 
+  it.each([
+    ["pasted CP", "CP", "PH2", "C[PH2]=O", "CH5OP"],
+    ["element tool", "CP", "PH2", "C[PH2]=O", "CH5OP"],
+    ["pasted CPC", "CPC", "PH", "C[PH](=O)C", "C2H7OP"],
+    ["pasted phospholane", "C1CC[PH]C1", "PH", "O=[PH]1CCCC1", "C4H9OP"]
+  ])("oxidizes phosphorus from %s exactly like its spelled label, retaining its hydrogens", (origin, smiles, label, oxide, formula) => {
+    let document = origin === "element tool"
+      ? insertNativeSingleBondMolecule(createPhase4Document("Phosphorus hydrogens"), { x: 300, y: 300 })
+      : insertSmilesMolecule(createPhase4Document("Phosphorus hydrogens"), { x: 300, y: 300 }, depictSmiles2D(smiles), smiles);
+    const before = molecule(document);
+    const phosphorus = origin === "element tool" ? before.atoms[1] : before.atoms.find(atom => atom.element === "P")!;
+    const target = { objectId: before.id, kind: "atom" as const, atomId: phosphorus.id, distanceToPointer: 0 };
+    if (origin === "element tool") document = applyNativeAtomElementTarget(document, target, "P");
+    const source = molecule(document);
+    expect(source.atoms.find(atom => atom.id === phosphorus.id)).toMatchObject({ element: "P", formalCharge: 0 });
+    const labelled = applyPatches(document, [{ op: "updateObject", objectId: source.id, changes: {
+      atoms: source.atoms.map(atom => atom.id === phosphorus.id ? { ...atom, element: label, labelLiteral: true } : atom)
+    } }]);
+    const reference = nativeOxoHotkeyTarget(labelled, target);
+    expect(reference.refusal).toBeUndefined();
+    const result = nativeOxoHotkeyTarget(document, target);
+    expect(result.refusal).toBeUndefined();
+    const after = molecule(result.document);
+    expect(canonicalSmiles(after.structure)).toBe(canonicalSmiles(molecule(reference.document).structure));
+    expect(canonicalSmiles(after.structure)).toBe(canonicalSmiles(oxide));
+    expect(after.chemistry?.formula).toBe(molecule(reference.document).chemistry?.formula);
+    expect(after.chemistry?.formula).toBe(formula);
+    expect(Molecule.fromSmiles(after.structure).getMolecularFormula().formula).toBe(formula);
+    expect(after.atoms.find(atom => atom.id === phosphorus.id)).toMatchObject({ element: label, labelLiteral: true });
+    expect(after.atoms).toHaveLength(source.atoms.length + 1);
+    expect(after.bonds.slice(0, source.bonds.length)).toEqual(source.bonds);
+    expect(nativeOxoHotkeyTarget(reference.document, target).refusal).toBe("atom-no-free-valence");
+    expect(nativeOxoHotkeyTarget(result.document, target)).toEqual({ document: result.document, refusal: "atom-no-free-valence" });
+  });
+
   it("preserves literal SH and its explicit hydrogen when adding oxygen", () => {
     const { document, target, before } = fixture("SH", ["C"]);
     const edited = applyPatches(document, [{ op: "updateObject", objectId: before.id, changes: {

@@ -163,17 +163,16 @@ export function nativeOxoHotkeyTarget(document: ChemDraftDocument, target: Nativ
   if (!atom || !graph || (element !== "S" && element !== "P")) return nativeCarbonylHotkeyAtAtomTarget(document, target, plan);
   const next = oxygenGraph(graph, atom.id, document, plan);
   if (!next) return { document, refusal: "sprout-no-free-direction" };
-  // Terminal S carries an implicit H before oxidation. The bare three-bond-order S in
-  // C–S=O fails validation; spell the retained H so the existing SH label path validates
-  // the complete hypervalent state and keeps that H in the formula and SMILES. Do this
-  // only when the ordinary result is invalid; already supported P/S states keep their
-  // representation. Literal, charged, isotopic and radical atoms retain their own gates.
+  // Oxidation must retain the source's implicit H even if the bare product validates
+  // (CP -> CP=O would silently lose two H). Spell a changed H count so the existing
+  // SH/PH label path validates the complete hypervalent state and preserves its formula.
+  // Atoms without implicit H and literal, charged, isotopic or radical atoms keep their gates.
   if (reading?.kind === "element" && atom.labelLiteral !== true && atom.formalCharge === 0 &&
-    atom.isotope === undefined && !(atom.markRadicals ?? 0) &&
-    !nativeAtomValidationState(atom, next.bonds, atom.formalCharge, next.atoms).valid) {
+    atom.isotope === undefined && !(atom.markRadicals ?? 0)) {
     const usage = atomBondOrderUsageMap(graph.atoms, graph.bonds).get(atom.id) ?? 0;
     const hydrogens = nativeImplicitHydrogenCount(element, usage, atom.formalCharge);
-    if (hydrogens > 0) {
+    const nextUsage = atomBondOrderUsageMap(next.atoms, next.bonds).get(atom.id) ?? 0;
+    if (hydrogens > 0 && hydrogens !== nativeImplicitHydrogenCount(element, nextUsage, atom.formalCharge)) {
       next.atoms = next.atoms.map(candidate => candidate.id === atom.id
         ? { ...candidate, element: `${element}H${hydrogens === 1 ? "" : hydrogens}`, labelLiteral: true }
         : candidate);
