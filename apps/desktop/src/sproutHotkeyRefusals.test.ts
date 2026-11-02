@@ -8,7 +8,9 @@ import {
   type NativeAtomSproutHotkeyResult, type NativeMoleculeDeleteTarget
 } from "./documentWorkflow";
 import { nativeTemplateFallbackReasonText } from "./MainWindow";
-import { nativeBondLengthPx } from "@chemdraft/document-workflow-core";
+import { insertSmilesMolecule, nativeBondLengthPx } from "@chemdraft/document-workflow-core";
+import { depictSmiles2D } from "@chemdraft/ocl-adapter";
+import { nativeOxoHotkeyTarget } from "./sproutHotkeys";
 
 function seed() {
   const document = insertNativeSingleBondMolecule(createPhase4Document("Sprout refusal"), { x: 300, y: 300 });
@@ -28,6 +30,20 @@ const hotkeys = [
 ] as const;
 
 describe("sprout refusal diagnostics", () => {
+  it.each([
+    ["sulfone", "CS(=O)(=O)C", "S"],
+    ["phosphine oxide", "CP(=O)(C)C", "P"]
+  ])("the oxo key keeps the specific refusal for %s", (_name, smiles, element) => {
+    const document = insertSmilesMolecule(createPhase4Document("Full oxo target"), { x: 300, y: 300 }, depictSmiles2D(smiles), smiles);
+    const molecule = document.pages[0].objects[0] as MoleculeObject;
+    const atom = molecule.atoms.find(atom => atom.element === element && molecule.bonds.filter(bond =>
+      bond.fromAtomId === atom.id || bond.toAtomId === atom.id).length > 1)!;
+    const result = nativeOxoHotkeyTarget(document, { objectId: molecule.id, kind: "atom", atomId: atom.id, distanceToPointer: 0 });
+    expect(result).toEqual({ document, refusal: "atom-no-free-valence" });
+    expect(`Cannot add carbonyl or oxo to hovered atom: ${nativeTemplateFallbackReasonText(result.refusal!)}`)
+      .toBe("Cannot add carbonyl or oxo to hovered atom: that atom has no free valence");
+  });
+
   it.each(hotkeys)("%s names a missing target and an uneditable structure", (_kind, apply) => {
     const { document, molecule, target } = seed();
     const missing = apply(document, { ...target, objectId: "missing" });
