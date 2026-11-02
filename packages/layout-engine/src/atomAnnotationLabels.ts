@@ -194,7 +194,7 @@ export function layoutAtomAnnotationLabels(input: {
 }
 
 /** Bounding hierarchy for static obstacles. Exact predicates and candidate order stay unchanged. */
-function obstacleIndex<T>(items: readonly T[], boundsOf: (item: T) => AnnotationLabelBox) {
+export function obstacleIndex<T>(items: readonly T[], boundsOf: (item: T) => AnnotationLabelBox) {
   interface Node {
     left: number; top: number; right: number; bottom: number;
     items?: { item: T; box: AnnotationLabelBox }[];
@@ -228,7 +228,7 @@ function obstacleIndex<T>(items: readonly T[], boundsOf: (item: T) => Annotation
   };
 }
 
-function segmentIntersectsBox(a: { x: number; y: number }, b: { x: number; y: number }, box: AnnotationLabelBox): boolean {
+export function segmentIntersectsBox(a: { x: number; y: number }, b: { x: number; y: number }, box: AnnotationLabelBox): boolean {
   let low = 0;
   let high = 1;
   for (const [start, delta, min, max] of [
