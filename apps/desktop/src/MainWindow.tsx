@@ -7346,16 +7346,11 @@ export function MainWindow({
     setStatus(["Copied ChemDraft selection", ...notices].join("; "));
   }, [deleteSelectionAfterClipboardCut]);
 
-  // What every flush writes — the session autosave, the quit and window-close flush (macOS and
-  // Windows), Save and export: the working document as it would be if an open label edit closed
-  // now. The keystroke that brings a session back to its starting text already writes the label as
-  // it started (applyNativeAtomLabelDraft); the flush still applies the close's own rule
-  // (finishNativeAtomLabelEdit), so what reaches disk never depends on which path wrote the present
-  // document, and a relaunch never reopens changed chemistry. The edit itself stays open. Reads
-  // refs only. Table text is private until edit completion; fold its current rich-text draft
-  // into the same snapshot without touching the working document or recording history.
-  const documentForFlush = useCallback((): ChemDraftDocument => {
-    let current = documentRef.current;
+  // Table text is private until edit completion. Copy As and flushes include its rich-text draft
+  // without touching the working document or history. This table-only snapshot leaves chemistry
+  // untouched, so it needs no additional commit normalization or atom-label draft finalization.
+  const documentWithTableDraft = useCallback((): ChemDraftDocument => {
+    const current = documentRef.current;
     const cell = tableCellEditRef.current;
     const value = tableCellEditorRef.current?.draft();
     const table = selectedTable(current);
@@ -7366,9 +7361,21 @@ export function MainWindow({
           ? cell.kind === "caption" ? setTableCaption(table, value)
             : setTableFootnotes(table, table.footnotes.map((note, index) => index === cell.index ? value : note))
           : setTableCell(table, cell.rowId, cell.columnId, value);
-        current = normalizeCommittedDocument(applyTableObjectEdit(current, edited.table));
+        return applyTableObjectEdit(current, edited.table);
       }
     }
+    return current;
+  }, []);
+
+  // What every flush writes — the session autosave, the quit and window-close flush (macOS and
+  // Windows), Save and export: the working document as it would be if an open label edit closed
+  // now. The keystroke that brings a session back to its starting text already writes the label as
+  // it started (applyNativeAtomLabelDraft); the flush still applies the close's own rule
+  // (finishNativeAtomLabelEdit), so what reaches disk never depends on which path wrote the present
+  // document, and a relaunch never reopens changed chemistry. The edit itself stays open. Reads
+  // refs only, including the table draft snapshot shared with Copy As.
+  const documentForFlush = useCallback((): ChemDraftDocument => {
+    const current = documentWithTableDraft();
     const edit = activeAtomLabelEditRef.current;
     if (
       !edit ||
@@ -7379,10 +7386,10 @@ export function MainWindow({
     }
     if (!atomLabelEditKeepsStartingText(edit) && !documentHasAtomLabelDraft(current, edit)) return current;
     return normalizeCommittedDocument(finishedAtomLabelDraft(current, edit).document);
-  }, []);
+  }, [documentWithTableDraft]);
 
   const performCopyAs = useCallback(async (commandId: string) => {
-    const current = documentForFlush();
+    const current = documentWithTableDraft();
     const writeText = async (text: string | undefined, label: string, warnings: readonly string[] = []) => {
       if (!text) {
         setStatus(`Nothing to copy as ${label}`);
@@ -7486,7 +7493,7 @@ export function MainWindow({
       default:
         setStatus(`Unknown copy format: ${commandId}`);
     }
-  }, [documentForFlush]);
+  }, [documentWithTableDraft]);
 
   const pasteClipboard = useCallback(async (domPayload?: ClipboardReadPayload | Promise<ClipboardReadPayload>) => {
     smilesListPasteAbortRef.current?.abort();
@@ -10365,7 +10372,7 @@ export function MainWindow({
     if (!savingDocument || !savingFileState) return false;
     const savingTableDraft = active ? JSON.stringify(tableCellEditorRef.current?.draft()) : undefined;
     const savedDocument = active ? documentForFlush() : savingDocument;
-    const payload = createNativeSavePayload(savedDocument);
+    const payload = createNativeSavePayload(active ? documentForFlush() : savingDocument);
     const finishSave = (path?: string) => {
       savedDocumentsRef.current.set(savingTabId, savedDocument);
       documentSaveRevisionsRef.current.set(savingTabId, (documentSaveRevisionsRef.current.get(savingTabId) ?? 0) + 1);
