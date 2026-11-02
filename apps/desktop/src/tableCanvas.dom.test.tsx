@@ -140,8 +140,8 @@ describe("native tables on the canvas", () => {
     expect(edited.rows[2].cells[0].text).toBe("1");
     expect(edited.rows.flatMap(row => row.cells).filter(cell => cell.text !== "")).toHaveLength(1);
     const editedLayout = planTableLayout(edited);
-    expect(editedLayout.columns[0].width).toBe(editedLayout.columns[0].contentWidth);
-    expect(editedLayout.columns[0].width).toBeLessThan(minimum);
+    expect(editedLayout.columns[0].width).toBe(layout.columns[0].width);
+    expect(editedLayout.columns[0].width).toBeGreaterThanOrEqual(minimum);
     const editedBox = editedLayout.cells.find(cell => cell.rowIndex === 2 && cell.columnIndex === 0)!.box;
     expect(editedBox.width).toBeGreaterThan(5);
     const editedX = (editedBox.x + 5) * scale, editedY = (editedBox.y + editedBox.height / 2) * scale;
@@ -152,6 +152,38 @@ describe("native tables on the canvas", () => {
     }
     await act(async () => editedHit.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, detail: 2, clientX: editedX, clientY: editedY })));
     expect(container.querySelector<HTMLTextAreaElement>("[data-table-cell-editor] textarea")?.value).toBe("1");
+  });
+
+  it("lets an all-empty column without an auto minimum shrink to natural width after typing", async () => {
+    const nativeDocument = fixture(), table = nativeDocument.pages[0].objects[0];
+    if (table.type !== "table") throw new Error("Expected table");
+    delete table.tableStyle.autoColumnMinEm;
+    for (const row of table.rows) row.cells[0].text = "";
+    await render(nativeDocument);
+    const layout = planTableLayout(table);
+    const minimum = Math.ceil((3 * nativeTextStyleFromObjectStyle(table.style).fontSizePx + 2 * table.tableStyle.cellPaddingPx.x) * 2) / 2;
+    expect(layout.columns[0].width).toBeGreaterThanOrEqual(minimum);
+    const box = layout.cells.find(cell => cell.rowIndex === 1 && cell.columnIndex === 0)!.box;
+    const scale = (window.__CHEMDRAFT_AGENT__!.snapshot().viewport as { scale: number }).scale;
+    const x = (box.x + 5) * scale, y = (box.y + box.height / 2) * scale;
+    const hit = container.querySelector("[data-table-hit-target]")!;
+    for (let i = 0; i < 2; i++) {
+      await pointer(hit, "pointerdown", x, y);
+      await pointer(container.querySelector(".page")!, "pointerup", x, y);
+    }
+    await act(async () => hit.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, detail: 2, clientX: x, clientY: y })));
+    const editor = container.querySelector<HTMLTextAreaElement>("[data-table-cell-editor] textarea");
+    expect(editor).not.toBeNull();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(editor, "1");
+      editor!.dispatchEvent(new Event("input", { bubbles: true }));
+      editor!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    const edited = window.__CHEMDRAFT_AGENT__!.snapshot().document.pages[0].objects[0];
+    if (edited.type !== "table") throw new Error("Expected table");
+    const editedLayout = planTableLayout(edited);
+    expect(editedLayout.columns[0].width).toBe(editedLayout.columns[0].contentWidth);
+    expect(editedLayout.columns[0].width).toBeLessThan(minimum);
   });
 
   it("leaves the empty bounding-box corners outside a 45-degree table hit rect", async () => {

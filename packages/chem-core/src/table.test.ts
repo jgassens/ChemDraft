@@ -9,6 +9,16 @@ const document = parseDocument(fixture);
 const table = document.pages[0]!.objects[0] as TableObject;
 
 describe("table objects", () => {
+  it("validates and round-trips the optional auto column minimum", () => {
+    for (const value of [undefined, 0.1, 3, 10]) {
+      const styled = { ...table, tableStyle: { ...table.tableStyle, ...(value === undefined ? {} : { autoColumnMinEm: value }) } };
+      const doc = { ...document, pages: [{ ...document.pages[0], objects: [styled] }] };
+      expect(deserializeDocument(serializeDocument(doc))).toEqual(doc);
+    }
+    for (const value of [0, -1, 10.1, Infinity, "3", null]) {
+      expect(TableObjectSchema.safeParse({ ...table, tableStyle: { ...table.tableStyle, autoColumnMinEm: value } }).success).toBe(false);
+    }
+  });
   it("enforces the new content and font limits at their boundaries", () => {
     const cell = { text: "x", spans: Array(200).fill({ text: "x", style: {}, script: "normal" }) };
     const base = { ...table, columns: [table.columns[0]], rows: [{ id: "r", cells: [cell] }],

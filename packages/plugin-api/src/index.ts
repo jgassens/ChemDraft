@@ -28,6 +28,7 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * (including structured minimize3d clash/contact diagnostics and flatten3d clash refusal).
  * 0.1.16 adds optional isotope mass numbers to native document atoms.
  * 0.1.17 adds the optional MoleculeBond `stereo: "either"` field for E/Z-unspecified double bonds.
+ * 0.1.19 adds the optional table style field autoColumnMinEm (minimum auto column width in em)
  * 0.1.18 adds command-scoped documents.insertTable with a validated native PluginTableSpec.
  *
  * The MINOR stays at 1 for both. For a 0.x release `isPluginApiVersionCompatible` treats the minor as
@@ -38,7 +39,7 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * local structure recognition, `^0.1.7` for structure naming, `^0.1.8` for external tools), which this host satisfies and an
  * older one correctly does not.
  */
-export const PluginApiVersion = "0.1.18" as const;
+export const PluginApiVersion = "0.1.19" as const;
 
 export const pluginPermissions = [
   "document.read",

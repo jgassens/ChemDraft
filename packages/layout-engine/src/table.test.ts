@@ -19,6 +19,23 @@ function smallTable(align: TableObject["columns"][number]["align"], texts: strin
 }
 
 describe("table layout and SVG", () => {
+  it("applies an explicit minimum to auto columns without changing fixed or natural content widths", () => {
+    const withMinimum = (input: TableObject) => ({ ...input, tableStyle: { ...input.tableStyle, autoColumnMinEm: 3 } });
+    const minimum = Math.ceil((3 * style.fontSizePx + 2 * table.tableStyle.cellPaddingPx.x) * 2) / 2;
+    const short = planTableLayout(withMinimum(smallTable("left", ["7"]))).columns[0];
+    expect(short.width).toBe(minimum);
+    expect(short.contentWidth).toBeLessThan(short.width);
+    const long = planTableLayout(withMinimum(smallTable("left", ["A long text that exceeds the minimum"]))).columns[0];
+    expect(long.width).toBe(long.contentWidth);
+    const fixed = planTableLayout(withMinimum(smallTable("left", ["7"], 10))).columns[0];
+    expect(fixed.width).toBe(10);
+    expect(fixed.contentWidth).toBe(short.contentWidth);
+    const decimal = planTableLayout(withMinimum(smallTable("decimal", ["1.2"]))).columns[0];
+    expect(decimal.width).toBe(minimum);
+    const block = decimal.decimalBlock!;
+    expect(decimal.decimalAnchorX).toBeCloseTo(decimal.x + table.tableStyle.cellPaddingPx.x + block.insetLeft + block.preWidth);
+    expect(block.insetLeft).toBeCloseTo(block.insetRight);
+  });
   it("floors only all-empty auto columns, including when other columns have header or body text", () => {
     const minimum = Math.ceil((3 * style.fontSizePx + 2 * table.tableStyle.cellPaddingPx.x) * 2) / 2;
     const empty = { ...table, caption: undefined, footnotes: [], headerRowCount: 0,

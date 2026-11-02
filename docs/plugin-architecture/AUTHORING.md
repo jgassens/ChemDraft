@@ -61,7 +61,7 @@ into core — e.g. `import type { ChemDraftDocument, DocumentPatch } from "@chem
 ```
 
 `apiVersion` in your manifest declares the SDK contract you target (`PluginApiVersion`, currently
-`0.1.18`). API 0.1.17 adds optional `MoleculeBond.stereo: "either"` for an E/Z-unspecified double bond.
+`0.1.19`). API 0.1.19 adds optional `tableStyle.autoColumnMinEm`, the minimum auto column width in em. API 0.1.17 adds optional `MoleculeBond.stereo: "either"` for an E/Z-unspecified double bond.
 It is allowed only on double bonds; plugins must preserve it when copying bonds and must not set it on other orders.
 API 0.1.16 adds optional positive integer `isotope` mass numbers to native document atoms.
 Native molecule objects returned by `chemistry.structureFromSmiles` and passed through document
@@ -80,11 +80,12 @@ API 0.1.7 adds host-owned `context.chemistry.structureToName`; plugins that use 
 use it should declare `^0.1.6`. API 0.1.5 added command-scoped `context.images.requestImage`, 0.1.4 added
 `context.documents.applyPatch`, and 0.1.3 added the host-owned `context.dialogs.promptText`
 capability. API 0.1.9 adds `context.assistant` for request-scoped tools and MCP sessions.
-Existing `^0.1.0` through `^0.1.18` packages remain compatible, each on a host at or above the version
+Existing `^0.1.0` through `^0.1.19` packages remain compatible, each on a host at or above the version
 it declares.
 
 | API version | Additive capability | Permission |
 | --- | --- | --- |
+| 0.1.19 | Optional `tableStyle.autoColumnMinEm` | Readable by plugins |
 | 0.1.18 | `documents.insertTable(spec)` | `document.write`, during the plugin's own command |
 | 0.1.17 | Optional bond `stereo: "either"` for E/Z-unspecified double bonds | No new permission |
 | 0.1.16 | Optional atom `isotope` fields | No new permission |
@@ -667,6 +668,9 @@ only objects selected when that command started plus its accepted insertions. Fl
 it does not open the proposal review tray/window. Assistant writes join one transaction per request.
 
 ### Native tables (0.1.18)
+
+Plugins may read the optional `tableStyle.autoColumnMinEm` minimum auto column width in em.
+`documents.insertTable` does not set it.
 
 Declare `document.write` and `apiVersion: "^0.1.18"`. The optional
 `context.documents.insertTable(spec: PluginTableSpec)` validates untrusted input with the shared

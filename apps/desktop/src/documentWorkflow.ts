@@ -21493,7 +21493,7 @@ export function insertTableIntoDocument(document: ChemDraftDocument, options: Ta
     style: { preset: options.preset }
   }, { id: options.newId("table"), x: 0, y: 0, newId: options.newId,
     style: textStyleToObjectStyle(options.textStyle ?? {}) });
-  return addTableCenteredOnPage(document, object, options.center);
+  return addTableCenteredOnPage(document, { ...object, tableStyle: { ...object.tableStyle, autoColumnMinEm: 3 } }, options.center);
 }
 
 /**
