@@ -1067,6 +1067,22 @@ Text editing (macOS and Windows): edit an existing text box next to another labe
 one copy of its text is visible while typing, rich formatting remains intact, the other label stays
 visible, and clicking away restores the updated drawing. Check Select/Text tool entry and Undo/Redo.
 
+## Toolbar popovers and dropdowns (macOS and Windows)
+
+- Hover a palette button until its tooltip appears, then mouse-open a toolbar flyout, the Art
+  colour picker, or the E/Z popover. The tooltip must disappear as the popover appears; hovering
+  buttons on this or another palette must show no tooltip while any popover is visible. Include a
+  rapid hover/open sequence to catch delayed tooltip shows. Dismiss the last popover and hover
+  again: normal tooltips must resume. Repeat on a second monitor with different scaling. Mouse
+  opens must preserve document focus, and utility windows must not cover other applications.
+- Open Art's paint-type dropdown (including None), and the other toolbar selects. Every option
+  must have readable dark text on an opaque light background with the OS in both light and dark
+  appearance. Confirm the existing macOS light appearance is unchanged.
+- Escape routing from the document/palette is unchanged by this fix: check its existing tool/edit
+  cancellation behavior with no popover open. Check Escape inside a focused E/Z popover or a leased
+  colour field still dismisses it. Mouse-opened non-key popovers still use click-away dismissal;
+  routing the document/palette Escape to them remains a separate task.
+
 ## Formatting several text boxes
 
 Text formatting (macOS and Windows): select two or more text boxes and change font family, then

@@ -1596,6 +1596,8 @@ textarea:focus-visible,
 }
 
 .toolbar-select {
+  /* Match the app's light tokens even when WebView2 inherits a dark OS control scheme. */
+  color-scheme: light;
   box-sizing: border-box;
   height: 24px;
   width: 100%;
@@ -1614,6 +1616,11 @@ textarea:focus-visible,
   font-size: 12px;
   line-height: 22px;
   white-space: nowrap;
+}
+
+.toolbar-select option {
+  background-color: var(--cd-bg-control);
+  color: var(--cd-text-primary);
 }
 
 .toolbar-font-select {
