@@ -9202,7 +9202,6 @@ mod tests {
     fn committed_sidecar_placeholders_are_never_runnable() {
         let binaries = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries");
         for triple in [
-            "x86_64-apple-darwin",
             "x86_64-unknown-linux-gnu",
             "aarch64-unknown-linux-gnu",
         ] {
@@ -9212,6 +9211,7 @@ mod tests {
         }
         for real in [
             "avogadro3d-sidecar-aarch64-apple-darwin",
+            "avogadro3d-sidecar-x86_64-apple-darwin",
             "avogadro3d-sidecar-x86_64-pc-windows-msvc.exe",
         ] {
             assert!(!is_sidecar_placeholder(&binaries.join(real)), "{real}");
