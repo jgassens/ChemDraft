@@ -73,7 +73,7 @@ An explicit Install action starts these downloads, including an approved plugin 
 required engine; they are not background engine installs. Evidence:
 `apps/desktop/src/plugins/StructureRecognitionInstallDialog.tsx:37–55`;
 `apps/desktop/src/plugins/StructureNamingInstallDialog.tsx:100`;
-`apps/desktop/src/plugins/structureNamingController.ts:68–79`, `:104–110`.
+`apps/desktop/src/plugins/StructureNamingController.ts:68–79`, `:104–110`.
 
 | Recipient | What is sent / purpose | Evidence |
 | --- | --- | --- |
