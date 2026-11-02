@@ -19,21 +19,21 @@ import {
  * sizes + positions the window (centered on the anchor, flipped above when there's no room
  * below), and shows. A hide broadcast (pointer left the button) hides it again.
  */
-function hideTooltipWindow() {
+function hideTooltipWindow(isCurrent: () => boolean) {
   // Through Rust, like show: both sync commands run on the main thread in send order. The JS
   // window API's hide took a separate IPC path that could overtake a just-sent show and leave the
   // tooltip stranded visible (seen on Windows once showing stopped stealing activation).
   void import("@tauri-apps/api/core")
-    .then(({ invoke }) => invoke("hide_toolset_tooltip_window"))
+    .then(({ invoke }) => isCurrent() ? invoke("hide_toolset_tooltip_window") : undefined)
     .catch(() => undefined);
 }
 
-function showTooltipWindow(position: { x: number; y: number }) {
+function showTooltipWindow(position: { x: number; y: number }, isCurrent: () => boolean) {
   // Rust places (in global logical coordinates, converted with the anchor monitor's scale) and
   // orders the panel front in one call — the same path that displays the palettes. Tauri's JS
   // show() resolved without error here but never actually displayed this focusable(false) panel.
   void import("@tauri-apps/api/core")
-    .then(({ invoke }) => invoke("show_toolset_tooltip_window", { x: position.x, y: position.y }))
+    .then(({ invoke }) => isCurrent() ? invoke("show_toolset_tooltip_window", { x: position.x, y: position.y }) : undefined)
     .catch(() => undefined);
 }
 
@@ -98,7 +98,8 @@ export function PaletteTooltipWindow() {
     void listenForPaletteTooltipHide(() => {
       generationRef.current += 1;
       setPayload(undefined);
-      hideTooltipWindow();
+      const generation = generationRef.current;
+      hideTooltipWindow(() => generationRef.current === generation);
     })
       .then((cleanup) => {
         unlistenHide = cleanup;
@@ -150,7 +151,7 @@ export function PaletteTooltipWindow() {
         height,
         bounds
       });
-      showTooltipWindow({ x, y });
+      showTooltipWindow({ x, y }, () => !superseded());
     })().catch(() => undefined);
     return () => {
       cancelled = true;
