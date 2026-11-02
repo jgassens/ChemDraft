@@ -15,6 +15,17 @@ selection after tab switching/closing.
 Canvas context menus (macOS and Windows): open the page and object menus with the mouse and keyboard;
 use arrows, Home/End, Arrange and Copy As submenus, Enter, Space, Escape and Tab, then verify canvas
 focus and drawing shortcuts return after an action or dismissal.
+
+Selection nudging (macOS and Windows): select a molecule, an atom/bond fragment, text, arrow,
+graphic, and a mixed selection in turn. Arrow keys move by 1 document unit (one CSS pixel);
+Shift+arrow moves by 10, and Down increases document y. Check at several zoom levels and page edges.
+Press Right three times and hold it for auto-repeat: the view stays still and one Undo restores
+the original coordinates; Redo restores the final position. Another key, pointer action,
+selection change or one second idle starts a new Undo burst. Check stereo, labels, anchored charge
+marks and mechanism arrows against a drag move. With nothing selected, arrows add no Undo entry.
+While atom labels, text, table cells, form controls or editable plugin text hold focus, verify
+real arrow caret/navigation behavior and no canvas movement. Cmd/Ctrl/Alt+arrows retain their
+usual behavior.
 Palette field input (macOS and Windows): in Drawn Structure Settings, click Target bond length,
 type 30 and press Return; the value changes, the canvas does not, and no hotkey fires. Switch to
 another app and back, then click the field again; Customize gallery search still types.

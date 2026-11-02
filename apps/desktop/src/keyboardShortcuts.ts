@@ -11,6 +11,7 @@ import {
   editActions,
   pageOrientationActions,
   pageSizeActions,
+  selectionNudgeActions,
   textToolbarActions,
   toolbarCustomizationActions,
   viewActions,
@@ -18,6 +19,28 @@ import {
 } from "./commands";
 import { applyKeybindingSchemeToCommands } from "./keybindingScheme";
 import type { KeybindingScheme } from "./keybindingSettings";
+import { isEditableTarget } from "./editableTarget";
+
+/** Document coordinates use CSS-pixel units, with positive y pointing down the page. */
+export function arrowNudgeOffset(key: string, shift = false): { x: number; y: number } | undefined {
+  const step = shift ? 10 : 1;
+  switch (key) {
+    case "ArrowLeft": return { x: -step, y: 0 };
+    case "ArrowRight": return { x: step, y: 0 };
+    case "ArrowUp": return { x: 0, y: -step };
+    case "ArrowDown": return { x: 0, y: step };
+    default: return undefined;
+  }
+}
+
+export function arrowNudgeContinuesBurst(lastPress: number | undefined, now: number): boolean {
+  return lastPress !== undefined && now >= lastPress && now - lastPress < 1000;
+}
+
+/** All form controls keep their own arrow navigation, including non-text inputs and selects. */
+export function isArrowNudgeEditorTarget(target: EventTarget | null): boolean {
+  return isEditableTarget(target) || (target instanceof Element && !!target.closest("input, textarea, select"));
+}
 
 /**
  * Platform-convention chords bound in addition to a command's own `shortcut`. Windows and Linux
@@ -71,6 +94,7 @@ export function createMainWindowShortcutCommands(
     ...state.layerActions,
     ...copyAsActions,
     ...editActions,
+    ...selectionNudgeActions,
     ...state.toolCommandSpecs,
     ...viewActions,
     ...pageSizeActions,
