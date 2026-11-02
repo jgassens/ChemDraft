@@ -339,6 +339,23 @@ describe.each(["windows", "macos"] as const)("hover label target changes (%s sho
     expect(molecule(1)).toEqual(other);
   });
 
+  it.each(["OMe", "CO2Me", "CF3", "Cl", "Si", "NMe2", "OTBS"])("continues %s after the first letter drifts onto its own bond", async label => {
+    const before = molecule();
+    const [carbon, neighbour] = before.atoms;
+    await hoverAtom(0);
+    await press(label[0]!);
+    await hoverPoint({ x: carbon!.x + (neighbour!.x - carbon!.x) * 0.6, y: carbon!.y + (neighbour!.y - carbon!.y) * 0.6 });
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond", bondId: before.bonds[0]!.id });
+    for (const key of label.slice(1)) await press(key);
+    expect(editor()?.value).toBe(label);
+    expect(editor()?.dataset.atomId).toBe(carbon!.id);
+    await press("Enter");
+    expect(editor()).toBeNull();
+    expect(molecule().atoms).toEqual([{ ...carbon, element: label, labelLiteral: true }, neighbour]);
+    expect(molecule().bonds).toEqual(before.bonds);
+    expect(snapshot().activeToolCommandId).toBe("tool.bond");
+  });
+
   it("keeps typing in an explicitly opened label editor over another atom", async () => {
     await addEthanes();
     await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("tool.atom"); });

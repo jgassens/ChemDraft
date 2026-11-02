@@ -16,6 +16,8 @@ describe.each(["macos", "windows"] as const)("hover label Escape (%s shortcuts)"
   let root: Root;
   let canvas: HTMLElement;
   let carbon: { x: number; y: number; id: string };
+  let neighbour: { x: number; y: number; id: string };
+  let bondId: string;
   const molecule = () => container.querySelector<HTMLElement>(".native-molecule-object")!;
   const editor = () => container.querySelector<HTMLInputElement>('[data-atom-label-editor="true"]');
   const chemistry = () => ({
@@ -39,6 +41,8 @@ describe.each(["macos", "windows"] as const)("hover label Escape (%s shortcuts)"
     const object = initial.pages[0].objects[0];
     if (object.type !== "molecule") throw new Error("Expected molecule");
     carbon = object.atoms[1]!;
+    neighbour = object.atoms[0]!;
+    bondId = object.bonds[0]!.id;
     await act(async () => root.render(<MainWindow
       initialDocument={selectDocumentObjects(initial, initial.pages[0].id, [])}
       initialActiveToolCommandId="tool.bond" initialPaletteMode="hidden" initialRulersVisible={false}
@@ -64,10 +68,71 @@ describe.each(["macos", "windows"] as const)("hover label Escape (%s shortcuts)"
   }
 
   async function key(key: string, init: KeyboardEventInit = {}) {
-    await act(async () => (document.activeElement ?? canvas).dispatchEvent(
-      new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init })
-    ));
+    const target = document.activeElement ?? canvas;
+    const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...init });
+    await act(async () => target.dispatchEvent(event));
+    // jsdom has no text-editing default; apply it only when the editor allowed the key.
+    if (!event.defaultPrevented && target instanceof HTMLInputElement && key.length === 1) {
+      const start = target.selectionStart ?? target.value.length;
+      const end = target.selectionEnd ?? start;
+      const value = target.value.slice(0, start) + key + target.value.slice(end);
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(target, value);
+        target.dispatchEvent(new Event("input", { bubbles: true }));
+        target.setSelectionRange(start + key.length, start + key.length);
+      });
+    }
   }
+
+  async function hoverBondNearNeighbour() {
+    await hover({ x: carbon.x + (neighbour.x - carbon.x) * 0.6, y: carbon.y + (neighbour.y - carbon.y) * 0.6 });
+    expect(molecule().dataset.deleteHoverKind).toBe("bond");
+    expect(molecule().dataset.deleteHoverBondId).toBe(bondId);
+  }
+
+  it("routes o over the own bond near C2 as with no pending label, keeping C1 OH without opening Oo", async () => {
+    const before = chemistry();
+    await hover(carbon);
+    await key("o");
+    expect(label()).toBe("OH");
+    // Escape clears the continuation, giving the ordinary bond-key dispatch as a baseline.
+    await key("Escape");
+    await hoverBondNearNeighbour();
+    await key("o");
+    expect(editor()).toBeNull();
+    expect([...container.querySelectorAll("[data-atom-label]")].map(node => node.getAttribute("data-atom-label"))).toEqual(["HO", "OH"]);
+    const freshDispatch = chemistry();
+    const undo = { metaKey: platform === "macos", ctrlKey: platform === "windows" };
+    await key("z", undo);
+    await key("z", undo);
+    expect(chemistry()).toEqual(before);
+
+    await hover(carbon);
+    await key("o");
+    expect(label()).toBe("OH");
+    await hoverBondNearNeighbour();
+    await key("o");
+    expect(editor()).toBeNull();
+    expect(chemistry()).toEqual(freshDispatch);
+    expect([...container.querySelectorAll("[data-atom-label]")].map(node => node.getAttribute("data-atom-label"))).toEqual(["HO", "OH"]);
+  });
+
+  it("continues OMe on C1 after drifting onto the own bond near C2", async () => {
+    const before = chemistry();
+    await hover(carbon);
+    await key("O");
+    await hoverBondNearNeighbour();
+    await key("M");
+    expect(editor()?.value).toBe("OM");
+    expect(editor()?.dataset.atomId).toBe(carbon.id);
+    await key("e");
+    expect(editor()?.value).toBe("OMe");
+    await key("Enter");
+    expect(editor()).toBeNull();
+    expect(label()).toBe("OMe");
+    expect(chemistry()).toMatchObject({ atoms: before.atoms, bonds: before.bonds, orders: before.orders });
+    expect(chemistry().structure).not.toBe(before.structure);
+  });
 
   it("preserves the committed OH when an empty-canvas key is followed by Escape, with exactly one undo step", async () => {
     const before = chemistry();

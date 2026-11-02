@@ -14,7 +14,7 @@ import { paletteFocusDiagnostic } from "./paletteFocusDiagnostic";
 import { installMainWindowPalettePendingKeys } from "./palettePendingKeys";
 import { nextObjectId, structureTemplateLayoutMessage } from "@chemdraft/document-workflow-core";
 import { insertStructureTemplate } from "./structureTemplateInsertion";
-import { structureTemplates } from "@chemdraft/template-library";
+import { abbreviationBondedSpellings, abbreviationSpellings, structureTemplates } from "@chemdraft/template-library";
 import { templateInsertActions, templateInsertCommandId } from "./templateCommands";
 import { isEditableTarget } from "./editableTarget";
 import { ORPHANED_COMPOSITION_IDLE_MS } from "./imeComposition";
@@ -241,6 +241,7 @@ import {
   bondRefKey,
   depthCuedLabelColor,
   depthCuedLabelScale,
+  nativeAtomLabelReading,
   nativeBondOrderResolution,
   nativeElementFromAtomLabel,
   nativeMoleculeRings,
@@ -23798,8 +23799,9 @@ export function hoverTargetKeepsLabelContinuation(
 /**
  * Whether a letter or digit typed mid-label continues that label, wherever the pointer has drifted.
  * Numeric bond hotkeys over a bond belong to that bond, including the labelled atom's own bonds.
- * An element key in either case continues while the pointer has stayed on the labelled atom and
- * its own bonds ("CF3"). After leaving, element keys in either case and all digits act on a different
+ * An element key in either case continues while the pointer has stayed on the labelled atom.
+ * On its own bonds, only recognized labels or abbreviation prefixes continue ("CF3", not "Oo").
+ * After leaving, element keys in either case and all digits act on a different
  * hovered atom. Over a bond or empty canvas, lowercase element-symbol completion ("i" in Si) still
  * continues; other element keys over a target start a new label, even on the same atom again.
  * Other letters ("M" in OMe, "e") continue after a drift. An element key over empty canvas cannot
@@ -23824,6 +23826,16 @@ export function hoverLabelContinuesForKey(
   const atom = molecule?.type === "molecule" ? molecule.atoms.find((candidate) => candidate.id === assignment.atomId) : undefined;
   if (atom?.element !== assignment.label) {
     return false;
+  }
+  if (target?.kind === "bond" && hoverTargetKeepsLabelContinuation(target, assignment)) {
+    const draft = assignment.label + key;
+    return nativeAtomLabelReading(draft, { bonded: true }).kind !== "unrecognized" ||
+      [...abbreviationSpellings, ...abbreviationBondedSpellings].some(spelling =>
+        spelling.startsWith(draft) ||
+        // A partial substituent also counts when the shared grammar recognizes its completion:
+        // "NM" can become NMe, and "OT" can become OTBS, without a separate composite-label table.
+        (spelling.startsWith(key) && nativeAtomLabelReading(assignment.label + spelling, { bonded: true }).kind === "group")
+      );
   }
   if (!assignment.leftAtom && hoverTargetKeepsLabelContinuation(target, assignment)) {
     return true;
