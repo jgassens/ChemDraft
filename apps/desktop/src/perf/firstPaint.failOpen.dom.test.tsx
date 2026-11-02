@@ -45,7 +45,7 @@ it.each(["preferences", "spin3d-debugger"].flatMap(role =>
     await Promise.resolve(); await Promise.resolve();
     const calls = fault.mock.calls.length, rows = localStorage.getItem("chemdraft.perfLog");
     if (role === "preferences") {
-      const control = container.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+      const control = container.querySelector<HTMLInputElement>('section[aria-labelledby="compound-layout-tools"] input[type="checkbox"]')!;
       await act(async () => control.click());
       expect(control.checked).toBe(true);
       expect(JSON.parse(localStorage.getItem("chemdraft.compound-layout-tools.v1")!).enabled).toBe(true);

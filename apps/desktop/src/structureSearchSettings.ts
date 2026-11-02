@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { emitTo, listen } from "@tauri-apps/api/event";
+import { emitTo } from "@tauri-apps/api/event";
+import { listenTauriEvent } from "./window-manager/tauriEvents";
 
 export const STRUCTURE_SEARCH_DEFAULT_ENABLED = true;
 export const STRUCTURE_SEARCH_STORAGE_KEY = "chemdraft.structure-search.enabled.v1";
@@ -39,11 +40,11 @@ export function useStructureSearchEnabled(): boolean {
     const onSettings = () => update(loadStructureSearchEnabled());
     globalThis.addEventListener?.("storage", onStorage);
     globalThis.addEventListener?.(SETTINGS_EVENT, onSettings);
-    if (isTauri()) void listen<{ enabled: boolean }>(SETTINGS_EVENT, event => {
+    if (isTauri()) void listenTauriEvent<{ enabled: boolean }>(SETTINGS_EVENT, event => {
       if (typeof event.payload?.enabled === "boolean") update(event.payload.enabled);
     }).then(stop => {
       if (disposed) stop(); else { unlisten = stop; update(loadStructureSearchEnabled()); }
-    });
+    }).catch(error => console.error("Could not observe online structure search preference:", error));
     else update(loadStructureSearchEnabled());
     return () => {
       disposed = true;

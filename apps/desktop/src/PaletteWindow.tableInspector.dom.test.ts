@@ -24,7 +24,8 @@ import {
 // A plain palette click is routed to the main window through the native `route_toolset_command`
 // invoke (not a DOM event), so capture what the window hands to it.
 const routed = vi.hoisted(() => [] as string[]);
-vi.mock("@tauri-apps/api/core", () => ({
+vi.mock("@tauri-apps/api/core", async original => ({
+  ...await original<typeof import("@tauri-apps/api/core")>(),
   invoke: async (command: string, payload?: { commandId?: string }) => {
     if (command === "route_toolset_command" && payload?.commandId) routed.push(payload.commandId);
   }
