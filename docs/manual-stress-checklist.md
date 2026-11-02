@@ -7,6 +7,12 @@ port's own hands-on pass.
 
 Speed runs on both platforms: follow the [timing probe protocol](architecture/perf-probe.md), including the bridge-off no-log check.
 
+Plugin starter (macOS and Windows): Plugins ▸ Vibe Code Your Own Plugin… follows Add or Remove
+Plugins… and a separator; Save defaults to Documents/ChemDraft plugin starter.md. Cancel writes
+nothing and shows nothing. Save to a chosen path, read the brief for clarity and complete example
+sources, and check the installed app/API versions and package/install steps. In web preview verify
+the same command downloads the Markdown file; Customize offers the command on both platforms.
+
 Manual stress must cover tab initialization, user tab persistence, mixed states, multi-molecule
 scaling, sparse override precedence, terminal carbon labels, hidden implicit hydrogens, explicit
 hydrogens, fonts, save/reopen, undo/redo, Spin 3D, atom-label editor placement, SVG export, and ring

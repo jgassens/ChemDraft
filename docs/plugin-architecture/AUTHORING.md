@@ -4,6 +4,12 @@ A plugin is a TypeScript package that imports **only `@chemdraft/plugin-api`** a
 plus command handlers. Bundled examples are composed from source by the desktop build; an installable
 plugin is compiled into a verified multi-file worker package by `pnpm plugin:package`.
 
+## Starting from the app
+
+Choose **Plugins ▸ Vibe Code Your Own Plugin…** to save a Markdown brief for any coding agent.
+It includes the installed app/API versions, authoring rules, working example sources, and build,
+test, package and install steps for macOS and Windows. Replace its goal line with your plugin idea.
+
 ## Assistant tools (0.1.9)
 
 Declare `document.read`, `document.write`, `selection.read`, `chemistry.compute`, `native.execute`,
@@ -886,7 +892,8 @@ The checksum sidecar makes either archive independently verifiable. It is an **i
 a signature and not a trust decision — and a successful technical build does not override the license
 terms inside the archive.
 
-To install a package by hand, choose **Plugins ▸ Add plugin from package…** and pick the `.zip`. Keep
+To install a package by hand, choose **Plugins ▸ Add or Remove Plugins…**, then
+**Add plugin from package…**, and pick the `.zip`. Keep
 the `.zip.sha256` beside it: ChemDraft reads it automatically and refuses the install if it is
 present but wrong. Without it the package still installs, unverified by checksum. See
 `docs/architecture/plugin-package-reading.md`.

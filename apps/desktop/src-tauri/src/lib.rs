@@ -628,6 +628,7 @@ const MENU_COMMAND_IDS: &[&str] = &[
     "chemistry.validateSelection",
     "structure.openInteractive3d",
     "plugins.manage",
+    "plugins.vibeCodeStarter",
     "help.reportBug",
 ];
 
@@ -7398,13 +7399,23 @@ fn create_app_menu_for_toolsets<R: Runtime>(
         app,
         "Plugins",
         true,
-        &[&MenuItem::with_id(
-            app,
-            "plugins.manage",
-            "Add or Remove Plugins...",
-            true,
-            None::<&str>,
-        )?],
+        &[
+            &MenuItem::with_id(
+                app,
+                "plugins.manage",
+                "Add or Remove Plugins…",
+                true,
+                None::<&str>,
+            )?,
+            &PredefinedMenuItem::separator(app)?,
+            &MenuItem::with_id(
+                app,
+                "plugins.vibeCodeStarter",
+                "Vibe Code Your Own Plugin…",
+                true,
+                None::<&str>,
+            )?,
+        ],
     )?;
     let plugins_plugin_items = plugin_menu_items_in(plugin_items, "plugins");
     if !plugins_plugin_items.is_empty() {
@@ -10497,6 +10508,15 @@ mod tests {
             .expect("Plugins menu block");
 
         assert!(plugins_menu_block.contains("plugin_menu_items_in(plugin_items, \"plugins\")"));
+        let manager = plugins_menu_block
+            .find("\"Add or Remove Plugins…\"")
+            .unwrap();
+        let starter = plugins_menu_block
+            .find("\"Vibe Code Your Own Plugin…\"")
+            .unwrap();
+        assert!(manager < starter);
+        assert!(plugins_menu_block[manager..starter].contains("PredefinedMenuItem::separator(app)"));
+        assert!(plugins_menu_block.contains("\"plugins.vibeCodeStarter\""));
     }
 
     #[test]
@@ -10507,6 +10527,7 @@ mod tests {
     #[test]
     fn plugin_manager_menu_command_is_routed() {
         expect_true(is_routed_menu_command("plugins.manage"));
+        expect_true(is_routed_menu_command("plugins.vibeCodeStarter"));
     }
 
     #[test]

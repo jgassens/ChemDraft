@@ -818,6 +818,7 @@ import {
 } from "./toolsets";
 import { MenuBar } from "./MenuBar";
 import { buildAppMenuModel, pluginUpdatesAvailableMenuItem, PLUGIN_MANAGER_COMMAND_ID, PLUGIN_UPDATES_COMMAND_ID } from "./appMenu";
+import { registerVibeCodeStarter, vibeCodeStarterCommand } from "./commands/vibeCodeStarter";
 import {
   editHistoryDirection,
   forceDocumentHistoryCommandId,
@@ -1713,7 +1714,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.02.09.30-codex";
+const CURRENT_BUILD_STAMP = "11.02.14.40-codex";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -3265,12 +3266,12 @@ export function MainWindow({
   );
   const shellCommandSpecs = useMemo(
     () => applyKeybindingSchemeToCommands(
-      allShellCommands(document, selectedMolecule, {
+      [...allShellCommands(document, selectedMolecule, {
         activeTableCell,
         availability: { canUndo, canRedo, hasMultipleTabs: documentTabs.length > 1, hasOpenWarnings: openWarnings !== undefined },
         registry: toolsetRegistry,
         compoundLayoutsEnabled
-      }),
+      }), vibeCodeStarterCommand],
       keybindingScheme
     ),
     [activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId, canRedo, canUndo, document, documentTabs.length, keybindingScheme, openWarnings, selectedMolecule, toolsetRegistry, compoundLayoutsEnabled]
@@ -10904,6 +10905,13 @@ export function MainWindow({
     ].forEach((action) => {
       register(action, () => { applyMoleculeInspectorCommand(action.id); });
     });
+
+    registerVibeCodeStarter(register, {
+      isDesktop: isDesktopRuntime(),
+      pickSavePath: pickNativeExportPath,
+      writeText: writeNativeTextFile,
+      download: downloadText
+    }, setStatus);
 
     for (const commandId of [PLUGIN_MANAGER_COMMAND_ID, PLUGIN_UPDATES_COMMAND_ID]) register(
       {
