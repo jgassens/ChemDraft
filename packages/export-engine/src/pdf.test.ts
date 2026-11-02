@@ -34,6 +34,41 @@ function filledRingFixture(): MoleculeObject {
 const timestamp = "2026-05-29T00:00:00.000Z";
 
 describe("exportDocumentToPdf", () => {
+  it.each(["document", "SVG"].flatMap(caller => [0, 0.35, 1].map(opacity => ({ caller, opacity }))))(
+    "applies picture opacity $opacity once in the $caller PDF path", async ({ caller, opacity }) => {
+      const png = Buffer.from(new Resvg('<svg xmlns="http://www.w3.org/2000/svg" width="2" height="1"><rect width="2" height="1" fill="red"/></svg>').render().asPng()).toString("base64");
+      const picture = createImageGraphicObject({ id: "opacity-picture", mimeType: "image/png",
+        dataBase64: png, center: { x: 200, y: 200 } });
+      picture.style.opacity = opacity;
+      const document = createEmptyDocument();
+      const opaque = { ...picture, id: "opaque-picture", x: 300, style: {} };
+      const page = document.pages[0]!;
+      page.objects = [picture, opaque];
+      const result = await withPdfDom(domParser => caller === "document"
+        ? exportDocumentToPdf(document, { domParser, compress: false })
+        : exportSvgToPdf(exportDocumentToSvg(document).contents, { domParser, compress: false,
+          outputWidth: page.width, outputHeight: page.height, pageSize: page,
+          pictures: new Map([[picture.id, picture], [opaque.id, opaque]]) }));
+      const pdf = Buffer.from(result.bytes).toString("latin1");
+      const states = new Map([...pdf.matchAll(/(\d+) 0 obj\s*<<\s*\/ca ([\d.]+)\s*>>/g)]
+        .map(match => [match[1]!, Number(match[2])]));
+      const resources = new Map([...pdf.matchAll(/\/(GS\d+) (\d+) 0 R/g)]
+        .map(match => [match[1]!, states.get(match[2]!)]));
+      // Interpret q/Q so a missing restore cannot leak translucency to the next picture.
+      const stack: number[] = [];
+      let alpha = 1;
+      const painted: number[] = [];
+      const contents = pdf.match(/stream\n([\s\S]*?)\nendstream/)![1]!;
+      for (const token of contents.matchAll(/\b(q|Q)\b|\/(GS\d+) gs|\/I\d+ Do/g)) {
+        if (token[1] === "q") stack.push(alpha);
+        else if (token[1] === "Q") alpha = stack.pop() ?? 1;
+        else if (token[2]) alpha = resources.get(token[2]) ?? alpha;
+        else painted.push(alpha);
+      }
+      expect(painted).toEqual([opacity, 1]);
+      expect(result.warnings).toEqual([]);
+    });
+
   it.each(["document", "SVG"])("draws a paste-accepted ~16.8 MB PNG through the %s PDF caller", async (caller) => {
     const png = largePicturePng();
     expect(png.length).toBeGreaterThan(16_700_000);

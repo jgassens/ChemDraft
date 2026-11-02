@@ -1,4 +1,5 @@
 export * from "./layoutQuality";
+export { rotatedGraphicLocalBounds } from "./graphicBounds";
 import type { LayoutLabelBox } from "./layoutQuality";
 import { bondsOverlap } from "./layoutQuality";
 export * from "./layoutRepair";

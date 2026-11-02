@@ -1,9 +1,10 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { applyPatches, createImageGraphicObject, type ChemDraftDocument, type DocumentObject, type GroupObject, type TextObject } from "@chemdraft/chem-core";
+import { boundsTestEllipse, ellipseBoundsCases, expectTightOutlineBounds, renderedEllipseOutline } from "../../../packages/layout-engine/src/graphicBounds.testHelpers";
+import { applyPatches, createImageGraphicObject, type ChemDraftDocument, type DocumentObject, type GraphicObject, type GroupObject, type TextObject } from "@chemdraft/chem-core";
 import {
   copyAsScopeMolecules, copyAsScopeObjects, copyAsScopedDocument, createPhase4Document, exportPhase4Svg,
-  groupSelectedDocumentObjects, insertNativeSingleBondMolecule, insertNativeTemplateMolecule
+  documentObjectVisualBounds, groupSelectedDocumentObjects, insertNativeSingleBondMolecule, insertNativeTemplateMolecule
 } from "./documentWorkflow";
 
 describe("Copy As grouped artwork", () => {
@@ -127,6 +128,39 @@ function expectPaddedFrames(document: ChemDraftDocument) {
 }
 
 describe("Copy As rotated content crop", () => {
+  it.each(ellipseBoundsCases)("tightly crops the rendered ellipse at $rotation degrees, tilt $tiltX/$tiltY, stroke $strokeWidth ($width × $height)", geometry => {
+    const ellipse = boundsTestEllipse(geometry);
+    const bounds = documentObjectVisualBounds(ellipse);
+    expectTightOutlineBounds(bounds, renderedEllipseOutline(ellipse));
+    const initial = createPhase4Document();
+    const document = applyPatches(initial, [
+      { op: "addObject", pageId: initial.pages[0]!.id, object: ellipse },
+      { op: "setSelection", pageId: initial.pages[0]!.id, objectIds: [ellipse.id] }
+    ]);
+    const copied = copyAsScopedDocument(document).pages[0]!;
+    const moved = copied.objects[0] as GraphicObject;
+    expectTightOutlineBounds({ x: 16, y: 16, width: copied.width - 32, height: copied.height - 32 },
+      renderedEllipseOutline(moved));
+    expect(copied.width).toBeCloseTo(bounds.width + 32, 2);
+    expect(copied.height).toBeCloseTo(bounds.height + 32, 2);
+    expect(copyAsScopedDocument({ ...document, selection: { ...document.selection, objectIds: [] } }).pages[0])
+      .toEqual(copied);
+  });
+
+  it.each([0, 0.35, 1])("retains picture opacity %s in Copy As SVG", opacity => {
+    const document = createPhase4Document();
+    const image = picture(30);
+    image.style.opacity = opacity;
+    document.pages[0]!.objects = [image];
+    document.selection.objectIds = [image.id];
+    const copied = copyAsScopedDocument(document);
+    expect(copied.pages[0]!.objects[0]!.style.opacity).toBe(opacity);
+    const svg = exportPhase4Svg(copied).contents;
+    const group = svg.match(/<g\b[^>]*data-object-id="picture"[^>]*>/)![0];
+    if (opacity === 1) expect(group).not.toContain("opacity=");
+    else expect(group).toContain(`opacity="${opacity}"`);
+  });
+
   it.each([90, 30])("contains a 2:1 picture rotated %s degrees beside a ring with 16-unit padding", rotation => {
     const document = insertNativeTemplateMolecule(createPhase4Document(), { x: 110, y: 350 }, "cyclohexane");
     const image = picture(rotation);
