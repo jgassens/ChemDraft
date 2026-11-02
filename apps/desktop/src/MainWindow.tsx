@@ -2635,6 +2635,7 @@ export function MainWindow({
   useEffect(() => {
     const endBurst = () => { arrowNudgeBurstRef.current = undefined; };
     const onKey = (event: KeyboardEvent) => {
+      if (["Shift", "Control", "Alt", "Meta", "CapsLock"].includes(event.key)) return;
       if (!arrowNudgeOffset(event.key) || event.metaKey || event.ctrlKey || event.altKey || event.isComposing) endBurst();
     };
     window.addEventListener("keydown", onKey, true);

@@ -104,7 +104,7 @@ describe.each(["macos", "windows"] as const)("canvas arrow nudge (%s)", platform
     await key("ArrowRight");
     if (boundary === "idle") {
       const now = Date.now(); vi.spyOn(Date, "now").mockReturnValue(now + 1001);
-    } else if (boundary === "other key") await key("F8");
+    } else if (boundary === "other key") await key("a");
     else if (boundary === "command") await command("view.zoomIn");
     else if (boundary === "selection") await command("edit.selectAll");
     else await pointer(container, boundary === "pointer motion" ? "pointermove" : "pointerdown", { x: 0, y: 0 });
@@ -117,6 +117,15 @@ describe.each(["macos", "windows"] as const)("canvas arrow nudge (%s)", platform
     await mount(); const before = current();
     await key("ArrowLeft"); await key("ArrowDown", { shiftKey: true }); await key("ArrowUp");
     expectTranslation(before, -1, 9);
+    await undo(); expect(current().pages).toEqual(before.pages);
+  });
+  it.each(["Shift", "Control", "Alt", "Meta", "CapsLock"])("keeps a burst across a %s keydown", async modifier => {
+    await mount(); const before = current();
+    await key("ArrowRight");
+    await key(modifier, modifier === "Shift" ? { shiftKey: true } : {});
+    await key("ArrowDown", { shiftKey: true });
+    await act(async () => canvas.dispatchEvent(new KeyboardEvent("keyup", { key: modifier, bubbles: true })));
+    expectTranslation(before, 1, 10);
     await undo(); expect(current().pages).toEqual(before.pages);
   });
   it("keeps a held key in the same burst while clamped at the page edge", async () => {
