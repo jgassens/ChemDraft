@@ -1096,3 +1096,25 @@ has the style, the command removes it from all; otherwise it applies it to all (
 box). Superscript and Subscript apply to every selected box. Each command must undo/redo all boxes in
 one step and preserve selection. Highlight characters inside one box and confirm only that range is
 formatted.
+
+## Drawing unsupported valence (macOS and Windows)
+
+- Draw a Ru donor complex with neutral N bonded to Ru and two carbons. Set the solid Ru–N bond
+  to double using hover `2`, order cycling, and the bond tool. Each edit must land with (!) on N;
+  Undo/Redo restores the exact authored graph without adding charge. Dashed Ru–N stays single.
+- Draw neopentane, relabel its centre S and endpoints O, then raise two S–O bonds to double one
+  at a time. The intermediate S(V) has (!); the final H2SO4 has no (!). Repeat with literal S/O
+  labels and explicit OH for the acid oxygens. Keep every atom, coordinate and charge as drawn.
+- Grow, connect, merge and chain-drag from full atoms and group labels. An eighth bond must not
+  hide the growth target or arrow, and a full target must still snap. Only actual overlaps or page
+  edges may prevent placement. Hover `8`, `0`, ring hotkeys and fused/spiro ring tools must land
+  with (!) where needed; a chemistry warning must never place the requested ring separately.
+- Hover the central CH of isobutane and press `9`: one bond attaches a new CH bearing two methyls;
+  the source carbon has four bonds. On a secondary carbon it adds two methyls directly. One Undo
+  removes the whole fragment, and Redo restores it without recomputing. On an already four-bond
+  carbon, `9` leaves the graph unchanged so this command never makes pentavalent carbon.
+- Place + on a four-bond C, then a second + on four-bond N+. Both stay on the clicked atom with (!).
+  Place a radical on full carbon and edit surrounding bonds: the mark must not jump to a neighbour
+  or float because its atom becomes invalid. Deliberately dragging a mark away still detaches it.
+- Confirm C–OMe cannot be raised to a multiple bond, a dashed dative bond cannot be raised, and
+  dashed display cannot be applied to a multiple bond. Ignore hides only (!); exports still warn.

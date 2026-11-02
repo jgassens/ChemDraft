@@ -67,9 +67,14 @@ describe("atom-aware numeric sprouts", () => {
     expect(after.atoms.slice(0, before.atoms.length)).toEqual(before.atoms);
   });
 
-  it("retains today's gate for methanethiol instead of silently attaching formyl", () => {
+  it("adds oxo directly to methanethiol and diagnoses its transient sulfur valence", () => {
     const { document, target } = fixture("S", ["C"]);
-    expect(nativeOxoHotkeyTarget(document, target)).toEqual({ document, refusal: "atom-no-free-valence" });
+    const result = nativeOxoHotkeyTarget(document, target);
+    expect(result.refusal).toBeUndefined();
+    const after = molecule(result.document);
+    expect(after.atoms.map(atom => atom.element)).toEqual(["S", "C", "O"]);
+    expect(after.bonds.at(-1)).toMatchObject({ fromAtomId: target.atomId, order: "double" });
+    expect(nativeAtomValidationState(sourceAtom(after), after.bonds, 0, after.atoms)).toMatchObject({ valid: false, valenceUsed: 3 });
   });
 
   it("preserves literal SH and its explicit hydrogen when adding oxygen", () => {
@@ -96,12 +101,12 @@ describe("atom-aware numeric sprouts", () => {
     if (count === 3) expect(after.atoms.slice(before.atoms.length).some(atom => incident(after, atom.id).length === 3)).toBe(true);
   });
 
-  it("key 9 on a quaternary carbon is refused by today's gate without a partial sprout", () => {
+  it("key 9 leaves quaternary carbon unchanged to honor its never-pentavalent contract", () => {
     const { document, target, before } = fixture("C", ["C", "C", "C"]);
     const filled = nativeBranchedHotkeyTarget(document, target).document;
     const result = nativeBranchedHotkeyTarget(filled, target);
     expect(result.document).toBe(filled);
-    expect(result.refusal).toBe("atom-no-free-valence");
+    expect(result.refusal).toBe("branched-carbon-full");
     expect(molecule(filled).atoms.length).toBe(before.atoms.length + 3);
   });
 });

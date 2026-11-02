@@ -2663,14 +2663,11 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("stereoPerceptionMolfile(molecule, warnings)");
   });
 
-  it("names why a charge-hotkey increment was refused: the ±9 cap, or the atom's valence", () => {
-    // A refused increment used to read "Cannot place positive charge on hovered atom" even though
-    // the mark WAS on the atom — it was the increment that was refused, past ±9 or past what the
-    // element can carry. The query itself is covered in documentWorkflow.test.ts; this guards the
-    // MainWindow wiring of both messages.
+  it("keeps the charge-hotkey format cap without a valence-refusal status", () => {
+    // The representation cap still has its own message; valence no longer vetoes charge edits.
     expect(mainWindowSource).toContain("nativeChargeStackRefusal(currentDocument, markSpec, target)");
     expect(mainWindowSource).toContain("Charge is already at the ±");
-    expect(mainWindowSource).toContain("cannot carry ${noun} at its current valence");
+    expect(mainWindowSource).not.toContain("cannot carry ${noun} at its current valence");
   });
 
   it("names the stacked magnitude in the charge status noun", () => {

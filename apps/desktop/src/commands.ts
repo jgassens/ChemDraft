@@ -330,7 +330,7 @@ export const editActions: CommandSpec[] = [
     icon: "bond",
     source: "core",
     category: "edit",
-    description: "Grow two methyl groups, or attach isopropyl when carbon has fewer than two free valences"
+    description: "Add two methyls directly with two free carbon valences, or isopropyl through one bond with one; leave fully substituted carbon unchanged"
   },
   {
     id: "atom.addCyclicBondToHoveredAtom",

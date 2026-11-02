@@ -1711,7 +1711,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.01.20.34-sonnet";
+const CURRENT_BUILD_STAMP = "11.02.08.00-codex";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -4723,14 +4723,12 @@ export function MainWindow({
     const nextDocument = applyChargeToolAtNativeAtom(currentDocument, markSpec, target);
     if (nextDocument === currentDocument) {
       // A refused INCREMENT is not a refused mark: the mark is already on the atom, so name
-      // what stopped the press — the ±9 cap, or a valence that cannot carry one more — instead
+      // what stopped the press — the ±9 representation cap — instead
       // of claiming the charge could not be placed.
       const refusal = nativeChargeStackRefusal(currentDocument, markSpec, target);
       setStatus(refusal === "cap"
         ? `Charge is already at the ±${nativeChargeMarkMaxMagnitude} limit`
-        : refusal === "valence"
-          ? `Hovered atom cannot carry ${noun} at its current valence`
-          : `Cannot place ${noun} on hovered atom`);
+        : `Cannot place ${noun} on hovered atom`);
       return;
     }
 
@@ -23555,28 +23553,14 @@ function nativeTemplateStatusLabel(templateId: NativeMoleculeTemplateId): string
 /** Why a ring or sprout could not change the target molecule, worded for the status line. */
 export function nativeTemplateFallbackReasonText(reason: NativeAtomSproutRefusal): string {
   switch (reason) {
+    case "branched-carbon-full":
+      return "this carbon already uses all four valences; branched alkyl needs one attachment bond";
     case "sprout-no-free-direction":
       return "there is no free direction to grow into without overlapping";
     case "sprout-page-edge":
       return "the page edge blocks every direction";
-    case "sprout-needs-two-valences":
-      return "that atom needs two free valences for this sprout";
-    case "methylidene-needs-neutral-carbon":
-      return "methylidene needs a neutral carbon atom";
     case "closure-bond-exists":
       return "those atoms are already connected";
-    case "atom-no-free-valence":
-      return "that atom has no free valence";
-    case "bond-atom-no-free-valence":
-      return "an atom on that bond has no free valence";
-    case "closure-atom-no-free-valence":
-      return "the ring would close onto an atom with no free valence";
-    case "connection-atom-no-free-valence":
-      return "the atom it would connect to has no free valence";
-    case "double-bond-overfill":
-      return "the ring's double bonds would overfill a neighbouring atom";
-    case "atom-label-not-element":
-      return "that atom's label is an abbreviation; relabel it to an element first";
     case "ring-geometry-unavailable":
       return "the ring's geometry could not be placed there";
     case "structure-not-editable":
