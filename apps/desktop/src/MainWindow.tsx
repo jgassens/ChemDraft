@@ -9903,9 +9903,23 @@ export function MainWindow({
   // it started (applyNativeAtomLabelDraft); the flush still applies the close's own rule
   // (finishNativeAtomLabelEdit), so what reaches disk never depends on which path wrote the present
   // document, and a relaunch never reopens changed chemistry. The edit itself stays open. Reads
-  // refs only.
+  // refs only. Table text is private until edit completion; fold its current rich-text draft
+  // into the same snapshot without touching the working document or recording history.
   const documentForFlush = useCallback((): ChemDraftDocument => {
-    const current = documentRef.current;
+    let current = documentRef.current;
+    const cell = tableCellEditRef.current;
+    const value = tableCellEditorRef.current?.draft();
+    const table = selectedTable(current);
+    if (cell && value && table?.id === cell.tableId) {
+      const original = tableEditingContent(table, cell)?.value;
+      if (original && JSON.stringify({ text: original.text, spans: original.spans }) !== JSON.stringify(value)) {
+        const edited = "kind" in cell
+          ? cell.kind === "caption" ? setTableCaption(table, value)
+            : setTableFootnotes(table, table.footnotes.map((note, index) => index === cell.index ? value : note))
+          : setTableCell(table, cell.rowId, cell.columnId, value);
+        current = normalizeCommittedDocument(applyTableObjectEdit(current, edited.table));
+      }
+    }
     const edit = activeAtomLabelEditRef.current;
     if (
       !edit ||
@@ -10313,13 +10327,16 @@ export function MainWindow({
     const savingDocument = active ? documentRef.current : snapshot?.history.present;
     const savingFileState = active ? fileStateRef.current : snapshot?.file;
     if (!savingDocument || !savingFileState) return false;
+    const savingTableDraft = active ? JSON.stringify(tableCellEditorRef.current?.draft()) : undefined;
     const payload = createNativeSavePayload(active ? documentForFlush() : savingDocument);
     const finishSave = (path?: string) => {
       documentSaveRevisionsRef.current.set(savingTabId, (documentSaveRevisionsRef.current.get(savingTabId) ?? 0) + 1);
       nonPristineTabsRef.current.add(savingTabId);
       const currentDocument = savingTabId === activeDocumentTabIdRef.current ? documentRef.current :
         documentTabSnapshotsRef.current.get(savingTabId)?.history.present;
-      const nextFileState = { path: path ?? savingFileState.path, dirty: currentDocument !== savingDocument };
+      const tableDraftChanged = savingTabId === activeDocumentTabIdRef.current &&
+        JSON.stringify(tableCellEditorRef.current?.draft()) !== savingTableDraft;
+      const nextFileState = { path: path ?? savingFileState.path, dirty: currentDocument !== savingDocument || tableDraftChanged };
       const displayName = path ? nativePathBasename(path) : payload.filename;
       const warningsReport: OpenWarningsReport | undefined = payload.warnings.length > 0 ? {
         operation: "save", displayName, sourceLabel: "ChemDraft CDXML envelope", warnings: payload.warnings
@@ -21443,7 +21460,8 @@ export function MainWindow({
                       platform={shortcutPlatform} renderText={object => <TextObjectContent object={object} noWrap />}
                       resolveShortcut={event => shortcutRegistry.resolve({ key: event.key, shiftKey: event.shiftKey,
                         metaKey: event.metaKey, ctrlKey: event.ctrlKey, altKey: event.altKey })}
-                      onFinish={finishTableCellEdit} onHistoryCommand={restoreDocumentHistory} onError={setStatus} /> : null}
+                      onFinish={finishTableCellEdit} onDraftChange={markDocumentDirty}
+                      onHistoryCommand={restoreDocumentHistory} onError={setStatus} /> : null}
                   </>;
                 })()}
                 {activeNativeTemplateId && templatePreview ? (

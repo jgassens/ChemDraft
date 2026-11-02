@@ -15,6 +15,8 @@ import { tableEditingContent, tableEditingKeyAction, type TableEditingAction } f
 export interface TableCellEditorHandle {
   applyCommand(commandId: string): boolean;
   commit(): true | false | "composing";
+  /** A flush reads the last accepted text while IME composition is in progress. */
+  draft(): TableRichText;
 }
 
 /** Like native text objects: a textarea owns input/IME, and the shared rich-text view paints runs. */
@@ -27,10 +29,11 @@ export const TableCellEditor = forwardRef<TableCellEditorHandle, {
   renderText(object: TextObject): ReactNode;
   resolveShortcut(event: KeyboardEvent): string | undefined;
   onFinish(value: TableRichText, action: TableEditingAction): void;
+  onDraftChange(): void;
   onHistoryCommand(direction: "undo" | "redo"): void;
   onError(message: string): void;
 }>(function TableCellEditor({ document: nativeDocument, table, cell, scale, platform = detectDesktopShortcutPlatform(),
-  renderText, resolveShortcut, onFinish, onHistoryCommand, onError }, ref) {
+  renderText, resolveShortcut, onFinish, onDraftChange, onHistoryCommand, onError }, ref) {
   const isNote = "kind" in cell;
   const row = isNote ? -1 : table.rows.findIndex(item => item.id === cell.rowId);
   const column = isNote ? -1 : table.columns.findIndex(item => item.id === cell.columnId);
@@ -47,6 +50,7 @@ export const TableCellEditor = forwardRef<TableCellEditorHandle, {
   const previewRef = useRef<HTMLDivElement>(null);
   const closed = useRef(false);
   const composing = useRef(false);
+  const beforeComposition = useRef<TextObject | undefined>(undefined);
   const deferredOutside = useRef(false);
   const compositionCommitTimer = useRef<number | undefined>(undefined);
   const selection = useRef({ start: draft.text.length, end: draft.text.length });
@@ -80,11 +84,12 @@ export const TableCellEditor = forwardRef<TableCellEditorHandle, {
   };
   const finishLatest = useRef(finish); finishLatest.current = finish;
   // Run the very same text-object operations against a private scratch document. Drafts never
-  // enter the real document or history; the only persisted model is native TextSpan[].
+  // enter history until finish; flushes may read them without ending the edit.
   const update = (edit: (scratch: ChemDraftDocument, id: string) => ChemDraftDocument) => {
     const object = draftRef.current;
     const next = edit(scratchFor(object), object.id).pages[0].objects[0] as TextObject;
     draftRef.current = next; setDraft(next);
+    if (JSON.stringify([object.text, object.spans]) !== JSON.stringify([next.text, next.spans])) onDraftChange();
   };
   const recordSelection = () => {
     const editor = editorRef.current;
@@ -159,7 +164,10 @@ export const TableCellEditor = forwardRef<TableCellEditorHandle, {
     editorRef.current?.focus({ preventScroll: true });
     return true;
   };
-  useImperativeHandle(ref, () => ({ applyCommand, commit: () => {
+  useImperativeHandle(ref, () => ({ applyCommand, draft: () => {
+    const value = beforeComposition.current ?? (isUnchanged() ? initialValue.current : draftRef.current);
+    return { text: value.text, spans: value.spans };
+  }, commit: () => {
     if (composing.current) return "composing";
     return finish({ kind: "commit" });
   } }));
@@ -242,9 +250,16 @@ export const TableCellEditor = forwardRef<TableCellEditorHandle, {
         if (previewRef.current) previewRef.current.style.transform =
           `translate(${-event.currentTarget.scrollLeft}px, ${-event.currentTarget.scrollTop}px)`;
       }}
-      onCompositionStart={() => { composing.current = true; }}
+      onCompositionStart={() => {
+        beforeComposition.current = isUnchanged() ? initialValue.current : draftRef.current;
+        composing.current = true;
+      }}
       onCompositionEnd={() => {
         composing.current = false;
+        const before = beforeComposition.current;
+        beforeComposition.current = undefined;
+        if (before && JSON.stringify([before.text, before.spans]) !==
+          JSON.stringify([draftRef.current.text, draftRef.current.spans])) onDraftChange();
         if (deferredOutside.current) {
           deferredOutside.current = false;
           // WebKit may deliver the final input after compositionend. Let it update the draft first.
