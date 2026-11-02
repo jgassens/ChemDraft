@@ -11,7 +11,7 @@ import { isSpin3dSettings, type Spin3dSettings } from "../spin3dSettings";
 import { isCompoundLayoutSettings, COMPOUND_LAYOUT_STORAGE_KEY, loadCompoundLayoutSettings, type CompoundLayoutSettings } from "../compoundLayoutSettings";
 import { isKeybindingSettings, type KeybindingScheme, type KeybindingSettings } from "../keybindingSettings";
 import { migrateLegacyToolsetIds } from "../toolbars/legacyToolsetIds";
-import { listenCurrentWindowEvent, listenTauriEvent } from "./tauriEvents";
+import { listenCurrentWindowEvent, listenTauriEvent, safeTauriListen } from "./tauriEvents";
 
 export const PALETTE_COMMAND_EVENT = "chemdraft://palette-command";
 export const PALETTE_COMMAND_PREVIEW_EVENT = "chemdraft://palette-command-preview";
@@ -299,22 +299,59 @@ export async function prewarmToolsetTooltipWindow(): Promise<void> {
   await invoke("prewarm_toolset_tooltip").catch(() => undefined);
 }
 
-export async function closeToolsetPopoverWindow(toolsetId: string): Promise<void> {
+export async function closeToolsetPopoverWindow(toolsetId: string, openedAt: number | undefined, generation?: number): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
 
   const { invoke } = await import("@tauri-apps/api/core");
   await invoke("close_toolset_popover", { toolsetId }).catch(() => undefined);
+  if (openedAt !== undefined) await notifyToolsetPopoverClosed(toolsetId, openedAt, generation);
 }
 
-/** Query the OS: click-away and app deactivation can hide a picker outside its owner's state. */
-export async function isToolsetPopoverWindowVisible(toolsetId: string): Promise<boolean> {
+/** OS deactivation and native hides need not pass through the renderer's close notification. */
+export async function isToolsetPopoverVisible(toolsetId: string): Promise<boolean> {
   if (!isDesktopRuntime()) return false;
   const { Window } = await import("@tauri-apps/api/window");
   const popover = await Window.getByLabel(`toolset-popover-${toolsetId.replaceAll(".", "-")}`);
-  return popover ? popover.isVisible() : false;
+  return popover ? popover.isVisible().catch(() => false) : false;
 }
+
+/** Subscribe on the native window, not its renderer: destruction may never notify from JS.
+ * Both events are supplied by Tauri on macOS and Windows. Attach before querying visibility. */
+export async function listenForToolsetPopoverNativeClose(toolsetId: string, closed: () => void): Promise<Unlisten> {
+  if (!isDesktopRuntime()) return () => undefined;
+  const { Window } = await import("@tauri-apps/api/window");
+  const popover = await Window.getByLabel(`toolset-popover-${toolsetId.replaceAll(".", "-")}`);
+  if (!popover) { closed(); return () => undefined; }
+  const listeners = ["tauri://close-requested", "tauri://destroyed"].map(name =>
+    safeTauriListen(name, handler => popover.listen(name, handler), closed));
+  const stop = () => listeners.forEach(listener => listener.stop());
+  try {
+    await Promise.all(listeners.map(listener => listener.attached));
+    return stop;
+  } catch (error) {
+    stop();
+    throw error;
+  }
+}
+
+const TOOLSET_POPOVER_CLOSED_EVENT = "chemdraft://toolset-popover-closed";
+interface ToolsetPopoverClosedPayload { toolsetId: string; openedAt: number; generation?: number }
+
+export async function notifyToolsetPopoverClosed(toolsetId: string, openedAt: number, generation?: number): Promise<void> {
+  if (!isDesktopRuntime()) return;
+  const { emit } = await import("@tauri-apps/api/event");
+  await emit(TOOLSET_POPOVER_CLOSED_EVENT, { toolsetId, openedAt, ...(generation === undefined ? {} : { generation }) }).catch(() => undefined);
+}
+
+export async function listenForToolsetPopoverClosed(handler: (payload: ToolsetPopoverClosedPayload) => void): Promise<Unlisten> {
+  if (!isDesktopRuntime()) return () => undefined;
+  return listenTauriEvent<ToolsetPopoverClosedPayload>(TOOLSET_POPOVER_CLOSED_EVENT, event => handler(event.payload));
+}
+
+/** Swatch toggles and Escape use the same current native visibility query. */
+export const isToolsetPopoverWindowVisible = isToolsetPopoverVisible;
 
 /** Route param identifying a palette popover webview (see App.tsx / PalettePopoverWindow). */
 export const TOOLSET_POPOVER_WINDOW_KIND = "toolsetPopover";
@@ -327,9 +364,27 @@ export function toolsetPopoverTimestamp(): number {
   return performance.timeOrigin + performance.now();
 }
 
+export interface ToolsetPopoverOpening {
+  /** Captured before async work and retained on startup replays for click-away ordering. */
+  openedAt?: number;
+  /** Originating opener's sequence, so equal timestamps still identify distinct opens. */
+  generation?: number;
+}
+let popoverGeneration = 0;
+/** Allocate once at the originating press; startup replays retain this sequence. */
+export function newToolsetPopoverOpening(): Required<ToolsetPopoverOpening> {
+  return { openedAt: toolsetPopoverTimestamp(), generation: ++popoverGeneration };
+}
+export function compareToolsetPopoverOpenings(a: ToolsetPopoverOpening, b: ToolsetPopoverOpening): number {
+  return (a.openedAt ?? 0) - (b.openedAt ?? 0) || (a.generation ?? 0) - (b.generation ?? 0);
+}
+
 export interface ToolsetPopoverDismissPayload {
   /** Captured synchronously at the originating press, before any asynchronous IPC. */
   requestedAt: number;
+  reason?: "escape";
+  /** A visibility reply only authorizes dismissal of the openings that were checked. */
+  openings?: (ToolsetPopoverOpening & { toolsetId: string })[];
 }
 
 /**
@@ -339,13 +394,15 @@ export interface ToolsetPopoverDismissPayload {
  * closes when you click anything else" behaviour without depending on macOS key-window semantics.
  * Pass the press timestamp before starting IPC; omit it for an unconditional dismissal.
  */
-export async function dismissToolsetPopovers(requestedAt?: number): Promise<void> {
+export async function dismissToolsetPopovers(requestedAt?: number, reason?: "escape", openings?: ToolsetPopoverDismissPayload["openings"]): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
 
   const { emit } = await import("@tauri-apps/api/event");
-  await emit(TOOLSET_POPOVER_DISMISS_EVENT, requestedAt === undefined ? undefined : { requestedAt }).catch(() => undefined);
+  await emit(TOOLSET_POPOVER_DISMISS_EVENT, requestedAt === undefined ? undefined : {
+    requestedAt, ...(reason ? { reason } : {}), ...(openings ? { openings } : {})
+  }).catch(() => undefined);
 }
 
 export async function listenForToolsetPopoverDismiss(handler: (payload?: ToolsetPopoverDismissPayload) => void): Promise<Unlisten> {
@@ -389,11 +446,7 @@ export interface ToolsetFlyoutSnapshot {
  * so opening the colour picker vs a flyout dropdown just swaps the content in the same window —
  * no per-kind windows to keep in sync, and no way for a stale kind to coexist.
  */
-export type ToolsetPopoverContent = {
-  /** Captured by the opener before any async work, using toolsetPopoverTimestamp().
-   *  Retained on startup replays so a delayed snapshot cannot undo click-away. */
-  openedAt?: number;
-} & (
+export type ToolsetPopoverContent = ToolsetPopoverOpening & (
   | { kind: "artColor" }
   | { kind: "flyout"; flyout: ToolsetFlyoutSnapshot }
 );

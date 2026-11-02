@@ -74,7 +74,7 @@ describe("native palette tooltip and colour handoff", () => {
     expect(native.dismiss).not.toHaveBeenCalled(); // The opening pointerdown is not click-away.
     await clickSwatch();
     expect(native.visible).toBe(false);
-    expect(native.close).toHaveBeenCalledExactlyOnceWith("core.art");
+    expect(native.close).toHaveBeenCalledExactlyOnceWith("core.art", expect.any(Number), expect.any(Number));
     expect(native.open).toHaveBeenCalledTimes(1);
     expect(native.dismiss).toHaveBeenCalledTimes(1);
     await clickSwatch();
