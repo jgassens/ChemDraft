@@ -1005,14 +1005,14 @@ export async function fitCurrentPaletteWindow(size: ToolsetWindowSize, area: Mon
  * on Windows whenever the two overlapped. Falls back to that plain `show()` if the command is
  * unavailable for focusable popovers. A preserve-focus open must never fall back to an activating show.
  */
-export async function showCurrentToolsetPopoverWindow(focusMode: ToolsetPopoverFocusMode = "focus"): Promise<void> {
+export async function showCurrentToolsetPopoverWindow(focusMode: ToolsetPopoverFocusMode = "focus", kind?: ToolsetPopoverContent["kind"]): Promise<void> {
   if (!isDesktopRuntime()) {
     return;
   }
 
   const { invoke } = await import("@tauri-apps/api/core");
   try {
-    await invoke("show_toolset_popover_window", { focusMode });
+    await invoke("show_toolset_popover_window", { focusMode, ...(kind ? { kind } : {}) });
   } catch (error) {
     if (focusMode === "preserve") throw error;
     const { getCurrentWindow } = await import("@tauri-apps/api/window");

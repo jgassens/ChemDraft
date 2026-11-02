@@ -1,4 +1,4 @@
-//! Bridge-gated timing log, plus a separate always-on bounded popover geometry diagnostic.
+//! Bridge-gated timing log, plus a separate dev-only bounded popover geometry diagnostic.
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -20,7 +20,17 @@ const MAX_LINE_BYTES: usize = 16 * 1024;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PopoverGeometry {
     phase: PopoverGeometryPhase,
+    before_reset: PopoverDomGeometry,
+    after_reset: PopoverDomGeometry,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PopoverDomGeometry {
     inner_height: f64,
+    visual_viewport_offset_top: Option<f64>,
+    visual_viewport_height: Option<f64>,
+    document_top: f64,
     scroll_top: f64,
     scroll_y: f64,
     shell_top: f64,
@@ -33,6 +43,47 @@ struct PopoverGeometry {
 enum PopoverGeometryPhase {
     Reveal,
     Release,
+    Guard,
+}
+
+enum PopoverGeometryRoute {
+    Other,
+    Skip,
+    Record(PopoverGeometry),
+}
+
+// Use the application identity, not debug_assertions: packaged branch builds are release builds.
+// Even a stale worktree label must never write this diagnostic into the stable app's data.
+fn popover_geometry_enabled(identifier: &str) -> bool {
+    identifier == "org.chemdraft.desktop.dev"
+}
+
+fn route_popover_geometry(
+    enabled: bool,
+    source: &str,
+    line: &str,
+) -> Result<PopoverGeometryRoute, String> {
+    #[derive(Deserialize)]
+    #[serde(tag = "event", deny_unknown_fields)]
+    enum Diagnostic {
+        #[serde(rename = "toolset-popover-geometry")]
+        Popover { geometry: PopoverGeometry },
+    }
+    if line.len() <= MAX_LINE_BYTES {
+        if let Ok(Diagnostic::Popover { geometry }) = serde_json::from_str(line) {
+            if !enabled {
+                return Ok(PopoverGeometryRoute::Skip);
+            }
+            if !source
+                .strip_prefix("toolset-popover-")
+                .is_some_and(|id| !id.is_empty())
+            {
+                return Err("Only toolset popovers may record geometry".into());
+            }
+            return Ok(PopoverGeometryRoute::Record(geometry));
+        }
+    }
+    Ok(PopoverGeometryRoute::Other)
 }
 
 // Separate from the gated timing records: no document text, arbitrary messages or paths.
@@ -80,12 +131,79 @@ async fn popover_native_geometry(
                 "windowFrame": rect(window.frame()), "contentViewFrame": rect(content.frame()),
                 "contentViewBounds": rect(content.bounds()), "contentLayoutRect": rect(window.contentLayoutRect()),
                 "webviewFrame": rect(view.frame()), "webviewBounds": rect(view.bounds()),
+                "webviewFrameInWindow": rect(view.convertRect_toView(view.bounds(), None)),
+                // AppKit exposes safe areas on NSView, not NSWindow on current macOS.
+                // Keep unsupported selectors null rather than claiming a zero inset.
+                "safeAreaInsets": native_edge_insets(&window, objc2::sel!(safeAreaInsets)),
+                "contentViewSafeAreaInsets": native_edge_insets(&content, objc2::sel!(safeAreaInsets)),
+                "webviewSafeAreaInsets": native_edge_insets(view, objc2::sel!(safeAreaInsets)),
+                "scrollView": native_scroll_geometry(view),
                 "styleMask": window.styleMask().bits()
             }))
         });
         let _ = send.send(result);
     }).map_err(|e| e.to_string())?;
     receive.await.map_err(|e| e.to_string())?
+}
+
+#[cfg(target_os = "macos")]
+fn native_edge_insets(
+    object: &objc2::runtime::AnyObject,
+    selector: objc2::runtime::Sel,
+) -> Option<serde_json::Value> {
+    // SAFETY: callers pass live AppKit objects on the UI thread and only NSEdgeInsets getters.
+    unsafe {
+        let responds: bool = objc2::msg_send![object, respondsToSelector: selector];
+        if !responds {
+            return None;
+        }
+        let inset: objc2_foundation::NSEdgeInsets = if selector == objc2::sel!(safeAreaInsets) {
+            objc2::msg_send![object, safeAreaInsets]
+        } else if selector == objc2::sel!(contentInset) {
+            objc2::msg_send![object, contentInset]
+        } else if selector == objc2::sel!(contentInsets) {
+            objc2::msg_send![object, contentInsets]
+        } else if selector == objc2::sel!(adjustedContentInset) {
+            objc2::msg_send![object, adjustedContentInset]
+        } else {
+            return None;
+        };
+        Some(
+            serde_json::json!({ "top": inset.top, "left": inset.left, "bottom": inset.bottom, "right": inset.right }),
+        )
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn native_scroll_geometry(view: &objc2_web_kit::WKWebView) -> serde_json::Value {
+    // WKWebView's public scrollView property is primarily an iOS API. Query only supported
+    // selectors on macOS; never use private KVC or assume a UIKit scroll view exists.
+    unsafe {
+        let has_scroll_view: bool =
+            objc2::msg_send![view, respondsToSelector: objc2::sel!(scrollView)];
+        let scroll: *mut objc2::runtime::AnyObject = if has_scroll_view {
+            objc2::msg_send![view, scrollView]
+        } else {
+            objc2::msg_send![view, enclosingScrollView]
+        };
+        let Some(scroll) = scroll.as_ref() else {
+            return serde_json::json!({ "available": false, "contentInset": null,
+                "adjustedContentInset": null, "contentOffset": null });
+        };
+        let has_offset: bool =
+            objc2::msg_send![scroll, respondsToSelector: objc2::sel!(contentOffset)];
+        let offset = if has_offset {
+            let p: objc2_foundation::NSPoint = objc2::msg_send![scroll, contentOffset];
+            Some(serde_json::json!({ "x": p.x, "y": p.y }))
+        } else {
+            None
+        };
+        serde_json::json!({ "available": true,
+            "contentInset": native_edge_insets(scroll, objc2::sel!(contentInset)),
+            "contentInsets": native_edge_insets(scroll, objc2::sel!(contentInsets)),
+            "adjustedContentInset": native_edge_insets(scroll, objc2::sel!(adjustedContentInset)),
+            "contentOffset": offset })
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -667,17 +785,17 @@ pub(crate) async fn perf_log_append(
     window: tauri::WebviewWindow,
     line: String,
 ) -> Result<(), String> {
-    // This fixed, geometry-only variant is always on; ordinary timing rows keep their gate.
-    #[derive(Deserialize)]
-    #[serde(tag = "event", deny_unknown_fields)]
-    enum Diagnostic {
-        #[serde(rename = "toolset-popover-geometry")]
-        Popover { geometry: PopoverGeometry },
-    }
-    if line.len() <= MAX_LINE_BYTES {
-        if let Ok(Diagnostic::Popover { geometry }) = serde_json::from_str(&line) {
+    // Route before the timing gate, but skip stable builds before native sampling or path lookup.
+    match route_popover_geometry(
+        popover_geometry_enabled(&app.config().identifier),
+        window.label(),
+        &line,
+    )? {
+        PopoverGeometryRoute::Skip => return Ok(()),
+        PopoverGeometryRoute::Record(geometry) => {
             return log_toolset_popover_geometry(app, window, geometry).await;
         }
+        PopoverGeometryRoute::Other => {}
     }
     // Reject before even resolving app_data_dir. The state was constructed using precisely the
     // existing agent_bridge_status env/argument parser, never renderer flags.
@@ -868,7 +986,62 @@ fn valid_completion(
 #[cfg(test)]
 mod tests {
     #[test]
-    fn popover_geometry_log_is_always_on_and_rotates() {
+    fn perf_log_append_popover_geometry_routing_obeys_dev_gate() {
+        use super::{popover_geometry_enabled, route_popover_geometry, PopoverGeometryRoute};
+        let before = serde_json::json!({ "innerHeight": 90.0, "visualViewportOffsetTop": 28.0,
+            "visualViewportHeight": 62.0, "documentTop": -28.0, "scrollTop": 28.0, "scrollY": 28.0,
+            "shellTop": -28.0, "shellHeight": 90.0, "shellScrollTop": 28.0 });
+        let after = serde_json::json!({ "innerHeight": 90.0, "visualViewportOffsetTop": 0.0,
+            "visualViewportHeight": 90.0, "documentTop": 0.0, "scrollTop": 0.0, "scrollY": 0.0,
+            "shellTop": 0.0, "shellHeight": 90.0, "shellScrollTop": 0.0 });
+        let geometry =
+            serde_json::json!({ "phase": "guard", "beforeReset": before, "afterReset": after });
+        let line = serde_json::json!({ "event": "toolset-popover-geometry", "geometry": geometry })
+            .to_string();
+        assert!(popover_geometry_enabled("org.chemdraft.desktop.dev"));
+        assert!(!popover_geometry_enabled("org.chemdraft.desktop"));
+        assert!(!popover_geometry_enabled(
+            "org.chemdraft.desktop.dev.untrusted"
+        ));
+        let PopoverGeometryRoute::Record(record) = route_popover_geometry(
+            popover_geometry_enabled("org.chemdraft.desktop.dev"),
+            "toolset-popover-core-main",
+            &line,
+        )
+        .unwrap() else {
+            panic!("dev popover geometry must route to its bounded log")
+        };
+        assert_eq!(serde_json::to_value(record).unwrap(), geometry);
+        // This is the exact routing seam perf_log_append uses before native sampling, path lookup,
+        // or the independent timing gate. A stable build silently skips even a valid diagnostic.
+        assert!(matches!(
+            route_popover_geometry(
+                popover_geometry_enabled("org.chemdraft.desktop"),
+                "toolset-popover-core-main",
+                &line
+            )
+            .unwrap(),
+            PopoverGeometryRoute::Skip
+        ));
+        assert!(route_popover_geometry(true, "main", &line).is_err());
+        assert!(route_popover_geometry(true, "toolset-popover-", &line).is_err());
+        assert!(matches!(
+            route_popover_geometry(true, "toolset-popover-core-main", &self::line()).unwrap(),
+            PopoverGeometryRoute::Other
+        ));
+        assert!(matches!(
+            route_popover_geometry(
+                true,
+                "toolset-popover-core-main",
+                &line.replace("scrollTop", "arbitraryText")
+            )
+            .unwrap(),
+            PopoverGeometryRoute::Other
+        ));
+    }
+
+    #[test]
+    fn popover_geometry_log_rotates() {
         let directory = dir();
         let row =
             serde_json::json!({ "event": "toolset-popover-geometry", "dom": { "scrollTop": 28 } });

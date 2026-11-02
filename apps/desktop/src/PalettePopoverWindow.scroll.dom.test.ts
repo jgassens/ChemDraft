@@ -15,7 +15,10 @@ const native = vi.hoisted(() => ({
 vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ hide: async () => {}, setFocus: async () => {} }) }));
 vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: () => ({ setFocus: async () => {} }) }));
-vi.mock("./plugins/pluginPanelInputFocus", () => ({ installPaletteInputFocus: () => () => {} }));
+vi.mock("./plugins/pluginPanelInputFocus", async importOriginal => ({
+  ...await importOriginal<typeof import("./plugins/pluginPanelInputFocus")>(),
+  installPaletteInputFocus: () => () => {}
+}));
 vi.mock("./window-manager", async importOriginal => ({
   ...await importOriginal<typeof import("./window-manager")>(),
   listenForToolsetPopoverContent: vi.fn(async handler => { native.content = handler; return () => {}; }),
@@ -35,6 +38,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.useFakeTimers();
   host.__TAURI__ = {};
+  vi.stubGlobal("__WORKTREE_LABEL__", "flyout [test]");
+  vi.stubGlobal("visualViewport", { offsetTop: 28, height: 62 });
   vi.stubGlobal("ResizeObserver", class {
     constructor(callback: () => void) { native.resized = callback; }
     observe() {} disconnect() {}
@@ -77,8 +82,14 @@ it("clears retained document/root/shell scrolling on content update, fit and rev
   offset();
   await act(async () => finishReveal());
   expectReset();
-  expect(records()).toEqual([expect.objectContaining({ event: "toolset-popover-geometry",
-    geometry: expect.objectContaining({ phase: "reveal", scrollTop: 0, shellTop: 0, shellHeight: 90, innerHeight: window.innerHeight, scrollY: 0 }) })]);
+  expect(records().filter(record => record.geometry.phase === "reveal")).toEqual([
+    expect.objectContaining({ event: "toolset-popover-geometry", geometry: {
+      phase: "reveal",
+      beforeReset: expect.objectContaining({ scrollTop: 28, shellScrollTop: 28 }),
+      afterReset: expect.objectContaining({ scrollTop: 0, shellTop: 0, shellHeight: 90,
+        innerHeight: window.innerHeight, scrollY: 0, documentTop: 0,
+        visualViewportOffsetTop: 28, visualViewportHeight: 62 })
+    } })]);
   offset();
   await act(async () => native.resized?.());
   expectReset();
@@ -94,11 +105,39 @@ it("samples the owner's release offset before resetting it, and ignores another 
   await act(async () => { native.release?.({ toolsetId: "core.art", releasedAt: 2 }); await vi.advanceTimersByTimeAsync(0); });
   expect(records()).toHaveLength(1);
   await act(async () => { native.release?.({ toolsetId: "core.main", releasedAt: 2 }); await vi.advanceTimersByTimeAsync(0); });
-  expect(records()[1].geometry).toMatchObject({ phase: "release", scrollTop: 28, shellScrollTop: 28 });
+  expect(records()[1].geometry).toMatchObject({ phase: "release",
+    beforeReset: { scrollTop: 28, shellScrollTop: 28 }, afterReset: { scrollTop: 0, shellScrollTop: 0 } });
   expectReset();
   offset();
   document.documentElement.dispatchEvent(new Event("scroll"));
   expectReset();
+  expect(records().at(-1).geometry).toMatchObject({ phase: "guard",
+    beforeReset: { scrollTop: 28, shellScrollTop: 28 }, afterReset: { scrollTop: 0, shellScrollTop: 0 } });
+  await act(async () => { native.release?.({ toolsetId: "core.main", releasedAt: 3 }); await vi.advanceTimersByTimeAsync(0); });
+  // A capture-phase repair before release must leave its original offset in the preceding record.
+  expect(records().at(-1).geometry).toMatchObject({ phase: "release", beforeReset: { scrollTop: 0 } });
+});
+
+it("keeps scroll guards active but diagnostics silent in an unlabelled stable build", async () => {
+  vi.stubGlobal("__WORKTREE_LABEL__", "");
+  await act(async () => root.render(createElement(PalettePopoverWindow, { toolsetId: "core.main", kind: "flyout", prewarm: true })));
+  await act(async () => native.content?.(rings));
+  offset();
+  document.documentElement.dispatchEvent(new Event("scroll"));
+  expectReset();
+  await act(async () => { native.release?.({ toolsetId: "core.main", releasedAt: 2 }); await vi.advanceTimersByTimeAsync(0); });
+  expect(records()).toEqual([]);
+});
+
+it("sends the live content kind on each reveal of a prewarmed Art popover", async () => {
+  await act(async () => root.render(createElement(PalettePopoverWindow, { toolsetId: "core.art", kind: "artColor", prewarm: true })));
+  expect(native.show).not.toHaveBeenCalled();
+  await act(async () => native.content?.({ toolsetId: "core.art", kind: "artColor" }));
+  expect(native.show).toHaveBeenLastCalledWith("focus", "artColor");
+  await act(async () => native.content?.({ ...rings, toolsetId: "core.art" }));
+  expect(native.show).toHaveBeenLastCalledWith("focus", "flyout");
+  await act(async () => native.content?.({ toolsetId: "core.art", kind: "artColor" }));
+  expect(native.show).toHaveBeenLastCalledWith("focus", "artColor");
 });
 
 it("focuses keyboard flyout choices and traverses Tab without scrolling", async () => {

@@ -85,18 +85,19 @@ export function PalettePopoverWindow({
   const [artStyle, setArtStyle] = useState<ToolsetArtStylePayload | undefined>();
   const contentRef = useRef(content);
   contentRef.current = content;
-  const resetScroll = () => {
-    // A reused WKWebView can retain scrolling from layout at its previous, smaller size.
-    for (const element of [document.scrollingElement, document.documentElement, document.body,
-      document.getElementById("root"), shellRef.current, shellRef.current?.firstElementChild]) {
-      if (element) { element.scrollTop = 0; element.scrollLeft = 0; }
-    }
-    if (window.scrollX || window.scrollY) window.scrollTo(0, 0);
-  };
-  const recordGeometry = (phase: "reveal" | "release") => {
+  const resetScroll = (phase: "reveal" | "release" | "guard" = "guard") => {
+    const reset = () => {
+      // A reused WKWebView can retain scrolling from layout at its previous, smaller size.
+      for (const element of [document.scrollingElement, document.documentElement, document.body,
+        document.getElementById("root"), shellRef.current, shellRef.current?.firstElementChild]) {
+        if (element) { element.scrollTop = 0; element.scrollLeft = 0; }
+      }
+      if (window.scrollX || window.scrollY) window.scrollTo(0, 0);
+    };
     if (contentRef.current.kind === "flyout" && shellRef.current) {
-      logToolsetPopoverGeometry(phase, shellRef.current);
-    }
+      // Sample every repair, including capture-phase scroll events, before it clears offsets.
+      logToolsetPopoverGeometry(phase, shellRef.current, reset);
+    } else reset();
   };
   useLayoutEffect(resetScroll, [content]);
   const notifyBondStereoClose = (current = contentRef.current) => {
@@ -125,13 +126,14 @@ export function PalettePopoverWindow({
     document.documentElement.classList.add("palette-popover-window-html");
     document.body.classList.add("palette-popover-window-body");
     // overflow:hidden prevents user scrolling; this also catches browser focus/scroll anchoring.
-    document.addEventListener("scroll", resetScroll, true);
-    window.addEventListener("scroll", resetScroll);
-    document.addEventListener("focusin", resetScroll);
+    const guardScroll = () => resetScroll();
+    document.addEventListener("scroll", guardScroll, true);
+    window.addEventListener("scroll", guardScroll);
+    document.addEventListener("focusin", guardScroll);
     return () => {
-      document.removeEventListener("scroll", resetScroll, true);
-      window.removeEventListener("scroll", resetScroll);
-      document.removeEventListener("focusin", resetScroll);
+      document.removeEventListener("scroll", guardScroll, true);
+      window.removeEventListener("scroll", guardScroll);
+      document.removeEventListener("focusin", guardScroll);
       document.documentElement.classList.remove("palette-popover-window-html");
       document.body.classList.remove("palette-popover-window-body");
     };
@@ -145,8 +147,7 @@ export function PalettePopoverWindow({
       if (payload && (payload.toolsetId !== toolsetId || payload.releasedAt < contentOpenedAt.current)) return;
       window.setTimeout(() => {
         if (disposed || dismissedRef.current) return;
-        recordGeometry("release"); // Sample before repairing, so a residual offset is visible in the log.
-        resetScroll();
+        resetScroll("release");
       }, 0);
     };
     const localRelease = () => afterRelease();
@@ -315,8 +316,8 @@ export function PalettePopoverWindow({
         const preserveFocus = content.kind === "flyout" && content.flyout.variant === "bondStereo" && !content.flyout.keyboardOpen;
         keepWindowFocusRef.current = toolsetId === "core.bondStereo" && content.kind === "flyout" &&
           content.flyout.variant === "bondStereo" && !!content.flyout.keyboardOpen;
-        await showCurrentToolsetPopoverWindow(preserveFocus ? "preserve" : "focus");
-        resetScroll();
+        await showCurrentToolsetPopoverWindow(preserveFocus ? "preserve" : "focus", content.kind);
+        resetScroll("reveal");
         if (cancelled || dismissedRef.current) {
           // An older reveal may complete after a fresh open. Only hide the content
           // this chain belongs to; the new session owns the reused window now.
@@ -335,7 +336,6 @@ export function PalettePopoverWindow({
             shellRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus({ preventScroll: true });
           }
         }
-        recordGeometry("reveal");
         perfHook(() => perfProbe?.surfaceShown(perfShown, "popover-shown"));
         if (perfShownRef.current === perfShown) perfShownRef.current = undefined;
       } catch (error) {
@@ -372,7 +372,7 @@ export function PalettePopoverWindow({
         return;
       }
       resetScroll();
-      void showCurrentToolsetPopoverWindow().then(() => { resetScroll(); recordGeometry("reveal"); }).catch(() => undefined);
+      void showCurrentToolsetPopoverWindow("focus", contentRef.current.kind).then(() => resetScroll("reveal")).catch(() => undefined);
     }, 600);
     return () => window.clearTimeout(fallback);
   }, [prewarm, toolsetId]);

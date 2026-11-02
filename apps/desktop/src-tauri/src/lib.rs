@@ -4319,6 +4319,9 @@ async fn open_toolset_popover(
         // popover away from its anchor. An explicit LogicalPosition set is the final word in
         // both the warm and cold paths.
         configure_toolset_popover_window(&window, focus_mode)?;
+        window
+            .set_title(toolset_popover_title(&label, &kind))
+            .map_err(|error| error.to_string())?;
         set_window_global_logical_position(&window, x, y)?;
         return Ok(());
     }
@@ -4362,6 +4365,16 @@ async fn prewarm_toolset_tooltip(app: tauri::AppHandle) -> Result<(), String> {
     build_toolset_tooltip_window(&app)
 }
 
+fn toolset_popover_title(label: &str, kind: &str) -> &'static str {
+    if label == toolset_popover_window_label("core.bondStereo") {
+        "E/Z not specified"
+    } else if kind == "artColor" {
+        "ChemDraft color picker"
+    } else {
+        "ChemDraft tools"
+    }
+}
+
 /// The actual builder configuration is also the test seam for native creation.
 /// `parent` is an owner on Windows (not a child HWND). Keep macOS popovers unparented:
 /// AppKit child windows can reveal hidden/prewarmed windows and alter their level/Spaces behavior.
@@ -4379,12 +4392,7 @@ fn toolset_popover_window_config(
             format!("/?window=toolsetPopover&toolsetId={toolset_id}&kind={kind}{prewarm_param}")
                 .into(),
         ),
-        title: if toolset_id == "core.bondStereo" {
-            "E/Z not specified"
-        } else {
-            "ChemDraft tools"
-        }
-        .into(),
+        title: toolset_popover_title(&toolset_popover_window_label(toolset_id), kind).into(),
         #[cfg(windows)]
         parent: Some(MAIN_WINDOW_LABEL.into()),
         #[cfg(not(windows))]
@@ -4445,15 +4453,6 @@ fn configure_toolset_popover_window<R: Runtime>(
     let target = window.clone();
     run_on_main_thread_blocking(window, move || {
         configure_toolset_utility_window(&target, false)?;
-        target
-            .set_title(
-                if target.label() == toolset_popover_window_label("core.bondStereo") {
-                    "E/Z not specified"
-                } else {
-                    "ChemDraft tools"
-                },
-            )
-            .map_err(|error| error.to_string())?;
         target
             .set_focusable(focus_mode == ToolsetPopoverFocusMode::Focus)
             .map_err(|error| error.to_string())?;
@@ -4633,9 +4632,20 @@ fn raise_among_owned_windows<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Re
 fn show_toolset_popover_window(
     window: tauri::WebviewWindow,
     focus_mode: Option<ToolsetPopoverFocusMode>,
+    kind: Option<String>,
 ) -> Result<(), String> {
+    if !window.label().starts_with("toolset-popover-") {
+        return Err("Only toolset popovers may reveal popover content".into());
+    }
     if utility_windows_suspended() {
         return Ok(());
+    }
+    // The page owns the live content, including a prewarmed/reused Art window switching
+    // between its colour picker and command flyouts. Titles are fixed native strings.
+    if let Some(kind) = kind {
+        window
+            .set_title(toolset_popover_title(window.label(), &kind))
+            .map_err(|error| error.to_string())?;
     }
     let focus_mode =
         effective_toolset_popover_focus_mode(window.label(), focus_mode.unwrap_or_default());
@@ -4655,7 +4665,8 @@ fn show_toolset_popover_window(
     // `focus: false` at creation makes Tao use SW_SHOWNOACTIVATE on Windows.
     // Keep its visibility state in sync (a raw ShowWindow alone breaks later hide()).
     window.show().map_err(|error| error.to_string())?;
-    raise_among_owned_windows(&window)
+    raise_among_owned_windows(&window)?;
+    fit_toolset_popover_webview(&window)
 }
 
 /// Hide the tooltip window. Deliberately a sync command like `show_toolset_tooltip_window`: both
@@ -7429,10 +7440,18 @@ fn configure_toolset_utility_window_on_main_thread<R: Runtime>(
         return Err("Could not access native ChemDraft toolbar window.".to_string());
     };
 
-    let style = ns_window.styleMask()
+    let mut style = ns_window.styleMask()
         | NSWindowStyleMask::UtilityWindow
         | NSWindowStyleMask::NonactivatingPanel;
-    ns_window.setStyleMask(style);
+    let is_popover = window.label().starts_with("toolset-popover-");
+    if is_popover {
+        style = borderless_popover_style(style);
+    }
+    // This runs at creation, reuse and reveal, not pointer release. Avoid asking AppKit
+    // to redo content layout when the desired mask is already installed.
+    if !is_popover || style != ns_window.styleMask() {
+        ns_window.setStyleMask(style);
+    }
     ns_window.setLevel(toolset_utility_window_level());
     ns_window.setHidesOnDeactivate(toolset_window_hides_on_deactivate());
     ns_window.setCanHide(true);
@@ -7459,6 +7478,47 @@ fn configure_toolset_utility_window_on_main_thread<R: Runtime>(
         ns_window.orderFront(None);
     }
 
+    fit_toolset_popover_webview(window)
+}
+
+#[cfg(target_os = "macos")]
+fn borderless_popover_style(style: NSWindowStyleMask) -> NSWindowStyleMask {
+    // UtilityWindow is for titled palettes. A borderless popover has no title-bar area
+    // for WebKit to inset around; retain NonactivatingPanel and the input-lease subclass.
+    (style | NSWindowStyleMask::NonactivatingPanel)
+        & !(NSWindowStyleMask::UtilityWindow
+            | NSWindowStyleMask::Titled
+            | NSWindowStyleMask::FullSizeContentView)
+}
+
+#[cfg(target_os = "macos")]
+fn fit_toolset_popover_webview<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
+    if !window.label().starts_with("toolset-popover-") {
+        return Ok(());
+    }
+    window
+        .with_webview(|webview| {
+            // SAFETY: Tauri owns the live WKWebView and dispatches this on the UI thread.
+            let view: &objc2_web_kit::WKWebView = unsafe { &*webview.inner().cast() };
+            if let Some(content) = view.window().and_then(|window| window.contentView()) {
+                // Frame is in the superview's coordinates; do not assume Wry's view hierarchy.
+                // This changes only the webview frame, never the NSWindow size or position.
+                if let Some(parent) = unsafe { view.superview() } {
+                    let frame = content.convertRect_toView(content.bounds(), Some(&parent));
+                    if view.frame() != frame {
+                        view.setFrame(frame);
+                    }
+                }
+            }
+        })
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn fit_toolset_popover_webview<R: Runtime>(
+    _window: &tauri::WebviewWindow<R>,
+) -> Result<(), String> {
+    // WebView2 already fills the borderless client area; keep its native layout unchanged.
     Ok(())
 }
 
@@ -9577,6 +9637,8 @@ mod tests {
                 config.title,
                 if toolset == "core.bondStereo" {
                     "E/Z not specified"
+                } else if kind == "artColor" {
+                    "ChemDraft color picker"
                 } else {
                     "ChemDraft tools"
                 }
@@ -9588,6 +9650,36 @@ mod tests {
             #[cfg(not(windows))]
             assert_eq!(config.parent, None);
         }
+    }
+
+    #[test]
+    fn reused_popover_titles_follow_content() {
+        let art = toolset_popover_window_label("core.art");
+        assert_eq!(
+            toolset_popover_title(&art, "artColor"),
+            "ChemDraft color picker"
+        );
+        assert_eq!(toolset_popover_title(&art, "flyout"), "ChemDraft tools");
+        assert_eq!(
+            toolset_popover_title(&art, "artColor"),
+            "ChemDraft color picker"
+        );
+        assert_eq!(
+            toolset_popover_title(&toolset_popover_window_label("core.bondStereo"), "flyout"),
+            "E/Z not specified"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn popover_style_stays_borderless_and_nonactivating() {
+        let titled = NSWindowStyleMask::UtilityWindow
+            | NSWindowStyleMask::Titled
+            | NSWindowStyleMask::FullSizeContentView;
+        let style = borderless_popover_style(titled);
+        assert!(!style.intersects(titled));
+        assert!(style.contains(NSWindowStyleMask::NonactivatingPanel));
+        assert_eq!(borderless_popover_style(style), style);
     }
 
     #[test]
