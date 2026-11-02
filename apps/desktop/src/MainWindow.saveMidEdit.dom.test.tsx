@@ -3,7 +3,7 @@
 // a failing dirty/prompt assertion means the release is affected, not an expected failure.
 // Findings: new text boxes ARE affected through File > Save on both platforms,
 // and through macOS native accelerator delivery. Table cells are NOT affected.
-// Windows Ctrl+S in either editor does not reach Save. Recovery autosave/quit flush
+// Windows Ctrl+S in either editor reaches Save. Recovery autosave/quit flush
 // do not mark either editor clean. Escape cancels table drafts; text Escape commits.
 // AppKit/WebView2 themselves are outside jsdom: accelerator delivery is modeled
 // explicitly below; all editing/focus/blur/pointer events exercise the actual UI.
@@ -69,7 +69,7 @@ describe.each(["macos", "windows"] as const)("save mid-edit (%s)", platform => {
   const editor = () => container.querySelector<HTMLTextAreaElement>(".text-object-editor, [data-table-cell-editor] textarea");
   const table = () => snapshot().document.pages[0].objects.find(object => object.type === "table") as TableObject;
   type Kind = "text box" | "table cell";
-  type Route = "File > Save" | "File > Save As" | "native accelerator" | "session autosave" | "quit session flush";
+  type Route = "File > Save" | "File > Save As" | "editor keyboard shortcut" | "session autosave" | "quit session flush";
   const contentsText = (contents: string, kind: Kind) => {
     const objects = openChemDraftPayload(contents).document!.pages[0].objects;
     return kind === "text box" ? objects.find(object => object.type === "text")!.text
@@ -149,14 +149,9 @@ describe.each(["macos", "windows"] as const)("save mid-edit (%s)", platform => {
   }
   async function saveWhileEditing(route: Route, kind: Kind) {
     const textarea = editor()!;
-    if (route === "native accelerator") {
+    if (route === "editor keyboard shortcut") {
       const event = await key("s", platform === "macos" ? { metaKey: true } : { ctrlKey: true });
-      expect(event.defaultPrevented, "editor leaves save chord available to native default").toBe(false);
-      expect(native.writeFile, "the editor does not dispatch Save from its JS key handler").not.toHaveBeenCalled();
-      // jsdom cannot execute AppKit defaults. Model its menu accelerator delivery at
-      // the actual Rust -> DOM boundary. WebView2 has no such fallback (keyboardShortcuts.ts).
-      expect(platform).toBe("macos");
-      await command("document.save");
+      expect(event.defaultPrevented, "editor consumes save chord").toBe(true);
     } else if (route === "File > Save") await command("document.save");
     else if (route === "File > Save As") await command("document.saveAs");
     else if (route === "session autosave") {
@@ -164,7 +159,7 @@ describe.each(["macos", "windows"] as const)("save mid-edit (%s)", platform => {
     } else await act(async () => { await native.quitFlush!(); });
     expect(editor(), "save/flush keeps the same editor").toBe(textarea);
     expect(document.activeElement, "save/flush retains editor focus").toBe(textarea);
-    if (route === "File > Save" || route === "File > Save As" || route === "native accelerator") {
+    if (route === "File > Save" || route === "File > Save As" || route === "editor keyboard shortcut") {
       expect(native.writeFile).toHaveBeenCalledTimes(1);
       expect(contentsText(native.writeFile.mock.calls[0][1], kind), "file has Hello at save").toBe("Hello");
       expect(snapshot().file.dirty, "explicit save marks open draft clean").toBe(false);
@@ -276,7 +271,7 @@ describe.each(["macos", "windows"] as const)("save mid-edit (%s)", platform => {
 
   describe.each(["text box", "table cell"] as const)("%s", kind => {
     const routes: Route[] = ["File > Save", "session autosave", "quit session flush"];
-    if (platform === "macos") routes.push("native accelerator");
+    routes.push("editor keyboard shortcut");
     describe.each(routes)("%s", route => {
       for (const ending of ["Escape", "click-away"] as const) {
         it.each(["close", "quit"] as const)(`retained extra typing stays dirty after ${ending} and prompts on %s`, async boundary => {
@@ -304,14 +299,24 @@ describe.each(["macos", "windows"] as const)("save mid-edit (%s)", platform => {
         });
       }
     });
-    if (platform === "windows") it("Ctrl+S inside editor is NOT REACHABLE as Save (the editor keeps the key)", async () => {
+    if (platform === "windows") it("Ctrl+S inside editor saves once and later typing stays dirty and prompts", async () => {
       await mount(kind);
       const textarea = editor();
       const event = await key("s", { ctrlKey: true });
-      expect(event.defaultPrevented).toBe(false);
-      expect(native.writeFile).not.toHaveBeenCalled();
+      expect(event.defaultPrevented).toBe(true);
       expect(editor()).toBe(textarea);
+      expect(native.writeFile).toHaveBeenCalledTimes(1);
+      expect(contentsText(native.writeFile.mock.calls[0][1], kind)).toBe("Hello");
+      expect(snapshot().file.dirty).toBe(false);
+      await type("Hellox");
       expect(snapshot().file.dirty).toBe(true);
+      await endEdit("click-away");
+      expect(currentText(kind)).toBe("Hellox");
+      expect(snapshot().file.dirty).toBe(true);
+      await assertPrompt("close");
+      await assertPrompt("quit");
+      expect(native.writeFile).toHaveBeenCalledTimes(1);
+      expect(contentsText(native.writeFile.mock.calls[0][1], kind)).toBe("Hello");
     });
   });
 });
