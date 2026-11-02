@@ -11,6 +11,7 @@ import { validTableDimensions, type TableInsertDimensions } from "./dialogs/inse
 import { doubleBondStereoState, perceivedSpecifiedDoubleBondIds } from "./interaction/doubleBondStereo";
 import type { storedCoordinatesMatchStereo } from "@chemdraft/ocl-adapter";
 import type { DoubleBondStereoReader } from "./interaction/doubleBondStereo";
+import { nativeDocumentExportWarnings, nativeMoleculeExportWarnings } from "@chemdraft/document-workflow-core";
 import {
   GRAPHIC_CORNER_RADIUS_HANDLE_SIZE_PX,
   OBJECT_RESIZE_HANDLE_OFFSET_PX,
@@ -19298,7 +19299,8 @@ export function exportPhase4Cdxml(
   document: ChemDraftDocument,
   options: CdxmlTextExportOptions = {}
 ): TextExportResult {
-  return exportDocumentToCdxmlText(document, options);
+  const result = exportDocumentToCdxmlText(document, options);
+  return { ...result, warnings: [...nativeDocumentExportWarnings(document), ...result.warnings] };
 }
 
 /**
@@ -19743,7 +19745,9 @@ export function copyAsMolfile(
   flavor: "v2000" | "v3000",
   warningsOut?: string[]
 ): string | undefined {
-  const scoped = copyAsMergedMolecule(copyAsScopeMolecules(document));
+  const molecules = copyAsScopeMolecules(document);
+  warningsOut?.push(...molecules.flatMap(molecule => nativeMoleculeExportWarnings(molecule).map(warning => warning.message)));
+  const scoped = copyAsMergedMolecule(molecules);
   if (!scoped) {
     return undefined;
   }

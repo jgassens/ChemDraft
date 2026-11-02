@@ -98,3 +98,9 @@ SMILES drawing tools inherit exact canonical isomeric template matching from the
 and report `layout: "template:<id>"` (per cell/component for grids/reactions).
 Stereo and charge must match; template drawings use the default document bond length.
 `render_document` preserves the coordinates in its native JSON input.
+
+Invalid native drawings still render and save with the CLI's shared atom warnings, including
+suppressed badges (`export.invalid_structure`, e.g. `C1 has unsupported valence 5.`).
+An unparseable molecule returns `chemistryStatus: "unverified"`, with `canonicalSmiles` and
+all stereo counts set to `null`. Treat this as an unverified drawing, never as verified
+chemistry. `export_structure` retains its SMILES-input identity checks.

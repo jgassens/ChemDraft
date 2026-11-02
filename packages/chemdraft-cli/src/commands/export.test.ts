@@ -63,9 +63,13 @@ describe("chemdraft export", () => {
     built.document.pages[0]!.objects = [molecule];
     built.identityMolfile = moleculeToMolfileV2000(molecule, { fromDocFrame: true,
       kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders }).contents;
+    const expectedWarnings = [
+      ...(molecule.id === "nitro" ? ["N1 has unsupported valence 5."] : []),
+      expect.stringContaining("SMILES writes charge-separated formal charges")
+    ];
     for (const format of ["mol", "cdxml"] as const) {
       const result = await exportPerJobFormat(format, built);
-      expect(result.warnings).toEqual([expect.stringContaining("SMILES writes charge-separated formal charges")]);
+      expect(result.warnings).toEqual(expectedWarnings);
     }
     // Supply the same native drawing at the command's builder boundary; SMILES input alone
     // would already have been sanitized before the export verification under test.
@@ -75,7 +79,7 @@ describe("chemdraft export", () => {
         const io = collectIo();
         expect(await runCli(["--smiles", smiles, "--out", join(outputDirectory, `${molecule.id}.${format}`)], io)).toBe(0);
         expect(jsonLines(io)[0]).toMatchObject({ ok: true,
-          warnings: [expect.stringContaining("SMILES writes charge-separated formal charges")] });
+          warnings: expectedWarnings });
       }
     } finally { spy.mockRestore(); }
   });

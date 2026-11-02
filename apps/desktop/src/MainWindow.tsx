@@ -7376,9 +7376,11 @@ export function MainWindow({
         await writeText(copyAsMolfile(current, "v2000", warnings), "MOL V2000 text", warnings);
         return;
       }
-      case "clipboard.copyAs.cdxml":
-        await writeText(exportPhase4Cdxml(copyAsScopedDocument(current)).contents, "CDXML text");
+      case "clipboard.copyAs.cdxml": {
+        const result = exportPhase4Cdxml(copyAsScopedDocument(current));
+        await writeText(result.contents, "CDXML text", result.warnings.map(warning => warning.message));
         return;
+      }
       case "clipboard.copyAs.svg": {
         const svgContents = exportPhase4Svg(copyAsScopedDocument(current), { includeWarnings: false }).contents;
         // Write a real SVG image flavor first: vector apps (Illustrator, Sketch, Figma) paste the
@@ -28213,7 +28215,7 @@ function DocumentObjectViewContent({
       // Charge-mark chemistry is reconciled INTO atom.formalCharge on commit, so validity and
       // labels read the molecule directly; atoms whose charge came from a mark carry markCharge.
       const invalidAtomStates = nativeMoleculeInvalidAtomStates(object);
-      const invalidAtomIds = new Set(invalidAtomStates.map((state) => state.atomId));
+      const invalidAtomIds = new Set(invalidAtomStates.filter((state) => !state.warningSuppressed).map((state) => state.atomId));
       const invalidReasonByAtomId = new Map(invalidAtomStates.map((state) => [state.atomId, state.invalidReason]));
       const resolvedChargeAtomIds = object.atoms
         .filter((atom) => (atom.markCharge ?? 0) !== 0)

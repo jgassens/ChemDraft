@@ -28,6 +28,7 @@ desktop importers did not change.
 | `labelOnBondedAtom.ts` | Commit-time relabel/substituent decision using the original atom, shared label readings and valence admission |
 | `smiles.ts` | The native SMILES writer; aromatic bonds are kekulized by layout-engine's `nativeBondOrderResolution` |
 | `moleculeSmiles.ts` | Export-time SMILES: RDKit when the caller supplies it, native writer otherwise |
+| `exportWarnings.ts` | Raw atom diagnostics for export callers, with consistent one-based drawn atom names; independent of badge suppression and cached metadata |
 | `structureTemplates.ts` | Exact normalized name lookup, injected canonical isomeric identity lookup, and authored template layout → native molecule at document bond length |
 | `graph.ts` | Graph walks over native atoms and bonds, including the longest path the SMILES writer and 2D cleanup lay a component along |
 | `shared.ts` | Ids, page access, numeric helpers |

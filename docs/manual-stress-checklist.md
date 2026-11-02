@@ -7,6 +7,12 @@ port's own hands-on pass.
 
 Speed runs on both platforms: follow the [timing probe protocol](architecture/perf-probe.md), including the bridge-off no-log check.
 
+Invalid structure exports (macOS and Windows): draw/import a carbon with five single bonds;
+copy as MOL V2000, MOL V3000, CDXML and SMILES, and export CDXML, SDF and SMILES. Each writes
+the drawing and reports the same warning naming the carbon and unsupported valence 5. Clear
+Warning and repeat: the (!) badge hides, exports still warn, and analysis still reports the
+problem. Save/reopen and undo/redo suppression; check that atoms, bonds and charges stay unchanged.
+
 Manual stress must cover tab initialization, user tab persistence, mixed states, multi-molecule
 scaling, sparse override precedence, terminal carbon labels, hidden implicit hydrogens, explicit
 hydrogens, fonts, save/reopen, undo/redo, Spin 3D, atom-label editor placement, SVG export, and ring

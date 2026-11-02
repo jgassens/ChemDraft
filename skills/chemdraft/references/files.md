@@ -118,6 +118,14 @@ PDF before delivering it, and prefer SVG or PNG figures until this is fixed.
 
 ## Hand-edit loop and compatibility
 
+Native drawings with chemistry problems can still render and save through `render-document`
+(MCP `render_document`). Always report the returned per-atom `export.invalid_structure`
+warnings, such as `C1 has unsupported valence 5.`, including when the user hid the canvas badge.
+For an unparseable molecule, `chemistryStatus` is `"unverified"`, and `canonicalSmiles`,
+`stereoCenters`, `unspecifiedStereoCenters` and `unspecifiedDoubleBonds` are `null`.
+Do not treat a null count as zero or claim its identity was verified. SMILES-input exports
+still refuse when identity cannot be preserved; do not remove chemistry to force success.
+
 Export CDXML. Tell the human to save the current drawing first, because
 File > Open replaces the open document without asking. Then have them open
 the file through ChemDraft **File > Open** and edit the actual structure.

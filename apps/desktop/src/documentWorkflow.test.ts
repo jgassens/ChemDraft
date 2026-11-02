@@ -5704,7 +5704,9 @@ describe("Phase 4 document workflow", () => {
     const target = { objectId: selectedMolecule(fluorine).id, kind: "atom" as const, atomId: "atom_001", distanceToPointer: 0 };
     expect(nativeMoleculeInvalidAtomStates(selectedMolecule(fluorine)).map((state) => state.atomId)).toEqual(["atom_001"]);
     const dismissed = applyNativeAtomWarningSuppression(fluorine, target, true);
-    expect(nativeMoleculeInvalidAtomStates(selectedMolecule(dismissed))).toEqual([]);
+    expect(nativeMoleculeInvalidAtomStates(selectedMolecule(dismissed))).toEqual([
+      expect.objectContaining({ atomId: "atom_001", valid: false, warningSuppressed: true })
+    ]);
 
     // Relabelled to a (still invalid) three-bond oxygen: a different atom, its own badge. The
     // dismissal used to ride along and silence an error the user never saw, for good.
@@ -6102,12 +6104,14 @@ describe("Phase 4 document workflow", () => {
     expect(nativeMoleculeInvalidAtomStates(molecule)).toHaveLength(1);
     expect(molecule.chemistry?.warnings).toHaveLength(1);
 
-    // ...Clear Warning silences the badge and the stored warning...
+    // ...Clear Warning hides only the badge; raw validation and stored warnings remain...
     const cleared = applyNativeAtomWarningSuppression(document, target, true);
     const clearedMolecule = selectedMolecule(cleared);
     expect(clearedMolecule.atoms[0]).toMatchObject({ warningSuppressed: true });
-    expect(nativeMoleculeInvalidAtomStates(clearedMolecule)).toEqual([]);
-    expect(clearedMolecule.chemistry?.warnings).toEqual([]);
+    expect(nativeMoleculeInvalidAtomStates(clearedMolecule)).toEqual([
+      expect.objectContaining({ valid: false, warningSuppressed: true })
+    ]);
+    expect(clearedMolecule.chemistry?.warnings).toEqual(molecule.chemistry?.warnings);
 
     // ...and Restore Warning brings it back.
     const restored = applyNativeAtomWarningSuppression(cleared, target, false);
@@ -6133,11 +6137,14 @@ describe("Phase 4 document workflow", () => {
     const partialMolecule = selectedMolecule(partial);
     expect(partialMolecule.atoms.find((atom) => atom.id === "atom_001")?.warningSuppressed).toBe(true);
     expect(partialMolecule.atoms.find((atom) => atom.id === "atom_002")?.warningSuppressed).toBeUndefined();
-    expect(nativeMoleculeInvalidAtomStates(partialMolecule)).toMatchObject([{ atomId: "atom_002" }]);
+    expect(nativeMoleculeInvalidAtomStates(partialMolecule)).toMatchObject([
+      { atomId: "atom_001", valid: false, warningSuppressed: true }, { atomId: "atom_002", valid: false }
+    ]);
 
-    // Whole-molecule scope: every current warning goes; restoring the same scope brings both back.
+    // Whole-molecule scope: every badge hides, while both raw diagnostics remain.
     const whole = applyNativeWarningSuppressionToScope(document, [{ objectId: molecule.id }], true);
-    expect(nativeMoleculeInvalidAtomStates(selectedMolecule(whole))).toEqual([]);
+    expect(nativeMoleculeInvalidAtomStates(selectedMolecule(whole))).toHaveLength(2);
+    expect(nativeMoleculeInvalidAtomStates(selectedMolecule(whole)).every(state => state.warningSuppressed)).toBe(true);
     const restored = applyNativeWarningSuppressionToScope(whole, [{ objectId: molecule.id }], false);
     expect(nativeMoleculeInvalidAtomStates(selectedMolecule(restored))).toHaveLength(2);
 
@@ -12832,8 +12839,9 @@ describe("Phase 4 document workflow", () => {
       const unrecognizedScoped = { ...unrecognized, selection: { ...unrecognized.selection, objectIds: [] } };
       const placeholderWarnings: string[] = [];
       expect(await copyAsSmiles(unrecognizedScoped, placeholderWarnings)).toBe("C[*]");
-      expect(placeholderWarnings).toHaveLength(1);
-      expect(placeholderWarnings[0]).toContain("\"Phe\"");
+      expect(placeholderWarnings).toHaveLength(2);
+      expect(placeholderWarnings[0]).toBe("Phe2 isn't an element or a known group.");
+      expect(placeholderWarnings[1]).toContain("\"Phe\"");
       const placeholderMolfileWarnings: string[] = [];
       copyAsMolfile(unrecognizedScoped, "v3000", placeholderMolfileWarnings);
       expect(placeholderMolfileWarnings.some((warning) => warning.includes("\"Phe\""))).toBe(true);

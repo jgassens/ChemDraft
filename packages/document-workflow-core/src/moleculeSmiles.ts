@@ -13,6 +13,7 @@ import {
 } from "@chemdraft/layout-engine";
 
 import { expandNativeMoleculeLabelGroups, nativeImplicitHydrogenCount, nativeSingleHeavyElementLabelValence } from "./atoms";
+import { nativeMoleculeExportWarnings } from "./exportWarnings";
 import { nativeMoleculeUnspellableLabels, nativeSingleBondGraphSmiles, nativeSmilesBondOrderResolution } from "./smiles";
 
 export type ComputeStructureIdentifiers = typeof import("@chemdraft/rdkit-adapter/identifiers").computeStructureIdentifiers;
@@ -66,6 +67,8 @@ export async function moleculeSmiles(
   molfile?: string,
   options: { requireEngineAtomStates?: boolean } = {}
 ): Promise<string> {
+  const invalidWarnings = nativeMoleculeExportWarnings(molecule);
+  warnings.push(...invalidWarnings);
   const requireEngineAtomStates = options.requireEngineAtomStates ?? false;
   // Both the V2000 input to RDKit and the native fallback approximate these features.
   const dativeBondCount = molecule.bonds.filter(isDativeBond).length;
@@ -169,6 +172,7 @@ export async function moleculeSmiles(
   // "[Ar]O" for aryl alcohol) while the warnings above promise [*]; write the current graph instead.
   if (
     engineUnavailable && !requireEngineAtomStates &&
+    invalidWarnings.length === 0 &&
     expanded.expansions.length === 0 &&
     expanded.placeholderAtoms.size === 0 &&
     nativeMoleculeUnspellableLabels(molecule).length === 0 &&

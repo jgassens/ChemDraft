@@ -6354,6 +6354,9 @@ describe("ChemDraft desktop shell", () => {
       expect(clearedMolecule?.atoms.find((atom) => atom.id === selectedAtomIds[index])?.warningSuppressed).toBe(true);
       expect(clearedMolecule?.atoms.find((atom) => atom.id === molecule.atoms[1].id)?.warningSuppressed).toBeUndefined();
       expect(clearedMolecule ? nativeMoleculeInvalidAtomStates(clearedMolecule).map((state) => state.atomId) : [])
+        .toEqual(molecule.atoms.map(atom => atom.id));
+      expect(clearedMolecule ? nativeMoleculeInvalidAtomStates(clearedMolecule)
+        .filter(state => !state.warningSuppressed).map(state => state.atomId) : [])
         .toEqual([molecule.atoms[1].id]);
     }
   });
