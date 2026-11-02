@@ -1713,7 +1713,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.02.14.16-codex";
+const CURRENT_BUILD_STAMP = "11.02.14.30-codex";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -13486,6 +13486,29 @@ export function MainWindow({
     window.addEventListener("keydown", handOffHoverLabelKey, true);
     return () => window.removeEventListener("keydown", handOffHoverLabelKey, true);
   }, [finishAtomLabelEdit]);
+
+  useEffect(() => {
+    // Inline editors own typing, clipboard and undo keys, and stop their propagation. Save must
+    // reach the registered command before that happens. Resolve without the editable-target
+    // filter, using the same platform-aware registry as the canvas, and keep the #273 flush path.
+    const saveFromInlineEditor = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || event.key === "Process" || event.keyCode === 229 ||
+          isBlockedByModalDialog(event.target) || !(event.target instanceof Element) ||
+          !event.target.matches(".text-object-editor, [data-table-cell-editor] textarea, [data-atom-label-editor]")) return;
+      const commandId = shortcutRegistry.resolve({
+        key: event.key, ctrlKey: event.ctrlKey, metaKey: event.metaKey,
+        altKey: event.altKey, shiftKey: event.shiftKey
+      });
+      if (commandId !== "document.save" && commandId !== "document.saveAs") return;
+      // Cancel the browser/native accelerator fallback as well, so macOS cannot save twice.
+      // Cmd+Q remains the native app.quit accelerator, which requests the shared draft flush;
+      // Windows registers no Quit accelerator. Neither needs a second JS command binding.
+      event.preventDefault();
+      void invokeCommandRef.current(commandId);
+    };
+    window.addEventListener("keydown", saveFromInlineEditor, true);
+    return () => window.removeEventListener("keydown", saveFromInlineEditor, true);
+  }, [shortcutRegistry]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
