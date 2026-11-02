@@ -107,16 +107,13 @@ describe.each(["macos", "windows"] as const)("text edit history (%s)", platform 
   const undo = () => command(forceDocumentHistoryCommandId("edit.undo"));
   const redo = () => command(forceDocumentHistoryCommandId("edit.redo"));
 
-  // The 1 px editor border outsets the content frame on every side (App.css).
-  const editorBorder = 1;
-
   function assertAutomaticEditorWidth(object: TextObject, contentWidth = 117.126, scale = 1) {
     const frame = editor()!.closest<HTMLElement>(".document-object-chrome")!;
     // Independent font numbers, never the production measurement function: nine Cs
     // at 18 px = 9 * .723 * 18 (outward-rounded Arial/Helvetica real advances).
     // jsdom checks the geometry supplied to the browser, not real glyph wrapping.
-    expect(parseFloat(frame.style.width)).toBeCloseTo(Math.max(object.width * scale, (contentWidth + 0.5) * scale + 4) + 2 * editorBorder, 8);
-    expect(parseFloat(frame.style.width)).toBeGreaterThanOrEqual(contentWidth * scale + 4 + 2 * editorBorder);
+    expect(parseFloat(frame.style.width)).toBeCloseTo(Math.max(object.width * scale, (contentWidth + 0.5) * scale + 4), 8);
+    expect(parseFloat(frame.style.width)).toBeGreaterThanOrEqual(contentWidth * scale + 4);
   }
 
   it("sizes the editor on placement, edit, undo and reopen without changing stored widths on open", async () => {
@@ -154,7 +151,7 @@ describe.each(["macos", "windows"] as const)("text edit history (%s)", platform 
       expect(texts()[0].width).toBe(106.44);
       if (sizingMode === "fixed-width" || sizingMode === "fixed-size") {
         const frame = editor()!.closest<HTMLElement>(".document-object-chrome")!;
-        expect(frame.style.width).toBe(`${106.44 + 2 * editorBorder}px`);
+        expect(frame.style.width).toBe(`${106.44 / drawing.pages[0]!.width * 100}%`);
       } else assertAutomaticEditorWidth(texts()[0]);
       await type("CCCCCCCCCC"); await pagePress(); await undo();
       expect(texts()[0].width).toBe(106.44);
@@ -248,16 +245,16 @@ describe.each(["macos", "windows"] as const)("text edit history (%s)", platform 
     const [originX, originY] = frame.style.transformOrigin.split(" ").map(parseFloat);
     const left = parseFloat(frame.style.left);
     const anchor = textAlign === "left" ? 0 : textAlign === "center" ? 0.5 : 1;
-    expect(left).toBeCloseTo(200 - anchor * 15.186 - editorBorder, 8);
+    expect(left).toBeCloseTo(200 - anchor * 15.186, 8);
     expect(left + originX!).toBeCloseTo(253.22, 8); // original stored rotation pivot
-    expect(originY).toBeCloseTo(object.height / 2 + editorBorder, 8);
-    expect(frame.style.top).toBe(`${200 - editorBorder}px`);
+    expect(originY).toBeCloseTo(object.height / 2, 8);
+    expect(frame.style.top).toBe(`${200 / snapshot().document.pages[0].height * 100}%`);
     expect(frame.style.transform).toBe("rotate(30deg)");
     // Evaluate the actual CSS anchor after rotation against the old frame's anchor.
-    const localAnchor = editorBorder + anchor * (parseFloat(frame.style.width) - 2 * editorBorder) - originX!;
+    const localAnchor = anchor * parseFloat(frame.style.width) - originX!;
     expect(left + originX! + localAnchor * Math.cos(Math.PI / 6))
       .toBeCloseTo(253.22 + (anchor - 0.5) * 106.44 * Math.cos(Math.PI / 6), 8);
-    expect(200 - editorBorder + originY! + localAnchor * Math.sin(Math.PI / 6))
+    expect(200 + originY! + localAnchor * Math.sin(Math.PI / 6))
       .toBeCloseTo(200 + object.height / 2 + (anchor - 0.5) * 106.44 * Math.sin(Math.PI / 6), 8);
     expect(texts()[0]).toEqual(object);
     await pagePress();

@@ -1713,10 +1713,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-// CSS border and live-preview inset are driven by this screen-pixel width.
-const TEXT_OBJECT_EDITOR_BORDER_PX = 1;
-
-const CURRENT_BUILD_STAMP = "11.02.07.21-codex";
+const CURRENT_BUILD_STAMP = "11.01.19.55-codex";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -28729,27 +28726,21 @@ function DocumentObjectViewContent({
     const objectTextScript = textScriptForTextObject(object);
     const fixedTextWidth = object.style.textBoxSizingMode === "fixed-width" || object.style.textBoxSizingMode === "fixed-size";
     // Editor chrome only; never rewrite old/undone stored frames on open. Content and
-    // the 0.5 page-unit metric safety margin scale with zoom. Preserve the existing
-    // 4 CSS-pixel content-fit allowance, then add the border outside that frame.
+    // the 0.5 page-unit metric safety margin scale with zoom. Two borders, one caret
+    // pixel and one CSS pixel for browser layout rounding remain screen-sized.
     const editorFrameCss: CSSProperties = {};
-    if (editingText) {
+    if (editingText && !fixedTextWidth) {
       const scale = pageScale ?? 1;
-      const border = TEXT_OBJECT_EDITOR_BORDER_PX;
       const contentWidth = Math.max(0, ...textObjectSpanLines(object).map(line =>
         measureNativeTextSpanLineWidth(line, textStyle)));
-      const width = fixedTextWidth ? object.width * scale
-        : Math.max(object.width * scale, (contentWidth + 0.5) * scale + 4);
+      const width = Math.max(object.width * scale, (contentWidth + 0.5) * scale + 4);
       const growth = width - object.width * scale;
       const anchor = textStyle.textAlign === "right" ? 1 : textStyle.textAlign === "center" ? 0.5 : 0;
-      // Grow away from the alignment anchor, then outset in CSS pixels so the content
-      // starts at the SVG box at every zoom. Shift the local pivot by both offsets,
-      // preserving its position in page space.
-      editorFrameCss.width = `${width + 2 * border}px`;
-      editorFrameCss.height = `${object.height * scale + 2 * border}px`;
-      editorFrameCss.left = `${object.x * scale - anchor * growth - border}px`;
-      editorFrameCss.top = `${object.y * scale - border}px`;
-      editorFrameCss.transformOrigin = `${object.width * scale / 2 + anchor * growth + border}px ${object.height * scale / 2 + border}px`;
-      Object.assign(editorFrameCss, { "--text-object-editor-border": `${border}px` });
+      // Grow away from the alignment anchor. Keep the original rotation pivot in page
+      // space by moving it inside the expanded frame by the same amount as its left edge.
+      editorFrameCss.width = `${width}px`;
+      editorFrameCss.left = `${object.x * scale - anchor * growth}px`;
+      editorFrameCss.transformOrigin = `${object.width * scale / 2 + anchor * growth}px ${object.height * scale / 2}px`;
     }
 
     const textCss = {
