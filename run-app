@@ -5,7 +5,28 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="$ROOT_DIR/apps/desktop"
 DEV_HOST="127.0.0.1"
 DEV_PORT="${CHEMDRAFT_DEV_PORT:-5173}"
-RUN_MODE="${1:-app}"
+RUN_MODE="app"
+MACOS_TARGET=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dev) RUN_MODE="--dev"; shift ;;
+    app) shift ;;
+    --target)
+      if [ "$#" -lt 2 ]; then echo "--target needs a macOS target triple"; exit 2; fi
+      MACOS_TARGET="$2"; shift 2 ;;
+    --target=*) MACOS_TARGET="${1#--target=}"; shift ;;
+    *) echo "Usage: ./run-app [--dev] [--target aarch64-apple-darwin|x86_64-apple-darwin]"; exit 2 ;;
+  esac
+done
+case "$MACOS_TARGET" in
+  ""|aarch64-apple-darwin|x86_64-apple-darwin) ;;
+  *) echo "Unsupported macOS target: $MACOS_TARGET"; exit 2 ;;
+esac
+if [ "$RUN_MODE" = "--dev" ] && [ -n "$MACOS_TARGET" ]; then
+  echo "--target is supported for packaged launches only; --dev keeps its host-native workflow."
+  exit 2
+fi
+RELEASE_TARGET_DIR="$APP_DIR/src-tauri/target${MACOS_TARGET:+/$MACOS_TARGET}/release"
 # Which worktree/branch this launch is from. With several ChemDraft worktrees checked out (all
 # building an app literally named "ChemDraft"), this is exported so the build bakes it into the
 # window title (Rust option_env!) and the on-screen build stamp (vite), and it's printed in a banner
@@ -18,7 +39,10 @@ export CHEMDRAFT_WORKTREE_LABEL
 RUN_APP_SIGN_IDENTITY=""
 RUN_APP_SIGN_IDENTITY_DESC=""
 LOCAL_ENGINE3D_SIDECAR="$ROOT_DIR/native/avogadro3d-sidecar/build/protocol-scout/avogadro3d-sidecar"
-TAURI_OUTPUT_BUNDLE="$APP_DIR/src-tauri/target/release/bundle/macos/ChemDraft.app"
+if [ "$MACOS_TARGET" = "x86_64-apple-darwin" ]; then
+  LOCAL_ENGINE3D_SIDECAR="$ROOT_DIR/native/avogadro3d-sidecar/build/protocol-scout-x86_64/avogadro3d-sidecar"
+fi
+TAURI_OUTPUT_BUNDLE="$RELEASE_TARGET_DIR/bundle/macos/ChemDraft.app"
 # /Applications/ChemDraft.app is the STABLE build from `main` and is never written, renamed, or
 # unregistered by this script. Dev builds share one bundle id, app-data folder, and single-instance
 # lock, separate from stable, with their own display name and bundles under <worktree>/app/.
@@ -38,11 +62,11 @@ DEV_LAUNCHER_OWNS_PROCESS_GROUP=0
 RUN_APP_DISPLAY_NAME="ChemDraft (dev)"
 RUN_APP_BUNDLE_DIR="$ROOT_DIR/app"
 RUN_APP_BUNDLE="$RUN_APP_BUNDLE_DIR/$RUN_APP_DISPLAY_NAME.app"
-LEGACY_RUN_APP_BUNDLE="$APP_DIR/src-tauri/target/release/bundle/macos/ChemDraft Run App.app"
+LEGACY_RUN_APP_BUNDLE="$RELEASE_TARGET_DIR/bundle/macos/ChemDraft Run App.app"
 LEGACY_RUN_APP_BUNDLE_ID="org.chemdraft.desktop.run-app"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 DEV_APP_EXECUTABLE="$APP_DIR/src-tauri/target/debug/chemdraft"
-RELEASE_APP_EXECUTABLE="$APP_DIR/src-tauri/target/release/chemdraft"
+RELEASE_APP_EXECUTABLE="$RELEASE_TARGET_DIR/chemdraft"
 RUN_APP_EXECUTABLE="$RUN_APP_BUNDLE/Contents/MacOS/chemdraft"
 RUN_APP_EXECUTABLE_PRODUCT_NAME="$RUN_APP_BUNDLE/Contents/MacOS/ChemDraft"
 LEGACY_RUN_APP_EXECUTABLE="$LEGACY_RUN_APP_BUNDLE/Contents/MacOS/chemdraft"
@@ -55,6 +79,7 @@ print_launch_banner() {
   echo "  ChemDraft  ▸  $CHEMDRAFT_WORKTREE_LABEL"
   echo "  worktree:  $ROOT_DIR"
   echo "  mode:      $mode"
+  if [ -n "$MACOS_TARGET" ]; then echo "  target:    $MACOS_TARGET"; fi
   # Printed so a launch is self-evidently NOT the stable /Applications app.
   echo "  bundle id: $RUN_APP_BUNDLE_ID"
   echo "  stable:    /Applications/ChemDraft.app ($STABLE_BUNDLE_ID) — untouched"
@@ -67,10 +92,12 @@ print_launch_banner() {
 
 usage() {
   cat <<EOF
-Usage: ./run-app [--dev]
+Usage: ./run-app [--dev] [--target aarch64-apple-darwin|x86_64-apple-darwin]
 
 Default: build and launch the ChemDraft macOS app bundle.
   --dev   launch Tauri dev mode with Vite/HMR.
+  --target  build a packaged app for this macOS architecture (requires matching staged JRE).
+            Without it, retain the existing host-native build and target/release paths.
 EOF
 }
 
@@ -278,6 +305,9 @@ assert_no_other_dev_app() {
     executable="$(process_executable "$pid")"
     case "$executable" in
       "" | "$DEV_APP_EXECUTABLE" | "$RELEASE_APP_EXECUTABLE" | \
+      "$APP_DIR/src-tauri/target/release/chemdraft" | \
+      "$APP_DIR/src-tauri/target/aarch64-apple-darwin/release/chemdraft" | \
+      "$APP_DIR/src-tauri/target/x86_64-apple-darwin/release/chemdraft" | \
       "$RUN_APP_EXECUTABLE" | "$RUN_APP_EXECUTABLE_PRODUCT_NAME" | \
       "$LEGACY_RUN_APP_EXECUTABLE" | "$LEGACY_RUN_APP_EXECUTABLE_PRODUCT_NAME" | \
       "$TAURI_OUTPUT_BUNDLE/Contents/MacOS/chemdraft" | \
@@ -293,6 +323,9 @@ assert_no_other_dev_app() {
       case "$executable" in
         */app/*.app/Contents/MacOS/chemdraft | */app/*.app/Contents/MacOS/ChemDraft | \
         */target/debug/chemdraft | */target/release/chemdraft | \
+        */target/*-apple-darwin/release/chemdraft | \
+        */target/*-apple-darwin/release/bundle/macos/*.app/Contents/MacOS/chemdraft | \
+        */target/*-apple-darwin/release/bundle/macos/*.app/Contents/MacOS/ChemDraft | \
         */target/release/bundle/macos/*.app/Contents/MacOS/chemdraft | \
         */target/release/bundle/macos/*.app/Contents/MacOS/ChemDraft) other_dev=1 ;;
       esac
@@ -335,6 +368,9 @@ stop_existing_dev_apps() {
     belongs=0
     case "$executable" in
       "$DEV_APP_EXECUTABLE" | "$RELEASE_APP_EXECUTABLE" | \
+      "$APP_DIR/src-tauri/target/release/chemdraft" | \
+      "$APP_DIR/src-tauri/target/aarch64-apple-darwin/release/chemdraft" | \
+      "$APP_DIR/src-tauri/target/x86_64-apple-darwin/release/chemdraft" | \
       "$RUN_APP_EXECUTABLE" | "$RUN_APP_EXECUTABLE_PRODUCT_NAME" | \
       "$LEGACY_RUN_APP_EXECUTABLE" | "$LEGACY_RUN_APP_EXECUTABLE_PRODUCT_NAME") belongs=1 ;;
     esac
@@ -822,7 +858,15 @@ force_tauri_context_rebuild
 # only the plist would give the bundle a separate LaunchServices identity while it kept reading and
 # writing ~/Library/Application Support/org.chemdraft.desktop — still fighting the stable app over
 # toolbar-state.json, which is the whole thing this split exists to stop.
-node_modules/.bin/tauri build --bundles app --config "{\"identifier\":\"$RUN_APP_BUNDLE_ID\"}"
+if [ -n "$MACOS_TARGET" ]; then
+  tauri_target_args=(--target "$MACOS_TARGET")
+  if [ "$MACOS_TARGET" = "x86_64-apple-darwin" ]; then
+    tauri_target_args+=(--config "$APP_DIR/src-tauri/tauri.intel.conf.json")
+  fi
+  node_modules/.bin/tauri build "${tauri_target_args[@]}" --bundles app --config "{\"identifier\":\"$RUN_APP_BUNDLE_ID\"}"
+else
+  node_modules/.bin/tauri build --bundles app --config "{\"identifier\":\"$RUN_APP_BUNDLE_ID\"}"
+fi
 set_bundle_display_name "$TAURI_OUTPUT_BUNDLE" "$RUN_APP_DISPLAY_NAME"
 stage_run_app_bundle
 resign_local_bundle "$RUN_APP_BUNDLE"

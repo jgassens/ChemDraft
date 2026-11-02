@@ -8,14 +8,24 @@
 // before packaging a release, or whenever you want the feature live in a dev build.
 //
 // Cross-platform (macOS, Windows, Linux); `build-opsin-runtime.sh` delegates here. The runtime is
-// built for the host platform only — a Windows installer needs a runtime built on Windows.
+// built for the host OS. macOS also accepts --arch arm64|x86_64 (or OPSIN_TARGET_ARCH).
+// Cross-architecture builds require an explicit matching JAVA_HOME; Intel on arm64 uses Rosetta.
 //
 // Provenance, the licence audit of the jar, and the module list are in
 // apps/desktop/src-tauri/resources/opsin/BUILD.md.
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, readdirSync, rmSync, statSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseArgs } from "node:util";
+import { assertMachOArchitecture } from "../tools/release/macos-mach-o.mjs";
+import { jdkInvocation, opsinArchitecturePlan } from "./opsin-runtime-architecture.mjs";
+
+const { values } = parseArgs({ options: { arch: { type: "string" } } });
+const architecturePlan = opsinArchitecturePlan({
+  platform: process.platform, hostArch: process.arch,
+  targetArch: values.arch ?? process.env.OPSIN_TARGET_ARCH, javaHome: process.env.JAVA_HOME
+});
 
 const ROOT_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 const OPSIN_DIR = join(ROOT_DIR, "apps", "desktop", "src-tauri", "resources", "opsin");
@@ -42,6 +52,7 @@ function findJlink() {
   if (javaHome && existsSync(join(javaHome, "bin", `jlink${exe}`))) {
     return join(javaHome, "bin", `jlink${exe}`);
   }
+  if (architecturePlan.cross) throw new Error("JAVA_HOME must contain bin/jlink for the target JDK; refusing PATH fallback");
   const fromPath = onPath("jlink");
   if (fromPath) {
     return fromPath;
@@ -116,27 +127,47 @@ if (!jlink) {
 }
 
 console.log(`Using ${jlink}`);
+function checkRuntimeArchitecture(root) {
+  for (const relative of [join("bin", "java"), join("lib", "server", "libjvm.dylib")]) {
+    const path = join(root, relative);
+    assertMachOArchitecture(readFileSync(path), architecturePlan.target, path);
+  }
+}
+if (process.platform === "darwin") {
+  // Check the selected JDK before removing the previous image. jlink cannot change JMOD CPU type.
+  let jdkHome = dirname(dirname(realpathSync(jlink)));
+  // Apple's /usr/bin/jlink is a launcher, not the JDK. Preserve the old default discovery,
+  // but inspect the JDK the launcher selects instead of mistaking /usr for JAVA_HOME.
+  if (jdkHome === "/usr") {
+    const selected = spawnSync("/usr/libexec/java_home", [], { encoding: "utf8" });
+    if (selected.status !== 0 || !selected.stdout.trim()) throw new Error("Could not resolve the JDK used by /usr/bin/jlink; set JAVA_HOME");
+    jdkHome = selected.stdout.trim();
+  }
+  checkRuntimeArchitecture(jdkHome);
+}
 rmSync(DEST, { recursive: true, force: true });
+const linkArgs = ["--add-modules", MODULES, "--strip-debug", "--no-header-files", "--no-man-pages", "--compress=zip-9", "--output", DEST];
 const link = spawnSync(
-  jlink,
-  ["--add-modules", MODULES, "--strip-debug", "--no-header-files", "--no-man-pages", "--compress=zip-9", "--output", DEST],
+  ...jdkInvocation(jlink, linkArgs, architecturePlan),
   { stdio: "inherit" }
 );
 if (link.status !== 0) {
+  if (link.error) console.error(`error: jlink could not start: ${link.error.message}`);
   process.exit(link.status ?? 1);
 }
 makeWritable(DEST);
+if (process.platform === "darwin") checkRuntimeArchitecture(DEST);
 console.log(`Built ${(sizeOf(DEST) / 1024 / 1024).toFixed(0)}M runtime at ${DEST}`);
 
 // Prove it before declaring success: a runtime that cannot run OPSIN is worse than none, because the
 // capability would report itself available.
 if (existsSync(JAR)) {
-  const smoke = spawnSync(join(DEST, "bin", `java${exe}`), ["-jar", JAR, "-o", "smi"], {
+  const smoke = spawnSync(...jdkInvocation(join(DEST, "bin", `java${exe}`), ["-jar", JAR, "-o", "smi"], architecturePlan), {
     input: "benzene\n",
     encoding: "utf8"
   });
   const out = (smoke.stdout ?? "").split(/\r?\n/)[0].trim();
-  if (out === "C1=CC=CC=C1") {
+  if (smoke.status === 0 && out === "C1=CC=CC=C1") {
     console.log(`smoke ok: benzene -> ${out}`);
   } else {
     console.error(`error: runtime built but OPSIN did not convert benzene (got '${out}')`);

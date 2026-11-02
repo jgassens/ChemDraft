@@ -51,6 +51,33 @@ it must be no greater than 11.0.
 /opt/homebrew/bin/cmake --build --preset protocol-scout
 ```
 
+### Intel macOS sidecar from Apple silicon
+
+Use the same pinned source dependencies above and Apple's SDK/compiler. The
+`protocol-scout-x86_64` configure and build presets inherit `protocol-scout`,
+including macOS 11.0, and set `CMAKE_OSX_ARCHITECTURES=x86_64` for the executable
+and all its static dependencies. Its separate build directory prevents reuse of
+arm64 objects. From the repository root:
+
+```bash
+cd native/avogadro3d-sidecar
+cmake --preset protocol-scout-x86_64
+cmake --build --preset protocol-scout-x86_64
+file build/protocol-scout-x86_64/avogadro3d-sidecar
+otool -l build/protocol-scout-x86_64/avogadro3d-sidecar
+cd ../..
+```
+
+Expect a thin `x86_64` Mach-O with `minos` (or legacy minimum `version`) no greater
+than 11.0, and no non-system dynamic dependencies (`otool -L`). Run all three
+smokes below with `CHEMDRAFT_ENGINE3D_SIDECAR` pointing at this build; execution on
+Apple silicon requires Rosetta. Then copy and commit the validated executable to
+`apps/desktop/src-tauri/binaries/avogadro3d-sidecar-x86_64-apple-darwin`.
+That path is currently a placeholder script; this tooling change leaves it in
+place. When replacing it, update the Intel-placeholder assertion in
+`apps/desktop/src-tauri/src/lib.rs` and the binaries README in the same change.
+The Intel smoke workflow runs only the committed artifact, never a local build.
+
 Without the local `_deps` checkout, the CMake preset intentionally fails rather
 than falling back to placeholder mechanics. A no-Avogadro fallback build can be
 made explicitly for protocol debugging only:
