@@ -1713,7 +1713,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.02.07.58-codex";
+const CURRENT_BUILD_STAMP = "11.02.09.44-codex";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -6607,6 +6607,14 @@ export function MainWindow({
       documentUndoLabelsRef.current.set(documentRef.current, atomLabelUndoLabel(result.baseline, result.target, state.draft));
     } else if (changed) {
       commitDocumentHistoryFrom(result.baseline, result.document, atomLabelUndoLabel(result.baseline, result.target, state.draft));
+      // snapshotDocumentTab finishes drafts before close/quit checks this ref. The history
+      // commit queues its dirty-state update; reconcile it now, as the table finisher does.
+      // A Save while the editor was open may already have written this exact draft.
+      const saved = savedDocumentsRef.current.get(activeDocumentTabIdRef.current);
+      const file = { ...fileStateRef.current,
+        dirty: !saved || !assistantDocumentContentUnchanged(saved, documentRef.current) };
+      fileStateRef.current = file;
+      setFileState(file);
     } else {
       replacePresentDocument(result.document);
     }
