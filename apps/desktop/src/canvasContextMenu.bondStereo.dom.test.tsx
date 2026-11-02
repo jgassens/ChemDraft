@@ -281,7 +281,7 @@ describe.each<ShortcutPlatform>(["macos", "windows"])("native badge popover (%s)
     // A later press in another palette reaches this window only via its broadcast.
     await dismissToolsetPopovers(performance.timeOrigin + performance.now());
     await act(async () => nativePopover.dismiss?.(nativePopover.pendingDismisses.shift()));
-    expect(closeToolsetPopoverWindow).toHaveBeenCalledWith("core.bondStereo");
+    expect(closeToolsetPopoverWindow).toHaveBeenCalledWith("core.bondStereo", originalContent.openedAt, originalContent.generation);
     await act(async () => nativePopover.request?.("core.bondStereo"));
     expect(setToolsetPopoverContent).toHaveBeenCalledTimes(2);
   });
@@ -309,7 +309,7 @@ describe.each<ShortcutPlatform>(["macos", "windows"])("native badge popover (%s)
       if (action === "click-away") canvas.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
       if (action === "palette-away") nativePopover.dismiss?.();
     });
-    expect(closeToolsetPopoverWindow).toHaveBeenCalledWith("core.bondStereo");
+    expect(closeToolsetPopoverWindow).toHaveBeenCalledWith("core.bondStereo", content.openedAt, content.generation);
     expect(document.activeElement).toBe(canvas); expect(molecule()).toEqual(original);
     await command("edit.undo"); expect(molecule()).toEqual(original);
   });

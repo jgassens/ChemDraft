@@ -1,3 +1,4 @@
+import { installPopoverEscapeRouting } from "./window-manager/popoverEscape";
 import type { AnalysisReport } from "@chemdraft/analysis-core";
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent } from "react";
 import { DefaultNativeTextStyle, type NativeTextStyle, type TextSpan } from "@chemdraft/chem-core";
@@ -44,6 +45,7 @@ import {
   DEFAULT_TOOLSET_ID,
   closeToolsetWindow,
   closeToolsetPopoverWindow,
+  newToolsetPopoverOpening,
   currentWindowLogicalPosition,
   currentWindowLogicalWorkArea,
   fitCurrentPaletteWindow,
@@ -152,6 +154,8 @@ export function PaletteWindow({
   const commandSpecsRef = useRef(commandSpecs);
   const commandSpecsSignatureRef = useRef(toolsetCommandSpecsSignature(commandSpecs));
   const [keybindingScheme, setKeybindingScheme] = useState<KeybindingScheme>(() => loadKeybindingSettings().scheme);
+  useEffect(() => installPopoverEscapeRouting(), []);
+
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
@@ -816,7 +820,7 @@ export function PaletteWindow({
   );
 
   const openPopover = (anchor: ToolbarPopoverAnchor, kind: string, content: ToolsetPopoverContent) => {
-    content = { ...content, openedAt: toolsetPopoverTimestamp() };
+    content = { ...content, ...newToolsetPopoverOpening() };
     void (async () => {
       // No silent origin fallback: a failed position read once sent the first popover
       // open to the anchor offset from (0,0) — inches from its button — while every
@@ -874,7 +878,8 @@ export function PaletteWindow({
   // If this palette goes away, don't leave its popover window orphaned on screen.
   useEffect(() => {
     return () => {
-      void closeToolsetPopoverWindow(toolset.id).catch(() => undefined);
+      const opening = lastPopoverPayloadRef.current?.content;
+      void closeToolsetPopoverWindow(toolset.id, opening?.openedAt, opening?.generation).catch(() => undefined);
     };
   }, [toolset.id]);
 

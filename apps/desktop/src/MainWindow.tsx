@@ -1,3 +1,4 @@
+import { installPopoverEscapeRouting } from "./window-manager/popoverEscape";
 import { nativeTemplateForToolCommand } from "./ringTemplates";
 import { nativeFragmentSproutTarget, nativeDieneFuseTarget, nativeOxoHotkeyTarget, nativeBranchedHotkeyTarget, type FragmentSproutKind } from "./sproutHotkeys";
 import { applyTableCommand, applyTableFontCommand, applyTableObjectEdit, createTableCommands, createTableInsertAction, parseTableInsertCommandId, resolveActiveTableCell, selectedTable, tableInsertCommandId, tableInspectorSnapshot, type ActiveTableCell, type TableInsertDimensions } from "./tableCommands";
@@ -1713,7 +1714,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.02.09.30-codex";
+const CURRENT_BUILD_STAMP = "11.02.12.48-codex";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -13480,6 +13481,10 @@ export function MainWindow({
     window.addEventListener("keydown", handOffHoverLabelKey, true);
     return () => window.removeEventListener("keydown", handOffHoverLabelKey, true);
   }, [finishAtomLabelEdit]);
+
+  useEffect(() => installPopoverEscapeRouting(() => Boolean(
+    activeAtomLabelEditRef.current || activeTextEditObjectIdRef.current || tableCellEditRef.current
+  )), []);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {

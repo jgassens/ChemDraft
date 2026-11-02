@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { dismissToolsetPopovers, listenForToolsetPopoverDismiss, listenForToolsetPopoverContent, setToolsetPopoverContent,
-  TOOLSET_POPOVER_DISMISS_EVENT, toolsetPopoverTimestamp, openToolsetPopoverWindow, listenForToolsetPopoverRelease } from "./index";
+  TOOLSET_POPOVER_DISMISS_EVENT, toolsetPopoverTimestamp, openToolsetPopoverWindow, listenForToolsetPopoverRelease,
+  notifyToolsetPopoverClosed, listenForToolsetPopoverClosed, newToolsetPopoverOpening, compareToolsetPopoverOpenings } from "./index";
 
 const transport = vi.hoisted(() => ({
   emit: vi.fn(async (_event: string, _payload?: unknown) => {}),
@@ -18,7 +19,25 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => {}) }));
 
 const host = window as typeof window & { __TAURI__?: unknown };
 beforeEach(() => { host.__TAURI__ = {}; vi.clearAllMocks(); });
-afterEach(() => { delete host.__TAURI__; });
+afterEach(() => { delete host.__TAURI__; vi.restoreAllMocks(); });
+
+it("assigns distinct sequences at identical timestamps and retains them through replay, close and Escape", async () => {
+  vi.spyOn(performance, "now").mockReturnValue(100);
+  const first = newToolsetPopoverOpening();
+  const second = newToolsetPopoverOpening();
+  expect(second.openedAt).toBe(first.openedAt);
+  expect(second.generation).toBe(first.generation + 1);
+  expect(compareToolsetPopoverOpenings(second, first)).toBeGreaterThan(0);
+  const content = { kind: "artColor", ...second } as const;
+  await setToolsetPopoverContent("core.art", content);
+  await setToolsetPopoverContent("core.art", content);
+  expect(transport.emit.mock.calls[0]).toEqual(transport.emit.mock.calls[1]);
+  await notifyToolsetPopoverClosed("core.art", first.openedAt, first.generation);
+  expect(transport.emit).toHaveBeenLastCalledWith("chemdraft://toolset-popover-closed", { toolsetId: "core.art", ...first });
+  const openings = [{ toolsetId: "core.art", ...second }];
+  await dismissToolsetPopovers(200, "escape", openings);
+  expect(transport.emit).toHaveBeenLastCalledWith(TOOLSET_POPOVER_DISMISS_EVENT, { requestedAt: 200, reason: "escape", openings });
+});
 
 it("forwards the captured opening release once even if the button stops propagation", async () => {
   const handler = vi.fn();
@@ -57,6 +76,29 @@ it("preserves unconditional unstamped broadcasts, including Tauri's null payload
     transport.receive?.({ event: TOOLSET_POPOVER_DISMISS_EVENT, id: 1, payload });
     expect(handler).toHaveBeenLastCalledWith(payload);
   }
+  stop();
+});
+
+it("transports Escape cancellation separately from click-away dismissal", async () => {
+  const handler = vi.fn();
+  const stop = await listenForToolsetPopoverDismiss(handler);
+  const requestedAt = toolsetPopoverTimestamp();
+  await dismissToolsetPopovers(requestedAt, "escape");
+  const payload = { requestedAt, reason: "escape" };
+  expect(transport.emit).toHaveBeenCalledWith(TOOLSET_POPOVER_DISMISS_EVENT, payload);
+  transport.receive?.({ event: TOOLSET_POPOVER_DISMISS_EVENT, id: 1, payload });
+  expect(handler).toHaveBeenCalledWith(payload);
+  stop();
+});
+
+it("transports the closed opening identity so stale replays cannot claim another Escape", async () => {
+  const handler = vi.fn();
+  const stop = await listenForToolsetPopoverClosed(handler);
+  const payload = { toolsetId: "core.main", openedAt: toolsetPopoverTimestamp() };
+  await notifyToolsetPopoverClosed(payload.toolsetId, payload.openedAt);
+  expect(transport.emit).toHaveBeenCalledWith("chemdraft://toolset-popover-closed", payload);
+  transport.receive?.({ event: "chemdraft://toolset-popover-closed", id: 1, payload });
+  expect(handler).toHaveBeenCalledWith(payload);
   stop();
 });
 
