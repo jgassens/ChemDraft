@@ -3,6 +3,8 @@
 import type { PluginLinkedFigureSpectrum } from "@chemdraft/plugin-api";
 import { invoke } from "@tauri-apps/api/core";
 import { Blob as NodeBlob } from "node:buffer";
+import { posix } from "node:path";
+import { lastExportDirectory } from "../exportDirectory";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -47,7 +49,15 @@ vi.mock("@tauri-apps/api/core", async (original) => ({
     await bridgeEmit(args.event, args.payload);
   })
 }));
-vi.mock("@tauri-apps/plugin-fs", () => ({ writeTextFile: nativeWriteTextFile, writeFile: nativeWriteFile }));
+vi.mock("@tauri-apps/api/path", () => ({
+  documentDir: async () => "/Users/chemist/Documents",
+  join: async (...parts: string[]) => posix.join(...parts),
+  dirname: async (path: string) => posix.dirname(path)
+}));
+vi.mock("@tauri-apps/plugin-fs", () => ({
+  writeTextFile: nativeWriteTextFile, writeFile: nativeWriteFile,
+  stat: async () => ({ isDirectory: true })
+}));
 const bridgeEmit = vi.hoisted(() => vi.fn());
 const bridgeListeners = vi.hoisted(() => new Map<string, (event: { payload: unknown }) => void>());
 vi.mock("@tauri-apps/api/event", () => ({
@@ -62,6 +72,7 @@ const originalClipboardItem = globalThis.ClipboardItem;
 beforeEach(() => vi.stubGlobal("Blob", NodeBlob));
 
 afterEach(() => {
+  lastExportDirectory.current = undefined;
   nativeSave.mockReset();
   nativeWriteTextFile.mockReset();
   nativeWriteFile.mockReset();
@@ -446,11 +457,15 @@ describe("spectrum picture exports", () => {
     nativeWriteFile.mockResolvedValue(undefined);
     await expect(saveBinaryFile("spectrum.png", tinyPng, options)).resolves.toBe("saved");
     expect(nativeWriteFile).toHaveBeenCalledWith("/tmp/spectrum.png", tinyPng);
-    expect(nativeSave).toHaveBeenCalledWith(expect.objectContaining({ title: options.title, defaultPath: "spectrum.png" }));
+    expect(nativeSave).toHaveBeenCalledWith(expect.objectContaining({ title: options.title, defaultPath: "/Users/chemist/Documents/spectrum.png" }));
+    expect(lastExportDirectory.current).toBe("/tmp");
+    nativeSave.mockResolvedValue("/other/spectrum.png");
     nativeWriteFile.mockRejectedValue(new Error("disk full"));
     await expect(saveBinaryFile("spectrum.png", tinyPng, options)).resolves.toBe("failed");
+    expect(lastExportDirectory.current).toBe("/tmp");
     nativeSave.mockResolvedValue(null);
     await expect(saveBinaryFile("spectrum.png", tinyPng, options)).resolves.toBe("cancelled");
+    expect(lastExportDirectory.current).toBe("/tmp");
   });
 
   it("forwards desktop panel PNG without opening a panel dialog", async () => {
@@ -512,8 +527,26 @@ describe("spectrum picture exports", () => {
 });
 
 describe("saveTextFile", () => {
+  it("shares a successful text export's folder with binary exports and keeps it on cancel", async () => {
+    (globalThis as typeof globalThis & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    nativeSave.mockResolvedValueOnce("/tmp/exports/predicted.jdx");
+    await expect(saveTextFile("predicted.jdx", "data", {
+      title: "Export", formatLabel: "JCAMP-DX", extensions: ["jdx"], mimeType: "chemical/x-jcamp-dx"
+    })).resolves.toBe("saved");
+    expect(nativeWriteTextFile).toHaveBeenCalledWith("/tmp/exports/predicted.jdx", "data");
+    expect(lastExportDirectory.current).toBe("/tmp/exports");
+    nativeSave.mockResolvedValueOnce(null);
+    await expect(saveBinaryFile("spectrum.png", tinyPng, {
+      title: "PNG", formatLabel: "PNG", extensions: ["png"], mimeType: "image/png"
+    })).resolves.toBe("cancelled");
+    expect(nativeSave).toHaveBeenLastCalledWith(expect.objectContaining({ defaultPath: "/tmp/exports/spectrum.png" }));
+    expect(lastExportDirectory.current).toBe("/tmp/exports");
+    expect(nativeWriteFile).not.toHaveBeenCalled();
+  });
+
   it("reports a native write failure without falling through to a Tauri-inert browser download", async () => {
     (globalThis as typeof globalThis & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {};
+    lastExportDirectory.current = "/previous/exports";
     nativeSave.mockResolvedValue("/tmp/predicted.jdx");
     nativeWriteTextFile.mockRejectedValue(new Error("disk full"));
     const click = vi.spyOn(HTMLAnchorElement.prototype, "click");
@@ -527,6 +560,7 @@ describe("saveTextFile", () => {
       })
     ).resolves.toBe("failed");
     expect(click).not.toHaveBeenCalled();
+    expect(lastExportDirectory.current).toBe("/previous/exports");
   });
 
   it("hands a report window's save to the main window instead of opening a dialog it cannot use", async () => {

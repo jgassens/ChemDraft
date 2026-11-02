@@ -3,6 +3,7 @@ export { rotatedGraphicLocalBounds } from "./graphicBounds";
 import type { LayoutLabelBox } from "./layoutQuality";
 import { bondsOverlap } from "./layoutQuality";
 export * from "./layoutRepair";
+export { routeAtomAnnotationLeaders, type AnnotationLeader } from "./annotationLeaders";
 export { DocumentStyleScale, documentStylePointBounds, FigureStyles, type FigureStyle } from "./documentStyle";
 export {
   planTableLayout, planTableObjectSvg, tableCellElementId, tableVisualBoundsForArrangement, type TableLayout

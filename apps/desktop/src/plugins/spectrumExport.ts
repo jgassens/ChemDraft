@@ -3,6 +3,7 @@ import type { PluginLinkedFigurePeak, PluginLinkedFigureSpectrum } from "@chemdr
 import { pngWithPhysicalDensity, writeClipboardItems } from "../clipboard";
 import type { ClipboardWriteItem, ClipboardWriteResult } from "../clipboard";
 import { isDesktopRuntime } from "../window-manager";
+import { saveInExportDirectory } from "../exportDirectory";
 import { sanitizeSpectrumSvg, STANDALONE_SPECTRUM_STYLE } from "./spectrumSvgSanitizer";
 import {
   isPluginPanelWindowRoute,
@@ -451,18 +452,13 @@ export async function saveTextFileHere(
   options = target.options;
   if (isDesktopRuntime()) {
     try {
-      const { save } = await import("../nativeFileDialog");
-      const path = await save({
+      return await saveInExportDirectory(filename, {
         title: options.title,
-        defaultPath: filename,
         filters: [{ name: options.formatLabel, extensions: [...options.extensions] }]
+      }, async (path) => {
+        const { writeTextFile } = await import("@tauri-apps/plugin-fs");
+        await writeTextFile(path, text);
       });
-      if (!path) {
-        return "cancelled";
-      }
-      const { writeTextFile } = await import("@tauri-apps/plugin-fs");
-      await writeTextFile(path, text);
-      return "saved";
     } catch {
       // A browser download is a no-op in Tauri. Report the native failure to the caller instead of
       // pretending the file was saved through an ineffective fallback.
@@ -721,16 +717,13 @@ export async function saveBinaryFileHere(
   options = target.options;
   if (isDesktopRuntime()) {
     try {
-      const { save } = await import("../nativeFileDialog");
-      const path = await save({
+      return await saveInExportDirectory(filename, {
         title: options.title,
-        defaultPath: filename,
         filters: [{ name: options.formatLabel, extensions: [...options.extensions] }]
+      }, async (path) => {
+        const { writeFile } = await import("@tauri-apps/plugin-fs");
+        await writeFile(path, bytes);
       });
-      if (!path) return "cancelled";
-      const { writeFile } = await import("@tauri-apps/plugin-fs");
-      await writeFile(path, bytes);
-      return "saved";
     } catch {
       return "failed";
     }
