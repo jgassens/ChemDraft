@@ -14,7 +14,7 @@ import { tableEditingContent, tableEditingKeyAction, type TableEditingAction } f
 
 export interface TableCellEditorHandle {
   applyCommand(commandId: string): boolean;
-  commit(): true | false | "composing";
+  commit(options?: { finishComposition?: boolean }): true | false | "composing";
   /** A flush reads the last accepted text while IME composition is in progress. */
   draft(): TableRichText;
 }
@@ -167,8 +167,15 @@ export const TableCellEditor = forwardRef<TableCellEditorHandle, {
   useImperativeHandle(ref, () => ({ applyCommand, draft: () => {
     const value = beforeComposition.current ?? (isUnchanged() ? initialValue.current : draftRef.current);
     return { text: value.text, spans: value.spans };
-  }, commit: () => {
-    if (composing.current) return "composing";
+  }, commit: (options?: { finishComposition?: boolean }) => {
+    if (composing.current) {
+      if (!options?.finishComposition) return "composing";
+      // A tab switch unmounts the textarea, so retain the last accepted input rather than
+      // abandoning the draft or committing the IME's unfinished candidate.
+      draftRef.current = beforeComposition.current ?? initialValue.current;
+      beforeComposition.current = undefined;
+      composing.current = false;
+    }
     return finish({ kind: "commit" });
   } }));
   useLayoutEffect(() => {

@@ -73,6 +73,21 @@ describe.each(["macos", "windows"] as const)("open table draft persistence (%s)"
       editor().dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
     });
   }
+  async function click(button: HTMLElement) {
+    await act(async () => {
+      button.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true, button: 0 }));
+      button.focus();
+      button.click();
+    });
+  }
+  async function startComposition() {
+    await act(async () => { editor().dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true })); });
+    await type("Hello未");
+  }
+  async function addOtherTab() {
+    await command("document.new");
+    await command("document.previousTab");
+  }
   beforeEach(async () => {
     vi.clearAllMocks();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "requestAnimationFrame", "cancelAnimationFrame"] });
@@ -130,6 +145,119 @@ describe.each(["macos", "windows"] as const)("open table draft persistence (%s)"
   }
 
   describe.each(["cell", "caption", "footnote"] as const)("%s", target => {
+    it("marks a saved draft changed after Escape and prompts on quit", async () => {
+      const original = value(currentTable(), target).text;
+      await open(target);
+      await command("document.save");
+      expect(snapshot().file.dirty).toBe(false);
+      await act(async () => { editor().dispatchEvent(new KeyboardEvent("keydown", {
+        key: "Escape", bubbles: true, cancelable: true
+      })); });
+      expect(editor()).toBeNull();
+      expect(value(currentTable(), target).text).toBe(original);
+      expect(snapshot().file.dirty).toBe(true);
+      await act(async () => { await native.promptQuit!(1); });
+      expect(pendingPrompt?.prompt.title).toBe("Save changes before quitting?");
+      expect(native.quit).not.toHaveBeenCalled();
+      await act(async () => { pendingPrompt!.resolve("cancel"); });
+      await command("edit.undo");
+      expect(container.querySelector('[role="status"]')?.textContent).toContain("Nothing to undo");
+    });
+    it("keeps a committed saved draft clean, and later changes dirty", async () => {
+      await open(target);
+      await command("document.save");
+      await act(async () => { container.querySelector<HTMLElement>(".canvas-region")!.focus(); });
+      expect(value(currentTable(), target).text).toBe("Hello");
+      expect(snapshot().file.dirty).toBe(false);
+      await open(target);
+      await type("Hello again");
+      await act(async () => { container.querySelector<HTMLElement>(".canvas-region")!.focus(); });
+      expect(snapshot().file.dirty).toBe(true);
+    });
+    it.each(["cancel", "commit", "switch"] as const)("keeps dirty state correct when an in-flight save finishes after %s", async finish => {
+      if (finish === "switch") await addOtherTab();
+      const original = value(currentTable(), target).text;
+      await open(target);
+      let finishWrite!: () => void;
+      native.writeFile.mockImplementationOnce(() => new Promise(resolve => { finishWrite = resolve; }));
+      await command("document.save");
+      if (finish === "cancel") await act(async () => { editor().dispatchEvent(new KeyboardEvent("keydown", {
+        key: "Escape", bubbles: true, cancelable: true
+      })); });
+      else if (finish === "commit") await act(async () => { container.querySelector<HTMLElement>(".canvas-region")!.focus(); });
+      else await command("document.nextTab");
+      await act(async () => { finishWrite(); });
+      if (finish === "switch") await command("document.previousTab");
+      expect(value(persistedTable(native.writeFile.mock.calls.at(-1)![1]), target).text).toBe("Hello");
+      expect(value(currentTable(), target).text).toBe(finish === "cancel" ? original : "Hello");
+      expect(snapshot().file.dirty).toBe(finish === "cancel");
+    });
+    describe.each(["native command", "pointer"] as const)("tab switch via %s", route => {
+      it.each([false, true])("commits the draft into the tab and session (saved while open: %s)", async saved => {
+        await addOtherTab();
+        const original = value(currentTable(), target).text;
+        await open(target);
+        if (saved) await command("document.save");
+        if (route === "native command") await command("document.nextTab");
+        else await click(container.querySelectorAll<HTMLElement>('[role="tab"]')[1]);
+        expect(editor()).toBeNull();
+        const firstTab = container.querySelectorAll('[role="tab"]')[0];
+        expect(firstTab.querySelector('[aria-label="Unsaved changes"]') !== null).toBe(!saved);
+        await act(async () => { await native.quitFlush!(); });
+        const session = native.saveSession.mock.calls.at(-1)![0].tabs![0];
+        expect(value(persistedTable(session.contents), target).text).toBe("Hello");
+        expect(session.dirty).toBe(!saved);
+        await command("document.previousTab");
+        expect(value(currentTable(), target).text).toBe("Hello");
+        expect(snapshot().file.dirty).toBe(!saved);
+        await command("document.save");
+        expect(value(persistedTable(native.writeFile.mock.calls.at(-1)![1]), target).text).toBe("Hello");
+        await command("edit.undo");
+        expect(value(currentTable(), target).text).toBe(original);
+        expect(container.querySelector('[role="status"]')?.textContent).toContain(
+          target === "cell" ? "Undid Edit cell" : target === "caption" ? "Undid Edit caption" : "Undid Edit footnotes");
+        await command("edit.undo");
+        expect(container.querySelector('[role="status"]')?.textContent).toContain("Nothing to undo");
+      });
+    });
+    it("commits pre-composition text when a native command switches tabs", async () => {
+      await addOtherTab();
+      await open(target);
+      await startComposition();
+      await command("document.nextTab");
+      await act(async () => { await native.quitFlush!(); });
+      const session = native.saveSession.mock.calls.at(-1)![0].tabs![0];
+      expect(value(persistedTable(session.contents), target).text).toBe("Hello");
+      expect(session.dirty).toBe(true);
+      await command("document.previousTab");
+      expect(value(currentTable(), target).text).toBe("Hello");
+      expect(snapshot().file.dirty).toBe(true);
+    });
+    it.each([false, true])("commits before closing and saves the draft (composing: %s)", async composing => {
+      await addOtherTab();
+      await open(target);
+      if (composing) await startComposition();
+      await command("document.closeTab");
+      expect(editor()).toBeNull();
+      expect(value(currentTable(), target).text).toBe("Hello");
+      expect(snapshot().file.dirty).toBe(true);
+      expect(pendingPrompt?.prompt.title).toBe("Save changes before closing?");
+      await act(async () => { pendingPrompt!.resolve("cancel"); });
+      expect(value(currentTable(), target).text).toBe("Hello");
+      await command("document.closeTab");
+      await act(async () => { pendingPrompt!.resolve("save"); });
+      expect(value(persistedTable(native.writeFile.mock.calls.at(-1)![1]), target).text).toBe("Hello");
+      expect(container.querySelectorAll('[role="tab"]')).toHaveLength(1);
+    });
+    it("closes a draft saved while open without losing text or prompting", async () => {
+      await addOtherTab();
+      await open(target);
+      await command("document.save");
+      await command("document.closeTab");
+      expect(container.querySelectorAll('[role="tab"]')).toHaveLength(1);
+      expect(pendingPrompt).toBeUndefined();
+      expect(value(persistedTable(native.writeFile.mock.calls.at(-1)![1]), target).text).toBe("Hello");
+    });
     it("saves the draft through the native menu without closing or moving the caret", async () => {
       await open(target);
       const textarea = editor(); textarea.setSelectionRange(2, 2);

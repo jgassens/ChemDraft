@@ -2742,6 +2742,8 @@ export function MainWindow({
   const fileStateRef = useRef<NativeFileState>(fileState);
   // Successful explicit saves, per tab, including a save completed while its label editor is open.
   const documentSaveRevisionsRef = useRef(new Map<string, number>());
+  // Keep the actual saved contents: an open table draft can be saved without entering history.
+  const savedDocumentsRef = useRef(new Map<string, ChemDraftDocument>());
   // Capture once: Preferences changes affect the next launch, never this run.
   const [startWithFreshDocument] = useState(loadStartWithFreshDocument);
   const skippedSessionRestoreRef = useRef(false);
@@ -3430,6 +3432,7 @@ export function MainWindow({
   // copy-and-reparse `toEngineDocument` would make — 150–200 ms per open of a 5,000-molecule file.
   // A caller holding a document it still uses must pass `toEngineDocument(document)` instead.
   const resetDocumentHistory = useCallback((nextDocument: ChemDraftDocument, nextFileState: NativeFileState = { dirty: false }) => {
+    savedDocumentsRef.current.delete(activeDocumentTabIdRef.current);
     if (nextDocument.selection.objectIds.length === 0) {
       toolbarStyleTargetRef.current = undefined;
     }
@@ -7667,6 +7670,14 @@ export function MainWindow({
     const cell = tableCellEditRef.current;
     let table = selectedTable(documentRef.current);
     if (!cell || !table || table.id !== cell.tableId) return;
+    const reconcileDirtyState = () => {
+      const saved = savedDocumentsRef.current.get(activeDocumentTabIdRef.current);
+      if (!saved) return;
+      const file = { ...fileStateRef.current, dirty: !assistantDocumentContentUnchanged(saved, documentRef.current) };
+      // Tab/quit guards read this before React processes the commit's dirty-state update.
+      fileStateRef.current = file;
+      setFileState(file);
+    };
     if ("kind" in cell) {
       const original = tableEditingContent(table, cell)?.value;
       if (original && action.kind !== "cancel" && JSON.stringify(original) !== JSON.stringify(value)) {
@@ -7676,6 +7687,7 @@ export function MainWindow({
         commitTableObject(edit.table, edit.label);
       }
       clearScheduledTextEditorFocus();
+      reconcileDirtyState();
       tableCellEditRef.current = undefined;
       setTableCellEdit(undefined);
       canvasRegionRef.current?.focus({ preventScroll: true });
@@ -7703,6 +7715,7 @@ export function MainWindow({
       next = { tableId: table.id, rowId: inserted.table.rows.at(-1)!.id, columnId: table.columns[0].id };
     }
     clearScheduledTextEditorFocus();
+    reconcileDirtyState();
     tableCellEditRef.current = next;
     setTableCellEdit(next);
     if (next) setActiveTableCell(next);
@@ -9181,6 +9194,7 @@ export function MainWindow({
   tabSessionCancellerRef.current = cancelDocumentTabSessions;
   const snapshotDocumentTab = useCallback((finishDrafts = true) => {
     // A switch is an edit-ending gesture. Finish drafts while their document is still active.
+    if (finishDrafts) tableCellEditorRef.current?.commit({ finishComposition: true });
     const labelEdit = activeAtomLabelEditRef.current;
     if (finishDrafts && labelEdit) {
       tabEditFinishersRef.current.finalizeAtomLabelDraft(labelEdit);
@@ -9294,6 +9308,7 @@ export function MainWindow({
       installDocumentTab(remaining[Math.min(index, remaining.length - 1)]!.id);
     }
     documentTabSnapshotsRef.current.delete(id);
+    savedDocumentsRef.current.delete(id);
     nonPristineTabsRef.current.delete(id);
     browserFileKeysRef.current.delete(id);
     documentTabsRef.current = remaining;
@@ -10328,15 +10343,22 @@ export function MainWindow({
     const savingFileState = active ? fileStateRef.current : snapshot?.file;
     if (!savingDocument || !savingFileState) return false;
     const savingTableDraft = active ? JSON.stringify(tableCellEditorRef.current?.draft()) : undefined;
-    const payload = createNativeSavePayload(active ? documentForFlush() : savingDocument);
+    const savedDocument = active ? documentForFlush() : savingDocument;
+    const payload = createNativeSavePayload(savedDocument);
     const finishSave = (path?: string) => {
+      savedDocumentsRef.current.set(savingTabId, savedDocument);
       documentSaveRevisionsRef.current.set(savingTabId, (documentSaveRevisionsRef.current.get(savingTabId) ?? 0) + 1);
       nonPristineTabsRef.current.add(savingTabId);
       const currentDocument = savingTabId === activeDocumentTabIdRef.current ? documentRef.current :
         documentTabSnapshotsRef.current.get(savingTabId)?.history.present;
-      const tableDraftChanged = savingTabId === activeDocumentTabIdRef.current &&
-        JSON.stringify(tableCellEditorRef.current?.draft()) !== savingTableDraft;
-      const nextFileState = { path: path ?? savingFileState.path, dirty: currentDocument !== savingDocument || tableDraftChanged };
+      const currentTableDraft = savingTabId === activeDocumentTabIdRef.current
+        ? JSON.stringify(tableCellEditorRef.current?.draft()) : undefined;
+      const tableDraftChanged = savingTabId === activeDocumentTabIdRef.current && currentTableDraft !== savingTableDraft;
+      // The editor may have committed/cancelled (or its tab switched) while the write awaited I/O.
+      const dirty = savingTableDraft !== undefined && currentTableDraft === undefined
+        ? !currentDocument || !assistantDocumentContentUnchanged(savedDocument, currentDocument)
+        : currentDocument !== savingDocument || tableDraftChanged;
+      const nextFileState = { path: path ?? savingFileState.path, dirty };
       const displayName = path ? nativePathBasename(path) : payload.filename;
       const warningsReport: OpenWarningsReport | undefined = payload.warnings.length > 0 ? {
         operation: "save", displayName, sourceLabel: "ChemDraft CDXML envelope", warnings: payload.warnings
