@@ -246,6 +246,9 @@ import {
   nativeMoleculeRings,
   nativeTextScriptFontScale,
   measureNativeTextSpanLineWidth,
+  planTextObjectPlacement,
+  planTextObjectEditorPlacement,
+  type NativeTextCssMetrics,
   textObjectSpanLines,
   nonElementAtomLabelPlacement,
   defaultMechanismArrowControls,
@@ -270,6 +273,7 @@ import {
   type NativeArtVisualPlan,
   type ResolvedBondCrossing
 } from "@chemdraft/layout-engine";
+import { measureTextEditorMetrics, measureTextEditorViewport } from "./textEditorMetrics";
 // `/adapter`, NOT the barrel: the barrel re-exports `./analysis`, which reaches the pKa network's
 // 4.2 MB of JSON. Measured with the repo's own vite build, that model was 4,042,470 characters of a
 // 7.43 MB startup chunk — parsed synchronously before the first frame, on the path this app's whole
@@ -1713,7 +1717,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.02.09.30-codex";
+const CURRENT_BUILD_STAMP = "11.02.10.39-codex";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -27980,6 +27984,46 @@ function DocumentObjectViewContent({
   onAtomLabelFinish(state: AtomLabelEditState, reason: AtomLabelFinishReason): void;
 }) {
   const textEditorRef = useRef<HTMLTextAreaElement | null>(null);
+  const textEditorStyle = object.type === "text" ? nativeTextStyleFromObjectStyle(object.style) : undefined;
+  const [textEditorLayout, setTextEditorLayout] = useState<{
+    metrics: NativeTextCssMetrics | undefined;
+    scale: number;
+    offset: { x: number; y: number };
+  }>();
+
+  useLayoutEffect(() => {
+    if (!editingText || object.type !== "text") return;
+    const placement = planTextObjectPlacement(object);
+    const measure = () => {
+      const viewport = measureTextEditorViewport(interactionLayer) ?? { scale: pageScale ?? 1, offset: { x: 0, y: 0 } };
+      setTextEditorLayout({ ...viewport,
+        metrics: measureTextEditorMetrics(placement.style, viewport.scale, placement.lineAdvance * viewport.scale) });
+    };
+    // A monitor move can change browser font rounding without changing page zoom.
+    // Watch the current resolution again after each change, including a move back.
+    let resolution: MediaQueryList | undefined;
+    const watchResolution = () => {
+      resolution?.removeEventListener("change", onResolutionChange);
+      resolution = window.matchMedia?.(`(resolution: ${window.devicePixelRatio}dppx)`);
+      resolution?.addEventListener("change", onResolutionChange);
+    };
+    const onResolutionChange = () => {
+      watchResolution();
+      measure();
+    };
+    const resizeObserver = new ResizeObserver(measure);
+    for (const target of [interactionLayer?.closest(".page"), interactionLayer?.closest(".canvas-region")]) {
+      if (target) resizeObserver.observe(target);
+    }
+    watchResolution();
+    measure();
+    return () => {
+      resolution?.removeEventListener("change", onResolutionChange);
+      resizeObserver.disconnect();
+    };
+  }, [editingText, object.type, textEditorStyle?.fontFamily, textEditorStyle?.fontSizePx,
+    textEditorStyle?.fontWeight, textEditorStyle?.fontStyle, textEditorStyle?.lineHeight,
+    textEditorStyle?.paragraphSpacingPx, pageScale, pageWidth, pageHeight, interactionLayer]);
 
   useEffect(() => {
     if (!editingText || object.type !== "text") {
@@ -28790,23 +28834,24 @@ function DocumentObjectViewContent({
   if (object.type === "text") {
     const textStyle = nativeTextStyleFromObjectStyle(object.style);
     const objectTextScript = textScriptForTextObject(object);
-    const fixedTextWidth = object.style.textBoxSizingMode === "fixed-width" || object.style.textBoxSizingMode === "fixed-size";
-    // Editor chrome only; never rewrite old/undone stored frames on open. Content and
-    // the 0.5 page-unit metric safety margin scale with zoom. Two borders, one caret
-    // pixel and one CSS pixel for browser layout rounding remain screen-sized.
+    const scale = textEditorLayout?.scale ?? pageScale ?? 1;
+    const contentWidth = editingText ? Math.max(0, ...textObjectSpanLines(object).map(line =>
+      measureNativeTextSpanLineWidth(line, textStyle))) : 0;
+    const editorPlacement = planTextObjectEditorPlacement(object, scale, contentWidth,
+      // Replaced in the layout effect before paint. Non-layout hosts (jsdom) have
+      // no measurable CSS font metrics; they can inject them through the reader.
+      textEditorLayout?.metrics ?? { ascentPx: textStyle.fontSizePx * scale, descentPx: 0 }, textEditorLayout?.offset);
+    // Editor chrome only; never rewrite old/undone stored frames on open.
     const editorFrameCss: CSSProperties = {};
-    if (editingText && !fixedTextWidth) {
-      const scale = pageScale ?? 1;
-      const contentWidth = Math.max(0, ...textObjectSpanLines(object).map(line =>
-        measureNativeTextSpanLineWidth(line, textStyle)));
-      const width = Math.max(object.width * scale, (contentWidth + 0.5) * scale + 4);
-      const growth = width - object.width * scale;
-      const anchor = textStyle.textAlign === "right" ? 1 : textStyle.textAlign === "center" ? 0.5 : 0;
-      // Grow away from the alignment anchor. Keep the original rotation pivot in page
-      // space by moving it inside the expanded frame by the same amount as its left edge.
-      editorFrameCss.width = `${width}px`;
-      editorFrameCss.left = `${object.x * scale - anchor * growth}px`;
-      editorFrameCss.transformOrigin = `${object.width * scale / 2 + anchor * growth}px ${object.height * scale / 2}px`;
+    if (editingText) {
+      const frame = editorPlacement.frame;
+      editorFrameCss.width = `${frame.width}px`;
+      editorFrameCss.left = `${frame.left}px`;
+      editorFrameCss.top = `${frame.top}px`;
+      editorFrameCss.height = `${frame.height}px`;
+      editorFrameCss.transformOrigin = `${frame.originX}px ${frame.originY}px`;
+      // Rich-text spans use this inherited scale too, including explicit run sizes.
+      Object.assign(editorFrameCss, { "--page-scale": scale });
     }
 
     const textCss = {
@@ -28822,6 +28867,7 @@ function DocumentObjectViewContent({
     } as CSSProperties;
     const textEditorCss = {
       ...textCss,
+      ...editorPlacement.content,
       color: "transparent",
       caretColor: textStyle.color,
       ...(objectTextScript === "normal" ? {} : {
@@ -28897,7 +28943,7 @@ function DocumentObjectViewContent({
         ) : null}
         {editingText ? (
           <>
-            <TextObjectContent object={object} editing />
+            <TextObjectContent object={object} editing placementStyle={editorPlacement.content} />
             <textarea
               aria-label="Text object"
               autoFocus
@@ -31610,10 +31656,12 @@ function formatSvgNumber(value: number): number {
   return Number(value.toFixed(3));
 }
 
-function TextObjectContent({ editing = false, object, noWrap = false }: { editing?: boolean; object: TextObject; noWrap?: boolean }) {
+function TextObjectContent({ editing = false, object, noWrap = false, placementStyle }: {
+  editing?: boolean; object: TextObject; noWrap?: boolean; placementStyle?: CSSProperties;
+}) {
   return (
     <span className={["text-object-content", editing ? "text-object-edit-preview" : ""].filter(Boolean).join(" ")}
-      style={noWrap ? { whiteSpace: "pre", overflowWrap: "normal" } : undefined}>
+      style={{ ...placementStyle, ...(noWrap ? { whiteSpace: "pre", overflowWrap: "normal" } : {}) }}>
       {textObjectSpansForRendering(object).map((span, index) => (
         <span
           className="text-object-run"

@@ -151,7 +151,7 @@ describe.each(["macos", "windows"] as const)("text edit history (%s)", platform 
       expect(texts()[0].width).toBe(106.44);
       if (sizingMode === "fixed-width" || sizingMode === "fixed-size") {
         const frame = editor()!.closest<HTMLElement>(".document-object-chrome")!;
-        expect(frame.style.width).toBe(`${106.44 / drawing.pages[0]!.width * 100}%`);
+        expect(frame.style.width).toBe("106.44px");
       } else assertAutomaticEditorWidth(texts()[0]);
       await type("CCCCCCCCCC"); await pagePress(); await undo();
       expect(texts()[0].width).toBe(106.44);
@@ -248,7 +248,7 @@ describe.each(["macos", "windows"] as const)("text edit history (%s)", platform 
     expect(left).toBeCloseTo(200 - anchor * 15.186, 8);
     expect(left + originX!).toBeCloseTo(253.22, 8); // original stored rotation pivot
     expect(originY).toBeCloseTo(object.height / 2, 8);
-    expect(frame.style.top).toBe(`${200 / snapshot().document.pages[0].height * 100}%`);
+    expect(frame.style.top).toBe("200px");
     expect(frame.style.transform).toBe("rotate(30deg)");
     // Evaluate the actual CSS anchor after rotation against the old frame's anchor.
     const localAnchor = anchor * parseFloat(frame.style.width) - originX!;
