@@ -243,7 +243,7 @@ describe.each<ShortcutPlatform>(["macos", "windows"])("native badge popover (%s)
     if (content.kind !== "flyout") throw new Error("Expected flyout");
     await act(async () => nativePopover.action?.({ sessionId: content.flyout.id!, action: "flipped" }));
     const canonical = (molecules: MoleculeObject[]) => Molecule.fromMolfile(
-      moleculeToMolfileV3000(copyAsMergedMolecule(molecules)!, { fromDocFrame: true }).contents
+      moleculeToMolfileV3000(copyAsMergedMolecule(molecules)!, { fromDocFrame: true, kekuleBondOrders: new Map() }).contents
     ).toIsomericSmiles();
     let flippedCanonical = "";
     for (const stage of ["flip", "undo", "redo"] as const) {

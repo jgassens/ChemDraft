@@ -30,7 +30,7 @@ describe("E/Z flip undo clipboard", () => {
     const copied = payload.objects.filter((o): o is MoleculeObject => o.type === "molecule");
     expect(copied.flatMap(o => o.atoms).filter(a => a.element === "C")).toHaveLength(12);
     const canonical = (molecules: MoleculeObject[]) => Molecule.fromMolfile(
-      moleculeToMolfileV3000(copyAsMergedMolecule(molecules)!, { fromDocFrame: true }).contents
+      moleculeToMolfileV3000(copyAsMergedMolecule(molecules)!, { fromDocFrame: true, kekuleBondOrders: new Map() }).contents
     ).toIsomericSmiles();
     expect(canonical(copied).split(".")).toHaveLength(3);
     expect(canonical(copied)).toBe(canonical(originals));
