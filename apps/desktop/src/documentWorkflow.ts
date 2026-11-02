@@ -5,7 +5,7 @@ import { snapRotationDegrees } from "./rotationSnap";
 import { snapPlacementDegrees } from "./placementSnap";
 import { projectedDoubleBondSides } from "./interaction/projectedDoubleBondSides";
 import { buildTableObject, pageConstrainedShift } from "@chemdraft/document-workflow-core";
-import { planTableLayout, tableVisualBoundsForArrangement } from "@chemdraft/layout-engine";
+import { planTableLayout, tableVisualBoundsForArrangement, transformPointForObject } from "@chemdraft/layout-engine";
 import { validTableDimensions, type TableInsertDimensions } from "./dialogs/insertTableOptions";
 import { doubleBondStereoState, perceivedSpecifiedDoubleBondIds } from "./interaction/doubleBondStereo";
 import type { storedCoordinatesMatchStereo } from "@chemdraft/ocl-adapter";
@@ -19714,10 +19714,34 @@ export function copyAsScopedDocument(document: ChemDraftDocument): ChemDraftDocu
     return document;
   }
 
-  const minX = Math.min(...objects.map((object) => object.x));
-  const minY = Math.min(...objects.map((object) => object.y));
-  const maxX = Math.max(...objects.map((object) => object.x + object.width));
-  const maxY = Math.max(...objects.map((object) => object.y + object.height));
+  const bounds = objects.map((object): ObjectBounds => {
+    // Preserve the exact legacy crop for unrotated objects, including stored frames
+    // that differ from their ink bounds (labels, table overflow and art effects).
+    if (object.rotation === 0) return object;
+    if (object.type === "graphic") return documentObjectVisualBounds(object, page.objects);
+    if (object.type === "text") return textVisualBoundsForArrangement(object);
+    if (object.type === "molecule") return moleculeVisualBoundsForArrangement(object);
+    if (object.type === "table") return tableVisualBoundsForArrangement(object);
+
+    // The non-graphic visual-bounds fallback does not rotate arrows, brackets or
+    // other stored frames. Transform their page-space corners about the SVG pivot.
+    const frame = documentObjectVisualBounds(object, page.objects);
+    const points = [
+      { x: frame.x, y: frame.y },
+      { x: frame.x + frame.width, y: frame.y },
+      { x: frame.x + frame.width, y: frame.y + frame.height },
+      { x: frame.x, y: frame.y + frame.height }
+    ].map((point) => transformPointForObject(object, point));
+    const x = Math.min(...points.map((point) => point.x));
+    const y = Math.min(...points.map((point) => point.y));
+    return { x, y,
+      width: Math.max(...points.map((point) => point.x)) - x,
+      height: Math.max(...points.map((point) => point.y)) - y };
+  });
+  const minX = Math.min(...bounds.map((bound) => bound.x));
+  const minY = Math.min(...bounds.map((bound) => bound.y));
+  const maxX = Math.max(...bounds.map((bound) => bound.x + bound.width));
+  const maxY = Math.max(...bounds.map((bound) => bound.y + bound.height));
 
   const scopedWidth = maxX - minX + copyAsPagePaddingPx * 2;
   const scopedHeight = maxY - minY + copyAsPagePaddingPx * 2;
