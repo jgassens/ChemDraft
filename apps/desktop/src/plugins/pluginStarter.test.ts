@@ -85,16 +85,20 @@ describe("plugin starter Markdown", () => {
     const install = row("Install workspace dependencies from the repo root");
     const test = row("Test your plugin");
     const stage = row("Stage plugin and lockfile");
+    const commit = row("Commit plugin and lockfile");
     const pack = row("Build package");
     expect(create).toBeGreaterThan(-1);
     expect(install).toBeGreaterThan(create);
     expect(test).toBeGreaterThan(install);
     expect(stage).toBeGreaterThan(test);
+    expect(commit).toBeGreaterThan(stage);
     expect(pack).toBeGreaterThan(stage);
+    expect(pack).toBeGreaterThan(commit);
     for (const column of [2, 3]) {
       expect(rows[create]!.split("|")[column]).toContain("package.json");
       expect(rows[install]!.split("|")[column]).toContain("`pnpm install`");
       expect(rows[stage]!.split("|")[column]).toContain("`git add -- examples/plugins/<your-plugin> pnpm-lock.yaml`");
+      expect(rows[commit]!.split("|")[column]).toContain("`git commit");
     }
   });
 
