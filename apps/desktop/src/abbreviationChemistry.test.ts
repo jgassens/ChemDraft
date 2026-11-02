@@ -3,6 +3,8 @@
 // packages/template-library and packages/document-workflow-core; this file covers the app wiring.
 
 import { beforeAll, describe, expect, it } from "vitest";
+import { Molecule } from "openchemlib";
+import { abbreviationForLabel } from "@chemdraft/template-library";
 import type { ChemDraftDocument, MoleculeAtom, MoleculeBond, MoleculeObject, ViewMatrix } from "@chemdraft/chem-core";
 import { moleculeSmiles, nativeLabelBondSideFromGeometry, stereoPerceptionMolfile } from "@chemdraft/document-workflow-core";
 import type { ExportWarning } from "@chemdraft/export-engine";
@@ -12,6 +14,8 @@ import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifier
 import { installNodeRdkitModuleLoader } from "@chemdraft/rdkit-adapter/node";
 
 import { applyPatch } from "@chemdraft/chem-core";
+
+
 import {
   analysisFacingStructure,
   applyAnalysisToSelectedMolecule,
@@ -91,6 +95,13 @@ const canonical = async (input: MoleculeObject): Promise<string> => {
   const warnings: ExportWarning[] = [];
   return moleculeSmiles(input, 0, warnings, computeStructureIdentifiers);
 };
+
+describe("protecting group SMILES", () => {
+  it.each([["TBDPS", "C17H22Si"], ["TIPS", "C10H24Si"], ["TES", "C7H18Si"], ["PMB", "C9H12O"], ["MOM", "C3H8O"], ["SEM", "C7H18OSi"]])("expands %s with a methyl attachment", (label, formula) => {
+    const smiles = abbreviationForLabel(label)!.smiles.replace("*", "C");
+    expect(Molecule.fromSmiles(smiles).getMolecularFormula().formula).toBe(formula);
+  });
+});
 
 describe("the owner's report: OMe on a ring carbon", () => {
   it("badges OMe placed on a cyclohexane carbon by the O hotkey, and by typing", () => {

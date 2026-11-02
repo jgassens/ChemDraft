@@ -20,6 +20,9 @@ const groupOf = (label: string, context: Parameters<typeof nativeAtomLabelReadin
 };
 
 describe("the atom-label grammar", () => {
+  it.each(["OTBDPS", "OTIPS", "OTES", "OPMB", "OMOM", "OSEM", "OTBS", "OTf"])("reads %s as a composite group", label => {
+    expect(groupOf(label)).toMatchObject({ kind: "composite", head: "O" });
+  });
   it("reads each kind of label", () => {
     expect(nativeAtomLabelReading("Cl")).toEqual({ kind: "element", element: "Cl" });
     expect(nativeAtomLabelReading("D")).toEqual({ kind: "heavy-hydrogen", element: "D" });

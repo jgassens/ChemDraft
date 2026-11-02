@@ -1713,7 +1713,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.01.19.55-codex";
+const CURRENT_BUILD_STAMP = "11.02.08.27-codex";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -23732,6 +23732,8 @@ export function hoveredNativeTargetShortcutCommand(
   }
 
   if (target?.kind === "bond") {
+    if (key === "w") return "bond.setHoveredBondDisplay.wedge";
+    if (key === "W") return "bond.setHoveredBondDisplay.hashed";
     return Object.prototype.hasOwnProperty.call(numericBondDrawingHotkeys, key)
       ? numericBondDrawingHotkeys[key]
       : undefined;
