@@ -10,7 +10,7 @@ import {
   type TextSpan,
   textStyleToObjectStyle
 } from "@chemdraft/chem-core";
-import { nativeTextCharacterWidthFactor, nativeTextScriptFontScale } from "@chemdraft/layout-engine";
+import { measureNativeTextSpanLineWidth, textObjectSpanLines } from "@chemdraft/layout-engine";
 import { clamp, firstPage, nextObjectId, type PagePoint, phase4Timestamp } from "./shared";
 
 export const nativeTextObjectDimensions = {
@@ -30,13 +30,20 @@ const nativeTextBoxVerticalPadding = 4;
 export function nativeTextObjectSizeForText(
   text: string,
   style: Record<string, unknown> | Partial<NativeTextStyle> = {},
-  options: { width?: number; height?: number; maxWidth?: number; maxHeight?: number } = {}
+  options: { width?: number; height?: number; maxWidth?: number; maxHeight?: number; spans?: TextSpan[] } = {}
 ): { width: number; height: number } {
   const textStyle = nativeTextStyleFromObjectStyle(style);
   const paragraphs = normalizeTextLines(text);
+  const plainLineWidths = paragraphs.map(line => estimateNativeTextLineWidth(line, textStyle));
+  // This path historically sized unformatted text. Keep that floor when spans are supplied,
+  // so smaller/script runs cannot shrink a box compared with its previous sizing behavior.
+  const lineWidths = options.spans
+    ? textObjectSpanLines({ text, spans: options.spans }).map((line, index) =>
+      Math.max(plainLineWidths[index] ?? 0, estimateNativeTextSpanLineWidth(line, textStyle)))
+    : plainLineWidths;
   const lineHeightPx = textStyle.fontSizePx * textStyle.lineHeight;
   const naturalContentWidth = Math.max(
-    ...paragraphs.map((line) => estimateNativeTextLineWidth(line, textStyle)),
+    ...lineWidths,
     nativeTextObjectMinimumDimensions.width - nativeTextBoxHorizontalPadding
   );
   const maxWidth = options.maxWidth ?? nativeTextObjectDimensions.width;
@@ -45,8 +52,8 @@ export function nativeTextObjectSizeForText(
     nativeTextObjectMinimumDimensions.width,
     Math.max(nativeTextObjectMinimumDimensions.width, maxWidth)
   );
-  const wrappedLineCount = paragraphs.reduce((count, line) => (
-    count + wrappedNativeTextLineCount(line, textStyle, width - nativeTextBoxHorizontalPadding)
+  const wrappedLineCount = lineWidths.reduce((count, lineWidth) => (
+    count + Math.max(1, Math.ceil(lineWidth / Math.max(1, width - nativeTextBoxHorizontalPadding)))
   ), 0);
   const paragraphSpacing = Math.max(0, paragraphs.length - 1) * textStyle.paragraphSpacingPx;
   const naturalHeight = clamp(
@@ -138,20 +145,7 @@ export function estimateNativeTextLineWidth(line: string, style: NativeTextStyle
 /** Matches the shared SVG renderer: scripts are 72% of the object's font size, while normal
  * spans may override their font size. Letter spacing continues across span boundaries. */
 export function estimateNativeTextSpanLineWidth(spans: readonly TextSpan[], style: NativeTextStyle): number {
-  let width = 0;
-  let count = 0;
-  for (const span of spans) {
-    const fontSize = span.script === "normal"
-      ? (typeof span.style.fontSizePx === "number" ? span.style.fontSizePx : style.fontSizePx)
-      : style.fontSizePx * nativeTextScriptFontScale;
-    const letterSpacing = typeof span.style.letterSpacingPx === "number"
-      ? span.style.letterSpacingPx : style.letterSpacingPx;
-    for (const character of span.text) {
-      width += fontSize * nativeTextCharacterWidthFactor(character) + (count > 0 ? letterSpacing : 0);
-      count += 1;
-    }
-  }
-  return width;
+  return measureNativeTextSpanLineWidth(spans, style);
 }
 
 /** Sizes explicit rendered lines, with no implicit wrapping or maximum-width clamp. The line
@@ -169,11 +163,6 @@ export function nativeTextObjectSizeForSpanLines(
     lineBoxHeight,
     contentWidth
   };
-}
-
-function wrappedNativeTextLineCount(line: string, style: NativeTextStyle, contentWidth: number): number {
-  const safeContentWidth = Math.max(1, contentWidth);
-  return Math.max(1, Math.ceil(estimateNativeTextLineWidth(line, style) / safeContentWidth));
 }
 
 function roundToTextBoxPixel(value: number): number {

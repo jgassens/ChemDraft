@@ -245,6 +245,8 @@ import {
   nativeElementFromAtomLabel,
   nativeMoleculeRings,
   nativeTextScriptFontScale,
+  measureNativeTextSpanLineWidth,
+  textObjectSpanLines,
   nonElementAtomLabelPlacement,
   defaultMechanismArrowControls,
   planMoleculeAtomLabels,
@@ -21690,8 +21692,12 @@ export function MainWindow({
                       interactionLayer={interactionLayer}
                       pageHeight={activePage.height}
                       pageWidth={activePage.width}
-                      pageScale={selected && !inGroupSelection && object.type === "graphic" &&
-                        nativeGraphicCornerRadiusEditPoint(object) !== undefined
+                      // Text editor allowance and the selected corner-radius handle use
+                      // screen-sized margins. Other object views stay memoized on zoom.
+                      pageScale={(object.type === "text" && activeTextEditObjectId === object.id) ||
+                        (object.type === "graphic" && selected && !inGroupSelection &&
+                          !nativeArtToolIsOrbital(activeToolState.activeCommandId) &&
+                          object.graphicKind === "rect")
                         ? viewport.scale : undefined}
                       spinning={spinning}
                       selected={selected && !nativeArtToolIsOrbital(activeToolState.activeCommandId)}
@@ -28777,6 +28783,25 @@ function DocumentObjectViewContent({
   if (object.type === "text") {
     const textStyle = nativeTextStyleFromObjectStyle(object.style);
     const objectTextScript = textScriptForTextObject(object);
+    const fixedTextWidth = object.style.textBoxSizingMode === "fixed-width" || object.style.textBoxSizingMode === "fixed-size";
+    // Editor chrome only; never rewrite old/undone stored frames on open. Content and
+    // the 0.5 page-unit metric safety margin scale with zoom. Two borders, one caret
+    // pixel and one CSS pixel for browser layout rounding remain screen-sized.
+    const editorFrameCss: CSSProperties = {};
+    if (editingText && !fixedTextWidth) {
+      const scale = pageScale ?? 1;
+      const contentWidth = Math.max(0, ...textObjectSpanLines(object).map(line =>
+        measureNativeTextSpanLineWidth(line, textStyle)));
+      const width = Math.max(object.width * scale, (contentWidth + 0.5) * scale + 4);
+      const growth = width - object.width * scale;
+      const anchor = textStyle.textAlign === "right" ? 1 : textStyle.textAlign === "center" ? 0.5 : 0;
+      // Grow away from the alignment anchor. Keep the original rotation pivot in page
+      // space by moving it inside the expanded frame by the same amount as its left edge.
+      editorFrameCss.width = `${width}px`;
+      editorFrameCss.left = `${object.x * scale - anchor * growth}px`;
+      editorFrameCss.transformOrigin = `${object.width * scale / 2 + anchor * growth}px ${object.height * scale / 2}px`;
+    }
+
     const textCss = {
       color: textStyle.color,
       fontFamily: textStyle.fontFamily,
@@ -28904,7 +28929,7 @@ function DocumentObjectViewContent({
             />
           </>
         ) : null}
-        </>, textCss)}
+        </>, { ...textCss, ...editorFrameCss })}
       </div>
     );
   }

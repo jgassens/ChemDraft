@@ -46,6 +46,15 @@ const fourStructures = [
 ] as const;
 
 describe("chemdraft grid", () => {
+  it("uses moderate chemistry-symbol widths for named grid labels shared with MCP", async () => {
+    const rendered = await renderGrid([{ name: "⇌≡≈′⁺⁻₂", smiles: "CCO" }], {
+      columns: 1, labels: "names", width: 600, gutter: 32, padding: 24, background: "white"
+    }, memoryIo().io);
+    const label = rendered.document.pages[0]!.objects.find(object => object.type === "text")!;
+    expect(label).toMatchObject({ text: "⇌≡≈′⁺⁻₂", width: 89.68, height: 25.6 });
+    expect(rendered.cells[0]!.label).toBe("⇌≡≈′⁺⁻₂");
+    expect(rendered.svg).toContain("⇌≡≈′⁺⁻₂");
+  });
   it("preserves safe-build E/Z warnings and dashed dative bonds", async () => {
     const capture = memoryIo();
     const rendered = await renderGrid([
