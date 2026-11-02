@@ -52,7 +52,7 @@ describe("bounded document opening", () => {
 
   it("checks a shell byte array before iteration or copying", () => {
     const bytes = new Array<number>(MAX_OPEN_DOCUMENT_BYTES + 1);
-    bytes.every = () => { throw new Error("must not iterate oversized transport"); };
+    vi.spyOn(bytes, "every").mockImplementation(() => { throw new Error("must not iterate oversized transport"); });
     expect(() => decodeNativeDocumentContents({ contents: "", bytes })).toThrow("64 MB size limit");
     expect(decodeNativeDocumentContents({ contents: "", bytes: [1, 2, 255] })).toEqual(new Uint8Array([1, 2, 255]));
     expect(() => decodeNativeDocumentContents({ contents: "", bytes: [256] })).toThrow("invalid binary bytes");

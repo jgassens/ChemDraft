@@ -9925,7 +9925,10 @@ mod tests {
         assert_eq!(payload.display_name, "a.chemdraft");
         assert_eq!(payload.contents, "<CDXML/>");
         assert!(payload.bytes.is_none());
-        assert!(serde_json::to_value(&payload).unwrap().get("bytes").is_none());
+        assert!(serde_json::to_value(&payload)
+            .unwrap()
+            .get("bytes")
+            .is_none());
 
         let binary = [b"VjCD0100".as_slice(), &[0xFF, 0x00, 0x80]].concat();
         for name in ["renamed.data", "binary.cdxml", "binary.cdx"] {
@@ -10945,10 +10948,8 @@ mod tests {
 
     #[test]
     fn open_document_rejects_oversized_file() {
-        let path = std::env::temp_dir().join(format!(
-            "chemdraft-open-oversized-{}",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("chemdraft-open-oversized-{}", std::process::id()));
         let file = fs::File::create(&path).expect("create fixture");
         file.set_len(MAX_OPEN_DOCUMENT_BYTES + 1)
             .expect("size fixture");
