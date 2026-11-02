@@ -569,6 +569,7 @@ export const TableStyleSchema = z.object({
   bottomRulePt: z.number().finite().min(0).max(6).default(1),
   gridRulePt: z.number().finite().min(0).max(6).default(0.5),
   headerBold: z.boolean().default(false),
+  autoColumnMinEm: z.number().finite().gt(0).max(10).optional(),
   cellPaddingPx: z.object({
     x: z.number().finite().min(0).max(48).default(6),
     y: z.number().finite().min(0).max(48).default(2)

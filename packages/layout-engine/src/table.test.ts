@@ -19,6 +19,61 @@ function smallTable(align: TableObject["columns"][number]["align"], texts: strin
 }
 
 describe("table layout and SVG", () => {
+  it("applies an explicit minimum to auto columns without changing fixed or natural content widths", () => {
+    const withMinimum = (input: TableObject) => ({ ...input, tableStyle: { ...input.tableStyle, autoColumnMinEm: 3 } });
+    const minimum = Math.ceil((3 * style.fontSizePx + 2 * table.tableStyle.cellPaddingPx.x) * 2) / 2;
+    const short = planTableLayout(withMinimum(smallTable("left", ["7"]))).columns[0];
+    expect(short.width).toBe(minimum);
+    expect(short.contentWidth).toBeLessThan(short.width);
+    const long = planTableLayout(withMinimum(smallTable("left", ["A long text that exceeds the minimum"]))).columns[0];
+    expect(long.width).toBe(long.contentWidth);
+    const fixed = planTableLayout(withMinimum(smallTable("left", ["7"], 10))).columns[0];
+    expect(fixed.width).toBe(10);
+    expect(fixed.contentWidth).toBe(short.contentWidth);
+    const decimal = planTableLayout(withMinimum(smallTable("decimal", ["1.2"]))).columns[0];
+    expect(decimal.width).toBe(minimum);
+    const block = decimal.decimalBlock!;
+    expect(decimal.decimalAnchorX).toBeCloseTo(decimal.x + table.tableStyle.cellPaddingPx.x + block.insetLeft + block.preWidth);
+    expect(block.insetLeft).toBeCloseTo(block.insetRight);
+  });
+  it("floors only all-empty auto columns, including when other columns have header or body text", () => {
+    const minimum = Math.ceil((3 * style.fontSizePx + 2 * table.tableStyle.cellPaddingPx.x) * 2) / 2;
+    const empty = { ...table, caption: undefined, footnotes: [], headerRowCount: 0,
+      columns: table.columns.map(column => ({ ...column, width: { mode: "auto" as const } })),
+      rows: table.rows.map(row => ({ ...row, cells: row.cells.map(() => ({ text: "", spans: [] })) })) };
+    expect(planTableLayout(empty).columns.map(column => column.width)).toEqual(empty.columns.map(() => minimum));
+    for (const value of ["1", " "]) {
+      const measured = measureTextRun(value, { fontSizePx: style.fontSizePx, fontWeight: style.fontWeight });
+      expect(planTableLayout(smallTable("left", [value])).columns[0].width)
+        .toBe(Math.ceil((measured * 1.04 + 2 * table.tableStyle.cellPaddingPx.x) * 2) / 2);
+    }
+    const mixed = { ...empty, headerRowCount: 1, rows: empty.rows.map((row, index) => ({ ...row,
+      cells: row.cells.map((cell, col) => ({ ...cell, text: index === 0 && col === 1 ? "1" : index === 1 && col === 2 ? "1" : "" })) })) };
+    const mixedLayout = planTableLayout(mixed);
+    expect(mixedLayout.columns[0].width).toBe(minimum);
+    expect(mixedLayout.columns[1].width).toBe(mixedLayout.columns[1].contentWidth);
+    expect(mixedLayout.columns[2].width).toBe(mixedLayout.columns[2].contentWidth);
+    expect(mixedLayout.columns.slice(3).every(column => column.width === minimum)).toBe(true);
+    const text = "A long text that exceeds the minimum";
+    const measured = measureTextRun(text, { fontSizePx: style.fontSizePx, fontWeight: style.fontWeight });
+    expect(planTableLayout(smallTable("left", [text])).columns[0].width)
+      .toBe(Math.ceil((measured * 1.04 + 2 * table.tableStyle.cellPaddingPx.x) * 2) / 2);
+    for (const value of ["", "1"]) expect(planTableLayout(smallTable("left", [value], 10)).columns[0].width).toBe(10);
+  });
+
+  it("uses the natural width and original centering for decimal text", () => {
+    const layout = planTableLayout(smallTable("decimal", ["1.2", ".3"]));
+    const column = layout.columns[0], block = column.decimalBlock!;
+    const pre = measureTextRun("1", { fontSizePx: style.fontSizePx });
+    const post = measureTextRun(".2", { fontSizePx: style.fontSizePx });
+    expect(column.width).toBe(Math.ceil(((pre + post) * 1.04 + 2 * table.tableStyle.cellPaddingPx.x) * 2) / 2);
+    expect(column.decimalAnchorX).toBeCloseTo(column.x + table.tableStyle.cellPaddingPx.x + (column.width - 2 * table.tableStyle.cellPaddingPx.x - pre - post) / 2 + pre);
+    expect(block.insetLeft).toBeGreaterThan(0);
+    expect(block.insetLeft).toBeCloseTo(block.insetRight);
+    expect(column.decimalAnchorX! + (block.postWidth - block.preWidth) / 2).toBeCloseTo(column.x + column.width / 2);
+    for (const cell of layout.cells) expect(cell.lines[0].pieces.every(piece => piece.x === column.decimalAnchorX)).toBe(true);
+  });
+
   it("caches immutable snapshots and shares SVG children while keeping layer indices distinct", () => {
     const input = smallTable("left", ["original"]);
     const layout = planTableLayout(input), svg = planTableObjectSvg(input, 0);

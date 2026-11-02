@@ -70,7 +70,7 @@ function manifest(permissions: PluginManifest["permissions"]): PluginManifest {
 
 describe("supportsPluginTableInsertion", () => {
   it.each([
-    ["^0.1.17", false], ["^0.1.18", true], ["^0.1.20", true], ["^0.2.0", true], ["0.1.18", true],
+    ["^0.1.17", false], ["^0.1.18", true], ["^0.1.19", true], ["^0.1.20", true], ["^0.2.0", true], ["0.1.18", true],
     ["~0.1.17", false], [" ~0.1.18 ", true], ["invalid", false]
   ] as const)("checks the minimum of %s", (range, expected) => {
     expect(supportsPluginTableInsertion(range)).toBe(expected);
@@ -136,7 +136,7 @@ describe("isPluginApiVersionCompatible", () => {
     expect(isPluginApiVersionCompatible("^0.1.14", "0.1.13")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.15", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.15", "0.1.14")).toBe(false);
-    expect(PluginApiVersion).toBe("0.1.19");
+    expect(PluginApiVersion).toBe("0.1.20");
     expect(isPluginApiVersionCompatible("^0.1.16", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.16", "0.1.15")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.17", PluginApiVersion)).toBe(true);
@@ -145,6 +145,8 @@ describe("isPluginApiVersionCompatible", () => {
     expect(isPluginApiVersionCompatible("^0.1.18", "0.1.17")).toBe(false);
     expect(isPluginApiVersionCompatible("^0.1.19", PluginApiVersion)).toBe(true);
     expect(isPluginApiVersionCompatible("^0.1.19", "0.1.18")).toBe(false);
+    expect(isPluginApiVersionCompatible("^0.1.20", PluginApiVersion)).toBe(true);
+    expect(isPluginApiVersionCompatible("^0.1.20", "0.1.19")).toBe(false);
   });
 });
 
