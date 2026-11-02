@@ -34,6 +34,22 @@ describe("grid object ids", () => {
 });
 
 describe("shared text sizing", () => {
+  it.each(["Installed face, Arial", "Helvetica Neue", "Menlo", "Monaco", "Consolas", "sans-serif", "serif", "monospace"])(
+    "sizes new grid labels moderately for %s", fontFamily => {
+      const molecule: MoleculeObject = {
+        id: "source", type: "molecule", x: 0, y: 0, width: 40, height: 20,
+        rotation: 0, style: {}, structureFormat: "smiles", structure: "C",
+        atoms: [{ id: "a", element: "C", x: 0, y: 0, formalCharge: 0 }], bonds: [], superatoms: [], rGroups: []
+      };
+      const layout = layoutGrid({ style: "document", textStyle: { fontFamily, fontSizePx: 18 },
+        entries: [{ molecule, bounds: { minX: 0, minY: 0, maxX: 40, maxY: 20 }, label: "HiAW" }],
+        columns: 1, gutter: 32, anchor: { x: 24, y: 24 }, pageWidth: 800 });
+      // .815 + .601 + .723 + .976 em, plus existing 6 px box padding.
+      expect(layout.labels[0]!.width).toBe(62.07);
+      expect(layout.document.pages[0]!.width).toBe(142.07);
+      expect(layout.labels[0]!.text).toBe("HiAW");
+    }
+  );
   it("delegates line and span sizing to metrics without narrowing any legacy line", () => {
     const style = nativeTextStyleFromObjectStyle({ fontSizePx: 18, letterSpacingPx: 1 });
     for (const text of ["CCCCCCCCC", "iiii", "MW% 123", "hé🧪", "\t", ""]) {
@@ -55,7 +71,7 @@ describe("shared text sizing", () => {
     expect(nativeTextObjectSizeForSpanLines([spans], style).contentWidth).toBe(measured);
     expect(nativeTextObjectSizeForSpanLines([spans], style).width).toBeCloseTo(measured + 6, 2);
     expect(nativeTextObjectSizeForText("CCC", style, { spans }).width).toBeCloseTo(measured + 6, 2);
-    expect(nativeTextObjectSizeForText("CCCCCCCCC", { fontSizePx: 18 }).width).toBe(122.96);
+    expect(nativeTextObjectSizeForText("CCCCCCCCC", { fontSizePx: 18 }).width).toBe(123.13);
     expect(nativeTextObjectSizeForText("CCCCCCCCC", style, {
       spans: [{ text: "CCCCCCCCC", script: "subscript", style: {} }]
     }).width).toBeGreaterThanOrEqual(nativeTextObjectSizeForText("CCCCCCCCC", style).width);

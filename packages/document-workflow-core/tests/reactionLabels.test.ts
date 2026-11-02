@@ -78,6 +78,17 @@ function renderedInkEnvelope(line: ReturnType<typeof renderedLines>["lines"][num
 }
 
 describe("reaction label policy", () => {
+  it("sizes chemistry symbols and unknown first families without flat over-reservation", () => {
+    const chemistry = labels({ above: ["⇌≡≈′⁺⁻₂"], below: [], caption: undefined, textStyle: { fontSizePx: 14 } });
+    expect(chemistry.above!.text).toBe("⇌≡≈′⁺⁻₂");
+    expect(chemistry.plan.above!.size.contentWidth).toBeCloseTo(65.086);
+    expect(chemistry.above!.width).toBe(71.09);
+    expect(chemistry.plan.arrowLength).toBeCloseTo(90.086);
+    const unknown = labels({ above: ["HiAW"], below: [], caption: undefined,
+      textStyle: { fontSizePx: 18, fontFamily: "Installed face, Arial" } });
+    expect(unknown.plan.above!.size.contentWidth).toBeCloseTo(56.07);
+    expect(unknown.above!.width).toBe(62.07);
+  });
   it("places Sharpless ink against the shaft and reserves both arrowheads at 14 px", () => {
     const result = labels({ textStyle: { fontSizePx: 14 }, bondLength: 28 });
     const lastAbove = renderedLines(result.above!).lines.at(-1)!.baseline;
@@ -403,7 +414,7 @@ describe("reaction label policy", () => {
       { text: "2", script: "subscript", style: {} },
       { text: "O", script: "normal", style: {} }
     ];
-    expect(estimateNativeTextSpanLineWidth(spans, style)).toBeCloseTo(15 * (0.722 + 0.778) + 15 * 0.72 * 0.556 + 4);
+    expect(estimateNativeTextSpanLineWidth(spans, style)).toBeCloseTo(15 * (0.723 + 0.778) + 15 * 0.72 * 0.557 + 6);
     expect(estimateNativeTextSpanLineWidth(spans, style)).toBeLessThan(estimateNativeTextLineWidth("H2O", style));
     const result = labels({ above: ["H2O\nCH2Cl2"], textStyle: { fontSizePx: 15, lineHeight: 1.5, paragraphSpacingPx: 3 } });
     expect(result.above!.height).toBe(2 * 15 * 1.5 + 3 + 4);

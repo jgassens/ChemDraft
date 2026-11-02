@@ -3,6 +3,10 @@ import {
   helveticaAdvances, helveticaBoldAdvances, timesAdvances, timesBoldAdvances,
   timesItalicAdvances, timesBoldItalicAdvances, courierAdvances
 } from "./textMetrics.generated";
+import {
+  arialAdvanceCeilings, timesAdvanceCeilings, courierAdvanceCeilings, georgiaAdvanceCeilings,
+  chemistryAdvanceCeilings
+} from "./nativeFontCeilings.generated";
 
 /** Explicit SVG script metrics. Offsets are in PARENT em, independent of script size.
  * WebKit/Chromium's historical sub/super placement was approximately this offset;
@@ -33,46 +37,81 @@ export function nativeTextCharacterWidthFactor(character: string): number {
   return 0.54;
 }
 
-function nativeTextAdvances(fontFamily: string, bold: boolean, italic: boolean): Readonly<Record<number, number>> {
-  // Resolve the first known family in a CSS stack. Unknown stacks use Helvetica.
-  for (const family of fontFamily.toLowerCase().split(",").map(name => name.trim().replace(/["']/g, ""))) {
-    if (["courier", "courier new", "monospace", "menlo", "monaco", "consolas"].includes(family)) return courierAdvances;
-    if (["times", "times new roman", "georgia", "serif"].includes(family)) {
-      return italic ? (bold ? timesBoldItalicAdvances : timesItalicAdvances) : (bold ? timesBoldAdvances : timesAdvances);
-    }
-    if (["arial", "helvetica", "helvetica neue", "sans-serif"].includes(family)) break;
+function nativeTextAdvances(fontFamily: string, bold: boolean, italic: boolean): {
+  advances: Readonly<Record<number, number>>;
+  ceilings: Readonly<Record<number, number>>;
+} | undefined {
+  // Do not skip an unknown first family: it may be installed and wider than its fallback.
+  const family = fontFamily.split(",")[0]!.trim().toLowerCase().replace(/["']/g, "");
+  const face = (bold ? 1 : 0) + (italic ? 2 : 0);
+  if (["courier", "courier new"].includes(family)) {
+    return { advances: courierAdvances, ceilings: courierAdvanceCeilings[face]! };
   }
-  return bold ? helveticaBoldAdvances : helveticaAdvances;
+  if (["times", "times new roman", "georgia"].includes(family)) {
+    return {
+      advances: italic ? (bold ? timesBoldItalicAdvances : timesItalicAdvances) : (bold ? timesBoldAdvances : timesAdvances),
+      ceilings: (family === "georgia" ? georgiaAdvanceCeilings : timesAdvanceCeilings)[face]!
+    };
+  }
+  if (["arial", "helvetica"].includes(family)) {
+    return { advances: bold ? helveticaBoldAdvances : helveticaAdvances, ceilings: arialAdvanceCeilings[face]! };
+  }
+  return undefined;
 }
+
+// Resolve once from the shipped tables, never from host fonts. Generic CSS families
+// have no fixed real face, so they use the same per-character maximum as unknown ones.
+const fallbackAdvances = [0, 1, 2, 3].map(face => {
+  const bold = (face & 1) !== 0, italic = (face & 2) !== 0;
+  const tables = ["Arial", "Times", "Courier", "Georgia"].flatMap(family => {
+    const metrics = nativeTextAdvances(family, bold, italic)!;
+    return [metrics.advances, metrics.ceilings];
+  });
+  const codePoints = new Set(tables.flatMap(table => Object.keys(table).map(Number)));
+  return Object.fromEntries([...codePoints].map(cp => [cp, Math.max(...tables.map(table => table[cp] ?? 0))]));
+});
 
 /** Content width for ONE explicit line, without box padding or implicit wrapping.
  * Core14 Helvetica (sans), Times (serif), Courier (mono), with Symbol Greek/arrows.
- * Unknown fonts use the first known stack fallback, otherwise Helvetica; uncovered glyphs
- * use 0.62 em. This is deterministic advance measurement, without kerning or shaping.
+ * Known families use per-glyph upward corrections from real font advances (README.md).
+ * Unknown/generic first families take the per-character maximum of the known faces.
+ * Uncovered glyphs use the sourced chemistry fallback, then 1 em. No host font access or shaping.
  * Return max(legacy whole-line estimate, metric whole-line width), so existing sizing
  * never gets narrower. Scripts use the renderer's parent-size scale; tracking continues
- * across spans. Helvetica oblique and every Courier face share upright advances. */
+ * after EVERY character; the final character's tracking is clamped at zero so negative
+ * tracking never removes the final advance. This shared
+ * result feeds both automatic stored-box sizing and the transient editor frame. */
 export function measureNativeTextSpanLineWidth(spans: readonly TextSpan[], style: NativeTextStyle): number {
   let legacyWidth = 0;
   let metricWidth = 0;
   let count = 0;
+  let finalLetterSpacing = 0;
   for (const span of spans) {
     const fontSize = span.script === "normal"
       ? (typeof span.style.fontSizePx === "number" ? span.style.fontSizePx : style.fontSizePx)
       : style.fontSizePx * nativeTextScriptFontScale;
     const letterSpacing = typeof span.style.letterSpacingPx === "number" ? span.style.letterSpacingPx : style.letterSpacingPx;
+    const bold = (typeof span.style.fontWeight === "number" ? span.style.fontWeight : style.fontWeight) >= 600;
+    const italic = (span.style.fontStyle ?? style.fontStyle) === "italic";
+    const face = (bold ? 1 : 0) + (italic ? 2 : 0);
     const advances = nativeTextAdvances(
       typeof span.style.fontFamily === "string" ? span.style.fontFamily : style.fontFamily,
-      (typeof span.style.fontWeight === "number" ? span.style.fontWeight : style.fontWeight) >= 600,
-      (span.style.fontStyle ?? style.fontStyle) === "italic"
+      bold, italic
     );
     for (const character of span.text) {
-      const spacing = count > 0 ? letterSpacing : 0;
-      legacyWidth += fontSize * nativeTextCharacterWidthFactor(character) + spacing;
-      metricWidth += fontSize * (advances[character.codePointAt(0)!] ?? 0.62) + spacing;
+      const codePoint = character.codePointAt(0)!;
+      // Keep the historical whole-line floor verbatim, including negative tracking.
+      legacyWidth += fontSize * nativeTextCharacterWidthFactor(character) + (count > 0 ? letterSpacing : 0);
+      const advance = advances
+        ? (advances.advances[codePoint] === undefined && advances.ceilings[codePoint] === undefined ? undefined
+          : Math.max(advances.advances[codePoint] ?? 0, advances.ceilings[codePoint] ?? 0))
+        : fallbackAdvances[face]![codePoint];
+      metricWidth += fontSize * (advance ?? chemistryAdvanceCeilings[face]![codePoint] ?? 1) + letterSpacing;
+      finalLetterSpacing = letterSpacing;
       count += 1;
     }
   }
+  metricWidth -= Math.min(0, finalLetterSpacing);
   // Round metrics upward at sub-pixel precision to avoid summation undershooting an advance.
   return Math.max(legacyWidth, Math.ceil(metricWidth * 1e9) / 1e9);
 }
