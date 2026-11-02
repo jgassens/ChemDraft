@@ -4,7 +4,8 @@ import {
   type ChemDraftDocument,
   type GraphicObject
 } from "@chemdraft/chem-core";
-import { jsPDF } from "jspdf";
+import { GState, jsPDF } from "jspdf";
+import { planNativeArtVisual } from "@chemdraft/layout-engine";
 import * as svg2pdfModule from "svg2pdf.js";
 import { getExportFormatDescriptor } from "./formats";
 import type { BinaryExportResult, ExportWarning } from "./results";
@@ -152,6 +153,8 @@ export async function exportSvgToPdf(
         const height = picture.height * pictureScale;
         pdf.advancedAPI();
         pdf.saveGraphicsState();
+        const opacity = planNativeArtVisual(picture).opacity;
+        if (opacity !== 1) pdf.setGState(new GState({ opacity }));
         pdf.setCurrentTransformationMatrix(pdf.Matrix(scale * cos, scale * sin, -scale * sin, scale * cos,
           offsetX + scale * (cx - cos * cx + sin * cy), offsetY + scale * (cy - sin * cx - cos * cy)));
         pdf.addImage(`data:image/png;base64,${picture.data.image.dataBase64}`, "PNG",
