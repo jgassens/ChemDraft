@@ -1034,6 +1034,7 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
 
 ## Direct multiple-bond tools (Windows and macOS)
 
+- In Preferences, switch Default double bond between Offset and Centred; draw by click/drag, extend/connect atoms, press hover key 2 over atoms and bonds, and click a bond to cycle order. Only newly created double bonds follow the choice; ring/structure templates keep their explicit placement. Reopen Preferences and relaunch to confirm persistence and live document-window sync. Existing drawings, undo/redo, opening files, import and paste must retain their display and chemical identity. Repeat on macOS and Windows.
 - On a fresh profile, confirm the default Main toolbar does not show Double Bond or Triple Bond. Add both from Customize Main Toolbar, then activate each; verify distinct icons and active highlight.
 - Click and drag on empty page, extend from an atom, connect atoms and separate molecules, and click an existing bond to set its order. Confirm the requested order, normal snapping/Alt behavior, and one Undo/Redo step per gesture.
 - Refuse growth or order changes that exceed available valence; retain existing atoms, bonds and coordinates. Check save/reopen and SVG/MOL export. Switch back to Single Bond and wedge/hash/dashed/bold tools.

@@ -890,6 +890,8 @@ import { ArrangementSpacingDialog, arrangementSpacingPreviewSvg } from "./Arrang
 import { arrangeSelectedDocumentObjects, adjustArrangementSpacing, arrangementSpacingRange, selectedArrangementObjectIds } from "./documentWorkflow";
 import { arrangementLayoutForCommand, arrangementGridAlignmentForCommand } from "./commands";
 import { loadKeybindingSettings, type KeybindingScheme } from "./keybindingSettings";
+import { saveDrawingSettings } from "./drawingSettings";
+import { listenForDrawingSettings } from "./window-manager";
 import { rasterizeSvgNative } from "./nativeRasterExport";
 import { clientToPage, pageToClient } from "./interaction/camera";
 import {
@@ -3233,6 +3235,16 @@ export function MainWindow({
     }
   }, [activeTool]);
   const [keybindingScheme, setKeybindingScheme] = useState<KeybindingScheme>(() => loadKeybindingSettings().scheme);
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    // Drawing reads the validated preference at creation time, so changing it never
+    // rewrites the document or enters its undo history.
+    void listenForDrawingSettings(saveDrawingSettings).then(listener => {
+      if (disposed) listener(); else unlisten = listener;
+    });
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
   const keybindingSchemeRef = useRef(keybindingScheme);
   useEffect(() => {
     keybindingSchemeRef.current = keybindingScheme;
