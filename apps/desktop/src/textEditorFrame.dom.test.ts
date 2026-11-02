@@ -54,8 +54,9 @@ describe.each(["macos", "windows"] as const)("text editor frame (%s)", platform 
 
   it.each(cases)("aligns $textAlign $mode rotation=$rotation scale=$scale growth=$growing", async ({ scale, textAlign, mode, rotation, growing }) => {
     const drawing = structuredClone(insertNativeTextObject(createPhase4Document("Editor frame"),
-      { x: 200, y: 160 }, "CCCCCCCCC", { fontSizePx: 18, textAlign, textBoxSizingMode: mode }));
+      { x: 200, y: 160 }, "CCCCCCCCC", { fontSizePx: 18, textAlign }));
     const object = drawing.pages[0].objects[0] as TextObject;
+    object.style.textBoxSizingMode = mode;
     object.width = growing ? 106.44 : 180;
     object.height = mode === "fixed-size" ? 20 : 40;
     object.rotation = rotation;
@@ -64,6 +65,8 @@ describe.each(["macos", "windows"] as const)("text editor frame (%s)", platform 
       initialDocument: drawing, initialPaletteMode: "hidden", nativePalette: true,
       initialRulersVisible: false, initialCrosshairsVisible: false, shortcutPlatform: platform
     })));
+    const saved = () => window.__CHEMDRAFT_AGENT__!.snapshot().document.pages[0].objects.find(item => item.id === object.id);
+    expect((saved() as TextObject)?.style.textBoxSizingMode ?? "auto").toBe(mode);
     if (scale === 2) {
       // The wheel zoom uses exp(-deltaY * .002); this input doubles the page scale.
       await act(async () => {
@@ -98,7 +101,6 @@ describe.each(["macos", "windows"] as const)("text editor frame (%s)", platform 
     expect(left + ox).toBeCloseTo((object.x + object.width / 2) * scale, 8);
     expect(top + oy).toBeCloseTo((object.y + object.height / 2) * scale, 8);
     expect(frame.style.transform).toBe(rotation ? `rotate(${rotation}deg)` : "");
-    const saved = () => window.__CHEMDRAFT_AGENT__!.snapshot().document.pages[0].objects.find(item => item.id === object.id);
     expect(saved()).toEqual(original);
     await act(async () => editor.blur());
     expect(container.querySelector(".text-object-editor")).toBeNull();
