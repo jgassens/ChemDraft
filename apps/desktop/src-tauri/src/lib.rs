@@ -4252,6 +4252,14 @@ fn build_or_show_plugin_panel<R: Runtime>(
     disable_default_context_menus(&window);
     let target = window.clone();
     let installed = run_on_main_thread_blocking(&window, move || {
+        #[cfg(target_os = "macos")]
+        {
+            // Finalize the one-time nonactivation style before placing the panel and adding
+            // its resize overlay. Later reveals see the same style and skip the setter.
+            let pointer = target.ns_window().map_err(|error| error.to_string())?;
+            let native = unsafe { &*(pointer as *const NSWindow) };
+            configure_analysis_window_traits(&target, native)?;
+        }
         if let Some(placement) = placement {
             let webview: &tauri::Webview<R> = target.as_ref();
             panel_full_size::apply(&webview.window(), placement)?;
@@ -4542,7 +4550,18 @@ fn configure_analysis_window_traits<R: Runtime>(
     // Resizable is already set by the builder. Even an unchanged style setter can rebuild
     // the content hierarchy, so configure only the missing nonactivation bit, once.
     panel_window::configure_macos_style(ns_window.styleMask(), |style| {
+        let responder = ns_window.firstResponder();
         ns_window.setStyleMask(style);
+        // AppKit can reset keyboard routing during a style change. Keep Wry's responder,
+        // without taking key status or asking tao to focus its original, detached NSView.
+        if let Some(responder) = responder {
+            let current = ns_window
+                .firstResponder()
+                .is_some_and(|current| std::ptr::eq(&*current, &*responder));
+            if !current {
+                ns_window.makeFirstResponder(Some(&responder));
+            }
+        }
     });
     ns_window.setAcceptsMouseMovedEvents(true);
     Ok(())

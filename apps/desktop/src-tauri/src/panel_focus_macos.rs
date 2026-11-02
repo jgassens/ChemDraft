@@ -7,8 +7,8 @@ use objc2::{
 use objc2_app_kit::{
     NSApplication, NSApplicationDidUnhideNotification, NSApplicationWillHideNotification,
     NSAutoresizingMaskOptions, NSEvent, NSEventMask, NSView, NSWindow,
-    NSWindowDidBecomeKeyNotification, NSWindowDidResignKeyNotification, NSWindowStyleMask,
-    NSWindowWillCloseNotification,
+    NSWindowDidBecomeKeyNotification, NSWindowDidResignKeyNotification, NSWindowOrderingMode,
+    NSWindowStyleMask, NSWindowWillCloseNotification,
 };
 use objc2_foundation::{
     ns_string, NSNotification, NSNotificationCenter, NSObject, NSObjectProtocol, NSPoint, NSString,
@@ -174,8 +174,8 @@ fn observe_panel<R: tauri::Runtime>(
     let callback = block2::RcBlock::new(move |event: NonNull<NSEvent>| {
         let native = unsafe { event.as_ref() };
         // Runs before webview dispatch, only for this window's native mouse-downs.
-        // Pass the original event through, including native resize presses. Never take key
-        // status from an app-modal session (an alert or open panel), where the panel's
+        // Pass the original event through. Resize presses keep AppKit's non-activating path.
+        // Never take key status from an app-modal session (an alert or open panel), where the panel's
         // sendEvent: never ran before this monitor replaced it.
         let outside_modal = MainThreadMarker::new().is_some_and(|mtm| {
             NSApplication::sharedApplication(mtm)
@@ -187,9 +187,23 @@ fn observe_panel<R: tauri::Runtime>(
             && target.is_visible().unwrap_or(false)
             && !target.is_minimized().unwrap_or(true)
         {
-            let _ = target.set_focusable(true);
             if let Ok(pointer) = target.ns_window() {
-                unsafe { &*(pointer as *const NSWindow) }.makeKeyWindow();
+                let panel = unsafe { &*(pointer as *const NSWindow) };
+                let resizing = panel.contentView().is_some_and(|content| {
+                    let point = content.convertPoint_fromView(native.locationInWindow(), None);
+                    let bounds = content.bounds();
+                    resize_enabled(panel.styleMask())
+                        && resize_edge(
+                            point.x - bounds.origin.x,
+                            point.y - bounds.origin.y,
+                            bounds.size.width,
+                            bounds.size.height,
+                        )
+                });
+                if !resizing {
+                    let _ = target.set_focusable(true);
+                    panel.makeKeyWindow();
+                }
             }
         }
         event.as_ptr()
@@ -217,33 +231,47 @@ pub(super) fn resize_edge(x: f64, y: f64, width: f64, height: f64) -> bool {
         && (x < edge || y < edge || x >= width - edge || y >= height - edge)
 }
 
+fn resize_enabled(style: NSWindowStyleMask) -> bool {
+    style.contains(NSWindowStyleMask::Resizable) && !style.contains(NSWindowStyleMask::FullScreen)
+}
+
 define_class!(
-    // A new container, not a replacement class for Wry's live content view. Wry's view,
-    // tracking areas and handlers remain intact as an autoresizing child.
+    // A transparent sibling of the WKWebView, inside Wry's existing content root.
+    // Never detach that root: doing so moves WebKit through a nil window and changes
+    // the contentView that tao reads for native handles and resize notifications.
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
-    #[name = "ChemDraftPanelResizeContainer"]
-    struct PanelResizeContainer;
+    #[name = "ChemDraftPanelResizeOverlay"]
+    struct PanelResizeOverlay;
 
-    impl PanelResizeContainer {
+    impl PanelResizeOverlay {
         #[unsafe(method(hitTest:))]
         fn hit_test(&self, point: NSPoint) -> *mut NSView {
             let frame = self.frame();
-            if self.window().is_some_and(|panel| {
-                let style = panel.styleMask();
-                style.contains(NSWindowStyleMask::Resizable)
-                    && !style.contains(NSWindowStyleMask::FullScreen)
-            }) && resize_edge(
-                point.x - frame.origin.x,
-                point.y - frame.origin.y,
-                frame.size.width,
-                frame.size.height,
-            ) {
-                // NSThemeFrame supplies native cursors and its non-activating resize loop
-                // when the content root yields the border, including descendants.
+            let Some(panel) = self.window() else {
                 return std::ptr::null_mut();
+            };
+            if resize_enabled(panel.styleMask())
+                && resize_edge(
+                    point.x - frame.origin.x,
+                    point.y - frame.origin.y,
+                    frame.size.width,
+                    frame.size.height,
+                )
+            {
+                // Return the same native frame hit as a content root yielding its border.
+                // Returning nil here would let the WKWebView sibling swallow the edge.
+                // AppKit retains its resize cursors, resize loop and first-responder policy.
+                // SAFETY: the retained window keeps its frame view alive during hit testing.
+                return panel
+                    .contentView()
+                    .and_then(|content| unsafe { content.superview() })
+                    .map_or(std::ptr::null_mut(), |frame| {
+                        Retained::as_ptr(&frame).cast_mut()
+                    });
             }
-            unsafe { msg_send![super(self), hitTest: point] }
+            // The overlay never takes an interior hit or becomes first responder.
+            std::ptr::null_mut()
         }
     }
 );
@@ -258,36 +286,65 @@ pub(super) fn install_resize_hit_test<R: tauri::Runtime>(
     let content = panel
         .contentView()
         .ok_or("Could not access panel content view.")?;
-    if content.isKindOfClass(PanelResizeContainer::class()) {
+    if content
+        .subviews()
+        .iter()
+        .any(|view| view.isKindOfClass(PanelResizeOverlay::class()))
+    {
         return Ok(());
     }
-    let container = PanelResizeContainer::alloc(mtm).set_ivars(());
-    let container: Retained<PanelResizeContainer> =
-        unsafe { msg_send![super(container), initWithFrame: content.frame()] };
+    // SAFETY: the live panel owns the frame view; this main-thread setup cannot outlive it.
+    if unsafe { content.superview() }.is_none() {
+        return Err("Could not access panel frame view for native resizing.".into());
+    }
+    let overlay = PanelResizeOverlay::alloc(mtm).set_ivars(());
+    let overlay: Retained<PanelResizeOverlay> =
+        unsafe { msg_send![super(overlay), initWithFrame: content.bounds()] };
     let autoresize =
         NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable;
-    container.setAutoresizingMask(autoresize);
-    content.setAutoresizingMask(autoresize);
-    // Re-parenting resigns a first responder inside the moved view, such as the webview Wry
-    // made first responder. Remember it and hand it back once the view is in the container.
-    let responder = panel.firstResponder();
-    // Supported reparenting with every original class intact. Retain content across
-    // setContentView; WebKit can pair its window KVO removal/registration normally.
-    panel.setContentView(Some(&container));
-    content.setFrame(container.bounds());
-    container.addSubview(&content);
-    if let Some(responder) = responder {
-        let inside = responder
-            .downcast_ref::<NSView>()
-            .is_some_and(|view| view.isDescendantOf(&content));
-        let current = panel
-            .firstResponder()
-            .is_some_and(|current| Retained::as_ptr(&current) == Retained::as_ptr(&responder));
-        if inside && !current {
-            panel.makeFirstResponder(Some(&responder));
-        }
-    }
+    overlay.setAutoresizingMask(autoresize);
+    content.addSubview_positioned_relativeTo(&overlay, NSWindowOrderingMode::Above, None);
+    log_view_hierarchy(window.label(), panel);
     Ok(())
+}
+
+fn find_webview(view: &NSView) -> Option<Retained<NSView>> {
+    if view.isKindOfClass(objc2_web_kit::WKWebView::class()) {
+        return Some(view.retain());
+    }
+    view.subviews()
+        .iter()
+        .find_map(|child| find_webview(&child))
+}
+
+fn log_view_hierarchy(label: &str, panel: &NSWindow) {
+    // Inspect the tree directly: Tauri's with_webview calls Wry's ns_window(), which
+    // unwraps WKWebView.window() and would panic in the detached-view case we need to log.
+    // A missing WKWebView is explicit (false / None), never a fabricated zero-size frame.
+    let content = panel.contentView();
+    let view = content.as_ref().and_then(|content| find_webview(content));
+    let class = content.as_ref().map_or("<none>".into(), |content| {
+        content.class().name().to_string_lossy()
+    });
+    let descendant = view.as_ref().is_some_and(|view| {
+        content
+            .as_ref()
+            .is_some_and(|content| view.isDescendantOf(content))
+    });
+    super::super::palette_focus_log(format_args!(
+        "panel-view label={} content_class={} content_frame={:?} wk_descendant={} \
+         wk_frame={:?} wk_hidden={:?} wk_in_window={} style_mask={:#x}",
+        label,
+        class,
+        content.as_ref().map(|content| content.frame()),
+        descendant,
+        view.as_ref().map(|view| view.frame()),
+        view.as_ref().map(|view| view.isHidden()),
+        view.as_ref()
+            .and_then(|view| view.window())
+            .is_some_and(|window| std::ptr::eq(&*window, panel)),
+        panel.styleMask().bits(),
+    ));
 }
 
 pub(super) fn observe<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
@@ -347,4 +404,23 @@ pub(super) fn forget(label: &str) {
     // Drop outside the map's borrow: AppKit removal may invoke native callbacks.
     let tokens = OBSERVERS.with(|observers| observers.borrow_mut().remove(label));
     drop(tokens);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_resize_requires_resizable_and_not_full_screen() {
+        for base in [
+            NSWindowStyleMask::Borderless,
+            NSWindowStyleMask::NonactivatingPanel,
+        ] {
+            assert!(!resize_enabled(base));
+            assert!(resize_enabled(base | NSWindowStyleMask::Resizable));
+            assert!(!resize_enabled(
+                base | NSWindowStyleMask::Resizable | NSWindowStyleMask::FullScreen
+            ));
+        }
+    }
 }

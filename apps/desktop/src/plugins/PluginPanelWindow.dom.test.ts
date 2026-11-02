@@ -482,29 +482,53 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     expect(click).toMatch(/native\.windowNumber\(\) == number\s*&& outside_modal/);
     // Our Objective-C classes carry a ChemDraft prefix.
     expect(mac).toContain('#[name = "ChemDraftPanelVisibilityObserver"]');
-    expect(mac).toContain('#[name = "ChemDraftPanelResizeContainer"]');
+    expect(mac).toContain('#[name = "ChemDraftPanelResizeOverlay"]');
   });
 
-  it("gives Wry's first responder back after moving its view into the resize container", () => {
+  it("leaves Wry's content root, webview attachment and first responder alone during resize installation", () => {
     const mac = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src/panel_focus_macos.rs"), "utf8");
-    const install = mac.split("pub(super) fn install_resize_hit_test<")[1]!.split("pub(super) fn observe<")[0]!;
-    expect(install.indexOf("let responder = panel.firstResponder();")).toBeLessThan(install.indexOf("panel.setContentView(Some(&container))"));
-    expect(install.indexOf("container.addSubview(&content)")).toBeLessThan(install.indexOf("panel.makeFirstResponder(Some(&responder))"));
-    expect(install).toContain("view.isDescendantOf(&content)");
+    const install = mac.split("pub(super) fn install_resize_hit_test<")[1]!.split("fn find_webview(")[0]!;
+    // The old test required detaching and then restoring Wry's responder. Keeping its view
+    // in the window throughout installation avoids that transition and WebKit's window KVO.
+    expect(mac).not.toMatch(/\.setContentView\(|\.removeFromSuperview\(/);
+    expect(install).not.toMatch(/\.makeFirstResponder\(|content\.setFrame\(|content\.setAutoresizingMask\(/);
+    expect(install).toContain("content.addSubview_positioned_relativeTo(&overlay, NSWindowOrderingMode::Above, None)");
+    expect(install).toContain(".any(|view| view.isKindOfClass(PanelResizeOverlay::class()))");
   });
 
-  it("yields the resize band through a new container while retaining Wry's content-view class", () => {
+  it("routes only the six-point border to AppKit's frame and lets interior hits reach WebKit", () => {
     const mac = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src/panel_focus_macos.rs"), "utf8");
     expect(mac).toContain("#[unsafe(super(NSView))]");
-    expect(mac).toContain("struct PanelResizeContainer");
-    expect(mac).toContain("PanelResizeContainer::alloc(mtm)");
+    expect(mac).toContain("struct PanelResizeOverlay");
+    expect(mac).toContain("PanelResizeOverlay::alloc(mtm)");
     expect(mac).toContain("#[unsafe(method(hitTest:))]");
-    expect(mac).toContain("return std::ptr::null_mut()");
-    expect(mac).toContain("msg_send![super(self), hitTest: point]");
-    expect(mac).toContain("panel.setContentView(Some(&container))");
-    expect(mac).toContain("container.addSubview(&content)");
-    expect(mac).toContain("content.setAutoresizingMask(autoresize)");
+    const hitTest = mac.split("fn hit_test(")[1]!.split("pub(super) fn install_resize_hit_test<")[0]!;
+    expect(hitTest).toMatch(/resize_enabled\(panel.styleMask\(\)\)[\s\S]*&& resize_edge\(/);
+    expect(hitTest).toContain(".and_then(|content| unsafe { content.superview() })");
+    expect(hitTest).toContain("Retained::as_ptr(&frame).cast_mut()");
+    expect(hitTest).toMatch(/std::ptr::null_mut\(\)\s*\}\s*\}\s*\);/);
+    expect(mac).toContain("initWithFrame: content.bounds()");
+    expect(mac).toContain("overlay.setAutoresizingMask(autoresize)");
+    const click = mac.split("let number = panel.windowNumber();")[1]!.split("pub(super) fn resize_edge")[0]!;
+    expect(click).toContain("content.convertPoint_fromView(native.locationInWindow(), None)");
+    expect(click).toMatch(/if !resizing \{\s*let _ = target.set_focusable\(true\);\s*panel.makeKeyWindow\(\);/);
+    expect(click).toContain("event.as_ptr()");
     expect(mac).not.toContain("setStyleMask");
+  });
+
+  it("logs the panel's native view hierarchy once after installation through the existing diagnostic gate", () => {
+    const mac = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src/panel_focus_macos.rs"), "utf8");
+    const install = mac.split("pub(super) fn install_resize_hit_test<")[1]!.split("fn find_webview(")[0]!;
+    expect(install.indexOf("log_view_hierarchy(window.label(), panel)")).toBeGreaterThan(install.indexOf("content.addSubview_positioned_relativeTo"));
+    expect(mac).toContain("super::super::palette_focus_log(format_args!(");
+    expect(mac).toContain("panel-view label={}");
+    expect(mac).toContain("content_class={} content_frame={:?} wk_descendant={}");
+    expect(mac).toContain("wk_frame={:?} wk_hidden={:?} wk_in_window={} style_mask={:#x}");
+    expect(mac).toContain("view.isKindOfClass(objc2_web_kit::WKWebView::class())");
+    expect(mac).not.toContain(".with_webview(");
+    expect(mac).toContain("view.isDescendantOf(content)");
+    expect(mac).toContain("view.isHidden()");
+    expect(mac).toContain("panel.styleMask().bits()");
   });
 
   it("keeps resizing a creation trait and skips redundant AppKit style-mask setters", () => {
@@ -512,8 +536,14 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     const source = readFileSync(join(nativePath, "lib.rs"), "utf8");
     const build = source.split("fn build_or_show_plugin_panel<")[1]!.split("fn current_plugin_panel_geometry<")[0]!;
     expect(build.indexOf(".resizable(true)")).toBeLessThan(build.indexOf("builder.build()"));
+    const install = build.split("let installed = run_on_main_thread_blocking")[1]!;
+    expect(install).toMatch(/#\[cfg\(target_os = "macos"\)\]\s*\{[\s\S]*configure_analysis_window_traits\(&target, native\)\?;/);
+    expect(install.indexOf("configure_analysis_window_traits")).toBeLessThan(install.indexOf("panel_full_size::apply"));
+    expect(install.indexOf("configure_analysis_window_traits")).toBeLessThan(install.indexOf("install_resize_hit_test"));
     const configure = source.split("fn configure_analysis_window_traits<")[1]!.split("/// Makes `child`")[0]!;
     expect(configure).toContain("panel_window::configure_macos_style(ns_window.styleMask()");
+    expect(configure.indexOf("let responder = ns_window.firstResponder()")).toBeLessThan(configure.indexOf("ns_window.setStyleMask(style)"));
+    expect(configure.indexOf("ns_window.makeFirstResponder(Some(&responder))")).toBeGreaterThan(configure.indexOf("ns_window.setStyleMask(style)"));
     const panel = readFileSync(join(nativePath, "panel_window.rs"), "utf8");
     const style = panel.split("pub(crate) fn macos_style(")[1]!.split("pub(crate) fn install_input_focus<")[0]!;
     expect(style).toContain("if required != current");
