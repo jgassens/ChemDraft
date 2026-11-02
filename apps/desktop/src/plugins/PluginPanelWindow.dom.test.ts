@@ -496,8 +496,14 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     expect(install).toContain(".any(|view| view.isKindOfClass(PanelResizeOverlay::class()))");
   });
 
-  it("routes only the six-point border to AppKit's frame and lets interior hits reach WebKit", () => {
+  it("routes only the two-point native Mac band to AppKit's frame and lets other hits reach WebKit", () => {
     const mac = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src/panel_focus_macos.rs"), "utf8");
+    // AppKit's measured band is narrower than Windows' 6 px zone; the wider Mac strip ate page hits.
+    expect(mac).toContain("const MAC_NATIVE_RESIZE_BAND_PT: f64 = 2.0;");
+    const band = mac.split("pub(super) fn resize_edge")[1]!.split("fn resize_enabled")[0]!;
+    // Both callers must get the Mac band from this helper, never the shared Windows constant.
+    expect(band).toContain("let edge = MAC_NATIVE_RESIZE_BAND_PT;");
+    expect(mac).not.toContain("super::RESIZE_ZONE_LOGICAL_PX");
     expect(mac).toContain("#[unsafe(super(NSView))]");
     expect(mac).toContain("struct PanelResizeOverlay");
     expect(mac).toContain("PanelResizeOverlay::alloc(mtm)");
@@ -512,6 +518,8 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     expect(mac).toContain("initWithFrame: content.bounds()");
     expect(mac).toContain("overlay.setAutoresizingMask(autoresize)");
     const click = mac.split("let number = panel.windowNumber();")[1]!.split("pub(super) fn resize_edge")[0]!;
+    // Activation must skip exactly the same band that the overlay yields to AppKit.
+    expect(click).toMatch(/resize_enabled\(panel.styleMask\(\)\)[\s\S]*&& resize_edge\(/);
     expect(click).toContain("content.convertPoint_fromView(native.locationInWindow(), None)");
     expect(click).toMatch(/if !resizing \{\s*let _ = target.set_focusable\(true\);\s*panel.makeKeyWindow\(\);/);
     expect(click).toContain("event.as_ptr()");

@@ -24,6 +24,13 @@ use std::{
     },
 };
 
+// Packaged macOS 26: native resizing works ~1.5 pt inside all edges and corners,
+// and ~3.3 pt inside right/bottom, but not left/top; ~5 pt works nowhere.
+// Use about 2 pt, below the first failing probe on the narrowest edges, rather than
+// intercepting a 6 pt strip where AppKit cannot resize and the page gets no hit.
+// Both the overlay and activation monitor use this band through resize_edge.
+const MAC_NATIVE_RESIZE_BAND_PT: f64 = 2.0;
+
 #[derive(Default)]
 struct Observers {
     notifications: Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>,
@@ -223,7 +230,7 @@ fn observe_panel<R: tauri::Runtime>(
 }
 
 pub(super) fn resize_edge(x: f64, y: f64, width: f64, height: f64) -> bool {
-    let edge = super::RESIZE_ZONE_LOGICAL_PX;
+    let edge = MAC_NATIVE_RESIZE_BAND_PT;
     x >= 0.0
         && y >= 0.0
         && x < width
@@ -409,6 +416,26 @@ pub(super) fn forget(label: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_resize_band_covers_edges_and_corners_without_swallowing_page_hits() {
+        let width = 400.0;
+        let height = 300.0;
+        for (inset, in_band) in [(1.5, true), (2.5, false), (5.0, false)] {
+            for (x, y) in [
+                (inset, height / 2.0),
+                (width - inset, height / 2.0),
+                (width / 2.0, inset),
+                (width / 2.0, height - inset),
+                (inset, inset),
+                (width - inset, inset),
+                (inset, height - inset),
+                (width - inset, height - inset),
+            ] {
+                assert_eq!(resize_edge(x, y, width, height), in_band, "({x}, {y})");
+            }
+        }
+    }
 
     #[test]
     fn native_resize_requires_resizable_and_not_full_screen() {

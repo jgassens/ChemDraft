@@ -462,7 +462,7 @@ pub(crate) fn forget<R: tauri::Runtime>(window: &tauri::Window<R>) {
 #[path = "panel_window_geometry.rs"]
 mod geometry;
 
-#[cfg(any(windows, target_os = "macos", test))]
+#[cfg(any(windows, test))]
 const RESIZE_ZONE_LOGICAL_PX: f64 = 6.0;
 /// SetActiveWindow changes activation only within our UI thread; unlike tao's set_focus it
 /// never calls SetForegroundWindow or synthesizes Alt. A late IPC is dropped in the background.
