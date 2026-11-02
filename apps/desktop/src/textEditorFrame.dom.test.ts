@@ -15,11 +15,11 @@ import { DOM_COMMAND_EVENT } from "./window-manager";
 it("drives the editor border and preview inset from the geometry constant", () => {
   const css = readFileSync(resolve("apps/desktop/src/App.css"), "utf8");
   expect(css.match(/^\.text-object-editor\s*\{([^}]+)\}/m)?.[1])
-    .toContain("border: var(--text-object-editor-border) solid");
+    .toContain("border: var(--text-object-editor-border, 1px) solid");
   expect(css.match(/^\.text-object-editor\s*\{([^}]+)\}/m)?.[1])
     .toContain("min-height: 0");
   expect(css.match(/^\.text-object-edit-preview\s*\{([^}]+)\}/m)?.[1])
-    .toContain("inset: var(--text-object-editor-border)");
+    .toContain("inset: var(--text-object-editor-border, 1px)");
 });
 
 describe.each(["macos", "windows"] as const)("text editor frame (%s)", platform => {

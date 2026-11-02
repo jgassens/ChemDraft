@@ -5524,7 +5524,7 @@ textarea:focus-visible,
 .text-object-edit-preview {
   position: absolute;
   z-index: 1;
-  inset: var(--text-object-editor-border);
+  inset: var(--text-object-editor-border, 1px);
   pointer-events: none;
 }
 
@@ -5620,7 +5620,7 @@ textarea:focus-visible,
   overflow: hidden;
   resize: none;
   padding: 0;
-  border: var(--text-object-editor-border) solid var(--cd-accent-border-muted);
+  border: var(--text-object-editor-border, 1px) solid var(--cd-accent-border-muted);
   border-radius: var(--cd-radius-control);
   outline: none;
   background: var(--cd-bg-control-translucent);
