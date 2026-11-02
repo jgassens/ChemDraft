@@ -490,6 +490,7 @@ import {
   applyNativeTemplateToolAtTarget,
   applyNativeTemplateToolAtPoint,
   planNativeTemplatePlacement,
+  nativeTemplatePlacementResult,
   applyNativeTemplatePlacementPlan,
   type NativeTemplatePlacementPlan,
   type NativeTemplateFallbackReason,
@@ -1706,7 +1707,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.01.18.11-sonnet";
+const CURRENT_BUILD_STAMP = "11.01.18.52-sonnet";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -14392,7 +14393,7 @@ export function MainWindow({
     target?: NativeMoleculeDeleteTarget
   ) => {
     const currentDocument = documentRef.current;
-    const plan = planNativeTemplatePlacement(currentDocument, { point, target }, templateId);
+    const { plan, refusal } = nativeTemplatePlacementResult(currentDocument, { point, target }, templateId);
     const nextDocument = plan
       ? applyNativeTemplatePlacementPlan(currentDocument, plan)
       : currentDocument;
@@ -14413,7 +14414,9 @@ export function MainWindow({
     templatePreviewKeyRef.current = undefined;
     templatePreviewTargetKeyRef.current = undefined;
     templatePreviewPlanRef.current = undefined;
-    setStatus(nativeTemplateStatusForApplication(templateId, target, changed, plan?.fallbackReason));
+    setStatus(refusal
+      ? `Cannot add ${nativeTemplateStatusLabel(templateId)} here: ${nativeTemplateFallbackReasonText(refusal)}`
+      : nativeTemplateStatusForApplication(templateId, target, changed, plan?.fallbackReason));
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange]);
 
   const startNativePlacementDrag = useCallback((

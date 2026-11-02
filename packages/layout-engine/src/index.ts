@@ -1,5 +1,6 @@
 export * from "./layoutQuality";
 import type { LayoutLabelBox } from "./layoutQuality";
+import { bondsOverlap } from "./layoutQuality";
 export * from "./layoutRepair";
 export { DocumentStyleScale, documentStylePointBounds, FigureStyles, type FigureStyle } from "./documentStyle";
 export {
@@ -408,6 +409,181 @@ export function planBondExtension(input: BondExtensionPlanningInput): BondExtens
   }
   // No direction leaves a visible bond inside the page: decline rather than draw one.
   return undefined;
+}
+
+/** Rotation step of the ring-attachment search, in degrees. */
+const RING_ATTACHMENT_ROTATION_STEP_DEGREES = 15;
+/** A turned ring is accepted only if every angle at the attachment atom between an existing bond and a new ring bond reaches this. */
+const RING_ATTACHMENT_PREFERRED_MIN_ANGLE_DEGREES = 90;
+
+/** Direction (radians) from the attachment atom to the centroid of the ring atoms added there. */
+export function ringAttachmentCenterAngle(
+  sourceAtom: LayoutPoint,
+  addedAtoms: readonly LayoutPoint[]
+): number | undefined {
+  if (addedAtoms.length === 0) return undefined;
+  const centroid = {
+    x: addedAtoms.reduce((sum, atom) => sum + atom.x, 0) / addedAtoms.length,
+    y: addedAtoms.reduce((sum, atom) => sum + atom.y, 0) / addedAtoms.length
+  };
+  return angleBetweenPoints(sourceAtom, centroid);
+}
+
+/**
+ * Aim points that turn a ring about its attachment atom: the preferred orientation first, then
+ * 15 degrees to either side in growing steps (negative turn before positive) up to a half turn.
+ * Each aim lies `aimDistance` from the atom along the ring-centre direction.
+ */
+export function ringAttachmentRotationAims(input: {
+  sourceAtom: LayoutPoint;
+  centerAngle: number;
+  aimDistance: number;
+}): Array<{ rotationDegrees: number; point: LayoutPoint }> {
+  const steps = Math.round(180 / RING_ATTACHMENT_ROTATION_STEP_DEGREES);
+  const rotations = [0];
+  for (let step = 1; step < steps; step += 1) {
+    rotations.push(-step * RING_ATTACHMENT_ROTATION_STEP_DEGREES, step * RING_ATTACHMENT_ROTATION_STEP_DEGREES);
+  }
+  rotations.push(180);
+  return rotations.map((rotationDegrees) => {
+    const angle = input.centerAngle + rotationDegrees * Math.PI / 180;
+    return {
+      rotationDegrees,
+      point: {
+        x: input.sourceAtom.x + Math.cos(angle) * input.aimDistance,
+        y: input.sourceAtom.y + Math.sin(angle) * input.aimDistance
+      }
+    };
+  });
+}
+
+/**
+ * How a ring bonded at `sourceAtomId` sits against the bonds already there. `minAngleDegrees` is
+ * the smallest angle between any existing bond and either of the ring's two bonds at the atom;
+ * `asymmetryDegrees` totals, over the existing bonds, how unequally that bond splits the ring
+ * bonds (0 when each existing bond bisects the ring's exterior angle). Undefined unless the ring
+ * has exactly two bonds at the atom.
+ */
+export function ringAttachmentAngleMetrics(input: {
+  atoms: readonly MoleculeLayoutAtom[];
+  bonds: readonly MoleculeLayoutBond[];
+  addedAtoms: readonly MoleculeLayoutAtom[];
+  addedBonds: readonly MoleculeLayoutBond[];
+  sourceAtomId: string;
+}): { minAngleDegrees: number; asymmetryDegrees: number } | undefined {
+  const sourceAtom = input.atoms.find((atom) => atom.id === input.sourceAtomId);
+  if (!sourceAtom) return undefined;
+  const atomById = new Map([...input.atoms, ...input.addedAtoms].map((atom) => [atom.id, atom]));
+  const ringNeighbors = bondedNeighbors(
+    [...input.atoms, ...input.addedAtoms], input.addedBonds, input.sourceAtomId
+  );
+  if (ringNeighbors.length !== 2) return undefined;
+  const existingNeighbors = bondedNeighbors(input.atoms, input.bonds, input.sourceAtomId)
+    .map((neighbor) => atomById.get(neighbor.id) ?? neighbor);
+  const separation = (left: LayoutPoint, right: LayoutPoint) => {
+    const difference = Math.abs(angleBetweenPoints(sourceAtom, left) - angleBetweenPoints(sourceAtom, right));
+    return Math.min(difference, Math.PI * 2 - difference) * 180 / Math.PI;
+  };
+  let minAngleDegrees = 180;
+  let asymmetryDegrees = 0;
+  for (const existing of existingNeighbors) {
+    const first = separation(existing, ringNeighbors[0]!);
+    const second = separation(existing, ringNeighbors[1]!);
+    minAngleDegrees = Math.min(minAngleDegrees, first, second);
+    asymmetryDegrees += Math.abs(first - second);
+  }
+  return { minAngleDegrees, asymmetryDegrees };
+}
+
+/**
+ * Pick among rotations that already fit the page and are clear. Only those whose every attachment
+ * angle reaches 90 degrees qualify; of them take the one closest to the symmetric placement (then
+ * the smallest turn from the preferred orientation, a negative turn first). Returns an index into
+ * `candidates`, or undefined when none qualifies.
+ */
+export function selectRingAttachmentRotation(
+  candidates: ReadonlyArray<{ rotationDegrees: number; minAngleDegrees: number; asymmetryDegrees: number }>
+): number | undefined {
+  // Vertices are rounded to 0.001, so an exact 90-degree turn measures a few thousandths short.
+  const epsilon = 0.01;
+  return candidates.map((_, index) => index)
+    .filter((index) => candidates[index]!.minAngleDegrees >= RING_ATTACHMENT_PREFERRED_MIN_ANGLE_DEGREES - epsilon)
+    .sort((left, right) => {
+      const a = candidates[left]!;
+      const b = candidates[right]!;
+      return (Math.abs(a.asymmetryDegrees - b.asymmetryDegrees) > epsilon
+          ? a.asymmetryDegrees - b.asymmetryDegrees : 0)
+        || Math.abs(a.rotationDegrees) - Math.abs(b.rotationDegrees)
+        || a.rotationDegrees - b.rotationDegrees;
+    })[0];
+}
+
+/** Whole-geometry page check: attachments must fit without clamping or distorting any vertex. */
+export function layoutPointsFitBounds(points: readonly LayoutPoint[], bounds: LayoutBounds): boolean {
+  return points.every((point) => pointInsideExpandedBounds(point, bounds, 0));
+}
+
+/** Only judge added geometry: existing overlaps must not veto a new ring elsewhere. */
+export function ringAttachmentIsClear(input: {
+  atoms: readonly MoleculeLayoutAtom[];
+  bonds: readonly MoleculeLayoutBond[];
+  addedAtoms: readonly MoleculeLayoutAtom[];
+  addedBonds: readonly MoleculeLayoutBond[];
+  sourceAtomId: string;
+  bondLength: number;
+}): boolean {
+  // Match the growth planner's collision radius (rather than accepting near-duplicate atoms).
+  if (input.addedAtoms.some((point) =>
+    nearestOtherAtomDistance(input.atoms, input.sourceAtomId, point) < input.bondLength * 0.45
+  )) return false;
+
+  const atomById = new Map([...input.atoms, ...input.addedAtoms].map((atom) => [atom.id, atom]));
+  // A narrow gap can wrap the new ring around an existing small ring: no atom is too close and no
+  // bond crosses, yet the existing atoms sit inside the new polygon.
+  const newRing = addedRingPolygon(atomById, input.addedBonds, input.sourceAtomId);
+  if (newRing && input.atoms.some((atom) =>
+    atom.id !== input.sourceAtomId && pointInPolygon(atom, newRing)
+  )) return false;
+
+  return input.addedBonds.every((added) => input.bonds.every((existing) => {
+    const from = atomById.get(added.fromAtomId);
+    const to = atomById.get(added.toAtomId);
+    const existingFrom = atomById.get(existing.fromAtomId);
+    const existingTo = atomById.get(existing.toAtomId);
+    // bondsOverlap permits a shared endpoint but rejects crossings and collinear overlap.
+    return from !== undefined && to !== undefined && existingFrom !== undefined && existingTo !== undefined
+      && !bondsOverlap(from, to, existingFrom, existingTo, input.bondLength);
+  }));
+}
+
+/** The new ring's vertices in order, walked from the source atom; undefined unless it is one simple cycle. */
+function addedRingPolygon(
+  atomById: ReadonlyMap<string, MoleculeLayoutAtom>,
+  addedBonds: readonly MoleculeLayoutBond[],
+  sourceAtomId: string
+): LayoutPoint[] | undefined {
+  const neighbors = new Map<string, string[]>();
+  for (const bond of addedBonds) {
+    neighbors.set(bond.fromAtomId, [...(neighbors.get(bond.fromAtomId) ?? []), bond.toAtomId]);
+    neighbors.set(bond.toAtomId, [...(neighbors.get(bond.toAtomId) ?? []), bond.fromAtomId]);
+  }
+  if (!neighbors.has(sourceAtomId) || [...neighbors.values()].some((ids) => ids.length !== 2)) {
+    return undefined;
+  }
+  const ids = [sourceAtomId];
+  let previous = sourceAtomId;
+  let current = neighbors.get(sourceAtomId)![0]!;
+  while (current !== sourceAtomId) {
+    if (ids.includes(current)) return undefined;
+    ids.push(current);
+    const next = neighbors.get(current)!.find((id) => id !== previous);
+    if (next === undefined) return undefined;
+    previous = current;
+    current = next;
+  }
+  if (ids.length < 3 || ids.length !== neighbors.size) return undefined;
+  const points = ids.map((id) => atomById.get(id));
+  return points.every((point) => point !== undefined) ? (points as LayoutPoint[]) : undefined;
 }
 
 /**
