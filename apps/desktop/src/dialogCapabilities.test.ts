@@ -22,8 +22,8 @@ const permissionIdentifiers = (capability: Capability) => capability.permissions
 describe("dialog capabilities", () => {
   it("gives draft windows only validated channel transport with no generic event permissions", () => {
     const host = capabilities.find(({ name }) => name === "dialog-host.json")!.capability;
-    // The final pattern belongs to the structure-template picker.
-    expect(host.windows).toEqual(["dialog-main-pageSize-*", "dialog-main-arrangementSpacing-*", "dialog-main-insertTable-*", "dialog-main-export-*", "dialog-main-engineInstall-*", "dialog-main-toolInstall-*", "dialog-main-structureTemplates-*"]);
+    // Each native dialog kind gets only the same validated request/send transport.
+    expect(host.windows).toEqual(["dialog-main-pageSize-*", "dialog-main-arrangementSpacing-*", "dialog-main-insertTable-*", "dialog-main-export-*", "dialog-main-engineInstall-*", "dialog-main-toolInstall-*", "dialog-main-structureTemplates-*", "dialog-main-atomProblem-*"]);
     expect(host.permissions.slice().sort()).toEqual([
       "allow-dialog-request", "allow-dialog-send"
     ]);

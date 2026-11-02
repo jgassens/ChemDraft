@@ -14,6 +14,7 @@ desktop importers did not change.
 
 | File | Holds |
 |---|---|
+| `atomProblems.ts` | Read-only explanations and explicit H/charge/Ignore/Restore suggestions, accepted only by the existing atom validator |
 | `drawingDefaults.ts` | Field-by-field document drawing/text defaults for newly inserted objects, falling back to the hand-drawing preset |
 | `molecule.ts` | SMILES/molfile depiction → native molecule, target bond length, double-bond sides |
 | `documentStyle.ts` | Scale first-page layout using layout-engine geometry, including pixel style overrides; keep picture dimensions physical, preserve colours and appearance toggles and apply fixed molecule size keys |

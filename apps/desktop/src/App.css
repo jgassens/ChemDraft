@@ -5105,7 +5105,13 @@ textarea:focus-visible,
 }
 
 .native-atom-invalid-marker {
-  pointer-events: none;
+  pointer-events: all;
+  cursor: pointer;
+}
+
+.native-atom-invalid-marker:focus-visible .native-atom-invalid-ring {
+  stroke: var(--cd-accent, #1673d1);
+  stroke-width: 2;
 }
 
 /* A sibling of the selection's transform frame (z-index: 3), not a child of

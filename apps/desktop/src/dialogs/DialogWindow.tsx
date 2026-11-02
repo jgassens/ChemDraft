@@ -12,6 +12,7 @@ import { exportOptions } from "./exportOptionsValidation";
 import { EngineInstallForm } from "./EngineInstallForm";
 import { ToolInstallForm } from "./ToolInstallForm";
 import { InsertTableForm } from "./InsertTableForm";
+import { AtomProblemForm } from "./AtomProblemForm";
 import { measureDialogContentWhenFontsReady } from "./dialogContentFit";
 const ExportForm = lazy(() => import("./ExportForm").then(module => ({ default: module.ExportForm })));
 const StructureTemplatePicker = lazy(() => import("./StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
@@ -80,7 +81,7 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
       if (message.type === "snapshot") {
         if (latest && (message.sessionId !== latest.sessionId || message.snapshotRevision < latest.snapshotRevision)) return;
         // Replay must not replace the user's draft at the same revision.
-        if (!latest || message.snapshotRevision > latest.snapshotRevision || message.dialogKind === "engineInstall" || message.dialogKind === "toolInstall") {
+        if (!latest || message.snapshotRevision > latest.snapshotRevision || message.dialogKind === "engineInstall" || message.dialogKind === "toolInstall" || message.dialogKind === "atomProblem") {
           setSnapshot(message);
           if (message.dialogKind === "toolInstall" && (message.data.state.status === "failed" || message.data.state.status === "broken")) {
             clearTimeout(actionTimer.current);
@@ -130,7 +131,7 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
         }
         clearTimeout(actionTimer.current);
         // A successful terminal receipt precedes native destruction. Never reopen Apply here.
-        if (message.data.status !== "applied") { actionPending.current = false; setBusy(false); }
+        if (message.data.status !== "applied" || latest.dialogKind === "atomProblem") { actionPending.current = false; setBusy(false); }
         if (message.data.status === "exported") setExported(true);
         if (message.data.status === "picked" && message.data.destinationPath && message.data.filename) {
           const { destinationPath, filename } = message.data;
@@ -146,7 +147,7 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
   // A content-fit form passes its root: the host sizes the window to it (measured once fonts settle).
   const reportReady = useCallback((fitElement?: HTMLElement) => {
     if (!snapshot) return;
-    if ((snapshot.dialogKind === "engineInstall" || snapshot.dialogKind === "toolInstall") && readySession.current === snapshot.sessionId) return;
+    if ((snapshot.dialogKind === "engineInstall" || snapshot.dialogKind === "toolInstall" || snapshot.dialogKind === "atomProblem") && readySession.current === snapshot.sessionId) return;
     readySession.current = snapshot.sessionId;
     const sending = (fitElement ? measureDialogContentWhenFontsReady(fitElement) : Promise.resolve(undefined)).then(fit =>
       sendDialogMessage(hostId, { ...dialogEnvelope(snapshot), requestId: crypto.randomUUID(), type: "ready", data: fit ?? {} }));
@@ -165,7 +166,7 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
     }, percent === 100 ? 0 : 120);
     return () => { clearTimeout(debounce); clearTimeout(previewTimer.current); };
   }, [hostId, snapshot, percent]);
-  useEffect(() => { if (snapshot?.dialogKind === "pageSize" || snapshot?.dialogKind === "arrangementSpacing" || snapshot?.dialogKind === "engineInstall" || snapshot?.dialogKind === "toolInstall") reportReady(); }, [snapshot, reportReady]);
+  useEffect(() => { if (snapshot?.dialogKind === "pageSize" || snapshot?.dialogKind === "arrangementSpacing" || snapshot?.dialogKind === "engineInstall" || snapshot?.dialogKind === "toolInstall" || snapshot?.dialogKind === "atomProblem") reportReady(); }, [snapshot, reportReady]);
   const sendAction = (data: Extract<DialogMessage, { type: "action" }>["data"]) => {
     if (!snapshot) return;
     clearPreview();
@@ -197,6 +198,8 @@ function DialogWindowContent({ hostId }: { hostId: string }) {
     });
   };
   if (!snapshot) return <p role="status">{error ?? "Opening dialog…"}</p>;
+  if (snapshot.dialogKind === "atomProblem") return <AtomProblemForm data={snapshot.data} busy={busy} error={error}
+    onAction={action => sendAction({ action, targetVersion: snapshot.data.targetVersion })} onClose={() => sendAction({ action: "cancel" })} />;
   if (snapshot.dialogKind === "structureTemplates") return <Suspense fallback={<p role="status">Opening Templates…</p>}>
     <StructureTemplatePicker {...snapshot.data} busy={busy} error={error} onReady={reportReady}
       onInsert={templateId => sendAction({ action: "insert", templateId })} onClose={() => sendAction({ action: "cancel" })} />

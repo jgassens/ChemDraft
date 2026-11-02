@@ -1,4 +1,4 @@
-import { formulaSpansFromText } from "@chemdraft/document-workflow-core";
+import { atomProblem, formulaSpansFromText } from "@chemdraft/document-workflow-core";
 import { nativeMoleculeLayoutQuality } from "./depiction2d/layoutQuality";
 import { planObjectArrangement, moleculeAnchorForArrangement, moleculeVisualBoundsForArrangement, textVisualBoundsForArrangement, type ArrangementLayout, type ArrangementOptions, type ArrangementItem, type LayoutBounds } from "@chemdraft/layout-engine";
 import { snapRotationDegrees } from "./rotationSnap";
@@ -9275,10 +9275,25 @@ export function applyNativeWarningSuppressionToScope(
 }
 
 /**
- * Dismiss (or restore) one atom's valence warning from the context menu. Suppression is a
- * per-atom mark: the checker reports the atom valid, so the badge disappears and no warning
- * is stored, until the user restores it.
+ * Apply one explicit, currently justified problem-window action through the normal patch path.
  */
+export function applyNativeAtomProblemFix(
+  document: ChemDraftDocument,
+  objectId: string,
+  atomId: string,
+  action: import("@chemdraft/document-workflow-core").AtomProblemAction
+): { document: ChemDraftDocument; label: string } | undefined {
+  const molecule = document.pages.flatMap(page => page.objects).find(object => object.id === objectId);
+  if (molecule?.type !== "molecule" || !isEditableNativeMoleculeGraph(molecule)) return undefined;
+  const fix = atomProblem(molecule, atomId)?.fixes.find(fix => fix.action === action);
+  if (!fix) return undefined;
+  const atoms = molecule.atoms.map(atom => atom.id === atomId ? fix.atom : atom);
+  const updated = refreshNativeSingleBondGraph(molecule, atoms, molecule.bonds);
+  return { document: selectDocumentObject(applyPatch(document, { op: "updateObject", objectId, changes: updated }, { now: phase4Timestamp }), objectId),
+    label: fix.label };
+}
+
+/** Suppression hides only the badge; raw validation remains available. */
 export function applyNativeAtomWarningSuppression(
   document: ChemDraftDocument,
   target: NativeMoleculeDeleteTarget,

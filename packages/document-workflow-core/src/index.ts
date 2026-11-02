@@ -1,4 +1,5 @@
 export * from "./chemicalIdentity";
+export * from "./atomProblems";
 export * from "./exportWarnings";
 export * from "./formulaText";
 export * from "./atoms";

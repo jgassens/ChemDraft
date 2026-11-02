@@ -13,6 +13,23 @@ the drawing and reports the same warning naming the carbon and unsupported valen
 Warning and repeat: the (!) badge hides, exports still warn, and analysis still reports the
 problem. Save/reopen and undo/redo suppression; check that atoms, bonds and charges stay unchanged.
 
+Atom problem window (macOS and Windows): change a pincer Ru–N bond to double. The edit lands
+with (!) on neutral N. Click the badge, then reach it with Tab and activate with Enter/Space:
+each opens the same movable, modeless native Atom problem window without editing the drawing.
+It explains the current bonds, valence and charge and offers +1. Apply it: N becomes N+, stays
+selected, and one Undo restores the warning; Redo restores N+. Repeat with an S(III) atom
+(one S=O and one S–C bond): explicitly add H to reach S(IV). For a literal OH2 on one bond,
+remove H to get OH. Each fix is one labelled Undo and leaves connectivity/coordinates intact.
+Five-bond carbon offers no H/charge fix; Ignore hides only its badge, while validation/export
+still warn. Right-click that atom, choose Atom problem…, then Restore: the badge returns in one
+Undo step. Retarget to a second invalid atom: no second window appears and no automatic change
+occurs. Correct or delete the target using drawing tools: the window shows No problem. Move the
+window off the document onto another monitor, close/reopen it, and check its remembered position,
+first-open centring, toolbar usability/stacking, document ownership, and no Windows taskbar entry.
+Repeat at mixed DPI; switch tabs while it is open, apply a fix to its originating drawing, and
+verify selection/Undo there. Closing/replacing that drawing closes its window. Check badge focus,
+clicks with a drawing tool active, Space scrolling prevention, and absence of badges in exports.
+
 Manual stress must cover tab initialization, user tab persistence, mixed states, multi-molecule
 scaling, sparse override precedence, terminal carbon labels, hidden implicit hydrogens, explicit
 hydrogens, fonts, save/reopen, undo/redo, Spin 3D, atom-label editor placement, SVG export, and ring
