@@ -76,6 +76,7 @@
       }
     },
     "macOS": {
+      "minimumSystemVersion": "11.0",
       "frameworks": ["./Sparkle.framework"],
       "entitlements": "./chemdraft.entitlements"
     }

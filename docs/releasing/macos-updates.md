@@ -7,6 +7,10 @@ silently install updates. A user can start the same visible check at any time fr
 
 - [ ] Run `node scripts/pin-external-tools.mjs --check` before a release; refresh pins if it differs.
 - [ ] For any pin bump, run that check on both macOS and Windows; each run checks only its host platform.
+- [ ] Inspect every Mach-O in the packaged bundle, including helpers, frameworks, sidecars and
+  runtime libraries, with `otool -l`. Each architecture's `LC_BUILD_VERSION` minos or
+  `LC_VERSION_MIN_MACOSX` version must be no greater than `bundle.macOS.minimumSystemVersion`
+  in `apps/desktop/src-tauri/tauri.conf.json`.
 
 ## Why installed plugins survive
 
