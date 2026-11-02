@@ -122,6 +122,8 @@ body.palette-window-body #root {
 html.palette-popover-window-html,
 body.palette-popover-window-body,
 body.palette-popover-window-body #root {
+  overflow: hidden;
+  overflow-anchor: none;
   min-width: 0;
   width: max-content;
   height: max-content;
@@ -165,6 +167,8 @@ body.palette-tooltip-window-body #root {
 }
 
 .palette-popover-shell {
+  overflow: hidden;
+  overflow-anchor: none;
   box-sizing: border-box;
   width: max-content;
   height: max-content;

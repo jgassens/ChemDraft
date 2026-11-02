@@ -856,6 +856,51 @@ describe("ToolPalette arrange flyouts", () => {
     container.remove();
   });
 
+  it.each(["core.main", "core.structure"])("selects rings under the benzene button in %s", async (toolsetId) => {
+    const onInvoke = vi.fn();
+    await act(async () => {
+      root.render(createElement(ToolPalette, {
+        groups: getToolsetCommandGroups(toolsetId), itemGroups: getToolsetItemGroups(toolsetId),
+        activeTool: "tool.cyclooctane", orientation: "horizontal", onInvoke
+      }));
+    });
+    const owner = container.querySelector<HTMLButtonElement>('[data-command-flyout-button="ring-templates"]')!;
+    expect(owner.getAttribute("data-toolbar-asset")).toBe("Custom_Benzene");
+    expect(owner.getAttribute("aria-pressed")).toBe("true");
+    act(() => owner.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(onInvoke).toHaveBeenCalledExactlyOnceWith("tool.benzene");
+    const menu = container.querySelector<HTMLElement>('[data-command-flyout-menu="ring-templates"]')!;
+    const choices = Array.from(menu.querySelectorAll<HTMLButtonElement>('[data-command-id]'));
+    expect(choices).toHaveLength(9);
+    for (const choice of choices) {
+      onInvoke.mockClear();
+      act(() => owner.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+      expect(menu.hidden).toBe(false);
+      act(() => choice.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+      expect(onInvoke).toHaveBeenCalledExactlyOnceWith(choice.dataset.commandId);
+      expect(menu.hidden).toBe(true);
+    }
+  });
+
+  it.each(["core.main", "core.structure"])("sends every ring to the native %s flyout", async (toolsetId) => {
+    const onRequestFlyout = vi.fn();
+    await act(async () => {
+      root.render(createElement(ToolPalette, {
+        groups: getToolsetCommandGroups(toolsetId), itemGroups: getToolsetItemGroups(toolsetId),
+        orientation: "horizontal", onInvoke: vi.fn(), onRequestFlyout
+      }));
+    });
+    const owner = container.querySelector<HTMLButtonElement>('[data-command-flyout-button="ring-templates"]')!;
+    expect(owner.getAttribute("aria-controls")).toBeNull();
+    act(() => owner.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+    expect(onRequestFlyout).toHaveBeenCalledTimes(1);
+    expect(onRequestFlyout.mock.calls[0][0].flyout.commands.map((command: { id: string }) => command.id)).toEqual([
+      "tool.benzene", "tool.cyclopropane", "tool.cyclobutane", "tool.cyclopentane", "tool.cyclohexane",
+      "tool.cycloheptane", "tool.cyclooctane", "tool.chairCyclohexaneA", "tool.chairCyclohexaneB"
+    ]);
+    expect(container.querySelector<HTMLElement>('[data-command-flyout-menu="ring-templates"]')?.hidden).toBe(true);
+  });
+
   it("opens art arrange flyout menus and invokes submenu commands", () => {
     const onInvoke = vi.fn();
     act(() => {

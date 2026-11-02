@@ -16,8 +16,8 @@ import { formatShortcutLabel } from "./toolsets";
  * `lib.rs` and fails if the two ever drift, so a command added to (or removed from) one side must
  * be reflected in the other.
  *
- * Deliberately omitted from the web bar (they are OS-level, not in-document actions): the macOS
- * application menu (About/Services/Hide/Quit), the Window menu (minimize/maximize), and File ▸
+ * Deliberately omitted from the web bar (they are OS-level, not in-document actions):
+ * About/Services/Hide/Quit, the Window menu (minimize/maximize), and File ▸
  * Close Window / Quit. File ▸ Check for Updates is also native-only because Sparkle owns its UI and
  * lifecycle rather than the frontend command registry. Help ▸ About is OS-level too; Help ▸ Report a
  * Bug… is routed like any other command.
@@ -31,7 +31,7 @@ export interface AppMenuCommand {
   /** Command id dispatched through the frontend command registry. */
   commandId: string;
   label: string;
-  /** Pre-formatted keyboard hint (mac glyphs), e.g. "⇧⌘S". */
+  /** Platform-formatted keyboard hint, e.g. "⇧⌘S" or "Ctrl+Shift+S". */
   shortcut?: string;
   /** The raw accelerator the hint was formatted from, e.g. "Shift+Cmd+S", for checking it binds. */
   accelerator?: string;
@@ -90,6 +90,8 @@ export interface PluginAppMenuItem {
 }
 
 export interface AppMenuContext {
+  /** Explicit in tests so both desktop conventions can be checked from one host. */
+  platform?: ShortcutPlatform;
   /** Number of installed plugins with a cached update offer. */
   availablePluginUpdateCount?: number;
   rulersVisible: boolean;
@@ -230,6 +232,7 @@ function buildPageSetupSubmenu(): AppMenuSubmenu {
 export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
   separatorSeq = 0;
   const chemDrawScheme = context.keybindingScheme === "chemdraw";
+  const platform = context.platform ?? detectShortcutPlatform();
 
   const toolbarsSubmenu: AppMenuSubmenu = {
     kind: "submenu",
@@ -252,7 +255,8 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
         separator(),
         buildPageSetupSubmenu(),
         separator(),
-        command("export.open", "Export…", { accelerator: chemDrawScheme ? "Ctrl+Cmd+E" : "Shift+Cmd+E" })
+        command("export.open", "Export…", { accelerator: chemDrawScheme ? "Ctrl+Cmd+E" : "Shift+Cmd+E" }),
+        ...(platform === "macos" ? [] : [separator(), command("view.togglePreferences", "Preferences…", { accelerator: "Cmd+," })])
       ]
     },
     {
@@ -298,8 +302,6 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
       id: "view",
       label: "View",
       items: [
-        command("view.togglePreferences", "Preferences…", { accelerator: "Cmd+," }),
-        separator(),
         command("view.toggleRulers", "Show Rulers", {
           accelerator: chemDrawScheme ? "Cmd+;" : "Cmd+R",
           checked: context.rulersVisible
@@ -357,6 +359,14 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
     }
   ];
 
+  if (platform === "macos") {
+    sections.unshift({ id: "app", label: "ChemDraft", items: [
+      command("view.togglePreferences", "Preferences…", { accelerator: "Cmd+," })
+    ] });
+  }
+  for (const item of flattenAppMenuCommands(sections)) {
+    item.shortcut = formatMenuShortcut(item.accelerator, platform);
+  }
   appendPluginMenuItems(sections, [
     ...pluginUpdatesAvailableMenuItem(context.availablePluginUpdateCount ?? 0),
     ...(context.pluginMenuItems ?? [])

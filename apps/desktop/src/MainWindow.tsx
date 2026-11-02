@@ -1,3 +1,5 @@
+import { nativeTemplateForToolCommand } from "./ringTemplates";
+import { nativeFragmentSproutTarget, nativeDieneFuseTarget, nativeOxoHotkeyTarget, nativeBranchedHotkeyTarget, type FragmentSproutKind } from "./sproutHotkeys";
 import { applyTableCommand, applyTableFontCommand, applyTableObjectEdit, createTableCommands, createTableInsertAction, parseTableInsertCommandId, resolveActiveTableCell, selectedTable, tableInsertCommandId, tableInspectorSnapshot, type ActiveTableCell, type TableInsertDimensions } from "./tableCommands";
 import { TableCellEditor, TableColumnResizers, type TableCellEditorHandle } from "./tableCellEditor";
 import { tableCellAtPoint, tableEditingContent, tableTextAtPoint, type TableEditingAction } from "./tableInteraction";
@@ -290,6 +292,10 @@ import {
   atomNicknameLabelActions,
   atomElementCommandId,
   nicknameLabelByCommandId,
+  fragmentAtomDrawingHotkeys,
+  fragmentBondDrawingHotkeys,
+  fragmentSproutKindForCommand,
+  fragmentSproutCommands,
   numericAtomDrawingHotkeys,
   numericBondDrawingHotkeys,
   artBooleanOperationCommandIds,
@@ -445,7 +451,6 @@ import {
   applyClipboardPastePayload,
   applyImportedPageFitRecommendation,
   applyNativeArtBooleanOperationToSelection,
-  nativeCarbonylHotkeyAtAtomTarget,
   applyNativeAtomElementTarget,
   commitNativeAtomLabelTarget,
   normalizeNativeAtomElementLabel,
@@ -618,7 +623,6 @@ import {
   nativeArtToolIsOrbital,
   nativeOrbitalAnchorPoint,
   aimNativeOrbitalPlacement,
-  nativeTemplateForToolCommand,
   projectedPlaneTiltMaxRadians,
   wrapProjectedPlaneTiltVectorRadians,
   alignSelectedDocumentObjects,
@@ -1707,7 +1711,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.01.20.15-sonnet";
+const CURRENT_BUILD_STAMP = "11.01.20.34-sonnet";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -4612,9 +4616,22 @@ export function MainWindow({
 
   const sproutAtHoveredNativeAtom = useCallback((kind: NativeAtomSproutKind, statusNoun: string) => {
     applyHoveredNativeTargetEdit("atom", statusNoun, (document, target) =>
-      nativeAtomSproutHotkeyTarget(document, target, kind, hoveredGrowthArrowPlan(target))
+      kind === "gemDimethyl"
+        ? nativeBranchedHotkeyTarget(document, target, hoveredGrowthArrowPlan(target))
+        : nativeAtomSproutHotkeyTarget(document, target, kind, hoveredGrowthArrowPlan(target))
     );
   }, [applyHoveredNativeTargetEdit, hoveredGrowthArrowPlan]);
+
+  const sproutFragmentAtHoveredNativeAtom = useCallback((kind: FragmentSproutKind) => {
+    const statusNoun = fragmentSproutCommands.find(([id]) => id === kind)![1].toLowerCase();
+    applyHoveredNativeTargetEdit("atom", statusNoun, (document, target) =>
+      nativeFragmentSproutTarget(document, target, kind, hoveredGrowthArrowPlan(target))
+    );
+  }, [applyHoveredNativeTargetEdit, hoveredGrowthArrowPlan]);
+
+  const fuseDieneAtHoveredNativeBond = useCallback(() => {
+    applyHoveredNativeTargetEdit("bond", "fused cyclopentadiene", nativeDieneFuseTarget);
+  }, [applyHoveredNativeTargetEdit]);
 
   const attachRingAtHoveredNativeAtom = useCallback((templateId: NativeMoleculeTemplateId, statusNoun: string) => {
     applyHoveredNativeTargetEdit("atom", statusNoun, (document, target) =>
@@ -4632,7 +4649,7 @@ export function MainWindow({
     const target = hoveredNativeDeleteTargetRef.current
       ?? nativeDeleteTargetFromSelectionPart(documentRef.current, selectedNativeMoleculePart);
     if (!target || target.kind !== "atom") {
-      setStatus("No hovered carbon for C=O");
+      setStatus("No hovered atom for carbonyl or oxo");
       return;
     }
 
@@ -4641,9 +4658,9 @@ export function MainWindow({
     const plan = arrow && arrow.objectId === target.objectId && arrow.atomId === target.atomId
       ? { newAtomPoint: arrow.newAtomPoint, targetAtomId: arrow.targetAtomId, direction: arrow.direction }
       : undefined;
-    const { document: nextDocument, refusal } = nativeCarbonylHotkeyAtAtomTarget(currentDocument, target, plan);
+    const { document: nextDocument, refusal } = nativeOxoHotkeyTarget(currentDocument, target, plan);
     if (nextDocument === currentDocument) {
-      setStatus(`Cannot add C=O to hovered atom: ${nativeTemplateFallbackReasonText(refusal!)}`);
+      setStatus(`Cannot add carbonyl or oxo to hovered atom: ${nativeTemplateFallbackReasonText(refusal!)}`);
       return;
     }
 
@@ -4655,7 +4672,7 @@ export function MainWindow({
     setSelectedNativeMoleculePart(undefined);
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
-    setStatus("Added C=O to hovered carbon");
+    setStatus("Added carbonyl or oxo to hovered atom");
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange, selectedNativeMoleculePart]);
 
   const addSingleBondToHoveredNativeAtom = useCallback(() => {
@@ -11019,6 +11036,16 @@ export function MainWindow({
 
     editActions.forEach((action) => {
       register(action, () => {
+        if (action.id.startsWith("atom.sproutFragmentAtHoveredAtom.")) {
+          const kind = fragmentSproutKindForCommand(action.id);
+          if (kind) sproutFragmentAtHoveredNativeAtom(kind);
+          return;
+        }
+        if (action.id === "bond.fuseDieneAtHoveredBond") {
+          fuseDieneAtHoveredNativeBond();
+          return;
+        }
+
         if (action.id === "atom.addSingleBondToHoveredAtom") {
           addSingleBondToHoveredNativeAtom();
           return;
@@ -11058,7 +11085,7 @@ export function MainWindow({
         if (action.id.startsWith("bond.fuseRingAtHoveredBond.")) {
           const templateId = action.id.replace("bond.fuseRingAtHoveredBond.", "");
           if (
-            templateId === "benzene" || templateId === "cyclobutane" || templateId === "cyclopentane" ||
+            templateId === "benzene" || templateId === "cyclopropane" || templateId === "cyclobutane" || templateId === "cyclopentane" ||
             templateId === "cyclohexane" || templateId === "cycloheptane" || templateId === "cyclooctane" ||
             templateId === "chairCyclohexaneA" || templateId === "chairCyclohexaneB"
           ) {
@@ -11081,7 +11108,7 @@ export function MainWindow({
         }
 
         if (action.id === "atom.sproutGemDimethylAtHoveredAtom") {
-          sproutAtHoveredNativeAtom("gemDimethyl", "gem-dimethyl");
+          sproutAtHoveredNativeAtom("gemDimethyl", "branched alkyl");
           return;
         }
 
@@ -11508,6 +11535,8 @@ export function MainWindow({
     analysisReportIsStale,
     addChargeToHoveredNativeAtom,
     addCarbonylToHoveredNativeAtom,
+    sproutFragmentAtHoveredNativeAtom,
+    fuseDieneAtHoveredNativeBond,
     addSingleBondToHoveredNativeAtom,
     applyObjectStyleCommand,
     applyMoleculeInspectorCommand,
@@ -23502,6 +23531,10 @@ function nativeReactionArrowStatusLabel(arrowKind: ArrowObject["arrowKind"]): st
 
 function nativeTemplateStatusLabel(templateId: NativeMoleculeTemplateId): string {
   switch (templateId) {
+    case "cyclopropane": return "cyclopropane";
+    case "cyclobutane": return "cyclobutane";
+    case "cycloheptane": return "cycloheptane";
+    case "cyclooctane": return "cyclooctane";
     case "cyclopentane":
       return "cyclopentane";
     case "cyclohexane":
@@ -23684,6 +23717,8 @@ export function hoveredNativeTargetShortcutCommand(
   key: string,
   scheme: KeybindingScheme = "chemdraft"
 ): string | undefined {
+  const fragments = target?.kind === "atom" ? fragmentAtomDrawingHotkeys : target?.kind === "bond" ? fragmentBondDrawingHotkeys : undefined;
+  if (fragments && Object.prototype.hasOwnProperty.call(fragments, key)) return fragments[key];
   if (scheme === "chemdraw") {
     return target?.kind === "atom" || target?.kind === "bond"
       ? chemDrawHoveredTargetHotkeyCommand(target.kind, key)
