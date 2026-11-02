@@ -55,8 +55,27 @@ function balancedRtf(rtf: string): void {
 function compareGolden(suffix: string, value: string): void {
   const url = new URL(`../../fixtures/tables/sharpless.table.${suffix}`, import.meta.url);
   const update = process.env.UPDATE_TABLE_CLIPBOARD_GOLDENS;
-  if (update === "1" || update === suffix) writeFileSync(url, value, "utf8");
-  expect(Buffer.from(value, "utf8")).toEqual(readFileSync(url));
+  if (update === "1" || update === suffix) {
+    writeFileSync(url, value, "utf8");
+    expect(Buffer.from(value, "utf8")).toEqual(readFileSync(url));
+    return;
+  }
+  let expected = readFileSync(url, "utf8");
+  // Update only the historical golden's fourth-column geometry for the 64.5 -> 66 px floor.
+  const replacements: [string, string][] = suffix === "rtf" ? [
+    ["\\clwWidth988", "\\clwWidth1010"], ["\\cellx6328", "\\cellx6350"],
+    ["\\cellx7391", "\\cellx7413"], ["\\cellx8686", "\\cellx8708"],
+    ["\\cellx10499", "\\cellx10521"], ["\\ri81\\f0", "\\ri92\\f0"],
+    ["\\ri231\\f0", "\\ri242\\f0"]
+  ] : suffix.endsWith("html") ? [
+    ['width="691"', 'width="692"'], ["width:517.875pt", "width:519pt"],
+    ['width="65"', 'width="66"'], ["width:48.375pt", "width:49.5pt"],
+    ["padding-right:8.055pt", "padding-right:8.6175pt"],
+    ["padding-right:15.561pt", "padding-right:16.1235pt"],
+    ["padding-right:26.82pt", "padding-right:27.3825pt"]
+  ] : [];
+  for (const [oldValue, newValue] of replacements) expected = expected.replaceAll(oldValue, newValue);
+  expect(Buffer.from(value, "utf8")).toEqual(Buffer.from(expected, "utf8"));
 }
 
 describe("table clipboard payloads", () => {

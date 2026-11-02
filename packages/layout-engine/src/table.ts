@@ -119,8 +119,10 @@ export function planTableLayout(table: TableObject): TableLayout {
         widest = Math.max(widest, runWidth(runs, style));
       }
     }));
+    // Reserve three em of content space plus padding, on the same half-pixel grid.
+    const minimumWidth = Math.ceil((3 * style.fontSizePx + 2 * padding.x) * 2) / 2;
     const width = column.width.mode === "fixed" ? column.width.px
-      : Math.ceil((Math.max(widest, pre + post) * 1.04 + 2 * padding.x) * 2) / 2;
+      : Math.max(minimumWidth, Math.ceil((Math.max(widest, pre + post) * 1.04 + 2 * padding.x) * 2) / 2);
     const inset = Math.max(0, (width - 2 * padding.x - pre - post) / 2);
     const result = { x, width, ...(column.align === "decimal" ? {
       decimalAnchorX: x + padding.x + inset + pre,

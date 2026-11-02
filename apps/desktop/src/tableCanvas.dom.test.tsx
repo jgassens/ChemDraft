@@ -110,6 +110,33 @@ describe("native tables on the canvas", () => {
     }
   });
 
+  it("opens and edits a body cell in a newly inserted default empty table", async () => {
+    await render(createPhase4Document());
+    await command("table.insert.r6c4h1");
+    const table = window.__CHEMDRAFT_AGENT__!.snapshot().document.pages[0].objects[0];
+    if (table.type !== "table") throw new Error("Expected table");
+    expect(table.rows).toHaveLength(6); expect(table.columns).toHaveLength(4);
+    const box = planTableLayout(table).cells.find(cell => cell.rowIndex === 2 && cell.columnIndex === 1)!.box;
+    const scale = (window.__CHEMDRAFT_AGENT__!.snapshot().viewport as { scale: number }).scale;
+    const x = (box.x + box.width / 2) * scale, y = (box.y + box.height / 2) * scale;
+    const hit = container.querySelector("[data-table-hit-target]")!;
+    for (let i = 0; i < 2; i++) {
+      await pointer(hit, "pointerdown", x, y);
+      await pointer(container.querySelector(".page")!, "pointerup", x, y);
+    }
+    await act(async () => hit.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, detail: 2, clientX: x, clientY: y })));
+    const editor = container.querySelector<HTMLTextAreaElement>("[data-table-cell-editor] textarea");
+    expect(editor).not.toBeNull();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(editor, "edited");
+      editor!.dispatchEvent(new Event("input", { bubbles: true }));
+      editor!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    const edited = window.__CHEMDRAFT_AGENT__!.snapshot().document.pages[0].objects[0] as typeof table;
+    expect(edited.rows[2].cells[1].text).toBe("edited");
+    expect(edited.rows.flatMap(row => row.cells).filter(cell => cell.text !== "")).toHaveLength(1);
+  });
+
   it("leaves the empty bounding-box corners outside a 45-degree table hit rect", async () => {
     const nativeDocument = fixture(), table = nativeDocument.pages[0].objects[0];
     if (table.type !== "table") throw new Error("Expected table");

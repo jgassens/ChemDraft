@@ -19,6 +19,31 @@ function smallTable(align: TableObject["columns"][number]["align"], texts: strin
 }
 
 describe("table layout and SVG", () => {
+  it("floors auto columns at three em plus padding without changing wide or fixed columns", () => {
+    const minimum = Math.ceil((3 * style.fontSizePx + 2 * table.tableStyle.cellPaddingPx.x) * 2) / 2;
+    const empty = { ...table, caption: undefined, footnotes: [], headerRowCount: 0,
+      columns: table.columns.map(column => ({ ...column, width: { mode: "auto" as const } })),
+      rows: table.rows.map(row => ({ ...row, cells: row.cells.map(() => ({ text: "", spans: [] })) })) };
+    expect(planTableLayout(empty).columns.map(column => column.width)).toEqual(empty.columns.map(() => minimum));
+    expect(planTableLayout(smallTable("left", ["i"])).columns[0].width).toBe(minimum);
+    const text = "A long text that exceeds the minimum";
+    const measured = measureTextRun(text, { fontSizePx: style.fontSizePx, fontWeight: style.fontWeight });
+    expect(planTableLayout(smallTable("left", [text])).columns[0].width)
+      .toBe(Math.ceil((measured * 1.04 + 2 * table.tableStyle.cellPaddingPx.x) * 2) / 2);
+    expect(planTableLayout(smallTable("left", [""], 10)).columns[0].width).toBe(10);
+  });
+
+  it("centers the decimal block when an auto column is floored", () => {
+    const layout = planTableLayout(smallTable("decimal", ["1.2", ".3"]));
+    const column = layout.columns[0], block = column.decimalBlock!;
+    const minimum = Math.ceil((3 * style.fontSizePx + 2 * table.tableStyle.cellPaddingPx.x) * 2) / 2;
+    expect(column.width).toBe(minimum);
+    expect(block.insetLeft).toBeGreaterThan(0);
+    expect(block.insetLeft).toBeCloseTo(block.insetRight);
+    expect(column.decimalAnchorX! + (block.postWidth - block.preWidth) / 2).toBeCloseTo(column.x + column.width / 2);
+    for (const cell of layout.cells) expect(cell.lines[0].pieces.every(piece => piece.x === column.decimalAnchorX)).toBe(true);
+  });
+
   it("caches immutable snapshots and shares SVG children while keeping layer indices distinct", () => {
     const input = smallTable("left", ["original"]);
     const layout = planTableLayout(input), svg = planTableObjectSvg(input, 0);
@@ -56,7 +81,7 @@ describe("table layout and SVG", () => {
         109,
         109,
         134,
-        64.5,
+        66,
         69.5,
         85,
         119.5,
