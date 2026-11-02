@@ -6714,9 +6714,9 @@ describe("Phase 4 document workflow", () => {
     expect(atomDisplayLabel(molecule.atoms[0], molecule.bonds, undefined, molecule.atoms)).toBe("C");
     expect(nativeMoleculeInvalidAtomStates(molecule)).toHaveLength(1);
 
-    // Lower-case and two-letter symbols canonicalize ("fe" → Fe); Fe has no valence table entry,
+    // Exact-capitalization two-letter symbols convert; Fe has no valence table entry,
     // so it converts without a flag.
-    const ironText = insertNativeTextObject(createPhase4Document("Iron Text"), { x: 300, y: 300 }, "fe");
+    const ironText = insertNativeTextObject(createPhase4Document("Iron Text"), { x: 300, y: 300 }, "Fe");
     const ironObject = ironText.pages[0].objects.find((object) => object.type === "text");
     const iron = selectedMolecule(convertNativeTextObjectToAtom(ironText, ironObject?.id ?? ""));
     expect(iron.atoms[0]).toMatchObject({ element: "Fe" });
