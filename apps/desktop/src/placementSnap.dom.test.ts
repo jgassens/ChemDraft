@@ -106,7 +106,7 @@ describe.each(["macos", "windows"] as const)("placement pointer handlers on %s",
 
   const status = () => container.querySelector("[data-status-message]")?.textContent ?? "";
 
-  it.each(["double", "triple"])("refuses to set a %s bond on a full-valence carbon, says why, and leaves Undo empty", async (order) => {
+  it.each(["double", "triple"])("sets a %s bond on a full-valence carbon with a warning and one Undo entry", async (order) => {
     const { document, objectId, centerId } = fullCarbonWithTail();
     await mount(`tool.${order}Bond`, document);
     const before = molecules(current());
@@ -118,9 +118,13 @@ describe.each(["macos", "windows"] as const)("placement pointer handlers on %s",
     const wrapper = container.querySelector<HTMLElement>(`[data-object-id="${objectId}"]`)!;
     await pointer("pointerdown", midpoint, wrapper);
     await pointer("pointerup", midpoint, wrapper);
-    expect(molecules(current())).toEqual(before);
-    expect(container.querySelector('[data-can-undo="true"]')).toBeNull();
-    expect(status()).toMatch(/Bond order not changed: C would exceed its valence/);
+    expect(molecules(current())[0].bonds.find(candidate => candidate.id === bond.id)?.order).toBe(order);
+    expect(molecules(current())[0].atoms).toEqual(molecule.atoms);
+    expect(container.querySelector(`[data-invalid-atom-id="${centerId}"] title`)?.textContent)
+      .toBe(`C has unsupported valence ${order === "double" ? 5 : 6}.`);
+    expect(status()).toBe(`Set bond to ${order}`);
+    expect(container.querySelector('[data-can-undo="true"]')).not.toBeNull();
+    await undoOnce(before);
   });
 
   it("refuses a dashed (dative) bond click like order cycling and does not call it unchanged", async () => {
@@ -146,7 +150,7 @@ describe.each(["macos", "windows"] as const)("placement pointer handlers on %s",
     expect(status()).toBe("Bond is already double");
   });
 
-  it.each(["tool.doubleBond", "tool.tripleBond"])("refuses to connect two atoms with %s past valence, says why, and leaves Undo empty", async (tool) => {
+  it.each(["tool.doubleBond", "tool.tripleBond"])("connects two atoms with %s past valence with a warning and one Undo entry", async (tool) => {
     const { document, centerId, tailId } = fullCarbonWithTail();
     await mount(tool, document);
     const before = molecules(current());
@@ -156,9 +160,15 @@ describe.each(["macos", "windows"] as const)("placement pointer handlers on %s",
     await pointer("pointerdown", source, wrapper);
     await pointer("pointermove", target, wrapper);
     await pointer("pointerup", target, wrapper);
-    expect(molecules(current())).toEqual(before);
-    expect(container.querySelector('[data-can-undo="true"]')).toBeNull();
-    expect(status()).toMatch(/Freeform bond not placed: C (would exceed its valence|has no available valence)/);
+    const after = molecules(current())[0];
+    expect(after.atoms).toEqual(before[0].atoms);
+    expect(after.bonds).toHaveLength(before[0].bonds.length + 1);
+    expect(after.bonds.at(-1)).toMatchObject({ fromAtomId: tailId, toAtomId: centerId,
+      order: tool === "tool.doubleBond" ? "double" : "triple" });
+    expect(container.querySelector(`[data-invalid-atom-id="${centerId}"] title`)?.textContent)
+      .toBe(`C has unsupported valence ${tool === "tool.doubleBond" ? 6 : 7}.`);
+    expect(container.querySelector('[data-can-undo="true"]')).not.toBeNull();
+    await undoOnce(before);
   });
 
   const tools = ["tool.doubleBond", "tool.tripleBond", "tool.bond", "tool.wedgeBond", "tool.hashedBond", "tool.dashedBond", "tool.boldBond"];

@@ -19047,7 +19047,10 @@ export function createNativeSavePayload(document: ChemDraftDocument): NativeSave
     filename: `${sanitizeFilename(document.title.replace(/\.chemdraft$/i, ""))}.chemdraft`,
     mimeType: "chemical/x-cdxml",
     contents: result.contents,
-    warnings: result.warnings,
+    warnings: [
+      ...nativeDocumentExportWarnings(document).map(({ code, message, objectId }) => ({ code, message, sourceObjectId: objectId })),
+      ...result.warnings
+    ],
     // The embedded native document's hash, already computed by the export: hashing the whole
     // envelope again cost ~190 ms per autosave on a large page.
     payloadHash: result.nativePayloadHash

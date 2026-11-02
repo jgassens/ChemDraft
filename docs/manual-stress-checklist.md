@@ -611,13 +611,16 @@ double-click opens a fresh app with that document. On macOS, ⌘Q
 and the application menu's Quit the same way, with a palette open.
 
 Ring placement valence: with the cyclohexane, benzene, and chair tools, hover and click a bond of
-neopentane (a four-bond carbon): the ghost and the result are a separate ring, the molecule is
-unchanged, and the status says an atom on that bond has no free valence; press 6 over the same bond
-and check it refuses with the same reason; benzene and cyclohexane on a benzene or cyclohexane bond
-still make naphthalene and decalin (both platforms). Label an atom OMe with one bond (the Atom Label
-tool on a chain end, type OMe), then click a bond to it with the cyclohexane tool: the ring is placed
-separately, the OMe and its bond are unchanged, and the status says an atom on that bond has no free
-valence.
+neopentane (a four-bond carbon): the ghost previews the fused ring and flags the invalid attachment;
+the click fuses it onto the existing molecule, the over-valent carbon shows (!), and the status
+reports the fused template. Undo once restores neopentane. Press 6 over the same bond and check
+the ring also fuses with (!) and one Undo step; benzene and cyclohexane on a benzene or cyclohexane
+bond still make naphthalene and decalin (both platforms). Label an atom OMe with one bond (the Atom
+Label tool on a chain end, type OMe), then click a bond to it with the cyclohexane tool: the ring
+fuses onto that bond, the OMe label stays and shows (!) for its extra attachment, and Undo once
+restores the original molecule. Setting the C–OMe bond to double or triple is still refused: a
+multiple bond to a group label cannot be represented by that label, so the bond stays single and
+no Undo entry is added.
 
 Open warnings list: open `packages/fixtures/cdxml/ten-metals.cdxml` (11 warnings) and
 `invalid-element.cdxml` (3 warnings); the status line keeps "N warnings" (and says "1 warning" for a

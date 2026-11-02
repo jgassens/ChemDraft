@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { parseMolfileGraph } from "@chemdraft/clipboard-adapter";
 import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
-import { copyAsMolfile, copyAsSmiles, exportPhase4Cdxml } from "./documentWorkflow";
+import { copyAsMolfile, copyAsSmiles, createNativeSavePayload, exportPhase4Cdxml } from "./documentWorkflow";
 import { exportStructureListSdf, exportStructureListSmi } from "./structureListExport";
 import { openChemDraftPayload } from "@chemdraft/cdx-compat";
 import { invalidCarbonDocument, invalidCarbonWarning } from "../../../packages/document-workflow-core/test/invalidStructureFixtures";
@@ -11,6 +11,22 @@ vi.mock("@chemdraft/rdkit-adapter/identifiers", () => ({ computeStructureIdentif
 beforeEach(() => { vi.mocked(computeStructureIdentifiers).mockReset().mockResolvedValue(undefined); });
 
 describe.each([false, true])("invalid exports (suppressed=%s)", suppressed => {
+  it("saves a native envelope with the CDXML invalid-structure warnings and the full authored graph", () => {
+    const document = invalidCarbonDocument(suppressed);
+    const before = structuredClone(document);
+    const saved = createNativeSavePayload(document);
+    expect(saved.filename).toMatch(/\.chemdraft$/);
+    expect(saved.warnings.map(({ code, message, sourceObjectId }) => ({ code, message, objectId: sourceObjectId })))
+      .toEqual(exportPhase4Cdxml(document).warnings.map(({ code, message, objectId }) => ({ code, message, objectId })));
+    expect(saved.warnings).toContainEqual(expect.objectContaining({
+      code: "export.invalid_structure", message: invalidCarbonWarning, sourceObjectId: "invalid_carbon"
+    }));
+    const authored = document.pages[0]!.objects[0]!;
+    if (authored.type !== "molecule") throw new Error("Expected molecule fixture");
+    const molecule = openChemDraftPayload(saved.contents).document!.pages[0]!.objects[0]!;
+    expect(molecule).toMatchObject({ type: "molecule", atoms: authored.atoms, bonds: authored.bonds });
+    expect(document).toEqual(before);
+  });
   it.each(["v2000", "v3000"] as const)("copies %s with the full graph and named diagnostic", flavor => {
     const document = invalidCarbonDocument(suppressed);
     const before = structuredClone(document);
