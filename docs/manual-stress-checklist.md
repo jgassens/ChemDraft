@@ -1075,7 +1075,12 @@ visible, and clicking away restores the updated drawing. Check Select/Text tool 
   rapid hover/open sequence to catch delayed tooltip shows. Dismiss the last popover and hover
   again: normal tooltips must resume. Repeat on a second monitor with different scaling. Mouse
   opens must preserve document focus, and utility windows must not cover other applications.
-- Open Art's paint-type dropdown (including None), and the other toolbar selects. Every option
+- Open the native palettes' toolbar selects: Text font, Text size, Stroke width,
+  Dash pattern, Fill/Stroke paint type (including None), and Line ends; Main's style widget:
+  Bond line width, Atom label font/size, Double bond spacing, Text font/size, Fill/Stroke paint
+  type, Stroke width, Dash pattern, Corners, No-reaction mark size, Arrowhead style/size.
+  In Molecule/Ring inspectors open Bond spacing mode, Double-bond position, Bond line cap,
+  Atom label font family/face, background mode, alignment, and placement. Every option
   must have readable dark text on an opaque light background with the OS in both light and dark
   appearance. Confirm the existing macOS light appearance is unchanged.
 - Escape routing from the document/palette is unchanged by this fix: check its existing tool/edit

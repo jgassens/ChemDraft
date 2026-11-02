@@ -1596,8 +1596,6 @@ textarea:focus-visible,
 }
 
 .toolbar-select {
-  /* Match the app's light tokens even when WebView2 inherits a dark OS control scheme. */
-  color-scheme: light;
   box-sizing: border-box;
   height: 24px;
   width: 100%;
@@ -1618,7 +1616,14 @@ textarea:focus-visible,
   white-space: nowrap;
 }
 
-.toolbar-select option {
+/* Keep native palette menus light without changing the inspector's closed-control styling. */
+.toolbar-select,
+.molecule-inspector-field select {
+  color-scheme: light;
+}
+
+.toolbar-select option,
+.molecule-inspector-field select option {
   background-color: var(--cd-bg-control);
   color: var(--cd-text-primary);
 }

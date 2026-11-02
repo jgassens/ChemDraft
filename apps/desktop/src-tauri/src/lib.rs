@@ -4583,11 +4583,11 @@ fn show_toolset_tooltip_window(
     // recheck here, immediately before showing, even if its measurement began before the popover.
     // Hidden/prewarmed popovers do not block the next hover after the last popover closes.
     let windows = app.webview_windows();
+    // A window being torn down may have unreadable visibility; it must not suppress tooltips.
     if toolset_tooltip_suppressed(
         windows
             .iter()
-            .filter(|(label, _)| label.starts_with("toolset-popover-"))
-            .map(|(label, window)| (label.as_str(), window.is_visible().unwrap_or(true))),
+            .map(|(label, window)| (label.as_str(), window.is_visible().unwrap_or(false))),
     ) {
         return Ok(());
     }
@@ -4672,7 +4672,8 @@ fn show_toolset_popover_window(
     configure_toolset_popover_window(&window, focus_mode)?;
     // Remove a tooltip already on screen before revealing this popover on either platform.
     // Subsequent tooltip-show commands are blocked by its native visibility until it hides.
-    hide_toolset_tooltip_window(window.app_handle().clone())?;
+    // Best-effort: a tooltip-hide failure must not prevent opening the requested popover.
+    let _ = hide_toolset_tooltip_window(window.app_handle().clone());
     #[cfg(target_os = "macos")]
     if focus_mode == ToolsetPopoverFocusMode::Preserve {
         // TaoWindow subclasses NSWindow; focusable(false) guards canBecomeKeyWindow.
