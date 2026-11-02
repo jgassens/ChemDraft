@@ -17,7 +17,8 @@ other platform is a follow-up" is not an acceptable state to merge.
   both, so code dead on one side fails there. TypeScript: take the platform as a parameter that
   defaults to detection (`ShortcutPlatform` / `detectDesktopShortcutPlatform()` in
   `keyboardShortcuts.ts`), so one test host can exercise both branches. Tauri: platform-only
-  capabilities carry `"platforms": [...]`; Windows-only config lives in `tauri.windows.conf.json`.
+  capabilities carry `"platforms": [...]`; Windows-only config lives in `tauri.windows.conf.json`,
+  with `tauri.allusers.conf.json` as the all-users overlay.
 - **Known differences you must respect:**
   - App origin: `tauri://localhost` on macOS, `http://tauri.localhost` on Windows (WebView2). Anything
     served same-origin, such as installed plugins, must accept both (`installed_plugins.rs`).
@@ -29,7 +30,8 @@ other platform is a follow-up" is not an acceptable state to merge.
   - Shortcuts: `CmdOrCtrl`, a Ctrl+Y redo alternate off macOS, Mac glyph labels only on macOS, and
     F5/Ctrl+R must never reload the webview (a reload discards the document).
   - Quitting: on Windows, closing the document window quits after flushing the session.
-  - Updates: Sparkle and `appcast.xml` on macOS; `tauri-plugin-updater` and `latest.json` on Windows.
+  - Updates: Sparkle and `appcast.xml` on macOS; `tauri-plugin-updater` with `latest.json` on
+    Windows, plus `latest-allusers.json` for the all-users installer.
   - Clipboard: Windows formats are handled in `windows_clipboard.rs` (UTF-16, CRLF, Office formats).
   - Files: Windows registers `.chemdraft` only; it must never take over `.cdxml`.
   - Paths and tools: backslashes, 8.3 temp paths, no bash, no `zip`, symlinks need privileges. Use
@@ -45,11 +47,11 @@ other platform is a follow-up" is not an acceptable state to merge.
   serving, check it on both platforms. If you can run only one, the report must name the other as
   unverified and say exactly what needs checking there. Never report a platform as verified that you
   did not run.
-- **Releases** are joint: the macOS DMG and the Windows NSIS installer are built from the same commit,
-  the GitHub release body has `## macOS` and `## Windows` sections, and neither platform gets a
-  version the other does not. See `docs/releasing/`. The Windows installer is
-  built only by `.github/workflows/windows-release.yml` on a GitHub-hosted runner (owner rule,
-  2026-10-22), never on a local machine or VM; the Windows session tests the installer CI built.
+- **Releases** are joint: the macOS DMG and the per-user and all-users Windows NSIS installers are
+  built from the same commit, the GitHub release body has `## macOS` and `## Windows` sections, and
+  neither platform gets a version the other does not. See `docs/releasing/`. Both Windows installers
+  are built only by `.github/workflows/windows-release.yml` on a GitHub-hosted runner (owner rule,
+  2026-10-22), never on a local machine or VM; the Windows session tests the installers CI built.
 
 ## 2. Orientation
 
@@ -404,8 +406,9 @@ the label you saw. Only a stable build (on `main`, or `CHEMDRAFT_STABLE_BUILD=1`
 
 ### 15.2 The stable app is never replaced (do not remove)
 
-The stable app (`/Applications/ChemDraft.app`; `%LOCALAPPDATA%\ChemDraft` on Windows) is built from
-`main` as `org.chemdraft.desktop`. Branch builds are a different application, `ChemDraft (dev)` with
+The stable app (`/Applications/ChemDraft.app`; `%LOCALAPPDATA%\ChemDraft` per-user or
+`C:\Program Files\ChemDraft` all-users on Windows) is built from `main` as `org.chemdraft.desktop`.
+Branch builds are a different application, `ChemDraft (dev)` with
 the shared identifier `org.chemdraft.desktop.dev`, one shared app-data folder (settings and installed
 plugins), and one shared single-instance lock. Only one dev build runs at a time; quit it before
 launching another worktree's build. Stable app data and its lock stay separate.

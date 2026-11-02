@@ -27,20 +27,55 @@ skips the normal quit path. If the save fails, the update stops and the app stay
 - A branch build ("ChemDraft (dev)", with its own identifier) and a `pnpm dev` session never check.
   Choosing File > Check for Updates… in one says so in the status bar.
 
+## Choose an installer
+
+Both NSIS installers ship the same ChemDraft version from the same commit:
+
+| Installer | Use | Default program location | Update feed |
+| --- | --- | --- | --- |
+| `ChemDraft_<ver>_x64-setup.exe` | Personal installation, no admin required | `%LOCALAPPDATA%\ChemDraft` | `latest.json` |
+| `ChemDraft_<ver>_x64-allusers-setup.exe` | Managed or shared machines; available to every account | `C:\Program Files\ChemDraft` | `latest-allusers.json` |
+
+The all-users installer creates an all-users Start Menu shortcut and requires administrator rights
+for installation, uninstallation, and **every update**, including updates accepted inside ChemDraft.
+On a normal unelevated launch it requests UAC elevation; a standard user sees an **admin-credentials
+UAC prompt** and needs an administrator to supply credentials. Passive mode does not suppress UAC.
+If credentials are unavailable, choose Later and ask the machine administrator to deploy the update.
+
+For silent deployment, run this from an **elevated prompt**:
+
+```text
+ChemDraft_<ver>_x64-allusers-setup.exe /S
+```
+
+The all-users build reads its own feed, which always points at the all-users installer. The existing
+per-user installer, filename and `latest.json` channel are unchanged. Installing both on one machine
+gives **two copies**; uninstall one first before switching scope. The installers do not migrate or
+remove the other copy. Both register `.chemdraft` only; a retained per-user association can override
+the machine association. See the [scope audit](../architecture/windows-installer-scope.md).
+
 ## Why installed plugins and settings survive
 
-The installer replaces the program files in `%LOCALAPPDATA%\ChemDraft`. Plugins, settings, and the
+The installer replaces the program files in `%LOCALAPPDATA%\ChemDraft` (per-user) or
+`C:\Program Files\ChemDraft` (all-users). Plugins, settings, and the
 document session live in the app data directory, which is keyed by the identifier and never touched
-by the installer. They are there on the next launch, as on macOS.
+by a normal update. These remain per Windows account even when program files are shared. They are
+there on the next launch, as on macOS.
 
 ## Checked-in configuration
 
-The NSIS installer hook quotes both the executable path and `.chemdraft` document argument so per-user installs remain openable from paths containing spaces.
+The shared NSIS installer hook quotes both the executable path and `.chemdraft` document argument
+for both installation scopes, so paths containing spaces remain openable.
 
 - **Crate:** `tauri-plugin-updater` 2.12.0, `cfg(windows)` only (Apache-2.0 OR MIT).
 - **Frontend package:** `@tauri-apps/plugin-updater` 2.12.0 (Apache-2.0 OR MIT).
-- **Feed:** `https://raw.githubusercontent.com/jgassens/ChemDraft/main/latest.json`. It sits next to
-  the macOS `appcast.xml`; joint releases use the same commit and version for both platforms.
+- **Per-user feed:** `https://raw.githubusercontent.com/jgassens/ChemDraft/main/latest.json`.
+- **All-users feed:** `https://raw.githubusercontent.com/jgassens/ChemDraft/main/latest-allusers.json`.
+  Both sit next to the macOS `appcast.xml`; joint releases use the same commit and version for both platforms.
+- **All-users overlay:** `apps/desktop/src-tauri/tauri.allusers.conf.json`, passed with `--config`
+  in the release workflow. It sets NSIS `installMode: "perMachine"` and the separate feed. Both
+  installers use the association quoting hook at `windows/installer-hooks.nsh` from the Windows
+  config, along with its updater public key and passive update mode.
 - **Public key:** `plugins.updater.pubkey` in `apps/desktop/src-tauri/tauri.windows.conf.json`.
 - **Private key:** `%USERPROFILE%\.tauri\chemdraft-updater.key`.
   - It is outside the repository. Never commit it, and never print it.
@@ -68,23 +103,42 @@ published version.
 ### GitHub Actions path
 
 This is the only release path (owner rule, 2026-10-22). The manual-dispatch [Windows release workflow](../../.github/workflows/windows-release.yml) builds
-the installer on `windows-latest`, optionally Authenticode-signs the CI artifact through SignPath
-Foundation, then signs the **final installer bytes** for the Tauri updater and generates `latest.json`.
+both installers on `windows-latest`, optionally Authenticode-signs the CI artifacts through SignPath
+Foundation, then signs each installer's **final bytes** for the Tauri updater and generates
+`latest.json` and `latest-allusers.json` with the existing `release:windows-manifest` generator.
 The [signing guide](windows-signing.md) covers the owner's SignPath application, trusted build setup,
 repository secrets/variables, workflow inputs and release checks.
 
 Dispatch on the release tag with the same tag in `ref`; optionally provide a tracked Windows notes
 file and an existing draft release tag in `upload_to_release`. The final `windows-release` artifact
-contains the installer, `.exe.sig`, `latest.json`, and checksums. Missing signing secrets produce
+contains both installers, each `.exe.sig`, both feeds, and checksums. Missing signing secrets produce
 explicit warnings and dry-run output. Optional uploads refuse published releases; the workflow never
-publishes a release or commits the feed. Review both platform artifacts from the same commit/version,
-publish the joint release, then commit the generated feed to `main` only after its installer URL works.
+publishes a release or commits the feeds. Review both platform artifacts from the same commit/version,
+publish the joint release, then **commit `latest-allusers.json` together with `latest.json` to `main`
+at each release**, only after both installer URLs work. Never point an all-users feed entry at the
+per-user installer.
+
+The workflow's variant list shares build/rename, identity checks, signing, verification and upload.
+Tauri initially names each installer `ChemDraft_<ver>_x64-setup.exe`; the workflow stages it with
+the variant suffix before the next build overwrites that output. Adding a future variant with no
+feed requires a variant entry and config; it still goes through signing and upload.
+
+To regenerate the all-users feed from its already signed CI artifact:
+
+```text
+pnpm -s release:windows-manifest --version X.Y.Z --installer "release-assets/ChemDraft_X.Y.Z_x64-allusers-setup.exe" --out release-assets/latest-allusers.json --notes release-notes.md
+```
+
+The same version, branch-build, and missing/empty-signature guards apply to both installers. The
+signature is verified against the inherited updater public key before either generated feed is
+included in the signed workflow output.
 
 ### Windows VM path (retired)
 
-Retired for releases (owner rule, 2026-10-22): publish only installers built by the GitHub Actions
-path above. These steps remain for reference and for local test installers; never publish a
-VM-built installer. Its updater signature does not provide Authenticode signing. If Authenticode
+Retired for all installer builds (owner rule, 2026-10-22): use only installers built by the GitHub
+Actions path above, including for Windows testing. The historical commands below explain the
+per-user artifact and feed; do not run installer builds locally or in a VM. An updater signature
+does not provide Authenticode signing. If Authenticode
 is applied separately, do it **before** the final `tauri signer sign` and manifest generation: an
 existing `.sig` is invalid once any installer bytes change. SignPath Foundation requires verifiable
 CI builds; submitting a VM-built installer through the workflow is not supported.
@@ -113,13 +167,14 @@ CI builds; submitting a VM-built installer through the workflow is not supported
    The script refuses a version with a leading `v`, an installer from a different version, a branch
    ("dev") installer, and a missing or empty signature.
 
-4. Commit `latest.json` to `main` **only after** the release asset is downloadable. An app that sees
+4. Commit `latest.json` and `latest-allusers.json` together to `main` **only after** both release assets are downloadable. An app that sees
    the feed first would fail its download. Do not hand-edit a generated entry: the signature covers
    the installer bytes, not the file name.
 
 ## Verification
 
-An end-to-end test needs two signed stable builds with increasing versions and a local feed:
+An end-to-end test needs two signed stable CI builds with increasing versions and a local feed.
+Run it separately for each installer scope; do not install both copies at once:
 
 1. Build the older version with an extra `--config` that points `plugins.updater.endpoints` at
    `http://127.0.0.1:<port>/latest.json` and sets `dangerousInsecureTransportProtocol: true`.
@@ -133,6 +188,16 @@ An end-to-end test needs two signed stable builds with increasing versions and a
      on the newer version;
    - a drawing made before the update is still there after the relaunch.
 5. Uninstall the test build.
+
+For all-users verification, retain the all-users overlay on both CI builds and override its endpoint
+with the local `latest-allusers.json` feed. Check Program Files and the all-users Start Menu shortcut,
+then run ChemDraft as a standard user. Verify the quoted HKLM `.chemdraft` command with spaces in the
+document path, and use OPSIN, the naming engine, installed plugins and the 3D sidecar without writes
+to Program Files. Accept an update with administrator credentials and confirm it replaces the machine
+copy, restores the drawing in the original account, and creates no `%LOCALAPPDATA%\ChemDraft` copy.
+Also check an administrator's UAC consent, cancellation, silent deployment from an elevated prompt,
+and uninstall. These all-users runtime checks remain unverified; the historical run below covered
+only the per-user updater.
 
 To drive the prompt from a script: it is a Windows task dialog, and on Windows 11 its buttons are
 exposed to UI Automation as bare panes with no Invoke pattern. Find the window instead
