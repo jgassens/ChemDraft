@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { applyPatch } from "@chemdraft/chem-core";
+import { applyPatch, undo, redo, type BracketObject, type ChemDraftDocument } from "@chemdraft/chem-core";
+import { exportDocumentToCdxml, openChemDraftPayload } from "@chemdraft/cdx-compat";
 import { repeatUnitExportWarnings } from "@chemdraft/export-engine";
 import { createBracketCommands, selectedBracketPair, setBracketRepeatLabel, toggleBracketRepeatUnit } from "./bracketCommands";
 import { applySingleBondToolAtPoint, copyAsMolfile, copyAsSmiles, createPhase4Document,
-  createSelectionClipboardPayload, duplicateSelectedDocumentObjects, insertNativeBracket, pasteSelectionClipboardPayload } from "./documentWorkflow";
+  createSelectionClipboardPayload, deleteSelectedDocumentObjects, duplicateSelectedDocumentObjects, insertNativeBracket, pasteSelectionClipboardPayload } from "./documentWorkflow";
 import { exportStructureListSdf, exportStructureListSmi } from "./structureListExport";
 import { allShellCommands } from "./commands";
 
@@ -11,6 +12,15 @@ vi.mock("@chemdraft/rdkit-adapter/identifiers", () => ({ computeStructureIdentif
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 
 const brackets = () => insertNativeBracket(createPhase4Document("Bracket unit"), { x: 100, y: 100 }, "round", { x: 260, y: 200 });
+const bracketObjects = (document: ChemDraftDocument) => document.pages[0].objects.filter((object): object is BracketObject => object.type === "bracket");
+const repeatAroundMolecule = () => toggleBracketRepeatUnit(insertNativeBracket(
+  applySingleBondToolAtPoint(createPhase4Document("Unit"), { x: 140, y: 140 }),
+  { x: 100, y: 100 }, "round", { x: 260, y: 200 }));
+function expectPlainBracket(object: BracketObject) {
+  expect(object.pairId).toBeUndefined();
+  expect(object.repeatUnit).toBeUndefined();
+  expect(object.label).toBeUndefined();
+}
 
 describe("bracket pair annotations", () => {
   it("exposes the repeat-unit command with selection-dependent availability", () => {
@@ -49,6 +59,79 @@ describe("bracket pair annotations", () => {
     expect(selectedBracketPair(pasted)).toHaveLength(2);
     expect(selectedBracketPair(pasted)[0].pairId).not.toBe(selectedBracketPair(original)[0].pairId);
   });
+
+  it.each([false, true])("keeps only copied membership on duplicate and paste (molecule copied: %s)", includeMolecule => {
+    const original = repeatAroundMolecule();
+    const molecule = original.pages[0].objects.find(object => object.type === "molecule")!;
+    expect(bracketObjects(original).every(object => object.containedObjectIds.includes(molecule.id))).toBe(true);
+    const source = includeMolecule ? applyPatch(original, { op: "setSelection", objectIds: original.pages[0].objects.map(object => object.id) }) : original;
+    const target = applySingleBondToolAtPoint(createPhase4Document("Other document"), { x: 400, y: 400 });
+    expect(target.pages[0].objects[0].id).toBe(molecule.id);
+    const payload = createSelectionClipboardPayload(source)!;
+    expect(payload.objects.filter((object): object is BracketObject => object.type === "bracket")
+      .map(object => object.containedObjectIds)).toEqual(includeMolecule ? [[molecule.id], [molecule.id]] : [[], []]);
+    // Also accept older clipboard payloads that still contain uncopied member IDs.
+    const olderPayload = { ...payload, objects: original.pages[0].objects.filter(object => includeMolecule || object.type === "bracket") };
+    for (const result of [duplicateSelectedDocumentObjects(source),
+      pasteSelectionClipboardPayload(target, payload, { x: 300, y: 300 }),
+      pasteSelectionClipboardPayload(target, olderPayload, { x: 300, y: 300 })]) {
+      const selected = result.pages[0].objects.filter(object => result.selection.objectIds.includes(object.id));
+      const copiedMolecule = selected.find(object => object.type === "molecule");
+      for (const bracket of selected.filter((object): object is BracketObject => object.type === "bracket")) {
+        expect(bracket.containedObjectIds).toEqual(includeMolecule ? [copiedMolecule!.id] : []);
+        expect(bracket.containedObjectIds).not.toContain(molecule.id);
+      }
+      const exported = exportDocumentToCdxml(result);
+      const visible = exported.contents.replace(/<objecttag\b[^>]*\/>/g, "");
+      if (!includeMolecule) {
+        const groups = [...visible.matchAll(/<bracketedgroup\b([^>]*)>/g)];
+        expect(groups.at(-1)![1]).not.toContain("BracketedObjectIDs");
+      }
+      const reopened = openChemDraftPayload(exported.contents).document!;
+      expect(bracketObjects(reopened).map(object => object.containedObjectIds)).toEqual(bracketObjects(result).map(object => object.containedObjectIds));
+    }
+    expect(bracketObjects(original).every(object => object.containedObjectIds.includes(molecule.id))).toBe(true);
+  });
+
+  it.each(["open", "close"] as const)("copies only the %s glyph without pair metadata", side => {
+    const original = repeatAroundMolecule();
+    const selected = bracketObjects(original).find(object => object.side === side)!;
+    const source = applyPatch(original, { op: "setSelection", objectIds: [selected.id] });
+    const payload = createSelectionClipboardPayload(source)!;
+    expect(payload.objects).toHaveLength(1);
+    expectPlainBracket(payload.objects[0] as BracketObject);
+    const olderPayload = { ...payload, objects: [selected] };
+    for (const result of [duplicateSelectedDocumentObjects(source),
+      pasteSelectionClipboardPayload(source, payload, { x: 400, y: 400 }),
+      pasteSelectionClipboardPayload(source, olderPayload, { x: 400, y: 400 })]) {
+      const copy = bracketObjects(result).find(object => result.selection.objectIds.includes(object.id))!;
+      expectPlainBracket(copy);
+      expect(copy.containedObjectIds).toEqual([]);
+    }
+    expect(selectedBracketPair(source)).toHaveLength(2);
+  });
+
+  it.each(["open", "close"] as const)("deletes/cuts the %s half and clears the survivor in one undo entry", side => {
+    const original = repeatAroundMolecule();
+    const removed = bracketObjects(original).find(object => object.side === side)!;
+    for (const capturedIds of [undefined, [removed.id]]) {
+      const before = capturedIds ? original : applyPatch(original, { op: "setSelection", objectIds: [removed.id] });
+      const deleted = deleteSelectedDocumentObjects(before, capturedIds);
+      const survivor = bracketObjects(deleted)[0];
+      expect(bracketObjects(deleted)).toHaveLength(1);
+      expectPlainBracket(survivor);
+      expect(repeatUnitExportWarnings(deleted, "MOL")).toEqual([]);
+      expect(setBracketRepeatLabel(deleted, survivor.id, "m")).toBe(deleted);
+      const exported = exportDocumentToCdxml(deleted);
+      expect(exported.contents).toContain('GraphicType="Bracket"');
+      expect(exported.contents).not.toContain("<bracketedgroup");
+      expect(exported.warnings).toEqual([]);
+      const history = { past: [before], present: deleted, future: [] };
+      expect(undo(history).present).toBe(before);
+      expect(undo(history).present.pages[0].objects).toEqual(before.pages[0].objects);
+      expect(redo(undo(history)).present).toBe(deleted);
+    }
+  });
 });
 
 describe("repeat-unit graph-export warnings", () => {
@@ -76,7 +159,49 @@ describe("repeat-unit graph-export warnings", () => {
       expect(result.contents.length).toBeGreaterThan(0);
       expect(result.warnings).toEqual([expect.objectContaining({ code: "export.repeat_unit_not_represented" })]);
     }
-    expect(() => copyAsMolfile(repeat, "v3000")).toThrow("does not represent repeat units");
-    await expect(copyAsSmiles(repeat)).rejects.toThrow("does not represent repeat units");
+    expect(copyAsMolfile(repeat, "v3000")).toBe(before);
+    await expect(copyAsSmiles(repeat)).resolves.toBe("CC");
+  });
+
+  it.each([false, true])("does not warn for an unrelated selected molecule (pair on another page: %s)", async anotherPage => {
+    const repeat = repeatAroundMolecule();
+    const withOther = applySingleBondToolAtPoint(repeat, { x: 400, y: 400 });
+    const selectedMolecule = withOther.pages[0].objects.find(object => object.type === "molecule" && withOther.selection.objectIds.includes(object.id))!;
+    const document = anotherPage ? { ...withOther, pages: [
+      { ...withOther.pages[0], objects: [selectedMolecule] },
+      { ...repeat.pages[0], id: "other_page" }
+    ] } : withOther;
+    const warnings: string[] = [];
+    expect(copyAsMolfile(document, "v3000", warnings)).toBeDefined();
+    expect(await copyAsSmiles(document, warnings)).toBe("CC");
+    expect(warnings).toEqual([]);
+    for (const writer of [exportStructureListSmi, exportStructureListSdf]) expect((await writer(document)).warnings).toEqual([]);
+  });
+
+  it("requires both the pair and an exported member or enclosed molecule", () => {
+    const repeat = repeatAroundMolecule();
+    const molecule = repeat.pages[0].objects.find(object => object.type === "molecule")!;
+    expect(repeatUnitExportWarnings(repeat, "MOL", { objects: [molecule], molecules: [molecule] })).toEqual([]);
+    expect(repeatUnitExportWarnings(repeat, "MOL", { objects: bracketObjects(repeat), molecules: [] })).toEqual([]);
+    expect(repeatUnitExportWarnings(repeat, "MOL")).toHaveLength(1);
+    const enclosed = { ...repeat, pages: [{ ...repeat.pages[0], objects: repeat.pages[0].objects.map(object =>
+      object.type === "bracket" ? { ...object, containedObjectIds: [] } : object) }] };
+    expect(repeatUnitExportWarnings(enclosed, "MOL")).toHaveLength(1);
+    const outside = { ...enclosed, pages: [{ ...enclosed.pages[0], objects: enclosed.pages[0].objects.map(object =>
+      object.type === "molecule" ? { ...object, x: 400, y: 400 } : object) }] };
+    expect(repeatUnitExportWarnings(outside, "MOL")).toEqual([]);
+  });
+
+  it("stays quiet when an included pair contains only molecules excluded from the export", async () => {
+    const repeat = repeatAroundMolecule();
+    const withOther = applySingleBondToolAtPoint(repeat, { x: 400, y: 400 });
+    const scoped = applyPatch(withOther, { op: "setSelection", objectIds: [
+      ...withOther.selection.objectIds, ...bracketObjects(repeat).map(object => object.id)
+    ] });
+    const warnings: string[] = [];
+    expect(copyAsMolfile(scoped, "v3000", warnings)).toBeDefined();
+    expect(await copyAsSmiles(scoped, warnings)).toBe("CC");
+    expect(warnings).toEqual([]);
+    for (const writer of [exportStructureListSmi, exportStructureListSdf]) expect((await writer(scoped)).warnings).toEqual([]);
   });
 });

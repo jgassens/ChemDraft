@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!-- Synthetic fixture; reversed BoundingBox orientation and repeat-label association are unverified against an independent reader. -->
 <CDXML CreationProgram="ChemDraft Synthetic Fixture">
   <page id="p1" BoundingBox="0 0 612 792">
     <graphic id="b1" GraphicType="Bracket" BracketType="Square" BoundingBox="75 90 87 138" LineWidth="1.125"/>

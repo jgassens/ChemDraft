@@ -56,6 +56,8 @@ import {
 } from "@chemdraft/art-engine";
 import {
   adoptDerivedDocument,
+  bracketPairs,
+  withoutBracketPairMetadata,
   applyPatch,
   applyPatches,
   ChemDraftSyntheticStylePreset,
@@ -7270,10 +7272,22 @@ export function deleteSelectedDocumentObjects(
   if (objectIds.length === 0) {
     return document;
   }
+  const removedIds = new Set(objectIds);
+  const removedPairIds = new Set(page.objects.flatMap(object =>
+    object.type === "bracket" && object.pairId && removedIds.has(object.id) ? [object.pairId] : []));
 
   return applyPatches(
     document,
-    objectIds.map((objectId) => ({ op: "removeObject", objectId })),
+    [
+      ...objectIds.map((objectId): DocumentPatch => ({ op: "removeObject", objectId })),
+      ...page.objects.flatMap((object): DocumentPatch[] => {
+        if (object.type !== "bracket" || !object.pairId || removedIds.has(object.id) || !removedPairIds.has(object.pairId)) return [];
+        return [{ op: "updateObject", objectId: object.id, changes: {
+          pairId: undefined, repeatUnit: undefined, label: undefined, containedObjectIds: [],
+          bracketKind: object.bracketKind === "polymer" ? "square" : object.bracketKind
+        } }];
+      })
+    ],
     { now: phase4Timestamp }
   );
 }
@@ -14631,10 +14645,12 @@ export function createSelectionClipboardPayload(
     return undefined;
   }
 
+  const clipboardObjects = structuredClone(copiedObjects) as DocumentObject[];
+  remapCopiedBracketPairs(clipboardObjects, new Map(clipboardObjects.map(object => [object.id, object.id])));
   return {
     kind: "chemdraft-selection",
     version: 1,
-    objects: structuredClone(copiedObjects) as DocumentObject[],
+    objects: clipboardObjects,
     selectionIds: [
       ...document.selection.objectIds.filter((objectId) =>
         selectedIdSet.has(objectId) || selectedGroups.some((group) => group.id === objectId)
@@ -14779,13 +14795,23 @@ export function parseSelectionClipboardPayload(
 }
 
 function remapCopiedBracketPairs(objects: DocumentObject[], idMap: ReadonlyMap<string, string>) {
+  const completePairs = bracketPairs(objects);
   const pairs = new Map<string, string>();
   for (const object of objects) if (object.type === "bracket") {
-    if (object.pairId) {
+    if (object.pairId && completePairs.has(object.pairId)) {
       const pairId = pairs.get(object.pairId) ?? object.id;
       pairs.set(object.pairId, pairId); object.pairId = pairId;
+    } else {
+      const plain = withoutBracketPairMetadata(object);
+      delete object.pairId;
+      delete object.repeatUnit;
+      delete object.label;
+      Object.assign(object, plain);
     }
-    object.containedObjectIds = object.containedObjectIds.map(id => idMap.get(id) ?? id);
+    object.containedObjectIds = object.containedObjectIds.flatMap(id => {
+      const mapped = idMap.get(id);
+      return mapped === undefined ? [] : [mapped];
+    });
   }
 }
 
@@ -19748,8 +19774,8 @@ export function analysisSubjectKey(molecule: MoleculeObject): string {
  * Keep this import on demand: copying a drawing must not load RDKit at application startup.
  */
 export async function copyAsSmiles(document: ChemDraftDocument, warningsOut?: string[]): Promise<string | undefined> {
-  reportRepeatUnitExportWarnings(document, "SMILES", warningsOut);
   const molecules = copyAsScopeMolecules(document);
+  reportRepeatUnitExportWarnings(document, "SMILES", molecules, warningsOut);
   if (molecules.length === 0) {
     return undefined;
   }
@@ -19780,8 +19806,9 @@ export function copyAsMolfile(
   flavor: "v2000" | "v3000",
   warningsOut?: string[]
 ): string | undefined {
-  reportRepeatUnitExportWarnings(document, "MOL", warningsOut);
-  const scoped = copyAsMergedMolecule(copyAsScopeMolecules(document));
+  const molecules = copyAsScopeMolecules(document);
+  reportRepeatUnitExportWarnings(document, "MOL", molecules, warningsOut);
+  const scoped = copyAsMergedMolecule(molecules);
   if (!scoped) {
     return undefined;
   }
@@ -19800,9 +19827,8 @@ export function copyAsMolfile(
 
 const copyAsPagePaddingPx = 16;
 
-function reportRepeatUnitExportWarnings(document: ChemDraftDocument, format: string, warningsOut?: string[]) {
-  const messages = repeatUnitExportWarnings(document, format).map(warning => warning.message);
-  if (messages.length && !warningsOut) throw new Error(messages.join(" "));
+function reportRepeatUnitExportWarnings(document: ChemDraftDocument, format: string, molecules: readonly MoleculeObject[], warningsOut?: string[]) {
+  const messages = repeatUnitExportWarnings(document, format, { objects: copyAsScopeObjects(document), molecules }).map(warning => warning.message);
   warningsOut?.push(...messages);
 }
 

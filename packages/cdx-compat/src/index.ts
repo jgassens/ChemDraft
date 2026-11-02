@@ -392,7 +392,8 @@ export function openChemDraftPayload(contents: string): ChemDraftOpenResult {
   return {
     document: embeddedDocument,
     source: "native-payload",
-    warnings: []
+    warnings: embeddedDocument.compatibility.warnings.filter(item => item.code === "document.bracket_partner_missing")
+      .map(item => ({ code: item.code, message: item.message, sourceObjectId: item.objectId }))
   };
 }
 
@@ -418,10 +419,12 @@ export function decodeBase64UrlUtf8(value: string): string {
 
 function openLegacyJsonDocument(contents: string): ChemDraftOpenResult {
   try {
+    const document = deserializeDocument(contents);
     return {
-      document: deserializeDocument(contents),
+      document,
       source: "legacy-json",
-      warnings: []
+      warnings: document.compatibility.warnings.filter(item => item.code === "document.bracket_partner_missing")
+        .map(item => ({ code: item.code, message: item.message, sourceObjectId: item.objectId }))
     };
   } catch (error) {
     const unsupportedSchemaWarning = unsupportedSchemaWarningFromJson(contents);
@@ -594,7 +597,8 @@ function exportableBracketPair(object: BracketObject, objects: ReadonlyMap<strin
 }
 
 function exportBracketGlyph(object: BracketObject, ids: Map<string, string>, allocator: IdAllocator): string {
-  // A reversed horizontal box reverses the single glyph's opening direction.
+  // Unverified against an independent reader: reversed x bounds stand for a closing glyph.
+  // See docs/architecture/brackets-repeat-units.md; do not infer new CDXML attributes.
   const box = object.side === "close" ? { ...object, x: object.x + object.width, width: -object.width } : object;
   return `<graphic id="${idFor(ids, object.id, allocator)}" GraphicType="Bracket" BracketType="${object.bracketKind === "round" ? "Round" : "Square"}" BoundingBox="${formatBoundingBox(box)}" LineWidth="${formatNumber(cssPxToCdxml(1.5))}"/>`;
 }
@@ -1799,22 +1803,41 @@ function importPageObjects(
       object.type === "bracket" && object.compatibility?.originalId === attachment.attributes.GraphicID));
     if (pair.length !== 2 || pair.some(object => !object) || pair[0] === pair[1]) {
       const data = [group.attributes.BracketedObjectIDs ? "atom or object membership" : undefined,
-        attachments.some(attachment => childElements(attachment, "crossingbond").length > 0) ? "crossing-bond attachments" : undefined].filter(Boolean);
+        attachments.some(attachment => childElements(attachment, "crossingbond").length > 0) ? "crossing-bond attachments" : undefined,
+        group.attributes.BracketUsage && group.attributes.BracketUsage !== "SRU" ? `bracket usage "${group.attributes.BracketUsage}"` : undefined].filter(Boolean);
       warnings.push({ code: "cdxml.bracket_group_preserved", message: `CDXML import: bracket group ${group.attributes.id ?? "(unknown)"} has unsupported attachment count or bracket references${data.length ? `; the following data is not interpreted: ${data.join(" and ")}` : ""}; the group is preserved as an unknown compatibility object.` });
+      const remaining = [...new Set(pair.filter((object): object is BracketObject => object !== undefined))];
+      if (remaining.length === 1 && group.attributes.BracketUsage === "SRU") {
+        const bracket = remaining[0];
+        warnings.push({ code: "document.bracket_partner_missing", sourceObjectId: bracket.id,
+          message: `Bracket ${bracket.compatibility?.originalId ?? bracket.id} had no partner; repeat-unit mark removed.` });
+      }
       objects.push(importUnknownCompatibilityObject(group, pageIndex, objectIndex++));
       continue;
     }
     const repeatUnit = group.attributes.BracketUsage === "SRU";
-    const unsupportedUsage = group.attributes.BracketUsage && !repeatUnit;
+    const unsupportedUsage = group.attributes.BracketUsage !== undefined && !repeatUnit;
     const crossing = attachments.some(attachment => childElements(attachment, "crossingbond").length > 0);
     const containedIds = splitCdxmlIdList(group.attributes.BracketedObjectIDs);
     const containedObjects = containedIds.map(id => objects.find(object => object.compatibility?.originalId === id));
     const extraData = Object.keys(group.attributes).some(key => !["id", "BracketedObjectIDs", "BracketUsage"].includes(key)) ||
       group.children.some(child => { const element = elementView(child); return element && element.name !== "bracketattachment"; }) ||
-      attachments.some(attachment => Object.keys(attachment.attributes).some(key => !["id", "GraphicID"].includes(key)));
-    const unsupported = unsupportedUsage || crossing || extraData || containedObjects.some(object => !object) ||
-      (pair as BracketObject[]).some(bracket => bracket.side !== "open" && bracket.side !== "close") ||
-      pair[0]!.side === pair[1]!.side;
+      attachments.some(attachment => Object.keys(attachment.attributes).some(key => !["id", "GraphicID"].includes(key)) ||
+        attachment.children.some(child => { const element = elementView(child); return element && element.name !== "crossingbond"; }));
+    const unsupportedMembership = containedObjects.some(object => object?.type !== "molecule");
+    const unsupportedSides = (pair as BracketObject[]).some(bracket => bracket.side !== "open" && bracket.side !== "close") ||
+      pair[0]!.side === pair[1]!.side || pair[0]!.bracketKind !== pair[1]!.bracketKind;
+    const unsupported = unsupportedUsage || crossing || extraData || unsupportedMembership || unsupportedSides;
+    if (unsupported) {
+      const details = [unsupportedUsage ? `bracket usage "${group.attributes.BracketUsage}"` : undefined,
+        crossing ? "crossing-bond attachments" : undefined,
+        unsupportedMembership ? "unresolved atom or object membership" : undefined,
+        extraData ? "additional bracket data" : undefined,
+        unsupportedSides ? "bracket sides or shapes" : undefined].filter(Boolean).join(", ");
+      warnings.push({ code: "cdxml.bracket_semantics_preserved", message: `CDXML import: bracket group ${group.attributes.id ?? "(unknown)"} has unsupported ${details}; this data is preserved as an unknown compatibility object and is not interpreted as polymer connectivity.` });
+      objects.push(importUnknownCompatibilityObject(group, pageIndex, objectIndex++));
+      continue;
+    }
     const pairId = `cdxml_bracket_pair_${pageIndex + 1}_${objectIndex++}`;
     for (const bracket of pair as BracketObject[]) {
       bracket.pairId = pairId;
@@ -1828,14 +1851,6 @@ function importPageObjects(
     }
     if (repeatUnit) warnings.push({ code: "cdxml.repeat_label_unassociated",
       message: `CDXML import: repeat-unit label association for bracket group ${group.attributes.id ?? "(unknown)"} is not interpreted; separate label text is retained independently.` });
-    if (unsupported) {
-      const details = [unsupportedUsage ? "bracket usage" : undefined, crossing ? "crossing-bond attachments" : undefined,
-        containedObjects.some(object => !object) ? "unresolved atom or object membership" : undefined,
-        extraData ? "additional bracket data" : undefined,
-        (pair as BracketObject[]).some(bracket => bracket.side !== "open" && bracket.side !== "close") || pair[0]!.side === pair[1]!.side ? "bracket sides" : undefined].filter(Boolean).join(", ");
-      warnings.push({ code: "cdxml.bracket_semantics_preserved", message: `CDXML import: bracket group ${group.attributes.id ?? "(unknown)"} has unsupported ${details}; this data is preserved as an unknown compatibility object and is not interpreted as polymer connectivity.` });
-      objects.push(importUnknownCompatibilityObject(group, pageIndex, objectIndex++));
-    }
   }
   return {
     objects,

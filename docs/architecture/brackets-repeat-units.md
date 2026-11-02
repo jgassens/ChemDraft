@@ -9,6 +9,10 @@ The optional v1 `side`, `pairId`, and `repeatUnit` fields extend the existing ob
 introducing another bracket type. Missing fields preserve legacy documents and their original
 single glyph appearance, including the old `polymer` kind. Duplicate and native paste remint pair
 identities so editing a copied pair cannot change the original.
+Membership travels only with copied objects: uncopied member IDs are dropped. Copying one glyph
+removes its pair identity, repeat mark and label. Deleting or cutting one glyph clears those fields
+on the survivor in the same patch batch; undo restores both original glyphs exactly. Native loading
+also clears orphaned pair metadata and records a warning naming each affected bracket.
 
 UI choice for coordinator review: the object context menu offers **Mark as Repeat Unit** /
 **Remove Repeat Unit** and **Edit Repeat Label**. Both are registered commands. Marking applies to
@@ -21,12 +25,14 @@ label and retains its text for a subsequent mark.
 `bracketLabelPlan` in layout-engine supplies lower-right placement, script font size and measured
 bounds. The page SVG render plan, canvas overlay, label input and SVG/PDF exports consume it.
 Copy-scope bounds include custom labels. Molecular graph data is never rewritten by these tools.
-SMILES/SDF/MOL export reports `export.repeat_unit_not_represented` once per pair. Copy helpers refuse
-to silently omit repeat semantics when called without a warning sink; plain brackets remain quiet.
+SMILES/SDF/MOL export reports `export.repeat_unit_not_represented` once per exported repeat pair
+containing an exported molecule, by membership or enclosure. Pairs outside the export scope,
+including other pages, remain quiet. Copy helpers use the normal optional copy-warning sink;
+omitting that sink never prevents copying. Plain brackets and lone glyphs remain quiet.
 
 ## CDXML coverage and remaining work
 
-Real square/round `graphic` brackets and pair `bracketattachment` membership are covered by
+Square/round `graphic` brackets and pair `bracketattachment` membership are covered by synthetic
 `packages/fixtures/cdxml/brackets-square.cdxml` and `brackets-round.cdxml`. Native document envelope
 round trips preserve square, round and repeat pairs (labels `n` and `m`) exactly. Plain square/round
 pairs also round-trip through the visible layer with all native metadata removed.
@@ -45,6 +51,19 @@ Imported `crossingbond` and unsupported bracket-group data remain unknown compat
 with a warning, instead of being asserted as native polymer chemistry. Curly/unknown/legacy-polymer
 glyphs and transformed brackets retain `cdxml.bracket_payload_only` until covered by a verified
 mapping. No general Tier B polymer-compatibility claim is made.
+
+A foreign group becomes a native pair only when all its group data can be represented: two
+opposite glyphs, whole-molecule membership, no crossing attachments or extra group data, and no
+usage other than SRU (an absent usage remains an ordinary pair). Unsupported groups retain their
+original unknown compatibility object, with a warning naming the group and unsupported data or
+usage value. Re-export keeps that object unchanged in the embedded payload, following the existing
+unknown-object path; it does not write a cleaned-up visible `bracketedgroup`.
+
+The orientation mapping is **UNVERIFIED against an independent reader**. The current mapping uses
+reversed `BoundingBox` x coordinates for a closing glyph. A repo search of fixtures, cdx-compat
+tests/docs and architecture notes found no vendored CDXML schema or specification documenting this
+orientation rule or an alternative attribute. These synthetic fixtures test internal consistency
+only; no new orientation attributes are invented and no independent-reader compatibility is claimed.
 
 Recommended next task: obtain authoritative CDXML repeat-label/connectivity fixtures and complete
 the standard repeat-label association plus atom-level attachment mapping. Verify the synthetic

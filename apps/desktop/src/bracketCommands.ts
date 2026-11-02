@@ -1,14 +1,14 @@
-import { applyPatches, type BracketObject, type ChemDraftDocument } from "@chemdraft/chem-core";
+import { applyPatches, bracketPairs, type BracketObject, type ChemDraftDocument } from "@chemdraft/chem-core";
 import type { CommandSpec } from "./commands";
 
 export function selectedBracketPair(document: ChemDraftDocument): BracketObject[] {
-  const objects = document.pages.flatMap(page => page.objects);
+  const page = document.pages.find(page => page.id === document.selection.pageId) ?? document.pages[0];
+  const objects = page.objects;
   const selected = objects.filter(object => document.selection.objectIds.includes(object.id));
   if (!selected.length || selected.some(object => object.type !== "bracket")) return [];
   const first = selected[0] as BracketObject;
   if (!first.pairId || selected.some(object => object.type !== "bracket" || object.pairId !== first.pairId)) return [];
-  const pair = objects.filter((object): object is BracketObject => object.type === "bracket" && object.pairId === first.pairId);
-  return pair.length === 2 && pair.some(object => object.side === "open") && pair.some(object => object.side === "close") ? pair : [];
+  return bracketPairs(objects).get(first.pairId) ?? [];
 }
 
 export function createBracketCommands(document: ChemDraftDocument): CommandSpec[] {
@@ -37,10 +37,11 @@ export function toggleBracketRepeatUnit(document: ChemDraftDocument): ChemDraftD
 
 export function setBracketRepeatLabel(document: ChemDraftDocument, objectId: string, label: string): ChemDraftDocument {
   const object = document.pages.flatMap(page => page.objects).find(object => object.id === objectId);
-  if (object?.type !== "bracket" || object.side !== "close" || !(object.repeatUnit || object.bracketKind === "polymer")) return document;
+  const page = document.pages.find(page => page.objects.some(item => item.id === objectId));
+  const pair = object?.type === "bracket" && object.pairId && page ? bracketPairs(page.objects).get(object.pairId) : undefined;
+  if (object?.type !== "bracket" || !pair || object.side !== "close" || !(object.repeatUnit || object.bracketKind === "polymer")) return document;
   const value = label.trim() || "n";
   if (value === (object.label ?? "n")) return document;
-  const pair = document.pages.flatMap(page => page.objects).filter(item => item.type === "bracket" && item.pairId === object.pairId);
   return applyPatches(document, [
     { op: "updateObject", objectId, changes: { label: value } },
     { op: "setSelection", pageId: document.selection.pageId, objectIds: pair.map(item => item.id) }

@@ -63,6 +63,95 @@ describe("CDXML bracket graphics", () => {
       `CDXML import: repeat-unit label association for bracket group ${id} is not interpreted; separate label text is retained independently.`));
   });
 
+  it("imports a standalone foreign bracket as a plain glyph without pair metadata", () => {
+    const source = fixture("brackets-round")
+      .replace(/\s*<graphic id="b2"[^>]*\/>/, "")
+      .replace(/\s*<bracketedgroup\b[\s\S]*?<\/bracketedgroup>/, "");
+    const imported = openChemDraftPayload(source);
+    const objects = imported.document!.pages[0].objects;
+    expect(objects).toHaveLength(1);
+    expect(objects[0]).toMatchObject({ type: "bracket", bracketKind: "round", side: "open", containedObjectIds: [] });
+    const bracket = objects[0] as BracketObject;
+    expect(bracket.pairId).toBeUndefined();
+    expect(bracket.repeatUnit).toBeUndefined();
+    expect(bracket.label).toBeUndefined();
+    const exported = exportDocumentToCdxml(imported.document!);
+    expect(exported.contents).toContain('GraphicType="Bracket"');
+    expect(exported.contents).not.toContain("<bracketedgroup");
+    expect(exported.warnings).toEqual([]);
+  });
+
+  it("normalizes a broken native pair on open with a warning naming the bracket", () => {
+    const native = pair("round", "m");
+    native.pages[0].objects = [native.pages[0].objects[1]];
+    for (const source of [JSON.stringify(native), exportDocumentToCdxml(native).contents]) {
+      const imported = openChemDraftPayload(source);
+      const bracket = imported.document!.pages[0].objects[0] as BracketObject;
+      expect(bracket.pairId).toBeUndefined();
+      expect(bracket.repeatUnit).toBeUndefined();
+      expect(bracket.label).toBeUndefined();
+      expect(imported.warnings).toContainEqual({ code: "document.bracket_partner_missing", sourceObjectId: "b2",
+        message: "Bracket b2 had no partner; repeat-unit mark removed." });
+      const exported = exportDocumentToCdxml(imported.document!);
+      expect(exported.contents).toContain('GraphicType="Bracket"');
+      expect(exported.contents).not.toContain("<bracketedgroup");
+      expect(exported.warnings).toEqual([]);
+    }
+  });
+
+  it("imports a foreign SRU with a missing partner as a plain glyph and names the bracket", () => {
+    const source = fixture("brackets-sru").replace(/\s*<graphic id="b2"[^>]*\/>/, "");
+    const imported = openChemDraftPayload(source);
+    const bracket = imported.document!.pages[0].objects.find((object): object is BracketObject => object.type === "bracket")!;
+    expect(bracket.pairId).toBeUndefined();
+    expect(bracket.repeatUnit).toBeUndefined();
+    expect(bracket.label).toBeUndefined();
+    expect(imported.warnings).toContainEqual({ code: "document.bracket_partner_missing", sourceObjectId: bracket.id,
+      message: "Bracket b1 had no partner; repeat-unit mark removed." });
+    expect(imported.document!.pages[0].objects.some(object => object.type === "unknown-compatibility-object")).toBe(true);
+  });
+
+  it.each([
+    ["brackets-sru-crossing", "sru_crossing", "crossing-bond attachments"],
+    ["brackets-unsupported-usage", "component_group", 'bracket usage "Component"'],
+    ["brackets-unresolved-membership", "atom_membership", "unresolved atom or object membership"]
+  ])("preserves unsupported foreign group semantics in %s without creating a native pair", (name, groupId, detail) => {
+    const imported = openChemDraftPayload(fixture(name));
+    const brackets = imported.document!.pages[0].objects.filter((object): object is BracketObject => object.type === "bracket");
+    expect(brackets).toHaveLength(2);
+    expect(brackets.every(object => object.pairId === undefined && object.repeatUnit === undefined && object.label === undefined)).toBe(true);
+    expect(imported.warnings).toContainEqual(expect.objectContaining({ code: "cdxml.bracket_semantics_preserved",
+      message: expect.stringContaining(`bracket group ${groupId} has unsupported ${detail}`) }));
+    expect(imported.warnings.some(warning => warning.code === "cdxml.repeat_label_unassociated")).toBe(false);
+    const preserved = imported.document!.pages[0].objects.find(object => object.type === "unknown-compatibility-object");
+    expect(preserved).toMatchObject({ sourceObjectType: "bracketedgroup", raw: { attributes: { id: groupId } } });
+    const exported = exportDocumentToCdxml(imported.document!);
+    // The existing unknown-object path keeps the original group in the native payload. It must
+    // never emit a replacement visible group with the unsupported semantics stripped off.
+    expect(exported.contents).not.toContain("<bracketedgroup");
+    expect(exported.warnings).toContainEqual(expect.objectContaining({ code: "cdxml.object_export_unsupported", sourceObjectId: preserved!.id }));
+    expect(openChemDraftPayload(exported.contents).document!.pages[0].objects.find(object => object.id === preserved!.id)).toEqual(preserved);
+  });
+
+  it("converts a fully representable foreign SRU group and remaps its whole-molecule membership", () => {
+    const imported = openChemDraftPayload(fixture("brackets-sru"));
+    const objects = imported.document!.pages[0].objects;
+    const molecule = objects.find(object => object.type === "molecule")!;
+    const brackets = objects.filter((object): object is BracketObject => object.type === "bracket");
+    expect(brackets).toHaveLength(2);
+    expect(brackets[0].pairId).toBe(brackets[1].pairId);
+    expect(brackets[0].pairId).toBeDefined();
+    expect(brackets.every(object => object.repeatUnit && object.containedObjectIds.length === 1 && object.containedObjectIds[0] === molecule.id)).toBe(true);
+    expect(objects.some(object => object.type === "unknown-compatibility-object")).toBe(false);
+    const exported = exportDocumentToCdxml(imported.document!);
+    expect(exported.contents.match(/<bracketedgroup\b/g)).toHaveLength(1);
+    expect(exported.contents).toContain('BracketUsage="SRU"');
+    const visible = openChemDraftPayload(visibleOnly(exported.contents)).document!;
+    const visibleMolecule = visible.pages[0].objects.find(object => object.type === "molecule")!;
+    expect(visible.pages[0].objects.filter((object): object is BracketObject => object.type === "bracket")
+      .every(object => object.containedObjectIds[0] === visibleMolecule.id)).toBe(true);
+  });
+
   it("preserves unknown bracket types and crossing attachments instead of assigning polymer connectivity", () => {
     const unfamiliar = openChemDraftPayload(fixture("brackets-square").replaceAll('BracketType="Square"', 'BracketType="FutureBracket"'));
     expect(unfamiliar.document!.pages[0].objects[0].type).toBe("unknown-compatibility-object");
