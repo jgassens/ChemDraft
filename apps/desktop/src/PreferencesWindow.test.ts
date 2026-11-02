@@ -6,6 +6,7 @@ import { MemoryStorage } from "./testSupport/memoryStorage";
 import { saveExportPreviewEnabled } from "./exportPreviewSettings";
 import { saveAutomaticPluginUpdates } from "./pluginUpdateSettings";
 import { saveAskToSaveBeforeQuit } from "./quitSettings";
+import { saveDrawingSettings } from "./drawingSettings";
 
 const STORAGE_KEY = "chemdraft.spin3d.settings.v1";
 const KEYBINDINGS_STORAGE_KEY = "chemdraft.keybindings.v1";
@@ -73,11 +74,13 @@ describe("PreferencesWindow", () => {
   });
 
   it("reflects persisted settings as one selected option per group", () => {
+    saveDrawingSettings({ defaultDoubleBond: "centred" });
     storage.setItem(STORAGE_KEY, JSON.stringify({ refinementMode: "balanced", enginePreference: "openchemlib", forceField: "uff" }));
     storage.setItem(KEYBINDINGS_STORAGE_KEY, JSON.stringify({ scheme: "chemdraw" }));
     const markup = renderToStaticMarkup(createElement(PreferencesWindow));
-    // One selection per radio group (four groups total).
-    expect(markup.match(/data-selected="true"/g)).toHaveLength(4);
+    // One selection per radio group (five groups total).
+    expect(markup.match(/data-selected="true"/g)).toHaveLength(5);
+    expect(markup).toMatch(selected("default-double-bond", "centred"));
     expect(markup).toMatch(selected("keybinding-scheme", "chemdraw"));
     expect(markup).toMatch(selected("spin3d-refinement-mode", "balanced"));
     expect(markup).toMatch(selected("spin3d-engine", "openchemlib"));
@@ -86,7 +89,8 @@ describe("PreferencesWindow", () => {
 
   it("defaults to chemdraft / quality / auto / mmff94s when nothing is stored", () => {
     const markup = renderToStaticMarkup(createElement(PreferencesWindow));
-    expect(markup.match(/data-selected="true"/g)).toHaveLength(4);
+    expect(markup.match(/data-selected="true"/g)).toHaveLength(5);
+    expect(markup).toMatch(selected("default-double-bond", "offset"));
     expect(markup).toMatch(selected("keybinding-scheme", "chemdraft"));
     expect(markup).toMatch(selected("spin3d-refinement-mode", "quality"));
     expect(markup).toMatch(selected("spin3d-engine", "auto"));

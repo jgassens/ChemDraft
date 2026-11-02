@@ -10,6 +10,7 @@ import {
   type NativeAtomSproutHotkeyResult, type NativeBondGrowthPlan, type NativeMoleculeDeleteTarget
 } from "./documentWorkflow";
 import type { FragmentSproutKind } from "./commands";
+import { loadDrawingSettings } from "./drawingSettings";
 export type { FragmentSproutKind } from "./commands";
 
 function moleculeAt(document: ChemDraftDocument, target: NativeMoleculeDeleteTarget): MoleculeObject | undefined {
@@ -150,7 +151,8 @@ function oxygenGraph(graph: MoleculeObject, atomId: string, document: ChemDraftD
   };
   const oxygen: MoleculeAtom = { id: nextId("atom", graph.atoms.map(candidate => candidate.id)), element: "O", formalCharge: 0, ...preview.newAtomPoint };
   return { ...graph, atoms: [...graph.atoms, oxygen], bonds: [...graph.bonds, {
-    id: nextId("bond", graph.bonds.map(bond => bond.id)), fromAtomId: atomId, toAtomId: oxygen.id, order: "double"
+    id: nextId("bond", graph.bonds.map(bond => bond.id)), fromAtomId: atomId, toAtomId: oxygen.id, order: "double",
+    ...(loadDrawingSettings().defaultDoubleBond === "centred" ? { display: { doubleBondSide: "center" as const } } : {})
   }] };
 }
 
