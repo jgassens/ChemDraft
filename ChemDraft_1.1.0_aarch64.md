@@ -18,7 +18,7 @@ ChemDraft 1.1 is a fix release. It adds picture paste and editable tables, makes
 - **Keys act on the atom under the pointer.** After labelling one atom by hovering and typing, the next key goes to whatever the pointer is over now, so "o" then "o" on ethane gives HO–OH, and "o" then "5" over the new bond fuses a ring.
 - **Bond angles.** Ring hotkeys on a bonded atom use the widest open angle (toluene drawn by hotkey gets 120°), bonds from a triple bond or an allene carbon grow straight at 180°, wedges reverse correctly, and hydrogens on left-side labels sit on the left.
 - **Rings stay on the page.** A ring attached at a bonded atom near the page edge is kept inside the page.
-- **More hotkeys.** Hover an atom or bond and press g (cyclopropyl, or a fused cyclopropane over a bond), u (cyclobutyl), z (an alkyne, or a fused cyclopentadiene over a bond), Shift+G (cyclopentadienyl), Shift+J (phenyl), 2 over S or P (add =O) or 9 over a full carbon (isopropyl). They work in both key presets.
+- **More hotkeys.** Hover an atom or bond and press g (cyclopropyl, or a fused cyclopropane over a bond), u (cyclobutyl), z (an alkyne, or a fused cyclopentadiene over a bond), Shift+G (cyclopentadienyl), Shift+J (phenyl), 2 over a labelled SH or PH2, or over a P with no hydrogens (add =O) or 9 over a full carbon (isopropyl). They work in both key presets.
 - **3- to 8-membered rings.** Ring tools are grouped under the benzene button, with rings from 3 to 8 atoms. Ring grouping and the 7- and 8-membered rings contributed by Neelima Koti.
 - **Tooltips stay out of the way.** A toolbar tooltip no longer draws over or under an open flyout or colour picker.
 - **Settings…** is in the ChemDraft menu (⌘,).
@@ -63,6 +63,7 @@ ChemDraft 1.1 is a fix release. It adds picture paste and editable tables, makes
 - A rotated table saved by an earlier version with an empty column can shift by a few pixels the first time it is edited.
 - Text in a text box can move by a pixel or two when editing starts or ends.
 - Applying superscript or subscript to a whole text box can remove bold from part of its text; Undo restores it.
+- After you undo a double-bond geometry change made from the (!) badge, select the structures again before copying; otherwise the copy can be incomplete.
 - On macOS the NMR panel resizes only from a thin band at its edge.
 - On Macs running macOS 15 or earlier, Spin 3D may not start; a fix is planned for 1.1.1.
 
