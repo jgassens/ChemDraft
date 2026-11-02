@@ -60,22 +60,7 @@ function compareGolden(suffix: string, value: string): void {
     expect(Buffer.from(value, "utf8")).toEqual(readFileSync(url));
     return;
   }
-  let expected = readFileSync(url, "utf8");
-  // Update only the historical golden's fourth-column geometry for the 64.5 -> 66 px floor.
-  const replacements: [string, string][] = suffix === "rtf" ? [
-    ["\\clwWidth988", "\\clwWidth1010"], ["\\cellx6328", "\\cellx6350"],
-    ["\\cellx7391", "\\cellx7413"], ["\\cellx8686", "\\cellx8708"],
-    ["\\cellx10499", "\\cellx10521"], ["\\ri81\\f0", "\\ri92\\f0"],
-    ["\\ri231\\f0", "\\ri242\\f0"]
-  ] : suffix.endsWith("html") ? [
-    ['width="691"', 'width="692"'], ["width:517.875pt", "width:519pt"],
-    ['width="65"', 'width="66"'], ["width:48.375pt", "width:49.5pt"],
-    ["padding-right:8.055pt", "padding-right:8.6175pt"],
-    ["padding-right:15.561pt", "padding-right:16.1235pt"],
-    ["padding-right:26.82pt", "padding-right:27.3825pt"]
-  ] : [];
-  for (const [oldValue, newValue] of replacements) expected = expected.replaceAll(oldValue, newValue);
-  expect(Buffer.from(value, "utf8")).toEqual(Buffer.from(expected, "utf8"));
+  expect(Buffer.from(value, "utf8")).toEqual(readFileSync(url));
 }
 
 describe("table clipboard payloads", () => {
@@ -663,6 +648,19 @@ describe("table clipboard payloads", () => {
         expect(Math.round(6.04 * 15) + Math.ceil(measure(text) * 15) + right + indent).toBeLessThanOrEqual(width);
       });
     });
+  });
+
+  it("keeps a fitting fixed column narrower than the auto minimum", () => {
+    const input = smallTable(["i"]);
+    input.columns[0].width = { mode: "fixed", px: 30 };
+    const layout = planTableLayout(input);
+    expect(layout.columns[0].contentWidth).toBeLessThan(30);
+    expect(planTableLayout({ ...input, columns: [{ ...input.columns[0], width: { mode: "auto" } }] }).columns[0].width).toBeGreaterThan(30);
+    const output = exportTableClipboardPayloads(input);
+    expect(output.warnings).toEqual([]);
+    expect(output.html).toContain('width="30"');
+    expect(output.rtf).toContain("\\clwWidth450");
+    expect(output.rtf).toContain("\\cellx450");
   });
 
   it("warns for unrotated copying and natural-width overflow without mutating its input", () => {

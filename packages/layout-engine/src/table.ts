@@ -30,6 +30,8 @@ export interface TableLayout {
   columns: {
     x: number;
     width: number;
+    /** Natural text width including padding, before the auto-column minimum. */
+    contentWidth: number;
     decimalAnchorX?: number;
     decimalBlock?: { insetLeft: number; insetRight: number; preWidth: number; postWidth: number };
   }[];
@@ -121,10 +123,10 @@ export function planTableLayout(table: TableObject): TableLayout {
     }));
     // Reserve three em of content space plus padding, on the same half-pixel grid.
     const minimumWidth = Math.ceil((3 * style.fontSizePx + 2 * padding.x) * 2) / 2;
-    const width = column.width.mode === "fixed" ? column.width.px
-      : Math.max(minimumWidth, Math.ceil((Math.max(widest, pre + post) * 1.04 + 2 * padding.x) * 2) / 2);
+    const contentWidth = Math.ceil((Math.max(widest, pre + post) * 1.04 + 2 * padding.x) * 2) / 2;
+    const width = column.width.mode === "fixed" ? column.width.px : Math.max(minimumWidth, contentWidth);
     const inset = Math.max(0, (width - 2 * padding.x - pre - post) / 2);
-    const result = { x, width, ...(column.align === "decimal" ? {
+    const result = { x, width, contentWidth, ...(column.align === "decimal" ? {
       decimalAnchorX: x + padding.x + inset + pre,
       decimalBlock: { insetLeft: inset, insetRight: inset, preWidth: pre, postWidth: post }
     } : {}) };

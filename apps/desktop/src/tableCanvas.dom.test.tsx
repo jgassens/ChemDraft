@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { deserializeDocument, type ChemDraftDocument } from "@chemdraft/chem-core";
+import { deserializeDocument, nativeTextStyleFromObjectStyle, type ChemDraftDocument } from "@chemdraft/chem-core";
 import { planPageSvgRender, planTableLayout, tableVisualBoundsForArrangement,
   transformPointForObject, type PageSvgFragment } from "@chemdraft/layout-engine";
 import { MainWindow } from "./MainWindow";
@@ -116,9 +116,13 @@ describe("native tables on the canvas", () => {
     const table = window.__CHEMDRAFT_AGENT__!.snapshot().document.pages[0].objects[0];
     if (table.type !== "table") throw new Error("Expected table");
     expect(table.rows).toHaveLength(6); expect(table.columns).toHaveLength(4);
-    const box = planTableLayout(table).cells.find(cell => cell.rowIndex === 2 && cell.columnIndex === 1)!.box;
+    const layout = planTableLayout(table);
+    const fontSize = nativeTextStyleFromObjectStyle(table.style).fontSizePx;
+    const minimum = Math.ceil((3 * fontSize + 2 * table.tableStyle.cellPaddingPx.x) * 2) / 2;
+    expect(layout.columns.every(column => column.width >= minimum)).toBe(true);
+    const box = layout.cells.find(cell => cell.rowIndex === 2 && cell.columnIndex === 0)!.box;
     const scale = (window.__CHEMDRAFT_AGENT__!.snapshot().viewport as { scale: number }).scale;
-    const x = (box.x + box.width / 2) * scale, y = (box.y + box.height / 2) * scale;
+    const x = (box.x + 5) * scale, y = (box.y + box.height / 2) * scale;
     const hit = container.querySelector("[data-table-hit-target]")!;
     for (let i = 0; i < 2; i++) {
       await pointer(hit, "pointerdown", x, y);
@@ -133,7 +137,7 @@ describe("native tables on the canvas", () => {
       editor!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
     });
     const edited = window.__CHEMDRAFT_AGENT__!.snapshot().document.pages[0].objects[0] as typeof table;
-    expect(edited.rows[2].cells[1].text).toBe("edited");
+    expect(edited.rows[2].cells[0].text).toBe("edited");
     expect(edited.rows.flatMap(row => row.cells).filter(cell => cell.text !== "")).toHaveLength(1);
   });
 
