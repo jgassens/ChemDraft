@@ -9,13 +9,14 @@ import {
 } from "@chemdraft/chem-core";
 import { buildTableObject } from "@chemdraft/document-workflow-core";
 import { exportTableClipboardPayloads } from "@chemdraft/export-engine";
-import type { ClipboardWriteTextItem } from "./clipboard";
+import type { ClipboardWriteResult, ClipboardWriteTextItem } from "./clipboard";
 import {
   addTableCenteredOnPage, CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, parseSelectionClipboardPayload, serializeSelectionClipboardPayload,
   type ChemDraftSelectionClipboardPayload
 } from "./documentWorkflow";
 
 type ParseHtml = (html: string) => Document;
+type InspectClipboard = (payload: ClipboardReadPayload) => ClipboardDetectedPayload;
 
 /** Consume a generated RTF header group, respecting escaped braces in font names. */
 function rtfGroup(text: string): [string, string] {
@@ -57,10 +58,18 @@ function remapRtfReferences(text: string, fontIndex: number, colorOffset: number
   });
 }
 
-/** Selection payload objects are in page order; a molecule fragment makes this ineligible too. */
+/** A table copy item; only the private selection is required (see tableSelectionClipboardItems). */
+export type TableClipboardWriteItem = ClipboardWriteTextItem & { required: boolean };
+
+/**
+ * Selection payload objects are in page order; a molecule fragment makes this ineligible too.
+ * Only the private selection is required. HTML, RTF and text are interoperable renditions: when
+ * one does not fit the native copy budget the writer drops it with a warning instead of refusing
+ * the whole copy, the way the paste side declines an oversized DIB beside a usable PNG.
+ */
 export function tableSelectionClipboardItems(
   payload: ChemDraftSelectionClipboardPayload
-): { items: ClipboardWriteTextItem[]; warnings: string[] } | undefined {
+): { items: TableClipboardWriteItem[]; warnings: string[] } | undefined {
   if (!payload.objects.length || !payload.objects.every((object): object is TableObject => object.type === "table")) return undefined;
   const exports = payload.objects.map(table => exportTableClipboardPayloads(table));
   const start = "<!--StartFragment-->", end = "<!--EndFragment-->";
@@ -70,16 +79,30 @@ export function tableSelectionClipboardItems(
     + firstHtml.slice(firstHtml.indexOf(end));
   return {
     items: [
-      { type: CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, text: serializeSelectionClipboardPayload(payload) },
-      { type: "text/html", text: html },
-      { type: "text/rtf", text: joinRtf(exports.map(item => item.rtf)) },
-      { type: "text/plain", text: exports.map(item => item.tsv).join("\n\n") }
+      { type: CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, text: serializeSelectionClipboardPayload(payload), required: true },
+      { type: "text/html", text: html, required: false },
+      { type: "text/rtf", text: joinRtf(exports.map(item => item.rtf)), required: false },
+      { type: "text/plain", text: exports.map(item => item.tsv).join("\n\n"), required: false }
     ],
     warnings: exports.flatMap(item => item.warnings)
   };
 }
 
-/** Called only after chemical formats (including parsed plain-text SMILES lists) have declined. */
+/**
+ * What a successful copy left out, for the status line: the writer's warnings (an optional
+ * format dropped over the copy budget) and any optional format it could not write.
+ */
+export function clipboardWriteNotices(result: ClipboardWriteResult): string[] {
+  return [
+    ...result.warnings,
+    ...(result.ok ? result.failed.map(failure => `${failure.type} was not copied: ${failure.reason}`) : [])
+  ];
+}
+
+/**
+ * Called only after chemical formats (including parsed plain-text SMILES lists) have declined.
+ * Pass a size-guarded read, so a table comes only from flavors within their caps.
+ */
 export function readTableClipboardPaste(payload: ClipboardReadPayload, parseHtml: ParseHtml): ClipboardTableResult | undefined {
   const html = readClipboardHtmlTable(payload, parseHtml);
   if (html !== undefined) return html;
@@ -117,14 +140,22 @@ export function tableClipboardResultOutranksPicture(result: ClipboardTableResult
   return populatedRows.length > 1;
 }
 
-/** Keep native and chemical precedence; plausible SMILES text uses the existing parser first. */
-export function tableClipboardPasteDecision(payload: ClipboardReadPayload, parseHtml: ParseHtml): TableClipboardPasteDecision {
+/**
+ * Keep native and chemical precedence; plausible SMILES text uses the existing parser first.
+ * Pass a size-guarded read whose chemistry refusal the caller already reported; `inspect` is the
+ * caller's own paste inspection, used for chemistry precedence and for everything not a table.
+ */
+export function tableClipboardPasteDecision(
+  payload: ClipboardReadPayload, parseHtml: ParseHtml, inspect: InspectClipboard = inspectClipboardPayload
+): TableClipboardPasteDecision {
   const selection = payload.textItems.map(item => parseSelectionClipboardPayload(item.text)).find(Boolean);
   if (selection) return { kind: "selection", payload: selection };
   // Office and Google supply pictures alongside editable tables. Exclude those renditions
   // while checking chemistry precedence, then restore picture detection if no table wins.
   const stripped = stripClipboardPictures(payload);
-  const detected = inspectClipboardPayload(stripped);
+  // Size-skipped flavors are simply absent here (the caller refused oversized chemistry first),
+  // so a table within its own cap still pastes when an unrelated flavor was too large.
+  const detected = inspect({ ...stripped, skippedItems: undefined });
   // A few reagent names/header words can resemble SMILES in a prose-heavy Office table.
   // Only defer to chemistry if even the best case (every candidate parses) can qualify
   // under the same list policy used by the chemical parser.
@@ -148,10 +179,10 @@ export function tableClipboardPasteDecision(payload: ClipboardReadPayload, parse
     looksLikeSmiles(detected.text.trim()) || possibleList
   );
   if (!["plain-text", "empty", "vector-only"].includes(detected.kind) || textNeedsChemistry) {
-    return { kind: "existing", payload: inspectClipboardPayload(payload) };
+    return { kind: "existing", payload: inspect(payload) };
   }
   const table = readTableClipboardPaste(stripped, parseHtml);
-  const existing = inspectClipboardPayload(payload);
+  const existing = inspect(payload);
   const hasPicture = existing.kind === "image" ||
     ((existing.kind === "plain-text" || existing.kind === "smiles") && !!existing.fallbackImage);
   return table && (!hasPicture || tableClipboardResultOutranksPicture(table))

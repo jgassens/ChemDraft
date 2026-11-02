@@ -1,5 +1,28 @@
-import { inflateSync } from "node:zlib";
+import { crc32, deflateSync, inflateSync } from "node:zlib";
 import { jsPDF } from "jspdf";
+
+/** A valid ~16.8 MB PNG whose base64 exceeds the 20 MiB SVG markup budget. */
+export function largePicturePng(): Buffer {
+  const side = 2048;
+  const stride = side * 4 + 1;
+  const pixels = Buffer.alloc(stride * side, 255);
+  for (let row = 0; row < side; row++) pixels[row * stride] = 0; // Unfiltered RGBA scanlines.
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(side, 0);
+  header.writeUInt32BE(side, 4);
+  header[8] = 8;
+  header[9] = 6;
+  const chunk = (type: string, data: Buffer) => {
+    const bytes = Buffer.alloc(data.length + 12);
+    bytes.writeUInt32BE(data.length, 0);
+    bytes.write(type, 4, "ascii");
+    data.copy(bytes, 8);
+    bytes.writeUInt32BE(crc32(bytes.subarray(4, -4)), bytes.length - 4);
+    return bytes;
+  };
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk("IHDR", header), chunk("IDAT", deflateSync(pixels, { level: 0 })), chunk("IEND", Buffer.alloc(0))]);
+}
 
 /** Deterministic Helvetica advances for the headless ASCII alignment tests (SVG px in/out). */
 export function standardFontTextWidth(text: string, fontSizePx: number): number {

@@ -24,6 +24,7 @@ const EMPTY_CONTEXT: AppMenuContext = {
   hasSelection: false,
   hasSelectedMolecule: false,
   canConvertTextToAtomLabel: true,
+  platform: "macos",
   toolbars: []
 };
 
@@ -60,11 +61,12 @@ describe("app menu model", () => {
   it.each(["MacIntel", "Win32"])("shows the counted plugin update notice only for available offers on %s", platform => {
     vi.stubGlobal("navigator", { platform });
     try {
+      const context = { ...EMPTY_CONTEXT, platform: platform === "MacIntel" ? "macos" as const : "windows" as const };
       for (const count of [undefined, 0, -1]) {
-        const model = buildAppMenuModel({ ...EMPTY_CONTEXT, availablePluginUpdateCount: count });
+        const model = buildAppMenuModel({ ...context, availablePluginUpdateCount: count });
         expect(flattenAppMenuCommands(model).some(item => item.commandId === PLUGIN_UPDATES_COMMAND_ID)).toBe(false);
       }
-      const model = buildAppMenuModel({ ...EMPTY_CONTEXT, availablePluginUpdateCount: 2 });
+      const model = buildAppMenuModel({ ...context, availablePluginUpdateCount: 2 });
       const plugins = model.find(section => section.id === "plugins")!;
       const notice = flattenAppMenuCommands([plugins]).filter(item => item.commandId === PLUGIN_UPDATES_COMMAND_ID);
       expect(PLUGIN_UPDATES_COMMAND_ID).toBe("plugins.showUpdates");
@@ -94,7 +96,8 @@ describe("app menu model", () => {
   it.each(["MacIntel", "Win32"])("places Insert > Templates… after Edit on %s", platform => {
     vi.stubGlobal("navigator", { platform });
     try {
-      const model = buildAppMenuModel(EMPTY_CONTEXT);
+      const context = { ...EMPTY_CONTEXT, platform: platform === "MacIntel" ? "macos" as const : "windows" as const };
+      const model = buildAppMenuModel(context);
       const index = model.findIndex(section => section.id === "edit");
       expect(model.slice(index, index + 3).map(section => section.id)).toEqual(["edit", "insert", "view"]);
       // Insert holds Table… (tables) and Templates… (structure templates) since both landed.
@@ -131,7 +134,8 @@ describe("app menu model", () => {
   it.each(["MacIntel", "Win32"])("omits kept-drawing actions from the menu on %s", (platform) => {
     vi.stubGlobal("navigator", { platform });
     try {
-      const commands = flattenAppMenuCommands(buildAppMenuModel(EMPTY_CONTEXT));
+      const context = { ...EMPTY_CONTEXT, platform: platform === "MacIntel" ? "macos" as const : "windows" as const };
+      const commands = flattenAppMenuCommands(buildAppMenuModel(context));
       for (const id of ["document.saveUnrestoredTabs", "document.discardUnrestoredTabs"]) {
         expect(commands.some(command => command.commandId === id)).toBe(false);
         expect(parseNativeMenuCommandIds()).not.toContain(id);
@@ -229,6 +233,7 @@ describe("app menu model", () => {
 
   it("presents the expected top-level sections", () => {
     expect(buildAppMenuModel(EMPTY_CONTEXT).map((section) => section.label)).toEqual([
+      "ChemDraft",
       "File",
       "Edit",
       "Insert",
@@ -286,6 +291,7 @@ describe("app menu model", () => {
 
     // Item lands in Analyze; no new top-level section appears for a known location.
     expect(model.map((section) => section.label)).toEqual([
+      "ChemDraft",
       "File",
       "Edit",
       "Insert",
@@ -341,5 +347,36 @@ describe("app menu model", () => {
     ]);
     expect(nativeRoutedCommandIds(model)).toContain(PLUGIN_MANAGER_COMMAND_ID);
     expect(nativeRoutedCommandIds(model)).not.toContain("plugin.demo.open");
+  });
+});
+
+
+describe("Preferences placement", () => {
+  it("keeps native Preferences in the macOS application menu and Windows File menu", () => {
+    const source = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+    const builder = source.split("fn create_app_menu_for_toolsets<R: Runtime>")[1]!.split("/// Close Window")[0]!;
+    const fileMenu = builder.split('"File",')[1]!.split('"Edit",')[0]!;
+    expect(fileMenu).toContain('#[cfg(not(target_os = "macos"))]\n                    &preferences_menu_item(app)?');
+    expect(fileMenu.indexOf('"export.open"')).toBeLessThan(fileMenu.indexOf("&preferences_menu_item(app)?"));
+    expect(source).toContain('#[cfg(target_os = "macos")]\nfn create_native_app_menu<R: Runtime>');
+    const appMenu = source.split("fn create_native_app_menu<R: Runtime>")[1]!.split("fn create_page_setup_menu")[0]!;
+    expect(appMenu.indexOf("PredefinedMenuItem::about")).toBeLessThan(appMenu.indexOf("&preferences_menu_item(app)?"));
+    expect(appMenu.indexOf("&preferences_menu_item(app)?")).toBeLessThan(appMenu.indexOf("PredefinedMenuItem::services"));
+    const item = source.split("fn preferences_menu_item<R: Runtime>")[1]!.split("fn create_view_menu")[0]!;
+    expect(item).toContain("PREFERENCES_TOGGLE_COMMAND_ID");
+    expect(item).toContain('Some("CmdOrCtrl+,")');
+    const viewMenu = source.split("fn create_view_menu<R: Runtime>")[1]!.split("fn create_toolbars_menu")[0]!;
+    expect(viewMenu).not.toContain("preferences");
+    expect(source).toContain('const PREFERENCES_TOGGLE_COMMAND_ID: &str = "view.togglePreferences";');
+  });
+
+  it.each(["macos", "windows"] as const)("places Preferences in the platform menu on %s", platform => {
+    const sections = buildAppMenuModel({ ...EMPTY_CONTEXT, platform });
+    const owner = sections.find(section => section.items.some(item => item.kind === "command" && item.commandId === "view.togglePreferences"))!;
+    expect(owner.id).toBe(platform === "macos" ? "app" : "file");
+    const preferences = flattenAppMenuCommands(sections).filter(item => item.commandId === "view.togglePreferences");
+    expect(preferences).toHaveLength(1);
+    expect(preferences[0]).toMatchObject({ accelerator: "Cmd+,", shortcut: platform === "macos" ? "⌘," : "Ctrl+," });
+    expect(flattenAppMenuCommands(sections.filter(section => section.id === "view")).some(item => item.commandId === "view.togglePreferences")).toBe(false);
   });
 });

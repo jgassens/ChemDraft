@@ -1,5 +1,5 @@
-import { perfHook, perfProbe } from "./perf/runtime";
-import { useEffect, useRef, useState } from "react";
+import { logToolsetPopoverGeometry, perfHook, perfProbe } from "./perf/runtime";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ColorPickerPopoverBody, symbolToolGlyph, toolbarCommandFlyoutGridStyle } from "./ToolPalette";
 import { Icon, type IconName } from "./icons";
 import { toolbarAsset, type ToolbarAssetName } from "./toolbarAssets";
@@ -8,6 +8,7 @@ import { installPaletteInputFocus } from "./plugins/pluginPanelInputFocus";
 import {
   listenForToolsetPopoverContent,
   listenForToolsetPopoverDismiss,
+  listenForToolsetPopoverRelease,
   listenForBondStereoPopoverActions,
   listenForToolsetTextStyle,
   requestToolsetPopoverContent,
@@ -84,6 +85,21 @@ export function PalettePopoverWindow({
   const [artStyle, setArtStyle] = useState<ToolsetArtStylePayload | undefined>();
   const contentRef = useRef(content);
   contentRef.current = content;
+  const resetScroll = (phase: "reveal" | "release" | "guard" = "guard") => {
+    const reset = () => {
+      // A reused WKWebView can retain scrolling from layout at its previous, smaller size.
+      for (const element of [document.scrollingElement, document.documentElement, document.body,
+        document.getElementById("root"), shellRef.current, shellRef.current?.firstElementChild]) {
+        if (element) { element.scrollTop = 0; element.scrollLeft = 0; }
+      }
+      if (window.scrollX || window.scrollY) window.scrollTo(0, 0);
+    };
+    if (contentRef.current.kind === "flyout" && shellRef.current) {
+      // Sample every repair, including capture-phase scroll events, before it clears offsets.
+      logToolsetPopoverGeometry(phase, shellRef.current, reset);
+    } else reset();
+  };
+  useLayoutEffect(resetScroll, [content]);
   const notifyBondStereoClose = (current = contentRef.current) => {
     if (current.kind === "flyout" && current.flyout.variant === "bondStereo" && current.flyout.id) {
       void sendBondStereoPopoverAction({ sessionId: current.flyout.id, action: "close" }).catch(() => undefined);
@@ -109,11 +125,38 @@ export function PalettePopoverWindow({
   useEffect(() => {
     document.documentElement.classList.add("palette-popover-window-html");
     document.body.classList.add("palette-popover-window-body");
+    // overflow:hidden prevents user scrolling; this also catches browser focus/scroll anchoring.
+    const guardScroll = () => resetScroll();
+    document.addEventListener("scroll", guardScroll, true);
+    window.addEventListener("scroll", guardScroll);
+    document.addEventListener("focusin", guardScroll);
     return () => {
+      document.removeEventListener("scroll", guardScroll, true);
+      window.removeEventListener("scroll", guardScroll);
+      document.removeEventListener("focusin", guardScroll);
       document.documentElement.classList.remove("palette-popover-window-html");
       document.body.classList.remove("palette-popover-window-body");
     };
   }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    // The opening press is captured by the OWNER window, not this separate webview.
+    const afterRelease = (payload?: { toolsetId: string; releasedAt: number }) => {
+      if (payload && (payload.toolsetId !== toolsetId || payload.releasedAt < contentOpenedAt.current)) return;
+      window.setTimeout(() => {
+        if (disposed || dismissedRef.current) return;
+        resetScroll("release");
+      }, 0);
+    };
+    const localRelease = () => afterRelease();
+    window.addEventListener("pointerup", localRelease, true);
+    void listenForToolsetPopoverRelease(afterRelease).then(stop => {
+      if (disposed) stop(); else unlisten = stop;
+    }).catch(() => undefined);
+    return () => { disposed = true; unlisten?.(); window.removeEventListener("pointerup", localRelease, true); };
+  }, [toolsetId]);
 
   // The owning palette pushes what this window should show. Request it on mount too — an open may
   // have emitted before this window finished subscribing (a cold first open, or a press landing
@@ -199,7 +242,7 @@ export function PalettePopoverWindow({
         if (anchor) {
           await setCurrentWindowLogicalPosition(anchor);
         }
-      })().catch(() => undefined);
+      })().catch(() => undefined).finally(resetScroll);
     };
 
     applySize();
@@ -266,13 +309,15 @@ export function PalettePopoverWindow({
         perfHook(() => perfProbe?.surfaceShown(perfShown, "no-op"));
         return;
       }
+      resetScroll();
       try {
         // Rust maps other popovers to Preserve; their fields lease the keyboard.
         // Only a deliberate E/Z keyboard reveal owns focus without a field lease.
         const preserveFocus = content.kind === "flyout" && content.flyout.variant === "bondStereo" && !content.flyout.keyboardOpen;
         keepWindowFocusRef.current = toolsetId === "core.bondStereo" && content.kind === "flyout" &&
           content.flyout.variant === "bondStereo" && !!content.flyout.keyboardOpen;
-        await showCurrentToolsetPopoverWindow(preserveFocus ? "preserve" : "focus");
+        await showCurrentToolsetPopoverWindow(preserveFocus ? "preserve" : "focus", content.kind);
+        resetScroll("reveal");
         if (cancelled || dismissedRef.current) {
           // An older reveal may complete after a fresh open. Only hide the content
           // this chain belongs to; the new session owns the reused window now.
@@ -288,7 +333,7 @@ export function PalettePopoverWindow({
             if (cancelled || dismissedRef.current) return;
             await getCurrentWebview().setFocus();
             if (cancelled || dismissedRef.current) return;
-            shellRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+            shellRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus({ preventScroll: true });
           }
         }
         perfHook(() => perfProbe?.surfaceShown(perfShown, "popover-shown"));
@@ -326,7 +371,8 @@ export function PalettePopoverWindow({
       if (contentPushedRef.current || dismissedRef.current) {
         return;
       }
-      void showCurrentToolsetPopoverWindow().catch(() => undefined);
+      resetScroll();
+      void showCurrentToolsetPopoverWindow("focus", contentRef.current.kind).then(() => resetScroll("reveal")).catch(() => undefined);
     }, 600);
     return () => window.clearTimeout(fallback);
   }, [prewarm, toolsetId]);
@@ -431,7 +477,7 @@ export function PalettePopoverWindow({
             const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")];
             const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
             event.preventDefault(); event.stopPropagation();
-            buttons[(index + (event.shiftKey ? buttons.length - 1 : 1)) % buttons.length]?.focus();
+            buttons[(index + (event.shiftKey ? buttons.length - 1 : 1)) % buttons.length]?.focus({ preventScroll: true });
           }}>
           <strong>E/Z not specified</strong>
           <p>This double bond's geometry wasn't given, so ChemDraft shows it as either E or Z.</p>

@@ -1,30 +1,9 @@
 /**
- * ChemDraw-compatible keybinding scheme.
- *
- * The mapping is behavioral: each entry pairs a ChemDraft command with the key
- * ChemDraw users expect for the equivalent action, so muscle memory transfers.
- * The numeric drawing row IS mapped: ring attach/fuse, wedge/hash sprouts,
- * carbonyl, gem-dimethyl, and the cyclic-bond key live in
- * `numericAtomDrawingHotkeys`/`numericBondDrawingHotkeys` (commands.ts) and are
- * spread into the hover tables below — and into the default ChemDraft scheme's
- * hover ladder, which consults the same tables. Nickname labels (e→Et, O→OMe,
- * Boc/Cbz/Fmoc…) ARE mapped, as verbatim text labels rather than structural
- * expansions. ChemDraw actions with no ChemDraft equivalent (fragment sprouts
- * beyond the numeric row such as t-Bu, dialog hotkeys, and A→Ac — an
- * element-symbol collision) are simply absent — the keys do nothing rather
- * than doing something surprising.
- *
- * Three surfaces are remapped:
- *   1. Registry shortcuts (tool switching + menu chords) via
- *      `applyKeybindingSchemeToCommands`, applied wherever a shortcut registry
- *      or command list is built.
- *   2. Hovered atom/bond hotkeys via `chemDrawHoveredTargetHotkeyCommand`,
- *      consulted by the MainWindow keydown ladder ahead of the registry.
- *   3. Native macOS menu accelerators, rebuilt by the Rust side when the
- *      scheme changes (`set_keybinding_scheme`).
+ * Keybinding preset overrides and context-sensitive hover keys.
+ * Numeric and fragment drawing keys are shared by both presets.
  */
 
-import { atomLabelCommandId, numericAtomDrawingHotkeys, numericBondDrawingHotkeys, type CommandSpec } from "./commands";
+import { atomLabelCommandId, fragmentAtomDrawingHotkeys, fragmentBondDrawingHotkeys, numericAtomDrawingHotkeys, numericBondDrawingHotkeys, type CommandSpec } from "./commands";
 import type { KeybindingScheme } from "./keybindingSettings";
 import { formatShortcutLabel } from "./toolsets";
 
@@ -51,9 +30,7 @@ export const CHEMDRAW_COMMAND_SHORTCUT_OVERRIDES: Readonly<Record<string, string
   "tool.plus": null, // +/- act on the hovered atom only, never switch tools
   "tool.minus": null,
 
-  // --- Hovered-target keys that differ ---
-  // Carbonyl is "2" over an atom in ChemDraw (handled by the hover ladder);
-  // a bare "K" there means t-Bu, which ChemDraft doesn't support.
+  // Carbonyl and fragment keys are resolved by the hover ladder.
   "atom.addCarbonylToHoveredAtom": null,
 
   // --- Menu chords that differ from ChemDraft defaults ---
@@ -115,6 +92,7 @@ function atomElementCommand(element: string): string {
  */
 const CHEMDRAW_ATOM_HOTKEYS: Readonly<Record<string, string>> = {
   ...numericAtomDrawingHotkeys,
+  ...fragmentAtomDrawingHotkeys,
   // "3/a" on the cheat sheet: both attach a benzene ring at the atom.
   a: numericAtomDrawingHotkeys["3"],
   "+": "atom.addPositiveChargeToHoveredAtom",
@@ -165,6 +143,7 @@ const CHEMDRAW_ATOM_HOTKEYS: Readonly<Record<string, string>> = {
  */
 const CHEMDRAW_BOND_HOTKEYS: Readonly<Record<string, string>> = {
   ...numericBondDrawingHotkeys,
+  ...fragmentBondDrawingHotkeys,
   // ChemDraw fuses benzene onto a bond with "a".
   a: "bond.fuseRingAtHoveredBond.benzene",
   w: "bond.setHoveredBondDisplay.wedge",

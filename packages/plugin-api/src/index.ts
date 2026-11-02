@@ -1,5 +1,7 @@
 import type { ChemDraftDocument, DocumentPatch } from "@chemdraft/chem-core";
 import { z } from "zod";
+import { panelReportLimitIssue, PluginPanelReportLimits, snapshotPanelReport } from "./reportLimits";
+export { PluginPanelReportLimits, snapshotPanelReport } from "./reportLimits";
 export * from "./chemistry3d";
 import type { PluginEmbed3DRequest, PluginEmbed3DResult, PluginMinimize3DRequest, PluginMinimize3DResult,
   PluginFlatten3DRequest, PluginFlatten3DResult } from "./chemistry3d";
@@ -28,8 +30,10 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * (including structured minimize3d clash/contact diagnostics and flatten3d clash refusal).
  * 0.1.16 adds optional isotope mass numbers to native document atoms.
  * 0.1.17 adds the optional MoleculeBond `stereo: "either"` field for E/Z-unspecified double bonds.
- * 0.1.19 adds the optional table style field autoColumnMinEm (minimum auto column width in em)
  * 0.1.18 adds command-scoped documents.insertTable with a validated native PluginTableSpec.
+ * 0.1.19 bounds panel report strings, arrays, aggregate counts and UTF-8 JSON size; all report numbers are finite.
+ * 0.1.19 exports the parameterised detached snapshotPanelReport walk for host overlay validation.
+ * 0.1.20 adds the optional table style field autoColumnMinEm (minimum auto column width in em).
  *
  * The MINOR stays at 1 for both. For a 0.x release `isPluginApiVersionCompatible` treats the minor as
  * the compatibility boundary, so 0.2.0 would have made every plugin declaring `^0.1.0` — the NMR
@@ -39,7 +43,7 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * local structure recognition, `^0.1.7` for structure naming, `^0.1.8` for external tools), which this host satisfies and an
  * older one correctly does not.
  */
-export const PluginApiVersion = "0.1.19" as const;
+export const PluginApiVersion = "0.1.20" as const;
 
 export const pluginPermissions = [
   "document.read",
@@ -244,26 +248,29 @@ export const PluginRecognizerContributionSchema = z
   })
   .strict();
 
+const ReportStringSchema = z.string().max(PluginPanelReportLimits.stringLength);
+const ReportNonEmptyStringSchema = ReportStringSchema.min(1);
+
 /** Stable ids for sections and their nested controls, unique within a report. */
 export const PluginPanelControlIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/);
 
 export const PluginPanelPromptSectionSchema = z.object({
   kind: z.literal("prompt"),
   id: PluginPanelControlIdSchema,
-  title: NonEmptyStringSchema.optional(),
+  title: ReportNonEmptyStringSchema.optional(),
   commandId: PluginCommandIdSchema,
-  label: z.string().optional(),
-  placeholder: z.string().optional(),
-  submitLabel: NonEmptyStringSchema.default("Send"),
-  maxLength: z.number().int().min(1).max(20000).default(4000),
-  rows: z.number().int().min(1).max(12).default(3),
+  label: ReportStringSchema.optional(),
+  placeholder: ReportStringSchema.optional(),
+  submitLabel: ReportNonEmptyStringSchema.default("Send"),
+  maxLength: z.number().finite().int().min(1).max(20000).default(4000),
+  rows: z.number().finite().int().min(1).max(12).default(3),
   disabled: z.boolean().default(false),
-  hint: z.string().optional(),
+  hint: ReportStringSchema.optional(),
   select: z.object({
     id: PluginPanelControlIdSchema,
-    label: NonEmptyStringSchema,
-    value: z.string().max(100),
-    options: z.array(z.object({ value: z.string().max(100), label: NonEmptyStringSchema }).strict()).min(1).max(20),
+    label: ReportNonEmptyStringSchema,
+    value: ReportStringSchema.max(100),
+    options: z.array(z.object({ value: ReportStringSchema.max(100), label: ReportNonEmptyStringSchema }).strict()).min(1).max(20),
     commandId: PluginCommandIdSchema.optional()
   }).strict().optional()
 }).strict();
@@ -516,10 +523,10 @@ export const PluginPanelSectionSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("actions"),
     id: PluginPanelControlIdSchema,
-    title: NonEmptyStringSchema.optional(),
+    title: ReportNonEmptyStringSchema.optional(),
     buttons: z.array(z.object({
       id: PluginPanelControlIdSchema,
-      label: NonEmptyStringSchema,
+      label: ReportNonEmptyStringSchema,
       commandId: PluginCommandIdSchema,
       payload: PluginPanelPayloadSchema.optional(),
       disabled: z.boolean().default(false),
@@ -528,58 +535,58 @@ export const PluginPanelSectionSchema = z.discriminatedUnion("kind", [
   }).strict(),
   z.object({
     kind: z.literal("image"),
-    title: NonEmptyStringSchema.optional(),
-    dataUri: z.string().max(1024 * 1024).regex(/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$(?![\s\S])/)
+    title: ReportNonEmptyStringSchema.optional(),
+    dataUri: z.string().max(PluginPanelReportLimits.imageLength).regex(/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$(?![\s\S])/)
       .refine(uri => (uri.length - uri.indexOf(",") - 1) % 4 === 0, "Image data must contain complete base64 groups."),
-    alt: z.string(),
-    caption: z.string().optional(),
-    maxWidthPx: z.number().int().positive().optional()
+    alt: ReportStringSchema,
+    caption: ReportStringSchema.optional(),
+    maxWidthPx: z.number().finite().int().positive().optional()
   }).strict(),
   z
     .object({
       kind: z.literal("text"),
-      title: NonEmptyStringSchema.optional(),
-      body: z.string()
+      title: ReportNonEmptyStringSchema.optional(),
+      body: ReportStringSchema
     })
     .strict(),
   z
     .object({
       kind: z.literal("keyValue"),
-      title: NonEmptyStringSchema.optional(),
-      rows: z.array(z.object({ label: z.string(), value: z.string() }).strict())
+      title: ReportNonEmptyStringSchema.optional(),
+      rows: z.array(z.object({ label: ReportStringSchema, value: ReportStringSchema }).strict()).max(PluginPanelReportLimits.keyValueRows)
     })
     .strict(),
   z
     .object({
       kind: z.literal("table"),
-      title: NonEmptyStringSchema.optional(),
-      columns: z.array(z.string()),
-      rows: z.array(z.array(z.string()))
+      title: ReportNonEmptyStringSchema.optional(),
+      columns: z.array(ReportStringSchema).max(PluginPanelReportLimits.tableColumns),
+      rows: z.array(z.array(ReportStringSchema).max(PluginPanelReportLimits.tableColumns)).max(PluginPanelReportLimits.tableRows)
     })
     .strict(),
   z
     .object({
       kind: z.literal("svg"),
-      title: NonEmptyStringSchema.optional(),
-      svg: z.string().max(512_000),
-      caption: z.string().optional()
+      title: ReportNonEmptyStringSchema.optional(),
+      svg: z.string().max(PluginPanelReportLimits.svgLength),
+      caption: ReportStringSchema.optional()
     })
     .strict(),
   z
     .object({
       kind: z.literal("chemicalName"),
-      title: NonEmptyStringSchema.optional(),
-      label: NonEmptyStringSchema,
-      name: NonEmptyStringSchema,
-      kindLabel: NonEmptyStringSchema,
+      title: ReportNonEmptyStringSchema.optional(),
+      label: ReportNonEmptyStringSchema,
+      name: ReportNonEmptyStringSchema,
+      kindLabel: ReportNonEmptyStringSchema,
       warnings: z.array(
         z
           .object({
             code: z.enum(["stereoLimitedEvidence", "abbreviationExpanded"]),
-            message: NonEmptyStringSchema
+            message: ReportNonEmptyStringSchema
           })
           .strict()
-      )
+      ).max(PluginPanelReportLimits.warnings)
     })
     .strict(),
   // Core-owned interactive figure (ADR-0015). Plugins supply serializable data only; the desktop
@@ -588,27 +595,27 @@ export const PluginPanelSectionSchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("linkedFigure"),
-      title: NonEmptyStringSchema.optional(),
-      caption: z.string().optional(),
+      title: ReportNonEmptyStringSchema.optional(),
+      caption: ReportStringSchema.optional(),
       spectrum: z
         .object({
           /** Free-form axis label token, e.g. "1H" or "13C". Rendered, not interpreted. */
-          nucleus: z.string(),
+          nucleus: ReportStringSchema,
           /** Suggested ppm range. The renderer expands it when a supplied peak falls outside. */
-          domain: z.object({ min: z.number(), max: z.number() }).strict(),
+          domain: z.object({ min: z.number().finite(), max: z.number().finite() }).strict(),
           /** NMR convention plots high→low left→right; default true. */
           reversed: z.boolean().optional(),
           /** Solvent context of the reference data (e.g. "CDCl₃ (predominant reference solvent)"). */
-          solvent: z.string().min(1).max(120).optional(),
+          solvent: ReportStringSchema.min(1).max(120).optional(),
           /** Provider-owned comparison capability and labels. This may be present with zero
            * currently applicable alternative values; per-peak `alternativePpm` is the availability
            * source of truth, allowing the renderer to explain a primary-only result. */
           comparison: z
             .object({
-              primaryLabel: NonEmptyStringSchema,
-              alternativeLabel: NonEmptyStringSchema,
+              primaryLabel: ReportNonEmptyStringSchema,
+              alternativeLabel: ReportNonEmptyStringSchema,
               /** Short visual suffix for the alternative value, e.g. "ᵢ". */
-              alternativeMarker: z.string().min(1).max(8).optional()
+              alternativeMarker: ReportStringSchema.min(1).max(8).optional()
             })
             .strict()
             .optional(),
@@ -616,29 +623,29 @@ export const PluginPanelSectionSchema = z.discriminatedUnion("kind", [
             .array(
               z
                 .object({
-                  id: NonEmptyStringSchema,
-                  ppm: z.number(),
+                  id: ReportNonEmptyStringSchema,
+                  ppm: z.number().finite(),
                   /** Relative stick height (e.g. equivalent-nuclei count); >= 0. */
-                  intensity: z.number().min(0),
-                  label: z.string().optional(),
+                  intensity: z.number().finite().min(0),
+                  label: ReportStringSchema.optional(),
                   /** Structure atom `index` values this peak is assigned to (for cross-highlight). */
-                  atomIndices: z.array(z.number().int().min(0)).max(4000),
+                  atomIndices: z.array(z.number().finite().int().min(0)).max(PluginPanelReportLimits.atomIndicesPerPeak),
                   /** True when the shift is a coarse rule estimate, not a reference-DB match. */
                   estimated: z.boolean().optional(),
                   /** Plugin-supplied confidence tier; low peaks draw muted. */
                   confidence: z.enum(["high", "medium", "low"]).optional(),
                   /** Optional alternative estimate for the same peak. A renderer may show it beside
                    * the primary value; the producing plugin owns its method and eligibility policy. */
-                  alternativePpm: z.number().optional(),
+                  alternativePpm: z.number().finite().optional(),
                   /** First-order couplings (Hz + equivalent-partner count) for drawing split peaks. */
                   couplings: z
-                    .array(z.object({ jHz: z.number(), partnerCount: z.number().int().min(0) }).strict())
-                    .max(16)
+                    .array(z.object({ jHz: z.number().finite(), partnerCount: z.number().finite().int().min(0) }).strict())
+                    .max(PluginPanelReportLimits.couplingsPerPeak)
                     .optional()
                 })
                 .strict()
             )
-            .max(4000)
+            .max(PluginPanelReportLimits.peaks)
         })
         .strict(),
       /** Optional 2D depiction. Omitted when the backend has no molecule geometry (e.g. a fixture). */
@@ -648,25 +655,25 @@ export const PluginPanelSectionSchema = z.discriminatedUnion("kind", [
             .array(
               z
                 .object({
-                  index: z.number().int().min(0),
-                  x: z.number(),
-                  y: z.number(),
-                  element: z.string()
+                  index: z.number().finite().int().min(0),
+                  x: z.number().finite(),
+                  y: z.number().finite(),
+                  element: ReportStringSchema
                 })
                 .strict()
             )
-            .max(4000),
+            .max(PluginPanelReportLimits.atoms),
           bonds: z
             .array(
               z
                 .object({
-                  from: z.number().int().min(0),
-                  to: z.number().int().min(0),
-                  order: z.number().int().min(1).max(3)
+                  from: z.number().finite().int().min(0),
+                  to: z.number().finite().int().min(0),
+                  order: z.number().finite().int().min(1).max(3)
                 })
                 .strict()
             )
-            .max(8000)
+            .max(PluginPanelReportLimits.bonds)
         })
         .strict()
         .optional()
@@ -674,10 +681,10 @@ export const PluginPanelSectionSchema = z.discriminatedUnion("kind", [
     .strict()
 ]);
 
-export const PluginPanelReportSchema = z
+const PanelReportObjectSchema = z
   .object({
-    title: NonEmptyStringSchema,
-    sections: z.array(PluginPanelSectionSchema),
+    title: ReportNonEmptyStringSchema,
+    sections: z.array(PluginPanelSectionSchema).max(PluginPanelReportLimits.sections),
     /**
      * Optional reference to the document object this report was computed from, with the selection
      * fingerprint at computation time. Desktop chrome compares it against the live document to flag a
@@ -685,8 +692,8 @@ export const PluginPanelReportSchema = z
      */
     source: z
       .object({
-        objectId: NonEmptyStringSchema,
-        sourceFingerprint: NonEmptyStringSchema
+        objectId: ReportNonEmptyStringSchema,
+        sourceFingerprint: ReportNonEmptyStringSchema
       })
       .optional(),
     /**
@@ -694,10 +701,74 @@ export const PluginPanelReportSchema = z
      * exact variant that produced it (e.g. the ¹H command for a ¹H report) instead of the panel
      * contribution's single default command. When absent, chrome falls back to the panel's commandId.
      */
-    rerunCommandId: NonEmptyStringSchema.optional()
+    rerunCommandId: ReportNonEmptyStringSchema.optional()
   })
   .strict()
-  .superRefine((report, ctx) => validatePanelControlIds(report.sections, ctx));
+  .superRefine((report, ctx) => {
+    // Defaults (for example on prompt/actions sections) also count toward the rendered report.
+    const sizeIssue = panelReportLimitIssue(report);
+    if (sizeIssue) { ctx.addIssue({ code: z.ZodIssueCode.custom, ...sizeIssue }); return; }
+    validatePanelControlIds(report.sections, ctx);
+    let invalidIndex = false;
+    report.sections.forEach((section, sectionIndex) => {
+      if (section.kind !== "linkedFigure" || !section.structure) return;
+      const seen = new Set<number>();
+      const checkIndex = (index: number, path: (string | number)[]) => {
+        if (!seen.has(index) && !invalidIndex) {
+          invalidIndex = true;
+          ctx.addIssue({ code: z.ZodIssueCode.custom,
+            path: ["sections", sectionIndex, ...path],
+            message: `linkedFigure atom index: ${index} is missing from structure atoms` });
+        }
+      };
+      section.structure.atoms.forEach((atom, i) => {
+        if (seen.has(atom.index) && !invalidIndex) {
+          invalidIndex = true;
+          ctx.addIssue({ code: z.ZodIssueCode.custom,
+            path: ["sections", sectionIndex, "structure", "atoms", i, "index"],
+            message: `linkedFigure duplicate atom index: ${atom.index}` });
+        }
+        seen.add(atom.index);
+      });
+      section.structure.bonds.forEach((bond, i) => {
+        checkIndex(bond.from, ["structure", "bonds", i, "from"]);
+        checkIndex(bond.to, ["structure", "bonds", i, "to"]);
+      });
+      section.spectrum.peaks.forEach((peak, i) => peak.atomIndices.forEach((index, j) =>
+        checkIndex(index, ["spectrum", "peaks", i, "atomIndices", j])));
+    });
+  });
+
+// Only this trusted envelope reaches Zod; a failure never exposes the rejected input to a parser.
+const PanelReportSnapshotSchema = z.custom<ReturnType<typeof snapshotPanelReport>>().transform((snapshot, ctx) => {
+  if (!snapshot.ok) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, ...snapshot.issue, fatal: true });
+    return z.NEVER;
+  }
+  return snapshot.data;
+}).pipe(PanelReportObjectSchema);
+
+// Zod probes an object's `then`/`catch` even before a preprocess runs. Snapshot at the public
+// entry points too, so getters on the original report are never called by that type detection.
+class BoundedPanelReportSchema extends z.ZodType<z.output<typeof PanelReportObjectSchema>, z.ZodTypeDef, unknown> {
+  _parse(input: z.ParseInput) {
+    return PanelReportSnapshotSchema._parse({ ...input, data: snapshotPanelReport(input.data) });
+  }
+
+  safeParse(data: unknown, params?: Partial<z.ParseParams>): z.SafeParseReturnType<unknown, this["_output"]> {
+    return PanelReportSnapshotSchema.safeParse(snapshotPanelReport(data), params);
+  }
+
+  async safeParseAsync(data: unknown, params?: Partial<z.ParseParams>): Promise<z.SafeParseReturnType<unknown, this["_output"]>> {
+    return PanelReportSnapshotSchema.safeParseAsync(snapshotPanelReport(data), params);
+  }
+
+  ["~validate"](data: unknown) {
+    return PanelReportSnapshotSchema["~validate"](snapshotPanelReport(data));
+  }
+}
+
+export const PluginPanelReportSchema = new BoundedPanelReportSchema({});
 
 function validatePanelControlIds(sections: PluginPanelSection[], ctx: z.RefinementCtx): void {
   const ids = new Set<string>();

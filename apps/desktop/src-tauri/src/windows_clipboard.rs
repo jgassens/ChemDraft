@@ -23,7 +23,6 @@
 use super::{decode_clipboard_text_bytes, text_is_plausible_clipboard_text};
 #[cfg(any(windows, test))]
 use crate::clipboard_formats::{windows_target_for_payload_type, WindowsTarget};
-use crate::clipboard_images::png_pixels_per_meter;
 
 // Standard clipboard format ids (winuser.h). Kept local so the pure helpers build off Windows.
 const CF_TEXT: u32 = 1;
@@ -57,7 +56,7 @@ fn image_read_formats(png_id: u32, mime_png_id: u32, svg_id: u32) -> [(&'static 
 /// and `FileName` (an 8.3 path), which the text fallback used to turn into a junk text object — and
 /// the formats Office renders on demand: fetching those makes Excel/Word/PowerPoint serialize the
 /// whole selection again (WM_RENDERFORMAT) while ChemDraft's thread waits, for nothing it can use.
-const NON_TEXT_FORMATS: [&str; 39] = [
+const NON_TEXT_FORMATS: [&str; 40] = [
     PNG_FORMAT,
     CDX_FORMAT,
     "Embed Source",
@@ -96,7 +95,9 @@ const NON_TEXT_FORMATS: [&str; 39] = [
     "JFIF",
     "GIF",
     "Link Preview Format",
+    // Word's second copies of its RTF, rendered on demand; "Rich Text Format" carries it once.
     "Rich Text Format Without Objects",
+    "RTF As Text",
 ];
 
 /// Name prefixes of the same kind: Excel's binary workbook formats, Office drawing formats, and the
@@ -145,6 +146,19 @@ pub(crate) fn is_binary_windows_format(name: &str) -> bool {
             .iter()
             .any(|prefix| name.starts_with(prefix))
         || crate::clipboard_images::is_image_clipboard_type(name) && name != "image/svg+xml"
+}
+
+/// The shared admission priority of a format, before any preview of its bytes. Binary and opaque
+/// registered formats are never read; HTML Format and Rich Text Format are (see
+/// `clipboard_limits::clipboard_read_steps`).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn windows_text_read_priority(payload_type: &str, name: Option<&str>) -> Option<u8> {
+    if name
+        .is_some_and(|name| is_binary_windows_format(name) || crate::is_opaque_clipboard_type(name))
+    {
+        return None;
+    }
+    crate::clipboard_limits::text_read_priority(payload_type)
 }
 
 /// Accept decoded clipboard text only if it could be something a person copied: plausible (no
@@ -231,6 +245,53 @@ pub(crate) fn windows_line_endings(text: &str) -> String {
     text.replace("\r\n", "\n").replace('\n', "\r\n")
 }
 
+/// The pixels-per-metre a PNG declares in its `pHYs` chunk (unit 1 = metre), if any. Copy As PNG
+/// stamps the real print density there (e.g. 384 dpi for its 4x render).
+/// Refuse corrupt or unrepresentable metadata before preparing any native clipboard formats.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn png_pixels_per_meter(png: &[u8]) -> Result<Option<(u32, u32)>, String> {
+    const SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+    let malformed = || "Malformed PNG density metadata.".to_string();
+    if !png.starts_with(SIGNATURE) {
+        return Err(malformed());
+    }
+    let mut index = SIGNATURE.len();
+    let mut density = None;
+    let mut seen_density = false;
+    let mut seen_image = false;
+    while index + 8 <= png.len() {
+        let length = u32::from_be_bytes(png[index..index + 4].try_into().unwrap()) as usize;
+        let kind = &png[index + 4..index + 8];
+        let data_end = (index + 8).checked_add(length).ok_or_else(malformed)?;
+        let chunk_end = data_end.checked_add(4).ok_or_else(malformed)?;
+        let chunk = png.get(index + 4..chunk_end).ok_or_else(malformed)?;
+        if kind == b"pHYs" {
+            // PNG permits a single pHYs chunk, before the image data.
+            if length != 9 || seen_density || seen_image {
+                return Err(malformed());
+            }
+            seen_density = true;
+            let crc = u32::from_be_bytes(png[data_end..chunk_end].try_into().unwrap());
+            if png_crc32(&chunk[..4 + length]) != crc {
+                return Err("PNG density metadata has an invalid CRC.".into());
+            }
+            let data = &png[index + 8..data_end];
+            let x = u32::from_be_bytes(data[0..4].try_into().unwrap());
+            let y = u32::from_be_bytes(data[4..8].try_into().unwrap());
+            if data[8] == 1 {
+                density = (x > 0 && y > 0).then_some((x, y));
+            }
+        }
+        index = chunk_end;
+        if kind == b"IDAT" {
+            seen_image = true;
+        } else if kind == b"IEND" {
+            return Ok(density);
+        }
+    }
+    Err(malformed())
+}
+
 // Clipboard compatibility extras are optional: cap each dimension at 16384 pixels and the
 // decoded RGBA buffer at 256 MiB, independently of the compressed clipboard byte limit.
 const MAX_PNG_SIDE: u32 = 16_384;
@@ -305,6 +366,14 @@ pub(crate) fn png_to_dibv5(png: &[u8]) -> Result<Vec<u8>, String> {
     const LCS_GM_IMAGES: u32 = 4;
 
     let (width, height) = bounded_png_dimensions(png)?;
+    // Declare the PNG's own density: a hard-coded 72 dpi told bitmap-only readers that honor DIB
+    // resolution (older Office, WordPad) a 384 dpi Copy As PNG was 5.3x its real size.
+    let (pixels_per_meter_x, pixels_per_meter_y) =
+        png_pixels_per_meter(png)?.unwrap_or((2835, 2835));
+    // DIB is an optional sibling. PNG can retain the full unsigned pHYs range.
+    if pixels_per_meter_x > i32::MAX as u32 || pixels_per_meter_y > i32::MAX as u32 {
+        return Err("PNG density exceeds the signed DIB range.".into());
+    }
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(MAX_PNG_SIDE);
     limits.max_image_height = Some(MAX_PNG_SIDE);
@@ -324,11 +393,6 @@ pub(crate) fn png_to_dibv5(png: &[u8]) -> Result<Vec<u8>, String> {
         .and_then(|pixels| pixels.checked_mul(4))
         .filter(|size| *size <= u32::MAX - HEADER_SIZE)
         .ok_or_else(|| format!("Image too large for the clipboard: {width}x{height}"))?;
-    // Declare the PNG's own density: a hard-coded 72 dpi told bitmap-only readers that honor DIB
-    // resolution (older Office, WordPad) a 384 dpi Copy As PNG was 5.3x its real size.
-    let (pixels_per_meter_x, pixels_per_meter_y) =
-        png_pixels_per_meter(png).unwrap_or((2835, 2835));
-
     let mut dib = Vec::with_capacity((HEADER_SIZE + size_image) as usize);
     let push = |dib: &mut Vec<u8>, value: u32| dib.extend_from_slice(&value.to_le_bytes());
     push(&mut dib, HEADER_SIZE); // bV5Size
@@ -374,9 +438,10 @@ pub(crate) mod native {
         ValidatedClipboardItem,
     };
     use crate::clipboard_images::{
-        check_image_byte_length, dib_image_item, png_image_item, svg_image_item,
-        ClipboardImageItem, SkippedClipboardImageItem,
+        dib_image_item, png_image_item, svg_image_item, ClipboardImageItem,
+        SkippedClipboardImageItem,
     };
+    use crate::clipboard_limits::{ClipboardReadBudget, ClipboardReadStep};
     use crate::{is_opaque_clipboard_type, ClipboardReadPayload, ClipboardTextItem};
     use windows_sys::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND};
     use windows_sys::Win32::System::DataExchange::{
@@ -424,9 +489,37 @@ pub(crate) mod native {
         (length > 0).then(|| String::from_utf16_lossy(&buffer[..length as usize]))
     }
 
-    /// Copy of a clipboard handle's bytes (the clipboard still owns the handle).
-    fn format_bytes(id: u32) -> Option<Vec<u8>> {
-        // SAFETY: the clipboard is open; the handle stays owned by it and is only read while locked.
+    fn is_text_alias(id: u32, admitted: &[ClipboardTextItem]) -> bool {
+        // SAFETY: caller holds the clipboard open; no pointer survives GlobalUnlock.
+        unsafe {
+            let handle = GetClipboardData(id);
+            if handle.is_null() {
+                return false;
+            }
+            let size = GlobalSize(handle as HGLOBAL);
+            let pointer = GlobalLock(handle as HGLOBAL) as *const u8;
+            if pointer.is_null() {
+                return false;
+            }
+            let alias = crate::clipboard_limits::is_admitted_text_alias(
+                std::slice::from_raw_parts(pointer, size),
+                admitted,
+            );
+            GlobalUnlock(handle as HGLOBAL);
+            alias
+        }
+    }
+
+    fn decode_format(
+        id: u32,
+        source: &str,
+        budget: &mut ClipboardReadBudget,
+        decode: impl FnOnce(&[u8]) -> Option<String>,
+    ) -> Option<String> {
+        // Decode directly from the locked OS-owned buffer. There is no ChemDraft Vec
+        // alive alongside the decoded String, so the native and decoded reservations
+        // describe successive owned allocations rather than an unaccounted peak.
+        // SAFETY: read_payload holds the clipboard open. No borrowed bytes escape the lock.
         unsafe {
             let handle = GetClipboardData(id);
             if handle.is_null() {
@@ -437,22 +530,58 @@ pub(crate) mod native {
             if pointer.is_null() {
                 return None;
             }
-            let bytes = std::slice::from_raw_parts(pointer, size).to_vec();
+            let bytes = std::slice::from_raw_parts(pointer, size);
+            let reservation = if id == CF_UNICODETEXT {
+                budget.reserve_utf16_allocation(source, size, unicode_text_utf8_length(bytes))
+            } else if source != "chemical/x-mdl-molfile"
+                && (source.contains("utf16")
+                    || crate::looks_like_utf16_bytes(&bytes[..bytes.len().min(8192)]))
+            {
+                budget.reserve_utf16_allocation(
+                    source,
+                    size,
+                    crate::clipboard_limits::utf16_utf8_byte_length(bytes),
+                )
+            } else {
+                budget.reserve(source, size).map(|()| size)
+            };
+            let text = match reservation {
+                Ok(reserved) => {
+                    let text = decode(bytes);
+                    budget.release(reserved);
+                    text
+                }
+                Err(_) => {
+                    budget.mark_chemistry(source, bytes);
+                    None
+                }
+            };
             GlobalUnlock(handle as HGLOBAL);
-            Some(bytes)
+            // The caller checks and reserves the retained UTF-8 size.
+            text
         }
     }
 
-    fn unicode_text() -> Option<String> {
-        let bytes = format_bytes(CF_UNICODETEXT)?;
+    fn unicode_text_utf8_length(bytes: &[u8]) -> usize {
         let units = bytes
             .chunks_exact(2)
             .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-            .take_while(|unit| *unit != 0)
-            .collect::<Vec<_>>();
-        // Lossy: one unpaired surrogate (a truncated emoji) used to fail the whole decode, leaving
-        // `text/plain` listed with no text — and a paste that silently did nothing.
-        Some(String::from_utf16_lossy(&units)).filter(|text| !text.is_empty())
+            .take_while(|unit| *unit != 0);
+        char::decode_utf16(units)
+            .map(|character| character.unwrap_or(char::REPLACEMENT_CHARACTER).len_utf8())
+            .sum()
+    }
+
+    fn unicode_text(bytes: &[u8]) -> Option<String> {
+        let units = bytes
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .take_while(|unit| *unit != 0);
+        // Preserve the existing lossy-surrogate behavior without an intermediate Vec<u16>.
+        let text: String = char::decode_utf16(units)
+            .map(|character| character.unwrap_or(char::REPLACEMENT_CHARACTER))
+            .collect();
+        (!text.is_empty()).then_some(text)
     }
 
     /// Check the allocation size before copying image bytes, including SVG used as text.
@@ -460,6 +589,7 @@ pub(crate) mod native {
         id: u32,
         source: &str,
         kind: &str,
+        budget: &mut ClipboardReadBudget,
     ) -> Result<Vec<u8>, SkippedClipboardImageItem> {
         let refused = |length, reason| SkippedClipboardImageItem::new(kind, length, reason);
         // SAFETY: read_payload holds the clipboard open. The clipboard owns the handle; the
@@ -473,9 +603,15 @@ pub(crate) mod native {
                 ));
             }
             let size = GlobalSize(handle as HGLOBAL);
-            check_image_byte_length(source, size).map_err(|reason| refused(size, reason))?;
+            if source == "image/svg+xml" {
+                budget.reserve_svg_allocation(source, size)
+            } else {
+                budget.reserve(source, size)
+            }
+            .map_err(|reason| refused(size, reason))?;
             let pointer = GlobalLock(handle as HGLOBAL) as *const u8;
             if pointer.is_null() {
+                budget.release(size);
                 return Err(refused(
                     size,
                     format!("Could not lock {source} clipboard data"),
@@ -488,7 +624,7 @@ pub(crate) mod native {
     }
 
     fn read_images(
-        text_items: &mut Vec<ClipboardTextItem>,
+        budget: &mut ClipboardReadBudget,
     ) -> (Vec<ClipboardImageItem>, Vec<SkippedClipboardImageItem>) {
         let mut items = Vec::new();
         let mut skipped = Vec::new();
@@ -512,35 +648,73 @@ pub(crate) mod native {
             if id == 0 || unsafe { IsClipboardFormatAvailable(id) } == 0 {
                 continue;
             }
-            let result = image_format_bytes(id, source, kind).and_then(|bytes| {
+            let result = image_format_bytes(id, source, kind, budget).and_then(|bytes| {
                 let item = match source {
                     PNG_FORMAT | "image/png" => png_image_item(&bytes),
-                    "image/svg+xml" => {
-                        if let Some(text) = decode_registered_text(&bytes) {
-                            text_items.push(ClipboardTextItem {
-                                r#type: kind.to_string(),
-                                text,
-                            });
-                        }
-                        svg_image_item(&bytes, source)
-                    }
+                    "image/svg+xml" => svg_image_item(&bytes, source),
                     _ => dib_image_item(&bytes, source),
                 };
-                item.map_err(|reason| SkippedClipboardImageItem::new(kind, bytes.len(), reason))
+                // Replace the SVG allocation reservation even when conversion fails.
+                if source == "image/svg+xml" {
+                    budget.release(bytes.len());
+                }
+                let item = item.and_then(|item| {
+                    if source == "image/svg+xml" {
+                        budget.reserve(source, item.retained_byte_length())?;
+                    }
+                    Ok(item)
+                });
+                item.map_err(|reason| {
+                    if source != "image/svg+xml" {
+                        budget.release(bytes.len());
+                    }
+                    SkippedClipboardImageItem::new(kind, bytes.len(), reason)
+                })
             });
             match result {
-                Ok(item) => items.push(item),
+                Ok(item) => {
+                    items.push(item);
+                    break;
+                }
                 Err(reason) => skipped.push(reason),
             }
         }
         (items, skipped)
     }
 
+    fn text_read_priority(id: u32, kind: &str, name: Option<&str>) -> Option<u8> {
+        let priority = windows_text_read_priority(kind, name);
+        if priority != Some(2) {
+            return priority;
+        }
+        // SAFETY: read_payload holds the clipboard open. Preview at most 8 KiB,
+        // without copying the allocation or keeping the clipboard pointer.
+        unsafe {
+            let handle = GetClipboardData(id);
+            if handle.is_null() {
+                return priority;
+            }
+            let size = GlobalSize(handle as HGLOBAL);
+            let pointer = GlobalLock(handle as HGLOBAL) as *const u8;
+            if pointer.is_null() {
+                return priority;
+            }
+            let priority = crate::clipboard_limits::text_priority_with_preview(
+                kind,
+                std::slice::from_raw_parts(pointer, size.min(8192)),
+            );
+            GlobalUnlock(handle as HGLOBAL);
+            priority
+        }
+    }
+
     pub(crate) fn read_payload() -> Result<ClipboardReadPayload, String> {
         let _clipboard = OpenedClipboard::open(std::ptr::null_mut())?;
         let mut types = Vec::new();
         let mut text_items = Vec::new();
+        let mut budget = ClipboardReadBudget::default();
 
+        let mut formats = Vec::new();
         let mut id = 0;
         loop {
             // SAFETY: the clipboard is open.
@@ -557,14 +731,40 @@ pub(crate) mod native {
             }
             types.push(payload_type.clone());
 
-            let text = match name.as_deref() {
-                None if id == CF_UNICODETEXT => unicode_text(),
-                None => None,
-                Some(MDLCT_FORMAT) => format_bytes(id).and_then(|bytes| decode_mdlct(&bytes)),
-                Some("HTML Format") => {
-                    format_bytes(id).and_then(|bytes| parse_cf_html(&bytes).ok())
+            let priority = text_read_priority(id, &payload_type, name.as_deref());
+            formats.push((id, name, payload_type, priority));
+        }
+        // Chemistry precedes artwork; plain text, then HTML and RTF follow it, beside a picture
+        // too. The returned text order remains the native order used by the resolver.
+        let mut image_items = Vec::new();
+        let mut skipped_image_items = Vec::new();
+        let priorities = formats
+            .iter()
+            .map(|(_, _, _, priority)| *priority)
+            .collect::<Vec<_>>();
+        for step in crate::clipboard_limits::clipboard_read_steps(&priorities) {
+            let index = match step {
+                ClipboardReadStep::Pictures => {
+                    (image_items, skipped_image_items) = read_images(&mut budget);
+                    continue;
                 }
-                // SVG text is populated by read_images, after the GlobalSize guard.
+                ClipboardReadStep::Text(index) => index,
+            };
+            let (id, name, payload_type, _) = &formats[index];
+            let id = *id;
+            if is_text_alias(id, &text_items) {
+                continue;
+            }
+            let text = match name.as_deref() {
+                None if id == CF_UNICODETEXT => {
+                    decode_format(id, payload_type, &mut budget, unicode_text)
+                }
+                None => None,
+                Some(MDLCT_FORMAT) => decode_format(id, payload_type, &mut budget, decode_mdlct),
+                Some("HTML Format") => decode_format(id, payload_type, &mut budget, |bytes| {
+                    parse_cf_html(bytes).ok()
+                }),
+                // Images are handled only by read_images, after the allocation guard.
                 Some(name)
                     if crate::clipboard_images::is_image_clipboard_type(name)
                         || is_binary_windows_format(name)
@@ -572,22 +772,33 @@ pub(crate) mod native {
                 {
                     None
                 }
-                Some(_) => format_bytes(id).and_then(|bytes| decode_registered_text(&bytes)),
+                Some(_) => decode_format(id, payload_type, &mut budget, decode_registered_text),
             };
             if let Some(text) = text {
+                // A provider may use an encoding whose bounded prefix was inconclusive.
+                if text_items
+                    .iter()
+                    .any(|item: &ClipboardTextItem| item.text == text)
+                {
+                    continue;
+                }
+                if budget.reserve(payload_type, text.len()).is_err() {
+                    budget.mark_chemistry(payload_type, text.as_bytes());
+                    continue;
+                }
                 text_items.push(ClipboardTextItem {
-                    r#type: payload_type,
+                    r#type: payload_type.clone(),
                     text,
                 });
             }
         }
-
-        let (image_items, skipped_image_items) = read_images(&mut text_items);
+        text_items.sort_by_key(|item| types.iter().position(|kind| kind == &item.r#type));
         Ok(ClipboardReadPayload {
             types,
             text_items,
             image_items,
             skipped_image_items,
+            skipped_items: budget.skipped_items,
         })
     }
 
@@ -633,6 +844,9 @@ pub(crate) mod native {
 
     fn prepare_write(item: &ValidatedClipboardItem) -> Result<PreparedWrite, String> {
         let target = windows_target_for_payload_type(&item.r#type);
+        if target == WindowsTarget::Png {
+            png_pixels_per_meter(item.data.bytes())?;
+        }
         let bytes = match &target {
             WindowsTarget::UnicodeText => wide(&windows_line_endings(clipboard_utf8(
                 item.data.bytes(),
@@ -748,6 +962,23 @@ pub(crate) mod native {
         use crate::clipboard_formats::{native_test_data as fixture, validate_clipboard_items};
 
         #[test]
+        fn windows_utf16_and_utf8_text_share_the_decoded_cap() {
+            crate::clipboard_limits::assert_text_encoding_size_admission(
+                "text/plain",
+                "text/plain",
+            );
+            for text in ["ASCII", "μ界😀"] {
+                let bytes: Vec<u8> = text
+                    .encode_utf16()
+                    .chain([0])
+                    .flat_map(u16::to_le_bytes)
+                    .collect();
+                assert_eq!(unicode_text_utf8_length(&bytes), text.len());
+                assert_eq!(unicode_text(&bytes).as_deref(), Some(text));
+            }
+        }
+
+        #[test]
         fn windows_preparation_refuses_markerless_html_before_opening_or_clearing() {
             let items =
                 validate_clipboard_items(vec![crate::clipboard_formats::ClipboardWriteItem {
@@ -771,20 +1002,62 @@ pub(crate) mod native {
         }
 
         #[test]
-        fn png_preparation_preserves_required_bytes_when_extras_are_omitted() {
+        fn png_preparation_rejects_malformed_metadata_before_opening_or_clearing() {
             let item = ValidatedClipboardItem {
                 r#type: "image/png".to_string(),
                 data: ClipboardWriteData::Binary(b"malformed PNG".to_vec()),
                 required: true,
             };
-            let prepared = prepare_write(&item).expect("required PNG is not refused");
-            assert_eq!(prepared.target, WindowsTarget::Png);
-            assert_eq!(prepared.bytes, item.data.bytes());
-            assert!(matches!(
-                &prepared.extras[..],
-                [PreparedExtra::RegisteredAlias("image/png"), PreparedExtra::Dibv5(Err(reason))]
-                    if reason.contains("malformed PNG IHDR")
-            ));
+            assert_eq!(
+                prepare_write(&item).err().unwrap(),
+                "Malformed PNG density metadata."
+            );
+            assert_eq!(
+                write_items(std::ptr::null_mut(), &[item]).unwrap_err(),
+                "Malformed PNG density metadata."
+            );
+        }
+
+        #[test]
+        fn png_preparation_rejects_corrupt_density_before_opening_or_clearing() {
+            let mut corrupt = super::super::tests::png_with_density(15118, 15118, 1);
+            corrupt[50] ^= 1;
+            let reason = png_pixels_per_meter(&corrupt).unwrap_err();
+            assert_eq!(reason, "PNG density metadata has an invalid CRC.");
+            let item = ValidatedClipboardItem {
+                r#type: "image/png".into(),
+                data: ClipboardWriteData::Binary(corrupt),
+                required: true,
+            };
+            assert_eq!(prepare_write(&item).err().unwrap(), reason);
+            assert_eq!(
+                write_items(std::ptr::null_mut(), &[item]).unwrap_err(),
+                reason
+            );
+        }
+
+        #[test]
+        fn png_preparation_preserves_unsigned_density_and_declines_only_dib() {
+            for (x, y) in [(u32::MAX, 15118), (15118, u32::MAX)] {
+                let png = super::super::tests::png_with_density(x, y, 1);
+                assert_eq!(png_pixels_per_meter(&png), Ok(Some((x, y))));
+                let item = ValidatedClipboardItem {
+                    r#type: "image/png".into(),
+                    data: ClipboardWriteData::Binary(png),
+                    required: true,
+                };
+                let prepared =
+                    prepare_write(&item).expect("PNG density is valid unsigned metadata");
+                assert_eq!(prepared.target, WindowsTarget::Png);
+                assert_eq!(prepared.bytes, item.data.bytes());
+                assert!(matches!(
+                    &prepared.extras[..],
+                    [
+                        PreparedExtra::RegisteredAlias("image/png"),
+                        PreparedExtra::Dibv5(Err(reason))
+                    ] if reason == "PNG density exceeds the signed DIB range."
+                ));
+            }
         }
 
         #[test]
@@ -886,8 +1159,13 @@ pub(crate) mod native {
                 assert_eq!(bytes.get(..png.len()), Some(png.as_slice()));
             }
             let _clipboard = OpenedClipboard::open(owner.0).expect("open for binary readback");
-            let bytes = image_format_bytes(registered(PNG_FORMAT), PNG_FORMAT, "image/png")
-                .expect("registered PNG reads back");
+            let bytes = image_format_bytes(
+                registered(PNG_FORMAT),
+                PNG_FORMAT,
+                "image/png",
+                &mut ClipboardReadBudget::default(),
+            )
+            .expect("registered PNG reads back");
             // GlobalSize may include allocation padding after the original binary payload.
             assert_eq!(bytes.get(..png.len()), Some(png.as_slice()));
         }
@@ -992,6 +1270,65 @@ mod tests {
                 .as_deref(),
             Some("application/x-chemdraft-selection+json")
         );
+    }
+
+    #[test]
+    fn office_table_html_and_rtf_are_read_beside_its_picture() {
+        use crate::clipboard_limits::{clipboard_read_steps, ClipboardReadStep};
+        const CF_BITMAP: u32 = 2;
+        // Word's and Excel's table formats (abridged), in the order Office registers them.
+        for (formats, expected) in [
+            (
+                &[
+                    (0xC001, Some("Object Descriptor")),
+                    (0xC002, Some("Rich Text Format")),
+                    (0xC003, Some("HTML Format")),
+                    (0xC004, Some("Rich Text Format Without Objects")),
+                    (0xC005, Some("RTF As Text")),
+                    (CF_UNICODETEXT, None),
+                    (0xC006, Some("PNG")),
+                    (CF_ENHMETAFILE, None),
+                    (0xC007, Some("Embed Source")),
+                ][..],
+                ["pictures", "text/plain", "text/rtf", "text/html"],
+            ),
+            (
+                &[
+                    (0xC011, Some("DataObject")),
+                    (0xC012, Some("Biff12")),
+                    (CF_ENHMETAFILE, None),
+                    (CF_BITMAP, None),
+                    (0xC013, Some("HTML Format")),
+                    (0xC014, Some("Rich Text Format")),
+                    (CF_UNICODETEXT, None),
+                    (0xC015, Some("PNG")),
+                    (CF_DIB, None),
+                    (0xC016, Some("XML Spreadsheet")),
+                ][..],
+                ["pictures", "text/plain", "text/html", "text/rtf"],
+            ),
+        ] {
+            let read = formats
+                .iter()
+                .filter_map(|(id, name)| {
+                    let kind = payload_type_for_format(*id, *name)?;
+                    let priority = windows_text_read_priority(&kind, *name);
+                    Some((kind, priority))
+                })
+                .collect::<Vec<_>>();
+            let priorities = read
+                .iter()
+                .map(|(_, priority)| *priority)
+                .collect::<Vec<_>>();
+            let steps = clipboard_read_steps(&priorities)
+                .into_iter()
+                .map(|step| match step {
+                    ClipboardReadStep::Pictures => "pictures",
+                    ClipboardReadStep::Text(index) => read[index].0.as_str(),
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(steps, expected);
+        }
     }
 
     #[test]
@@ -1144,29 +1481,103 @@ mod tests {
         assert_eq!(windows_line_endings("a\nb\r\nc"), "a\r\nb\r\nc");
     }
 
-    #[test]
-    fn reads_the_density_a_png_declares() {
+    pub(super) fn png_with_density(x: u32, y: u32, unit: u8) -> Vec<u8> {
         let mut image = image::RgbaImage::new(1, 1);
         image.put_pixel(0, 0, image::Rgba([0, 0, 0, 255]));
         let mut png = Vec::new();
         image::DynamicImage::ImageRgba8(image)
             .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
             .expect("encode png");
-        assert_eq!(png_pixels_per_meter(&png), None);
+        assert_eq!(png_pixels_per_meter(&png), Ok(None));
 
-        // Insert a pHYs chunk (15118 px/m = 384 dpi) right after IHDR, as export.rs does.
+        // Insert a pHYs chunk right after IHDR, as export.rs does (15118 px/m = 384 dpi).
         let ihdr_end = 8 + 12 + 13;
         let mut chunk = Vec::new();
         chunk.extend_from_slice(&9u32.to_be_bytes());
         chunk.extend_from_slice(b"pHYs");
-        chunk.extend_from_slice(&15118u32.to_be_bytes());
-        chunk.extend_from_slice(&15118u32.to_be_bytes());
-        chunk.push(1);
-        chunk.extend_from_slice(&[0, 0, 0, 0]); // CRC is not checked by the reader
+        chunk.extend_from_slice(&x.to_be_bytes());
+        chunk.extend_from_slice(&y.to_be_bytes());
+        chunk.push(unit);
+        chunk.extend_from_slice(&png_crc32(&chunk[4..]).to_be_bytes());
         let mut stamped = png[..ihdr_end].to_vec();
         stamped.extend_from_slice(&chunk);
         stamped.extend_from_slice(&png[ihdr_end..]);
-        assert_eq!(png_pixels_per_meter(&stamped), Some((15118, 15118)));
+        stamped
+    }
+
+    #[test]
+    fn reads_the_density_a_png_declares() {
+        let png = png_with_density(15118, 15118, 1);
+        assert_eq!(png_pixels_per_meter(&png), Ok(Some((15118, 15118))));
+        let dib = png_to_dibv5(&png).unwrap();
+        assert_eq!(i32::from_le_bytes(dib[24..28].try_into().unwrap()), 15118);
+        assert_eq!(i32::from_le_bytes(dib[28..32].try_into().unwrap()), 15118);
+        for png in [png_with_density(4, 3, 0), png_with_density(0, 15118, 1)] {
+            assert_eq!(png_pixels_per_meter(&png), Ok(None));
+            let dib = png_to_dibv5(&png).unwrap();
+            assert_eq!(i32::from_le_bytes(dib[24..28].try_into().unwrap()), 2835);
+            assert_eq!(i32::from_le_bytes(dib[28..32].try_into().unwrap()), 2835);
+        }
+    }
+
+    #[test]
+    fn rejects_density_crc_corruption_and_truncation_before_dib_conversion() {
+        let png = png_with_density(15118, 15118, 1);
+        for offset in [41, 45, 50] {
+            let mut corrupt = png.clone();
+            corrupt[offset] ^= 1;
+            assert!(png_pixels_per_meter(&corrupt).unwrap_err().contains("CRC"));
+            assert!(png_to_dibv5(&corrupt).unwrap_err().contains("CRC"));
+        }
+        // The density is not trusted until the complete CRC is present.
+        for length in 41..54 {
+            assert!(png_pixels_per_meter(&png[..length]).is_err());
+            assert!(png_to_dibv5(&png[..length]).is_err());
+        }
+        let mut duplicate = png.clone();
+        duplicate.splice(54..54, png[33..54].iter().copied());
+        assert!(png_pixels_per_meter(&duplicate).is_err());
+        let mut late = png[..33].to_vec();
+        late.extend_from_slice(&png[54..png.len() - 12]);
+        late.extend_from_slice(&png[33..54]);
+        late.extend_from_slice(&png[png.len() - 12..]);
+        assert!(png_pixels_per_meter(&late).is_err());
+    }
+
+    #[test]
+    fn density_fits_signed_dib_fields_without_changing_valid_values() {
+        let max = i32::MAX as u32;
+        for (x, y) in [(1, 1), (15118, 11811), (max, max)] {
+            let png = png_with_density(x, y, 1);
+            assert_eq!(png_pixels_per_meter(&png), Ok(Some((x, y))));
+            let dib = png_to_dibv5(&png).unwrap();
+            assert_eq!(
+                i32::from_le_bytes(dib[24..28].try_into().unwrap()),
+                x as i32
+            );
+            assert_eq!(
+                i32::from_le_bytes(dib[28..32].try_into().unwrap()),
+                y as i32
+            );
+        }
+        for (x, y) in [
+            (max + 1, 15118),
+            (15118, max + 1),
+            (u32::MAX, u32::MAX),
+            (max + 1, 0),
+            (0, max + 1),
+        ] {
+            let png = png_with_density(x, y, 1);
+            assert_eq!(
+                png_pixels_per_meter(&png),
+                Ok((x > 0 && y > 0).then_some((x, y)))
+            );
+            if x > 0 && y > 0 {
+                assert!(png_to_dibv5(&png).unwrap_err().contains("signed DIB"));
+            } else {
+                assert!(png_to_dibv5(&png).is_ok());
+            }
+        }
     }
 
     #[test]

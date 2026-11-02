@@ -165,4 +165,26 @@ describe("core capability grants", () => {
     expect(grants.map(({ name }) => name)).toEqual(["document-dialogs.json"]);
     expect(grants[0]!.capability.windows).toEqual(["main"]);
   });
+
+  it("lets only the document window hide panels on their behalf, and only panels hide themselves", () => {
+    const directory = new URL("../src-tauri/capabilities/", import.meta.url);
+    const grants = readdirSync(directory)
+      .filter((name) => name.endsWith(".json"))
+      .map((name) => ({
+        name,
+        capability: JSON.parse(readFileSync(new URL(name, directory), "utf8")) as {
+          windows: string[]; permissions: (string | { identifier: string })[];
+        }
+      }));
+    const owners = (permission: string) => grants.filter(({ capability }) => capability.permissions
+      .some((entry) => (typeof entry === "string" ? entry : entry.identifier) === permission));
+    expect(owners("allow-hide-plugin-panel-from-main").map(({ name, capability }) => [name, capability.windows]))
+      .toEqual([["plugin-panel-hide.json", ["main"]]]);
+    expect(grants.find(({ name }) => name === "plugin-panel-hide.json")!.capability.permissions)
+      .toEqual(["allow-hide-plugin-panel-from-main"]);
+    expect(owners("allow-hide-plugin-panel-window").map(({ name }) => name)).toEqual(["plugin-panel.json"]);
+    const rust = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+    expect(rust.slice(rust.indexOf("generate_handler!["), rust.indexOf(".run(tauri::generate_context!")))
+      .toContain("panel_window_controls::hide_plugin_panel_from_main,");
+  });
 });

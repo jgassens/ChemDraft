@@ -531,11 +531,11 @@ describe("user feedback app stress", () => {
 
   const sproutKeys = [
     ["1", "Cannot add a single bond to hovered atom", "that atom has no free valence"],
-    ["2", "Cannot add C=O to hovered atom", "that atom has no free valence"],
+    ["2", "Cannot add carbonyl or oxo to hovered atom", "that atom has no free valence"],
     ["4", "Cannot add wedge bond here", "that atom has no free valence"],
     ["5", "Cannot add hashed bond here", "that atom has no free valence"],
     ["8", "Cannot add methylidene here", "that atom needs two free valences for this sprout"],
-    ["9", "Cannot add gem-dimethyl here", "that atom needs two free valences for this sprout"],
+    ["9", "Cannot add branched alkyl here", "that atom needs two free valences for this sprout"],
     ["0", "Cannot add cyclic bond here", "that atom has no free valence"]
   ] as const;
 
@@ -617,11 +617,11 @@ describe("user feedback app stress", () => {
 
   it.each([
     ["1", "Added single bond to hovered atom", 1, 1],
-    ["2", "Added C=O to hovered carbon", 1, 1],
+    ["2", "Added carbonyl or oxo to hovered atom", 1, 1],
     ["4", "Added wedge bond", 1, 1],
     ["5", "Added hashed bond", 1, 1],
     ["8", "Added methylidene", 1, 1],
-    ["9", "Added gem-dimethyl", 2, 2],
+    ["9", "Added branched alkyl", 2, 2],
     ["0", "Added cyclic bond", 1, 1]
   ] as const)("successful sprout %s retains its placement and success status", async (press, text, atomCount, bondCount) => {
     const seed = insertNativeSingleBondMolecule(createPhase4Document("Successful sprout"), { x: 300, y: 300 });

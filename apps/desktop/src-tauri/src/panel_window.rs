@@ -1,4 +1,4 @@
-//! Native panel traits and guarded hand-back after WebView2 pointer activation.
+//! Non-activating utilities: persistent panel activation and temporary palette input leases.
 
 use std::{collections::HashMap, sync::Mutex};
 use tauri::{Emitter, Manager};
@@ -16,6 +16,15 @@ pub(crate) use key_guard::{
     keeps_palette_focus, observe_document_pointer_release, End as PointerGuardEnd,
 };
 
+pub(crate) fn palette_blocks_forwarded_shortcut(
+    key: &str,
+    meta: bool,
+    ctrl: bool,
+    alt: bool,
+) -> bool {
+    key_guard::blocks_forwarded_shortcut(key_guard::blocks_document(), key, meta, ctrl, alt)
+}
+
 pub(crate) fn palette_blocks_menu(document_target: bool, command: &str) -> bool {
     key_guard::blocks_menu(key_guard::blocks_document(), document_target, command)
 }
@@ -31,7 +40,83 @@ pub(crate) fn install_pointer_guard<R: tauri::Runtime>(
 mod macos;
 
 #[derive(Default)]
-pub(crate) struct PanelFocusState(Mutex<HashMap<String, focus_lease::Lease>>);
+pub(crate) struct PanelFocusState(Mutex<HashMap<String, InputFocusState>>);
+
+// Keep palette leases independent of the native-activation gate required by plugin panels.
+enum InputFocusState {
+    Palette(focus_lease::Lease),
+    Panel(focus_lease::PanelActivation),
+}
+
+impl InputFocusState {
+    fn new(label: &str) -> Self {
+        if super::is_plugin_panel_window_label(label) {
+            Self::Panel(focus_lease::PanelActivation::default())
+        } else {
+            Self::Palette(focus_lease::Lease::default())
+        }
+    }
+
+    fn reset(&mut self) {
+        match self {
+            Self::Palette(lease) => lease.reset(),
+            Self::Panel(panel) => panel.reset(),
+        }
+    }
+
+    fn epoch(&self) -> u64 {
+        match self {
+            Self::Palette(lease) => lease.epoch,
+            Self::Panel(panel) => panel.epoch,
+        }
+    }
+
+    fn is_held(&self) -> bool {
+        match self {
+            Self::Palette(lease) => lease.is_held(),
+            Self::Panel(panel) => panel.is_held(),
+        }
+    }
+
+    fn is_current(&self, generation: u64, epoch: u64) -> bool {
+        match self {
+            Self::Palette(lease) => lease.is_current(generation, epoch),
+            Self::Panel(panel) => panel.is_current(generation, epoch),
+        }
+    }
+
+    fn acquired(&mut self, generation: u64, epoch: u64, focused: bool) -> bool {
+        match self {
+            Self::Palette(lease) => lease.acquired(generation, epoch, focused),
+            Self::Panel(panel) => panel.acquired(generation, epoch, focused),
+        }
+    }
+}
+
+pub(crate) fn is_active<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+) -> Result<bool, String> {
+    if !window.is_visible().map_err(|error| error.to_string())?
+        || window.is_minimized().map_err(|error| error.to_string())?
+    {
+        return Ok(false);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let marker =
+            objc2::MainThreadMarker::new().ok_or("Panel focus requires the main thread.")?;
+        if !objc2_app_kit::NSApplication::sharedApplication(marker).isActive() {
+            return Ok(false);
+        }
+    }
+    #[cfg(windows)]
+    return Ok(unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow()
+            == window.hwnd().map_err(|error| error.to_string())?.0
+    });
+    #[cfg(not(windows))]
+    window.is_focused().map_err(|error| error.to_string())
+}
 
 pub(crate) fn end_pointer_guard<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
@@ -59,7 +144,7 @@ pub(crate) fn holds_input_focus<R: tauri::Runtime>(window: &tauri::WebviewWindow
         .lock()
         .unwrap()
         .get(window.label())
-        .is_some_and(focus_lease::Lease::is_held)
+        .is_some_and(InputFocusState::is_held)
 }
 
 /// A release is explicit: native deactivation, teardown and rejected acquisitions do not
@@ -177,7 +262,7 @@ pub(crate) fn reset_for_webview<R: tauri::Runtime>(window: &tauri::Window<R>) {
         .lock()
         .unwrap()
         .entry(window.label().to_string())
-        .or_default()
+        .or_insert_with(|| InputFocusState::new(window.label()))
         .reset();
     let _ = window.set_focusable(false);
 }
@@ -198,8 +283,8 @@ pub(crate) fn page_token<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) ->
         .lock()
         .unwrap()
         .entry(window.label().to_string())
-        .or_default()
-        .epoch
+        .or_insert_with(|| InputFocusState::new(window.label()))
+        .epoch()
         .to_string()
 }
 
@@ -212,12 +297,24 @@ pub(crate) fn request<R: tauri::Runtime>(
 ) -> Option<u64> {
     let state = window.state::<PanelFocusState>();
     let mut leases = state.0.lock().unwrap();
-    let lease = leases.entry(window.label().to_string()).or_default();
+    let lease = leases
+        .entry(window.label().to_string())
+        .or_insert_with(|| InputFocusState::new(window.label()));
     let epoch = page_token.parse().ok()?;
-    if !lease.request(generation, epoch, editing) {
+    let accepted = match lease {
+        InputFocusState::Panel(panel) => panel.request(generation, epoch, editing),
+        InputFocusState::Palette(lease) => {
+            let accepted = lease.request(generation, epoch, editing);
+            if accepted {
+                lease.select_interaction =
+                    cfg!(target_os = "macos") && editing && select_interaction;
+            }
+            accepted
+        }
+    };
+    if !accepted {
         return None;
     }
-    lease.select_interaction = cfg!(target_os = "macos") && editing && select_interaction;
     Some(epoch)
 }
 
@@ -233,7 +330,7 @@ pub(crate) fn acquired<R: tauri::Runtime>(
         .lock()
         .unwrap()
         .entry(window.label().to_string())
-        .or_default()
+        .or_insert_with(|| InputFocusState::new(window.label()))
         .acquired(generation, epoch, focused)
 }
 
@@ -278,14 +375,28 @@ fn activation_with_reason<R: tauri::Runtime>(
     let (generation, preserve_select) = {
         let state = window.state::<PanelFocusState>();
         let mut leases = state.0.lock().unwrap();
-        let lease = leases.entry(window.label().to_string()).or_default();
-        let preserve_select = !active && reason == "window" && lease.suspend_select();
-        let generation = if active || preserve_select {
-            Some(lease.generation)
-        } else {
-            lease.deactivate()
-        };
-        (generation, preserve_select)
+        let lease = leases
+            .entry(window.label().to_string())
+            .or_insert_with(|| InputFocusState::new(window.label()));
+        match lease {
+            InputFocusState::Panel(panel) => {
+                if active {
+                    panel.activate();
+                } else {
+                    panel.deactivate();
+                }
+                (Some(panel.generation), false)
+            }
+            InputFocusState::Palette(lease) => {
+                let preserve_select = !active && reason == "window" && lease.suspend_select();
+                let generation = if active || preserve_select {
+                    Some(lease.generation)
+                } else {
+                    lease.deactivate()
+                };
+                (generation, preserve_select)
+            }
+        }
     };
     if let Some(generation) = generation {
         if !active && !preserve_select {
@@ -322,7 +433,7 @@ pub(super) fn end_select_interactions<R: tauri::Runtime>(
             .lock()
             .unwrap()
             .get(&label)
-            .is_some_and(|lease| lease.select_interaction);
+            .is_some_and(|state| matches!(state, InputFocusState::Palette(lease) if lease.select_interaction));
         if select {
             activation_with_reason(&window, false, reason);
         }
@@ -351,6 +462,8 @@ pub(crate) fn forget<R: tauri::Runtime>(window: &tauri::Window<R>) {
 #[path = "panel_window_geometry.rs"]
 mod geometry;
 
+#[cfg(any(windows, test))]
+const RESIZE_ZONE_LOGICAL_PX: f64 = 6.0;
 /// SetActiveWindow changes activation only within our UI thread; unlike tao's set_focus it
 /// never calls SetForegroundWindow or synthesizes Alt. A late IPC is dropped in the background.
 #[cfg(windows)]
@@ -439,7 +552,19 @@ pub(crate) fn return_focus_to_document<R: tauri::Runtime>(
 pub(crate) fn macos_style(
     style: objc2_app_kit::NSWindowStyleMask,
 ) -> objc2_app_kit::NSWindowStyleMask {
+    // Resizable is a creation trait (.resizable(true)), never a late frame-view rebuild.
     style | objc2_app_kit::NSWindowStyleMask::NonactivatingPanel
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn configure_macos_style(
+    current: objc2_app_kit::NSWindowStyleMask,
+    apply: impl FnOnce(objc2_app_kit::NSWindowStyleMask),
+) {
+    let required = macos_style(current);
+    if required != current {
+        apply(required);
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -461,6 +586,8 @@ pub(crate) fn install_input_focus<R: tauri::Runtime>(
 pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
     window: &tauri::WebviewWindow<R>,
 ) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    macos::install_resize_hit_test(window)?;
     install_input_focus(window)
 }
 
@@ -571,20 +698,12 @@ pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
     use windows_sys::Win32::UI::Shell::{RemoveWindowSubclass, SetWindowSubclass};
     install_input_focus(window)?;
     let hwnd = window.hwnd().map_err(|error| error.to_string())?.0;
-    let document = window
-        .app_handle()
-        .get_webview_window(super::MAIN_WINDOW_LABEL)
-        .ok_or_else(|| "Main document window is not available.".to_string())?;
     let parent = hwnd as usize;
-    let lease_panel = window.clone();
+    let hide_panel = window.clone();
     let data = Box::into_raw(Box::new(PanelSubclass {
-        return_focus: std::rc::Rc::new(move || {
-            activation(&lease_panel, false);
-            if let Err(error) =
-                return_focus_to_document(parent as _, &document, lease_panel.label())
-            {
-                eprintln!("Could not return panel keyboard focus: {error}");
-            }
+        will_hide: std::rc::Rc::new(move || {
+            let webview: &tauri::Webview<R> = hide_panel.as_ref();
+            super::panel_full_size::will_hide(&webview.window());
         }),
     }));
     unsafe {
@@ -616,24 +735,38 @@ pub(crate) fn install_resize_hit_test<R: tauri::Runtime>(
 
 #[cfg(windows)]
 struct PanelSubclass {
-    return_focus: std::rc::Rc<dyn Fn()>,
+    will_hide: std::rc::Rc<dyn Fn()>,
 }
 
 #[cfg(windows)]
-unsafe fn resize_border(hwnd: windows_sys::Win32::Foundation::HWND) -> (i32, i32) {
-    use windows_sys::Win32::UI::{
-        HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi},
-        WindowsAndMessaging::{IsZoomed, SM_CXFRAME, SM_CXPADDEDBORDER, SM_CYFRAME},
-    };
+unsafe fn resize_border(hwnd: windows_sys::Win32::Foundation::HWND) -> i32 {
+    use windows_sys::Win32::UI::{HiDpi::GetDpiForWindow, WindowsAndMessaging::IsZoomed};
     if IsZoomed(hwnd) != 0 {
-        return (0, 0);
+        return 0;
     }
-    let dpi = GetDpiForWindow(hwnd);
-    let padding = GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
-    (
-        GetSystemMetricsForDpi(SM_CXFRAME, dpi) + padding,
-        GetSystemMetricsForDpi(SM_CYFRAME, dpi) + padding,
-    )
+    geometry::resize_border(GetDpiForWindow(hwnd))
+}
+
+#[cfg(windows)]
+unsafe fn panel_content_rect(hwnd: windows_sys::Win32::Foundation::HWND) -> Option<geometry::Rect> {
+    use windows_sys::Win32::{
+        Foundation::{POINT, RECT},
+        Graphics::Gdi::ClientToScreen,
+        UI::WindowsAndMessaging::GetClientRect,
+    };
+    let mut rect = RECT::default();
+    let mut origin = POINT::default();
+    if GetClientRect(hwnd, &mut rect) == 0 || ClientToScreen(hwnd, &mut origin) == 0 {
+        return None;
+    }
+    // The webview paints the visible border at the client edge. GetWindowRect includes
+    // invisible resize margins on Windows; those must never become panel grab zones.
+    Some(geometry::Rect {
+        left: origin.x + rect.left,
+        top: origin.y + rect.top,
+        right: origin.x + rect.right,
+        bottom: origin.y + rect.bottom,
+    })
 }
 
 #[cfg(windows)]
@@ -646,16 +779,15 @@ unsafe fn resize_overlay(
     FindWindowExW(parent, std::ptr::null_mut(), class.as_ptr(), name.as_ptr())
 }
 
-/// Widen the INPUT region of Tauri's existing child, not the parent's non-client frame.
-/// Tauri 2.11.2 otherwise clips this child to SM_CYFRAME (without SM_CXPADDEDBORDER),
-/// so a larger hit test alone cannot receive presses throughout the system resize band.
+/// Reserve six logical pixels inside every visible edge in Tauri's existing input child.
+/// Its region sits above WebView2, so the right grab zone wins over the content scrollbar.
 #[cfg(windows)]
 unsafe fn update_resize_overlay(
     parent: windows_sys::Win32::Foundation::HWND,
 ) -> Result<(), String> {
     use windows_sys::Win32::{
         Foundation::{HWND, RECT},
-        UI::WindowsAndMessaging::{GetClientRect, GetWindowRect},
+        UI::WindowsAndMessaging::GetClientRect,
     };
     // These entry points are gated behind windows-sys's otherwise unused GDI feature.
     type Region = *mut std::ffi::c_void;
@@ -663,6 +795,7 @@ unsafe fn update_resize_overlay(
     extern "system" {
         fn CreateRectRgn(left: i32, top: i32, right: i32, bottom: i32) -> Region;
         fn EqualRgn(first: Region, second: Region) -> i32;
+        fn CombineRgn(destination: Region, first: Region, second: Region, mode: i32) -> i32;
         fn DeleteObject(object: Region) -> i32;
     }
     #[link(name = "user32")]
@@ -671,33 +804,44 @@ unsafe fn update_resize_overlay(
         fn SetWindowRgn(hwnd: HWND, region: Region, redraw: i32) -> i32;
     }
     let overlay = resize_overlay(parent);
-    let mut window_rect = RECT::default();
-    let mut overlay_rect = RECT::default();
     let mut client_rect = RECT::default();
-    if overlay.is_null()
-        || GetWindowRect(parent, &mut window_rect) == 0
-        || GetWindowRect(overlay, &mut overlay_rect) == 0
-        || GetClientRect(parent, &mut client_rect) == 0
-    {
+    if overlay.is_null() || GetClientRect(parent, &mut client_rect) == 0 {
         return Err("Could not measure panel resize overlay.".into());
     }
-    let (_, border) = resize_border(parent);
-    let region = geometry::top_overlay_rect(
-        client_rect.right - client_rect.left,
-        client_rect.bottom - client_rect.top,
-        overlay_rect.top - window_rect.top,
+    let border = resize_border(parent);
+    let width = client_rect.right - client_rect.left;
+    let height = client_rect.bottom - client_rect.top;
+    let cutout = geometry::overlay_cutout(
+        geometry::Rect {
+            left: 0,
+            top: 0,
+            right: width,
+            bottom: height,
+        },
         border,
     );
-    let desired = CreateRectRgn(region.left, region.top, region.right, region.bottom);
+    let desired = CreateRectRgn(0, 0, width, height);
     let current = CreateRectRgn(0, 0, 0, 0);
-    if desired.is_null() || current.is_null() {
+    let interior = CreateRectRgn(cutout.left, cutout.top, cutout.right, cutout.bottom);
+    if desired.is_null() || current.is_null() || interior.is_null() {
         if !desired.is_null() {
             DeleteObject(desired);
         }
         if !current.is_null() {
             DeleteObject(current);
         }
+        if !interior.is_null() {
+            DeleteObject(interior);
+        }
         return Err("Could not allocate panel resize region.".into());
+    }
+    const RGN_DIFF: i32 = 4;
+    let combined = CombineRgn(desired, desired, interior, RGN_DIFF);
+    DeleteObject(interior);
+    if combined == 0 {
+        DeleteObject(desired);
+        DeleteObject(current);
+        return Err("Could not construct panel resize region.".into());
     }
     // SetWindowRgn sends WM_WINDOWPOSCHANGED too. Comparing first makes that nested
     // callback a no-op and avoids repainting on ordinary moves of an unchanged band.
@@ -725,31 +869,29 @@ unsafe extern "system" fn resize_subclass(
     use windows_sys::Win32::UI::{
         Shell::{DefSubclassProc, RemoveWindowSubclass},
         WindowsAndMessaging::{
-            HTCLIENT, MA_NOACTIVATE, WM_DPICHANGED, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE,
-            WM_MOUSEACTIVATE, WM_NCDESTROY, WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_NCMBUTTONDOWN,
-            WM_NCRBUTTONDOWN, WM_SETTINGCHANGE, WM_SIZE,
+            HTCLIENT, MA_ACTIVATE, SWP_HIDEWINDOW, WINDOWPOS, WM_DPICHANGED, WM_MOUSEACTIVATE,
+            WM_NCDESTROY, WM_NCHITTEST, WM_SETTINGCHANGE, WM_SHOWWINDOW, WM_SIZE,
+            WM_WINDOWPOSCHANGING,
         },
     };
+    // This also covers core:window hide calls from the panel or document webview. Restore before
+    // the native hide; no DOM cleanup or queued WindowEvent is required.
+    if (message == WM_SHOWWINDOW && wparam == 0)
+        || (message == WM_WINDOWPOSCHANGING
+            && lparam != 0
+            && (*(lparam as *const WINDOWPOS)).flags & SWP_HIDEWINDOW != 0)
+    {
+        let notify = (*(data as *const PanelSubclass)).will_hide.clone();
+        notify();
+    }
     if message == WM_MOUSEACTIVATE {
-        // NOACTIVATE, not NOACTIVATEANDEAT: WebView2 must still receive the click.
-        return MA_NOACTIVATE as isize;
+        // Explicit mouse activation does not change WS_EX_NOACTIVATE or the lifetime
+        // focused(false) show mode. The click, including native resize edges, keeps focus.
+        return MA_ACTIVATE as isize;
     }
     if message == WM_NCHITTEST {
         // Share the overlay's geometry and bypass Tao's broad HTTOP client strip.
         return panel_resize_hit(hwnd, lparam).map_or(HTCLIENT as isize, |hit| hit as isize);
-    }
-    let non_client_press = matches!(
-        message,
-        WM_NCLBUTTONDOWN | WM_NCMBUTTONDOWN | WM_NCRBUTTONDOWN
-    );
-    // Copy the callback before DefSubclassProc: a nested move/resize loop may destroy the panel.
-    let return_focus = (non_client_press || matches!(message, WM_ENTERSIZEMOVE | WM_EXITSIZEMOVE))
-        .then(|| (*(data as *const PanelSubclass)).return_focus.clone());
-    if non_client_press {
-        // A native border/title press ends a lease even without movement. No DOM event arrives.
-        if let Some(return_focus) = &return_focus {
-            return_focus();
-        }
     }
     if message == WM_NCDESTROY {
         RemoveWindowSubclass(hwnd, Some(resize_subclass), id);
@@ -759,23 +901,18 @@ unsafe extern "system" fn resize_subclass(
     }
     let result = DefSubclassProc(hwnd, message, wparam, lparam);
     // Run after Tauri's WM_SIZE handler rewrites the overlay region. DPI/settings
-    // changes also refresh the metrics even if the client size has not changed.
+    // changes also refresh the zone width even if the client size has not changed.
     if matches!(message, WM_SIZE | WM_DPICHANGED | WM_SETTINGCHANGE) {
         if let Err(error) = update_resize_overlay(hwnd) {
             eprintln!("{error}");
         }
-    }
-    if let Some(return_focus) = return_focus {
-        // Wry focuses WebView2 on entering a native move/resize loop. Hand back AFTER it,
-        // and again after the gesture, including a title press that never becomes a drag.
-        return_focus();
     }
     result
 }
 
 /// Tauri owns this overlay's size/lifetime. Its original shadow handler returns
 /// HTTOP for every pixel in SM_CYFRAME, swallowing title presses and corner directions.
-/// The adapted region and hit test reserve the system resize border and delegate the
+/// The adapted region and hit test reserve the inner six logical pixels and delegate the
 /// title interior below it to WebView2, without changing Tao's client origin.
 #[cfg(windows)]
 unsafe extern "system" fn overlay_subclass(
@@ -789,14 +926,13 @@ unsafe extern "system" fn overlay_subclass(
     use windows_sys::Win32::UI::{
         Shell::{DefSubclassProc, RemoveWindowSubclass},
         WindowsAndMessaging::{
-            SendMessageW, HTTRANSPARENT, MA_NOACTIVATE, WM_MOUSEACTIVATE, WM_NCDESTROY,
-            WM_NCHITTEST, WM_NCLBUTTONDOWN, WM_NCMBUTTONDOWN, WM_NCRBUTTONDOWN,
-            WM_WINDOWPOSCHANGED,
+            SendMessageW, HTTRANSPARENT, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_NCHITTEST,
+            WM_NCLBUTTONDOWN, WM_NCMBUTTONDOWN, WM_NCRBUTTONDOWN, WM_WINDOWPOSCHANGED,
         },
     };
     let parent = parent as windows_sys::Win32::Foundation::HWND;
     if message == WM_MOUSEACTIVATE {
-        return MA_NOACTIVATE as isize;
+        return SendMessageW(parent, message, wparam, lparam);
     }
     if message == WM_NCDESTROY {
         RemoveWindowSubclass(hwnd, Some(overlay_subclass), id);
@@ -832,23 +968,12 @@ unsafe fn panel_resize_hit(
     hwnd: windows_sys::Win32::Foundation::HWND,
     lparam: isize,
 ) -> Option<geometry::ResizeHit> {
-    use windows_sys::Win32::{Foundation::RECT, UI::WindowsAndMessaging::GetWindowRect};
-    let mut rect = RECT::default();
-    if GetWindowRect(hwnd, &mut rect) == 0 {
-        return None;
-    }
-    let (bx, by) = resize_border(hwnd);
+    let rect = panel_content_rect(hwnd)?;
     geometry::resize_hit(
         (lparam as u16 as i16) as i32,
         ((lparam >> 16) as u16 as i16) as i32,
-        geometry::Rect {
-            left: rect.left,
-            top: rect.top,
-            right: rect.right,
-            bottom: rect.bottom,
-        },
-        bx,
-        by,
+        rect,
+        resize_border(hwnd),
     )
 }
 
@@ -856,13 +981,95 @@ unsafe fn panel_resize_hit(
 mod tests {
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_keeps_resize_traits_and_adds_nonactivation() {
+    fn macos_content_hit_test_yields_all_edges_and_corners_only() {
+        for (width, height) in [(280.0, 200.0), (380.0, 520.0), (1200.0, 800.0)] {
+            // The owner narrowed this to AppKit's native 2 pt band, in logical points.
+            for (depth, expected) in [(0.5, true), (1.5, true), (2.5, false), (5.5, false)] {
+                for (x, y) in [
+                    (depth, height / 2.0),
+                    (width - depth, height / 2.0),
+                    (width / 2.0, depth),
+                    (width / 2.0, height - depth),
+                    (depth, depth),
+                    (width - depth, depth),
+                    (depth, height - depth),
+                    (width - depth, height - depth),
+                ] {
+                    assert_eq!(super::macos::resize_edge(x, y, width, height), expected);
+                }
+            }
+            for (x, y) in [
+                (0.0, 0.0),
+                (width / 2.0, 0.0),
+                (width - 0.5, 0.0),
+                (0.0, height / 2.0),
+                (width - 0.5, height / 2.0),
+                (0.0, height - 0.5),
+                (width / 2.0, height - 0.5),
+                (width - 0.5, height - 0.5),
+            ] {
+                assert!(super::macos::resize_edge(x, y, width, height));
+            }
+            for (x, y) in [
+                (6.0, 6.0),
+                (width - 6.5, height - 6.5),
+                (6.0, height / 2.0),
+                (width - 6.5, height / 2.0),
+                (width / 2.0, 6.0),
+                (width / 2.0, height - 6.5),
+                (width / 2.0, height / 2.0),
+                (-0.5, 0.0),
+                (0.0, -0.5),
+                (width, height / 2.0),
+                (0.0, height),
+            ] {
+                assert!(!super::macos::resize_edge(x, y, width, height));
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_preserves_creation_traits_and_only_adds_nonactivation() {
         use objc2_app_kit::NSWindowStyleMask;
-        let original = NSWindowStyleMask::Resizable | NSWindowStyleMask::Borderless;
-        let style = super::macos_style(original);
-        assert!(style.contains(NSWindowStyleMask::NonactivatingPanel));
-        assert!(style.contains(NSWindowStyleMask::Resizable));
-        assert_eq!(style, original | NSWindowStyleMask::NonactivatingPanel);
+        for original in [
+            NSWindowStyleMask::Borderless,
+            NSWindowStyleMask::Resizable,
+            NSWindowStyleMask::Titled | NSWindowStyleMask::Closable,
+        ] {
+            let style = super::macos_style(original);
+            assert!(style.contains(NSWindowStyleMask::NonactivatingPanel));
+            assert_eq!(
+                style.contains(NSWindowStyleMask::Resizable),
+                original.contains(NSWindowStyleMask::Resizable)
+            );
+            assert_eq!(style, original | NSWindowStyleMask::NonactivatingPanel);
+            assert_eq!(super::macos_style(style), style);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_style_configuration_skips_the_setter_when_the_required_bits_are_present() {
+        use objc2_app_kit::NSWindowStyleMask;
+        let original = NSWindowStyleMask::Resizable | NSWindowStyleMask::Miniaturizable;
+        let mut applied = None;
+        super::configure_macos_style(original, |style| applied = Some(style));
+        let configured = applied.expect("add nonactivation once");
+        assert_eq!(configured, original | NSWindowStyleMask::NonactivatingPanel);
+        super::configure_macos_style(configured, |_| panic!("must not call setStyleMask again"));
+        // The function sees only the mask. A full-screen mask that already carries nonactivation
+        // gets no setter call; one that lacks it gains only that bit, keeping FullScreen.
+        let full_screen = original | NSWindowStyleMask::FullScreen;
+        super::configure_macos_style(full_screen | NSWindowStyleMask::NonactivatingPanel, |_| {
+            panic!("must not call setStyleMask on a configured full-screen mask")
+        });
+        let mut applied = None;
+        super::configure_macos_style(full_screen, |style| applied = Some(style));
+        assert_eq!(
+            applied,
+            Some(full_screen | NSWindowStyleMask::NonactivatingPanel)
+        );
     }
 
     #[cfg(windows)]

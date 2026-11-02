@@ -60,8 +60,67 @@ describe("double-bond position commands", () => {
   });
 });
 import { allShellCommands, convertTextToAtomLabelCommandId } from "./commands";
+import { editActions, fragmentAtomDrawingHotkeys, fragmentBondDrawingHotkeys, fragmentSproutCommandId, fragmentSproutCommands, fragmentSproutKindForCommand } from "./commands";
 import { createPhase4Document, insertNativeSingleBondMolecule, insertNativeTextObject, getSelectedMolecule, selectDocumentObjects } from "./documentWorkflow";
 import { buildAppMenuModel, flattenAppMenuCommands } from "./appMenu";
+import { normalizeShortcut, parseShortcutDisplay } from "@chemdraft/shortcut-engine";
+import { createLayerActions, createQuickActions } from "./commands";
+import { withStandaloneDrawingToolCommands } from "./drawingTools";
+import { createMainWindowShortcutCommands } from "./keyboardShortcuts";
+import { desktopToolsetRegistry, getToolsetCommandSpecs } from "./toolsets";
+import { elementSymbols } from "@chemdraft/chem-core";
+import { chemDrawHoveredTargetHotkeyCommand } from "./keybindingScheme";
+
+describe("fragment hotkey commands", () => {
+  it("reserves hover element and continuation keys for any new fragment bindings", () => {
+    // Existing bindings predate this guard. New bindings must also avoid both hover presets.
+    const existing = new Set(["g", "u", "z", "G", "J"]);
+    const elementKeys = new Set(elementSymbols.flatMap(symbol => [symbol[0].toLowerCase(), symbol[0].toUpperCase(), ...symbol.slice(1)]));
+    const keys = new Set([...Object.keys(fragmentAtomDrawingHotkeys), ...Object.keys(fragmentBondDrawingHotkeys)]);
+    for (const key of keys) {
+      if (existing.has(key)) continue;
+      expect(elementKeys.has(key), `element or continuation key ${key}`).toBe(false);
+      expect(/^[0-9]$/.test(key), `numeric key ${key}`).toBe(false);
+      expect(["k", "K", "+", "-"].includes(key), `ChemDraft hover key ${key}`).toBe(false);
+      for (const target of ["atom", "bond"] as const) {
+        const ownBinding = (target === "atom" ? fragmentAtomDrawingHotkeys : fragmentBondDrawingHotkeys)[key];
+        const resolved = chemDrawHoveredTargetHotkeyCommand(target, key);
+        expect(resolved === undefined || resolved === ownBinding, `compatibility hover key ${key}`).toBe(true);
+      }
+      expect(!(key in fragmentAtomDrawingHotkeys && key in fragmentBondDrawingHotkeys), `duplicate fragment key ${key}`).toBe(true);
+    }
+  });
+  it.each(["chemdraft", "chemdraw"] as const)("keeps every fragment key free of tool/command shortcuts in %s", scheme => {
+    const document = createPhase4Document();
+    const commands = createMainWindowShortcutCommands({
+      quickActions: createQuickActions(document, undefined),
+      layerActions: createLayerActions(document),
+      toolCommandSpecs: withStandaloneDrawingToolCommands(getToolsetCommandSpecs(desktopToolsetRegistry))
+    }, scheme);
+    for (const platform of ["macos", "windows"] as const) {
+      const bindings = commands.flatMap(command => {
+        const shortcut = command.shortcut ?? command.defaultShortcut;
+        return shortcut ? [normalizeShortcut({ commandId: command.id, keys: parseShortcutDisplay(shortcut) }, platform)] : [];
+      });
+      for (const key of new Set([...Object.keys(fragmentAtomDrawingHotkeys), ...Object.keys(fragmentBondDrawingHotkeys)])) {
+        const fragment = normalizeShortcut({ commandId: "fragment", keys: /^[A-Z]$/.test(key) ? ["Shift", key] : [key] }, platform);
+        expect(bindings.filter(binding => binding.key === fragment.key &&
+          binding.modifiers.join("+") === fragment.modifiers.join("+")), `${platform}, ${key}`).toEqual([]);
+      }
+    }
+  });
+
+  it("registers every atom and bond action and encodes each fragment in its command id", () => {
+    const registered = new Set(editActions.map(command => command.id));
+    for (const id of [...Object.values(fragmentAtomDrawingHotkeys), ...Object.values(fragmentBondDrawingHotkeys)]) {
+      expect(registered.has(id)).toBe(true);
+    }
+    for (const [kind] of fragmentSproutCommands) {
+      expect(fragmentSproutKindForCommand(fragmentSproutCommandId(kind))).toBe(kind);
+    }
+    expect(fragmentSproutKindForCommand("atom.sproutFragmentAtHoveredAtom.unknown")).toBeUndefined();
+  });
+});
 
 describe("Convert Text to Atom Label command", () => {
   const spec = (document: ReturnType<typeof createPhase4Document>) =>

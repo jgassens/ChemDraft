@@ -1,11 +1,13 @@
+import { nativeTemplateForToolCommand } from "./ringTemplates";
+import { nativeFragmentSproutTarget, nativeDieneFuseTarget, nativeOxoHotkeyTarget, nativeBranchedHotkeyTarget, type FragmentSproutKind } from "./sproutHotkeys";
 import { applyTableCommand, applyTableFontCommand, applyTableObjectEdit, createTableCommands, createTableInsertAction, parseTableInsertCommandId, resolveActiveTableCell, selectedTable, tableInsertCommandId, tableInspectorSnapshot, type ActiveTableCell, type TableInsertDimensions } from "./tableCommands";
 import { TableCellEditor, TableColumnResizers, type TableCellEditorHandle } from "./tableCellEditor";
 import { tableCellAtPoint, tableEditingContent, tableTextAtPoint, type TableEditingAction } from "./tableInteraction";
 import type { ActiveTableText } from "./tableCommands";
 import { tableValidationMessage } from "./tableCommands";
 import { tableCellElementId } from "@chemdraft/layout-engine";
-import { insertTableIntoDocument, parseSelectionClipboardPayload } from "./documentWorkflow";
-import { pasteTableIntoDocument, readTableClipboardPaste, stripClipboardPictures, tableClipboardPasteDecision, tableClipboardResultOutranksPicture, tableSelectionClipboardItems } from "./tableClipboardWiring";
+import { insertTableIntoDocument } from "./documentWorkflow";
+import { clipboardWriteNotices, pasteTableIntoDocument, readTableClipboardPaste, stripClipboardPictures, tableClipboardPasteDecision, tableClipboardResultOutranksPicture, tableSelectionClipboardItems, type TableClipboardPasteDecision } from "./tableClipboardWiring";
 import type { ClipboardReadPayload, ClipboardTableResult } from "@chemdraft/clipboard-adapter";
 import type { InsertTableOptions } from "./dialogs/dialogProtocol";
 import { paletteFocusDiagnostic } from "./paletteFocusDiagnostic";
@@ -192,7 +194,6 @@ import { AnalyzerNoticeBanner, type AnalyzerNotice } from "./plugins/AnalyzerNot
 import { PatchReviewTray, PendingProposalsBadge, proposalReviewItem } from "./plugins/PatchReviewTray";
 import type { DesktopPluginRuntime } from "./plugins/createPluginRuntime";
 import {
-  ANALYSIS_WINDOW_ACTION_EVENT,
   ANALYSIS_WINDOW_OWNER_ID,
   MOLECULAR_INSPECTOR_WINDOW_ID,
   PATCH_REVIEW_WINDOW_ID,
@@ -223,12 +224,12 @@ import {
   type PluginPanelReportPayload,
   type ProposalDecisionOutcome
 } from "./plugins/panelBridge";
-import { resolvePluginPanelAction } from "./plugins/pluginPanelActions";
+import { isAnalysisWindowActionAuthorized, resolvePluginPanelAction } from "./plugins/pluginPanelActions";
 import { canvasOverlayDockSlots, PluginCanvasOverlay } from "./plugins/PluginCanvasOverlay";
 import { pluginPanelOpenCommand } from "./plugins/pluginPanelOpenCommand";
 import { canvasOverlayPrompt, OVERLAY_BUSY_MESSAGE, pluginCanvasOverlayOpenCommand } from "./plugins/pluginCanvasOverlayControls";
 import type { PluginPanelActionRequest, PluginPanelActionResult } from "./plugins/pluginPanelActionTypes";
-import { saveTextFileHere } from "./plugins/spectrumExport";
+import { handleSpectrumWindowAction, saveBinaryFileHere, saveTextFileHere, spectrumToPdf } from "./plugins/spectrumExport";
 import type { QueuedProposedPatch } from "@chemdraft/plugin-host";
 import { isBlockedByModalDialog, shouldIgnoreShortcutTarget, subscribeToModalDialogChanges, type ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import {
@@ -275,7 +276,7 @@ import {
 import { createRdkitAdapter } from "@chemdraft/rdkit-adapter/adapter";
 import { buildAnalysisReport, type AnalysisReport, type AnalysisRun } from "@chemdraft/analysis-core";
 import { analysisClient } from "./analysisClient";
-import { inspectClipboardPayload, looksLikeSmiles, smilesListCandidates, type ClipboardDetectedPayload } from "@chemdraft/clipboard-adapter";
+import { clipboardChemistrySizeRefusal, guardClipboardPayload, inspectClipboardPayload, isVectorArtworkType, looksLikeSmiles, smilesListCandidates, type ClipboardDetectedPayload } from "@chemdraft/clipboard-adapter";
 import { verifySmilesPaste, verifySmilesPasteInput, verifySmilesGridEntries } from "./smilesPasteIdentity";
 import {
   SmilesListPasteError, depictSmilesForPaste, depictSmilesListForPaste, smilesListFailureStatus
@@ -291,6 +292,10 @@ import {
   atomNicknameLabelActions,
   atomElementCommandId,
   nicknameLabelByCommandId,
+  fragmentAtomDrawingHotkeys,
+  fragmentBondDrawingHotkeys,
+  fragmentSproutKindForCommand,
+  fragmentSproutCommands,
   numericAtomDrawingHotkeys,
   numericBondDrawingHotkeys,
   artBooleanOperationCommandIds,
@@ -436,6 +441,7 @@ import {
   writeClipboardText,
   writeClipboardTextItems,
   writeClipboardImage,
+  writeClipboardItems,
   rasterizeSvgInBrowser,
   type ClipboardWriteTextItem
 } from "./clipboard";
@@ -445,7 +451,6 @@ import {
   applyClipboardPastePayload,
   applyImportedPageFitRecommendation,
   applyNativeArtBooleanOperationToSelection,
-  nativeCarbonylHotkeyAtAtomTarget,
   applyNativeAtomElementTarget,
   commitNativeAtomLabelTarget,
   normalizeNativeAtomElementLabel,
@@ -618,7 +623,6 @@ import {
   nativeArtToolIsOrbital,
   nativeOrbitalAnchorPoint,
   aimNativeOrbitalPlacement,
-  nativeTemplateForToolCommand,
   projectedPlaneTiltMaxRadians,
   wrapProjectedPlaneTiltVectorRadians,
   alignSelectedDocumentObjects,
@@ -1684,9 +1688,27 @@ const PEN_CONTROL_DRAG_THRESHOLD_PX = 10;
 const LASSO_POINT_SPACING_PX = 3;
 const OBJECT_RESIZE_MIN_SCALE = 0.12;
 const DOCUMENT_OBJECT_LAYER_OFFSET = 20;
-// The shared decision retains pictures when a table is refused or only holds a figure caption.
+// The shared decision retains pictures when a table is refused or only holds a figure caption;
+// what is neither a selection nor a table gets the paste inspection with its SVG-as-picture rules.
 function tableClipboardDecisionBeforePicture(payload: ClipboardReadPayload) {
-  return tableClipboardPasteDecision(payload, html => new DOMParser().parseFromString(html, "text/html"));
+  return tableClipboardPasteDecision(payload, html => new DOMParser().parseFromString(html, "text/html"), inspectPastePayload);
+}
+
+type GuardedClipboardPaste =
+  | { kind: "refused"; message: string }
+  | { kind: "decided"; payload: ClipboardReadPayload; decision: TableClipboardPasteDecision };
+
+/**
+ * One order for every paste entry point: the size guard on the raw read first (an oversized
+ * chemistry flavor refuses with its own message and never falls back), then the private selection
+ * and tables, read only from admitted flavors, then the inspection for everything else.
+ */
+function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipboardPaste {
+  // The private selection parser also copies text; admit flavors before trying it.
+  const payload = guardClipboardPayload(read);
+  const refusal = clipboardChemistrySizeRefusal(payload);
+  if (refusal) return { kind: "refused", message: refusal };
+  return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
 const CURRENT_BUILD_STAMP = "11.01.20.00-codex";
@@ -1971,6 +1993,13 @@ function isCanvasDrawingPress(canvas: HTMLElement, event: { target: EventTarget 
   // Rulers are pointer-transparent, so their occupied strips also need a point check.
   const inset = canvas.classList.contains("rulers-visible") ? RULER_THICKNESS : 0;
   return x >= inset && y >= inset && x < canvas.clientWidth && y < canvas.clientHeight;
+}
+
+function inspectPastePayload(payload: ClipboardReadPayload): ClipboardDetectedPayload {
+  return inspectClipboardPayload({
+    ...payload,
+    types: payload.types.map((type) => type.trim().toLowerCase() === "public.svg-image" ? "public.svg" : type)
+  });
 }
 
 export function MainWindow({
@@ -4587,9 +4616,22 @@ export function MainWindow({
 
   const sproutAtHoveredNativeAtom = useCallback((kind: NativeAtomSproutKind, statusNoun: string) => {
     applyHoveredNativeTargetEdit("atom", statusNoun, (document, target) =>
-      nativeAtomSproutHotkeyTarget(document, target, kind, hoveredGrowthArrowPlan(target))
+      kind === "gemDimethyl"
+        ? nativeBranchedHotkeyTarget(document, target, hoveredGrowthArrowPlan(target))
+        : nativeAtomSproutHotkeyTarget(document, target, kind, hoveredGrowthArrowPlan(target))
     );
   }, [applyHoveredNativeTargetEdit, hoveredGrowthArrowPlan]);
+
+  const sproutFragmentAtHoveredNativeAtom = useCallback((kind: FragmentSproutKind) => {
+    const statusNoun = fragmentSproutCommands.find(([id]) => id === kind)![1].toLowerCase();
+    applyHoveredNativeTargetEdit("atom", statusNoun, (document, target) =>
+      nativeFragmentSproutTarget(document, target, kind, hoveredGrowthArrowPlan(target))
+    );
+  }, [applyHoveredNativeTargetEdit, hoveredGrowthArrowPlan]);
+
+  const fuseDieneAtHoveredNativeBond = useCallback(() => {
+    applyHoveredNativeTargetEdit("bond", "fused cyclopentadiene", nativeDieneFuseTarget);
+  }, [applyHoveredNativeTargetEdit]);
 
   const attachRingAtHoveredNativeAtom = useCallback((templateId: NativeMoleculeTemplateId, statusNoun: string) => {
     applyHoveredNativeTargetEdit("atom", statusNoun, (document, target) =>
@@ -4607,7 +4649,7 @@ export function MainWindow({
     const target = hoveredNativeDeleteTargetRef.current
       ?? nativeDeleteTargetFromSelectionPart(documentRef.current, selectedNativeMoleculePart);
     if (!target || target.kind !== "atom") {
-      setStatus("No hovered carbon for C=O");
+      setStatus("No hovered atom for carbonyl or oxo");
       return;
     }
 
@@ -4616,9 +4658,9 @@ export function MainWindow({
     const plan = arrow && arrow.objectId === target.objectId && arrow.atomId === target.atomId
       ? { newAtomPoint: arrow.newAtomPoint, targetAtomId: arrow.targetAtomId, direction: arrow.direction }
       : undefined;
-    const { document: nextDocument, refusal } = nativeCarbonylHotkeyAtAtomTarget(currentDocument, target, plan);
+    const { document: nextDocument, refusal } = nativeOxoHotkeyTarget(currentDocument, target, plan);
     if (nextDocument === currentDocument) {
-      setStatus(`Cannot add C=O to hovered atom: ${nativeTemplateFallbackReasonText(refusal!)}`);
+      setStatus(`Cannot add carbonyl or oxo to hovered atom: ${nativeTemplateFallbackReasonText(refusal!)}`);
       return;
     }
 
@@ -4630,7 +4672,7 @@ export function MainWindow({
     setSelectedNativeMoleculePart(undefined);
     assignHoveredNativeDeleteTarget(undefined);
     setFreeformNativeBond(undefined);
-    setStatus("Added C=O to hovered carbon");
+    setStatus("Added carbonyl or oxo to hovered atom");
   }, [assignHoveredNativeDeleteTarget, commitDocumentChange, selectedNativeMoleculePart]);
 
   const addSingleBondToHoveredNativeAtom = useCallback(() => {
@@ -7095,6 +7137,17 @@ export function MainWindow({
 
   const applyDetectedClipboardPayload = useCallback((detectedPayload: ClipboardDetectedPayload, rawPayload?: ClipboardReadPayload) => {
     smilesListPasteAbortRef.current?.abort();
+    if (detectedPayload.kind === "size-refused") {
+      setStatus(detectedPayload.message);
+      return;
+    }
+    if (detectedPayload.kind === "vector-only" && detectedPayload.sourceType !== undefined && (
+      !isVectorArtworkType(detectedPayload.sourceType) ||
+      ["public.svg", "image/svg+xml"].includes(detectedPayload.sourceType.trim().toLowerCase())
+    )) {
+      setStatus("Couldn't paste the SVG: no readable SVG document was found on the clipboard.");
+      return;
+    }
     if (detectedPayload.kind === "inchi") {
       applySyncClipboardPayload({ kind: "plain-text", text: detectedPayload.text, sourceType: detectedPayload.sourceType, warnings: [] });
       setStatus("InChI detected — structure import from InChI isn't supported yet; pasted as text");
@@ -7266,7 +7319,10 @@ export function MainWindow({
     }
 
     const tableCopy = tableSelectionClipboardItems(payload);
-    const didWrite = await writeClipboardTextItems(tableCopy?.items ?? selectionClipboardTextItems(payload));
+    // A table's HTML, RTF and text are optional; keep the writer's result so a dropped one is shown.
+    const result = await writeClipboardItems(tableCopy?.items ?? selectionClipboardTextItems(payload));
+    // As writeClipboardTextItems: a browser accepts a plain-text fallback when richer formats fail.
+    const didWrite = result.ok || (!isDesktopRuntime() && result.written.includes("text/plain"));
     if (!didWrite) {
       setStatus(mode === "copy" ? "Copy failed: clipboard unavailable" : "Cut canceled: clipboard unavailable");
       return;
@@ -7274,14 +7330,15 @@ export function MainWindow({
 
     selectionClipboardPayloadRef.current = payload;
     selectionClipboardPasteStateRef.current = initialSelectionClipboardPasteState(payload, mode);
+    const notices = [...(tableCopy?.warnings ?? []), ...clipboardWriteNotices(result)];
 
     if (mode === "cut") {
       deleteSelectionAfterClipboardCut(payload, wholeObjectIds);
-      setStatus(["Cut ChemDraft selection", ...(tableCopy?.warnings ?? [])].join("; "));
+      setStatus(["Cut ChemDraft selection", ...notices].join("; "));
       return;
     }
 
-    setStatus(["Copied ChemDraft selection", ...(tableCopy?.warnings ?? [])].join("; "));
+    setStatus(["Copied ChemDraft selection", ...notices].join("; "));
   }, [deleteSelectionAfterClipboardCut]);
 
   const performCopyAs = useCallback(async (commandId: string) => {
@@ -7409,10 +7466,12 @@ export function MainWindow({
     // Prefer the native private flavor, then other native content. The event snapshot is a
     // fallback when the native clipboard was busy or empty; DataTransfer is no longer readable here.
     for (const candidate of [rawPayload, fallbackPayload]) {
-      const payload = await candidate;
+      const unguardedPayload = await candidate;
       if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
-      if (!payload) continue;
-      const decision = tableClipboardDecisionBeforePicture(payload);
+      if (!unguardedPayload) continue;
+      const guarded = guardedClipboardPasteDecision(unguardedPayload);
+      if (guarded.kind === "refused") { setStatus(guarded.message); return; }
+      const { payload, decision } = guarded;
       if (decision.kind === "selection") {
         applySelectionClipboardPayload(decision.payload);
         return;
@@ -10977,6 +11036,16 @@ export function MainWindow({
 
     editActions.forEach((action) => {
       register(action, () => {
+        if (action.id.startsWith("atom.sproutFragmentAtHoveredAtom.")) {
+          const kind = fragmentSproutKindForCommand(action.id);
+          if (kind) sproutFragmentAtHoveredNativeAtom(kind);
+          return;
+        }
+        if (action.id === "bond.fuseDieneAtHoveredBond") {
+          fuseDieneAtHoveredNativeBond();
+          return;
+        }
+
         if (action.id === "atom.addSingleBondToHoveredAtom") {
           addSingleBondToHoveredNativeAtom();
           return;
@@ -11016,7 +11085,7 @@ export function MainWindow({
         if (action.id.startsWith("bond.fuseRingAtHoveredBond.")) {
           const templateId = action.id.replace("bond.fuseRingAtHoveredBond.", "");
           if (
-            templateId === "benzene" || templateId === "cyclobutane" || templateId === "cyclopentane" ||
+            templateId === "benzene" || templateId === "cyclopropane" || templateId === "cyclobutane" || templateId === "cyclopentane" ||
             templateId === "cyclohexane" || templateId === "cycloheptane" || templateId === "cyclooctane" ||
             templateId === "chairCyclohexaneA" || templateId === "chairCyclohexaneB"
           ) {
@@ -11039,7 +11108,7 @@ export function MainWindow({
         }
 
         if (action.id === "atom.sproutGemDimethylAtHoveredAtom") {
-          sproutAtHoveredNativeAtom("gemDimethyl", "gem-dimethyl");
+          sproutAtHoveredNativeAtom("gemDimethyl", "branched alkyl");
           return;
         }
 
@@ -11466,6 +11535,8 @@ export function MainWindow({
     analysisReportIsStale,
     addChargeToHoveredNativeAtom,
     addCarbonylToHoveredNativeAtom,
+    sproutFragmentAtHoveredNativeAtom,
+    fuseDieneAtHoveredNativeBond,
     addSingleBondToHoveredNativeAtom,
     applyObjectStyleCommand,
     applyMoleculeInspectorCommand,
@@ -11877,8 +11948,8 @@ export function MainWindow({
     const runtime = pluginRuntime.runtime;
     return listenForNativePanelWindowCloses(({ pluginId, panelId }) => {
       if (pluginId === ANALYSIS_WINDOW_OWNER_ID) {
-        const action: AnalysisWindowAction = { kind: "close", windowId: panelId };
-        window.dispatchEvent(new CustomEvent(ANALYSIS_WINDOW_ACTION_EVENT, { detail: action }));
+        if (panelId === PLUGIN_DIAGNOSTICS_WINDOW_ID) setPluginDiagnosticsOpen(false);
+        if (panelId === PATCH_REVIEW_WINDOW_ID) setProposalReview((current) => ({ ...current, windowOpen: false }));
         return;
       }
       runtime.panels.closeDetachedPanel(pluginId, panelId);
@@ -12100,8 +12171,20 @@ export function MainWindow({
   }, [acceptPluginProposal, copyAnalysisText, pluginRuntime.runtime, recomputeAnalysisFor, rejectPluginProposal]);
   useEffect(
     () =>
-      listenForAnalysisWindowActions((action: AnalysisWindowAction) => {
+      listenForAnalysisWindowActions((action: AnalysisWindowAction, sourceLabel?: string) => {
         const handlers = analysisWindowActionHandlersRef.current;
+        if (sourceLabel !== undefined || isDesktopRuntime()) {
+          const identity = sourceLabel ? parsePluginPanelWindowLabel(sourceLabel) : undefined;
+          const panel = identity && handlers.runtime.panels.getDetachedPanels().find((candidate) =>
+            candidate.pluginId === identity.pluginId && candidate.panelId === identity.panelId);
+          const owner = identity?.pluginId === ANALYSIS_WINDOW_OWNER_ID
+            ? analysisWindowSnapshotsRef.current.get(pluginPanelIdentityKey(identity.pluginId, identity.panelId))
+            : panel ? { ...panel, content: { kind: "report" as const, report: panel.report } } : undefined;
+          if (!sourceLabel || !isAnalysisWindowActionAuthorized(action, sourceLabel, owner)) {
+            console.warn("Rejected analysis window action", action.kind, sourceLabel);
+            return;
+          }
+        }
         switch (action.kind) {
           case "close":
             if (action.windowId === PLUGIN_DIAGNOSTICS_WINDOW_ID) {
@@ -12118,7 +12201,7 @@ export function MainWindow({
             void handlers
               .copyAnalysisText(text)
               .catch(() => false)
-              .then((ok) => (requestId ? respondToCopyMolecularInspector(requestId, ok) : undefined))
+              .then((ok) => (requestId ? respondToCopyMolecularInspector(requestId, ok, sourceLabel) : undefined))
               .catch(() => undefined);
             return;
           }
@@ -12142,19 +12225,25 @@ export function MainWindow({
               outcome = handlers.rejectPluginProposal(proposal);
             }
             if (action.requestId) {
-              void respondToProposalDecision(action.requestId, outcome).catch(() => undefined);
+              const response = sourceLabel === undefined
+                ? respondToProposalDecision(action.requestId, outcome)
+                : respondToProposalDecision(action.requestId, outcome, sourceLabel);
+              void response.catch(() => undefined);
             }
             return;
           }
-          case "saveTextFile": {
-            // A report window asked for a save it has no permission to perform itself (the NMR
-            // figure's JCAMP-DX export). Run it here and tell that window how it ended.
-            const { requestId, filename, text, title, formatLabel, extensions, mimeType } = action;
-            void saveTextFileHere(filename, text, { title, formatLabel, extensions, mimeType })
-              .catch(() => "failed" as const)
-              .then((result) => respondToSaveTextFile(requestId, result))
-              .catch(() => undefined);
-          }
+          case "copySpectrum":
+          case "saveBinaryFile":
+          case "saveTextFile":
+            void handleSpectrumWindowAction(action, {
+              writeClipboard: writeClipboardItems,
+              saveBinary: saveBinaryFileHere,
+              saveText: saveTextFileHere,
+              pdf: spectrumToPdf,
+              respondCopy: (requestId, ok) => respondToCopyMolecularInspector(requestId, ok, sourceLabel),
+              respondSave: (requestId, result) => respondToSaveTextFile(requestId, result, sourceLabel)
+            }).catch(() => undefined);
+            return;
         }
       }),
     []
@@ -12240,8 +12329,8 @@ export function MainWindow({
     // history both arrive here. Neither may reach the registry: the field wants native text undo,
     // and a disabled edit.undo would throw instead of saying "Nothing to undo".
     //
-    // A secondary window forwards here (see `installSecondaryWindowEditHistory`) only after finding
-    // no text field focused THERE, wrapping the commandId so we know to skip our own activeElement
+    // A secondary window forwards here (see `installSecondaryWindowEditHistory` and the native panel
+    // shortcut bridge) only after declining local editing, wrapping the commandId to skip activeElement
     // check below: this window is not key when that happens, so `globalThis.document.activeElement`
     // can still be a hidden field of ours that never blurred, and checking it would undo that field's
     // text instead of the drawing the user actually asked to undo.
@@ -12423,7 +12512,7 @@ export function MainWindow({
   const pluginPanelActionHandlerRef = useRef<Parameters<typeof listenForPluginPanelActions>[0]>(() => undefined);
   pluginPanelActionHandlerRef.current = (id, request, sourceLabel) => {
     const refuse = (reason: string) => {
-      void respondToPluginPanelAction(id, { ok: false, reason }).catch(() => undefined);
+      void respondToPluginPanelAction(id, { ok: false, reason }, sourceLabel).catch(() => undefined);
     };
     const runtime = pluginRuntime.runtime;
     const openPanel = runtime.panels.getOpenPanel();
@@ -12459,7 +12548,7 @@ export function MainWindow({
     // invoke enqueues plugin work and returns immediately. Acknowledge acceptance, never wait
     // for completion: a long submit must leave the panel free to send its separate stop command.
     void acceptPluginInput(resolved.commandId, resolved.input)
-      .then(result => respondToPluginPanelAction(id, result.ok ? { ok: true } : { ok: false, reason: result.message }))
+      .then(result => respondToPluginPanelAction(id, result.ok ? { ok: true } : { ok: false, reason: result.message }, sourceLabel))
       .catch(() => undefined);
   };
   useEffect(() => listenForPluginPanelActions((id, request, sourceLabel) => {
@@ -12828,14 +12917,9 @@ export function MainWindow({
       }
 
       event.preventDefault();
-      const selectionPayload =
-        parseSelectionClipboardPayload(event.clipboardData.getData(CHEMDRAFT_SELECTION_CLIPBOARD_TYPE)) ??
-        parseSelectionClipboardPayload(event.clipboardData.getData("text/plain"));
-      if (selectionPayload) {
-        applySelectionClipboardPayload(selectionPayload);
-        return;
-      }
-
+      // Snapshot every flavor now; DataTransfer is unreadable once this handler returns. Nothing is
+      // applied before the complete read is size-guarded: guardedClipboardPasteDecision makes the
+      // menu's decision (chemistry refusal, then the private selection, tables, everything else).
       const domPayload = clipboardPayloadFromDataTransfer(event.clipboardData);
       // WKWebView and WebView2 cannot expose the natively written private ChemDraft flavor
       // through DataTransfer. Read natively before a text/plain fallback can lose formatting;
@@ -12844,9 +12928,11 @@ export function MainWindow({
         void pasteClipboard(domPayload);
         return;
       }
-      void domPayload.then((payload) => {
+      void domPayload.then((unguardedPayload) => {
         if (quitInteractionRef.current) { setStatus("Paste cancelled while quitting"); return; }
-        const decision = tableClipboardDecisionBeforePicture(payload);
+        const guarded = guardedClipboardPasteDecision(unguardedPayload);
+        if (guarded.kind === "refused") { setStatus(guarded.message); return; }
+        const { payload, decision } = guarded;
         if (decision.kind === "selection") {
           applySelectionClipboardPayload(decision.payload);
           return;
@@ -23445,6 +23531,10 @@ function nativeReactionArrowStatusLabel(arrowKind: ArrowObject["arrowKind"]): st
 
 function nativeTemplateStatusLabel(templateId: NativeMoleculeTemplateId): string {
   switch (templateId) {
+    case "cyclopropane": return "cyclopropane";
+    case "cyclobutane": return "cyclobutane";
+    case "cycloheptane": return "cycloheptane";
+    case "cyclooctane": return "cyclooctane";
     case "cyclopentane":
       return "cyclopentane";
     case "cyclohexane":
@@ -23627,6 +23717,8 @@ export function hoveredNativeTargetShortcutCommand(
   key: string,
   scheme: KeybindingScheme = "chemdraft"
 ): string | undefined {
+  const fragments = target?.kind === "atom" ? fragmentAtomDrawingHotkeys : target?.kind === "bond" ? fragmentBondDrawingHotkeys : undefined;
+  if (fragments && Object.prototype.hasOwnProperty.call(fragments, key)) return fragments[key];
   if (scheme === "chemdraw") {
     return target?.kind === "atom" || target?.kind === "bond"
       ? chemDrawHoveredTargetHotkeyCommand(target.kind, key)
