@@ -23796,11 +23796,24 @@ export function hoverTargetKeepsLabelContinuation(
     : target.fromAtomId === assignment.atomId || target.toAtomId === assignment.atomId;
 }
 
+/** A drifted label may continue only as a recognized label or the start of an abbreviation. */
+function hoverLabelTextContinues(label: string, key: string): boolean {
+  const draft = label + key;
+  return nativeAtomLabelReading(draft, { bonded: true }).kind !== "unrecognized" ||
+    [...abbreviationSpellings, ...abbreviationBondedSpellings].some(spelling =>
+      spelling.startsWith(draft) ||
+      // A partial substituent also counts when the shared grammar recognizes its completion:
+      // "NM" can become NMe, and "OT" can become OTBS, without a separate composite-label table.
+      (spelling.startsWith(key) && nativeAtomLabelReading(label + spelling, { bonded: true }).kind === "group")
+    );
+}
+
 /**
  * Whether a letter or digit typed mid-label continues that label, wherever the pointer has drifted.
  * Numeric bond hotkeys over a bond belong to that bond, including the labelled atom's own bonds.
  * An element key in either case continues while the pointer has stayed on the labelled atom.
- * On its own bonds, only recognized labels or abbreviation prefixes continue ("CF3", not "Oo").
+ * On its own bonds or empty canvas, only recognized labels or abbreviation prefixes continue
+ * ("CF3", not "Oo" or "Sv").
  * After leaving, element keys in either case and all digits act on a different
  * hovered atom. Over a bond or empty canvas, lowercase element-symbol completion ("i" in Si) still
  * continues; other element keys over a target start a new label, even on the same atom again.
@@ -23828,14 +23841,10 @@ export function hoverLabelContinuesForKey(
     return false;
   }
   if (target?.kind === "bond" && hoverTargetKeepsLabelContinuation(target, assignment)) {
-    const draft = assignment.label + key;
-    return nativeAtomLabelReading(draft, { bonded: true }).kind !== "unrecognized" ||
-      [...abbreviationSpellings, ...abbreviationBondedSpellings].some(spelling =>
-        spelling.startsWith(draft) ||
-        // A partial substituent also counts when the shared grammar recognizes its completion:
-        // "NM" can become NMe, and "OT" can become OTBS, without a separate composite-label table.
-        (spelling.startsWith(key) && nativeAtomLabelReading(assignment.label + spelling, { bonded: true }).kind === "group")
-      );
+    return hoverLabelTextContinues(assignment.label, key);
+  }
+  if (target === undefined && !hoverLabelTextContinues(assignment.label, key)) {
+    return false;
   }
   if (!assignment.leftAtom && hoverTargetKeepsLabelContinuation(target, assignment)) {
     return true;
