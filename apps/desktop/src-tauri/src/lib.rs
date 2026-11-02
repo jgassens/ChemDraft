@@ -4382,7 +4382,7 @@ fn toolset_popover_window_config(
         title: if toolset_id == "core.bondStereo" {
             "E/Z not specified"
         } else {
-            "ChemDraft color picker"
+            "ChemDraft tools"
         }
         .into(),
         #[cfg(windows)]
@@ -4445,6 +4445,15 @@ fn configure_toolset_popover_window<R: Runtime>(
     let target = window.clone();
     run_on_main_thread_blocking(window, move || {
         configure_toolset_utility_window(&target, false)?;
+        target
+            .set_title(
+                if target.label() == toolset_popover_window_label("core.bondStereo") {
+                    "E/Z not specified"
+                } else {
+                    "ChemDraft tools"
+                },
+            )
+            .map_err(|error| error.to_string())?;
         target
             .set_focusable(focus_mode == ToolsetPopoverFocusMode::Focus)
             .map_err(|error| error.to_string())?;
@@ -9551,6 +9560,8 @@ mod tests {
     fn keyboard_popovers_and_color_picker_inputs_remain_focusable() {
         for (toolset, kind, prewarm) in [
             ("core.bondStereo", "flyout", false),
+            ("core.main", "flyout", false),
+            ("core.main", "artColor", true),
             ("core.art", "artColor", false),
             ("core.art", "artColor", true),
         ] {
@@ -9562,6 +9573,14 @@ mod tests {
                 ToolsetPopoverFocusMode::Focus,
             );
             assert!(config.focusable);
+            assert_eq!(
+                config.title,
+                if toolset == "core.bondStereo" {
+                    "E/Z not specified"
+                } else {
+                    "ChemDraft tools"
+                }
+            );
             assert!(!config.focus);
             assert!(!config.visible);
             #[cfg(windows)]

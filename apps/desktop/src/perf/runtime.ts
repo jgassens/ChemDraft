@@ -119,6 +119,18 @@ export function perfSurfaceReady(target: string, requestKey: string, signal: Don
   }));
 }
 
+/** Always-on, bounded geometry-only log; independent of the opt-in timing probe. */
+export function logToolsetPopoverGeometry(phase: "reveal" | "release", shell: HTMLElement): void {
+  const native = window as Window & { __TAURI_INTERNALS__?: unknown; __TAURI__?: unknown };
+  if (!native.__TAURI_INTERNALS__ && !native.__TAURI__) return;
+  const rect = shell.getBoundingClientRect();
+  void invoke("perf_log_append", { line: JSON.stringify({ event: "toolset-popover-geometry", geometry: {
+    phase, innerHeight: window.innerHeight,
+    scrollTop: document.scrollingElement?.scrollTop ?? 0, scrollY: window.scrollY,
+    shellTop: rect.top, shellHeight: rect.height, shellScrollTop: shell.scrollTop
+  } }) }).catch(() => undefined);
+}
+
 export function probePlatform(platform = detectShortcutPlatform()): PerfRecord["platform"] {
   return platform === "macos" ? "macos" : platform === "windows" ? "windows" : "linux";
 }

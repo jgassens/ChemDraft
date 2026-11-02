@@ -1,4 +1,4 @@
-//! Bridge-gated timing log. Clock and writer are shared by every webview in this process.
+//! Bridge-gated timing log, plus a separate always-on bounded popover geometry diagnostic.
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -15,6 +15,110 @@ use tauri::Manager;
 
 const MAX_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_LINE_BYTES: usize = 16 * 1024;
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PopoverGeometry {
+    phase: PopoverGeometryPhase,
+    inner_height: f64,
+    scroll_top: f64,
+    scroll_y: f64,
+    shell_top: f64,
+    shell_height: f64,
+    shell_scroll_top: f64,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum PopoverGeometryPhase {
+    Reveal,
+    Release,
+}
+
+// Separate from the gated timing records: no document text, arbitrary messages or paths.
+// Two bounded files, serialized across popovers, and disk I/O stays off the UI thread.
+fn append_popover_geometry(directory: &Path, row: &serde_json::Value) -> Result<(), String> {
+    static WRITER: Mutex<()> = Mutex::new(());
+    let _guard = WRITER
+        .lock()
+        .map_err(|_| "Popover geometry log lock poisoned")?;
+    fs::create_dir_all(directory).map_err(|e| e.to_string())?;
+    let path = directory.join("toolset-popover-geometry.jsonl");
+    let line = format!("{row}\n");
+    if fs::metadata(&path).map(|m| m.len()).unwrap_or(0) + line.len() as u64 > 1024 * 1024 {
+        fs::copy(&path, directory.join("toolset-popover-geometry.1.jsonl"))
+            .map_err(|e| e.to_string())?;
+        OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .and_then(|f| f.set_len(0))
+            .map_err(|e| e.to_string())?;
+    }
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .and_then(|mut file| file.write_all(line.as_bytes()))
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(target_os = "macos")]
+async fn popover_native_geometry(
+    window: &tauri::WebviewWindow,
+) -> Result<serde_json::Value, String> {
+    let (send, receive) = tokio::sync::oneshot::channel();
+    window.with_webview(move |webview| {
+        // SAFETY: Tauri dispatches with_webview on the UI thread and owns this live WKWebView.
+        let view: &objc2_web_kit::WKWebView = unsafe { &*webview.inner().cast() };
+        let rect = |r: objc2_foundation::NSRect| serde_json::json!({
+            "x": r.origin.x, "y": r.origin.y, "width": r.size.width, "height": r.size.height
+        });
+        let result = view.window().ok_or_else(|| "Popover has no NSWindow".to_string()).and_then(|window| {
+            let content = window.contentView().ok_or("Popover has no contentView")?;
+            Ok(serde_json::json!({
+                "units": "points; AppKit coordinates",
+                "windowFrame": rect(window.frame()), "contentViewFrame": rect(content.frame()),
+                "contentViewBounds": rect(content.bounds()), "contentLayoutRect": rect(window.contentLayoutRect()),
+                "webviewFrame": rect(view.frame()), "webviewBounds": rect(view.bounds()),
+                "styleMask": window.styleMask().bits()
+            }))
+        });
+        let _ = send.send(result);
+    }).map_err(|e| e.to_string())?;
+    receive.await.map_err(|e| e.to_string())?
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn popover_native_geometry(
+    window: &tauri::WebviewWindow,
+) -> Result<serde_json::Value, String> {
+    let size = window.inner_size().map_err(|e| e.to_string())?;
+    let position = window.inner_position().map_err(|e| e.to_string())?;
+    Ok(
+        serde_json::json!({ "units": "physical pixels", "innerSize": size, "innerPosition": position,
+        "scaleFactor": window.scale_factor().map_err(|e| e.to_string())? }),
+    )
+}
+
+async fn log_toolset_popover_geometry(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    geometry: PopoverGeometry,
+) -> Result<(), String> {
+    if !window.label().starts_with("toolset-popover-") {
+        return Err("Only toolset popovers may record geometry".into());
+    }
+    let native = popover_native_geometry(&window).await?;
+    let row = serde_json::json!({ "event": "toolset-popover-geometry", "window": window.label(),
+        "timestampMs": SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis(),
+        "dom": geometry, "native": native });
+    tauri::async_runtime::spawn_blocking(move || {
+        let directory = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        append_popover_geometry(&directory, &row)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
 // Independent webview midpoint calibrations: allow at most 10 ms of receipt clock skew.
 const COMPLETION_CLOCK_SKEW_MS: f64 = 10.0;
 
@@ -563,6 +667,18 @@ pub(crate) async fn perf_log_append(
     window: tauri::WebviewWindow,
     line: String,
 ) -> Result<(), String> {
+    // This fixed, geometry-only variant is always on; ordinary timing rows keep their gate.
+    #[derive(Deserialize)]
+    #[serde(tag = "event", deny_unknown_fields)]
+    enum Diagnostic {
+        #[serde(rename = "toolset-popover-geometry")]
+        Popover { geometry: PopoverGeometry },
+    }
+    if line.len() <= MAX_LINE_BYTES {
+        if let Ok(Diagnostic::Popover { geometry }) = serde_json::from_str(&line) {
+            return log_toolset_popover_geometry(app, window, geometry).await;
+        }
+    }
     // Reject before even resolving app_data_dir. The state was constructed using precisely the
     // existing agent_bridge_status env/argument parser, never renderer flags.
     app.state::<PerfLog>().sample()?;
@@ -751,6 +867,25 @@ fn valid_completion(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn popover_geometry_log_is_always_on_and_rotates() {
+        let directory = dir();
+        let row =
+            serde_json::json!({ "event": "toolset-popover-geometry", "dom": { "scrollTop": 28 } });
+        super::append_popover_geometry(&directory, &row).unwrap();
+        let path = directory.join("toolset-popover-geometry.jsonl");
+        assert_eq!(fs::read_to_string(&path).unwrap(), format!("{row}\n"));
+        fs::write(&path, vec![b'x'; 1024 * 1024]).unwrap();
+        super::append_popover_geometry(&directory, &row).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), format!("{row}\n"));
+        assert_eq!(
+            fs::metadata(directory.join("toolset-popover-geometry.1.jsonl"))
+                .unwrap()
+                .len(),
+            1024 * 1024
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
     use super::{
         clock_request, completion_receipt, native_open_label, native_paint_receipt,
         popover_receipt, valid_completion, validate_line, validate_window_state_target,

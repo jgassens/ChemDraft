@@ -219,6 +219,36 @@ export async function closeToolsetWindow(toolsetId: string): Promise<ToolsetWind
 
 export type ToolsetPopoverFocusMode = "preserve" | "focus";
 
+const TOOLSET_POPOVER_RELEASE_EVENT = "chemdraft://toolset-popover-release";
+let stopPopoverRelease: (() => void) | undefined;
+function observePopoverOpeningRelease(toolsetId: string): void {
+  stopPopoverRelease?.();
+  const stop = () => {
+    window.removeEventListener("pointerup", release, true);
+    window.removeEventListener("pointercancel", stop, true);
+    window.clearTimeout(timeout);
+    if (stopPopoverRelease === stop) stopPopoverRelease = undefined;
+  };
+  const release = () => {
+    stop();
+    const releasedAt = toolsetPopoverTimestamp();
+    void import("@tauri-apps/api/event").then(({ emit }) =>
+      emit(TOOLSET_POPOVER_RELEASE_EVENT, { toolsetId, releasedAt })).catch(() => undefined);
+  };
+  const timeout = window.setTimeout(stop, 30_000);
+  stopPopoverRelease = stop;
+  window.addEventListener("pointerup", release, true);
+  window.addEventListener("pointercancel", stop, true);
+}
+
+export async function listenForToolsetPopoverRelease(
+  handler: (payload: { toolsetId: string; releasedAt: number }) => void
+): Promise<Unlisten> {
+  if (!isDesktopRuntime()) return () => undefined;
+  return listenTauriEvent<{ toolsetId: string; releasedAt: number }>(TOOLSET_POPOVER_RELEASE_EVENT,
+    event => handler(event.payload));
+}
+
 /**
  * Opens (or repositions) a palette's popover in its own little floating window so it can
  * overflow the palette and float over the document — the native way (a webview can't paint
@@ -236,6 +266,7 @@ export async function openToolsetPopoverWindow(
     return;
   }
 
+  if (kind === "flyout") observePopoverOpeningRelease(toolsetId);
   const { invoke } = await import("@tauri-apps/api/core");
   await invoke("open_toolset_popover", { toolsetId, kind, x, y, focusMode });
 }
