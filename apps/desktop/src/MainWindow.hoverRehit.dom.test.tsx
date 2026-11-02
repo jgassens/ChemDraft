@@ -218,6 +218,30 @@ describe.each(["windows", "macos"] as const)("hover re-hit (%s shortcuts)", plat
     expect(molecule()).toEqual(before);
   });
 
+  it.each(["blur", "hidden"])("waits for pointer movement after %s", async reason => {
+    await mount();
+    const bond = await hoverBond();
+    await press("2");
+    await act(async () => {
+      if (reason === "blur") window.dispatchEvent(new Event("blur"));
+      else {
+        vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+        document.dispatchEvent(new Event("visibilitychange"));
+      }
+    });
+    expect(snapshot().hoveredNativeTarget).toBeUndefined();
+    const resolve = vi.spyOn(hitTest, "nativeMoleculeCanvasHoverTarget");
+    await press("z", true);
+    expect(molecule().bonds[0]!.order).toBe("single");
+    expect(snapshot().hoveredNativeTarget).toBeUndefined();
+    expect(resolve).not.toHaveBeenCalled();
+    await press("2");
+    expect(molecule().bonds[0]!.order).toBe("single");
+    await hoverBond();
+    await press("2");
+    expect(molecule().bonds.find(candidate => candidate.id === bond.id)!.order).toBe("double");
+  });
+
   it("does not re-hit during an armed pointer gesture", async () => {
     await mount();
     const bond = await hoverBond();

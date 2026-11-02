@@ -14895,6 +14895,13 @@ export function MainWindow({
   rederiveNativeCanvasHoverRef.current = rederiveNativeCanvasHoverFromLastPointer;
 
   useEffect(() => {
+    const clearCanvasHover = () => {
+      pointerInsideCanvasRef.current = false;
+      updateNativeCanvasHover(documentRef.current, undefined);
+    };
+    const handleVisibilityChange = () => {
+      if (window.document.hidden) clearCanvasHover();
+    };
     const handleWindowPointerMove = (event: globalThis.MouseEvent) => {
       const clientPoint = { x: event.clientX, y: event.clientY };
       const canvas = canvasRegionRef.current;
@@ -14906,11 +14913,15 @@ export function MainWindow({
 
     window.addEventListener("pointermove", handleWindowPointerMove, { capture: true });
     window.addEventListener("mousemove", handleWindowPointerMove, { capture: true });
+    window.addEventListener("blur", clearCanvasHover);
+    window.document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
       window.removeEventListener("pointermove", handleWindowPointerMove, { capture: true });
       window.removeEventListener("mousemove", handleWindowPointerMove, { capture: true });
+      window.removeEventListener("blur", clearCanvasHover);
+      window.document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, []);
+  }, [updateNativeCanvasHover]);
 
   const updateFreeformBondPreview = useCallback((
     sourceDocument: ChemDraftDocument,
