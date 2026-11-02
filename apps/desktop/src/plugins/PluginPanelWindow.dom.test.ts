@@ -507,6 +507,8 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     expect(hitTest).toContain(".and_then(|content| unsafe { content.superview() })");
     expect(hitTest).toContain("Retained::as_ptr(&frame).cast_mut()");
     expect(hitTest).toMatch(/std::ptr::null_mut\(\)\s*\}\s*\}\s*\);/);
+    // Interior hits must fall through to the WKWebView.
+    expect(hitTest).not.toMatch(/super\(self\)\s*,\s*hitTest/);
     expect(mac).toContain("initWithFrame: content.bounds()");
     expect(mac).toContain("overlay.setAutoresizingMask(autoresize)");
     const click = mac.split("let number = panel.windowNumber();")[1]!.split("pub(super) fn resize_edge")[0]!;
