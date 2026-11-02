@@ -6,7 +6,7 @@ export { DocumentStyleScale, documentStylePointBounds, FigureStyles, type Figure
 export {
   planTableLayout, planTableObjectSvg, tableCellElementId, tableVisualBoundsForArrangement, type TableLayout
 } from "./table";
-export { textAdvanceEm, measureTextRun } from "./textMetrics";
+export { textAdvanceEm, measureTextRun, measureNativeTextSpanLineWidth } from "./textMetrics";
 export { medianLength, representativeMoleculeBondLength, scalePageGeometry } from "./pageScale";
 export {
   nativeTextMetrics, nativeTextCharacterWidthFactor, nativeTextSubscriptBottomEm,
@@ -3910,7 +3910,7 @@ export function textSpanLineFragments(
   });
 }
 
-function textObjectSpanLines(object: TextObject): TextSpan[][] {
+export function textObjectSpanLines(object: Pick<TextObject, "text" | "spans">): TextSpan[][] {
   const spans = textObjectSpansForRendering(object);
   return spans.reduce<TextSpan[][]>((lines, span) => {
     const parts = span.text.split(/\r?\n/);
@@ -3926,7 +3926,7 @@ function textObjectSpanLines(object: TextObject): TextSpan[][] {
   }, [[]]);
 }
 
-export function textObjectSpansForRendering(object: TextObject): TextSpan[] {
+export function textObjectSpansForRendering(object: Pick<TextObject, "text" | "spans">): TextSpan[] {
   const spans = object.spans.filter((span) => span.text.length > 0);
   if (spans.length > 0 && spans.map((span) => span.text).join("") === object.text) {
     return spans;

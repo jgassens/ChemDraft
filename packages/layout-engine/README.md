@@ -121,8 +121,17 @@ Interaction, selection and arrangement use these visual bounds. Layout, SVG and 
 by immutable table object identity; SVG roots also key on layer index and share their cell fragments.
 Replace the table object when editing it. `tableCellElementId` supplies the shared canvas/SVG cell ID.
 
-`textMetrics.generated.ts` contains only derived Helvetica regular/bold and Symbol Greek/arrow
+`textMetrics.generated.ts` contains only derived Helvetica regular/bold, Times regular/bold/italic/bold italic, Courier and Symbol Greek/arrow
 advance widths. Regenerate it with
 `node packages/layout-engine/scripts/generate-text-metrics.mjs <Adobe Core 14 AFM directory>`
 from the repository root. The generator verifies the oblique widths, retains Adobe's notices and
 permission paragraph verbatim, and records the modification. Do not add the source AFM files.
+
+
+Native text sizing uses `measureNativeTextSpanLineWidth`: the larger of the previous whole-line
+character-factor estimate and the Core14 advance width. It resolves sans families to Helvetica,
+serif families to Times, and monospace families to Courier, with per-span bold/italic, font sizes,
+letter spacing and the renderer's parent-size script scale. Unknown fonts use the first known
+family in their CSS stack (otherwise Helvetica); uncovered code points use 0.62 em. This is a
+deterministic fallback, not host-font shaping or a guarantee for arbitrary installed fonts.
+Stored document frames are never remeasured merely by loading or normalizing them.

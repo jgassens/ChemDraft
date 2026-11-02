@@ -244,6 +244,8 @@ import {
   nativeElementFromAtomLabel,
   nativeMoleculeRings,
   nativeTextScriptFontScale,
+  measureNativeTextSpanLineWidth,
+  textObjectSpanLines,
   nonElementAtomLabelPlacement,
   defaultMechanismArrowControls,
   planMoleculeAtomLabels,
@@ -1689,7 +1691,7 @@ function tableClipboardDecisionBeforePicture(payload: ClipboardReadPayload) {
   return tableClipboardPasteDecision(payload, html => new DOMParser().parseFromString(html, "text/html"));
 }
 
-const CURRENT_BUILD_STAMP = "11.01.13.57-codex";
+const CURRENT_BUILD_STAMP = "11.01.19.55-codex";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -28626,6 +28628,14 @@ function DocumentObjectViewContent({
   if (object.type === "text") {
     const textStyle = nativeTextStyleFromObjectStyle(object.style);
     const objectTextScript = textScriptForTextObject(object);
+    const fixedTextWidth = object.style.textBoxSizingMode === "fixed-width" || object.style.textBoxSizingMode === "fixed-size";
+    // Editor chrome only: opening an old/undone automatic box must not mutate its stored
+    // frame. Two CSS pixels cover the borders, plus one for the trailing caret.
+    const editorFrameCss: CSSProperties = editingText && !fixedTextWidth ? {
+      width: `max(${style.width}, calc(${Math.max(0, ...textObjectSpanLines(object).map(line =>
+        measureNativeTextSpanLineWidth(line, textStyle)))}px * var(--page-scale) + 3px))`
+    } : {};
+
     const textCss = {
       color: textStyle.color,
       fontFamily: textStyle.fontFamily,
@@ -28753,7 +28763,7 @@ function DocumentObjectViewContent({
             />
           </>
         ) : null}
-        </>, textCss)}
+        </>, { ...textCss, ...editorFrameCss })}
       </div>
     );
   }

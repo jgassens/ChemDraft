@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
+import { measureNativeTextSpanLineWidth, textObjectSpanLines } from "@chemdraft/layout-engine";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { MoleculeObject, TextObject } from "@chemdraft/chem-core";
+import { nativeTextStyleFromObjectStyle, type MoleculeObject, type TextObject } from "@chemdraft/chem-core";
 import { MainWindow } from "./MainWindow";
 import { createPhase4Document, insertNativeTextObject, selectDocumentObjects } from "./documentWorkflow";
 import { beginAssistantTransaction, endAssistantTransaction, writeAssistantTransaction } from "./assistant/assistantTransaction";
@@ -105,6 +106,62 @@ describe.each(["macos", "windows"] as const)("text edit history (%s)", platform 
   }
   const undo = () => command(forceDocumentHistoryCommandId("edit.undo"));
   const redo = () => command(forceDocumentHistoryCommandId("edit.redo"));
+
+  function assertAutomaticEditorWidth(object: TextObject) {
+    const contentWidth = Math.max(...textObjectSpanLines(object).map(line =>
+      measureNativeTextSpanLineWidth(line, nativeTextStyleFromObjectStyle(object.style))));
+    const frame = editor()!.closest<HTMLElement>(".document-object-chrome")!;
+    // jsdom cannot lay out glyphs or resolve var(--page-scale). Check the supplied CSS:
+    // at scale 1 this reserves content width plus the two borders and the caret.
+    const storedFrameWidth = object.width / snapshot().document.pages[0].width * 100;
+    expect(frame.style.width).toBe(`max(${storedFrameWidth}%, calc(${contentWidth}px * var(--page-scale) + 3px))`);
+    expect(Number(frame.style.width.match(/calc\(([\d.]+)px/)![1]) + 3).toBeGreaterThanOrEqual(contentWidth + 3);
+  }
+
+  it("sizes the editor on placement, edit, undo and reopen without changing stored widths on open", async () => {
+    const id = await place("CCCCCCCCC", 200);
+    const placed = texts()[0];
+    await open(id);
+    expect(texts()[0].width).toBe(placed.width);
+    assertAutomaticEditorWidth(texts()[0]);
+    await type("CCCCCCCCCC");
+    assertAutomaticEditorWidth(texts()[0]);
+    await pagePress();
+    await undo();
+    expect(texts()[0]).toEqual(placed);
+    await open(id);
+    assertAutomaticEditorWidth(texts()[0]);
+    expect(texts()[0]).toEqual(placed);
+  });
+
+  it.each([undefined, "auto", "fixed-width", "fixed-size"])(
+    "preserves loaded narrow widths (%s) and widens only automatic editor chrome", async sizingMode => {
+      const drawing = structuredClone(insertNativeTextObject(createPhase4Document("Old text"), { x: 200, y: 200 }, "CCCCCCCCC",
+        { fontSizePx: 18 }));
+      const object = drawing.pages[0]!.objects[0] as TextObject;
+      object.width = 106.44; // 1.1.0's nine-C width, including its 6 px padding.
+      if (sizingMode) object.style.textBoxSizingMode = sizingMode;
+      else delete object.style.textBoxSizingMode;
+      await act(async () => root.unmount()); container.innerHTML = "";
+      root = createRoot(container);
+      await act(async () => root.render(createElement(MainWindow, {
+        initialDocument: drawing, initialPaletteMode: "hidden", nativePalette: true,
+        initialRulersVisible: false, initialCrosshairsVisible: false, shortcutPlatform: platform
+      })));
+      expect(texts()[0].width).toBe(106.44);
+      await open(object.id);
+      expect(texts()[0].width).toBe(106.44);
+      if (sizingMode === "fixed-width" || sizingMode === "fixed-size") {
+        const frame = editor()!.closest<HTMLElement>(".document-object-chrome")!;
+        expect(frame.style.width).toBe(`${106.44 / drawing.pages[0]!.width * 100}%`);
+      } else assertAutomaticEditorWidth(texts()[0]);
+      await type("CCCCCCCCCC"); await pagePress(); await undo();
+      expect(texts()[0].width).toBe(106.44);
+      await open(object.id);
+      expect(texts()[0].width).toBe(106.44);
+      if (!sizingMode || sizingMode === "auto") assertAutomaticEditorWidth(texts()[0]);
+    }
+  );
 
   it("records one labelled edit across keystrokes and redoes it without losing Beta", async () => {
     const alpha = await place("Alpha", 200); await place("Beta", 400); await open(alpha);

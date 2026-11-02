@@ -403,7 +403,7 @@ describe("reaction label policy", () => {
       { text: "2", script: "subscript", style: {} },
       { text: "O", script: "normal", style: {} }
     ];
-    expect(estimateNativeTextSpanLineWidth(spans, style)).toBeCloseTo(15 * 0.62 * 2 + 15 * 0.72 * 0.62 + 4);
+    expect(estimateNativeTextSpanLineWidth(spans, style)).toBeCloseTo(15 * (0.722 + 0.778) + 15 * 0.72 * 0.556 + 4);
     expect(estimateNativeTextSpanLineWidth(spans, style)).toBeLessThan(estimateNativeTextLineWidth("H2O", style));
     const result = labels({ above: ["H2O\nCH2Cl2"], textStyle: { fontSizePx: 15, lineHeight: 1.5, paragraphSpacingPx: 3 } });
     expect(result.above!.height).toBe(2 * 15 * 1.5 + 3 + 4);
