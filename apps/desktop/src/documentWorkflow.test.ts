@@ -153,6 +153,7 @@ import {
   createNativeSingleBondMolecule,
   createNativeMolfileMolecule,
   createPhase4Document,
+  insertTableIntoDocument,
   createSelectionClipboardPayload,
   formatElementList,
   nativeMoleculeUnmodeledMetalElements,
@@ -326,6 +327,22 @@ function orbitalLobeTip(object: GraphicObject): PagePoint {
     y: center.y + dx * Math.sin(radians) + dy * Math.cos(radians)
   };
 }
+
+describe("insertTableIntoDocument", () => {
+  it("stores the dimensions of the table layout", () => {
+    let id = 0;
+    const document = insertTableIntoDocument(createPhase4Document(), {
+      columns: 4, rows: 6, headerRows: 1, preset: "grid", center: { x: 300, y: 300 },
+      newId: prefix => `${prefix}-${id++}`
+    });
+    const table = document.pages[0].objects[0];
+    if (table.type !== "table") throw new Error("Expected table");
+    const layout = layoutEngine.planTableLayout(table);
+    expect(table.tableStyle.autoColumnMinEm).toBe(3);
+    expect(table.width).toBeCloseTo(layout.width);
+    expect(table.height).toBeCloseTo(layout.height);
+  });
+});
 
 describe("editing unknown-order bonds without storing lossy SMILES", () => {
   function unknownBondDocument(twoUnknownBonds: boolean): ChemDraftDocument {

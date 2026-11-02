@@ -121,8 +121,10 @@ describe("native tables on the canvas", () => {
     const minimum = Math.ceil((3 * fontSize + 2 * table.tableStyle.cellPaddingPx.x) * 2) / 2;
     expect(layout.columns.every(column => column.width >= minimum)).toBe(true);
     const box = layout.cells.find(cell => cell.rowIndex === 2 && cell.columnIndex === 0)!.box;
+    const next = layout.cells.find(cell => cell.rowIndex === 2 && cell.columnIndex === 1)!.box;
     const scale = (window.__CHEMDRAFT_AGENT__!.snapshot().viewport as { scale: number }).scale;
     const x = (box.x + 5) * scale, y = (box.y + box.height / 2) * scale;
+    const nextX = (next.x + next.width / 2) * scale, nextY = (next.y + next.height / 2) * scale;
     const hit = container.querySelector("[data-table-hit-target]")!;
     for (let i = 0; i < 2; i++) {
       await pointer(hit, "pointerdown", x, y);
@@ -142,16 +144,16 @@ describe("native tables on the canvas", () => {
     const editedLayout = planTableLayout(edited);
     expect(editedLayout.columns[0].width).toBe(layout.columns[0].width);
     expect(editedLayout.columns[0].width).toBeGreaterThanOrEqual(minimum);
-    const editedBox = editedLayout.cells.find(cell => cell.rowIndex === 2 && cell.columnIndex === 0)!.box;
-    expect(editedBox.width).toBeGreaterThan(5);
-    const editedX = (editedBox.x + 5) * scale, editedY = (editedBox.y + editedBox.height / 2) * scale;
     const editedHit = container.querySelector("[data-table-hit-target]")!;
     for (let i = 0; i < 2; i++) {
-      await pointer(editedHit, "pointerdown", editedX, editedY);
-      await pointer(container.querySelector(".page")!, "pointerup", editedX, editedY);
+      await pointer(editedHit, "pointerdown", nextX, nextY);
+      await pointer(container.querySelector(".page")!, "pointerup", nextX, nextY);
     }
-    await act(async () => editedHit.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, detail: 2, clientX: editedX, clientY: editedY })));
-    expect(container.querySelector<HTMLTextAreaElement>("[data-table-cell-editor] textarea")?.value).toBe("1");
+    await act(async () => editedHit.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, detail: 2, clientX: nextX, clientY: nextY })));
+    const nextEditor = container.querySelector<HTMLTextAreaElement>("[data-table-cell-editor] textarea");
+    expect(nextEditor).not.toBeNull();
+    expect(nextEditor!.parentElement!.dataset.rowId).toBe(table.rows[2].id);
+    expect(nextEditor!.parentElement!.dataset.columnId).toBe(table.columns[1].id);
   });
 
   it("lets an all-empty column without an auto minimum shrink to natural width after typing", async () => {
