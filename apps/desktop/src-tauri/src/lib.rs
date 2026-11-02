@@ -5043,6 +5043,14 @@ fn start_window_drag(window: tauri::WebviewWindow, grab_x: f64, grab_y: f64) -> 
 
 const TOOLSET_TOOLTIP_WINDOW_LABEL: &str = "toolset-tooltip";
 
+/// Read current native visibility rather than keeping a second open/closed ledger: prewarming,
+/// click-away, app deactivation, and closing a palette can all hide a popover independently.
+fn toolset_tooltip_suppressed<'a>(windows: impl IntoIterator<Item = (&'a str, bool)>) -> bool {
+    windows
+        .into_iter()
+        .any(|(label, visible)| label.starts_with("toolset-popover-") && visible)
+}
+
 /// Place the (pre-built, hidden) tooltip window at global-logical `x`/`y` (when given) and order it
 /// front. The tooltip webview invokes this after sizing itself: palettes and popovers become visible
 /// through this same NSWindow::orderFront path, whereas Tauri's JS `show()` did not reliably display
@@ -5054,6 +5062,18 @@ fn show_toolset_tooltip_window(
     y: Option<f64>,
 ) -> Result<(), String> {
     if utility_windows_suspended() {
+        return Ok(());
+    }
+    // Both reveal commands are synchronous on the main thread. A delayed hover request must
+    // recheck here, immediately before showing, even if its measurement began before the popover.
+    // Hidden/prewarmed popovers do not block the next hover after the last popover closes.
+    let windows = app.webview_windows();
+    // A window being torn down may have unreadable visibility; it must not suppress tooltips.
+    if toolset_tooltip_suppressed(
+        windows
+            .iter()
+            .map(|(label, window)| (label.as_str(), window.is_visible().unwrap_or(false))),
+    ) {
         return Ok(());
     }
     let Some(window) = app.get_webview_window(TOOLSET_TOOLTIP_WINDOW_LABEL) else {
@@ -5135,6 +5155,10 @@ fn show_toolset_popover_window(
     let focus_mode =
         effective_toolset_popover_focus_mode(window.label(), focus_mode.unwrap_or_default());
     configure_toolset_popover_window(&window, focus_mode)?;
+    // Remove a tooltip already on screen before revealing this popover on either platform.
+    // Subsequent tooltip-show commands are blocked by its native visibility until it hides.
+    // Best-effort: a tooltip-hide failure must not prevent opening the requested popover.
+    let _ = hide_toolset_tooltip_window(window.app_handle().clone());
     #[cfg(target_os = "macos")]
     if focus_mode == ToolsetPopoverFocusMode::Preserve {
         // TaoWindow subclasses NSWindow; focusable(false) guards canBecomeKeyWindow.
@@ -10229,6 +10253,34 @@ mod tests {
     #[test]
     fn toolset_windows_do_not_take_focus_from_document_window() {
         expect_false(toolset_window_focusable());
+    }
+
+    #[test]
+    fn toolset_tooltip_suppression_tracks_all_visible_popovers() {
+        assert!(!toolset_tooltip_suppressed([]));
+        let mut windows = [
+            ("main", true),
+            ("toolset-core-art", true),
+            (TOOLSET_TOOLTIP_WINDOW_LABEL, true),
+            ("toolset-popover-core-main", false),
+            ("toolset-popover-core-art", false),
+            ("toolset-popover-core-bondStereo", false),
+        ];
+        // Visible palettes and a tooltip, plus hidden prewarmed popovers, leave hovers unchanged.
+        assert!(!toolset_tooltip_suppressed(windows));
+        for index in 3..windows.len() {
+            windows[index].1 = true;
+            assert!(toolset_tooltip_suppressed(windows));
+            windows[index].1 = false;
+            assert!(!toolset_tooltip_suppressed(windows));
+        }
+        // Closing one popover is insufficient when another is still visible.
+        windows[3].1 = true;
+        windows[4].1 = true;
+        windows[3].1 = false;
+        assert!(toolset_tooltip_suppressed(windows));
+        windows[4].1 = false;
+        assert!(!toolset_tooltip_suppressed(windows));
     }
 
     fn assert_bond_stereo_mouse_creation() {

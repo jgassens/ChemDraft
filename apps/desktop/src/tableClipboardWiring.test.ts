@@ -9,7 +9,7 @@ import { exportTableClipboardPayloads } from "@chemdraft/export-engine";
 import { tableVisualBoundsForArrangement } from "@chemdraft/layout-engine";
 import {
   CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, createPhase4Document, createSelectionClipboardPayload,
-  insertNativeTemplateMolecule, insertNativeTextObject, insertTableIntoDocument, serializeSelectionClipboardPayload
+  insertNativeTemplateMolecule, insertNativeTextObject, insertTableIntoDocument, parseSelectionClipboardPayload, serializeSelectionClipboardPayload
 } from "./documentWorkflow";
 import { clipboardWriteNotices, pasteTableIntoDocument, readTableClipboardPaste, tableClipboardPasteDecision, tableSelectionClipboardItems } from "./tableClipboardWiring";
 import { picturePngBase64 } from "./testSupport/imageFixture";
@@ -26,6 +26,15 @@ function selectedTable() {
 }
 
 describe("table-only copy", () => {
+  it("round-trips private table styles with and without the optional minimum", () => {
+    for (const minimum of [undefined, 3]) {
+      const doc = selectedTable();
+      const table = doc.pages[0].objects[0] as TableObject;
+      if (minimum !== undefined) table.tableStyle.autoColumnMinEm = minimum;
+      const selection = createSelectionClipboardPayload(doc)!;
+      expect(parseSelectionClipboardPayload(serializeSelectionClipboardPayload(selection))!.objects[0]).toEqual(table);
+    }
+  });
   it("writes exactly the native selection, HTML, RTF and plain TSV items without images", () => {
     const selection = createSelectionClipboardPayload(selectedTable())!;
     const result = tableSelectionClipboardItems(selection)!;
@@ -255,6 +264,7 @@ describe("paste precedence and table building", () => {
       expect(parsed.warnings).toEqual([]);
       const built = pasteTableIntoDocument(createPhase4Document(), parsed, { x: 408, y: 528 }, {}, ids());
       const table = built.document.pages[0].objects[0] as TableObject;
+      expect(table.tableStyle.autoColumnMinEm).toBeUndefined();
       expect(table.headerRowCount).toBe(1);
       expect(table.rows).toHaveLength(5);
       expect(table.rows.every(row => row.cells.length === 3)).toBe(true);
@@ -366,6 +376,7 @@ describe("paste precedence and table building", () => {
       const inserted = insertTableIntoDocument(document, { rows: 8, columns: 6, headerRows: 1, preset: "grid", center,
         newId: ids() });
       const table = inserted.pages[0].objects[0] as TableObject;
+      expect(table.tableStyle.autoColumnMinEm).toBe(3);
       const drawn = tableVisualBoundsForArrangement(table);
       expect(inserted.selection.objectIds).toEqual([table.id]);
       expect(drawn.x).toBeGreaterThanOrEqual(-1e-9);

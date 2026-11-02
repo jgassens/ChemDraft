@@ -62,6 +62,9 @@ function verifyOblique(upright, oblique) {
 const regular = readAfm("Helvetica"), bold = readAfm("Helvetica-Bold");
 verifyOblique(regular, readAfm("Helvetica-Oblique"));
 verifyOblique(bold, readAfm("Helvetica-BoldOblique"));
+const times = ["Times-Roman", "Times-Bold", "Times-Italic", "Times-BoldItalic"].map(readAfm);
+const courier = readAfm("Courier");
+for (const face of ["Courier-Bold", "Courier-Oblique", "Courier-BoldOblique"]) verifyOblique(courier, readAfm(face));
 const symbol = readAfm("Symbol");
 function widths(metrics) {
   const result = {};
@@ -79,5 +82,9 @@ function widths(metrics) {
 const license = readFileSync(join(directory, "readme.txt"), "utf8").match(/This file and the 14 PostScript\(R\) AFM files[\s\S]*?to support the use of the AFM files\./)?.[0];
 if (!license) throw new Error("Missing Adobe licence paragraph");
 const header = `/*\n${[...copyrightLines].join("\n")}\n\n${license}\n\nModified: reduced to advance widths per Unicode code point by scripts/generate-text-metrics.mjs.\nGenerated file; do not edit.\n*/\n`;
-const output = header + `\nexport const helveticaAdvances: Readonly<Record<number, number>> = ${JSON.stringify(widths(regular), null, 2)};\n\nexport const helveticaBoldAdvances: Readonly<Record<number, number>> = ${JSON.stringify(widths(bold), null, 2)};\n`;
+let output = header + `\nexport const helveticaAdvances: Readonly<Record<number, number>> = ${JSON.stringify(widths(regular), null, 2)};\n\nexport const helveticaBoldAdvances: Readonly<Record<number, number>> = ${JSON.stringify(widths(bold), null, 2)};\n`;
+for (const [name, metrics] of [
+  ["timesAdvances", times[0]], ["timesBoldAdvances", times[1]],
+  ["timesItalicAdvances", times[2]], ["timesBoldItalicAdvances", times[3]], ["courierAdvances", courier]
+]) output += `\nexport const ${name}: Readonly<Record<number, number>> = ${JSON.stringify(widths(metrics), null, 2)};\n`;
 writeFileSync(new URL("../src/textMetrics.generated.ts", import.meta.url), output.replace(/[ \t]+$/gm, ""));
