@@ -263,6 +263,7 @@ export function LinkedFigureView({
   const [exportStatus, setExportStatus] = useState<SaveTextFileResult | null>(null);
   const [exportBusy, setExportBusy] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const [exportMenuIndex, setExportMenuIndex] = useState(0);
   const exportMenuId = useId();
   const exportButtonRef = useRef<HTMLButtonElement | null>(null);
   const exportMenuRef = useRef<HTMLDivElement | null>(null);
@@ -415,6 +416,7 @@ export function LinkedFigureView({
 
   useEffect(() => {
     if (!exportMenuOpen) return;
+    setExportMenuIndex(0);
     exportMenuRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
     const onPointerDown = (event: PointerEvent): void => {
       if (event.target instanceof Node && !exportMenuRef.current?.contains(event.target)
@@ -441,18 +443,22 @@ export function LinkedFigureView({
             : (index + items.length - 1) % items.length) : null;
         if (next !== null) {
           event.preventDefault();
+          event.stopPropagation();
+          setExportMenuIndex(next);
           items[next]?.focus();
           return;
         }
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
-          (items[index] ?? items[0])?.click();
+          event.stopPropagation();
+          (items[index] ?? items[exportMenuIndex])?.click();
           return;
         }
       }
       if (event.key !== "Escape") return;
       event.preventDefault();
       if (exportMenuOpen) {
+        event.stopPropagation();
         setExportMenuOpen(false);
         exportButtonRef.current?.focus();
       } else {
@@ -461,7 +467,7 @@ export function LinkedFigureView({
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [showFull, exportMenuOpen, leaveFullSize]);
+  }, [showFull, exportMenuOpen, exportMenuIndex, leaveFullSize]);
 
   const ticks = useMemo(() => axisTicks(view.min, view.max), [view.min, view.max]);
   const zoomed = view.max - view.min < domainSpan - 1e-6;
@@ -614,13 +620,14 @@ export function LinkedFigureView({
             onKeyDown={(event) => {
               if (event.key === "ArrowDown") {
                 event.preventDefault();
+                event.stopPropagation();
                 setExportMenuOpen(true);
               }
             }}
             title={exportBusy ? "Saving the spectrum" : "Export spectrum as JCAMP-DX, PNG, SVG or PDF"}
           >
             {exportBusy ? "Exporting…" : exportStatus === "saved" ? "Exported"
-              : exportStatus === "failed" ? "Export failed" : exportStatus === "cancelled" ? "Export cancelled" : "Export"}
+              : exportStatus === "failed" ? "Export failed" : "Export"}
           </button>
           <button
             type="button"
@@ -645,9 +652,25 @@ export function LinkedFigureView({
           role="menu"
           data-plugin-panel-input-menu="true"
           aria-label="Export spectrum"
+          aria-orientation="horizontal"
         >
-          {([["jdx", "JCAMP-DX (.jdx)"], ["png", "PNG"], ["svg", "SVG"], ["pdf", "PDF"]] as const).map(([format, label]) => (
-            <button key={format} type="button" className="lf-btn" role="menuitem" tabIndex={-1} onClick={() => void onExport(format)}>
+          {([["jdx", "JCAMP-DX (.jdx)"], ["png", "PNG"], ["svg", "SVG"], ["pdf", "PDF"]] as const).map(([format, label], index) => (
+            <button
+              key={format}
+              type="button"
+              className="lf-btn"
+              role="menuitem"
+              tabIndex={exportMenuIndex === index ? 0 : -1}
+              onFocus={() => setExportMenuIndex(index)}
+              style={exportMenuIndex === index ? {
+                // Mouse-opened menus cannot rely on the webview's :focus-visible heuristic.
+                outline: "2px solid var(--cd-accent)",
+                outlineOffset: 2,
+                background: "var(--cd-accent-soft)",
+                color: "var(--cd-accent-text)"
+              } : undefined}
+              onClick={() => void onExport(format)}
+            >
               {label}
             </button>
           ))}

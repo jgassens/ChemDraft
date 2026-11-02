@@ -928,6 +928,7 @@ describe("LinkedFigureView", () => {
       click(container!.querySelector('[aria-haspopup="menu"]')!);
       const items = container!.querySelectorAll<HTMLButtonElement>('[role="menuitem"]');
       await act(async () => items[["jdx", "png", "svg", "pdf"].indexOf(format)].click());
+      expect(container!.querySelector('[aria-haspopup="menu"]')!.textContent).toBe(outcome === "cancelled" ? "Export" : "Export failed");
       expect(container!.querySelector('[role="status"]')!.textContent).toBe(outcome === "cancelled" ? "Export cancelled." : "Spectrum export failed.");
     }
   });
@@ -960,6 +961,97 @@ describe("LinkedFigureView", () => {
       expect(escape.defaultPrevented).toBe(prevented);
     }
     expect(document.querySelector(".lf-modal")).toBeNull();
+  });
+
+  it.each(["macos", "windows"] as const)("visibly navigates a mouse-opened Export menu without forwarding keys on %s", (platform) => {
+    const shortcuts = { resolve: vi.fn(() => "selection.nudgeDown"), forward: vi.fn() };
+    const stop = installPluginPanelInputFocus(document.body, vi.fn(async (editing: boolean) => editing),
+      platform, async () => () => undefined, shortcuts);
+    // Synthetic keys alone never forward. Also assert that handled keys cannot even reach the
+    // document's bubbling listeners (including the panel shortcut handler).
+    const documentKey = vi.fn();
+    document.addEventListener("keydown", documentKey);
+    try {
+      mount(createElement(LinkedFigureView, { spectrum }));
+      const owner = container!.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!;
+      click(owner);
+      const menu = container!.querySelector('[role="menu"]')!;
+      const items = [...menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
+      expect(menu.getAttribute("aria-orientation")).toBe("horizontal");
+      const highlighted = (index: number): void => {
+        expect(document.activeElement).toBe(items[index]);
+        expect(items.filter((item) => item.tabIndex === 0)).toEqual([items[index]]);
+        expect(items[index].style.outline).toBe("2px solid var(--cd-accent)");
+        expect(items[index].style.background).toBe("var(--cd-accent-soft)");
+        expect(items[index].style.color).toBe("var(--cd-accent-text)");
+        expect(items.filter((item) => item.style.outline !== "")).toEqual([items[index]]);
+      };
+      const key = (name: string): void => {
+        const event = new KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true });
+        act(() => document.activeElement!.dispatchEvent(event));
+        expect(event.defaultPrevented).toBe(true);
+      };
+      highlighted(0); // Opening still focuses the first item; the highlight ignores input modality.
+      // WKWebView may leave/return focus to the mouse-clicked owner: Down must enter at item one.
+      act(() => owner.focus());
+      key("ArrowDown");
+      highlighted(0);
+      for (const index of [1, 2, 3, 0]) {
+        key("ArrowDown");
+        highlighted(index);
+      }
+      for (const index of [3, 2]) {
+        key("ArrowUp");
+        highlighted(index);
+      }
+      key("ArrowLeft");
+      highlighted(1);
+      key("ArrowRight");
+      highlighted(2);
+      key("Home");
+      highlighted(0);
+      key("End");
+      highlighted(3);
+      // Transient webview blur can target keys at body instead of any menu item.
+      act(() => items[3].blur());
+      key("ArrowDown");
+      highlighted(0);
+      key("Escape");
+      expect(container!.querySelector('[role="menu"]')).toBeNull();
+      expect(container!.querySelector(".lf-spectrum")).not.toBeNull();
+      expect(document.activeElement).toBe(owner);
+      expect(owner.getAttribute("aria-expanded")).toBe("false");
+      expect(owner.hasAttribute("aria-controls")).toBe(false);
+      expect(documentKey).not.toHaveBeenCalled();
+      expect(shortcuts.resolve).not.toHaveBeenCalled();
+      expect(shortcuts.forward).not.toHaveBeenCalled();
+    } finally {
+      document.removeEventListener("keydown", documentKey);
+      stop();
+    }
+  });
+
+  it.each(["Enter", " "])("chooses the highlighted Export item once with %j after keyboard opening and transient blur", async (key) => {
+    mount(createElement(LinkedFigureView, { spectrum }));
+    const owner = container!.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!;
+    act(() => {
+      owner.focus();
+      owner.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+    });
+    const items = container!.querySelectorAll<HTMLButtonElement>('[role="menuitem"]');
+    expect(document.activeElement).toBe(items[0]);
+    act(() => items[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true })));
+    expect(document.activeElement).toBe(items[1]);
+    expect(items[1].tabIndex).toBe(0);
+    expect(items[1].style.outline).toBe("2px solid var(--cd-accent)");
+    act(() => items[1].blur());
+    const choose = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+    await act(async () => document.activeElement!.dispatchEvent(choose));
+    expect(choose.defaultPrevented).toBe(true);
+    expect(exportSpectrumFigure).toHaveBeenCalledExactlyOnceWith("png", expect.any(String), "1H");
+    expect(saveTextFile).not.toHaveBeenCalled();
+    expect(container!.querySelector('[role="menu"]')).toBeNull();
+    expect(document.activeElement).toBe(owner);
   });
 
   it.each(["macos", "windows"] as const)("handles Full size Escape before input blur and panel close on %s", async (platform) => {
