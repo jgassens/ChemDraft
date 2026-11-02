@@ -10,7 +10,7 @@ export interface VibeCodeStarterSaveOptions {
   download: (filename: string, contents: string, mimeType: string) => void;
 }
 
-export async function saveVibeCodeStarter(options: VibeCodeStarterSaveOptions): Promise<void> {
+export async function saveVibeCodeStarter(options: VibeCodeStarterSaveOptions): Promise<string | undefined> {
   let path: string | undefined;
   if (options.isDesktop) {
     const { documentDir, join } = await import("@tauri-apps/api/path");
@@ -26,4 +26,5 @@ export async function saveVibeCodeStarter(options: VibeCodeStarterSaveOptions): 
   const contents = buildPluginStarterMarkdown({ appVersion });
   if (path) await options.writeText(path, contents);
   else options.download(PLUGIN_STARTER_FILENAME, contents, "text/markdown;charset=utf-8");
+  return path ? path.split(/[\\/]/).pop() : PLUGIN_STARTER_FILENAME;
 }

@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { dangerousPluginPermissions, PluginApiVersion } from "@chemdraft/plugin-api";
 import { describe, expect, it } from "vitest";
 import {
-  buildPluginStarterMarkdown, pluginStarterAuthoringHeadings, pluginStarterAuthoringSection
+  buildPluginStarterMarkdown, pluginStarterAuthoringHeadings, pluginStarterAuthoringSection, sanitizePluginStarterProse
 } from "./pluginStarter";
 
 const appVersion = "9.8.7-dev";
@@ -52,7 +52,8 @@ describe("plugin starter Markdown", () => {
       "src/tests/massAnalysis.test.ts"
     ]) {
       expect(markdown).toContain(`## ${file}`);
-      expect(markdown).toContain(read(`examples/plugins/mass-fragment-demo/${file}`).trimEnd());
+      if (file !== "LICENSE") expect(markdown).toContain(read(`examples/plugins/mass-fragment-demo/${file}`)
+        .replace(/\/\*\*[\s\S]*?\*\//g, sanitizePluginStarterProse).trimEnd());
     }
   });
 
@@ -104,7 +105,8 @@ describe("plugin starter Markdown", () => {
 
   it("includes the trust warning, fallback, goal and real install path without misleading advice", () => {
     expect(markdown).toContain("A plugin you build runs on your computer with the permissions it declares, so only install plugins that you or your agent wrote and that you trust.");
-    expect(markdown).toContain("\nDescribe your plugin here\n");
+    expect(markdown).toContain("\nGoal: Describe your plugin here\n");
+    expect(markdown).toContain('Replace the text after "Goal:" below');
     expect(markdown).toContain(`If \`git checkout v${appVersion}\` fails`);
     expect(markdown).toContain("git checkout main");
     expect(markdown).toContain("Main may be newer than the installed app");
@@ -114,5 +116,31 @@ describe("plugin starter Markdown", () => {
     expect(markdown).toContain("Packages over 32 MB are refused");
     expect(markdown).not.toContain("npm install @chemdraft");
     expect(markdown).not.toContain("ChemDraw");
+  });
+
+  it("removes internal references cleanly", () => {
+    expect(markdown).not.toMatch(/\bADR-\d+\b|\bM\d{2}\b|\bD-\d{2}\b|reports\/\d+|planning workspace|registerBundledPlugins/i);
+    expect(sanitizePluginStarterProse("Keep this. See reports/0030 in the planning workspace. Keep that.").replace(/\s+/g, " ")).toBe("Keep this. Keep that.");
+  });
+
+  it("preserves prose that resembles internal references", () => {
+    for (const prose of ["Use an ADR-compatible format.", "an M3 screw", "D-glucose", "version 0.1.20", "C10H18"]) {
+      expect(sanitizePluginStarterProse(prose)).toBe(prose);
+    }
+  });
+
+  it("personalizes the license and explains the example entries", () => {
+    const license = read("examples/plugins/mass-fragment-demo/LICENSE");
+    const [, , holder] = license.match(/^Copyright \(c\) (\d{4}) (.+)$/m)!;
+    expect(markdown).not.toContain(holder);
+    expect(markdown).toContain("Copyright (c) <year> <your name>");
+    expect(markdown).not.toMatch(/Copyright \(c\) \d{4}/);
+    expect(markdown).toContain("Put the plugin author's name and the current year");
+    const pkg = JSON.parse(read("examples/plugins/mass-fragment-demo/package.json"));
+    const entry = read("examples/plugins/mass-fragment-demo/src/manifest.ts").match(/entry: "([^"]+)"/)![1];
+    expect(markdown).toContain(`Rename the example package \`${pkg.name}\``);
+    expect(markdown).toContain("never under the `@chemdraft` scope");
+    expect(markdown).toContain(`\`${pkg.exports["."].default.slice(2)}\` is the source entry`);
+    expect(markdown).toContain(`\`${entry}\` is the built entry`);
   });
 });

@@ -62,7 +62,7 @@ describe("plugin starter command", () => {
     }));
     expect(native.write).toHaveBeenCalledExactlyOnceWith(selected, expect.stringContaining("ChemDraft 9.8.7"));
     expect(download).not.toHaveBeenCalled();
-    expect(onError).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledExactlyOnceWith("Saved plugin starter to brief.custom");
   });
 
   it("does nothing on Cancel", async () => {
@@ -83,7 +83,7 @@ describe("plugin starter command", () => {
       expect.stringContaining(`ChemDraft ${config.version}`), "text/markdown;charset=utf-8");
     expect(native.save).not.toHaveBeenCalled();
     expect(native.write).not.toHaveBeenCalled();
-    expect(onError).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledExactlyOnceWith(`Saved plugin starter to ${PLUGIN_STARTER_FILENAME}`);
   });
 
   it("reports native write failures without downloading or retrying", async () => {

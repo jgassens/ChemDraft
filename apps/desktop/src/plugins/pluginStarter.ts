@@ -17,6 +17,16 @@ export const pluginStarterAuthoringHeadings = [
   "Direct document writes versus proposals", "Worker entry", "Distribute"
 ] as const;
 
+// Remove planning reports, ADRs, milestone and decision IDs, and app-only source references.
+export function sanitizePluginStarterProse(source: string): string {
+  const internal = /reports\/\d+|planning workspace|\bADR-\d+\b|\bM\d{2}\b|\bD-\d{2}\b|registerBundledPlugins/i;
+  return source.replace(/ADR-\d+ SDK boundary/g, "SDK boundary")
+    .replace(/\([^()]*\)/gs, match => internal.test(match) ? "" : match)
+    .split(/(?<=[.!?])(\s+)(?=[A-Z`])/)
+    .map((part, index) => index % 2 === 0 && internal.test(part) ? "" : part)
+    .join("").replace(/ +([:,.])/g, "$1");
+}
+
 /** Fail visibly if the source guide is reorganised; never silently omit an agent's instructions. */
 export function pluginStarterAuthoringSection(heading: string, source = authoring): string {
   const lines = source.replace(/\r\n?/g, "\n").split("\n");
@@ -30,12 +40,12 @@ export function pluginStarterAuthoringSection(heading: string, source = authorin
   }
   const body = lines.slice(start + 1, end).join("\n").trim();
   if (!body) throw new Error(`Plugin authoring section empty: ${heading}`);
-  return body;
+  return sanitizePluginStarterProse(body);
 }
 
 const exampleFiles: ReadonlyArray<readonly [string, string, string]> = [
   ["package.json", "json", packageJson],
-  ["LICENSE", "text", license],
+  ["LICENSE", "text", license.replace(/^Copyright \(c\) \d{4} .+$/gm, "Copyright (c) <year> <your name>")],
   ["src/manifest.ts", "ts", manifest],
   ["src/register.ts", "ts", registration],
   ["src/workerEntry.ts", "ts", workerEntry],
@@ -50,17 +60,17 @@ export function buildPluginStarterMarkdown({ appVersion }: { appVersion: string 
   const rules = pluginStarterAuthoringHeadings
     .map(heading => `## ${heading}\n\n${pluginStarterAuthoringSection(heading)}`).join("\n\n");
   const example = exampleFiles.map(([path, language, source]) =>
-    `## ${path}\n\n\`\`\`${language}\n${source.replace(/\r\n?/g, "\n").trimEnd()}\n\`\`\``).join("\n\n");
+    `## ${path}\n\n\`\`\`${language}\n${source.replace(/\r\n?/g, "\n").replace(/\/\*\*[\s\S]*?\*\//g, sanitizePluginStarterProse).trimEnd()}\n\`\`\``).join("\n\n");
 
   return `# To you
 
-This is a plugin-building brief for ChemDraft ${appVersion}. Hand this file to Codex, Claude Code or any coding agent. Replace the goal line below with what you want. When the agent is done, install the .zip it made using the steps at the end.
+This is a plugin-building brief for ChemDraft ${appVersion}. Hand this file to Codex, Claude Code or any coding agent. Replace the text after "Goal:" below with what you want. When the agent is done, install the .zip it made using the steps at the end.
 
 A plugin you build runs on your computer with the permissions it declares, so only install plugins that you or your agent wrote and that you trust.
 
 # Brief for the agent
 
-Describe your plugin here
+Goal: Describe your plugin here
 
 Build a working plugin for the installed ChemDraft ${appVersion}, test it, and deliver its installable .zip and .zip.sha256. Keep the plugin small and use the fewest permissions. Preserve chemical meaning; warn or fail when an operation cannot preserve it. Do not modify ChemDraft's core to implement the plugin.
 
@@ -77,6 +87,8 @@ ${rules}
 # Minimal working example
 
 These are the actual mass-fragment-demo sources shipped with this build, including every runtime module, a test and the MIT license. Model your plugin on them; choose a new package name, manifest id and contribution ids. Runtime imports must obey the SDK-only rule. Test-only host helpers are not runtime imports. For additional API signatures consult packages/plugin-api/src/index.ts in the checkout.
+
+Rename the example package \`@chemdraft/plugin-mass-fragment\` to your own package name, never under the \`@chemdraft\` scope. In the example, \`src/index.ts\` is the source entry; \`dist/plugin.js\` is the built entry produced by packaging the worker source. Put the plugin author's name and the current year in the LICENSE copyright line.
 
 ${example}
 

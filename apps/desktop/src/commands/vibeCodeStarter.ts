@@ -15,14 +15,15 @@ export const vibeCodeStarterCommand: CommandSpec = {
 export function registerVibeCodeStarter(
   register: (spec: CommandSpec, handler: () => Promise<void>) => void,
   options: VibeCodeStarterSaveOptions,
-  onError: (message: string) => void
+  setStatus: (message: string) => void
 ): void {
   register(vibeCodeStarterCommand, async () => {
     try {
       const { saveVibeCodeStarter } = await import("../plugins/vibeCodeStarter");
-      await saveVibeCodeStarter(options);
+      const filename = await saveVibeCodeStarter(options);
+      if (filename) setStatus(`Saved plugin starter to ${filename}`);
     } catch (error) {
-      onError(`Could not save plugin starter: ${error instanceof Error ? error.message : String(error)}`);
+      setStatus(`Could not save plugin starter: ${error instanceof Error ? error.message : String(error)}`);
     }
   });
 }
