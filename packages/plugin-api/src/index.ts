@@ -33,6 +33,7 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * 0.1.18 adds command-scoped documents.insertTable with a validated native PluginTableSpec.
  * 0.1.19 bounds panel report strings, arrays, aggregate counts and UTF-8 JSON size; all report numbers are finite.
  * 0.1.19 exports the parameterised detached snapshotPanelReport walk for host overlay validation.
+ * 0.1.20 adds the optional table style field autoColumnMinEm (minimum auto column width in em).
  *
  * The MINOR stays at 1 for both. For a 0.x release `isPluginApiVersionCompatible` treats the minor as
  * the compatibility boundary, so 0.2.0 would have made every plugin declaring `^0.1.0` — the NMR
@@ -42,7 +43,7 @@ import type { DocumentObject } from "@chemdraft/chem-core";
  * local structure recognition, `^0.1.7` for structure naming, `^0.1.8` for external tools), which this host satisfies and an
  * older one correctly does not.
  */
-export const PluginApiVersion = "0.1.19" as const;
+export const PluginApiVersion = "0.1.20" as const;
 
 export const pluginPermissions = [
   "document.read",

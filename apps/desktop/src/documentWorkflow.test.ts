@@ -153,6 +153,7 @@ import {
   createNativeSingleBondMolecule,
   createNativeMolfileMolecule,
   createPhase4Document,
+  insertTableIntoDocument,
   createSelectionClipboardPayload,
   formatElementList,
   nativeMoleculeUnmodeledMetalElements,
@@ -223,6 +224,7 @@ import {
   nativeElementFromAtomLabel,
   nativeElementFromKeyboardKey,
   nativeTemplateForToolCommand,
+  normalizeCommittedDocument,
   normalizeNativeAtomElementLabel,
   nativeMoleculeInvalidAtomStates,
   stereoPerceptionDistinctLabelLimit,
@@ -326,6 +328,22 @@ function orbitalLobeTip(object: GraphicObject): PagePoint {
     y: center.y + dx * Math.sin(radians) + dy * Math.cos(radians)
   };
 }
+
+describe("insertTableIntoDocument", () => {
+  it("stores the dimensions of the table layout", () => {
+    let id = 0;
+    const document = insertTableIntoDocument(createPhase4Document(), {
+      columns: 4, rows: 6, headerRows: 1, preset: "grid", center: { x: 300, y: 300 },
+      newId: prefix => `${prefix}-${id++}`
+    });
+    const table = document.pages[0].objects[0];
+    if (table.type !== "table") throw new Error("Expected table");
+    const layout = layoutEngine.planTableLayout(table);
+    expect(table.tableStyle.autoColumnMinEm).toBe(3);
+    expect(table.width).toBeCloseTo(layout.width);
+    expect(table.height).toBeCloseTo(layout.height);
+  });
+});
 
 describe("editing unknown-order bonds without storing lossy SMILES", () => {
   function unknownBondDocument(twoUnknownBonds: boolean): ChemDraftDocument {
@@ -18809,5 +18827,26 @@ describe("terminal geometry by hotkey and tool click", () => {
     expect(snapped.aim).not.toBeCloseTo(snapped.pointerAim, 1);
     const free = dragFromEnd(seededBond(order, 37), 140, true);
     expect(free.aim).toBeCloseTo(free.pointerAim, 6);
+  });
+});
+
+describe("stored text frame preservation", () => {
+  it("does not remeasure any text width when loading or normalizing existing documents", () => {
+    let drawing = createPhase4Document("Old text frames");
+    for (const [index, mode] of [undefined, "auto", "fixed-width", "fixed-size"].entries()) {
+      drawing = structuredClone(insertNativeTextObject(drawing, { x: 100, y: 100 + index * 50 }, "CCCCCCCCC",
+        { fontSizePx: 18 }));
+      const object = drawing.pages[0]!.objects.at(-1)! as TextObject;
+      object.width = 106.44 + index;
+      if (mode) object.style.textBoxSizingMode = mode;
+      else delete object.style.textBoxSizingMode;
+    }
+    const widths = (document: ChemDraftDocument) => document.pages.flatMap(page => page.objects)
+      .filter((object): object is TextObject => object.type === "text").map(object => [object.id, object.width]);
+    const loaded = deserializeDocument(serializeDocument(drawing));
+    expect(widths(loaded)).toEqual(widths(drawing));
+    const normalized = normalizeCommittedDocument(loaded);
+    expect(widths(normalized)).toEqual(widths(drawing));
+    expect(widths(normalizeCommittedDocument(normalized))).toEqual(widths(drawing));
   });
 });

@@ -30,6 +30,8 @@ export interface TableLayout {
   columns: {
     x: number;
     width: number;
+    /** Natural text width including padding, before the auto-column minimum. */
+    contentWidth: number;
     decimalAnchorX?: number;
     decimalBlock?: { insetLeft: number; insetRight: number; preWidth: number; postWidth: number };
   }[];
@@ -119,10 +121,13 @@ export function planTableLayout(table: TableObject): TableLayout {
         widest = Math.max(widest, runWidth(runs, style));
       }
     }));
-    const width = column.width.mode === "fixed" ? column.width.px
-      : Math.ceil((Math.max(widest, pre + post) * 1.04 + 2 * padding.x) * 2) / 2;
+    // Legacy tables reserve editing space only for entirely empty columns.
+    const minimumWidth = Math.ceil(((table.tableStyle.autoColumnMinEm ?? 3) * style.fontSizePx + 2 * padding.x) * 2) / 2;
+    const contentWidth = Math.ceil((Math.max(widest, pre + post) * 1.04 + 2 * padding.x) * 2) / 2;
+    const empty = table.rows.every(row => row.cells[columnIndex].text.length === 0);
+    const width = column.width.mode === "fixed" ? column.width.px : table.tableStyle.autoColumnMinEm !== undefined || empty ? Math.max(minimumWidth, contentWidth) : contentWidth;
     const inset = Math.max(0, (width - 2 * padding.x - pre - post) / 2);
-    const result = { x, width, ...(column.align === "decimal" ? {
+    const result = { x, width, contentWidth, ...(column.align === "decimal" ? {
       decimalAnchorX: x + padding.x + inset + pre,
       decimalBlock: { insetLeft: inset, insetRight: inset, preWidth: pre, postWidth: post }
     } : {}) };

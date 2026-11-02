@@ -5309,9 +5309,11 @@ export function updateNativeTextObjectText(
     return document;
   }
   const { object, page } = location;
+  const spans = textObjectSpansForTextChange(object, text);
   const fixedWidth = object.style.textBoxSizingMode === "fixed-width" || object.style.textBoxSizingMode === "fixed-size";
   const fixedSize = object.style.textBoxSizingMode === "fixed-size";
   const size = nativeTextObjectSizeForText(text, object.style, {
+    spans,
     width: fixedWidth ? object.width : undefined,
     height: fixedSize ? object.height : undefined,
     maxWidth: Math.max(nativeTextObjectMinimumDimensions.width, page.width - object.x),
@@ -5327,7 +5329,7 @@ export function updateNativeTextObjectText(
         text,
         width: size.width,
         height: size.height,
-        spans: textObjectSpansForTextChange(object, text)
+        spans
       }
     },
     { now: phase4Timestamp }
@@ -5353,6 +5355,7 @@ export function resizeNativeTextObjectBox(
   );
   const fixedHeight = frame.height !== undefined;
   const size = nativeTextObjectSizeForText(object.text, object.style, {
+    spans: object.spans,
     width: nextWidth,
     height: fixedHeight ? frame.height : undefined,
     maxWidth: Math.max(nativeTextObjectMinimumDimensions.width, page.width - nextX),
@@ -5396,6 +5399,7 @@ export function updateNativeTextObjectStyle(
   const fixedWidth = object.style.textBoxSizingMode === "fixed-width" || object.style.textBoxSizingMode === "fixed-size";
   const fixedSize = object.style.textBoxSizingMode === "fixed-size";
   const size = nativeTextObjectSizeForText(object.text, nextStyle, {
+    spans: object.spans,
     width: fixedWidth ? object.width : undefined,
     height: fixedSize ? object.height : undefined,
     maxWidth: Math.max(nativeTextObjectMinimumDimensions.width, page.width - object.x),
@@ -21195,7 +21199,9 @@ export function insertTableIntoDocument(document: ChemDraftDocument, options: Ta
     style: { preset: options.preset }
   }, { id: options.newId("table"), x: 0, y: 0, newId: options.newId,
     style: textStyleToObjectStyle(options.textStyle ?? {}) });
-  return addTableCenteredOnPage(document, object, options.center);
+  const table = { ...object, tableStyle: { ...object.tableStyle, autoColumnMinEm: 3 } };
+  const layout = planTableLayout(table);
+  return addTableCenteredOnPage(document, { ...table, width: layout.width, height: layout.height }, options.center);
 }
 
 /**
