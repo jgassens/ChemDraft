@@ -103,14 +103,14 @@ describe("picture paste and canvas", () => {
     target.dispatchEvent(event);
   }
 
-  async function pasteFiles(files: File[]) {
+  async function pasteFiles(files: File[], completed: () => void) {
     const event = new Event("paste", { bubbles: true, cancelable: true });
     Object.defineProperty(event, "clipboardData", { value: { types: ["Files"], files, getData: () => "" } });
     await act(async () => {
       window.dispatchEvent(event);
-      await new Promise(resolve => setTimeout(resolve, 30));
     });
     expect(event.defaultPrevented).toBe(true);
+    await vi.waitFor(async () => { await act(async () => {}); completed(); });
   }
 
   it.each(["menu", "event", "native-fallback"])("pastes a Word table before its picture through %s, including after chemistry declines", async route => {
@@ -140,8 +140,8 @@ describe("picture paste and canvas", () => {
         await act(async () => {
           window.dispatchEvent(event);
           expect(event.defaultPrevented).toBe(true);
-          await new Promise(resolve => setTimeout(resolve, 30));
         });
+        await vi.waitFor(async () => { await act(async () => {}); expect(snapshot().pages[0]!.objects).toHaveLength(1); });
       }
       const objects = snapshot().pages[0]!.objects;
       expect(objects).toHaveLength(1);
@@ -183,8 +183,8 @@ describe("picture paste and canvas", () => {
         } });
         await act(async () => {
           window.dispatchEvent(event);
-          await new Promise(resolve => setTimeout(resolve, 30));
         });
+        await vi.waitFor(async () => { await act(async () => {}); expect(snapshot().pages[0]!.objects).toHaveLength(1); });
         expect(event.defaultPrevented).toBe(true);
       }
       const objects = snapshot().pages[0]!.objects;
@@ -331,7 +331,7 @@ describe("picture paste and canvas", () => {
   it.each(["image/png", "image/svg+xml"])("reads %s files in the DOM fallback as base64 and pastes them", async type => {
     await render();
     const bytes = type === "image/png" ? Uint8Array.from(atob(picturePngBase64), char => char.charCodeAt(0)) : pictureSvg;
-    await pasteFiles([new File([bytes], "picture", { type })]);
+    await pasteFiles([new File([bytes], "picture", { type })], () => expect(snapshot().pages[0]!.objects.some(object => object.type === "graphic")).toBe(true));
     const image = snapshot().pages[0]!.objects.find(object => object.type === "graphic")!;
     expect(image).toMatchObject({ graphicKind: "image", data: { image: { mimeType: type,
       dataBase64: type === "image/png" ? picturePngBase64 : btoa(pictureSvg) } } });
@@ -350,7 +350,7 @@ describe("picture paste and canvas", () => {
     const payload = await clipboard.clipboardPayloadFromDataTransfer({ types: ["Files"], files: [file], getData: () => "" } as unknown as DataTransfer);
     expect(inspectClipboardPayload(payload)).toMatchObject({ kind: "image-refused", message: "Couldn't paste the picture: PNG is 26.0 MB; the limit is 25 MB." });
     expect(read).not.toHaveBeenCalled();
-    await pasteFiles([file]);
+    await pasteFiles([file], () => expect(container.querySelector('[role="status"]')?.textContent).toBe("Couldn't paste the picture: PNG is 26.0 MB; the limit is 25 MB."));
     expect(snapshot().pages[0]!.objects).toHaveLength(0);
     expect(canUndo()).toBe(false);
   });
@@ -367,7 +367,7 @@ describe("picture paste and canvas", () => {
     expect(inspectClipboardPayload(payload)).toMatchObject({ kind: "image-refused",
       message: "Couldn't paste the picture: the image data could not be decoded." });
     vi.stubGlobal("Image", class { src = ""; async decode() { throw new Error("decode failed"); } });
-    await pasteFiles([file]);
+    await pasteFiles([file], () => expect(container.querySelector('[role="status"]')?.textContent).toBe("Couldn't paste the picture: the image data could not be decoded."));
     expect(container.querySelector('[role="status"]')?.textContent).toBe("Couldn't paste the picture: the image data could not be decoded.");
     expect(snapshot().pages[0]!.objects).toHaveLength(0);
     expect(canUndo()).toBe(false);

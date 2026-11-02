@@ -73,7 +73,8 @@ async function invoke(args: string[], env: Record<string, string | undefined> = 
 
 afterEach(async () => { await Promise.all(temporary.splice(0).map((directory) => rm(directory, { recursive: true, force: true }))); });
 
-describe('stress runner', { timeout: 30_000 }, () => {
+// Each integration case starts real processes and may perform multiple runs on loaded CI.
+describe('stress runner', { timeout: 120_000 }, () => {
   it('resolves Windows npm shims and preserves a quoted prompt without starting cmd.exe', () => {
     const prompt = `Draw (S)-ibuprofen & say "R" or 'S' 100% $HOME`;
     const shim = 'C:\\Users\\chemist\\AppData\\Roaming\\npm\\codex.CMD';

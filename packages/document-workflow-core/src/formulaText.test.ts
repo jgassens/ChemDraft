@@ -29,7 +29,7 @@ describe("formula text", () => {
   });
 
   it("classifies a long superscript digit run without a sign in linear time", () => {
-    const short = "²".repeat(100_000), long = "²".repeat(200_000);
+    const short = "²".repeat(25_000), long = "²".repeat(400_000);
     const elapsed = (text: string) => {
       const started = performance.now();
       for (let index = 0; index < 20; index += 1) expect(formulaSpansForMixedText(text)).toBeUndefined();
@@ -41,8 +41,9 @@ describe("formula text", () => {
       shortTimes.push(elapsed(short)); longTimes.push(elapsed(long));
     }
     const median = (times: number[]) => times.sort((a, b) => a - b)[2];
-    expect(median(longTimes) / median(shortTimes)).toBeLessThan(3);
-  });
+    // Linear growth is about 16x; quadratic growth is about 256x.
+    expect(median(longTimes) / median(shortTimes)).toBeLessThan(64);
+  }, 30_000); // Allow repeated long scans to finish on a loaded runner.
 
   it("leaves trailing punctuation plain after formulas", () => {
     for (const punctuation of [",", ";", ":", ".", "!", "?", "*", "†", "‡"]) {
@@ -70,7 +71,7 @@ describe("formula text", () => {
   });
 
   it("classifies a long formula token in linear time", () => {
-    const tokens = [50_000, 200_000].map(n => `${"H".repeat(n - 2)}2x`);
+    const tokens = [25_000, 400_000].map(n => `${"H".repeat(n - 2)}2x`);
     for (const token of tokens) formulaSpansForMixedText(token);
     const times = tokens.map(token => Math.min(...Array.from({ length: 3 }, () => {
       const started = performance.now();
@@ -79,10 +80,9 @@ describe("formula text", () => {
       expect(result).toBeUndefined();
       return elapsed;
     })));
-    // A linear scan grows about 4x for a 4x longer token; the old quadratic scan grew about 16x.
-    // The ratio separates them on any machine, unlike the absolute limit that failed on loaded CI runners.
-    expect(times[1] / Math.max(times[0], 0.5)).toBeLessThan(10);
-  // Eight scans of up to 200,000 characters can exceed the 5 s default on a heavily loaded machine; the assertion is the ratio, not the time.
+    // A 16x input separates linear (~16x) from quadratic (~256x) growth, with room for load noise.
+    expect(times[1] / Math.max(times[0], 0.5)).toBeLessThan(64);
+  // Eight scans of up to 400,000 characters can exceed the 5 s default on a heavily loaded machine; the assertion is the ratio, not the time.
   }, 30_000);
 
   it("formats formula-like tokens in mixed text", () => {
