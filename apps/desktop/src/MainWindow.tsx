@@ -7344,8 +7344,43 @@ export function MainWindow({
     setStatus(["Copied ChemDraft selection", ...notices].join("; "));
   }, [deleteSelectionAfterClipboardCut]);
 
+  // What every flush writes — the session autosave, the quit and window-close flush (macOS and
+  // Windows), Save and export: the working document as it would be if an open label edit closed
+  // now. The keystroke that brings a session back to its starting text already writes the label as
+  // it started (applyNativeAtomLabelDraft); the flush still applies the close's own rule
+  // (finishNativeAtomLabelEdit), so what reaches disk never depends on which path wrote the present
+  // document, and a relaunch never reopens changed chemistry. The edit itself stays open. Reads
+  // refs only. Table text is private until edit completion; fold its current rich-text draft
+  // into the same snapshot without touching the working document or recording history.
+  const documentForFlush = useCallback((): ChemDraftDocument => {
+    let current = documentRef.current;
+    const cell = tableCellEditRef.current;
+    const value = tableCellEditorRef.current?.draft();
+    const table = selectedTable(current);
+    if (cell && value && table?.id === cell.tableId) {
+      const original = tableEditingContent(table, cell)?.value;
+      if (original && JSON.stringify({ text: original.text, spans: original.spans }) !== JSON.stringify(value)) {
+        const edited = "kind" in cell
+          ? cell.kind === "caption" ? setTableCaption(table, value)
+            : setTableFootnotes(table, table.footnotes.map((note, index) => index === cell.index ? value : note))
+          : setTableCell(table, cell.rowId, cell.columnId, value);
+        current = normalizeCommittedDocument(applyTableObjectEdit(current, edited.table));
+      }
+    }
+    const edit = activeAtomLabelEditRef.current;
+    if (
+      !edit ||
+      edit.documentIdentity !== documentIdentityRef.current ||
+      edit.historyNavigation !== historyNavigationCountRef.current
+    ) {
+      return current;
+    }
+    if (!atomLabelEditKeepsStartingText(edit) && !documentHasAtomLabelDraft(current, edit)) return current;
+    return normalizeCommittedDocument(finishedAtomLabelDraft(current, edit).document);
+  }, []);
+
   const performCopyAs = useCallback(async (commandId: string) => {
-    const current = documentRef.current;
+    const current = documentForFlush();
     const writeText = async (text: string | undefined, label: string, warnings: readonly string[] = []) => {
       if (!text) {
         setStatus(`Nothing to copy as ${label}`);
@@ -7449,7 +7484,7 @@ export function MainWindow({
       default:
         setStatus(`Unknown copy format: ${commandId}`);
     }
-  }, []);
+  }, [documentForFlush]);
 
   const pasteClipboard = useCallback(async (domPayload?: ClipboardReadPayload | Promise<ClipboardReadPayload>) => {
     smilesListPasteAbortRef.current?.abort();
@@ -7655,6 +7690,12 @@ export function MainWindow({
     setActiveEditorObjectId(undefined);
     replacePresentDocument(current => selectDocumentObject(current, table.id));
     if (!("kind" in cell)) setActiveTableCell(cell);
+    // A clean opened/restored file may not have been saved during this session. Its current
+    // content is still a trustworthy baseline; draft typing must not lose that clean state.
+    const tabId = activeDocumentTabIdRef.current;
+    if (!fileStateRef.current.dirty && !savedDocumentsRef.current.has(tabId)) {
+      savedDocumentsRef.current.set(tabId, documentRef.current);
+    }
     tableCellEditRef.current = cell;
     setTableCellEdit(cell);
     scheduleInlineEditorFocus(() => pageRef.current?.querySelector<HTMLTextAreaElement>("[data-table-cell-editor] textarea")?.focus({ preventScroll: true }));
@@ -9194,7 +9235,14 @@ export function MainWindow({
   tabSessionCancellerRef.current = cancelDocumentTabSessions;
   const snapshotDocumentTab = useCallback((finishDrafts = true) => {
     // A switch is an edit-ending gesture. Finish drafts while their document is still active.
-    if (finishDrafts) tableCellEditorRef.current?.commit({ finishComposition: true });
+    if (finishDrafts) {
+      const commit = tableCellEditorRef.current?.commit({ finishComposition: true });
+      if (commit === "composing") {
+        setStatus("Finish typing in the table first.");
+        return false;
+      }
+      if (commit === false) return false;
+    }
     const labelEdit = activeAtomLabelEditRef.current;
     if (finishDrafts && labelEdit) {
       tabEditFinishersRef.current.finalizeAtomLabelDraft(labelEdit);
@@ -9220,6 +9268,7 @@ export function MainWindow({
       warnings: tabWarningsRef.current, saveWarnings: tabSaveWarningsRef.current,
       status: statusRef.current, pageFit: tabPageFitRef.current
     });
+    return true;
   }, [assistantHistoryPort]);
 
   const installDocumentTab = useCallback((id: string) => {
@@ -9260,12 +9309,12 @@ export function MainWindow({
 
   const activateDocumentTab = useCallback((id: string) => {
     if (id === activeDocumentTabIdRef.current || closeTabPrompt) return;
-    snapshotDocumentTab();
+    if (!snapshotDocumentTab()) return;
     installDocumentTab(id);
   }, [closeTabPrompt, installDocumentTab, snapshotDocumentTab]);
 
   const addDocumentTab = useCallback((title: string) => {
-    snapshotDocumentTab();
+    if (!snapshotDocumentTab()) return false;
     const id = crypto.randomUUID();
     const tabs = [...documentTabsRef.current, { id, title }];
     documentTabsRef.current = tabs;
@@ -9276,10 +9325,11 @@ export function MainWindow({
     viewportRef.current = nextViewport;
     setViewport(nextViewport);
     pendingTabScrollRef.current = { left: 0, top: 0 };
+    return true;
   }, [snapshotDocumentTab]);
 
   const newDocumentTab = useCallback(() => {
-    addDocumentTab("Untitled");
+    if (!addDocumentTab("Untitled")) return;
     resetDocumentHistory(createPhase4Document());
     clearDocumentInteractionState({ clearSpin3dModelCache: true });
     tabPageFitRef.current = undefined;
@@ -9304,7 +9354,7 @@ export function MainWindow({
     }
     const remaining = tabs.filter((tab) => tab.id !== id);
     if (id === activeDocumentTabIdRef.current) {
-      snapshotDocumentTab();
+      if (!snapshotDocumentTab()) return;
       installDocumentTab(remaining[Math.min(index, remaining.length - 1)]!.id);
     }
     documentTabSnapshotsRef.current.delete(id);
@@ -9325,7 +9375,7 @@ export function MainWindow({
       return;
     }
     activateDocumentTab(id);
-    snapshotDocumentTab();
+    if (activeDocumentTabIdRef.current !== id || !snapshotDocumentTab()) return;
     setCloseTabSaveMessage(undefined);
     if (fileStateRef.current.dirty) setCloseTabPrompt(id);
     else removeDocumentTab(id);
@@ -9387,8 +9437,8 @@ export function MainWindow({
       ? recommendImportedPageFit(resolvedOpen.document)
       : undefined;
     const dirty = options?.dirty ?? false;
-    snapshotDocumentTab();
-    if (nonPristineTabsRef.current.has(activeDocumentTabIdRef.current)) addDocumentTab(displayName);
+    if (!snapshotDocumentTab()) return;
+    if (nonPristineTabsRef.current.has(activeDocumentTabIdRef.current) && !addDocumentTab(displayName)) return;
     const id = activeDocumentTabIdRef.current;
     // A pristine tab keeps its tab ID but now represents a different document. Settle its drafts
     // synchronously before replacing the history; late actions must never target the opened file.
@@ -9912,41 +9962,6 @@ export function MainWindow({
     };
   }, [installDocumentTab, snapshotDocumentTab, startWithFreshDocument]);
 
-  // What every flush writes — the session autosave, the quit and window-close flush (macOS and
-  // Windows), Save and export: the working document as it would be if an open label edit closed
-  // now. The keystroke that brings a session back to its starting text already writes the label as
-  // it started (applyNativeAtomLabelDraft); the flush still applies the close's own rule
-  // (finishNativeAtomLabelEdit), so what reaches disk never depends on which path wrote the present
-  // document, and a relaunch never reopens changed chemistry. The edit itself stays open. Reads
-  // refs only. Table text is private until edit completion; fold its current rich-text draft
-  // into the same snapshot without touching the working document or recording history.
-  const documentForFlush = useCallback((): ChemDraftDocument => {
-    let current = documentRef.current;
-    const cell = tableCellEditRef.current;
-    const value = tableCellEditorRef.current?.draft();
-    const table = selectedTable(current);
-    if (cell && value && table?.id === cell.tableId) {
-      const original = tableEditingContent(table, cell)?.value;
-      if (original && JSON.stringify({ text: original.text, spans: original.spans }) !== JSON.stringify(value)) {
-        const edited = "kind" in cell
-          ? cell.kind === "caption" ? setTableCaption(table, value)
-            : setTableFootnotes(table, table.footnotes.map((note, index) => index === cell.index ? value : note))
-          : setTableCell(table, cell.rowId, cell.columnId, value);
-        current = normalizeCommittedDocument(applyTableObjectEdit(current, edited.table));
-      }
-    }
-    const edit = activeAtomLabelEditRef.current;
-    if (
-      !edit ||
-      edit.documentIdentity !== documentIdentityRef.current ||
-      edit.historyNavigation !== historyNavigationCountRef.current
-    ) {
-      return current;
-    }
-    if (!atomLabelEditKeepsStartingText(edit) && !documentHasAtomLabelDraft(current, edit)) return current;
-    return normalizeCommittedDocument(finishedAtomLabelDraft(current, edit).document);
-  }, []);
-
   // Write the working document + file association to the session file now. Reads refs only, so it
   // is stable and safe to call from the debounce below and from the quit flush. Gated on hydration
   // so the startup blank can't clobber the previous session before the restore above has read it.
@@ -10074,7 +10089,11 @@ export function MainWindow({
           }
           return;
         }
-        snapshotDocumentTab();
+        if (!snapshotDocumentTab()) {
+          await cancelQuit(requestId);
+          quitInteractionRef.current = false;
+          return;
+        }
         const dirty = documentTabsRef.current.some((tab) => tab.id === activeDocumentTabIdRef.current
           ? fileStateRef.current.dirty : documentTabSnapshotsRef.current.get(tab.id)?.file.dirty);
         if (!dirty) {

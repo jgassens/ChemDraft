@@ -3,17 +3,22 @@ import { readFileSync } from "node:fs";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { deserializeDocument, type TableObject } from "@chemdraft/chem-core";
+import { deserializeDocument, type ChemDraftDocument, type TableObject } from "@chemdraft/chem-core";
 import { openChemDraftPayload } from "@chemdraft/cdx-compat";
 import { planTableLayout } from "@chemdraft/layout-engine";
 import { MainWindow } from "./MainWindow";
 import { DOM_COMMAND_EVENT } from "./window-manager";
-import { DOCUMENT_SESSION_SAVE_DEBOUNCE_MS, type DocumentSessionEnvelope } from "./documentSession";
+import { buildDocumentSessionEnvelope, DOCUMENT_SESSION_SAVE_DEBOUNCE_MS, type DocumentSessionEnvelope } from "./documentSession";
+import { createNativeSavePayload, createPhase4Document } from "./documentWorkflow";
+import { writeClipboardTextItems, writeClipboardImage } from "./clipboard";
+import { rasterizeSvgNative } from "./nativeRasterExport";
 import { setNativePromptProvider, type NativePromptOptions } from "./nativePrompt";
 import { saveAskToSaveBeforeQuit } from "./quitSettings";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 
 const native = vi.hoisted(() => ({
+  loadSession: vi.fn<() => Promise<unknown>>(),
+  open: undefined as undefined | ((payload: { path: string; displayName: string; contents: string }) => void),
   saveSession: vi.fn<(value: DocumentSessionEnvelope) => Promise<void>>(),
   writeFile: vi.fn<(path: string, contents: string) => Promise<void>>(),
   quitFlush: undefined as undefined | (() => Promise<void>),
@@ -25,7 +30,7 @@ vi.mock("@scena/react-ruler", () => ({ default: () => <canvas /> }));
 vi.mock("./window-manager", async original => ({
   ...await original<typeof import("./window-manager")>(),
   isDesktopRuntime: () => true,
-  loadDocumentSession: async () => undefined,
+  loadDocumentSession: native.loadSession,
   saveDocumentSession: native.saveSession,
   loadToolsetLayoutState: async () => undefined,
   listToolsetWindowStates: async () => [],
@@ -45,10 +50,23 @@ vi.mock("./window-manager", async original => ({
   confirmQuitAfterFlush: native.quit,
   confirmPromptedQuit: native.quit
 }));
+vi.mock("./window-manager/tauriEvents", async original => ({
+  ...await original<typeof import("./window-manager/tauriEvents")>(),
+  listenTauriEvent: async (name: string, handler: (event: { payload: Parameters<NonNullable<typeof native.open>>[0] }) => void) => {
+    if (name !== "chemdraft://open-document") return () => {};
+    native.open = payload => handler({ payload });
+    return () => { native.open = undefined; };
+  }
+}));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ save: async () => "/tmp/table.chemdraft" }));
 vi.mock("@tauri-apps/plugin-fs", async original => ({
   ...await original<typeof import("@tauri-apps/plugin-fs")>(), writeTextFile: native.writeFile
 }));
+vi.mock("./clipboard", async original => ({
+  ...await original<typeof import("./clipboard")>(),
+  writeClipboardTextItems: vi.fn(), writeClipboardImage: vi.fn()
+}));
+vi.mock("./nativeRasterExport", () => ({ rasterizeSvgNative: vi.fn() }));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -88,6 +106,19 @@ describe.each(["macos", "windows"] as const)("open table draft persistence (%s)"
     await command("document.new");
     await command("document.previousTab");
   }
+  const drawing = () => deserializeDocument(readFileSync("packages/fixtures/tables/sharpless-reagent-table.json", "utf8"));
+  async function mount(source: ChemDraftDocument) {
+    await act(async () => root.render(<MainWindow initialDocument={source} initialActiveToolCommandId="tool.select"
+      initialPaletteMode="hidden" initialCrosshairsVisible={false} initialRulersVisible={false} nativePalette shortcutPlatform={platform} />));
+    const page = container.querySelector<HTMLElement>(".page")!;
+    vi.spyOn(page, "getBoundingClientRect").mockReturnValue({ x: 0, y: 0, left: 0, top: 0,
+      right: 816, bottom: 1056, width: 816, height: 1056, toJSON: () => ({}) });
+  }
+  async function remount(source: ChemDraftDocument) {
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await mount(source);
+  }
   beforeEach(async () => {
     vi.clearAllMocks();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "requestAnimationFrame", "cancelAnimationFrame"] });
@@ -102,14 +133,13 @@ describe.each(["macos", "windows"] as const)("open table draft persistence (%s)"
     restorePrompt = setNativePromptProvider(prompt => new Promise(resolve => { pendingPrompt = { prompt, resolve }; }));
     saveAskToSaveBeforeQuit(true);
     native.saveSession.mockResolvedValue(); native.writeFile.mockResolvedValue();
+    native.loadSession.mockResolvedValue(undefined);
+    vi.mocked(writeClipboardTextItems).mockResolvedValue(true);
+    vi.mocked(writeClipboardImage).mockResolvedValue(true);
+    vi.mocked(rasterizeSvgNative).mockResolvedValue({ bytes: new Uint8Array([1, 2, 3]), width: 10, height: 10, warnings: [] });
     window.history.replaceState(null, "", "/?agentBridge=1");
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
-    const drawing = deserializeDocument(readFileSync("packages/fixtures/tables/sharpless-reagent-table.json", "utf8"));
-    await act(async () => root.render(<MainWindow initialDocument={drawing} initialActiveToolCommandId="tool.select"
-      initialPaletteMode="hidden" initialCrosshairsVisible={false} initialRulersVisible={false} nativePalette shortcutPlatform={platform} />));
-    const page = container.querySelector<HTMLElement>(".page")!;
-    vi.spyOn(page, "getBoundingClientRect").mockReturnValue({ x: 0, y: 0, left: 0, top: 0,
-      right: 816, bottom: 1056, width: 816, height: 1056, toJSON: () => ({}) });
+    await mount(drawing());
     // Establish a clean saved file, so opening an editor cannot hide a missing dirty transition.
     await command("document.save");
     expect(snapshot().file.dirty).toBe(false);
@@ -121,7 +151,7 @@ describe.each(["macos", "windows"] as const)("open table draft persistence (%s)"
     for (const method of ["setPointerCapture", "releasePointerCapture", "hasPointerCapture"]) Reflect.deleteProperty(Element.prototype, method);
     window.history.replaceState(null, "", "/"); delete window.__CHEMDRAFT_AGENT__;
   });
-  async function open(target: Target) {
+  async function open(target: Target, text = "Hello") {
     const layout = planTableLayout(currentTable());
     const box = target === "cell" ? layout.cells.find(cell => cell.rowIndex === 1 && cell.columnIndex === 0)!.box
       : target === "caption" ? layout.captionBox! : layout.footnoteBoxes[0];
@@ -141,10 +171,81 @@ describe.each(["macos", "windows"] as const)("open table draft persistence (%s)"
     })); });
     await act(async () => vi.advanceTimersByTimeAsync(100));
     expect(editor()).toBe(document.activeElement);
-    await type("Hello");
+    await type(text);
   }
 
   describe.each(["cell", "caption", "footnote"] as const)("%s", target => {
+    it.each(["opened", "restored", "restored dirty"] as const)("Escape restores the original dirty state of a file %s without saving this session", async source => {
+      const payload = createNativeSavePayload(drawing());
+      if (source !== "opened") native.loadSession.mockResolvedValueOnce(
+        buildDocumentSessionEnvelope(payload, { path: "/tmp/opened-table.chemdraft", dirty: source === "restored dirty" }, "opened-table.chemdraft", false));
+      await remount(createPhase4Document());
+      if (source === "opened") await act(async () => { native.open!({
+        path: "/tmp/opened-table.chemdraft", displayName: "opened-table.chemdraft", contents: payload.contents
+      }); });
+      native.writeFile.mockClear();
+      const original = value(currentTable(), target).text;
+      expect(snapshot().file.dirty).toBe(source === "restored dirty");
+      await open(target);
+      expect(snapshot().file.dirty).toBe(true);
+      await act(async () => { editor().dispatchEvent(new KeyboardEvent("keydown", {
+        key: "Escape", bubbles: true, cancelable: true
+      })); });
+      expect(editor()).toBeNull();
+      expect(value(currentTable(), target).text).toBe(original);
+      expect(snapshot().file.dirty).toBe(source === "restored dirty");
+      expect(native.writeFile).not.toHaveBeenCalled();
+    });
+    it.each(["svg", "png"] as const)("Copy As %s includes the open draft and leaves editing/history intact", async format => {
+      const original = value(currentTable(), target).text;
+      await open(target, "Unsaved draft for copying");
+      const textarea = editor(); textarea.setSelectionRange(3, 3);
+      await command(`clipboard.copyAs.${format}`);
+      const svg = format === "svg"
+        ? vi.mocked(writeClipboardTextItems).mock.calls.at(-1)![0].find(item => item.type === "image/svg+xml")!.text
+        : vi.mocked(rasterizeSvgNative).mock.calls.at(-1)![0];
+      expect(svg).toContain("Unsaved draft for copying");
+      if (format === "png") expect(writeClipboardImage).toHaveBeenCalledWith(new Uint8Array([1, 2, 3]));
+      expect(editor()).toBe(textarea); expect(document.activeElement).toBe(textarea);
+      expect([textarea.selectionStart, textarea.selectionEnd]).toEqual([3, 3]);
+      expect(value(currentTable(), target).text).toBe(original);
+      expect(snapshot().file.dirty).toBe(true);
+      await act(async () => { textarea.dispatchEvent(new KeyboardEvent("keydown", {
+        key: "Escape", bubbles: true, cancelable: true
+      })); });
+      expect(snapshot().file.dirty).toBe(false);
+      await command("edit.undo");
+      expect(container.querySelector('[role="status"]')?.textContent).toContain("Nothing to undo");
+    });
+    it.each(["native command", "pointer"] as const)("aborts a tab switch via %s when the draft exceeds the table limit", async route => {
+      const source = drawing();
+      const table = source.pages[0].objects[0] as TableObject;
+      table.columns = table.columns.slice(0, 2).map(column => ({ ...column, width: { mode: "fixed", px: 200 }, formula: "off" }));
+      table.rows = Array.from({ length: 100 }, (_, index) => ({ id: `row-${index}`,
+        cells: [{ text: "x".repeat(1000), spans: [] }, { text: "y".repeat(1000), spans: [] }] }));
+      const noteLength = table.caption!.text.length + table.footnotes.reduce((total, note) => total + note.text.length, 0);
+      table.rows.at(-1)!.cells[1].text = "y".repeat(1000 - noteLength);
+      await remount(source);
+      await addOtherTab();
+      const original = value(currentTable(), target).text;
+      await open(target, original + "z");
+      const textarea = editor();
+      const firstTab = container.querySelectorAll<HTMLElement>('[role="tab"]')[0];
+      if (route === "native command") await command("document.nextTab");
+      else await click(container.querySelectorAll<HTMLElement>('[role="tab"]')[1]);
+      expect(firstTab.getAttribute("aria-selected")).toBe("true");
+      expect(editor()).toBe(textarea);
+      expect(textarea.value).toBe(original + "z");
+      expect(value(currentTable(), target).text).toBe(original);
+      expect(container.querySelector('[role="status"]')?.textContent)
+        .toBe("maxTableCharacters is 200000; actual value is 200001");
+      // Correcting the input allows the same navigation to complete, with the text retained.
+      await type(original.slice(0, -1) + "z");
+      await command("document.nextTab");
+      expect(editor()).toBeNull();
+      await command("document.previousTab");
+      expect(value(currentTable(), target).text).toBe(original.slice(0, -1) + "z");
+    });
     it("marks a saved draft changed after Escape and prompts on quit", async () => {
       const original = value(currentTable(), target).text;
       await open(target);
