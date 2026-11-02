@@ -1716,7 +1716,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
 // CSS border and live-preview inset are driven by this screen-pixel width.
 const TEXT_OBJECT_EDITOR_BORDER_PX = 1;
 
-const CURRENT_BUILD_STAMP = "11.01.19.55-codex";
+const CURRENT_BUILD_STAMP = "11.02.07.21-codex";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
