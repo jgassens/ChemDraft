@@ -8,6 +8,7 @@ This repository intentionally does not include full chemistry drawing beyond the
 
 ## Current Status
 
+- Tools offers selected-structure searches in PubChem and Reaxys through your browser, with per-site first-use consent and an Online structure search preference.
 - `apps/desktop` contains a Tauri v2, Vite, React, and TypeScript desktop shell with native floating toolset windows for desktop builds and command-backed File > Page Setup controls.
 - Packaged macOS builds use Sparkle 2 to check for signed app updates automatically and expose File > Check for Updates…; installed plugins remain in Application Support across app replacement.
 - Phase 7 has started with command-backed active drawing tools, keyboard shortcut routing, a minimal document-backed native single-bond insertion path, selected carbon-chain extension through native atom/bond payloads, and a lazy Ketcher host for active selected-molecule editing.

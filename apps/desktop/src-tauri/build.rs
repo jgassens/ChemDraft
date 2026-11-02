@@ -18,6 +18,8 @@ fn main() {
             "assistant_mcp_respond",
             "assistant_mcp_status",
             "diagnose_download_host",
+            "open_structure_search",
+            "set_structure_search_enabled",
             "external_tool_status",
             "external_tool_install",
             "external_tool_cancel_install",

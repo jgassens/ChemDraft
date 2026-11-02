@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { loadStructureSearchEnabled, saveStructureSearchEnabled } from "./structureSearchSettings";
 import { loadStartWithFreshDocument, saveStartWithFreshDocument } from "./startupSettings";
 import { loadExportPreviewEnabled, saveExportPreviewEnabled } from "./exportPreviewSettings";
 import { loadAutomaticPluginUpdates, saveAutomaticPluginUpdates, broadcastPluginUpdateSettings } from "./pluginUpdateSettings";
@@ -97,6 +98,7 @@ function PreferenceRadioGroup<T extends string>({ legend, hint, name, options, v
 }
 
 export function PreferencesWindow() {
+  const [structureSearchEnabled, setStructureSearchEnabled] = useState(loadStructureSearchEnabled);
   const [startFresh, setStartFresh] = useState(loadStartWithFreshDocument);
   const [compoundLayouts, setCompoundLayouts] = useState(() => loadCompoundLayoutSettings());
   const [exportPreview, setExportPreview] = useState(loadExportPreviewEnabled);
@@ -142,6 +144,19 @@ export function PreferencesWindow() {
       <header className="preferences-header">
         <h1>Preferences</h1>
       </header>
+
+      <section className="preferences-section">
+        <h2>Online search</h2>
+        <label className="preferences-radio">
+          <input type="checkbox" checked={structureSearchEnabled} onChange={event => {
+            const enabled = event.currentTarget.checked;
+            setStructureSearchEnabled(enabled);
+            void saveStructureSearchEnabled(enabled).catch(error => console.error("Could not broadcast online structure search preference:", error));
+          }} />
+          <span className="preferences-radio-body"><span>Online structure search</span>
+            <small>Search selected structures in PubChem or Reaxys using your browser</small></span>
+        </label>
+      </section>
 
       <section className="preferences-section" aria-labelledby="compound-layout-tools">
         <h2 id="compound-layout-tools">Compound layout tools</h2>

@@ -7,6 +7,18 @@ port's own hands-on pass.
 
 Speed runs on both platforms: follow the [timing probe protocol](architecture/perf-probe.md), including the bridge-off no-log check.
 
+Online structure search (macOS and Windows): with nothing selected, both Tools searches are disabled;
+select text only and confirm they stay disabled. Select a molecule, a group containing molecules,
+and an atom/bond fragment in turn. Search PubChem and Search Reaxys opens the system browser with
+only the selected chemistry. Each site first asks Continue/Cancel with the browser-history notice;
+Cancel opens nothing and asks again, while Continue is remembered across app restarts per site.
+Repeat commands rapidly: at most one browser tab opens per second across both sites. Disable
+Preferences > Online structure search: both menu entries disappear immediately and direct command
+invocation refuses, including while a consent box is open. Re-enable, restart, and verify persistence.
+Oversized links show “This structure is too large for a search link. Select a smaller part.”
+Check charged, isotopic and stereochemical queries in both destinations; Reaxys needs the user's
+own access and its browser session may retain an earlier query, so verify the loaded structure.
+
 Manual stress must cover tab initialization, user tab persistence, mixed states, multi-molecule
 scaling, sparse override precedence, terminal carbon labels, hidden implicit hydrogens, explicit
 hydrogens, fonts, save/reopen, undo/redo, Spin 3D, atom-label editor placement, SVG export, and ring
