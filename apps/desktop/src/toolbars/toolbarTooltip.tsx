@@ -40,7 +40,9 @@ export function usePaletteTooltipState() {
   }, [clearPendingTooltip]);
 
   const clearTooltip = useCallback((tooltipId?: string) => {
-    clearPendingTooltip();
+    if (tooltipId === undefined || pendingTooltipIdRef.current === tooltipId) {
+      clearPendingTooltip();
+    }
     setVisibleTooltipId((current) => (
       tooltipId && current !== tooltipId ? current : undefined
     ));
