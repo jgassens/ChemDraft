@@ -29,6 +29,28 @@ failure reports an error in the document status; it never creates an in-page des
 - `src-tauri/capabilities/dialog-host.json` / `dialog-owner.json`: host receive/send only versus
   main-only create/publish/close. Existing filesystem/dialog/capture/engine grants are unchanged.
 
+## Preferences frame lifecycle
+
+Preferences retains the `preferences` label, its existing renderer, and its settings permissions.
+Its native frame is registered with this host: `place_window`, `sample_position`, the bounded
+position worker, and close flushing share `dialog-positions.json` under the `preferences` key.
+First open centres over the document. Subsequent opens restore the saved monitor-relative position
+at the destination display scale. Finite saved frames on an existing monitor are clamped to its
+work area, including off-screen frames; a missing monitor uses the existing centring fallback.
+Minimized, maximized, fullscreen and suspended frames are excluded. Preferences excludes the
+position applied by placement and OS adjustments within two physical pixels per axis (or one
+logical pixel rounded up at the window's scale, whichever is larger). The placement marker remains
+until a move exceeds that tolerance or the window closes; larger user moves are accepted immediately.
+Retained-window reveal preserves its position. Windows uses document ownership without a taskbar
+entry; macOS uses the host's floating level and activation policy. Owner dismissal closes it too.
+Preferences does not become a protocol draft window or receive dialog transport permissions.
+
+Native regression tests cover first-open centring, per-kind persistence/reopen at a different scale,
+OS rounding and immediate user moves after placement, DPI-scaled tolerance, off-screen clamping
+and missing-monitor fallback. They require
+native execution on both platforms; follow the Preferences checks in the standing manual stress
+checklist for real-window verification.
+
 
 ## Local engine installation
 

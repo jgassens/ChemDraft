@@ -859,6 +859,18 @@ with a preview/flyout open: it closes, controls disappear and direct commands re
 
 ## Native Custom Page Size (macOS and Windows)
 
+- Preferences frame regression: open Preferences with no saved position; it must centre over the
+  document, including when the document is on a secondary monitor. Move Preferences outside the
+  document bounds, close with its title bar, and reopen: restore its position. Repeat using the
+  Preferences command to hide/reopen it, after an app restart, and after a drag begun within 500 ms
+  of opening followed by immediate close. That immediate user move must be restored on reopen.
+  Test both directions between 100% and 150%/200% displays on Windows and different display scales
+  on macOS, including negative monitor coordinates and work-area edges. Disconnect the saved
+  monitor and reopen: centre over the document with the title bar reachable. Repeat after owner
+  minimize/restore and native-message/file-picker suspension; transient frames must never replace
+  the saved user position. Verify no Windows taskbar entry or utility-window menu appears.
+- With a saved Preferences or Page Size frame fully off-screen on a still-connected monitor, reopen
+  each dialog: clamp to that monitor's work-area edge rather than centring over the document.
 - From this worktree's labelled build, open Custom Page Size. Verify the first opening is centred
   over the document with a movable native title bar, and the title/form name the originating drawing.
   On Windows verify no separate taskbar entry; on macOS verify a floating-level focusable document child,
@@ -1097,10 +1109,20 @@ visible, and clicking away restores the updated drawing. Check Select/Text tool 
   Atom label font family/face, background mode, alignment, and placement. Every option
   must have readable dark text on an opaque light background with the OS in both light and dark
   appearance. Confirm the existing macOS light appearance is unchanged.
-- Escape routing from the document/palette is unchanged by this fix: check its existing tool/edit
-  cancellation behavior with no popover open. Check Escape inside a focused E/Z popover or a leased
-  colour field still dismisses it. Mouse-opened non-key popovers still use click-away dismissal;
-  routing the document/palette Escape to them remains a separate task.
+- With a drawing tool active and objects selected, mouse-open a toolbar flyout, Art colour picker,
+  or E/Z popover while focus stays in the document. Escape must dismiss it without changing the
+  tool, selection or drawing; a second Escape performs the existing canvas action. Repeat from a
+  palette and with the inline browser fallback. Check the submenu owner's expanded/controls state
+  and keyboard reopening. Choose a flyout command, then Escape: no stale open state may consume it.
+  Also switch applications with a flyout open, return after the OS hides it, and press Escape:
+  the first Escape must perform the normal canvas action. Close and quickly reopen a flyout:
+  a delayed close for the earlier opening must leave the new one dismissible with Escape.
+- Keep a text or atom-label editor open, mouse-open a flyout, and press Escape in the editor:
+  the editor must retain its cancel behavior. Repeat with a native dialog focused and with a leased
+  colour field or E/Z popover focused: their existing Escape behavior must remain local.
+  With delayed native visibility IPC, press Escape from the canvas and open an editor before the
+  response arrives: that same Escape must cancel the editor. Repeat with a newly opened dialog;
+  the delayed Escape must reach the dialog, with no canvas action.
 
 ## Formatting several text boxes
 
