@@ -121,8 +121,88 @@ Interaction, selection and arrangement use these visual bounds. Layout, SVG and 
 by immutable table object identity; SVG roots also key on layer index and share their cell fragments.
 Replace the table object when editing it. `tableCellElementId` supplies the shared canvas/SVG cell ID.
 
-`textMetrics.generated.ts` contains only derived Helvetica regular/bold and Symbol Greek/arrow
+`textMetrics.generated.ts` contains only derived Helvetica regular/bold, Times regular/bold/italic/bold italic, Courier and Symbol Greek/arrow
 advance widths. Regenerate it with
 `node packages/layout-engine/scripts/generate-text-metrics.mjs <Adobe Core 14 AFM directory>`
 from the repository root. The generator verifies the oblique widths, retains Adobe's notices and
 permission paragraph verbatim, and records the modification. Do not add the source AFM files.
+
+
+Native text sizing uses `measureNativeTextSpanLineWidth`: the larger of the previous whole-line
+character-factor estimate and the corrected Core14 advance width, with per-span bold/italic,
+font sizes, letter spacing and the renderer's parent-size script scale. Letter spacing is counted
+after **every character, including the last** (also across spans); the last character contributes
+`max(0, spacing)` so negative tracking cannot narrow the previous metric estimate. Both automatic box sizing in document-workflow-core and the transient editor frame use
+this result. Stored document frames are never remeasured merely by loading, normalizing or reopening.
+
+### Font advance ceilings
+
+The shipped commands in `apps/desktop/src/commands.ts` offer Arial/Helvetica/sans-serif,
+Times New Roman/Times/serif, Courier New/Courier/monospace and Georgia/serif. The fallback menus in
+`systemFonts.ts` and `ToolPalette.tsx` offer the same aliases; the native menu additionally lists
+arbitrary installed families. Core14 is only an approximation for these real fonts: even Arial's
+C is 1479/2048 = **0.72216796875 em**, slightly above Helvetica AFM's 0.722 em.
+
+`nativeFontCeilings.generated.ts` is a **per-glyph conservative mapping**, not a scale inferred
+from a sample word. For every covered code point and each of regular/bold/italic/bold italic,
+take the maximum of its Core14 advance and the real family's `hmtx` advance divided by `head.unitsPerEm`.
+Arial/Helvetica, Times New Roman/Times and Courier New/Courier each also take the maximum of the
+two real families. When a real advance exceeds Core14, round it **up to the next 0.001 em**.
+This covers punctuation, Latin accents, Greek and arrows as well as letters. For example, a
+scale based only on Georgia H/Times H = 0.81494140625/0.722 ≈ 1.129 misses Georgia's `|`,
+which is 0.375 em versus Times AFM's 0.2 em (ratio **1.875**).
+
+| Families | Core14 base | Real source files, under `/System/Library/Fonts/` | Example real → reserved em |
+| --- | --- | --- | --- |
+| Arial, Helvetica | Helvetica regular/bold | `Supplemental/Arial{, Bold, Italic, Bold Italic}.ttf` (head revisions 5.01/5.00); named Helvetica regular/bold/oblique/bold oblique faces of `Helvetica.ttc` | C 0.72216796875 → 0.723; bold A 0.72216796875 → 0.723 |
+| Times New Roman, Times | Corresponding Times face | `Supplemental/Times New Roman{, Bold, Italic, Bold Italic}.ttf` (5.01/5.00); named Times Roman/bold/italic/bold italic faces of `Times.ttc` | macron 0.5 → 0.5, versus AFM 0.333 |
+| Courier New, Courier | Courier | `Supplemental/Courier New{, Bold, Italic, Bold Italic}.ttf` (5.00); named Courier regular/bold/oblique/bold oblique faces of `Courier.ttc` | Latin cell 0.60009765625 → 0.601; individual Greek advances can be wider |
+| Georgia | Corresponding Times face plus Georgia ceiling | `Supplemental/Georgia{, Bold, Italic, Bold Italic}.ttf` (5.00) | H regular/italic 1669/2048 = 0.81494140625 → 0.815; bold/bold italic 1870/2048 = 0.9130859375 → 0.914; bold macron 0.703125 → 0.704 |
+| Other installed families, including Helvetica Neue, Menlo, Monaco, Consolas; all generic CSS families | Maximum of the four corrected family groups, **per character and style** | The same sources above; no assumed generic face | Regular C .723, i .601, H .815, W .976 em; bold W 1.127 em |
+| Otherwise uncovered code points | Chemistry table below, then **1.0 em** | Same offline sources when a glyph exists; 1 em is a sizing policy, not a measured bound | Test-tube emoji 1 em |
+
+Sources were audited on the macOS authoring host on 2026-11-01. These are Microsoft-supplied font
+metrics for the named Windows families plus Apple's bundled Helvetica/Times/Courier; Windows font
+versions and real WebView2 layout still need hands-on verification. The OpenType definitions of
+[`hmtx`](https://learn.microsoft.com/en-us/typography/opentype/spec/hmtx),
+[`head`](https://learn.microsoft.com/en-us/typography/opentype/spec/head) and
+[`cmap`](https://learn.microsoft.com/en-us/typography/opentype/spec/cmap) specify the source fields;
+[`name`](https://learn.microsoft.com/en-us/typography/opentype/spec/name) defines face identification.
+Reproduce the covered-glyph mappings with
+`node packages/layout-engine/scripts/generate-native-font-ceilings.mjs /System/Library/Fonts`.
+The generator selects every TTF/TTC face by OpenType PostScript name (name ID 6), rejecting missing
+or duplicate matches; it never assumes collection order. Corrections cover the union of **every**
+tabulated Core14 face's characters, not just Helvetica's character set.
+The generator reads files **offline only**; application and headless callers import numbers and
+never read host font files. No font files/outlines are redistributed. The Core14 source and notice
+remain in `textMetrics.generated.ts`.
+
+An unknown first family in a CSS stack is never skipped: it may actually be installed. Its per-character
+maximum is at least the corrected Helvetica width without a flat reservation for ordinary text.
+Generic `sans-serif`, `serif`, `monospace` and other generic families follow this rule because their
+resolved face is not fixed. This is not an absolute bound for arbitrary installed fonts or shaping
+(a custom font can have any advance). This deterministic measurement is
+not a shaping engine. Missing-glyph substitution and browser rasterization require real-app checks.
+
+`chemistryAdvanceCeilings` records a small fallback table in the same generated file, with separate
+regular/bold/italic/bold italic maps. For each character it takes the largest available `hmtx` advance
+across Arial, Helvetica, Times New Roman, Times, Courier New, Courier and Georgia in that style,
+plus the existing Core14 advance where present, rounded upward to 0.001 em. It covers
+`→ ← ↔ ≡ ≈ ± × · ′ ″ ° ⁺ ⁻ ⁰ ¹ ² ³ ⁴ ⁵ ⁶ ⁷ ⁸ ⁹ ₀ ₁ ₂ ₃ ₄ ₅ ₆ ₇ ₈ ₉`,
+Greek α–ω (including final sigma) and Α–Ω, `µ Å ‰`. For example, regular ≈ reserves .644 em,
+≡/prime/superscript charges/subscript digits .601 em, and ‰ 1.206 em (bold italic 1.317 em).
+The source files contain **no glyph for ⇌ or ⇄ in any of these faces**: the generator reports that
+absence and those two characters explicitly use the **1.0 em uncovered-character policy**; no
+measured advance is claimed for them. A named face uses its own covered advances first, then this
+chemistry table, then 1 em. The unknown-family maximum uses the same fallback for uncovered characters.
+These numeric tables are shared by desktop, CLI and MCP sizing, with no load/reopen remeasurement.
+
+### Editor allowance and alignment
+
+Automatic editor chrome uses `max(stored width × scale, (measured content + 0.5) × scale + 4)` CSS px.
+The 0.5 page-unit margin covers small metric/layout differences and scales with the text;
+the 4 CSS px cover two 1 px borders, one caret pixel and one pixel for browser layout rounding.
+Fixed-width/fixed-size boxes retain their authored editor width. Growing chrome preserves the
+left/centre/right alignment anchor: move its left edge by 0/half/all of the growth and move the
+rotation origin inside the frame by the same amount. The original rotation pivot therefore stays
+fixed in page space, including on rotated old boxes. The document frame is untouched.

@@ -151,7 +151,21 @@ vi.mock("@tauri-apps/api/core", async (original) => ({
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: native.picker, save: native.savePicker }));
 vi.mock("@tauri-apps/plugin-fs", async (original) => ({
-  ...await original<typeof import("@tauri-apps/plugin-fs")>(), readFile: native.readFile, writeTextFile: native.writeFile
+  ...await original<typeof import("@tauri-apps/plugin-fs")>(), readFile: native.readFile, writeTextFile: native.writeFile,
+  stat: async () => ({ size: 0 }),
+  open: async (path: string) => {
+    const bytes = await native.readFile(path);
+    let offset = 0;
+    return {
+      read: async (buffer: Uint8Array) => {
+        const count = Math.min(buffer.length, bytes.length - offset);
+        buffer.set(bytes.subarray(offset, offset + count));
+        offset += count;
+        return count;
+      },
+      close: async () => {}
+    };
+  }
 }));
 vi.mock("./plugins/createPluginRuntime", async (original) => {
   const actual = await original<typeof import("./plugins/createPluginRuntime")>();
@@ -1046,7 +1060,8 @@ describe("documents in one window", () => {
     native.desktop = false;
     async function drop(name: string) {
       const event = new Event("drop", { bubbles: true, cancelable: true });
-      Object.defineProperty(event, "dataTransfer", { value: { files: [{ name, text: async () => fileContents(name) }] } });
+      const bytes = new TextEncoder().encode(fileContents(name));
+      Object.defineProperty(event, "dataTransfer", { value: { files: [{ name, size: bytes.length, arrayBuffer: async () => bytes.buffer }] } });
       await act(async () => container.querySelector('[aria-label="Document workspace"]')!.dispatchEvent(event));
     }
     await drop("First.chemdraft");
