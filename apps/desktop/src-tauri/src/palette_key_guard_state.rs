@@ -148,13 +148,29 @@ pub(crate) fn blocks_menu(pending: bool, document_target: bool, command: &str) -
         )
 }
 
+/// Panel IPC and native document keys use the same pending-click policy.
+pub(crate) fn blocks_forwarded_shortcut(
+    pending: bool,
+    key: &str,
+    meta: bool,
+    ctrl: bool,
+    alt: bool,
+) -> bool {
+    pending && editing_key(key, meta, ctrl, alt)
+}
+
 pub(crate) fn keeps_palette_focus(label: &str, held: bool) -> bool {
     label.starts_with("toolset-") && held
 }
 
 /// AppKit supplies charactersIgnoringModifiers, including private-use function keys.
-#[cfg(any(target_os = "macos", test))]
 pub(super) fn editing_key(key: &str, command: bool, control: bool, alt: bool) -> bool {
+    // Panel IPC uses browser key names; normalize them to AppKit equivalents.
+    let key = match key {
+        "Backspace" => "\u{8}",
+        "Delete" => "\u{f728}",
+        _ => key,
+    };
     if matches!(key, "\u{8}" | "\u{7f}" | "\u{f728}") {
         return true;
     }
@@ -347,6 +363,39 @@ mod tests {
         }
         for key in ["\u{1b}", "\t", "\r", "\u{f700}"] {
             assert!(!editing_key(key, false, false, false));
+        }
+    }
+}
+
+#[cfg(test)]
+mod forwarded_shortcut_tests {
+    use super::*;
+    #[test]
+    fn panel_forwarding_respects_pending_palette_clicks() {
+        for (key, meta, ctrl, alt) in [
+            ("3", false, false, false),
+            ("N", false, false, false),
+            ("Delete", false, false, false),
+            ("z", true, false, false),
+            ("v", false, true, false),
+        ] {
+            assert!(
+                blocks_forwarded_shortcut(true, key, meta, ctrl, alt),
+                "{key}"
+            );
+            assert!(!blocks_forwarded_shortcut(false, key, meta, ctrl, alt));
+        }
+        for (key, meta, ctrl, alt) in [
+            ("s", true, false, false),
+            ("r", false, true, false),
+            ("c", true, false, false),
+            ("ArrowDown", false, false, false),
+            ("Escape", false, false, false),
+        ] {
+            assert!(
+                !blocks_forwarded_shortcut(true, key, meta, ctrl, alt),
+                "{key}"
+            );
         }
     }
 }

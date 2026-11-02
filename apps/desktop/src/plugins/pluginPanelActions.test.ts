@@ -1,7 +1,11 @@
 import type { PluginPanelReport } from "@chemdraft/plugin-api";
 import { describe, expect, it } from "vitest";
 
-import { resolvePluginPanelAction } from "./pluginPanelActions";
+import { isAnalysisWindowActionAuthorized, resolvePluginPanelAction } from "./pluginPanelActions";
+import {
+  ANALYSIS_WINDOW_OWNER_ID, MOLECULAR_INSPECTOR_WINDOW_ID, PATCH_REVIEW_WINDOW_ID,
+  pluginPanelWindowLabel, type AnalysisWindowAction
+} from "./panelBridge";
 
 const panelId = "panel.example.chat";
 const commands = new Set(["plugin.example.send", "plugin.example.changeProvider", "plugin.example.stop"]);
@@ -64,5 +68,56 @@ describe("resolvePluginPanelAction", () => {
     const disabled = { ...report, sections: [{ ...report.sections[0]!, disabled: true }] } as PluginPanelReport;
     expect(resolvePluginPanelAction(disabled, { panelId, sectionId: "composer", control: "prompt", text: "draw" }, commands))
       .toMatchObject({ ok: false });
+  });
+});
+
+describe("analysis window action ownership", () => {
+  type Owner = NonNullable<Parameters<typeof isAnalysisWindowActionAuthorized>[2]>;
+  const inspector: Owner = {
+    pluginId: ANALYSIS_WINDOW_OWNER_ID, panelId: MOLECULAR_INSPECTOR_WINDOW_ID,
+    content: { kind: "molecularInspector", busy: false, stale: false }
+  };
+  const proposals: Owner = {
+    pluginId: ANALYSIS_WINDOW_OWNER_ID, panelId: PATCH_REVIEW_WINDOW_ID,
+    content: { kind: "patchReview", proposals: [{ id: "proposal-1", pluginId: "org.example", pluginName: "Example", reason: "Insert", warnings: [] }] }
+  };
+  const figure: Owner = {
+    pluginId: "org.example", panelId: "panel.example.result",
+    content: { kind: "report", report: { title: "Spectrum", sections: [{
+      kind: "linkedFigure", spectrum: { nucleus: "13C", domain: { min: 0, max: 200 }, peaks: [] }
+    }] } }
+  };
+  const cases: { action: AnalysisWindowAction; owner: Owner }[] = [
+    { action: { kind: "close", windowId: MOLECULAR_INSPECTOR_WINDOW_ID }, owner: inspector },
+    { action: { kind: "copyMolecularInspector", text: "C6H6" }, owner: inspector },
+    { action: { kind: "changeMolecularInterpretation", interpretationId: "drawn" }, owner: inspector },
+    { action: { kind: "acceptPluginProposal", proposalId: "proposal-1" }, owner: proposals },
+    { action: { kind: "rejectPluginProposal", proposalId: "proposal-1" }, owner: proposals },
+    { action: { kind: "copySpectrum", requestId: "copy" }, owner: figure },
+    { action: { kind: "saveBinaryFile", requestId: "png" }, owner: figure },
+    { action: { kind: "saveTextFile", requestId: "svg" }, owner: figure }
+  ];
+
+  it.each(cases)("accepts $action.kind only from its rightful window", ({ action, owner }) => {
+    expect(isAnalysisWindowActionAuthorized(action, pluginPanelWindowLabel(owner), owner)).toBe(true);
+    const other = { ...owner, panelId: `${owner.panelId}.other` };
+    expect(isAnalysisWindowActionAuthorized(action, pluginPanelWindowLabel(other), owner)).toBe(false);
+    expect(isAnalysisWindowActionAuthorized(action, pluginPanelWindowLabel(owner), undefined)).toBe(false);
+  });
+
+  it.each(cases)("refuses $action.kind when the source has unrelated content", ({ action, owner }) => {
+    const unrelated: Owner = { ...owner, content: { kind: "pluginDiagnostics", plugins: [], diagnostics: [] } };
+    const changed = action.kind === "close" ? { ...action, windowId: "another-window" } : action;
+    expect(isAnalysisWindowActionAuthorized(changed, pluginPanelWindowLabel(unrelated), unrelated)).toBe(false);
+  });
+
+  it("keeps chemical-name report copies and binds proposal ids to the displayed queue", () => {
+    const name: Owner = { ...figure, content: { kind: "report", report: { title: "Name", sections: [] } } };
+    expect(isAnalysisWindowActionAuthorized({ kind: "copyMolecularInspector", text: "ethanol" }, pluginPanelWindowLabel(name), name)).toBe(true);
+    for (const kind of ["acceptPluginProposal", "rejectPluginProposal"] as const) {
+      expect(isAnalysisWindowActionAuthorized({ kind, proposalId: "unseen" }, pluginPanelWindowLabel(proposals), proposals)).toBe(false);
+      const impostor = { ...proposals, pluginId: "org.example" };
+      expect(isAnalysisWindowActionAuthorized({ kind, proposalId: "proposal-1" }, pluginPanelWindowLabel(impostor), impostor)).toBe(false);
+    }
   });
 });

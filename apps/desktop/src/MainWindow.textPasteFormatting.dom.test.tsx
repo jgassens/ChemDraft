@@ -21,6 +21,7 @@ import { depictSmilesForPaste } from "./smilesListPaste";
 import { installDomRdkitLoader } from "./testSupport/rdkitIdentity";
 import { inspectStructureOffThread } from "./depiction2d/identityClient";
 import { DOM_COMMAND_EVENT } from "./window-manager";
+import { picturePngBase64 } from "./testSupport/imageFixture";
 
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("./depiction2d/identityClient", () => ({ inspectStructureOffThread: vi.fn() }));
@@ -100,6 +101,7 @@ describe.each(["macos", "windows"] as const)("text paste formatting (%s)", platf
   });
 
   async function mount(payload: ClipboardReadPayload | string | Error = nativeClipboard("")) {
+    const expectNativeToolsetProbe = runtime.desktop;
     vi.mocked(invoke).mockImplementation(async command => {
       if (command === "read_clipboard_payload") {
         if (typeof payload === "string" || payload instanceof Error) throw payload;
@@ -119,11 +121,127 @@ describe.each(["macos", "windows"] as const)("text paste formatting (%s)", platf
       nativePalette: true,
       shortcutPlatform: platform
     })));
+    if (expectNativeToolsetProbe) {
+      // The desktop probe falls back in jsdom and can otherwise overwrite a later paste status.
+      await vi.waitFor(() => {
+        expect(container.querySelector('[role="status"]')?.textContent, "Native toolset startup probe did not settle")
+          .toContain("Native toolset windows unavailable; using in-window toolbars");
+      }, { timeout: 5_000 });
+    }
   }
 
   const objects = () => window.__CHEMDRAFT_AGENT__!.snapshot().document.pages[0]!.objects;
   const status = () => container.querySelector('[role="status"]')?.textContent;
   const nativeReads = () => vi.mocked(invoke).mock.calls.filter(([command]) => command === "read_clipboard_payload");
+
+  const tooLargeMessage = "Couldn't paste: clipboard flavor \"text/plain\" is too large (400.0 MB; the limit is 256 MB).";
+
+  it.each([
+    { reason: "flavor" as const, byteLength: 400 * 1024 * 1024, totalByteLength: undefined, message: tooLargeMessage },
+    { reason: "total" as const, byteLength: 1.25 * 1024 * 1024, totalByteLength: 1024.25 * 1024 * 1024,
+      message: "Couldn't paste: the clipboard contents are too large (1024.3 MB in total; the limit is 1024 MB)." }
+  ])("shows the $reason refusal as status when the only usable flavor is refused", async ({ reason, byteLength, totalByteLength, message }) => {
+    await mount({ types: ["text/plain"], textItems: [], skippedItems: [
+      { type: "text/plain", byteLength, limitBytes: (reason === "total" ? 1024 : 256) * 1024 * 1024, reason, totalByteLength }
+    ] });
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "clipboard.paste" } }));
+    });
+    expect(status()).toBe(message);
+    expect(objects()).toHaveLength(0);
+    await paste({ "text/plain": "" });
+    expect(status()).toBe(message);
+    expect(objects()).toHaveLength(0);
+  });
+
+  it("shows the 256 MB own-cap refusal for a 400 MiB DOM plain-text paste", async () => {
+    await mount();
+    runtime.desktop = false;
+    const text = { length: 400 * 1024 * 1024, trim: () => { throw new Error("must not parse"); } } as unknown as string;
+    await paste({ "text/plain": text });
+    expect(status()).toBe(tooLargeMessage);
+    expect(objects()).toHaveLength(0);
+  });
+
+  it("guards text before the private-selection parser on native and web paste", async () => {
+    const text = { length: 400 * 1024 * 1024, trim: () => { throw new Error("must not parse"); } } as unknown as string;
+    await mount({ types: [CHEMDRAFT_SELECTION_CLIPBOARD_TYPE],
+      textItems: [{ type: CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, text }] });
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "clipboard.paste" } }));
+    });
+    expect(status()).toBe(tooLargeMessage.replace("text/plain", CHEMDRAFT_SELECTION_CLIPBOARD_TYPE));
+    expect(objects()).toHaveLength(0);
+    runtime.desktop = false;
+    await paste({ [CHEMDRAFT_SELECTION_CLIPBOARD_TYPE]: text });
+    expect(status()).toBe(tooLargeMessage.replace("text/plain", CHEMDRAFT_SELECTION_CLIPBOARD_TYPE));
+    expect(objects()).toHaveLength(0);
+  });
+
+  it("refuses oversized CDXML instead of pasting lower-fidelity prose", async () => {
+    await mount({ ...nativeClipboard("ordinary prose"), skippedItems: [
+      { type: "chemical/x-cdxml", byteLength: 400 * 1024 * 1024, limitBytes: 256 * 1024 * 1024 }
+    ] });
+    await paste({ "text/plain": "ordinary prose" });
+    expect(status()).toBe(tooLargeMessage.replace("text/plain", "chemical/x-cdxml"));
+    expect(objects()).toHaveLength(0);
+  });
+
+  it.each(["image/svg+xml", "public.svg-image", "text/plain"].flatMap(type => [
+    [type, "declared-namespace", '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><path d="M0 0L40 20"/></svg>'],
+    [type, "missing-namespace", '<svg><path d="M0 0L1 1"/></svg>']
+  ]))("pastes SVG from %s (%s) as a picture on menu and DOM paste", async (type, _, svg) => {
+    await mount({ types: [type], textItems: [{ type, text: svg }] });
+    const expectPictures = (count: number) => {
+      expect(status()).toBe("Pasted picture");
+      expect(objects()).toHaveLength(count);
+      for (const object of objects()) {
+        expect(object).toMatchObject({ type: "graphic", graphicKind: "image", data: { image: { mimeType: "image/svg+xml" } } });
+      }
+    };
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "clipboard.paste" } }));
+    });
+    expectPictures(1);
+    expect((await paste({ [type]: svg })).defaultPrevented).toBe(true);
+    expectPictures(2);
+    runtime.desktop = false;
+    expect((await paste({ [type]: svg })).defaultPrevented).toBe(true);
+    expectPictures(3);
+  });
+
+  it.each([
+    ["malformed", "<svg><g></svg>", "Couldn't paste the SVG: it isn't well-formed XML: line 1, column 14: unexpected close tag."],
+    ["sanitizer-refused", '<svg><script>alert(1)</script></svg>', "Couldn't paste the SVG: it contains a <script> element that isn't allowed."],
+    ["wrong-namespace", '<svg xmlns="urn:wrong"><path d="M0 0L1 1"/></svg>', "Couldn't paste the SVG: the root must be <svg> in the SVG namespace (http://www.w3.org/2000/svg)."]
+  ])("refuses %s SVG text on menu and DOM paste without inserting anything", async (_, svg, expected) => {
+    await mount(nativeClipboard(svg));
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "clipboard.paste" } }));
+    });
+    expect(status()).toBe(expected);
+    expect(objects()).toHaveLength(0);
+    expect((await paste({ "text/plain": svg })).defaultPrevented).toBe(true);
+    expect(status()).toBe(expected);
+    expect(objects()).toHaveLength(0);
+    runtime.desktop = false;
+    expect((await paste({ "text/plain": svg })).defaultPrevented).toBe(true);
+    expect(status()).toBe(expected);
+    expect(objects()).toHaveLength(0);
+  });
+
+  it.each(["image/svg+xml", "public.svg-image"])("recognizes an SVG flavor without text: %s", async type => {
+    await mount({ types: [type], textItems: [] });
+    await paste({ [type]: "" });
+    expect(status()).toBe("Couldn't paste the SVG: no readable SVG document was found on the clipboard.");
+    expect(objects()).toHaveLength(0);
+  });
+
+  it("keeps the existing failure for a non-SVG image", async () => {
+    await mount({ types: ["public.png"], textItems: [] });
+    await paste({ "public.png": "" });
+    expect(status()).toBe("The clipboard contains vector artwork only; no editable chemistry payload was found.");
+  });
 
   async function paste(items: Record<string, string>, target: EventTarget = window, prevented = false) {
     const event = new Event("paste", { bubbles: true, cancelable: true });
@@ -261,6 +379,46 @@ describe.each(["macos", "windows"] as const)("text paste formatting (%s)", platf
     expect(nativeReads()).toHaveLength(1);
   });
 
+  it("refuses an oversized private selection beside an in-cap table on menu, native and web paste", async () => {
+    const html = readFileSync("packages/fixtures/clipboard-tables/word-like.html", "utf8");
+    const htmlType = platform === "macos" ? "public.html" : "HTML Format";
+    const selection = { length: 400 * 1024 * 1024, trim: () => { throw new Error("must not parse"); } } as unknown as string;
+    const message = tooLargeMessage.replace("text/plain", CHEMDRAFT_SELECTION_CLIPBOARD_TYPE);
+    await mount({ types: [CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, htmlType],
+      textItems: [{ type: CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, text: selection }, { type: htmlType, text: html }] });
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "clipboard.paste" } }));
+    });
+    expect(status()).toBe(message);
+    expect(objects()).toHaveLength(0);
+    expect((await paste({ "text/html": html })).defaultPrevented).toBe(true);
+    expect(status()).toBe(message);
+    expect(objects()).toHaveLength(0);
+    runtime.desktop = false;
+    expect((await paste({ [CHEMDRAFT_SELECTION_CLIPBOARD_TYPE]: selection, "text/html": html })).defaultPrevented).toBe(true);
+    expect(status()).toBe(message);
+    expect(objects()).toHaveLength(0);
+  });
+
+  it("pastes an in-cap table beside a size-skipped flavor on menu, native and web paste", async () => {
+    const html = readFileSync("packages/fixtures/clipboard-tables/word-like.html", "utf8");
+    const htmlType = platform === "macos" ? "public.html" : "HTML Format";
+    const rtf = { length: 400 * 1024 * 1024, trim: () => { throw new Error("must not parse"); } } as unknown as string;
+    await mount({ types: [htmlType, "text/rtf"], textItems: [{ type: htmlType, text: html }],
+      skippedItems: [{ type: "text/rtf", byteLength: 400 * 1024 * 1024, limitBytes: 256 * 1024 * 1024, reason: "flavor" }] });
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "clipboard.paste" } }));
+    });
+    expect(objects().map(object => object.type)).toEqual(["table"]);
+    expect(status()).toBe("Pasted table");
+    await paste({ "text/html": html });
+    expect(objects().map(object => object.type)).toEqual(["table", "table"]);
+    runtime.desktop = false;
+    await paste({ "text/html": html, "text/rtf": rtf });
+    expect(objects().map(object => object.type)).toEqual(["table", "table", "table"]);
+    expect(status()).toBe("Pasted table");
+  });
+
   it("uses the synchronous DataTransfer snapshot when the native read rejects", async () => {
     await mount(clipboardBusy);
     expect((await paste({ "text/plain": "external text" })).defaultPrevented).toBe(true);
@@ -290,6 +448,8 @@ describe.each(["macos", "windows"] as const)("text paste formatting (%s)", platf
     await act(async () => { window.dispatchEvent(new Event("copy", { bubbles: true, cancelable: true })); });
     expect(status()).toBe("Copied ChemDraft selection");
     expect(objects()).toHaveLength(1);
+    // Keyboard paste reads natively first, as menu paste does; count only the paste under test.
+    vi.mocked(invoke).mockClear();
   }
 
   it.each(["empty", "failed"])("prefers DataTransfer content over the cached selection when the native read is %s", async read => {
@@ -356,11 +516,64 @@ describe.each(["macos", "windows"] as const)("text paste formatting (%s)", platf
     expect(status()).toBe("The clipboard contains CDXML, but CDXML paste parsing is not implemented yet.");
   });
 
-  it.each([CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, "text/plain"])("applies a web-written selection in %s directly without a native read", async type => {
-    await mount(nativeClipboard("different native text"));
+  it.each([CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, "text/plain"])("applies a web-written selection in %s after the native read finds nothing, as menu paste does", async type => {
+    await mount(nativeClipboard(""));
     expect((await paste({ [type]: formattedSelection() })).defaultPrevented).toBe(true);
     expectFormatting();
-    expect(nativeReads()).toHaveLength(0);
+    expect(nativeReads()).toHaveLength(1);
+  });
+
+  it("refuses a private selection beside oversized CDXML on menu, desktop keyboard and web keyboard paste alike", async () => {
+    const cdxmlTooLarge = tooLargeMessage.replace("text/plain", "chemical/x-cdxml");
+    await mount({ ...nativeClipboard("H2O", formattedSelection()), skippedItems: [
+      { type: "chemical/x-cdxml", byteLength: 400 * 1024 * 1024, limitBytes: 256 * 1024 * 1024, reason: "flavor" }
+    ] });
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "clipboard.paste" } }));
+    });
+    expect(status()).toBe(cdxmlTooLarge);
+    expect(objects()).toHaveLength(0);
+    // The DataTransfer exposes a valid selection, but the complete native read is guarded first.
+    expect((await paste({ [CHEMDRAFT_SELECTION_CLIPBOARD_TYPE]: formattedSelection(), "text/plain": "H2O" })).defaultPrevented).toBe(true);
+    expect(nativeReads()).toHaveLength(2);
+    expect(status()).toBe(cdxmlTooLarge);
+    expect(objects()).toHaveLength(0);
+    runtime.desktop = false;
+    const cdxmlText = { length: 400 * 1024 * 1024, trim: () => { throw new Error("must not parse"); } } as unknown as string;
+    expect((await paste({ [CHEMDRAFT_SELECTION_CLIPBOARD_TYPE]: formattedSelection(), "chemical/x-cdxml": cdxmlText }))
+      .defaultPrevented).toBe(true);
+    expect(nativeReads()).toHaveLength(2);
+    expect(status()).toBe(cdxmlTooLarge);
+    expect(objects()).toHaveLength(0);
+  });
+
+  it.each(["menu", "keyboard"] as const)("pastes a Word table carried as HTML + RTF + PNG as a table via %s", async route => {
+    // What the native readers now return for a Word/Excel table: HTML and RTF beside the picture.
+    const html = readFileSync("packages/fixtures/clipboard-tables/word-like.html", "utf8");
+    const [htmlType, rtfType, textType, pngType] = platform === "macos"
+      ? ["public.html", "public.rtf", "public.utf8-plain-text", "public.png"]
+      : ["text/html", "text/rtf", "text/plain", "image/png"];
+    const rtf = "{\\rtf1\\ansi{\\trowd\\cellx1000 Material\\cell\\row}}";
+    await mount({
+      types: [htmlType, rtfType, textType, pngType],
+      textItems: [{ type: htmlType, text: html }, { type: rtfType, text: rtf },
+        { type: textType, text: "Material\tMW (g/mol)\tDensity (g/mL)" }],
+      imageItems: [{ type: "image/png", bytesBase64: picturePngBase64, pixelWidth: 144, pixelHeight: 72 }]
+    });
+    if (route === "menu") {
+      await act(async () => {
+        window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId: "clipboard.paste" } }));
+      });
+    } else {
+      expect((await paste({ "text/plain": "Material\tMW (g/mol)\tDensity (g/mL)" })).defaultPrevented).toBe(true);
+    }
+    expect(nativeReads()).toHaveLength(1);
+    expect(objects().map(object => object.type)).toEqual(["table"]);
+    const table = objects()[0]!;
+    if (table.type !== "table") throw new Error("Expected a pasted native table");
+    expect(table.rows[0]!.cells.map(cell => cell.text)).toEqual(["Material", "MW (g/mol)", "Density (g/mL)"]);
+    expect(table.rows[2]!.cells[0]!.spans).toContainEqual(expect.objectContaining({ text: "4", script: "subscript" }));
+    expect(status()).toBe("Pasted table");
   });
 
   it("keeps web plain-text paste on the DataTransfer path", async () => {
@@ -425,6 +638,8 @@ describe.each(["macos", "windows"] as const)("text paste formatting (%s)", platf
   it("leaves paste into a canvas text object to its editor", async () => {
     await mount(nativeClipboard("H2O", formattedSelection()));
     await paste({ [CHEMDRAFT_SELECTION_CLIPBOARD_TYPE]: formattedSelection() });
+    // That setup paste read natively first, as menu paste does; count only the editor's paste.
+    vi.mocked(invoke).mockClear();
     await act(async () => {
       container.querySelector('[data-page-svg-object-visual][data-object-type="text"]')!.dispatchEvent(new MouseEvent("dblclick", {
         bubbles: true, cancelable: true

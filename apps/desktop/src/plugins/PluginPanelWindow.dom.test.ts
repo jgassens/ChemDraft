@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { EventCallback } from "@tauri-apps/api/event";
@@ -39,8 +39,17 @@ import {
   type PluginPanelReportPayload
 } from "./panelBridge";
 import { PluginPanelWindow } from "./PluginPanelWindow";
+import { PluginPanelSurface } from "./PluginPanelSurface";
 
-const tauriInvoke = vi.hoisted(() => vi.fn(async (command: string) => command === "register_plugin_panel_input_focus" ? "page-token" : true));
+const tauriInvoke = vi.hoisted(() => vi.fn(async (command: string, args?: { enabled?: boolean }) => {
+  if (command === "set_plugin_panel_full_size") {
+    const status = { enabled: args?.enabled ?? false };
+    await tauriEvents.emit("chemdraft://plugin-panel-full-size", status);
+    return status;
+  }
+  if (command === "hide_plugin_panel_window") return nativePanel.hide();
+  return command === "register_plugin_panel_input_focus" ? "page-token" : true;
+}));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: tauriInvoke }));
 
 // A minimal cross-window event bus: `emit` reaches every `listen`er of that event name, as Tauri's
@@ -89,6 +98,9 @@ vi.mock("../window-manager/tauriEvents", async (importOriginal) => {
     ...actual,
     listenTauriEvent: (name: string, handler: EventCallback<unknown>) =>
       actual.safeTauriListen(name, (wrapped) => tauriEvents.listen(name, ({ payload }) =>
+        wrapped({ event: name, id: 1, payload })), handler).attached,
+    listenCurrentWindowEvent: (name: string, handler: EventCallback<unknown>) =>
+      actual.safeTauriListen(name, (wrapped) => tauriEvents.listen(name, ({ payload }) =>
         wrapped({ event: name, id: 1, payload })), handler).attached
   };
 });
@@ -97,15 +109,21 @@ vi.mock("@tauri-apps/api/webviewWindow", () => ({
 }));
 const nativeSave = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/plugin-dialog", () => ({ save: nativeSave }));
-vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ hide: async () => undefined }) }));
+const nativePanel = vi.hoisted(() => ({
+  hide: vi.fn(async () => undefined)
+}));
+vi.mock("@tauri-apps/api/window", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@tauri-apps/api/window")>(),
+  getCurrentWindow: () => { throw new Error("Panel chrome must use caller-bound native controls"); }
+}));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 let container: HTMLElement | undefined;
 let root: Root | undefined;
 
-afterEach(() => {
-  act(() => {
+afterEach(async () => {
+  await act(async () => {
     root?.unmount();
   });
   container?.remove();
@@ -120,6 +138,7 @@ afterEach(() => {
   tauriEvents.pending.clear();
   tauriEvents.emitted.length = 0;
   tauriEvents.setResponder(undefined);
+  Object.values(nativePanel).forEach((mock) => mock.mockClear());
   window.history.replaceState(null, "", "/");
 });
 
@@ -264,19 +283,65 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     for (const name of contentEvents) expect(tauriEvents.listeners.get(name)?.size ?? 0).toBe(0);
   });
 
-  it("uses an AppKit key-window operation instead of Tao activation for input focus", () => {
+  it("uses an AppKit key-window operation only for native panel clicks instead of Tao activation", () => {
+    const nativePath = join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src");
+    const source = readFileSync(join(nativePath, "lib.rs"), "utf8");
+    const command = source.split("fn set_plugin_panel_activation(")[1]!.split("/// Sent to the main window")[0]!;
+    const mac = readFileSync(join(nativePath, "panel_focus_macos.rs"), "utf8");
+    // Click activation moved from a live NSWindow subclass to a supported local monitor.
+    const click = mac.split("let number = panel.windowNumber();")[1]!.split("pub(super) fn resize_edge")[0]!;
+    expect(click).toContain("makeKeyWindow()");
+    expect(click).toContain("target.is_visible()");
+    expect(click).toContain("!target.is_minimized()");
+    expect(click).toContain("native.windowNumber() == number");
+    expect(click).toContain("addLocalMonitorForEventsMatchingMask_handler");
+    for (const button of ["LeftMouseDown", "RightMouseDown", "OtherMouseDown"]) {
+      expect(click).toContain(`NSEventMask::${button}`);
+    }
+    expect(click).toContain("event.as_ptr()");
+    expect(mac).not.toMatch(/\.set_focus\(|activateIgnoringOtherApps|makeKeyAndOrderFront/);
+    expect(command).not.toMatch(/target\.set_focus\(|makeKeyWindow/);
+    expect(command).toMatch(/if !panel_window::is_active\(&target\)\?[\s\S]*return Ok\(false\)[\s\S]*webview\.set_focus\(\)/);
+    expect(command).toContain("run_on_main_thread_blocking");
+  });
+
+  it("keeps Windows pointer activation and refuses delayed input focus after the panel loses foreground", () => {
+    const nativePath = join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src");
+    const source = readFileSync(join(nativePath, "lib.rs"), "utf8");
+    const command = source.split("fn set_plugin_panel_activation(")[1]!.split("/// Sent to the main window")[0]!;
+    expect(command).toMatch(/if !panel_window::is_active\(&target\)\?[\s\S]*return Ok\(false\)[\s\S]*webview\.set_focus\(\)/);
+    expect(command).not.toContain("target.set_focus()");
+    const release = command.split("if !editing {")[1]!.split("let result =")[0]!;
+    expect(release).toContain("return Ok(false)");
+    expect(release).not.toMatch(/set_focus\(|return_focus|focus_main_document/);
+    const panel = readFileSync(join(nativePath, "panel_window.rs"), "utf8");
+    const active = panel.split("pub(crate) fn is_active<")[1]!.split("pub(crate) fn reset_for_webview")[0]!;
+    expect(active).toContain("!window.is_visible()");
+    expect(active).toContain("window.is_minimized()");
+    expect(active).toMatch(/#\[cfg\(windows\)\][\s\S]*GetForegroundWindow\(\)\s*== window\.hwnd\(\)/);
+    expect(active.split("pub(crate) fn end_pointer_guard")[0]!).not.toMatch(/SetActiveWindow\(|SetForegroundWindow\(|SendInput\(|return_focus_to_document/);
+    const resizeSubclass = panel.split("unsafe extern \"system\" fn resize_subclass")[1]!
+      .split("unsafe extern \"system\" fn")[0]!;
+    expect(resizeSubclass).toMatch(/if message == WM_MOUSEACTIVATE \{[\s\S]*return MA_ACTIVATE as isize;/);
+    expect(resizeSubclass).not.toMatch(/return_focus|set_focus\(/);
+    const overlaySubclass = panel.split("unsafe extern \"system\" fn overlay_subclass")[1]!
+      .split("unsafe fn panel_resize_hit")[0]!;
+    expect(overlaySubclass).toMatch(/if message == WM_MOUSEACTIVATE \{\s*return SendMessageW\(parent, message, wparam, lparam\);/);
+  });
+
+  it("uses an AppKit key-window operation instead of Tao activation for palette input focus", () => {
     const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src/lib.rs"), "utf8");
-    const command = source.split("async fn set_plugin_panel_input_focus(")[1]!.split("/// Sent to the main window")[0]!;
+    const command = source.split("async fn set_plugin_panel_input_focus(")[1]!.split("fn set_plugin_panel_activation(")[0]!;
     const mac = command.split('#[cfg(target_os = "macos")]')[1]!.split('#[cfg(windows)]')[0]!;
     expect(mac).toContain("makeKeyWindow()");
     expect(mac).not.toMatch(/\.set_focus\(|activateIgnoringOtherApps|makeKeyAndOrderFront/);
     expect(command).toContain("run_on_main_thread_blocking");
   });
 
-  it("uses guarded thread-local activation for Windows input, release and resize presses", () => {
+  it("uses guarded thread-local activation for Windows palette input, release and drag completion", () => {
     const nativePath = join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src");
     const source = readFileSync(join(nativePath, "lib.rs"), "utf8");
-    const command = source.split("async fn set_plugin_panel_input_focus(")[1]!.split("/// Sent to the main window")[0]!;
+    const command = source.split("async fn set_plugin_panel_input_focus(")[1]!.split("fn set_plugin_panel_activation(")[0]!;
     const windows = command.split('#[cfg(windows)]')[1]?.split('#[cfg(not(any(')[0] ?? "";
     expect(windows).toContain("if !panel_window::focus_if_app_active(hwnd)");
     expect(windows).toContain("return Ok(false)");
@@ -328,14 +393,171 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     const handBack = panel.split("pub(crate) fn return_focus_to_document<")[1]!.split('#[cfg(target_os')[0]!;
     expect(handBack).toContain("foreground_can_return_to_document");
     expect(handBack).toContain("webview.set_focus()");
-    expect(panel).toContain("WM_NCLBUTTONDOWN | WM_NCMBUTTONDOWN | WM_NCRBUTTONDOWN");
-    expect(panel).toContain("WM_ENTERSIZEMOVE | WM_EXITSIZEMOVE");
-    expect(panel.split("if non_client_press {")[1]!.split("if message == WM_NCHITTEST")[0]!)
-      .toContain("return_focus()");
-    const resizeSubclass = panel.split("unsafe extern \"system\" fn resize_subclass")[1]!
-      .split("unsafe extern \"system\" fn")[0]!;
-    expect(resizeSubclass.split("let result = DefSubclassProc").at(-1)!)
-      .toContain("return_focus()");
+    // Panel resize presses retain activation. Palette drag completion still hands back.
+    const observer = panel.split('unsafe extern "system" fn focus_subclass')[1]!
+      .split('pub(crate) fn install_resize_hit_test')[0]!;
+    expect(observer).toContain("message == WM_EXITSIZEMOVE");
+    expect(observer.split("let result = DefSubclassProc").at(-1)!).toContain("drag_finished()");
+    const install = panel.split("let drag_target = window.clone()")[1]!.split("struct FocusObserver")[0]!;
+    expect(install).toContain('drag_target.label().starts_with("toolset-")');
+    expect(install).toContain("return_focus_after_interaction(&drag_target, true)");
+  });
+
+  it("separates native panel activation from palette leases before either can change focus", () => {
+    const nativePath = join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src");
+    const source = readFileSync(join(nativePath, "lib.rs"), "utf8");
+    const dispatch = source.split("async fn set_plugin_panel_input_focus(")[1]!.split("let result: Result")[0]!;
+    expect(dispatch).toMatch(/if is_plugin_panel_window_label\(window.label\(\)\) \{\s*return set_plugin_panel_activation/);
+    const mac = readFileSync(join(nativePath, "panel_focus_macos.rs"), "utf8");
+    // Only panels observe visibility and pointer activation; palettes keep their input leases.
+    expect(mac).toMatch(/if super::super::is_plugin_panel_window_label\(window.label\(\)\) \{\s*observe_panel\(window, panel, &mut tokens\)\?/);
+    const panel = readFileSync(join(nativePath, "panel_window.rs"), "utf8");
+    const observe = panel.split('pub(crate) fn install_input_focus')[1]!.split('#[cfg(')[0]!;
+    expect(observe).not.toContain("install_resize_hit_test");
+  });
+
+  it("never replaces live AppKit/WebKit classes, preserving their KVO and tracking-area state", () => {
+    const nativePath = join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src");
+    function check(directory: string): void {
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        const path = join(directory, entry.name);
+        if (entry.isDirectory()) check(path);
+        else if (entry.name.endsWith(".rs") && entry.name !== "macos_quit.rs") {
+          expect(readFileSync(path, "utf8"), path).not.toMatch(/\b(?:set_class|object_setClass)\b/);
+        }
+      }
+    }
+    check(nativePath);
+  });
+
+  it("pairs visibility observation and the mouse monitor with synchronous native-close cleanup", () => {
+    const nativePath = join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src");
+    const mac = readFileSync(join(nativePath, "panel_focus_macos.rs"), "utf8");
+    expect(mac).toContain("observeValueForKeyPath:ofObject:change:context:");
+    // Old and new values, after the change: only a real visible -> hidden change restores.
+    expect(mac).not.toContain("notificationIsPrior");
+    expect(mac).toContain("options: NS_KEY_VALUE_OBSERVING_OPTION_OLD | NS_KEY_VALUE_OBSERVING_OPTION_NEW");
+    expect(mac).toMatch(/change_flag\(change, ns_string!\("old"\)\) == Some\(true\)\s*&& change_flag\(change, ns_string!\("new"\)\) == Some\(false\)/);
+    expect(mac).toMatch(/!APP_HIDDEN\.load\(Ordering::SeqCst\)\s*&& !target\.is_visible\(\)\.unwrap_or\(true\)\s*&& super::super::panel_full_size::is_enlarged\(&window\)/);
+    // Cmd+H orders panels out too; the backstop stands aside from will-hide until unhide.
+    expect(mac).toMatch(/\(NSApplicationWillHideNotification, true\),\s*\(NSApplicationDidUnhideNotification, false\)/);
+    expect(mac).toContain("addObserver: &*observer");
+    expect(mac).toContain("removeObserver: &*self.observer");
+    expect(mac.match(/forKeyPath: ns_string!\("visible"\)/g)).toHaveLength(2);
+    expect(mac).toContain("panel_full_size::will_hide(&webview.window())");
+    expect(mac).toContain("NSWindowWillCloseNotification");
+    expect(mac).toContain("forget(&label)");
+    expect(mac).toContain("NSEvent::removeMonitor(&monitor)");
+    // Reinstall first removes the old registrations, so reloads cannot duplicate callbacks.
+    expect(mac).toContain("forget(window.label())");
+  });
+
+  it("restores an enlarged panel on ChemDraft's own hides, keeps it on app hide, and never activates under a modal", () => {
+    const nativePath = join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src");
+    const source = readFileSync(join(nativePath, "lib.rs"), "utf8");
+    // Utility suspension (file pickers) and screen capture restore before their own hides.
+    expect(source).toMatch(/panel_window::end_for_hide\(window\.app_handle\(\), window\.label\(\)\);\s*panel_full_size::before_hide\(&window\);\s*if let Err\(error\) = window\.hide\(\)/);
+    const capture = readFileSync(join(nativePath, "screen_capture.rs"), "utf8");
+    // Screen capture restores and hides together on the main thread (the restore requires it).
+    expect(capture).toMatch(/run_on_main_thread_blocking\(app, move \|\| hide_visible_windows\(&on_main\)\)/);
+    expect(capture).toMatch(/crate::panel_full_size::before_hide,\s*\|window\| window\.hide\(\)\.is_ok\(\)/);
+    // Closing (CloseRequested) and the panel's own hide command restore explicitly too.
+    expect(source).toMatch(/if let WindowEvent::CloseRequested \{ api, \.\. \} = event \{\s*panel_full_size::will_hide\(window\);/);
+    const controls = readFileSync(join(nativePath, "panel_window_controls.rs"), "utf8");
+    expect(controls).toMatch(/panel_full_size::set\(window, false, 0\.0, 0\.0\)\?;\s*window\.hide\(\)/);
+    // So does the document window's hide of a panel, on the main thread, through a caller-bound command.
+    expect(controls).toMatch(/authorize_main_hide\(window\.label\(\), &label\)\?;/);
+    expect(controls).toMatch(/\|\| super::panel_full_size::before_hide\(window\),\s*\|\| window\.hide\(\)/);
+    expect(controls).toMatch(/run_on_main_thread_blocking\(&target, move \|\| restore_then_hide\(&task\)\)/);
+    // Cmd+H keeps enlarged panels as they were; quit still restores every panel.
+    const appHide = source.split("fn observe_hide_for_document_key_restore<")[1]!.split("\n}\n")[0]!;
+    expect(appHide).not.toContain("restore_all");
+    expect(source).toMatch(/WindowEvent::Destroyed => \{[\s\S]*?panel_full_size::restore_all\(window\.app_handle\(\)\)/);
+    const sizes = readFileSync(join(nativePath, "panel_full_size.rs"), "utf8");
+    expect(sizes).toMatch(/#\[cfg\(target_os = "macos"\)\]\s*pub\(super\) fn before_hide/);
+    expect(sizes).toMatch(/#\[cfg\(not\(target_os = "macos"\)\)\]\s*pub\(super\) fn before_hide<R: Runtime>\(_window: &tauri::WebviewWindow<R>\) \{\}/);
+    const mac = readFileSync(join(nativePath, "panel_focus_macos.rs"), "utf8");
+    const click = mac.split("let number = panel.windowNumber();")[1]!.split("pub(super) fn resize_edge")[0]!;
+    expect(click).toMatch(/NSApplication::sharedApplication\(mtm\)\s*\.modalWindow\(\)\s*\.is_none\(\)/);
+    expect(click).toMatch(/native\.windowNumber\(\) == number\s*&& outside_modal/);
+    // Our Objective-C classes carry a ChemDraft prefix.
+    expect(mac).toContain('#[name = "ChemDraftPanelVisibilityObserver"]');
+    expect(mac).toContain('#[name = "ChemDraftPanelResizeOverlay"]');
+  });
+
+  it("leaves Wry's content root, webview attachment and first responder alone during resize installation", () => {
+    const mac = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src/panel_focus_macos.rs"), "utf8");
+    const install = mac.split("pub(super) fn install_resize_hit_test<")[1]!.split("fn find_webview(")[0]!;
+    // The old test required detaching and then restoring Wry's responder. Keeping its view
+    // in the window throughout installation avoids that transition and WebKit's window KVO.
+    expect(mac).not.toMatch(/\.setContentView\(|\.removeFromSuperview\(/);
+    expect(install).not.toMatch(/\.makeFirstResponder\(|content\.setFrame\(|content\.setAutoresizingMask\(/);
+    expect(install).toContain("content.addSubview_positioned_relativeTo(&overlay, NSWindowOrderingMode::Above, None)");
+    expect(install).toContain(".any(|view| view.isKindOfClass(PanelResizeOverlay::class()))");
+  });
+
+  it("routes only the two-point native Mac band to AppKit's frame and lets other hits reach WebKit", () => {
+    const mac = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src/panel_focus_macos.rs"), "utf8");
+    // AppKit's measured band is narrower than Windows' 6 px zone; the wider Mac strip ate page hits.
+    expect(mac).toContain("const MAC_NATIVE_RESIZE_BAND_PT: f64 = 2.0;");
+    const band = mac.split("pub(super) fn resize_edge")[1]!.split("fn resize_enabled")[0]!;
+    // Both callers must get the Mac band from this helper, never the shared Windows constant.
+    expect(band).toContain("let edge = MAC_NATIVE_RESIZE_BAND_PT;");
+    expect(mac).not.toContain("super::RESIZE_ZONE_LOGICAL_PX");
+    expect(mac).toContain("#[unsafe(super(NSView))]");
+    expect(mac).toContain("struct PanelResizeOverlay");
+    expect(mac).toContain("PanelResizeOverlay::alloc(mtm)");
+    expect(mac).toContain("#[unsafe(method(hitTest:))]");
+    const hitTest = mac.split("fn hit_test(")[1]!.split("pub(super) fn install_resize_hit_test<")[0]!;
+    expect(hitTest).toMatch(/resize_enabled\(panel.styleMask\(\)\)[\s\S]*&& resize_edge\(/);
+    expect(hitTest).toContain(".and_then(|content| unsafe { content.superview() })");
+    expect(hitTest).toContain("Retained::as_ptr(&frame).cast_mut()");
+    expect(hitTest).toMatch(/std::ptr::null_mut\(\)\s*\}\s*\}\s*\);/);
+    // Interior hits must fall through to the WKWebView.
+    expect(hitTest).not.toMatch(/super\(self\)\s*,\s*hitTest/);
+    expect(mac).toContain("initWithFrame: content.bounds()");
+    expect(mac).toContain("overlay.setAutoresizingMask(autoresize)");
+    const click = mac.split("let number = panel.windowNumber();")[1]!.split("pub(super) fn resize_edge")[0]!;
+    // Activation must skip exactly the same band that the overlay yields to AppKit.
+    expect(click).toMatch(/resize_enabled\(panel.styleMask\(\)\)[\s\S]*&& resize_edge\(/);
+    expect(click).toContain("content.convertPoint_fromView(native.locationInWindow(), None)");
+    expect(click).toMatch(/if !resizing \{\s*let _ = target.set_focusable\(true\);\s*panel.makeKeyWindow\(\);/);
+    expect(click).toContain("event.as_ptr()");
+    expect(mac).not.toContain("setStyleMask");
+  });
+
+  it("logs the panel's native view hierarchy once after installation through the existing diagnostic gate", () => {
+    const mac = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src/panel_focus_macos.rs"), "utf8");
+    const install = mac.split("pub(super) fn install_resize_hit_test<")[1]!.split("fn find_webview(")[0]!;
+    expect(install.indexOf("log_view_hierarchy(window.label(), panel)")).toBeGreaterThan(install.indexOf("content.addSubview_positioned_relativeTo"));
+    expect(mac).toContain("super::super::palette_focus_log(format_args!(");
+    expect(mac).toContain("panel-view label={}");
+    expect(mac).toContain("content_class={} content_frame={:?} wk_descendant={}");
+    expect(mac).toContain("wk_frame={:?} wk_hidden={:?} wk_in_window={} style_mask={:#x}");
+    expect(mac).toContain("view.isKindOfClass(objc2_web_kit::WKWebView::class())");
+    expect(mac).not.toContain(".with_webview(");
+    expect(mac).toContain("view.isDescendantOf(content)");
+    expect(mac).toContain("view.isHidden()");
+    expect(mac).toContain("panel.styleMask().bits()");
+  });
+
+  it("keeps resizing a creation trait and skips redundant AppKit style-mask setters", () => {
+    const nativePath = join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src");
+    const source = readFileSync(join(nativePath, "lib.rs"), "utf8");
+    const build = source.split("fn build_or_show_plugin_panel<")[1]!.split("fn current_plugin_panel_geometry<")[0]!;
+    expect(build.indexOf(".resizable(true)")).toBeLessThan(build.indexOf("builder.build()"));
+    const install = build.split("let installed = run_on_main_thread_blocking")[1]!;
+    expect(install).toMatch(/#\[cfg\(target_os = "macos"\)\]\s*\{[\s\S]*configure_analysis_window_traits\(&target, native\)\?;/);
+    expect(install.indexOf("configure_analysis_window_traits")).toBeLessThan(install.indexOf("panel_full_size::apply"));
+    expect(install.indexOf("configure_analysis_window_traits")).toBeLessThan(install.indexOf("install_resize_hit_test"));
+    const configure = source.split("fn configure_analysis_window_traits<")[1]!.split("/// Makes `child`")[0]!;
+    expect(configure).toContain("panel_window::configure_macos_style(ns_window.styleMask()");
+    expect(configure.indexOf("let responder = ns_window.firstResponder()")).toBeLessThan(configure.indexOf("ns_window.setStyleMask(style)"));
+    expect(configure.indexOf("ns_window.makeFirstResponder(Some(&responder))")).toBeGreaterThan(configure.indexOf("ns_window.setStyleMask(style)"));
+    const panel = readFileSync(join(nativePath, "panel_window.rs"), "utf8");
+    const style = panel.split("pub(crate) fn macos_style(")[1]!.split("pub(crate) fn install_input_focus<")[0]!;
+    expect(style).toContain("if required != current");
+    expect(style).not.toMatch(/\|\s*objc2_app_kit::NSWindowStyleMask::Resizable/);
   });
 
   it("preserves Tao's Win10 zero top inset and adapts the single existing resize overlay", () => {
@@ -347,8 +569,14 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     expect(panel).toContain("SetWindowSubclass(overlay, Some(overlay_subclass)");
     expect(panel).toContain("HTTRANSPARENT");
     expect(panel).toContain("GetDpiForWindow(hwnd)");
-    expect(panel).toContain("GetSystemMetricsForDpi(SM_CYFRAME, dpi) + padding");
-    expect(panel).toContain("geometry::top_overlay_rect(");
+    expect(panel).toContain("geometry::resize_border(GetDpiForWindow(hwnd))");
+    expect(panel).toContain("ClientToScreen(hwnd, &mut origin)");
+    expect(panel).toContain("FindWindowExW(parent, std::ptr::null_mut(), class.as_ptr(), name.as_ptr())");
+    expect(panel).toContain("geometry::overlay_cutout(");
+    const geometry = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src/panel_window_geometry.rs"), "utf8");
+    expect(panel).toContain("const RESIZE_ZONE_LOGICAL_PX: f64 = 6.0");
+    expect(geometry).toContain("(super::RESIZE_ZONE_LOGICAL_PX * f64::from(dpi) / 96.0).round()");
+    expect(geometry).toContain("let top = (client.top + border).min(client.bottom)");
     expect(panel).not.toMatch(/CreateWindow|controller\.SetBounds|controller\.ParentWindow|ResizeWebview/);
   });
 
@@ -378,7 +606,7 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     expect(reset).toContain(".reset()");
     expect(reset).toContain("set_focusable(false)");
     // The pure Rust regression also exercises generation reuse and an old UI task's epoch.
-    const command = source.split("async fn set_plugin_panel_input_focus(")[1]!.split("/// Sent to the main window")[0]!;
+    const command = source.split("fn set_plugin_panel_activation(")[1]!.split("/// Sent to the main window")[0]!;
     expect(command).toContain("panel_window::is_current(&target, generation, epoch)");
   });
 
@@ -389,7 +617,7 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     expect(build).toMatch(/finish_installation\(installed, \|\| \{[\s\S]*window\.destroy\(\)[\s\S]*\}\)\?/);
   });
 
-  it("grants and releases input focus for the full-size spectrum portal", async () => {
+  it("keeps panel focus after a full-size control blurs and Escape restores the frame", async () => {
     (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
     const bodyListen = vi.spyOn(document.body, "addEventListener");
     await mountWindow();
@@ -397,6 +625,10 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     const fullSize = [...container!.querySelectorAll<HTMLButtonElement>(".lf-btn")]
       .find((button) => button.textContent === "Full size")!;
     await act(async () => { fullSize.click(); });
+    expect(tauriInvoke).toHaveBeenCalledWith("set_plugin_panel_full_size", {
+      enabled: true, width: 1392, height: 660
+    });
+    expect(tauriEvents.listeners.get("chemdraft://plugin-panel-full-size")?.size).toBe(1);
     const select = document.querySelector<HTMLSelectElement>(".lf-modal select")!;
     expect(select).not.toBeNull();
     expect(container!.contains(select)).toBe(false);
@@ -406,18 +638,28 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
       pointer?.({ target: select, isTrusted: true, button: 0 } as unknown as Event);
       select.focus();
     });
-    // Pointer acquisitions carry classification metadata; Escape has no pointer fallback.
-    expect(tauriInvoke).toHaveBeenCalledWith("set_plugin_panel_input_focus", {
-      editing: true, generation: expect.any(Number), pageToken: "page-token",
-      clickSequence: undefined, pointerBefore: expect.any(Number), returnFocus: false
+    expect(tauriInvoke).toHaveBeenCalledWith("set_plugin_panel_input_focus", { editing: true, generation: expect.any(Number), pageToken: "page-token" });
+    await act(async () => {
+      select.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    expect(document.activeElement).not.toBe(select);
+    expect(document.querySelector(".lf-modal")).not.toBeNull();
+    expect(tauriInvoke).not.toHaveBeenCalledWith("set_plugin_panel_full_size", {
+      enabled: false, width: 0, height: 0
     });
     await act(async () => {
+      select.focus();
       select.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
     });
-    expect(tauriInvoke).toHaveBeenLastCalledWith("set_plugin_panel_input_focus", {
-      editing: false, generation: expect.any(Number), pageToken: "page-token",
-      clickSequence: undefined, pointerBefore: undefined, returnFocus: true
+    const focusCalls = tauriInvoke.mock.calls.filter(([command]) => command === "set_plugin_panel_input_focus");
+    expect(focusCalls).toEqual([
+      ["set_plugin_panel_input_focus", { editing: true, generation: expect.any(Number), pageToken: "page-token" }]
+    ]);
+    expect(tauriInvoke).toHaveBeenCalledWith("set_plugin_panel_full_size", {
+      enabled: false, width: 0, height: 0
     });
+    expect(document.querySelector(".lf-modal")).toBeNull();
+    expect(nativePanel.hide).not.toHaveBeenCalled();
     expect(container!.querySelector(".plugin-panel-shell")).not.toBeNull();
   });
 
@@ -520,6 +762,10 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
       exportButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
+    await act(async () => {
+      container!.querySelector<HTMLButtonElement>('[role="menuitem"]')!.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
 
     const request = tauriEvents.emitted.find(
       (event) =>
@@ -528,8 +774,7 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     expect(request?.payload).toMatchObject({
       kind: "saveTextFile",
       filename: "predicted-1H-nmr.jdx",
-      formatLabel: "JCAMP-DX",
-      extensions: ["jdx", "dx"]
+      format: "jcamp"
     });
     expect((request?.payload as { text: string }).text).toContain("##JCAMP-DX=");
     // The report window never reached for a dialog of its own.
@@ -556,6 +801,10 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     )!;
     await act(async () => {
       exportButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await act(async () => {
+      container!.querySelector<HTMLButtonElement>('[role="menuitem"]')!.click();
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     expect(exportButton.textContent).toBe("Export failed");
@@ -812,6 +1061,109 @@ describe("PluginPanelWindow (unified renderer, ADR-0030)", () => {
     expect(container!.querySelector(".plugin-panel-run-again")).toBeNull();
     await broadcast(reportPayload({ revision: 2 }));
     expect(container!.querySelector(".plugin-panel-run-again")).not.toBeNull();
+  });
+
+  it("opens result reports at the top and resets on a new result or same-revision reopen", async () => {
+    await mountWindow();
+    const content = container!.querySelector<HTMLDivElement>(".plugin-panel-content")!;
+    Object.defineProperties(content, {
+      scrollHeight: { configurable: true, value: 1000 },
+      clientHeight: { configurable: true, value: 100 },
+      scrollTop: { configurable: true, writable: true, value: 900 }
+    });
+    await broadcast(reportPayload());
+    expect(content.scrollTop).toBe(0);
+    content.scrollTop = 900;
+    await broadcast(reportPayload({ revision: 2 }));
+    expect(content.scrollTop).toBe(0);
+    content.scrollTop = 120;
+    await broadcast(reportPayload({ revision: 2 }));
+    expect(content.scrollTop).toBe(0);
+    content.scrollTop = 120;
+    await broadcast(reportPayload({ revision: 1 }));
+    expect(content.scrollTop).toBe(120);
+  });
+
+  it("keeps every shift table header and cell inside its own horizontal scroll box", async () => {
+    await mountWindow();
+    const columns = ["Nucleus", "δ (ppm)", "Equiv.", "Mult. est.", "J (Hz) est.", "Confidence", "Atoms", "Environment"];
+    const cells = ["¹³C", "140.85", "1", "—", "—", "medium", "12", "Long environment description".repeat(20)];
+    await broadcast(reportPayload({ report: { title: "Shifts", sections: [{ kind: "table", title: "Predicted shifts", columns, rows: [cells] }] } }));
+    const box = container!.querySelector(".plugin-report-table-scroll")!;
+    expect([...box.querySelectorAll("thead th")].map((cell) => cell.textContent)).toEqual(columns);
+    expect([...box.querySelectorAll("tbody td")].map((cell) => cell.textContent)).toEqual(cells);
+  });
+
+  it("starts replacement web fallback results at the top too", async () => {
+    const payload = reportPayload();
+    const panel = { pluginId: PLUGIN_ID, panelId: PANEL_ID, title: "Results", openedAt: "2026-10-31T00:00:00Z", report: payload.report };
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const render = (report: PluginPanelReport) => root!.render(createElement(PluginPanelSurface, {
+      openPanel: { ...panel, report }, diagnosticsOpen: false, plugins: [], diagnostics: [],
+      onClose: vi.fn(), onCloseDiagnostics: vi.fn(), onRunAgain: vi.fn()
+    }));
+    act(() => render(panel.report));
+    const report = container.querySelector<HTMLElement>(".plugin-report")!;
+    report.scrollTop = 500;
+    act(() => render({ ...panel.report }));
+    expect(report.scrollTop).toBe(0);
+  });
+
+  it("restores the original native frame before the close button hides a full-size panel", async () => {
+    (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+    await mountWindow();
+    await broadcast(reportPayload());
+    await act(async () => [...container!.querySelectorAll<HTMLButtonElement>(".lf-btn")].find((button) => button.textContent === "Full size")!.click());
+    expect(tauriInvoke).toHaveBeenCalledWith("set_plugin_panel_full_size", {
+      enabled: true, width: 1392, height: 660
+    });
+    expect(document.querySelector(".lf-modal")).not.toBeNull();
+    let finishRestore!: (status: { enabled: boolean }) => void;
+    tauriInvoke.mockImplementationOnce(() => new Promise<{ enabled: boolean }>((resolve) => { finishRestore = resolve; }));
+    await act(async () => container!.querySelector<HTMLButtonElement>('[aria-label="Close panel"]')!.click());
+    expect(tauriInvoke).toHaveBeenLastCalledWith("set_plugin_panel_full_size", {
+      enabled: false, width: 0, height: 0
+    });
+    expect(nativePanel.hide).not.toHaveBeenCalled();
+    expect(tauriEvents.emitted.filter(({ name }) => name === PLUGIN_PANEL_CLOSED_EVENT)).toHaveLength(0);
+    expect(document.querySelector(".lf-modal")).not.toBeNull();
+    await act(async () => {
+      await tauriEvents.emit("chemdraft://plugin-panel-full-size", { enabled: false });
+    });
+    expect(document.querySelector(".lf-modal")).toBeNull();
+    expect(nativePanel.hide).not.toHaveBeenCalled();
+    await act(async () => { finishRestore({ enabled: false }); });
+    expect(nativePanel.hide).toHaveBeenCalledTimes(1);
+    expect(tauriInvoke).toHaveBeenCalledWith("hide_plugin_panel_window");
+    expect(tauriEvents.emitted.filter(({ name }) => name === PLUGIN_PANEL_CLOSED_EVENT)).toHaveLength(1);
+    expect(document.querySelector(".lf-modal")).toBeNull();
+    await broadcast(reportPayload());
+    expect(container!.querySelector(".lf-root")).not.toBeNull();
+  });
+
+  it("keeps the panel open with a visible reason if frame restoration fails, and lets close retry", async () => {
+    (globalThis as typeof globalThis & { __TAURI__?: unknown }).__TAURI__ = {};
+    await mountWindow();
+    await broadcast(reportPayload());
+    await act(async () => [...container!.querySelectorAll<HTMLButtonElement>(".lf-btn")].find((button) => button.textContent === "Full size")!.click());
+    expect(document.querySelector(".lf-modal")).not.toBeNull();
+    tauriInvoke.mockRejectedValueOnce(new Error("Restore unavailable"));
+    await act(async () => container!.querySelector<HTMLButtonElement>('[aria-label="Close panel"]')!.click());
+    expect(tauriInvoke).toHaveBeenLastCalledWith("set_plugin_panel_full_size", {
+      enabled: false, width: 0, height: 0
+    });
+    expect(nativePanel.hide).not.toHaveBeenCalled();
+    expect(tauriEvents.emitted.filter(({ name }) => name === PLUGIN_PANEL_CLOSED_EVENT)).toHaveLength(0);
+    expect(container!.querySelector('[role="alert"]')!.textContent).toContain("Could not restore the panel's previous size and position. Try closing it again.");
+    expect(document.querySelector('.lf-modal [role="status"]')!.textContent).toContain("Try closing it again");
+    await act(async () => container!.querySelector<HTMLButtonElement>('[aria-label="Close panel"]')!.click());
+    expect(tauriInvoke.mock.calls.filter(([command, args]) => command === "set_plugin_panel_full_size" && args?.enabled === false)).toHaveLength(2);
+    expect(nativePanel.hide).toHaveBeenCalledTimes(1);
+    expect(tauriEvents.emitted.filter(({ name }) => name === PLUGIN_PANEL_CLOSED_EVENT)).toHaveLength(1);
+    expect(container!.querySelector('[role="alert"]')).toBeNull();
+    expect(document.querySelector(".lf-modal")).toBeNull();
   });
 
   it("follows replacement output only at the bottom or after the reader submits", async () => {

@@ -10,7 +10,7 @@ import { exportTableClipboardPayloads } from "@chemdraft/export-engine";
 import { tableVisualBoundsForArrangement } from "@chemdraft/layout-engine";
 import { MainWindow } from "./MainWindow";
 import { CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, createPhase4Document, createSelectionClipboardPayload, insertNativeTextObject } from "./documentWorkflow";
-import { readClipboardPayload, writeClipboardTextItems } from "./clipboard";
+import { readClipboardPayload, writeClipboardItems, type ClipboardWriteResult } from "./clipboard";
 import { depictSmilesListForPaste } from "./smilesListPaste";
 import { DOM_COMMAND_EVENT } from "./window-manager";
 import { ZodError } from "zod";
@@ -21,7 +21,7 @@ import { IdentityWorkerUnavailableError } from "./depiction2d/identityWorkerClie
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 vi.mock("./clipboard", async importOriginal => ({
   ...await importOriginal<typeof import("./clipboard")>(),
-  readClipboardPayload: vi.fn(), writeClipboardTextItems: vi.fn()
+  readClipboardPayload: vi.fn(), writeClipboardItems: vi.fn()
 }));
 vi.mock("./smilesListPaste", async importOriginal => ({
   ...await importOriginal<typeof import("./smilesListPaste")>(),
@@ -47,7 +47,7 @@ describe("MainWindow table clipboard wiring", () => {
         Object.defineProperty(prototype, key, { configurable: true, value: key === "hasPointerCapture" ? () => false : () => {} });
       }
     }
-    vi.mocked(writeClipboardTextItems).mockReset().mockResolvedValue(true);
+    vi.mocked(writeClipboardItems).mockReset().mockResolvedValue(written());
     vi.mocked(readClipboardPayload).mockReset().mockResolvedValue({ types: [], textItems: [] });
     vi.mocked(depictSmilesListForPaste).mockReset();
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
@@ -80,6 +80,9 @@ describe("MainWindow table clipboard wiring", () => {
     return { types: textItems.map(item => item.type), textItems };
   }
   const snapshot = () => window.__CHEMDRAFT_AGENT__!.snapshot();
+  function written(): ClipboardWriteResult {
+    return { ok: true, written: [CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, "text/html", "text/rtf", "text/plain"], failed: [], warnings: [] };
+  }
 
   it.each(["clipboard.copy", "clipboard.cut"])("%s writes the four table formats once; cut then deletes", async commandId => {
     const source = tableDocument();
@@ -88,12 +91,15 @@ describe("MainWindow table clipboard wiring", () => {
     await render(source);
     await command(commandId);
     const exported = exportTableClipboardPayloads(table);
-    expect(writeClipboardTextItems).toHaveBeenCalledTimes(1);
-    const items = vi.mocked(writeClipboardTextItems).mock.calls[0][0];
+    expect(writeClipboardItems).toHaveBeenCalledTimes(1);
+    const items = vi.mocked(writeClipboardItems).mock.calls[0][0] as { type: string; text: string; required?: boolean }[];
     expect(items.map(item => item.type)).toEqual([CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, "text/html", "text/rtf", "text/plain"]);
     expect(JSON.parse(items[0].text)).toEqual(createSelectionClipboardPayload(source));
+    // Only the private selection is required; a rendition over the copy budget is dropped, not fatal.
+    expect(items[0].required).toBe(true);
     expect(items.slice(1)).toEqual([
-      { type: "text/html", text: exported.html }, { type: "text/rtf", text: exported.rtf }, { type: "text/plain", text: exported.tsv }
+      { type: "text/html", text: exported.html, required: false }, { type: "text/rtf", text: exported.rtf, required: false },
+      { type: "text/plain", text: exported.tsv, required: false }
     ]);
     expect(container.querySelector('[role="status"]')?.textContent).toContain("A rotated table is copied unrotated.");
     expect(snapshot().document.pages[0].objects).toHaveLength(commandId === "clipboard.cut" ? 0 : 1);
@@ -105,10 +111,23 @@ describe("MainWindow table clipboard wiring", () => {
 
   it("does not delete on an unsuccessful clipboard write", async () => {
     await render(tableDocument());
-    vi.mocked(writeClipboardTextItems).mockResolvedValue(false);
+    vi.mocked(writeClipboardItems).mockResolvedValue({ ...written(), ok: false, written: [],
+      failed: [{ type: CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, reason: "busy" }] });
     await command("clipboard.cut");
     expect(snapshot().document.pages[0].objects).toHaveLength(1);
     expect(container.querySelector('[role="status"]')?.textContent).toContain("clipboard unavailable");
+  });
+
+  it.each(["clipboard.copy", "clipboard.cut"])("%s shows a rendition the writer dropped over budget and still completes", async commandId => {
+    const dropped = "Dropped optional Clipboard item \"text/html\" exceeds its 67108864-byte cap or the 67108864-byte copy budget.";
+    vi.mocked(writeClipboardItems).mockResolvedValue({ ok: true, written: [CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, "text/plain"],
+      failed: [{ type: "text/rtf", reason: "Could not write clipboard data for type text/rtf." }], warnings: [dropped] });
+    await render(tableDocument());
+    await command(commandId);
+    const status = container.querySelector('[role="status"]')?.textContent;
+    expect(status).toBe([commandId === "clipboard.cut" ? "Cut ChemDraft selection" : "Copied ChemDraft selection",
+      dropped, "text/rtf was not copied: Could not write clipboard data for type text/rtf."].join("; "));
+    expect(snapshot().document.pages[0].objects).toHaveLength(commandId === "clipboard.cut" ? 0 : 1);
   });
 
   it.each(["menu", "event"])("pastes Word-like HTML via %s as one selected native table and undoes once", async path => {

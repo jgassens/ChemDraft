@@ -2,6 +2,10 @@
 
 Owns plugin manifest handling, command registration, permission enforcement, plugin storage scoping, and lifecycle behavior.
 
+API 0.1.19 rejects oversized or non-finite panel reports through the existing `showReport` schema
+validation failure path, before forwarding any content to the panel. See the SDK's
+`PluginPanelReportLimits` and `docs/plugin-architecture/AUTHORING.md` for the complete limits.
+
 This package validates trusted manifests, registers command-backed plugin contributions, enforces declared permissions, scopes plugin storage, queues proposed document patches for host/user approval, and forwards `document.write` patches only from the owning plugin's active command invocation. Image acquisition is similarly limited to an `image.read` plugin's active command and enforces the 25 MB / 8192-pixel host limits before bytes reach plugin code.
 
 API 0.1.17 adds optional `MoleculeBond.stereo: "either"` for E/Z-unspecified double bonds.
@@ -55,7 +59,9 @@ to the `overlays.setContent` embedding sink. Hosts replace the prompt's disabled
 an omitted prompt or disabled flag means false. Permission and ownership checks remain unchanged.
 
 API 0.1.12 adds optional `overlays.setContent(pluginId, overlayId, sections)` and
-`overlays.open(pluginId, overlayId, focus)` embedding sinks. Content is bounded to 20 existing
+`overlays.open(pluginId, overlayId, focus)` embedding sinks. Content passes directly through the same parameterised bounded detached JSON snapshot as panel reports before schema
+parsing, without invoking plugin getters or iterators or retaining nested payload references.
+Content is bounded to 20 existing
 text/keyValue/actions/image sections and 64 KiB UTF-8 JSON; ids must be unique alongside the overlay's
 prompt/select, and commands obey the same ownership rules as panel reports. Both methods recheck
 `ui.canvas` and ownership. `open` additionally requires a live command invocation from that plugin;
