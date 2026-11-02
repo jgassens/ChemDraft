@@ -17,6 +17,31 @@ export interface AtomProblemSnapshot {
   fixes: { action: AtomProblemAction; label: string }[];
 }
 const problemActions = ["hydrogens", "charge", "ignore", "restore"];
+const SMALL_DIALOG_MAX_BYTES = 3400;
+const serializedBytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).length;
+
+/** Clip JSON string content by encoded bytes and schema length without splitting a code point. */
+function clipDialogText(text: string, maxLength: number, maxBytes: number): string {
+  let result = "", bytes = 0;
+  for (const character of text) {
+    const size = serializedBytes(character) - 2; // Exclude JSON's surrounding quotes.
+    if (result.length + character.length > maxLength || bytes + size > maxBytes) break;
+    result += character;
+    bytes += size;
+  }
+  return result;
+}
+
+export function boundedAtomProblemSnapshot(data: AtomProblemSnapshot): AtomProblemSnapshot {
+  // Reserve the largest valid envelope, including later snapshot revisions and retargets.
+  const empty = { ...data, title: "", explanation: "" };
+  const overhead = serializedBytes({ protocolVersion: 1, ownerWindowId: "main", dialogKind: "atomProblem",
+    documentTabId: "x".repeat(128), sessionId: "x".repeat(128), requestId: "x".repeat(128),
+    snapshotRevision: Number.MAX_SAFE_INTEGER, type: "snapshot", data: empty });
+  const title = clipDialogText(data.title, 256, 768);
+  const remaining = SMALL_DIALOG_MAX_BYTES - overhead - (serializedBytes(title) - 2);
+  return { ...data, title, explanation: clipDialogText(data.explanation, 1024, remaining) };
+}
 export interface StructureTemplatesSnapshot { title: string; templateIds: string[] }
 export type EngineInstallAction = "install" | "cancelInstall" | "close";
 export type ToolInstallAction = "install" | "allow" | "cancelInstall" | "close";
@@ -111,7 +136,7 @@ export function parseDialogMessage(value: unknown): DialogMessage | undefined {
         !Number.isSafeInteger(value.snapshotRevision) || Number(value.snapshotRevision) < 1 || !record(value.data)) return undefined;
     const d = value.data;
     // Room for the Rust-written delivery wrapper, including the longest native label.
-    if ((value.dialogKind === "engineInstall" || value.dialogKind === "toolInstall" || value.dialogKind === "atomProblem") && new TextEncoder().encode(JSON.stringify(value)).length > 3400) return undefined;
+    if ((value.dialogKind === "engineInstall" || value.dialogKind === "toolInstall" || value.dialogKind === "atomProblem") && serializedBytes(value) > SMALL_DIALOG_MAX_BYTES) return undefined;
     let valid = false;
     if (value.dialogKind === "atomProblem") {
       const text = (v: unknown, max: number) => typeof v === "string" && v.length > 0 && v.length <= max && !v.includes("\0");
