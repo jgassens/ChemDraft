@@ -50,11 +50,14 @@ describe.each(["macos", "windows"] as const)("existing text editing (%s)", platf
     delete window.__CHEMDRAFT_AGENT__;
   });
 
-  async function mount(tool = "tool.select", selected = false, withSecondText = false) {
-    let doc = insertNativeTextObject(createPhase4Document("Text editing"), { x: 200, y: 200 }, "Reaction conditions");
-    objectId = doc.pages[0].objects.find(object => object.type === "text")!.id;
-    if (withSecondText) doc = insertNativeTextObject(doc, { x: 400, y: 300 }, "Other label");
-    doc = selectDocumentObjects(doc, doc.pages[0].id, selected ? [objectId] : []);
+  async function mount(tool = "tool.select", selected = false, withSecondText = false, empty = false) {
+    let doc = createPhase4Document("Text editing");
+    if (!empty) {
+      doc = insertNativeTextObject(doc, { x: 200, y: 200 }, "Reaction conditions");
+      objectId = doc.pages[0].objects.find(object => object.type === "text")!.id;
+      if (withSecondText) doc = insertNativeTextObject(doc, { x: 400, y: 300 }, "Other label");
+      doc = selectDocumentObjects(doc, doc.pages[0].id, selected ? [objectId] : []);
+    }
     await act(async () => root.render(createElement(MainWindow, {
       initialDocument: doc, initialActiveToolCommandId: tool, initialCrosshairsVisible: false,
       initialRulersVisible: false, initialPaletteMode: "hidden", nativePalette: true
@@ -284,5 +287,78 @@ describe.each(["macos", "windows"] as const)("existing text editing (%s)", platf
     expect(objects).toHaveLength(2);
     expect(objects.find(object => object.id === objectId)).toEqual(originalText);
     expect(objects.find(object => object.id !== objectId)).toMatchObject({ type: "text", text: "New conditions" });
+  });
+
+  it("keeps one undo entry per text box after editing an earlier one (Alpha, Beta, edit Alpha)", async () => {
+    await mount("tool.select", false, false, true);
+    const texts = () => snapshot().document.pages[0].objects.filter(object => object.type === "text") as Array<{ id: string; text: string }>;
+    const pagePress = async (x: number, y: number) => act(async () => {
+      const event = new MouseEvent("pointerdown", { bubbles: true, cancelable: true, button: 0, buttons: 1, clientX: x, clientY: y });
+      Object.defineProperties(event, { pointerId: { value: 7 }, pointerType: { value: "mouse" }, isPrimary: { value: true } });
+      container.querySelector(".page")!.dispatchEvent(event);
+    });
+    const type = async (value: string) => {
+      const field = editor()!;
+      expect(field).not.toBeNull();
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, value);
+        field.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    };
+    const textTool = async () => {
+      await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "t", bubbles: true, cancelable: true })); });
+      expect(snapshot().activeToolCommandId).toBe("tool.text");
+    };
+    const undo = async () => act(async () => {
+      const options = { key: "z", code: "KeyZ", bubbles: true, cancelable: true,
+        metaKey: platform === "macos", ctrlKey: platform === "windows" };
+      window.dispatchEvent(new KeyboardEvent("keydown", options));
+      window.dispatchEvent(new KeyboardEvent("keyup", options));
+    });
+    const find = (id: string) => texts().find(object => object.id === id);
+
+    // Place and type 'Alpha', then end the edit by clicking empty page.
+    await textTool();
+    await pagePress(200, 200);
+    await type("Alpha");
+    await pagePress(100, 500);
+    expect(editor()).toBeNull();
+    const alphaId = texts()[0].id;
+
+    // Place and type 'Beta', then end the edit by clicking empty page.
+    await textTool();
+    await pagePress(400, 350);
+    await type("Beta");
+    await pagePress(100, 500);
+    expect(editor()).toBeNull();
+    const betaId = texts().find(object => object.id !== alphaId)!.id;
+    expect(texts().map(object => object.text).sort()).toEqual(["Alpha", "Beta"]);
+
+    // Edit 'Alpha' into 'Alpha123': double-click, type, click empty page.
+    objectId = alphaId;
+    const target = glyph();
+    await click(target, 1);
+    await click(target, 2);
+    await mouse(target, "dblclick", 2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+    expect(editor()?.value).toBe("Alpha");
+    await type("Alpha123");
+    await pagePress(100, 500);
+    expect(editor()).toBeNull();
+    expect(find(alphaId)?.text).toBe("Alpha123");
+
+    // Undo 1: the edit alone is reverted; Beta stays.
+    await undo();
+    expect(find(betaId)?.text).toBe("Beta");
+    expect(find(alphaId)?.text).toBe("Alpha");
+
+    // Undo 2: Beta is gone; Alpha remains.
+    await undo();
+    expect(find(betaId)).toBeUndefined();
+    expect(find(alphaId)?.text).toBe("Alpha");
+
+    // Undo 3: Alpha is gone.
+    await undo();
+    expect(texts()).toHaveLength(0);
   });
 });

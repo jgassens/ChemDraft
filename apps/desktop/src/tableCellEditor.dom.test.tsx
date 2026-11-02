@@ -336,6 +336,23 @@ describe.each(["macos", "windows"] as const)("table real DOM editing (%s)", plat
     expect(cell().spans.some(span => span.script === "subscript")).toBe(true);
   });
 
+  it("undoes only the edited cell, keeping the other cells and document objects", async () => {
+    await mount({ rows: [["Alpha", "Beta"], ["Gamma", "Delta"]], formula: "off", mixedSelection: true });
+    const before = snapshot().document.pages[0].objects;
+    await open(); await type("Alpha123");
+    expect(cell().text).toBe("Alpha"); // The draft has not replaced the history present.
+    await pointer(page(), "pointerdown", 600, 600);
+    expect(editor()).toBeNull(); expect(cell().text).toBe("Alpha123");
+    expect(cell(0, 1).text).toBe("Beta");
+    const edited = snapshot().document.pages[0].objects;
+    await command("edit.undo");
+    expect(container.textContent).toContain("Undid Edit cell");
+    expect(snapshot().document.pages[0].objects).toEqual(before);
+    await command("edit.redo"); expect(snapshot().document.pages[0].objects).toEqual(edited);
+    await command("edit.undo"); await command("edit.undo");
+    expect(container.textContent).toContain("Nothing to undo");
+  });
+
   it("Escape cancels and an unchanged commit creates no history", async () => {
     await mount(); const before = currentTable(); await open(); await type("cancelled"); await key("Escape");
     expect(editor()).toBeNull(); expect(currentTable()).toEqual(before);
