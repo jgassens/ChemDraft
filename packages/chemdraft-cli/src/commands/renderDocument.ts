@@ -45,7 +45,6 @@ async function moleculeResults(document: ChemDraftDocument, warnings: ExportWarn
   const results = [];
   for (const molecule of molecules) {
     const diagnostics = nativeMoleculeExportWarnings(molecule);
-    warnings.push(...diagnostics);
     if (diagnostics.length > 0) {
       // Rendering and native saves preserve the authored graph, including invalid drawings.
       // Never claim canonical identity or stereo counts for a graph we have not verified.
@@ -56,11 +55,14 @@ async function moleculeResults(document: ChemDraftDocument, warnings: ExportWarn
       try { await canonicalSmiles(molfile, `molecule ${molecule.id}`); }
       catch { parseable = false; }
       if (!parseable) {
+        warnings.push(...diagnostics);
         results.push({ objectId: molecule.id, canonicalSmiles: null, chemistryStatus: "unverified" as const,
           stereoCenters: null, unspecifiedStereoCenters: null, unspecifiedDoubleBonds: null });
         continue;
       }
     }
+    // Parseable graphs use the identity pass's diagnostics, including its applied nitro
+    // charge-separation note, before deciding whether a raw valence warning is still needed.
     const writerWarnings: string[] = [];
     const molfile = (await currentMoleculeIdentityMolfile(molecule, writerWarnings, warnings)).contents;
     warnings.push(...writerWarnings.map((message) => ({ code: "export.molfile_loss", message,

@@ -138,12 +138,10 @@ describe("ChemDraft MCP server", () => {
       warnings: string[]; molecules: { canonicalSmiles: string }[];
     };
     expect(payload.molecules[0]!.canonicalSmiles).toBe(smiles);
-    expect(payload.exportWarnings).toEqual([
-      ...(molecule.id === "nitro" ? [expect.objectContaining({ code: "export.invalid_structure", message: "N1 has unsupported valence 5." })] : []),
-      expect.objectContaining({
+    expect(payload.exportWarnings).toEqual([expect.objectContaining({
       code: "export.smiles_charge_separated", severity: "info"
     })]);
-    expect(payload.warnings).toEqual(payload.exportWarnings.map(warning => warning.message));
+    expect(payload.warnings).toEqual([payload.exportWarnings[0]!.message]);
   });
   it.each([...radicalExportCases, ...metalHydrogenLossCases.map((entry) => ({ ...entry, loss: true })), ...preservedRadicalExportCases.map((entry) => ({ ...entry, loss: false }))])("preserves or refuses native radical input: $name", async ({ molecule, states, loss }) => {
     const document = createEmptyDocument();

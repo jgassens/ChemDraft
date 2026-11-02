@@ -2588,7 +2588,8 @@ describe("ChemDraft desktop shell", () => {
     // through this funnel; each must normalize the document it installs.
     // Assistant pushes/amendments share prepareDocumentCommit with ordinary edits, so they
     // record label bond sides while retaining one request entry, including in inactive tabs.
-    expect(mainWindowSource.match(/normalizeCommittedDocument\(/g)).toHaveLength(11);
+    // The atom-problem fix path also normalizes commits into inactive tabs.
+    expect(mainWindowSource.match(/normalizeCommittedDocument\(/g)).toHaveLength(12);
     expect(mainWindowSource).toMatch(/const prepareDocumentCommit = useCallback\([\s\S]*?const present = normalizeCommittedDocument\(nextDocument\);/);
     expect(mainWindowSource).toContain("const present = prepareDocumentCommit(nextDocument, undoLabel);");
     const assistantHistorySource = mainWindowSource.slice(

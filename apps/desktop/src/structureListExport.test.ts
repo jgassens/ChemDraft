@@ -31,9 +31,7 @@ it.each(chargeSeparationCases)("retains the $name info note in desktop list expo
   for (const exportList of [exportStructureListSmi, exportStructureListSdf]) {
     const result = await exportList(documentWith([molecule]));
     expect(result.contents).not.toBe("");
-    expect(result.warnings).toEqual([
-      ...(molecule.id === "nitro" ? [expect.objectContaining({ code: "export.invalid_structure", message: "N1 has unsupported valence 5." })] : []),
-      expect.objectContaining({
+    expect(result.warnings).toEqual([expect.objectContaining({
       code: "export.smiles_charge_separated", severity: "info", objectId: molecule.id
     })]);
   }
@@ -480,7 +478,7 @@ M  END
       }))
     };
     const result = await exportStructureListSdf(documentWith([molecule]));
-    expect(result.warnings).toEqual([expect.objectContaining({ code: "export.invalid_structure", message: "C1 has 3 of 4 bonds." }), expect.objectContaining({
+    expect(result.warnings).toEqual([expect.objectContaining({
       code: "export.smiles_radical_loss",
       message: "Atom a0 (C) is drawn with 0 radical electrons; SMILES would imply 1 radical electron with its hydrogen count and formal charge."
     })]);
@@ -575,7 +573,7 @@ describe("SMILES export review regressions", () => {
       const molecule = moleculeAt("literal", 0, 0);
       molecule.atoms[1] = { ...molecule.atoms[1], element: "N", labelLiteral: true };
       const result = await exportStructureListSmi(documentWith([molecule]));
-      expect(result.warnings).toEqual([expect.objectContaining({ code: "export.invalid_structure", message: "N2 has 1 of 3 bonds." }), expect.objectContaining({
+      expect(result.warnings).toEqual([expect.objectContaining({
         code: "export.smiles_radical_loss",
         message: "Atom a2 (N) is drawn with 0 radical electrons; SMILES reparses with 2 radical electrons."
       })]);
