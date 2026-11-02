@@ -46,11 +46,11 @@ it("warns when a picture is omitted from visible CDXML and retains the native pa
 });
 
 describe("files that are not CDXML", () => {
-  it("names a ChemDraw binary .cdx file and says what to do", () => {
+  it("directs binary CDX text to the byte import API", () => {
     const opened = openChemDraftPayload("VjCD0100\u0004\u0003\u0002\u0001�\u0000");
     expect(opened.document).toBeUndefined();
     expect(opened.warnings?.[0]).toMatchObject({ code: "cdx.binary_not_supported" });
-    expect(opened.warnings?.[0].message).toContain("Save As");
+    expect(opened.warnings?.[0].message).toContain("importCdx");
     // The same file base64-encoded, as some interchange files carry it.
     expect(openChemDraftPayload("VmpDRDAxMDAEAwIBAAAAAAAA").warnings?.[0]).toMatchObject({ code: "cdx.binary_not_supported" });
   });

@@ -8,6 +8,8 @@ licensed under the Apache License, Version 2.0 (see LICENSE).
 Third-party components requiring attribution
 --------------------------------------------------------------------------------
 
+Octet Draw - Copyright 2026 Sam Ellis - Apache-2.0 - CDX binary reader/writer and tag table (packages/cdx-compat/src/cdxBinary.ts, cdxTags.ts), adapted
+
 Network transport and diagnostics (locked Rust dependencies)
   webpki-roots 1.0.9: CDLA-Permissive-2.0 (Mozilla root certificate list).
   rustls-native-certs 0.8.4: Apache-2.0 OR ISC OR MIT (MIT elected).

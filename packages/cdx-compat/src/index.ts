@@ -34,6 +34,15 @@ import { measureTextRun, planTableLayout } from "@chemdraft/layout-engine";
 import { bondedElementLabelMeaning } from "@chemdraft/template-library";
 import { planMoleculeAtomLabels } from "@chemdraft/layout-engine";
 import { sha256Hex, utf8Bytes, utf8String } from "./sha256";
+import {
+  CDX_NATIVE_ENVELOPE_ATTRIBUTE,
+  cdxElementFromOrderedTree,
+  cdxElementToCdxml,
+  hex,
+  readCdx,
+  writeCdx,
+  type CdxElement
+} from "./cdxBinary";
 
 export interface CompatibilityConversionWarning {
   code: string;
@@ -55,6 +64,87 @@ export interface CdxmlExportResult {
   /** SHA-256 of the native document the envelope embeds: an identity for what was saved, already
    *  computed for the envelope, so a caller need not hash the megabytes of `contents` again. */
   nativePayloadHash: string;
+}
+
+export interface CdxExportOptions extends CdxmlExportOptions {
+  /** Save As includes the exact native document; interchange Export omits it. Defaults to false. */
+  embedNativePayload?: boolean;
+}
+
+export interface CdxExportResult {
+  bytes: Uint8Array;
+  warnings: CompatibilityConversionWarning[];
+}
+
+/** Binary decoding feeds the same CDXML open path, including native-envelope integrity checks. */
+export function importCdx(bytes: Uint8Array): ChemDraftOpenResult {
+  const warnings: CompatibilityConversionWarning[] = [];
+  try {
+    const integrity: { visibleBinaryHash?: string } = {};
+    const root = readCdx(bytes, true, warnings, integrity);
+    const encoded = root.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE];
+    delete root.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE];
+    if (encoded !== undefined) {
+      try {
+        if (!encoded.startsWith("|x|") || (encoded.length - 3) % 2 || !/^[0-9a-f]+$/i.test(encoded.slice(3))) throw new Error("invalid envelope bytes");
+        const data = new Uint8Array((encoded.length - 3) / 2);
+        for (let k = 0; k < data.length; k++) data[k] = parseInt(encoded.slice(3 + 2 * k, 5 + 2 * k), 16);
+        const envelope: unknown = JSON.parse(utf8String(data));
+        if (!envelope || typeof envelope !== "object" || !("format" in envelope) || envelope.format !== "org.chemdraft/cdx-envelope.v1" || !("tags" in envelope) || !Array.isArray(envelope.tags)) {
+          throw new Error("unrecognized envelope format");
+        }
+        const page = root.kids.find((child) => child.name === "page");
+        if (!page) throw new Error("native envelope has no document page");
+        const tags: CdxElement[] = envelope.tags.map((entry: unknown) => {
+          if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== "string" || typeof entry[1] !== "string" || !Object.values(ChemDraftObjectTags).includes(entry[0] as typeof ChemDraftObjectTags[keyof typeof ChemDraftObjectTags])) {
+            throw new Error("invalid native envelope tag");
+          }
+          return { name: "objecttag", attrs: { Name: entry[0], Value: entry[1], TagType: "String", Persistent: "yes" }, kids: [], text: "" };
+        });
+        if (!("visibleBinaryHash" in envelope) || envelope.visibleBinaryHash !== integrity.visibleBinaryHash) {
+          // Even a change to the legacy text hidden by its UTF-8 copy must defeat native restoration.
+          for (const tag of tags) if (tag.attrs.Name === ChemDraftObjectTags.visibleCdxmlHash) tag.attrs.Value = "";
+          warnings.push(warning("cdx.native_payload_modified", "CDX import: binary content changed or its integrity hash is missing; the embedded native document requires conflict review."));
+        }
+        page.kids.push(...tags);
+      } catch (error) {
+        warnings.push(warning("cdx.native_payload_invalid", `CDX import: native envelope could not be decoded: ${errorMessage(error)}`));
+      }
+    }
+    const opened = openChemDraftPayload(cdxElementToCdxml(root));
+    return { ...opened, warnings: [...warnings, ...opened.warnings] };
+  } catch (error) {
+    return { source: "external-cdxml", warnings: [...warnings, warning("cdx.invalid_binary", errorMessage(error))] };
+  }
+}
+
+/** Native → the existing CDXML writer → binary CDX. No separate chemistry conversion. */
+export function exportDocumentToCdx(document: ChemDraftDocument, options: CdxExportOptions = {}): CdxExportResult {
+  const cdxml = exportDocumentToCdxml(document, options);
+  const warnings = [...cdxml.warnings];
+  const root = cdxElementFromOrderedTree(parseCdxml(cdxml.contents));
+  const tags: [string, string][] = [];
+  const strip = (x: CdxElement) => {
+    x.kids = x.kids.filter((child) => {
+      if (child.name === "objecttag" && child.attrs.Name?.startsWith(ChemDraftObjectTagPrefix)) {
+        tags.push([child.attrs.Name, child.attrs.Value]);
+        return false;
+      }
+      strip(child);
+      return true;
+    });
+  };
+  strip(root);
+  const visibleBytes = writeCdx(root, warnings);
+  if (!options.embedNativePayload) return { bytes: visibleBytes, warnings };
+  // Binary encoding normalizes IDs, fixed-point coordinates, styles and table precision. Hash that
+  // actual visible layer, so subsequent external edits still take the existing conflict path.
+  const normalized = readCdx(visibleBytes);
+  const visibleHash = visibleHashForCdxml(cdxElementToCdxml(normalized));
+  const visibleBinaryHash = sha256Hex(writeCdx(normalized));
+  const envelope = { format: "org.chemdraft/cdx-envelope.v1", visibleBinaryHash, tags: tags.map(([name, value]) => [name, name === ChemDraftObjectTags.visibleCdxmlHash ? visibleHash : value]) };
+  normalized.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE] = `|x|${hex(utf8Bytes(JSON.stringify(envelope)))}`;
+  return { bytes: writeCdx(normalized, warnings), warnings };
 }
 
 export type ChemDraftOpenSource = "native-payload" | "legacy-json" | "external-cdxml";
@@ -230,8 +320,7 @@ export function openChemDraftPayload(contents: string): ChemDraftOpenResult {
     return openLegacyJsonDocument(normalized);
   }
 
-  // "VjCD0100" opens every ChemDraw binary file. Say what it is and what to do — the generic
-  // "neither JSON nor XML" left a ChemDraw user with no way forward.
+  // Binary CDX must reach importCdx as bytes, before any text decoding can damage its contents.
   // "VmpDRDAx" is the same signature base64-encoded, the form CDX takes in some interchange files.
   if (normalized.startsWith("VjCD") || normalized.startsWith("VmpDRDAx")) {
     return {
@@ -239,7 +328,7 @@ export function openChemDraftPayload(contents: string): ChemDraftOpenResult {
       warnings: [
         warning(
           "cdx.binary_not_supported",
-          "This is a ChemDraw binary (.cdx) file, which ChemDraft cannot read yet. In ChemDraw, use File ▸ Save As and choose CDXML, then open that file."
+          "This is a binary CDX file. Open it as bytes with importCdx; the app must use that path for Open and Save As CDX."
         )
       ]
     };
@@ -674,6 +763,11 @@ function exportMoleculeObject(
     }
     if (atom.formalCharge !== 0) {
       attributes.push(`Charge="${atom.formalCharge}"`);
+    }
+    if (atom.markRadicals === 1 || atom.markRadicals === 2) {
+      attributes.push(`Radical="${atom.markRadicals === 1 ? "Doublet" : "Triplet"}"`);
+    } else if (atom.markRadicals) {
+      warnings.push({ code: "cdxml.atom_radical_unsupported", message: `CDXML export: atom ${atom.id} has ${atom.markRadicals} unpaired electrons, which cannot be encoded by Radical.`, sourceObjectId: molecule.id, atomIds: [atom.id] });
     }
     // NumHydrogens is the standard CDXML atom constraint, understood without ChemDraft's native
     // payload. Keep aromatic display (Order=1.5) while preserving the source's chosen N–H site.
@@ -1579,7 +1673,7 @@ function importVisibleCdxmlFromTree(tree: OrderedXmlTree): { document?: ChemDraf
   const objectCount = importedPages.reduce((count, page) => count + page.objects.length, 0);
   if (objectCount === 0) {
     return {
-      warnings: [warning("cdxml.no_supported_visible_objects", "No supported visible CDXML objects were found.")]
+      warnings: [warning("cdxml.no_supported_visible_objects", "No supported visible CDXML objects were found."), ...warnings]
     };
   }
 
@@ -1959,6 +2053,11 @@ function importFragment(
   );
   const atomElements = expansion.atomElements;
   const bondElements = expansion.bondElements;
+  const unsupportedRadical = atomElements.find((atom) => atom.attributes.Radical !== undefined && !["None", "0", "Doublet", "2", "Triplet", "3"].includes(atom.attributes.Radical));
+  if (unsupportedRadical) {
+    warnings.push({ code: "cdxml.atom_radical_unsupported", message: `CDXML import failed: Radical="${unsupportedRadical.attributes.Radical}" on atom ${unsupportedRadical.attributes.id ?? "<unnamed>"} cannot be represented without changing its electron state; fragment skipped.` });
+    return undefined;
+  }
   if (atomElements.length === 0) {
     warnings.push({
       code: "cdxml.empty_fragment_skipped",
@@ -2020,6 +2119,8 @@ function importFragment(
       x: point.x,
       y: point.y,
       formalCharge: parseInteger(atomElement.attributes.Charge) ?? 0,
+      ...(["Doublet", "2"].includes(atomElement.attributes.Radical) ? { markRadicals: 1 }
+        : ["Triplet", "3"].includes(atomElement.attributes.Radical) ? { markRadicals: 2 } : {}),
       // An abbreviation that could not be expanded keeps its drawn text and means exactly that:
       // no implicit hydrogens are invented for a label like "SO3".
       ...(literalLabel || textLabel ? { labelLiteral: true } : {}),

@@ -283,7 +283,6 @@ import {
 } from "./smilesListPaste";
 import type { Generate3DConformerResult, StructureAnalysisResult } from "@chemdraft/chemistry-adapter";
 import {
-  getExportFormatDescriptor,
   type ExportFormatId,
   type ExportResult
 } from "@chemdraft/export-engine";
@@ -844,7 +843,9 @@ import {
   enableWindowsLastDocumentCloseAction,
   isBrowserReloadChord
 } from "./keyboardShortcuts";
-import { decodeDocumentBytes } from "./documentText";
+import { assertDocumentSize, decodeNativeDocumentContents, documentContentsKey, readBrowserDocumentFile, readNativeDocumentFile, type DocumentContents } from "./documentText";
+import { createDocumentFileSave, exportDocumentCdx } from "./documentFileFormats";
+import { getDesktopExportFormatDescriptor as getExportFormatDescriptor } from "./desktopExportFormats";
 import { boundedHistoryPast } from "./documentHistoryBudget";
 import { ExportForm, rasterExportFormatForDialogFormat } from "./dialogs/ExportForm";
 import type { ExportDialogState, ExportOptions, ExportPreviewResult, ExportFrame } from "./dialogs/exportOptions";
@@ -1711,7 +1712,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.01.20.34-sonnet";
+const CURRENT_BUILD_STAMP = "11.02.09.01-codex";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -1929,6 +1930,7 @@ interface NativeOpenDocumentPayload {
   path: string;
   displayName: string;
   contents: string;
+  bytes?: number[];
 }
 
 interface ChemDraftAgentArtDebugSnapshot {
@@ -2419,7 +2421,7 @@ export function MainWindow({
   const browserFileKeysRef = useRef(new Map<string, string>());
   const nonPristineTabsRef = useRef(new Set<string>());
   const pendingDocumentOpensRef = useRef<Array<{
-    contents: string; displayName: string; path?: string;
+    contents: DocumentContents; displayName: string; path?: string;
     options?: { dirty?: boolean; statusOverride?: string };
   }>>([]);
   const documentTabSnapshotsRef = useRef(new Map<string, {
@@ -9334,19 +9336,20 @@ export function MainWindow({
   }, [activeDocumentTabId, document, updateRulerFrame]);
 
   const openDocumentContentsNow = useCallback(async (
-    contents: string,
+    contents: DocumentContents,
     displayName: string,
     path?: string,
     options?: OpenDocumentContentsOptions,
     reportOutcome?: (outcome: "queued" | "already-open" | "installed") => void
   ) => {
+    assertDocumentSize(contents.length);
     if (closeTabPromptRef.current || quitInteractionRef.current || keptDrawingsPromptRef.current || (isDesktopRuntime() && !documentSessionHydratedRef.current)) {
       // Wait for the close/kept-drawing prompt and startup restore before activating an OS open-with.
       pendingDocumentOpensRef.current.push({ contents, displayName, path, options });
       perfHook(() => reportOutcome?.("queued"));
       return;
     }
-    const browserKey = path ? undefined : `${displayName}\n${sha256Utf8Hex(contents)}`;
+    const browserKey = path ? undefined : `${displayName}\n${sha256Utf8Hex(documentContentsKey(contents))}`;
     const existing = documentTabsRef.current.find((tab) =>
       path ? (tab.id === activeDocumentTabIdRef.current ? fileStateRef.current.path :
         documentTabSnapshotsRef.current.get(tab.id)?.file.path) !== undefined &&
@@ -9390,7 +9393,9 @@ export function MainWindow({
     clearDocumentInteractionState({ clearSpin3dModelCache: true });
     tabPageFitRef.current = fitRecommendation ? { ...fitRecommendation, displayName } : undefined;
     setPageFitPrompt(tabPageFitRef.current);
-    const sourceLabel = openSourceLabel(resolvedOpen.source, resolvedOpen.statusSourceLabel);
+    const sourceLabel = typeof contents === "string"
+      ? openSourceLabel(resolvedOpen.source, resolvedOpen.statusSourceLabel)
+      : openSourceLabel(resolvedOpen.source, resolvedOpen.statusSourceLabel).replaceAll("CDXML", "CDX");
     const warningsReport = { displayName, sourceLabel, warnings: opened.warnings };
     tabWarningsRef.current = warningsReport;
     setOpenWarningsReport(warningsReport);
@@ -9408,7 +9413,7 @@ export function MainWindow({
   // Opens run one at a time. A CDXML conflict choice awaits the user, so a second open of the same
   // file must wait and then find the tab the first one made, not add a second tab for one path.
   const openDocumentContents = useCallback((
-    contents: string,
+    contents: DocumentContents,
     displayName: string,
     path?: string,
     options?: OpenDocumentContentsOptions
@@ -9633,7 +9638,7 @@ export function MainWindow({
   const openDroppedDocumentPaths = useCallback(async (paths: readonly string[]) => {
     for (const path of paths) {
       try {
-        await openDocumentContents(await readNativeTextFile(path), nativePathBasename(path), path);
+        await openDocumentContents(await readNativeDocumentFile(path), nativePathBasename(path), path);
       } catch (error) {
         setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -9666,7 +9671,7 @@ export function MainWindow({
     }
 
     try {
-      const contents = await readNativeTextFile(path);
+      const contents = await readNativeDocumentFile(path);
       await openDocumentContents(contents, nativePathBasename(path), path);
     } catch (error) {
       setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -9706,18 +9711,19 @@ export function MainWindow({
     let unlisten: (() => void) | undefined;
 
     const openNativePayload = async (payload: NativeOpenDocumentPayload) => {
-      const payloadKey = `${payload.path}\n${sha256Utf8Hex(payload.contents)}`;
-      const now = Date.now();
-      const last = lastNativeOpenPayloadKeyRef.current;
-      // A single OS open is delivered via both the Tauri event and the pending-document
-      // poll, so coalesce identical payloads that arrive close together. Use a time window
-      // rather than a permanent key so a later request still activates its already-open tab.
-      if (last && last.key === payloadKey && now - last.at < NATIVE_OPEN_DEDUPE_WINDOW_MS) {
-        return;
-      }
-      lastNativeOpenPayloadKeyRef.current = { key: payloadKey, at: now };
       try {
-        await openDocumentContents(payload.contents, payload.displayName, payload.path);
+        const contents = decodeNativeDocumentContents(payload);
+        const payloadKey = `${payload.path}\n${sha256Utf8Hex(documentContentsKey(contents))}`;
+        const now = Date.now();
+        const last = lastNativeOpenPayloadKeyRef.current;
+        // A single OS open is delivered via both the Tauri event and the pending-document
+        // poll, so coalesce identical payloads that arrive close together. Use a time window
+        // rather than a permanent key so a later request still activates its already-open tab.
+        if (last && last.key === payloadKey && now - last.at < NATIVE_OPEN_DEDUPE_WINDOW_MS) {
+          return;
+        }
+        lastNativeOpenPayloadKeyRef.current = { key: payloadKey, at: now };
+        await openDocumentContents(contents, payload.displayName, payload.path);
       } catch (error) {
         const failure = `Open failed: ${error instanceof Error ? error.message : String(error)}`;
         setStatus(failure);
@@ -10313,7 +10319,8 @@ export function MainWindow({
     const savingDocument = active ? documentRef.current : snapshot?.history.present;
     const savingFileState = active ? fileStateRef.current : snapshot?.file;
     if (!savingDocument || !savingFileState) return false;
-    const payload = createNativeSavePayload(active ? documentForFlush() : savingDocument);
+    const documentToSave = active ? documentForFlush() : savingDocument;
+    let payload = createDocumentFileSave(documentToSave);
     const finishSave = (path?: string) => {
       documentSaveRevisionsRef.current.set(savingTabId, (documentSaveRevisionsRef.current.get(savingTabId) ?? 0) + 1);
       nonPristineTabsRef.current.add(savingTabId);
@@ -10322,7 +10329,7 @@ export function MainWindow({
       const nextFileState = { path: path ?? savingFileState.path, dirty: currentDocument !== savingDocument };
       const displayName = path ? nativePathBasename(path) : payload.filename;
       const warningsReport: OpenWarningsReport | undefined = payload.warnings.length > 0 ? {
-        operation: "save", displayName, sourceLabel: "ChemDraft CDXML envelope", warnings: payload.warnings
+        operation: "save", displayName, sourceLabel: payload.kind === "binary" ? "ChemDraft CDX envelope" : "ChemDraft CDXML envelope", warnings: payload.warnings
       } : undefined;
       if (savingTabId === activeDocumentTabIdRef.current) {
         fileStateRef.current = nextFileState;
@@ -10346,7 +10353,7 @@ export function MainWindow({
     };
     try {
       if (!isDesktopRuntime()) {
-        downloadText(payload.filename, payload.contents, payload.mimeType);
+        downloadExportResult(payload.filename, payload);
         finishSave();
         return true;
       }
@@ -10362,7 +10369,8 @@ export function MainWindow({
         return false;
       }
       const finalPath = ensureChemDraftFileExtension(path);
-      await writeNativeTextFile(finalPath, payload.contents);
+      payload = createDocumentFileSave(documentToSave, finalPath);
+      await writeNativeExportResult(finalPath, payload);
       finishSave(finalPath);
       return true;
     } catch (error) {
@@ -14386,8 +14394,7 @@ export function MainWindow({
       return;
     }
 
-    void file
-      .text()
+    void readBrowserDocumentFile(file)
       .then((contents) => {
         return openDocumentContents(contents, file.name);
       })
@@ -20990,7 +20997,7 @@ export function MainWindow({
       <input
         ref={fileInputRef}
         type="file"
-        accept=".chemdraft,.cdxml,.xml,.json,chemical/x-cdxml,application/xml,text/xml,application/json,application/vnd.chemdraft+json"
+        accept=".chemdraft,.cdx,.cdxml,.xml,.json,chemical/x-cdx,chemical/x-cdxml,application/xml,text/xml,application/json,application/vnd.chemdraft+json"
         className="native-file-input"
         aria-label="Open native ChemDraft document"
         onChange={handleOpenFile}
@@ -21377,7 +21384,7 @@ export function MainWindow({
             const files = Array.from(event.dataTransfer.files);
             void (async () => {
               for (const file of files) {
-                try { await openDocumentContents(await file.text(), file.name); }
+                try { await openDocumentContents(await readBrowserDocumentFile(file), file.name); }
                 catch (error) { setStatus(`Open failed: ${error instanceof Error ? error.message : String(error)}`); }
               }
             })();
@@ -32500,6 +32507,8 @@ export async function createDialogExportResult(
     });
   }
 
+  if (state.format === "cdx") return exportDocumentCdx(document, false);
+
   if (state.format === "cdxml") {
     return exportPhase4Cdxml(document, {
       creationProgram: state.cdxml.creationProgram.trim() || "ChemDraft"
@@ -32603,7 +32612,7 @@ function formatOpenFailure(warnings: readonly { code: string; message: string }[
 async function pickNativeOpenPath(): Promise<string | undefined> {
   const { open } = await loadTauriDialogModule();
   const selected = await open({
-    title: "Open ChemDraft or CDXML Document",
+    title: "Open ChemDraft, CDXML or CDX Document",
     multiple: false,
     fileAccessMode: "scoped"
   });
@@ -32618,7 +32627,11 @@ async function pickNativeSavePath(
   const selected = await save({
     title: options?.title ?? "Save ChemDraft Document",
     defaultPath,
-    filters: [{ name: options ? "Saved document" : "ChemDraft", extensions: [options?.extension ?? "chemdraft"] }]
+    filters: options ? [{ name: "Saved document", extensions: [options.extension] }] : [
+      { name: "ChemDraft", extensions: ["chemdraft"] },
+      { name: "CDXML", extensions: ["cdxml"] },
+      { name: "CDX (*.cdx)", extensions: ["cdx"] }
+    ]
   });
   return selected ?? undefined;
 }
@@ -32681,12 +32694,6 @@ function prewarmNativeDialogModule(): void {
   });
 }
 
-/** An opened document's text, decoded by its byte-order mark (see documentText.ts) — `readTextFile`
- *  alone assumes UTF-8, so a UTF-16 CDXML file opened as noise. */
-async function readNativeTextFile(path: string): Promise<string> {
-  return decodeDocumentBytes(await readNativeBinaryFile(path));
-}
-
 async function readNativeBinaryFile(path: string): Promise<Uint8Array> {
   const { readFile } = await import("@tauri-apps/plugin-fs");
   return readFile(path);
@@ -32714,7 +32721,9 @@ function isNativeOpenDocumentPayload(value: unknown): value is NativeOpenDocumen
     value !== null &&
     typeof (value as NativeOpenDocumentPayload).path === "string" &&
     typeof (value as NativeOpenDocumentPayload).displayName === "string" &&
-    typeof (value as NativeOpenDocumentPayload).contents === "string"
+    typeof (value as NativeOpenDocumentPayload).contents === "string" &&
+    ((value as NativeOpenDocumentPayload).bytes === undefined ||
+      Array.isArray((value as NativeOpenDocumentPayload).bytes))
   );
 }
 
@@ -32729,7 +32738,7 @@ async function writeNativeBinaryFile(path: string, bytes: Uint8Array): Promise<v
 }
 
 function ensureChemDraftFileExtension(path: string): string {
-  return /\.(chemdraft|cdxml)$/i.test(path) ? path : `${path}.chemdraft`;
+  return /\.(chemdraft|cdxml|cdx)$/i.test(path) ? path : `${path}.chemdraft`;
 }
 
 function ensureExportFileExtension(path: string, extensions: readonly string[]): string {

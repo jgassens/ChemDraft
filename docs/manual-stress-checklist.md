@@ -387,9 +387,22 @@ updater — an older signed build offered the newer one by the launch check and 
 Updates…, the document saved before the passive installer runs and restored after it relaunches, and
 a branch build or `pnpm dev` session never checking (`docs/releasing/windows-updates.md`); an update
 accepted while autosave is off (the last session unreadable) refusing to install over unsaved work; and
-opening from Explorer a `.cdx` (the app says it is a ChemDraw binary, including at a cold start that
+opening from Explorer a `.cdx` (binary import, including at a cold start that
 then restores the last session), a UTF-16 `.cdxml`, and a CDXML file whose molecules sit inside `<group>`
 elements (they open grouped).
+
+Binary CDX file IO, on **macOS and Windows**:
+
+- Open a `.cdx` through File > Open, shell Open With (cold and warm start), and drag/drop. Repeat
+  with CDX renamed `.cdxml` and `.data`: header detection must preserve the binary bytes. Open
+  UTF-16 CDXML and a `.chemdraft` beside it to check the existing text path.
+- Save As `.cdx`, reopen, edit and Save again, then restart with that saved tab and Save. Verify
+  native objects, styles, atom/bond counts, isotopes, charge, stereo and coordinates survive;
+  cancelled Save As leaves the document dirty. Check the normal warning list for unsupported data.
+- Export CDX and reopen it: verify the supported visible drawing and chemistry with compatibility
+  warnings. Export must omit native metadata. A truncated CDX gives a specific import failure.
+- On macOS, confirm CDX is an Alternate handler. On Windows, install the CI-built installer and
+  confirm neither `.cdx` nor `.cdxml` is associated; `.chemdraft` is the only registered extension.
 
 Undo/redo surfaces added since: Edit ▸ Undo/Redo from the menu and ⌘Z/⇧⌘Z — one press is one undo
 on the canvas, and the same shortcut inside a focused text-entry field (the atom-label box, a

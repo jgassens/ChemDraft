@@ -120,6 +120,7 @@ import {
 import {
   exportDocumentToCdxml as exportDocumentToCdxmlEnvelope,
   openChemDraftPayload,
+  importCdx,
   type ChemDraftOpenResult,
   type CompatibilityConversionWarning
 } from "@chemdraft/cdx-compat";
@@ -19306,8 +19307,8 @@ export function exportPhase4Cdxml(
  * bond side (an imported CDXML, a file from before the record existed) gets the side its drawing
  * shows now, and keeps it through every later layout change (`withNativeDocumentLabelBondSides`).
  */
-export function openNativeDocument(contents: string): ChemDraftOpenResult {
-  const result = openChemDraftPayload(contents);
+export function openNativeDocument(contents: string | Uint8Array): ChemDraftOpenResult {
+  const result = typeof contents === "string" ? openChemDraftPayload(contents) : importCdx(contents);
   const { conflict } = result;
   return {
     ...result,
