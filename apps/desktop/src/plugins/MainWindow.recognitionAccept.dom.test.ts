@@ -365,7 +365,11 @@ function registerDirectWritePlugin(pageId: string, resolveName = false): { relea
       commandHandlers: {
         [DIRECT_WRITE_COMMAND_ID]: async (context) => {
           await released;
-          if (resolveName) await context.chemistry.nameToStructure!({ name: "β-CD" });
+          if (resolveName) {
+            const nameToStructure = context.chemistry?.nameToStructure;
+            if (!nameToStructure) throw new Error("Name resolution capability is unavailable in the direct-write fixture.");
+            await nameToStructure({ name: "β-CD" });
+          }
           return context.documents.applyPatch!({
             reason: "deterministic result for a name the user typed",
             patch: {
