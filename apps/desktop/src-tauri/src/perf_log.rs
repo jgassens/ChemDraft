@@ -118,17 +118,34 @@ async fn popover_native_geometry(
     window: &tauri::WebviewWindow,
 ) -> Result<serde_json::Value, String> {
     let (send, receive) = tokio::sync::oneshot::channel();
+    let source_palette = window
+        .label()
+        .strip_prefix("toolset-popover-")
+        .and_then(|suffix| {
+            window
+                .app_handle()
+                .get_webview_window(&format!("toolset-{suffix}"))
+        });
     window.with_webview(move |webview| {
         // SAFETY: Tauri dispatches with_webview on the UI thread and owns this live WKWebView.
         let view: &objc2_web_kit::WKWebView = unsafe { &*webview.inner().cast() };
         let rect = |r: objc2_foundation::NSRect| serde_json::json!({
             "x": r.origin.x, "y": r.origin.y, "width": r.size.width, "height": r.size.height
         });
+        // Read both windows in the same UI-thread sample, including after the opening release.
+        let source_palette = source_palette.and_then(|palette| {
+            let pointer = palette.ns_window().ok()? as *mut objc2_app_kit::NSWindow;
+            // SAFETY: this is a live Tauri window and with_webview runs on the UI thread.
+            let native = unsafe { pointer.as_ref() }?;
+            Some(serde_json::json!({ "label": palette.label(),
+                "windowFrame": rect(native.frame()), "windowLevel": native.level() }))
+        });
         let result = view.window().ok_or_else(|| "Popover has no NSWindow".to_string()).and_then(|window| {
             let content = window.contentView().ok_or("Popover has no contentView")?;
             Ok(serde_json::json!({
                 "units": "points; AppKit coordinates",
-                "windowFrame": rect(window.frame()), "contentViewFrame": rect(content.frame()),
+                "windowFrame": rect(window.frame()), "windowLevel": window.level(),
+                "sourcePalette": source_palette, "contentViewFrame": rect(content.frame()),
                 "contentViewBounds": rect(content.bounds()), "contentLayoutRect": rect(window.contentLayoutRect()),
                 "webviewFrame": rect(view.frame()), "webviewBounds": rect(view.bounds()),
                 "webviewFrameInWindow": rect(view.convertRect_toView(view.bounds(), None)),

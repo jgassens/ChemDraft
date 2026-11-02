@@ -4652,8 +4652,8 @@ fn show_toolset_popover_window(
     configure_toolset_popover_window(&window, focus_mode)?;
     #[cfg(target_os = "macos")]
     if focus_mode == ToolsetPopoverFocusMode::Preserve {
-        // Tao's show() calls makeKeyAndOrderFront. Order this NonactivatingPanel
-        // front without making it key, even when the real mouse granted activation.
+        // TaoWindow subclasses NSWindow; focusable(false) guards canBecomeKeyWindow.
+        // Use orderFront rather than show's makeKeyAndOrderFront to keep the document key.
         let target = window.clone();
         run_on_main_thread_blocking(&window, move || {
             configure_toolset_utility_window_on_main_thread(&target, true)
@@ -4665,8 +4665,7 @@ fn show_toolset_popover_window(
     // `focus: false` at creation makes Tao use SW_SHOWNOACTIVATE on Windows.
     // Keep its visibility state in sync (a raw ShowWindow alone breaks later hide()).
     window.show().map_err(|error| error.to_string())?;
-    raise_among_owned_windows(&window)?;
-    fit_toolset_popover_webview(&window)
+    raise_among_owned_windows(&window)
 }
 
 /// Hide the tooltip window. Deliberately a sync command like `show_toolset_tooltip_window`: both
@@ -7440,19 +7439,11 @@ fn configure_toolset_utility_window_on_main_thread<R: Runtime>(
         return Err("Could not access native ChemDraft toolbar window.".to_string());
     };
 
-    let mut style = ns_window.styleMask()
+    let style = ns_window.styleMask()
         | NSWindowStyleMask::UtilityWindow
         | NSWindowStyleMask::NonactivatingPanel;
-    let is_popover = window.label().starts_with("toolset-popover-");
-    if is_popover {
-        style = borderless_popover_style(style);
-    }
-    // This runs at creation, reuse and reveal, not pointer release. Avoid asking AppKit
-    // to redo content layout when the desired mask is already installed.
-    if !is_popover || style != ns_window.styleMask() {
-        ns_window.setStyleMask(style);
-    }
-    ns_window.setLevel(toolset_utility_window_level());
+    ns_window.setStyleMask(style);
+    ns_window.setLevel(toolset_utility_window_level(window.label()));
     ns_window.setHidesOnDeactivate(toolset_window_hides_on_deactivate());
     ns_window.setCanHide(true);
     ns_window.setIgnoresMouseEvents(false);
@@ -7471,54 +7462,13 @@ fn configure_toolset_utility_window_on_main_thread<R: Runtime>(
     window
         .set_focusable(toolset_window_focusable())
         .map_err(|error| error.to_string())?;
-    // A hidden pre-warm build (the popover's first creation) sets its NSPanel traits here but must
+    // A hidden pre-warm build (the popover's first creation) sets its utility traits here but must
     // NOT be ordered front yet — it reveals itself once its webview has painted real content, so the
     // user never sees a blank window loading. Every other caller shows immediately.
     if order_front {
         ns_window.orderFront(None);
     }
 
-    fit_toolset_popover_webview(window)
-}
-
-#[cfg(target_os = "macos")]
-fn borderless_popover_style(style: NSWindowStyleMask) -> NSWindowStyleMask {
-    // UtilityWindow is for titled palettes. A borderless popover has no title-bar area
-    // for WebKit to inset around; retain NonactivatingPanel and the input-lease subclass.
-    (style | NSWindowStyleMask::NonactivatingPanel)
-        & !(NSWindowStyleMask::UtilityWindow
-            | NSWindowStyleMask::Titled
-            | NSWindowStyleMask::FullSizeContentView)
-}
-
-#[cfg(target_os = "macos")]
-fn fit_toolset_popover_webview<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
-    if !window.label().starts_with("toolset-popover-") {
-        return Ok(());
-    }
-    window
-        .with_webview(|webview| {
-            // SAFETY: Tauri owns the live WKWebView and dispatches this on the UI thread.
-            let view: &objc2_web_kit::WKWebView = unsafe { &*webview.inner().cast() };
-            if let Some(content) = view.window().and_then(|window| window.contentView()) {
-                // Frame is in the superview's coordinates; do not assume Wry's view hierarchy.
-                // This changes only the webview frame, never the NSWindow size or position.
-                if let Some(parent) = unsafe { view.superview() } {
-                    let frame = content.convertRect_toView(content.bounds(), Some(&parent));
-                    if view.frame() != frame {
-                        view.setFrame(frame);
-                    }
-                }
-            }
-        })
-        .map_err(|error| error.to_string())
-}
-
-#[cfg(not(target_os = "macos"))]
-fn fit_toolset_popover_webview<R: Runtime>(
-    _window: &tauri::WebviewWindow<R>,
-) -> Result<(), String> {
-    // WebView2 already fills the borderless client area; keep its native layout unchanged.
     Ok(())
 }
 
@@ -7681,8 +7631,16 @@ fn toolset_window_focusable() -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn toolset_utility_window_level() -> NSWindowLevel {
-    NSFloatingWindowLevel
+fn toolset_utility_window_level(label: &str) -> NSWindowLevel {
+    // AppKit can bring the clicked palette forward when the opening mouse press ends.
+    // orderFront only wins within a level: popovers need their own higher level on every
+    // creation/reuse/reveal, so palette clicks and focus leases cannot cover them.
+    // Windows keeps its existing document ownership and nonactivating HWND_TOP raise.
+    if label.starts_with("toolset-popover-") {
+        NSFloatingWindowLevel + 1
+    } else {
+        NSFloatingWindowLevel
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -9670,18 +9628,6 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn popover_style_stays_borderless_and_nonactivating() {
-        let titled = NSWindowStyleMask::UtilityWindow
-            | NSWindowStyleMask::Titled
-            | NSWindowStyleMask::FullSizeContentView;
-        let style = borderless_popover_style(titled);
-        assert!(!style.intersects(titled));
-        assert!(style.contains(NSWindowStyleMask::NonactivatingPanel));
-        assert_eq!(borderless_popover_style(style), style);
-    }
-
     #[test]
     fn palette_popovers_open_without_focus_and_lease_their_fields() {
         let bond_stereo = toolset_popover_window_label("core.bondStereo");
@@ -9704,8 +9650,17 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn toolset_utility_windows_float_above_document_windows() {
-        expect_true(toolset_utility_window_level() > objc2_app_kit::NSNormalWindowLevel);
+    fn toolset_popover_level_stays_above_palettes_after_release() {
+        let palette_level = toolset_utility_window_level(&toolset_window_label("core.main"));
+        assert_eq!(palette_level, NSFloatingWindowLevel);
+        assert!(palette_level > objc2_app_kit::NSNormalWindowLevel);
+        for toolset in ["core.main", "core.art", "core.bondStereo"] {
+            assert!(
+                toolset_utility_window_level(&toolset_popover_window_label(toolset))
+                    > palette_level,
+                "{toolset}: click ordering within the palette level must never cover a popover"
+            );
+        }
     }
 
     #[cfg(target_os = "macos")]

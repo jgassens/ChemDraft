@@ -1651,7 +1651,7 @@ pub(crate) fn configure_on_main<R: Runtime>(
 
 #[cfg(target_os = "macos")]
 fn dialog_window_level() -> objc2_app_kit::NSWindowLevel {
-    super::toolset_utility_window_level()
+    super::toolset_utility_window_level("dialog")
 }
 
 /// Reveal/reopen and becoming key raise within the utility level. Restoration only configures
@@ -2749,7 +2749,10 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn dialog_level_reaches_floating_toolbars() {
-        assert!(dialog_window_level() >= super::super::toolset_utility_window_level());
+        assert!(
+            dialog_window_level()
+                >= super::super::toolset_utility_window_level("toolset-core-main")
+        );
         assert!(dialog_window_level() > objc2_app_kit::NSNormalWindowLevel);
     }
 
