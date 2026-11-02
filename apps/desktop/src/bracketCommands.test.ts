@@ -5,6 +5,7 @@ import { createBracketCommands, selectedBracketPair, setBracketRepeatLabel, togg
 import { applySingleBondToolAtPoint, copyAsMolfile, copyAsSmiles, createPhase4Document,
   createSelectionClipboardPayload, duplicateSelectedDocumentObjects, insertNativeBracket, pasteSelectionClipboardPayload } from "./documentWorkflow";
 import { exportStructureListSdf, exportStructureListSmi } from "./structureListExport";
+import { allShellCommands } from "./commands";
 
 vi.mock("@chemdraft/rdkit-adapter/identifiers", () => ({ computeStructureIdentifiers: vi.fn(async () => undefined) }));
 vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
@@ -12,6 +13,12 @@ vi.mock("./rdkitWasmLoader", () => ({ registerRdkitWasmLoader: vi.fn() }));
 const brackets = () => insertNativeBracket(createPhase4Document("Bracket unit"), { x: 100, y: 100 }, "round", { x: 260, y: 200 });
 
 describe("bracket pair annotations", () => {
+  it("exposes the repeat-unit command with selection-dependent availability", () => {
+    const document = brackets();
+    expect(allShellCommands(document).find(command => command.id === "bracket.repeatUnit.toggle")).toMatchObject({ enabled: true });
+    const unselected = applyPatch(document, { op: "setSelection", objectIds: [] });
+    expect(allShellCommands(unselected).find(command => command.id === "bracket.repeatUnit.toggle")).toMatchObject({ enabled: false, disabledReason: expect.any(String) });
+  });
   it("toggles both glyphs, labels only the closing side and keeps both selected", () => {
     const original = brackets();
     const repeat = toggleBracketRepeatUnit(original);

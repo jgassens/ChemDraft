@@ -11790,12 +11790,17 @@ export function MainWindow({
   pluginRuntimeRef.current = pluginRuntime.runtime;
 
   const availablePluginUpdateCount = pluginRuntime.cachedPluginUpdateResults.filter(result => result.status === "available").length;
+  const bracketMenuItems = useMemo(() => bracketActions.filter(action => action.id === "bracket.repeatUnit.toggle").map(action => ({
+    location: "structure", command: { kind: "command" as const, id: action.id, commandId: action.id,
+      label: action.title, enabled: action.enabled !== false, coreRouted: true }
+  })), [bracketActions]);
   // One complete menu snapshot per result change. The existing native installer attaches menus only
   // to the document window on Windows and deduplicates unchanged snapshots on both platforms.
   const nativePluginMenuItems = useMemo(() => [
     ...pluginUpdatesAvailableMenuItem(availablePluginUpdateCount),
+    ...bracketMenuItems,
     ...pluginRuntime.pluginMenuItems
-  ], [availablePluginUpdateCount, pluginRuntime.pluginMenuItems]);
+  ], [availablePluginUpdateCount, bracketMenuItems, pluginRuntime.pluginMenuItems]);
   useEffect(() => {
     if (!isTauriHost()) return;
     void syncPluginNativeMenuItems(nativePluginMenuItems);
@@ -20800,7 +20805,7 @@ export function MainWindow({
         hasSelectedMolecule: selectedMolecule !== undefined,
         canConvertTextToAtomLabel: quickActions.find((action) => action.id === convertTextToAtomLabelCommandId)?.enabled === true,
         toolbars: getToolbarsMenuModel(visibleToolsetIds, toolsetRegistry),
-        pluginMenuItems: pluginRuntime.pluginMenuItems,
+        pluginMenuItems: [...bracketMenuItems, ...pluginRuntime.pluginMenuItems],
         availablePluginUpdateCount,
         keybindingScheme
       }),
@@ -20816,6 +20821,7 @@ export function MainWindow({
       visibleToolsetIds,
       toolsetRegistry,
       pluginRuntime.pluginMenuItems,
+      bracketMenuItems,
       availablePluginUpdateCount
     ]
   );

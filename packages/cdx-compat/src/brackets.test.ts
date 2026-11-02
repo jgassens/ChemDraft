@@ -46,6 +46,10 @@ describe("CDXML bracket graphics", () => {
         expect(exported.warnings.map(warning => warning.code)).toEqual([
           "cdxml.repeat_label_payload_only", "cdxml.repeat_connectivity_not_represented"
         ]);
+        expect(exported.warnings.map(warning => warning.message)).toEqual([
+          `CDXML export: repeat-unit label "${label}" of bracket pair b1 is visible, but its association with the bracket pair is kept only in the embedded ChemDraft payload.`,
+          "CDXML export: bracket pair b1 has whole-molecule membership only; atom membership, polymer crossing bonds and head-to-tail connectivity are not written."
+        ]);
       }
     }
   });
@@ -55,6 +59,8 @@ describe("CDXML bracket graphics", () => {
     expect(imported.document!.pages[0].objects.filter(object => object.type === "text").map(object => object.text)).toEqual(["n", "m"]);
     expect(imported.document!.pages[0].objects.filter(object => object.type === "bracket").every(object => object.repeatUnit)).toBe(true);
     expect(imported.warnings.map(warning => warning.code)).toEqual(["cdxml.external_subset_imported", "cdxml.repeat_label_unassociated", "cdxml.repeat_label_unassociated"]);
+    expect(imported.warnings.slice(1).map(warning => warning.message)).toEqual(["pair1", "pair2"].map(id =>
+      `CDXML import: repeat-unit label association for bracket group ${id} is not interpreted; separate label text is retained independently.`));
   });
 
   it("preserves unknown bracket types and crossing attachments instead of assigning polymer connectivity", () => {
@@ -66,6 +72,11 @@ describe("CDXML bracket graphics", () => {
     const unknown = imported.document!.pages[0].objects.find(object => object.type === "unknown-compatibility-object");
     expect(JSON.stringify(unknown)).toContain("crossingbond");
     expect(JSON.stringify(unknown)).toContain("InnerAtomID");
+    expect(imported.warnings.find(warning => warning.code === "cdxml.bracket_group_preserved")?.message).toBe("CDXML import: bracket group bg_crossing has unsupported attachment count or bracket references; the following data is not interpreted: atom or object membership and crossing-bond attachments; the group is preserved as an unknown compatibility object.");
+    const paired = fixture("crossing-bonds").replace('<bracketedgroup id="bg_crossing"', '<graphic id="g_other" BoundingBox="198 174 186 186" GraphicType="Bracket" BracketType="Round"/><bracketedgroup id="bg_crossing"')
+      .replace('</bracketedgroup>', '<bracketattachment id="ba_other" GraphicID="g_other"/></bracketedgroup>');
+    expect(openChemDraftPayload(paired).warnings.find(warning => warning.code === "cdxml.bracket_semantics_preserved")?.message)
+      .toBe("CDXML import: bracket group bg_crossing has unsupported crossing-bond attachments, unresolved atom or object membership; this data is preserved as an unknown compatibility object and is not interpreted as polymer connectivity.");
     const unsupported = pair("round");
     unsupported.pages[0].objects[0].rotation = 30;
     expect(exportDocumentToCdxml(unsupported).warnings.map(warning => warning.code)).toContain("cdxml.bracket_payload_only");

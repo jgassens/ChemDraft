@@ -43,6 +43,7 @@ import type { ToolbarAssetName } from "./toolbarAssets";
 import { SPIN3D_DEBUGGER_COMMAND_ID } from "./conformerDebug";
 import { NO_OPEN_WARNINGS_REASON, TOGGLE_OPEN_WARNINGS_COMMAND_ID } from "./openWarnings";
 import { createTableCommands, type ActiveTableCell } from "./tableCommands";
+import { createBracketCommands } from "./bracketCommands";
 export { tableRuleWidthCommandId, parseTableRuleWidthCommandId } from "./tableCommands";
 import { templateDialogAction, templateInsertActions } from "./templateCommands";
 export { templateInsertCommandId } from "./templateCommands";
@@ -2353,6 +2354,7 @@ export function allShellCommands(
   const registry = options.registry ?? desktopToolsetRegistry;
   return dedupeCommands([
     ...createTableCommands(document, options.activeTableCell),
+    ...createBracketCommands(document),
     ...createQuickActions(document, selectedMolecule, options.availability),
     ...createLayerActions(document, options.compoundLayoutsEnabled),
     // Generated launchers must beat a persisted toolbar occurrence under first-wins dedupe. The

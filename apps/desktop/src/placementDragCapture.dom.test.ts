@@ -253,6 +253,9 @@ describe("placement drags that start on an object follow pointer capture", () =>
     expect(container.querySelector(".bracket-repeat-label")?.textContent).toBe("m");
     await act(async () => { await bridge().command("edit.undo"); });
     expect(container.querySelector(".bracket-repeat-label")?.textContent).toBe("n");
+    await act(async () => { await bridge().command("edit.undo"); });
+    expect(container.querySelector(".bracket-repeat-label")).toBeNull();
+    expect(bridge().snapshot().document.pages[0].objects.filter(object => object.type === "bracket")).toHaveLength(2);
   });
 
   it("grows a chain dragged off a ring atom, one undo entry, SMILES derived", async () => {

@@ -626,9 +626,9 @@ function exportBracketPairs(page: DocumentPage, context: VisibleExportContext, a
       // Standard visible text, without inventing a repeat-label association attribute.
       groups.push(`<t id="${allocator.next()}" p="${formatPoint({ x: closing.x + label.x, y: closing.y + label.y })}"><s size="${formatNumber(cssPxToCdxml(label.fontSize))}">${escapeXmlText(label.text)}</s></t>`);
       warnings.push({ code: "cdxml.repeat_label_payload_only", sourceObjectId: closing.id,
-        message: "The SRU bracket and its label text are visible CDXML, but the editable repeat-label association is preserved only in the ChemDraft payload; a verified CDXML repeat-label mapping is not yet implemented." });
+        message: `CDXML export: repeat-unit label "${label.text}" of bracket pair ${closing.pairId} is visible, but its association with the bracket pair is kept only in the embedded ChemDraft payload.` });
       warnings.push({ code: "cdxml.repeat_connectivity_not_represented", sourceObjectId: closing.id,
-        message: "Repeat-unit brackets carry whole-object membership only. Polymer crossing bonds and head-to-tail connectivity are not represented; the drawn molecular graph is unchanged." });
+        message: `CDXML export: bracket pair ${closing.pairId} has whole-molecule membership only; atom membership, polymer crossing bonds and head-to-tail connectivity are not written.` });
     }
   }
   return groups;
@@ -1798,7 +1798,9 @@ function importPageObjects(
     const pair = attachments.map(attachment => objects.find((object): object is BracketObject =>
       object.type === "bracket" && object.compatibility?.originalId === attachment.attributes.GraphicID));
     if (pair.length !== 2 || pair.some(object => !object) || pair[0] === pair[1]) {
-      warnings.push({ code: "cdxml.bracket_group_preserved", message: "Unsupported bracket group membership or attachment count was preserved as an unknown compatibility object." });
+      const data = [group.attributes.BracketedObjectIDs ? "atom or object membership" : undefined,
+        attachments.some(attachment => childElements(attachment, "crossingbond").length > 0) ? "crossing-bond attachments" : undefined].filter(Boolean);
+      warnings.push({ code: "cdxml.bracket_group_preserved", message: `CDXML import: bracket group ${group.attributes.id ?? "(unknown)"} has unsupported attachment count or bracket references${data.length ? `; the following data is not interpreted: ${data.join(" and ")}` : ""}; the group is preserved as an unknown compatibility object.` });
       objects.push(importUnknownCompatibilityObject(group, pageIndex, objectIndex++));
       continue;
     }
@@ -1825,9 +1827,13 @@ function importPageObjects(
       bracket.compatibility!.unknown.bracketedGroup = group;
     }
     if (repeatUnit) warnings.push({ code: "cdxml.repeat_label_unassociated",
-      message: "Imported SRU brackets without interpreting their repeat label. Separate label text is retained independently because its repeat-label association is unsupported." });
+      message: `CDXML import: repeat-unit label association for bracket group ${group.attributes.id ?? "(unknown)"} is not interpreted; separate label text is retained independently.` });
     if (unsupported) {
-      warnings.push({ code: "cdxml.bracket_semantics_preserved", message: "Unsupported bracket usage, atom membership or crossing-bond attachments were preserved as an unknown compatibility object; they were not interpreted as polymer chemistry." });
+      const details = [unsupportedUsage ? "bracket usage" : undefined, crossing ? "crossing-bond attachments" : undefined,
+        containedObjects.some(object => !object) ? "unresolved atom or object membership" : undefined,
+        extraData ? "additional bracket data" : undefined,
+        (pair as BracketObject[]).some(bracket => bracket.side !== "open" && bracket.side !== "close") || pair[0]!.side === pair[1]!.side ? "bracket sides" : undefined].filter(Boolean).join(", ");
+      warnings.push({ code: "cdxml.bracket_semantics_preserved", message: `CDXML import: bracket group ${group.attributes.id ?? "(unknown)"} has unsupported ${details}; this data is preserved as an unknown compatibility object and is not interpreted as polymer connectivity.` });
       objects.push(importUnknownCompatibilityObject(group, pageIndex, objectIndex++));
     }
   }
