@@ -3,6 +3,8 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use std::collections::HashMap;
 
+// Preserve main's existing UTF-8/binary input envelope for copy. Paste has extra headroom
+// for native encodings, terminators/allocation padding, and interoperable siblings.
 const MAX_CLIPBOARD_BYTES: usize = 64 * 1024 * 1024;
 const CF_HTML_HEADER_BYTES: usize = 105;
 const START_FRAGMENT: &str = "<!--StartFragment-->";
@@ -88,16 +90,50 @@ impl ClipboardWriteResult {
 pub(crate) fn validate_clipboard_items(
     items: Vec<ClipboardWriteItem>,
 ) -> Result<Vec<ValidatedClipboardItem>, String> {
-    validate_clipboard_items_with_limit(items, MAX_CLIPBOARD_BYTES)
+    validate_clipboard_items_with_warnings(items).map(|(items, _)| items)
 }
 
+pub(crate) fn validate_clipboard_items_with_warnings(
+    items: Vec<ClipboardWriteItem>,
+) -> Result<(Vec<ValidatedClipboardItem>, Vec<String>), String> {
+    validate_clipboard_items_for_platform(items, MAX_CLIPBOARD_BYTES, cfg!(windows))
+}
+
+#[cfg(test)]
 fn validate_clipboard_items_with_limit(
     items: Vec<ClipboardWriteItem>,
     limit: usize,
 ) -> Result<Vec<ValidatedClipboardItem>, String> {
+    validate_clipboard_items_for_platform(items, limit, cfg!(windows)).map(|(items, _)| items)
+}
+
+fn validate_clipboard_items_for_platform(
+    mut items: Vec<ClipboardWriteItem>,
+    limit: usize,
+    windows: bool,
+) -> Result<(Vec<ValidatedClipboardItem>, Vec<String>), String> {
+    // Mandatory selection data wins over best-effort interoperable representations.
+    let required_types: std::collections::HashSet<String> = items
+        .iter()
+        .filter(|item| {
+            item.required
+                && (item.text.as_ref().is_some_and(|text| !text.is_empty())
+                    || item
+                        .bytes_base64
+                        .as_ref()
+                        .is_some_and(|bytes| !bytes.is_empty()))
+        })
+        .map(|item| item.r#type.trim().to_string())
+        .collect();
+    for item in &mut items {
+        item.required |= required_types.contains(item.r#type.trim());
+    }
+    items.sort_by_key(|item| !item.required);
+    let mut warnings = Vec::new();
     let mut seen = HashMap::<String, usize>::new();
     let mut validated: Vec<ValidatedClipboardItem> = Vec::new();
     let mut total = 0usize;
+    let mut read_total = 0usize;
     for item in items {
         let item_type = item.r#type.trim();
         if item_type.is_empty() {
@@ -106,13 +142,27 @@ fn validate_clipboard_items_with_limit(
         if item_type.contains('\0') {
             return Err("Clipboard item type contains a NUL character.".to_string());
         }
-        let size_error = || format!("Clipboard items exceed the {limit}-byte size limit.");
+        let own_limit =
+            if !item.required && crate::clipboard_images::is_image_clipboard_type(item_type) {
+                crate::clipboard_images::MAX_CLIPBOARD_IMAGE_BYTES
+            } else {
+                limit
+            };
+        let size_error = || {
+            format!(
+            "Clipboard item \"{item_type}\" exceeds its {own_limit}-byte cap or the {limit}-byte copy budget."
+        )
+        };
         let data = match (item.text, item.bytes_base64) {
             (Some(text), None) => ClipboardWriteData::Text(text),
             (None, Some(encoded)) => {
                 // Bound allocation before decoding; the final exact check includes padding.
-                if encoded.len() > (limit.saturating_sub(total).saturating_add(2) / 3) * 4 {
-                    return Err(size_error());
+                if encoded.len() > (own_limit.saturating_add(2) / 3) * 4 {
+                    if item.required {
+                        return Err(size_error());
+                    }
+                    warnings.push(format!("Dropped optional {}", size_error()));
+                    continue;
                 }
                 ClipboardWriteData::Binary(STANDARD.decode(encoded).map_err(|error| {
                     format!("Clipboard item {item_type} has invalid base64: {error}")
@@ -127,10 +177,6 @@ fn validate_clipboard_items_with_limit(
         if data.bytes().is_empty() {
             continue;
         }
-        total = total
-            .checked_add(data.bytes().len())
-            .filter(|total| *total <= limit)
-            .ok_or_else(size_error)?;
 
         match item_type {
             "text/html" => {
@@ -146,6 +192,19 @@ fn validate_clipboard_items_with_limit(
             validated[index].required |= item.required;
             continue;
         }
+        let read_size = clipboard_copy_read_size(item_type, &data, windows);
+        if data.bytes().len() > own_limit
+            || data.bytes().len() > limit.saturating_sub(total)
+            || read_size > crate::clipboard_limits::MAX_CLIPBOARD_BYTES.saturating_sub(read_total)
+        {
+            if item.required {
+                return Err(size_error());
+            }
+            warnings.push(format!("Dropped optional {}", size_error()));
+            continue;
+        }
+        total += data.bytes().len();
+        read_total += read_size;
         seen.insert(item_type.to_string(), validated.len());
         validated.push(ValidatedClipboardItem {
             r#type: item_type.to_string(),
@@ -156,7 +215,29 @@ fn validate_clipboard_items_with_limit(
     if validated.is_empty() {
         return Err("Clipboard write requires at least one non-empty item.".to_string());
     }
-    Ok(validated)
+    Ok((validated, warnings))
+}
+
+/// Charge the retained UTF-8 bytes, exactly as both native text readers and the TS guard do.
+/// Windows plain text retains CRLF; registered JSON/CDXML/HTML stays UTF-8. GlobalSize
+/// (UTF-16 + terminator + allocator padding on Windows) and NSData are allocation preflights,
+/// not additional retained-byte charges. macOS text aliases are admitted only once.
+/// PNG/DIB aliases are alternatives, not additional items in the retained paste budget.
+fn clipboard_copy_read_size(kind: &str, data: &ClipboardWriteData, windows: bool) -> usize {
+    if windows && kind == "text/plain" {
+        if let Ok(text) = std::str::from_utf8(data.bytes()) {
+            return text.len()
+                + text
+                    .as_bytes()
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, byte)| {
+                        **byte == b'\n' && (*i == 0 || text.as_bytes()[i - 1] != b'\r')
+                    })
+                    .count();
+        }
+    }
+    data.bytes().len()
 }
 
 pub(crate) fn clipboard_utf8<'a>(bytes: &'a [u8], kind: &str) -> Result<&'a str, String> {
@@ -328,6 +409,165 @@ mod tests {
 
     fn html(fragment: &str) -> String {
         format!("<html><head><meta charset=\"utf-8\"></head><body>{START_FRAGMENT}{fragment}{END_FRAGMENT}</body></html>")
+    }
+
+    #[test]
+    fn clipboard_embedded_25_mib_picture_selection_copies_on_both_platforms() {
+        for windows in [false, true] {
+            for picture_mib in [24usize, 25] {
+                let data = "A".repeat((picture_mib * 1024 * 1024).div_ceil(3) * 4);
+                let selection = format!(r#"{{"kind":"chemdraft-selection","image":"{data}"}}"#);
+                let expected = selection.len();
+                let (items, warnings) = validate_clipboard_items_for_platform(
+                    vec![ClipboardWriteItem {
+                        r#type: "application/x-chemdraft-selection+json".into(),
+                        text: Some(selection),
+                        bytes_base64: None,
+                        required: true,
+                    }],
+                    MAX_CLIPBOARD_BYTES,
+                    windows,
+                )
+                .unwrap();
+                assert!(warnings.is_empty());
+                assert_eq!(items[0].data.bytes().len(), expected);
+                assert_eq!(
+                    clipboard_copy_read_size(&items[0].r#type, &items[0].data, windows),
+                    expected
+                );
+                let mut budget = crate::clipboard_limits::ClipboardReadBudget::default();
+                budget
+                    .check(&items[0].r#type, expected + if windows { 16 } else { 0 })
+                    .unwrap();
+                budget.reserve(&items[0].r#type, expected).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn clipboard_copy_charges_retained_utf8_once_and_windows_crlf_exactly() {
+        for text in ["ascii", "\n\n\n", "é€😀", "a\r\nb\nc"] {
+            let data = ClipboardWriteData::Text(text.into());
+            assert_eq!(
+                clipboard_copy_read_size("text/plain", &data, false),
+                text.len()
+            );
+            assert_eq!(
+                clipboard_copy_read_size("text/plain", &data, true),
+                crate::windows_clipboard::windows_line_endings(text).len()
+            );
+            for windows in [false, true] {
+                for kind in [
+                    "application/x-chemdraft-selection+json",
+                    "chemical/x-cdxml",
+                    "text/html",
+                ] {
+                    assert_eq!(clipboard_copy_read_size(kind, &data, windows), text.len());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn clipboard_optional_over_cap_or_total_is_dropped_with_its_own_cap_warning() {
+        for windows in [false, true] {
+            let (items, warnings) = validate_clipboard_items_for_platform(vec![
+                item(serde_json::json!({"type":"application/x-chemdraft-selection+json","text":"selection"})),
+                ClipboardWriteItem { r#type: "image/png".into(), text: None,
+                    bytes_base64: Some("A".repeat((25 * 1024 * 1024 / 3 + 1) * 4)),
+                    required: false },
+                item(serde_json::json!({"type":"text/html","text":"x".repeat(101),"required":false})),
+            ], 100, windows).unwrap();
+            assert_eq!(items.len(), 1);
+            assert_eq!(warnings.len(), 2);
+            assert!(warnings[0].contains("image/png") && warnings[0].contains("26214400-byte cap"));
+            assert!(warnings[1].contains("text/html") && warnings[1].contains("100-byte cap"));
+            let error = validate_clipboard_items_for_platform(
+                vec![item(serde_json::json!({
+                    "type":"application/x-chemdraft-selection+json","text":"x".repeat(101)
+                }))],
+                100,
+                windows,
+            )
+            .unwrap_err();
+            assert!(
+                error.contains("application/x-chemdraft-selection+json")
+                    && error.contains("100-byte cap")
+            );
+        }
+    }
+
+    #[test]
+    fn clipboard_required_picture_copy_retains_mains_64_mib_input_cap() {
+        // A standalone Copy As PNG can target another app. Main allowed >25 MiB here;
+        // only optional picture siblings use the host's 25 MiB paste cap.
+        let encoded = "A".repeat((26 * 1024 * 1024 / 3 + 1) * 4);
+        let items = validate_clipboard_items(vec![ClipboardWriteItem {
+            r#type: "image/png".into(),
+            text: None,
+            bytes_base64: Some(encoded),
+            required: true,
+        }])
+        .unwrap();
+        assert!(items[0].data.bytes().len() > crate::clipboard_images::MAX_CLIPBOARD_IMAGE_BYTES);
+    }
+
+    #[test]
+    fn clipboard_optional_total_overflow_keeps_the_mandatory_selection() {
+        for windows in [false, true] {
+            let (items, warnings) = validate_clipboard_items_for_platform(vec![
+                item(serde_json::json!({"type":"text/html","text":"123456","required":false})),
+                item(serde_json::json!({"type":"application/x-chemdraft-selection+json","text":"123456"})),
+            ], 10, windows).unwrap();
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].r#type, "application/x-chemdraft-selection+json");
+            assert_eq!(warnings.len(), 1);
+            assert!(
+                warnings[0].contains("text/html") && warnings[0].contains("10-byte copy budget")
+            );
+        }
+    }
+
+    #[test]
+    fn clipboard_table_copy_keeps_the_selection_and_format_order_when_a_rendition_overflows() {
+        // A table copy: the private selection is required; HTML, RTF and text are optional.
+        for windows in [false, true] {
+            let (items, warnings) = validate_clipboard_items_for_platform(
+                vec![
+                    item(serde_json::json!({
+                        "type":"application/x-chemdraft-selection+json","text":"s".repeat(40)
+                    })),
+                    item(
+                        serde_json::json!({"type":"text/html","text":"h".repeat(40),"required":false}),
+                    ),
+                    item(serde_json::json!({
+                        "type":"text/rtf","text":format!("{{\\rtf1 {}}}", "r".repeat(23)),"required":false
+                    })),
+                    item(
+                        serde_json::json!({"type":"text/plain","text":"t".repeat(10),"required":false}),
+                    ),
+                ],
+                100,
+                windows,
+            )
+            .unwrap();
+            assert_eq!(
+                items
+                    .iter()
+                    .map(|item| item.r#type.as_str())
+                    .collect::<Vec<_>>(),
+                [
+                    "application/x-chemdraft-selection+json",
+                    "text/html",
+                    "text/plain"
+                ]
+            );
+            assert_eq!(warnings.len(), 1);
+            assert!(
+                warnings[0].starts_with("Dropped optional Clipboard item \"text/rtf\"")
+                    && warnings[0].contains("100-byte copy budget")
+            );
+        }
     }
 
     #[test]

@@ -114,6 +114,8 @@ it.each([
   await act(async () => root!.render(<MainWindow initialDocument={createPhase4Document("Test document")}
     initialPaletteMode="hidden" initialRulersVisible={false} nativePalette={false} />));
   const runtime = native.runtime!;
+  // Linked native imports may bypass Vitest's module mock; provide the real IPC entry point too.
+  vi.stubGlobal("__TAURI_INTERNALS__", { invoke: (command: string, args: unknown) => native.invoke(command, args) });
   const descriptor = loadPackagedPlugin({ baseUrl: `${origin}/installed-plugins/detached-panel/`, manifest }, {
     createWorker: entryUrl => {
       expect(entryUrl.href).toBe(`${origin}/installed-plugins/detached-panel/entry.js`);
@@ -152,13 +154,21 @@ it.each([
     vi.spyOn(window, "dispatchEvent").mockImplementation(event =>
       [PLUGIN_PANEL_REQUEST_EVENT, PLUGIN_PANEL_REPORT_EVENT].includes(event.type) ? true : dispatch(event));
     window.history.replaceState(null, "", `/?window=pluginPanel&panelId=${windowId}`);
-    vi.stubGlobal("__TAURI_INTERNALS__", {});
-    native.invoke.mockImplementation(async (command: string, args?: { event?: string; payload?: unknown }) => {
+    native.invoke.mockImplementation(async (command: string, args?: {
+      event?: string; payload?: unknown;
+      publication?: { targetLabel: string; event: string; payload: unknown };
+    }) => {
       if (command === "plugin_panel_event_forward") {
         expect(args?.event).toBe(PLUGIN_PANEL_REQUEST_EVENT);
         // Rust derives this label from the IPC caller and refuses mismatched identities.
         expect(args?.payload).toEqual(parsePluginPanelWindowLabel(`plugin-panel-${windowId}`));
         for (const handler of native.listeners.get(args!.event!) ?? []) handler({ payload: args!.payload });
+      }
+      if (command === "open_plugin_panel_window" && args?.publication) {
+        // Native publication evaluates a CustomEvent in only this recipient, bypassing the bus.
+        expect(args).not.toHaveProperty("request");
+        expect(args.publication.targetLabel).toBe(`plugin-panel-${windowId}`);
+        dispatch(new CustomEvent(args.publication.event, { detail: args.publication.payload }));
       }
       return undefined;
     });

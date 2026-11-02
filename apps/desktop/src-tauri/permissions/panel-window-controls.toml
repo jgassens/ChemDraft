@@ -1,0 +1,9 @@
+[[permission]]
+identifier = "allow-hide-plugin-panel-window"
+description = "Hides only the invoking host-owned panel window."
+commands.allow = ["hide_plugin_panel_window"]
+
+[[permission]]
+identifier = "allow-hide-plugin-panel-from-main"
+description = "Lets the document window hide a host-owned panel window, restoring its normal frame first."
+commands.allow = ["hide_plugin_panel_from_main"]

@@ -1,25 +1,20 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "plugin-panel",
-  "description": "Minimal capability for host-owned analysis windows. These windows render declarative plugin reports or built-in analysis snapshots through trusted app components and hold NO plugin code. They receive core app/path/window/webview/image/resource APIs, event listening and narrow authenticated native panel forwarders. Event emission is not granted, so panel actions cannot spoof another window's identity. They hold no filesystem, dialog, clipboard or generic command-routing permission. Plugin code still executes in a CSP-restricted worker with no IPC.",
+  "description": "Minimal capability for host-owned analysis windows rendering declarative reports and analysis snapshots. Window enumeration and generic window mutation are not granted. Panel chrome uses caller-bound native controls; panels hold no plugin code, filesystem, dialog, clipboard or generic command-routing permission.",
   "windows": ["plugin-panel-*"],
   "permissions": [
     "core:app:default",
     "core:path:default",
-    "core:window:default",
-    "core:webview:default",
     "core:image:default",
     "core:resources:default",
     "core:event:allow-listen",
     "core:event:allow-unlisten",
     "allow-plugin-panel-action-forward",
     "allow-plugin-panel-event-forward",
-    "core:window:allow-hide",
-    "core:window:allow-outer-position",
-    "core:window:allow-scale-factor",
     "allow-register-plugin-panel-input-focus",
     "allow-set-plugin-panel-input-focus",
-    "core:window:allow-set-position",
-    "core:window:allow-set-size"
+    "allow-set-plugin-panel-full-size",
+    "allow-hide-plugin-panel-window"
   ]
 }

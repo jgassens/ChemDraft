@@ -9,6 +9,10 @@ export {
 export { textAdvanceEm, measureTextRun, measureNativeTextSpanLineWidth } from "./textMetrics";
 export { medianLength, representativeMoleculeBondLength, scalePageGeometry } from "./pageScale";
 export {
+  layoutAtomAnnotationLabels, estimateAnnotationTextWidth, annotationLabelBoxesOverlap, annotationBondLines,
+  type AnnotationAtom, type AnnotationLabelBox
+} from "./atomAnnotationLabels";
+export {
   nativeTextMetrics, nativeTextCharacterWidthFactor, nativeTextSubscriptBottomEm,
   nativeTextScriptFontScale, nativeTextSubscriptOffsetEm, nativeTextSuperscriptOffsetEm
 } from "./textMetrics";

@@ -1,15 +1,17 @@
 import { readFileSync } from "node:fs";
 import { JSDOM } from "jsdom";
 import { describe, expect, it } from "vitest";
-import { deserializeDocument, textStyleToObjectStyle, type TableObject } from "@chemdraft/chem-core";
-import type { ClipboardReadPayload } from "@chemdraft/clipboard-adapter";
+import { deserializeDocument, TableObjectSchema, textStyleToObjectStyle, type TableObject } from "@chemdraft/chem-core";
+import {
+  guardClipboardPayload, inspectClipboardPayload, MAX_CLIPBOARD_BYTES, MAX_CLIPBOARD_TEXT_BYTES, type ClipboardReadPayload
+} from "@chemdraft/clipboard-adapter";
 import { exportTableClipboardPayloads } from "@chemdraft/export-engine";
 import { tableVisualBoundsForArrangement } from "@chemdraft/layout-engine";
 import {
   CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, createPhase4Document, createSelectionClipboardPayload,
   insertNativeTemplateMolecule, insertNativeTextObject, insertTableIntoDocument, serializeSelectionClipboardPayload
 } from "./documentWorkflow";
-import { pasteTableIntoDocument, readTableClipboardPaste, tableClipboardPasteDecision, tableSelectionClipboardItems } from "./tableClipboardWiring";
+import { clipboardWriteNotices, pasteTableIntoDocument, readTableClipboardPaste, tableClipboardPasteDecision, tableSelectionClipboardItems } from "./tableClipboardWiring";
 import { picturePngBase64 } from "./testSupport/imageFixture";
 
 const fixture = (name: string) => readFileSync(`packages/fixtures/clipboard-tables/${name}`, "utf8");
@@ -29,12 +31,31 @@ describe("table-only copy", () => {
     const result = tableSelectionClipboardItems(selection)!;
     const table = selection.objects[0] as TableObject;
     const exported = exportTableClipboardPayloads(table);
+    // Only the private selection is required; the interoperable renditions are optional.
     expect(result).toEqual({ items: [
-      { type: CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, text: serializeSelectionClipboardPayload(selection) },
-      { type: "text/html", text: exported.html }, { type: "text/rtf", text: exported.rtf },
-      { type: "text/plain", text: exported.tsv }
+      { type: CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, text: serializeSelectionClipboardPayload(selection), required: true },
+      { type: "text/html", text: exported.html, required: false }, { type: "text/rtf", text: exported.rtf, required: false },
+      { type: "text/plain", text: exported.tsv, required: false }
     ], warnings: exported.warnings });
     expect(selection.objects[0]).toEqual(table);
+  });
+
+  it("keeps the selection required and the renditions optional, in format order", () => {
+    const copy = tableSelectionClipboardItems(createSelectionClipboardPayload(selectedTable())!)!;
+    expect(copy.items.map(item => [item.type, item.required])).toEqual([
+      [CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, true], ["text/html", false], ["text/rtf", false], ["text/plain", false]
+    ]);
+  });
+
+  it("reports what a successful copy dropped or could not write, and nothing for a failed one", () => {
+    const dropped = "Dropped optional Clipboard item \"text/html\" exceeds its 67108864-byte cap or the 67108864-byte copy budget.";
+    expect(clipboardWriteNotices({ ok: true, written: [CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, "text/plain"],
+      failed: [{ type: "text/rtf", reason: "Could not write clipboard data for type text/rtf." }], warnings: [dropped] }))
+      .toEqual([dropped, "text/rtf was not copied: Could not write clipboard data for type text/rtf."]);
+    expect(clipboardWriteNotices({ ok: true, written: [CHEMDRAFT_SELECTION_CLIPBOARD_TYPE], failed: [], warnings: [] })).toEqual([]);
+    // A failed copy reports itself; its per-item failures are not "left out" of a copy.
+    expect(clipboardWriteNotices({ ok: false, written: [], failed: [{ type: CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, reason: "busy" }],
+      warnings: [] })).toEqual([]);
   });
 
   it("declines empty, text, molecule, mixed and molecule-fragment selections", () => {
@@ -54,6 +75,37 @@ describe("table-only copy", () => {
       objectId: ring.id, atomIds: [ring.atoms[0].id, ring.atoms[1].id], bondIds: [ring.bonds[0].id]
     }])!)).toBeUndefined();
   });
+
+  it("copies 2,000 rows (four tables at the row and character maxima) inside the native copy budget", () => {
+    let document = createPhase4Document("Large tables");
+    const newId = ids();
+    for (let index = 0; index < 4; index += 1) {
+      document = insertTableIntoDocument(document, { rows: 500, columns: 8, headerRows: 1, preset: "grid",
+        center: { x: 100, y: 100 }, newId });
+    }
+    document = structuredClone(document);
+    const tables = document.pages[0].objects as TableObject[];
+    for (const table of tables) {
+      for (const row of table.rows) for (const cell of row.cells) cell.text = "Ti(OiPr)4 0.854 g/mL, allyl alcohol 58.08".padEnd(50, ".");
+      expect(TableObjectSchema.safeParse(table).success).toBe(true);
+    }
+    document.selection = { pageId: document.pages[0].id, objectIds: tables.map(table => table.id) };
+    const copy = tableSelectionClipboardItems(createSelectionClipboardPayload(document)!)!;
+    const bytes = copy.items.map(item => new TextEncoder().encode(item.text).length);
+    // All four fit main's 64 MiB copy envelope (clipboard_formats.rs), so none is dropped; Windows
+    // CRLF is charged only against the 1 GiB paste total.
+    expect(bytes.reduce((sum, size) => sum + size, 0)).toBeLessThan(64 * 1024 * 1024);
+    expect(copy.items.map(item => item.type)).toEqual([CHEMDRAFT_SELECTION_CLIPBOARD_TYPE, "text/html", "text/rtf", "text/plain"]);
+    expect(copy.items[1].text.match(/<tr\b/g)).toHaveLength(2000);
+    expect(copy.items[2].text.match(/\\row\b/g)).toHaveLength(2000);
+    expect(copy.items[3].text.split("\n").filter(line => line !== "")).toHaveLength(2000);
+    // Pasting the copy back: every flavor is within the paste caps and the selection wins.
+    const read = payload(...copy.items);
+    expect(Math.max(...bytes)).toBeLessThan(MAX_CLIPBOARD_TEXT_BYTES);
+    expect(guardClipboardPayload(read)).toMatchObject({ skippedItems: [], textItems: read.textItems });
+    expect(bytes.reduce((sum, size) => sum + size, 0)).toBeLessThan(MAX_CLIPBOARD_BYTES);
+    expect(tableClipboardPasteDecision(read, parseHtml)).toMatchObject({ kind: "selection" });
+  }, 60_000);
 
   it("joins tables in page order with one HTML document, one RTF document and empty TSV line", () => {
     const first = selectedTable();
@@ -449,6 +501,26 @@ describe("paste precedence and table building", () => {
     const raw = htmlPayload();
     raw.types.push("com.cambridgesoft.cdx");
     expect(tableClipboardPasteDecision(raw, parseHtml)).toMatchObject({ kind: "existing", payload: { kind: "cdx" } });
+  });
+
+  it("pastes an in-cap table beside a size-skipped flavor, without letting the skip reorder precedence", () => {
+    const skippedItems = [{ type: "text/rtf", byteLength: 400 * 1024 * 1024, limitBytes: MAX_CLIPBOARD_TEXT_BYTES, reason: "flavor" as const }];
+    expect(tableClipboardPasteDecision({ ...htmlPayload(), skippedItems }, parseHtml))
+      .toMatchObject({ kind: "table", result: { ok: true, source: "html" } });
+    const cdx = { ...htmlPayload(), skippedItems };
+    cdx.types.push("chemical/x-cdx");
+    expect(tableClipboardPasteDecision(cdx, parseHtml)).toMatchObject({ kind: "existing", payload: { kind: "size-refused" } });
+    expect(tableClipboardPasteDecision({ ...payload({ type: "text/html", text: "<p>prose</p>" }), skippedItems }, parseHtml))
+      .toMatchObject({ kind: "existing", payload: { kind: "size-refused" } });
+  });
+
+  it("uses the caller's paste inspection for everything that is not a table", () => {
+    const flavorOnly: ClipboardReadPayload = { types: ["public.svg-image"], textItems: [] };
+    const inspect = (raw: ClipboardReadPayload) => inspectClipboardPayload({ ...raw,
+      types: raw.types.map(type => type === "public.svg-image" ? "public.svg" : type) });
+    expect(tableClipboardPasteDecision(flavorOnly, parseHtml)).toMatchObject({ kind: "existing", payload: { kind: "empty" } });
+    expect(tableClipboardPasteDecision(flavorOnly, parseHtml, inspect))
+      .toMatchObject({ kind: "existing", payload: { kind: "vector-only", sourceType: "public.svg" } });
   });
 
   it.each(["CCO", "CCO\nCCN", "CCO\tCCN\nCCC\tCCCC", "CCO\tethanol\nCCN\tethylamine", "CCO\tethanol sample\nCCN\tethylamine sample"])("sends SMILES/list %j to today's structure parser first", text => {

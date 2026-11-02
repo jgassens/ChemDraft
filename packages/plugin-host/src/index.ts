@@ -93,6 +93,7 @@ import {
   PluginPanelReportSchema,
   PluginOverlayStatusRequestSchema,
   PluginOverlayTranscriptRequestSchema,
+  snapshotPanelReport,
   PluginOverlayContentRequestSchema,
   PluginOverlayOpenRequestSchema,
   PluginCommandInputSchema,
@@ -745,7 +746,12 @@ export class PluginHost {
           },
           setContent: async request => {
             this.requirePermission(pluginId, "ui.canvas");
-            const parsed = PluginOverlayContentRequestSchema.parse(request);
+            // Snapshot the request directly: action payloads have a separate 4,000-character
+            // contract. Leave room for 64 KiB of sections, the prompt and ownership metadata;
+            // the overlay schema supplies its own specific content-size refusal afterwards.
+            const snapshot = snapshotPanelReport(request, { serializedBytes: 2 * 1024 * 1024 });
+            if (!snapshot.ok) throw new PluginHostError(snapshot.issue.message);
+            const parsed = PluginOverlayContentRequestSchema.parse(snapshot.data);
             const overlay = requireOwnOverlay(parsed.overlayId);
             // Content control ids must also be distinct from the permanent composer/select.
             const report = PluginPanelReportSchema.parse({ title: overlay.title, sections: [overlay.prompt, ...parsed.sections] });
@@ -777,6 +783,7 @@ export class PluginHost {
               if (!declared) {
                 throw new PluginHostError(`Plugin "${pluginId}" does not declare panel "${panelId}".`);
               }
+              // Every call, including an open panel's updates, forwards only the detached snapshot.
               const parsedReport = PluginPanelReportSchema.parse(report);
               requireOwnReportCommands(parsedReport);
               await this.showPanelReport?.(pluginId, panelId, parsedReport);

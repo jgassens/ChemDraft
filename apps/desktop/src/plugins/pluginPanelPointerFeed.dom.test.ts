@@ -85,13 +85,13 @@ it("preserves related targets so crossing a peak does not end a spectrum drag", 
   vi.spyOn(svg, "getBoundingClientRect").mockReturnValue({ left: 0, width: 640 } as DOMRect);
   let frame: FrameRequestCallback | undefined;
   vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => { frame = callback; return 1; });
-  const before = peak.querySelector("rect")!.getAttribute("x");
+  const before = peak.querySelector(".lf-hit")!.getAttribute("x");
   act(() => svg.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: 100 })));
   moveTo(peak, 110);
   expect((out.mock.calls[0]![0] as PointerEvent).relatedTarget).toBe(peak);
   expect(frame).toBeDefined();
   act(() => frame!(0));
-  expect(peak.querySelector("rect")!.getAttribute("x")).not.toBe(before);
+  expect(peak.querySelector(".lf-hit")!.getAttribute("x")).not.toBe(before);
 });
 
 it("routes motion to pointer capture and defers boundary events until capture is released", async () => {

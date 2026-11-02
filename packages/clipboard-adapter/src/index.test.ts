@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { JSDOM } from "jsdom";
+import roundingCases from "./clipboardSizeRounding.json";
 import {
+  MAX_CLIPBOARD_BYTES, MAX_CLIPBOARD_TEXT_BYTES, clipboardTextByteLength, clipboardSizeRefusalMessage,
+  guardClipboardPayload,
   detectMolfileFormat,
   extractRxnMolfileBlocks,
   inspectClipboardPayload,
@@ -14,6 +18,412 @@ import {
   smilesListTokens,
   smilesListDecision
 } from "./index";
+import type { ClipboardReadPayload, ClipboardInspectionOptions } from "./index";
+
+describe("SVG XML well-formedness", () => {
+  const window = new JSDOM("").window;
+  const parser = new window.DOMParser();
+  const namespace = 'xmlns="http://www.w3.org/2000/svg"';
+  const payloads = (text: string): ClipboardReadPayload[] => [
+    ...["text/plain", "public.utf8-plain-text", "image/svg+xml", "public.svg", "public.svg-image"].map(type => ({
+      types: [type], textItems: [{ type, text }]
+    })),
+    { types: ["image/svg+xml"], textItems: [], imageItems: [
+      { type: "image/svg+xml", bytesBase64: Buffer.from(text).toString("base64") }
+    ] }
+  ];
+
+  describe.each(["DOMParser", "headless"] as const)("%s", mode => {
+    const options: ClipboardInspectionOptions = { svgParser: mode === "DOMParser" ? parser : null };
+
+    it.each([
+      '<svg xmlns="http://www.w3.org/2000/svg"><g xmlns:xlink="http://www.w3.org/1999/xlink"><use xlink:href="#p"/></g></svg>',
+      '<s:svg xmlns:s="http://www.w3.org/2000/svg"/>',
+      '<s:svg width="1" xmlns:s="http://www.w3.org/2000/svg"><s:g><s:path d="M0 0"/></s:g></s:svg>'
+    ])("preserves valid namespace scopes byte for byte: %s", text => {
+      for (const payload of payloads(text)) {
+        const result = inspectClipboardPayload(payload, options);
+        expect(result.kind).toBe("image");
+        if (result.kind === "image") expect(Buffer.from(result.image.bytesBase64, "base64").toString()).toBe(text);
+      }
+    });
+
+    it.each([
+      ['<svg><path d="M0 0L1 1"/></svg>', `<svg ${namespace}><path d="M0 0L1 1"/></svg>`],
+      ['<svg><use xlink:href="#p"/></svg>', `<svg ${namespace} xmlns:xlink="http://www.w3.org/1999/xlink"><use xlink:href="#p"/></svg>`],
+      [`<svg ${namespace}><use xlink:href="#p"/></svg>`, `<svg xmlns:xlink="http://www.w3.org/1999/xlink" ${namespace}><use xlink:href="#p"/></svg>`],
+      ['<svg xlink:href="#p"/>', `<svg ${namespace} xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="#p"/>`],
+      ['<?xml version="1.0"?><!-- <svg/> --><svg title="xmlns=\'unchanged\' >"><g xmlns="http://www.w3.org/2000/svg"/></svg>',
+        `<?xml version="1.0"?><!-- <svg/> --><svg ${namespace} title="xmlns='unchanged' >"><g xmlns="http://www.w3.org/2000/svg"/></svg>`],
+      ['<svg><g xmlns:xlink="http://www.w3.org/1999/xlink"><use xlink:href="#p"/></g></svg>',
+        `<svg ${namespace}><g xmlns:xlink="http://www.w3.org/1999/xlink"><use xlink:href="#p"/></g></svg>`],
+      ['<svg><g xmlns:xlink="http://www.w3.org/1999/xlink"><use xlink:href="#p"/></g><use xlink:href="#p"/></svg>',
+        `<svg ${namespace} xmlns:xlink="http://www.w3.org/1999/xlink"><g xmlns:xlink="http://www.w3.org/1999/xlink"><use xlink:href="#p"/></g><use xlink:href="#p"/></svg>`],
+      ['<svg><!-- xlink:href --><text>xlink:href</text><![CDATA[xlink:href]]></svg>',
+        `<svg ${namespace}><!-- xlink:href --><text>xlink:href</text><![CDATA[xlink:href]]></svg>`]
+    ])("stores missing namespaces in the picture on every SVG path: %s", (text, expected) => {
+      for (const payload of payloads(text)) {
+        const result = inspectClipboardPayload(payload, options);
+        expect(result.kind).toBe("image");
+        if (result.kind === "image") expect(Buffer.from(result.image.bytesBase64, "base64").toString()).toBe(expected);
+        const fallback = inspectClipboardPayload({ ...payload,
+          textItems: [...payload.textItems, { type: "text/plain", text: "CCO" }] }, options);
+        expect(fallback).toMatchObject({ kind: "smiles", fallbackImage: { type: "image/svg+xml" } });
+        if (fallback.kind === "smiles") expect(Buffer.from(fallback.fallbackImage!.bytesBase64, "base64").toString()).toBe(expected);
+      }
+    });
+
+    it.each([
+      ["<svg><script>alert(1)</script></svg>", /it contains a <script> element/],
+      ["<svg><g></svg>", /it isn't well-formed XML:/],
+      ['<svg xmlns="urn:wrong"/>', /the root must be <svg> in the SVG namespace/],
+      ['<svg xmlns=""/>', /the root must be <svg> in the SVG namespace/],
+      ['<foo:svg xmlns:foo="urn:wrong"/>', /the root must be <svg> in the SVG namespace/],
+      ['<svg xmlns:xlink="urn:wrong"><use xlink:href="#p"/></svg>', /it contains an XML namespace that isn't allowed/]
+    ])("retains specific refusals without replacing declared namespaces: %s", (text, problem) => {
+      for (const payload of payloads(text)) {
+        expect(inspectClipboardPayload(payload, options)).toMatchObject({ kind: "image-refused", message: expect.stringMatching(problem) });
+      }
+    });
+
+    it.each([
+      [`<svg ${namespace}><g undeclared:x="1"/></svg>`, /undeclared|unbound/i],
+      [`<svg ${namespace}><undeclared:g/></svg>`, /undeclared|unbound/i],
+      [`<svg ${namespace}>\n<!-- a -- b --></svg>`, /comment/i],
+      [`<svg ${namespace}>\n<!-- a ---></svg>`, /comment/i],
+      [`<!-- a -- b --><svg ${namespace}/>`, /comment/i],
+      [`<svg ${namespace}/><!-- a --->`, /comment/i],
+      [`<svg ${namespace} width="1" width="2"/>`, /duplicate attribute/i],
+      [`<svg ${namespace}><g></svg>`, /closing tag|close tag/i],
+      [`<svg ${namespace}><g xmlns:p="http://www.w3.org/1999/xlink"/><g p:x="1"/></svg>`, /undeclared|unbound/i],
+      [`<svg ${namespace} xmlns:p="http://www.w3.org/1999/xlink" xmlns:q="http://www.w3.org/1999/xlink" p:href="#a" q:href="#b"/>`, /duplicate attribute/i]
+    ])("refuses malformed XML on every SVG path: %s", (text, problem) => {
+      for (const payload of payloads(text)) {
+        const result = inspectClipboardPayload(payload, options);
+        expect(result).toMatchObject({ kind: "image-refused", message: expect.stringContaining("Couldn't paste the SVG: it isn't well-formed XML:") });
+        if (result.kind === "image-refused") expect(result.message).toMatch(problem);
+      }
+    });
+
+    it("keeps declared prefixes, comments, CDATA styles and escaped text as the original picture", () => {
+      const text = `<?xml version="1.0"?><svg ${namespace} xmlns:xlink="http://www.w3.org/1999/xlink"><!-- valid --><defs><path id="p"/></defs><style><![CDATA[path { fill: red; }]]></style><use xlink:href="#p"/><text>A &amp; B</text></svg>`;
+      for (const payload of payloads(text)) {
+        const result = inspectClipboardPayload(payload, options);
+        expect(result.kind).toBe("image");
+        if (result.kind === "image") expect(Buffer.from(result.image.bytesBase64, "base64").toString()).toBe(text);
+      }
+    });
+
+    it("does not offer malformed SVG as a chemistry fallback picture", () => {
+      for (const payload of payloads(`<svg ${namespace}><g undeclared:x="1"/></svg>`)) {
+        const result = inspectClipboardPayload({ ...payload, textItems: [...payload.textItems, { type: "text/plain", text: "CCO" }] }, options);
+        expect(result).toMatchObject({ kind: "smiles", text: "CCO" });
+        expect(result).not.toHaveProperty("fallbackImage");
+      }
+    });
+  });
+
+  it("uses globalThis.DOMParser by default and retains parser line numbers", () => {
+    vi.stubGlobal("DOMParser", window.DOMParser);
+    try {
+      for (const payload of payloads(`<svg ${namespace}>\n<g undeclared:x="1"/></svg>`)) {
+        expect(inspectClipboardPayload(payload)).toMatchObject({ kind: "image-refused",
+          message: expect.stringMatching(/isn't well-formed XML: line 2, column \d+:.*unbound/i) });
+      }
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("reports the original pasted XML column before namespace insertion", () => {
+    const text = "<svg><g></svg>";
+    for (const payload of payloads(text)) {
+      expect(inspectClipboardPayload(payload, { svgParser: parser })).toMatchObject({ kind: "image-refused",
+        message: "Couldn't paste the SVG: it isn't well-formed XML: line 1, column 14: unexpected close tag." });
+    }
+  });
+
+  it("does not let a comment marker inside an XML declaration hide a DOCTYPE", () => {
+    const text = '<?xml version="1.0" encoding="<!--"?><!DOCTYPE svg [<!ENTITY x "expanded">]><!-- --><svg>&x;</svg>';
+    const parseFromString = vi.fn(() => { throw new Error("must not parse declarations"); });
+    for (const payload of payloads(text)) {
+      expect(inspectClipboardPayload(payload, { svgParser: { parseFromString } })).toMatchObject({ kind: "image-refused",
+        message: "Couldn't paste the SVG: it contains a document type declaration that isn't allowed." });
+    }
+    expect(parseFromString).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["Chromium/WebView2", "root", "http://www.w3.org/1999/xhtml"],
+    ["WebKit", "nested", "http://www.w3.org/1999/xhtml"],
+    ["namespace-free fallback", "nested", ""]
+  ])("extracts the error lines from %s parsererror output", (_engine, position, errorNamespace) => {
+    const parsed = parser.parseFromString(`<svg ${namespace}/>`, "image/svg+xml");
+    const error = parsed.createElementNS(errorNamespace || null, "parsererror");
+    // WebKit nests XHTML parsererror in the SVG; Chromium can make it the root.
+    error.innerHTML = '<h3>This page contains the following errors:</h3><div style="font-family:monospace;font-size:12px">error on line 7 at column 9: Namespace prefix x for href on use is not defined</div><h3>Below is a rendering of the page up to the first error.</h3>';
+    if (position === "root") parsed.replaceChild(error, parsed.documentElement);
+    else parsed.documentElement.append(error);
+    const parseFromString = vi.fn(() => parsed);
+    for (const payload of payloads(`<svg ${namespace}/>`)) {
+      expect(inspectClipboardPayload(payload, { svgParser: { parseFromString } })).toMatchObject({ kind: "image-refused",
+        message: "Couldn't paste the SVG: it isn't well-formed XML: error on line 7 at column 9: Namespace prefix x for href on use is not defined." });
+    }
+    expect(parseFromString).toHaveBeenCalledWith(expect.any(String), "image/svg+xml");
+  });
+
+  it.each(["<other/>", '<svg xmlns="urn:wrong"/>'])("refuses a parsed root outside the SVG namespace: %s", text => {
+    expect(inspectClipboardPayload({ types: ["image/svg+xml"], textItems: [{ type: "image/svg+xml", text }] }, { svgParser: parser }))
+      .toMatchObject({ kind: "image-refused", message: expect.stringContaining("the root must be <svg> in the SVG namespace") });
+  });
+
+  it("pastes a 25 MiB SVG and 24 nested groups unchanged at main's picture limit", () => {
+    const wrapper = '<svg xmlns="http://www.w3.org/2000/svg">' + '<g>'.repeat(24);
+    const closing = '</g>'.repeat(24) + '</svg>';
+    const text = wrapper + " ".repeat(25 * 1024 * 1024 - wrapper.length - closing.length) + closing;
+    const result = inspectClipboardPayload({ types: ["image/svg+xml"], textItems: [{ type: "image/svg+xml", text }] }, { svgParser: null });
+    expect(result.kind).toBe("image");
+    if (result.kind === "image") expect(result.image.bytesBase64).toBe(Buffer.from(text).toString("base64"));
+  }, 10_000);
+
+  it("retains the validation size cap before calling the XML parser", () => {
+    const parseFromString = vi.fn(() => { throw new Error("must not parse"); });
+    const text = `<svg ${namespace}>${" ".repeat(25 * 1024 * 1024)}</svg>`;
+    expect(inspectClipboardPayload({ types: ["text/plain"], textItems: [{ type: "text/plain", text }] }, { svgParser: { parseFromString } }))
+      .toMatchObject({ kind: "size-refused", message: expect.stringContaining("the limit is 25 MB") });
+    expect(parseFromString).not.toHaveBeenCalled();
+  }, 60_000);
+
+  it("applies the validation size cap to the namespaced text", () => {
+    const parseFromString = vi.fn(() => { throw new Error("must not parse"); });
+    const text = `<svg>${" ".repeat(25 * 1024 * 1024 - 11)}</svg>`;
+    for (const payload of payloads(text)) {
+      expect(inspectClipboardPayload(payload, { svgParser: { parseFromString } }))
+        .toMatchObject({ kind: "image-refused", message: "Couldn't paste the SVG: it exceeds the 25 MB picture limit." });
+    }
+    expect(parseFromString).not.toHaveBeenCalled();
+  }, 60_000);
+
+  it.each([
+    ['<!DOCTYPE svg [<!ENTITY x "expanded">]>', "a document type declaration"],
+    ['<!ENTITY x "expanded">', "an entity declaration"],
+    ['<?xml-stylesheet href="external.css"?>', "a processing instruction"]
+  ])("refuses declarations before parsing: %s", (declaration, reason) => {
+    const parseFromString = vi.fn(() => { throw new Error("must not parse"); });
+    const text = declaration.startsWith("<!ENTITY")
+      ? `<svg ${namespace}>${declaration}</svg>` : `${declaration}<svg ${namespace}/>`;
+    for (const payload of payloads(text)) {
+      expect(inspectClipboardPayload(payload, { svgParser: { parseFromString } })).toMatchObject({ kind: "image-refused",
+        message: `Couldn't paste the SVG: it contains ${reason} that isn't allowed.` });
+    }
+    expect(parseFromString).not.toHaveBeenCalled();
+  });
+});
+
+describe("clipboard byte limits", () => {
+  const mb = 1024 * 1024;
+  const message = "Couldn't paste: clipboard flavor \"text/plain\" is too large (400.0 MB; the limit is 256 MB).";
+
+  it.each(["text/plain", "public.utf16-plain-text", "public.utf8-plain-text"])(
+    "applies the decoded UTF-8 cap to ASCII from %s without large allocations", type => {
+      // Native UTF-16 is 400/600 MiB; the adapter receives decoded 200/300 MiB text.
+      // A length-only probe exercises admission without constructing either representation.
+      for (const size of [200, 300]) {
+        const item = { type, text: { length: size * mb } as unknown as string };
+        const guarded = guardClipboardPayload({ types: [type], textItems: [item] });
+        if (size === 200) {
+          expect(guarded.textItems).toEqual([item]);
+          expect(guarded.skippedItems).toEqual([]);
+        } else {
+          expect(guarded.textItems).toEqual([]);
+          expect(guarded.skippedItems).toMatchObject([
+            { byteLength: 300 * mb, limitBytes: MAX_CLIPBOARD_TEXT_BYTES, reason: "flavor" }
+          ]);
+          expect(inspectClipboardPayload({ types: [type], textItems: [item] })).toMatchObject({
+            kind: "size-refused",
+            message: 'Couldn\'t paste: clipboard flavor "text/plain" is too large (300.0 MB; the limit is 256 MB).'
+          });
+        }
+      }
+    }
+  );
+
+  it.each(["text/rtf", "NeXT TIFF v4.0 pasteboard type", "Apple PNG pasteboard type"])("keeps a 24 MB PNG beside a 50 MB sibling: %s", type => {
+    const header = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/aWQAAAAASUVORK5CYII=", "base64");
+    const bytes = Buffer.alloc(24 * mb); header.copy(bytes);
+    const image = { type: "image/png" as const, bytesBase64: bytes.toString("base64") };
+    const result = guardClipboardPayload({ types: [type, "image/png"], textItems: [{ type, text: "x".repeat(50 * mb) }],
+      imageItems: [image] });
+    expect(result.imageItems).toEqual([image]);
+    expect(result.skippedItems).toEqual([]);
+  }, 60_000);
+
+  it.each(["application/x-chemdraft-selection+json", "chemical/x-cdxml", "chemical/x-cdx", "chemical/x-mdl-molfile", "org.opensmiles.smiles"])("refuses oversized chemistry before pictures or prose: %s", type => {
+    const bytes = 400 * mb;
+    const message = `Couldn't paste: clipboard flavor "${type}" is too large (400.0 MB; the limit is 256 MB).`;
+    for (const native of [false, true]) {
+      const payload: ClipboardReadPayload = { types: [type, "image/png", "text/plain"],
+        textItems: [{ type: "text/plain", text: "ordinary prose" }],
+        imageItems: [{ type: "image/png", bytesBase64: "AA==" }] };
+      if (native) payload.skippedItems = [{ type, byteLength: bytes, limitBytes: MAX_CLIPBOARD_TEXT_BYTES }];
+      else payload.textItems.push({ type, text: { length: bytes } as unknown as string });
+      expect(inspectClipboardPayload(payload)).toMatchObject({ kind: "size-refused", message });
+    }
+  });
+
+  it.each(["<CDXML>", "header\n V2000", '{"kind":"chemdraft-selection"}', "InChI=1S/CH4/h1H4", "CCCCCCCC"])("preserves native chemistry classification for size-skipped generic text: %s", prefix => {
+    const text = { length: 400 * mb } as unknown as string;
+    expect(inspectClipboardPayload({ types: ["text/plain", "image/png"], textItems: [{ type: "text/plain", text }],
+      skippedItems: [{ type: "text/plain", byteLength: 400 * mb, limitBytes: MAX_CLIPBOARD_TEXT_BYTES, chemistry: true }],
+      imageItems: [{ type: "image/png", bytesBase64: "AA==" }] })).toMatchObject({ kind: "size-refused",
+      message: 'Couldn\'t paste: clipboard flavor "text/plain" is too large (400.0 MB; the limit is 256 MB).' });
+  });
+
+  it.each([9, 20])("admits %i MiB chemistry text once despite native text aliases", mbSize => {
+    for (const [type, prefix, kind] of [
+      ["org.opensmiles.smiles", "CC", "smiles"],
+      ["chemical/x-mdl-molfile", "header\n  ChemDraft\n\n  0  0  0  0  0  0  0  0  0  0999 V2000\nM  END\n", "molfile"],
+      ["chemical/x-cdxml", "<CDXML>", "cdxml"]
+    ]) {
+      const text = prefix + "C".repeat(mbSize * mb - prefix.length);
+      for (const aliases of [
+        ["public.utf8-plain-text", "public.utf16-plain-text", "public.plain-text", "public.text", "NSStringPboardType", "text/plain"],
+        ["text/plain"]
+      ]) {
+        const payload = { types: [type, ...aliases], textItems: [type, ...aliases].map(type => ({ type, text })) };
+        const guarded = guardClipboardPayload(payload);
+        expect(guarded.skippedItems).toEqual([]);
+        expect(guarded.textItems).toEqual([{ type, text }]);
+        const result = inspectClipboardPayload(payload);
+        expect(result.kind).toBe(kind);
+        if ("text" in result) expect(result.text).toBe(text);
+      }
+    }
+  }, 15_000);
+
+  it("accepts a 64 MiB private selection plus 25 MiB PNG and large Office siblings unchanged", () => {
+    const selection = { type: "application/x-chemdraft-selection+json", text: '{"kind":"chemdraft-selection","data":"' + "x".repeat(64 * mb - 40) + '"}' };
+    const image = { type: "image/png" as const, bytesBase64: "A".repeat(Math.floor(25 * mb / 3) * 4) };
+    const rtf = { type: "text/rtf", text: "{\\rtf1 " + "x".repeat(50 * mb) + "}" };
+    const payload = { types: [selection.type, image.type, rtf.type], textItems: [selection, rtf], imageItems: [image] };
+    const guarded = guardClipboardPayload(payload);
+    expect(guarded.skippedItems).toEqual([]);
+    expect(guarded.textItems).toEqual(payload.textItems);
+    expect(guarded.imageItems).toEqual(payload.imageItems);
+  }, 10_000);
+
+  it("keeps malformed-picture errors instead of naming an unrelated skipped sibling", () => {
+    expect(inspectClipboardPayload({ types: ["image/svg+xml"], textItems: [{ type: "image/svg+xml", text: "<svg><g></svg>" }],
+      skippedItems: [{ type: "text/rtf", byteLength: 50 * mb, limitBytes: MAX_CLIPBOARD_TEXT_BYTES }] }))
+      .toMatchObject({ kind: "image-refused", message: expect.stringContaining("isn't well-formed XML") });
+  });
+
+  it.each(["public.utf8-plain-text", "public.utf16-plain-text", "text/plain"])("uses the same native and DOM size message for %s", type => {
+    expect(inspectClipboardPayload({ types: [type], textItems: [], skippedItems: [{ type, byteLength: 400 * mb, limitBytes: MAX_CLIPBOARD_TEXT_BYTES }] }))
+      .toMatchObject({ kind: "size-refused", message });
+  });
+
+  it.each(roundingCases)("rounds %i bytes to %s MB with the shared native table", (byteLength, expected) => {
+    for (const reason of ["flavor", "total"] as const) {
+      const message = clipboardSizeRefusalMessage({ type: "text/plain", byteLength: Number(byteLength),
+        limitBytes: reason === "total" ? MAX_CLIPBOARD_BYTES : MAX_CLIPBOARD_TEXT_BYTES, reason });
+      expect(message).toContain("(" + expected + " MB");
+    }
+  });
+
+  it("rounds a skipped flavor's attempted total identically to native messages", () => {
+    expect(inspectClipboardPayload({ types: [], textItems: [], skippedItems: [
+      { type: "text/rtf", byteLength: 1.25 * mb, limitBytes: MAX_CLIPBOARD_BYTES, reason: "total", totalByteLength: 1024.25 * mb }
+    ] })).toMatchObject({ kind: "size-refused", message: "Couldn't paste: the clipboard contents are too large (1024.3 MB in total; the limit is 1024 MB)." });
+  });
+
+  it("records DOM total overflow with the same reason, total and message as native metadata", () => {
+    const bounded = guardClipboardPayload({ types: ["text/plain", "text/rtf"], textItems: [
+      ...Array.from({ length: 4 }, (_, i) => ({ type: "sibling-" + i, text: { length: 255.75 * mb } as unknown as string })),
+      { type: "text/rtf", text: { length: 1.25 * mb } as unknown as string }
+    ] });
+    expect(bounded.skippedItems).toEqual([{ type: "text/rtf", byteLength: 1.25 * mb,
+      limitBytes: MAX_CLIPBOARD_BYTES, reason: "total", totalByteLength: 1024.25 * mb }]);
+    // No usable representation remains after native decoding fails or a DOM flavor is discarded.
+    expect(inspectClipboardPayload({ types: [], textItems: [], skippedItems: bounded.skippedItems }))
+      .toMatchObject({ kind: "size-refused", message: "Couldn't paste: the clipboard contents are too large (1024.3 MB in total; the limit is 1024 MB)." });
+  });
+
+  it("rejects huge text before normalization, encoding, or inspecting its contents", () => {
+    const text = { length: 400 * mb, replace: vi.fn(() => { throw new Error("must not normalize"); }) } as unknown as string;
+    expect(inspectClipboardPayload({ types: ["text/plain"], textItems: [{ type: "text/plain", text }] }))
+      .toMatchObject({ kind: "size-refused", message, warnings: [{ code: "clipboard.too_large", message }] });
+    expect(text.replace).not.toHaveBeenCalled();
+  });
+
+  it("keeps the exact per-flavor boundary and skips only flavors exceeding the total", () => {
+    const items = Array.from({ length: 4 }, (_, i) => ({
+      type: "sibling-" + i, text: { length: MAX_CLIPBOARD_TEXT_BYTES } as unknown as string
+    }));
+    const bounded = guardClipboardPayload({ types: [...items.map(item => item.type), "other"],
+      textItems: [...items, { type: "other", text: "b" }] });
+    expect(bounded.textItems).toEqual(items);
+    expect(bounded.textItems[0]).toBe(items[0]);
+    expect(bounded.skippedItems).toEqual([{ type: "other", byteLength: 1, limitBytes: MAX_CLIPBOARD_BYTES, reason: "total", totalByteLength: MAX_CLIPBOARD_BYTES + 1 }]);
+  });
+
+  it.each([["é", 2], ["€", 3], ["😀", 4]] as const)(
+    "counts UTF-8 bytes for %s without encoding", (unit, bytes) => {
+      expect(clipboardTextByteLength(unit.repeat(100))).toBe(100 * bytes);
+    }
+  );
+
+  it("stops measuring as soon as the first code point exceeds the byte limit", () => {
+    const read = vi.spyOn(String.prototype, "charCodeAt");
+    expect(clipboardTextByteLength("界".repeat(10), 20)).toBe(21);
+    expect(read).toHaveBeenCalledTimes(7);
+    read.mockClear();
+    expect(clipboardTextByteLength("x".repeat(100), 20)).toBe(100);
+    expect(read).not.toHaveBeenCalled();
+    read.mockRestore();
+  });
+
+  it("rejects large base64 images before atob or byte copies, keeping the 25 MB cap", () => {
+    const decode = vi.spyOn(globalThis, "atob").mockImplementation(() => { throw new Error("must not decode"); });
+    try {
+      const bytesBase64 = { length: 40 * mb } as unknown as string;
+      expect(inspectClipboardPayload({ types: ["image/png"], textItems: [],
+        imageItems: [{ type: "image/png", bytesBase64 }] }))
+        .toMatchObject({ kind: "size-refused", message: "Couldn't paste: clipboard flavor \"image/png\" is too large (30.0 MB; the limit is 25 MB)." });
+      expect(decode).not.toHaveBeenCalled();
+    } finally {
+      decode.mockRestore();
+    }
+  });
+
+  it("shares the total budget between text and decoded image sizes before decoding", () => {
+    const image = { type: "image/png" as const, bytesBase64: "A".repeat(32 * mb) }; // 24 MB decoded
+    const bounded = guardClipboardPayload({ types: ["text/plain", "image/png"],
+      textItems: [{ type: "text/plain", text: { length: 16 * mb } as unknown as string }], imageItems: Array(43).fill(image) });
+    expect(bounded.imageItems).toHaveLength(42); // Pictures are admitted first; 42 x 24 MiB plus retained text fills the envelope.
+    expect(bounded.skippedItems).toEqual([{ type: "image/png", byteLength: 24 * mb, limitBytes: MAX_CLIPBOARD_BYTES, reason: "total", totalByteLength: 1032 * mb }]);
+  }, 60_000);
+
+  it("caps SVG source in text before encoding it as a picture", () => {
+    expect(inspectClipboardPayload({ types: ["text/plain"], textItems: [
+      { type: "text/plain", text: "<svg>" + " ".repeat(26 * mb) + "</svg>" }
+    ] })).toMatchObject({ kind: "size-refused",
+      message: "Couldn't paste: clipboard flavor \"text/plain\" is too large (26.0 MB; the limit is 25 MB)." });
+  }, 60_000);
+
+  it("preserves native refusal metadata and still accepts smaller alternatives", () => {
+    const skippedItems = [{ type: "chemical/x-cdxml", byteLength: 400 * mb, limitBytes: MAX_CLIPBOARD_TEXT_BYTES }];
+    expect(inspectClipboardPayload({ types: ["chemical/x-cdxml"], textItems: [], skippedItems }))
+      .toMatchObject({ kind: "size-refused", message: message.replace("text/plain", "chemical/x-cdxml") });
+    expect(inspectClipboardPayload({ types: ["chemical/x-cdxml", "text/plain"], skippedItems,
+      textItems: [{ type: "text/plain", text: "some ordinary prose" }] }))
+      .toMatchObject({ kind: "size-refused", message: message.replace("text/plain", "chemical/x-cdxml") });
+    expect(inspectClipboardPayload({ types: ["text/plain", "org.opensmiles.smiles"],
+      textItems: [{ type: "text/plain", text: { length: MAX_CLIPBOARD_BYTES + 1 } as unknown as string },
+        { type: "org.opensmiles.smiles", text: "CCO" }] }))
+      .toMatchObject({ kind: "smiles", text: "CCO" });
+  });
+});
 
 describe("SMILES list candidates", () => {
   it.each([
@@ -429,6 +839,126 @@ describe("clipboard-adapter", () => {
     });
   });
 
+  it("pastes complete SVG documents in plain-text flavors as pictures, never text", () => {
+    for (const text of [
+      "<svg/>",
+      '<?xml version="1.0"?><!-- prolog --><svg></svg>',
+      '<s:svg xmlns:s="http://www.w3.org/2000/svg"/>',
+      '<s:svg width="1" xmlns:s="http://www.w3.org/2000/svg"><s:g><s:path d="M0 0"/></s:g></s:svg>',
+      '<svg><!-- </svg> --><![CDATA[</svg>]]></svg>',
+      '<svg title="a > b"><g/></svg><!-- after -->',
+      " \uFEFF <?xml version=\"1.0\"?>\n<!-- comment -->\n<svg class=\"spectrum\"></svg>",
+      "<!-- before --><svg xmlns=\"http://www.w3.org/2000/svg\"/>"
+    ]) {
+      const result = inspectClipboardPayload({
+        types: ["public.utf8-plain-text"],
+        textItems: [{ type: "public.utf8-plain-text", text }]
+      });
+      expect(result).toMatchObject({ kind: "image", sourceType: "public.utf8-plain-text", image: { type: "image/svg+xml" } });
+      const expected = text.includes('xmlns="') ? text : text.replace("<svg", '<svg xmlns="http://www.w3.org/2000/svg"');
+      if (result.kind === "image") expect(Buffer.from(result.image.bytesBase64, "base64").toString("utf8")).toBe(expected);
+    }
+  });
+
+  it("reports the sanitizer refusal for SVG outside the picture reader's supported prologs", () => {
+    const text = '<!DOCTYPE svg [<!-- ] > [ --><!ENTITY x "unused">]><svg/>';
+    expect(inspectClipboardPayload({ types: ["text/plain"], textItems: [{ type: "text/plain", text }] }))
+      .toMatchObject({ kind: "image-refused", message: "Couldn't paste the SVG: it contains a document type declaration that isn't allowed." });
+  });
+
+  it("keeps text mentioning SVG and other root elements as plain text", () => {
+    for (const text of [
+      "This mentions <svg in a sentence", "<svgish/>", "<!-- comment --><other><svg/></other>",
+      '<?xml version="1.0"?><?unfinished <svg/>', '<!DOCTYPE svg [<svg/>'
+    ]) {
+      expect(inspectClipboardPayload({
+        types: ["text/plain"], textItems: [{ type: "text/plain", text }]
+      })).toMatchObject({ kind: "plain-text", text });
+    }
+  });
+
+  it("refuses malformed, over-nested and oversized SVG source instead of pasting it as text", () => {
+    for (const text of [
+      "<svg ", "<svg>", "<svg title=", "<svg><g/></other>", "<svg><g></svg>",
+      "<svg/ trailing>", "<svg/><other/>", "<svg/> trailing text", "<svg><!-- </svg>",
+      '<svg xmlns="https://example.invalid"/>', '<s:svg/>',
+      '<s:svg xmlns="http://www.w3.org/2000/svg"/>',
+      '<s:svg xmlns:s="https://example.invalid"/>',
+      '<s:svg xmlns:s="http://www.w3.org/2000/svg"></svg>',
+      "<svg>" + "<g>".repeat(257) + "</g>".repeat(257) + "</svg>",
+      "<svg>" + "x".repeat(25 * 1024 * 1024) + "</svg>"
+    ]) {
+      expect(inspectClipboardPayload({
+        types: ["text/plain"], textItems: [{ type: "text/plain", text }]
+      })).toMatchObject(Buffer.byteLength(text) > 25 * 1024 * 1024
+        ? { kind: "size-refused", message: expect.stringContaining("the limit is 25 MB") }
+        : { kind: "image-refused", message: expect.stringContaining("Couldn't paste the SVG:") });
+    }
+  }, 60_000);
+
+  it("keeps the stricter SVG validation limits for image flavors too", () => {
+    for (const text of [
+      '<svg xmlns="https://example.invalid"/>', '<s:svg/>', '<svg><g></svg>',
+      "<svg>" + "<g>".repeat(257) + "</g>".repeat(257) + "</svg>",
+      "<svg>" + "x".repeat(25 * 1024 * 1024) + "</svg>"
+    ]) {
+      expect(inspectClipboardPayload({ types: ["image/svg+xml"], textItems: [],
+        imageItems: [{ type: "image/svg+xml", bytesBase64: Buffer.from(text).toString("base64") }] }))
+        .toMatchObject(Buffer.byteLength(text) > 25 * 1024 * 1024
+        ? { kind: "size-refused", message: expect.stringContaining("the limit is 25 MB") }
+        : { kind: "image-refused", message: expect.stringContaining("Couldn't paste the SVG:") });
+    }
+  }, 60_000);
+
+  it.each([
+    ["<svg", "it isn't well-formed XML: invalid or incomplete markup."],
+    ["<svg><g></svg>", "it isn't well-formed XML: mismatched closing tag </svg>; expected </g>."],
+    ["<svg>unescaped & text</svg>", "it isn't well-formed XML: invalid or incomplete markup."],
+    ["<svg>&unknown;</svg>", "it isn't well-formed XML: invalid or incomplete markup."],
+    ["<svg>&#0;</svg>", "it isn't well-formed XML: invalid or incomplete markup."],
+    ['<svg width="1" width="2"/>', "it isn't well-formed XML: duplicate attribute 'width'."],
+    ["<svg><script>alert(1)</script></svg>", "it contains a <script> element that isn't allowed."],
+    ["<svg><foreignObject/></svg>", "it contains a <foreignObject> element that isn't allowed."],
+    ['<svg onload="alert(1)"/>', "it contains an event handler (onload) that isn't allowed."],
+    ['<svg><image href="https://example.invalid/image.png"/></svg>', "it contains external links or embedded objects, which aren't allowed."],
+    ['<svg><image href="data:image/png;base64,AA=="/></svg>', "it contains external links or embedded objects, which aren't allowed."],
+    ['<svg><use href="&#106;avascript:alert(1)"/></svg>', "it contains external links or embedded objects, which aren't allowed."],
+    ['<svg><path fill="url(https://example.invalid/paint)"/></svg>', "it contains external links or active content in styles, which isn't allowed."],
+    ['<svg><style>@import "https://example.invalid/style.css";</style></svg>', "it contains external links or active content in styles, which isn't allowed."],
+    ['<svg><style><![CDATA[path { fill: url(https://example.invalid/paint); }]]></style></svg>', "it contains external links or active content in styles, which isn't allowed."],
+    ['<svg><style><![CDATA[@im]]>port "https://example.invalid/style.css";</style></svg>', "it contains external links or active content in styles, which isn't allowed."],
+    ['<?xml-stylesheet href="spectrum.css"?><svg/>', "it contains a processing instruction that isn't allowed."],
+    ['<!DOCTYPE svg SYSTEM "unused.dtd"><svg/>', "it contains a document type declaration that isn't allowed."]
+  ])("refuses SVG with its specific validation reason: %s", (text, reason) => {
+    for (const type of ["text/plain", "public.utf8-plain-text", "image/svg+xml", "public.svg-image"]) {
+      expect(inspectClipboardPayload({ types: [type], textItems: [{ type, text }] }))
+        .toMatchObject({ kind: "image-refused", message: `Couldn't paste the SVG: ${reason}` });
+    }
+    expect(inspectClipboardPayload({ types: ["image/svg+xml"], textItems: [], imageItems: [
+      { type: "image/svg+xml", bytesBase64: Buffer.from(text).toString("base64") }
+    ] })).toMatchObject({ kind: "image-refused", message: `Couldn't paste the SVG: ${reason}` });
+  });
+
+  it("accepts static SVG styles, local references and escaped labels without rewriting the picture", () => {
+    const text = '<svg xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="paint"><stop offset="0"/></linearGradient></defs><style>path { fill: url(#paint); }</style><path fill="url(#paint)"/><text>δ &amp; Δ</text><!-- <script/> --></svg>';
+    const result = inspectClipboardPayload({ types: ["text/plain"], textItems: [{ type: "text/plain", text }] });
+    expect(result.kind).toBe("image");
+    if (result.kind === "image") expect(Buffer.from(result.image.bytesBase64, "base64").toString("utf8")).toBe(text);
+  });
+
+  it("prefers chemistry flavors over SVG source", () => {
+    for (const [type, text, kind] of [
+      ["chemical/x-daylight-smiles", "CCO", "smiles"],
+      ["text/plain", cyclopropaneV2000, "molfile"],
+      ["text/plain", "<CDXML><page /></CDXML>", "cdxml"]
+    ]) {
+      expect(inspectClipboardPayload({
+        types: ["text/plain", type],
+        textItems: [{ type: "text/plain", text: "<svg/>" }, { type, text }]
+      }).kind).toBe(kind);
+    }
+  });
+
   it("classifies picture paste with chemistry before images and images before prose", () => {
     const png = { type: "image/png" as const, bytesBase64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/aWQAAAAASUVORK5CYII=", pixelWidth: 200, pixelHeight: 100 };
     const svg = { type: "image/svg+xml" as const, bytesBase64: "PHN2Zy8+" };
@@ -510,7 +1040,7 @@ describe("clipboard-adapter", () => {
 
   it("retains a fallback picture for heuristic SMILES candidates without asserting parse success", () => {
     const png = { type: "image/png" as const, bytesBase64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/aWQAAAAASUVORK5CYII=" };
-    const svg = { type: "image/svg+xml" as const, bytesBase64: "PHN2Zy8+" };
+    const svg = { type: "image/svg+xml" as const, bytesBase64: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>').toString("base64") };
     for (const image of [png, svg]) {
       const result = inspectClipboardPayload({ types: ["text/plain", image.type], imageItems: [svg, image],
         textItems: [{ type: "text/plain", text: "PNG" }] });
@@ -529,7 +1059,7 @@ describe("clipboard-adapter", () => {
   });
 
   it("chooses supported SMILES-list candidates before pictures and retains the fallback", () => {
-    const image = { type: "image/svg+xml" as const, bytesBase64: "PHN2Zy8+" };
+    const image = { type: "image/svg+xml" as const, bytesBase64: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>').toString("base64") };
     for (const text of ["CCO\nCCN", "CCO CCN", "1. CCO\n2. CCN", "CCO ethanol\nCCN ethylamine",
       '["CCO","CCN"]', '"CCO","CCN"', "CCO;CCN", "CCO,CCN"]) {
       expect(inspectClipboardPayload({ types: ["text/plain"], imageItems: [image],
@@ -577,7 +1107,7 @@ describe("clipboard-adapter", () => {
     ];
     for (const payload of payloads) {
       expect(inspectClipboardPayload(payload)).toMatchObject({ kind: "image-refused",
-        message: "Couldn't paste the picture: the SVG is incomplete." });
+        message: "Couldn't paste the SVG: it isn't well-formed XML: invalid or incomplete markup." });
     }
   });
 
@@ -598,13 +1128,14 @@ describe("clipboard-adapter", () => {
   it("recognizes SVG roots after XML prologs without turning SVG source into a text box", () => {
     for (const text of [
       "<svg/>",
-      ' \uFEFF <?xml version="1.0"?>\n<!-- comment -->\n<!DOCTYPE svg [<!ENTITY x \'a>b\'>]>\n<svg class="spectrum"></svg>',
-      '<!-- before --><!DOCTYPE svg PUBLIC "id" "url"><!-- after --><svg xmlns="http://www.w3.org/2000/svg"/>',
+      ' \uFEFF <?xml version="1.0"?>\n<!-- comment -->\n<svg class="spectrum"></svg>',
+      '<!-- before --><svg xmlns="http://www.w3.org/2000/svg"/>',
       '<svg width="1in" height="0.5in"><text>δ &amp; Δ</text>\r\n</svg>'
     ]) {
       const result = inspectClipboardPayload({ types: ["text/plain"], textItems: [{ type: "text/plain", text }] });
       expect(result).toMatchObject({ kind: "image", image: { type: "image/svg+xml" } });
-      if (result.kind === "image") expect(Buffer.from(result.image.bytesBase64, "base64").toString("utf8")).toBe(text);
+      const expected = text.includes('xmlns="') ? text : text.replace("<svg", '<svg xmlns="http://www.w3.org/2000/svg"');
+      if (result.kind === "image") expect(Buffer.from(result.image.bytesBase64, "base64").toString("utf8")).toBe(expected);
     }
     for (const text of ["This mentions <svg in a sentence", "<svgish/>", "<!-- comment --><other><svg/></other>"]) {
       expect(inspectClipboardPayload({ types: ["text/plain"], textItems: [{ type: "text/plain", text }] }))

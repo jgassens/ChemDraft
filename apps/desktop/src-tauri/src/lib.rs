@@ -1,6 +1,7 @@
 mod assistant_mcp;
 mod clipboard_formats;
 mod clipboard_images;
+mod clipboard_limits;
 mod dialog_windows;
 mod document_session;
 mod download_diagnosis;
@@ -18,7 +19,10 @@ mod network_error;
 mod network_test_http;
 mod ocsr_engine;
 mod opsin;
+mod panel_full_size;
 mod panel_window;
+mod panel_window_controls;
+mod panel_window_frame;
 mod perf_log;
 mod plugin_package;
 #[cfg(test)]
@@ -794,6 +798,8 @@ struct ClipboardReadPayload {
     text_items: Vec<ClipboardTextItem>,
     image_items: Vec<ClipboardImageItem>,
     skipped_image_items: Vec<SkippedClipboardImageItem>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    skipped_items: Vec<clipboard_limits::SkippedClipboardItem>,
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -856,6 +862,8 @@ struct ToolsetLayoutState {
     /// `ensure_main_window_visible`; centering is only the fallback when nothing usable was saved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     main_window: Option<MainWindowGeometry>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    plugin_panels: HashMap<String, panel_window_frame::Frame>,
 }
 
 impl Default for ToolsetLayoutState {
@@ -864,6 +872,7 @@ impl Default for ToolsetLayoutState {
             version: 1,
             toolsets: HashMap::new(),
             main_window: None,
+            plugin_panels: HashMap::new(),
         }
     }
 }
@@ -941,6 +950,7 @@ pub fn run() {
         .manage(perf_log)
         .manage(PendingOpenDocument::default())
         .manage(panel_window::PanelFocusState::default())
+        .manage(panel_full_size::State::default())
         .manage(Engine3dSidecarSessions::default())
         .manage(ocsr_engine::OcsrEngineState::default())
         .manage(external_tools::ExternalToolsState::default())
@@ -1072,6 +1082,7 @@ pub fn run() {
                         // ExitRequested. Raise the quit flag so palette destruction that follows
                         // isn't recorded as user closes.
                         APP_QUITTING.store(true, Ordering::SeqCst);
+                        panel_full_size::restore_all(window.app_handle());
                         dialog_windows::dismiss_owned(window.app_handle(), "quit");
                         window.state::<ocsr_engine::OcsrEngineState>().shutdown();
                         external_tools::shutdown(window.app_handle());
@@ -1146,31 +1157,24 @@ pub fn run() {
             // told, so a plugin gets its close signal (AGENTS.md §8a) and a later report re-shows the
             // window. Destroying it left the main window believing it was still open.
             if is_plugin_panel_window_label(window.label()) {
-                // Native resize edges sit outside the DOM's focus hook. Resizing finishes an
-                // input lease too, on both platforms, without changing the resize gesture.
-                if matches!(event, WindowEvent::Resized(_))
-                    && window.is_focused().unwrap_or(false)
-                    && !window.is_minimized().unwrap_or(true)
-                {
-                    if let Some(panel) = window.app_handle().get_webview_window(window.label()) {
-                        panel_window::activation(&panel, false);
+                if matches!(
+                    event,
+                    WindowEvent::Moved(_)
+                        | WindowEvent::Resized(_)
+                        | WindowEvent::CloseRequested { .. }
+                ) {
+                    if let Err(error) = persist_plugin_panel_geometry(window) {
+                        eprintln!(
+                            "Could not persist ChemDraft panel frame {}: {error}",
+                            window.label()
+                        );
                     }
-                    let _ = window.set_focusable(false);
-                    #[cfg(windows)]
-                    if let (Ok(panel), Some(main)) = (
-                        window.hwnd(),
-                        window.app_handle().get_webview_window(MAIN_WINDOW_LABEL),
-                    ) {
-                        let _ =
-                            panel_window::return_focus_to_document(panel.0, &main, window.label());
-                    }
-                    #[cfg(not(windows))]
-                    let _ = focus_main_document_window_impl(
-                        window.app_handle(),
-                        MainWindowFocusMode::OnlyIfAppActive,
-                    );
+                }
+                if matches!(event, WindowEvent::Destroyed) {
+                    panel_full_size::forget(window);
                 }
                 if let WindowEvent::CloseRequested { api, .. } = event {
+                    panel_full_size::will_hide(window);
                     if APP_QUITTING.load(Ordering::SeqCst) {
                         return;
                     }
@@ -1367,6 +1371,9 @@ pub fn run() {
             open_plugin_panel_window,
             plugin_panel_action_forward,
             plugin_panel_event_forward,
+            set_plugin_panel_full_size,
+            panel_window_controls::hide_plugin_panel_window,
+            panel_window_controls::hide_plugin_panel_from_main,
             register_plugin_panel_input_focus,
             set_plugin_panel_input_focus,
             open_toolset_popover,
@@ -1447,6 +1454,7 @@ pub fn run() {
                     request_quit(app);
                 } else {
                     APP_QUITTING.store(true, Ordering::SeqCst);
+                    panel_full_size::restore_all(app);
                     app.state::<ocsr_engine::OcsrEngineState>().shutdown();
                     external_tools::shutdown(app);
                     assistant_mcp::shutdown();
@@ -1458,6 +1466,7 @@ pub fn run() {
                 // only when the preference is enabled. System termination and preference-off
                 // AppKit quit still reach this final, non-blocking cleanup as before.
                 APP_QUITTING.store(true, Ordering::SeqCst);
+                panel_full_size::restore_all(app);
                 app.state::<ocsr_engine::OcsrEngineState>().shutdown();
                 external_tools::shutdown(app);
                 assistant_mcp::shutdown();
@@ -2034,6 +2043,7 @@ async fn suspend_toolset_windows(
                     continue;
                 }
                 panel_window::end_for_hide(window.app_handle(), window.label());
+                panel_full_size::before_hide(&window);
                 if let Err(error) = window.hide() {
                     // A failed acquisition must undo its own temporary hides; JS will not release
                     // an acquisition that rejected and will use the in-app fallback instead.
@@ -2969,7 +2979,7 @@ struct OpenPluginPanelRequest {
     width: Option<f64>,
     height: Option<f64>,
     /// Legacy reveal hint from the host. Opening a panel never grants keyboard focus;
-    /// only an input or deliberate report-text selection may lease it via set_plugin_panel_input_focus.
+    /// only a native pointer activation may grant it, independently of report updates.
     #[serde(default, rename = "focus")]
     _focus: bool,
 }
@@ -3002,6 +3012,21 @@ fn plugin_panel_window_label(panel_id: &str) -> String {
 }
 
 const PLUGIN_PANEL_WINDOW_LABEL_PREFIX: &str = "plugin-panel-";
+
+#[tauri::command]
+async fn set_plugin_panel_full_size(
+    window: tauri::WebviewWindow,
+    enabled: bool,
+    width: f64,
+    height: f64,
+) -> Result<panel_full_size::Status, String> {
+    panel_full_size::authorize(window.label())?;
+    let target = window.clone();
+    run_on_main_thread_blocking(&window, move || {
+        let webview: &tauri::Webview = target.as_ref();
+        panel_full_size::set(&webview.window(), enabled, width, height)
+    })?
+}
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -3042,7 +3067,49 @@ fn plugin_panel_action_forward(
 }
 
 /// Panel windows cannot emit arbitrary events (including forged authenticated actions).
-/// Preserve their existing non-command bridges through this fixed list only.
+/// Preserve their bridges through this fixed list only. Shortcut forwarding uses the live
+/// host command catalog and the same document dispatcher as toolbars, without moving focus.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PluginPanelShortcut {
+    command_id: String,
+    #[serde(default)]
+    key: String,
+    #[serde(default)]
+    meta_key: bool,
+    #[serde(default)]
+    ctrl_key: bool,
+    #[serde(default)]
+    alt_key: bool,
+}
+
+impl PluginPanelShortcut {
+    fn parse(payload: &serde_json::Value) -> Result<Self, String> {
+        let shortcut: Self = serde_json::from_value(payload.clone())
+            .map_err(|_| "Invalid panel shortcut.".to_string())?;
+        if shortcut.key.len() > 256
+            || shortcut.command_id.is_empty()
+            || shortcut.command_id.len() > 4096
+            || shortcut.command_id.trim() != shortcut.command_id
+            || shortcut.command_id == "document.closeTab"
+            || shortcut.command_id.starts_with("document.closeTab.")
+        {
+            return Err("Invalid panel shortcut command.".into());
+        }
+        Ok(shortcut)
+    }
+
+    fn document_command_id(&self) -> String {
+        // The panel already declined local editing. Like other secondary windows, skip any
+        // editor the inactive document webview retained when the user clicked the panel.
+        if is_edit_history_command(&self.command_id) || self.command_id == "edit.selectAll" {
+            format!("{}:forceDocumentHistory", self.command_id)
+        } else {
+            self.command_id.clone()
+        }
+    }
+}
+
 fn validate_plugin_panel_event(
     label: &str,
     event: &str,
@@ -3062,9 +3129,23 @@ fn validate_plugin_panel_event(
             }
             Ok(())
         }
-        "chemdraft://analysis-window-action" => Ok(()),
+        "chemdraft://analysis-window-action" if payload.is_object() => Ok(()),
+        "chemdraft://toolset-command-specs-request" if payload == &serde_json::json!({}) => Ok(()),
+        "chemdraft://plugin-panel-shortcut" => PluginPanelShortcut::parse(payload).map(|_| ()),
         _ => Err("This event cannot be forwarded by a panel window.".into()),
     }
+}
+
+fn authenticated_plugin_panel_event(
+    label: &str,
+    event: &str,
+    mut payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    validate_plugin_panel_event(label, event, &payload)?;
+    if event == "chemdraft://analysis-window-action" {
+        payload["sourceLabel"] = serde_json::Value::String(label.into());
+    }
+    Ok(payload)
 }
 
 #[tauri::command]
@@ -3073,7 +3154,25 @@ fn plugin_panel_event_forward(
     event: String,
     payload: serde_json::Value,
 ) -> Result<(), String> {
-    validate_plugin_panel_event(window.label(), &event, &payload)?;
+    let payload = authenticated_plugin_panel_event(window.label(), &event, payload)?;
+    if event == "chemdraft://plugin-panel-shortcut" {
+        let shortcut = PluginPanelShortcut::parse(&payload)?;
+        let target = window.clone();
+        return run_on_main_thread_blocking(&window, move || {
+            if !utility_windows_suspended()
+                && !panel_window::palette_blocks_forwarded_shortcut(
+                    &shortcut.key,
+                    shortcut.meta_key,
+                    shortcut.ctrl_key,
+                    shortcut.alt_key,
+                )
+                && panel_window::is_active(&target)?
+            {
+                return emit_command_to_main(target.app_handle(), &shortcut.document_command_id());
+            }
+            Ok(())
+        })?;
+    }
     window
         .app_handle()
         .emit_to(MAIN_WINDOW_LABEL, &event, payload)
@@ -3116,6 +3215,10 @@ async fn set_plugin_panel_input_focus(
     return_focus: Option<bool>,
     select_interaction: Option<bool>,
 ) -> Result<bool, String> {
+    validate_plugin_panel_focus_caller(window.label())?;
+    if is_plugin_panel_window_label(window.label()) {
+        return set_plugin_panel_activation(window, page_token, editing, generation);
+    }
     let result: Result<bool, String> = (|| {
         validate_plugin_panel_focus_caller(window.label())?;
         let before = pointer_before.unwrap_or(0);
@@ -3289,6 +3392,52 @@ async fn set_plugin_panel_input_focus(
     ));
     result
 }
+// Plugin panels never enter the palette lease/acquisition/hand-back path above.
+fn set_plugin_panel_activation(
+    window: tauri::WebviewWindow,
+    page_token: String,
+    editing: bool,
+    generation: u64,
+) -> Result<bool, String> {
+    validate_plugin_panel_focus_caller(window.label())?;
+    // Register the pending generation BEFORE marshalling acquisition to the UI thread.
+    // A native loss while that operation is queued must cancel it, not be forgotten.
+    let Some(epoch) = panel_window::request(&window, generation, &page_token, editing, false)
+    else {
+        return Ok(false);
+    };
+    let target = window.clone();
+    run_on_main_thread_blocking(&window, move || {
+        if !panel_window::is_current(&target, generation, epoch)
+            || (editing && !panel_window::acquired(&target, generation, epoch, true))
+        {
+            return Ok(false);
+        }
+        if !editing {
+            // Releasing input bookkeeping never moves OS focus. Only a user switching windows
+            // (or closing this one) ends panel activation.
+            return Ok(false);
+        }
+        let result = (|| -> Result<bool, String> {
+            // Pointer activation already made the panel key/foreground. A delayed request must
+            // never reclaim it from the document, another panel, or another application.
+            if !panel_window::is_active(&target)? {
+                return Ok(false);
+            }
+            let webview: &tauri::Webview = target.as_ref();
+            webview.set_focus().map_err(|error| error.to_string())?;
+            panel_window::is_active(&target)
+        })();
+        let held = panel_window::acquired(
+            &target,
+            generation,
+            epoch,
+            result.as_ref().copied().unwrap_or(false),
+        );
+        result.map(|_| held)
+    })?
+}
+
 /// Sent to the main window with the closed window's label; `listenForNativePanelWindowCloses` in
 /// panelBridge.ts decodes it back to the panel.
 const PLUGIN_PANEL_WINDOW_CLOSED_EVENT: &str = "chemdraft://plugin-panel-window-closed";
@@ -3416,6 +3565,161 @@ mod plugin_panel_label_tests {
             )
             .is_err());
         }
+    }
+
+    #[test]
+    fn panel_shortcut_length_caps_allow_real_catalog_ids_and_long_keyboard_names() {
+        use super::PluginPanelShortcut;
+        let command = format!("plugin.synthetic.{}", "a".repeat(380));
+        let payload = serde_json::json!({"commandId": command, "key": "AudioVolumeDown"});
+        let parsed = PluginPanelShortcut::parse(&payload).unwrap();
+        assert_eq!(parsed.command_id, command);
+        assert_eq!(parsed.key, "AudioVolumeDown");
+        for bad in [
+            serde_json::json!({"commandId": "x".repeat(4097)}),
+            serde_json::json!({"commandId": "edit.undo", "key": "x".repeat(257)}),
+        ] {
+            assert!(PluginPanelShortcut::parse(&bad).is_err());
+        }
+    }
+
+    #[test]
+    fn panel_shortcut_bridge_is_typed_caller_bound_and_cannot_close_documents() {
+        use super::validate_plugin_panel_event;
+        let label = plugin_panel_window_label("panel.test");
+        let event = "chemdraft://plugin-panel-shortcut";
+        let undo = serde_json::json!({"commandId": "edit.undo"});
+        assert!(validate_plugin_panel_event(&label, event, &undo).is_ok());
+        assert!(validate_plugin_panel_event("main", event, &undo).is_err());
+        for payload in [
+            serde_json::json!({}),
+            serde_json::json!({"commandId": ""}),
+            serde_json::json!({"commandId": " edit.undo"}),
+            serde_json::json!({"commandId": "document.closeTab"}),
+            serde_json::json!({"commandId": "document.closeTab.other"}),
+            serde_json::json!({"commandId": "edit.undo", "sourceLabel": "main"}),
+        ] {
+            assert!(validate_plugin_panel_event(&label, event, &payload).is_err());
+        }
+        let request = "chemdraft://toolset-command-specs-request";
+        assert!(validate_plugin_panel_event(&label, request, &serde_json::json!({})).is_ok());
+        assert!(validate_plugin_panel_event(&label, request, &undo).is_err());
+    }
+
+    #[test]
+    fn panel_shortcuts_preserve_secondary_window_document_routing() {
+        use super::PluginPanelShortcut;
+        for command in ["edit.undo", "edit.redo", "edit.selectAll"] {
+            let shortcut =
+                PluginPanelShortcut::parse(&serde_json::json!({"commandId": command})).unwrap();
+            let forwarded = shortcut.document_command_id();
+            assert_eq!(forwarded, format!("{command}:forceDocumentHistory"));
+            let already_forwarded =
+                PluginPanelShortcut::parse(&serde_json::json!({"commandId": forwarded})).unwrap();
+            assert_eq!(already_forwarded.document_command_id(), forwarded);
+        }
+        for command in ["tool.bond", "clipboard.copy", "plugin.example.run"] {
+            let shortcut =
+                PluginPanelShortcut::parse(&serde_json::json!({"commandId": command})).unwrap();
+            assert_eq!(shortcut.document_command_id(), command);
+        }
+    }
+
+    #[test]
+    fn plugin_panel_analysis_actions_overwrite_forged_sources() {
+        use super::authenticated_plugin_panel_event;
+        let label = plugin_panel_window_label("v1x61x62");
+        let event = "chemdraft://analysis-window-action";
+        for kind in [
+            "close",
+            "copyMolecularInspector",
+            "changeMolecularInterpretation",
+            "acceptPluginProposal",
+            "rejectPluginProposal",
+            "copySpectrum",
+            "saveBinaryFile",
+            "saveTextFile",
+        ] {
+            for source in [
+                serde_json::Value::Null,
+                serde_json::json!("plugin-panel-other"),
+            ] {
+                let payload = serde_json::json!({"kind": kind, "sourceLabel": source});
+                let forwarded = authenticated_plugin_panel_event(&label, event, payload).unwrap();
+                assert_eq!(forwarded["sourceLabel"], label);
+                assert_eq!(forwarded["kind"], kind);
+            }
+            let forwarded =
+                authenticated_plugin_panel_event(&label, event, serde_json::json!({"kind": kind}))
+                    .unwrap();
+            assert_eq!(forwarded["sourceLabel"], label);
+        }
+        for payload in [
+            serde_json::Value::Null,
+            serde_json::json!([]),
+            serde_json::json!(1),
+        ] {
+            assert!(authenticated_plugin_panel_event(&label, event, payload).is_err());
+        }
+    }
+
+    #[test]
+    fn plugin_panel_publications_are_private_and_document_owned() {
+        use super::{plugin_panel_publication_script, PluginPanelPublication};
+        let state = std::sync::Mutex::new(super::utility_suspension::UtilitySuspension::default());
+        let mut publication = PluginPanelPublication {
+            target_label: plugin_panel_window_label("v1x61x62"),
+            event: "chemdraft://analysis-window-snapshot".into(),
+            payload: serde_json::json!({"text": "\"}); alert('untrusted'); //"}),
+        };
+        for source in ["plugin-panel-other", "preferences", "toolset-core-main"] {
+            assert!(plugin_panel_publication_script(source, &publication, &state).is_err());
+        }
+        let script = plugin_panel_publication_script("main", &publication, &state).unwrap();
+        assert!(script.starts_with("window.dispatchEvent(new CustomEvent("));
+        assert!(script.contains("JSON.parse("));
+        assert!(!script.contains("__TAURI_EVENT_PLUGIN_INTERNALS__"));
+        for event in [
+            "chemdraft://plugin-panel-report",
+            "chemdraft://plugin-panel-report-cleared",
+            "chemdraft://plugin-panel-staleness",
+            "chemdraft://analysis-window-snapshot",
+            "chemdraft://analysis-window-action-result",
+            "chemdraft://plugin-panel-action-result",
+        ] {
+            publication.event = event.into();
+            assert!(plugin_panel_publication_script("main", &publication, &state).is_ok());
+        }
+        publication.event = "chemdraft://analysis-window-action".into();
+        assert!(plugin_panel_publication_script("main", &publication, &state).is_err());
+        publication.event = "chemdraft://analysis-window-snapshot".into();
+        publication.target_label = "main".into();
+        assert!(plugin_panel_publication_script("main", &publication, &state).is_err());
+    }
+
+    #[test]
+    fn plugin_panel_private_tombstones_cancel_suspended_restores() {
+        use super::{
+            dispatch_plugin_panel_open, plugin_panel_publication_script,
+            resume_deferred_plugin_panels, PluginPanelPublication,
+        };
+        let state = std::sync::Mutex::new(super::utility_suspension::UtilitySuspension::default());
+        let label = plugin_panel_window_label("v1x61x62");
+        state.lock().unwrap().begin([], None);
+        let request = serde_json::from_value(serde_json::json!({
+            "panelId": "v1x61x62", "title": "Result"
+        }))
+        .unwrap();
+        dispatch_plugin_panel_open(&state, request, false, |_| panic!("suspended")).unwrap();
+        let publication = PluginPanelPublication {
+            target_label: label,
+            event: super::PLUGIN_PANEL_REPORT_CLEARED_EVENT.into(),
+            payload: serde_json::json!({"pluginId": "a", "panelId": "b", "revision": 2}),
+        };
+        plugin_panel_publication_script("main", &publication, &state).unwrap();
+        state.lock().unwrap().release(false);
+        resume_deferred_plugin_panels(&state, || false, |_| panic!("removed panel restored"))
+            .unwrap();
     }
 
     #[test]
@@ -3688,13 +3992,65 @@ mod plugin_panel_label_tests {
     }
 }
 
-/// Host-owned analysis windows. Plugin reports and built-in Analyze surfaces share this one
-/// transport; each window is parented to the main document rather than being globally floating.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PluginPanelPublication {
+    target_label: String,
+    event: String,
+    payload: serde_json::Value,
+}
+
+fn plugin_panel_publication_script(
+    source: &str,
+    publication: &PluginPanelPublication,
+    suspension: &Mutex<utility_suspension::UtilitySuspension>,
+) -> Result<String, String> {
+    if source != MAIN_WINDOW_LABEL || !is_plugin_panel_window_label(&publication.target_label) {
+        return Err("Only the document window may publish to a panel.".into());
+    }
+    match publication.event.as_str() {
+        "chemdraft://plugin-panel-report"
+        | "chemdraft://plugin-panel-report-cleared"
+        | "chemdraft://plugin-panel-staleness"
+        | "chemdraft://analysis-window-snapshot"
+        | "chemdraft://analysis-window-action-result"
+        | "chemdraft://plugin-panel-action-result" => {}
+        _ => return Err("This event cannot be published to a panel.".into()),
+    }
+    let event = serde_json::to_string(&publication.event).map_err(|error| error.to_string())?;
+    let payload = serde_json::to_string(&publication.payload).map_err(|error| error.to_string())?;
+    if publication.event == PLUGIN_PANEL_REPORT_CLEARED_EVENT {
+        cancel_plugin_panel_restore(suspension, &payload);
+    }
+    let payload = serde_json::to_string(&payload).map_err(|error| error.to_string())?;
+    Ok(format!(
+        "window.dispatchEvent(new CustomEvent({event}, {{ detail: JSON.parse({payload}) }}));"
+    ))
+}
+
+/// Host-owned analysis windows share their existing document-window grant for private publications.
+/// Publication mode delivers content without opening or revealing a window.
 #[tauri::command]
 async fn open_plugin_panel_window(
     app: tauri::AppHandle,
-    request: OpenPluginPanelRequest,
+    window: tauri::WebviewWindow,
+    request: Option<OpenPluginPanelRequest>,
+    publication: Option<PluginPanelPublication>,
 ) -> Result<(), String> {
+    if let Some(publication) = publication {
+        if request.is_some() {
+            return Err("Cannot open and publish a panel in the same request.".into());
+        }
+        let script =
+            plugin_panel_publication_script(window.label(), &publication, &UTILITY_SUSPENSION)?;
+        // Tauri's emit_to also reaches Any listeners in other webviews. Evaluate only in the
+        // recipient so proposal snapshots and replies never enter that shared event bus.
+        if let Some(target) = app.get_webview_window(&publication.target_label) {
+            target.eval(script).map_err(|error| error.to_string())?;
+        }
+        return Ok(());
+    }
+    let request = request.ok_or("Missing plugin panel request.")?;
     if !is_valid_plugin_storage_id(&request.panel_id) {
         return Err(format!("Invalid plugin panel id \"{}\".", request.panel_id));
     }
@@ -3833,6 +4189,20 @@ fn build_or_show_plugin_panel<R: Runtime>(
                 restore_utility_in_document_group(&target)
             })?;
         }
+        if !window.is_visible().unwrap_or(true) {
+            // Reopening a reusable window also checks for a monitor disconnected since close.
+            // Prompt restoration above deliberately leaves its live frame and ordering alone.
+            let webview: &tauri::Webview<R> = window.as_ref();
+            let live = current_plugin_panel_geometry(&webview.window());
+            let (_, _, placement) = plugin_panel_initial_geometry(app, &request, live);
+            if let Some(placement) = placement {
+                let target = window.clone();
+                run_on_main_thread_blocking(&window, move || {
+                    let webview: &tauri::Webview<R> = target.as_ref();
+                    panel_full_size::apply(&webview.window(), placement)
+                })??;
+            }
+        }
         // `show()` makes the window key on macOS (tao's `set_visible` is makeKeyAndOrderFront), so
         // an automatic re-show leaves visibility to `configure_analysis_window`, which only orders
         // the window front.
@@ -3843,9 +4213,11 @@ fn build_or_show_plugin_panel<R: Runtime>(
         return Ok(());
     }
 
-    let width = request.width.unwrap_or(380.0);
-    let height = request.height.unwrap_or(520.0);
-    let position = analysis_window_initial_position(app, width, height);
+    let saved = load_toolset_layout_state(app)
+        .plugin_panels
+        .get(&request.panel_id)
+        .cloned();
+    let (width, height, placement) = plugin_panel_initial_geometry(app, &request, saved);
     // `.parent` is an owner window on Windows (no taskbar entry, stays above the document), the
     // same relationship utility_window_builder gives the palettes.
     let mut builder = WebviewWindowBuilder::new(
@@ -3855,12 +4227,15 @@ fn build_or_show_plugin_panel<R: Runtime>(
     )
     .title(format!("ChemDraft {}", request.title))
     .inner_size(width, height)
-    .min_inner_size(280.0, 200.0)
+    .min_inner_size(
+        panel_window_frame::MIN_WIDTH,
+        panel_window_frame::MIN_HEIGHT,
+    )
     .accept_first_mouse(true)
     .focusable(false)
     // Windows uses this creation trait for EVERY later show, not just the initial reveal.
     .focused(presentation.focused_on_build)
-    .visible(presentation.visible_on_build)
+    .visible(presentation.visible_on_build && placement.is_none())
     .resizable(true)
     .decorations(false)
     // Overlapping panels need a visible edge, matching the palette popover's native shadow.
@@ -3873,13 +4248,22 @@ fn build_or_show_plugin_panel<R: Runtime>(
             builder = builder.parent(&main).map_err(|error| error.to_string())?;
         }
     }
-    if let Some(position) = position {
-        builder = builder.position(position.x, position.y);
-    }
     let window = builder.build().map_err(|error| error.to_string())?;
     disable_default_context_menus(&window);
     let target = window.clone();
     let installed = run_on_main_thread_blocking(&window, move || {
+        #[cfg(target_os = "macos")]
+        {
+            // Finalize the one-time nonactivation style before placing the panel and adding
+            // its resize overlay. Later reveals see the same style and skip the setter.
+            let pointer = target.ns_window().map_err(|error| error.to_string())?;
+            let native = unsafe { &*(pointer as *const NSWindow) };
+            configure_analysis_window_traits(&target, native)?;
+        }
+        if let Some(placement) = placement {
+            let webview: &tauri::Webview<R> = target.as_ref();
+            panel_full_size::apply(&webview.window(), placement)?;
+        }
         panel_window::install_resize_hit_test(&target)
     })
     .and_then(|result| result);
@@ -3893,8 +4277,92 @@ fn build_or_show_plugin_panel<R: Runtime>(
             restore_utility_in_document_group(&target)
         })?;
     }
+    if !cfg!(target_os = "macos") {
+        window.show().map_err(|error| error.to_string())?;
+    }
     configure_analysis_window(&window)?;
     Ok(())
+}
+
+fn current_plugin_panel_geometry<R: Runtime>(
+    window: &tauri::Window<R>,
+) -> Option<panel_window_frame::Frame> {
+    let position = window.outer_position().ok()?;
+    let size = window.inner_size().ok()?;
+    let monitor =
+        panel_window_frame::Monitor::from_native(&window.current_monitor().ok().flatten()?);
+    panel_window_frame::Frame::from_physical(
+        (position.x, position.y),
+        (size.width, size.height),
+        &monitor,
+    )
+}
+
+fn plugin_panel_initial_geometry<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    request: &OpenPluginPanelRequest,
+    saved: Option<panel_window_frame::Frame>,
+) -> (f64, f64, Option<panel_window_frame::Placement>) {
+    let (width, height) = panel_window_frame::default_size(request.width, request.height);
+    let placement = saved
+        .as_ref()
+        .and_then(|frame| plugin_panel_saved_placement(app, frame))
+        .or_else(|| plugin_panel_default_placement(app, width, height));
+    (width, height, placement)
+}
+
+fn plugin_panel_saved_placement<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    frame: &panel_window_frame::Frame,
+) -> Option<panel_window_frame::Placement> {
+    let monitors = app.available_monitors().unwrap_or_default();
+    let monitors: Vec<_> = monitors
+        .iter()
+        .map(panel_window_frame::Monitor::from_native)
+        .collect();
+    frame.restore(&monitors)
+}
+
+fn plugin_panel_restore_geometry<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    saved: &panel_window_frame::Frame,
+) -> Option<(panel_window_frame::Placement, panel_window_frame::Frame)> {
+    let monitors = app.available_monitors().unwrap_or_default();
+    let monitors: Vec<_> = monitors
+        .iter()
+        .map(panel_window_frame::Monitor::from_native)
+        .collect();
+    if let Some(placement) = saved.restore_normal(&monitors) {
+        let monitor = monitors.iter().find(|m| m.identity == saved.monitor)?;
+        let frame =
+            panel_window_frame::Frame::from_physical(placement.position, placement.size, monitor)?;
+        return Some((placement, frame));
+    }
+    let (width, height) = panel_window_frame::default_size(None, None);
+    let placement = plugin_panel_default_placement(app, width, height)?;
+    let main = app.get_webview_window(MAIN_WINDOW_LABEL)?;
+    let monitor = panel_window_frame::Monitor::from_native(&main.current_monitor().ok().flatten()?);
+    let frame =
+        panel_window_frame::Frame::from_physical(placement.position, placement.size, &monitor)?;
+    Some((placement, frame))
+}
+
+fn plugin_panel_default_placement<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    width: f64,
+    height: f64,
+) -> Option<panel_window_frame::Placement> {
+    let position = analysis_window_initial_position(app, width, height)?;
+    let main = app.get_webview_window(MAIN_WINDOW_LABEL)?;
+    let monitor = main.current_monitor().ok().flatten()?;
+    let scale = monitor.scale_factor();
+    let position = position.to_physical::<i32>(scale);
+    let size = tauri::LogicalSize::new(width, height).to_physical::<u32>(scale);
+    Some(panel_window_frame::Placement {
+        position: (position.x, position.y),
+        size: (size.width, size.height),
+        scale,
+    })
 }
 
 fn analysis_window_initial_position<R: Runtime>(
@@ -4070,20 +4538,33 @@ fn configure_analysis_window_on_main_thread<R: Runtime>(
 
 #[cfg(target_os = "macos")]
 fn configure_analysis_window_traits<R: Runtime>(
-    window: &tauri::WebviewWindow<R>,
+    _window: &tauri::WebviewWindow<R>,
     ns_window: &NSWindow,
 ) -> Result<(), String> {
     // Normal level + a native parent keeps this movable/resizable, non-activating panel with its
-    // document. Focusability is enabled only for an input's temporary keyboard-focus lease.
+    // document. Only native pointer activation enables keyboard focus.
     ns_window.setLevel(NSNormalWindowLevel);
     ns_window.setHidesOnDeactivate(false);
     ns_window.setCanHide(true);
     ns_window.setIgnoresMouseEvents(false);
-    ns_window.setStyleMask(panel_window::macos_style(ns_window.styleMask()));
+    // Resizable is already set by the builder. Even an unchanged style setter can rebuild
+    // the content hierarchy, so configure only the missing nonactivation bit, once.
+    panel_window::configure_macos_style(ns_window.styleMask(), |style| {
+        let responder = ns_window.firstResponder();
+        ns_window.setStyleMask(style);
+        // AppKit can reset keyboard routing during a style change. Keep Wry's responder,
+        // without taking key status or asking tao to focus its original, detached NSView.
+        if let Some(responder) = responder {
+            let current = ns_window
+                .firstResponder()
+                .is_some_and(|current| std::ptr::eq(&*current, &*responder));
+            if !current {
+                ns_window.makeFirstResponder(Some(&responder));
+            }
+        }
+    });
     ns_window.setAcceptsMouseMovedEvents(true);
-    window
-        .set_focusable(false)
-        .map_err(|error| error.to_string())
+    Ok(())
 }
 
 /// Makes `child` a child window of the main document window again, if it is not one already.
@@ -4237,6 +4718,7 @@ fn observe_hide_for_document_key_restore<R: Runtime>(app: tauri::AppHandle<R>) {
     let center = NSNotificationCenter::defaultCenter();
     let hide_app = app.clone();
     let on_hide = block2::RcBlock::new(move |_: NonNull<NSNotification>| {
+        // Hiding the app keeps enlarged panels enlarged; quit and panel hide/close restore them.
         let was_key = main_ns_window(&hide_app).is_some_and(|main| main.isKeyWindow());
         if let Ok(mut state) = DOCUMENT_KEY_AFTER_UNHIDE.lock() {
             state.will_hide(was_key);
@@ -4927,8 +5409,10 @@ fn write_clipboard_items_checked(
     app: &tauri::AppHandle,
     items: Vec<ClipboardWriteItem>,
 ) -> Result<ClipboardWriteResult, String> {
-    let items = validate_clipboard_items(items)?;
-    write_clipboard_items_impl(app, &items)
+    let (items, warnings) = clipboard_formats::validate_clipboard_items_with_warnings(items)?;
+    let mut result = write_clipboard_items_impl(app, &items)?;
+    result.warnings.extend(warnings);
+    Ok(result)
 }
 
 // Retain the legacy IPC signatures pinned by the command-separation test and used by the ignored
@@ -5031,31 +5515,86 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let mut text_items = pasteboard
-        .types()
-        .map(|types| {
-            types
-                .to_vec()
-                .into_iter()
-                .filter_map(|pasteboard_type| {
-                    clipboard_text_for_type(&pasteboard, &pasteboard_type).map(|text| {
-                        ClipboardTextItem {
-                            r#type: pasteboard_type.to_string(),
-                            text,
-                        }
+    let read_plan = types
+        .iter()
+        .map(|source| {
+            let priority = clipboard_limits::text_read_priority(source);
+            let priority = if priority == Some(2) {
+                pasteboard
+                    .dataForType(&NSString::from_str(source))
+                    .as_ref()
+                    .map_or(priority, |data| {
+                        // SAFETY: immutable retained NSData, inspected only during this call.
+                        clipboard_limits::text_priority_with_preview(source, unsafe {
+                            data.as_bytes_unchecked()
+                        })
                     })
-                })
-                .collect::<Vec<_>>()
+            } else {
+                priority
+            };
+            (source, priority)
         })
-        .unwrap_or_default();
+        .collect::<Vec<_>>();
+    let mut budget = clipboard_limits::ClipboardReadBudget::default();
+    let mut text_items = Vec::new();
+    let mut image_items = Vec::new();
+    let mut skipped_image_items = Vec::new();
+    let priorities = read_plan
+        .iter()
+        .map(|(_, priority)| *priority)
+        .collect::<Vec<_>>();
+    // Chemistry precedes artwork; plain text, then HTML and RTF follow it, beside a picture too.
+    for step in clipboard_limits::clipboard_read_steps(&priorities) {
+        let source = match step {
+            clipboard_limits::ClipboardReadStep::Pictures => {
+                (image_items, skipped_image_items) =
+                    clipboard_picture_items(&pasteboard, &types, &mut budget);
+                continue;
+            }
+            clipboard_limits::ClipboardReadStep::Text(index) => read_plan[index].0,
+        };
+        if let Some(text) = clipboard_text_for_type(
+            &pasteboard,
+            &NSString::from_str(source),
+            &mut budget,
+            &text_items,
+        ) {
+            text_items.push(ClipboardTextItem {
+                r#type: source.to_string(),
+                text,
+            });
+        }
+    }
+    text_items.sort_by_key(|item| types.iter().position(|kind| kind == &item.r#type));
 
+    Ok(ClipboardReadPayload {
+        types,
+        text_items,
+        image_items,
+        skipped_image_items,
+        skipped_items: budget.skipped_items,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn clipboard_picture_items(
+    pasteboard: &NSPasteboard,
+    types: &[String],
+    budget: &mut clipboard_limits::ClipboardReadBudget,
+) -> (Vec<ClipboardImageItem>, Vec<SkippedClipboardImageItem>) {
     let mut image_items = Vec::new();
     let mut skipped_image_items = Vec::new();
     // Picture flavors bypass the text reader. SVG text is decoded only from these bounded bytes.
     for (sources, output_type) in [
         (&["public.png", "public.tiff"][..], "image/png"),
-        (&["public.svg-image", "image/svg+xml"][..], "image/svg+xml"),
+        (
+            &["public.svg-image", "image/svg+xml", "public.svg"][..],
+            "image/svg+xml",
+        ),
     ] {
+        if !image_items.is_empty() {
+            break;
+        }
         for &source in sources {
             if !types.iter().any(|kind| kind == source) {
                 continue;
@@ -5069,23 +5608,29 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
                 continue;
             };
             let byte_length = data.length();
-            let result =
-                clipboard_images::check_image_byte_length(source, byte_length).and_then(|()| {
-                    let bytes = data.to_vec();
-                    match source {
-                        "public.png" => clipboard_images::png_image_item(&bytes),
-                        "public.tiff" => clipboard_images::tiff_image_item(&bytes),
-                        _ => {
-                            if let Some(text) = decode_clipboard_text_bytes(&bytes) {
-                                text_items.push(ClipboardTextItem {
-                                    r#type: source.to_string(),
-                                    text,
-                                });
-                            }
-                            clipboard_images::svg_image_item(&bytes, source)
-                        }
-                    }
-                });
+            let svg = output_type == "image/svg+xml";
+            let admission = if svg {
+                budget.reserve_svg_allocation(source, byte_length)
+            } else {
+                budget.reserve(source, byte_length)
+            };
+            let result = admission.and_then(|()| {
+                // SAFETY: NSData is retained and immutable; decode directly without a byte copy.
+                let bytes = unsafe { data.as_bytes_unchecked() };
+                let item = match source {
+                    "public.png" => clipboard_images::png_image_item(bytes),
+                    "public.tiff" => clipboard_images::tiff_image_item(bytes),
+                    _ => clipboard_images::svg_image_item(bytes, source),
+                };
+                if svg {
+                    budget.release(byte_length);
+                }
+                let item = item?;
+                if svg {
+                    budget.reserve(source, item.retained_byte_length())?;
+                }
+                Ok(item)
+            });
             match result {
                 Ok(item) => {
                     if !image_items
@@ -5094,25 +5639,29 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
                     {
                         image_items.push(item);
                     }
-                    if output_type != "image/svg+xml" {
-                        break;
-                    }
+                    break;
                 }
-                Err(reason) => skipped_image_items.push(SkippedClipboardImageItem::new(
-                    output_type,
-                    byte_length,
-                    reason,
-                )),
+                Err(reason) => {
+                    // A failed conversion was not kept and must not penalize its fallback.
+                    // A refused reservation consumed no bytes in the first place.
+                    if !svg
+                        && !budget
+                            .skipped_items
+                            .iter()
+                            .any(|item| item.r#type == source)
+                    {
+                        budget.release(byte_length);
+                    }
+                    skipped_image_items.push(SkippedClipboardImageItem::new(
+                        output_type,
+                        byte_length,
+                        reason,
+                    ));
+                }
             }
         }
     }
-
-    Ok(ClipboardReadPayload {
-        types,
-        text_items,
-        image_items,
-        skipped_image_items,
-    })
+    (image_items, skipped_image_items)
 }
 
 #[cfg(target_os = "macos")]
@@ -5191,21 +5740,107 @@ fn is_opaque_clipboard_type(pasteboard_type: &str) -> bool {
 fn clipboard_text_for_type(
     pasteboard: &NSPasteboard,
     pasteboard_type: &objc2_app_kit::NSPasteboardType,
+    budget: &mut clipboard_limits::ClipboardReadBudget,
+    admitted: &[ClipboardTextItem],
 ) -> Option<String> {
     let kind = pasteboard_type.to_string();
-    if is_opaque_clipboard_type(&kind) || clipboard_images::is_image_clipboard_type(&kind) {
+    if is_opaque_clipboard_type(&kind) {
         return None;
     }
+    clipboard_limits::text_read_priority(&kind)?;
 
-    if let Some(text) = pasteboard.stringForType(pasteboard_type) {
-        let text = text.to_string();
-        if !text.is_empty() {
-            return Some(text);
+    // AppKit must materialize NSData to expose its length; we cannot prevent that OS-owned
+    // allocation, nor any internal NSString conversion it performs. The UTF8String native
+    // buffer used by to_string / alias comparison is another unavoidable OS-owned copy.
+    // Reserve the native size before copying. Never copy NSData into a Rust Vec or build a second
+    // owned Rust text buffer: only the final String crosses into ChemDraft-owned memory.
+    let data = pasteboard.dataForType(pasteboard_type);
+    let data_length = data.as_ref().map_or(0, |data| data.length());
+    if let Some(data) = &data {
+        // SAFETY: immutable retained NSData; comparison never copies or retains its pointer.
+        if clipboard_limits::is_admitted_text_alias(unsafe { data.as_bytes_unchecked() }, admitted)
+        {
+            return None;
+        }
+    }
+    let native_text = pasteboard.stringForType(pasteboard_type);
+    let utf8_length = native_text
+        .as_ref()
+        .map(|text| text.lengthOfBytesUsingEncoding(objc2_foundation::NSUTF8StringEncoding));
+    if let (Some(text), Some(byte_length)) = (native_text.as_ref(), utf8_length) {
+        // Providers may publish an NSString alias without NSData. Check lengths first,
+        // then compare whole UTF-8 buffers with one Objective-C conversion per NSString.
+        // Never issue characterAtIndex calls per character on a large paste.
+        let alias = if admitted.iter().any(|item| item.text.len() == byte_length) {
+            let pointer = text.UTF8String();
+            !pointer.is_null() && {
+                // SAFETY: NSString retains the native UTF-8 buffer for this comparison;
+                // lengthOfBytesUsingEncoding excludes the trailing NUL, including interior NULs.
+                let bytes =
+                    unsafe { std::slice::from_raw_parts(pointer.cast::<u8>(), byte_length) };
+                admitted.iter().any(|item| item.text.as_bytes() == bytes)
+            }
+        } else {
+            false
+        };
+        if alias {
+            return None;
+        }
+    }
+    let utf16 = kind.contains("utf16")
+        || data.as_ref().is_some_and(|data| {
+            // SAFETY: immutable retained NSData; inspect only a bounded encoding prefix.
+            let bytes = unsafe { data.as_bytes_unchecked() };
+            looks_like_utf16_bytes(&bytes[..bytes.len().min(8192)])
+        });
+    let reservation = if utf16 {
+        let decoded_length = utf8_length.unwrap_or_else(|| {
+            data.as_ref().map_or(0, |data| {
+                // SAFETY: immutable retained NSData, measured without an owned text allocation.
+                clipboard_limits::utf16_utf8_byte_length(unsafe { data.as_bytes_unchecked() })
+            })
+        });
+        budget.reserve_utf16_allocation(&kind, data_length, decoded_length)
+    } else {
+        budget.reserve(&kind, data_length).map(|()| data_length)
+    };
+    let reserved = match reservation {
+        Ok(reserved) => reserved,
+        Err(_) => {
+            if let Some(data) = &data {
+                // SAFETY: immutable retained NSData used only for a bounded preview.
+                budget.mark_chemistry(&kind, unsafe { data.as_bytes_unchecked() });
+            }
+            return None;
+        }
+    };
+    if let Some(text) = native_text {
+        let byte_length = text.lengthOfBytesUsingEncoding(objc2_foundation::NSUTF8StringEncoding);
+        if byte_length > 0 {
+            // Replace the native-size reservation before allocating the final UTF-8 String.
+            budget.release(reserved);
+            if budget.reserve(&kind, byte_length).is_err() {
+                if let Some(data) = &data {
+                    // SAFETY: immutable retained NSData used only for a bounded preview.
+                    budget.mark_chemistry(&kind, unsafe { data.as_bytes_unchecked() });
+                }
+                return None;
+            }
+            return Some(text.to_string());
         }
     }
 
-    let data = pasteboard.dataForType(pasteboard_type)?;
-    decode_clipboard_text_bytes(&data.to_vec())
+    // SAFETY: immutable NSData remains retained for the entire borrowed decode.
+    let text = data
+        .as_ref()
+        .and_then(|data| decode_clipboard_text_bytes(unsafe { data.as_bytes_unchecked() }));
+    budget.release(reserved);
+    let text = text?;
+    if budget.reserve(&kind, text.len()).is_err() {
+        budget.mark_chemistry(&kind, text.as_bytes());
+        return None;
+    }
+    Some(text)
 }
 
 #[cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
@@ -5220,7 +5855,7 @@ fn decode_clipboard_text_bytes(bytes: &[u8]) -> Option<String> {
         }
     }
 
-    if let Ok(text) = String::from_utf8(bytes.to_vec()) {
+    if let Ok(text) = std::str::from_utf8(bytes) {
         // ChemDraw-style flavors end in a C-string terminator; strip it. An INTERIOR null is
         // different — text never contains one, so its presence means these bytes are binary.
         let text = text.trim_end_matches('\0');
@@ -5324,17 +5959,15 @@ fn decode_utf16_units(content: &[u8], big_endian: bool) -> Option<String> {
         return None;
     }
 
-    let units = content
-        .chunks_exact(2)
-        .map(|chunk| {
-            if big_endian {
-                u16::from_be_bytes([chunk[0], chunk[1]])
-            } else {
-                u16::from_le_bytes([chunk[0], chunk[1]])
-            }
-        })
-        .collect::<Vec<_>>();
-    String::from_utf16(&units)
+    let units = content.chunks_exact(2).map(|chunk| {
+        if big_endian {
+            u16::from_be_bytes([chunk[0], chunk[1]])
+        } else {
+            u16::from_le_bytes([chunk[0], chunk[1]])
+        }
+    });
+    char::decode_utf16(units)
+        .collect::<Result<String, _>>()
         .ok()
         .filter(|text| !text.is_empty() && text_is_plausible_clipboard_text(text))
 }
@@ -5373,6 +6006,7 @@ fn read_clipboard_payload_impl() -> Result<ClipboardReadPayload, String> {
         text_items: Vec::new(),
         image_items: Vec::new(),
         skipped_image_items: Vec::new(),
+        skipped_items: Vec::new(),
     })
 }
 
@@ -7403,12 +8037,13 @@ fn install_toolset_input_focus<R: Runtime>(window: &tauri::WebviewWindow<R>) -> 
 /// window-creating commands are `async` (a tokio worker — required for WebView2 on Windows), so every
 /// raw NSWindow call they reach must be marshalled. Tauri runs the closure inline when already on the
 /// main thread, so this is also safe to call from there (the result is sent before `recv` blocks).
-fn run_on_main_thread_blocking<R: Runtime, T: Send + 'static>(
-    window: &tauri::WebviewWindow<R>,
+fn run_on_main_thread_blocking<R: Runtime, M: Manager<R>, T: Send + 'static>(
+    window: &M,
     task: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, String> {
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
     window
+        .app_handle()
         .run_on_main_thread(move || {
             let _ = sender.send(task());
         })
@@ -8030,6 +8665,49 @@ fn persist_main_window_geometry<R: Runtime>(window: &tauri::Window<R>) -> Result
     })
 }
 
+fn persist_plugin_panel_geometry<R: Runtime>(window: &tauri::Window<R>) -> Result<(), String> {
+    if APP_QUITTING.load(Ordering::SeqCst) || utility_windows_suspended() {
+        return Ok(());
+    }
+    // Native state is authoritative before Tao's cached minimized flag catches up. Windows may
+    // move an owned panel to its minimized parking position before reporting the owner's resize.
+    let native = main_window_placement::snapshot(window)?;
+    let owner_minimized = window
+        .app_handle()
+        .get_webview_window(MAIN_WINDOW_LABEL)
+        .is_some_and(|owner| owner.is_minimized().unwrap_or(true));
+    let Some(frame) = panel_full_size::frame_for_save(window) else {
+        return Ok(());
+    };
+    let Some(frame) = frame.for_save(
+        native.minimized || window.is_minimized().unwrap_or(true),
+        owner_minimized,
+        native.fullscreen || window.is_fullscreen().unwrap_or(true),
+    ) else {
+        return Ok(());
+    };
+    save_plugin_panel_frame(window, frame)
+}
+
+fn save_plugin_panel_frame<R: Runtime>(
+    window: &tauri::Window<R>,
+    frame: panel_window_frame::Frame,
+) -> Result<(), String> {
+    // Reject off-screen/parked positions rather than replacing the last usable frame.
+    if plugin_panel_saved_placement(window.app_handle(), &frame).is_none() {
+        return Ok(());
+    }
+    let Some(id) = window
+        .label()
+        .strip_prefix(PLUGIN_PANEL_WINDOW_LABEL_PREFIX)
+    else {
+        return Ok(());
+    };
+    update_toolset_layout_state(window.app_handle(), |layout| {
+        layout.plugin_panels.insert(id.replace(':', "."), frame);
+    })
+}
+
 fn update_main_window_geometry(
     saved: &mut Option<MainWindowGeometry>,
     update: MainWindowGeometryUpdate,
@@ -8331,6 +9009,15 @@ fn find_menu_item_by_id<R: Runtime>(
 mod tests {
 
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_utf16_and_utf8_text_share_the_decoded_cap() {
+        clipboard_limits::assert_text_encoding_size_admission(
+            "public.utf16-plain-text",
+            "public.utf8-plain-text",
+        );
+    }
 
     #[test]
     fn insert_menu_is_shared_by_both_platforms_and_follows_edit() {
@@ -9212,6 +9899,7 @@ mod tests {
         let saved = ToolsetLayoutState {
             version: 1,
             toolsets: HashMap::new(),
+            plugin_panels: HashMap::new(),
             main_window: Some(MainWindowGeometry {
                 x: 12.0,
                 y: 34.0,

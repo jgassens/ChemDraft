@@ -167,6 +167,12 @@ function OpenPanelView({
   const activeDragCleanupRef = useRef<(() => void) | undefined>(undefined);
   offsetRef.current = offset;
 
+  useLayoutEffect(() => {
+    if (panel.report.sections.some((section) => section.kind === "prompt")) return;
+    const report = panelRef.current?.querySelector<HTMLElement>(".plugin-report");
+    if (report) report.scrollTop = 0;
+  }, [panel.report]);
+
   useEffect(() => {
     const onResize = (): void => {
       // A resize changes the panel's CSS max-width and its usable drag range. End any drag that was
