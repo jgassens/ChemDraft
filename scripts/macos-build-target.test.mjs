@@ -10,15 +10,18 @@ test("macOS build preserves native defaults and routes explicit targets correctl
   assert.deepEqual(macosBuildArgs(defaultArgs, "intel.json"), defaultArgs);
   const arm64Args = ["build", "--target", "aarch64-apple-darwin", "--bundles", "app"];
   assert.deepEqual(macosBuildArgs(arm64Args, "intel.json"), arm64Args);
-  for (const flag of [["--target", "x86_64-apple-darwin"], ["--target=x86_64-apple-darwin"]]) {
+  for (const flag of [["--target", "x86_64-apple-darwin"], ["--target=x86_64-apple-darwin"], ["-t", "x86_64-apple-darwin"]]) {
     const input = ["build", ...flag, "--config", '{"identifier":"org.chemdraft.desktop.dev"}'];
     assert.deepEqual(macosBuildArgs(input, "intel.json"), ["build", "--config", "intel.json", ...input.slice(1)]);
   }
+  assert.deepEqual(macosBuildArgs(["build", "-t", "aarch64-apple-darwin"], "intel.json"), ["build", "-t", "aarch64-apple-darwin"]);
   assert.deepEqual(macosBuildArgs(["build", "--target=x86_64-apple-darwin", "--", "--release"], "intel.json"), ["build", "--config", "intel.json", "--target=x86_64-apple-darwin", "--", "--release"]);
   assert.deepEqual(macosBuildArgs(["dev"], "intel.json"), ["dev"]);
   assert.throws(() => macosBuildArgs(["build", "--target"], "intel.json"), /Unsupported/);
   assert.throws(() => macosBuildArgs(["build", "--target=universal-apple-darwin"], "intel.json"), /Unsupported/);
   assert.throws(() => macosBuildArgs(["build", "--target=x86_64-apple-darwin", "--target=bad"], "intel.json"), /only once/);
+  assert.throws(() => macosBuildArgs(["build", "-t", "x86_64-apple-darwin", "--target=aarch64-apple-darwin"], "intel.json"), /only once/);
+  assert.throws(() => macosBuildArgs(["build", "--target=x86_64-apple-darwin", "-t", "aarch64-apple-darwin"], "intel.json"), /only once/);
 });
 
 test("Intel plist preserves the base Sparkle settings and only changes the feed", () => {
@@ -31,7 +34,7 @@ test("Intel plist preserves the base Sparkle settings and only changes the feed"
 
 test("run-app rejects invalid targets and cross-target dev before any build or installation", { skip: process.platform === "win32" }, () => {
   const launcher = fileURLToPath(new URL("../run-app", import.meta.url));
-  for (const args of [["--target", "bad-target"], ["--dev", "--target", "x86_64-apple-darwin"], ["--target"]]) {
+  for (const args of [["--target", "bad-target"], ["--dev", "--target", "x86_64-apple-darwin"], ["--target"], ["--target="], ["--target", "x86_64-apple-darwin", "--target", ""], ["--target", "x86_64-apple-darwin", "--target=aarch64-apple-darwin"]]) {
     const result = spawnSync("bash", [launcher, ...args], { encoding: "utf8" });
     assert.equal(result.status, 2, result.stderr);
     assert.match(result.stdout, /target/);

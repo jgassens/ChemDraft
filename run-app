@@ -13,8 +13,12 @@ while [ "$#" -gt 0 ]; do
     app) shift ;;
     --target)
       if [ "$#" -lt 2 ]; then echo "--target needs a macOS target triple"; exit 2; fi
+      if [ -n "$MACOS_TARGET" ] || [ -z "$2" ]; then echo "Usage: ./run-app [--dev] [--target aarch64-apple-darwin|x86_64-apple-darwin]"; exit 2; fi
       MACOS_TARGET="$2"; shift 2 ;;
-    --target=*) MACOS_TARGET="${1#--target=}"; shift ;;
+    --target=*)
+      TARGET_VALUE="${1#--target=}"
+      if [ -n "$MACOS_TARGET" ] || [ -z "$TARGET_VALUE" ]; then echo "Usage: ./run-app [--dev] [--target aarch64-apple-darwin|x86_64-apple-darwin]"; exit 2; fi
+      MACOS_TARGET="$TARGET_VALUE"; shift ;;
     *) echo "Usage: ./run-app [--dev] [--target aarch64-apple-darwin|x86_64-apple-darwin]"; exit 2 ;;
   esac
 done

@@ -6,7 +6,7 @@ export function macosBuildArgs(input, intelConfig) {
   if (args[0] !== "build") return args;
   const end = args.indexOf("--");
   const options = end === -1 ? args : args.slice(0, end);
-  const targets = options.flatMap((arg, index) => arg === "--target" ? [options[index + 1]] : arg.startsWith("--target=") ? [arg.slice(9)] : []);
+  const targets = options.flatMap((arg, index) => arg === "--target" || arg === "-t" ? [options[index + 1]] : arg.startsWith("--target=") ? [arg.slice(9)] : arg.startsWith("-t") && arg.length > 2 ? [arg.slice(2)] : []);
   if (targets.length > 1) throw new Error("Specify --target only once");
   if (!targets.length) return args;
   const target = targets[0];
