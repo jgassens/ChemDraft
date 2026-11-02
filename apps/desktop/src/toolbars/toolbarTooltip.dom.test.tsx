@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ToolPalette } from "../ToolPalette";
 import type { CommandSpec } from "../commands";
+import type { ToolbarPaletteItemModel } from "../toolsets";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -12,12 +13,14 @@ describe("toolbar tooltip pointer transitions", () => {
   let container: HTMLDivElement;
   let root: Root;
   let buttons: HTMLButtonElement[];
+  let onInvoke: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     vi.useFakeTimers();
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
+    onInvoke = vi.fn();
     const commands: CommandSpec[] = ["A", "B", "C", "D"].map((title) => ({
       id: `tool.${title.toLowerCase()}`,
       title,
@@ -27,12 +30,24 @@ describe("toolbar tooltip pointer transitions", () => {
     }));
     act(() => {
       root.render(createElement(ToolPalette, {
-        groups: [commands],
+        itemGroups: [commands.map<ToolbarPaletteItemModel>((command, index) => ({
+          id: command.id,
+          kind: "button",
+          label: command.title,
+          primary: { type: "command", command },
+          submenu: index === 0 ? {
+            id: "menu.a",
+            type: "command-grid",
+            items: [commands[2]!]
+          } : null,
+          tooltip: { title: command.title, description: null, shortcut: null },
+          layout: { colSpan: 1, rowSpan: 1 }
+        }))],
         orientation: "horizontal",
-        onInvoke: vi.fn()
+        onInvoke
       }));
     });
-    buttons = Array.from(container.querySelectorAll<HTMLButtonElement>("button[data-command-id]"));
+    buttons = Array.from(container.querySelectorAll<HTMLButtonElement>("button.icon-button[data-command-id]"));
     expect(buttons).toHaveLength(4);
   });
 
@@ -76,7 +91,7 @@ describe("toolbar tooltip pointer transitions", () => {
     const visible = Array.from(container.querySelectorAll('[data-tooltip-visible="true"]'));
     expect(visible).toEqual(button ? [button.closest("[data-tooltip-owner-id]")] : []);
     if (button) {
-      expect(visible[0]?.querySelector('[role="tooltip"] > span')?.textContent).toBe(button.dataset.tooltip);
+      expect(visible[0]?.querySelector('[role="tooltip"] > .visually-hidden')?.textContent).toBe(button.dataset.tooltip);
     }
   }
 
@@ -96,6 +111,43 @@ describe("toolbar tooltip pointer transitions", () => {
     moveTo(buttons[0]!);
     advance(250);
     moveTo(null, buttons[0]!);
+    advance(501);
+    expectTooltip();
+  });
+
+  it.each(["Enter", " "])("cancels pending B when focused A is activated with %s", (key) => {
+    act(() => buttons[0]!.focus());
+    moveTo(buttons[1]!);
+    advance(250);
+    act(() => buttons[0]!.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true })));
+    expect(onInvoke).toHaveBeenCalledExactlyOnceWith("tool.a");
+    advance(501);
+    expectTooltip();
+  });
+
+  it("cancels pending B when ArrowDown opens focused A's flyout", () => {
+    act(() => buttons[0]!.focus());
+    moveTo(buttons[1]!);
+    advance(250);
+    act(() => buttons[0]!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+    expect(buttons[0]!.getAttribute("aria-expanded")).toBe("true");
+    expect(onInvoke).not.toHaveBeenCalled();
+    advance(501);
+    expectTooltip();
+  });
+
+  it.each(["press", "scroll", "blur"])("cancels pending B on %s", (action) => {
+    moveTo(buttons[1]!);
+    advance(250);
+    act(() => {
+      if (action === "press") {
+        pointer(buttons[0]!, "pointerdown");
+      } else if (action === "scroll") {
+        container.dispatchEvent(new Event("scroll"));
+      } else {
+        window.dispatchEvent(new Event("blur"));
+      }
+    });
     advance(501);
     expectTooltip();
   });

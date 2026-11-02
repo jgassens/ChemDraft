@@ -9,6 +9,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 export const TOOLTIP_DELAY_MS = 500;
 
+export type ClearTooltipOptions = { onlyMatchingPending?: boolean };
+
 export function usePaletteTooltipState() {
   const [visibleTooltipId, setVisibleTooltipId] = useState<string | undefined>();
   const visibleTooltipIdRef = useRef<string | undefined>(undefined);
@@ -39,8 +41,10 @@ export function usePaletteTooltipState() {
     }, TOOLTIP_DELAY_MS);
   }, [clearPendingTooltip]);
 
-  const clearTooltip = useCallback((tooltipId?: string) => {
-    if (tooltipId === undefined || pendingTooltipIdRef.current === tooltipId) {
+  const clearTooltip = useCallback((tooltipId?: string, options?: ClearTooltipOptions) => {
+    // Pointer transitions can arrive from a stale owner after another tooltip was queued.
+    // Explicit dismissals must cancel the timer regardless of its owner.
+    if (!options?.onlyMatchingPending || tooltipId === undefined || pendingTooltipIdRef.current === tooltipId) {
       clearPendingTooltip();
     }
     setVisibleTooltipId((current) => (
@@ -63,37 +67,37 @@ export function usePaletteTooltipState() {
       const ownerElement = targetElement?.closest<HTMLElement>("[data-tooltip-owner-id]");
 
       if (ownerElement?.dataset.tooltipOwnerId !== visibleTooltipId) {
-        clearTooltip(visibleTooltipId);
+        clearTooltip(visibleTooltipId, { onlyMatchingPending: true });
       }
     };
 
     const clearVisibleTooltip = () => {
-      clearTooltip(visibleTooltipId);
+      clearTooltip(visibleTooltipId, { onlyMatchingPending: true });
     };
 
     document.addEventListener("mousemove", clearWhenPointerLeavesOwner, true);
     document.addEventListener("pointermove", clearWhenPointerLeavesOwner, true);
     document.addEventListener("mouseleave", clearVisibleTooltip, true);
-    document.addEventListener("pointerdown", clearWhenPointerLeavesOwner, true);
-    window.addEventListener("blur", clearVisibleTooltip);
 
     return () => {
       document.removeEventListener("mousemove", clearWhenPointerLeavesOwner, true);
       document.removeEventListener("pointermove", clearWhenPointerLeavesOwner, true);
       document.removeEventListener("mouseleave", clearVisibleTooltip, true);
-      document.removeEventListener("pointerdown", clearWhenPointerLeavesOwner, true);
-      window.removeEventListener("blur", clearVisibleTooltip);
     };
   }, [visibleTooltipId, clearTooltip]);
 
   useEffect(() => {
-    const clearPendingOnBlur = () => {
+    const dismissTooltip = () => {
       clearTooltip();
     };
 
-    window.addEventListener("blur", clearPendingOnBlur);
+    window.addEventListener("blur", dismissTooltip);
+    document.addEventListener("pointerdown", dismissTooltip, true);
+    document.addEventListener("scroll", dismissTooltip, true);
     return () => {
-      window.removeEventListener("blur", clearPendingOnBlur);
+      window.removeEventListener("blur", dismissTooltip);
+      document.removeEventListener("pointerdown", dismissTooltip, true);
+      document.removeEventListener("scroll", dismissTooltip, true);
     };
   }, [clearTooltip]);
 
