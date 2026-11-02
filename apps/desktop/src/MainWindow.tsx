@@ -1693,7 +1693,7 @@ function tableClipboardDecisionBeforePicture(payload: ClipboardReadPayload) {
   return tableClipboardPasteDecision(payload, html => new DOMParser().parseFromString(html, "text/html"));
 }
 
-const CURRENT_BUILD_STAMP = "11.01.19.55-codex";
+const CURRENT_BUILD_STAMP = "11.01.19.58-opus";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -2431,6 +2431,14 @@ export function MainWindow({
   closeTabPromptRef.current = closeTabPrompt;
   const [activeEditorObjectId, setActiveEditorObjectId] = useState<string | undefined>();
   const [activeTextEditObjectId, setActiveTextEditObjectId] = useState<string | undefined>();
+  const textEditHistorySnapshotRef = useRef<{
+    objectId: string; document: ChemDraftDocument; documentIdentity: number;
+  } | undefined>(undefined);
+  const checkpointTextEditBeforeCommitRef = useRef<(beforePreview?: ChemDraftDocument) => (() => void) | undefined>(() => undefined);
+  const textEditHistoryWritingRef = useRef(false);
+  // Keeps an open numeric rotate/stretch preview as its own entry; assigned where those handlers live.
+  const keepNumericInputPreviewsRef = useRef<() => void>(() => undefined);
+  const textAutoConversionInProgressRef = useRef(false);
   // Only the first committed edit of each box placed by the Text tool may become an atom label.
   // Existing captions always remain text when reopened; the explicit command remains available.
   // A second placement can end an earlier edit before React observes it, so pending ids cannot be
@@ -3456,21 +3464,25 @@ export function MainWindow({
     undoLabel?: string
   ): boolean => {
     if (quitMutationFrozenRef.current) throw new Error("Quit is completing; the pending edit was not applied.");
+    // Record typing before the command, retaining main's editor lifetime in its callers.
+    const resumeTextEdit = checkpointTextEditBeforeCommitRef.current();
     let changed = false;
-    installDocumentHistory((currentHistory) => {
-      const nextDocument = typeof nextDocumentOrUpdate === "function"
-        ? nextDocumentOrUpdate(currentHistory.present)
-        : nextDocumentOrUpdate;
-      if (nextDocument === currentHistory.present) return currentHistory;
+    try {
+      installDocumentHistory((currentHistory) => {
+        const nextDocument = typeof nextDocumentOrUpdate === "function"
+          ? nextDocumentOrUpdate(currentHistory.present)
+          : nextDocumentOrUpdate;
+        if (nextDocument === currentHistory.present) return currentHistory;
 
-      const present = prepareDocumentCommit(nextDocument, undoLabel);
-      changed = true;
-      return {
-        past: boundedHistoryPast([...currentHistory.past, atomLabelHistorySnapshot(currentHistory.present)], present),
-        present,
-        future: []
-      };
-    });
+        const present = prepareDocumentCommit(nextDocument, undoLabel);
+        changed = true;
+        return {
+          past: boundedHistoryPast([...currentHistory.past, atomLabelHistorySnapshot(currentHistory.present)], present),
+          present,
+          future: []
+        };
+      });
+    } finally { resumeTextEdit?.(); }
     if (!changed) return false;
     setFileState((current) => {
       const nextFileState = { ...current, dirty: true };
@@ -3488,15 +3500,19 @@ export function MainWindow({
     // commit/cancel notifications must never restore this obsolete startDocument.
     artStylePreviewRef.current = null;
     moleculeInspectorPreviewRef.current = null;
-    installDocumentHistory((history) => {
-      if (history.present === session.startDocument) return history;
-      const present = prepareDocumentCommit(history.present, session.undoLabel);
-      return {
-        past: boundedHistoryPast([...history.past, atomLabelHistorySnapshot(session.startDocument)], present),
-        present,
-        future: []
-      };
-    });
+    const previewDocument = documentRef.current;
+    const resumeTextEdit = checkpointTextEditBeforeCommitRef.current(session.startDocument);
+    try {
+      installDocumentHistory((history) => {
+        if (previewDocument === session.startDocument) return history;
+        const present = prepareDocumentCommit(previewDocument, session.undoLabel);
+        return {
+          past: boundedHistoryPast([...history.past, atomLabelHistorySnapshot(session.startDocument)], present),
+          present,
+          future: []
+        };
+      });
+    } finally { resumeTextEdit?.(); }
     // Close/quit guards read the ref immediately, before React processes state updates.
     const nextFileState = { ...fileStateRef.current, dirty: true };
     fileStateRef.current = nextFileState;
@@ -3517,6 +3533,8 @@ export function MainWindow({
       if (quitMutationFrozenRef.current) throw new Error("Quit is completing; the assistant edit was refused.");
       if (!readHistory(tabId)) throw new Error("The assistant's document tab is closed; write refused.");
       if (tabId === activeDocumentTabIdRef.current) {
+        // Record the user's session before entering the assistant-owned history write.
+        const resumeTextEdit = checkpointTextEditBeforeCommitRef.current();
         let changed = false;
         assistantHistoryWritingRef.current = true;
         let templateMessages: string[] = [];
@@ -3532,7 +3550,10 @@ export function MainWindow({
             }
             return next;
           });
-        } finally { assistantHistoryWritingRef.current = false; }
+        } finally {
+          assistantHistoryWritingRef.current = false;
+          resumeTextEdit?.();
+        }
         if (!changed) return;
         if (templateMessages.length) setStatus(templateMessages.join("; "));
         fileStateRef.current = { ...fileStateRef.current, dirty: true };
@@ -3633,14 +3654,18 @@ export function MainWindow({
     undoLabel?: string
   ) => {
     if (quitMutationFrozenRef.current) throw new Error("Quit is completing; the pending edit was not applied.");
+    // Exclude live preview geometry from the text checkpoint, then resume on the final frame.
+    const resumeTextEdit = checkpointTextEditBeforeCommitRef.current(startDocument);
     const present = normalizeCommittedDocument(nextDocument);
     const label = undoLabel ?? documentUndoLabelsRef.current.get(nextDocument);
     if (label) documentUndoLabelsRef.current.set(present, label);
-    installDocumentHistory((currentHistory) => ({
-      past: boundedHistoryPast([...currentHistory.past, atomLabelHistorySnapshot(startDocument)], present),
-      present,
-      future: []
-    }));
+    try {
+      installDocumentHistory((currentHistory) => ({
+        past: boundedHistoryPast([...currentHistory.past, atomLabelHistorySnapshot(startDocument)], present),
+        present,
+        future: []
+      }));
+    } finally { resumeTextEdit?.(); }
     setFileState((current) => {
       const nextFileState = { ...current, dirty: true };
       fileStateRef.current = nextFileState;
@@ -3700,16 +3725,20 @@ export function MainWindow({
     });
   }, []);
   const commitLiveInputPreview = useCallback((startDocument: ChemDraftDocument): boolean => {
+    const previewDocument = documentRef.current;
+    const resumeTextEdit = checkpointTextEditBeforeCommitRef.current(startDocument);
     let changed = false;
-    installDocumentHistory((currentHistory) => {
-      if (currentHistory.present === startDocument) return currentHistory;
-      changed = true;
-      return {
-        past: boundedHistoryPast([...currentHistory.past, atomLabelHistorySnapshot(startDocument)], currentHistory.present),
-        present: currentHistory.present,
-        future: []
-      };
-    });
+    try {
+      installDocumentHistory((currentHistory) => {
+        if (previewDocument === startDocument) return currentHistory;
+        changed = true;
+        return {
+          past: boundedHistoryPast([...currentHistory.past, atomLabelHistorySnapshot(startDocument)], previewDocument),
+          present: previewDocument,
+          future: []
+        };
+      });
+    } finally { resumeTextEdit?.(); }
     if (!changed) return false;
     markDocumentDirty();
     return true;
@@ -7436,38 +7465,90 @@ export function MainWindow({
     if (!textObjectIdsAwaitingAutoConversionRef.current.delete(objectId)) {
       return;
     }
-    const currentDocument = documentRef.current;
-    const labelResult = convertNativeTextObjectToAtomLabel(currentDocument, objectId);
-    if (labelResult.target) {
-      if (labelResult.document !== currentDocument) {
-        commitDocumentChange(
-          labelResult.document,
-          atomLabelUndoLabel(
-            currentDocument,
-            labelResult.target,
-            nativeTextObjectLabel(currentDocument, objectId),
-            "Convert Text to Atom Label"
-          )
-        );
-        setSelectedNativeMoleculePart(labelResult.target);
+    // A previous box may convert after a second placement. Its untouched first edit still
+    // belongs to that placement, rather than becoming an existing-text edit at conversion.
+    textAutoConversionInProgressRef.current = true;
+    try {
+      const currentDocument = documentRef.current;
+      const labelResult = convertNativeTextObjectToAtomLabel(currentDocument, objectId);
+      if (labelResult.target) {
+        if (labelResult.document !== currentDocument) {
+          commitDocumentChange(
+            labelResult.document,
+            atomLabelUndoLabel(
+              currentDocument,
+              labelResult.target,
+              nativeTextObjectLabel(currentDocument, objectId),
+              "Convert Text to Atom Label"
+            )
+          );
+          setSelectedNativeMoleculePart(labelResult.target);
+        }
+        if (labelResult.message) setStatus(labelResult.message);
+        return;
       }
-      if (labelResult.message) setStatus(labelResult.message);
-      return;
-    }
-    // The label path above already performed the atom hit-test. Only its no-target path reaches
-    // the open-space element conversion, so do not repeat that hit-test here.
-    const converted = convertNativeTextObjectToAtom(currentDocument, objectId, { skipAtomLabel: true });
-    if (converted !== currentDocument) {
-      commitDocumentChange(converted);
-      const atomElement = getSelectedMolecule(converted)?.atoms[0]?.element;
-      setStatus(atomElement ? `Placed naked ${atomElement} atom` : "Placed atom");
-    }
+      // The label path above already performed the atom hit-test. Only its no-target path reaches
+      // the open-space element conversion, so do not repeat that hit-test here.
+      const converted = convertNativeTextObjectToAtom(currentDocument, objectId, { skipAtomLabel: true });
+      if (converted !== currentDocument) {
+        commitDocumentChange(converted);
+        const atomElement = getSelectedMolecule(converted)?.atoms[0]?.element;
+        setStatus(atomElement ? `Placed naked ${atomElement} atom` : "Placed atom");
+      }
+    } finally { textAutoConversionInProgressRef.current = false; }
   }, [commitDocumentChange]);
 
-  // Catch-all for text conversion: a text edit can end through MANY paths (Escape,
-  // blur, a tool switch, clicking elsewhere — some of which clear the state from canvas pointer
-  // handlers before any blur fires, and WKWebView's focus timing makes blur-only commits
-  // unreliable). Whichever path ends the first edit of a newly placed object converts it.
+  const finalizeTextEditHistory = useCallback((objectId: string, current = documentRef.current) => {
+    const snapshot = textEditHistorySnapshotRef.current;
+    if (!snapshot || snapshot.objectId !== objectId) return;
+    // Disarm before installing history: late blur, effects and tab cleanup are idempotent.
+    textEditHistorySnapshotRef.current = undefined;
+    if (snapshot.documentIdentity !== documentIdentityRef.current) return;
+    if (!assistantDocumentContentUnchanged(snapshot.document, current)) {
+      textEditHistoryWritingRef.current = true;
+      try { commitDocumentHistoryFrom(snapshot.document, current, "Edit Text"); }
+      finally { textEditHistoryWritingRef.current = false; }
+      // The state updater that marks the file dirty is deferred; the quit prompt reads the ref now.
+      fileStateRef.current = { ...fileStateRef.current, dirty: true };
+    }
+  }, [commitDocumentHistoryFrom]);
+
+  const finishActiveNativeTextEdit = useCallback((finishedObjectId?: string) => {
+    // Canvas capture can close the editor before its blur arrives; use the owner's id.
+    const objectId = finishedObjectId ?? activeTextEditObjectIdRef.current ?? textEditHistorySnapshotRef.current?.objectId;
+    if (!objectId) return;
+    settlePalettePreviewRef.current("finish text edit");
+    if (activeTextEditObjectIdRef.current === objectId) activeTextEditObjectIdRef.current = undefined;
+    setActiveTextEditObjectId((current) => (current === objectId ? undefined : current));
+    finalizeTextEditHistory(objectId);
+    convertCommittedText(objectId);
+  }, [convertCommittedText, finalizeTextEditHistory]);
+  checkpointTextEditBeforeCommitRef.current = (beforePreview) => {
+    if (textEditHistoryWritingRef.current) return;
+    // Settle a visible chooser first so its style never leaks into the typing entry.
+    if (!beforePreview) settlePalettePreviewRef.current("history edit");
+    const objectId = activeTextEditObjectIdRef.current ?? textEditHistorySnapshotRef.current?.objectId;
+    if (!objectId) return;
+    if (textAutoConversionInProgressRef.current && !textEditHistorySnapshotRef.current) return;
+    const hadSnapshot = !!textEditHistorySnapshotRef.current;
+    const documentIdentity = documentIdentityRef.current;
+    finalizeTextEditHistory(objectId, beforePreview);
+    const checkpointHistory = documentHistoryRef.current;
+    // No close or conversion here: callers that ended editing on main still do so, and
+    // the active-id effect converts afterwards, outside the outer write's baseline/install.
+    return () => {
+      const current = documentRef.current;
+      if (!hadSnapshot && documentHistoryRef.current === checkpointHistory) return;
+      if (documentIdentity !== documentIdentityRef.current ||
+        activeTextEditObjectIdRef.current !== objectId || findDocumentObject(current, objectId)?.type !== "text") return;
+      textEditHistorySnapshotRef.current = {
+        objectId, document: atomLabelHistorySnapshot(current), documentIdentity
+      };
+    };
+  };
+
+  // Catch every state-only close (tool switches, selection handlers). Explicit finishers commit
+  // synchronously before another edit, history navigation or tab installs a different baseline.
   const previousTextEditObjectIdRef = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (pendingTextPlaceholderObjectIdRef.current !== activeTextEditObjectId) {
@@ -7475,31 +7556,30 @@ export function MainWindow({
     }
     const previous = previousTextEditObjectIdRef.current;
     previousTextEditObjectIdRef.current = activeTextEditObjectId;
-    if (!previous || previous === activeTextEditObjectId) {
-      return;
-    }
-    convertCommittedText(previous);
-  }, [activeTextEditObjectId, convertCommittedText]);
-
-  const finishActiveNativeTextEdit = useCallback((finishedObjectId?: string) => {
-    // The editor's blur passes its own object id: a click-away clears activeTextEditObjectId in a
-    // canvas pointer handler BEFORE the blur fires, so relying on the state alone silently
-    // skipped the commit-time conversion for the most natural gesture.
-    const objectId = finishedObjectId ?? activeTextEditObjectId;
-    setActiveTextEditObjectId((current) => (current === objectId ? undefined : current));
-    if (!objectId) {
-      return;
-    }
-    convertCommittedText(objectId);
-  }, [activeTextEditObjectId, convertCommittedText]);
+    if (previous && previous !== activeTextEditObjectId) finishActiveNativeTextEdit(previous);
+  }, [activeTextEditObjectId, finishActiveNativeTextEdit]);
 
   const startTextObjectEdit = useCallback((objectId: string) => {
+    // Settle any chooser or numeric preview first, so the snapshot below is the settled document
+    // and no checkpoint can fire against a half-armed session.
+    settlePalettePreviewRef.current("start text edit");
+    keepNumericInputPreviewsRef.current();
+    const previous = activeTextEditObjectIdRef.current;
+    if (previous && previous !== objectId) finishActiveNativeTextEdit(previous);
     const currentDocument = documentRef.current;
     const object = findDocumentObject(currentDocument, objectId);
     if (object?.type !== "text") {
       return;
     }
 
+    // Own the session before arming its snapshot: a checkpoint never sees a snapshot without its owner.
+    activeTextEditObjectIdRef.current = objectId;
+    if (!textObjectIdsAwaitingAutoConversionRef.current.has(objectId) &&
+      textEditHistorySnapshotRef.current?.objectId !== objectId) {
+      textEditHistorySnapshotRef.current = {
+        objectId, document: atomLabelHistorySnapshot(currentDocument), documentIdentity: documentIdentityRef.current
+      };
+    }
     replacePresentDocument((current) => selectDocumentObject(current, objectId));
     setActiveEditorObjectId(undefined);
     setActiveTextEditObjectId(objectId);
@@ -7511,7 +7591,7 @@ export function MainWindow({
     setNativeDoubleBondSidePreview(undefined);
     focusTextObjectEditor(objectId);
     setStatus("Editing text");
-  }, [assignHoveredNativeDeleteTarget, focusTextObjectEditor, replacePresentDocument]);
+  }, [assignHoveredNativeDeleteTarget, atomLabelHistorySnapshot, finishActiveNativeTextEdit, focusTextObjectEditor, replacePresentDocument]);
 
   const handleTextDoubleClick = useCallback((objectId: string, event: ObjectMouseEvent) => {
     if (activeToolState.activeCommandId !== "tool.select" && activeToolState.activeCommandId !== "tool.text") {
@@ -7602,6 +7682,8 @@ export function MainWindow({
   const applyTextStyleCommand = useCallback((commandId: string): boolean => {
     if (tableCellEditorRef.current?.applyCommand(commandId)) return true;
     const currentDocument = documentRef.current;
+    // Formatting belongs to the open session, like typing. Outside an editor it is its own entry.
+    const changeText = activeTextEditObjectIdRef.current ? replacePresentDocument : commitDocumentChange;
     const toolbarStyleTarget = toolbarStyleTargetRef.current;
     const snapshotTextSelection = toolbarStyleTarget?.textRange;
     const activeTextObject = activeTextEditObjectId
@@ -7642,7 +7724,7 @@ export function MainWindow({
           ? selectedTextObjects.every((object) => textScriptForTextObject(object) === textScript)
           : currentScript === textScript;
         const nextScript = textScript === "normal" || !alreadyApplied ? textScript : "normal";
-        const changed = commitDocumentChange(multiple
+        const changed = changeText(multiple
           ? selectedTextObjects.reduce(
             (nextDocument, object) => updateNativeTextObjectScript(nextDocument, object.id, nextScript),
             currentDocument
@@ -7712,7 +7794,7 @@ export function MainWindow({
       const colorResult = applyToolbarColorToSelection(currentDocument, selectedColor, colorSelection);
 
       if (colorResult.targetedSelection) {
-        const changed = commitDocumentChange(colorResult.document);
+        const changed = changeText(colorResult.document);
         setActiveTextEditObjectId((current) => selected && current === selected.id ? current : undefined);
         setActiveEditorObjectId(undefined);
         setStatus(changed ? "Updated selected color" : "Selected color unchanged");
@@ -7726,7 +7808,7 @@ export function MainWindow({
     if (selected) {
       // A character selection belongs to its editor. Whole-object formatting instead
       // updates every selected text box, committed together as one Undo entry.
-      const changed = commitDocumentChange(hasSelectedTextRange && selectedTextRange
+      const changed = changeText(hasSelectedTextRange && selectedTextRange
         ? updateNativeTextObjectStyleRange(currentDocument, selected.id, selectedTextRange, stylePatch as Record<string, unknown>)
         : (selectedTextObjects.length ? selectedTextObjects : [selected]).reduce(
           (nextDocument, object) => updateNativeTextObjectStyle(nextDocument, object.id, stylePatch),
@@ -7740,7 +7822,7 @@ export function MainWindow({
 
     setStatus("Updated text defaults");
     return true;
-  }, [activeTextEditObjectId, commitDocumentChange, selectedNativeMoleculePart, textStyleDefaults]);
+  }, [activeTextEditObjectId, commitDocumentChange, replacePresentDocument, selectedNativeMoleculePart, textStyleDefaults]);
 
   const selectedMoleculeRingTargets = useCallback((): NativeMoleculeRingTarget[] => {
     return currentMoleculeInspector.rings.selectedRings.map((ring) => ({
@@ -8898,6 +8980,12 @@ export function MainWindow({
       return;
     }
 
+    // Focused editors retain native typing undo, as atom-label editors do. A document-level
+    // navigation (including a forced palette command) records and closes the live session first.
+    // First typing belongs to placement: navigating history must not insert a conversion entry.
+    const textEditId = activeTextEditObjectIdRef.current ?? textEditHistorySnapshotRef.current?.objectId;
+    if (textEditId) textObjectIdsAwaitingAutoConversionRef.current.delete(textEditId);
+    finishActiveNativeTextEdit();
     let nextHistory: DocumentHistory | undefined;
     let undoLabel: string | undefined;
     installDocumentHistory((history) => {
@@ -8949,7 +9037,7 @@ export function MainWindow({
           ? "Undid last document change"
           : "Redid document change"
     );
-  }, [assignHoveredNativeDeleteTarget, atomLabelHistorySnapshot, cancelSpin3dSession, installDocumentHistory]);
+  }, [assignHoveredNativeDeleteTarget, atomLabelHistorySnapshot, cancelSpin3dSession, finishActiveNativeTextEdit, installDocumentHistory]);
 
   const cancelDocumentTabSessions = useCallback(() => {
     // Settle chooser edits before choosing a rollback snapshot. Otherwise the
@@ -9056,7 +9144,7 @@ export function MainWindow({
       tabEditFinishersRef.current.finalizeAtomLabelDraft(labelEdit);
       activeAtomLabelEditRef.current = undefined;
     }
-    const textEdit = activeTextEditObjectIdRef.current;
+    const textEdit = activeTextEditObjectIdRef.current ?? textEditHistorySnapshotRef.current?.objectId;
     if (finishDrafts && textEdit) {
       tabEditFinishersRef.current.finishActiveNativeTextEdit(textEdit);
       activeTextEditObjectIdRef.current = undefined;
@@ -9381,7 +9469,7 @@ export function MainWindow({
         activeAtomLabelEditRef.current = undefined;
         setActiveAtomLabelEdit(undefined);
       }
-      const textEdit = activeTextEditObjectIdRef.current;
+      const textEdit = activeTextEditObjectIdRef.current ?? textEditHistorySnapshotRef.current?.objectId;
       if (textEdit) {
         tabEditFinishersRef.current.finishActiveNativeTextEdit(textEdit);
         activeTextEditObjectIdRef.current = undefined;
@@ -15907,6 +15995,11 @@ export function MainWindow({
     setStatus(changed ? "Stretch applied" : "Stretch unchanged");
     return changed;
   }, [commitLiveInputPreview, updateObjectResizeInput]);
+
+  keepNumericInputPreviewsRef.current = () => {
+    handleRotationInputKeep();
+    handleObjectResizeInputKeep();
+  };
 
   // Clears the transient interaction "chrome" — open editors, hover highlights, and in-flight
   // previews — without touching the selection. Numeric transform sessions are first kept as
