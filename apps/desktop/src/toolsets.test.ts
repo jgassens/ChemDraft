@@ -85,6 +85,12 @@ function registry(toolsets: ToolsetDefinition[]): DesktopToolsetRegistry {
 }
 
 describe("desktop toolset mapping", () => {
+  it("keeps Double Bond and Triple Bond off the default Main toolbar", () => {
+    const ids = getToolsetItemGroups("core.main").flat().map(item => item.id);
+    expect(ids).toContain("tool.bond");
+    expect(ids).not.toContain("tool.doubleBond");
+    expect(ids).not.toContain("tool.tripleBond");
+  });
   it("maps legacy command items to schema-backed palette items", () => {
     const item = getToolsetItemGroups("core.legacy", registry([legacyToolset]))[0][0];
 

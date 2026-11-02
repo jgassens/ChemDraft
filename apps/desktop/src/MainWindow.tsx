@@ -22,6 +22,7 @@ import { assistantDocumentContentUnchanged, registerAssistantHistoryPort, type A
 import { getAssistantTransactions } from "./assistant/assistantTransaction";
 import { acquireNativeUtilitySuspension } from "./nativeUtilitySuspension";
 import { loadAskToSaveBeforeQuit } from "./quitSettings";
+import { loadStartWithFreshDocument } from "./startupSettings";
 import { nativePrompt, useNativePrompt } from "./nativePrompt";
 import { useInAppModalUtilitySuspension } from "./useInAppModalUtilitySuspension";
 import { Icon } from "./icons";
@@ -590,6 +591,8 @@ import {
   insertSmilesMoleculeGrid,
   documentObjectProjectedPlaneTilt,
   nativeBondStyleForToolCommand,
+  nativeBondOrderForToolCommand,
+  nativeBondOrderTargetRefusal,
   nativeChargeMarkMaxMagnitude,
   nativeChargeStackRefusal,
   stereoPerceptionMolfile,
@@ -611,6 +614,9 @@ import {
   nativeMoleculeTransformState,
   isNativeArrowGraphic,
   nativeArtToolForCommand,
+  nativeArtToolIsOrbital,
+  nativeOrbitalAnchorPoint,
+  aimNativeOrbitalPlacement,
   nativeTemplateForToolCommand,
   projectedPlaneTiltMaxRadians,
   wrapProjectedPlaneTiltVectorRadians,
@@ -1009,6 +1015,7 @@ type NativeBondDragState = {
   objectId: string;
   atomId: string;
   bondStyle?: NativeBondDisplayStyle;
+  bondOrder?: NativeBondOrderValue;
   startPoint: ClientPoint;
   latestPoint: ClientPoint;
   dragging: boolean;
@@ -1018,13 +1025,14 @@ type NativeBondDragState = {
 };
 type NativePlacementDragState = {
   pointerId: number;
-  kind: "single-bond" | "template" | "arrow" | "chain" | "art-line";
+  kind: "single-bond" | "template" | "arrow" | "chain" | "art-line" | "orbital";
   startDocument: ChemDraftDocument;
   placementDocument: ChemDraftDocument;
   objectId: string;
   startPoint: ClientPoint;
   latestPoint: ClientPoint;
   bondStyle?: NativeBondDisplayStyle;
+  bondOrder?: NativeBondOrderValue;
   templateId?: NativeMoleculeTemplateId;
   arrowKind?: ArrowObject["arrowKind"];
   chainAnchor?: NativeChainAnchor;
@@ -1033,6 +1041,8 @@ type NativePlacementDragState = {
   /** Pointer path (page coords) accumulated across the drag for the flexible chain. */
   chainPath?: ClientPoint[];
   artLineCommandId?: string;
+  orbitalCommandId?: string;
+  shiftKey?: boolean;
   dragging: boolean;
   altKey: boolean;
 };
@@ -1678,7 +1688,7 @@ function tableClipboardDecisionBeforePicture(payload: ClipboardReadPayload) {
   return tableClipboardPasteDecision(payload, html => new DOMParser().parseFromString(html, "text/html"));
 }
 
-const CURRENT_BUILD_STAMP = "11.01.16.31-sonnet";
+const CURRENT_BUILD_STAMP = "11.01.18.10-sonnet";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -2694,8 +2704,13 @@ export function MainWindow({
   const fileStateRef = useRef<NativeFileState>(fileState);
   // Successful explicit saves, per tab, including a save completed while its label editor is open.
   const documentSaveRevisionsRef = useRef(new Map<string, number>());
-  // Flips true once the startup session-restore attempt has resolved; autosave waits for it.
+  // Capture once: Preferences changes affect the next launch, never this run.
+  const [startWithFreshDocument] = useState(loadStartWithFreshDocument);
+  const skippedSessionRestoreRef = useRef(false);
+  const skippedRecoveryTabCountRef = useRef(0);
+  // Flips true once the startup session read/restore attempt has resolved; autosave waits for it.
   const documentSessionHydratedRef = useRef(false);
+  const [sessionStartupCompleted, setSessionStartupCompleted] = useState(false);
   // Autosave writes the session file only after a clean read of it. A failed read leaves this false
   // so the blank startup document can never replace a session we merely failed to decode.
   /** A shell open that failed before the session restore ran; the restore's status repeats it. */
@@ -3064,6 +3079,7 @@ export function MainWindow({
   );
   const activeEditorMolecule =
     selectedMolecule && selectedMolecule.id === activeEditorObjectId ? selectedMolecule : undefined;
+  const activeNativeBondOrder = nativeBondOrderForToolCommand(activeToolState.activeCommandId);
   const activeNativeBondToolStyle = nativeBondStyleForToolCommand(activeToolState.activeCommandId);
   const activeNativeBondDisplayStyle = activeNativeBondToolStyle && activeNativeBondToolStyle !== "solid"
     ? activeNativeBondToolStyle
@@ -7573,7 +7589,10 @@ export function MainWindow({
     const activeTextObject = activeTextEditObjectId
       ? findDocumentObject(currentDocument, activeTextEditObjectId)
       : undefined;
-    const selectedTextObject = getSelectedTextObject(currentDocument) ?? (
+    const selectedTextObjects = currentDocument.selection.objectIds
+      .map((id) => findDocumentObject(currentDocument, id))
+      .filter((object): object is TextObject => object?.type === "text");
+    const selectedTextObject = selectedTextObjects[0] ?? (
       activeTextObject?.type === "text" ? activeTextObject : undefined
     );
     const snapshotTextObject = !selectedTextObject && snapshotTextSelection
@@ -7591,18 +7610,28 @@ export function MainWindow({
         : undefined
     );
     const hasSelectedTextRange = Boolean(
-      selectedTextRange && selectedTextRange.start !== selectedTextRange.end
+      selectedTextObjects.length <= 1 && selectedTextRange && selectedTextRange.start !== selectedTextRange.end
     );
     const textScript = textScriptForCommand(commandId);
     if (textScript) {
       if (selected) {
+        const multiple = selectedTextObjects.length > 1;
         const currentScript = hasSelectedTextRange && selectedTextRange
           ? textScriptForTextRange(selected, selectedTextRange)
           : textScriptForTextObject(selected);
-        const nextScript = textScript === "normal" || currentScript !== textScript ? textScript : "normal";
-        const changed = commitDocumentChange(hasSelectedTextRange && selectedTextRange
-          ? updateNativeTextObjectScriptRange(currentDocument, selected.id, selectedTextRange, nextScript)
-          : updateNativeTextObjectScript(currentDocument, selected.id, nextScript));
+        // With several boxes the toggle turns off only when every box already has the script.
+        const alreadyApplied = multiple
+          ? selectedTextObjects.every((object) => textScriptForTextObject(object) === textScript)
+          : currentScript === textScript;
+        const nextScript = textScript === "normal" || !alreadyApplied ? textScript : "normal";
+        const changed = commitDocumentChange(multiple
+          ? selectedTextObjects.reduce(
+            (nextDocument, object) => updateNativeTextObjectScript(nextDocument, object.id, nextScript),
+            currentDocument
+          )
+          : hasSelectedTextRange && selectedTextRange
+            ? updateNativeTextObjectScriptRange(currentDocument, selected.id, selectedTextRange, nextScript)
+            : updateNativeTextObjectScript(currentDocument, selected.id, nextScript));
         setActiveTextEditObjectId((current) => current === selected.id ? current : undefined);
         setActiveEditorObjectId(undefined);
         setStatus(changed ? "Updated selected text script" : "Selected text script unchanged");
@@ -7616,7 +7645,17 @@ export function MainWindow({
     const currentStyle = selected
       ? nativeTextStyleFromObjectStyle(selected.style)
       : textStyleDefaults;
-    const stylePatch = textStylePatchForCommand(commandId, currentStyle);
+    let resolvedPatch = textStylePatchForCommand(commandId, currentStyle);
+    if (resolvedPatch && selectedTextObjects.length > 1) {
+      // Toggles (bold, italic, underline): remove only when every box already has the style,
+      // otherwise apply it to all. Non-toggle commands produce the same patch for every box.
+      const patches = selectedTextObjects.map((object) =>
+        JSON.stringify(textStylePatchForCommand(commandId, nativeTextStyleFromObjectStyle(object.style))));
+      if (patches.some((patch) => patch !== patches[0])) {
+        resolvedPatch = textStylePatchForCommand(commandId, undefined);
+      }
+    }
+    const stylePatch = resolvedPatch;
 
     if (!stylePatch) {
       return false;
@@ -7667,9 +7706,14 @@ export function MainWindow({
     }
 
     if (selected) {
+      // A character selection belongs to its editor. Whole-object formatting instead
+      // updates every selected text box, committed together as one Undo entry.
       const changed = commitDocumentChange(hasSelectedTextRange && selectedTextRange
         ? updateNativeTextObjectStyleRange(currentDocument, selected.id, selectedTextRange, stylePatch as Record<string, unknown>)
-        : updateNativeTextObjectStyle(currentDocument, selected.id, stylePatch));
+        : (selectedTextObjects.length ? selectedTextObjects : [selected]).reduce(
+          (nextDocument, object) => updateNativeTextObjectStyle(nextDocument, object.id, stylePatch),
+          currentDocument
+        ));
       setActiveTextEditObjectId((current) => current === selected.id ? current : undefined);
       setActiveEditorObjectId(undefined);
       setStatus(changed ? "Updated selected text style" : "Selected text style unchanged");
@@ -9594,12 +9638,19 @@ export function MainWindow({
             if (raw !== undefined && raw !== null) throw new Error("Unreadable session envelope");
             return;
           }
+          skippedSessionRestoreRef.current = startWithFreshDocument;
           if (!shouldRestoreDocumentSession(envelope)) return;
           const shellOpenFailure = shellOpenFailureRef.current;
           shellOpenFailureRef.current = undefined;
           const skipped: unknown[] = [];
           const restored = [];
           for (const [candidateIndex, rawTab] of documentSessionRestoreCandidates(envelope).entries()) {
+            // Fresh startup does not install even newly readable recovery tabs. Keep their raw
+            // envelopes until the user explicitly saves/discards them or restores on a later launch.
+            if (startWithFreshDocument && envelope.unrestoredTabs?.includes(rawTab)) {
+              skipped.push(rawTab);
+              continue;
+            }
             try {
               const session = parseDocumentSessionEnvelope(rawTab, true);
               if (!session) throw new Error("Unreadable tab envelope");
@@ -9622,6 +9673,11 @@ export function MainWindow({
           unrestoredSessionTabsRef.current = skipped;
           setUnrestoredSessionTabCount(skipped.length);
           const restoreNotice = unrestoredTabsNotice(skipped.length);
+          if (startWithFreshDocument) {
+            // Decode through the same path to retain failed candidates, but install no old tabs.
+            skippedRecoveryTabCountRef.current = skipped.length;
+            return;
+          }
           if (!restored.length) {
             setStatus(`Could not restore the last session${restoreNotice}`);
             return;
@@ -9670,8 +9726,9 @@ export function MainWindow({
       .finally(async () => {
         if (active) {
           documentSessionHydratedRef.current = true;
+          if (startWithFreshDocument) setSessionStartupCompleted(true);
           perfHook(() => perfCanvasReady());
-          if (unrestoredSessionTabsRef.current.length) {
+          if (unrestoredSessionTabsRef.current.length && !startWithFreshDocument) {
             keptDrawingsPromptRef.current = "notice";
             setKeptDrawingsPrompt("notice");
             return;
@@ -9690,7 +9747,7 @@ export function MainWindow({
     return () => {
       active = false;
     };
-  }, [installDocumentTab, snapshotDocumentTab]);
+  }, [installDocumentTab, snapshotDocumentTab, startWithFreshDocument]);
 
   // What every flush writes — the session autosave, the quit and window-close flush (macOS and
   // Windows), Save and export: the working document as it would be if an open label edit closed
@@ -9741,6 +9798,14 @@ export function MainWindow({
     try {
       snapshotDocumentTab(false);
       const flushed = documentForFlush();
+      // View changes and quitting an untouched startup blank are not new document work.
+      // The sticky pristine marker also recognizes edit-then-undo and explicit Save of a blank.
+      if (skippedSessionRestoreRef.current
+        && skippedRecoveryTabCountRef.current === unrestoredSessionTabsRef.current.length
+        && documentTabsRef.current.length === 1
+        && !nonPristineTabsRef.current.has(activeDocumentTabIdRef.current)
+        && !fileStateRef.current.path && !fileStateRef.current.dirty
+        && documentIsBlank(flushed)) return;
       const tabs = documentTabsRef.current.map((tab) => {
         const snapshot = documentTabSnapshotsRef.current.get(tab.id)!;
         const tabDocument = tab.id === activeDocumentTabIdRef.current ? flushed : snapshot.history.present;
@@ -9762,6 +9827,7 @@ export function MainWindow({
         documentTabsRef.current.findIndex((tab) => tab.id === activeDocumentTabIdRef.current));
       if (unrestoredSessionTabsRef.current.length) envelope.unrestoredTabs = unrestoredSessionTabsRef.current;
       await saveDocumentSession(envelope, { strict: options?.strict });
+      skippedSessionRestoreRef.current = false;
     } catch (error) {
       if (options?.strict) {
         throw error;
@@ -9781,7 +9847,7 @@ export function MainWindow({
       void writeDocumentSessionNow();
     }, DOCUMENT_SESSION_SAVE_DEBOUNCE_MS);
     return () => window.clearTimeout(handle);
-  }, [document, fileState, documentTabs, activeDocumentTabId, viewport, openWarningsReport, saveWarningsReport, writeDocumentSessionNow]);
+  }, [document, fileState, documentTabs, activeDocumentTabId, viewport, openWarningsReport, saveWarningsReport, sessionStartupCompleted, writeDocumentSessionNow]);
 
 
   // Menu Quit / Cmd+Q on macOS, or closing the document window / File ▸ Exit elsewhere: Rust asks
@@ -14231,13 +14297,23 @@ export function MainWindow({
   const applySingleBondDocumentAtPoint = useCallback((
     sourceDocument: ChemDraftDocument,
     point: ClientPoint,
-    bondStyle?: NativeBondDisplayStyle
+    bondStyle?: NativeBondDisplayStyle,
+    bondOrder: NativeBondOrderValue = "single"
   ) => {
-    const { document: nextDocument, refusal } = nativeSingleBondToolAtPoint(sourceDocument, point, { bondStyle });
-    if (refusal) {
+    let refusal: string | undefined;
+    const { document: nextDocument, refusal: sproutRefusal } = nativeSingleBondToolAtPoint(sourceDocument, point, {
+      bondStyle,
+      bondOrder,
+      onRefusal: reason => { refusal = reason; }
+    });
+    if (sproutRefusal) {
       setHoveredNativeAtom(undefined);
       setFreeformNativeBond(undefined);
-      setStatus(`No room to add a bond here: ${nativeTemplateFallbackReasonText(refusal)}`);
+      setStatus(`No room to add a bond here: ${nativeTemplateFallbackReasonText(sproutRefusal)}`);
+      return;
+    }
+    if (nextDocument === sourceDocument) {
+      setStatus(refusal ? `Bond not placed: ${refusal}` : "Bond not placed");
       return;
     }
     const selected = getSelectedMolecule(nextDocument);
@@ -14250,7 +14326,7 @@ export function MainWindow({
     setFreeformNativeBond(undefined);
     setStatus(atomCount > 2
       ? `Extended carbon chain to ${atomCount} atoms`
-      : `Inserted ${nativeBondToolStatusLabel(bondStyle)} molecule`);
+      : `Inserted ${bondOrder === "single" ? nativeBondToolStatusLabel(bondStyle) : `${bondOrder} bond`} molecule`);
   }, [commitDocumentChange]);
 
   const applyNativeTemplateDocumentAtPoint = useCallback((
@@ -14287,11 +14363,12 @@ export function MainWindow({
     event: ObjectPointerEvent,
     point: ClientPoint,
     placement:
-      | { kind: "single-bond"; bondStyle?: NativeBondDisplayStyle }
+      | { kind: "single-bond"; bondStyle?: NativeBondDisplayStyle; bondOrder?: NativeBondOrderValue }
       | { kind: "template"; templateId: NativeMoleculeTemplateId }
       | { kind: "arrow"; arrowKind: ArrowObject["arrowKind"] }
       | { kind: "chain"; anchor?: NativeChainAnchor; flexible?: boolean }
       | { kind: "art-line"; commandId: string }
+      | { kind: "orbital"; commandId: string }
   ): boolean => {
     const startDocument = documentRef.current;
     const placementDocument = placement.kind === "template"
@@ -14302,7 +14379,9 @@ export function MainWindow({
           ? applyNativeChainTool(startDocument, point, undefined, placement.anchor)
           : placement.kind === "art-line"
             ? applyNativeArtLineToolDefaultAtPoint(startDocument, point, placement.commandId)
-            : applySingleBondToolAtPoint(startDocument, point, { bondStyle: placement.bondStyle });
+            : placement.kind === "orbital"
+              ? insertNativeArtGraphicObject(startDocument, point, placement.commandId)
+              : applySingleBondToolAtPoint(startDocument, point, { bondStyle: placement.bondStyle, bondOrder: placement.bondOrder });
     const objectId = placementDocument.selection.objectIds[0];
     // Anchored chains grow an existing molecule, so the placed object legitimately pre-exists.
     const growsExistingObject = placement.kind === "chain" && placement.anchor !== undefined;
@@ -14319,12 +14398,15 @@ export function MainWindow({
       startPoint: point,
       latestPoint: point,
       bondStyle: placement.kind === "single-bond" ? placement.bondStyle : undefined,
+      bondOrder: placement.kind === "single-bond" ? placement.bondOrder : undefined,
       templateId: placement.kind === "template" ? placement.templateId : undefined,
       arrowKind: placement.kind === "arrow" ? placement.arrowKind : undefined,
       chainAnchor: placement.kind === "chain" ? placement.anchor : undefined,
       chainFlexible: placement.kind === "chain" ? placement.flexible === true : undefined,
       chainPath: placement.kind === "chain" && placement.flexible ? [point] : undefined,
       artLineCommandId: placement.kind === "art-line" ? placement.commandId : undefined,
+      orbitalCommandId: placement.kind === "orbital" ? placement.commandId : undefined,
+      shiftKey: event.shiftKey,
       altKey: event.altKey,
       dragging: false
     };
@@ -14430,13 +14512,17 @@ export function MainWindow({
     point: ClientPoint,
     forceCustomLength: boolean,
     bondStyle?: NativeBondDisplayStyle,
-    placementAltKey = false
+    placementAltKey = false,
+    bondOrder: NativeBondOrderValue = "single"
   ) => {
     const previousMolecule = findDocumentObject(sourceDocument, objectId);
-    const { document: nextDocument, refusal } = nativeFreeformSingleBondToolAtPoint(sourceDocument, objectId, atomId, point, {
+    let refusal: string | undefined;
+    const { document: nextDocument, refusal: sproutRefusal } = nativeFreeformSingleBondToolAtPoint(sourceDocument, objectId, atomId, point, {
       forceCustomLength,
       bondStyle,
-      placementAltKey
+      bondOrder,
+      placementAltKey,
+      onRefusal: reason => { refusal = reason; }
     });
     const selected = getSelectedMolecule(nextDocument);
     const atomCount = selected?.atoms.length ?? 0;
@@ -14455,9 +14541,9 @@ export function MainWindow({
     setFreeformNativeBond(undefined);
     setStatus(
       nextDocument === sourceDocument
-        ? refusal === "sprout-page-edge"
+        ? sproutRefusal === "sprout-page-edge"
           ? "Freeform bond not placed: the page edge leaves no room in that direction"
-          : "Freeform bond not placed"
+          : refusal ? `Freeform bond not placed: ${refusal}` : "Freeform bond not placed"
         : connectedExistingAtoms
           ? `Connected carbon atoms; molecule has ${atomCount} atoms`
           : `Placed freeform carbon bond; molecule has ${atomCount} atoms`
@@ -14706,6 +14792,9 @@ export function MainWindow({
     // the distinction has to be passed in rather than hardcoded per branch.
     options: { preview: boolean } = { preview: true }
   ): ChemDraftDocument => {
+    if (drag.kind === "orbital") {
+      return aimNativeOrbitalPlacement(drag.placementDocument, drag.objectId, point, drag.shiftKey);
+    }
     if (drag.kind === "arrow") {
       // Arrows stretch: the press point stays the tail and the pointer sets length and angle.
       return stretchNativeReactionArrowTo(drag.placementDocument, drag.objectId, drag.startPoint, point);
@@ -14787,6 +14876,7 @@ export function MainWindow({
 
     drag.latestPoint = point;
     drag.altKey = event.altKey;
+    drag.shiftKey = event.shiftKey;
     placementMachineRef.current = interactionReducer(placementMachineRef.current, { type: "pointerMove", pointerId: event.pointerId, world: point, target: { kind: "empty" } });
     const nowDragging = placementMachineRef.current.phase === "dragging";
     if (!drag.dragging && nowDragging) {
@@ -15059,6 +15149,13 @@ export function MainWindow({
   const objectRotateDragDegrees = useCallback((drag: ObjectRotateDragState, point: ClientPoint): number => {
     const degrees = rotationDeltaDegrees(drag.centerPoint, drag.startPoint, point);
     if (!drag.target) {
+      const object = findDocumentObject(drag.startDocument, drag.objectId);
+      if (object && nativeOrbitalAnchorPoint(object)) {
+        const startAngle = Math.atan2(drag.startPoint.y - drag.centerPoint.y, drag.startPoint.x - drag.centerPoint.x);
+        const endAngle = Math.atan2(point.y - drag.centerPoint.y, point.x - drag.centerPoint.x);
+        const angle = ((endAngle - startAngle) * 180 / Math.PI + 540) % 360 - 180;
+        return drag.shiftKey ? snapRotationDegrees(angle, { shiftKey: true, referenceDegrees: drag.startRotationDegrees }) : angle;
+      }
       return snapRotationDegrees(degrees, {
         shiftKey: drag.shiftKey,
         referenceDegrees: drag.startRotationDegrees
@@ -16462,6 +16559,10 @@ export function MainWindow({
         startNativeArtLineDrawOrDefault(event, point, activeNativeArtTool.commandId, activeNativeArtTool.title);
         return;
       }
+      if (nativeArtToolIsOrbital(activeNativeArtTool.commandId)) {
+        startNativePlacementDrag(event, point, { kind: "orbital", commandId: activeNativeArtTool.commandId });
+        return;
+      }
       applyNativeArtDocumentAtPoint(point, activeNativeArtTool.commandId);
       return;
     }
@@ -16544,8 +16645,8 @@ export function MainWindow({
     if (activeNativeBondToolStyle) {
       event.preventDefault();
       event.stopPropagation();
-      if (!startNativePlacementDrag(event, point, { kind: "single-bond", bondStyle: activeNativeBondDisplayStyle })) {
-        applySingleBondDocumentAtPoint(document, point, activeNativeBondDisplayStyle);
+      if (!startNativePlacementDrag(event, point, { kind: "single-bond", bondStyle: activeNativeBondDisplayStyle, bondOrder: activeNativeBondOrder })) {
+        applySingleBondDocumentAtPoint(document, point, activeNativeBondDisplayStyle, activeNativeBondOrder);
       }
     }
   }, [
@@ -16553,6 +16654,7 @@ export function MainWindow({
     activeMechanismArrowKind,
     startMechanismArrowDrag,
     activeNativeBondDisplayStyle,
+    activeNativeBondOrder,
     activeNativeBondToolStyle,
     activeNativeTemplateId,
     activeNativeArtTool,
@@ -17785,6 +17887,10 @@ export function MainWindow({
     if (activeNativeArtTool && point) {
       event.preventDefault();
       event.stopPropagation();
+      if (nativeArtToolIsOrbital(activeNativeArtTool.commandId)) {
+        startNativePlacementDrag(event, point, { kind: "orbital", commandId: activeNativeArtTool.commandId });
+        return;
+      }
       applyNativeArtDocumentAtPoint(point, activeNativeArtTool.commandId);
       return;
     }
@@ -18396,6 +18502,26 @@ export function MainWindow({
       return;
     }
 
+    if (activeNativeBondToolStyle && activeNativeBondOrder !== "single" && object?.type === "molecule" && nativeMoleculeHit?.kind === "bond") {
+      event.stopPropagation();
+      const target = { objectId, ...nativeMoleculeHit };
+      const selectedDocument = selectDocumentObject(document, objectId);
+      const nextDocument = applyNativeMoleculeBondOrderValueTarget(selectedDocument, target, activeNativeBondOrder);
+      if (nextDocument === selectedDocument) {
+        setStatus(nativeBondOrderTargetRefusal(selectedDocument, target, activeNativeBondOrder) ?? "Bond order not changed");
+        return;
+      }
+      commitDocumentChange(nextDocument);
+      setActiveEditorObjectId(undefined);
+      setActiveTextEditObjectId(undefined);
+      setActiveAtomLabelEdit(undefined);
+      setHoveredNativeAtom(undefined);
+      assignHoveredNativeDeleteTarget(undefined);
+      setFreeformNativeBond(undefined);
+      setStatus(`Set bond to ${activeNativeBondOrder}`);
+      return;
+    }
+
     if (activeToolState.activeCommandId === "tool.bond" && object?.type === "molecule" && point) {
       if (nativeMoleculeHit?.kind === "bond") {
         event.stopPropagation();
@@ -18425,7 +18551,7 @@ export function MainWindow({
       // click: Alt/Option can still aim it toward open room. The release decides click vs drag.
       const dragAtomId = preview?.atomId ?? nativeBondDragSourceAtomId(object, point);
       if (!dragAtomId) {
-        applySingleBondDocumentAtPoint(selectDocumentObject(document, objectId), point, activeNativeBondDisplayStyle);
+        applySingleBondDocumentAtPoint(selectDocumentObject(document, objectId), point, activeNativeBondDisplayStyle, activeNativeBondOrder);
         return;
       }
 
@@ -18434,6 +18560,7 @@ export function MainWindow({
         objectId,
         atomId: dragAtomId,
         bondStyle: activeNativeBondDisplayStyle,
+        bondOrder: activeNativeBondOrder,
         startPoint: point,
         latestPoint: point,
         dragging: false,
@@ -18497,6 +18624,7 @@ export function MainWindow({
     startMechanismArrowDrag,
     activeNativeArtTool,
     activeNativeBondDisplayStyle,
+    activeNativeBondOrder,
     activeNativeBondToolStyle,
     activeNativeTemplateId,
     addChargeToHoveredNativeAtom,
@@ -18662,6 +18790,7 @@ export function MainWindow({
       centerPoint: (selectedFragmentBounds && selectedFragmentTarget && object.type === "molecule"
         ? nativeMoleculePartRotationPivot(object, selectedFragmentTarget) ?? documentObjectCenter(selectedFragmentBounds)
         : undefined)
+        ?? nativeOrbitalAnchorPoint(object)
         ?? (object.type === "molecule" ? nativeMoleculeCenter(object) : documentObjectCenter(object)),
       startPoint: point,
       startRotationDegrees: object.type === "molecule"
@@ -20079,9 +20208,9 @@ export function MainWindow({
     const point = pagePointFromPointerEvent(event) ?? drag.latestPoint;
     const selectedDocument = selectDocumentObject(document, objectId);
     if (drag.dragging) {
-      applyFreeformBondDocumentAtPoint(selectedDocument, objectId, drag.atomId, drag.latestPoint, drag.freeformUnlocked || drag.connectsForeignAtom, drag.bondStyle, drag.altKey);
+      applyFreeformBondDocumentAtPoint(selectedDocument, objectId, drag.atomId, drag.latestPoint, drag.freeformUnlocked || drag.connectsForeignAtom, drag.bondStyle, drag.altKey, drag.bondOrder);
     } else {
-      applySingleBondDocumentAtPoint(selectedDocument, point, drag.bondStyle);
+      applySingleBondDocumentAtPoint(selectedDocument, point, drag.bondStyle, drag.bondOrder);
     }
     clearNativeBondDrag(event);
   }, [
@@ -20553,6 +20682,7 @@ export function MainWindow({
     let interaction: ModifierHintInteraction = "idle";
     if (objectRotateDragRef.current || groupTransformDragRef.current?.mode === "rotate") interaction = "rotate-drag";
     else if (objectResizeDragRef.current || groupTransformDragRef.current?.mode === "resize") interaction = "resize-drag";
+    else if (nativePlacementDragRef.current?.kind === "orbital") interaction = "rotate-drag";
     else if (tapeMeasureDragRef.current) interaction = "measure-drag";
     else if (graphicMarkerDragRef.current) interaction = "arrowhead-drag";
     else if (selectionLassoRef.current) interaction = "lasso";
@@ -20984,13 +21114,11 @@ export function MainWindow({
             const textEditId = activeTextEditObjectIdRef.current;
             const target = event.target instanceof Element ? event.target : null;
             // Capture before page/object tools can clear the edit and start a gesture.
-            // Leave editor controls and the edited glyph alone: Text may have restored
-            // Select already when the second press of a double-click reaches that glyph.
-            const editingGlyph = target?.closest("[data-page-svg-object-visual]")?.getAttribute("data-page-svg-object-visual") === textEditId
-              && (activeToolState.activeCommandId === "tool.select" || activeToolState.activeCommandId === "tool.text");
+            // Leave editor controls alone. The edited glyph is pointer-transparent while its
+            // HTML preview shows, so its second double-click press lands on the editor.
             const editingControl = target?.closest(".text-resize-handle")?.closest("[data-object-id]")?.getAttribute("data-object-id") === textEditId;
             if (textEditId && event.button === 0 && event.isPrimary !== false
-              && !isEditableTarget(event.target) && !editingGlyph && !editingControl && isCanvasDrawingPress(canvas, event)) {
+              && !isEditableTarget(event.target) && !editingControl && isCanvasDrawingPress(canvas, event)) {
               event.preventDefault();
               event.stopPropagation();
               // Keep the native IME and its editor alive until composition terminates.
@@ -21116,6 +21244,7 @@ export function MainWindow({
                   objectOverlayFragments={objectOverlayFragments}
                   objectTransformPreview={objectTransformPreview}
                   spinningObjectId={activeSpin3dState?.objectId}
+                  editingTextObjectId={activeTextEditObjectId}
                   editingTableCell={tableCellEdit && !("kind" in tableCellEdit) ? tableCellEdit : undefined}
                 />
                 <PageInteractionPortal target={interactionLayer}>
@@ -21324,9 +21453,9 @@ export function MainWindow({
                         nativeGraphicCornerRadiusEditPoint(object) !== undefined
                         ? viewport.scale : undefined}
                       spinning={spinning}
-                      selected={selected}
+                      selected={selected && !nativeArtToolIsOrbital(activeToolState.activeCommandId)}
                       inGroupSelection={inGroupSelection}
-                      graphicTransformActive={activeGraphicTransformObjectId === object.id}
+                      graphicTransformActive={activeGraphicTransformObjectId === object.id || nativeOrbitalAnchorPoint(object) !== undefined}
                       graphicArrowEditActive={arrowEditTargetId === object.id && activeArtLineDrawToolActive}
                       graphicShiftTransformActive={shiftHoveredArrowId === object.id}
                       graphicDirectEditActive={activeToolState.activeCommandId === "tool.art.directEdit"}
@@ -21370,7 +21499,7 @@ export function MainWindow({
                         projectedPlaneTiltReadout?.objectId === object.id ? projectedPlaneTiltReadout : undefined
                       }
                       rotationInput={rotationInput?.objectId === object.id ? rotationInput : undefined}
-                      rotationHandlesVisible={transformRotationHandlesVisible}
+                      rotationHandlesVisible={transformRotationHandlesVisible || nativeOrbitalAnchorPoint(object) !== undefined}
                       resizeReadout={objectResizeReadout?.objectId === object.id ? objectResizeReadout : undefined}
                       resizeInput={objectResizeInput?.objectId === object.id ? objectResizeInput : undefined}
                       objectTransformPreview={
@@ -23173,6 +23302,7 @@ function nativeBondToolStatusLabel(bondStyle: NativeBondDisplayStyle | undefined
 }
 
 function nativePlacementStatusLabel(drag: NativePlacementDragState): string {
+  if (drag.kind === "orbital" && drag.orbitalCommandId) return nativeArtToolForCommand(drag.orbitalCommandId)?.title.toLowerCase() ?? "orbital";
   if (drag.kind === "arrow" && drag.arrowKind) {
     return `${nativeReactionArrowStatusLabel(drag.arrowKind)} arrow`;
   }
@@ -23184,7 +23314,7 @@ function nativePlacementStatusLabel(drag: NativePlacementDragState): string {
   }
   return drag.kind === "template" && drag.templateId
     ? `${nativeTemplateStatusLabel(drag.templateId)} template`
-    : `${nativeBondToolStatusLabel(drag.bondStyle)} molecule`;
+    : `${drag.bondOrder && drag.bondOrder !== "single" ? `${drag.bondOrder} bond` : nativeBondToolStatusLabel(drag.bondStyle)} molecule`;
 }
 
 function nativeReactionArrowAriaLabel(arrowKind: ArrowObject["arrowKind"]): string {
@@ -27080,6 +27210,7 @@ function PageSvgSurfaceContent({
   objectOverlayFragments,
   objectTransformPreview,
   spinningObjectId,
+  editingTextObjectId,
   editingTableCell,
   ...handlers
 }: {
@@ -27092,6 +27223,8 @@ function PageSvgSurfaceContent({
   objectTransformPreview?: ObjectTransformPreviewState;
   /** The id of the molecule being spun in 3D; its drawn structure fades to a faint ghost. */
   spinningObjectId?: string;
+  /** The HTML editing preview owns this text's paint until its edit ends. */
+  editingTextObjectId?: string;
   editingTableCell?: ActiveTableCell;
   onPointerDown(objectId: string, event: ObjectPointerEvent): void;
   onPointerMove(objectId: string, event: ObjectPointerEvent): void;
@@ -27144,6 +27277,7 @@ function PageSvgSurfaceContent({
           {objects.map(object => {
             const preview = previewIds.has(object.id) ? objectTransformPreview : undefined;
             const fragments = objectOverlayFragments.get(object.id)!;
+            const editingText = object.type === "text" && object.id === editingTextObjectId;
             const tableLayout = object.type === "table" ? planTableLayout(object) : undefined;
             return (
               <g
@@ -27152,8 +27286,9 @@ function PageSvgSurfaceContent({
                 data-object-type={object.type}
                 data-layer-index={Number(fragments[0]!.attrs["data-layer-index"])}
                 opacity={object.id === spinningObjectId ? 0.1 : undefined}
+                visibility={editingText ? "hidden" : undefined}
                 transform={preview ? objectTransformPreviewSvgTransform(preview) : undefined}
-                style={{ pointerEvents: object.id === spinningObjectId ? "none" : "auto" }}
+                style={{ pointerEvents: object.id === spinningObjectId || editingText ? "none" : "auto" }}
                 onPointerDown={event => handlers.onPointerDown(object.id, event)}
                 onPointerMove={event => handlers.onPointerMove(object.id, event)}
                 onPointerUp={event => handlers.onPointerUp(object.id, event)}

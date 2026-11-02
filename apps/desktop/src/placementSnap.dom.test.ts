@@ -6,12 +6,30 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChemDraftDocument, MoleculeObject, Point } from "@chemdraft/chem-core";
 import { nativeBondLengthPx } from "@chemdraft/document-workflow-core";
 import { MainWindow } from "./MainWindow";
-import { applyNativeChainTool, applySingleBondToolAtPoint, createPhase4Document, insertNativeSingleBondMolecule } from "./documentWorkflow";
+import {
+  applyFreeformSingleBondToolAtPoint, applyNativeChainTool, applySingleBondToolAtPoint, createPhase4Document,
+  getSelectedMolecule, insertNativeSingleBondMolecule
+} from "./documentWorkflow";
 import { saveKeybindingSettings } from "./keybindingSettings";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 class TestResizeObserver { observe() {} unobserve() {} disconnect() {} }
 const molecules = (document: ChemDraftDocument) => document.pages[0].objects.filter((object): object is MoleculeObject => object.type === "molecule");
+/** A carbon with four single bonds, plus a tail hanging off its first neighbour. */
+function fullCarbonWithTail() {
+  let document = applySingleBondToolAtPoint(createPhase4Document("Full carbon"), { x: 300, y: 300 });
+  const first = getSelectedMolecule(document)!;
+  const [origin, center] = first.atoms;
+  for (const degrees of [-60, 60, 180]) {
+    const radians = degrees * Math.PI / 180;
+    document = applyFreeformSingleBondToolAtPoint(document, first.id, center.id, {
+      x: center.x + Math.cos(radians) * 40, y: center.y + Math.sin(radians) * 40
+    });
+  }
+  document = applyFreeformSingleBondToolAtPoint(document, first.id, origin.id, { x: origin.x - 40, y: origin.y });
+  const molecule = getSelectedMolecule(document)!;
+  return { document, objectId: first.id, centerId: center.id, tailId: molecule.atoms.at(-1)!.id };
+}
 const angle = (start: Point, end: Point) => Math.atan2(end.y - start.y, end.x - start.x) * 180 / Math.PI;
 const pointAt = (start: Point, degrees: number, length = nativeBondLengthPx * 3) => ({
   x: start.x + Math.cos(degrees * Math.PI / 180) * length,
@@ -71,7 +89,79 @@ describe.each(["macos", "windows"] as const)("placement pointer handlers on %s",
     expect(molecules(current())).toEqual(before);
     expect(container.querySelector('[data-can-undo="true"]')).toBeNull();
   }
-  const tools = ["tool.bond", "tool.wedgeBond", "tool.hashedBond", "tool.dashedBond", "tool.boldBond"];
+  it.each(["double", "triple"])("sets a clicked bond to %s and supports Undo/Redo", async (order) => {
+    await mount(`tool.${order}Bond`, insertNativeSingleBondMolecule(createPhase4Document("Set order"), { x: 240, y: 240 }));
+    const before = molecules(current());
+    const molecule = before[0];
+    const midpoint = { x: (molecule.atoms[0].x + molecule.atoms[1].x) / 2, y: (molecule.atoms[0].y + molecule.atoms[1].y) / 2 };
+    const wrapper = container.querySelector<HTMLElement>(`[data-object-id="${molecule.id}"]`)!;
+    await pointer("pointerdown", midpoint, wrapper);
+    await pointer("pointerup", midpoint, wrapper);
+    expect(molecules(current())[0].bonds[0].order).toBe(order);
+    expect(molecules(current())[0].atoms).toEqual(molecule.atoms);
+    await undoOnce(before);
+    await act(async () => { await window.__CHEMDRAFT_AGENT__!.command("edit.redo"); });
+    expect(molecules(current())[0].bonds[0].order).toBe(order);
+  });
+
+  const status = () => container.querySelector("[data-status-message]")?.textContent ?? "";
+
+  it.each(["double", "triple"])("refuses to set a %s bond on a full-valence carbon, says why, and leaves Undo empty", async (order) => {
+    const { document, objectId, centerId } = fullCarbonWithTail();
+    await mount(`tool.${order}Bond`, document);
+    const before = molecules(current());
+    const molecule = before[0];
+    const bond = molecule.bonds.find(candidate => candidate.fromAtomId === centerId || candidate.toAtomId === centerId)!;
+    const from = molecule.atoms.find(atom => atom.id === bond.fromAtomId)!;
+    const to = molecule.atoms.find(atom => atom.id === bond.toAtomId)!;
+    const midpoint = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
+    const wrapper = container.querySelector<HTMLElement>(`[data-object-id="${objectId}"]`)!;
+    await pointer("pointerdown", midpoint, wrapper);
+    await pointer("pointerup", midpoint, wrapper);
+    expect(molecules(current())).toEqual(before);
+    expect(container.querySelector('[data-can-undo="true"]')).toBeNull();
+    expect(status()).toMatch(/Bond order not changed: C would exceed its valence/);
+  });
+
+  it("refuses a dashed (dative) bond click like order cycling and does not call it unchanged", async () => {
+    await mount("tool.doubleBond", insertNativeSingleBondMolecule(createPhase4Document("Dative"), { x: 240, y: 240 }, { bondStyle: "dashed" }));
+    const before = molecules(current());
+    const molecule = before[0];
+    const midpoint = { x: (molecule.atoms[0].x + molecule.atoms[1].x) / 2, y: (molecule.atoms[0].y + molecule.atoms[1].y) / 2 };
+    const wrapper = container.querySelector<HTMLElement>(`[data-object-id="${molecule.id}"]`)!;
+    await pointer("pointerdown", midpoint, wrapper);
+    await pointer("pointerup", midpoint, wrapper);
+    expect(molecules(current())).toEqual(before);
+    expect(container.querySelector('[data-can-undo="true"]')).toBeNull();
+    expect(status()).toMatch(/dashed \(dative\) bond stays single/);
+  });
+
+  it("says a click on a bond already of that order is already that order", async () => {
+    await mount("tool.doubleBond", applySingleBondToolAtPoint(createPhase4Document("Same"), { x: 240, y: 240 }, { bondOrder: "double" }));
+    const molecule = molecules(current())[0];
+    const midpoint = { x: (molecule.atoms[0].x + molecule.atoms[1].x) / 2, y: (molecule.atoms[0].y + molecule.atoms[1].y) / 2 };
+    const wrapper = container.querySelector<HTMLElement>(`[data-object-id="${molecule.id}"]`)!;
+    await pointer("pointerdown", midpoint, wrapper);
+    await pointer("pointerup", midpoint, wrapper);
+    expect(status()).toBe("Bond is already double");
+  });
+
+  it.each(["tool.doubleBond", "tool.tripleBond"])("refuses to connect two atoms with %s past valence, says why, and leaves Undo empty", async (tool) => {
+    const { document, centerId, tailId } = fullCarbonWithTail();
+    await mount(tool, document);
+    const before = molecules(current());
+    const source = before[0].atoms.find(atom => atom.id === tailId)!;
+    const target = before[0].atoms.find(atom => atom.id === centerId)!;
+    const wrapper = container.querySelector<HTMLElement>(`[data-object-id="${before[0].id}"]`)!;
+    await pointer("pointerdown", source, wrapper);
+    await pointer("pointermove", target, wrapper);
+    await pointer("pointerup", target, wrapper);
+    expect(molecules(current())).toEqual(before);
+    expect(container.querySelector('[data-can-undo="true"]')).toBeNull();
+    expect(status()).toMatch(/Freeform bond not placed: C (would exceed its valence|has no available valence)/);
+  });
+
+  const tools = ["tool.doubleBond", "tool.tripleBond", "tool.bond", "tool.wedgeBond", "tool.hashedBond", "tool.dashedBond", "tool.boldBond"];
 
   it.each(tools.flatMap((tool) => [false, true].map((alt) => [tool, alt] as const)))("aims %s from an atom (Alt: %s), previews and commits once", async (tool, alt) => {
     const seed = insertNativeSingleBondMolecule(createPhase4Document("Seed"), { x: 240, y: 240 });
@@ -96,11 +186,12 @@ describe.each(["macos", "windows"] as const)("placement pointer handlers on %s",
     expect(placed.bonds.slice(0, 1)).toEqual(before[0].bonds);
     expect(placed.atoms).toHaveLength(3);
     expect(placed.bonds).toHaveLength(2);
+    expect(placed.bonds[1].order).toBe(tool === "tool.doubleBond" ? "double" : tool === "tool.tripleBond" ? "triple" : "single");
     const terminal = placed.atoms[2];
     expect(angle(source, terminal)).toBeCloseTo(alt ? 23 : 30, 8);
     expect(terminal.x - source.x).toBeCloseTo(previewEnd.x - previewStart.x, 8);
     expect(terminal.y - source.y).toBeCloseTo(previewEnd.y - previewStart.y, 8);
-    expect(placed.structure).toBe("CCC");
+    expect(placed.structure).toBe(tool === "tool.doubleBond" ? "CC=C" : tool === "tool.tripleBond" ? "CC#C" : "CCC");
     await undoOnce(before);
   });
 
@@ -169,6 +260,7 @@ describe.each(["macos", "windows"] as const)("placement pointer handlers on %s",
     await pointer("pointerdown", start);
     await pointer("pointermove", pointAt(start, 23), page(), alt);
     const preview = molecules(current())[0];
+    expect(preview.bonds[0].order).toBe(tool === "tool.doubleBond" ? "double" : tool === "tool.tripleBond" ? "triple" : "single");
     expect(preview.atoms[0]).toMatchObject(start);
     expect(angle(preview.atoms[0], preview.atoms[1])).toBeCloseTo(alt ? 23 : 30, 8);
     expect(Math.hypot(preview.atoms[1].x - start.x, preview.atoms[1].y - start.y)).toBeCloseTo(nativeBondLengthPx, 8);
@@ -233,9 +325,9 @@ describe.each(["macos", "windows"] as const)("placement pointer handlers on %s",
     await undoOnce(before);
   });
 
-  it("connects existing atoms without moving them to the angle grid", async () => {
+  it.each(["tool.bond", "tool.doubleBond", "tool.tripleBond"])("connects existing atoms with %s without moving them to the angle grid", async (tool) => {
     const seed = applyNativeChainTool(createPhase4Document("Close chain"), { x: 240, y: 240 }, { x: 315, y: 269 });
-    await mount("tool.bond", seed);
+    await mount(tool, seed);
     const before = molecules(current());
     const source = before[0].atoms[0];
     const target = before[0].atoms.at(-1)!;
@@ -247,7 +339,7 @@ describe.each(["macos", "windows"] as const)("placement pointer handlers on %s",
     const placed = molecules(current())[0];
     expect(placed.atoms).toEqual(before[0].atoms);
     expect(placed.bonds).toHaveLength(before[0].bonds.length + 1);
-    expect(placed.bonds.at(-1)).toMatchObject({ fromAtomId: source.id, toAtomId: target.id });
+    expect(placed.bonds.at(-1)).toMatchObject({ fromAtomId: source.id, toAtomId: target.id, order: tool === "tool.doubleBond" ? "double" : tool === "tool.tripleBond" ? "triple" : "single" });
     await undoOnce(before);
   });
 });
