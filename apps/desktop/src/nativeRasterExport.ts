@@ -1,3 +1,5 @@
+import { prepareRasterPictures } from "./rasterPictureDecode";
+
 export type NativeRasterExportFormat = "png" | "jpeg" | "bmp" | "gif" | "tiff";
 
 export interface NativeRasterExportOptions {
@@ -40,9 +42,14 @@ export async function rasterizeSvgNative(
   options: NativeRasterExportOptions = {}
 ): Promise<NativeRasterExportResult> {
   const { invoke } = await import("@tauri-apps/api/core");
+  // PNG pictures are decoded here, in the webview, and reach Rust as checked RGBA pixels: native
+  // code never decodes a bitmap (see rasterPictureDecode.ts). Base64 fields keep the request JSON;
+  // the command's argument shape is unchanged when a drawing has no PNG pictures.
+  const prepared = await prepareRasterPictures(svg);
   const response = await invoke<NativeRasterExportResponse>("rasterize_svg", {
     request: {
-      svg,
+      svg: prepared.svg,
+      ...(prepared.pictures.length > 0 ? { pictures: prepared.pictures } : {}),
       format,
       scale: options.scale,
       background: options.background,
