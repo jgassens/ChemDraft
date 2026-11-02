@@ -1070,7 +1070,7 @@ caption must use the atom-label size. Existing structures on the page must not c
   without xmlns: each becomes a picture with “Pasted picture”. Malformed or sanitizer-refused
   SVG shows the specific “Couldn't paste the SVG: ...” message. SVG never becomes a text box.
   Copy into Word and a rich-text editor; check the size is sensible.
-- Drag every edge and corner using the system's own grab band on macOS (about 2 pt inside
+- Drag every edge and corner using the system's own grab band on macOS (within about 1.5 pt of
   the border) or 6 px inside on Windows. Use Full size, then Esc: the
   exact previous frame returns. Repeat across monitors with different scaling.
 - Hover over peaks and verify no empty tooltip appears.

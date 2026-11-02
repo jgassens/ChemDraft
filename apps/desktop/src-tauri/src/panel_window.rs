@@ -983,28 +983,19 @@ mod tests {
     #[test]
     fn macos_content_hit_test_yields_all_edges_and_corners_only() {
         for (width, height) in [(280.0, 200.0), (380.0, 520.0), (1200.0, 800.0)] {
-            // AppKit coordinates are logical points; backing scale must not widen the zone.
-            for scale in [1.0, 1.5, 2.0] {
-                let border = (6.0_f64 * scale) as i32;
-                for depth in 0..border {
-                    let near = f64::from(depth) / scale;
-                    let far_x = width - f64::from(depth + 1) / scale;
-                    let far_y = height - f64::from(depth + 1) / scale;
-                    for (x, y) in [
-                        (near, height / 2.0),
-                        (far_x, height / 2.0),
-                        (width / 2.0, near),
-                        (width / 2.0, far_y),
-                        (near, near),
-                        (far_x, near),
-                        (near, far_y),
-                        (far_x, far_y),
-                    ] {
-                        assert!(
-                            super::macos::resize_edge(x, y, width, height),
-                            "scale={scale}"
-                        );
-                    }
+            // The owner narrowed this to AppKit's native 2 pt band, in logical points.
+            for (depth, expected) in [(0.5, true), (1.5, true), (2.5, false), (5.5, false)] {
+                for (x, y) in [
+                    (depth, height / 2.0),
+                    (width - depth, height / 2.0),
+                    (width / 2.0, depth),
+                    (width / 2.0, height - depth),
+                    (depth, depth),
+                    (width - depth, depth),
+                    (depth, height - depth),
+                    (width - depth, height - depth),
+                ] {
+                    assert_eq!(super::macos::resize_edge(x, y, width, height), expected);
                 }
             }
             for (x, y) in [

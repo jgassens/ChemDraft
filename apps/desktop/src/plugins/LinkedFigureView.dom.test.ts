@@ -1031,6 +1031,28 @@ describe("LinkedFigureView", () => {
     }
   });
 
+  it("highlights the first Export item before the focus effect on reopen", () => {
+    mount(createElement(LinkedFigureView, { spectrum }));
+    const owner = container!.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!;
+    click(owner);
+    act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true, cancelable: true })));
+    click(owner);
+    const firstPaint: { tabIndex: number; outline: string }[] = [];
+    const focus = HTMLButtonElement.prototype.focus;
+    const spy = vi.spyOn(HTMLButtonElement.prototype, "focus").mockImplementation(function (this: HTMLButtonElement) {
+      if (this.getAttribute("role") === "menuitem") {
+        firstPaint.push({ tabIndex: this.tabIndex, outline: this.style.outline });
+      }
+      focus.call(this);
+    });
+    try {
+      click(owner);
+      expect(firstPaint[0]).toEqual({ tabIndex: 0, outline: "2px solid var(--cd-accent)" });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it.each(["Enter", " "])("chooses the highlighted Export item once with %j after keyboard opening and transient blur", async (key) => {
     mount(createElement(LinkedFigureView, { spectrum }));
     const owner = container!.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!;

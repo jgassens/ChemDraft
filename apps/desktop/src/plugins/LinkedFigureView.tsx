@@ -416,7 +416,6 @@ export function LinkedFigureView({
 
   useEffect(() => {
     if (!exportMenuOpen) return;
-    setExportMenuIndex(0);
     exportMenuRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
     const onPointerDown = (event: PointerEvent): void => {
       if (event.target instanceof Node && !exportMenuRef.current?.contains(event.target)
@@ -616,11 +615,15 @@ export function LinkedFigureView({
             aria-expanded={exportMenuOpen}
             aria-controls={exportMenuOpen ? exportMenuId : undefined}
             disabled={exportBusy}
-            onClick={() => setExportMenuOpen((open) => !open)}
+            onClick={() => {
+              setExportMenuIndex(0);
+              setExportMenuOpen((open) => !open);
+            }}
             onKeyDown={(event) => {
               if (event.key === "ArrowDown") {
                 event.preventDefault();
                 event.stopPropagation();
+                setExportMenuIndex(0);
                 setExportMenuOpen(true);
               }
             }}
