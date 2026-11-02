@@ -59,6 +59,15 @@ pnpm --filter @chemdraft/desktop build --bundles nsis
 
 - The build produces `apps/desktop/src-tauri/target/release/bundle/nsis/ChemDraft_<version>_x64-setup.exe`,
   a per-user installer (no admin); it is unsigned, so SmartScreen will ask once.
+- Releases also provide `ChemDraft_<version>_x64-allusers-setup.exe` for managed or shared machines:
+  it installs to `C:\Program Files\ChemDraft` with an all-users Start Menu shortcut and requires admin
+  rights for installation and every update. A standard user needs administrator credentials at UAC.
+  The per-user installer uses `%LOCALAPPDATA%\ChemDraft` and `latest.json`; the all-users installer
+  uses its own `latest-allusers.json` feed. Installing both gives two copies; uninstall one first
+  before switching. Silent deployment from an elevated prompt:
+  `ChemDraft_<version>_x64-allusers-setup.exe /S`. See the
+  [Windows release guide](docs/releasing/windows-updates.md). Release installers are built only by
+  the GitHub-hosted Windows release workflow.
 - Built from any branch but `main`, it is `ChemDraft (dev)` (`ChemDraft (dev)_<version>_x64-setup.exe`,
   installed to `%LOCALAPPDATA%\ChemDraft (dev)`), with the shared `org.chemdraft.desktop.dev` identifier,
   one shared dev app-data folder and one shared single-instance lock. Quit the running dev build before
@@ -70,7 +79,7 @@ pnpm --filter @chemdraft/desktop build --bundles nsis
   SmartScreen still warns on a manual download.
 - The Windows installer registers `.chemdraft` only (`tauri.windows.conf.json`). The macOS `.cdxml` entry
   ranks ChemDraft as an Alternate handler, but NSIS ignores rank: a per-user install would write
-  `HKCU\Software\Classes\.cdxml`, which outranks ChemDraw's machine-wide registration and silently takes
+  `HKCU\Software\Classes\.cdxml`, which outranks an existing machine-wide registration and silently takes
   over every `.cdxml` double-click. Open `.cdxml` files through File ▸ Open or Explorer's "Open with".
 - The Windows sidecar binary is committed; rebuild it with
   `cmake --preset windows-msvc && cmake --build --preset windows-msvc` in `native/avogadro3d-sidecar`
