@@ -1713,7 +1713,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.02.09.30-codex";
+const CURRENT_BUILD_STAMP = "11.02.14.16-codex";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -2744,7 +2744,7 @@ export function MainWindow({
   const fileStateRef = useRef<NativeFileState>(fileState);
   // Successful explicit saves, per tab, including a save completed while its label editor is open.
   const documentSaveRevisionsRef = useRef(new Map<string, number>());
-  // Keep the actual saved contents: an open table draft can be saved without entering history.
+  // Keep the actual saved contents: open drafts can be saved without ending their history session.
   const savedDocumentsRef = useRef(new Map<string, ChemDraftDocument>());
   // Capture once: Preferences changes affect the next launch, never this run.
   const [startWithFreshDocument] = useState(loadStartWithFreshDocument);
@@ -3753,6 +3753,14 @@ export function MainWindow({
       fileStateRef.current = nextFileState;
       return nextFileState;
     });
+  }, []);
+  const reconcileSavedDocumentDirtyState = useCallback(() => {
+    const saved = savedDocumentsRef.current.get(activeDocumentTabIdRef.current);
+    if (!saved) return;
+    const file = { ...fileStateRef.current, dirty: !assistantDocumentContentUnchanged(saved, documentRef.current) };
+    // Close/quit can read this in the same event, before React processes state updates.
+    fileStateRef.current = file;
+    setFileState(file);
   }, []);
   const commitLiveInputPreview = useCallback((startDocument: ChemDraftDocument): boolean => {
     const previewDocument = documentRef.current;
@@ -7547,8 +7555,10 @@ export function MainWindow({
   }, [applyDetectedClipboardPayload, applySelectionClipboardPayload, applyTableClipboardResult]);
 
   const updateTextObjectContent = useCallback((objectId: string, text: string) => {
-    replacePresentDocument((current) => updateNativeTextObjectText(current, objectId, text));
-  }, [replacePresentDocument]);
+    if (replacePresentDocument((current) => updateNativeTextObjectText(current, objectId, text))) {
+      reconcileSavedDocumentDirtyState();
+    }
+  }, [reconcileSavedDocumentDirtyState, replacePresentDocument]);
 
   const convertCommittedText = useCallback((objectId: string) => {
     if (!textObjectIdsAwaitingAutoConversionRef.current.delete(objectId)) {
@@ -7611,7 +7621,10 @@ export function MainWindow({
     setActiveTextEditObjectId((current) => (current === objectId ? undefined : current));
     finalizeTextEditHistory(objectId);
     convertCommittedText(objectId);
-  }, [convertCommittedText, finalizeTextEditHistory]);
+    // New boxes share placement's undo entry; existing boxes have a snapshot from before typing.
+    // Neither history baseline tells us what a mid-edit Save actually wrote.
+    reconcileSavedDocumentDirtyState();
+  }, [convertCommittedText, finalizeTextEditHistory, reconcileSavedDocumentDirtyState]);
   checkpointTextEditBeforeCommitRef.current = (beforePreview) => {
     if (textEditHistoryWritingRef.current) return;
     // Settle a visible chooser first so its style never leaks into the typing entry.
@@ -7659,6 +7672,12 @@ export function MainWindow({
     const object = findDocumentObject(currentDocument, objectId);
     if (object?.type !== "text") {
       return;
+    }
+
+    // Opened/restored clean files may not have an explicit save in this session yet.
+    const tabId = activeDocumentTabIdRef.current;
+    if (!fileStateRef.current.dirty && !savedDocumentsRef.current.has(tabId)) {
+      savedDocumentsRef.current.set(tabId, currentDocument);
     }
 
     // Own the session before arming its snapshot: a checkpoint never sees a snapshot without its owner.
@@ -7720,14 +7739,6 @@ export function MainWindow({
     const cell = tableCellEditRef.current;
     let table = selectedTable(documentRef.current);
     if (!cell || !table || table.id !== cell.tableId) return;
-    const reconcileDirtyState = () => {
-      const saved = savedDocumentsRef.current.get(activeDocumentTabIdRef.current);
-      if (!saved) return;
-      const file = { ...fileStateRef.current, dirty: !assistantDocumentContentUnchanged(saved, documentRef.current) };
-      // Tab/quit guards read this before React processes the commit's dirty-state update.
-      fileStateRef.current = file;
-      setFileState(file);
-    };
     if ("kind" in cell) {
       const original = tableEditingContent(table, cell)?.value;
       if (original && action.kind !== "cancel" && JSON.stringify(original) !== JSON.stringify(value)) {
@@ -7737,7 +7748,7 @@ export function MainWindow({
         commitTableObject(edit.table, edit.label);
       }
       clearScheduledTextEditorFocus();
-      reconcileDirtyState();
+      reconcileSavedDocumentDirtyState();
       tableCellEditRef.current = undefined;
       setTableCellEdit(undefined);
       canvasRegionRef.current?.focus({ preventScroll: true });
@@ -7765,12 +7776,12 @@ export function MainWindow({
       next = { tableId: table.id, rowId: inserted.table.rows.at(-1)!.id, columnId: table.columns[0].id };
     }
     clearScheduledTextEditorFocus();
-    reconcileDirtyState();
+    reconcileSavedDocumentDirtyState();
     tableCellEditRef.current = next;
     setTableCellEdit(next);
     if (next) setActiveTableCell(next);
     else canvasRegionRef.current?.focus({ preventScroll: true });
-  }, [clearScheduledTextEditorFocus, commitTableObject]);
+  }, [clearScheduledTextEditorFocus, commitTableObject, reconcileSavedDocumentDirtyState]);
 
   const handleTableDoubleClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
     if (activeToolState.activeCommandId !== "tool.select" || isEditableTarget(event.target)) return;
@@ -10370,22 +10381,17 @@ export function MainWindow({
     const savingDocument = active ? documentRef.current : snapshot?.history.present;
     const savingFileState = active ? fileStateRef.current : snapshot?.file;
     if (!savingDocument || !savingFileState) return false;
-    const savingTableDraft = active ? JSON.stringify(tableCellEditorRef.current?.draft()) : undefined;
     const savedDocument = active ? documentForFlush() : savingDocument;
-    const payload = createNativeSavePayload(active ? documentForFlush() : savingDocument);
+    // The baseline and payload describe the same single draft snapshot.
+    const payload = createNativeSavePayload(savedDocument);
     const finishSave = (path?: string) => {
       savedDocumentsRef.current.set(savingTabId, savedDocument);
       documentSaveRevisionsRef.current.set(savingTabId, (documentSaveRevisionsRef.current.get(savingTabId) ?? 0) + 1);
       nonPristineTabsRef.current.add(savingTabId);
-      const currentDocument = savingTabId === activeDocumentTabIdRef.current ? documentRef.current :
+      const currentDocument = savingTabId === activeDocumentTabIdRef.current ? documentForFlush() :
         documentTabSnapshotsRef.current.get(savingTabId)?.history.present;
-      const currentTableDraft = savingTabId === activeDocumentTabIdRef.current
-        ? JSON.stringify(tableCellEditorRef.current?.draft()) : undefined;
-      const tableDraftChanged = savingTabId === activeDocumentTabIdRef.current && currentTableDraft !== savingTableDraft;
       // The editor may have committed/cancelled (or its tab switched) while the write awaited I/O.
-      const dirty = savingTableDraft !== undefined && currentTableDraft === undefined
-        ? !currentDocument || !assistantDocumentContentUnchanged(savedDocument, currentDocument)
-        : currentDocument !== savingDocument || tableDraftChanged;
+      const dirty = !currentDocument || !assistantDocumentContentUnchanged(savedDocument, currentDocument);
       const nextFileState = { path: path ?? savingFileState.path, dirty };
       const displayName = path ? nativePathBasename(path) : payload.filename;
       const warningsReport: OpenWarningsReport | undefined = payload.warnings.length > 0 ? {
