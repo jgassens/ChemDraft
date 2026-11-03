@@ -111,6 +111,9 @@ when necessary to fit. Explicit `gap` values remain fixed; molecule dimensions n
 `textVisualBoundsForArrangement` measures rotated caption frames around the same pivot as SVG
 text rendering, so grouped captions participate in layout clearance and page-fit checks.
 
+Arrow offshoot frames, shaft hit testing, nested attachment resolution, and attachment-tree
+membership are shared in `arrowAttachments.ts`. Canvas and export resolve the same geometry.
+
 ## Tables
 
 `planTableLayout` measures native tables without a DOM, including rich-text scripts, decimal tabs,

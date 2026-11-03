@@ -1,3 +1,6 @@
+export * from "./arrowAttachments";
+import { resolveArrowAttachments } from "./arrowAttachments";
+
 export * from "./layoutQuality";
 import type { LayoutLabelBox } from "./layoutQuality";
 import { bondsOverlap } from "./layoutQuality";
@@ -1709,6 +1712,7 @@ export function planPageSvgRender(
     anchorResolutionPage?: DocumentPage;
   } = {}
 ): PageSvgRenderPlan {
+  if (!options.anchorResolutionPage) page = resolveArrowAttachments(page);
   const warnings: PageSvgRenderWarning[] = [];
   const crossings = resolvePageBondCrossings(page, warnings);
   const gapsByBondKey = crossings.reduce<Map<string, BondCrossingGap[]>>((byBond, crossing) => {

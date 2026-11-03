@@ -28,6 +28,9 @@ export * from "./structureName";
 export * from "./structureTemplates";
 export * from "./textObjects";
 export * from "./documentStyle";
+
+export * from "./reactionArrowAttachments";
+
 export * from "./sourceBondSemantics";
 export * from "./drawingDefaults";
 export * from "./tables";

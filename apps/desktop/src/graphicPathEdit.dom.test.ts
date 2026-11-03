@@ -1,3 +1,5 @@
+import { attachReactionArrowOffshoot } from "@chemdraft/document-workflow-core";
+import { graphicPathEditPoints, graphicArrowAttachmentFrame,graphicOpenStrokePageSamplePoints,planNativeArtVisual } from "@chemdraft/art-engine";
 // @vitest-environment jsdom
 
 import { applyPatch, type ChemDraftDocument, type GraphicObject } from "@chemdraft/chem-core";
@@ -9,6 +11,7 @@ import {
   applyNativeArtLineToolAtPoint,
   applyNativeTemplateToolAtPoint,
   createPhase4Document,
+  selectDocumentObjects,
   insertNativeArtGraphicObject,
   insertNativeTextObject,
   createMechanismArrowBetween,
@@ -152,7 +155,7 @@ describe("graphic path direct editing interactions", () => {
     return container.querySelector<HTMLElement>(`[data-object-controls="${objectId}"]`) ?? objectElement(objectId);
   }
 
-  function pathHandle(handle: "start" | "middle" | "end"): HTMLButtonElement {
+  function pathHandle(handle: "start" | "middle" | "end" | "tether"): HTMLButtonElement {
     const button = container.querySelector<HTMLButtonElement>(`[data-graphic-path-handle="${handle}"]`);
     if (!button) {
       throw new Error(`Expected ${handle} path handle.`);
@@ -845,6 +848,106 @@ describe("graphic path direct editing interactions", () => {
     const undone = debugArtObject(objectId);
     expect(undone.object.width).toBeCloseTo(before.object.width, 3);
     expect(undone.object.data.markerEnd?.sizePx).toBeCloseTo(startHead, 3);
+  });
+
+  it('slides a full-curve tether on ink and edits each endpoint or both with Shift without moving the junction',async()=>{
+    let document=insertNativeArtGraphicObject(createPhase4Document('Full curve handles'),{x:220,y:250},'tool.art.reactionArrow');
+    const parentId=document.selection.objectIds[0];
+    document=updateNativeGraphicPathHandle(document,parentId,'middle',{x:280,y:220});
+    document=attachReactionArrowOffshoot(document,parentId,'above','fullCurve');
+    const id=document.selection.objectIds[0];await renderMainWindow(document);
+    const shaft=graphicOpenStrokePageSamplePoints(debugArtObject(parentId).object),target=shaft[Math.floor(shaft.length*.7)];
+    const first=graphicPathEditPoints(debugArtObject(id).object)!;
+    await act(async()=>dispatchPointer(pathHandle('tether'),'pointerdown',first.middle,120));
+    await act(async()=>{dispatchPointer(pageElement(),'pointermove',target,120);dispatchPointer(pageElement(),'pointerup',target,120);});
+    const tethered=debugArtObject(id).object,anchor=graphicPathEditPoints(tethered)!.middle;
+    expect(anchor.x).toBeCloseTo(target.x,4);expect(anchor.y).toBeCloseTo(target.y,4);
+    await act(async()=>window.dispatchEvent(new KeyboardEvent('keydown',{key:'z',metaKey:true,bubbles:true,cancelable:true})));
+    expect(graphicPathEditPoints(debugArtObject(id).object)!.middle).toEqual(first.middle);
+    await act(async()=>window.dispatchEvent(new KeyboardEvent('keydown',{key:'z',metaKey:true,shiftKey:true,bubbles:true,cancelable:true})));
+    expect(graphicPathEditPoints(debugArtObject(id).object)!.middle).toEqual(anchor);
+    for(const [index,handle,paired] of [[0,'end',false],[1,'start',false],[2,'end',true],[3,'start',true]] as const){
+      if(paired)await act(async()=>window.dispatchEvent(new KeyboardEvent('keydown',{key:'Shift',shiftKey:true,bubbles:true})));
+      const before=graphicPathEditPoints(debugArtObject(id).object)!;
+      const end=before[handle],next={x:end.x+(handle==='start'?-18:18),y:end.y-20};
+      await act(async()=>dispatchPointer(pathHandle(handle),'pointerdown',end,121+index,1,{shiftKey:paired}));
+      await act(async()=>dispatchPointer(pageElement(),'pointermove',next,121+index,1,{shiftKey:paired}));
+      const preview=graphicPathEditPoints(debugArtObject(id).object)!;
+      expect(preview.middle.x).toBeCloseTo(anchor.x,5);expect(preview.middle.y).toBeCloseTo(anchor.y,5);
+      await act(async()=>dispatchPointer(pageElement(),'pointerup',next,121+index,1,{shiftKey:paired}));
+      const edited=debugArtObject(id).object,points=graphicPathEditPoints(edited)!;
+      expect(points.middle.x).toBeCloseTo(anchor.x,5);expect(points.middle.y).toBeCloseTo(anchor.y,5);
+      if(!paired)expect(points[handle==='end'?'start':'end']).toEqual(before[handle==='end'?'start':'end']);
+      else {const a=edited.arrowAttachment!;if(a.kind==='offshoot'){expect(a.startOffset!.x).toBeCloseTo(-a.endOffset.x,5);expect(a.startOffset!.y).toBeCloseTo(a.endOffset.y,5);}}
+      const glyph=objectElement(id);
+      expect(glyph.querySelector('.graphic-glyph-hit-target')?.getAttribute('d')).toBe(planNativeArtVisual(edited,{coordinateSpace:'local'}).pathD);
+      if(paired)await act(async()=>window.dispatchEvent(new KeyboardEvent('keyup',{key:'Shift',shiftKey:false,bubbles:true})));
+    }
+    const after=debugArtObject(id).object;
+    await act(async()=>window.dispatchEvent(new KeyboardEvent('keydown',{key:'z',metaKey:true,bubbles:true,cancelable:true})));
+    expect(debugArtObject(id).object).not.toEqual(after);
+    expect(graphicPathEditPoints(debugArtObject(id).object)!.middle).toEqual(anchor);
+  });
+  it('drags the third Shift-frame handle to adjust both full-curve ends in one undo step',async()=>{
+    let drawing=insertNativeArtGraphicObject(createPhase4Document('Paired curve grip'),{x:220,y:250},'tool.art.reactionArrow');
+    const parentId=drawing.selection.objectIds[0];
+    drawing=attachReactionArrowOffshoot(drawing,parentId,'above','fullCurve');
+    const branchId=drawing.selection.objectIds[0];
+    const initial=graphicPathEditPoints(graphicById(drawing,branchId))!;
+    drawing=updateNativeGraphicPathHandle(drawing,branchId,'start',{x:initial.start.x-12,y:initial.start.y-18});
+    await renderMainWindow(drawing);
+    const before=debugArtObject(branchId).object;
+    if(before.arrowAttachment?.kind==='offshoot')
+      expect(before.arrowAttachment.startOffset!.y).not.toBeCloseTo(before.arrowAttachment.endOffset.y,5);
+    expect(container.querySelector('[data-selection-pair-curve-handle]')).toBeNull();
+    await shiftHover(branchId);
+    await holdShiftForRotationHandles();
+    const grip=objectControls(branchId).querySelector<HTMLButtonElement>('[data-selection-pair-curve-handle="true"]')!;
+    expect(grip).not.toBeNull();
+    expect(objectControls(parentId).querySelector('[data-selection-pair-curve-handle]')).toBeNull();
+    const from={x:320,y:175},to={x:342,y:160};
+    await act(async()=>dispatchPointer(grip,'pointerdown',from,175,1,{shiftKey:true}));
+    await act(async()=>dispatchPointer(pageElement(),'pointermove',to,175,1,{shiftKey:true}));
+    const preview=debugArtObject(branchId).object;
+    expect(preview.arrowAttachment?.kind).toBe('offshoot');
+    if(preview.arrowAttachment?.kind==='offshoot'){
+      expect(preview.arrowAttachment.startOffset!.x).toBeCloseTo(-preview.arrowAttachment.endOffset.x,5);
+      expect(preview.arrowAttachment.startOffset!.y).toBeCloseTo(preview.arrowAttachment.endOffset.y,5);
+    }
+    expect(graphicPathEditPoints(preview)!.middle).toEqual(graphicPathEditPoints(before)!.middle);
+    await act(async()=>dispatchPointer(pageElement(),'pointerup',to,175,1,{shiftKey:true}));
+    expect(debugArtObject(branchId).object).toEqual(preview);
+    await act(async()=>window.dispatchEvent(new KeyboardEvent('keydown',{key:'z',metaKey:true,bubbles:true,cancelable:true})));
+    expect(debugArtObject(branchId).object).toEqual(before);
+    await releaseShiftForRotationHandles();
+  });
+  it.each([undefined,'fullCurve'] as const)("keeps a matching-headed offshoot (%s) attached during a real parent resize and restores both with Undo", async mode => {
+    let document=insertNativeArtGraphicObject(createPhase4Document("Attached arrow resize"),{x:220,y:180},"tool.art.reactionArrow");
+    const parentId=document.selection.objectIds[0];
+    document=attachReactionArrowOffshoot(document,parentId,"above",mode);
+    const branchId=document.selection.objectIds[0];
+    document=selectDocumentObjects(document,document.pages[0].id,[parentId]);
+    await renderMainWindow(document);
+    const before=debugArtObject(parentId),old=graphicPathEditPoints(debugArtObject(branchId).object)!;
+    const center={x:before.object.x+before.object.width/2,y:before.object.y+before.object.height/2};
+    const corner={x:before.object.x+before.object.width,y:before.object.y+before.object.height};
+    const target={x:center.x+(corner.x-center.x)*2,y:center.y+(corner.y-center.y)*2};
+    await shiftHover(parentId);
+    await act(async()=>{dispatchPointer(transformResizeCorner("bottom-right"),"pointerdown",corner,92);
+      dispatchPointer(pageElement(),"pointermove",target,92);dispatchPointer(pageElement(),"pointerup",target,92);});
+    const parent=debugArtObject(parentId).object,child=debugArtObject(branchId).object;
+    const next=graphicPathEditPoints(child)!;
+    const factor=parent.width/before.object.width;
+    expect(factor).toBeGreaterThan(1.5);
+    expect(next.end.y-next.start.y).toBeCloseTo((old.end.y-old.start.y)*factor,3);
+    expect(next.end.x-next.start.x).toBeCloseTo((old.end.x-old.start.x)*factor,3);
+    expect(child.data.markerEnd?.sizePx).toBe(parent.data.markerEnd?.sizePx);
+    if(mode==='fullCurve'){
+      const origin=graphicArrowAttachmentFrame(parent)!.origin;
+      expect(next.middle.x).toBeCloseTo(origin.x,5);expect(next.middle.y).toBeCloseTo(origin.y,5);
+    }
+    await act(async()=>window.dispatchEvent(new KeyboardEvent("keydown",{key:"z",metaKey:true,bubbles:true,cancelable:true})));
+    expect(graphicPathEditPoints(debugArtObject(branchId).object)!.end).toEqual(old.end);
   });
 
   it("keeps an arrow's size box up while Shift is held and the pointer moves off it", async () => {

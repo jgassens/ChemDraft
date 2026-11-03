@@ -1,4 +1,6 @@
 import { Resvg } from "@resvg/resvg-js";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createEmptyDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { pastedStructureDepictionFromMolfile, stereoPerceptionMolfile } from "@chemdraft/document-workflow-core";
@@ -14,6 +16,16 @@ import { depictInWorker, type PasteDepiction } from "./depict";
 import { inspectStructureInWorker } from "./identityInspect";
 import { nativeMoleculeLayoutQuality } from "./layoutQuality";
 import { gatePasteDepiction } from "./qualityGate";
+
+// Load one known, compatible face instead of scanning every installed font for each label.
+// Linux CI installs fonts-liberation; macOS and Windows provide Arial.
+const labelFontFamily = process.platform === "linux" ? "Liberation Sans" : "Arial";
+const labelFontFiles = (process.platform === "darwin"
+  ? ["/System/Library/Fonts/Supplemental/Arial.ttf"]
+  : process.platform === "win32"
+    ? [join(process.env.WINDIR ?? "C:\\Windows", "Fonts", "arial.ttf")]
+    : ["/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+      "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"]).filter(existsSync);
 
 // Atom indices follow the input SMILES/standard depiction, and cover every originally flagged pair.
 const fixtures = [
@@ -38,7 +50,10 @@ const boxDistance = (a: Box, b: Box) => Math.hypot(
   Math.max(0, a.x - b.x - b.width, b.x - a.x - a.width),
   Math.max(0, a.y - b.y - b.height, b.y - a.y - a.height));
 
-beforeAll(async () => { installRealRdkitModuleLoader(); await ensureOclResources(); });
+beforeAll(async () => {
+  expect(labelFontFiles.length, "Label glyph checks require Arial or Linux fonts-liberation").toBeGreaterThan(0);
+  installRealRdkitModuleLoader(); await ensureOclResources();
+});
 afterAll(() => resetRdkitForTesting());
 afterEach(() => vi.restoreAllMocks());
 
@@ -78,7 +93,10 @@ describe("renderer label collision regressions", () => {
     const glyphs = plans.map(plan => {
       const runs = plan.layout.runs.map(run => `<text x="${run.x}" y="${run.y}" dy="0.35em" text-anchor="${run.textAnchor}" font-size="${atomLabelRunFontSize(run.script, plan.drawingStyle) ?? plan.fontSizePx}">${run.text}</text>`).join("");
       const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="800" height="800"><g transform="translate(${plan.anchor.x} ${plan.anchor.y})" font-family="${plan.fontFamily}" font-weight="${plan.fontWeight}" font-style="${plan.fontStyle}">${runs}</g></svg>`;
-      const glyph = new Resvg(svg).getBBox()!;
+      const glyph = new Resvg(svg, {
+        font: { loadSystemFonts: false, fontFiles: labelFontFiles,
+          sansSerifFamily: labelFontFamily, defaultFontFamily: labelFontFamily }
+      }).getBBox()!;
       const box = boxes.find(box => molecule.atoms[box.atom].id === plan.atom.id)!;
       expect(glyph.x).toBeGreaterThanOrEqual(box.x - 0.5);
       expect(glyph.y).toBeGreaterThanOrEqual(box.y - 0.5);
