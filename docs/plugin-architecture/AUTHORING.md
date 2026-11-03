@@ -6,6 +6,8 @@ plugin is compiled into a verified multi-file worker package by `pnpm plugin:pac
 
 ## Starting from the app
 
+The Vibe Code Your Own Plugin… guide walks you through saving the starter and installing the finished package.
+
 Choose **Plugins ▸ Vibe Code Your Own Plugin…** to save a Markdown brief for any coding agent.
 It includes the installed app/API versions, authoring rules, working example sources, and build,
 test, package and install steps for macOS and Windows. Replace its goal line with your plugin idea.

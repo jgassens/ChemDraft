@@ -56,11 +56,31 @@ const exampleFiles: ReadonlyArray<readonly [string, string, string]> = [
   ["src/tests/massAnalysis.test.ts", "ts", massAnalysisTest]
 ];
 
-export function buildPluginStarterMarkdown({ appVersion }: { appVersion: string }): string {
+export interface ThisComputer {
+  platform: string;
+  architecture: string;
+  buildKind: string;
+  executablePath: string;
+  bundlePath?: string | null;
+  appDataDir: string;
+  installedPluginsDir: string;
+}
+
+export function buildPluginStarterMarkdown({ appVersion, thisComputer }: { appVersion: string; thisComputer?: ThisComputer }): string {
   const rules = pluginStarterAuthoringHeadings
     .map(heading => `## ${heading}\n\n${pluginStarterAuthoringSection(heading)}`).join("\n\n");
   const example = exampleFiles.map(([path, language, source]) =>
     `## ${path}\n\n\`\`\`${language}\n${source.replace(/\r\n?/g, "\n").replace(/\/\*\*[\s\S]*?\*\//g, sanitizePluginStarterProse).trimEnd()}\n\`\`\``).join("\n\n");
+
+  const computer = thisComputer ? `
+- App version: ${appVersion}
+- Platform: ${thisComputer.platform}
+- CPU architecture: ${thisComputer.architecture}
+- Build kind: ${thisComputer.buildKind}
+- Executable: \`${thisComputer.executablePath}\`
+${thisComputer.bundlePath ? `- App bundle: \`${thisComputer.bundlePath}\`\n` : ""}- App data: \`${thisComputer.appDataDir}\`
+- Installed plugins: \`${thisComputer.installedPluginsDir}\`
+` : "\nComputer details are unavailable in the browser preview. Save this file from the desktop app to include them.\n";
 
   return `# To you
 
@@ -73,6 +93,14 @@ A plugin you build runs on your computer with the permissions it declares, so on
 Goal: Describe your plugin here
 
 Build a working plugin for the installed ChemDraft ${appVersion}, test it, and deliver its installable .zip and .zip.sha256. Keep the plugin small and use the fewest permissions. Preserve chemical meaning; warn or fail when an operation cannot preserve it. Do not modify ChemDraft's core to implement the plugin.
+
+# This computer
+
+This file contains this computer's folder paths, so don't share it publicly.
+${computer}
+Run the plugin's unit tests with \`pnpm vitest run --configLoader runner examples/plugins/<your-plugin>\`, then run \`pnpm plugin:package -- examples/plugins/<your-plugin>\` (this runs the package gates). Ask the user to install the ZIP through **Plugins ▸ Add or Remove Plugins… ▸ Add plugin from package…**. Confirm that the folder appears under the installed plugins folder at \`<installed-plugins>/<plugin id>/\` and that the plugin's menu item exists. Installation errors appear in the Plugins window; load errors appear in **Analyze ▸ Bundled Plugins…** diagnostics.
+
+Never copy files into the installed-plugins folder by hand; that skips the checksum and manifest checks. Always install the ZIP through the app.
 
 # Rules
 

@@ -11,7 +11,8 @@ Plugin starter (macOS and Windows): Plugins ▸ Vibe Code Your Own Plugin… fol
 Plugins… and a separator; Save defaults to Documents/ChemDraft plugin starter.md. Cancel writes
 nothing and shows nothing. Save to a chosen path, read the brief for clarity and complete example
 sources, and check the installed app/API versions and package/install steps. In web preview verify
-the same command downloads the Markdown file; Customize offers the command on both platforms.
+the command opens the guide and its Save Starter File… action downloads the Markdown file; Customize
+offers the command on both platforms.
 
 Manual stress must cover tab initialization, user tab persistence, mixed states, multi-molecule
 scaling, sparse override precedence, terminal carbon labels, hidden implicit hydrogens, explicit
@@ -1117,3 +1118,5 @@ has the style, the command removes it from all; otherwise it applies it to all (
 box). Superscript and Subscript apply to every selected box. Each command must undo/redo all boxes in
 one step and preserve selection. Highlight characters inside one box and confirm only that range is
 formatted.
+
+- **Vibe Code guide (macOS and Windows):** Open and reopen the guide, move it, save or cancel the starter, open the plugin manager, and close with Close and Escape; check ownership, focus, placement, and taskbar behavior.

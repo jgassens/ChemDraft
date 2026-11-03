@@ -27,6 +27,7 @@ mod perf_log;
 mod plugin_package;
 #[cfg(test)]
 mod plugin_panel_acl_tests;
+mod plugin_starter;
 mod problem_reports;
 mod screen_capture;
 mod utility_suspension;
@@ -59,6 +60,7 @@ use std::{
 };
 
 use download_diagnosis::diagnose_download_host;
+use plugin_starter::plugin_starter_computer;
 use tauri::{
     menu::{
         AboutMetadata, CheckMenuItem, Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu,
@@ -1345,6 +1347,7 @@ pub fn run() {
             external_tools::external_tool_run_cancel,
             external_tools::external_tool_conversation_clear,
             diagnose_download_host,
+            plugin_starter_computer,
             plugin_package::read_plugin_package,
             dialog_windows::dialog_open,
             dialog_windows::dialog_request,
@@ -10115,7 +10118,7 @@ mod tests {
     fn registered_commands_have_permissions_and_capability_grants() {
         let lib_source = include_str!("lib.rs");
         let capability = format!(
-            "{}{}{}{}{}{}{}{}",
+            "{}{}{}{}{}{}{}{}{}",
             include_str!("../capabilities/palette-focus-diagnostic.json"),
             include_str!("../capabilities/window-drag.json"),
             include_str!("../capabilities/default.json"),
@@ -10123,7 +10126,8 @@ mod tests {
             include_str!("../capabilities/plugin-panel.json"),
             include_str!("../capabilities/quit-prompt.json"),
             include_str!("../capabilities/download-diagnosis.json"),
-            include_str!("../capabilities/external-tools.json")
+            include_str!("../capabilities/external-tools.json"),
+            include_str!("../capabilities/plugin-starter.json")
         );
 
         let handler_start = lib_source

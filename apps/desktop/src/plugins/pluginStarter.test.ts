@@ -34,7 +34,7 @@ describe("plugin starter Markdown", () => {
     // Ignore code fences: the distributed example and guide contain source comments.
     const prose = markdown.replace(/```[^\n]*\n[\s\S]*?```/g, "");
     expect([...prose.matchAll(/^# (.+)$/gm)].map(match => match[1])).toEqual([
-      "To you", "Brief for the agent", "Rules", "Minimal working example", "Build, test, package and install"
+      "To you", "Brief for the agent", "This computer", "Rules", "Minimal working example", "Build, test, package and install"
     ]);
   });
 
@@ -43,6 +43,19 @@ describe("plugin starter Markdown", () => {
     expect(markdown).toContain(`git checkout v${appVersion}`);
     expect(markdown).toContain(`apiVersion to "^${PluginApiVersion}"`);
     for (const permission of dangerousPluginPermissions) expect(markdown).toContain(`\`${permission}\``);
+  });
+
+  it.each([
+    { platform: "macos", architecture: "aarch64", buildKind: "stable", executablePath: "/Applications/ChemDraft.app/Contents/MacOS/ChemDraft", bundlePath: "/Applications/ChemDraft.app", appDataDir: "/Users/me/Library/Application Support/org.chemdraft.desktop", installedPluginsDir: "/Users/me/Library/Application Support/org.chemdraft.desktop/installed-plugins" },
+    { platform: "windows", architecture: "x86_64", buildKind: "dev", executablePath: "C:\\Apps\\ChemDraft.exe", appDataDir: "C:\\Users\\me\\AppData\\Roaming\\org.chemdraft.desktop.dev", installedPluginsDir: "C:\\Users\\me\\AppData\\Roaming\\org.chemdraft.desktop.dev\\installed-plugins" }
+  ])("prints the supplied paths on $platform", thisComputer => {
+    const result = buildPluginStarterMarkdown({ appVersion, thisComputer });
+    for (const value of Object.values(thisComputer)) expect(result).toContain(value);
+    expect(result).toContain("don't share it publicly");
+    expect(result).toContain("Never copy files into the installed-plugins folder by hand");
+    expect(result).toContain("skips the checksum and manifest checks");
+    const section = result.split("# This computer\n")[1]!.split("\n# Rules")[0]!;
+    expect(section).not.toContain("undefined");
   });
 
   it("inlines the actual complete example runtime, license and test", () => {

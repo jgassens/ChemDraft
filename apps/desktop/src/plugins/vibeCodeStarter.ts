@@ -1,6 +1,18 @@
 import appConfig from "../../src-tauri/tauri.conf.json";
+import type { ThisComputer } from "./pluginStarter";
+import { INSTALLED_PLUGINS_DIR } from "./installedPluginPaths";
 
 export const PLUGIN_STARTER_FILENAME = "ChemDraft plugin starter.md";
+
+export async function gatherThisComputer(): Promise<ThisComputer & { appVersion: string }> {
+  const [{ getVersion }, { appDataDir, join }, { invoke }] = await Promise.all([
+    import("@tauri-apps/api/app"), import("@tauri-apps/api/path"), import("@tauri-apps/api/core")
+  ]);
+  const [appVersion, appData, native] = await Promise.all([
+    getVersion(), appDataDir(), invoke<Omit<ThisComputer, "appDataDir" | "installedPluginsDir">>("plugin_starter_computer")
+  ]);
+  return { ...native, appVersion, appDataDir: appData, installedPluginsDir: await join(appData, INSTALLED_PLUGINS_DIR) };
+}
 
 /** The document window supplies its existing export picker, writer and browser download helpers. */
 export interface VibeCodeStarterSaveOptions {
@@ -19,11 +31,10 @@ export async function saveVibeCodeStarter(options: VibeCodeStarterSaveOptions): 
     );
     if (!path) return;
   }
-  const appVersion = options.isDesktop
-    ? await (await import("@tauri-apps/api/app")).getVersion()
-    : appConfig.version;
+  const thisComputer = options.isDesktop ? await gatherThisComputer() : undefined;
+  const appVersion = thisComputer?.appVersion ?? appConfig.version;
   const { buildPluginStarterMarkdown } = await import("./pluginStarter");
-  const contents = buildPluginStarterMarkdown({ appVersion });
+  const contents = buildPluginStarterMarkdown({ appVersion, thisComputer });
   if (path) await options.writeText(path, contents);
   else options.download(PLUGIN_STARTER_FILENAME, contents, "text/markdown;charset=utf-8");
   return path ? path.split(/[\\/]/).pop() : PLUGIN_STARTER_FILENAME;
