@@ -7,7 +7,7 @@ You are working in the ChemDraft repository.
 
 First, read:
 
-- PLAN.md
+- docs/plans/PLAN.md
 - AGENTS.md
 - packages/plugin-api/README.md
 - packages/plugin-host/README.md

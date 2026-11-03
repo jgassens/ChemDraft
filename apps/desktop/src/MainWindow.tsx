@@ -1713,7 +1713,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.02.09.30-codex";
+const CURRENT_BUILD_STAMP = "11.03.08.00-codex";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -2360,7 +2360,7 @@ export function MainWindow({
     []
   );
 
-  // The Analyze surface (PLANS.md §9). `interpretationOverride` is the "— change" affordance from §1:
+  // The Analyze surface (docs/plans/PLANS.md §9). `interpretationOverride` is the "— change" affordance from §1:
   // it re-runs the same selection against a derived interpretation and replaces the report.
   const [analysisReport, setAnalysisReport] = useState<AnalysisReport | undefined>();
   /**
@@ -32891,7 +32891,7 @@ function arrayBufferFromBytes(bytes: Uint8Array): ArrayBuffer {
  * The status line for a completed run.
  *
  * Counts what declined rather than only what succeeded: "46 properties" beside a silent decline reads
- * as a complete answer, which is the impression PLANS.md §10 spends a paragraph warning against.
+ * as a complete answer, which is the impression docs/plans/PLANS.md §10 spends a paragraph warning against.
  */
 function formatAnalysisRunStatus(run: AnalysisRun): string {
   const computed = run.results.filter((result) => result.status === "ok").length;

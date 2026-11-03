@@ -1,5 +1,5 @@
 /**
- * Structure-analysis Web Worker (PLANS.md §5).
+ * Structure-analysis Web Worker (docs/plans/PLANS.md §5).
  *
  * "Persistent, so the engine is not re-initialized per call." That is the whole reason this exists: the
  * vendored RDKit MinimalLib is a 7.5 MB WASM module whose first instantiation costs a few hundred

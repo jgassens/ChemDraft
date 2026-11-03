@@ -1,5 +1,5 @@
 /**
- * The isotope-envelope engine (PLANS.md §8, Release 2).
+ * The isotope-envelope engine (docs/plans/PLANS.md §8, Release 2).
  *
  * IsoSpec exists here because neither the vendored RDKit MinimalLib nor OpenChemLib 9.22.1 exposes
  * per-isotope abundances — checked directly, not assumed (see `docs/architecture/dependency-inventory.md`).
