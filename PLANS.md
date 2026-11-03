@@ -110,5 +110,5 @@ Work scoped to a branch other than `main` carries its own plan; this file does n
 ---
 
 Repo-wide scope lives in `PLAN.md`. One further scoped plan applies inside its area:
-`PLAN-spin3d-forcefields.md` (Phase 3 blocked on owner decisions). The selection-architecture plan
+`docs/plans/spin3d-forcefields.md` (Phase 3 blocked on owner decisions). The selection-architecture plan
 finished and moved to `docs/shipped/selection-policy-refactor.md`.

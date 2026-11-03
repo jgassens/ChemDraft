@@ -296,7 +296,7 @@ analysis source, or a stale "PLANS.md §n" there, refers to that document.
   `projectSpin`. Projection helpers stay in `apps/desktop/src/interaction/`, flattening in
   `documentWorkflow`. Changes here prove themselves with `spin3dModel`, `spinFlatten`,
   `spinFlattenStereo`, `flattenRoundTrip`, `spinOverlay`, and `rotation3d` tests. Force-field work
-  follows `PLAN-spin3d-forcefields.md`.
+  follows `docs/plans/spin3d-forcefields.md`.
 
 ## 10. Commands and toolbars
 
