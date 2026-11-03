@@ -42,8 +42,13 @@ import {
   type TextObject,
   type TextSpan
 } from "@chemdraft/chem-core";
+export * from "./arrowAttachments";
+export * from "./reactionConditionsLayout";
+import { resolveArrowAttachments } from "./arrowAttachments";
 import {
   planNativeArtVisual as planNativeArtVisualFromArtEngine,
+  nativeSemanticArrowHeadSizePx,
+  svgPathSamplePoints,
   visualEffectPlansForStyle,
   visualEffectsForStyle
 } from "@chemdraft/art-engine";
@@ -95,6 +100,8 @@ export {
   ArrangementLayouts, ArrangementGridAlignments, planObjectArrangement,
   type ArrangementLayout, type ArrangementGridAlignment, type ArrangementItem, type ArrangementOptions, type ArrangementPlan
 } from "./arrangement";
+export { arrangementConnectionPairs, defaultArrangementDraft, validArrangementDraft, planArrangementConnections,
+  type ArrangementDraft, type ArrangementConnection } from "./arrangementConnections";
 
 export {
   atomBondOrderUsageMap,
@@ -1709,6 +1716,7 @@ export function planPageSvgRender(
     anchorResolutionPage?: DocumentPage;
   } = {}
 ): PageSvgRenderPlan {
+  if (!options.anchorResolutionPage) page = resolveArrowAttachments(page);
   const warnings: PageSvgRenderWarning[] = [];
   const crossings = resolvePageBondCrossings(page, warnings);
   const gapsByBondKey = crossings.reduce<Map<string, BondCrossingGap[]>>((byBond, crossing) => {
@@ -3914,6 +3922,28 @@ export function textSpanLineFragments(
   });
 }
 
+/** Metrics shared by attachment sizing and the conditions preview, matching native SVG text. */
+export function nativeTextSpanMetrics(span: TextSpan, objectStyle: TextObject["style"]) {
+  const parent = nativeTextStyleFromObjectStyle(objectStyle);
+  const style = nativeTextStyleFromObjectStyle({ ...objectStyle, ...span.style });
+  const fontSize = span.script === "normal" ? style.fontSizePx : Number((parent.fontSizePx * nativeTextScriptFontScale).toFixed(6));
+  const offset = parent.fontSizePx * (span.script === "subscript" ? nativeTextSubscriptOffsetEm
+    : span.script === "superscript" ? -nativeTextSuperscriptOffsetEm : 0);
+  return { fontSize, offset, ascent: fontSize * .8 - offset, descent: fontSize * .2 + offset };
+}
+
+export function nativeTextObjectLineMetrics(object: Pick<TextObject, "text" | "spans" | "style">) {
+  const style = nativeTextStyleFromObjectStyle(object.style);
+  const lines = textObjectSpanLines(object).map((spans, index) => {
+    const metrics = spans.map(span => nativeTextSpanMetrics(span, object.style));
+    return { spans, baseline: style.fontSizePx + index * (style.fontSizePx * style.lineHeight + style.paragraphSpacingPx),
+      ascent: Math.max(style.fontSizePx * .8, ...metrics.map(metric => metric.ascent)),
+      descent: Math.max(style.fontSizePx * .2, ...metrics.map(metric => metric.descent)) };
+  });
+  const last = lines[lines.length - 1];
+  return { lines, height: last ? last.baseline + last.descent + 2 : style.fontSizePx + 2 };
+}
+
 export function textObjectSpanLines(object: Pick<TextObject, "text" | "spans">): TextSpan[][] {
   const spans = textObjectSpansForRendering(object);
   return spans.reduce<TextSpan[][]>((lines, span) => {
@@ -4151,7 +4181,7 @@ function mechanismArrowFragment(
     return undefined;
   }
 
-  const headSize = 9;
+  const headSize = nativeSemanticArrowHeadSizePx;
   const { headTangent, target } = geometry;
   const headNormal = { x: -headTangent.y, y: headTangent.x };
   const back = { x: target.x - headTangent.x * headSize, y: target.y - headTangent.y * headSize };
@@ -5134,7 +5164,7 @@ export interface ReactionArrowGeometry {
   heads: Array<{ points: readonly LayoutPoint[]; filled: boolean }>;
 }
 
-export const reactionArrowHeadLengthPx = 9;
+export const reactionArrowHeadLengthPx = nativeSemanticArrowHeadSizePx;
 const reactionArrowHeadHalfWidthPx = 4.5;
 const equilibriumShaftOffsetPx = 3;
 const retroShaftOffsetPx = 2.5;
@@ -5890,6 +5920,43 @@ export function moleculeVisualBoundsForArrangement(object: MoleculeObject): Layo
     width: Math.max(...points.map(p=>p.x)) - x,
     height: Math.max(...points.map(p=>p.y)) - y
   };
+}
+
+const arrangementMoleculeOutlines = new WeakMap<MoleculeObject, LayoutPoint[]>();
+/** Tight outer ink envelope. Uses the renderer's bond, wedge/hash and label plans, never the
+ * molecule's padded storage box. A hull keeps arrows out of ring interiors and empty cavities. */
+export function moleculeOutlineForArrangement(object: MoleculeObject): LayoutPoint[] {
+  const cached=arrangementMoleculeOutlines.get(object);if(cached) return cached;
+  const resolution=nativeBondOrderResolution(object.atoms,object.bonds);
+  const labels=planMoleculeAtomLabels(object,resolution), byLabel=new Map(labels.map(p=>[p.atom.id,p]));
+  const atoms=new Map(object.atoms.map(a=>[a.id,a])), style=nativeDrawingStyleFromObjectStyle(object.style);
+  const points: LayoutPoint[]=[];
+  const add=(p:LayoutPoint,r=0)=>{for(const dx of [-r,r]) for(const dy of [-r,r]) points.push({x:p.x+dx,y:p.y+dy});};
+  labels.forEach(p=>{const b=p.layout.bounds;add({x:p.anchor.x+b.x,y:p.anchor.y+b.y});add({x:p.anchor.x+b.x+b.width,y:p.anchor.y+b.y+b.height});
+    add({x:p.anchor.x+b.x+b.width,y:p.anchor.y+b.y});add({x:p.anchor.x+b.x,y:p.anchor.y+b.y+b.height});});
+  const collect=(fragment:PageSvgElementFragment)=>{
+    const a=fragment.attrs,r=a.stroke==='none' ? 0 : Number(a['stroke-width']??style.bondStrokeWidthPx)/2;
+    if(fragment.tag==='line') {add({x:Number(a.x1),y:Number(a.y1)},r);add({x:Number(a.x2),y:Number(a.y2)},r);}
+    else if(fragment.tag==='polygon' && typeof a.points==='string') a.points.trim().split(/\s+/).forEach(pair=>{const [x,y]=pair.split(',').map(Number);add({x,y},r);});
+    else if(fragment.tag==='path' && typeof a.d==='string') svgPathSamplePoints(a.d).forEach(p=>add(p,r));
+    fragment.children.forEach(c=>{if(c.kind==='element') collect(c);});
+  };
+  const sides=ringInteriorDoubleBondSides(object);
+  for(const bond of object.bonds) {
+    const from=atoms.get(bond.fromAtomId),to=atoms.get(bond.toAtomId);if(!from||!to)continue;
+    const f=byLabel.get(from.id),t=byLabel.get(to.id),drawing=nativeMoleculeBondDrawingStyle(object,bond.id,style);
+    bondLineSegments(from,to,object,bond,drawing,f?.label,t?.label,f?.drawingStyle,t?.drawingStyle,sides.get(bond.id),f?.layout,t?.layout)
+      .forEach((segment,i)=>nativeBondSegmentFragments(object,{...segment,bond,key:`${bond.id}-${i}`},drawing,1,[],resolution).forEach(collect));
+  }
+  if(!points.length) object.atoms.forEach(p=>add(p,style.bondStrokeWidthPx/2));
+  if(!points.length) [object,{x:object.x+object.width,y:object.y},
+    {x:object.x+object.width,y:object.y+object.height},{x:object.x,y:object.y+object.height}].forEach(p=>add(p));
+  const sorted=points.filter(p=>Number.isFinite(p.x)&&Number.isFinite(p.y)).map(p=>transformPointForObject(object,p)).sort((a,b)=>a.x-b.x||a.y-b.y);
+  const cross=(a:LayoutPoint,b:LayoutPoint,c:LayoutPoint)=>(b.x-a.x)*(c.y-a.y)-(b.y-a.y)*(c.x-a.x);
+  const half=(list:LayoutPoint[])=>{const out:LayoutPoint[]=[];for(const p of list){while(out.length>1&&cross(out[out.length-2],out[out.length-1],p)<=0)out.pop();out.push(p);}return out;};
+  const lower=half(sorted),upper=half([...sorted].reverse());
+  const outline=sorted.length<3 ? sorted : [...lower.slice(0,-1),...upper.slice(0,-1)];
+  arrangementMoleculeOutlines.set(object,outline);return outline;
 }
 
 export function planAtomLabel(

@@ -1,7 +1,8 @@
+import { type ArrangementDraft } from "@chemdraft/layout-engine";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChemDraftDocument } from "@chemdraft/chem-core";
 import { exportDocumentToSvg } from "@chemdraft/export-engine";
-import { adjustArrangementSpacing, arrangementSpacingRange, arrangementSpacingPreviewBounds } from "./documentWorkflow";
+import { arrangeSelectedDocumentObjectsWithOptions, adjustArrangementSpacing, arrangementSpacingRange, arrangementSpacingPreviewBounds } from "./documentWorkflow";
 import { ArrangementSpacingForm } from "./dialogs/ArrangementSpacingForm";
 
 export function frameArrangementSpacingPreviewSvg(svg: string, pageWidth: number, pageHeight: number): string {
@@ -20,8 +21,8 @@ export function frameArrangementSpacingPreviewSvg(svg: string, pageWidth: number
 }
 
 /** Runs only in the document owner; native forms receive previews, never documents. */
-export function arrangementSpacingPreviewSvg(source: ChemDraftDocument, percent: number): string {
-  const result = adjustArrangementSpacing(source, percent / 100);
+export function arrangementSpacingPreviewSvg(source: ChemDraftDocument, percent: number, arrangement?: ArrangementDraft): string {
+  const result = arrangement ? arrangeSelectedDocumentObjectsWithOptions(source, arrangement) : adjustArrangementSpacing(source, percent / 100);
   if (!result.ok) throw new Error(result.status);
   if (!arrangementSpacingPreviewBounds(source)) throw new Error("Select at least two compounds or groups.");
   const pageIndex = source.pages.findIndex(page => page.id === source.selection.pageId);
@@ -36,20 +37,21 @@ export function arrangementSpacingPreviewSvg(source: ChemDraftDocument, percent:
 }
 
 /** Browser-only fallback. Desktop opens the same form through DialogCoordinator. */
-export function ArrangementSpacingDialog({ document: source, onSave, onCancel }: {
-  document: ChemDraftDocument; onSave(factor: number): void; onCancel(): void;
+export function ArrangementSpacingDialog({ document: source, arrangement: initialArrangement, onSave, onCancel }: {
+  document: ChemDraftDocument; arrangement?: ArrangementDraft; onSave(factor: number, arrangement?: ArrangementDraft): void; onCancel(): void;
 }) {
+  const [arrangement, setArrangement] = useState(initialArrangement);
   const [percent, setPercent] = useState(100);
   const previousFocus = useRef(document.activeElement instanceof HTMLElement ? document.activeElement : undefined);
   const range = useMemo(() => arrangementSpacingRange(source), [source]);
   const preview = useMemo(() => {
-    try { return { image: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(arrangementSpacingPreviewSvg(source, percent))}` }; }
+    try { return { image: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(arrangementSpacingPreviewSvg(source, percent, arrangement))}` }; }
     catch (error) { return { error: String(error) }; }
-  }, [source, percent]);
+  }, [source, percent, arrangement]);
   useEffect(() => {
     return () => { if (previousFocus.current?.isConnected) previousFocus.current.focus(); };
   }, []);
   return <div className="plugin-prompt-backdrop" role="presentation"><ArrangementSpacingForm modal title={source.title}
-    minPercent={Math.round(range.min * 100)} maxPercent={Math.round(range.max * 100)} percent={percent}
-    onChange={setPercent} preview={preview.image} error={preview.error} onCancel={onCancel} onSave={() => onSave(percent / 100)} /></div>;
+    arrangement={arrangement} onArrangementChange={setArrangement} minPercent={Math.round(range.min * 100)} maxPercent={Math.round(range.max * 100)} percent={percent}
+    onChange={setPercent} preview={preview.image} error={preview.error} onCancel={onCancel} onSave={() => onSave(percent / 100, ...(arrangement ? [arrangement] as const : []))} /></div>;
 }

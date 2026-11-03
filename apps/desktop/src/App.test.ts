@@ -307,6 +307,7 @@ function buildRegistryWithFixture(): DesktopToolsetRegistry {
 
 describe("ChemDraft desktop shell", () => {
   it("defines a canonical desktop design-token layer in App.css", () => {
+    expect(appCss).toMatch(/\.toolbar-command-flyout-menu button\[data-command-id="layout\.arrangeOptions"\] > svg,[\s\S]*?width: 18px;[\s\S]*?height: 18px;/);
     [
       "--cd-bg-app",
       "--cd-bg-canvas",

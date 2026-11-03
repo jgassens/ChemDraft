@@ -73,6 +73,15 @@ export function nativeTextObjectSizeForText(
   };
 }
 
+/** Measure formatted conditions with the same character metrics as native text sizing.
+ * SVG text breaks only at authored newlines; never claim a long line wrapped inside a capped box. */
+export function nativeFormattedTextObjectSize(object: Pick<TextObject, "text" | "spans" | "style">): { width: number; height: number } {
+  return nativeTextObjectSizeForText(object.text, object.style, {
+    spans: object.spans,
+    maxWidth: Number.MAX_SAFE_INTEGER
+  });
+}
+
 export function createNativeTextObject(
   document: ChemDraftDocument,
   point: PagePoint,
