@@ -307,6 +307,7 @@ function buildRegistryWithFixture(): DesktopToolsetRegistry {
 
 describe("ChemDraft desktop shell", () => {
   it("defines a canonical desktop design-token layer in App.css", () => {
+    expect(appCss).toMatch(/\.toolbar-command-flyout-menu button\[data-command-id="layout\.arrangeOptions"\] > svg,[\s\S]*?width: 18px;[\s\S]*?height: 18px;/);
     [
       "--cd-bg-app",
       "--cd-bg-canvas",
@@ -2584,7 +2585,7 @@ describe("ChemDraft desktop shell", () => {
     // is the flush (documentForFlush), which writes the document as an open label edit's close
     // would leave it. History snapshots strip live drafts before a seventh normalization;
     // restoring each document tab normalizes it through the same funnel once more.
-    // Modeless Page Size, arrangement spacing and Insert Table also commit into inactive tab histories
+    // Modeless Page Size, arrangement spacing, reaction conditions and Insert Table also commit into inactive tab histories
     // through this funnel; each must normalize the document it installs.
     // Assistant pushes/amendments share prepareDocumentCommit with ordinary edits, so they
     // record label bond sides while retaining one request entry, including in inactive tabs.
@@ -3224,7 +3225,7 @@ describe("ChemDraft desktop shell", () => {
     expect(appCss).toContain('.object-transform-frame[data-has-tilt3d="true"] .object-rotate-handle');
     expect(appCss).toContain("left: calc(50% - 17px);");
     expect(appCss).toContain("left: calc(50% + 17px);");
-    expect(appCss).not.toContain("left: calc(50% + 34px);");
+    expect(appCss).toMatch(/\.object-pair-curve-handle \{\s*position: absolute;\s*top: -34px;\s*left: calc\(50% \+ 34px\);/);
   });
 
   it("wires manual stretch entry to molecule resize corners", () => {

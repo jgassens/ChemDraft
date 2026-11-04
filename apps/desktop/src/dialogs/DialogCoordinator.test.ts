@@ -1,3 +1,4 @@
+import { defaultArrangementDraft } from "@chemdraft/layout-engine";
 import { exportFixture } from "./exportTestFixtures";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DialogCoordinator } from "./DialogCoordinator";
@@ -14,7 +15,7 @@ function host(options: { timeout?: number } = {}) {
     open: vi.fn(async s => { calls.push("open"); snapshot = s as typeof snapshot; return registration; }),
     publish: vi.fn(async () => {}), close: vi.fn(async () => {})
   };
-  const owner = { previewArrangementSpacing: vi.fn<(tabId: string, percent: number) => string | Promise<string>>(() => "<svg/>"), applyArrangementSpacing: vi.fn(), onSpacingSettled: vi.fn(), applyPageSize: vi.fn<(tabId: string, size: unknown) => void | Promise<void>>(), onError: vi.fn(), onSettled: vi.fn() };
+  const owner = { previewArrangementSpacing: vi.fn<(tabId: string, percent: number) => string | Promise<string>>(() => "<svg/>"), applyArrangementSpacing: vi.fn(), onSpacingSettled: vi.fn(), onSpacingClosed: vi.fn(), applyPageSize: vi.fn<(tabId: string, size: unknown) => void | Promise<void>>(), onError: vi.fn(), onSettled: vi.fn() };
   const coordinator = new DialogCoordinator(transport, owner, { readyTimeoutMs: options.timeout ?? 100 });
   const open = () => coordinator.openPageSize("tab-1", { title: "Drawing", width: 8.5, height: 11, unit: "inch" });
   const message = (type: DialogMessage["type"], data: unknown, requestId = "action-1") => ({ ...dialogEnvelope(snapshot), type, data, requestId }) as DialogMessage;
@@ -23,6 +24,78 @@ function host(options: { timeout?: number } = {}) {
 }
 afterEach(() => vi.useRealTimers());
 describe("DialogCoordinator", () => {
+  it('settles arrangement input focus only after its native dialog closes',async()=>{
+    const h=host();
+    await h.coordinator.openArrangementSpacing('tab-1',{title:'Drawing',minPercent:50,maxPercent:150});
+    await h.deliver(h.message('ready',{}));
+    let finishClose!:()=>void;
+    vi.mocked(h.transport.close).mockImplementation(()=>new Promise<void>(resolve=>{finishClose=resolve;}));
+    const pending=h.deliver(h.message('action',{action:'apply',percent:100}));
+    await vi.waitFor(()=>expect(h.transport.close).toHaveBeenCalled());
+    expect(h.owner.onSpacingSettled).toHaveBeenCalledExactlyOnceWith('tab-1','apply');
+    expect(h.owner.onSpacingClosed).not.toHaveBeenCalled();
+    finishClose();await pending;
+    expect(h.owner.onSpacingClosed).toHaveBeenCalledExactlyOnceWith('tab-1','apply');
+    await h.coordinator.dispose();
+  });
+  it('keeps a replacement spacing source when the previous native close finishes late',async()=>{
+    const h=host(),sources=new Map<string,object>(),focus=vi.fn();
+    const coordinator=new DialogCoordinator(h.transport,{...h.owner,onSpacingSettled:tab=>{sources.delete(tab);},onSpacingClosed:focus,
+      previewArrangementSpacing:tab=>{if(!sources.has(tab))throw new Error('Drawing changed');return '<svg/>';}});
+    const open=async()=>{
+      if(!coordinator.hasArrangementSpacing('tab-1'))sources.set('tab-1',{});
+      await coordinator.openArrangementSpacing('tab-1',{title:'Drawing',minPercent:50,maxPercent:150});
+    };
+    await open();let finishClose!:()=>void;
+    vi.mocked(h.transport.close).mockImplementationOnce(()=>new Promise<void>(resolve=>{finishClose=resolve;}));
+    const closing=coordinator.closeArrangementSpacing();
+    expect(sources.has('tab-1')).toBe(false);
+    await open();const replacement=sources.get('tab-1');
+    finishClose();await closing;
+    expect(sources.get('tab-1')).toBe(replacement);expect(focus).not.toHaveBeenCalled();
+    const snapshot=vi.mocked(h.transport.open).mock.calls.at(-1)![0];
+    const deliver=(type:string,data:unknown)=>coordinator.receive({senderWindowId:'dialog-main-pageSize-1',windowLabel:'dialog-main-pageSize-1',message:{...dialogEnvelope(snapshot),requestId:type,type,data}});
+    await deliver('ready',{});await deliver('action',{action:'preview',percent:80});
+    expect(h.owner.onError).not.toHaveBeenCalled();
+    expect(h.transport.publish).toHaveBeenCalledWith('opaque',expect.objectContaining({type:'preview'}));
+    await coordinator.dispose();await h.coordinator.dispose();
+  });
+  it("keeps conditions tied to their original tab and arrow, deduplicates Save and refuses another arrow", async () => {
+    const h = host();
+    const apply = vi.fn(), settled = vi.fn();
+    const coordinator = new DialogCoordinator(h.transport, { applyPageSize: vi.fn(), applyReactionConditions: apply, onConditionsSettled: settled, onError: vi.fn() });
+    const draft = { side: "above" as const, spans: [{ text: "80 °C", script: "normal" as const }] };
+    await coordinator.openReactionConditions("tab-2", { title: "Other drawing", arrowId: "arrow-2", draft });
+    const snapshot = vi.mocked(h.transport.open).mock.calls[0][0];
+    const deliver = (type: string, data: unknown, requestId = "request-2", sender = "dialog-main-pageSize-1") => coordinator.receive({
+      senderWindowId: sender, windowLabel: "dialog-main-pageSize-1", message: { ...dialogEnvelope(snapshot), type, data, requestId } });
+    await deliver("ready", {});
+    await expect(coordinator.openReactionConditions("tab-2", { title: "Other", arrowId: "another-arrow", draft })).rejects.toThrow("Finish the open");
+    await deliver("action", { action: "apply", draft }, "forged", "wrong-window");
+    expect(apply).not.toHaveBeenCalled();
+    await Promise.all([deliver("action", { action: "apply", draft }), deliver("action", { action: "apply", draft })]);
+    expect(apply).toHaveBeenCalledExactlyOnceWith("tab-2", "arrow-2", draft);
+    expect(settled).toHaveBeenCalledExactlyOnceWith("tab-2");
+    await coordinator.dispose();
+  });
+  it('cancels native conditions when disabled without touching another dialog or accepting late Save',async()=>{
+    const h=host(),apply=vi.fn();
+    vi.mocked(h.transport.open).mockImplementation(async snapshot=>({hostId:snapshot.dialogKind,windowLabel:`dialog-main-${snapshot.dialogKind}-1`}));
+    const coordinator=new DialogCoordinator(h.transport,{...h.owner,applyReactionConditions:apply});
+    const draft={side:'above' as const,spans:[{text:'THF',script:'normal' as const}]};
+    await coordinator.openPageSize('tab-1',{title:'Drawing',width:8.5,height:11,unit:'inch'});
+    await coordinator.openReactionConditions('tab-1',{title:'Drawing',arrowId:'arrow-1',draft});
+    const snapshot=vi.mocked(h.transport.open).mock.calls.at(-1)![0];
+    await coordinator.closeReactionConditions();
+    expect(h.transport.close).toHaveBeenCalledExactlyOnceWith('reactionConditions','cancel');
+    expect(coordinator.reactionConditionsArrowId('tab-1')).toBeUndefined();
+    await coordinator.receive({senderWindowId:'dialog-main-reactionConditions-1',windowLabel:'dialog-main-reactionConditions-1',
+      message:{...dialogEnvelope(snapshot),requestId:'late',type:'action',data:{action:'apply',draft}}});
+    expect(apply).not.toHaveBeenCalled();
+    await coordinator.dispose();
+    expect(h.transport.close).toHaveBeenCalledWith('pageSize','ownerClose');
+    await h.coordinator.dispose();
+  });
   it("cancels an opening while subscription is still pending", async () => {
     const h = host();
     let subscribed!: (stop: () => void) => void;
@@ -316,5 +389,19 @@ it("opens, updates, and closes a retained tool install dialog", async () => {
   await h.coordinator.closeToolInstall("tab-1");
   expect(presenter.closed).toHaveBeenCalledOnce();
   expect(h.transport.close).toHaveBeenCalledWith("opaque", "close");
+  await h.coordinator.dispose();
+});
+
+it("passes an arrangement draft to its originating tab for preview and one deduplicated Save", async () => {
+  const h = host(); const arrangement = { ...defaultArrangementDraft, arrows: true, closeCycle: true };
+  await h.coordinator.openArrangementSpacing("tab-2", { title: "Cycle", minPercent: 100, maxPercent: 100, arrangement });
+  await h.deliver(h.message("ready", {}));
+  await h.deliver(h.message("action", { action: "preview", percent: 100, arrangement }, "preview"));
+  expect(h.owner.previewArrangementSpacing).toHaveBeenCalledExactlyOnceWith("tab-2", 100, arrangement);
+  await h.deliver(h.message("action", { action: "apply", percent: 100 }, "wrong-mode"));
+  expect(h.owner.applyArrangementSpacing).not.toHaveBeenCalled();
+  const save = h.message("action", { action: "apply", percent: 100, arrangement }, "save");
+  await Promise.all([h.deliver(save), h.deliver(save)]);
+  expect(h.owner.applyArrangementSpacing).toHaveBeenCalledExactlyOnceWith("tab-2", 100, arrangement);
   await h.coordinator.dispose();
 });

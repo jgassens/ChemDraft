@@ -13,6 +13,26 @@ vi.mock("@tauri-apps/api/event", () => ({emit: native.emit, listen: native.liste
 beforeEach(() => { vi.stubGlobal("localStorage", new MemoryStorage()); });
 afterEach(() => { localStorage.clear(); vi.unstubAllGlobals(); vi.clearAllMocks(); });
 describe("compound layout preference synchronization", () => {
+  it("requires the parent checkbox and preserves independent child choices across toggles and reopen", async () => {
+    const container=document.createElement("div");document.body.append(container);const root=createRoot(container);
+    try {
+      await act(async()=>root.render(createElement(PreferencesWindow)));
+      const boxes=container.querySelectorAll<HTMLInputElement>('[aria-labelledby="compound-layout-tools"] input');
+      expect(boxes).toHaveLength(4);
+      const [parent,arrangement,offshoot,conditions]=boxes;
+      expect(container.querySelector('fieldset')?.disabled).toBe(true);
+      await act(async()=>arrangement.click());expect(loadCompoundLayoutSettings()).toEqual({enabled:false});
+      await act(async()=>parent.click());
+      expect(container.querySelector('fieldset')?.disabled).toBe(false);
+      await act(async()=>offshoot.click());
+      expect(loadCompoundLayoutSettings()).toEqual({enabled:true,offshootArrows:true});
+      expect(arrangement.checked).toBe(false);expect(conditions.checked).toBe(false);
+      await act(async()=>parent.click());expect(offshoot.checked).toBe(true);
+      await act(async()=>parent.click());expect(offshoot.checked).toBe(true);
+      await act(async()=>root.render(createElement(PreferencesWindow,{key:'reopened'})));
+      expect(container.querySelectorAll<HTMLInputElement>('[aria-labelledby="compound-layout-tools"] input')[2].checked).toBe(true);
+    } finally {await act(async()=>root.unmount());container.remove();}
+  });
   it("the Settings checkbox persists and broadcasts one change in StrictMode", async () => {
     localStorage.clear(); const handler=vi.fn(),stop=await listenForCompoundLayoutSettings(handler);
     const container=document.createElement("div");document.body.append(container);const root=createRoot(container);

@@ -1,3 +1,4 @@
+import { type ArrangementDraft } from "@chemdraft/layout-engine";
 import { nativeTemplateForToolCommand } from "./ringTemplates";
 import { nativeFragmentSproutTarget, nativeDieneFuseTarget, nativeOxoHotkeyTarget, nativeBranchedHotkeyTarget, type FragmentSproutKind } from "./sproutHotkeys";
 import { applyTableCommand, applyTableFontCommand, applyTableObjectEdit, createTableCommands, createTableInsertAction, parseTableInsertCommandId, resolveActiveTableCell, selectedTable, tableInsertCommandId, tableInspectorSnapshot, type ActiveTableCell, type TableInsertDimensions } from "./tableCommands";
@@ -33,6 +34,10 @@ import { planDisplayPage } from "./plannedDisplayPage";
 import { snapPlacementDegrees } from "./placementSnap";
 import { listenCurrentWindowEvent, listenTauriEvent } from "./window-manager/tauriEvents";
 import { OpenWarningsList } from "./OpenWarningsList";
+import { attachReactionArrowOffshoot, reactionConditionsDraft, setReactionArrowConditions, type ReactionConditionsDraft } from "@chemdraft/document-workflow-core";
+import { arrowAttachmentFrame, nearestArrowObjectAtPoint } from "@chemdraft/layout-engine";
+import { arrowOffshootCommandId } from "./commands";
+import { ReactionConditionsForm } from "./dialogs/ReactionConditionsForm";
 import {
   projectGraphicVisualPagePoint,
   rotatePointAroundCenter,
@@ -884,10 +889,10 @@ import {
   writeLastAutoCheck
 } from "./appUpdates";
 import { applyKeybindingSchemeToCommands, chemDrawHoveredTargetHotkeyCommand } from "./keybindingScheme";
-import { isCompoundLayoutCommand } from "./compoundLayoutSettings";
-import { useCompoundLayoutTools } from "./useCompoundLayoutTools";
+import { isCompoundLayoutCommandHidden, compoundLayoutCommandDisabledReason, isCompoundLayoutCommand } from "./compoundLayoutSettings";
+import { useCompoundLayoutSettings } from "./useCompoundLayoutTools";
 import { ArrangementSpacingDialog, arrangementSpacingPreviewSvg } from "./ArrangementSpacingDialog";
-import { arrangeSelectedDocumentObjects, adjustArrangementSpacing, arrangementSpacingRange, selectedArrangementObjectIds } from "./documentWorkflow";
+import { selectedArrangementDraft, arrangeAndSpaceSelectedDocumentObjects, arrangeSelectedDocumentObjects, arrangementSpacingRange, selectedArrangementObjectIds } from "./documentWorkflow";
 import { arrangementLayoutForCommand, arrangementGridAlignmentForCommand } from "./commands";
 import { loadKeybindingSettings, type KeybindingScheme } from "./keybindingSettings";
 import { rasterizeSvgNative } from "./nativeRasterExport";
@@ -1098,6 +1103,8 @@ type GraphicPathEditDragState = {
   pointerId: number;
   objectId: string;
   handle: NativeGraphicPathEditHandle;
+  shiftKey: boolean;
+  pairedGripEnd?: ClientPoint;
   startDocument: ChemDraftDocument;
   workingDocument: ChemDraftDocument;
   startPoint: ClientPoint;
@@ -1713,7 +1720,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.03.08.00-codex";
+const CURRENT_BUILD_STAMP = "11.03.15.00-codex";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -2411,6 +2418,12 @@ export function MainWindow({
   documentTabsRef.current = documentTabs;
   const pluginRuntimeRef = useRef<DesktopPluginRuntime | undefined>(undefined);
   const dialogCoordinatorRef = useRef<DialogCoordinator | undefined>(undefined);
+  const openReactionConditionsRef = useRef<(arrowId: string) => void>(() => {});
+  const arrowCommandTargetRef = useRef<string | undefined>(undefined);
+  const [conditionsEditor, setConditionsEditor] = useState<{ tabId: string; arrowId: string; title: string; draft: ReactionConditionsDraft }>();
+  const [conditionsError, setConditionsError] = useState<string>();
+  const conditionsSourcesRef = useRef(new Map<string, { arrowId: string; source: ChemDraftDocument }>());
+  const applyConditionsRef = useRef<(tabId: string, arrowId: string, draft: ReactionConditionsDraft) => void>(() => {});
   const [browserTemplates, setBrowserTemplates] = useState<(StructureTemplatesSnapshot & { tabId: string }) | undefined>();
   const templateCommandTargetRef = useRef<string | undefined>(undefined);
   const dispatchTemplateRef = useRef<(tabId: string, id: string) => Promise<void>>(async () => {});
@@ -2553,10 +2566,11 @@ export function MainWindow({
   const insertTableCommandRef = useRef<(dimensions: TableInsertDimensions, tabId?: string, preset?: "three-line" | "grid") => void>(() => {});
 
   const [activeToolState, setActiveToolState] = useState(() => createActiveToolState(initialActiveToolCommandId));
-  const compoundLayoutsEnabled = useCompoundLayoutTools();
+  const compoundLayoutSettings = useCompoundLayoutSettings();
+  const compoundLayoutsEnabled = compoundLayoutSettings.enabled;
   const [unfilteredToolsetRegistry, setToolsetRegistry] = useState<DesktopToolsetRegistry>(() => desktopToolsetRegistry);
-  const toolsetRegistry = useMemo(() => compoundLayoutRegistry(unfilteredToolsetRegistry, compoundLayoutsEnabled),
-    [unfilteredToolsetRegistry, compoundLayoutsEnabled]);
+  const toolsetRegistry = useMemo(() => compoundLayoutRegistry(unfilteredToolsetRegistry, compoundLayoutsEnabled, compoundLayoutSettings),
+    [unfilteredToolsetRegistry, compoundLayoutsEnabled, compoundLayoutSettings]);
 
   // The toolbar catalog is the single data brain: it composes the core manifest with live
   // plugin toolsets and the user's saved layout, and hands out immutable registry snapshots.
@@ -3189,19 +3203,34 @@ export function MainWindow({
   );
   const compoundLayoutsEnabledRef = useRef(compoundLayoutsEnabled);
   compoundLayoutsEnabledRef.current = compoundLayoutsEnabled;
+  const compoundLayoutSettingsRef = useRef(compoundLayoutSettings);
+  compoundLayoutSettingsRef.current = compoundLayoutSettings;
+  const [arrangementDraft, setArrangementDraft] = useState<ArrangementDraft>();
   const [spacingSource, setSpacingSource] = useState<ChemDraftDocument | undefined>();
   const nativeSpacingSourcesRef = useRef(new Map<string, ChemDraftDocument>());
-  const openArrangementSpacingRef = useRef<() => void>(() => {});
-  const layerActions = useMemo(() => createLayerActions(document, compoundLayoutsEnabled), [document, compoundLayoutsEnabled]);
-  const previousCompoundLayoutsEnabled = useRef(compoundLayoutsEnabled);
+  const openArrangementSpacingRef = useRef<(options?: boolean) => void>(() => {});
+  const layerActions = useMemo(() => {
+    const actions = createLayerActions(document, compoundLayoutsEnabled, compoundLayoutSettings);
+    const page = objectContextMenu && document.pages.find(page => page.objects.some(object => object.id === objectContextMenu.objectId));
+    const object = page && page.objects.find(object => object.id === objectContextMenu?.objectId);
+    return page && object && arrowAttachmentFrame(page, object)
+      ? actions.map(action => action.id.startsWith("arrow.") && !compoundLayoutCommandDisabledReason(action.id, compoundLayoutSettings) ? { ...action, enabled: true, disabledReason: undefined } : action) : actions;
+  }, [document, compoundLayoutsEnabled, compoundLayoutSettings, objectContextMenu]);
+  const previousCompoundLayoutSettings = useRef(compoundLayoutSettings);
   useEffect(() => {
-    if (!compoundLayoutsEnabled) {
+    const previous = previousCompoundLayoutSettings.current;
+    if (!compoundLayoutsEnabled || !!previous.arrangementArrows !== !!compoundLayoutSettings.arrangementArrows) {
       setSpacingSource(undefined);
       void dialogCoordinatorRef.current?.closeArrangementSpacing();
-      if (previousCompoundLayoutsEnabled.current) void dismissToolsetPopovers().catch(() => undefined);
+      if (previous.enabled) void dismissToolsetPopovers().catch(() => undefined);
     }
-    previousCompoundLayoutsEnabled.current = compoundLayoutsEnabled;
-  }, [compoundLayoutsEnabled]);
+    previousCompoundLayoutSettings.current = compoundLayoutSettings;
+    if (compoundLayoutCommandDisabledReason("arrow.conditions", compoundLayoutSettings)) {
+      setConditionsEditor(undefined);
+      conditionsSourcesRef.current.clear();
+      void dialogCoordinatorRef.current?.closeReactionConditions();
+    }
+  }, [compoundLayoutsEnabled, compoundLayoutSettings]);
   const pageCssVars = useMemo(
     () =>
       ({
@@ -3269,11 +3298,11 @@ export function MainWindow({
         activeTableCell,
         availability: { canUndo, canRedo, hasMultipleTabs: documentTabs.length > 1, hasOpenWarnings: openWarnings !== undefined },
         registry: toolsetRegistry,
-        compoundLayoutsEnabled
+        compoundLayoutsEnabled, compoundLayoutSettings
       }),
       keybindingScheme
     ),
-    [activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId, canRedo, canUndo, document, documentTabs.length, keybindingScheme, openWarnings, selectedMolecule, toolsetRegistry, compoundLayoutsEnabled]
+    [activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId, canRedo, canUndo, document, documentTabs.length, keybindingScheme, openWarnings, selectedMolecule, toolsetRegistry, compoundLayoutsEnabled, compoundLayoutSettings]
   );
   const shellCommandsById = useMemo(
     () => createShellCommandMap(shellCommandSpecs),
@@ -7661,6 +7690,10 @@ export function MainWindow({
       return;
     }
 
+    if (object.arrowAttachment?.kind === "conditions") {
+      openReactionConditionsRef.current(object.arrowAttachment.parentObjectId); return;
+    }
+
     // Own the session before arming its snapshot: a checkpoint never sees a snapshot without its owner.
     activeTextEditObjectIdRef.current = objectId;
     if (!textObjectIdsAwaitingAutoConversionRef.current.has(objectId) &&
@@ -7689,6 +7722,8 @@ export function MainWindow({
     // The painted text's SVG group supplies its owner; edit chrome lives in a separate layer.
     event.preventDefault();
     event.stopPropagation();
+    const attachment = findDocumentObject(documentRef.current, objectId)?.arrowAttachment;
+    if (attachment?.kind === "conditions") { openReactionConditionsRef.current(attachment.parentObjectId); return; }
     startTextObjectEdit(objectId);
   }, [activeToolState.activeCommandId, startTextObjectEdit]);
 
@@ -9652,21 +9687,26 @@ export function MainWindow({
     if (!source || current !== source) throw new Error("Drawing changed. Close and reopen Adjust spacing to preview the current selection.");
     return source;
   };
-  const previewSpacingRef = useRef<(tabId: string, percent: number) => string>(() => "");
-  previewSpacingRef.current = (tabId, percent) => arrangementSpacingPreviewSvg(spacingSourceForTab(tabId), percent);
-  const applySpacingRef = useRef<(tabId: string, percent: number) => void>(() => {});
-  applySpacingRef.current = (tabId, percent) => {
+  const previewSpacingRef = useRef<(tabId: string, percent: number, arrangement?: ArrangementDraft) => string>(() => "");
+  previewSpacingRef.current = (tabId, percent, arrangement) => {
+    if (arrangement) requireArrangementArrows();
+    return arrangementSpacingPreviewSvg(spacingSourceForTab(tabId), percent, arrangement);
+  };
+  const applySpacingRef = useRef<(tabId: string, percent: number, arrangement?: ArrangementDraft) => void>(() => {});
+  applySpacingRef.current = (tabId, percent, arrangement) => {
+    if (arrangement) requireArrangementArrows();
     const source = spacingSourceForTab(tabId);
     if (tabId === activeDocumentTabIdRef.current && isSnapshotSessionActive()) throw new Error("Finish the current drawing gesture, then save the spacing again.");
-    const result = adjustArrangementSpacing(source, percent / 100);
+    const result = arrangeAndSpaceSelectedDocumentObjects(source, percent / 100, arrangement);
+    const label = arrangement ? "Arrange selection" : "Adjust arrangement spacing";
     if (!result.ok) throw new Error(result.status);
     if (tabId === activeDocumentTabIdRef.current) {
-      commitDocumentChange(result.document, "Adjust arrangement spacing"); setStatus(result.status); return;
+      commitDocumentChange(result.document, label); setStatus(result.status); return;
     }
     const snapshot = documentTabSnapshotsRef.current.get(tabId)!;
     if (result.document === source) return;
     const present = normalizeCommittedDocument(result.document);
-    documentUndoLabelsRef.current.set(present, "Adjust arrangement spacing");
+    documentUndoLabelsRef.current.set(present, label);
     for (const listener of assistantUserEditListenersRef.current) listener(tabId);
     documentTabSnapshotsRef.current.set(tabId, { ...snapshot,
       history: { past: boundedHistoryPast([...snapshot.history.past, source], present), present, future: [] },
@@ -9674,27 +9714,96 @@ export function MainWindow({
     nonPristineTabsRef.current.add(tabId);
     setDocumentTabs([...documentTabsRef.current]);
   };
-  openArrangementSpacingRef.current = () => {
-    if (!isDesktopRuntime()) { setSpacingSource(documentRef.current); return; }
+  const requireArrangementArrows = () => {
+    const reason = compoundLayoutCommandDisabledReason("layout.arrangeOptions", compoundLayoutSettingsRef.current);
+    if (reason) throw new Error(reason);
+  };
+  openArrangementSpacingRef.current = (options = false) => {
+    options = options || compoundLayoutSettingsRef.current.arrangementArrows === true;
+    if (options) {
+      const reason = compoundLayoutCommandDisabledReason("layout.arrangeOptions", compoundLayoutSettingsRef.current);
+      if (reason) { setStatus(reason); return; }
+    }
+    if (!isDesktopRuntime()) {
+      if (!spacingSource) { setArrangementDraft(options ? selectedArrangementDraft(documentRef.current) : undefined); setSpacingSource(documentRef.current); }
+      return;
+    }
     const coordinator = dialogCoordinatorRef.current;
     if (!coordinator) { setStatus("Adjust spacing could not open: the dialog host is unavailable."); return; }
     const tabId = activeDocumentTabIdRef.current;
     const source = documentHistoryRef.current.present;
     if (!coordinator.hasArrangementSpacing(tabId)) nativeSpacingSourcesRef.current.set(tabId, source);
-    const range = arrangementSpacingRange(source);
+    const range = options ? {min:.25,max:1.5} : arrangementSpacingRange(source);
     const title = documentTabsRef.current.find(tab => tab.id === tabId)?.title ?? "Untitled";
-    void coordinator.openArrangementSpacing(tabId, { title: title.slice(0, 256), minPercent: Math.round(range.min * 100), maxPercent: Math.round(range.max * 100) })
+    void coordinator.openArrangementSpacing(tabId, { title: title.slice(0, 256), minPercent: Math.round(range.min * 100), maxPercent: Math.round(range.max * 100), ...(options ? { arrangement: selectedArrangementDraft(source) } : {}) })
       .catch(error => { nativeSpacingSourcesRef.current.delete(tabId); setStatus(`Adjust spacing could not open: ${String(error)}`); });
   };
+  applyConditionsRef.current = (tabId, arrowId, draft) => {
+    const reason = compoundLayoutCommandDisabledReason("arrow.conditions", compoundLayoutSettingsRef.current);
+    if (reason) throw new Error(reason);
+    if (!documentTabsRef.current.some(tab => tab.id === tabId)) throw new Error("The originating drawing was closed.");
+    const current = tabId === activeDocumentTabIdRef.current ? documentHistoryRef.current.present : documentTabSnapshotsRef.current.get(tabId)?.history.present;
+    const source = conditionsSourcesRef.current.get(tabId);
+    if (!current || source?.arrowId !== arrowId || source.source.id !== current.id ||
+        source.source.pages.length !== current.pages.length || source.source.pages.some((page, index) => page !== current.pages[index]))
+      throw new Error("Drawing changed. Close and reopen Reaction conditions before saving.");
+    if (tabId === activeDocumentTabIdRef.current && isSnapshotSessionActive()) throw new Error("Finish the drawing gesture before saving conditions.");
+    const next = setReactionArrowConditions(current, arrowId, draft);
+    if (tabId === activeDocumentTabIdRef.current) {
+      commitDocumentChange(next, "Edit reaction conditions"); setStatus("Reaction conditions saved"); return;
+    }
+    if (next === current) return;
+    const snapshot = documentTabSnapshotsRef.current.get(tabId)!;
+    const present = normalizeCommittedDocument(next);
+    documentUndoLabelsRef.current.set(present, "Edit reaction conditions");
+    documentTabSnapshotsRef.current.set(tabId, { ...snapshot,
+      history: { past: boundedHistoryPast([...snapshot.history.past, current], present), present, future: [] },
+      file: { ...snapshot.file, dirty: true }, status: "Reaction conditions saved" });
+    nonPristineTabsRef.current.add(tabId); setDocumentTabs([...documentTabsRef.current]);
+  };
+  openReactionConditionsRef.current = arrowId => {
+    const reason = compoundLayoutCommandDisabledReason("arrow.conditions", compoundLayoutSettingsRef.current);
+    if (reason) { setStatus(reason); return; }
+    const tabId = activeDocumentTabIdRef.current, source = documentHistoryRef.current.present;
+    const page = source.pages.find(page => page.objects.some(object => object.id === arrowId));
+    const arrow = page?.objects.find(object => object.id === arrowId);
+    if (!page || !arrow || !arrowAttachmentFrame(page, arrow)) { setStatus("Select one arrow"); return; }
+    const title = Array.from(documentTabsRef.current.find(tab => tab.id === tabId)?.title ?? "Untitled").slice(0, 80).join("");
+    const draft = reactionConditionsDraft(source, arrowId);
+    if (isDesktopRuntime()) {
+      const coordinator = dialogCoordinatorRef.current;
+      if (!coordinator) { setStatus("Reaction conditions could not open: the dialog host is unavailable."); return; }
+      if (!coordinator.reactionConditionsArrowId(tabId)) conditionsSourcesRef.current.set(tabId, { arrowId, source });
+      void coordinator.openReactionConditions(tabId, { title, arrowId, draft }).catch(error => setStatus(`Reaction conditions could not open: ${String(error)}`));
+    } else {
+      if (conditionsEditor) {
+        if (conditionsEditor.tabId !== tabId || conditionsEditor.arrowId !== arrowId) setStatus("Finish the open Reaction conditions editor first.");
+        return;
+      }
+      conditionsSourcesRef.current.set(tabId, { arrowId, source });
+      setConditionsError(undefined); setConditionsEditor({ tabId, arrowId, title, draft });
+    }
+  };
+  useEffect(() => {
+    if (conditionsEditor && !documentTabs.some(tab => tab.id === conditionsEditor.tabId)) {
+      conditionsSourcesRef.current.delete(conditionsEditor.tabId); setConditionsEditor(undefined);
+    }
+  }, [conditionsEditor, documentTabs]);
   useEffect(() => {
     if (!isDesktopRuntime()) return;
     const coordinator = new DialogCoordinator(nativeDialogTransport, {
       insertTemplate: (tabId, id) => dispatchTemplateRef.current(tabId, id),
       applyPageSize: (tabId, size) => applyPageSizeToTabRef.current(tabId, size),
       insertTable: (tabId, options) => insertTableFromDialogRef.current(tabId, options),
-      previewArrangementSpacing: (tabId, percent) => previewSpacingRef.current(tabId, percent),
-      applyArrangementSpacing: (tabId, percent) => applySpacingRef.current(tabId, percent),
-      onSpacingSettled: tabId => { nativeSpacingSourcesRef.current.delete(tabId); }, onError: setStatus,
+      applyReactionConditions: (tabId, arrowId, draft) => applyConditionsRef.current(tabId, arrowId, draft),
+      onConditionsSettled: tabId => { conditionsSourcesRef.current.delete(tabId); },
+      previewArrangementSpacing: (tabId, percent, arrangement) => previewSpacingRef.current(tabId, percent, arrangement),
+      applyArrangementSpacing: (tabId, percent, arrangement) => applySpacingRef.current(tabId, percent, arrangement),
+      onSpacingSettled: tabId => { nativeSpacingSourcesRef.current.delete(tabId); },
+      onSpacingClosed: (tabId, reason) => {
+        if (tabId === activeDocumentTabIdRef.current && (reason === 'apply' || reason === 'cancel' || reason === 'close'))
+          void focusCurrentWindowAndWebview({ onlyIfAppActive: true });
+      }, onError: setStatus,
       export: (tabId, options, live, progress) => exportToTabRef.current(tabId, options, live, progress),
       previewExport: (tabId, options, live) => previewExportRef.current(tabId, options, live),
       chooseExportDestination: (tabId, options, live) => chooseExportDestinationRef.current(tabId, options, live),
@@ -11205,10 +11314,26 @@ export function MainWindow({
 
     layerActions.forEach((action) => {
       register(action, () => {
+        if (action.id === "arrow.conditions" || action.id.startsWith("arrow.attachOffshoot.")) {
+          const reason = compoundLayoutCommandDisabledReason(action.id, compoundLayoutSettingsRef.current);
+          if (reason) { setStatus(reason); return; }
+          const current = documentRef.current;
+          const arrowId = arrowCommandTargetRef.current ?? (current.selection.objectIds.length === 1 ? current.selection.objectIds[0] : undefined);
+          arrowCommandTargetRef.current = undefined;
+          if (!arrowId) { setStatus("Select one arrow"); return; }
+          if (action.id === "arrow.conditions") { openReactionConditionsRef.current(arrowId); return; }
+          try {
+            commitDocumentChange(doc => attachReactionArrowOffshoot(doc, arrowId,
+              action.id===arrowOffshootCommandId('below')||action.id===arrowOffshootCommandId('fullCurve.below')?'below':'above',
+              action.id.includes('.fullCurve.')?'fullCurve':undefined), action.title);
+            setStatus("Attached arrow offshoot");
+          } catch (error) { setStatus(String(error)); }
+          return;
+        }
         if (isCompoundLayoutCommand(action.id)) {
           if (!compoundLayoutsEnabled) { setStatus("Enable Compound layout tools in Settings"); return; }
           if (selectedArrangementObjectIds(documentRef.current).length < 2) { setStatus("Select at least two objects or groups"); return; }
-          if (action.id === "layout.adjustArrangementSpacing") { openArrangementSpacingRef.current(); return; }
+          if (action.id === "layout.arrangeOptions" || action.id === "layout.adjustArrangementSpacing") { openArrangementSpacingRef.current(action.id === "layout.arrangeOptions"); return; }
           const layout = arrangementLayoutForCommand(action.id)!;
           let operationStatus = "";
           commitDocumentChange(current => {
@@ -12317,9 +12442,8 @@ export function MainWindow({
   );
 
   const invokeUnmeasured = useCallback(async (commandId: string, options?: { input?: PluginCommandInput }) => {
-    if (isCompoundLayoutCommand(commandId) && !compoundLayoutsEnabledRef.current) {
-      setStatus("Enable Compound layout tools in Settings"); return;
-    }
+    const featureDisabled = compoundLayoutCommandDisabledReason(commandId, compoundLayoutSettingsRef.current);
+    if (featureDisabled) { arrowCommandTargetRef.current = undefined; setStatus(featureDisabled); return; }
     if (keptDrawingsPromptRef.current || quitInteractionRef.current) return;
     if (closeTabPromptRef.current && commandId.startsWith("document.")) return;
     const tableDimensions = parseTableInsertCommandId(commandId);
@@ -12683,13 +12807,13 @@ export function MainWindow({
   const customizeCommandOptions = useMemo(() => {
     const byId = new Map<string, string>();
     for (const command of shellCommandSpecs) {
-      if (!compoundLayoutsEnabled && isCompoundLayoutCommand(command.id)) continue;
+      if (isCompoundLayoutCommandHidden(command.id, compoundLayoutSettings)) continue;
       if (!byId.has(command.id)) {
         byId.set(command.id, command.title ?? command.id);
       }
     }
     return [...byId].map(([id, title]) => ({ id, title }));
-  }, [shellCommandSpecs, compoundLayoutsEnabled]);
+  }, [shellCommandSpecs, compoundLayoutSettings]);
 
   // Full live specs (including current enabled state) for the in-place customize gallery — minus
   // transitional stubs, which must never be draggable onto a real toolbar. The declared stub set is
@@ -12702,11 +12826,11 @@ export function MainWindow({
     // ships is a fixed fact; what the user has arranged is not.
     const shipped = new Set(getToolsetCommandSpecs(desktopToolsetRegistry).map((command) => command.id));
     return shellCommandSpecs.filter((command) =>
-      (compoundLayoutsEnabled || !isCompoundLayoutCommand(command.id)) &&
+      !isCompoundLayoutCommandHidden(command.id, compoundLayoutSettings) &&
       !TRANSITIONAL_STUB_COMMAND_IDS.has(command.id) &&
       !isCompatOnlyArtVariantCommandId(command.id, shipped)
     );
-  }, [shellCommandSpecs, compoundLayoutsEnabled]);
+  }, [shellCommandSpecs, compoundLayoutSettings]);
 
   // Command id → title, for the customize-edit applier (an addCommand for a title-less/unknown id is
   // a no-op).
@@ -14298,7 +14422,7 @@ export function MainWindow({
         return;
       }
       const registry = toolsetRegistryRef.current;
-      const currentGroups = getToolsetPaletteGroups(DEFAULT_TOOLSET_ID, registry, new Map(), compoundLayoutsEnabledRef.current);
+      const currentGroups = getToolsetPaletteGroups(DEFAULT_TOOLSET_ID, registry, new Map(), compoundLayoutsEnabledRef.current, compoundLayoutSettingsRef.current);
       const presentItemIds = new Set(currentGroups.flatMap((group) => group.items.map((item) => item.id)));
       const orderedItemIdsByGroup = new Map(
         currentGroups.flatMap((group) =>
@@ -15251,6 +15375,10 @@ export function MainWindow({
 
   const previewObjectDrag = useCallback((drag: ObjectDragState, point: ClientPoint) => {
     markFrame("previewObjectDrag", () => {
+      if (drag.startDocument.pages.some(page => page.objects.some(object => object.arrowAttachment))) {
+        clearObjectTransformPreview(drag.pointerId);
+        replacePresentDocument(objectDragDocument(drag, point)); return;
+      }
       const previewObjectIds = graphicObjectIdsForCssDragPreview(drag);
       const delta = previewObjectIds ? { x: point.x - drag.startPoint.x, y: point.y - drag.startPoint.y }
         : objectDragDelta(drag, point);
@@ -15298,7 +15426,7 @@ export function MainWindow({
         arrowPreviewObjects
       });
     });
-  }, [objectDragDelta, objectDragDocument, scheduleObjectTransformPreview]);
+  }, [objectDragDelta, objectDragDocument, scheduleObjectTransformPreview, clearObjectTransformPreview, replacePresentDocument]);
 
   const graphicCornerRadiusDocumentFromDrag = useCallback((drag: GraphicCornerRadiusDragState, point: ClientPoint): ChemDraftDocument => {
     const object = findDocumentObject(drag.startDocument, drag.objectId);
@@ -15327,9 +15455,13 @@ export function MainWindow({
   }, [graphicCornerRadiusDocumentFromDrag, replacePresentDocument]);
 
   const graphicPathEditDocumentFromDrag = useCallback((drag: GraphicPathEditDragState, point: ClientPoint): ChemDraftDocument => {
-    const preparedDocument = prepareGraphicPathForDirectEdit(drag.workingDocument, drag.objectId);
-    const editPoint = nativeGraphicPathEditPointFromProjectedDrag(preparedDocument, drag.objectId, point);
-    return updateNativeGraphicPathHandle(preparedDocument, drag.objectId, drag.handle, editPoint);
+    const preparedDocument = prepareGraphicPathForDirectEdit(drag.pairedGripEnd ? drag.startDocument : drag.workingDocument, drag.objectId);
+    const current = nativeGraphicPathEditPointFromProjectedDrag(preparedDocument, drag.objectId, point);
+    const start = drag.pairedGripEnd && nativeGraphicPathEditPointFromProjectedDrag(preparedDocument, drag.objectId, drag.startPoint);
+    const editPoint = start && drag.pairedGripEnd
+      ? {x:drag.pairedGripEnd.x+current.x-start.x,y:drag.pairedGripEnd.y+current.y-start.y}
+      : current;
+    return updateNativeGraphicPathHandle(preparedDocument, drag.objectId, drag.handle, editPoint,{paired:drag.shiftKey||!!drag.pairedGripEnd});
   }, []);
 
   const previewGraphicPathEdit = useCallback((drag: GraphicPathEditDragState, point: ClientPoint) => {
@@ -15563,7 +15695,8 @@ export function MainWindow({
         objectRotateReadoutTimeoutRef.current = undefined;
         setObjectRotateReadout(undefined);
       }, 1200);
-      if (!drag.target && findDocumentObject(drag.startDocument, drag.objectId)?.type === "graphic") {
+      if (!drag.target && findDocumentObject(drag.startDocument, drag.objectId)?.type === "graphic" &&
+          !drag.startDocument.pages.some(page => page.objects.some(object => object.arrowAttachment))) {
         scheduleObjectTransformPreview({
           pointerId: drag.pointerId,
           objectIds: [drag.objectId],
@@ -17144,6 +17277,7 @@ export function MainWindow({
       }
 
       graphicPathEditDrag.latestPoint = point;
+      graphicPathEditDrag.shiftKey=event.shiftKey;
       if (
         !graphicPathEditDrag.dragging &&
         (
@@ -19425,7 +19559,8 @@ export function MainWindow({
   const handleGraphicPathEditPointerDown = useCallback((
     objectId: string,
     handle: NativeGraphicPathEditHandle,
-    event: PointerEvent<Element>
+    event: PointerEvent<Element>,
+    pairedGrip = false
   ) => {
     event.preventDefault();
     event.stopPropagation();
@@ -19450,6 +19585,7 @@ export function MainWindow({
     if (!point || object?.type !== "graphic" || (!editPoints && !nodeEditPoints)) {
       return;
     }
+    if(pairedGrip && (handle!=='end'||object.arrowAttachment?.kind!=='offshoot'||object.arrowAttachment.mode!=='fullCurve'||!editPoints))return;
 
     if (activeToolState.activeCommandId === "tool.eraser") {
       const nodeMatch = /^node:(\d+)$/.exec(handle);
@@ -19503,6 +19639,8 @@ export function MainWindow({
       pointerId: event.pointerId,
       objectId,
       handle,
+      shiftKey:event.shiftKey,
+      pairedGripEnd:pairedGrip?editPoints!.end:undefined,
       startDocument: selectedDocument,
       workingDocument: selectedDocument,
       startPoint: point,
@@ -19515,7 +19653,9 @@ export function MainWindow({
         ? "Move selected path node"
         : editPoints && isSemanticCircularGraphicArc(object, editPoints)
           ? handle === "middle" ? "Adjust selected arc radius" : "Adjust selected arc sweep"
-          : handle === "middle" ? "Bend selected line into a curve" : "Adjust selected line endpoint"
+          : object.arrowAttachment?.kind==='offshoot'&&object.arrowAttachment.mode==='fullCurve'
+            ?pairedGrip?'Drag to adjust both curve ends equally':handle==='tether'?'Slide tether along parent shaft':'Adjust curve endpoint; Shift adjusts both ends aligned'
+            : handle === "middle" ? "Bend selected line into a curve" : "Adjust selected line endpoint"
     );
   }, [
     activeToolState.activeKind,
@@ -19767,6 +19907,11 @@ export function MainWindow({
     if (isEditableTarget(event.target)) return;
     const currentDocument = documentRef.current;
     const point = pagePointFromPointerEvent(event);
+    const targetPage = currentDocument.pages.find(page => page.objects.some(object => object.id === objectId));
+    const targetObject = targetPage?.objects.find(object => object.id === objectId);
+    if(point && targetPage && targetObject && arrowAttachmentFrame(targetPage,targetObject)) {
+      objectId=nearestArrowObjectAtPoint(targetPage,point,8/viewportRef.current.scale)?.id??objectId;
+    }
     const crossingHit = point ? findNearestCrossingHit(pageSvgRenderPlan.crossings, point) : undefined;
 
     const clickedObject = findDocumentObject(currentDocument, objectId);
@@ -20139,6 +20284,7 @@ export function MainWindow({
       }
 
       graphicPathEditDrag.latestPoint = point;
+      graphicPathEditDrag.shiftKey=event.shiftKey;
       if (
         !graphicPathEditDrag.dragging &&
         (
@@ -21154,7 +21300,7 @@ export function MainWindow({
         ? visibleFloatingToolsets.map((toolset) => {
             const position = webPalettePositions[toolset.id] ?? defaultToolsetPosition(toolset.id, toolsetRegistry);
             const customizingThis = customizeMainToolbarActive && toolset.id === DEFAULT_TOOLSET_ID;
-            const paletteGroups = getToolsetPaletteGroups(toolset.id, toolsetRegistry, shellCommandsById, compoundLayoutsEnabled);
+            const paletteGroups = getToolsetPaletteGroups(toolset.id, toolsetRegistry, shellCommandsById, compoundLayoutsEnabled, compoundLayoutSettings);
             // Render from a given set of groups — the controller passes an optimistic overlay while a
             // drop settles so the palette doesn't flash the old layout during the broadcast round-trip.
             const renderPalette = (renderGroups: readonly ToolbarPaletteGroupModel[]) => (
@@ -21937,7 +22083,7 @@ export function MainWindow({
             baseToolsets={toolbarCatalog.baseToolsets()}
             layoutState={layoutStateRef.current ?? emptyLayoutState()}
             availableCommands={customizeCommandOptions}
-            isCommandHidden={compoundLayoutsEnabled ? undefined : isCompoundLayoutCommand}
+            isCommandHidden={id => isCompoundLayoutCommandHidden(id, compoundLayoutSettings)}
             onApply={applyCustomizeToolbars}
             onLiveApply={liveApplyCustomizeToolbars}
             onClose={() => setCustomizeToolbarsOpen(false)}
@@ -21998,20 +22144,36 @@ export function MainWindow({
         <StructureTemplatePicker {...browserTemplates} onClose={() => setBrowserTemplates(undefined)}
           onInsert={id => { void dispatchTemplateRef.current(browserTemplates.tabId, id).catch(error => setStatus(String(error))); }} />
       </Suspense></div> : null}
-      {!isDesktopRuntime() && spacingSource ? <ArrangementSpacingDialog document={spacingSource} onCancel={() => setSpacingSource(undefined)}
-        onSave={factor => {
+      {!isDesktopRuntime() && spacingSource ? <ArrangementSpacingDialog document={spacingSource} arrangement={arrangementDraft} onCancel={() => setSpacingSource(undefined)}
+        onSave={(factor, arrangement) => {
+          const reason = compoundLayoutCommandDisabledReason(arrangement ? "layout.arrangeOptions" : "layout.adjustArrangementSpacing", compoundLayoutSettingsRef.current);
+          if (reason) { setSpacingSource(undefined); setStatus(reason); return; }
           if (documentRef.current !== spacingSource) {
             setSpacingSource(undefined); setStatus("Drawing changed. Reopen Adjust spacing to preview the current selection."); return;
           }
           let ok = false, operationStatus = "";
-          commitDocumentChange(current => { const result = adjustArrangementSpacing(current, factor);
-            ok = result.ok; operationStatus = result.status; return result.document; }, "Adjust arrangement spacing");
+          commitDocumentChange(current => { const result = arrangeAndSpaceSelectedDocumentObjects(current, factor, arrangement);
+            ok = result.ok; operationStatus = result.status; return result.document; }, arrangement ? "Arrange selection" : "Adjust arrangement spacing");
           if (ok) setSpacingSource(undefined); setStatus(operationStatus);
         }} /> : null}
+      {conditionsEditor ? <div className="reaction-conditions-browser-window"><ReactionConditionsForm title={conditionsEditor.title}
+        draft={conditionsEditor.draft} onChange={draft => setConditionsEditor({ ...conditionsEditor, draft })} error={conditionsError}
+        onCancel={() => { conditionsSourcesRef.current.delete(conditionsEditor.tabId); setConditionsEditor(undefined); }}
+        onSave={() => {
+          try {
+            applyConditionsRef.current(conditionsEditor.tabId, conditionsEditor.arrowId, conditionsEditor.draft);
+            conditionsSourcesRef.current.delete(conditionsEditor.tabId); setConditionsEditor(undefined);
+          } catch (error) { setConditionsError(String(error)); }
+        }} /></div> : null}
       {objectContextMenu ? (
         <ObjectLayerContextMenu
           tableActions={selectedTable(document) ? tableActions : []}
-          layoutActions={compoundLayoutsEnabled ? layerActions.filter(action => isCompoundLayoutCommand(action.id)) : []}
+          arrowActions={(() => {
+            const object = activePage.objects.find(object => object.id === objectContextMenu.objectId);
+            return object && arrowAttachmentFrame(activePage, object) ? layerActions.filter(action => action.id.startsWith("arrow.") && !compoundLayoutCommandDisabledReason(action.id, compoundLayoutSettings))
+              .map(action => ({ ...action, enabled: true, disabledReason: undefined })) : [];
+          })()}
+          layoutActions={layerActions.filter(action => isCompoundLayoutCommand(action.id) && !isCompoundLayoutCommandHidden(action.id, compoundLayoutSettings))}
           bondStereoActions={(() => {
             const targets = currentMoleculeInspector.targets.bondTargets;
             if (targets.length !== 1 || targets[0].objectId !== objectContextMenu.objectId) return [];
@@ -22038,6 +22200,7 @@ export function MainWindow({
             canvasRegionRef.current?.focus({ preventScroll: true });
             const menu = objectContextMenu;
             setObjectContextMenu(undefined);
+            if (menu && commandId.startsWith("arrow.")) arrowCommandTargetRef.current = menu.objectId;
             if (commandId === "atom.toggleWarningSuppression" && menu?.atomWarning) {
               const { scope, suppressed, count } = menu.atomWarning;
               const changed = commitDocumentChange((current) =>
@@ -22061,6 +22224,7 @@ export function MainWindow({
               return;
             }
             invoke(commandId);
+            if (commandId.startsWith("arrow.")) queueMicrotask(() => { arrowCommandTargetRef.current = undefined; });
           }}
         />
       ) : null}
@@ -23446,6 +23610,11 @@ function capitalizeLabel(label: string): string {
 }
 
 function graphicPathEditStatus(drag: GraphicPathEditDragState, changed: boolean): string {
+  const edited=findDocumentObject(drag.workingDocument,drag.objectId);
+  if(edited?.arrowAttachment?.kind==='offshoot'&&edited.arrowAttachment.mode==='fullCurve'){
+    if(!changed)return 'Curve unchanged';
+    return drag.handle==='tether'?'Moved curve tether along parent shaft':drag.shiftKey||drag.pairedGripEnd?'Adjusted both curve endpoints aligned':'Adjusted curve endpoint; Shift adjusts both ends aligned';
+  }
   if (/^node:\d+:(in|out)$/.test(drag.handle)) {
     return changed ? "Adjusted Bezier control handle" : "Bezier control handle unchanged";
   }
@@ -25190,6 +25359,7 @@ function ArtStyleQaLayer({
 }
 
 export function ObjectLayerContextMenu({
+  arrowActions = [],
   layoutActions = [],
   tableActions = [],
   bondStereoActions = [],
@@ -25205,6 +25375,7 @@ export function ObjectLayerContextMenu({
   onFocusReturn,
   onDismiss = () => {}
 }: {
+  arrowActions?: readonly CommandSpec[];
   layoutActions?: readonly CommandSpec[];
   tableActions?: readonly CommandSpec[];
   bondStereoActions?: readonly CommandSpec[];
@@ -25232,6 +25403,23 @@ export function ObjectLayerContextMenu({
   // the right edge would clip it and slides up when the bottom would.
   const [copyAsOpen, setCopyAsOpen] = useState(false);
   const [arrangeOpen, setArrangeOpen] = useState(false);
+  const [offshootOpen,setOffshootOpen]=useState(false);
+  const offshootParentRef=useRef<HTMLDivElement|null>(null),offshootFlyoutRef=useRef<HTMLDivElement|null>(null);
+  const offshootKeyboardOpenRef=useRef(false);
+  const [offshootFlyoutStyle,setOffshootFlyoutStyle]=useState<CSSProperties>({});
+  const offshootActions=arrowActions.filter(action=>action.id.startsWith('arrow.attachOffshoot.'));
+  const offshootEnabled=offshootActions.some(action=>action.enabled!==false);
+  const offshootMenuId=`object-offshoot-${objectId}`;
+  useLayoutEffect(()=>{
+    if(!offshootEnabled){setOffshootOpen(false);return;}
+    if(!offshootOpen)return;
+    const parent=offshootParentRef.current,flyout=offshootFlyoutRef.current;
+    if(!parent||!flyout)return;
+    const p=parent.getBoundingClientRect(),f=flyout.getBoundingClientRect();
+    setOffshootFlyoutStyle({... (p.right+f.width+8>window.innerWidth?{right:'100%'}:{left:'100%'}),
+      top:`${-Math.max(0,p.top+f.height+8-window.innerHeight)}px`});
+    if(offshootKeyboardOpenRef.current){flyout.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();offshootKeyboardOpenRef.current=false;}
+  },[offshootOpen,offshootEnabled,clampedPosition]);
   const [tableAlignOpen, setTableAlignOpen] = useState(false);
   const tableAlignParentRef = useRef<HTMLDivElement | null>(null);
   const tableAlignFlyoutRef = useRef<HTMLDivElement | null>(null);
@@ -25341,33 +25529,80 @@ export function ObjectLayerContextMenu({
         </div>
         <div className="object-context-menu-separator" role="separator" />
       </> : null}
+      {arrowActions.filter(action=>!action.id.startsWith('arrow.attachOffshoot.')).map(action => <button type="button" role="menuitem" className="object-context-menu-item" key={action.id}
+        data-command-id={action.id} disabled={action.enabled === false} onClick={() => onInvoke(action.id)}>{action.title}</button>)}
+      {offshootActions.length>0?<div className="object-context-menu-submenu" ref={offshootParentRef}
+        onPointerEnter={()=>{if(offshootEnabled){setArrangeOpen(false);setCopyAsOpen(false);setOffshootOpen(true);}}}
+        onPointerLeave={()=>setOffshootOpen(false)}>
+        <button type="button" role="menuitem" className="object-context-menu-item object-context-menu-submenu-trigger"
+          data-context-submenu="offshoot" disabled={!offshootEnabled} aria-haspopup="menu" aria-expanded={offshootOpen}
+          aria-controls={offshootOpen?offshootMenuId:undefined}
+          onClick={()=>{setArrangeOpen(false);setCopyAsOpen(false);setOffshootOpen(open=>!open);}}
+          onKeyDown={event=>{if(event.key==='ArrowRight'||event.key==='ArrowDown'){
+            event.preventDefault();event.stopPropagation();offshootKeyboardOpenRef.current=true;
+            setArrangeOpen(false);setCopyAsOpen(false);setOffshootOpen(true);
+          }}}><span>Attach offshoot</span><span aria-hidden="true" className="object-context-menu-submenu-chevron">›</span></button>
+        {offshootOpen?<div id={offshootMenuId} className="object-context-menu object-context-menu-flyout" role="menu" aria-label="Attach offshoot"
+          ref={offshootFlyoutRef} style={offshootFlyoutStyle} onKeyDown={event=>{
+            if(event.key==='Escape'||event.key==='ArrowLeft'){
+              event.preventDefault();event.stopPropagation();setOffshootOpen(false);
+              offshootParentRef.current?.querySelector<HTMLButtonElement>('[data-context-submenu="offshoot"]')?.focus();
+            }else if(event.key==='ArrowDown'||event.key==='ArrowUp'){
+              event.preventDefault();event.stopPropagation();
+              const choices=[...event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')];
+              const index=choices.indexOf(document.activeElement as HTMLButtonElement);
+              choices[(index+(event.key==='ArrowDown'?1:choices.length-1))%choices.length]?.focus();
+            }
+          }}>{offshootActions.map(action=><button type="button" role="menuitem" className="object-context-menu-item" key={action.id}
+            data-command-id={action.id} disabled={action.enabled===false} onClick={()=>onInvoke(action.id)}
+            onKeyDown={event=>{if((event.key==='Enter'||event.key===' ')&&action.enabled!==false){event.preventDefault();event.stopPropagation();onInvoke(action.id);}}}>
+            {action.title.replace(/^Attach offshoot — /,'').replace(/^./,letter=>letter.toUpperCase())}
+          </button>)}</div>:null}
+      </div>:null}
+      {arrowActions.length > 0 ? <div className="object-context-menu-separator" role="separator" /> : null}
       {layoutActions.length > 0 ? (
         <div className="object-context-menu-submenu" ref={arrangeParentRef}
-          onPointerEnter={() => { setTableAlignOpen(false); setCopyAsOpen(false); setArrangeOpen(true); }}
+          onPointerEnter={() => { setTableAlignOpen(false); setOffshootOpen(false); setCopyAsOpen(false); setArrangeOpen(true); }}
           onPointerLeave={() => setArrangeOpen(false)}>
           <button type="button" role="menuitem" aria-haspopup="menu" aria-expanded={arrangeOpen}
             aria-controls={arrangeOpen ? "canvas-arrange-menu" : undefined}
             className="object-context-menu-item object-context-menu-submenu-trigger" data-context-submenu="arrange"
-            onClick={() => {
-              setTableAlignOpen(false); setCopyAsOpen(false); setArrangeOpen(open => !open);
+            onClick={() => { setTableAlignOpen(false); setOffshootOpen(false); setCopyAsOpen(false); setArrangeOpen(open => !open); }}
+            onKeyDown={event => {
+              if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+                event.preventDefault(); event.stopPropagation();
+                pendingSubmenuFocusRef.current = true;
+                setTableAlignOpen(false); setOffshootOpen(false); setCopyAsOpen(false); setArrangeOpen(true);
+              }
             }}>
             <span>Arrange</span><span aria-hidden="true" className="object-context-menu-submenu-chevron">›</span>
           </button>
           {arrangeOpen ? (
             <div id="canvas-arrange-menu" className="object-context-menu object-context-menu-flyout" role="menu" aria-label="Arrange layouts"
-              ref={arrangeFlyoutRef} style={arrangeFlyoutStyle}>
-              {layoutActions.filter(action => action.id !== "layout.adjustArrangementSpacing").map(action => (
+              ref={arrangeFlyoutRef} style={arrangeFlyoutStyle}
+              onKeyDown={event => {
+                if (event.key === "Escape" || event.key === "ArrowLeft") {
+                  event.preventDefault(); event.stopPropagation(); setArrangeOpen(false);
+                  arrangeParentRef.current?.querySelector<HTMLButtonElement>('[data-context-submenu="arrange"]')?.focus();
+                } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                  event.preventDefault(); event.stopPropagation();
+                  const choices = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')];
+                  const index = choices.indexOf(document.activeElement as HTMLButtonElement);
+                  choices[(index + (event.key === "ArrowDown" ? 1 : choices.length - 1)) % choices.length]?.focus();
+                }
+              }}>
+              {layoutActions.filter(action => action.id !== "layout.adjustArrangementSpacing" && action.id !== "layout.arrangeOptions").map(action => (
                 <button type="button" role="menuitem" className="object-context-menu-item" key={action.id}
                   data-command-id={action.id} disabled={!action.enabled} onClick={() => onInvoke(action.id)}>
                   {action.title.replace(/^Arrange in (?:a|an) /, "")}
                 </button>
               ))}
-              {layoutActions.filter(action => action.id === "layout.adjustArrangementSpacing").map(action => (
+              {layoutActions.filter(action => action.id === "layout.adjustArrangementSpacing" || action.id === "layout.arrangeOptions").map(action => (
                 <Fragment key={action.id}>
                   <div className="object-context-menu-separator" role="separator" />
                   <button type="button" role="menuitem" className="object-context-menu-item"
                     data-command-id={action.id} disabled={!action.enabled} onClick={() => onInvoke(action.id)}>
-                    Adjust spacing…
+                    {action.id === "layout.arrangeOptions" ? "Arrange with options…" : "Adjust spacing…"}
                   </button>
                 </Fragment>
               ))}
@@ -25390,7 +25625,7 @@ export function ObjectLayerContextMenu({
       <div
         className="object-context-menu-submenu"
         ref={copyAsParentRef}
-        onPointerEnter={() => { setTableAlignOpen(false); setArrangeOpen(false); setCopyAsOpen(true); }}
+        onPointerEnter={() => { setTableAlignOpen(false); setOffshootOpen(false); setArrangeOpen(false); setCopyAsOpen(true); }}
         onPointerLeave={() => setCopyAsOpen(false)}
       >
         <button
@@ -25401,7 +25636,7 @@ export function ObjectLayerContextMenu({
           aria-controls={copyAsOpen ? "canvas-copy-as-menu" : undefined}
           className="object-context-menu-item object-context-menu-submenu-trigger"
           data-context-submenu="copy-as"
-          onClick={() => { setTableAlignOpen(false); setArrangeOpen(false); setCopyAsOpen((open) => !open); }}
+          onClick={() => { setTableAlignOpen(false); setOffshootOpen(false); setArrangeOpen(false); setCopyAsOpen((open) => !open); }}
         >
           <span>Copy As</span>
           <span aria-hidden="true" className="object-context-menu-submenu-chevron">›</span>
@@ -27955,7 +28190,7 @@ function DocumentObjectViewContent({
   onProjectedPlaneTiltDoubleClick(objectId: string, event: ReactMouseEvent<HTMLButtonElement>): void;
   onGraphicCornerRadiusPointerDown(objectId: string, event: PointerEvent<HTMLButtonElement>): void;
   onGraphicCornerRadiusDoubleClick(objectId: string, event: ReactMouseEvent<HTMLButtonElement>): void;
-  onGraphicPathEditPointerDown(objectId: string, handle: NativeGraphicPathEditHandle, event: PointerEvent<Element>): void;
+  onGraphicPathEditPointerDown(objectId: string, handle: NativeGraphicPathEditHandle, event: PointerEvent<Element>, pairedGrip?: boolean): void;
   onGraphicMarkerPointerDown(objectId: string, markerId: NativeGraphicMarkerHandleId, event: PointerEvent<HTMLButtonElement>): void;
   onGraphicGradientPointerDown(objectId: string, target: GraphicStylePaintTarget, handle: NativeGraphicGradientHandleId, event: PointerEvent<HTMLButtonElement>): void;
   onRotationInputChange(nextInput: RotationInputState): void;
@@ -28255,6 +28490,8 @@ function DocumentObjectViewContent({
       frameStyle={artObjectTransformFrameStyle}
       targetLabel="selected art object"
       canProjectedPlaneTilt={object.type !== "graphic" || !graphicObjectIsFreehandPath(object)}
+      canPairCurveEnds={object.type==='graphic'&&object.arrowAttachment?.kind==='offshoot'&&object.arrowAttachment.mode==='fullCurve'&&graphicShiftTransformActive}
+      onPairCurveEndsPointerDown={event=>onGraphicPathEditPointerDown(object.id,'end',event,true)}
       rotationHandlesVisible={rotationHandlesVisible}
       rotateReadout={rotateReadout}
       projectedPlaneTiltReadout={projectedPlaneTiltReadout}
@@ -29291,6 +29528,8 @@ function ArtObjectTransformFrame({
   frameStyle,
   targetLabel,
   canProjectedPlaneTilt,
+  canPairCurveEnds,
+  onPairCurveEndsPointerDown,
   rotationHandlesVisible,
   rotateReadout,
   projectedPlaneTiltReadout,
@@ -29315,6 +29554,8 @@ function ArtObjectTransformFrame({
   frameStyle?: CSSProperties;
   targetLabel: string;
   canProjectedPlaneTilt: boolean;
+  canPairCurveEnds: boolean;
+  onPairCurveEndsPointerDown(event: PointerEvent<HTMLButtonElement>): void;
   rotationHandlesVisible: boolean;
   rotateReadout?: ObjectRotateReadoutState;
   projectedPlaneTiltReadout?: ProjectedPlaneTiltReadoutState;
@@ -29343,6 +29584,7 @@ function ArtObjectTransformFrame({
       className="object-transform-frame"
       data-art-transform-frame="true"
       data-has-tilt3d={canProjectedPlaneTilt ? "true" : undefined}
+      data-has-paired-curve={canPairCurveEnds ? "true" : undefined}
       style={frameStyle ?? { inset: 0 }}
     >
       <ObjectResizeHandles
@@ -29389,6 +29631,17 @@ function ArtObjectTransformFrame({
               limited={projectedPlaneTiltReadout.limited}
             />
           ) : null}
+        </button>
+      ) : null}
+      {canPairCurveEnds && rotationHandlesVisible ? (
+        <button type="button" className="object-pair-curve-handle"
+          aria-label="Adjust both curve endpoints equally"
+          data-selection-pair-curve-handle="true"
+          title="Drag to adjust both curve endpoints equally"
+          onPointerDown={onPairCurveEndsPointerDown}>
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M3 17l5-5m-5 5h4m-4 0v-4M21 17l-5-5m5 5h-4m4 0v-4M8 12q4-8 8 0" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
         </button>
       ) : null}
       {rotationInput ? (
@@ -30369,7 +30622,7 @@ function GraphicRadialGradientHandles({
  * handle, since dragging it is the only way to size an arrowhead at all.
  */
 function graphicShowsArrowheadSizeHandles(object: GraphicObject): boolean {
-  return object.data.dualShaft !== true;
+  return object.data.dualShaft !== true && object.arrowAttachment?.kind !== "offshoot";
 }
 
 function GraphicPathEditHandles({
@@ -30597,7 +30850,12 @@ function GraphicPathEditHandles({
             { handle: "middle", point: projectedPoints.middle, label: "Bend line into curve" },
             { handle: "end", point: projectedPoints.end, label: "Adjust line end" }
           ];
-  const handles = allHandles;
+  // Half branches anchor their tail; full curves anchor their on-curve middle instead.
+  const fullCurve=object.arrowAttachment?.kind==='offshoot'&&object.arrowAttachment.mode==='fullCurve';
+  const handles = object.arrowAttachment?.kind === "offshoot" ? fullCurve
+    ? [...allHandles.filter(handle=>handle.handle!=='middle').map(handle=>({...handle,label:`${handle.label}; Shift adjusts both ends aligned`})),
+      {handle:'tether' as const,point:projectedPoints.middle,label:'Slide curve tether along parent shaft'}]
+    : allHandles.filter(handle=>handle.handle!=='start') : allHandles;
 
   return (
     <>

@@ -628,3 +628,17 @@ describe("SVG export serialization", () => {
     expect(result.contents).toContain('stroke="none"');
   });
 });
+
+it("keeps formatted text runs contiguous without adding pretty-print spaces", () => {
+  let document=createEmptyDocument({title:"Conditions spans",now:timestamp});
+  const object:TextObject={id:"conditions",type:"text",x:100,y:100,width:160,height:60,rotation:0,style:{textAlign:"center"},text:"K2CO3, THF\n80 °C",
+    spans:[{text:"K",script:"normal",style:{}},{text:"2",script:"subscript",style:{}},{text:"CO3, THF\n80 °C",script:"normal",style:{}}]};
+  document=applyPatch(document,{op:"addObject",pageId:document.pages[0].id,object});
+  const svg=exportDocumentToSvg(document).contents;
+  const text=svg.match(/<text[^>]*>[\s\S]*?<\/text>/)?.[0];
+  expect(text).toBeDefined();
+  expect(text!.replace(/<[^>]*>/g,"")).toBe("K2CO3, THF80 °C");
+  expect(text).not.toContain('baseline-shift=');expect(text).toContain('y="');
+  expect([...text!.matchAll(/<tspan x="[^"]+" y="([^"]+)">/g)]).toHaveLength(2);
+  expect(text).toMatch(/dy="[0-9.]+"/);expect(text).toMatch(/dy="-[0-9.]+"/);
+});

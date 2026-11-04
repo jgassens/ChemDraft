@@ -17,6 +17,7 @@ import {
   graphicCornerRadiusEditPoint,
   graphicObjectIntersectsPolygon,
   graphicPathEditPoints,
+  quadraticArrowGeometry,
   graphicPathNodeEditPoints,
   graphicObjectSupportsBooleanOperation,
   maxGraphicCornerRadius,
@@ -45,6 +46,16 @@ const baseGraphic = {
 } satisfies Omit<GraphicObject, "graphicKind" | "width" | "height">;
 
 describe("art-engine native art planning", () => {
+  it("retains an exact quadratic junction after a subpixel attachment move", () => {
+    const source: GraphicObject = { ...baseGraphic, graphicKind: "line", width: 200, height: 100 };
+    const arrow = quadraticArrowGeometry(source, { x: 120, y: 80 }, { x: 320, y: 180 }, { x: 210, y: 100 });
+    const junction = { x: 120.00002, y: 79.99998 };
+    const moved = quadraticArrowGeometry(arrow, junction, { x: 320, y: 180 }, { x: 210, y: 100 });
+    expect(graphicPathEditPoints(moved)?.start).toEqual(junction);
+    expect(graphicPathEditPoints(moved)?.end).toEqual(graphicPathEditPoints(arrow)?.end);
+    expect(graphicPathEditPoints(moved)?.middle).toEqual(graphicPathEditPoints(arrow)?.middle);
+  });
+
   it("keeps Stage 2 dependency licenses inside the approved set", () => {
     const artEnginePackage = require("../package.json") as { dependencies?: Record<string, string> };
     const pathCommanderPackage = require("svg-path-commander/package.json") as { license: string };

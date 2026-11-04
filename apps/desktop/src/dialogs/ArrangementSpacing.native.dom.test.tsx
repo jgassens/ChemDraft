@@ -1,3 +1,4 @@
+import { defaultArrangementDraft } from "@chemdraft/layout-engine";
 // @vitest-environment jsdom
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -14,9 +15,9 @@ beforeEach(() => {
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
 });
 afterEach(() => { act(() => root.unmount()); container.remove(); vi.useRealTimers(); vi.unstubAllGlobals(); });
-async function mount() {
+async function mount(value: DialogSnapshot = snapshot) {
   await act(async () => root.render(createElement(DialogWindow, { hostId: "opaque" })));
-  await act(async () => host.receive!(snapshot));
+  await act(async () => host.receive!(value));
   await act(async () => vi.advanceTimersByTimeAsync(1));
 }
 function latestPreview(): DialogMessage { return host.send.mock.calls.map(call => call[1] as DialogMessage).filter(m => m.type === "action" && m.data.action === "preview").at(-1)!; }
@@ -59,4 +60,41 @@ it.each(['macos', 'windows'] as const)("supports %s close and reload keys in the
   for (const key of ['F5','r']) { const event=new KeyboardEvent('keydown',{key,...modifier,bubbles:true,cancelable:true}); await act(async()=>field.dispatchEvent(event)); expect(event.defaultPrevented).toBe(true); }
   await act(async()=>field.dispatchEvent(new KeyboardEvent('keydown',{key:'w',...modifier,bubbles:true,cancelable:true})));
   expect(cancel).toHaveBeenCalledOnce(); expect(save).not.toHaveBeenCalled();
+});
+
+it("previews arrangement drafts, discards a stale image after changing arrows and saves only the current draft", async () => {
+  await mount({ ...snapshot, data: { ...snapshot.data, arrangement: { ...defaultArrangementDraft } } } as DialogSnapshot);
+  expect(container.textContent).toContain("Arrange selection");
+  expect(container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(false);
+  expect(container.querySelector('input[id$="-spacing"]')).not.toBeNull();
+  const initial = latestPreview(); await image(initial);
+  const save = () => container.querySelector<HTMLButtonElement>('button[type="submit"]')!;
+  expect(save().disabled).toBe(false);
+  await act(async () => container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
+  expect(save().disabled).toBe(true);
+  await image(initial); expect(save().disabled).toBe(true);
+  await act(async () => vi.advanceTimersByTimeAsync(1));
+  const current = latestPreview();
+  expect(current.data).toEqual({ action: "preview", percent: 100, arrangement: { ...defaultArrangementDraft, arrows: true } });
+  await image(current); expect(save().disabled).toBe(false);
+  const length=container.querySelector<HTMLInputElement>('input[id$="-arrow-length"]')!;
+  expect(length).not.toBeNull();
+  await act(async()=>{Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')!.set!.call(length,'70');length.dispatchEvent(new Event('input',{bubbles:true}));});
+  expect(save().disabled).toBe(true);
+  await act(async()=>vi.advanceTimersByTimeAsync(1));
+  const shorter=latestPreview();expect(shorter.data).toEqual({action:'preview',percent:100,arrangement:{...defaultArrangementDraft,arrows:true,arrowLength:70}});
+  await image(current);expect(save().disabled).toBe(true);
+  await image(shorter);expect(save().disabled).toBe(false);
+  const spacing=container.querySelector<HTMLInputElement>('input[id$="-spacing"]')!;
+  await act(async()=>{Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')!.set!.call(spacing,'120');spacing.dispatchEvent(new Event('input',{bubbles:true}));});
+  expect(save().disabled).toBe(true);
+  await act(async()=>vi.advanceTimersByTimeAsync(121));
+  const spaced=latestPreview();
+  expect(spaced.data).toEqual({action:'preview',percent:120,arrangement:{...defaultArrangementDraft,arrows:true,arrowLength:70}});
+  await image(shorter);expect(save().disabled).toBe(true);
+  await image(spaced);expect(save().disabled).toBe(false);
+  await act(async () => { save().click(); save().click(); });
+  const applies = host.send.mock.calls.map(call => call[1] as DialogMessage).filter(m => m.type === "action" && m.data.action === "apply");
+  expect(applies).toHaveLength(1);
+  expect(applies[0].data).toEqual({ action: "apply", percent: 120, arrangement: { ...defaultArrangementDraft, arrows: true,arrowLength:70 } });
 });

@@ -25,6 +25,10 @@ destination chooses them. These pure writers do not access the native clipboard.
 
 PDF export uses jsPDF 4.2.1 and svg2pdf.js 2.7.0 over the same SVG geometry as the
 canvas. The app, CLI and MCP use `exportDocumentToPdf` from this package.
+Formatted native text and its nested spans serialize without formatting whitespace between runs, preserving
+authored spacing in formulas and reaction conditions and matching the canvas text geometry.
+Formatted runs also use explicit shared baseline offsets and per-line script clearance. PDF
+consumes that same SVG geometry; subscript/superscript offsets never accumulate into later lines.
 
 Embedded picture frames retain their physical size at 72/96 points per page unit in physical SVG
 and PDF output, including document-style SVG and resized physical output pages. Their centres follow

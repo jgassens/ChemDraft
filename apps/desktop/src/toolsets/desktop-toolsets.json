@@ -1051,6 +1051,11 @@
                     }
                   },
                   {
+                    "commandId": "layout.arrangeOptions",
+                    "label": "Arrange with options…",
+                    "icon": "arrange"
+                  },
+                  {
                     "commandId": "layout.adjustArrangementSpacing",
                     "label": "Adjust spacing…",
                     "icon": "align",
@@ -3366,6 +3371,11 @@
                     }
                   },
                   {
+                    "commandId": "layout.arrangeOptions",
+                    "label": "Arrange with options…",
+                    "icon": "arrange"
+                  },
+                  {
                     "commandId": "layout.adjustArrangementSpacing",
                     "label": "Adjust spacing…",
                     "icon": "align",
@@ -4309,6 +4319,11 @@
                       "title": "Arrange in a Column",
                       "shortcut": null
                     }
+                  },
+                  {
+                    "commandId": "layout.arrangeOptions",
+                    "label": "Arrange with options…",
+                    "icon": "arrange"
                   },
                   {
                     "commandId": "layout.adjustArrangementSpacing",

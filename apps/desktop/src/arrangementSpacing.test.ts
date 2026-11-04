@@ -1,6 +1,8 @@
 import {describe,expect,it} from "vitest";
 import {applyPatches, type TextObject} from "@chemdraft/chem-core";
 import {nativeSingleBondGraphSmiles} from "@chemdraft/document-workflow-core";
+import {defaultArrangementDraft, ArrangementLayouts} from "@chemdraft/layout-engine";
+import {arrangeAndSpaceSelectedDocumentObjects, arrangeSelectedDocumentObjectsWithOptions} from "./documentWorkflow";
 import {adjustArrangementSpacing,arrangementSpacingRange,arrangementSpacingPreviewBounds,arrangeSelectedDocumentObjects,
   createPhase4Document,createNativeSingleBondMolecule,selectDocumentObjects,
   createNativeSavePayload,openNativeDocument,setDocumentCustomPageSize} from "./documentWorkflow";
@@ -12,6 +14,30 @@ function fixture(layout:"circle"|"oval"|"row"|"column"|"grid") {
   return arrangeSelectedDocumentObjects(doc,layout,{gap:100}).document;
 }
 describe("arrangement spacing with fixed molecule sizes",()=>{
+  it.each(ArrangementLayouts)('combines %s layout, connecting arrows and spacing without changing molecule sizes',layout=>{
+    const source=setDocumentCustomPageSize(fixture('row'),{width:2400,height:1800,unit:'css-px'});
+    const draft={...defaultArrangementDraft,layout,arrows:true,closeCycle:false};
+    const arranged=arrangeSelectedDocumentObjectsWithOptions(source,draft);
+    expect(arranged.ok,arranged.status).toBe(true);
+    const combined=arrangeAndSpaceSelectedDocumentObjects(source,1.15,draft);
+    expect(combined.ok,combined.status).toBe(true);
+    const expected=adjustArrangementSpacing(arranged.document,1.15);
+    expect(combined.document.pages[0].objects).toEqual(expected.document.pages[0].objects);
+    for(const molecule of source.pages[0].objects.filter(o=>o.type==='molecule')) {
+      const after=combined.document.pages[0].objects.find(o=>o.id===molecule.id)!;
+      expect(after.width).toBe(molecule.width);expect(after.height).toBe(molecule.height);
+    }
+    const reopened=openNativeDocument(createNativeSavePayload(combined.document).contents).document!;
+    expect(reopened.pages[0].objects).toEqual(combined.document.pages[0].objects);
+    expect(arrangeAndSpaceSelectedDocumentObjects(source,1.15,draft).document.pages[0].objects).toEqual(combined.document.pages[0].objects);
+  });
+  it('discards the intermediate layout and newly generated arrows when combined spacing fails',()=>{
+    const source=fixture('circle'),draft={...defaultArrangementDraft,layout:'row' as const,arrows:true};
+    for(const factor of [.01,100,NaN]) {
+      const result=arrangeAndSpaceSelectedDocumentObjects(source,factor,draft);
+      expect(result.ok).toBe(false);expect(result.document).toBe(source);
+    }
+  });
   it.each([12.2, 12.3])("matches the integer-spacing oracle for %s-pixel captions at every page edge", thickness => {
     for (const axis of ["horizontal", "vertical"] as const) for (const edge of ["low", "high"] as const) {
       let document = setDocumentCustomPageSize(createPhase4Document("Aligned decimal captions"), {

@@ -1,3 +1,4 @@
+import { arrowAttachmentFrame } from "@chemdraft/layout-engine";
 import {
   MinimalPageSizePresetIds,
   findPageSizePreset,
@@ -20,7 +21,7 @@ import {
   SHAFT_MARK_SIZE_MIN_PX
 } from "@chemdraft/art-engine";
 import { ArrangementLayouts, ArrangementGridAlignments, type ArrangementLayout, type ArrangementGridAlignment } from "@chemdraft/layout-engine";
-import { loadCompoundLayoutSettings } from "./compoundLayoutSettings";
+import { compoundLayoutCommandDisabledReason, loadCompoundLayoutSettings, type CompoundLayoutSettings } from "./compoundLayoutSettings";
 import type { CommandDefinition } from "@chemdraft/plugin-host";
 import { withStandaloneDrawingToolCommands } from "./drawingTools";
 import {
@@ -64,6 +65,7 @@ export interface CommandAvailability {
 export interface ShellCommandOptions {
   activeTableCell?: ActiveTableCell;
   compoundLayoutsEnabled?: boolean;
+  compoundLayoutSettings?: CompoundLayoutSettings;
   availability?: CommandAvailability;
   registry?: DesktopToolsetRegistry;
 }
@@ -2021,7 +2023,12 @@ export function createOpenWarningsAction(availability: CommandAvailability = {})
   };
 }
 
-export function createLayerActions(document: ChemDraftDocument, layoutsEnabled = loadCompoundLayoutSettings().enabled): CommandSpec[] {
+export const arrowOffshootCommandId = (side: "above" | "below" | "fullCurve.above" | "fullCurve.below"): string => `arrow.attachOffshoot.${side}`;
+export function createLayerActions(document: ChemDraftDocument, layoutsEnabled = loadCompoundLayoutSettings().enabled,
+  settings: CompoundLayoutSettings = loadCompoundLayoutSettings()): CommandSpec[] {
+  const arrowPage = document.pages.find(page => page.id === document.selection.pageId) ?? document.pages[0];
+  const arrow = document.selection.objectIds.length === 1 ? arrowPage.objects.find(object => object.id === document.selection.objectIds[0]) : undefined;
+  const hasArrow = !!arrow && !!arrowAttachmentFrame(arrowPage, arrow);
   const hasSelection = document.selection.objectIds.length > 0;
   const hasMultiSelection = document.selection.objectIds.length >= 2;
   const hasDistributableSelection = document.selection.objectIds.length >= 3;
@@ -2029,6 +2036,18 @@ export function createLayerActions(document: ChemDraftDocument, layoutsEnabled =
   const hasArrangementSelection = selectedArrangementObjectIds(document).length >= 2;
   const hasBooleanSelection = selectedArtBooleanEligibleObjectIds(document).length >= 2;
   return [
+    ...[
+      ["arrow.conditions", "Reaction conditions…"],
+      [arrowOffshootCommandId("above"), "Attach offshoot — top / outside"],
+      [arrowOffshootCommandId("below"), "Attach offshoot — bottom / inside"],
+      [arrowOffshootCommandId("fullCurve.above"), "Attach offshoot — full curve — top / inside"],
+      [arrowOffshootCommandId("fullCurve.below"), "Attach offshoot — full curve — bottom / outside"]
+    ].map(([id, title]): CommandSpec => ({ id, title, icon: "export", source: "core", category: "layout",
+      enabled: hasArrow && !compoundLayoutCommandDisabledReason(id, { ...settings, enabled: layoutsEnabled }),
+      disabledReason: compoundLayoutCommandDisabledReason(id, { ...settings, enabled: layoutsEnabled }) ?? (hasArrow ? undefined : "Select one arrow") })),
+    { id: "layout.arrangeOptions", title: "Arrange with options…", icon: "arrange", source: "core", category: "layout",
+      enabled: layoutsEnabled && settings.arrangementArrows === true && hasArrangementSelection,
+      disabledReason: compoundLayoutCommandDisabledReason("layout.arrangeOptions", { ...settings, enabled: layoutsEnabled }) ?? "Select at least two objects or groups" },
     { id: "layout.adjustArrangementSpacing", title: "Adjust arrangement spacing…", icon: "align", source: "core", category: "layout",
       enabled: layoutsEnabled && hasArrangementSelection, disabledReason: layoutsEnabled ? "Select at least two objects or groups" : "Enable Compound layout tools in Settings" },
     ...ArrangementLayouts.flatMap((layout) => (layout === "grid" ? ArrangementGridAlignments : ["center"] as const).map((gridAlignment): CommandSpec => ({
@@ -2354,7 +2373,7 @@ export function allShellCommands(
   return dedupeCommands([
     ...createTableCommands(document, options.activeTableCell),
     ...createQuickActions(document, selectedMolecule, options.availability),
-    ...createLayerActions(document, options.compoundLayoutsEnabled),
+    ...createLayerActions(document, options.compoundLayoutsEnabled, options.compoundLayoutSettings),
     // Generated launchers must beat a persisted toolbar occurrence under first-wins dedupe. The
     // latter may carry the title from before a user/plugin toolbar was renamed.
     ...getToolsetToggleActions(registry),

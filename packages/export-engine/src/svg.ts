@@ -192,6 +192,8 @@ function serializeSvgFragment(fragment: PageSvgFragment, indent: number, insideT
     return `${pad}<${fragment.tag}${attrs}>${fragment.children.map((child) => child.kind === "text" ? escapeXml(child.text) : "").join("")}</${fragment.tag}>`;
   }
 
+  if (inline) return `${pad}<${fragment.tag}${attrs}>${children.join("")}</${fragment.tag}>`;
+
   return [
     `${pad}<${fragment.tag}${attrs}>`,
     ...children,
