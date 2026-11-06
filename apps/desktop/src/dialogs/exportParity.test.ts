@@ -16,6 +16,13 @@ describe("Export form preserves the existing export pipeline", () => {
     const state = createDefaultExportDialogState(createPhase4Document("Drawing"));
     expect(state).toEqual({ ...exportFixture(), filename: "Drawing.pdf", destinationPath: undefined, busy: false });
   });
+  it.each([
+    "/Users/me/Projects/Reaction scheme.chemdraft",
+    "C:\\Users\\me\\Projects\\Reaction scheme.chemdraft"
+  ])("suggests the saved document basename for export (%s)", path => {
+    const state = createDefaultExportDialogState(createPhase4Document("Untitled"), undefined, path);
+    expect(state.filename).toBe("Reaction-scheme.pdf");
+  });
   it.each([false, true])("returns identical SVG and CDXML bytes with page guides=%s", async guides => {
     const document = applyNativeChainTool(createPhase4Document("Parity"), { x: 100, y: 100 }, { x: 200, y: 130 });
     const svg = { includeWarnings: !guides, includePageGuides: guides };
