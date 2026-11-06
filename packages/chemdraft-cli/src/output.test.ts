@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -10,6 +10,7 @@ import {
   isWindowsDeviceName,
   parseNamedSmilesJob,
   readBatchFile,
+  MAX_BATCH_BYTES,
   validateBatchName
 } from "./output";
 import { validateDocumentOutputPath } from "./documentInput";
@@ -54,6 +55,19 @@ describe("shared CLI output helpers", () => {
   it("rejects case-insensitive batch-name collisions", async () => {
     await expect(readNamedJobs([{ name: "A" }, { name: "a" }]))
       .rejects.toThrow('Duplicate batch name "a": conflicts with "A"');
+  });
+
+  it("rejects an oversized batch file before parsing its contents", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "chemdraft-batch-size-"));
+    const path = join(directory, "oversized.json");
+    try {
+      await writeFile(path, "");
+      await truncate(path, MAX_BATCH_BYTES + 1);
+      await expect(readBatchFile(path, parseNamedSmilesJob))
+        .rejects.toThrow(`Could not read batch file "${path}": Batch file exceeds the 32 MB input limit.`);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("rejects a batch larger than 500 jobs and names the first excess job", async () => {
