@@ -94,6 +94,33 @@ it.each([
   }));
 });
 
+it.each([
+  { platform: "macOS", path: "/Users/me/Figures/Drawing.pdf", invalid: "../Temporary.pdf", folder: "/Users/me/Figures/", preview: false },
+  { platform: "macOS", path: "/Users/me/Figures/Drawing.pdf", invalid: "../Temporary.pdf", folder: "/Users/me/Figures/", preview: true },
+  { platform: "Windows", path: "C:\\Figures\\Drawing.pdf", invalid: "Sub\\Temporary.pdf", folder: "C:\\Figures\\", preview: false },
+  { platform: "Windows", path: "C:\\Figures\\Drawing.pdf", invalid: "Sub\\Temporary.pdf", folder: "C:\\Figures\\", preview: true }
+])("keeps the chosen folder after an invalid filename is corrected ($platform, preview $preview)", async ({ path, invalid, folder, preview }) => {
+  act(() => saveExportPreviewEnabled(preview));
+  let selected: ExportDialogState = { ...exportFixture(), destinationPath: path, busy: false };
+  function Form() {
+    const [state, setState] = useState(selected);
+    selected = state;
+    return createElement(ExportForm, {
+      state, onChange: setState, onSubmit: vi.fn(), onCancel: vi.fn(), onChooseDestination: vi.fn()
+    });
+  }
+  await act(async () => root.render(createElement(Form)));
+  const input = container.querySelector<HTMLInputElement>("#chemdraft-export-filename")!;
+  const enter = (filename: string) => act(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, filename);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  enter(invalid);
+  expect(selected.destinationPath).toBe(path);
+  enter("Final.pdf");
+  expect(selected).toMatchObject({ filename: "Final.pdf", destinationPath: `${folder}Final.pdf` });
+});
+
 it("keeps the action footer outside the scrollable form body", () => {
   act(() => root.render(createElement(ExportForm, {
     state: { ...exportFixture(), busy: false }, notice: "Warning\n".repeat(100),

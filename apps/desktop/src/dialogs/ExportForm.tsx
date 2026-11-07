@@ -531,6 +531,8 @@ export function updateExportDialogFormat(state: ExportDialogState, format: Expor
 function exportPathWithFilename(path: string | undefined, filename: string): string | undefined {
   // This is only a picker hint; the document window checks the exact native grant before writing.
   if (!path) return undefined;
+  // An invalid filename must not become part of the folder used by a later valid edit.
+  if (filename.includes("/") || filename.includes("\\")) return path;
   const separator = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
   return `${path.slice(0, separator + 1)}${filename}`;
 }
