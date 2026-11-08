@@ -41,15 +41,15 @@ describe.each(["macos", "windows"] as const)("text editor placement (%s)", platf
   });
 
   it.each([
-    ...[1, 1.25, 1.5, 2].flatMap(dpr => [14, 18].flatMap(points => [1, 2].flatMap(zoom =>
-      (["left", "center", "right"] as const).map(textAlign => ({ zoom, textAlign, points, dpr, text: "HHHHHH", height: undefined }))))),
+    ...[1, 1.25, 1.5, 2].flatMap(dpr => [12, 13.333, 18.667, 14 * 96 / 72, 24].flatMap(fontSizePx => [1, 2].flatMap(zoom =>
+      (["left", "center", "right"] as const).map(textAlign => ({ zoom, textAlign, fontSizePx, dpr, text: "HHHHHH", height: undefined }))))),
     ...[0.5, 1].flatMap(zoom => (["left", "center", "right"] as const).flatMap(textAlign =>
-      [0, 0.1].flatMap(height => ["", "H"].map(text => ({ zoom, textAlign, points: 14, dpr: 1, text, height })))))
+      [0, 0.1].flatMap(height => ["", "H"].map(text => ({ zoom, textAlign, fontSizePx: 14 * 96 / 72, dpr: 1, text, height })))))
   ])(
-    "applies glyph origins: '$text', height $height, $points pt, $textAlign at $zoom, DPR $dpr", async ({ zoom, textAlign, points, dpr, text, height }) => {
+    "applies glyph origins: '$text', height $height, $fontSizePx px, $textAlign at $zoom, DPR $dpr", async ({ zoom, textAlign, fontSizePx, dpr, text, height }) => {
       vi.stubGlobal("devicePixelRatio", dpr);
       const drawing = structuredClone(insertNativeTextObject(createPhase4Document("Text placement"), { x: 200, y: 160 }, text,
-        { fontFamily: "Arial", fontSizePx: points * 96 / 72, textAlign }));
+        { fontFamily: "Arial", fontSizePx, textAlign }));
       const object = drawing.pages[0].objects[0] as TextObject;
       if (height !== undefined) {
         object.height = height;
@@ -76,7 +76,18 @@ describe.each(["macos", "windows"] as const)("text editor placement (%s)", platf
       await act(async () => glyph.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, detail: 2 })));
       await act(async () => vi.advanceTimersByTimeAsync(100));
       const editor = container.querySelector<HTMLTextAreaElement>(".text-object-editor")!;
-      const preview = container.querySelector<SVGSVGElement>(".text-object-edit-preview")!;
+      const preview = container.querySelector<SVGGElement>(".text-object-edit-preview")!;
+      // Identical attributes in a second, HTML-sized SVG do not imply identical
+      // rendered glyphs: its fractional viewport has its own layout/raster phase.
+      // Chromium trace, 18.667 px at 200%, 32-unit-high box: the old preview's
+      // requested 63.9215686 px height became 63.90625 px, changing its Y scale
+      // from the canvas's 1.9975490 to 1.9970703. CSS style algebra misses this.
+      // The live glyphs must inherit the very same page viewport as the canvas.
+      expect(preview.ownerSVGElement).toBe(glyph.ownerSVGElement);
+      expect(preview.parentElement).toBe(glyph.parentElement!.parentElement);
+      expect(preview.getAttribute("transform")).toBe(glyph.parentElement!.getAttribute("transform"));
+      expect(preview.getAttribute("style")).toBeNull();
+      expect(glyph.ownerSVGElement!.querySelector("svg")).toBeNull();
       const frame = editor.closest<HTMLElement>(".document-object-chrome")!;
       const style = nativeTextStyleFromObjectStyle(object.style);
       const metrics = metricsReader.measureTextEditorMetrics(style, scale, style.fontSizePx * style.lineHeight * scale)!;
@@ -92,22 +103,13 @@ describe.each(["macos", "windows"] as const)("text editor placement (%s)", platf
       expect(parseFloat(computed.minHeight)).toBe(0);
       expect(editor.style.right).toBe("");
       expect(preview.namespaceURI).toBe("http://www.w3.org/2000/svg");
-      expect(parseFloat(getComputedStyle(preview).minWidth)).toBe(0);
-      expect(getComputedStyle(preview).overflow).toBe("visible");
       expect(getComputedStyle(preview).pointerEvents).toBe("none");
       const previewGlyph = preview.querySelector("text")!;
-      for (const attr of ["x", "y", "text-anchor", "font-family", "font-size", "font-weight", "letter-spacing"]) {
-        expect(previewGlyph.getAttribute(attr), attr).toBe(glyph.getAttribute(attr));
-      }
-      expect(previewGlyph.innerHTML).toBe(glyph.innerHTML);
-      expect(preview.getAttribute("preserveAspectRatio")).toBe("none");
-      const [vx, vy, vw, vh] = preview.getAttribute("viewBox")!.split(" ").map(Number);
-      // Reconstruct the visible glyph origin from the actual DOM viewport and
-      // SVG attributes, independently of the placement helper's expected output.
-      const previewX = parseFloat(frame.style.left) + parseFloat(preview.style.left)
-        + (Number(previewGlyph.getAttribute("x")) - vx) * parseFloat(preview.style.width) / vw;
-      const previewY = parseFloat(frame.style.top) + parseFloat(preview.style.top)
-        + (Number(previewGlyph.getAttribute("y")) - vy) * parseFloat(preview.style.height) / vh;
+      expect(previewGlyph.outerHTML).toBe(glyph.outerHTML);
+      // Both glyphs inherit the *same* page transform, rather than deriving a
+      // second transform from CSS lengths (jsdom cannot resolve SVG viewports).
+      const previewX = offset.x + Number(previewGlyph.getAttribute("x")) * scale;
+      const previewY = offset.y + Number(previewGlyph.getAttribute("y")) * scale;
       expect(Math.abs(previewX - (offset.x + svgX * scale))).toBeLessThan(0.25);
       expect(Math.abs(previewY - (offset.y + svgY * scale))).toBeLessThan(0.25);
       expect(previewX).toBeCloseTo(offset.x + svgX * scale, 10);
@@ -131,8 +133,48 @@ describe.each(["macos", "windows"] as const)("text editor placement (%s)", platf
       expect(saved()).toEqual(original);
       await act(async () => editor.blur());
       expect(container.querySelector(".text-object-editor")).toBeNull();
+      expect(container.querySelector(".text-object-edit-preview")).toBeNull();
+      expect(container.querySelector(`[data-page-svg-object-visual="${object.id}"] text`)).toBe(glyph);
+      expect(glyph.parentElement!.getAttribute("visibility")).toBeNull();
       expect(saved()).toEqual(original);
     });
+
+  it.each([0, 31, -45])("keeps rich text in the canvas coordinate system through typing and blur at %s degrees", async rotation => {
+    const drawing = structuredClone(insertNativeTextObject(createPhase4Document("Rich text placement"),
+      { x: 200.125, y: 160.375 }, "H2O solution", { fontSizePx: 18.667, textAlign: "center" }));
+    const object = drawing.pages[0].objects[0] as TextObject;
+    object.rotation = rotation;
+    object.spans = [
+      { text: "H", script: "normal", style: { fontSizePx: 18.667 } },
+      { text: "2", script: "subscript", style: {} },
+      { text: "O solution", script: "normal", style: { fontSizePx: 13.333 } }
+    ];
+    await act(async () => root.render(createElement(MainWindow, {
+      initialDocument: drawing, initialPaletteMode: "hidden", nativePalette: true,
+      initialRulersVisible: false, initialCrosshairsVisible: false, shortcutPlatform: platform
+    })));
+    const glyph = container.querySelector<SVGTextElement>(`[data-page-svg-object-visual="${object.id}"] text`)!;
+    const canvas = glyph.ownerSVGElement;
+    await act(async () => glyph.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, detail: 2 })));
+    await act(async () => vi.advanceTimersByTimeAsync(100));
+    const preview = () => container.querySelector<SVGGElement>(".text-object-edit-preview")!;
+    expect(preview().ownerSVGElement).toBe(canvas);
+    expect(preview().querySelector("text")!.outerHTML).toBe(glyph.outerHTML);
+    const editor = container.querySelector<HTMLTextAreaElement>(".text-object-editor")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(editor, "H2O solution updated");
+      editor.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(preview().ownerSVGElement).toBe(canvas);
+    const edited = preview().querySelector("text")!;
+    expect(edited.textContent).toBe("H2O solution updated");
+    expect(edited.outerHTML).toBe(glyph.outerHTML);
+    const editedMarkup = edited.outerHTML;
+    await act(async () => editor.blur());
+    expect(preview()).toBeNull();
+    expect(glyph.ownerSVGElement).toBe(canvas);
+    expect(glyph.outerHTML).toBe(editedMarkup);
+  });
 
   it("remeasures on DPR and container resize, re-arms resolution, and cleans up on unmount", async () => {
     const queries: Array<{ query: string; target: EventTarget; add: ReturnType<typeof vi.spyOn>; remove: ReturnType<typeof vi.spyOn> }> = [];

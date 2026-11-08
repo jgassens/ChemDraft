@@ -247,7 +247,6 @@ import {
   nativeTextScriptFontScale,
   measureNativeTextSpanLineWidth,
   planTextObjectPlacement,
-  planTextObjectSvg,
   planTextObjectEditorPlacement,
   type NativeTextCssMetrics,
   textObjectSpanLines,
@@ -1718,7 +1717,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.08.11.34-codex";
+const CURRENT_BUILD_STAMP = "11.08.12.44-codex";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -27545,55 +27544,65 @@ function PageSvgSurfaceContent({
             const editingText = object.type === "text" && object.id === editingTextObjectId;
             const tableLayout = object.type === "table" ? planTableLayout(object) : undefined;
             return (
-              <g
-                key={object.id}
-                data-page-svg-object-visual={object.id}
-                data-object-type={object.type}
-                data-layer-index={Number(fragments[0]!.attrs["data-layer-index"])}
-                opacity={object.id === spinningObjectId ? 0.1 : undefined}
-                visibility={editingText ? "hidden" : undefined}
-                transform={preview ? objectTransformPreviewSvgTransform(preview) : undefined}
-                style={{ pointerEvents: object.id === spinningObjectId || editingText ? "none" : "auto" }}
-                onPointerDown={event => handlers.onPointerDown(object.id, event)}
-                onPointerMove={event => handlers.onPointerMove(object.id, event)}
-                onPointerUp={event => handlers.onPointerUp(object.id, event)}
-                onPointerCancel={handlers.onPointerCancel}
-                onPointerLeave={event => handlers.onPointerLeave(object.id, event)}
-                onContextMenu={event => handlers.onContextMenu(object.id, event)}
-                onDoubleClick={object.type === "text" ? event => handlers.onTextDoubleClick(object.id, event) : undefined}
-              >
-                {object.type === "graphic" ? (
-                  // Keep the existing art renderer and its generous stroke/fill catchers.
-                  // It uses the same art-engine geometry as export, in local coordinates.
-                  <svg x={object.x} y={object.y} width={object.width} height={object.height}
-                    viewBox={`0 0 ${object.width} ${object.height}`} overflow="visible">
-                    <g transform={`rotate(${object.rotation} ${object.width / 2} ${object.height / 2})`}>
-                      {preview?.artPreviewProxies?.[object.id]
-                        ? <ArtTransformDragPreviewProxy proxy={preview.artPreviewProxies[object.id]!} asSvg />
-                        : <GraphicGlyph object={object} definitionPrefix="canvas-" />}
-                    </g>
-                  </svg>
-                ) : (
-                  <>
-                    {object.type === "table" || object.type === "bracket" || object.type === "reaction-arrow" ? (
-                      <rect x={object.x} y={object.y}
-                        width={tableLayout?.width ?? object.width}
-                        height={tableLayout?.height ?? object.height}
-                        data-table-hit-target={object.type === "table" ? object.id : undefined}
-                        transform={object.type === "table" ? String(fragments[0].attrs.transform ?? "")
-                          : projectedPlaneSvgTransformForObject(object)}
-                        fill="transparent" pointerEvents="all" />
-                    ) : null}
-                    {fragments.map(fragment => {
-                      const prefix = editingTableCell?.tableId === object.id
-                        ? `${tableCellElementId(object.id, editingTableCell.rowId,
-                          editingTableCell.columnId)}-line-` : undefined;
-                      return renderStaticPageSvgFragment(prefix ? { ...fragment, children: fragment.children.filter(child =>
-                        child.kind === "text" || !String(child.attrs.id ?? "").startsWith(prefix)) } : fragment);
-                    })}
-                  </>
-                )}
-              </g>
+              <Fragment key={object.id}>
+                <g
+                  data-page-svg-object-visual={object.id}
+                  data-object-type={object.type}
+                  data-layer-index={Number(fragments[0]!.attrs["data-layer-index"])}
+                  opacity={object.id === spinningObjectId ? 0.1 : undefined}
+                  visibility={editingText ? "hidden" : undefined}
+                  transform={preview ? objectTransformPreviewSvgTransform(preview) : undefined}
+                  style={{ pointerEvents: object.id === spinningObjectId || editingText ? "none" : "auto" }}
+                  onPointerDown={event => handlers.onPointerDown(object.id, event)}
+                  onPointerMove={event => handlers.onPointerMove(object.id, event)}
+                  onPointerUp={event => handlers.onPointerUp(object.id, event)}
+                  onPointerCancel={handlers.onPointerCancel}
+                  onPointerLeave={event => handlers.onPointerLeave(object.id, event)}
+                  onContextMenu={event => handlers.onContextMenu(object.id, event)}
+                  onDoubleClick={object.type === "text" ? event => handlers.onTextDoubleClick(object.id, event) : undefined}
+                >
+                  {object.type === "graphic" ? (
+                    // Keep the existing art renderer and its generous stroke/fill catchers.
+                    // It uses the same art-engine geometry as export, in local coordinates.
+                    <svg x={object.x} y={object.y} width={object.width} height={object.height}
+                      viewBox={`0 0 ${object.width} ${object.height}`} overflow="visible">
+                      <g transform={`rotate(${object.rotation} ${object.width / 2} ${object.height / 2})`}>
+                        {preview?.artPreviewProxies?.[object.id]
+                          ? <ArtTransformDragPreviewProxy proxy={preview.artPreviewProxies[object.id]!} asSvg />
+                          : <GraphicGlyph object={object} definitionPrefix="canvas-" />}
+                      </g>
+                    </svg>
+                  ) : (
+                    <>
+                      {object.type === "table" || object.type === "bracket" || object.type === "reaction-arrow" ? (
+                        <rect x={object.x} y={object.y}
+                          width={tableLayout?.width ?? object.width}
+                          height={tableLayout?.height ?? object.height}
+                          data-table-hit-target={object.type === "table" ? object.id : undefined}
+                          transform={object.type === "table" ? String(fragments[0].attrs.transform ?? "")
+                            : projectedPlaneSvgTransformForObject(object)}
+                          fill="transparent" pointerEvents="all" />
+                      ) : null}
+                      {fragments.map(fragment => {
+                        const prefix = editingTableCell?.tableId === object.id
+                          ? `${tableCellElementId(object.id, editingTableCell.rowId,
+                            editingTableCell.columnId)}-line-` : undefined;
+                        return renderStaticPageSvgFragment(prefix ? { ...fragment, children: fragment.children.filter(child =>
+                          child.kind === "text" || !String(child.attrs.id ?? "").startsWith(prefix)) } : fragment);
+                      })}
+                    </>
+                  )}
+                </g>
+                {editingText ? (
+                  // Share the canvas viewport, transform and inherited text styles.
+                  // A second SVG in HTML chrome resolves its fractional viewport
+                  // independently, even with identical text attributes and viewBox math.
+                  <g className="text-object-edit-preview" aria-hidden="true"
+                    transform={preview ? objectTransformPreviewSvgTransform(preview) : undefined}>
+                    {fragments.map(renderStaticPageSvgFragment)}
+                  </g>
+                ) : null}
+              </Fragment>
             );
           })}
         </svg>
@@ -28944,16 +28953,6 @@ function DocumentObjectViewContent({
         ) : null}
         {editingText ? (
           <>
-            <svg
-              className="text-object-edit-preview"
-              aria-hidden="true"
-              style={editorPlacement.preview.style}
-              viewBox={editorPlacement.preview.viewBox}
-              preserveAspectRatio="none"
-            >
-              {/* Chrome already rotates about the stored object's centre. */}
-              {renderStaticPageSvgFragment(planTextObjectSvg({ ...object, rotation: 0 }, layerIndex))}
-            </svg>
             <textarea
               aria-label="Text object"
               autoFocus
