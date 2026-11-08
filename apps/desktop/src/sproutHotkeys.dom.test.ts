@@ -4,6 +4,9 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MoleculeObject } from "@chemdraft/chem-core";
+import { Molecule } from "openchemlib";
+import { depictSmiles2D } from "@chemdraft/ocl-adapter";
+import { insertSmilesMolecule } from "@chemdraft/document-workflow-core";
 import { MainWindow } from "./MainWindow";
 import { applyNativeAtomElementTarget, createPhase4Document, insertNativeSingleBondMolecule, nativeAtomSproutHotkeyTarget, nativeSingleBondHotkeyAtAtomTarget, selectDocumentObjects } from "./documentWorkflow";
 import { saveKeybindingSettings } from "./keybindingSettings";
@@ -32,6 +35,9 @@ describe.each([
     Object.defineProperty(navigator, "platform", { value: platform === "windows" ? "Win32" : "MacIntel", configurable: true });
     originalResizeObserver = globalThis.ResizeObserver;
     globalThis.ResizeObserver = TestResizeObserver as unknown as typeof ResizeObserver;
+    HTMLElement.prototype.setPointerCapture = () => {};
+    HTMLElement.prototype.releasePointerCapture = () => {};
+    HTMLElement.prototype.hasPointerCapture = () => false;
     window.history.replaceState(null, "", "/?agentBridge=1");
     container = document.createElement("div");
     document.body.append(container);
@@ -58,15 +64,15 @@ describe.each([
     return object;
   };
 
-  async function renderEthane(initial = insertNativeSingleBondMolecule(createPhase4Document("Fragment keys"), { x: 300, y: 300 })) {
+  async function renderEthane(initial = insertNativeSingleBondMolecule(createPhase4Document("Fragment keys"), { x: 300, y: 300 }), showToolbar = false) {
     await act(async () => {
       root.render(createElement(MainWindow, {
         initialActiveToolCommandId: "tool.bond",
         initialCrosshairsVisible: false,
         initialDocument: selectDocumentObjects(initial, initial.pages[0].id, []),
-        initialPaletteMode: "hidden",
+        initialPaletteMode: showToolbar ? "floating" : "hidden",
         initialRulersVisible: false,
-        nativePalette: true
+        nativePalette: !showToolbar
       }));
     });
     const rect = { x: 0, y: 0, left: 0, top: 0, right: 792, bottom: 612, width: 792, height: 612, toJSON: () => ({}) } as DOMRect;
@@ -74,7 +80,16 @@ describe.each([
       element.getBoundingClientRect = () => rect;
     }
     await act(async () => { await Promise.resolve(); });
-    expect(molecule().atoms).toHaveLength((initial.pages[0].objects[0] as MoleculeObject).atoms.length);
+    if (initial.pages[0].objects.length) expect(molecule().atoms).toHaveLength((initial.pages[0].objects[0] as MoleculeObject).atoms.length);
+  }
+
+  async function pointer(type: "pointerdown" | "pointermove" | "pointerup", point: { x: number; y: number }) {
+    await act(async () => {
+      const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0,
+        buttons: type === "pointerup" ? 0 : 1, clientX: point.x, clientY: point.y });
+      Object.defineProperties(event, { pointerId: { value: 7 }, pointerType: { value: "mouse" }, isPrimary: { value: true } });
+      container.querySelector(".page")!.dispatchEvent(event);
+    });
   }
 
   async function hoverPoint(point: { x: number; y: number }) {
@@ -130,6 +145,90 @@ describe.each([
     const oxygen = after.atoms.at(-1)!;
     expect(oxygen.element).toBe("O");
     expect(after.bonds.at(-1)).toMatchObject({ fromAtomId: before.atoms[0].id, toAtomId: oxygen.id, order: "double" });
+  });
+
+  it("hovering plain sulfur in CSC and pressing 2 adds one undoable oxo", async () => {
+    const initial = insertSmilesMolecule(createPhase4Document("Sulfur oxo key"), { x: 300, y: 300 }, depictSmiles2D("CSC"), "CSC");
+    await renderEthane(initial);
+    const before = molecule();
+    const sulfurIndex = before.atoms.findIndex(atom => atom.element === "S");
+    expect(before.atoms[sulfurIndex].labelLiteral).toBeUndefined();
+    await hoverAtom(sulfurIndex);
+    const event = await press("2");
+    expect(event.defaultPrevented).toBe(true);
+    const after = molecule();
+    expect(after.atoms).toHaveLength(before.atoms.length + 1);
+    expect(after.atoms.slice(0, before.atoms.length)).toEqual(before.atoms);
+    expect(after.bonds.at(-1)).toMatchObject({ fromAtomId: before.atoms[sulfurIndex].id, order: "double" });
+    expect(Molecule.fromSmiles(after.structure).getIDCode()).toBe(Molecule.fromSmiles("CS(=O)C").getIDCode());
+    expect(container.querySelector("[data-status-message]")?.textContent).toContain("Added carbonyl or oxo");
+    await press("z", platform === "macos" ? { metaKey: true } : { ctrlKey: true });
+    expect(molecule()).toEqual(before);
+    await press("z", platform === "macos" ? { metaKey: true, shiftKey: true } : { ctrlKey: true, shiftKey: true });
+    expect(molecule()).toEqual(after);
+  });
+
+  it("hovering plain phosphorus in CP and pressing 2 retains both H, refuses another oxo, and undoes exactly", async () => {
+    const initial = insertSmilesMolecule(createPhase4Document("Phosphorus oxo key"), { x: 300, y: 300 }, depictSmiles2D("CP"), "CP");
+    await renderEthane(initial);
+    const before = molecule();
+    const phosphorusIndex = before.atoms.findIndex(atom => atom.element === "P");
+    expect(before.atoms[phosphorusIndex].labelLiteral).toBeUndefined();
+    await hoverAtom(phosphorusIndex);
+    expect((await press("2")).defaultPrevented).toBe(true);
+    const after = molecule();
+    expect(after.atoms).toHaveLength(before.atoms.length + 1);
+    expect(Molecule.fromSmiles(after.structure).getIDCode()).toBe(Molecule.fromSmiles("C[PH2]=O").getIDCode());
+    expect(after.chemistry?.formula).toBe("CH5OP");
+    expect(Molecule.fromSmiles(after.structure).getMolecularFormula().formula).toBe("CH5OP");
+    expect(container.querySelector("[data-status-message]")?.textContent).toContain("Added carbonyl or oxo");
+    await hoverAtom(phosphorusIndex);
+    await press("2");
+    expect(molecule()).toEqual(after);
+    expect(container.querySelector("[data-status-message]")?.textContent)
+      .toContain("Cannot add carbonyl or oxo to hovered atom: that atom has no free valence");
+    await press("z", platform === "macos" ? { metaKey: true } : { ctrlKey: true });
+    expect(molecule()).toEqual(before);
+    await press("z", platform === "macos" ? { metaKey: true, shiftKey: true } : { ctrlKey: true, shiftKey: true });
+    expect(molecule()).toEqual(after);
+  });
+
+  it("draws C–C, hover-types terminal S, ends continuation with the Bond toolbar, then adds undoable oxos", async () => {
+    await renderEthane(createPhase4Document("Hover-typed terminal sulfur"), true);
+    await pointer("pointerdown", { x: 300, y: 300 });
+    await pointer("pointermove", { x: 340, y: 300 });
+    await pointer("pointerup", { x: 340, y: 300 });
+    expect(molecule().atoms).toHaveLength(2);
+    expect(molecule().bonds).toHaveLength(1);
+    await hoverAtom(1);
+    await press("s");
+    expect(molecule().atoms[1].element).toBe("S");
+    const bondButton = container.querySelector<HTMLButtonElement>('[data-command-id="tool.bond"]');
+    expect(bondButton).not.toBeNull();
+    await act(async () => {
+      bondButton!.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true, button: 0, buttons: 1 }));
+      bondButton!.focus();
+      bondButton!.click();
+    });
+    expect(snapshot().activeToolCommandId).toBe("tool.bond");
+    expect(container.querySelector('[data-atom-label-editor="true"]')).toBeNull();
+    const before = molecule();
+    for (const smiles of ["C[SH]=O", "C[SH](=O)=O"]) {
+      await hoverAtom(1);
+      await press("2");
+      expect(container.querySelector("[data-status-message]")?.textContent).toContain("Added carbonyl or oxo");
+      expect(Molecule.fromSmiles(molecule().structure).getIDCode()).toBe(Molecule.fromSmiles(smiles).getIDCode());
+    }
+    const full = molecule();
+    await hoverAtom(1);
+    await press("2");
+    expect(molecule()).toEqual(full);
+    expect(container.querySelector("[data-status-message]")?.textContent)
+      .toContain("Cannot add carbonyl or oxo to hovered atom: that atom has no free valence");
+    await press("z", platform === "macos" ? { metaKey: true } : { ctrlKey: true });
+    expect(molecule().atoms).toHaveLength(before.atoms.length + 1);
+    await press("z", platform === "macos" ? { metaKey: true } : { ctrlKey: true });
+    expect(molecule()).toEqual(before);
   });
 
   it("key 9 over a tertiary carbon attaches isopropyl through the registry", async () => {
