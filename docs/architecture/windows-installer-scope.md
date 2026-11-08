@@ -116,4 +116,4 @@ Before a signed CI run, update any existing single-installer SignPath artifact c
 select both installers, as documented in `docs/releasing/windows-signing.md`. The workflow verifies
 the exact returned filename set and requires a valid Authenticode signature on each installer.
 
-The build stamp in `apps/desktop/src/MainWindow.tsx` is bumped so the build is identifiable; `scripts/ci/require-build-stamp-bump.sh` alone would not require it, since the only change under `apps/desktop/src` is a test file.
+The build stamp in `apps/desktop/src/MainWindow.tsx` is bumped so the build is identifiable; `scripts/ci/require-build-stamp-bump.sh` alone would not require it, since the only other change under `apps/desktop/src` is a test file.
