@@ -121,6 +121,10 @@ describe.each(["macos", "windows"] as const)("ring label commits (%s)", platform
     })));
     const rect = { x: 0, y: 0, left: 0, top: 0, right: 792, bottom: 612, width: 792, height: 612, toJSON: () => ({}) } as DOMRect;
     for (const e of container.querySelectorAll<HTMLElement>(".page, .canvas-region")) e.getBoundingClientRect = () => rect;
+    // Canvas capture checks client dimensions to exclude scrollbars; jsdom has no layout.
+    const canvas = container.querySelector<HTMLElement>(".canvas-region")!;
+    vi.spyOn(canvas, "clientWidth", "get").mockReturnValue(rect.width);
+    vi.spyOn(canvas, "clientHeight", "get").mockReturnValue(rect.height);
     await act(async () => { await Promise.resolve(); });
   }
   const snapshot = () => window.__CHEMDRAFT_AGENT__!.snapshot();
@@ -759,10 +763,16 @@ describe.each(["macos", "windows"] as const)("ring label commits (%s)", platform
       return;
     }
     if (finish === "tool") await command("tool.select");
+    else if (finish === "click") {
+      // Canvas capture consumes this press to finish editing, without placing a second box.
+      await pointer("pointerdown", { x: 50, y: 50 });
+      await pointer("pointerup", { x: 50, y: 50 });
+      expect(document.activeElement).toBe(container.querySelector(".canvas-region"));
+    }
     else {
-      if (finish === "click") await pointer("pointerdown", { x: 50, y: 50 });
-      // jsdom omits pointerdown's native focus default; supply the resulting blur.
+      // Exercise the original blur-only finish independently of canvas capture.
       const focused = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+      expect(document.activeElement).toBe(textEditor);
       await act(async () => textEditor.blur()); focused.mockRestore();
     }
     expect(container.querySelector(".text-object-editor")).toBeNull();
