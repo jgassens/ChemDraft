@@ -3601,7 +3601,6 @@ textarea:focus-visible,
   pointer-events: none;
 }
 .object-transform-preview-visual * { pointer-events: none !important; }
-.document-object-chrome .text-object-edit-preview { opacity: 1; }
 
 .crosshair-overlay {
   --crosshair-tick-minor-length: 4px;
@@ -5543,12 +5542,6 @@ textarea:focus-visible,
 }
 
 .text-object-edit-preview {
-  position: absolute;
-  display: block;
-  overflow: visible;
-  z-index: 1;
-  min-width: 0;
-  min-height: 0;
   pointer-events: none;
 }
 
@@ -7833,10 +7826,6 @@ textarea:focus-visible,
   border-color: transparent;
   background: transparent;
 }
-.text-object-edit-preview {
-  opacity: 0;
-}
-
 .arrangement-spacing-dialog { box-sizing: border-box; font-size: 13px; padding: 18px; color: var(--cd-text-primary); background: var(--cd-bg-panel); min-height: 100vh; max-height: 100vh; overflow-y: auto; }
 .plugin-prompt-backdrop > .arrangement-spacing-dialog { min-height: 0; width: min(540px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; border: 1px solid var(--cd-border); border-radius: var(--cd-radius-panel); }
 .arrangement-spacing-dialog h2 { margin-top: 0; font-size: 16px; }
