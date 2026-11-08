@@ -45,7 +45,7 @@ note, because it reads as current: this one sat unchanged from late May through 
 entire plugin program, the toolbar honesty slice, Spin 3D refinement, and three releases shipped
 past it.
 
-The active slice is never described here — it lives in `PLANS.md`. Completed slices and the
+The active slice is never described here — it lives in `docs/plans/PLANS.md`. Completed slices and the
 reasoning behind them live in `docs/shipped/README.md`.
 
 ### Shipped and stable
@@ -65,7 +65,7 @@ reasoning behind them live in `docs/shipped/README.md`.
 - Drawing tools: bonds, chains, atom labels, rings, brackets, orbitals, glyph stamps, formula text,
   and the four reaction-arrow families as semantic `reaction-arrow` objects. (Rebuilding those
   arrows as editable art objects is in flight on `codex/toolbar-bug-fixes`, not yet on `main` —
-  see `PLANS.md`.)
+  see `docs/plans/PLANS.md`.)
 - `packages/art-engine` and the art inspector, which styles graphics and molecules.
 - Spin 3D with selectable refinement modes, a Preferences window, and `packages/engine3d-api` as the
   versioned protocol to a 3D sidecar.
@@ -545,8 +545,8 @@ chemdraft/
     rdkit-oracle/
     scripts/
 
-  PLAN.md
-  PLANS.md
+  docs/plans/PLAN.md
+  docs/plans/PLANS.md
   AGENTS.md
   README.md
   LICENSE
@@ -1103,7 +1103,7 @@ phase ordering.
 The original "stage correction" note is preserved because its warning still holds: the first
 scaffold's dashboard-like UI was never product direction, and nothing should go back to polishing it.
 
-There is no single "current lane". The active slice lives in `PLANS.md`.
+There is no single "current lane". The active slice lives in `docs/plans/PLANS.md`.
 
 ### Phase 0: Repository foundation
 
@@ -1121,7 +1121,7 @@ Deliverables:
 - Linting and formatting where practical
 - Vitest
 - README
-- PLAN.md
+- docs/plans/PLAN.md
 - AGENTS.md
 - Package skeletons
 - `examples/plugins/molscribe-ocsr` README and manifest stub only
@@ -1572,7 +1572,7 @@ Candidate plugins:
 **Historical (reviewed 2026-07-30).** Tasks 1–11 are done, and the sequence stopped being followed
 well before that — the plugin program ran to completion out of order. Kept for traceability and
 because the *shape* of the guidance still holds: small, sequential, bounded tasks. Do not read it as
-a queue; take the next piece of work from `PLANS.md` or from the outstanding items flagged in §1.1
+a queue; take the next piece of work from `docs/plans/PLANS.md` or from the outstanding items flagged in §1.1
 and §17.
 
 Remaining unstarted: Task 12 (MOL/SDF/SMILES/RXN import/export), Task 15 (best-effort CDX

@@ -11,6 +11,11 @@ carries the text `avogadro3d-sidecar placeholder`, which the app looks for (and 
 Windows it also requires a PE image), so a placeholder reports the sidecar
 unavailable rather than failing to start it. Keep that text in any new placeholder.
 
+macOS sidecar builds must target macOS 11.0, the app's declared minimum. Check
+`otool -l apps/desktop/src-tauri/binaries/avogadro3d-sidecar-aarch64-apple-darwin`:
+the `LC_BUILD_VERSION` minos (or `LC_VERSION_MIN_MACOSX` version) must be no
+greater than 11.0.
+
 The runtime bridge does not execute arbitrary renderer-provided paths. During
 development, set `CHEMDRAFT_ENGINE3D_SIDECAR` to a built sidecar executable.
 Release packaging should replace the placeholder matching the target triple with
