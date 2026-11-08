@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createEmptyDocument, TextObjectSchema } from "@chemdraft/chem-core";
-import { planPageSvgRender, measureNativeTextSpanLineWidth, textObjectSpanLines } from "./index";
+import { planPageSvgRender, planTextObjectSvg, measureNativeTextSpanLineWidth, textObjectSpanLines } from "./index";
 import { elementFragments } from "./testing";
 import { planTextObjectEditorPlacement, planTextObjectPlacement } from "./textPlacement";
 
@@ -8,6 +8,38 @@ const cases = [0.5, 1, 2].flatMap(zoom => (["left", "center", "right"] as const)
   (["auto", "fixed-width", "fixed-size"] as const).map(textBoxSizingMode => ({ zoom, textAlign, textBoxSizingMode }))));
 
 describe("SVG and CSS text placement", () => {
+  it.each([1, 1.25, 1.5, 2].flatMap(dpr => [14, 18].flatMap(points =>
+    cases.filter(item => item.zoom !== 0.5).map(item => ({ ...item, dpr, points })))))(
+    "keeps glyph origins below 0.25 CSS px: $points pt, $textAlign, zoom $zoom, DPR $dpr, $textBoxSizingMode",
+    ({ zoom, textAlign, textBoxSizingMode, points, dpr }) => {
+      const object = TextObjectSchema.parse({ id: "text", type: "text", x: 203.125, y: 160.375, width: 100.3, height: 32,
+        text: "HHHHHH", style: { fontFamily: "Arial", fontSizePx: points * 96 / 72, textAlign, textBoxSizingMode } });
+      const page = { ...createEmptyDocument().pages[0], objects: [object] };
+      const canvas = planPageSvgRender(page).fragments.flatMap(elementFragments).find(fragment => fragment.tag === "text")!;
+      const scale = zoom - 2 / page.height;
+      // Fractional screen origins exercise pixel phases on standard and scaled displays.
+      const offset = { x: 0.375 / dpr, y: 0.625 / dpr };
+      const metrics = { ascentPx: 17.25 * scale, descentPx: 4.125 * scale };
+      const style = planTextObjectPlacement(object).style;
+      const advance = measureNativeTextSpanLineWidth(textObjectSpanLines(object)[0], style) * scale;
+      const { frame, content, preview } = planTextObjectEditorPlacement(object, scale, advance / scale, metrics, offset);
+      const glyph = planTextObjectSvg({ ...object, rotation: 0 }, 0);
+      expect(glyph.attrs).toEqual(canvas.attrs);
+      expect(glyph.children).toEqual(canvas.children);
+      const [vx, vy, vw, vh] = preview.viewBox.split(" ").map(Number);
+      const anchor = textAlign === "center" ? 0.5 : textAlign === "right" ? 1 : 0;
+      const canvasX = offset.x + Number(canvas.attrs.x) * scale - anchor * advance;
+      const canvasY = offset.y + Number(canvas.attrs.y) * scale;
+      const previewX = frame.left + preview.style.left + (Number(glyph.attrs.x) - vx) * preview.style.width / vw - anchor * advance;
+      const previewY = frame.top + preview.style.top + (Number(glyph.attrs.y) - vy) * preview.style.height / vh;
+      const editorX = frame.left + content.left + anchor * (content.width - advance);
+      const editorY = frame.top + content.top + (parseFloat(content.lineHeight) + metrics.ascentPx - metrics.descentPx) / 2;
+      for (const [actual, expected] of [[previewX, canvasX], [previewY, canvasY], [editorX, canvasX], [editorY, canvasY]]) {
+        expect(Math.abs(actual * dpr - expected * dpr) / dpr).toBeLessThan(0.25);
+        expect(actual).toBeCloseTo(expected, 10);
+      }
+    });
+
   it.each(cases.flatMap(placement => [0, 0.1].flatMap(height =>
     ["", "H"].map(text => ({ ...placement, height, text })))))(
     "keeps a one-line hit area and baseline for '$text', height $height, $textAlign, $zoom, $textBoxSizingMode",

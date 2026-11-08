@@ -249,6 +249,7 @@ import {
   nativeTextScriptFontScale,
   measureNativeTextSpanLineWidth,
   planTextObjectPlacement,
+  planTextObjectSvg,
   planTextObjectEditorPlacement,
   type NativeTextCssMetrics,
   textObjectSpanLines,
@@ -1719,7 +1720,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.08.09.21-opus";
+const CURRENT_BUILD_STAMP = "11.08.12.00-opus";
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -28948,7 +28949,16 @@ function DocumentObjectViewContent({
         ) : null}
         {editingText ? (
           <>
-            <TextObjectContent object={object} editing placementStyle={editorPlacement.content} />
+            <svg
+              className="text-object-edit-preview"
+              aria-hidden="true"
+              style={editorPlacement.preview.style}
+              viewBox={editorPlacement.preview.viewBox}
+              preserveAspectRatio="none"
+            >
+              {/* Chrome already rotates about the stored object's centre. */}
+              {renderStaticPageSvgFragment(planTextObjectSvg({ ...object, rotation: 0 }, layerIndex))}
+            </svg>
             <textarea
               aria-label="Text object"
               autoFocus
@@ -31662,12 +31672,12 @@ function formatSvgNumber(value: number): number {
   return Number(value.toFixed(3));
 }
 
-function TextObjectContent({ editing = false, object, noWrap = false, placementStyle }: {
-  editing?: boolean; object: TextObject; noWrap?: boolean; placementStyle?: CSSProperties;
+function TextObjectContent({ object, noWrap = false }: {
+  object: TextObject; noWrap?: boolean;
 }) {
   return (
-    <span className={["text-object-content", editing ? "text-object-edit-preview" : ""].filter(Boolean).join(" ")}
-      style={{ ...placementStyle, ...(noWrap ? { whiteSpace: "pre", overflowWrap: "normal" } : {}) }}>
+    <span className="text-object-content"
+      style={noWrap ? { whiteSpace: "pre", overflowWrap: "normal" } : undefined}>
       {textObjectSpansForRendering(object).map((span, index) => (
         <span
           className="text-object-run"
