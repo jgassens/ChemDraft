@@ -8,7 +8,7 @@ import {
   measureTextRun, planTableLayout, tableCellElementId, transformPointForObject
 } from "@chemdraft/layout-engine";
 import { MainWindow } from "./MainWindow";
-import { createPhase4Document, insertNativeTextObject } from "./documentWorkflow";
+import { createPhase4Document, insertNativeTextObject, insertTableIntoDocument } from "./documentWorkflow";
 import { DOM_COMMAND_EVENT } from "./window-manager";
 import { MemoryStorage } from "./testSupport/memoryStorage";
 
@@ -46,7 +46,7 @@ describe.each(["macos", "windows"] as const)("table real DOM editing (%s)", plat
     window.history.replaceState(null, "", "/"); delete window.__CHEMDRAFT_AGENT__;
   });
   async function mount(options: { rows?: string[][]; formula?: "auto" | "off";
-    cellFormula?: "auto" | "off"; rotation?: number; mixedSelection?: boolean; narrow?: boolean } = {}) {
+    cellFormula?: "auto" | "off"; rotation?: number; mixedSelection?: boolean; narrow?: boolean; inserted?: boolean } = {}) {
     let id = 0;
     const table = buildTableObject({ columns: [{ widthPx: options.narrow ? 12 : 100, formula: options.formula }, { widthPx: 110, formula: options.formula }],
       rows: options.rows ?? [["", ""], ["", ""]], style: { fontFamily: "Georgia", fontSizePx: 18 } },
@@ -55,8 +55,10 @@ describe.each(["macos", "windows"] as const)("table real DOM editing (%s)", plat
     table.style.color = "#234567";
     if (options.cellFormula) table.rows[0].cells[0].formula = options.cellFormula;
     const empty = createPhase4Document("Table editing");
-    let doc = applyPatches(empty, [{ op: "addObject", pageId: empty.pages[0].id, object: table },
-      { op: "setSelection", pageId: empty.pages[0].id, objectIds: [table.id] }]);
+    let doc = options.inserted ? insertTableIntoDocument(empty, { rows: 2, columns: 4, headerRows: 1, preset: "three-line",
+      center: { x: 300, y: 300 }, textStyle: { fontSizePx: 18 }, newId: prefix => `${prefix}-${++id}` }) :
+      applyPatches(empty, [{ op: "addObject", pageId: empty.pages[0].id, object: table },
+        { op: "setSelection", pageId: empty.pages[0].id, objectIds: [table.id] }]);
     if (options.mixedSelection) {
       doc = insertNativeTextObject(doc, { x: 400, y: 400 }, "Text");
       doc = applyPatches(doc, [{ op: "setSelection", pageId: doc.pages[0].id,
@@ -113,6 +115,24 @@ describe.each(["macos", "windows"] as const)("table real DOM editing (%s)", plat
     await act(async () => window.dispatchEvent(new CustomEvent(DOM_COMMAND_EVENT, { detail: { commandId } })));
   }
   const cell = (row = 0, column = 0) => currentTable().rows[row].cells[column];
+
+  it("keeps the next column under the same click after typing into an inserted table", async () => {
+    await mount({ inserted: true });
+    const before = planTableLayout(currentTable());
+    expect(before.bodyBox.width).toBe(264);
+    const first = before.cells.find(item => item.rowIndex === 1 && item.columnIndex === 0)!.box;
+    const next = before.cells.find(item => item.rowIndex === 1 && item.columnIndex === 1)!.box;
+    await openBox({ ...first, x: first.x + 5, width: 20 });
+    await type("7");
+    const rect = page().getBoundingClientRect();
+    await pointer(page(), "pointerdown", rect.left + 5, rect.top + 5);
+    await pointer(page(), "pointerup", rect.left + 5, rect.top + 5);
+    expect(cell(1, 0).text).toBe("7");
+    expect(planTableLayout(currentTable()).bodyBox.width).toBe(before.bodyBox.width);
+    await openBox({ ...next, x: next.x + 5, width: 20 });
+    await type("next"); await key("Enter");
+    expect(cell(1, 1).text).toBe("next");
+  });
 
   it("edits a caption with rich text in one undo entry and cancels Escape", async () => {
     await mount(); await command("table.caption.toggle");

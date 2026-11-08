@@ -63,6 +63,9 @@ describe("command-scoped native table insertion", () => {
     });
     await s.host.invokeCommand("plugin.tables.insert");
     expect(s.document().pages[0]!.objects[0]).toMatchObject({ type: "table", x: 120, y: 140 });
+    const inserted = s.document().pages[0]!.objects[0];
+    if (inserted.type !== "table") throw new Error("Expected table");
+    expect(inserted.tableStyle.autoColumnMinEm).toBeUndefined();
   });
   it("preserves typed validation errors naming the bad row before a patch reaches the host", async () => {
     const s = setup(context => context.documents.insertTable!({ columns: [{}, {}], rows: [["missing"]] }));
