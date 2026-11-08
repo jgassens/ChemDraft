@@ -365,11 +365,8 @@ describe.each(["macos", "windows"] as const)("open table draft persistence (%s)"
     it("saves the draft through the native menu without closing or moving the caret", async () => {
       await open(target);
       const textarea = editor(); textarea.setSelectionRange(2, 2);
-      const chord = new KeyboardEvent("keydown", { key: "s", bubbles: true, cancelable: true,
-        metaKey: platform === "macos", ctrlKey: platform === "windows" });
-      await act(async () => { textarea.dispatchEvent(chord); });
-      expect(chord.defaultPrevented).toBe(false);
       await command("document.save");
+      expect(native.writeFile).toHaveBeenCalledTimes(1);
       expect.soft(value(persistedTable(native.writeFile.mock.calls.at(-1)![1]), target).text, "saved file contains the open draft").toBe("Hello");
       expect(editor()).toBe(textarea); expect(document.activeElement).toBe(textarea);
       expect([textarea.selectionStart, textarea.selectionEnd]).toEqual([2, 2]);

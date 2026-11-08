@@ -1,5 +1,5 @@
 /**
- * The provenance report (PLANS.md §9 Release 1, §10).
+ * The provenance report (docs/plans/PLANS.md §9 Release 1, §10).
  *
  * "A copyable/exportable provenance report" — the artifact that makes Release 1's numbers reviewable
  * by someone who was not watching them being computed. It answers, for every value on screen: which
@@ -347,7 +347,7 @@ export function buildAnalysisReport(run: AnalysisRun, options: { title?: string 
   // Split out by unit rather than by claim: an m/z is a mass-to-charge ratio, which is a different
   // dimension from every other number in the report, and a dimension is a real distinction rather
   // than another classification axis. Positions only — the section carries no intensities, because
-  // which ions a spectrum actually shows is not something this knows (PLANS.md §9, Release 2).
+  // which ions a spectrum actually shows is not something this knows (docs/plans/PLANS.md §9, Release 2).
   const scalars = ok.filter(isKind("scalar"));
   const ions = scalars.filter((result) => result.unit === "thomson");
   if (ions.length > 0) {

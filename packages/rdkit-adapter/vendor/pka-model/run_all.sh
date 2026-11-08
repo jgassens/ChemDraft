@@ -151,7 +151,7 @@ print(f"   consistent: {forest['training']['grouping']}, "
 CHECK
 
 # The macroscopic yardstick. Not a training step -- it consumes the forest and reports the fold's
-# accuracy against tabulated titration constants, which is the figure PLANS.md publishes.
+# accuracy against tabulated titration constants, which is the figure docs/plans/PLANS.md publishes.
 echo
 echo "== macroscopic validation =="
 "$PYTHON" macro_validate.py

@@ -1,5 +1,5 @@
 /**
- * Adduct m/z tooling (PLANS.md §9, Release 2).
+ * Adduct m/z tooling (docs/plans/PLANS.md §9, Release 2).
  *
  * "m/z and adduct tooling · fragment formulas and exact-mass bookkeeping with **no** intensity or
  * MS/MS claims."

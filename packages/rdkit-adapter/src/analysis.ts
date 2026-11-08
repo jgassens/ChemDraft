@@ -1,5 +1,5 @@
 /**
- * The real RDKit-backed structure analysis (PLANS.md §9, Release 1).
+ * The real RDKit-backed structure analysis (docs/plans/PLANS.md §9, Release 1).
  *
  * Replaces the fixture-backed placeholder: ten hardcoded SMILES with hand-entered masses, which §7
  * calls what it is — "a second implementation by another name".
@@ -146,7 +146,7 @@ export interface AnalyzeStructureRequest {
   methodIds?: readonly string[];
   /**
    * Derived interpretations to offer, in preference order, when a method declines under `source`
-   * because of an element it has no parameters for (PLANS.md §1).
+   * because of an element it has no parameters for (docs/plans/PLANS.md §1).
    *
    * The source result is **kept** alongside the derived one — nothing is silently substituted. A run
    * on sodium benzoate carries both "Crippen logP: unsupported, Na has no parameters" and "Crippen
@@ -162,7 +162,7 @@ export interface AnalyzeStructureRequest {
    */
   interpretationOverride?: DerivedInterpretationId;
   /**
-   * Refuse a structure with more than this many heavy atoms (PLANS.md §5, "molecule and memory
+   * Refuse a structure with more than this many heavy atoms (docs/plans/PLANS.md §5, "molecule and memory
    * limits"). Enforced here rather than in the scheduler because the atom count is only knowable after
    * parsing, and it is the honest proxy for memory: MinimalLib exposes no heap cap, so bounding the
    * molecule is what bounds worst-case allocation. Omit for no limit.

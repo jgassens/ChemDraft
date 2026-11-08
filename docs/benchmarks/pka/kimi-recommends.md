@@ -47,7 +47,7 @@ fixtures, decline-with-reason — is the best thing about it.
    calibration, consensus figures, and parity fixture all derive from the *same* feature-code
    version. During my review the fixture and forest were regenerated minutes apart — precisely the
    train/serve skew the fixture exists to catch, one level up. A 10-line `run_all.sh` closes it.
-5. Stale figures in historical prose: PLANS.md:414,421,423 still carries 1.62-era r-values
+5. Stale figures in historical prose: docs/plans/PLANS.md:414,421,423 still carries 1.62-era r-values
    (0.84/0.42) in what reads like current narrative; minor, since §399-402 is now correct.
 
 ## Suggested improvements, prioritized by accuracy per unit effort
@@ -73,9 +73,9 @@ fixtures, decline-with-reason — is the best thing about it.
    type and by acidic/basic. This is what would have caught the histidine-amine move automatically,
    and tells users where the 1.21 actually lives (carboxyls vs tetrazoles).
 5. **Vendor the external eval.** The Novartis+SAMPL n = 38 figure (1.24) is quoted in the contract,
-   the header, and PLANS.md, but no script in the repo regenerates it — by your own rule, a number
+   the header, and docs/plans/PLANS.md, but no script in the repo regenerates it — by your own rule, a number
    nobody can regenerate is a number nobody can check.
-6. **Longer term**: protonation-state enumeration (already "still open" in PLANS.md) is the right
+6. **Longer term**: protonation-state enumeration (already "still open" in docs/plans/PLANS.md) is the right
    answer to macro-pKa, and note Claude already measured and rejected the shortcut — recovered
    multi-microstate labels score 1.91 vs 1.17. If GBM isn't enough, site-centered ECFP counts are
    the next feature step; the cycle-walking infrastructure in `pkaAromaticity.ts` is most of the

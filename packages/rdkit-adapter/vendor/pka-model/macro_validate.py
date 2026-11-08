@@ -5,7 +5,7 @@ it reports macroscopic constants, which are what reference tables list. `protona
 microstate ladder into those, and this script is the yardstick for that fold.
 
 It exists because the earlier version of this measurement lived in a throwaway script, so the figure
-quoted in PLANS.md could not be reproduced or re-checked -- the same way `pka_train.py` went unvendored
+quoted in docs/plans/PLANS.md could not be reproduced or re-checked -- the same way `pka_train.py` went unvendored
 long enough for a broken cross-validation grouping to survive unnoticed. Every number this project
 publishes should be regenerable by running something in this directory.
 
@@ -66,7 +66,7 @@ def run(drop_tautomer_states=True, w=W, model="site-pka-gnn.json"):
     return rows
 
 
-# The three columns PLANS.md publishes, each regenerable here rather than quoted from an old run.
+# The three columns docs/plans/PLANS.md publishes, each regenerable here rather than quoted from an old run.
 # "raw" is the fold with neither correction: no electrostatic coupling (W = 0) and the ylide microstates
 # left in. Each column then adds one thing.
 VARIANTS = [

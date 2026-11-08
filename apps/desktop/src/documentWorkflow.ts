@@ -5574,6 +5574,7 @@ export function updateNativeTextObjectScript(
     return document;
   }
   const { object } = location;
+  const spans = textObjectSpansForWorkflow(object);
 
   return applyPatch(
     document,
@@ -5581,7 +5582,9 @@ export function updateNativeTextObjectScript(
       op: "updateObject",
       objectId,
       changes: {
-        spans: [{ text: object.text, script, style: {} }]
+        spans: spans.length > 0
+          ? normalizeTextSpans(spans.map(span => ({ ...span, script })))
+          : [{ text: object.text, script, style: {} }]
       }
     },
     { now: phase4Timestamp }
