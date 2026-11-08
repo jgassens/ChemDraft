@@ -1,5 +1,5 @@
 /**
- * Derived interpretations (PLANS.md §1, Phase 3).
+ * Derived interpretations (docs/plans/PLANS.md §1, Phase 3).
  *
  * "Parse once → preserve the source representation → derive explicitly named interpretations →
  * calculate against a specified interpretation." Phase 2 shipped the `source` end of that; this module

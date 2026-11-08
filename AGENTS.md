@@ -3,7 +3,7 @@
 ChemDraft is a lightweight, open-source chemical drawing application with a plugin architecture. The
 core stays small, stable, testable, legally clean, and focused on drawing. This file governs every AI
 agent and human contributor, on every branch. It is repo-wide: scope for one slice belongs in
-`PLANS.md`, never here.
+`docs/plans/PLANS.md`, never here.
 
 ## 1. Both platforms, every change
 
@@ -53,13 +53,13 @@ other platform is a follow-up" is not an acceptable state to merge.
 
 ## 2. Orientation
 
-Before editing implementation files, read `PLANS.md`, this file, `README.md`, `package.json`, and
+Before editing implementation files, read `docs/plans/PLANS.md`, this file, `README.md`, `package.json`, and
 `pnpm-workspace.yaml`. If the work touches a package, read its README too.
 
-- **`PLANS.md`** is the slice in flight, and binds unless the user gives newer instructions. Keep
+- **`docs/plans/PLANS.md`** is the slice in flight, and binds unless the user gives newer instructions. Keep
   edits to its files and behaviors. At closeout the slice moves to `docs/shipped/README.md`, so
-  `PLANS.md` never becomes a changelog.
-- **`PLAN.md`** is the product charter: whether a thing should be built at all. Read it only when
+  `docs/plans/PLANS.md` never becomes a changelog.
+- **`docs/plans/PLAN.md`** is the product charter: whether a thing should be built at all. Read it only when
   scoping a feature (§3, §4, §19), deciding core versus plugin (§5 non-goals, §21), adding a
   dependency or touching licensing (§15), judging release readiness (§1.1, §4, §19), or changing a
   user-facing surface (§6.15).
@@ -261,7 +261,7 @@ tolerance.
 ## 8. Analysis and prediction claims
 
 The plan of record is `docs/shipped/analyzers-property-prediction-suite.md`. A bare "§n" in the
-analysis source, or a stale "PLANS.md §n" there, refers to that document.
+analysis source, or a stale "docs/plans/PLANS.md §n" there, refers to that document.
 
 - **One parse, many named interpretations.** Parse once through RDKit. Composition, charge, mass, and
   isotopes describe what the user drew. A method wanting a desalted or neutral form gets a *derived*
@@ -296,7 +296,7 @@ analysis source, or a stale "PLANS.md §n" there, refers to that document.
   `projectSpin`. Projection helpers stay in `apps/desktop/src/interaction/`, flattening in
   `documentWorkflow`. Changes here prove themselves with `spin3dModel`, `spinFlatten`,
   `spinFlattenStereo`, `flattenRoundTrip`, `spinOverlay`, and `rotation3d` tests. Force-field work
-  follows `PLAN-spin3d-forcefields.md`.
+  follows `docs/plans/spin3d-forcefields.md`.
 
 ## 10. Commands and toolbars
 
@@ -422,7 +422,7 @@ Keep tasks narrow and never invent a dependency's capabilities. At closeout:
   `apps/desktop/src`, `src-tauri/src`, or `packages`). Its suffix names the authoring agent (`-opus`,
   `-codex`, `-fable`), never the branch.
 - Launch the new build (§15) and run the gauntlet (§14).
-- Move a finished slice from `PLANS.md` to `docs/shipped/README.md`.
+- Move a finished slice from `docs/plans/PLANS.md` to `docs/shipped/README.md`.
 - Report: **Summary**, **Files changed**, **Tests run**, **Results** (pass or fail, honestly),
   **Platforms** (macOS and Windows each verified, or unverified with what remains to check),
   **Known limitations**, and **One recommended next task**.

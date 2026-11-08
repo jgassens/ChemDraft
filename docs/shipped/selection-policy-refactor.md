@@ -336,4 +336,4 @@ git diff --check
 - D2 (continuation UX): drop the no-shift "click another ring to add" behavior (recommended,
   matches atoms/objects), or keep it explicitly as documented behavior?
 - D3 (region rings): should shift-marquee/lasso also select ring interiors when the inspector is
-  open, or keep regions object/atom/bond-only (PLANS.md slice-1 default)?
+  open, or keep regions object/atom/bond-only (docs/plans/PLANS.md slice-1 default)?
