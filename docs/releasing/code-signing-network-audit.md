@@ -1,4 +1,4 @@
-# Code signing policy: desktop network audit (draft)
+# Code signing policy: desktop network audit
 
 Source review: 2026-11-02. Repository-relative file:line references describe the checkout reviewed.
 This is a source audit, not a packet capture or certification of third-party services. No builds,
@@ -134,5 +134,5 @@ Stored consent is reused and revocable. Proxy/certificate settings can be inheri
   are not established by this desktop audit.
 - OS services (such as certificate validation), updater/CLI/package internals and external plugin
   release contents were not exhaustively traced. Neither macOS nor Windows runtime traffic was
-  verified. Owner review should resolve or retain these qualifications before publication and
-  repeat the audit as dependencies change. A “never transfers information” claim is unsupported.
+  verified. These qualifications are retained in the published pages. A “never transfers information”
+  claim is unsupported.
