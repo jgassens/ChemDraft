@@ -27487,7 +27487,7 @@ function PageSvgSurfaceContent({
   objectTransformPreview?: ObjectTransformPreviewState;
   /** The id of the molecule being spun in 3D; its drawn structure fades to a faint ghost. */
   spinningObjectId?: string;
-  /** The HTML editing preview owns this text's paint until its edit ends. */
+  /** The SVG editing preview owns this text's paint until its edit ends. */
   editingTextObjectId?: string;
   editingTableCell?: ActiveTableCell;
   onPointerDown(objectId: string, event: ObjectPointerEvent): void;
