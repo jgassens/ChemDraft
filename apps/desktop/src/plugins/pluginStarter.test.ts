@@ -88,9 +88,13 @@ describe("plugin starter Markdown", () => {
     for (const command of ["plugin:package", "plugin:extract"]) expect(scripts[command]).toBeTruthy();
   });
 
-  it("keeps the Node requirement aligned with the README", () => {
-    expect(read("README.md")).toMatch(/Prerequisites: Node 24\b/);
-    expect(markdown).toContain("Use Git, Node 24, and pnpm");
+  it("keeps the Node requirement aligned with GitHub Actions", () => {
+    const workflowNodeVersions = [".github/workflows/ci.yml", ".github/workflows/windows-release.yml"]
+      .flatMap(path => [...read(path).matchAll(/node-version:\s*["']?(\d+)/g)].map(match => match[1]));
+    expect(workflowNodeVersions.length).toBeGreaterThan(0);
+    const nodeMajor = workflowNodeVersions[0]!;
+    expect(workflowNodeVersions.every(version => version === nodeMajor)).toBe(true);
+    expect(markdown).toMatch(new RegExp(`Use Git, Node ${nodeMajor}\\b, and pnpm`));
   });
 
   it("creates the package before installing and stages the lockfile before packaging on both platforms", () => {
