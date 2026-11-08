@@ -733,12 +733,12 @@ describe.each(["macos", "windows"] as const)("ring label commits (%s)", platform
     await history(); expect(current().pages[0].objects).toEqual(before); expect(status()).toBe("Undid Add OMe substituent");
     await history(true); expect(current().pages[0].objects).toEqual(after); expect(status()).toBe("Redid Add OMe substituent");
   });
-  it("fresh Text-tool text within reach converts automatically once", async () => {
+  it.each(["blur", "click", "tool", "Escape"])("fresh Text-tool text within reach finishes on %s; only Escape prevents conversion", async finish => {
     const d = ring(), m = d.pages[0].objects.find((o): o is MoleculeObject => o.type === "molecule")!;
     const point = { x: d.pages[0].width - 1, y: m.atoms[0]!.y };
     const anchor = createNativeTextObject(d, point);
     // Near the page edge the fresh text box clamps left of the click. Put a ring atom at
-    // that anchor: the pointer places text in open space, then blur converts on the atom.
+    // that anchor: the pointer places text in open space, then finishing can convert on the atom.
     const dx = anchor.x - m.atoms[0]!.x;
     const shifted = normalizeNativeMoleculeGeometry({ ...m, atoms: m.atoms.map(a => ({ ...a, x: a.x + dx })) });
     await mount(applyPatches(d, [{ op: "updateObject", objectId: m.id, changes: shifted }]), "tool.text");
@@ -746,10 +746,31 @@ describe.each(["macos", "windows"] as const)("ring label commits (%s)", platform
     await pointer("pointerdown", point);
     const textEditor = container.querySelector<HTMLTextAreaElement>(".text-object-editor")!;
     expect(textEditor).not.toBeNull(); await input(textEditor, "OMe");
-    const focused = vi.spyOn(document, "hasFocus").mockReturnValue(true);
-    await act(async () => textEditor.blur()); focused.mockRestore();
+    if (finish === "Escape") {
+      await key("Escape");
+      expect(container.querySelector(".text-object-editor")).toBeNull();
+      expect(molecule()).toEqual(before);
+      expect(current().pages[0].objects.find(o => o.type === "text")).toMatchObject({ text: "OMe" });
+      // Subsequent finishing paths must not re-arm the box Escape already closed.
+      await command("tool.select");
+      await pointer("pointerdown", { x: 50, y: 50 });
+      expect(molecule()).toEqual(before);
+      expect(current().pages[0].objects).toHaveLength(2);
+      return;
+    }
+    if (finish === "tool") await command("tool.select");
+    else {
+      if (finish === "click") await pointer("pointerdown", { x: 50, y: 50 });
+      // jsdom omits pointerdown's native focus default; supply the resulting blur.
+      const focused = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+      await act(async () => textEditor.blur()); focused.mockRestore();
+    }
+    expect(container.querySelector(".text-object-editor")).toBeNull();
     check(7, 7); expect(current().pages[0].objects).toHaveLength(1);
     expect(status()).toContain("Attached OMe");
+    // A late blur cannot attach the same text a second time.
+    await act(async () => textEditor.dispatchEvent(new FocusEvent("focusout", { bubbles: true })));
+    check(7, 7); expect(current().pages[0].objects).toHaveLength(1);
     const after = molecule(); await history();
     expect(molecule()).toEqual(before); expect(current().pages[0].objects.some(o => o.type === "text")).toBe(true);
     await history(true); expect(molecule()).toEqual(after);

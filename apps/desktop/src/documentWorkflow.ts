@@ -4838,10 +4838,12 @@ export function selectedTextToAtomLabelResult(document: ChemDraftDocument): Text
     : result;
 }
 
-/** Automatic conversion never normalizes user text into a different chemical symbol. */
+/** Exact elements and case-sensitive groups may auto-convert; groups need an atom target. */
 export function canAutoConvertNativeTextObjectToAtom(document: ChemDraftDocument, objectId: string): boolean {
   const object = firstPage(document).objects.find((candidate) => candidate.id === objectId);
-  return object?.type === "text" && object.text.length > 0 && nativeElementFromAtomLabel(object.text) === object.text;
+  if (object?.type !== "text" || object.text.length === 0 || object.text !== object.text.trim()) return false;
+  return nativeElementFromAtomLabel(object.text) === object.text ||
+    nativeAtomLabelReading(object.text, { bonded: true }).kind === "group";
 }
 
 /**
@@ -4867,7 +4869,8 @@ export function convertNativeTextObjectToAtom(
   const object = page.objects.find((candidate): candidate is TextObject =>
     candidate.id === objectId && candidate.type === "text"
   );
-  if (!object) {
+  // A group belongs on an existing atom; only an exact element can become a naked atom.
+  if (!object || nativeElementFromAtomLabel(object.text) !== object.text) {
     return document;
   }
 
