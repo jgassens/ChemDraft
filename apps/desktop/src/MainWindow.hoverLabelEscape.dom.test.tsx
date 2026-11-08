@@ -183,7 +183,7 @@ describe.each(["macos", "windows"] as const)("hover label Escape (%s shortcuts)"
     expect(container.querySelector('[data-can-undo]')?.getAttribute("data-can-undo")).toBe("false");
   });
 
-  it("records a text edit started after pointer drift separately from the committed hover edit", async () => {
+  it("coalesces a committed text continuation after pointer drift with the hover edit", async () => {
     const before = chemistry();
     await hover(carbon);
     await key("o");
@@ -191,13 +191,16 @@ describe.each(["macos", "windows"] as const)("hover label Escape (%s shortcuts)"
     await hover({ x: 650, y: 450 });
     await key("M");
     expect(editor()?.value).toBe("OM");
+    await key("e");
+    expect(editor()?.value).toBe("OMe");
     await key("Enter");
-    expect(chemistry()).not.toEqual(committed);
-    await key("z", { metaKey: platform === "macos", ctrlKey: platform === "windows" });
-    expect(chemistry()).toEqual(committed);
-    expect(label()).toBe("OH");
+    const continued = chemistry();
+    expect(continued).not.toEqual(committed);
+    expect(label()).toBe("OMe");
     await key("z", { metaKey: platform === "macos", ctrlKey: platform === "windows" });
     expect(chemistry()).toEqual(before);
     expect(container.querySelector('[data-can-undo]')?.getAttribute("data-can-undo")).toBe("false");
+    await key("z", { shiftKey: true, metaKey: platform === "macos", ctrlKey: platform === "windows" });
+    expect(chemistry()).toEqual(continued);
   });
 });

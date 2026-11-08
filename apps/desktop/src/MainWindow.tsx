@@ -3309,8 +3309,8 @@ export function MainWindow({
   // a pointer drifting mid-word is common on small atoms, so the next key decides
   // (`hoverLabelContinuesForKey`). After leaving, element keys and digits act on a different hovered
   // atom. Over a bond or empty canvas, lowercase element-symbol completion still continues.
-  // Leaving seals the instant assignment's undo entry. Text can still complete a word after
-  // drifting, but that editor owns a new cancellation baseline and history entry.
+  // Leaving keeps the instant assignment on cancellation. A committed continuation still
+  // coalesces with that assignment's undo entry.
   // A click, a tool change or a key that cannot continue a label ends the continuation.
   const assignHoveredNativeDeleteTarget = useCallback((target: NativeMoleculeDeleteTarget | undefined) => {
     hoveredNativeDeleteTargetRef.current = target;
@@ -13779,11 +13779,11 @@ export function MainWindow({
           if (atom?.element === assignment.label && startAtomLabelEdit(hoveredTarget, {
             draft, beforeAtom: assignment.beforeAtom, beforeMolecule: assignment.beforeMolecule,
             startedFromHover: true,
+            hotkeyChanged: assignment.hotkeyChanged, hotkeyUndoDocument: assignment.hotkeyUndoDocument,
             // The original atom still informs the typed-label chemistry decision (for example,
-            // attaching OMe to a ring carbon). It is no longer a cancellation/history snapshot
-            // once the pointer has left: the instant assignment is already a committed edit.
+            // attaching OMe to a ring carbon). Keep its history entry for commit coalescing,
+            // but after pointer drift Escape cancels only the later text draft.
             ...(!assignment.leftAtom ? {
-              hotkeyChanged: assignment.hotkeyChanged, hotkeyUndoDocument: assignment.hotkeyUndoDocument,
               hotkeyUndoState: assignment.hotkeyUndoState,
               hotkeyAfterDocument: assignment.hotkeyAfterDocument, saveRevision: assignment.saveRevision
             } : {})
@@ -23897,8 +23897,8 @@ export function hoveredNativeTargetShortcutCommand(
 
 /**
  * A label typed by hovering an atom and pressing an element key, open for continuation. `leftAtom`
- * records that the pointer has since left the atom and its own bonds, sealing the instant edit's
- * undo entry. Its pre-hotkey snapshot may only be reused while the pointer has not left.
+ * records that the pointer has since left the atom and its own bonds. Its pre-hotkey snapshot may
+ * only be reused for cancellation while the pointer has not left; commits can still coalesce.
  */
 type HoverLabelAssignment = {
   objectId: string; atomId: string; label: string; leftAtom?: boolean;
