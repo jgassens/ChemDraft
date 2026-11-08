@@ -178,8 +178,15 @@ the form sends an empty `ready` otherwise and the native host rejects such a pay
 size applies. When `ready` arrives the host records the window's native scale factor with it, and
 at reveal converts the measurement through that scale (physical height ÷ scale at measurement),
 so a display-scale change between measurement and reveal neither doubles nor collapses the
-height; placement then sizes the client at the destination's scale. The inner height is never
-below the kind's minimum, every resize, the first included, is bounded by the destination work
+height; placement then sizes the client at the destination's scale. On macOS, synchronous AppKit
+`setFrameOrigin` moves to the destination in logical points (with the global Y axis flipped),
+then `setContentSize` completes before frame measurement and minimum-size restoration. Tao queues
+moves and content resizes on macOS and converts physical requests through the current backing scale;
+using its queued move before a synchronous resize would still measure at the origin monitor's
+scale and could double the minimum height on a 2x-to-1x move. Windows retains Tauri's synchronous
+move and inner-size paths. Native title bars and borders are additional to the measured content
+height. The inner height is never below the kind's minimum, every resize, the first included,
+is bounded by the destination work
 area, and the result is clamped through the same move-then-resize-then-clamp placement. Reopening
 does not resize, and later content growth (fields wrapping in a narrow window, a long message)
 scrolls the body instead of triggering another measurement or resize.
@@ -361,6 +368,7 @@ the orchestrator to handle during integration.
 | Opening versus tab close | Register pending sessions before subscription awaits; cancellation prevents creation or closes a late build | Coordinator deferred-subscription and late-creation tests |
 | Reused tab ID | Settle the originating session before installing a replacement document history | `MainWindow.tabs.dom.test.tsx` replaces pristine Untitled, injects late Apply/closed deliveries, and verifies a fresh session works on the replacement |
 | Mixed-DPI sizing | Move, destination client resize, measure actual outer frame, clamp | Rust `placement_moves_before_destination_resize_and_clamps_the_measured_outer_frame` simulates WM_DPICHANGED and title-bar/border dimensions |
+| Content-fit final frame and minimum | Complete placement and logical minimum update before draining queued operations | Rust `dialog_placement_and_minimum_have_correct_final_sizes_on_both_platforms` asserts final client/outer sizes, minimum and position for both platform paths, remembered 1x/2x moves, negative coordinates and small work areas |
 | Reopen | Reinvoke open with the retained snapshot; Rust shows/configures/focuses the same ready window without placement | Coordinator retained-snapshot reopen test |
 | Move persistence | One bounded-notification worker; coalesced burst; latest move across tabs wins; registry snapshot before off-lock IO; close flush serialized against worker writes | Rust `persistence_worker_coalesces_a_burst_and_writes_after_registry_unlock` exercises 1000 moves and asserts the write callback can acquire the registry lock; `a_coalesced_kind_remembers_the_latest_move_across_tabs` covers multiple dialogs |
 | macOS Select All | Native and web Edit menus register the existing command; native routing follows the key window; shared field selection keeps dialog edits local with no document forwarding | Rust `select_all_targets_the_focused_dialog_without_touching_document_selection`, `appMenu.test.ts`, `editMenuUndo.dom.test.ts` and dialog DOM keyboard/menu tests |

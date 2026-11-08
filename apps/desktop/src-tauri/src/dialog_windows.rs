@@ -1910,30 +1910,75 @@ fn place_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), Stri
             f64::from(owner_size.height) / destination.scale,
         ),
     });
-    let fits_work_area = template_placement.is_some() || fitted_height.is_some();
-    if fits_work_area {
-        // The picker, and a fitted dialog, must also fit work areas smaller than its normal
-        // minimum. Restore a bounded minimum after measuring the destination's decorations.
-        window
-            .set_min_size(Some(tauri::LogicalSize::new(1.0, 1.0)))
-            .map_err(|e| e.to_string())?;
-    }
     // WM_DPICHANGED runs when moving between Windows monitors. Move first, set the desired
     // client size at the destination DPI, then clamp using the measured final outer frame.
-    finish_placement(
-        ((x, y, destination_scale), client_size),
-        destination,
-        fitted_height.is_some(),
-        template_placement,
+    DialogPlacement {
+        position: (x, y, destination_scale),
+        client_size,
+        work: destination,
+        spec: &spec,
+        fit_content: fitted_height.is_some(),
+        template: template_placement,
+    }
+    .apply(
         |x, y| {
-            window
-                .set_position(tauri::PhysicalPosition::new(x as i32, y as i32))
-                .map_err(|e| e.to_string())
+            move_dialog(
+                cfg!(target_os = "macos"),
+                (x, y, destination_scale),
+                |position| {
+                    #[cfg(target_os = "macos")]
+                    {
+                        use objc2_app_kit::{NSScreen, NSWindow};
+                        let mtm = objc2::MainThreadMarker::new()
+                            .ok_or("Dialog placement requires the main thread")?;
+                        let ptr = window.ns_window().map_err(|e| e.to_string())? as *mut NSWindow;
+                        // SAFETY: the live Tauri window owns this NSWindow; placement runs on main.
+                        let native = unsafe { ptr.as_ref() }
+                            .ok_or("Could not access native dialog window")?;
+                        let primary = NSScreen::screens(mtm)
+                            .firstObject()
+                            .ok_or("The primary screen is unavailable")?;
+                        let origin = appkit_dialog_origin(
+                            position,
+                            primary.frame().size.height,
+                            native.frame().size.height,
+                        );
+                        native.setFrameOrigin(objc2_foundation::NSPoint::new(origin.x, origin.y));
+                        Ok(())
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        let _ = position;
+                        Err("AppKit positioning is only available on macOS".into())
+                    }
+                },
+                |position| window.set_position(position).map_err(|e| e.to_string()),
+            )
         },
         |width, height| {
-            window
-                .set_size(tauri::PhysicalSize::new(width, height))
-                .map_err(|e| e.to_string())
+            resize_dialog_client(
+                cfg!(target_os = "macos"),
+                tauri::PhysicalSize::new(width, height),
+                destination_scale,
+                |size| {
+                    #[cfg(target_os = "macos")]
+                    {
+                        let ptr = window.ns_window().map_err(|e| e.to_string())?
+                            as *mut objc2_app_kit::NSWindow;
+                        let native = unsafe { ptr.as_ref() }
+                            .ok_or("Could not access native dialog window")?;
+                        native
+                            .setContentSize(objc2_foundation::NSSize::new(size.width, size.height));
+                        Ok(())
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        let _ = size;
+                        Err("AppKit content sizing is only available on macOS".into())
+                    }
+                },
+                |size| window.set_size(size).map_err(|e| e.to_string()),
+            )
         },
         || {
             let outer = window.outer_size().map_err(|e| e.to_string())?;
@@ -1943,23 +1988,8 @@ fn place_window<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), Stri
                 client: (client.width, client.height),
             })
         },
+        |size| window.set_min_size(Some(size)).map_err(|e| e.to_string()),
     )?;
-    if fits_work_area {
-        let client = window.inner_size().map_err(|e| e.to_string())?;
-        let client_height = f64::from(client.height) / destination.scale;
-        window
-            // Keep constraints logical so Windows rescales them on later DPI changes.
-            // A fitted dialog never shrinks below its content (or the work area, if smaller).
-            .set_min_size(Some(tauri::LogicalSize::new(
-                (f64::from(client.width) / destination.scale).min(spec.min_size.0),
-                if fitted_height.is_some() {
-                    client_height
-                } else {
-                    client_height.min(spec.min_size.1)
-                },
-            )))
-            .map_err(|e| e.to_string())?;
-    }
     mark_transient(window.label());
     Ok(())
 }
@@ -1970,6 +2000,94 @@ struct TemplatePlacement<'a> {
 struct DialogFrame {
     outer: (u32, u32),
     client: (u32, u32),
+}
+struct DialogPlacement<'a> {
+    position: (f64, f64, f64),
+    client_size: (f64, f64),
+    work: &'a WorkArea,
+    spec: &'a DialogKindSpec,
+    fit_content: bool,
+    template: Option<TemplatePlacement<'a>>,
+}
+impl DialogPlacement<'_> {
+    fn apply(
+        self,
+        move_to: impl FnMut(f64, f64) -> Result<(), String>,
+        resize: impl FnMut(u32, u32) -> Result<(), String>,
+        mut measure: impl FnMut() -> Result<DialogFrame, String>,
+        mut set_minimum: impl FnMut(tauri::LogicalSize<f64>) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let fits_work_area = self.template.is_some() || self.fit_content;
+        if fits_work_area {
+            // Small work areas may require less than the kind's usual minimum.
+            set_minimum(tauri::LogicalSize::new(1.0, 1.0))?;
+        }
+        finish_placement(
+            (self.position, self.client_size),
+            self.work,
+            self.fit_content,
+            self.template,
+            move_to,
+            resize,
+            &mut measure,
+        )?;
+        if fits_work_area {
+            let frame = measure()?;
+            let client_height = f64::from(frame.client.1) / self.work.scale;
+            // Logical constraints rescale on Windows. A fitted dialog retains its content height
+            // (or the available work-area height) as the minimum after placement completes.
+            set_minimum(tauri::LogicalSize::new(
+                (f64::from(frame.client.0) / self.work.scale).min(self.spec.min_size.0),
+                if self.fit_content {
+                    client_height
+                } else {
+                    client_height.min(self.spec.min_size.1)
+                },
+            ))?;
+        }
+        Ok(())
+    }
+}
+/// Tao queues macOS moves and converts physical coordinates using the *origin* scale. Complete
+/// the move at the destination's logical position before any resize or backing-pixel measurement.
+fn move_dialog(
+    macos: bool,
+    (x, y, scale): (f64, f64, f64),
+    mut set_origin: impl FnMut(tauri::LogicalPosition<f64>) -> Result<(), String>,
+    mut set_tauri_position: impl FnMut(tauri::PhysicalPosition<i32>) -> Result<(), String>,
+) -> Result<(), String> {
+    if macos {
+        set_origin(tauri::LogicalPosition::new(x / scale, y / scale))
+    } else {
+        set_tauri_position(tauri::PhysicalPosition::new(x as i32, y as i32))
+    }
+}
+#[cfg(any(target_os = "macos", test))]
+fn appkit_dialog_origin(
+    top_left: tauri::LogicalPosition<f64>,
+    primary_height: f64,
+    outer_height: f64,
+) -> tauri::LogicalPosition<f64> {
+    // AppKit's origin is bottom-left; Tauri's is top-left of the primary display. Coordinates
+    // are global logical points, including negative x/y on displays left of or above primary.
+    tauri::LogicalPosition::new(top_left.x, primary_height - top_left.y - outer_height)
+}
+/// Placement reads the resized frame immediately, before clamping and setting its minimum.
+/// Tao 0.35.3 queues macOS `set_inner_size` onto GCD even on the main thread; use AppKit's
+/// synchronous content setter there. Windows keeps Tauri's synchronous inner-size path.
+/// AppKit adds the actual decorations; neither callback takes an outer size.
+fn resize_dialog_client(
+    macos: bool,
+    size: tauri::PhysicalSize<u32>,
+    scale: f64,
+    mut set_content_size: impl FnMut(tauri::LogicalSize<f64>) -> Result<(), String>,
+    mut set_tauri_size: impl FnMut(tauri::PhysicalSize<u32>) -> Result<(), String>,
+) -> Result<(), String> {
+    if macos {
+        set_content_size(size.to_logical(scale))
+    } else {
+        set_tauri_size(size)
+    }
 }
 // All arguments/results are physical pixels. Decoration sizes are measured after the move,
 // since Windows may replace them during WM_DPICHANGED.
@@ -3217,6 +3335,270 @@ mod tests {
         assert!(message.validate().is_err());
         assert!(is_dialog_label("dialog-main-arrangementSpacing-12"));
         assert!(!is_dialog_label("dialog-main-arrangementSpacing-../main"));
+    }
+    // The queued operations capture logical sizes/positions at call time, just as Tao does.
+    // Minimum updates are synchronous and can enlarge the current frame (Tao set_min_inner_size).
+    // Draining the queue is essential: stale reads alone do not prove a persistent size error.
+    enum QueuedDialogOperation {
+        Move(tauri::LogicalPosition<f64>),
+        Resize(tauri::LogicalSize<f64>),
+    }
+    struct SimulatedDialog {
+        scale: f64,
+        client: tauri::LogicalSize<f64>,
+        minimum: tauri::LogicalSize<f64>,
+        position: tauri::LogicalPosition<f64>,
+        decoration: tauri::LogicalSize<f64>,
+        queue: Vec<QueuedDialogOperation>,
+        calls: Vec<&'static str>,
+    }
+    impl SimulatedDialog {
+        fn frame(&self) -> DialogFrame {
+            let client = self.client.to_physical::<u32>(self.scale);
+            let outer = tauri::LogicalSize::new(
+                self.client.width + self.decoration.width,
+                self.client.height + self.decoration.height,
+            )
+            .to_physical::<u32>(self.scale);
+            DialogFrame {
+                client: (client.width, client.height),
+                outer: (outer.width, outer.height),
+            }
+        }
+        fn apply(&mut self, operation: QueuedDialogOperation, work: &WorkArea) {
+            match operation {
+                QueuedDialogOperation::Move(position) => {
+                    self.position = position;
+                    // Our destination is isolated from the origin monitor. An incorrect Tao
+                    // conversion may miss it; it must not magically acquire destination scale.
+                    if position.x >= work.x && position.x < work.x + work.width {
+                        self.scale = work.scale;
+                    }
+                }
+                QueuedDialogOperation::Resize(size) => self.client = size,
+            }
+        }
+        fn set_minimum(&mut self, size: tauri::LogicalSize<f64>) {
+            self.minimum = size;
+            self.client.width = self.client.width.max(size.width);
+            self.client.height = self.client.height.max(size.height);
+        }
+        fn drain(&mut self, work: &WorkArea) {
+            for operation in std::mem::take(&mut self.queue) {
+                self.apply(operation, work);
+            }
+        }
+    }
+    #[test]
+    fn dialog_placement_and_minimum_have_correct_final_sizes_on_both_platforms() {
+        use std::cell::RefCell;
+
+        for (platform, macos, title_bar, border) in
+            [("macos", true, 32.0, 0.0), ("windows", false, 40.0, 16.0)]
+        {
+            for (origin_scale, scale) in [
+                (2.0, 1.0),
+                (1.0, 2.0),
+                (1.0, 1.0),
+                (1.25, 1.25),
+                (1.5, 1.5),
+                (2.0, 2.0),
+            ] {
+                for (remembered, small) in [(false, false), (true, false), (true, true)] {
+                    for kind in ["vibeCodeGuide", "insertTable"] {
+                        let spec = kind_spec(kind).unwrap();
+                        let work = WorkArea {
+                            id: "destination".into(),
+                            // Exercise negative global coordinates and a secondary display.
+                            x: -2000.0,
+                            y: -300.0,
+                            width: if small { 450.0 } else { 1600.0 },
+                            height: if small { 300.0 } else { 1000.0 },
+                            scale,
+                        };
+                        let saved = remembered.then_some(SavedPosition {
+                            monitor: work.id.clone(),
+                            x: work.x,
+                            y: work.y,
+                            offset_x: 0.9,
+                            offset_y: 0.9,
+                        });
+                        let dialog = RefCell::new(SimulatedDialog {
+                            scale: origin_scale,
+                            client: tauri::LogicalSize::new(spec.size.0, spec.size.1),
+                            minimum: tauri::LogicalSize::new(spec.min_size.0, spec.min_size.1),
+                            position: tauri::LogicalPosition::new(100.0, 100.0),
+                            decoration: tauri::LogicalSize::new(border, title_bar),
+                            queue: Vec::new(),
+                            calls: Vec::new(),
+                        });
+                        // Repeated content measurements must also reset the previous minimum.
+                        for height in [432.0, 517.0, 400.0] {
+                            let measured = MeasuredContent::new(
+                                ContentFit::from_ready(
+                                    &json!({"contentHeight": height, "pixelRatio": origin_scale}),
+                                ),
+                                Some(origin_scale),
+                            )
+                            .unwrap();
+                            let client_height = measured.logical_height(spec.min_size.1);
+                            let position = position_for(
+                                saved.as_ref(),
+                                std::slice::from_ref(&work),
+                                &work,
+                                (work.x, work.y, work.width, work.height),
+                                (spec.size.0 + border, client_height + title_bar),
+                            );
+                            DialogPlacement {
+                                position,
+                                client_size: (spec.size.0, client_height),
+                                work: &work,
+                                spec: &spec,
+                                fit_content: true,
+                                template: None,
+                            }
+                            .apply(
+                                |x, y| {
+                                    move_dialog(
+                                        macos,
+                                        (x, y, scale),
+                                        |top_left| {
+                                            let mut native = dialog.borrow_mut();
+                                            native.calls.push("appkit move");
+                                            // Use the production flipped-Y conversion, then
+                                            // read back in Tauri coordinates as a real frame does.
+                                            let outer_height = native.client.height + title_bar;
+                                            let origin = appkit_dialog_origin(
+                                                top_left,
+                                                1080.0,
+                                                outer_height,
+                                            );
+                                            native.apply(
+                                                QueuedDialogOperation::Move(
+                                                    tauri::LogicalPosition::new(
+                                                        origin.x,
+                                                        1080.0 - origin.y - outer_height,
+                                                    ),
+                                                ),
+                                                &work,
+                                            );
+                                            Ok(())
+                                        },
+                                        |physical| {
+                                            let mut native = dialog.borrow_mut();
+                                            native.calls.push("tauri move");
+                                            let operation =
+                                                QueuedDialogOperation::Move(physical.to_logical(
+                                                    if macos { native.scale } else { scale },
+                                                ));
+                                            if macos {
+                                                native.queue.push(operation);
+                                            } else {
+                                                native.apply(operation, &work);
+                                            }
+                                            Ok(())
+                                        },
+                                    )
+                                },
+                                |width, height| {
+                                    resize_dialog_client(
+                                        macos,
+                                        tauri::PhysicalSize::new(width, height),
+                                        scale,
+                                        |logical| {
+                                            let mut native = dialog.borrow_mut();
+                                            native.calls.push("appkit resize");
+                                            native.apply(
+                                                QueuedDialogOperation::Resize(logical),
+                                                &work,
+                                            );
+                                            Ok(())
+                                        },
+                                        |physical| {
+                                            let mut native = dialog.borrow_mut();
+                                            native.calls.push("tauri resize");
+                                            let operation = QueuedDialogOperation::Resize(
+                                                physical.to_logical(native.scale),
+                                            );
+                                            if macos {
+                                                native.queue.push(operation);
+                                            } else {
+                                                native.apply(operation, &work);
+                                            }
+                                            Ok(())
+                                        },
+                                    )
+                                },
+                                || Ok(dialog.borrow().frame()),
+                                |size| {
+                                    dialog.borrow_mut().set_minimum(size);
+                                    Ok(())
+                                },
+                            )
+                            .unwrap();
+                            let mut native = dialog.borrow_mut();
+                            native.drain(&work);
+                            let frame = native.frame();
+                            let expected_client = (
+                                ((spec.size.0 * scale).ceil() as u32)
+                                    .min((work.width * scale) as u32 - (border * scale) as u32),
+                                ((client_height * scale).ceil() as u32)
+                                    .min((work.height * scale) as u32 - (title_bar * scale) as u32),
+                            );
+                            let expected_outer = (
+                                expected_client.0 + (border * scale) as u32,
+                                expected_client.1 + (title_bar * scale) as u32,
+                            );
+                            let case = format!("{platform} {kind} {origin_scale}x->{scale}x remembered={remembered} small={small} height={height}");
+                            assert_eq!(
+                                (frame.client, frame.outer),
+                                (expected_client, expected_outer),
+                                "final client/outer: {case}"
+                            );
+                            assert_eq!(
+                                native.minimum.height,
+                                f64::from(expected_client.1) / scale,
+                                "minimum: {case}"
+                            );
+                            assert_eq!(
+                                native.minimum.width,
+                                (f64::from(expected_client.0) / scale).min(spec.min_size.0),
+                                "minimum width: {case}"
+                            );
+                            assert_eq!(native.scale, scale, "destination scale: {case}");
+                            let (expected_x, expected_y) = work.clamp(
+                                position.0 / scale,
+                                position.1 / scale,
+                                f64::from(expected_outer.0) / scale,
+                                f64::from(expected_outer.1) / scale,
+                            );
+                            let expected_position = if macos {
+                                (expected_x, expected_y)
+                            } else {
+                                // Preserve the Windows physical-coordinate truncation.
+                                (
+                                    (expected_x * scale) as i32 as f64 / scale,
+                                    (expected_y * scale) as i32 as f64 / scale,
+                                )
+                            };
+                            assert!(
+                                (native.position.x - expected_position.0).abs() < 1e-9
+                                    && (native.position.y - expected_position.1).abs() < 1e-9,
+                                "final position: {case}"
+                            );
+                            assert!(
+                                native.calls.iter().all(|call| call.starts_with(if macos {
+                                    "appkit"
+                                } else {
+                                    "tauri"
+                                })),
+                                "native path: {case}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
     #[test]
     fn content_fit_dialogs_fit_their_windows_to_the_measured_content() {
