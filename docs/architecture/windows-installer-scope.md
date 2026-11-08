@@ -116,7 +116,4 @@ Before a signed CI run, update any existing single-installer SignPath artifact c
 select both installers, as documented in `docs/releasing/windows-signing.md`. The workflow verifies
 the exact returned filename set and requires a valid Authenticode signature on each installer.
 
-CI **does not require a build-stamp bump** for this patch. `scripts/ci/require-build-stamp-bump.sh`
-includes `apps/desktop/src`, `apps/desktop/src-tauri/src` and `packages`, excluding test filenames.
-The `.nsh` is now under `src-tauri/windows`, outside those source paths; all other edits are configs,
-workflow, docs or a test. `MainWindow.tsx` was left untouched as requested.
+The build stamp in `apps/desktop/src/MainWindow.tsx` is bumped so the build is identifiable; `scripts/ci/require-build-stamp-bump.sh` alone would not require it, since the only change under `apps/desktop/src` is a test file.
