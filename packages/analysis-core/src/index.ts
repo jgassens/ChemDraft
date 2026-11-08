@@ -5,7 +5,7 @@
  * types; the worker, the panel, and the provenance report consume them. Keeping the engines out is
  * what lets the contracts be validated, tested, and reasoned about without a 7.5 MB WASM load.
  *
- * The four pieces, and the PLANS.md section each implements:
+ * The four pieces, and the docs/plans/PLANS.md section each implements:
  *   §1 `interpretation` — parse once, derive named interpretations, keep the atom mapping
  *   §2 `classification` — three display axes, three branchable flags
  *   §3 `results`        — the discriminated union, the run, schema versioning

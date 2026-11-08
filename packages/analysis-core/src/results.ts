@@ -1,5 +1,5 @@
 /**
- * The discriminated result union and the run that carries it (PLANS.md §3).
+ * The discriminated result union and the run that carries it (docs/plans/PLANS.md §3).
  *
  * Separate shared execution metadata from individual outputs, and make each result kind *require* what
  * it needs. A scalar with a unit, an identifier that stops masquerading as a property, a distribution
@@ -86,7 +86,7 @@ export interface AnalysisResultBase {
   /** The contract this result came from. Version travels with the value, not just with the build. */
   methodId: string;
   methodVersion: string;
-  /** Which named interpretation the number describes (PLANS.md §1). Never implicit. */
+  /** Which named interpretation the number describes (docs/plans/PLANS.md §1). Never implicit. */
   interpretationId: string;
   status: AnalysisStatus;
   classification: Classification;
@@ -376,7 +376,7 @@ export interface IonizationResult extends AnalysisResultBase {
  * An isotope envelope, or any other set of (position, intensity) pairs that is not a spectrum.
  *
  * `truncation` is required, not optional. An envelope is always cut off somewhere, and an intensity
- * list without its cutoff rule cannot be compared against another engine's — PLANS.md §9 makes
+ * list without its cutoff rule cannot be compared against another engine's — docs/plans/PLANS.md §9 makes
  * recording it a Release 2 gate.
  */
 export interface DistributionResult extends AnalysisResultBase {
@@ -894,7 +894,7 @@ export interface EngineEnvironment {
 }
 
 /**
- * Shared execution metadata for a set of results (PLANS.md §3).
+ * Shared execution metadata for a set of results (docs/plans/PLANS.md §3).
  *
  * Deliberately lean for Release 1 — in-process descriptors do not need job scheduling — but the shape
  * is the one the sidecar layer grows into, so the boundary does not move when MOPAC arrives.

@@ -43,7 +43,7 @@ Before editing code, Codex must read:
 
 ```text
 AGENTS.md
-PLAN.md
+docs/plans/PLAN.md
 README.md
 package.json
 pnpm-workspace.yaml
@@ -1343,7 +1343,7 @@ Update these when relevant:
 ```text
 docs/architecture/dependency-inventory.md
 README.md if user-facing export formats change
-PLAN.md if roadmap status changes
+docs/plans/PLAN.md if roadmap status changes
 docs/file-formats/* for new format-specific research (planned paths; no such research docs exist yet)
 AGENTS.md build stamp after code changes
 apps/desktop/src/MainWindow.tsx build string after code changes

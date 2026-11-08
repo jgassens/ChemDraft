@@ -27,6 +27,14 @@ struct DialogKindSpec {
 }
 fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
     match kind {
+        "vibeCodeGuide" => Ok(DialogKindSpec {
+            maximizable: false,
+            resizable: true,
+            title: "Vibe Code Your Own Plugin",
+            size: (480.0, 400.0),
+            min_size: (420.0, 240.0),
+            fit_content: true,
+        }),
         "structureTemplates" => Ok(DialogKindSpec {
             maximizable: false,
             resizable: true,
@@ -89,7 +97,7 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
     }
 }
 fn native_window_title(kind: &str, spec_title: &str, snapshot_title: &str) -> String {
-    if kind == "engineInstall" || kind == "toolInstall" {
+    if matches!(kind, "engineInstall" | "toolInstall" | "vibeCodeGuide") {
         snapshot_title.to_string()
     } else {
         format!("{spec_title} — {snapshot_title}")
@@ -109,6 +117,18 @@ pub(crate) struct Message {
     #[serde(rename = "type")]
     message_type: String,
     data: Value,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VibeGuideSnapshot {
+    title: String,
+}
+#[derive(Deserialize)]
+#[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
+enum VibeGuideAction {
+    SaveStarter {},
+    OpenPluginManager {},
+    Cancel {},
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -758,6 +778,13 @@ impl Message {
             return Err("Invalid dialog envelope or payload limit exceeded".into());
         }
         let valid = match self.message_type.as_str() {
+            "snapshot" if self.dialog_kind == "vibeCodeGuide" => {
+                serde_json::from_value::<VibeGuideSnapshot>(self.data.clone())
+                    .is_ok_and(|s| valid_title(&s.title) && !s.title.contains('\0'))
+            }
+            "action" if self.dialog_kind == "vibeCodeGuide" => {
+                serde_json::from_value::<VibeGuideAction>(self.data.clone()).is_ok()
+            }
             "snapshot" if self.dialog_kind == "insertTable" => {
                 serde_json::from_value::<InsertTableSnapshot>(self.data.clone()).is_ok_and(|s| {
                     valid_title(&s.title)
@@ -2246,6 +2273,32 @@ pub(crate) fn on_window_event<R: Runtime>(window: &tauri::Window<R>, event: &Win
 mod tests {
     use super::*;
     #[test]
+    fn vibe_code_guide_kind_and_messages_are_bounded() {
+        let spec = kind_spec("vibeCodeGuide").unwrap();
+        assert!(spec.resizable && !spec.maximizable);
+        assert_eq!(
+            native_window_title("vibeCodeGuide", spec.title, spec.title),
+            spec.title
+        );
+        assert!(is_dialog_label("dialog-main-vibeCodeGuide-1"));
+        assert!(!is_dialog_label("dialog-main-vibeCodeGuide-../main"));
+        assert!(include_str!("../capabilities/dialog-host.json")
+            .contains("dialog-main-vibeCodeGuide-*"));
+        let mut message = snapshot();
+        message.dialog_kind = "vibeCodeGuide".into();
+        message.data = json!({"title":"Guide"});
+        assert!(message.validate().is_ok());
+        message.data = json!({"title":"x".repeat(257)});
+        assert!(message.validate().is_err());
+        message.message_type = "action".into();
+        for action in ["saveStarter", "openPluginManager", "cancel"] {
+            message.data = json!({"action":action});
+            assert!(message.validate().is_ok());
+        }
+        message.data = json!({"action":"saveStarter","path":"/tmp/a"});
+        assert!(message.validate().is_err());
+    }
+    #[test]
     fn structure_templates_registration_and_actions_are_bounded_on_all_platforms() {
         let mut message = snapshot();
         message.dialog_kind = "structureTemplates".into();
@@ -3166,8 +3219,9 @@ mod tests {
         assert!(!is_dialog_label("dialog-main-arrangementSpacing-../main"));
     }
     #[test]
-    fn only_insert_table_fits_its_window_to_the_measured_content() {
+    fn content_fit_dialogs_fit_their_windows_to_the_measured_content() {
         for kind in [
+            "vibeCodeGuide",
             "structureTemplates",
             "pageSize",
             "arrangementSpacing",
@@ -3176,7 +3230,10 @@ mod tests {
             "engineInstall",
             "toolInstall",
         ] {
-            assert_eq!(kind_spec(kind).unwrap().fit_content, kind == "insertTable");
+            assert_eq!(
+                kind_spec(kind).unwrap().fit_content,
+                matches!(kind, "insertTable" | "vibeCodeGuide")
+            );
         }
     }
     #[test]

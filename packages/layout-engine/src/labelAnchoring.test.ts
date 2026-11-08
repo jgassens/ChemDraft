@@ -1,4 +1,4 @@
-// A group label meets its bond at the atom it bonds to (PLANS.md, label anchoring): "OMe" with its
+// A group label meets its bond at the atom it bonds to (docs/plans/PLANS.md, label anchoring): "OMe" with its
 // O on the atom, drawn "MeO" with the bond on its right. Display only: the stored label is never
 // touched. The stress cases below check, for each label and bond direction, what is drawn, which
 // character sits on the atom, and where the bond stops against the label's box, against the old

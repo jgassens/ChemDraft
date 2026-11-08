@@ -26,7 +26,7 @@ perspective drawing** (chairs, bulky ligands at an angle).
   `MoleculeAtom`; the saved 2D drawing stays the native depiction. A valid spin
   model under `SPIN3D_MODEL_KEY` stores the conformer coordinates and committed
   orientation, so Spin 3D can reopen at that orientation after reload. This remains
-  a 2D drawing aid, not a 3D viewer (overrides `PLAN.md:133`).
+  a 2D drawing aid, not a 3D viewer (overrides `docs/plans/PLAN.md:133`).
 - **Two features, perspective first.** Perspective depiction now (a *picture*;
   re-editing is lossy). Clean 2D re-layout later (3D intermediate → regenerate tidy
   2D via CoordGen/Indigo; editable; no Z drop; no spin).
