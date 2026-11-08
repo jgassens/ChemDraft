@@ -40,6 +40,19 @@ pub fn result(id: Value, value: Value) -> Value {
     json!({"jsonrpc":"2.0", "id":id, "result":value})
 }
 
+/// The native timer may win the race with the host's per-tool timer. Keep tool
+/// failures model-visible in either case; non-tool requests retain protocol errors.
+pub fn deadline_response(id: Value, method: &str) -> Value {
+    if method == "tools/call" {
+        result(
+            id,
+            json!({"isError":true,"content":[{"type":"text","text":"ChemDraft tool deadline exceeded"}]}),
+        )
+    } else {
+        error(id, -32000, "ChemDraft did not answer in time")
+    }
+}
+
 pub fn deadline(method: &str, params: &Value) -> Duration {
     Duration::from_secs(if method == "tools/list" {
         10

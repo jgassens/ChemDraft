@@ -8,10 +8,15 @@ import { Chemistry3dQueue } from "./chemistry3dQueue";
 import { chemistry3dTimeoutMs } from "./chemistry3dDeadline";
 import { chemistry3dResultError } from "./chemistry3dResult";
 export { chemistry3dTimeoutMs, CHEMISTRY3D_STARTUP_TIMEOUT_MS, pauseChemistry3dDeadlineForStartup } from "./chemistry3dDeadline";
-import { AssistantCapabilityPermissions, supportsPluginTableInsertion, type PluginAssistantAPI } from "@chemdraft/plugin-api";
+import {
+  PluginChemistryPropertiesRequestSchema, PluginChemistryPropertiesResultSchema,
+  AssistantCapabilityPermissions, supportsPluginTableInsertion, type PluginAssistantAPI
+} from "@chemdraft/plugin-api";
 import type { ChemDraftDocument } from "@chemdraft/plugin-api";
 import type {
   AppliedPatchReceipt,
+  PluginChemistryPropertiesRequest, PluginChemistryPropertiesResult,
+  PluginAssistantToolHandler, PluginAssistantToolCall, PluginAssistantToolResult,
   PluginTableSpec,
   PluginAnalysisAPI,
   PluginCanvasOverlayContribution,
@@ -227,6 +232,7 @@ export interface RegisterPluginOptions {
   /** Called when the desktop closes one of the plugin's contributed panels, so the plugin can cancel
    *  in-flight work tied to it (ADR-0012). The panel is not reopened by a late report. */
   onPanelClosed?: (panelId: string) => void;
+  onAssistantToolCall?: PluginAssistantToolHandler;
 }
 
 export interface RegisteredPlugin {
@@ -258,6 +264,8 @@ export interface AcceptProposedPatchOptions extends ApplyPatchOptions {
 
 /** Host-owned transaction metadata for one command-scoped direct document write. */
 export interface PluginPatchApplicationRequest {
+  /** The embedding host must recheck before committing a deferred assistant tool write. */
+  signal?: AbortSignal;
   plugin: { id: string; name: string; version: string };
   command: { id: string; title: string };
   patch: NormalizedProposedDocumentPatch;
@@ -413,6 +421,8 @@ export interface PluginHostOptions {
    * the application supplies the engine it already owns.
    */
   computeIsotopeEnvelope?: (request: PluginIsotopeEnvelopeRequest) => Promise<PluginIsotopeEnvelopeResult>;
+  /** Source composition and masses from the embedding host's RDKit analysis. */
+  computeProperties?: (request: PluginChemistryPropertiesRequest) => Promise<PluginChemistryPropertiesResult>;
   /** Converts a systematic name to a structure. Same rule: absent hosts answer `available: false`. */
   convertNameToStructure?: (request: PluginNameToStructureRequest) => Promise<PluginNameToStructureResult>;
   /** Lays a SMILES out as a document object. Same rule: absent hosts answer `available: false`. */
@@ -447,6 +457,8 @@ export class PluginHost {
   private readonly recognizeStructure?: PluginHostOptions["recognizeStructure"];
   private readonly applyDocumentPatch?: PluginHostOptions["applyDocumentPatch"];
   private readonly buildTablePatch?: PluginHostOptions["buildTablePatch"];
+  private readonly computeProperties?: PluginHostOptions["computeProperties"];
+  private readonly assistantToolHandlers = new Map<string, () => PluginAssistantToolHandler | undefined>();
   private readonly computeIsotopeEnvelope?: PluginHostOptions["computeIsotopeEnvelope"];
   private readonly convertNameToStructure?: PluginHostOptions["convertNameToStructure"];
   private readonly buildStructureFromSmiles?: PluginHostOptions["buildStructureFromSmiles"];
@@ -493,6 +505,7 @@ export class PluginHost {
     this.recognizeStructure = options.recognizeStructure;
     this.applyDocumentPatch = options.applyDocumentPatch;
     this.buildTablePatch = options.buildTablePatch;
+    this.computeProperties = options.computeProperties;
     this.computeIsotopeEnvelope = options.computeIsotopeEnvelope;
     this.convertNameToStructure = options.convertNameToStructure;
     this.buildStructureFromSmiles = options.buildStructureFromSmiles;
@@ -534,6 +547,8 @@ export class PluginHost {
     if (options.onPanelClosed) {
       this.panelClosedHandlers.set(manifest.id, options.onPanelClosed);
     }
+    // Worker-routed options expose their handler only after the startup handshake confirms it.
+    this.assistantToolHandlers.set(manifest.id, () => options.onAssistantToolCall);
     this.notifySubscribers();
     return registered;
   }
@@ -559,6 +574,7 @@ export class PluginHost {
     }
     this.plugins.delete(pluginId);
     this.panelClosedHandlers.delete(pluginId);
+    this.assistantToolHandlers.delete(pluginId);
     this.notifySubscribers();
   }
 
@@ -671,6 +687,33 @@ export class PluginHost {
     }
     // Preserve the submitted values across asynchronous selection capture and in-process handlers.
     return deepFreeze(structuredClone(input));
+  }
+
+  hasAssistantToolHandler(pluginId: string): boolean {
+    return !!this.assistantToolHandlers.get(pluginId)?.();
+  }
+
+  /** Trusted session-controller entry: the caller validates session ownership and tool definitions.
+   * Reuse command permissions/scope; report validated direct-write receipts to the owning request. */
+  async invokeAssistantTool(pluginId: string, call: PluginAssistantToolCall, signal: AbortSignal,
+    writeSelection: readonly string[], onAppliedPatch?: (receipt: AppliedPatchReceipt) => void): Promise<PluginAssistantToolResult> {
+    for (const permission of AssistantCapabilityPermissions) this.requirePermission(pluginId, permission);
+    signal.throwIfAborted();
+    const handler = this.assistantToolHandlers.get(pluginId)?.();
+    if (!handler) throw new PluginHostError("This plugin registered no assistant tool handler.");
+    const token = Symbol(call.name);
+    this.activeCommandInvocations.set(token, {
+      pluginId, commandId: call.name, commandTitle: call.name, documentKey: this.getActiveDocumentKey?.(),
+      writeScope: new Set(writeSelection), recognized: false, recognizedImages: [], signal, onAppliedPatch
+    });
+    const cancel = () => this.finishCommandInvocation(token);
+    signal.addEventListener("abort", cancel, { once: true });
+    try {
+      return await handler(this.createCommandContext(pluginId, token), call, signal);
+    } finally {
+      signal.removeEventListener("abort", cancel);
+      this.finishCommandInvocation(token);
+    }
   }
 
   createCommandContext(pluginId: string, invocationToken?: symbol, input?: PluginCommandInput): PluginCommandContext {
@@ -846,6 +889,13 @@ export class PluginHost {
     // host — one seeing no capability, the other a rejected call. One code path, one shape of answer.
     const chemistry: PluginChemistryAPI | undefined = this.hasPermission(pluginId, "chemistry.compute")
       ? {
+          properties: async request => {
+            this.requirePermission(pluginId, "chemistry.compute");
+            const parsed = PluginChemistryPropertiesRequestSchema.safeParse(request);
+            if (!parsed.success) return { available: false, reason: `Invalid chemistry properties input: ${parsed.error.message}` };
+            if (!this.computeProperties) return { available: false, reason: "This host provides no RDKit properties engine." };
+            return PluginChemistryPropertiesResultSchema.parse(await this.computeProperties(parsed.data));
+          },
           embed3d: request => this.runChemistry3d(pluginId, invocationToken, "embed3d", () => {
             const parsed = PluginEmbed3DRequestSchema.parse(request);
             if (!this.chemistry3d.embed3d) throw new PluginHostError("This host provides no 3D embedding engine.");
@@ -1127,13 +1177,17 @@ export class PluginHost {
       plugin: { id: plugin.id, name: plugin.name, version: plugin.version },
       command: { id: invocation.commandId, title: invocation.commandTitle },
       patch: parsedPatch,
-      undoLabel: undoLabel ?? `${plugin.name}: ${invocation.commandTitle}`
+      undoLabel: undoLabel ?? `${plugin.name}: ${invocation.commandTitle}`,
+      ...(invocation.signal ? { signal: invocation.signal } : {})
     });
     const parsedReceipt = AppliedPatchReceiptSchema.parse(receipt);
     // Only a successful write grows the scope; use actual ids returned by the host after rebasing.
     // Assistant requests own their scope separately. Their Send-time selection must not widen the
     // surrounding command's ordinary document-write grant or the next request's grant.
-    if (!requestScope) for (const id of parsedReceipt.objectIds) invocation.writeScope.add(id);
+    if (!requestScope) {
+      for (const id of parsedReceipt.objectIds) invocation.writeScope.add(id);
+      invocation.onAppliedPatch?.(parsedReceipt);
+    }
     return parsedReceipt;
   }
 
@@ -1758,6 +1812,8 @@ export class PluginHost {
 }
 
 interface ActiveCommandInvocation {
+  signal?: AbortSignal;
+  onAppliedPatch?: (receipt: AppliedPatchReceipt) => void;
   writeScope: Set<string>;
   pluginId: string;
   commandId: string;

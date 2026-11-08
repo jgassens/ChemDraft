@@ -1,5 +1,8 @@
 import { applyPatch, createCustomPageLayout, type ChemDraftDocument } from "@chemdraft/chem-core";
-import { AssistantCapabilityPermissions, type PluginAssistantAPI, type PluginAssistantToolResult, type PluginManifest } from "@chemdraft/plugin-api";
+import {
+  PluginAssistantToolResultSchema, PluginAssistantToolSessionRequestSchema, AssistantCapabilityPermissions,
+  type PluginAssistantToolDescriptor, type PluginAssistantAPI, type PluginAssistantToolResult, type PluginManifest
+} from "@chemdraft/plugin-api";
 import { writePatchOps, type PluginHost, type PluginHostAssistant } from "@chemdraft/plugin-host";
 import { PluginWriteGateTimeoutError, type PluginWriteGate } from "../plugins/applyPluginDocumentPatch";
 import { runThumbnail } from "./runThumbnail";
@@ -12,6 +15,8 @@ import type { AssistantMcpEngine, McpBridgeRequest, McpBridgeResponse } from "./
 import { recheckNormalizedAssistantWrite, verifyNormalizedAssistantWrite } from "./normalizedWrite";
 
 type Plugin = { id: string; name: string };
+const assistantToolDeadlineMs = (name: string): number =>
+  name === "name_to_structure" || name === "structure_to_name" ? 45_000 : name === "render" ? 60_000 : 120_000;
 interface Request {
   pluginId: string;
   tabId: string;
@@ -39,7 +44,7 @@ export interface AssistantToolsControllerOptions {
 /** Owns request lifetimes; plugin code receives only the typed, permission-checked host facade. */
 export class AssistantToolsController implements PluginHostAssistant {
   private readonly requests = new Map<string, Request>();
-  private readonly sessions = new Map<string, { pluginId: string; requestId: string }>();
+  private readonly sessions = new Map<string, { pluginId: string; requestId: string; extraTools: PluginAssistantToolDescriptor[] }>();
   private activeCalls = 0;
   constructor(private readonly options: AssistantToolsControllerOptions) {}
 
@@ -97,7 +102,7 @@ export class AssistantToolsController implements PluginHostAssistant {
     const abort = new AbortController();
     request.cancellations.set(callId, abort);
     this.activeCalls++;
-    const timeoutMs = input.name === "name_to_structure" || input.name === "structure_to_name" ? 45_000 : input.name === "render" ? 60_000 : 120_000;
+    const timeoutMs = assistantToolDeadlineMs(input.name);
     const startDeadline = () => setTimeout(() => abort.abort(new Error("Assistant tool deadline exceeded.")), timeoutMs);
     let deadline = startDeadline();
     let approvedGrowth: { growth: AssistantPageGrowth; document: ChemDraftDocument } | undefined;
@@ -239,7 +244,17 @@ export class AssistantToolsController implements PluginHostAssistant {
     }
   }
 
-  async createToolSession(plugin: Plugin, { requestId }: { requestId: string }) {
+  async createToolSession(plugin: Plugin, input: Parameters<PluginAssistantAPI["createToolSession"]>[0]) {
+    const parsed = PluginAssistantToolSessionRequestSchema.parse(input);
+    const { requestId } = parsed;
+    const extraTools = structuredClone(parsed.extraTools ?? []);
+    const names = new Set<string>(listAssistantTools().map(tool => tool.name));
+    for (const tool of extraTools) {
+      if (names.has(tool.name)) throw new Error(`Extra assistant tool name "${tool.name}" collides with a host tool or another extra tool.`);
+      names.add(tool.name);
+    }
+    if (extraTools.length && !this.options.host().hasAssistantToolHandler(plugin.id))
+      throw new Error("This plugin registered no assistant tool handler.");
     const request = this.running(plugin, requestId);
     const count = [...this.sessions.values()].filter(s => s.pluginId === plugin.id).length + request.opening;
     if (count >= 2) throw new Error("At most two MCP sessions per plugin are allowed.");
@@ -250,8 +265,8 @@ export class AssistantToolsController implements PluginHostAssistant {
         await this.options.engine.close(session.sessionId);
         throw new Error("The assistant request ended while opening its MCP session.");
       }
-      this.sessions.set(session.sessionId, { pluginId: plugin.id, requestId });
-      return { ...session, tools: listAssistantTools().map(tool => tool.name) };
+      this.sessions.set(session.sessionId, { pluginId: plugin.id, requestId, extraTools });
+      return { ...session, tools: [...listAssistantTools(), ...extraTools].map(tool => tool.name) };
     } finally { request.opening--; }
   }
   async closeToolSession(plugin: Plugin, { sessionId }: { sessionId: string }) {
@@ -283,6 +298,49 @@ export class AssistantToolsController implements PluginHostAssistant {
     this.requests.delete(id);
     void this.closeRequestSessions(id).catch(() => {});
   }
+  private async callExtra(plugin: Plugin, requestId: string, sessionId: string,
+    input: { name: string; input: unknown }, callId: string): Promise<PluginAssistantToolResult> {
+    const request = this.running(plugin, requestId);
+    const abort = new AbortController();
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    let started = false;
+    let work: Promise<PluginAssistantToolResult> | undefined;
+    try {
+      if (this.activeCalls >= 4) throw new Error("At most four assistant tool calls may run concurrently.");
+      this.activeCalls++; started = true;
+      request.cancellations.set(callId, abort);
+      const cancelled = new Promise<never>((_, reject) => {
+        abort.signal.addEventListener("abort", () => reject(abort.signal.reason ?? new Error("Assistant tool call was cancelled.")), { once: true });
+      });
+      deadline = setTimeout(() => abort.abort(new Error("Assistant tool deadline exceeded (120 s).")), assistantToolDeadlineMs(input.name));
+      work = this.options.host().invokeAssistantTool(plugin.id, { sessionId, ...input }, abort.signal,
+        [...request.selection, ...request.inserted], receipt => {
+          if (request.ended || abort.signal.aborted) return;
+          for (const id of receipt.objectIds) {
+            request.touched.add(id);
+            if (!request.selection.includes(id)) request.inserted.add(id);
+          }
+        });
+      // A timeout responds immediately, but an abort-ignoring handler still occupies its slot.
+      void work.then(() => { this.activeCalls--; }, () => { this.activeCalls--; });
+      const result = structuredClone(await Promise.race([work, cancelled]));
+      // Match the Rust host-tool result ceiling, including UTF-8 encoding and JSON envelope.
+      if (!result || !Array.isArray(result.content) ||
+        new TextEncoder().encode(JSON.stringify({ result })).byteLength > 8 * 1024 * 1024)
+        throw new Error("Plugin assistant tool result is invalid or exceeds 8 MiB.");
+      return PluginAssistantToolResultSchema.parse(result);
+    } catch (error) {
+      return { isError: true, content: [{ type: "text", text: (error instanceof Error ? error.message : String(error)).slice(0, 4_000) }] };
+    } finally {
+      if (deadline) clearTimeout(deadline);
+      abort.abort();
+      if (started) {
+        if (!work) this.activeCalls--;
+        request.cancellations.delete(callId);
+      }
+    }
+  }
+
   private async bridge(plugin: Plugin, requestId: string, message: McpBridgeRequest): Promise<void> {
     let response: McpBridgeResponse;
     try {
@@ -294,9 +352,14 @@ export class AssistantToolsController implements PluginHostAssistant {
         request.cancellations.get(`${message.sessionId}:${message.requestId}`)?.abort();
         return;
       }
-      if (message.method === "tools/list") response = { result: { tools: await this.listTools(plugin) } };
-      else if (message.method === "tools/call") response = { result: await this.call(plugin, requestId,
-        { name: params?.name as string, input: params?.arguments ?? {} }, `${message.sessionId}:${message.requestId}`) };
+      if (message.method === "tools/list") response = { result: { tools: [...await this.listTools(plugin), ...structuredClone(session.extraTools)] } };
+      else if (message.method === "tools/call") {
+        const input = { name: params?.name as string, input: params?.arguments ?? {} };
+        const callId = `${message.sessionId}:${message.requestId}`;
+        response = { result: session.extraTools.some(tool => tool.name === input.name)
+          ? await this.callExtra(plugin, requestId, message.sessionId, input, callId)
+          : await this.call(plugin, requestId, input, callId) };
+      }
       else throw new Error(`Unsupported MCP method ${message.method}.`);
     } catch (error) { response = { error: { code: -32000, message: error instanceof Error ? error.message : String(error) } }; }
     try { await this.options.engine.respond(message.sessionId, message.requestId, response); } catch { /* Rust may already have closed or timed out the call. */ }

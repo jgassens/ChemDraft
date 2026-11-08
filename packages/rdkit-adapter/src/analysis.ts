@@ -762,7 +762,11 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
       );
     }
 
-    if (request.maxHeavyAtoms !== undefined && mol.get_num_atoms() > request.maxHeavyAtoms) {
+    const sourceJson = JSON.parse(mol.get_json()) as RdkitJson;
+    const composition = compositionFromRdkitJson(sourceJson);
+    const heavyAtoms = composition.elements.reduce((count, element) =>
+      count + (element.symbol === "H" ? 0 : element.count), 0);
+    if (request.maxHeavyAtoms !== undefined && heavyAtoms > request.maxHeavyAtoms) {
       // Refused before any descriptor runs. `unsupported` rather than `failed`: nothing went wrong,
       // the structure is outside what this call agreed to compute.
       return finish(
@@ -771,20 +775,13 @@ export async function analyzeStructureDetailed(request: AnalyzeStructureRequest)
         [
           warning(
             "structure.too_many_atoms",
-            // "atoms", not "heavy atoms". `get_num_atoms()` counts EXPLICIT hydrogens too, so a
-            // molfile that writes its hydrogens out is measured on a different scale from the SMILES
-            // for the same molecule — and the message named the scale it was not using. The guard is a
-            // work budget, so counting what the engine will actually process is right; only the word
-            // was wrong.
-            `The structure has ${mol.get_num_atoms()} atoms, over the ${request.maxHeavyAtoms} limit for this analysis.`,
+            `The structure has ${heavyAtoms} heavy atoms, over the ${request.maxHeavyAtoms} limit for this analysis.`,
             "warning"
           )
         ]
       );
     }
 
-    const sourceJson = JSON.parse(mol.get_json()) as RdkitJson;
-    const composition = compositionFromRdkitJson(sourceJson);
     const descriptors = readDescriptors(mol, descriptorDetails);
     const sourceContext: DerivedContext = { interpretation, mol, composition, descriptors };
     const ionMasses = resolveIonComponentMasses(module);
