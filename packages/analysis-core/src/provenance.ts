@@ -1,5 +1,5 @@
 /**
- * Provenance primitives shared by every analysis result (PLANS.md §3).
+ * Provenance primitives shared by every analysis result (docs/plans/PLANS.md §3).
  *
  * Uncertainty, applicability, citations, dataset references, warning codes, and raw-artifact
  * references. Each exists because omitting it produced a specific failure the plan names:
@@ -51,7 +51,7 @@ export const CitationRefSchema = z
 /**
  * A dataset a method depends on — training data, a parameter table, a reference database.
  *
- * `redistributable` is not decoration. The nmrshiftdb2 case (PLANS.md §4) is exactly a dataset whose
+ * `redistributable` is not decoration. The nmrshiftdb2 case (docs/plans/PLANS.md §4) is exactly a dataset whose
  * terms travel with any redistribution independently of the code's licence, and the acknowledgements
  * view is generated from these records rather than maintained by hand.
  */
@@ -239,7 +239,7 @@ export interface RawArtifactRef {
   kind: "input-deck" | "engine-output" | "log" | "molblock" | "coordinates";
   mediaType: string;
   byteLength: number;
-  /** Where the run stashed it. Retention is the job layer's business (PLANS.md §5). */
+  /** Where the run stashed it. Retention is the job layer's business (docs/plans/PLANS.md §5). */
   location: string;
   checksum?: string;
 }

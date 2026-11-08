@@ -818,6 +818,7 @@ import {
 } from "./toolsets";
 import { MenuBar } from "./MenuBar";
 import { buildAppMenuModel, pluginUpdatesAvailableMenuItem, PLUGIN_MANAGER_COMMAND_ID, PLUGIN_UPDATES_COMMAND_ID } from "./appMenu";
+import { registerVibeCodeStarter, vibeCodeStarterCommand, VIBE_CODE_SAVE_COMMAND_ID } from "./commands/vibeCodeStarter";
 import {
   editHistoryDirection,
   forceDocumentHistoryCommandId,
@@ -1713,7 +1714,8 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.02.10.39-codex";
+const CURRENT_BUILD_STAMP = "11.08.14.42-opus";
+const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
 export function startMainWindowPerfProbe(): void {
@@ -2360,7 +2362,7 @@ export function MainWindow({
     []
   );
 
-  // The Analyze surface (PLANS.md §9). `interpretationOverride` is the "— change" affordance from §1:
+  // The Analyze surface (docs/plans/PLANS.md §9). `interpretationOverride` is the "— change" affordance from §1:
   // it re-runs the same selection against a derived interpretation and replaces the report.
   const [analysisReport, setAnalysisReport] = useState<AnalysisReport | undefined>();
   /**
@@ -2411,6 +2413,8 @@ export function MainWindow({
   documentTabsRef.current = documentTabs;
   const pluginRuntimeRef = useRef<DesktopPluginRuntime | undefined>(undefined);
   const dialogCoordinatorRef = useRef<DialogCoordinator | undefined>(undefined);
+  const [browserVibeGuide, setBrowserVibeGuide] = useState(false);
+  const vibeGuideActionRef = useRef<(action: "saveStarter" | "openPluginManager") => Promise<void>>(async () => {});
   const [browserTemplates, setBrowserTemplates] = useState<(StructureTemplatesSnapshot & { tabId: string }) | undefined>();
   const templateCommandTargetRef = useRef<string | undefined>(undefined);
   const dispatchTemplateRef = useRef<(tabId: string, id: string) => Promise<void>>(async () => {});
@@ -2744,7 +2748,7 @@ export function MainWindow({
   const fileStateRef = useRef<NativeFileState>(fileState);
   // Successful explicit saves, per tab, including a save completed while its label editor is open.
   const documentSaveRevisionsRef = useRef(new Map<string, number>());
-  // Keep the actual saved contents: an open table draft can be saved without entering history.
+  // Keep the actual saved contents: open drafts can be saved without ending their history session.
   const savedDocumentsRef = useRef(new Map<string, ChemDraftDocument>());
   // Capture once: Preferences changes affect the next launch, never this run.
   const [startWithFreshDocument] = useState(loadStartWithFreshDocument);
@@ -3265,12 +3269,12 @@ export function MainWindow({
   );
   const shellCommandSpecs = useMemo(
     () => applyKeybindingSchemeToCommands(
-      allShellCommands(document, selectedMolecule, {
+      [...allShellCommands(document, selectedMolecule, {
         activeTableCell,
         availability: { canUndo, canRedo, hasMultipleTabs: documentTabs.length > 1, hasOpenWarnings: openWarnings !== undefined },
         registry: toolsetRegistry,
         compoundLayoutsEnabled
-      }),
+      }), vibeCodeStarterCommand],
       keybindingScheme
     ),
     [activeTableCell?.tableId, activeTableCell?.rowId, activeTableCell?.columnId, canRedo, canUndo, document, documentTabs.length, keybindingScheme, openWarnings, selectedMolecule, toolsetRegistry, compoundLayoutsEnabled]
@@ -3753,6 +3757,14 @@ export function MainWindow({
       fileStateRef.current = nextFileState;
       return nextFileState;
     });
+  }, []);
+  const reconcileSavedDocumentDirtyState = useCallback(() => {
+    const saved = savedDocumentsRef.current.get(activeDocumentTabIdRef.current);
+    if (!saved) return;
+    const file = { ...fileStateRef.current, dirty: !assistantDocumentContentUnchanged(saved, documentRef.current) };
+    // Close/quit can read this in the same event, before React processes state updates.
+    fileStateRef.current = file;
+    setFileState(file);
   }, []);
   const commitLiveInputPreview = useCallback((startDocument: ChemDraftDocument): boolean => {
     const previewDocument = documentRef.current;
@@ -7547,8 +7559,10 @@ export function MainWindow({
   }, [applyDetectedClipboardPayload, applySelectionClipboardPayload, applyTableClipboardResult]);
 
   const updateTextObjectContent = useCallback((objectId: string, text: string) => {
-    replacePresentDocument((current) => updateNativeTextObjectText(current, objectId, text));
-  }, [replacePresentDocument]);
+    if (replacePresentDocument((current) => updateNativeTextObjectText(current, objectId, text))) {
+      reconcileSavedDocumentDirtyState();
+    }
+  }, [reconcileSavedDocumentDirtyState, replacePresentDocument]);
 
   const convertCommittedText = useCallback((objectId: string) => {
     if (!textObjectIdsAwaitingAutoConversionRef.current.delete(objectId)) {
@@ -7611,7 +7625,10 @@ export function MainWindow({
     setActiveTextEditObjectId((current) => (current === objectId ? undefined : current));
     finalizeTextEditHistory(objectId);
     convertCommittedText(objectId);
-  }, [convertCommittedText, finalizeTextEditHistory]);
+    // New boxes share placement's undo entry; existing boxes have a snapshot from before typing.
+    // Neither history baseline tells us what a mid-edit Save actually wrote.
+    reconcileSavedDocumentDirtyState();
+  }, [convertCommittedText, finalizeTextEditHistory, reconcileSavedDocumentDirtyState]);
   checkpointTextEditBeforeCommitRef.current = (beforePreview) => {
     if (textEditHistoryWritingRef.current) return;
     // Settle a visible chooser first so its style never leaks into the typing entry.
@@ -7659,6 +7676,12 @@ export function MainWindow({
     const object = findDocumentObject(currentDocument, objectId);
     if (object?.type !== "text") {
       return;
+    }
+
+    // Opened/restored clean files may not have an explicit save in this session yet.
+    const tabId = activeDocumentTabIdRef.current;
+    if (!fileStateRef.current.dirty && !savedDocumentsRef.current.has(tabId)) {
+      savedDocumentsRef.current.set(tabId, currentDocument);
     }
 
     // Own the session before arming its snapshot: a checkpoint never sees a snapshot without its owner.
@@ -7720,14 +7743,6 @@ export function MainWindow({
     const cell = tableCellEditRef.current;
     let table = selectedTable(documentRef.current);
     if (!cell || !table || table.id !== cell.tableId) return;
-    const reconcileDirtyState = () => {
-      const saved = savedDocumentsRef.current.get(activeDocumentTabIdRef.current);
-      if (!saved) return;
-      const file = { ...fileStateRef.current, dirty: !assistantDocumentContentUnchanged(saved, documentRef.current) };
-      // Tab/quit guards read this before React processes the commit's dirty-state update.
-      fileStateRef.current = file;
-      setFileState(file);
-    };
     if ("kind" in cell) {
       const original = tableEditingContent(table, cell)?.value;
       if (original && action.kind !== "cancel" && JSON.stringify(original) !== JSON.stringify(value)) {
@@ -7737,7 +7752,7 @@ export function MainWindow({
         commitTableObject(edit.table, edit.label);
       }
       clearScheduledTextEditorFocus();
-      reconcileDirtyState();
+      reconcileSavedDocumentDirtyState();
       tableCellEditRef.current = undefined;
       setTableCellEdit(undefined);
       canvasRegionRef.current?.focus({ preventScroll: true });
@@ -7765,12 +7780,12 @@ export function MainWindow({
       next = { tableId: table.id, rowId: inserted.table.rows.at(-1)!.id, columnId: table.columns[0].id };
     }
     clearScheduledTextEditorFocus();
-    reconcileDirtyState();
+    reconcileSavedDocumentDirtyState();
     tableCellEditRef.current = next;
     setTableCellEdit(next);
     if (next) setActiveTableCell(next);
     else canvasRegionRef.current?.focus({ preventScroll: true });
-  }, [clearScheduledTextEditorFocus, commitTableObject]);
+  }, [clearScheduledTextEditorFocus, commitTableObject, reconcileSavedDocumentDirtyState]);
 
   const handleTableDoubleClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
     if (activeToolState.activeCommandId !== "tool.select" || isEditableTarget(event.target)) return;
@@ -9689,6 +9704,7 @@ export function MainWindow({
   useEffect(() => {
     if (!isDesktopRuntime()) return;
     const coordinator = new DialogCoordinator(nativeDialogTransport, {
+      vibeCodeGuideAction: action => vibeGuideActionRef.current(action),
       insertTemplate: (tabId, id) => dispatchTemplateRef.current(tabId, id),
       applyPageSize: (tabId, size) => applyPageSizeToTabRef.current(tabId, size),
       insertTable: (tabId, options) => insertTableFromDialogRef.current(tabId, options),
@@ -10370,22 +10386,17 @@ export function MainWindow({
     const savingDocument = active ? documentRef.current : snapshot?.history.present;
     const savingFileState = active ? fileStateRef.current : snapshot?.file;
     if (!savingDocument || !savingFileState) return false;
-    const savingTableDraft = active ? JSON.stringify(tableCellEditorRef.current?.draft()) : undefined;
     const savedDocument = active ? documentForFlush() : savingDocument;
-    const payload = createNativeSavePayload(active ? documentForFlush() : savingDocument);
+    // The baseline and payload describe the same single draft snapshot.
+    const payload = createNativeSavePayload(savedDocument);
     const finishSave = (path?: string) => {
       savedDocumentsRef.current.set(savingTabId, savedDocument);
       documentSaveRevisionsRef.current.set(savingTabId, (documentSaveRevisionsRef.current.get(savingTabId) ?? 0) + 1);
       nonPristineTabsRef.current.add(savingTabId);
-      const currentDocument = savingTabId === activeDocumentTabIdRef.current ? documentRef.current :
+      const currentDocument = savingTabId === activeDocumentTabIdRef.current ? documentForFlush() :
         documentTabSnapshotsRef.current.get(savingTabId)?.history.present;
-      const currentTableDraft = savingTabId === activeDocumentTabIdRef.current
-        ? JSON.stringify(tableCellEditorRef.current?.draft()) : undefined;
-      const tableDraftChanged = savingTabId === activeDocumentTabIdRef.current && currentTableDraft !== savingTableDraft;
       // The editor may have committed/cancelled (or its tab switched) while the write awaited I/O.
-      const dirty = savingTableDraft !== undefined && currentTableDraft === undefined
-        ? !currentDocument || !assistantDocumentContentUnchanged(savedDocument, currentDocument)
-        : currentDocument !== savingDocument || tableDraftChanged;
+      const dirty = !currentDocument || !assistantDocumentContentUnchanged(savedDocument, currentDocument);
       const nextFileState = { path: path ?? savingFileState.path, dirty };
       const displayName = path ? nativePathBasename(path) : payload.filename;
       const warningsReport: OpenWarningsReport | undefined = payload.warnings.length > 0 ? {
@@ -10903,6 +10914,19 @@ export function MainWindow({
         nativeBondStereoFlipDisabledReason(document, currentMoleculeInspector.targets.bondTargets, bondStereoReader))
     ].forEach((action) => {
       register(action, () => { applyMoleculeInspectorCommand(action.id); });
+    });
+
+    registerVibeCodeStarter(register, {
+      isDesktop: isDesktopRuntime(),
+      pickSavePath: pickNativeExportPath,
+      writeText: writeNativeTextFile,
+      download: downloadText
+    }, setStatus, async () => {
+      if (isDesktopRuntime()) {
+        const coordinator = dialogCoordinatorRef.current;
+        if (!coordinator) { setStatus("Guide could not open: the dialog host is unavailable."); return; }
+        await coordinator.openVibeCodeGuide();
+      } else setBrowserVibeGuide(true);
     });
 
     for (const commandId of [PLUGIN_MANAGER_COMMAND_ID, PLUGIN_UPDATES_COMMAND_ID]) register(
@@ -11666,6 +11690,8 @@ export function MainWindow({
       syncCoreCommands: createCoreCommandRegistrar(commandRegistry, () => coreCommandBindingsRef.current)
     };
   }, []);
+
+  vibeGuideActionRef.current = async action => { await registry.invoke(action === "saveStarter" ? VIBE_CODE_SAVE_COMMAND_ID : PLUGIN_MANAGER_COMMAND_ID); };
 
   insertTableFromDialogRef.current = async (tabId, options) => {
     const commandId = tableInsertCommandId(options.rows, options.columns, options.headerRows);
@@ -13480,6 +13506,29 @@ export function MainWindow({
     window.addEventListener("keydown", handOffHoverLabelKey, true);
     return () => window.removeEventListener("keydown", handOffHoverLabelKey, true);
   }, [finishAtomLabelEdit]);
+
+  useEffect(() => {
+    // Inline editors own typing, clipboard and undo keys, and stop their propagation. Save must
+    // reach the registered command before that happens. Resolve without the editable-target
+    // filter, using the same platform-aware registry as the canvas, and keep the #273 flush path.
+    const saveFromInlineEditor = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || event.key === "Process" || event.keyCode === 229 ||
+          isBlockedByModalDialog(event.target) || !(event.target instanceof Element) ||
+          !event.target.matches(".text-object-editor, [data-table-cell-editor] textarea, [data-atom-label-editor]")) return;
+      const commandId = shortcutRegistry.resolve({
+        key: event.key, ctrlKey: event.ctrlKey, metaKey: event.metaKey,
+        altKey: event.altKey, shiftKey: event.shiftKey
+      });
+      if (commandId !== "document.save" && commandId !== "document.saveAs") return;
+      // Cancel the browser/native accelerator fallback as well, so macOS cannot save twice.
+      // Cmd+Q remains the native app.quit accelerator, which requests the shared draft flush;
+      // Windows registers no Quit accelerator. Neither needs a second JS command binding.
+      event.preventDefault();
+      void invokeCommandRef.current(commandId);
+    };
+    window.addEventListener("keydown", saveFromInlineEditor, true);
+    return () => window.removeEventListener("keydown", saveFromInlineEditor, true);
+  }, [shortcutRegistry]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -20867,12 +20916,25 @@ export function MainWindow({
       setBondStereoPopoverTarget({ target, document, parts: selectedNativeMoleculeParts });
       setObjectContextMenu(undefined);
     },
-    invoke: commandId => {
+    invoke: async commandId => {
       if (!bondStereoPopoverTarget) return;
       // Registry availability and handlers read the rendered inspector selection.
       // Publish the chosen target before invoking the existing registered command.
-      flushSync(() => setSelectedNativeMoleculePart({ ...bondStereoPopoverTarget.target, kind: "bond" }));
-      return invokeCommandRef.current(commandId);
+      flushSync(() => {
+        // History records whole objects, not the temporary bond target used by the
+        // inspector. Include its molecule so Undo can restore a complete selection.
+        const current = documentRef.current;
+        replacePresentDocument(selectDocumentObjects(current, current.selection.pageId ?? current.pages[0].id,
+          [...new Set([...current.selection.objectIds, bondStereoPopoverTarget.target.objectId])]));
+        setSelectedNativeMoleculePart({ ...bondStereoPopoverTarget.target, kind: "bond" });
+      });
+      try {
+        await invokeCommandRef.current(commandId);
+      } finally {
+        // The badge's bond is only a command target. Keep the whole-molecule
+        // selection recorded in history and painted on canvas consistent with copy.
+        setSelectedNativeMoleculePart(undefined);
+      }
     },
     focusCanvas: () => {
       canvasRegionRef.current?.focus({ preventScroll: true });
@@ -21994,6 +22056,7 @@ export function MainWindow({
           />
         ) : null}
       </section>
+      {!isDesktopRuntime() && browserVibeGuide ? <Suspense fallback={<p>Opening guide…</p>}><VibeCodeGuideForm onAction={action => { if (action === "cancel") setBrowserVibeGuide(false); else void vibeGuideActionRef.current(action); }} /></Suspense> : null}
       {!isDesktopRuntime() && browserTemplates ? <div className="cd-template-browser"><Suspense fallback={<p role="status">Opening Templates…</p>}>
         <StructureTemplatePicker {...browserTemplates} onClose={() => setBrowserTemplates(undefined)}
           onInsert={id => { void dispatchTemplateRef.current(browserTemplates.tabId, id).catch(error => setStatus(String(error))); }} />
@@ -32891,7 +32954,7 @@ function arrayBufferFromBytes(bytes: Uint8Array): ArrayBuffer {
  * The status line for a completed run.
  *
  * Counts what declined rather than only what succeeded: "46 properties" beside a silent decline reads
- * as a complete answer, which is the impression PLANS.md §10 spends a paragraph warning against.
+ * as a complete answer, which is the impression docs/plans/PLANS.md §10 spends a paragraph warning against.
  */
 function formatAnalysisRunStatus(run: AnalysisRun): string {
   const computed = run.results.filter((result) => result.status === "ok").length;

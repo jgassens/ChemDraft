@@ -54,7 +54,7 @@ Independent review additionally blocks native commands, queued opens, and plugin
 the quit interaction, disables competing choices while Cancel is pending, lets an existing OS
 tab-close alert resolve before requesting quit again, and keeps/raises a waiting macOS prompt.
 
-Completed implementation slices, newest first. These moved out of `PLANS.md` on 2026-07-30 so that
+Completed implementation slices, newest first. These moved out of `docs/plans/PLANS.md` on 2026-07-30 so that
 file could go back to describing only the work in flight; the records themselves are unchanged apart
 from heading levels and cross-reference fixes.
 
@@ -818,8 +818,8 @@ tools under its own title.
 
 ### What was still open at the time of shipping
 
-Three items were carried into `PLANS.md` as open work. Two remain open; one has since been fixed —
-see [Known open items](../../PLANS.md#known-open-items-not-in-flight) in `PLANS.md` for current
+Three items were carried into `docs/plans/PLANS.md` as open work. Two remain open; one has since been fixed —
+see [Known open items](../plans/PLANS.md#known-open-items-not-in-flight) in `docs/plans/PLANS.md` for current
 status:
 
 1. Art inspector still styles only graphics and molecules (`ArtInspectorStyleObject`) — **still
@@ -865,7 +865,7 @@ Customize gallery that keyed off the user's own layout and so deleted any art to
 Known remaining gap at the time of shipping: the Art inspector still styles only graphics and
 molecules, so Color Controls and Object Settings route a bracket or arrow selection to a status
 message rather than a working panel. Widening `ArtInspectorStyleObject` is its own slice. **Still
-open** — tracked in `PLANS.md`.
+open** — tracked in `docs/plans/PLANS.md`.
 
 ### Objective
 
@@ -912,7 +912,7 @@ AGENTS.md command-ID stability rule; each can return via git when its feature sl
   styling is applied through the Art inspector's effects.
 
 `surface.canvas.addPageAfter` stays as disabled metadata: the surface registry does not drive
-rendered UI (PLAN.md 6.15 sanctions it explicitly — "may exist only as disabled metadata until
+rendered UI (docs/plans/PLAN.md 6.15 sanctions it explicitly — "may exist only as disabled metadata until
 `document.addPageAfter` is implemented and wired").
 
 ### Disposition of all audited items
@@ -956,8 +956,8 @@ Each phase was one independently green commit (code + pinned-test updates togeth
 "expected stub set" test introduced in Phase 1 asserts the exact remaining stub command IDs and
 shrinks every phase, reaching empty in Phase 6 and locked by a policy test in Phase 7.
 
-- **Phase 0 — Docs.** The PLANS.md section; AGENTS.md Toolbar Button Contract and §9 updates;
-  PLAN.md §6.11/§6.13 updates; build stamp.
+- **Phase 0 — Docs.** The docs/plans/PLANS.md section; AGENTS.md Toolbar Button Contract and §9 updates;
+  docs/plans/PLAN.md §6.11/§6.13 updates; build stamp.
 - **Phase 1 — Cleanup.** Delete the retired commands (`commands.ts`, `drawingTools.ts`,
   `desktop-toolsets.json` including the two retired IDs inside `tool.reactionArrow`'s submenu);
   gallery stub filter at the `MainWindow.tsx` call site; rewrite the placeholder-count test into the
@@ -1021,7 +1021,7 @@ Definition of done, as met:
   CDXML. *(Reversed 2026-08-02, PR #26: art arrows that round-trip CDXML — see below.)*
 - Orbitals, brackets, symbols, chain, and formula text create real document objects with undo/redo,
   save/reopen, and SVG export parity.
-- AGENTS.md, PLAN.md, and the plans file describe the shipped state; build stamps updated.
+- AGENTS.md, docs/plans/PLAN.md, and the plans file describe the shipped state; build stamps updated.
 
 ---
 
