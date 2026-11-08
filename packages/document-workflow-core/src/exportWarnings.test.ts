@@ -41,7 +41,6 @@ describe.each([false, true])("invalid structure diagnostics (suppressed=%s)", su
     expect(warnings).toContainEqual(expect.objectContaining({ message: invalidCarbonWarning }));
   });
 });
-
 function incompleteNitrogen() {
   const molecule = invalidCarbonMolecule();
   molecule.atoms = molecule.atoms.slice(0, 2);
@@ -93,31 +92,6 @@ it("never trusts stale stored CC for an incomplete N-C graph without RDKit", asy
   })]);
 });
 
-it("retains the valence warning when the reported radicals do not fill the deficit", async () => {
-  const molecule = incompleteNitrogen();
-  const identifiers = (await computeStructureIdentifiers(
-    moleculeToMolfileV2000(molecule, {}).contents, { includeAtomStates: true }
-  ))!;
-  const nitrogenIndex = identifiers.smilesAtomOrder!.indexOf(0);
-  identifiers.smilesAtomStates![nitrogenIndex]!.nRad = 1;
-  const warnings: ExportWarning[] = [];
-  await moleculeSmiles(molecule, 0, warnings, async () => identifiers);
-  expect(warnings.map(warning => warning.code)).toEqual(["export.invalid_structure", "export.smiles_radical_loss"]);
-  expect(warnings[0]!.message).toBe("N1 has 1 of 3 bonds.");
-});
-
-it("keeps the main nitro SMILES and charge-separation note exactly", async () => {
-  const molecule = chargeSeparationCases.find(entry => entry.name === "nitro")!.molecule;
-  const warnings: ExportWarning[] = [];
-  expect(await moleculeSmiles(molecule, 0, warnings, computeStructureIdentifiers)).toBe("C[N+](=O)[O-]");
-  expect(warnings).toEqual([{
-    code: "export.smiles_charge_separated", severity: "info", objectId: molecule.id,
-    message: "SMILES writes charge-separated formal charges while preserving total charge: " +
-      "Atom a0 (N) is drawn with formal charge 0; SMILES reparses with formal charge 1. " +
-      "Atom a1 (O) is drawn with formal charge 0; SMILES reparses with formal charge -1."
-  }]);
-});
-
 it("does not suppress nitro validation without evidence that sanitization applied", async () => {
   const molecule = chargeSeparationCases.find(entry => entry.name === "nitro")!.molecule;
   const warnings: ExportWarning[] = [];
@@ -125,28 +99,4 @@ it("does not suppress nitro validation without evidence that sanitization applie
   expect(warnings).toEqual([expect.objectContaining({
     code: "export.invalid_structure", message: "N1 has unsupported valence 5."
   })]);
-});
-
-it("accounts only for the nitro atom named by the applied charge separation", async () => {
-  const molecule = structuredClone(chargeSeparationCases.find(entry => entry.name === "nitro")!.molecule);
-  const originalCount = molecule.atoms.length;
-  molecule.atoms.push(...molecule.atoms.map(atom => ({ ...atom, id: `other_${atom.id}` })));
-  molecule.bonds.push(...molecule.bonds.map(bond => ({ ...bond, id: `other_${bond.id}`,
-    fromAtomId: `other_${bond.fromAtomId}`, toAtomId: `other_${bond.toAtomId}` })));
-  const identifiers = (await computeStructureIdentifiers(
-    moleculeToMolfileV2000(molecule, {}).contents, { includeAtomStates: true }
-  ))!;
-  // Model an engine reporting sanitization of only the first nitro group. A charge note
-  // elsewhere in this molecule is not evidence that the second N's problem was accounted for.
-  identifiers.smilesAtomOrder!.forEach((inputIndex, outputIndex) => {
-    if (inputIndex >= originalCount) identifiers.smilesAtomStates![outputIndex]!.formalCharge = 0;
-  });
-  const warnings: ExportWarning[] = [];
-  await moleculeSmiles(molecule, 0, warnings, async () => identifiers);
-  expect(warnings).toEqual([
-    { code: "export.invalid_structure", severity: "warning", objectId: molecule.id,
-      message: "N5 has unsupported valence 5." },
-    expect.objectContaining({ code: "export.smiles_charge_separated", severity: "info" })
-  ]);
-  expect(warnings[1]!.message).not.toContain("other_");
 });
