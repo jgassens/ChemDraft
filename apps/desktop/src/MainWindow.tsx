@@ -20896,12 +20896,25 @@ export function MainWindow({
       setBondStereoPopoverTarget({ target, document, parts: selectedNativeMoleculeParts });
       setObjectContextMenu(undefined);
     },
-    invoke: commandId => {
+    invoke: async commandId => {
       if (!bondStereoPopoverTarget) return;
       // Registry availability and handlers read the rendered inspector selection.
       // Publish the chosen target before invoking the existing registered command.
-      flushSync(() => setSelectedNativeMoleculePart({ ...bondStereoPopoverTarget.target, kind: "bond" }));
-      return invokeCommandRef.current(commandId);
+      flushSync(() => {
+        // History records whole objects, not the temporary bond target used by the
+        // inspector. Include its molecule so Undo can restore a complete selection.
+        const current = documentRef.current;
+        replacePresentDocument(selectDocumentObjects(current, current.selection.pageId ?? current.pages[0].id,
+          [...new Set([...current.selection.objectIds, bondStereoPopoverTarget.target.objectId])]));
+        setSelectedNativeMoleculePart({ ...bondStereoPopoverTarget.target, kind: "bond" });
+      });
+      try {
+        await invokeCommandRef.current(commandId);
+      } finally {
+        // The badge's bond is only a command target. Keep the whole-molecule
+        // selection recorded in history and painted on canvas consistent with copy.
+        setSelectedNativeMoleculePart(undefined);
+      }
     },
     focusCanvas: () => {
       canvasRegionRef.current?.focus({ preventScroll: true });
