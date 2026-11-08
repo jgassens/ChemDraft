@@ -73,9 +73,9 @@ than 11.0, and no non-system dynamic dependencies (`otool -L`). Run all three
 smokes below with `CHEMDRAFT_ENGINE3D_SIDECAR` pointing at this build; execution on
 Apple silicon requires Rosetta. Then copy and commit the validated executable to
 `apps/desktop/src-tauri/binaries/avogadro3d-sidecar-x86_64-apple-darwin`.
-That path is currently a placeholder script; this tooling change leaves it in
-place. When replacing it, update the Intel-placeholder assertion in
-`apps/desktop/src-tauri/src/lib.rs` and the binaries README in the same change.
+That path contains the committed Intel x86_64 Mach-O sidecar, built for macOS
+11.0. Its binary details are documented in
+`apps/desktop/src-tauri/binaries/README.md`.
 The Intel smoke workflow runs only the committed artifact, never a local build.
 
 Without the local `_deps` checkout, the CMake preset intentionally fails rather
