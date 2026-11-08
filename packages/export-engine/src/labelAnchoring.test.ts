@@ -1,4 +1,4 @@
-// A group label is exported exactly as the canvas draws it (PLANS.md, label anchoring): turned round
+// A group label is exported exactly as the canvas draws it (docs/plans/PLANS.md, label anchoring): turned round
 // for a bond on its right ("MeO"), with the atom it bonds to on the atom. The SVG is serialized from
 // the canvas's own plan (`planPageSvgRender`), and the PDF is drawn from that SVG.
 

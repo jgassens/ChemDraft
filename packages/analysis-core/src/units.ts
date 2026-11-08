@@ -1,5 +1,5 @@
 /**
- * Structured unit identifiers (PLANS.md §3: "structured unit identifiers (not free strings)").
+ * Structured unit identifiers (docs/plans/PLANS.md §3: "structured unit identifiers (not free strings)").
  *
  * A free-string unit is how "180.159 amu" and "180.042 amu" end up next to each other in a UI when
  * one is a molar mass in g/mol and the other a monoisotopic mass in daltons. The registry below keeps
