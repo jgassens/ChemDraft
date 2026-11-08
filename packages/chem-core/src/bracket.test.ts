@@ -10,7 +10,7 @@ describe("additive v1 bracket fields", () => {
     expect(deserializeDocument(serializeDocument(document)).pages[0].objects[0]).toEqual(legacy);
   });
   it("round-trips pair sides, repeat semantics and custom labels", () => {
-    const bracket = { ...legacy, bracketKind: "round", side: "close", pairId: "pair1", repeatUnit: true, label: "m" };
+    const bracket: BracketObject = { ...legacy, bracketKind: "round", side: "close", pairId: "pair1", repeatUnit: true, label: "m" };
     expect(BracketObjectSchema.parse(bracket)).toEqual(bracket);
     expect(BracketObjectSchema.safeParse({ ...bracket, side: "other" }).success).toBe(false);
     expect(BracketObjectSchema.safeParse({ ...bracket, repeatUnit: "yes" }).success).toBe(false);
