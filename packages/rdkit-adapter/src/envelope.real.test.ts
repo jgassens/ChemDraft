@@ -1,5 +1,5 @@
 /**
- * The isotope envelope inside a real analysis run (PLANS.md §9 Release 2).
+ * The isotope envelope inside a real analysis run (docs/plans/PLANS.md §9 Release 2).
  *
  * Run against both real engines rather than a fixture: the whole point of the method is that RDKit's
  * composition and IsoSpec's distribution agree, and only the real artifacts can show that.

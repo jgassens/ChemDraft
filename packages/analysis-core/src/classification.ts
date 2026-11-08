@@ -1,5 +1,5 @@
 /**
- * Three-axis classification with behaviour on the flags (PLANS.md §2).
+ * Three-axis classification with behaviour on the flags (docs/plans/PLANS.md §2).
  *
  * The load-bearing rule, and the reason an earlier single `ScientificClass` enum was replaced:
  *

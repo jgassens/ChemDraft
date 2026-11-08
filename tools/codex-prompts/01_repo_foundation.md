@@ -7,7 +7,7 @@ You are working in the ChemDraft repository.
 
 First, read these files fully:
 
-- PLAN.md
+- docs/plans/PLAN.md
 - AGENTS.md
 
 Goal for this task:
