@@ -42,7 +42,7 @@ it.each(["MacIntel", "Win32"])("uses a live preference change for hover key 2 on
       Object.defineProperties(event, { pointerId: { value: 7 }, pointerType: { value: "mouse" }, isPrimary: { value: true } });
       container.querySelector(".page")!.dispatchEvent(event);
     });
-    expect(snapshot().hoveredNativeTarget?.kind).toBe("bond");
+    expect(snapshot().hoveredNativeTarget).toMatchObject({ kind: "bond" });
     await act(async () => {
       (document.activeElement ?? document.body).dispatchEvent(
         new KeyboardEvent("keydown", { key: "2", bubbles: true, cancelable: true })
