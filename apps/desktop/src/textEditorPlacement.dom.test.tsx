@@ -71,7 +71,7 @@ describe.each(["macos", "windows"] as const)("text editor placement (%s)", platf
           bubbles: true, cancelable: true, ctrlKey: true, deltaY: -Math.log(zoom) / 0.002
         }));
       });
-      const glyph = container.querySelector(`[data-page-svg-object-visual="${object.id}"] text`)!;
+      const glyph = container.querySelector<SVGTextElement>(`[data-page-svg-object-visual="${object.id}"] text`)!;
       const svgX = Number(glyph.getAttribute("x")), svgY = Number(glyph.getAttribute("y"));
       await act(async () => glyph.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, detail: 2 })));
       await act(async () => vi.advanceTimersByTimeAsync(100));
