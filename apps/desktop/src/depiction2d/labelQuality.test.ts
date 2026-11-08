@@ -2,7 +2,7 @@ import { Resvg } from "@resvg/resvg-js";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createEmptyDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import { pastedStructureDepictionFromMolfile, stereoPerceptionMolfile } from "@chemdraft/document-workflow-core";
-import { atomLabelRunFontSize, moleculeLayoutLabelBoxes, planMoleculeAtomLabels } from "@chemdraft/layout-engine";
+import { atomLabelGlyphBounds, atomLabelRunFontSize, moleculeLayoutLabelBoxes, planMoleculeAtomLabels } from "@chemdraft/layout-engine";
 import * as layoutEngine from "@chemdraft/layout-engine";
 import { ensureOclResources, perceiveStereoCentersFromMolfile, relayoutMolfile2D } from "@chemdraft/ocl-adapter";
 import * as rdkitDepiction from "@chemdraft/rdkit-adapter/depiction";
@@ -43,6 +43,35 @@ afterAll(() => resetRdkitForTesting());
 afterEach(() => vi.restoreAllMocks());
 
 describe("renderer label collision regressions", () => {
+  // Hand-derived from packages/layout-engine/src/index.ts:5793 (N, H and 2 have
+  // ascent 0.75 em, descent 0.03 em), :5830-5832 (baseline dy = 0.35 em),
+  // :6146-6148 (subscript drop = 0.34 * base size) and :6306-6311 with
+  // packages/layout-engine/src/textMetrics.ts:14 (subscript size = 0.72 * base size).
+  // At 20 px, N spans y = -8 to 7.6: height 15.6.
+  // NH2 has the same top; its 14.4 px subscript ends at
+  // 6.8 + (0.35 + 0.03) * 14.4 = 12.272: height 20.272.
+  // Keep these expectations literal: deriving them with production bounds helpers
+  // would also accept padding accidentally added inside atomLabelGlyphBounds.
+  it.each([
+    { label: "N", expectedHeight: 15.6 },
+    { label: "NH2", expectedHeight: 20.272 }
+  ])("keeps $label collision height tight to fixed character extents", ({ label, expectedHeight }) => {
+    const molecule: MoleculeObject = {
+      id: "fixed-label", type: "molecule", x: 0, y: 0, width: 40, height: 40, rotation: 0,
+      structureFormat: "unknown", structure: "",
+      atoms: [{ id: "label", element: label, labelLiteral: true, x: 20, y: 20, formalCharge: 0 }],
+      bonds: [], superatoms: [], rGroups: [],
+      style: { atomLabelFontFamily: "Arial, Helvetica, sans-serif", atomLabelFontSizePx: 20,
+        atomLabelFontWeight: 400, atomLabelFontStyle: "normal" }
+    };
+    const plans = planMoleculeAtomLabels(molecule);
+    expect(plans.map(plan => plan.label)).toEqual([label]);
+    expect(plans[0].fontSizePx).toBe(20);
+    const boxes = moleculeLayoutLabelBoxes(molecule);
+    expect(boxes).toHaveLength(1);
+    expect(Math.abs(boxes[0].height - expectedHeight)).toBeLessThanOrEqual(0.5);
+  });
+
   it("exempts bonded labels only, retaining non-bonded label pairs and nonincident bonds", () => {
     const atoms = [{ x: 0, y: 0 }, { x: 22, y: 0 }, { x: 11, y: 0 }];
     const boxes = atoms.map((_, atom) => ({ atom, x: 0, y: -5, width: 22, height: 10 }));
@@ -84,8 +113,11 @@ describe("renderer label collision regressions", () => {
       expect(glyph.y).toBeGreaterThanOrEqual(box.y - 0.5);
       expect(glyph.x + glyph.width).toBeLessThanOrEqual(box.x + box.width + 0.5);
       expect(glyph.y + glyph.height).toBeLessThanOrEqual(box.y + box.height + 0.5);
-      // Tight extents, not a centred em square plus clipping padding.
-      expect(box.height - glyph.height).toBeLessThan(3);
+      // Check that collision boxes use glyph bounds rather than padded layout bounds.
+      // The fixed-label cases independently guard glyph-bound tightness without system
+      // fonts; the assertions above check that the actual ink is still enclosed.
+      const expectedHeight = atomLabelGlyphBounds(plan).height;
+      expect(Math.abs(box.height - expectedHeight)).toBeLessThanOrEqual(0.5);
       return glyph;
     });
     const measurements = pairs.map(([a, b]) => {

@@ -2,6 +2,7 @@ import { detectShortcutPlatform, type ShortcutPlatform } from "@chemdraft/shortc
 import { REPORT_BUG_COMMAND_ID } from "./problemReports";
 import { convertTextToAtomLabelCommandId } from "./commands";
 import { formatShortcutLabel } from "./toolsets";
+import { VIBE_CODE_STARTER_COMMAND_ID, vibeCodeStarterCommand } from "./commands/vibeCodeStarter";
 
 /**
  * Declarative model for the in-viewport application menu bar.
@@ -350,7 +351,11 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
     {
       id: "plugins",
       label: "Plugins",
-      items: [command(PLUGIN_MANAGER_COMMAND_ID, "Add or Remove Plugins…")]
+      items: [
+        command(PLUGIN_MANAGER_COMMAND_ID, "Add or Remove Plugins…"),
+        separator(),
+        command(VIBE_CODE_STARTER_COMMAND_ID, vibeCodeStarterCommand.title)
+      ]
     },
     {
       id: "help",
