@@ -1,5 +1,5 @@
 /**
- * Release 1 closeout locks (PLANS.md §9 "Definition of done", §10).
+ * Release 1 closeout locks (docs/plans/PLANS.md §9 "Definition of done", §10).
  *
  * The other suites test behaviours. This one tests *completeness* — the properties that are easy to
  * satisfy today and easy to erode later, and that no single feature test would notice breaking:

@@ -1,5 +1,5 @@
 /**
- * The provenance report against a real run (PLANS.md §9 Release 1).
+ * The provenance report against a real run (docs/plans/PLANS.md §9 Release 1).
  *
  * Built here rather than in `analysis-core` because the report's job is to describe what an actual
  * analysis produced. A report test over a hand-written run proves the formatter; a report test over

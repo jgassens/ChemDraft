@@ -15,6 +15,7 @@ import {
   type AppMenuContext
 } from "./appMenu";
 import { pluginItemsForNativeMenu } from "./plugins/nativePluginMenu";
+import { VIBE_CODE_STARTER_COMMAND_ID } from "./commands/vibeCodeStarter";
 
 const EMPTY_CONTEXT: AppMenuContext = {
   rulersVisible: true,
@@ -259,8 +260,8 @@ describe("app menu model", () => {
     expect(nativeRoutedCommandIds(model)).toContain("table.insertDialog");
   });
 
-  it("exposes the core plugin manager in its own native-routed section", () => {
-    const model = buildAppMenuModel(EMPTY_CONTEXT);
+  it.each(["macos", "windows"] as const)("exposes the plugin manager and starter in order on %s", platform => {
+    const model = buildAppMenuModel({ ...EMPTY_CONTEXT, platform });
     const plugins = model.find((section) => section.id === "plugins");
 
     expect(plugins?.label).toBe("Plugins");
@@ -270,9 +271,20 @@ describe("app menu model", () => {
         commandId: PLUGIN_MANAGER_COMMAND_ID,
         label: "Add or Remove Plugins…",
         enabled: true
+      }),
+      expect.objectContaining({ kind: "separator" }),
+      expect.objectContaining({
+        kind: "command",
+        commandId: VIBE_CODE_STARTER_COMMAND_ID,
+        label: "Vibe Code Your Own Plugin…",
+        enabled: true
       })
     ]);
     expect(nativeRoutedCommandIds(model)).toContain(PLUGIN_MANAGER_COMMAND_ID);
+    expect(nativeRoutedCommandIds(model)).toContain(VIBE_CODE_STARTER_COMMAND_ID);
+    const source = readFileSync("apps/desktop/src-tauri/src/lib.rs", "utf8");
+    const builder = source.split("let plugins_menu =")[1]!.split("let plugins_plugin_items")[0]!;
+    expect(builder).toMatch(/"plugins.manage",\s*"Add or Remove Plugins…"[\s\S]*PredefinedMenuItem::separator\(app\)[\s\S]*"plugins.vibeCodeStarter",\s*"Vibe Code Your Own Plugin…"/);
   });
 
   it("appends plugin menu items to their target section without disturbing the native routed set", () => {
@@ -323,7 +335,7 @@ describe("app menu model", () => {
     expect(commands.some((command) => /nmr/i.test(command.commandId) || /nmr/i.test(command.label))).toBe(false);
   });
 
-  it("appends contributed items to the core Plugins section after one separator", () => {
+  it("appends contributed items after the core Plugins commands and a separator", () => {
     const model = buildAppMenuModel({
       ...EMPTY_CONTEXT,
       pluginMenuItems: [
@@ -344,6 +356,8 @@ describe("app menu model", () => {
     const plugins = model.find((section) => section.id === "plugins");
     expect(plugins?.items.map((item) => (item.kind === "command" ? item.commandId : item.kind))).toEqual([
       PLUGIN_MANAGER_COMMAND_ID,
+      "separator",
+      VIBE_CODE_STARTER_COMMAND_ID,
       "separator",
       "plugin.demo.open"
     ]);

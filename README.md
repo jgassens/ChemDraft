@@ -1,106 +1,57 @@
 # ChemDraft
 
-Website: [chemdraft.ai](https://chemdraft.ai)
+ChemDraft 1.1.0 is a free, open-source chemical drawing application for macOS and Windows. It puts local files first and is licensed under Apache-2.0.
 
-ChemDraft is a lightweight, local-file-first chemical drawing application under early development. The current milestone has a clean monorepo foundation, strict package boundaries, a native document model scaffold, plugin API/host foundations, page-layout infrastructure, a narrow active Ketcher molecule-editor host, and an optional fixture-backed MolScribe OCSR plugin scaffold.
+## Download
 
-This repository intentionally does not include full chemistry drawing beyond the first native single-bond and connected carbon-chain slices plus selected-molecule Ketcher editing, full RDKit integration, CDXML/CDX parsing, native clipboard handling, plugin sandboxing, real MolScribe OCSR inference, or proprietary assets yet.
+Get the latest release from [GitHub Releases](https://github.com/jgassens/ChemDraft/releases/latest) or visit [chemdraft.ai](https://chemdraft.ai).
 
-## Current Status
+## What it does
 
-- Tools offers selected-structure searches in PubChem and Reaxys through your browser, with per-site first-use consent and an Online structure search preference.
-- `apps/desktop` contains a Tauri v2, Vite, React, and TypeScript desktop shell with native floating toolset windows for desktop builds and command-backed File > Page Setup controls.
-- Packaged macOS builds use Sparkle 2 to check for signed app updates automatically and expose File > Check for Updates…; installed plugins remain in Application Support across app replacement.
-- Phase 7 has started with command-backed active drawing tools, keyboard shortcut routing, a minimal document-backed native single-bond insertion path, selected carbon-chain extension through native atom/bond payloads, and a lazy Ketcher host for active selected-molecule editing.
-- `packages/chem-core` owns the first native document model, schemas, patches, serialization, history helpers, page layout state, and paper-size presets.
-- `packages/ketcher-adapter` provides a host adapter boundary with capability reporting and molecule load/save contracts. Ketcher is embedded only through a narrow desktop active molecule-editor host; `chem-core` remains the document/page source of truth.
-- `packages/plugin-api` defines manifest schemas, permission names, command contributions, plugin context types, and recognition-result types.
-- `packages/plugin-host` contains command registration, permission checks, plugin storage scoping, and proposed-patch handling.
-- `packages/viewport-engine` owns viewport state, coordinate conversion, zoom math, and ruler render state; rulers and crosshairs consume document page layout.
-- `apps/desktop/src/surfaces` contains a tiny metadata-only UX surface scaffold. Rendered UI is not yet driven from it.
-- Other packages are boundary placeholders for future work.
-- `examples/plugins/molscribe-ocsr` provides an optional fixture-backed MolScribe OCSR scaffold without adding ML dependencies.
+- Draw molecules, reactions and mechanisms with bonds, rings, arrows, atom labels and chemical abbreviations.
+- Import and export CDXML, and export drawings as SVG, PDF or PNG.
+- Copy structures and editable tables for use in Office applications.
+- Add editable tables and pictures, and use structure templates.
+- Inspect molecular properties and analysis results, and explore structures with Spin 3D.
+- Convert chemical names to structures with OPSIN.
+- Search a selected structure in PubChem or Reaxys through your browser, with first-use consent per site; turn it off under Preferences ▸ Online structure search.
+- Extend the app with plugins, including the optional official NMR predictor and MolScribe structure-recognition plugins.
+- Use the headless CLI, MCP server and [agent skill](skills/chemdraft/SKILL.md) from scripts or coding assistants.
 
-## Commands
+Spin 3D may not start on macOS 15 or earlier in version 1.1.0; a fix is planned for 1.1.1.
 
-```bash
-pnpm install
+## Plugins
+
+Plugins add capabilities without putting them all in the core application. See the [plugin authoring guide](docs/plugin-architecture/AUTHORING.md) to build one. Plugins ▸ Vibe Code Your Own Plugin… arrives in 1.1.1 with a guide and starter file for working with a coding assistant.
+
+## Roadmap
+
+See the [roadmap](ROADMAP.md) for upcoming releases and ideas.
+
+## Building from source
+
+Install Node.js, pnpm and Rust, then run `pnpm install`. On macOS, use `./run-app` to build and launch the packaged app; on Windows, use `pnpm dev`. See [AGENTS.md](AGENTS.md) for platform prerequisites, development rules and verification guidance.
+
+The verification gauntlet is:
+
+```sh
 pnpm lint
-pnpm test
+pnpm vitest run
 pnpm build
-pnpm dev
-pnpm dev:web
+git diff --check
+cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check
+cargo clippy --all-targets --manifest-path apps/desktop/src-tauri/Cargo.toml -- -D warnings
+cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 ```
 
-`pnpm dev` launches the ChemDraft Tauri desktop app through `./run-app --dev`, so normal dev launches clear stale ChemDraft instances and use the same app identity as packaged runs. In the desktop app, drawing toolsets are separate native windows that route command IDs back to the main document window, with visibility and placement persisted by the desktop shell. Use `pnpm dev:web` only as a secondary browser preview while working on the React surface; the browser preview uses in-window floating palette overlays, not palettes embedded in the document canvas.
+## Contributing and reporting bugs
 
-The first native build downloads the pinned Sparkle framework from its official release and verifies
-its SHA-256 before use. Release/appcast instructions are in
-`docs/releasing/macos-updates.md`; Sparkle update checks run only from a packaged macOS app, not the
-browser-only preview.
+Contributions and reports are welcome on [GitHub Issues](https://github.com/jgassens/ChemDraft/issues). You can also use Help ▸ Report a Bug… in the app.
 
-The `./run-app` helper builds the packaged macOS app and launches it as `ChemDraft (dev)`. All branch/dev builds share identifier `org.chemdraft.desktop.dev`, one app-data folder (settings and installed plugins), and one single-instance lock. Only one dev build runs at a time; quit it before launching another worktree's build. The helper refuses to launch while another checkout's dev build is running. It moves the bundle into `<worktree>/app/` and never builds over, renames, or unregisters the stable `/Applications/ChemDraft.app` (`org.chemdraft.desktop`), which is built from `main` and keeps separate app data and a separate lock (AGENTS.md §15.2 The stable app is never replaced). Use `./run-app --dev` only when you explicitly want Tauri dev mode with Vite/HMR; it runs a bare binary with no bundle identifier, using the shared dev identifier for app data and the lock. Tauri requires Rust/Cargo to be installed and available on `PATH`.
+## Support
 
-## Windows
+ChemDraft is free and open source. If it helps your work, you can [support its development](https://buymeacoffee.com/gassensmith).
 
-The same commands work on Windows 10/11 (x64). `pnpm dev` and the desktop `build`/`tauri` scripts run
-through Node launchers (`scripts/dev.mjs`, `scripts/desktop-tauri.mjs`) that keep macOS on its exact
-existing path and skip the macOS-only steps (Sparkle, signing) elsewhere.
+## License
 
-Prerequisites: Node 24 + pnpm 10.12.1, Rust via rustup (the pinned toolchain installs itself), Visual
-Studio 2022 Build Tools with the C++ workload, and WebView2 (preinstalled on Windows 11). For the
-optional pieces: a JDK for the OPSIN runtime, CMake for the Engine 3D sidecar.
-
-```bash
-pnpm install
-pnpm dev
-node scripts/build-opsin-runtime.mjs
-pnpm --filter @chemdraft/desktop build --bundles nsis
-```
-
-- The build produces `apps/desktop/src-tauri/target/release/bundle/nsis/ChemDraft_<version>_x64-setup.exe`,
-  a per-user installer (no admin); it is unsigned, so SmartScreen will ask once.
-- Built from any branch but `main`, it is `ChemDraft (dev)` (`ChemDraft (dev)_<version>_x64-setup.exe`,
-  installed to `%LOCALAPPDATA%\ChemDraft (dev)`), with the shared `org.chemdraft.desktop.dev` identifier,
-  one shared dev app-data folder and one shared single-instance lock. Quit the running dev build before
-  launching another worktree's; the stable app, its data, and its lock stay separate (AGENTS.md §15.2).
-  Release automation building a tagged commit sets `CHEMDRAFT_STABLE_BUILD=1`.
-- The released app updates itself: a daily check of a signed feed on `main`, File ▸ Check for
-  Updates…, and never a silent install. Publishing an update, and where the signing key lives, is in
-  `docs/releasing/windows-updates.md`. The installer itself is not Authenticode-signed yet, so
-  SmartScreen still warns on a manual download.
-- The Windows installer registers `.chemdraft` only (`tauri.windows.conf.json`). The macOS `.cdxml` entry
-  ranks ChemDraft as an Alternate handler, but NSIS ignores rank: a per-user install would write
-  `HKCU\Software\Classes\.cdxml`, which outranks ChemDraw's machine-wide registration and silently takes
-  over every `.cdxml` double-click. Open `.cdxml` files through File ▸ Open or Explorer's "Open with".
-- The Windows sidecar binary is committed; rebuild it with
-  `cmake --preset windows-msvc && cmake --build --preset windows-msvc` in `native/avogadro3d-sidecar`
-  after fetching `_deps` as its README describes.
-- Keep the checkout outside OneDrive. Syncing `node_modules` and `target/` makes builds and the test
-  suite several times slower.
-- Debug builds are large (~9 GB of `target/debug` with full debuginfo); on a small disk set
-  `CARGO_PROFILE_DEV_DEBUG=0`.
-
-## Using ChemDraft from an AI assistant
-
-The [ChemDraft agent skill](skills/chemdraft/SKILL.md) guides local assistants through
-the headless CLI and eight MCP tools for structures, reaction schemes, analysis, NMR
-predictions and exports. It requires computed results and preserves warnings and
-chemical identity. See [setup](skills/chemdraft/references/setup.md) for macOS and
-Windows installation, Claude Code, Claude Desktop with MCP, and Codex configuration.
-
-## Architecture Rules
-
-Read `PLAN.md` and `AGENTS.md` before making changes. In short:
-
-- Chemical identity must not be silently changed.
-- CDXML/CDX compatibility must not become the native document model.
-- External engines must stay behind adapter packages.
-- Plugins must request document changes through controlled APIs.
-- Migration-critical drawing and clipboard workflows are first-release concerns.
-- Do not copy proprietary icons, templates, documentation, sample files, or visual assets.
-- Do not use MolScribe as the app name; reserve it for the optional OCSR plugin integration.
-
-## Dependency Notes
-
-The initial dependency inventory is recorded in `docs/architecture/dependency-inventory.md`.
+ChemDraft is licensed under [Apache-2.0](LICENSE). See [NOTICE](NOTICE) for attribution and third-party notices.

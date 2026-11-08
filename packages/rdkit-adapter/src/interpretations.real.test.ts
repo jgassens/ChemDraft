@@ -1,5 +1,5 @@
 /**
- * Derived interpretations against the real engine (PLANS.md §1, Phase 3).
+ * Derived interpretations against the real engine (docs/plans/PLANS.md §1, Phase 3).
  *
  * The sodium-benzoate case is the whole architecture in one structure, and it is a first-class test
  * here rather than an example in a comment: composition and mass describe the salt the user drew,

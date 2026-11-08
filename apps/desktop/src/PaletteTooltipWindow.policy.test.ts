@@ -30,7 +30,11 @@ describe("native palette tooltip suppression", () => {
     expect(show.slice(guard, show.indexOf("let Some(window)"))).toContain("return Ok(())");
     expect(show).toContain("app.webview_windows()");
     expect(show).toContain("window.is_visible().unwrap_or(false)");
-    expect(show).not.toContain('.filter(|(label, _)| label.starts_with("toolset-popover-"))');
+    // Querying every window's visibility on each tooltip show slowed toolbar clicks;
+    // filter first so only popover windows are queried.
+    const labelFilter = show.indexOf('.filter(|(label, _)| label.starts_with("toolset-popover-"))');
+    expect(labelFilter).toBeGreaterThan(-1);
+    expect(labelFilter).toBeLessThan(show.indexOf("is_visible("));
   });
 
   it("hides the existing tooltip before either platform reveals a popover", () => {

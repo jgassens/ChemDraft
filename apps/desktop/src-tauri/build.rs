@@ -20,6 +20,7 @@ fn main() {
             "diagnose_download_host",
             "open_structure_search",
             "set_structure_search_enabled",
+            "plugin_starter_computer",
             "external_tool_status",
             "external_tool_install",
             "external_tool_cancel_install",

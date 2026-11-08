@@ -27,6 +27,7 @@ mod perf_log;
 mod plugin_package;
 #[cfg(test)]
 mod plugin_panel_acl_tests;
+mod plugin_starter;
 mod problem_reports;
 mod screen_capture;
 mod structure_search;
@@ -60,6 +61,7 @@ use std::{
 };
 
 use download_diagnosis::diagnose_download_host;
+use plugin_starter::plugin_starter_computer;
 use tauri::{
     menu::{
         AboutMetadata, CheckMenuItem, Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu,
@@ -629,6 +631,7 @@ const MENU_COMMAND_IDS: &[&str] = &[
     "chemistry.validateSelection",
     "structure.openInteractive3d",
     "plugins.manage",
+    "plugins.vibeCodeStarter",
     "help.reportBug",
 ];
 
@@ -1345,6 +1348,7 @@ pub fn run() {
             external_tools::external_tool_run_cancel,
             external_tools::external_tool_conversation_clear,
             diagnose_download_host,
+            plugin_starter_computer,
             plugin_package::read_plugin_package,
             dialog_windows::dialog_open,
             dialog_windows::dialog_request,
@@ -5072,6 +5076,7 @@ fn show_toolset_tooltip_window(
     if toolset_tooltip_suppressed(
         windows
             .iter()
+            .filter(|(label, _)| label.starts_with("toolset-popover-"))
             .map(|(label, window)| (label.as_str(), window.is_visible().unwrap_or(false))),
     ) {
         return Ok(());
@@ -7411,13 +7416,23 @@ fn create_app_menu_for_toolsets<R: Runtime>(
         app,
         "Plugins",
         true,
-        &[&MenuItem::with_id(
-            app,
-            "plugins.manage",
-            "Add or Remove Plugins...",
-            true,
-            None::<&str>,
-        )?],
+        &[
+            &MenuItem::with_id(
+                app,
+                "plugins.manage",
+                "Add or Remove Plugins…",
+                true,
+                None::<&str>,
+            )?,
+            &PredefinedMenuItem::separator(app)?,
+            &MenuItem::with_id(
+                app,
+                "plugins.vibeCodeStarter",
+                "Vibe Code Your Own Plugin…",
+                true,
+                None::<&str>,
+            )?,
+        ],
     )?;
     let plugins_plugin_items = plugin_menu_items_in(plugin_items, "plugins");
     if !plugins_plugin_items.is_empty() {
@@ -10118,7 +10133,7 @@ mod tests {
     fn registered_commands_have_permissions_and_capability_grants() {
         let lib_source = include_str!("lib.rs");
         let capability = format!(
-            "{}{}{}{}{}{}{}{}",
+            "{}{}{}{}{}{}{}{}{}",
             include_str!("../capabilities/palette-focus-diagnostic.json"),
             include_str!("../capabilities/window-drag.json"),
             include_str!("../capabilities/default.json"),
@@ -10126,7 +10141,8 @@ mod tests {
             include_str!("../capabilities/plugin-panel.json"),
             include_str!("../capabilities/quit-prompt.json"),
             include_str!("../capabilities/download-diagnosis.json"),
-            include_str!("../capabilities/external-tools.json")
+            include_str!("../capabilities/external-tools.json"),
+            include_str!("../capabilities/plugin-starter.json")
         );
 
         let handler_start = lib_source
@@ -10281,6 +10297,12 @@ mod tests {
         assert!(toolset_tooltip_suppressed(windows));
         windows[4].1 = false;
         assert!(!toolset_tooltip_suppressed(windows));
+        // Stop querying visibility as soon as a visible popover suppresses the tooltip.
+        assert!(toolset_tooltip_suppressed(
+            [("toolset-popover-core-main", true)]
+                .into_iter()
+                .chain(std::iter::once_with(|| panic!("scan must short-circuit"))),
+        ));
     }
 
     fn assert_bond_stereo_mouse_creation() {
@@ -10511,6 +10533,15 @@ mod tests {
             .expect("Plugins menu block");
 
         assert!(plugins_menu_block.contains("plugin_menu_items_in(plugin_items, \"plugins\")"));
+        let manager = plugins_menu_block
+            .find("\"Add or Remove Plugins…\"")
+            .unwrap();
+        let starter = plugins_menu_block
+            .find("\"Vibe Code Your Own Plugin…\"")
+            .unwrap();
+        assert!(manager < starter);
+        assert!(plugins_menu_block[manager..starter].contains("PredefinedMenuItem::separator(app)"));
+        assert!(plugins_menu_block.contains("\"plugins.vibeCodeStarter\""));
     }
 
     #[test]
@@ -10521,6 +10552,7 @@ mod tests {
     #[test]
     fn plugin_manager_menu_command_is_routed() {
         expect_true(is_routed_menu_command("plugins.manage"));
+        expect_true(is_routed_menu_command("plugins.vibeCodeStarter"));
     }
 
     #[test]

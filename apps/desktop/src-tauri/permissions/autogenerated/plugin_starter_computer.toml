@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-plugin-starter-computer"
+description = "Enables the plugin_starter_computer command without any pre-configured scope."
+commands.allow = ["plugin_starter_computer"]
+
+[[permission]]
+identifier = "deny-plugin-starter-computer"
+description = "Denies the plugin_starter_computer command without any pre-configured scope."
+commands.deny = ["plugin_starter_computer"]
