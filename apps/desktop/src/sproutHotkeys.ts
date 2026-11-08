@@ -1,6 +1,6 @@
 import { applyPatches, clearChangedAtomHydrogenHints, type ChemDraftDocument, type MoleculeAtom, type MoleculeBond, type MoleculeObject } from "@chemdraft/chem-core";
 import {
-  nativeAtomLabelReading,
+  atomBondOrderUsageMap, nativeAtomLabelReading, nativeAtomValidationState, nativeImplicitHydrogenCount,
   nativeSingleBondGraphMetadata, normalizeNativeMoleculeGeometry, phase4Timestamp,
   tryNativeSingleBondGraphSmiles, withNativeLabelBondSides
 } from "@chemdraft/document-workflow-core";
@@ -12,13 +12,29 @@ import {
 import type { FragmentSproutKind } from "./commands";
 export type { FragmentSproutKind } from "./commands";
 
+type NativeOxoHotkeyResult = {
+  document: ChemDraftDocument;
+  refusal?: NativeAtomSproutHotkeyResult["refusal"] | "atom-no-free-valence";
+};
+
 function moleculeAt(document: ChemDraftDocument, target: NativeMoleculeDeleteTarget): MoleculeObject | undefined {
   return document.pages[0].objects.find((object): object is MoleculeObject => object.id === target.objectId && object.type === "molecule");
 }
 
 /** Finish a graph edit through the same chemistry and geometry derivations as native drawing. */
-function commitGraph(document: ChemDraftDocument, before: MoleculeObject, atoms: MoleculeAtom[], bonds: MoleculeBond[]): NativeAtomSproutHotkeyResult {
+function commitGraph(document: ChemDraftDocument, before: MoleculeObject, atoms: MoleculeAtom[], bonds: MoleculeBond[]): NativeAtomSproutHotkeyResult;
+function commitGraph(document: ChemDraftDocument, before: MoleculeObject, atoms: MoleculeAtom[], bonds: MoleculeBond[], validateOxo: true): NativeOxoHotkeyResult;
+function commitGraph(document: ChemDraftDocument, before: MoleculeObject, atoms: MoleculeAtom[], bonds: MoleculeBond[], validateOxo = false): NativeOxoHotkeyResult {
   atoms = withNativeLabelBondSides({ atoms: clearChangedAtomHydrogenHints(before, atoms, bonds), bonds }).atoms;
+  // Oxo hotkeys retain their oxidation gate; other drawing edits diagnose valence after the edit.
+  if (validateOxo) for (const atom of atoms) {
+    const old = before.atoms.find(candidate => candidate.id === atom.id);
+    const bare = { ...atom, warningSuppressed: false };
+    if (old && nativeAtomValidationState({ ...old, warningSuppressed: false }, before.bonds, old.formalCharge, before.atoms).valid &&
+      !nativeAtomValidationState(bare, bonds, atom.formalCharge, atoms).valid) {
+      return { document, refusal: "atom-no-free-valence" };
+    }
+  }
   const stored = tryNativeSingleBondGraphSmiles(atoms, bonds);
   const next = normalizeNativeMoleculeGeometry({ ...before, atoms, bonds, structureFormat: "smiles",
     structure: "smiles" in stored ? stored.smiles : "", chemistry: nativeSingleBondGraphMetadata(atoms, bonds) });
@@ -126,8 +142,8 @@ function oxygenGraph(graph: MoleculeObject, atomId: string, document: ChemDraftD
   const atom = graph.atoms.find(candidate => candidate.id === atomId);
   if (!atom) return undefined;
   const page = document.pages[0];
-  // Use the element head to plan geometry for spelled SH/PH, retaining the authored label
-  // and hydrogens in the committed graph. Valence is diagnosed only after the edit.
+  // A spelled SH/PH label can accept a higher valence oxo even when the ordinary single-bond
+  // planner sees its minimum free valence as full. Plan geometry using only its element head.
   const reading = nativeAtomLabelReading(atom.element);
   const geometryAtom = reading.kind === "spelled" ? { ...atom, element: reading.element, labelLiteral: false } : atom;
   const geometryGraph = geometryAtom === atom ? graph : { ...graph, atoms: graph.atoms.map(candidate => candidate.id === atom.id ? geometryAtom : candidate) };
@@ -145,14 +161,30 @@ function oxygenGraph(graph: MoleculeObject, atomId: string, document: ChemDraftD
 }
 
 /** Key 2 adds oxygen directly to S/P, preserving their explicit labels, charge and isotope. */
-export function nativeOxoHotkeyTarget(document: ChemDraftDocument, target: NativeMoleculeDeleteTarget, plan?: NativeBondGrowthPlan): NativeAtomSproutHotkeyResult {
+export function nativeOxoHotkeyTarget(document: ChemDraftDocument, target: NativeMoleculeDeleteTarget, plan?: NativeBondGrowthPlan): NativeOxoHotkeyResult {
   const graph = moleculeAt(document, target);
   const atom = target.kind === "atom" ? graph?.atoms.find(candidate => candidate.id === target.atomId) : undefined;
   const reading = atom ? nativeAtomLabelReading(atom.element) : undefined;
   const element = reading?.kind === "element" || reading?.kind === "spelled" ? reading.element : undefined;
   if (!atom || !graph || (element !== "S" && element !== "P")) return nativeCarbonylHotkeyAtAtomTarget(document, target, plan);
   const next = oxygenGraph(graph, atom.id, document, plan);
-  return next ? commitGraph(document, graph, next.atoms, next.bonds) : { document, refusal: "sprout-no-free-direction" };
+  if (!next) return { document, refusal: "sprout-no-free-direction" };
+  // Oxidation must retain the source's implicit H even if the bare product validates
+  // (CP -> CP=O would silently lose two H). Spell a changed H count so the existing
+  // SH/PH label path validates the complete hypervalent state and preserves its formula.
+  // Atoms without implicit H and literal, charged, isotopic or radical atoms keep their gates.
+  if (reading?.kind === "element" && atom.labelLiteral !== true && atom.formalCharge === 0 &&
+    atom.isotope === undefined && !(atom.markRadicals ?? 0)) {
+    const usage = atomBondOrderUsageMap(graph.atoms, graph.bonds).get(atom.id) ?? 0;
+    const hydrogens = nativeImplicitHydrogenCount(element, usage, atom.formalCharge);
+    const nextUsage = atomBondOrderUsageMap(next.atoms, next.bonds).get(atom.id) ?? 0;
+    if (hydrogens > 0 && hydrogens !== nativeImplicitHydrogenCount(element, nextUsage, atom.formalCharge)) {
+      next.atoms = next.atoms.map(candidate => candidate.id === atom.id
+        ? { ...candidate, element: `${element}H${hydrogens === 1 ? "" : hydrogens}`, labelLiteral: true }
+        : candidate);
+    }
+  }
+  return commitGraph(document, graph, next.atoms, next.bonds, true);
 }
 
 /** Key 9 uses one source valence for isopropyl when two methyls would overfill carbon. */

@@ -2610,7 +2610,8 @@ describe("ChemDraft desktop shell", () => {
     expect(mainWindowSource).toContain("const clean = normalizeCommittedDocument(stripped);");
     expect(mainWindowSource).toContain("normalizeCommittedDocument(finishedAtomLabelDraft(current, edit).document)");
     expect(mainWindowSource).toContain("const flushed = documentForFlush();");
-    expect(mainWindowSource).toContain("createNativeSavePayload(active ? documentForFlush() : savingDocument)");
+    expect(mainWindowSource).toContain("const savedDocument = active ? documentForFlush() : savingDocument;");
+    expect(mainWindowSource).toContain("const payload = createNativeSavePayload(savedDocument);");
     expect(mainWindowSource).toContain("tabId === activeDocumentTabIdRef.current ? documentForFlush() : documentTabSnapshotsRef.current.get(tabId)?.history.present");
     expect(mainWindowSource).toContain("createDialogExportResult(source, { ...options, busy: false })");
     expect(mainWindowSource).not.toMatch(/createNativeSavePayload\(documentRef\.current\)/);

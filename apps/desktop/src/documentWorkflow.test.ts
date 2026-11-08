@@ -7531,6 +7531,23 @@ describe("Phase 4 document workflow", () => {
     expect(molecule?.bonds).toHaveLength(1);
   });
 
+  it.each(["subscript", "superscript", "normal"] as const)(
+    "preserves character styles when setting the entire text box to %s",
+    script => {
+      const withText = insertNativeTextObject(createPhase4Document("Text Script Style"), { x: 120, y: 140 }, "ABC");
+      const textObject = getSelectedTextObject(withText);
+      if (!textObject) throw new Error("Expected inserted text object to be selected.");
+
+      const bold = updateNativeTextObjectStyleRange(withText, textObject.id, { start: 1, end: 2 }, { fontWeight: 700 });
+      const scripted = updateNativeTextObjectScript(bold, textObject.id, script);
+      expect(getSelectedTextObject(scripted)?.spans).toEqual([
+        { text: "A", script, style: {} },
+        { text: "B", script, style: { fontWeight: 700 } },
+        { text: "C", script, style: {} }
+      ]);
+    }
+  );
+
   it("updates only the selected text range and preserves mixed spans while typing", () => {
     const withText = insertNativeTextObject(createPhase4Document("Text Range Style"), { x: 120, y: 140 }, "H2SO4");
     const textObject = getSelectedTextObject(withText);

@@ -1,5 +1,5 @@
 /**
- * Main-thread client for the analysis worker (PLANS.md §5).
+ * Main-thread client for the analysis worker (docs/plans/PLANS.md §5).
  *
  * Two responsibilities, and it is worth keeping them separate in your head:
  *
