@@ -171,7 +171,7 @@ describe.each(["macos", "windows"] as const)("canvas arrow nudge (%s)", platform
     expect(current()).toBe(before);
     await undo(); expect(current()).toBe(before);
   });
-  it.each(["input", "textarea", "select", "contenteditable", "checkbox"])("leaves focused %s arrow navigation alone", async kind => {
+  it.each(["input", "textarea", "select", "contenteditable", "checkbox", "button"])("leaves focused %s arrow navigation alone", async kind => {
     await mount();
     const control = document.createElement(kind === "contenteditable" ? "div" : kind === "checkbox" ? "input" : kind);
     if (kind === "contenteditable") { control.contentEditable = "true"; control.setAttribute("contenteditable", "true"); control.tabIndex = 0; }

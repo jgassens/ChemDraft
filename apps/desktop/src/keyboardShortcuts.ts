@@ -37,9 +37,9 @@ export function arrowNudgeContinuesBurst(lastPress: number | undefined, now: num
   return lastPress !== undefined && now >= lastPress && now - lastPress < 1000;
 }
 
-/** All form controls keep their own arrow navigation, including non-text inputs and selects. */
+/** Controls keep their own arrow navigation, including toolbar flyout buttons. */
 export function isArrowNudgeEditorTarget(target: EventTarget | null): boolean {
-  return isEditableTarget(target) || (target instanceof Element && !!target.closest("input, textarea, select"));
+  return isEditableTarget(target) || (target instanceof Element && !!target.closest("input, textarea, select, button"));
 }
 
 /**
