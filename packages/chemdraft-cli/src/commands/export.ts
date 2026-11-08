@@ -10,7 +10,7 @@ import {
 import { exportDocumentToCdxml, type ExportWarning } from "@chemdraft/export-engine";
 import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
 import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
-import { moleculeSmiles, nativeDocumentExportWarnings, nativeMoleculeExportWarnings } from "@chemdraft/document-workflow-core";
+import { moleculeSmiles } from "@chemdraft/document-workflow-core";
 
 import { parseOptions, stringOption } from "../args";
 import {
@@ -301,7 +301,8 @@ export async function exportPerJobFormat(
   format: "cdxml" | "pdf" | "mol",
   built: BuiltSmilesDocument
 ): Promise<PerJobExportResult> {
-  const identityWarnings = nativeDocumentExportWarnings(built.document).map(warning => warning.message);
+  // Identity verification already supplies problem-accounted invalid-structure warnings.
+  const identityWarnings: string[] = [];
   const sourceCanonicalSmiles = await verifiedSourceCanonicalSmiles(built, identityWarnings);
   if (format === "cdxml") {
     const result = exportDocumentToCdxml(built.document);
@@ -371,7 +372,7 @@ async function combinedRecord(
   index: number
 ): Promise<CombinedRecord> {
   const built = await buildSmilesDocument(job.smiles, { name: job.name });
-  const warnings = [...built.warnings, ...nativeMoleculeExportWarnings(built.molecule).map(warning => warning.message)];
+  const warnings = [...built.warnings];
   const molfile = built.identityMolfile;
   const sourceCanonicalSmiles = await verifiedSourceCanonicalSmiles(built);
   await assertCanonicalIdentity(sourceCanonicalSmiles, molfile);
@@ -393,8 +394,7 @@ async function combinedRecord(
   warnings.push(...smilesWarnings
     // The shared desktop helper still assumes its usual V2000 input. This CLI supplied a V3000
     // molfile and the identity check above proved RDKit retained every dative bond.
-    .filter((warning) => warning.code !== "export.invalid_structure" &&
-      !(built.dativeBonds > 0 && warning.code === "export.smiles_dative_bond"))
+    .filter((warning) => !(built.dativeBonds > 0 && warning.code === "export.smiles_dative_bond"))
     .map((warning) => warning.message));
 
   if (format === "smi") {

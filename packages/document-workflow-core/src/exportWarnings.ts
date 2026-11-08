@@ -3,21 +3,25 @@ import type { ExportWarning } from "@chemdraft/export-engine";
 import { nativeAtomValenceForCharge, nativeElementFromAtomLabel } from "@chemdraft/layout-engine";
 import { nativeAtomValidationState, nativeBondOrderResolution } from "./atoms";
 
-/** Evidence from diagnostics actually emitted by the SMILES route, never a validity override. */
-export interface SmilesProblemEvidence {
-  inferredRadicals: Map<string, number>;
-  chargeSeparatedNitro: Set<string>;
+/** Evidence from diagnostics actually emitted by an export route, never a validity override. */
+export interface ExportProblemEvidence {
+  inferredRadicals?: Map<string, number>;
+  chargeSeparatedNitro?: Set<string>;
+  unrecognizedLabels?: Set<string>;
 }
 
 /** Validate the authored graph independently of cached metadata and badge acknowledgement.
- * Call before expanding labels or merging molecules so drawn atom indices agree across formats.
+ * Pass the original molecule, without expanded labels or merged graphs, to retain drawn atom indices.
  */
-export function nativeMoleculeExportWarnings(molecule: MoleculeObject, evidence?: SmilesProblemEvidence): ExportWarning[] {
+export function nativeMoleculeExportWarnings(molecule: MoleculeObject, evidence?: ExportProblemEvidence): ExportWarning[] {
   const resolution = nativeBondOrderResolution(molecule.atoms, molecule.bonds);
   return molecule.atoms.flatMap((atom, index): ExportWarning[] => {
     const state = nativeAtomValidationState(atom, molecule.bonds, atom.formalCharge, molecule.atoms, resolution);
     if (state.valid) return [];
-    const inferred = evidence?.inferredRadicals.get(atom.id);
+    // A placeholder diagnostic explains an unrecognized label, but not an independent
+    // aromatic or valence problem on that atom.
+    if (state.unrecognizedLabel && evidence?.unrecognizedLabels?.has(atom.element)) return [];
+    const inferred = evidence?.inferredRadicals?.get(atom.id);
     const element = nativeElementFromAtomLabel(atom.element);
     // Only a complete valence deficit is accounted for by the radical diagnostic. Revalidate
     // the hypothetical count so aromatic uncertainty, label problems and excess valence survive.
@@ -25,7 +29,7 @@ export function nativeMoleculeExportWarnings(molecule: MoleculeObject, evidence?
         (resolution.bondOrderUsage.get(atom.id) ?? 0) + inferred === nativeAtomValenceForCharge(element, atom.formalCharge) &&
         nativeAtomValidationState({ ...atom, markRadicals: inferred }, molecule.bonds,
           atom.formalCharge, molecule.atoms, resolution).valid) return [];
-    if (evidence?.chargeSeparatedNitro.has(atom.id) && element === "N" &&
+    if (evidence?.chargeSeparatedNitro?.has(atom.id) && element === "N" &&
         atom.formalCharge === 0 && (atom.markRadicals ?? 0) === 0 && state.valenceUsed === 5 &&
         !state.unresolvedAromatic && !state.tautomerGuessed) return [];
     const name = `${atom.element.trim() || "Atom"}${index + 1}`;

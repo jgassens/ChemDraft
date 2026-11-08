@@ -13,7 +13,7 @@ import {
 } from "@chemdraft/layout-engine";
 
 import { expandNativeMoleculeLabelGroups, nativeImplicitHydrogenCount, nativeSingleHeavyElementLabelValence } from "./atoms";
-import { nativeMoleculeExportWarnings, type SmilesProblemEvidence } from "./exportWarnings";
+import { nativeMoleculeExportWarnings, type ExportProblemEvidence } from "./exportWarnings";
 import { nativeMoleculeUnspellableLabels, nativeSingleBondGraphSmiles, nativeSmilesBondOrderResolution } from "./smiles";
 
 export type ComputeStructureIdentifiers = typeof import("@chemdraft/rdkit-adapter/identifiers").computeStructureIdentifiers;
@@ -21,7 +21,7 @@ export type ComputeStructureIdentifiers = typeof import("@chemdraft/rdkit-adapte
 /** SMILES infers radicals from valence; compare that count with the drawn dots using the
  * same element, charge and hydrogen rules as the native labels and writer.
  */
-export function nativeSmilesRadicalWarnings(molecule: MoleculeObject, evidence?: SmilesProblemEvidence): ExportWarning[] {
+export function nativeSmilesRadicalWarnings(molecule: MoleculeObject, evidence?: ExportProblemEvidence): ExportWarning[] {
   const { molecule: expanded } = expandNativeMoleculeLabelGroups(molecule);
   const resolution = nativeBondOrderResolution(expanded.atoms, expanded.bonds);
   return expanded.atoms.flatMap((atom): ExportWarning[] => {
@@ -43,7 +43,7 @@ export function nativeSmilesRadicalWarnings(molecule: MoleculeObject, evidence?:
       if (radicals === 0 && atom.formalCharge !== 0) return [];
     } else if (radicals === 0 && (!atom.labelLiteral || !element)) return [];
     if (implied === radicals) return [];
-    if (implied !== undefined) evidence?.inferredRadicals.set(atom.id, implied);
+    if (implied !== undefined) evidence?.inferredRadicals?.set(atom.id, implied);
     const drawn = `Atom ${atom.id} (${atom.element}) is drawn with ${radicals} radical electron${radicals === 1 ? "" : "s"}`;
     const addedIsotopeHydrogen = isotopeHydrogen && used === 0 && radicals === 0 &&
       atom.formalCharge === 0 && !atom.labelLiteral;
@@ -68,7 +68,7 @@ export async function moleculeSmiles(
   molfile?: string,
   options: { requireEngineAtomStates?: boolean } = {}
 ): Promise<string> {
-  const evidence: SmilesProblemEvidence = { inferredRadicals: new Map(), chargeSeparatedNitro: new Set() };
+  const evidence: ExportProblemEvidence = { inferredRadicals: new Map(), chargeSeparatedNitro: new Set(), unrecognizedLabels: new Set() };
   const start = warnings.length;
   try {
     return await writeMoleculeSmiles(molecule, index, warnings, computeStructureIdentifiers, molfile, options, evidence);
@@ -86,7 +86,7 @@ async function writeMoleculeSmiles(
   computeStructureIdentifiers: ComputeStructureIdentifiers | undefined,
   molfile: string | undefined,
   options: { requireEngineAtomStates?: boolean },
-  evidence: SmilesProblemEvidence
+  evidence: ExportProblemEvidence
 ): Promise<string> {
   const invalidWarnings = nativeMoleculeExportWarnings(molecule);
   const requireEngineAtomStates = options.requireEngineAtomStates ?? false;
@@ -108,6 +108,7 @@ async function writeMoleculeSmiles(
     code: "export.smiles_bond_order", message, severity: "warning", objectId: molecule.id
   });
   for (const label of nativeMoleculeUnspellableLabels(molecule)) {
+    evidence.unrecognizedLabels?.add(label);
     warnings.push({
       code: "export.smiles_atom_label",
       message: `Atom label "${label}" cannot be spelled as a single SMILES atom; written as a dummy atom [*].`,
@@ -240,7 +241,7 @@ async function writeMoleculeSmiles(
 export function engineSmilesAtomWarnings(
   molecule: MoleculeObject,
   identifiers: Awaited<ReturnType<ComputeStructureIdentifiers>>,
-  evidence?: SmilesProblemEvidence
+  evidence?: ExportProblemEvidence
 ): ExportWarning[] {
   const { molecule: expanded, placeholderAtoms } = expandNativeMoleculeLabelGroups(molecule);
   const states = identifiers?.smilesAtomStates;
@@ -276,7 +277,7 @@ export function engineSmilesAtomWarnings(
         : 0));
     const prefix = `Atom ${atom.id} (${atom.element})`;
     const losses: ExportWarning[] = [];
-    if (radicals !== actual.nRad) evidence?.inferredRadicals.set(atom.id, actual.nRad);
+    if (radicals !== actual.nRad) evidence?.inferredRadicals?.set(atom.id, actual.nRad);
     if (radicals !== actual.nRad) losses.push(warning("export.smiles_radical_loss",
       `${prefix} is drawn with ${radicals} radical electron${radicals === 1 ? "" : "s"}; SMILES reparses with ${actual.nRad} radical electron${actual.nRad === 1 ? "" : "s"}.`));
     if (hydrogens !== actual.hydrogenCount) losses.push(warning("export.smiles_hydrogen_loss",
@@ -306,7 +307,7 @@ export function engineSmilesAtomWarnings(
       if (oxygens.length !== 2 || !oxygens.every(oxygen => oxygen.element === "O" && oxygen.formalCharge === 0 &&
           (resolution.bondsByAtom.get(oxygen.id)?.length ?? 0) === 1)) return;
       const charges = oxygens.map(oxygen => actualByInput.get(expanded.atoms.indexOf(oxygen))!.formalCharge).sort();
-      if (charges[0] === -1 && charges[1] === 0) evidence?.chargeSeparatedNitro.add(atom.id);
+      if (charges[0] === -1 && charges[1] === 0) evidence?.chargeSeparatedNitro?.add(atom.id);
     });
     return [{
       code: "export.smiles_charge_separated",

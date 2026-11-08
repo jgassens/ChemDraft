@@ -38,7 +38,6 @@ describe("Copy As SMILES messages", () => {
     const warnings: string[] = [];
     expect(await copyAsSmiles(doc, warnings)).toBe("*C");
     expect(warnings).toEqual([
-      "Phe2 isn't an element or a known group.",
       'Atom label "Phe" cannot be spelled as a single SMILES atom; written as a dummy atom [*].',
       'Atom label "Phe" is not an element symbol; written as a dummy atom (*) — the label\'s group is not represented in SMILES.'
     ]);
@@ -46,7 +45,7 @@ describe("Copy As SMILES messages", () => {
     for (const flavor of ["v2000", "v3000"] as const) {
       const molWarnings: string[] = [];
       copyAsMolfile(doc, flavor, molWarnings);
-      expect(molWarnings).toEqual(["Phe2 isn't an element or a known group.", 'Atom label "Phe" is not an element symbol; written as a dummy atom (*) — the label\'s group is not represented in the molfile.']);
+      expect(molWarnings).toEqual(['Atom label "Phe" is not an element symbol; written as a dummy atom (*) — the label\'s group is not represented in the molfile.']);
     }
     expect(doc).toEqual(before);
   });
@@ -166,7 +165,6 @@ describe("Copy As SMILES messages", () => {
     const warnings: string[] = [];
     await expect(copyAsSmiles(doc, warnings)).rejects.toThrow("Cannot write SMILES:");
     expect(warnings).toEqual([
-      "Phe2 isn't an element or a known group.",
       'Atom label "Phe" cannot be spelled as a single SMILES atom; written as a dummy atom [*].',
       'Atom label "Phe" is not an element symbol; written as a dummy atom (*) — the label\'s group is not represented in SMILES.'
     ]);

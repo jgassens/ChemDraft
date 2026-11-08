@@ -87,8 +87,7 @@ describe("Copy As SMILES status line", () => {
       expect(status).toContain(expected);
       expect(status).not.toMatch(/molfile|\bMOL\b|V2000|V3000/i);
       if (["success", "clipboard unavailable", "clipboard rejection", "second molecule refusal"].includes(path)) {
-        expect(status).toContain(" — Phe2 isn't an element or a known group.");
-        expect(status).toContain("Atom label");
+        expect(status).toContain(" — Atom label");
         expect(status).toContain("the label's group is not represented in SMILES.");
       }
       if (path === "unknown order" || path === "second molecule refusal") expect(status).toContain("has an unknown bond order.");

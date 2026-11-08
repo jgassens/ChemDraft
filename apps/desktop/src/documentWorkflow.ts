@@ -19536,7 +19536,6 @@ export function copyAsMolfile(
   warningsOut?: string[]
 ): string | undefined {
   const molecules = copyAsScopeMolecules(document);
-  warningsOut?.push(...molecules.flatMap(molecule => nativeMoleculeExportWarnings(molecule).map(warning => warning.message)));
   const scoped = copyAsMergedMolecule(molecules);
   if (!scoped) {
     return undefined;
@@ -19544,14 +19543,25 @@ export function copyAsMolfile(
   // Valid group labels are written as their atoms, each wrapped in a superatom S-group carrying
   // the label, so a reader that contracts abbreviations still shows "OMe".
   const { molecule: merged, expansions, placeholderAtoms } = expandNativeMoleculeLabelGroups(scoped);
+  const writerWarnings: string[] = [];
   const options = {
     fromDocFrame: true,
-    warnings: warningsOut,
+    warnings: writerWarnings,
     kekuleBondOrders: nativeBondOrderResolution(merged.atoms, merged.bonds).kekuleOrders,
     superatomGroups: expansions,
     placeholderAtoms
   };
-  return flavor === "v2000" ? moleculeToMolfileV2000(merged, options).contents : moleculeToMolfileV3000(merged, options).contents;
+  try {
+    return flavor === "v2000" ? moleculeToMolfileV2000(merged, options).contents : moleculeToMolfileV3000(merged, options).contents;
+  } finally {
+    warningsOut?.push(...molecules.flatMap(molecule => {
+      // Account only for labels the writer actually diagnosed, retaining drawn atom indices.
+      const unrecognizedLabels = new Set(molecule.atoms.filter(atom => writerWarnings.some(message =>
+        message.startsWith(`Atom label "${atom.element}" is not an element symbol;`)
+      )).map(atom => atom.element));
+      return nativeMoleculeExportWarnings(molecule, { unrecognizedLabels }).map(warning => warning.message);
+    }), ...writerWarnings);
+  }
 }
 
 const copyAsPagePaddingPx = 16;

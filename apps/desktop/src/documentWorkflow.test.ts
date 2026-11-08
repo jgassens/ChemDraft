@@ -12881,9 +12881,8 @@ describe("Phase 4 document workflow", () => {
       const unrecognizedScoped = { ...unrecognized, selection: { ...unrecognized.selection, objectIds: [] } };
       const placeholderWarnings: string[] = [];
       expect(await copyAsSmiles(unrecognizedScoped, placeholderWarnings)).toBe("C[*]");
-      expect(placeholderWarnings).toHaveLength(2);
-      expect(placeholderWarnings[0]).toBe("Phe2 isn't an element or a known group.");
-      expect(placeholderWarnings[1]).toContain("\"Phe\"");
+      expect(placeholderWarnings).toHaveLength(1);
+      expect(placeholderWarnings[0]).toContain("\"Phe\"");
       const placeholderMolfileWarnings: string[] = [];
       copyAsMolfile(unrecognizedScoped, "v3000", placeholderMolfileWarnings);
       expect(placeholderMolfileWarnings.some((warning) => warning.includes("\"Phe\""))).toBe(true);
