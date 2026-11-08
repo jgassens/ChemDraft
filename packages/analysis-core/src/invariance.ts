@@ -1,5 +1,5 @@
 /**
- * Representation-invariance property testing (PLANS.md §10, verification layer 5).
+ * Representation-invariance property testing (docs/plans/PLANS.md §10, verification layer 5).
  *
  * "Implemented as property-based testing over SMILES permutations, atom renumberings, Kekulé vs
  * aromatic forms, and hydrogen styles. → Phase 1, because this harness is what actually validates the

@@ -559,7 +559,7 @@ describe("art-engine native art planning", () => {
   });
 
   it("strips arrow identity when a line arrow is split into a polyline", () => {
-    // PLANS.md Thread C states that splitting "converts arrows to plain polylines and destroys
+    // docs/plans/PLANS.md Thread C states that splitting "converts arrows to plain polylines and destroys
     // their arrow identity", and anchor-point editing is kept out of the arrow toolbar on exactly
     // that promise. Nothing implemented it: the split deleted only the line/arc fields, so the
     // result stayed a tagged arrow — one that still exported as ArrowType="FullHead", silently

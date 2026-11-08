@@ -1,7 +1,7 @@
 import { applyPatches, clearChangedAtomHydrogenHints, type ChemDraftDocument, type MoleculeAtom, type MoleculeBond, type MoleculeObject } from "@chemdraft/chem-core";
 import {
   atomBondOrderUsageMap, nativeAtomLabelReading, nativeAtomValidationState, nativeElementFromAtomLabel,
-  nativeSingleBondGraphMetadata, normalizeNativeMoleculeGeometry, phase4Timestamp,
+  nativeImplicitHydrogenCount, nativeSingleBondGraphMetadata, normalizeNativeMoleculeGeometry, phase4Timestamp,
   tryNativeSingleBondGraphSmiles, withNativeLabelBondSides
 } from "@chemdraft/document-workflow-core";
 import {
@@ -164,7 +164,23 @@ export function nativeOxoHotkeyTarget(document: ChemDraftDocument, target: Nativ
   const element = reading?.kind === "element" || reading?.kind === "spelled" ? reading.element : undefined;
   if (!atom || !graph || (element !== "S" && element !== "P")) return nativeCarbonylHotkeyAtAtomTarget(document, target, plan);
   const next = oxygenGraph(graph, atom.id, document, plan);
-  return next ? commitGraph(document, graph, next.atoms, next.bonds) : { document, refusal: "sprout-no-free-direction" };
+  if (!next) return { document, refusal: "sprout-no-free-direction" };
+  // Oxidation must retain the source's implicit H even if the bare product validates
+  // (CP -> CP=O would silently lose two H). Spell a changed H count so the existing
+  // SH/PH label path validates the complete hypervalent state and preserves its formula.
+  // Atoms without implicit H and literal, charged, isotopic or radical atoms keep their gates.
+  if (reading?.kind === "element" && atom.labelLiteral !== true && atom.formalCharge === 0 &&
+    atom.isotope === undefined && !(atom.markRadicals ?? 0)) {
+    const usage = atomBondOrderUsageMap(graph.atoms, graph.bonds).get(atom.id) ?? 0;
+    const hydrogens = nativeImplicitHydrogenCount(element, usage, atom.formalCharge);
+    const nextUsage = atomBondOrderUsageMap(next.atoms, next.bonds).get(atom.id) ?? 0;
+    if (hydrogens > 0 && hydrogens !== nativeImplicitHydrogenCount(element, nextUsage, atom.formalCharge)) {
+      next.atoms = next.atoms.map(candidate => candidate.id === atom.id
+        ? { ...candidate, element: `${element}H${hydrogens === 1 ? "" : hydrogens}`, labelLiteral: true }
+        : candidate);
+    }
+  }
+  return commitGraph(document, graph, next.atoms, next.bonds);
 }
 
 /** Key 9 uses one source valence for isopropyl when two methyls would overfill carbon. */

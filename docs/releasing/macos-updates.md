@@ -7,6 +7,10 @@ silently install updates. A user can start the same visible check at any time fr
 
 - [ ] Run `node scripts/pin-external-tools.mjs --check` before a release; refresh pins if it differs.
 - [ ] For any pin bump, run that check on both macOS and Windows; each run checks only its host platform.
+- [ ] Inspect every Mach-O in the packaged bundle, including helpers, frameworks, sidecars and
+  runtime libraries, with `otool -l`. Each architecture's `LC_BUILD_VERSION` minos or
+  `LC_VERSION_MIN_MACOSX` version must be no greater than `bundle.macOS.minimumSystemVersion`
+  in `apps/desktop/src-tauri/tauri.conf.json`.
 
 ## Why installed plugins survive
 
@@ -77,8 +81,9 @@ Do not reuse a published version.
 2. Produce a Developer ID signed release app/DMG, notarize it, staple it, and pass the validation
    steps in `/Users/jeremiahgassensmith/programming/.notary/NOTORIZE.md`.
 3. Put the final DMG and an optional same-basename `.md` release-notes file into a clean staging
-   directory. Copy the current root `appcast.xml` into that directory so prior releases remain in the
-   feed.
+   directory. Keep the release-notes file at `release-notes/macos/ChemDraft_X.Y.Z_aarch64.md`
+   in the repository as well. Copy the current root `appcast.xml` into that directory so prior releases
+   remain in the feed.
 4. Generate signed feed entries with the Keychain-held Sparkle key. For version `X.Y.Z`:
 
 ```bash
@@ -92,8 +97,10 @@ apps/desktop/src-tauri/sparkle-bin/generate_appcast \
 ```
 
 5. Create GitHub release `vX.Y.Z` and upload the exact notarized DMG named in the generated appcast.
-6. Copy the generated appcast back to the repository root, then commit and push it to `main` only
-   after the release asset is reachable. Do not hand-edit a generated signed entry.
+6. Copy the generated appcast back to the repository root. Set the new entry’s release-notes link to
+   `https://raw.githubusercontent.com/jgassens/ChemDraft/main/release-notes/macos/ChemDraft_X.Y.Z_aarch64.md`.
+   Commit and push the appcast and notes to `main` only after the release asset is reachable. Do not
+   change the generated signature, length, or DMG URL.
 
 Back up the Sparkle private key before the first public release. Use
 `apps/desktop/src-tauri/sparkle-bin/generate_keys -x <private-key-file>`, store that file in an
