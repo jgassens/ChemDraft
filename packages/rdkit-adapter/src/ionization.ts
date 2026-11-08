@@ -1,5 +1,5 @@
 /**
- * Ionizable-site assessment (PLANS.md §9 Later phases; §8's "protonation-state enumeration").
+ * Ionizable-site assessment (docs/plans/PLANS.md §9 Later phases; §8's "protonation-state enumeration").
  *
  * **Two stages, from two different sources.** The site table *locates* ionizable positions; the model
  * in `pkaModel.ts`, trained here on measured pKa, *values* them. Keeping them apart is the whole
