@@ -69,7 +69,7 @@ into core — e.g. `import type { ChemDraftDocument, DocumentPatch } from "@chem
 ```
 
 `apiVersion` in your manifest declares the SDK contract you target (`PluginApiVersion`, currently
-`0.1.21`). API 0.1.21 adds optional name-to-structure `source`, `matchedName` and `matchedCas` provenance.
+`0.1.22`). API 0.1.22 adds optional name-to-structure `source`, `matchedName` and `matchedCas` provenance.
 API 0.1.20 adds optional `tableStyle.autoColumnMinEm`, the minimum auto column width in em. API 0.1.19 bounds panel reports: strings, collection sizes, aggregate work and UTF-8 JSON
 size are validated before a report is forwarded to the renderer (see [Panel report limits](#panel-report-limits)).
 API 0.1.17 adds optional `MoleculeBond.stereo: "either"` for an E/Z-unspecified double bond.
@@ -96,7 +96,7 @@ it declares.
 
 | API version | Additive capability | Permission |
 | --- | --- | --- |
-| 0.1.21 | Optional name-to-structure `source`, `matchedName`, `matchedCas`; OPSIN-first offline dictionary fallback | No new permission |
+| 0.1.22 | Optional name-to-structure `source`, `matchedName`, `matchedCas`; OPSIN-first offline dictionary fallback | No new permission |
 | 0.1.20 | Optional `tableStyle.autoColumnMinEm` | No new permission |
 | 0.1.19 | Bounded panel reports (`PluginPanelReportLimits`) and the exported `snapshotPanelReport` walk | No new permission |
 | 0.1.18 | `documents.insertTable(spec)` | `document.write`, during the plugin's own command |
