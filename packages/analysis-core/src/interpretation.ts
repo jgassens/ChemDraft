@@ -1,5 +1,5 @@
 /**
- * One parse, many named interpretations (PLANS.md §1).
+ * One parse, many named interpretations (docs/plans/PLANS.md §1).
  *
  * Parsing and sanitising once through RDKit is right; applying **one** normalised representation to
  * every calculation is not. Formula, charge, and isotope composition must describe what the user
