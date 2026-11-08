@@ -9,6 +9,10 @@ export const cdxmlFixtureDescriptors: FixtureDescriptor[] = [
   { id: "cdxml.brackets-square", format: "cdxml", description: "Synthetic square bracket graphics with pair attachments.", path: "packages/fixtures/cdxml/brackets-square.cdxml" },
   { id: "cdxml.brackets-round", format: "cdxml", description: "Synthetic round bracket graphics with pair attachments.", path: "packages/fixtures/cdxml/brackets-round.cdxml" },
   { id: "cdxml.brackets-repeat-labels", format: "cdxml", description: "Synthetic SRU brackets and independent n/m label text; repeat-label association remains unsupported.", path: "packages/fixtures/cdxml/brackets-repeat-labels.cdxml" },
+  { id: "cdxml.brackets-sru", format: "cdxml", description: "Synthetic SRU bracket group containing a fragment.", path: "packages/fixtures/cdxml/brackets-sru.cdxml" },
+  { id: "cdxml.brackets-sru-crossing", format: "cdxml", description: "Synthetic SRU bracket group with a crossing bond.", path: "packages/fixtures/cdxml/brackets-sru-crossing.cdxml" },
+  { id: "cdxml.brackets-unresolved-membership", format: "cdxml", description: "Synthetic SRU bracket group with unresolved membership.", path: "packages/fixtures/cdxml/brackets-unresolved-membership.cdxml" },
+  { id: "cdxml.brackets-unsupported-usage", format: "cdxml", description: "Synthetic bracket group with unsupported component usage.", path: "packages/fixtures/cdxml/brackets-unsupported-usage.cdxml" },
   {
     id: "cdxml.empty-page",
     format: "cdxml",
