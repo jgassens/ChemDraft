@@ -35,6 +35,8 @@ by the installer. They are there on the next launch, as on macOS.
 
 ## Checked-in configuration
 
+The NSIS installer hook quotes both the executable path and `.chemdraft` document argument so per-user installs remain openable from paths containing spaces.
+
 - **Crate:** `tauri-plugin-updater` 2.12.0, `cfg(windows)` only (Apache-2.0 OR MIT).
 - **Frontend package:** `@tauri-apps/plugin-updater` 2.12.0 (Apache-2.0 OR MIT).
 - **Feed:** `https://raw.githubusercontent.com/jgassens/ChemDraft/main/latest.json`. It sits next to
