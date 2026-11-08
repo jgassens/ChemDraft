@@ -1,5 +1,5 @@
 /**
- * Joback group contributions (PLANS.md §9, Later phases — estimates).
+ * Joback group contributions (docs/plans/PLANS.md §9, Later phases — estimates).
  *
  * Joback & Reid, *Chem. Eng. Commun.* **57** (1987) 233-243. The parameters are published scientific
  * data; the SMARTS patterns and the priority ordering follow the fragmentation Caleb Bell's `thermo`

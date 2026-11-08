@@ -1,3 +1,4 @@
+import { VIBE_CODE_GUIDE } from "./vibeCodeGuideText";
 import { dialogEnvelope, parseDialogMessage, validateDialogDelivery, type DialogCloseReason, type DialogMessage, type DialogRegistration, type PageSize, type SpacingSnapshot, type ExportDialogResult, SPACING_PREVIEW_CHUNK_SIZE, SPACING_PREVIEW_MAX_CHUNKS } from "./dialogProtocol";
 import type { ExportOptions, ExportFrame, ExportPreviewResult } from "./exportOptions";
 import type { DialogDelivery, DialogTransport } from "./dialogTransport";
@@ -49,6 +50,7 @@ export class DialogCoordinator {
     export?(tabId: string, options: ExportOptions, live: () => boolean, progress: (notice: string) => Promise<void>): Promise<ExportDialogResult>;
     previewExport?(tabId: string, options: ExportOptions, live: () => boolean): Promise<ExportPreviewResult>;
     chooseExportDestination?(tabId: string, options: ExportOptions, live: () => boolean): Promise<ExportDialogResult>;
+    vibeCodeGuideAction?(action: "saveStarter" | "openPluginManager"): void | Promise<void>;
     onError(message: string): void;
     onSettled?(tabId: string, reason: DialogCloseReason, kind?: DialogKind): void;
   }, private options: { readyTimeoutMs?: number } = {}) {}
@@ -91,6 +93,7 @@ export class DialogCoordinator {
     return this.subscription ??= this.transport.subscribe(delivery => { void this.receive(delivery).catch(e => this.owner.onError(String(e))); })
       .catch(error => { this.subscription = undefined; throw error; });
   }
+  async openVibeCodeGuide(): Promise<void> { return this.open("vibeCodeGuide", "vibeCodeGuide", { title: VIBE_CODE_GUIDE.title }); }
   async openPageSize(tabId: string, data: PageSize & { title: string }): Promise<void> {
     return this.open(tabId, "pageSize", data);
   }
@@ -154,7 +157,7 @@ export class DialogCoordinator {
     const snapshot: Session["snapshot"] = { protocolVersion: 1, ownerWindowId: "main", documentTabId: tabId,
       dialogKind: kind, sessionId: crypto.randomUUID(), requestId: crypto.randomUUID(), snapshotRevision: 1, type: "snapshot", data } as Session["snapshot"];
     if (perfProbe) perfHook(() => perfProbe?.expectCompletion("dialog-open", snapshot.sessionId));
-    const title = kind === "insertTable" ? "Insert Table" : kind === "structureTemplates" ? "Templates" : kind === "engineInstall" ? "Engine installation" : kind === "toolInstall" ? "Tool installation" : kind === "export" ? "Export" : kind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size";
+    const title = kind === "vibeCodeGuide" ? VIBE_CODE_GUIDE.title : kind === "insertTable" ? "Insert Table" : kind === "structureTemplates" ? "Templates" : kind === "engineInstall" ? "Engine installation" : kind === "toolInstall" ? "Tool installation" : kind === "export" ? "Export" : kind === "arrangementSpacing" ? "Adjust arrangement spacing" : "Custom Page Size";
     if (!parseDialogMessage(snapshot)) throw new Error(`Invalid ${title} snapshot`);
     const session: Session = { snapshot, engineInstall, toolInstall, receipts: new Map(), inFlight: new Map(), settled: false, ready: false,
       timer: setTimeout(() => { this.owner.onError(`${title} did not become ready. Open it again to try again.`); void this.settle(session, "error"); }, this.options.readyTimeoutMs ?? 10000) };
@@ -228,6 +231,17 @@ export class DialogCoordinator {
     }
     // Cancellation invalidates owner work immediately, even while a receipt is pending.
     if (message.data.action === "cancel") { await this.settle(session, "cancel"); return; }
+    if (session.snapshot.dialogKind === "vibeCodeGuide") {
+      if (message.data.action !== "saveStarter" && message.data.action !== "openPluginManager") return;
+      if (session.receipts.has(message.requestId)) return;
+      const receipt: DialogMessage = { ...dialogEnvelope(message), type: "result", data: { status: "cancelled" } };
+      session.receipts.set(message.requestId, receipt);
+      await this.transport.publish(session.registration.hostId, { ...dialogEnvelope(message), type: "result", data: { status: "accepted" } });
+      try { if (!session.settled) await this.owner.vibeCodeGuideAction?.(message.data.action); }
+      catch (error) { this.owner.onError(String(error)); }
+      if (!session.settled) await this.transport.publish(session.registration.hostId, receipt);
+      return;
+    }
     if (session.snapshot.dialogKind === "structureTemplates") {
       if (message.data.action !== "insert" || !session.snapshot.data.templateIds.includes(message.data.templateId)) return;
       const previous = session.receipts.get(message.requestId);

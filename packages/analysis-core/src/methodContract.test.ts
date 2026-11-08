@@ -65,7 +65,7 @@ describe("MethodContractSchema", () => {
 
   it("requires at least one declining condition", () => {
     // An empty list reads as "nobody thought about it" — and a predictor that returns a number for
-    // everything is more dangerous than one that declines (PLANS.md §10).
+    // everything is more dangerous than one that declines (docs/plans/PLANS.md §10).
     expect(MethodContractSchema.safeParse(contract({ declinesWhen: [] })).success).toBe(false);
   });
 

@@ -1,5 +1,5 @@
 /**
- * Method contracts for everything the RDKit adapter computes (PLANS.md §10).
+ * Method contracts for everything the RDKit adapter computes (docs/plans/PLANS.md §10).
  *
  * One contract per public number: its exact implementation and version, the interpretation it defaults
  * to, its units, the conventions it chose, the chemistry it covers, the conditions under which it

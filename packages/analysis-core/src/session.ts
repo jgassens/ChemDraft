@@ -1,5 +1,5 @@
 /**
- * Session cache and request identity (PLANS.md §5).
+ * Session cache and request identity (docs/plans/PLANS.md §5).
  *
  * "A session cache on the §1 keys — nearly free, and it is what makes the Analyze panel feel instant."
  *
