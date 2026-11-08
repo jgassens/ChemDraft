@@ -1,4 +1,4 @@
-// The CLI's render bounds follow the drawn label (PLANS.md, label anchoring): a group label anchored
+// The CLI's render bounds follow the drawn label (docs/plans/PLANS.md, label anchoring): a group label anchored
 // on its atom ("MeO" with its bond on the right) reaches the other way from its atom than the old
 // centred label did, and the rendered image must still hold all of it.
 

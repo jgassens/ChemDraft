@@ -1,5 +1,5 @@
 /**
- * Adduct m/z against the real engine (PLANS.md §9, Release 2).
+ * Adduct m/z against the real engine (docs/plans/PLANS.md §9, Release 2).
  *
  * The pinned numbers here are the point: an m/z that is wrong in the fourth decimal is worse than no
  * m/z at all, because it looks right. Aspirin's [M+H]⁺ and [M+Na]⁺ are values anyone can check against

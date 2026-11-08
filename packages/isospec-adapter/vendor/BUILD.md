@@ -7,7 +7,7 @@ the first-order M/M+1/M+2 approximation that `examples/plugins/mass-fragment-dem
 
 **IsoSpec itself is unpatched.** Unlike the RDKit vendoring, there are no patches: the library is
 compiled as-is and reached through a thin Embind wrapper of ours (`src/chemdraft_isospec.cpp`). Keep
-it that way — the patch budget PLANS.md §7 tracks is a real cost, and nothing here needed one.
+it that way — the patch budget docs/plans/PLANS.md §7 tracks is a real cost, and nothing here needed one.
 
 ## Pin
 - Release tag: **`v2.3.5`**

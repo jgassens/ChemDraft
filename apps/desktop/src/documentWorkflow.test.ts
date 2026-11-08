@@ -153,6 +153,7 @@ import {
   createNativeSingleBondMolecule,
   createNativeMolfileMolecule,
   createPhase4Document,
+  insertTableIntoDocument,
   createSelectionClipboardPayload,
   formatElementList,
   nativeMoleculeUnmodeledMetalElements,
@@ -327,6 +328,22 @@ function orbitalLobeTip(object: GraphicObject): PagePoint {
     y: center.y + dx * Math.sin(radians) + dy * Math.cos(radians)
   };
 }
+
+describe("insertTableIntoDocument", () => {
+  it("stores the dimensions of the table layout", () => {
+    let id = 0;
+    const document = insertTableIntoDocument(createPhase4Document(), {
+      columns: 4, rows: 6, headerRows: 1, preset: "grid", center: { x: 300, y: 300 },
+      newId: prefix => `${prefix}-${id++}`
+    });
+    const table = document.pages[0].objects[0];
+    if (table.type !== "table") throw new Error("Expected table");
+    const layout = layoutEngine.planTableLayout(table);
+    expect(table.tableStyle.autoColumnMinEm).toBe(3);
+    expect(table.width).toBeCloseTo(layout.width);
+    expect(table.height).toBeCloseTo(layout.height);
+  });
+});
 
 describe("editing unknown-order bonds without storing lossy SMILES", () => {
   function unknownBondDocument(twoUnknownBonds: boolean): ChemDraftDocument {
@@ -7499,6 +7516,23 @@ describe("Phase 4 document workflow", () => {
     expect(molecule?.atoms).toHaveLength(2);
     expect(molecule?.bonds).toHaveLength(1);
   });
+
+  it.each(["subscript", "superscript", "normal"] as const)(
+    "preserves character styles when setting the entire text box to %s",
+    script => {
+      const withText = insertNativeTextObject(createPhase4Document("Text Script Style"), { x: 120, y: 140 }, "ABC");
+      const textObject = getSelectedTextObject(withText);
+      if (!textObject) throw new Error("Expected inserted text object to be selected.");
+
+      const bold = updateNativeTextObjectStyleRange(withText, textObject.id, { start: 1, end: 2 }, { fontWeight: 700 });
+      const scripted = updateNativeTextObjectScript(bold, textObject.id, script);
+      expect(getSelectedTextObject(scripted)?.spans).toEqual([
+        { text: "A", script, style: {} },
+        { text: "B", script, style: { fontWeight: 700 } },
+        { text: "C", script, style: {} }
+      ]);
+    }
+  );
 
   it("updates only the selected text range and preserves mixed spans while typing", () => {
     const withText = insertNativeTextObject(createPhase4Document("Text Range Style"), { x: 120, y: 140 }, "H2SO4");

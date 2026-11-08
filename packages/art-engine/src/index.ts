@@ -2230,7 +2230,7 @@ function deleteSemanticArcData(data: GraphicObject["data"]): void {
  * the bow handle is gone, an equilibrium's two shafts have collapsed while `dualShaft` still claims
  * them, "Set as Default Arrow Style" no longer recognises the shape, and CDXML export would still
  * emit `ArrowType="FullHead"` — writing a straight arrow and losing the bend with no warning. This
- * is the conversion PLANS.md Thread C promises when it keeps anchor editing on the Scissors tool.
+ * is the conversion docs/plans/PLANS.md Thread C promises when it keeps anchor editing on the Scissors tool.
  */
 function deleteArrowIdentityData(data: GraphicObject["data"]): void {
   delete data.artToolId;

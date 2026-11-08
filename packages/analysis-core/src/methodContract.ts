@@ -1,5 +1,5 @@
 /**
- * The machine-readable method contract (PLANS.md §10).
+ * The machine-readable method contract (docs/plans/PLANS.md §10).
  *
  * "Each capability declares one contract … That single artifact generates documentation, tooltips,
  * test fixtures, acknowledgements, and half the result provenance — and it is what prevents the UI and
@@ -52,7 +52,7 @@ export interface MethodContract {
   /**
    * The choices a differently-but-defensibly-defined method would have made differently. RDKit and
    * OpenChemLib disagree on rotatable bonds in both directions; this is where the chosen rule is named
-   * so the tooltip can show it (PLANS.md §7).
+   * so the tooltip can show it (docs/plans/PLANS.md §7).
    */
   conventions: string[];
   classification: Classification;
@@ -140,7 +140,7 @@ export const MethodContractSchema = z
     }
     if (contract.declinesWhen.length === 0) {
       // A method that never declines is claiming universal applicability. If that is really true, say
-      // so explicitly — an empty list reads as "nobody thought about it", and PLANS.md §10 is blunt
+      // so explicitly — an empty list reads as "nobody thought about it", and docs/plans/PLANS.md §10 is blunt
       // about which of the two is more dangerous.
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

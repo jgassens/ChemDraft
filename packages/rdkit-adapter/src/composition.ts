@@ -1,5 +1,5 @@
 /**
- * Composition from RDKit's sanitized graph (PLANS.md §7).
+ * Composition from RDKit's sanitized graph (docs/plans/PLANS.md §7).
  *
  * "Formula, formal charge, and elemental composition come from the **sanitized RDKit molecule under a
  * named interpretation** … not an independent native graph walk. Computing a formula looks trivial
