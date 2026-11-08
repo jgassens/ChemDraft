@@ -1,5 +1,5 @@
 /**
- * The isotope envelope (PLANS.md §9 Release 2): the theoretical isotopic distribution of the
+ * The isotope envelope (docs/plans/PLANS.md §9 Release 2): the theoretical isotopic distribution of the
  * structure's composition, computed by the vendored IsoSpec build.
  *
  * **Why this lives with the analysis wiring rather than in `isospec-adapter`.** The envelope needs two

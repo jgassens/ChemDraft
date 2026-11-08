@@ -7899,6 +7899,11 @@ textarea:focus-visible,
 .cd-page-size-fields input, .cd-page-size-fields select { padding: 6px; background: var(--cd-bg-panel); color: var(--cd-text-primary); border: 1px solid var(--cd-border-subtle); border-radius: 6px; }
 .cd-page-size-buttons { display: flex; gap: 8px; justify-content: flex-end; }
 .cd-page-size-form button { padding: 6px 14px; }
+.cd-vibe-guide { line-height: 1.3; }
+.cd-vibe-guide ol { margin: 0; padding-left: 22px; }
+.cd-vibe-guide li { margin: 0 0 8px; }
+.cd-vibe-guide li div { margin-top: 4px; }
+.cd-vibe-guide p { margin: 4px 0 13px; }
 .cd-page-size-web-fallback .cd-page-size-form { width: 420px; min-height: 300px; border: 1px solid var(--cd-border-subtle); border-radius: 8px; }
 
 /* Disabled native form controls may suppress pointer events entirely in WebKit.

@@ -13,6 +13,8 @@ import {
 export const TOOLTIP_DELAY_MS = 500;
 export const TOOLTIP_RESHOW_WINDOW_MS = 300;
 
+export type ClearTooltipOptions = { onlyMatchingPending?: boolean };
+
 export function usePaletteTooltipState() {
   const [visibleTooltipId, setVisibleTooltipId] = useState<string | undefined>();
   const visibleTooltipIdRef = useRef<string | undefined>(undefined);
@@ -53,17 +55,23 @@ export function usePaletteTooltipState() {
     }, TOOLTIP_DELAY_MS);
   }, [clearPendingTooltip]);
 
-  const clearTooltip = useCallback((tooltipId?: string) => {
-    // An old owner's leave (or its document listener before React commits) must never cancel
-    // the neighbour's pending show. Refs change synchronously, even in the same event tick.
-    if (!tooltipId || pendingTooltipIdRef.current === tooltipId) clearPendingTooltip();
+  const clearTooltip = useCallback((tooltipId?: string, options?: ClearTooltipOptions) => {
+    // Pointer transitions can arrive from a stale owner after another tooltip was queued.
+    // Explicit dismissals must cancel the timer regardless of its owner.
+    if (!options?.onlyMatchingPending || tooltipId === undefined || pendingTooltipIdRef.current === tooltipId) {
+      clearPendingTooltip();
+    }
+    if (!tooltipId || !options?.onlyMatchingPending) {
+      clearTimeout(coolTimerRef.current);
+      warmRef.current = false;
+    }
+    // Refs change synchronously so an old owner's leave cannot hide its neighbour before
+    // React commits the handoff, even when both events arrive in the same pointer-feed tick.
     if (tooltipId && visibleTooltipIdRef.current !== tooltipId) return;
     visibleTooltipIdRef.current = undefined;
     setVisibleTooltipId(undefined);
     clearTimeout(coolTimerRef.current);
-    if (!tooltipId) {
-      warmRef.current = false;
-    } else {
+    if (tooltipId && options?.onlyMatchingPending) {
       // A's leave hides immediately. Keep a short warm interval across the gaps between cells,
       // so the neighbour can show promptly even when its enter is in the next pointer-feed tick.
       coolTimerRef.current = setTimeout(() => { warmRef.current = false; }, TOOLTIP_RESHOW_WINDOW_MS);
@@ -85,37 +93,37 @@ export function usePaletteTooltipState() {
       const ownerElement = targetElement?.closest<HTMLElement>("[data-tooltip-owner-id]");
 
       if (ownerElement?.dataset.tooltipOwnerId !== visibleTooltipId) {
-        clearTooltip(visibleTooltipId);
+        clearTooltip(visibleTooltipId, { onlyMatchingPending: true });
       }
     };
 
     const clearVisibleTooltip = () => {
-      clearTooltip(visibleTooltipId);
+      clearTooltip(visibleTooltipId, { onlyMatchingPending: true });
     };
 
     document.addEventListener("mousemove", clearWhenPointerLeavesOwner, true);
     document.addEventListener("pointermove", clearWhenPointerLeavesOwner, true);
     document.addEventListener("mouseleave", clearVisibleTooltip, true);
-    document.addEventListener("pointerdown", clearWhenPointerLeavesOwner, true);
-    window.addEventListener("blur", clearVisibleTooltip);
 
     return () => {
       document.removeEventListener("mousemove", clearWhenPointerLeavesOwner, true);
       document.removeEventListener("pointermove", clearWhenPointerLeavesOwner, true);
       document.removeEventListener("mouseleave", clearVisibleTooltip, true);
-      document.removeEventListener("pointerdown", clearWhenPointerLeavesOwner, true);
-      window.removeEventListener("blur", clearVisibleTooltip);
     };
   }, [visibleTooltipId, clearTooltip]);
 
   useEffect(() => {
-    const clearPendingOnBlur = () => {
+    const dismissTooltip = () => {
       clearTooltip();
     };
 
-    window.addEventListener("blur", clearPendingOnBlur);
+    window.addEventListener("blur", dismissTooltip);
+    document.addEventListener("pointerdown", dismissTooltip, true);
+    document.addEventListener("scroll", dismissTooltip, true);
     return () => {
-      window.removeEventListener("blur", clearPendingOnBlur);
+      window.removeEventListener("blur", dismissTooltip);
+      document.removeEventListener("pointerdown", dismissTooltip, true);
+      document.removeEventListener("scroll", dismissTooltip, true);
     };
   }, [clearTooltip]);
 
@@ -154,7 +162,7 @@ export function PaletteControlTooltip({ tooltip, children }: {
     className: `${props.className ?? ""} toolbar-control-tooltip`,
     ...{ "data-tooltip-owner-id": id, "data-tooltip-visible": visible ? "true" : undefined },
     onPointerEnter: event => { props.onPointerEnter?.(event); requestTooltip(id); },
-    onPointerLeave: event => { props.onPointerLeave?.(event); clearTooltip(id); },
+    onPointerLeave: event => { props.onPointerLeave?.(event); clearTooltip(id, { onlyMatchingPending: true }); },
     onPointerDownCapture: event => { props.onPointerDownCapture?.(event); clearTooltip(id); },
     onClickCapture: event => { props.onClickCapture?.(event); clearTooltip(id); }
   }, props.children, <span className="tool-tooltip" role="tooltip" aria-hidden="true"><span>{tooltip}</span></span>);

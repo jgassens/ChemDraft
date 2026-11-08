@@ -3,7 +3,7 @@
  *
  * `examples/plugins/` mixes two kinds of directory: real plugins, and named-but-unbuilt targets. A
  * directory called `opsin-name-to-structure` reads as "ChemDraft can turn a name into a structure"
- * whether or not anything is behind it — and PLANS.md did in fact end up asserting exactly that about
+ * whether or not anything is behind it — and docs/plans/PLANS.md did in fact end up asserting exactly that about
  * a directory holding one README. That is the same failure the corpus tag check exists for: a gap that
  * reads as coverage.
  *

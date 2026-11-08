@@ -44,6 +44,7 @@ import {
 } from "./toolbars/toolbarCells";
 import { MainStyleWidget } from "./toolbars/mainStyleWidget";
 import {
+  type ClearTooltipOptions,
   TOOLTIP_DELAY_MS,
   PaletteControlTooltip,
   PaletteControlTooltipContext,
@@ -275,7 +276,7 @@ export function ToolPalette({
       tooltipVisible={visibleTooltipId === tooltipId}
       distributeMode={currentDistributeMode}
       onTooltipEnter={() => requestTooltip(tooltipId)}
-      onTooltipLeave={() => clearTooltip(tooltipId)}
+      onTooltipLeave={(options) => clearTooltip(tooltipId, options)}
       onRequestFlyout={onRequestFlyout}
       onInvoke={onInvoke}
     />
@@ -3805,7 +3806,7 @@ function ToolbarPaletteItem({
   tooltipVisible?: boolean;
   distributeMode: ToolPaletteDistributeMode;
   onTooltipEnter?: () => void;
-  onTooltipLeave?: () => void;
+  onTooltipLeave?: (options?: ClearTooltipOptions) => void;
   onRequestFlyout?: (request: ToolbarFlyoutRequest) => void;
   onInvoke: (commandId: string) => void;
 }) {
@@ -4085,7 +4086,7 @@ function ToolbarPaletteItem({
       onPointerEnter={() => onTooltipEnter?.()}
       onPointerLeave={() => {
         clearHoldTimer();
-        onTooltipLeave?.();
+        onTooltipLeave?.({ onlyMatchingPending: true });
       }}
     >
       <button
@@ -4419,7 +4420,7 @@ export function CommandIconButton({
   tooltipVisible?: boolean;
   distributeMode?: ToolPaletteDistributeMode;
   onTooltipEnter?: () => void;
-  onTooltipLeave?: () => void;
+  onTooltipLeave?: (options?: ClearTooltipOptions) => void;
   separated?: boolean;
   onRequestFlyout?: (request: ToolbarFlyoutRequest) => void;
   onInvoke: (commandId: string) => void;
@@ -4463,7 +4464,7 @@ export function CommandIconButton({
       onPointerCancel={() => onTooltipLeave?.()}
       onPointerDownCapture={() => onTooltipLeave?.()}
       onPointerEnter={() => onTooltipEnter?.()}
-      onPointerLeave={() => onTooltipLeave?.()}
+      onPointerLeave={() => onTooltipLeave?.({ onlyMatchingPending: true })}
     >
       <button
         type="button"
@@ -4569,7 +4570,7 @@ function DistributeCommandIconButton({
   tooltipId?: string;
   tooltipVisible?: boolean;
   onTooltipEnter?: () => void;
-  onTooltipLeave?: () => void;
+  onTooltipLeave?: (options?: ClearTooltipOptions) => void;
   separated?: boolean;
   onRequestFlyout?: (request: ToolbarFlyoutRequest) => void;
   onInvoke: (commandId: string) => void;
@@ -4688,7 +4689,7 @@ function DistributeCommandIconButton({
       onPointerCancel={() => onTooltipLeave?.()}
       onPointerDownCapture={() => onTooltipLeave?.()}
       onPointerEnter={() => onTooltipEnter?.()}
-      onPointerLeave={() => onTooltipLeave?.()}
+      onPointerLeave={() => onTooltipLeave?.({ onlyMatchingPending: true })}
     >
       <button
         type="button"
@@ -4741,6 +4742,7 @@ function DistributeCommandIconButton({
           }
           if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
+            onTooltipLeave?.();
             // Match the pointer path (onPointerUp): a disabled distribute command must not invoke.
             // The menu (ArrowDown / hold) stays reachable so the mode can still be changed.
             if (!disabled) {

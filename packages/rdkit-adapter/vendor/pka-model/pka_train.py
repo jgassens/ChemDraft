@@ -3,7 +3,7 @@
 This script was NOT vendored with the first model, and that omission is why a measurement error went
 unnoticed for the whole of its life. The grouping decision lives here; with the script outside the
 repository nobody could read it, and the number it produced (MAE 1.18) travelled into the method
-contract, PLANS.md and several commit messages as though it had been checked.
+contract, docs/plans/PLANS.md and several commit messages as though it had been checked.
 
 GROUPING IS THE WHOLE MEASUREMENT.
 ----------------------------------
