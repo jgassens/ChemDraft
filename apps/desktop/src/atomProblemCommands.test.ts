@@ -43,4 +43,3 @@ it.each(["漢🙂", '🙂漢"\n\\'])("opens long non-ASCII problem text within t
     }
   } finally { await coordinator.dispose(); }
 });
-

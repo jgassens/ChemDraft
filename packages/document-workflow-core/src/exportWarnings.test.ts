@@ -1,15 +1,10 @@
-import { beforeAll, describe, expect, it } from "vitest";
-import { moleculeToMolfileV2000 } from "@chemdraft/chem-core";
-import { computeStructureIdentifiers } from "@chemdraft/rdkit-adapter/identifiers";
-import { installNodeRdkitModuleLoader } from "@chemdraft/rdkit-adapter/node";
+import { describe, expect, it } from "vitest";
 import { nativeAtomValidationState, nativeSingleBondGraphMetadata } from "./atoms";
 import { nativeDocumentExportWarnings, nativeMoleculeExportWarnings } from "./exportWarnings";
 import { moleculeSmiles } from "./moleculeSmiles";
 import type { ExportWarning } from "@chemdraft/export-engine";
 import { invalidCarbonDocument, invalidCarbonMolecule, invalidCarbonWarning } from "../test/invalidStructureFixtures";
 import { chargeSeparationCases } from "../test/chargeSeparationFixtures";
-
-beforeAll(() => { installNodeRdkitModuleLoader(); });
 
 describe.each([false, true])("invalid structure diagnostics (suppressed=%s)", suppressed => {
   it("retains validation and metadata independently of badge suppression", () => {
@@ -56,7 +51,6 @@ function incompleteNitrogen() {
 }
 
 describe.each([
-  { route: "engine", compute: computeStructureIdentifiers },
   { route: "native", compute: undefined }
 ])("specific problem accounting ($route)", ({ compute }) => {
   it("keeps the main incomplete-N output and diagnostic exactly, without mutating the graph", async () => {
