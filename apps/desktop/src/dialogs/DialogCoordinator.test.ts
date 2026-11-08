@@ -14,7 +14,7 @@ function host(options: { timeout?: number } = {}) {
     open: vi.fn(async s => { calls.push("open"); snapshot = s as typeof snapshot; return registration; }),
     publish: vi.fn(async () => {}), close: vi.fn(async () => {})
   };
-  const owner = { previewArrangementSpacing: vi.fn<(tabId: string, percent: number) => string | Promise<string>>(() => "<svg/>"), applyArrangementSpacing: vi.fn(), onSpacingSettled: vi.fn(), applyPageSize: vi.fn<(tabId: string, size: unknown) => void | Promise<void>>(), onError: vi.fn(), onSettled: vi.fn() };
+  const owner = { vibeCodeGuideAction: vi.fn(), previewArrangementSpacing: vi.fn<(tabId: string, percent: number) => string | Promise<string>>(() => "<svg/>"), applyArrangementSpacing: vi.fn(), onSpacingSettled: vi.fn(), applyPageSize: vi.fn<(tabId: string, size: unknown) => void | Promise<void>>(), onError: vi.fn(), onSettled: vi.fn() };
   const coordinator = new DialogCoordinator(transport, owner, { readyTimeoutMs: options.timeout ?? 100 });
   const open = () => coordinator.openPageSize("tab-1", { title: "Drawing", width: 8.5, height: 11, unit: "inch" });
   const message = (type: DialogMessage["type"], data: unknown, requestId = "action-1") => ({ ...dialogEnvelope(snapshot), type, data, requestId }) as DialogMessage;
@@ -23,6 +23,16 @@ function host(options: { timeout?: number } = {}) {
 }
 afterEach(() => vi.useRealTimers());
 describe("DialogCoordinator", () => {
+  it("reopens the same guide and dispatches its save action", async () => {
+    const h = host(); await h.coordinator.openVibeCodeGuide();
+    const retained = vi.mocked(h.transport.open).mock.calls[0]![0];
+    await h.coordinator.openVibeCodeGuide();
+    expect(h.transport.open).toHaveBeenNthCalledWith(2, retained);
+    await h.deliver(h.message("ready", {}));
+    await h.deliver(h.message("action", { action: "saveStarter" }));
+    expect(h.owner.vibeCodeGuideAction).toHaveBeenCalledExactlyOnceWith("saveStarter");
+    await h.coordinator.dispose();
+  });
   it("cancels an opening while subscription is still pending", async () => {
     const h = host();
     let subscribed!: (stop: () => void) => void;

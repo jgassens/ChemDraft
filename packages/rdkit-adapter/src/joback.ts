@@ -1,5 +1,5 @@
 /**
- * Joback group-contribution estimates (PLANS.md §9, Later phases — estimates).
+ * Joback group-contribution estimates (docs/plans/PLANS.md §9, Later phases — estimates).
  *
  * §9 asks for these "with method-specific uncertainty and unsupported-group reporting", and the second
  * half is the harder half. Joback is a **sum over groups**, which means a structure containing a group
