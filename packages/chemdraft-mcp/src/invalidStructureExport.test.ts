@@ -18,15 +18,15 @@ describe("MCP invalid native exports", () => {
     const built = { ...await documentWorkflow.buildSmilesDocument("CC"), document, molecule,
       identityMolfile: molecule.structure, sourceCanonicalSmiles: "*C", warnings: [] };
     const spy = vi.spyOn(documentWorkflow, "buildSmilesDocument").mockResolvedValue(built);
-    const jsonResult = (result: { content: unknown }) => {
-      const content = result.content as { type: string; text?: string }[];
-      return JSON.parse(content.find(block => block.type === "text")!.text!);
+    const jsonResult = (content: unknown) => {
+      const blocks = content as { type: string; text?: string }[];
+      return JSON.parse(blocks.find(block => block.type === "text")!.text!);
     };
     try {
       for (const format of ["mol", "pdf", "cdxml"]) {
         const result = await client.callTool({ name: "export_structure", arguments: { smiles: "*C", format } });
         expect(result.isError, JSON.stringify(result)).not.toBe(true);
-        expect(jsonResult(result).warnings).toEqual([
+        expect(jsonResult(result.content).warnings).toEqual([
           ...(format === "cdxml" ? [unrecognizedLabelCdxmlWarning()] : []), unrecognizedLabelMolfileWarning()
         ]);
       }
@@ -41,7 +41,7 @@ describe("MCP invalid native exports", () => {
           documentJson: serializeDocument(document), format
         } });
         expect(result.isError, JSON.stringify(result)).not.toBe(true);
-        expect(jsonResult(result).warnings).toEqual([
+        expect(jsonResult(result.content).warnings).toEqual([
           unrecognizedLabelMolfileWarning(), ...(format === "chemdraft" ? [unrecognizedLabelCdxmlWarning()] : [])
         ]);
       }

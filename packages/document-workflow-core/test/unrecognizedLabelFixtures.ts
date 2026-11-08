@@ -12,7 +12,7 @@ export function unrecognizedLabelDocument(label = "Phe") {
     ],
     bonds: [{ id: "b1", fromAtomId: "a1", toAtomId: "a2", order: "single" }]
   };
-  molecule.structure = moleculeToMolfileV2000(molecule, { fromDocFrame: true }).contents;
+  molecule.structure = moleculeToMolfileV2000(molecule, { fromDocFrame: true, kekuleBondOrders: new Map() }).contents;
   document.pages[0]!.objects = [molecule];
   return { document, molecule };
 }
