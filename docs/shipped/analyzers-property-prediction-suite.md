@@ -1,6 +1,6 @@
 # Analyzers: property and prediction suite
 
-Shipped on `chemdraft-analyzers`. Moved out of `PLANS.md` on merge, per the rule that `PLANS.md`
+Shipped on `chemdraft-analyzers`. Moved out of `docs/plans/PLANS.md` on merge, per the rule that `docs/plans/PLANS.md`
 describes only work in flight.
 
 Kept as its own file rather than folded into `README.md` because, like the selection refactor, its
@@ -1520,7 +1520,7 @@ slice above. AGENTS.md binds throughout: §8a scientific-claim rules, §9 comman
 invariants, §13 testing requirements, and the Toolbar Button Contract (no decorative disabled buttons —
 an Analyze item ships only when it computes something).
 
-- **Phase 0 — Plan of record.** This PLANS.md section. Dependency-inventory rows for RDKit MinimalLib
+- **Phase 0 — Plan of record.** This docs/plans/PLANS.md section. Dependency-inventory rows for RDKit MinimalLib
   (version, patch count, build flags, BSD-3-Clause), InChI, OpenChemLib, the Avogadro sidecar
   components, Eigen, and freetype — facts only; the license *choice* stays with the owner (§4).
 - **Phase 1 — Contracts. ✅ landed.** New `packages/analysis-core`: `MolecularInterpretation`,

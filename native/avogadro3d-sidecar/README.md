@@ -40,6 +40,12 @@ git clone --depth 1 --branch 3.4.0 https://gitlab.com/libeigen/eigen.git native/
 
 Build the Avogadro-backed protocol scout:
 
+macOS sidecar builds must target macOS 11.0, the app's declared minimum. The
+`protocol-scout` preset sets this deployment target without fixing an architecture.
+After building, check the `minos` (or `version` for `LC_VERSION_MIN_MACOSX`)
+with `otool -l native/avogadro3d-sidecar/build/protocol-scout/avogadro3d-sidecar`;
+it must be no greater than 11.0.
+
 ```bash
 /opt/homebrew/bin/cmake --preset protocol-scout
 /opt/homebrew/bin/cmake --build --preset protocol-scout

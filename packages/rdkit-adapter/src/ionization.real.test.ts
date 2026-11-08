@@ -512,7 +512,7 @@ describe("acidic and basic are reported separately", () => {
     // species whose carboxyl is already ionised — the zwitterion. What is computed here is the
     // microstate with the carboxyl intact, which is a different equilibrium, and the two are not
     // comparable to better than a log unit or so. Macroscopic pKa needs protonation-state
-    // enumeration, which PLANS.md still lists as open.
+    // enumeration, which docs/plans/PLANS.md still lists as open.
     expect(at(0)?.transition).toBe("basic");
     expect(at(0)!.pKa!).toBeGreaterThan(5);
 

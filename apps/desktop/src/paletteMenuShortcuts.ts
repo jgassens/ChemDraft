@@ -46,6 +46,7 @@ export const NATIVE_MENU_COMMAND_IDS: ReadonlySet<string> = new Set([
   "chemistry.validateSelection",
   "structure.openInteractive3d",
   "plugins.manage",
+  "plugins.vibeCodeStarter",
   "help.reportBug",
 ]);
 

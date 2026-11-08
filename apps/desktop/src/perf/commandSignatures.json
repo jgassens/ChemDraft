@@ -816,6 +816,14 @@
     "returnType": "Result<tauri::ipc::Response, String>"
   },
   {
+    "file": "plugin_starter.rs",
+    "name": "plugin_starter_computer",
+    "async": false,
+    "generics": "",
+    "parameters": "app: AppHandle",
+    "returnType": "Result<StarterComputer, String>"
+  },
+  {
     "file": "problem_reports.rs",
     "name": "open_problem_report_email",
     "async": false,
