@@ -3836,7 +3836,8 @@ function projectionDistanceAlongSegment(
   };
 }
 
-function planTextObjectSvg(object: TextObject, layerIndex: number): PageSvgElementFragment {
+/** @internal Shared by canvas, export and the live text-edit preview. */
+export function planTextObjectSvg(object: TextObject, layerIndex: number): PageSvgElementFragment {
   const { style: textStyle, textAnchor, x, y, lineAdvance } = planTextObjectPlacement(object);
   const lines = textObjectSpanLines(object);
   // Preserve the established markup for wholly unscripted text. With scripts, reset each

@@ -41,13 +41,15 @@ describe.each(["macos", "windows"] as const)("text editor placement (%s)", platf
   });
 
   it.each([
-    ...[1, 2].flatMap(zoom => (["left", "center"] as const).map(textAlign => ({ zoom, textAlign, text: "HHHHHH", height: undefined }))),
+    ...[1, 1.25, 1.5, 2].flatMap(dpr => [14, 18].flatMap(points => [1, 2].flatMap(zoom =>
+      (["left", "center", "right"] as const).map(textAlign => ({ zoom, textAlign, points, dpr, text: "HHHHHH", height: undefined }))))),
     ...[0.5, 1].flatMap(zoom => (["left", "center", "right"] as const).flatMap(textAlign =>
-      [0, 0.1].flatMap(height => ["", "H"].map(text => ({ zoom, textAlign, text, height })))))
+      [0, 0.1].flatMap(height => ["", "H"].map(text => ({ zoom, textAlign, points: 14, dpr: 1, text, height })))))
   ])(
-    "applies frame, font and baseline styles: '$text', height $height, $textAlign at $zoom", async ({ zoom, textAlign, text, height }) => {
+    "applies glyph origins: '$text', height $height, $points pt, $textAlign at $zoom, DPR $dpr", async ({ zoom, textAlign, points, dpr, text, height }) => {
+      vi.stubGlobal("devicePixelRatio", dpr);
       const drawing = structuredClone(insertNativeTextObject(createPhase4Document("Text placement"), { x: 200, y: 160 }, text,
-        { fontFamily: "Arial", fontSizePx: 18.667, textAlign }));
+        { fontFamily: "Arial", fontSizePx: points * 96 / 72, textAlign }));
       const object = drawing.pages[0].objects[0] as TextObject;
       if (height !== undefined) {
         object.height = height;
@@ -58,7 +60,7 @@ describe.each(["macos", "windows"] as const)("text editor placement (%s)", platf
       const scale = Math.min((drawing.pages[0].width * zoom - 2) / drawing.pages[0].width,
         (drawing.pages[0].height * zoom - 2) / drawing.pages[0].height);
       const offset = { x: (drawing.pages[0].width * zoom - 2 - drawing.pages[0].width * scale) / 2,
-        y: (drawing.pages[0].height * zoom - 2 - drawing.pages[0].height * scale) / 2 };
+        y: (drawing.pages[0].height * zoom - 2 - drawing.pages[0].height * scale) / 2 + 0.375 / dpr };
       vi.spyOn(metricsReader, "measureTextEditorViewport").mockReturnValue({ scale, offset });
       await act(async () => root.render(createElement(MainWindow, {
         initialDocument: drawing, initialPaletteMode: "hidden", nativePalette: true,
@@ -74,24 +76,42 @@ describe.each(["macos", "windows"] as const)("text editor placement (%s)", platf
       await act(async () => glyph.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true, detail: 2 })));
       await act(async () => vi.advanceTimersByTimeAsync(100));
       const editor = container.querySelector<HTMLTextAreaElement>(".text-object-editor")!;
-      const preview = container.querySelector<HTMLElement>(".text-object-edit-preview")!;
+      const preview = container.querySelector<SVGSVGElement>(".text-object-edit-preview")!;
       const frame = editor.closest<HTMLElement>(".document-object-chrome")!;
       const style = nativeTextStyleFromObjectStyle(object.style);
       const metrics = metricsReader.measureTextEditorMetrics(style, scale, style.fontSizePx * style.lineHeight * scale)!;
       const expected = planTextObjectEditorPlacement(object, scale,
         measureNativeTextSpanLineWidth(textObjectSpanLines(object)[0], style), metrics, offset);
-      for (const node of [editor, preview]) {
-        const computed = getComputedStyle(node);
-        for (const key of ["left", "top", "width", "height", "fontSize", "padding", "borderWidth"] as const) {
-          expect(parseFloat(computed[key]), key).toBeCloseTo(expected.content[key], 8);
-        }
-        expect(computed.lineHeight).toBe(expected.content.lineHeight);
-        expect(computed.boxSizing).toBe("border-box");
-        expect(computed.textAlign).toBe(textAlign);
-        expect(parseFloat(computed.minHeight)).toBe(0);
-        expect(node.style.right).toBe("");
+      const computed = getComputedStyle(editor);
+      for (const key of ["left", "top", "width", "height", "fontSize", "padding", "borderWidth"] as const) {
+        expect(parseFloat(computed[key]), key).toBeCloseTo(expected.content[key], 8);
       }
+      expect(computed.lineHeight).toBe(expected.content.lineHeight);
+      expect(computed.boxSizing).toBe("border-box");
+      expect(computed.textAlign).toBe(textAlign);
+      expect(parseFloat(computed.minHeight)).toBe(0);
+      expect(editor.style.right).toBe("");
+      expect(preview.namespaceURI).toBe("http://www.w3.org/2000/svg");
       expect(parseFloat(getComputedStyle(preview).minWidth)).toBe(0);
+      expect(getComputedStyle(preview).overflow).toBe("visible");
+      expect(getComputedStyle(preview).pointerEvents).toBe("none");
+      const previewGlyph = preview.querySelector("text")!;
+      for (const attr of ["x", "y", "text-anchor", "font-family", "font-size", "font-weight", "letter-spacing"]) {
+        expect(previewGlyph.getAttribute(attr), attr).toBe(glyph.getAttribute(attr));
+      }
+      expect(previewGlyph.innerHTML).toBe(glyph.innerHTML);
+      expect(preview.getAttribute("preserveAspectRatio")).toBe("none");
+      const [vx, vy, vw, vh] = preview.getAttribute("viewBox")!.split(" ").map(Number);
+      // Reconstruct the visible glyph origin from the actual DOM viewport and
+      // SVG attributes, independently of the placement helper's expected output.
+      const previewX = parseFloat(frame.style.left) + parseFloat(preview.style.left)
+        + (Number(previewGlyph.getAttribute("x")) - vx) * parseFloat(preview.style.width) / vw;
+      const previewY = parseFloat(frame.style.top) + parseFloat(preview.style.top)
+        + (Number(previewGlyph.getAttribute("y")) - vy) * parseFloat(preview.style.height) / vh;
+      expect(Math.abs(previewX - (offset.x + svgX * scale))).toBeLessThan(0.25);
+      expect(Math.abs(previewY - (offset.y + svgY * scale))).toBeLessThan(0.25);
+      expect(previewX).toBeCloseTo(offset.x + svgX * scale, 10);
+      expect(previewY).toBeCloseTo(offset.y + svgY * scale, 10);
       expect(frame.style.left).toBe(`${expected.frame.left}px`);
       expect(frame.style.top).toBe(`${expected.frame.top}px`);
       expect(frame.style.width).toBe(`${expected.frame.width}px`);

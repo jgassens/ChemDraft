@@ -5535,6 +5535,8 @@ textarea:focus-visible,
 
 .text-object-edit-preview {
   position: absolute;
+  display: block;
+  overflow: visible;
   z-index: 1;
   min-width: 0;
   min-height: 0;
