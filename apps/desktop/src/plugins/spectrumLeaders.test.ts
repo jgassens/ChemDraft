@@ -1,5 +1,5 @@
 import { depictSmiles2D } from "@chemdraft/ocl-adapter";
-import { annotationBondLines, layoutAtomAnnotationLabels, routeAtomAnnotationLeaders } from "@chemdraft/layout-engine";
+import { annotationBondLines, estimateAnnotationTextWidth, layoutAtomAnnotationLabels, routeAtomAnnotationLeaders, type AnnotationLabelBox } from "@chemdraft/layout-engine";
 import { describe, expect, it } from "vitest";
 
 interface Point { x: number; y: number }
@@ -17,19 +17,100 @@ function intersects(a: Point, b: Point, c: Point, d: Point): boolean {
   return cross(a, b, c) * cross(a, b, d) <= 1e-8 && cross(c, d, a) * cross(c, d, b) <= 1e-8;
 }
 
+function boxCorners(box: AnnotationLabelBox): Point[] {
+  return [{ x: box.x, y: box.y }, { x: box.x + box.width, y: box.y },
+    { x: box.x + box.width, y: box.y + box.height }, { x: box.x, y: box.y + box.height }];
+}
+
+function insideRing(point: Point, ring: Point[]): boolean {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const a = ring[i], b = ring[j];
+    if ((a.y > point.y) !== (b.y > point.y) && point.x < (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x) inside = !inside;
+  }
+  return inside;
+}
+
+// Independent cycle oracle: shortest path after removing each bond, rather than the layout's
+// planar face traversal. Covers both constituent rings of the fused naphthalene depiction.
+function ringsOf(atoms: (Point & { index: number })[], bonds: { from: number; to: number }[]): Point[][] {
+  const byIndex = new Map(atoms.map(atom => [atom.index, atom]));
+  return bonds.flatMap(removed => {
+    const paths = [[removed.from]], visited = new Set([removed.from]);
+    for (const path of paths) {
+      const last = path[path.length - 1];
+      for (const bond of bonds) {
+        if (bond === removed) continue;
+        const next = bond.from === last ? bond.to : bond.to === last ? bond.from : undefined;
+        if (next === undefined || visited.has(next)) continue;
+        if (next === removed.to) return [[...path, next].map(index => byIndex.get(index)!)];
+        visited.add(next);
+        paths.push([...path, next]);
+      }
+    }
+    return [];
+  });
+}
+
 describe("spectrum structure leaders", () => {
+  it.each([
+    { name: "toluene", smiles: "Cc1ccccc1", annotations: [21.40, 142.14, 128.54, 129.01, 125.60, 128.54, 129.01] },
+    { name: "naphthalene", smiles: "c1ccc2ccccc2c1", annotations: [127.70, 126.43, 125.61, 132.73, 127.70, 126.43, 125.61, 127.70, 132.73, 126.43] }
+  ].flatMap(molecule => [1, 2].flatMap(size => [1, -1].map(mirror => ({ ...molecule, size, mirror })))))(
+    "connects $name labels to their actual edges outside every ring at panel scale $size (y scale $mirror)", ({ smiles, annotations, size, mirror }) => {
+      const depiction = depictSmiles2D(smiles);
+      // Display regressions using the reported shift strings; these tests do not predict shifts.
+      const atoms = depiction.atoms.map((atom, index) => ({ ...atom, y: atom.y * mirror, index, annotation: annotations[index].toFixed(2) }));
+      const bonds = depiction.bonds.map(bond => ({ ...bond, order: bond.order === "double" ? 2 : 1 }));
+      const placement = layoutAtomAnnotationLabels({ atoms, bonds, width: 340 * size, height: 260 * size });
+      const byIndex = new Map(placement.atoms.map(atom => [atom.index, atom]));
+      const bondLines = bonds.flatMap(bond => annotationBondLines(byIndex.get(bond.from)!, byIndex.get(bond.to)!, bond.order, placement.fitScale));
+      const rings = ringsOf(placement.atoms, bonds);
+      const leaders = routeAtomAnnotationLeaders({ ...placement, bonds, bondLines });
+      for (const leader of leaders) {
+        const { label, points } = leader;
+        const end = points[points.length - 1];
+        const edgeDistance = Math.min(...boxCorners(label).map((a, i, corners) => {
+          const b = corners[(i + 1) % 4];
+          const t = Math.max(0, Math.min(1, ((end.x - a.x) * (b.x - a.x) + (end.y - a.y) * (b.y - a.y)) /
+            ((b.x - a.x) ** 2 + (b.y - a.y) ** 2)));
+          return Math.hypot(end.x - a.x - t * (b.x - a.x), end.y - a.y - t * (b.y - a.y));
+        }));
+        expect(edgeDistance, `atom ${leader.index}: leader must reach the label edge`).toBeLessThan(1e-6);
+        expect(points[0]).toEqual(expect.objectContaining({ x: byIndex.get(leader.index)!.x, y: byIndex.get(leader.index)!.y }));
+        const atom = byIndex.get(leader.index)!;
+        const nearest = { x: Math.max(label.x, Math.min(label.x + label.width, atom.x)),
+          y: Math.max(label.y, Math.min(label.y + label.height, atom.y)) };
+        expect(Math.hypot(nearest.x - atom.x, nearest.y - atom.y), `label ${leader.index} needlessly distant`)
+          .toBeLessThan(45 * placement.fitScale);
+        for (const ring of rings) {
+          for (const point of [...boxCorners(label), { x: label.x + label.width / 2, y: label.y + label.height / 2 }]) {
+            expect(insideRing(point, ring), `label ${leader.index} inside ring`).toBe(false);
+          }
+        }
+        const clearance = 2 * placement.fitScale;
+        const padded = { x: label.x - clearance, y: label.y - clearance, width: label.width + clearance * 2, height: label.height + clearance * 2 };
+        for (const line of bondLines) {
+          const a = { x: line.x1, y: line.y1 }, b = { x: line.x2, y: line.y2 };
+          const contains = (p: Point) => p.x >= padded.x && p.x <= padded.x + padded.width && p.y >= padded.y && p.y <= padded.y + padded.height;
+          expect(contains(a) || contains(b) || boxCorners(padded).some((p, i, corners) => intersects(a, b, p, corners[(i + 1) % 4])),
+            `label ${leader.index} touches a bond`).toBe(false);
+        }
+      }
+    }
+  );
   it.each([
     { name: "toluene", smiles: "Cc1ccccc1" },
     { name: "naphthalene", smiles: "c1ccc2ccccc2c1" },
     { name: "pyridine with an atom label", smiles: "c1ccncc1" }
-  ].flatMap(molecule => [ { ...molecule, mirror: 1 }, { ...molecule, mirror: -1 } ]))(
-    "routes $name from SMILES (y scale $mirror) without crossing bonds, text or other leaders", ({ smiles, mirror }) => {
+  ].flatMap(molecule => [1, 2].flatMap(size => [ { ...molecule, size, mirror: 1 }, { ...molecule, size, mirror: -1 } ])))(
+    "routes $name from SMILES (y scale $mirror, panel scale $size) without crossing bonds, text or other leaders", ({ smiles, mirror, size }) => {
     const depiction = depictSmiles2D(smiles);
     // These are synthetic annotations to exercise layout, not predictions. Preserve OCL's atom
     // indices/coordinates, as the plugin's declarative structure and panel layout do.
     const atoms = depiction.atoms.map((atom, index) => ({ ...atom, y: atom.y * mirror, index, annotation: `${120 + index}.00` }));
     const bonds = depiction.bonds.map(bond => ({ ...bond, order: bond.order === "double" ? 2 : 1 }));
-    const placement = layoutAtomAnnotationLabels({ atoms, bonds, width: 340, height: 260 });
+    const placement = layoutAtomAnnotationLabels({ atoms, bonds, width: 340 * size, height: 260 * size });
     const byIndex = new Map(placement.atoms.map(atom => [atom.index, atom]));
     const bondLines = bonds.flatMap(bond => annotationBondLines(byIndex.get(bond.from)!, byIndex.get(bond.to)!, bond.order, placement.fitScale));
     const before = structuredClone(placement);
@@ -41,7 +122,7 @@ describe("spectrum structure leaders", () => {
     const segments = leaders.flatMap(leader => {
       visible(leader.points);
       expect(leader.crossesBonds, `unexpected fallback for atom ${leader.index}`).toBe(false);
-      return leader.points.slice(1).map((b, i) => ({ index: leader.index, a: leader.points[i], b, initial: i === 0 }));
+      return leader.points.slice(1).map((b, i) => ({ index: leader.index, a: leader.points[i], b, initial: i === 0, terminal: i === leader.points.length - 2 }));
     });
     for (const segment of segments) {
       for (const bond of bonds) {
@@ -62,18 +143,24 @@ describe("spectrum structure leaders", () => {
         expect(intersects(a, segment.b, { x: line.x1, y: line.y1 }, { x: line.x2, y: line.y2 }), `leader ${segment.index} crosses stroke`).toBe(false);
       }
       const boxes = [
-        ...leaders.map(leader => leader.label),
-        ...placement.atoms.filter(atom => atom.element !== "C").map(atom => ({
-          x: atom.x - 12 * placement.fitScale, y: atom.y - 12 * placement.fitScale,
-          width: 24 * placement.fitScale, height: 24 * placement.fitScale
-        }))
+        ...leaders.map(leader => ({ ...leader.label, index: leader.index })),
+        ...placement.atoms.filter(atom => atom.element !== "C").map(atom => {
+          const width = estimateAnnotationTextWidth(atom.element, placement.atomFontSize) + 4 * placement.fitScale;
+          return { index: undefined, x: atom.x - width / 2, y: atom.y - 12 * placement.fitScale,
+            width, height: 24 * placement.fitScale };
+        })
       ];
       for (const box of boxes) {
         const corners = [
           { x: box.x, y: box.y }, { x: box.x + box.width, y: box.y },
           { x: box.x + box.width, y: box.y + box.height }, { x: box.x, y: box.y + box.height }
         ];
-        expect(corners.some((p, i) => intersects(segment.a, segment.b, p, corners[(i + 1) % 4])),
+        // The final endpoint must touch its own box edge, but must never enter it.
+        const end = segment.terminal && box.index === segment.index ? {
+          x: segment.b.x + (segment.a.x - segment.b.x) * 1e-5,
+          y: segment.b.y + (segment.a.y - segment.b.y) * 1e-5
+        } : segment.b;
+        expect(corners.some((p, i) => intersects(segment.a, end, p, corners[(i + 1) % 4])),
           `leader ${segment.index} crosses text`).toBe(false);
       }
       for (const other of segments) {

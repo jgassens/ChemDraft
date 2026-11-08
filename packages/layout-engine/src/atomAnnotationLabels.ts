@@ -1,3 +1,5 @@
+import { measureTextRun } from "./textMetrics";
+
 export interface AnnotationLabelBox {
   x: number;
   y: number;
@@ -38,9 +40,11 @@ export function annotationBondLines(
   })).filter((line) => Object.values(line).every(Number.isFinite));
 }
 
-/** Conservative advance, including bold/italic text, without browser font measurement. */
+/** Arial/Helvetica bold advance, shared with the explicit SVG textLength on annotations.
+ * A character-count reservation is unsuitable for leader endpoints: its empty trailing space
+ * can be as wide as the actual text. Keep measurement and drawing on this same contract. */
 export function estimateAnnotationTextWidth(text: string, fontSize: number): number {
-  return (Array.from(text).length + 0.5) * fontSize;
+  return measureTextRun(text, { fontSizePx: fontSize, fontWeight: 600 });
 }
 
 export function annotationLabelBoxesOverlap(a: AnnotationLabelBox, b: AnnotationLabelBox): boolean {
@@ -84,6 +88,7 @@ export function layoutAtomAnnotationLabels(input: {
   })).filter((atom) => Number.isFinite(atom.x) && Number.isFinite(atom.y));
   if (atoms.length === 0) return { atoms: [], labels: [], labelFontSize: 14, atomFontSize: 15, fitScale: 1 };
   const byIndex = new Map(atoms.map((atom) => [atom.index, atom]));
+  const insideRing = annotationRingInteriorIndex(atoms, input.bonds);
   const bonds = input.bonds.flatMap((bond) => {
     const a = byIndex.get(bond.from);
     const b = byIndex.get(bond.to);
@@ -103,15 +108,15 @@ export function layoutAtomAnnotationLabels(input: {
     x: Math.min(a.x, b.x), y: Math.min(a.y, b.y),
     width: Math.abs(a.x - b.x), height: Math.abs(a.y - b.y)
   }));
-  // Only local labels enter the grid; shelf labels are below every occupied box and cannot collide
-  // with an in-frame candidate. Keep their extents incrementally for both shelf placement and fit.
+  // Include exterior slots in the grid as well: the initial frame is no longer a hard boundary.
+  // Keep extents incrementally for both shelf placement and the complete drawing's final fit.
   const labelCells = new Map<string, AnnotationLabelBox[]>();
   const cellKeys = (box: AnnotationLabelBox): string[] => {
     const keys: string[] = [];
-    const left = Math.max(0, Math.floor(box.x / 32));
-    const right = Math.min(Math.floor(input.width / 32), Math.floor((box.x + box.width) / 32));
-    const top = Math.max(0, Math.floor(box.y / 32));
-    const bottom = Math.min(Math.floor(input.height / 32), Math.floor((box.y + box.height) / 32));
+    const left = Math.floor(box.x / 32);
+    const right = Math.floor((box.x + box.width) / 32);
+    const top = Math.floor(box.y / 32);
+    const bottom = Math.floor((box.y + box.height) / 32);
     for (let x = left; x <= right; x += 1) {
       for (let y = top; y <= bottom; y += 1) keys.push(`${x},${y}`);
     }
@@ -139,7 +144,7 @@ export function layoutAtomAnnotationLabels(input: {
     for (let ring = 0; ring < 5 && !box; ring += 1) {
       for (let step = 0; step < 16; step += 1) {
         const direction = angle + step * Math.PI / 8;
-        const radius = 22 + ring * (height + 5);
+        const radius = 16 + ring * (height + 5);
         const candidate = {
           x: atom.x + Math.cos(direction) * (radius + width / 2) - width / 2,
           y: atom.y + Math.sin(direction) * (radius + height / 2) - height / 2,
@@ -147,9 +152,9 @@ export function layoutAtomAnnotationLabels(input: {
           height
         };
         const clearance = { x: candidate.x - 3, y: candidate.y - 3, width: width + 6, height: height + 6 };
-        if (candidate.x >= padding && candidate.y >= padding &&
-            candidate.x + width <= input.width - padding && candidate.y + height <= input.height - padding &&
-            !atomIndex(clearance, (other) => annotationLabelBoxesOverlap(clearance, other)) &&
+        // Prefer nearby exterior slots even beyond the initial frame; the complete drawing is
+        // fitted below. Constraining slots to that frame used to push numbers inside rings.
+        if (!insideRing(clearance) && !atomIndex(clearance, (other) => annotationLabelBoxesOverlap(clearance, other)) &&
             !cellKeys(clearance).some((key) => labelCells.get(key)?.some((other) => annotationLabelBoxesOverlap(clearance, other))) &&
             !bondIndex(clearance, ({ a, b }) => segmentIntersectsBox(a, b, clearance))) {
           box = candidate;
@@ -191,6 +196,60 @@ export function layoutAtomAnnotationLabels(input: {
     atomFontSize: 15 * fitScale,
     fitScale
   };
+}
+
+/** Index the bounded faces of the drawn bond graph. No chemistry/ring perception is needed:
+ * the empty interior of each visible ring is a placement obstacle, including fused rings.
+ * Walking directed edges in angular order also handles branches on a ring boundary. */
+export function annotationRingInteriorIndex(atoms: readonly AnnotationAtom[], bonds: readonly { from: number; to: number }[]) {
+  const byIndex = new Map(atoms.map(atom => [atom.index, atom]));
+  const neighbors = new Map(atoms.map(atom => [atom.index, new Set<number>()]));
+  for (const { from, to } of bonds) {
+    if (from === to || !byIndex.has(from) || !byIndex.has(to)) continue;
+    neighbors.get(from)!.add(to);
+    neighbors.get(to)!.add(from);
+  }
+  const ordered = new Map(atoms.map(atom => [atom.index, [...neighbors.get(atom.index)!].sort((a, b) => {
+    const pa = byIndex.get(a)!, pb = byIndex.get(b)!;
+    return Math.atan2(pa.y - atom.y, pa.x - atom.x) - Math.atan2(pb.y - atom.y, pb.x - atom.x);
+  })]));
+  const visited = new Set<string>();
+  const faces: AnnotationAtom[][] = [];
+  for (const [from, adjacent] of ordered) for (const to of adjacent) {
+    if (visited.has(`${from}/${to}`)) continue;
+    const face: AnnotationAtom[] = [];
+    let a = from, b = to;
+    while (!visited.has(`${a}/${b}`)) {
+      visited.add(`${a}/${b}`);
+      face.push(byIndex.get(a)!);
+      const next = ordered.get(b)!;
+      const c = next[(next.indexOf(a) + next.length - 1) % next.length];
+      a = b;
+      b = c;
+    }
+    const area = face.reduce((sum, point, i) => {
+      const next = face[(i + 1) % face.length];
+      return sum + point.x * next.y - next.x * point.y;
+    }, 0);
+    // The unbounded face has the opposite winding. Degenerate chains enclose no area.
+    if (area > 1e-7) faces.push(face);
+  }
+  const index = obstacleIndex(faces, face => {
+    const x = Math.min(...face.map(p => p.x)), y = Math.min(...face.map(p => p.y));
+    return { x, y, width: Math.max(...face.map(p => p.x)) - x, height: Math.max(...face.map(p => p.y)) - y };
+  });
+  return (box: AnnotationLabelBox): boolean => index(box, face => {
+    const corners = [{ x: box.x, y: box.y }, { x: box.x + box.width, y: box.y },
+      { x: box.x + box.width, y: box.y + box.height }, { x: box.x, y: box.y + box.height }];
+    return corners.some(point => {
+      let inside = false;
+      for (let i = 0, j = face.length - 1; i < face.length; j = i++) {
+        const a = face[i], b = face[j];
+        if ((a.y > point.y) !== (b.y > point.y) && point.x < (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x) inside = !inside;
+      }
+      return inside;
+    });
+  });
 }
 
 /** Bounding hierarchy for static obstacles. Exact predicates and candidate order stay unchanged. */
