@@ -1,5 +1,5 @@
 /**
- * Engine regression against the vendored RDKit 2026.03.3 artifact (PLANS.md §10, verification layer 1).
+ * Engine regression against the vendored RDKit 2026.03.3 artifact (docs/plans/PLANS.md §10, verification layer 1).
  *
  * "Pinned outputs from the exact RDKit/OCL/IsoSpec/MOPAC version, so a dependency bump is a visible
  * failure, not a silent number change. → Phase 2, because the pins are what make release 1's numbers

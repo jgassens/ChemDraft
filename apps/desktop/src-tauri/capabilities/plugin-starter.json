@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "plugin-starter",
+  "description": "Allow only the document window to read its own executable details for the plugin starter.",
+  "windows": ["main"],
+  "permissions": ["allow-plugin-starter-computer"]
+}

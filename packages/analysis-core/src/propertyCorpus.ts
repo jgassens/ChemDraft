@@ -1,5 +1,5 @@
 /**
- * The property corpus (PLANS.md §10).
+ * The property corpus (docs/plans/PLANS.md §10).
  *
  * A sibling to `packages/chem-core/src/corpus.ts`, not an extension of it: that corpus is scoped to
  * 3D flatten cases and its entries carry flatten-specific expectations.
@@ -16,7 +16,7 @@
  */
 
 /**
- * The adversarial categories PLANS.md §10 names, as a value rather than a type alone.
+ * The adversarial categories docs/plans/PLANS.md §10 names, as a value rather than a type alone.
  *
  * A value is what lets `propertyCorpus.test.ts` assert that every declared category has an entry —
  * the check that caught `oversize` and `stereochemistry` sitting in this list with nothing tagged
