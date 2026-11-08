@@ -31,9 +31,9 @@ fn kind_spec(kind: &str) -> Result<DialogKindSpec, String> {
             maximizable: false,
             resizable: true,
             title: "Vibe Code Your Own Plugin",
-            size: (520.0, 620.0),
-            min_size: (420.0, 380.0),
-            fit_content: false,
+            size: (480.0, 400.0),
+            min_size: (420.0, 240.0),
+            fit_content: true,
         }),
         "structureTemplates" => Ok(DialogKindSpec {
             maximizable: false,
@@ -3219,8 +3219,9 @@ mod tests {
         assert!(!is_dialog_label("dialog-main-arrangementSpacing-../main"));
     }
     #[test]
-    fn only_insert_table_fits_its_window_to_the_measured_content() {
+    fn content_fit_dialogs_fit_their_windows_to_the_measured_content() {
         for kind in [
+            "vibeCodeGuide",
             "structureTemplates",
             "pageSize",
             "arrangementSpacing",
@@ -3229,7 +3230,10 @@ mod tests {
             "engineInstall",
             "toolInstall",
         ] {
-            assert_eq!(kind_spec(kind).unwrap().fit_content, kind == "insertTable");
+            assert_eq!(
+                kind_spec(kind).unwrap().fit_content,
+                matches!(kind, "insertTable" | "vibeCodeGuide")
+            );
         }
     }
     #[test]

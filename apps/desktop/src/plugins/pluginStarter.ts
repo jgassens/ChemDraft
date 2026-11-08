@@ -98,7 +98,7 @@ Build a working plugin for the installed ChemDraft ${appVersion}, test it, and d
 
 This file contains this computer's folder paths, so don't share it publicly.
 ${computer}
-Run the plugin's unit tests with \`pnpm vitest run --configLoader runner examples/plugins/<your-plugin>\`, then run \`pnpm plugin:package -- examples/plugins/<your-plugin>\` (this runs the package gates). Ask the user to install the ZIP through **Plugins ▸ Add or Remove Plugins… ▸ Add plugin from package…**. Confirm that the folder appears under the installed plugins folder at \`<installed-plugins>/<plugin id>/\` and that the plugin's menu item exists. Installation errors appear in the Plugins window; load errors appear in **Analyze ▸ Bundled Plugins…** diagnostics.
+Run the plugin's unit tests with \`pnpm vitest run --configLoader runner examples/plugins/<your-plugin>\`, then run \`pnpm plugin:package -- examples/plugins/<your-plugin>\` (this runs the package gates). Ask the user to install the ZIP through **Plugins ▸ Add or Remove Plugins… ▸ Add plugin from package…**. Confirm that the folder appears under the installed plugins folder at \`<installed-plugins>/<plugin id>/\` and that the plugin's menu item exists. The installed-plugins folder is created when the first plugin is installed; its absence before then is normal. Installation errors appear in **Add or Remove Plugins**; load errors appear in **Analyze ▸ Bundled Plugins…** diagnostics.
 
 Never copy files into the installed-plugins folder by hand; that skips the checksum and manifest checks. Always install the ZIP through the app.
 

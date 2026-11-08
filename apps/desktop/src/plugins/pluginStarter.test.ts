@@ -54,6 +54,8 @@ describe("plugin starter Markdown", () => {
     expect(result).toContain("don't share it publicly");
     expect(result).toContain("Never copy files into the installed-plugins folder by hand");
     expect(result).toContain("skips the checksum and manifest checks");
+    expect(result).toContain("The installed-plugins folder is created when the first plugin is installed; its absence before then is normal.");
+    expect(result).toContain("Installation errors appear in **Add or Remove Plugins**");
     const section = result.split("# This computer\n")[1]!.split("\n# Rules")[0]!;
     expect(section).not.toContain("undefined");
   });
@@ -126,6 +128,8 @@ describe("plugin starter Markdown", () => {
     expect(markdown).toContain("PowerShell");
     expect(markdown).toContain("Plugins ▸ Add or Remove Plugins…");
     expect(markdown).toContain("Add plugin from package…");
+    expect(markdown).toContain("The installed-plugins folder is created when the first plugin is installed; its absence before then is normal.");
+    expect(markdown).toContain("Installation errors appear in **Add or Remove Plugins**");
     expect(markdown).toContain("Packages over 32 MB are refused");
     expect(markdown).not.toContain("npm install @chemdraft");
     expect(markdown).not.toContain("ChemDraw");
