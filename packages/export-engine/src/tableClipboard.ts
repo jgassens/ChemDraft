@@ -234,7 +234,7 @@ function rtfTable(table: TableObject, layout: TableLayout, options: TableClipboa
     const decimalWidth = block ? Math.ceil((block.preWidth + block.postWidth) * 15)
       + 4 * margin - 2 * padx + 1 : 0;
     return Math.max(Math.ceil(column.width * 15), decimalWidth,
-      Math.ceil((planned.width - 2 * padding.x) * 15) + 2 * margin);
+      Math.ceil(((table.columns[index].width.mode === "fixed" ? planned.contentWidth : planned.width) - 2 * padding.x) * 15) + 2 * margin);
   });
   layout = planTableLayout({
     ...table, columns: table.columns.map((column, index) => ({
@@ -373,7 +373,7 @@ export function exportTableClipboardPayloads(
       columns: table.columns.map(column => ({ ...column, width: { mode: "auto" as const } }))
     });
     table.columns.forEach((column, index) => {
-      if (column.width.mode === "fixed" && column.width.px < natural.columns[index].width) {
+      if (column.width.mode === "fixed" && column.width.px < natural.columns[index].contentWidth) {
         warnings.push(`Fixed-width column "${column.id}" is narrower than its content.`);
       }
     });

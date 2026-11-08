@@ -55,7 +55,11 @@ function balancedRtf(rtf: string): void {
 function compareGolden(suffix: string, value: string): void {
   const url = new URL(`../../fixtures/tables/sharpless.table.${suffix}`, import.meta.url);
   const update = process.env.UPDATE_TABLE_CLIPBOARD_GOLDENS;
-  if (update === "1" || update === suffix) writeFileSync(url, value, "utf8");
+  if (update === "1" || update === suffix) {
+    writeFileSync(url, value, "utf8");
+    expect(Buffer.from(value, "utf8")).toEqual(readFileSync(url));
+    return;
+  }
   expect(Buffer.from(value, "utf8")).toEqual(readFileSync(url));
 }
 
@@ -644,6 +648,22 @@ describe("table clipboard payloads", () => {
         expect(Math.round(6.04 * 15) + Math.ceil(measure(text) * 15) + right + indent).toBeLessThanOrEqual(width);
       });
     });
+  });
+
+  it("keeps a fitting fixed column narrower than the auto minimum", () => {
+    const input = smallTable(["i"]);
+    input.columns[0].width = { mode: "fixed", px: 30 };
+    const layout = planTableLayout(input);
+    expect(layout.columns[0].contentWidth).toBeLessThan(30);
+    expect(planTableLayout({ ...input, columns: [{ ...input.columns[0], width: { mode: "auto" } }] }).columns[0].width).toBe(layout.columns[0].contentWidth);
+    const empty = { ...input, rows: input.rows.map(row => ({ ...row, cells: row.cells.map(() => ({ text: "", spans: [] })) })),
+      columns: [{ ...input.columns[0], width: { mode: "auto" as const } }] };
+    expect(planTableLayout(empty).columns[0].width).toBeGreaterThan(30);
+    const output = exportTableClipboardPayloads(input);
+    expect(output.warnings).toEqual([]);
+    expect(output.html).toContain('width="30"');
+    expect(output.rtf).toContain("\\clwWidth450");
+    expect(output.rtf).toContain("\\cellx450");
   });
 
   it("warns for unrotated copying and natural-width overflow without mutating its input", () => {

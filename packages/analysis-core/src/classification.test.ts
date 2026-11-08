@@ -47,7 +47,7 @@ function classification(flags: ClassificationFlags, overrides: Partial<Classific
 
 describe("classification predicates", () => {
   it("branches on flags only — the display axes cannot change behaviour", () => {
-    // PLANS.md §2: "the enums are for display and grouping; the flags are what code branches on."
+    // docs/plans/PLANS.md §2: "the enums are for display and grouping; the flags are what code branches on."
     // Every enum permutation with identical flags must produce identical answers. This is the test
     // that fails the moment someone reaches for `claim === "prediction"` inside a predicate.
     for (const flags of FLAG_COMBINATIONS) {
