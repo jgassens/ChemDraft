@@ -5069,6 +5069,7 @@ fn show_toolset_tooltip_window(
     if toolset_tooltip_suppressed(
         windows
             .iter()
+            .filter(|(label, _)| label.starts_with("toolset-popover-"))
             .map(|(label, window)| (label.as_str(), window.is_visible().unwrap_or(false))),
     ) {
         return Ok(());
@@ -10267,6 +10268,12 @@ mod tests {
         assert!(toolset_tooltip_suppressed(windows));
         windows[4].1 = false;
         assert!(!toolset_tooltip_suppressed(windows));
+        // Stop querying visibility as soon as a visible popover suppresses the tooltip.
+        assert!(toolset_tooltip_suppressed(
+            [("toolset-popover-core-main", true)]
+                .into_iter()
+                .chain(std::iter::once_with(|| panic!("scan must short-circuit"))),
+        ));
     }
 
     fn assert_bond_stereo_mouse_creation() {
