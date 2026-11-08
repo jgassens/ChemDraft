@@ -884,7 +884,9 @@ export function LinkedFigureView({
                         className={`lf-shift-label${atomQuality.has(atom.index) ? ` is-${atomQuality.get(atom.index)}` : ""}`}
                         x={annotation.x}
                         y={annotation.y + layout.labelFontSize}
-                        style={{ fontSize: layout.labelFontSize }}
+                        style={{ fontSize: layout.labelFontSize, fontFamily: "Arial, Helvetica, sans-serif" }}
+                        textLength={annotation.width}
+                        lengthAdjust="spacingAndGlyphs"
                         textAnchor="start"
                       >
                         {shift.map((part, index) => (

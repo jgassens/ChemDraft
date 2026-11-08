@@ -1,4 +1,4 @@
-import { annotationLabelBoxesOverlap, estimateAnnotationTextWidth, obstacleIndex, segmentIntersectsBox, type AnnotationAtom, type AnnotationLabelBox } from "./atomAnnotationLabels";
+import { annotationLabelBoxesOverlap, annotationRingInteriorIndex, estimateAnnotationTextWidth, obstacleIndex, segmentIntersectsBox, type AnnotationAtom, type AnnotationLabelBox } from "./atomAnnotationLabels";
 
 interface Point { x: number; y: number }
 interface Segment { a: Point; b: Point }
@@ -69,6 +69,7 @@ export function routeAtomAnnotationLeaders(input: {
   const gap = Math.max(0.05, 1.5 * scale);
   const minimumLength = 2 * gap;
   const byIndex = new Map(atoms.map(atom => [atom.index, atom]));
+  const insideRing = annotationRingInteriorIndex(atoms, input.bonds);
   const center = {
     x: atoms.reduce((sum, atom) => sum + atom.x, 0) / atoms.length,
     y: atoms.reduce((sum, atom) => sum + atom.y, 0) / atoms.length
@@ -152,7 +153,7 @@ export function routeAtomAnnotationLeaders(input: {
       ];
       const neighbors = neighborsOf(atom.index);
       const directions = freeDirections(atom, neighbors, center);
-      const ports = [target, ...corners(targetBox, gap),
+      let ports = [target, ...corners(targetBox, gap),
         { x: targetBox.x + targetBox.width / 2, y: targetBox.y - gap },
         { x: targetBox.x + targetBox.width / 2, y: targetBox.y + targetBox.height + gap },
         { x: targetBox.x - gap, y: targetBox.y + targetBox.height / 2 },
@@ -172,9 +173,13 @@ export function routeAtomAnnotationLeaders(input: {
       for (const segment of [...strokes, ...bondAxes]) {
         for (const p of [segment.a, segment.b]) detours.push(...corners({ ...p, width: 0, height: 0 }, gap));
       }
-      const unobstructed = (a: Point, b: Point, initial = false): boolean => {
+      const endpoint = (port: Point): Point => ({
+        x: Math.max(slot.x, Math.min(slot.x + slot.width, port.x)),
+        y: Math.max(slot.y, Math.min(slot.y + slot.height, port.y))
+      });
+      const unobstructed = (a: Point, b: Point, initial = false, terminal = false): boolean => {
         const bounds = segmentBounds({ a, b });
-        if (boxIndex(bounds, box => segmentIntersectsBox(a, b, box))) return false;
+        if (boxIndex(bounds, box => (!terminal || box !== targetBox) && segmentIntersectsBox(a, b, box))) return false;
         if (avoidLeaders && reservedIndex(bounds, segment => intersects(a, b, segment.a, segment.b))) return false;
         if (avoidLeaders && previousIndex(bounds, segment => intersects(a, b, segment.a, segment.b))) return false;
         if (axisIndex(bounds, segment => {
@@ -196,6 +201,11 @@ export function routeAtomAnnotationLeaders(input: {
           return intersects(a, b, segment.a, segment.b);
         });
       };
+      // The visibility graph routes around padded obstacles. Its ports are waypoints, not
+      // label endpoints: complete and validate the last segment to the actual drawn box.
+      ports = ports.filter(port => unobstructed(port, endpoint(port), false, true));
+      if (!ports.length) return [];
+      const finish = (path: Point[]): Point[] => [...path, endpoint(path[path.length - 1])];
       const connections = new Map<string, boolean>();
       const clear = (a: Point, b: Point, initial = false): boolean => {
         if (initial) return unobstructed(a, b, true);
@@ -225,7 +235,7 @@ export function routeAtomAnnotationLeaders(input: {
           const direct = [...ports].sort((a, b) =>
             Math.hypot(a.x - exit.x, a.y - exit.y) - Math.hypot(b.x - exit.x, b.y - exit.y)
           ).find(port => clear(exit, port));
-          if (direct) return [start, exit, direct];
+          if (direct) return finish([start, exit, direct]);
           departures.push({ start, exit });
         }
         if (!departures.length) continue;
@@ -249,7 +259,7 @@ export function routeAtomAnnotationLeaders(input: {
             const path = [nodes[current]];
             let root = current;
             while (parents[root] >= 0) { root = parents[root]; path.unshift(nodes[root]); }
-            return [departures[root].start, ...path];
+            return finish([departures[root].start, ...path]);
           }
           visited.add(current);
           for (let i = goalStart; i < nodes.length; i++) {
@@ -264,8 +274,11 @@ export function routeAtomAnnotationLeaders(input: {
       return [];
     };
     // Avoiding previous leaders is a preference within the strict bond/text search.
-    let points = search(label);
-    if (!points.length) points = search(label, false);
+    const validSlot = (slot: AnnotationLabelBox) => !insideRing(padded(slot)) &&
+      !strokes.some(s => segmentIntersectsBox(s.a, s.b, padded(slot))) &&
+      !bondAxes.some(s => segmentIntersectsBox(s.a, s.b, padded(slot)));
+    let points = validSlot(label) ? search(label) : [];
+    if (!points.length && validSlot(label)) points = search(label, false);
     let crossesBonds = false;
     if (!points.length) {
       const molecularBounds = {
@@ -304,7 +317,7 @@ export function routeAtomAnnotationLeaders(input: {
             box.y < molecularBounds.top ||
             box.x + box.width > molecularBounds.right ||
             box.y + box.height > molecularBounds.bottom)) return false;
-        return !labelBoxes.some((other, i) => labels[i].index !== atom.index && annotationLabelBoxesOverlap(box, other)) &&
+        return validSlot(slot) && !labelBoxes.some((other, i) => labels[i].index !== atom.index && annotationLabelBoxesOverlap(box, other)) &&
           !atomBoxes.some(other => annotationLabelBoxesOverlap(box, other)) &&
           !strokes.some(s => segmentIntersectsBox(s.a, s.b, box));
       }).sort((a, b) => Math.hypot(a.x - label.x, a.y - label.y) - Math.hypot(b.x - label.x, b.y - label.y));
@@ -323,9 +336,7 @@ export function routeAtomAnnotationLeaders(input: {
           Object.assign(label, exterior);
         } else {
           crossesBonds = true;
-          const target = targets.get(atom.index)!;
-          points = Math.hypot(target.x - atom.x, target.y - atom.y) >= minimumLength
-            ? [{ x: atom.x, y: atom.y }, target] : visibleFallback();
+          points = visibleFallback();
         }
       }
       labelBoxes[labels.indexOf(label)] = padded(label);
