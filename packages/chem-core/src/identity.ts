@@ -35,9 +35,9 @@
 import type { MoleculeObject, MoleculeAtom, MoleculeBond } from "./schemas";
 
 /** Bond display styles that encode stereochemistry (vs. `bold`/`dashed` cosmetics). */
-export type StereoMarkerStyle = "wedge" | "hashed";
+export type StereoMarkerStyle = "wedge" | "hashed" | "wavy";
 
-/** A wedge/hash marker, keyed by the WL invariants of its endpoints (id-independent). */
+/** A directed stereo-intent marker (including explicit unknown), keyed by endpoint WL invariants. */
 export interface StereoMarkerFingerprint {
   /** Invariant of the narrow-end (origin) atom — molfile wedge convention. */
   fromInvariant: string;
@@ -170,7 +170,7 @@ function weisfeilerLehmanColors(
 }
 
 function isStereoStyle(style: string | undefined): style is StereoMarkerStyle {
-  return style === "wedge" || style === "hashed";
+  return style === "wedge" || style === "hashed" || style === "wavy";
 }
 
 function compareMarkers(left: StereoMarkerFingerprint, right: StereoMarkerFingerprint): number {

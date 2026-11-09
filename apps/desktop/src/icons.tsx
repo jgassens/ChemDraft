@@ -18,6 +18,7 @@ export type IconName =
   | "bond"
   | "doubleBond"
   | "tripleBond"
+  | "wavyBond"
   | "bracket"
   | "charge"
   | "chain"
@@ -65,6 +66,8 @@ export function Icon({ name, ...props }: IconProps) {
   };
 
   switch (name) {
+    case "wavyBond":
+      return <svg {...common}><path d="M3 12C4 9 5 9 6 12S8 15 9 12S11 9 12 12S14 15 15 12S17 9 18 12S20 15 21 12" /></svg>;
     case "templates":
       return <svg {...common}><path d="m8 3 5 3v6l-5 3-5-3V6z" /><rect x="14" y="13" width="7" height="8" rx="1" /><path d="M14 17h7M17.5 13v8" /></svg>;
     case "close":

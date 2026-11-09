@@ -1714,7 +1714,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.08.11.15-opus";
+const CURRENT_BUILD_STAMP = "11.08.22.10-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -14764,6 +14764,10 @@ export function MainWindow({
       setStatus("Dashed (dative) display needs a single bond");
       return;
     }
+    if (bondStyle === "wavy" && targetBond && targetBond.order !== "single") {
+      setStatus("Wavy bond requires a single bond");
+      return;
+    }
     const reverses = targetBond !== undefined && nativeBondDisplayStyleReverses(targetBond, bondStyle);
     const nextDocument = applyNativeBondDisplayStyleTarget(currentDocument, target, bondStyle);
     if (nextDocument !== currentDocument) {
@@ -23602,6 +23606,7 @@ function isSemanticCircularGraphicArc(
 }
 
 function nativeBondToolStatusLabel(bondStyle: NativeBondDisplayStyle | undefined): string {
+  if (bondStyle === "wavy") return "wavy bond";
   if (bondStyle === "wedge") {
     return "solid wedge bond";
   }

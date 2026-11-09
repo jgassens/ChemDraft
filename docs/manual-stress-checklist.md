@@ -1,5 +1,10 @@
 # Manual stress checklist
 
+- Wavy bond: choose it from the bond flyout and Customize gallery; draw, convert a single bond,
+  click again to reverse its unknown stereo end, and convert back to wedge/plain. Each edit is one
+  Undo/Redo step. Check label clearance and canvas/SVG/PDF/PNG parity, no R/S at the wave's `from`
+  atom, SMILES without `@` there, MOL V2000 stereo 4 and V3000 CFG=2, on macOS and Windows.
+
 The standing hands-on checklist for interactive surfaces. It moved here from `AGENTS.md` §20 when that
 file was consolidated (2026-10-04); `AGENTS.md` §14 still requires it. Run every item on **macOS and
 Windows** unless the item names one platform. `docs/windows-port-stress-test.md` records the Windows

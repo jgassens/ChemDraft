@@ -47,6 +47,19 @@ describe("RDKit identity-preserving molfile re-layout (real WASM)", () => {
     }
   });
 
+  it.each([true, false])("retains a directed wavy single bond without specifying stereo (CoordGen=%s)", useCoordGen => {
+    const lines = molfile("F[C@](Cl)(Br)I").split(/\r?\n/);
+    const atomCount = Number(lines[3].slice(0, 3));
+    const index = lines.findIndex((line, i) => i >= 4 + atomCount && [1, 6].includes(Number(line.slice(9, 12))));
+    const from = Number(lines[index].slice(0, 3)) - 1, to = Number(lines[index].slice(3, 6)) - 1;
+    lines[index] = `${lines[index].slice(0, 9)}  4${lines[index].slice(12)}`;
+    const input = lines.join("\n");
+    const output = relayoutMolfile2DWithRdkit(input, rdkit, useCoordGen);
+    expect(output.bonds.find(bond => bond.wedge === "wavy")).toMatchObject({ from, to, order: "single" });
+    expect(identity(output.molfile)).toBe(identity(input));
+    expect(identity(output.molfile)).not.toContain("@");
+  });
+
   it("skips CoordGen above its size guard while leaving the default depictor available", () => {
     const input = molfile("C".repeat(81));
     expect(() => relayoutMolfile2DWithRdkit(input, rdkit, true)).toThrow(/size guard/);

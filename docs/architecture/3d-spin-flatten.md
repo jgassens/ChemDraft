@@ -436,7 +436,8 @@ Wiring (all locations verified against the current code):
   left-padded symbol field, then padding zeros as in any V2000).
 - `fromDocFrame: true` ⇒ write `y = -atom.y` (doc y-down → molfile y-up).
 - Bonds: `%3d%3d%3d%3d` with 1-based atom indices, order codes 1/2/3 (aromatic→4),
-  stereo flag 1 for `display.bondStyle === "wedge"`, 6 for `"hashed"`, else 0.
+  stereo flag 1 for `display.bondStyle === "wedge"`, 6 for `"hashed"`, 4 for single-bond
+  `"wavy"` (explicitly unknown at fromAtomId), else 0. V3000 writes CFG=2 for wavy.
   fromAtomId is the first index (narrow end).
 - Counts line: `%3d%3d  0  0  1  0  0  0  0  0999 V2000` (chiral flag 1 when any
   wedge/hash present, else 0). `M  CHG` lines for nonzero formalCharge
