@@ -19,6 +19,10 @@ unsupported data say explicitly when that data is not written because no payload
 Native multi-atom labels are encoded as standard `GenericNickname` nodes with label text on the
 existing atom; its bond endpoints stay unchanged. Import also accepts unexpanded nickname, formula,
 fragment and monomer text nodes, including a `GenericNickname` property without a text object.
+R-group text takes precedence over `GenericNickname="R"`: `R1` and `R2` keep those numbers,
+including when the number is in a separate subscript run. Imports record the label and atom anchor
+in native `rGroups`; visible CDXML and CDX exports write the full label on a `GenericNickname`
+node. Bare `R`, `R'`, and `R''` keep their text without acquiring a numeric index.
 `cdx.atom_label_unexpanded` names each label exported without an expanded atom graph: the text and
 drawn attachments are preserved, but the file does not supply an explicit chemical expansion to
 other readers. A nameless unexpanded node imports as an unknown atom with a warning, never carbon.

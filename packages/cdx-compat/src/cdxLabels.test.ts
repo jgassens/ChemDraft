@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createEmptyDocument, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { createEmptyDocument, moleculeToMolfileV2000, moleculeToMolfileV3000, rGroupNumberFromLabel, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
 import {
-  expandNativeMoleculeLabelGroups, nativeSingleBondGraphMetadata, nativeSingleBondGraphSmiles
+  expandNativeMoleculeLabelGroups, moleculeSmiles, nativeSingleBondGraphMetadata, nativeSingleBondGraphSmiles
 } from "../../document-workflow-core/src/index";
 import { computeStructureIdentifiers } from "../../rdkit-adapter/src/identifiers";
 import { resetRdkitForTesting } from "../../rdkit-adapter/src/conformer";
@@ -150,6 +150,81 @@ describe("synthetic multi-atom labels and attachment atoms", () => {
 const xmlTree = (content: string) => cdxElementFromOrderedTree(new XMLParser({
   preserveOrder: true, ignoreAttributes: false, attributeNamePrefix: "", parseAttributeValue: false, trimValues: false
 }).parse(`<CDXML><page id="1"><fragment id="2">${content}</fragment></page></CDXML>`));
+
+/** Synthetic para-disubstituted benzene. Source object ids deliberately differ from R numbers. */
+function rGroupTree(labels: readonly [string, string]) {
+  const ring = Array.from({ length: 6 }, (_, index) => {
+    const angle = index * Math.PI / 3;
+    return `<n id="${101 + index}" p="${100 + 30 * Math.cos(angle)} ${100 + 30 * Math.sin(angle)}"/>`;
+  }).join("");
+  const bonds = Array.from({ length: 6 }, (_, index) =>
+    `<b id="${201 + index}" B="${101 + index}" E="${101 + (index + 1) % 6}" Order="${index % 2 ? 1 : 2}"/>`).join("");
+  const label = (text: string) => text === "R1" ? '<s>R</s><s face="32">1</s>' : `<s>${text}</s>`;
+  return xmlTree(`${ring}${bonds}
+    <n id="1829667708" p="160 100" NodeType="GenericNickname" GenericNickname="R"><t>${label(labels[0])}</t></n>
+    <n id="1604796376" p="40 100" NodeType="GenericNickname" GenericNickname="R"><t>${label(labels[1])}</t></n>
+    <b id="207" B="101" E="1829667708"/><b id="208" B="104" E="1604796376"/>`);
+}
+
+describe("synthetic numbered R-group attachments", () => {
+  const formats = ["CDXML", "CDX"] as const;
+  const openedTree = (tree: ReturnType<typeof xmlTree>, format: typeof formats[number]) =>
+    format === "CDX" ? openChemDraftPayload(cdxElementToCdxml(readCdx(writeCdx(tree))))
+      : openChemDraftPayload(cdxElementToCdxml(tree));
+  const mappedNumbers = (smiles: string) => [...smiles.matchAll(/\[\*:(\d+)\]/g)].map((match) => Number(match[1])).sort();
+  const expectRgroups = (molecule: MoleculeObject, labels: readonly string[]) => {
+    expect(molecule.atoms).toHaveLength(8);
+    expect(molecule.bonds).toHaveLength(8);
+    expect(molecule.rGroups.map((group) => group.label)).toEqual(labels);
+    expect(molecule.rGroups.map((group) => rGroupNumberFromLabel(group.label))).toEqual(labels.map(rGroupNumberFromLabel));
+    for (const group of molecule.rGroups) {
+      expect(group.querySemantics).toBe("display-only");
+      expect(group.attachmentPoints).toEqual([{
+        kind: "atom", objectId: molecule.id,
+        atomId: molecule.atoms.find((atom) => atom.element === group.label)!.id
+      }]);
+    }
+  };
+
+  for (const format of formats) {
+    it(`${format} imports R1/R2 from text and keeps their numbers through engine SMILES and visible round trips`, async () => {
+      const opened = openedTree(rGroupTree(["R1", "R2"]), format);
+      const molecule = moleculeOf(opened);
+      expectRgroups(molecule, ["R1", "R2"]);
+      expect(molecule.rGroups.map((group) => rGroupNumberFromLabel(group.label))).toEqual([1, 2]);
+      expect(mappedNumbers(nativeSingleBondGraphSmiles(molecule.atoms, molecule.bonds))).toEqual([1, 2]);
+      expect(mappedNumbers(await moleculeSmiles(molecule, 0, [], undefined))).toEqual([1, 2]);
+      // The app's export path and the CLI/analysis molfile path both reach this real engine.
+      expect(mappedNumbers(await moleculeSmiles(molecule, 0, [], computeStructureIdentifiers))).toEqual([1, 2]);
+      for (const writer of [moleculeToMolfileV2000, moleculeToMolfileV3000]) {
+        const molfile = writer(molecule, { kekuleBondOrders: new Map() }).contents;
+        expect(mappedNumbers((await computeStructureIdentifiers(molfile))!.smiles!)).toEqual([1, 2]);
+      }
+      const exported = exportDocumentToCdxml(opened.document!, { embedNativePayload: false }).contents;
+      expect(exported).toContain('GenericNickname="R"');
+      expect(exported).toContain('<s>R1</s>');
+      expect(exported).toContain('<s>R2</s>');
+      const reopened = format === "CDX"
+        ? importCdx(exportDocumentToCdx(opened.document!, { embedNativePayload: false }).bytes)
+        : openChemDraftPayload(exported);
+      expectRgroups(moleculeOf(reopened), ["R1", "R2"]);
+      expect(await moleculeSmiles(moleculeOf(reopened), 0, [], computeStructureIdentifiers))
+        .toBe(await moleculeSmiles(molecule, 0, [], computeStructureIdentifiers));
+    });
+
+    it.each([["R", "R'"], ["R'", "R''"]] as const)(`${format} keeps %s / %s unnumbered`, async (left, right) => {
+      const opened = openedTree(rGroupTree([left, right]), format);
+      const molecule = moleculeOf(opened);
+      expectRgroups(molecule, [left, right]);
+      expect(molecule.rGroups.map((group) => rGroupNumberFromLabel(group.label))).toEqual([undefined, undefined]);
+      expect(await moleculeSmiles(molecule, 0, [], computeStructureIdentifiers)).not.toMatch(/\[\*:\d+\]/);
+      const exported = exportDocumentToCdxml(opened.document!, { embedNativePayload: false }).contents;
+      const roundTrip = format === "CDX" ? importCdx(exportDocumentToCdx(opened.document!, { embedNativePayload: false }).bytes)
+        : openChemDraftPayload(exported);
+      expectRgroups(moleculeOf(roundTrip), [left, right]);
+    });
+  }
+});
 
 describe("standard binary nickname nodes and fragment attachment points", () => {
   const u16 = (n: number) => [n & 255, n >>> 8 & 255];

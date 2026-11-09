@@ -60,6 +60,12 @@ Callers resolve orders through layout-engine; this package cannot depend on it. 
 map preserves unmapped aromatic bonds as type 4 and returns one warning per ring system, naming its
 atoms. Every consumer must surface those warnings through its operation's warning path.
 
+Numbered native R-group labels (`R1`–`R99`) write as dummy atoms with their drawn number in the
+atom-map field in both MOL formats. `rGroupNumberFromLabel` reads only that label, never an id or
+attachment anchor; `R`, `R'`, and `R''` remain unnumbered. In `abbreviations: "rgroup"` mode,
+numbered labels keep their numbers and other placeholders receive unused numbers for ranking.
+The native schema is unchanged: the atom's `element` and `RGroupDisplay.label` retain the text.
+
 Unknown bond orders write as CTfile type 8 (any) in both formats, with one warning naming all
 affected bond ids. This preserves the native unknown order on reimport, but readers treat it as a
 query bond with no chemical order. Chemistry and 3D engine callers pass `unknownBondOrders: "refuse"`; this

@@ -36,7 +36,7 @@ import {
   type UnknownCompatibilityObject
 } from "@chemdraft/chem-core";
 import { measureTextRun, planTableLayout } from "@chemdraft/layout-engine";
-import { bondedElementLabelMeaning } from "@chemdraft/template-library";
+import { bondedElementLabelMeaning, isGenericAtomLabel } from "@chemdraft/template-library";
 import { planMoleculeAtomLabels } from "@chemdraft/layout-engine";
 import { sha256Hex, utf8Bytes, utf8String } from "./sha256";
 import {
@@ -1469,6 +1469,7 @@ function exportMoleculeObject(
       ? bondedElementLabelMeaning(atom.element)
       : undefined;
     const heavyHydrogen = atom.element === "D" || atom.element === "T";
+    const rGroupLabel = atom.element.startsWith("R") && isGenericAtomLabel(atom.element);
     const isotope = atom.element === "D" ? 2 : atom.element === "T" ? 3 : atom.isotope;
     const elementNumber = heavyHydrogen ? 1
       : bondedMeaning === undefined ? atomicNumberForElement(atom.element) : undefined;
@@ -1482,7 +1483,9 @@ function exportMoleculeObject(
     if (isotope !== undefined) {
       attributes.push(`Isotope="${isotope}"`);
     }
-    if (elementNumber === undefined) {
+    if (rGroupLabel) {
+      attributes.push('NodeType="GenericNickname"', 'GenericNickname="R"');
+    } else if (elementNumber === undefined) {
       attributes.push(`Element="${escapeXmlAttribute(atom.element)}"`);
       warnings.push(bondedMeaning === undefined
         ? {
@@ -1525,6 +1528,9 @@ function exportMoleculeObject(
     // In particular, zero is a constraint too; omitting it reopens the tautomer choice.
     if (atom.hydrogenCount !== undefined) {
       attributes.push(`NumHydrogens="${atom.hydrogenCount}"`);
+    }
+    if (rGroupLabel) {
+      return `<n ${attributes.join(" ")}><t><s>${escapeXmlText(atom.element)}</s></t></n>`;
     }
     if (isotope !== undefined) {
       const label = (labels?.get(atom.id) ?? []).map((run) => {
@@ -3488,7 +3494,13 @@ function importFragment(
     atoms,
     bonds: normalizedBonds,
     superatoms: [],
-    rGroups: [],
+    rGroups: atoms.filter((atom) => atom.element.startsWith("R") && isGenericAtomLabel(atom.element))
+      .map((atom) => ({
+        label: atom.element,
+        querySemantics: "display-only",
+        attachmentPoints: [{ kind: "atom", objectId, atomId: atom.id }],
+        warnings: []
+      })),
     compatibility: {
       sourceFormat: "cdxml",
       originalId: fragment.attributes.id,
