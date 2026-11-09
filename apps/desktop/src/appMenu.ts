@@ -1,6 +1,6 @@
 import { detectShortcutPlatform, type ShortcutPlatform } from "@chemdraft/shortcut-engine";
 import { REPORT_BUG_COMMAND_ID } from "./problemReports";
-import { convertTextToAtomLabelCommandId } from "./commands";
+import { convertTextToAtomLabelCommandId, nativeStylePresetActions } from "./commands";
 import { formatShortcutLabel } from "./toolsets";
 import { VIBE_CODE_STARTER_COMMAND_ID, vibeCodeStarterCommand } from "./commands/vibeCodeStarter";
 
@@ -88,6 +88,17 @@ export interface AppMenuToolbarToggle {
 export interface PluginAppMenuItem {
   location: string;
   command: AppMenuCommand;
+}
+
+/** Drawing styles use the existing dynamic native-menu bridge on both desktop platforms. */
+export function nativeStylePresetMenuItems(): PluginAppMenuItem[] {
+  return nativeStylePresetActions.map(action => ({
+    location: "structure",
+    command: {
+      kind: "command", id: `menu.${action.id}`, commandId: action.id,
+      label: `Drawing style: ${action.title}`, enabled: true, coreRouted: true
+    }
+  }));
 }
 
 export interface AppMenuContext {
@@ -373,6 +384,7 @@ export function buildAppMenuModel(context: AppMenuContext): AppMenuSection[] {
     item.shortcut = formatMenuShortcut(item.accelerator, platform);
   }
   appendPluginMenuItems(sections, [
+    ...nativeStylePresetMenuItems(),
     ...pluginUpdatesAvailableMenuItem(context.availablePluginUpdateCount ?? 0),
     ...(context.pluginMenuItems ?? [])
   ]);

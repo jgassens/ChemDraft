@@ -19,6 +19,10 @@ Get the latest release from [GitHub Releases](https://github.com/jgassens/ChemDr
 
 Spin 3D may not start on macOS 15 or earlier in version 1.1.0; a fix is planned for 1.1.1.
 
+The Structure menu offers ChemDraft Synthetic, Document style, ACS 1996-style and RSC
+journal-style. Apply a preset to selected molecules/text, or clear the selection to style the
+whole document and its new-object defaults. See [native preset values and sources](packages/chem-core/README.md#native-drawing-presets).
+
 ## Plugins
 
 Plugins add capabilities without putting them all in the core application. See the [plugin authoring guide](docs/plugin-architecture/AUTHORING.md) to build one. Plugins ▸ Vibe Code Your Own Plugin… arrives in 1.1.1 with a guide and starter file for working with a coding assistant.

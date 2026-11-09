@@ -1,4 +1,7 @@
 import { nativeTemplateForToolCommand } from "./ringTemplates";
+import { documentDrawingDefaults } from "@chemdraft/document-workflow-core";
+import { nativeStylePresetPatchForSelection } from "./nativeStylePresetCommand";
+import { nativeStylePresetMenuItems } from "./appMenu";
 import { nativeFragmentSproutTarget, nativeDieneFuseTarget, nativeOxoHotkeyTarget, nativeBranchedHotkeyTarget, type FragmentSproutKind } from "./sproutHotkeys";
 import { applyTableCommand, applyTableFontCommand, applyTableObjectEdit, createTableCommands, createTableInsertAction, parseTableInsertCommandId, resolveActiveTableCell, selectedTable, tableInsertCommandId, tableInspectorSnapshot, type ActiveTableCell, type TableInsertDimensions } from "./tableCommands";
 import { TableCellEditor, TableColumnResizers, type TableCellEditorHandle } from "./tableCellEditor";
@@ -350,6 +353,8 @@ import {
   toggleRingInspectorCommandId,
   drawnStructureSettingsTemplateExportCommandId,
   drawnStructureSettingsTemplateImportCommandId,
+  nativeStylePresetActions,
+  nativeStylePresetIdForCommand,
   moleculeRingEffectColorForCommand,
   moleculeRingEffectDisableForCommand,
   moleculeRingEffectForCommand,
@@ -1714,7 +1719,7 @@ function guardedClipboardPasteDecision(read: ClipboardReadPayload): GuardedClipb
   return { kind: "decided", payload, decision: tableClipboardDecisionBeforePicture(payload) };
 }
 
-const CURRENT_BUILD_STAMP = "11.08.11.15-opus";
+const CURRENT_BUILD_STAMP = "11.08.20.55-codex";
 const VibeCodeGuideForm = lazy(() => import("./dialogs/VibeCodeGuideForm").then(module => ({ default: module.VibeCodeGuideForm })));
 const StructureTemplatePicker = lazy(() => import("./dialogs/StructureTemplatePicker").then(module => ({ default: module.StructureTemplatePicker })));
 /** Starts in the background for the document webview under the existing probe gate. */
@@ -2526,6 +2531,12 @@ export function MainWindow({
   const finalizedAtomLabelEditRef = useRef<AtomLabelEditState | undefined>(undefined);
   const hoverLabelHandoffRef = useRef<{ result?: ReturnType<typeof finishedAtomLabelDraft> } | undefined>(undefined);
   const [textStyleDefaults, setTextStyleDefaults] = useState<NativeTextStyle>(DefaultNativeTextStyle);
+  useEffect(() => {
+    // Persisted insertion defaults follow preset application, file reopen and undo/redo.
+    setTextStyleDefaults({ ...DefaultNativeTextStyle,
+      ...(document.styles.drawing !== undefined || document.styles.text !== undefined
+        ? documentDrawingDefaults(document).textStyle : {}) });
+  }, [document.styles.drawing, document.styles.text]);
   const [activeTableCellState, setActiveTableCell] = useState<ActiveTableCell>();
   const [tableCellEdit, setTableCellEdit] = useState<ActiveTableText>();
   const tableCellEditRef = useRef(tableCellEdit); tableCellEditRef.current = tableCellEdit;
@@ -10900,6 +10911,20 @@ export function MainWindow({
       }
     }));
 
+    nativeStylePresetActions.forEach(action => register(action, () => {
+      const presetId = nativeStylePresetIdForCommand(action.id)!;
+      const changed = commitDocumentChange(current => {
+        const patch = nativeStylePresetPatchForSelection(current, presetId,
+          selectedNativeMoleculePartsRef.current.map(part => part.objectId));
+        // Apply the flat leaves together: the external batch envelope has a 256-operation limit,
+        // while a native document-wide edit may contain more objects. Both paths are atomic.
+        return applyPatches(current, patch.patches);
+      }, action.title);
+      if (changed) setSelectedNativeMoleculeParts([]);
+      setActiveEditorObjectId(undefined);
+      setStatus(changed ? `Applied ${action.title}` : `${action.title} already matches`);
+    }));
+
     templateInsertActions.forEach(action => register(action, () => {
       const tabId = templateCommandTargetRef.current ?? activeDocumentTabIdRef.current;
       templateCommandTargetRef.current = undefined;
@@ -11862,6 +11887,7 @@ export function MainWindow({
   // One complete menu snapshot per result change. The existing native installer attaches menus only
   // to the document window on Windows and deduplicates unchanged snapshots on both platforms.
   const nativePluginMenuItems = useMemo(() => [
+    ...nativeStylePresetMenuItems(),
     ...pluginUpdatesAvailableMenuItem(availablePluginUpdateCount),
     ...pluginRuntime.pluginMenuItems
   ], [availablePluginUpdateCount, pluginRuntime.pluginMenuItems]);
