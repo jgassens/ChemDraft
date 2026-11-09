@@ -1,5 +1,5 @@
 /**
- * Interactive analysis scheduling (PLANS.md §5).
+ * Interactive analysis scheduling (docs/plans/PLANS.md §5).
  *
  * "Cancellation and supersession when the structure edits mid-calculation. Debouncing for interactive
  * analysis. Memory and molecule-size limits."

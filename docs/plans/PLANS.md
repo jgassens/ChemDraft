@@ -1,7 +1,7 @@
 # ChemDraft Plans
 
 This file describes **the slice currently in flight** — nothing else. Completed slices move to
-`docs/shipped/README.md` when they land, so that an agent told to "follow PLANS.md" gets the work
+`docs/shipped/README.md` when they land, so that an agent told to "follow docs/plans/PLANS.md" gets the work
 in progress rather than a changelog.
 
 ---
@@ -109,6 +109,6 @@ Work scoped to a branch other than `main` carries its own plan; this file does n
 
 ---
 
-Repo-wide scope lives in `PLAN.md`. One further scoped plan applies inside its area:
-`PLAN-spin3d-forcefields.md` (Phase 3 blocked on owner decisions). The selection-architecture plan
+Repo-wide scope lives in `docs/plans/PLAN.md`. One further scoped plan applies inside its area:
+`docs/plans/spin3d-forcefields.md` (Phase 3 blocked on owner decisions). The selection-architecture plan
 finished and moved to `docs/shipped/selection-policy-refactor.md`.

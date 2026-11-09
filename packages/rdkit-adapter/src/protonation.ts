@@ -1,5 +1,5 @@
 /**
- * Protonation-state enumeration: microscopic pKa in, macroscopic pKa out (PLANS.md §8).
+ * Protonation-state enumeration: microscopic pKa in, macroscopic pKa out (docs/plans/PLANS.md §8).
  *
  * **The gap this closes.** Every value the method produced until now was MICROSCOPIC — one proton, one
  * atom, on one drawn structure. Tables are macroscopic. Glycine's "9.6" is not the pKa of any single
