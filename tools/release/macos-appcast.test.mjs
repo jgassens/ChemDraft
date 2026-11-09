@@ -36,7 +36,15 @@ test("arm64 feed retains every published signed item byte-for-byte and lists onl
     "0.3.9": "496f84654de6a1abab02a39b8caa23a5b6ea4e121315e86b01499a6449331116"
   };
   for (const [version, hash] of Object.entries(published)) assert.equal(sha256(items.find((item) => item.version === version)?.raw ?? "missing"), hash);
-  const merged = mergeAppcast(xml, feed("arm64"), "arm64", { version: "1.1.1", dmgs: [names.arm64] });
+  const majorVersions = items.map(({ version }) => {
+    assert.match(version, /^\d+\.\d+\.\d+$/);
+    return BigInt(version.split(".")[0]);
+  });
+  const nextMajor = majorVersions.reduce((highest, major) => major > highest ? major : highest, 0n) + 1n;
+  const version = `${nextMajor}.0.0`;
+  const dmg = `ChemDraft_${version}_aarch64.dmg`;
+  const generated = feed("arm64", { version }).replaceAll(names.arm64, dmg);
+  const merged = mergeAppcast(xml, generated, "arm64", { version, dmgs: [dmg] });
   const updated = verifyAppcast(merged, "arm64");
   assert.equal(updated.length, items.length + 1);
   assert.deepEqual(updated.slice(1), items);
