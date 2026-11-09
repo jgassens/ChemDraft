@@ -1,6 +1,8 @@
 // Portions adapted from Octet Draw (https://github.com/SamChemMan/Octet-Draw), Copyright 2026 Sam Ellis, licensed under the Apache License, Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0). Modified for ChemDraft: adapted the binary codec to a local ordered element tree, warnings, and bounded ChemDraft import/export.
 
 import { CHARSETS, OBJECTS, PROPS } from "./cdxTags";
+import { atomicNumberForElementSymbol } from "@chemdraft/chem-core";
+import { bondedElementLabelMeaning } from "@chemdraft/template-library";
 import { sha256Hex } from "./sha256";
 export interface CdxElement {
   name: string;
@@ -106,8 +108,9 @@ function validProperty(p: Prop | undefined, b: Uint8Array, little: boolean, attr
   }
 }
 
-// CDXML permits symbolic IDs; CDX uses 32-bit object IDs and references to those same IDs.
-function numericObjectIds(root: CdxElement): CdxElement {
+// CDXML permits symbolic IDs and this package's textual Element labels. CDX needs numeric IDs
+// and an atomic number in Element; a label belongs on a nickname node, with its existing bonds.
+function prepareCdxTree(root: CdxElement, warn: (warning: CdxWarning) => void): CdxElement {
   const ids = new Map<string, string>(), used = new Set<number>();
   let count = 0;
   const walk = (x: CdxElement, visit: (x: CdxElement) => void, depth = 0) => {
@@ -133,12 +136,45 @@ function numericObjectIds(root: CdxElement): CdxElement {
     }
   });
   const references = new Set(["B", "E", "object", "SupersededBy", "BondCircularOrdering", "ConnectionOrder"]);
-  const copy = (x: CdxElement): CdxElement => ({ ...x, attrs: Object.fromEntries(Object.entries(x.attrs).map(([key, value]) => {
-    const kind = byName.get(key)?.kind;
-    const isReference = references.has(key) || kind === "ids" || kind === "attachments";
-    return [key, key === "id" && objectTag.has(x.name) ? ids.get(value) ?? value
-      : isReference ? value.split(/\s+/).map((id) => ids.get(id) ?? id).join(" ") : value];
-  })), kids: x.kids.map(copy) });
+  const copy = (x: CdxElement): CdxElement => {
+    const attrs = Object.fromEntries(Object.entries(x.attrs).map(([key, value]) => {
+      const kind = byName.get(key)?.kind;
+      const isReference = references.has(key) || kind === "ids" || kind === "attachments";
+      return [key, key === "id" && objectTag.has(x.name) ? ids.get(value) ?? value
+        : isReference ? value.split(/\s+/).map((id) => ids.get(id) ?? id).join(" ") : value];
+    }));
+    const kids = x.kids.map(copy);
+    const label = x.name === "n" ? attrs.Element?.trim() : undefined;
+    // Keep invalid numeric attributes on the codec's existing warning path rather than turning
+    // an invalid atomic number into a chemically meaningful nickname.
+    if (label && !/^[+\-\d.]/.test(label)) {
+      const number = atomicNumberForElementSymbol(label);
+      if (number !== undefined && bondedElementLabelMeaning(label) === undefined) {
+        attrs.Element = String(number);
+      } else if (label === "D" || label === "T") {
+        attrs.Element = "1";
+        attrs.Isotope = label === "D" ? "2" : "3";
+      } else {
+        delete attrs.Element;
+        const hasExpansion = kids.some((kid) => kid.name === "fragment");
+        attrs.NodeType = hasExpansion ? "Fragment" : "GenericNickname";
+        if (!hasExpansion) attrs.GenericNickname = label;
+        if (!kids.some((kid) => kid.name === "t")) {
+          if (++count > MAX_OBJECTS) throw new Error(`CDX export failed: object count exceeds ${MAX_OBJECTS}`);
+          while (used.has(next)) next++;
+          const id = String(next);
+          used.add(next++);
+          kids.push({ name: "t", attrs: { id }, text: "", kids: [{ name: "s", attrs: {}, kids: [], text: label }] });
+        }
+        if (!hasExpansion) warn({
+          code: "cdx.atom_label_unexpanded",
+          message: `CDX export: label "${label}" on node ${attrs.id ?? "0"} was preserved as a generic nickname with its existing bonds; no expanded atom graph is encoded for this label.`,
+          sourceObjectId: attrs.id
+        });
+      }
+    }
+    return { ...x, attrs, kids };
+  };
   return copy(root);
 }
 
@@ -513,8 +549,8 @@ const reals = (s: string) => s.trim().split(/\s+/).map(real);
 const ints = (s: string) => (s.trim() ? s.trim().split(/\s+/) : []).map((v) => (/^-?\d{1,10}$/.test(v) && Math.abs(Number(v)) < 2 ** 32 ? Number(v) : undefined));
 const fixed = (v: number) => Math.round(v * 65536);
 export function writeCdx(root: CdxElement, warnings: CdxWarning[] = []): Uint8Array {
-  root = numericObjectIds(root);
   const emitWarning = warningSink(warnings);
+  root = prepareCdxTree(root, emitWarning);
   const warn = (x: CdxElement, detail: string) => emitWarning({ code: "cdx.unencodable_data", message: "CDX export: " + detail + " in " + x.name + " object " + (x.attrs.id ?? "0") + " was omitted", sourceObjectId: x.attrs.id });
   const encodingLoss = (x: CdxElement) => (detail: string) => emitWarning({ code: "cdx.text_encoding_loss", message: `CDX export: ${detail} in ${x.name} object ${x.attrs.id ?? "0"}`, sourceObjectId: x.attrs.id });
   const fonts = new Map<number, number>();

@@ -13,6 +13,16 @@ clipboard data; decoding binary CDX as text first corrupts it. Malformed files r
 `exportDocumentToCdxml` for the visible document. Unsupported CDXML attributes, elements or values
 produce compatibility warnings. Export defaults to omitting native metadata.
 
+Native multi-atom labels are encoded as standard `GenericNickname` nodes with label text on the
+existing atom; its bond endpoints stay unchanged. Import also accepts unexpanded nickname, formula,
+fragment and monomer text nodes, including a `GenericNickname` property without a text object.
+`cdx.atom_label_unexpanded` names each label exported without an expanded atom graph: the text and
+drawn attachments are preserved, but the file does not supply an explicit chemical expansion to
+other readers. A nameless unexpanded node imports as an unknown atom with a warning, never carbon.
+Synthetic coverage includes chain formulas, a ring NMe, a repeated-formula linker, a metal fragment,
+peptide labels, and nested fragment connection points; it is not a claim of general peptide or
+multi-attachment fragment expansion.
+
 Save As uses `{ embedNativePayload: true }`. User-defined property `0x4344` contains a namespaced
 `org.chemdraft/cdx-envelope.v1` envelope with the existing CDXML payload tags. Its visible hash covers
 the actual binary-normalized CDXML, and a second hash covers every raw file byte except the envelope

@@ -1952,6 +1952,19 @@ function expandCdxmlAbbreviationNodes(
     const nodeId = atomElement.attributes.id ?? "";
     if (!nested) {
       expandedAtoms.push(atomElement);
+      // A standard nickname/formula node need not carry an expansion. Its text belongs to this
+      // atom, not to another carbon or a standalone text object. Never infer an element from the
+      // absent Element attribute (whose default would otherwise be carbon).
+      if (["Nickname", "Fragment", "Formula", "GenericNickname", "Monomer", "4", "5", "6", "7", "14"].includes(atomElement.attributes.NodeType)) {
+        const label = cdxmlAtomLabelText(atomElement);
+        literalLabelByCdxmlId.set(nodeId, label ?? "*");
+        warnings.push({
+          code: "cdxml.abbreviation_not_expanded",
+          message: label
+            ? `Kept the abbreviation "${label}" as a literal label with its bonds: it carries no expanded atom graph.`
+            : `Kept abbreviation node ${nodeId} as an unknown atom (*): it carries neither label text nor an expanded atom graph.`
+        });
+      }
       continue;
     }
 
@@ -2032,11 +2045,8 @@ function expandCdxmlAbbreviationNodes(
 /** The text ChemDraw draws in place of a node: "SO3", "OH", "Ph". */
 function cdxmlAtomLabelText(atomElement: XmlElementView): string | undefined {
   const labelElement = childElements(atomElement, "t")[0];
-  if (!labelElement) {
-    return undefined;
-  }
-  const text = textContent(labelElement.children).trim();
-  return text.length > 0 ? text : undefined;
+  const text = labelElement ? textContent(labelElement.children).trim() : "";
+  return text || atomElement.attributes.GenericNickname?.trim() || undefined;
 }
 
 function importFragment(
