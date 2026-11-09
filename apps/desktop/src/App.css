@@ -1,3 +1,11 @@
+@font-face {
+  font-family: 'Patrick Hand';
+  src: url('./assets/fonts/PatrickHand-Regular.ttf') format('truetype');
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+}
+
 :root {
   /* Canonical desktop design tokens for restrained technical minimalism. */
   --cd-bg-app: #d8dee3;

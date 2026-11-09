@@ -53,6 +53,15 @@ the AFM files are prominently noted in the modified file(s); and that this
 paragraph is not modified. Adobe Systems has no responsibility or obligation
 to support the use of the AFM files.
 
+Patrick Hand Regular 1.003 (Sketch handwriting for canvas, SVG and PDF)
+  SIL Open Font License 1.1; no Reserved Font Name.
+  Copyright (c) 2010-2012 Patrick Wagesreiter (mail@patrickwagesreiter.at)
+  Unmodified owner-provided TrueType font, bundled locally. SVG includes the
+  original font; PDF embeds used outlines. No runtime network font access.
+  Provenance and SHA-256: packages/export-engine/src/fonts/README.md
+  Full licence texts: apps/desktop/src/assets/fonts/OFL.txt and
+  packages/export-engine/src/fonts/LICENSE_PATRICK_HAND.txt
+
 Noto Sans 2.015 (primary regular, bold, italic, bold-italic PDF fonts)
   SIL Open Font License 1.1.
   Copyright 2022 The Noto Project Authors (https://github.com/notofonts/latin-greek-cyrillic)

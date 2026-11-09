@@ -1,3 +1,5 @@
+import { VisualEffectSchema, type VisualEffect } from "./schemas";
+
 export type NativeBondLineCap = "butt" | "round" | "square";
 export type NativeBondSpacingMode = "absolute" | "percent";
 export type NativeTextAlignment = "left" | "center" | "right" | "justify";
@@ -8,6 +10,7 @@ export type NativeAtomLabelPlacement = "automatic" | "above" | "below";
 
 export interface NativeDrawingStyle {
   stylePresetId: string;
+  visualEffects?: readonly VisualEffect[];
   chainAngleDegrees: number;
   bondLengthPx: number;
   bondStrokeWidthPx: number;
@@ -200,9 +203,22 @@ export const RscJournalStylePreset = {
   }
 } as const satisfies ChemDraftStylePreset;
 
+/** Original pen drawing: the established art effect, with locally bundled handwriting. */
+export const SketchStylePreset = {
+  id: "chemdraft.sketch",
+  name: "Sketch",
+  source: "core",
+  drawing: {
+    ...ChemDraftSyntheticStylePreset.drawing,
+    stylePresetId: "chemdraft.sketch",
+    atomLabelFontFamily: "'Patrick Hand', cursive",
+    visualEffects: [{ kind: "sketch", roughness: 1.25, bowing: 1, seed: 7 }]
+  }
+} as const satisfies ChemDraftStylePreset;
+
 /** Native presets shared by drawing workflows and command/menu surfaces. */
 export const NativeStylePresets = [
-  ChemDraftSyntheticStylePreset, DocumentStylePreset, Acs1996StylePreset, RscJournalStylePreset
+  ChemDraftSyntheticStylePreset, DocumentStylePreset, Acs1996StylePreset, RscJournalStylePreset, SketchStylePreset
 ] as const;
 export type NativeStylePresetId = typeof NativeStylePresets[number]["id"];
 
@@ -246,8 +262,10 @@ export function stylePresetToObjectStyle(
 
 export function nativeDrawingStyleFromObjectStyle(style: Record<string, unknown> = {}): NativeDrawingStyle {
   const fallback = DefaultNativeDrawingStyle;
+  const effects = VisualEffectSchema.array().safeParse(style.visualEffects);
 
   return {
+    ...(effects.success && effects.data.length ? { visualEffects: effects.data } : {}),
     stylePresetId: stringValue(style.stylePresetId, fallback.stylePresetId),
     chainAngleDegrees: positiveNumber(style.chainAngleDegrees, fallback.chainAngleDegrees),
     bondLengthPx: positiveNumber(style.bondLengthPx, fallback.bondLengthPx),

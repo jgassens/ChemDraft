@@ -11,6 +11,7 @@ import type { BinaryExportResult, ExportWarning } from "./results";
 import { exportDocumentToSvg } from "./svg";
 import { preparePdfFonts } from "./pdfFonts";
 import { preparePdfHaloPaint } from "./pdfHaloPaint";
+import { patrickHandFontFaceCss } from "./handwritingFont";
 
 const svg2pdf = resolveSvg2pdf(svg2pdfModule);
 const SVG_MARKUP_LIMIT_BYTES = 256 * 1024 * 1024;
@@ -228,7 +229,16 @@ function parseSvgElement(svg: string, domParser: DOMParser | undefined, pictures
           assertLocalSvgCss(attribute.value);
         }
       }
-      if (element.localName === "style") assertLocalSvgCss(element.textContent ?? "");
+      if (element.localName === "style") {
+        const css = element.textContent ?? "";
+        assertLocalSvgCss(css);
+        // preparePdfFonts registers this face in jsPDF and browser measurement APIs.
+        // svg2pdf need not parse its @font-face (nor access CSSStyleSheet in headless DOMs).
+        if (css.includes(patrickHandFontFaceCss)) {
+          element.textContent = css.split(patrickHandFontFaceCss).join("");
+          if (!element.textContent.trim()) element.remove();
+        }
+      }
     }
     for (let child = node.lastChild; child; child = child.previousSibling) pending.push({ node: child, depth: depth + 1 });
   }
@@ -251,7 +261,9 @@ function isMappedSvgPicture(element: Element, href: string, svgRoot: Element, pi
 }
 
 function assertLocalSvgCss(value: string): void {
-  const decoded = value.replace(/\\(?:\r\n|[\n\r\f])|\\([0-9a-f]{1,6})[ \t\r\n\f]?|\\([\s\S])/gi,
+  // Recognize only the exact bundled face, never arbitrary data URLs or external fonts.
+  const localCss = value.split(patrickHandFontFaceCss).join("");
+  const decoded = localCss.replace(/\\(?:\r\n|[\n\r\f])|\\([0-9a-f]{1,6})[ \t\r\n\f]?|\\([\s\S])/gi,
     (_match, hex: string | undefined, character: string | undefined) => {
       if (!hex) return character ?? "";
       const code = Number.parseInt(hex, 16);

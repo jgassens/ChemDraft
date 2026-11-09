@@ -74,6 +74,13 @@ every page, updates insertion defaults, and selects changed objects on the activ
 is page-local). Other object kinds, including reactions and mechanism arrows, retain their data.
 Rich-text spans keep their text and scripts while receiving the preset font family, size and weight.
 
+The presets are ChemDraft Synthetic (`chemdraft.synthetic`, unchanged), Document style,
+ACS 1996-style, RSC journal-style and Sketch (`chemdraft.sketch`). Sketch retains Synthetic's
+dimensions, adds the existing art sketch effect at roughness 1.25, bowing 1 and seed 7,
+and uses locally bundled Patrick Hand Regular for labels and text. Applying a plain preset
+removes the sketch effect and restores that preset's font, preserving other authored effects.
+Sketch uses existing style metadata; no document-schema field or migration was added.
+
 `applyDocumentStyle` uses each first-page molecule’s median bond length to scale the whole page
 (objects, atoms, arrows/control points, graphics, captions and page size) to 22 native units per
 bond. If molecule medians differ by more than 2%, it uses their median and emits a warning naming

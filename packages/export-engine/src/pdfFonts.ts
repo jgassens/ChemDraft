@@ -1,8 +1,9 @@
 import type { jsPDF } from "jspdf";
 import { fontCoverage } from "./fonts/coverage";
+import { isPatrickHandFont } from "@chemdraft/layout-engine";
 
 type Face = "normal" | "bold" | "italic" | "bolditalic";
-type Family = "ChemDraftNotoSans" | "ChemDraftDejaVuSans";
+type Family = "ChemDraftNotoSans" | "ChemDraftDejaVuSans" | "ChemDraftPatrickHand";
 
 // jsPDF 4.2.1's arabic parser recognizes these ranges and substitutes shapes /
 // ligatures before building ToUnicode. Disabling it would render unjoined letters.
@@ -15,9 +16,15 @@ const rtlText = /[\u0590-\u05ff\u0700-\u074f\u0780-\u089f\ufb1d-\ufb4f\u200f]/u;
 // to bytes in the standard fonts' declared WinAnsiEncoding (verified in PDF streams).
 const needsEmbeddedFont = /[^\u0000-\u00ffŒœŠšŸŽžƒˆ˜–—‘’‚“”„†‡•…‰‹›€™]/u;
 
-// Keep the losslessly encoded font files in separate chunks. Neither importing the
-// export engine nor exporting a standard-font PDF loads font data (browser or Node).
+// Noto/DejaVu payloads stay in lazy, per-face chunks. Patrick Hand is also available
+// to the synchronous SVG writer; PDF registers it only for handwriting runs.
 const loadFace = {
+  ChemDraftPatrickHand: {
+    normal: () => import("./fonts/PatrickHand-Regular"),
+    bold: () => import("./fonts/PatrickHand-Regular"),
+    italic: () => import("./fonts/PatrickHand-Regular"),
+    bolditalic: () => import("./fonts/PatrickHand-Regular")
+  },
   ChemDraftNotoSans: {
     normal: () => import("./fonts/NotoSans-Regular"),
     bold: () => import("./fonts/NotoSans-Bold"),
@@ -51,13 +58,16 @@ export async function preparePdfFonts(svg: Element, pdf: jsPDF): Promise<() => v
     if (content.includes("\\s+")) {
       throw new Error("Cannot export PDF: U+005C in the literal sequence \\s+ is not supported; jsPDF text processing cannot preserve original Unicode.");
     }
-    if (!needsEmbeddedFont.test(content)) continue;
+    const hasHandwriting = [text, ...text.querySelectorAll("tspan")].some(element =>
+      isPatrickHandFont(inheritedAttribute(element, "font-family") ?? ""));
+    if (!needsEmbeddedFont.test(content) && !hasHandwriting) continue;
 
     for (const element of [text, ...text.querySelectorAll("tspan")]) {
       const weight = inheritedAttribute(element, "font-weight") ?? "400";
       const style = inheritedAttribute(element, "font-style") ?? "normal";
       const bold = weight === "bold" || Number(weight) >= 600;
       const italic = style === "italic" || style === "oblique";
+      const handwriting = isPatrickHandFont(inheritedAttribute(element, "font-family") ?? "");
       const face: Face = bold ? (italic ? "bolditalic" : "bold") : (italic ? "italic" : "normal");
       // Only direct text belongs to this face; descendants can have another style.
       let firstSegment = true;
@@ -67,8 +77,9 @@ export async function preparePdfFonts(svg: Element, pdf: jsPDF): Promise<() => v
         const segments: { family: Family; text: string }[] = [];
         for (const character of content) {
           const code = character.codePointAt(0)!;
-          const family: Family = covers(fontCoverage.ChemDraftNotoSans[face], code)
-            ? "ChemDraftNotoSans" : "ChemDraftDejaVuSans";
+          const family: Family = handwriting && covers(fontCoverage.ChemDraftPatrickHand.normal, code)
+            ? "ChemDraftPatrickHand"
+            : covers(fontCoverage.ChemDraftNotoSans[face], code) ? "ChemDraftNotoSans" : "ChemDraftDejaVuSans";
           if (!covers(fontCoverage[family][face], code)) {
             throw new Error(`Cannot export PDF: embedded font ${face} does not support U+${code.toString(16).toUpperCase().padStart(4, "0")}.`);
           }

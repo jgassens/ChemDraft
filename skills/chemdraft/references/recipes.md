@@ -621,7 +621,7 @@ const build = read("penicillin-g-build.jsonl");
 const doc = read("penicillin-g.json");
 const page = doc.pages[0];
 const mol = page.objects.find((o) => o.type === "molecule");
-const ink = "#1f2a44", red = "#c0392b", hand = "Bradley Hand, Segoe Print, Comic Sans MS, cursive";
+const ink = "#1f2a44", red = "#c0392b", hand = "'Patrick Hand', cursive";
 // Uneven, tapering stroke weight gives the hand-drawn look; the seed
 // fixes the wobble so re-renders match.
 mol.style.visualEffects = [{ kind: "sketch", roughness: 1.25, bowing: 1, seed: 7, color: ink }];

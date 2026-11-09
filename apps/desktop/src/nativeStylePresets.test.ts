@@ -11,6 +11,10 @@ import { nativeStylePresetPatchForSelection } from "./nativeStylePresetCommand";
 describe("native style preset command and menu wiring", () => {
   it("registers one value-encoded command per preset without shortcuts", () => {
     const commands = allShellCommands(createEmptyDocument());
+    expect(commands.find(command => command.id === nativeStylePresetCommandId("chemdraft.synthetic"))?.title)
+      .toBe("ChemDraft Synthetic");
+    expect(nativeStylePresetMenuItems().find(item => item.command.commandId === nativeStylePresetCommandId("chemdraft.synthetic"))?.command.label)
+      .toBe("Drawing style: ChemDraft Synthetic");
     for (const preset of NativeStylePresets) {
       const id = nativeStylePresetCommandId(preset.id);
       expect(commands.filter(command => command.id === id)).toEqual([expect.objectContaining({ title: preset.name })]);
@@ -45,6 +49,8 @@ describe("native style preset command and menu wiring", () => {
     const structure = menu.find(section => section.id === "structure")!;
     const items = flattenAppMenuCommands([structure]).filter(command => nativeStylePresetIdForCommand(command.commandId));
     expect(items).toHaveLength(NativeStylePresets.length);
+    expect(items.find(item => item.commandId === nativeStylePresetCommandId("chemdraft.sketch"))?.label)
+      .toBe("Drawing style: Sketch");
     expect(items.map(command => command.commandId)).toEqual(nativeStylePresetActions.map(action => action.id));
     expect(items.every(command => command.enabled && command.coreRouted && !command.accelerator)).toBe(true);
     expect(pluginItemsForNativeMenu(nativeStylePresetMenuItems())).toEqual(items.map(command => ({

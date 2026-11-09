@@ -7,10 +7,12 @@ import {
   DocumentStyleScale,
   documentStylePointBounds,
   planPageSvgRender,
+  isPatrickHandFont,
   type PageSvgAttributeValue,
   type PageSvgFragment
 } from "@chemdraft/layout-engine";
 import type { ExportWarning } from "./results";
+import { patrickHandFontFaceCss } from "./handwritingFont";
 
 export interface SvgExportOptions {
   pageIndex?: number;
@@ -112,6 +114,13 @@ export function exportDocumentToSvg(document: ChemDraftDocument, options: SvgExp
       preserveAspectRatio: "none", href: `data:${image.data.image.mimeType};base64,${image.data.image.dataBase64}`
     }, children: [] }] }, 2);
   }).join("\n");
+  // Only rendered text on this page needs a font. Preserve all other SVG bytes.
+  const needsHandwriting = (fragments: readonly PageSvgFragment[]): boolean => fragments.some(fragment =>
+    fragment.kind === "element" && (isPatrickHandFont(String(fragment.attrs["font-family"] ?? ""))
+      || needsHandwriting(fragment.children)));
+  const fontMarkup = needsHandwriting(plan.fragments)
+    ? `  <defs><style>${patrickHandFontFaceCss}</style></defs>`
+    : "";
   const warnings = plan.warnings.filter((warning) => !(warning.code === "export.svg.graphic_fallback" && warning.objectId && images.has(warning.objectId))).map<ExportWarning>((warning) => ({
     code: warning.code,
     message: warning.message,
@@ -138,6 +147,7 @@ export function exportDocumentToSvg(document: ChemDraftDocument, options: SvgExp
     format: "svg",
     contents: [
       `<svg xmlns="http://www.w3.org/2000/svg" width="${outputWidth}" height="${outputHeight}" viewBox="0 0 ${page.width} ${page.height}" role="img" aria-label="${escapeXml(document.title)}">`,
+      fontMarkup,
       backgroundMarkup,
       pageGuideMarkup,
       body,

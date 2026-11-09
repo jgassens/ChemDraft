@@ -33,6 +33,8 @@ describe.each(["macos", "windows"] as const)("MainWindow native menu payload (%s
     for (const count of [0, 2]) {
       const payload = buildMainWindowNativeMenuItems(contributions, count);
       const structure = payload.filter(item => item.location === "structure");
+      expect(structure.find(item => item.id === "style.preset.apply.chemdraft.sketch")?.label).toBe("Drawing style: Sketch");
+      expect(structure.find(item => item.id === "style.preset.apply.chemdraft.synthetic")?.label).toBe("Drawing style: ChemDraft Synthetic");
       expect(structure).toEqual([
         ...nativeStylePresetActions.map(action => ({
           id: action.id, label: `Drawing style: ${action.title}`, enabled: true,

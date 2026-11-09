@@ -1,5 +1,29 @@
 # PDF font assets
 
+Patrick Hand Regular **1.003** supplies the native **Sketch** preset's handwriting.
+The owner supplied the unmodified `PatrickHand-Regular.ttf` and accompanying `OFL.txt`
+from the local `a-drawing/sketch-font/` staging directory; nothing was downloaded for
+this change. Copyright (c) 2010-2012 Patrick Wagesreiter (mail@patrickwagesreiter.at).
+SIL OFL 1.1, with **no Reserved Font Name**. Full terms are preserved verbatim in
+[LICENSE_PATRICK_HAND.txt](LICENSE_PATRICK_HAND.txt) and beside the app's TTF in
+`apps/desktop/src/assets/fonts/OFL.txt`. Documents do not acquire the font licence.
+
+The 214,772-byte TTF's SHA-256 is
+`0f173b3e6cb6d1af25babf7f0057c5ac4ee11f9992b0469bb817e967ef4ad0fc`.
+Canvas `@font-face` uses that bundled same-origin asset, with `'Patrick Hand', cursive`.
+The desktop CSP is currently `null` (no `font-src` restriction); the CSS references only
+the local asset. SVG embeds these exact bytes in a data-URI `@font-face` only on pages
+that render Patrick Hand text. The synchronous SVG writer imports its base64 module;
+the existing Noto/DejaVu payloads remain lazy. PDF registers Patrick Hand even for
+ASCII, subsets its outlines and preserves selectable text; missing characters follow
+the existing Noto/DejaVu coverage fallback. Patrick Hand has only a regular face.
+Shared label/text advances come from its `hmtx`/`cmap`, without host font measurement.
+
+Regenerate its base64, coverage and layout advances from the bundled TTF with
+`node packages/export-engine/src/fonts/generatePatrickHand.mjs`. The generator refuses
+an unexpected checksum. Patrick Hand uses the existing `visualEffects` and font-family
+metadata: **no new document-schema field, feature-table entry or migration**.
+
 Noto Sans 2.015 is the primary embedded font, with real regular, bold, italic
 and bold-italic faces. The unmodified TTFs come from the local LibreOffice bundle:
 `/Users/jeremiahgassensmith/.cache/codex-runtimes/codex-primary-runtime/dependencies/native/libreoffice-headless/libreoffice/LibreOfficeDev.app/Contents/Resources/fonts/truetype/`.

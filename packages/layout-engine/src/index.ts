@@ -6,7 +6,7 @@ export { DocumentStyleScale, documentStylePointBounds, FigureStyles, type Figure
 export {
   planTableLayout, planTableObjectSvg, tableCellElementId, tableVisualBoundsForArrangement, type TableLayout
 } from "./table";
-export { textAdvanceEm, measureTextRun, measureNativeTextSpanLineWidth } from "./textMetrics";
+export { textAdvanceEm, measureTextRun, measureNativeTextSpanLineWidth, isPatrickHandFont } from "./textMetrics";
 export { medianLength, representativeMoleculeBondLength, scalePageGeometry } from "./pageScale";
 export {
   layoutAtomAnnotationLabels, estimateAnnotationTextWidth, annotationLabelBoxesOverlap, annotationBondLines,
@@ -87,7 +87,7 @@ import {
   type NativeElementSymbol
 } from "./valence";
 import { planTableObjectSvg } from "./table";
-import { textAdvanceEm } from "./textMetrics";
+import { textAdvanceEm, isPatrickHandFont, patrickHandTextAdvanceEm } from "./textMetrics";
 import { formatNumber } from "./formatNumber";
 import { nativeTextScriptFontScale, nativeTextSubscriptOffsetEm, nativeTextSuperscriptOffsetEm } from "./textMetrics";
 import { nativeGroupLabelDisplay, type AtomLabelAnchor } from "./labelGrammar";
@@ -6267,6 +6267,7 @@ function splitAtomLabelCharge(label: string): { body: string; charge?: string } 
 }
 
 function atomLabelRunWidth(run: AtomLabelRun, drawingStyle: NativeDrawingStyle): number {
+  if (isPatrickHandFont(drawingStyle.atomLabelFontFamily)) return atomLabelRunAdvance(run, drawingStyle);
   const fontSize = atomLabelRunFontSize(run.script, drawingStyle) ?? drawingStyle.atomLabelFontSizePx;
   const widthFactor = run.script === "normal" ? 0.62 : 0.5;
   const weightFactor = drawingStyle.atomLabelFontWeight >= 600 ? 1.08 : 1;
@@ -6289,6 +6290,7 @@ export const sansSerifAdvanceEm: Readonly<Record<string, number>> = Object.fromE
 /** A run's width from `sansSerifAdvanceEm`, at its script's size and the label's weight and slant. */
 export function atomLabelRunAdvance(run: AtomLabelRun, drawingStyle: NativeDrawingStyle): number {
   const fontSize = atomLabelRunFontSize(run.script, drawingStyle) ?? drawingStyle.atomLabelFontSizePx;
+  if (isPatrickHandFont(drawingStyle.atomLabelFontFamily)) return patrickHandTextAdvanceEm(run.text) * fontSize;
   const weightFactor = drawingStyle.atomLabelFontWeight >= 600 ? 1.08 : 1;
   const italicFactor = drawingStyle.atomLabelFontStyle === "italic" ? 1.06 : 1;
   const em = [...run.text].reduce((sum, character) => sum + (sansSerifAdvanceEm[character] ?? 0.62), 0);
