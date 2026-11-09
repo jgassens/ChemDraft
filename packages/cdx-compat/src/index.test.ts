@@ -68,6 +68,40 @@ describe("files that are not CDXML", () => {
   });
 });
 
+describe("CDXML character references", () => {
+  it.each([
+    ["&nbsp; &copy; &NewLine; &Tab;", "&nbsp; &copy; &NewLine; &Tab;"],
+    ["A&#10;B&#13;C&#9;D&#xA;E&#xD;F&#x9;G&#x1F9EA;", "A\nB\rC\tD\nE\rF\tG🧪"],
+    ["&amp;#10; &amp;#xD; &amp;copy;", "&#10; &#xD; &copy;"],
+    ["&amp; &lt; &gt; &quot; &apos;", "& < > \" '"]
+  ])("decodes only XML and numeric references once in text and attributes: %s", (source, expected) => {
+    const opened = openChemDraftPayload(`<CDXML><page id="1"><group id="g" Label="${source}">
+      <t id="2" p="0 0"><s>${source}</s></t><t id="3" p="0 20"><s>other</s></t>
+      </group></page></CDXML>`);
+    expect(opened.document).toBeDefined();
+    const objects = opened.document!.pages[0].objects;
+    expect(objects.find(object => object.type === "text")).toMatchObject({ text: expected });
+    expect(objects.find(object => object.type === "group")?.compatibility?.unknown.attributes).toEqual({ Label: expected });
+  });
+
+  it("preserves CR, TAB and LF through repeated visible CDXML saves and reopens", () => {
+    const expected = "A\rB\tC\nD";
+    let document = openChemDraftPayload(`<CDXML><page id="1"><group id="g" Label="A&#13;B&#9;C&#10;D">
+      <t id="2" p="0 0"><s>A&#13;B&#9;C&#10;D</s></t><t id="3" p="0 20"><s>other</s></t>
+      </group></page></CDXML>`).document!;
+    for (let iteration = 0; iteration < 3; iteration++) {
+      expect(document).toBeDefined();
+      expect(document.pages[0].objects.find(object => object.type === "text")).toMatchObject({ text: expected });
+      expect(document.pages[0].objects.find(object => object.type === "group")?.compatibility?.unknown.attributes).toEqual({ Label: expected });
+      const xml = exportDocumentToCdxml(document).contents;
+      expect(xml).toContain('Label="A&#13;B&#9;C&#10;D"');
+      expect(xml).toContain("A&#13;B\tC\nD");
+      // Strip the native payload so it cannot hide a lossy visible serialization.
+      document = openChemDraftPayload(xml.replace(/<objecttag\b[^>]*\/>/g, "")).document!;
+    }
+  });
+});
+
 describe("CDXML groups", () => {
   const fragment = (id: string, x: number) =>
     `<fragment id="${id}"><n id="${id}a" p="${x} 0"/><n id="${id}b" p="${x + 14} 0"/><b id="${id}c" B="${id}a" E="${id}b"/></fragment>`;

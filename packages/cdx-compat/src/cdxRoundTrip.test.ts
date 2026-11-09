@@ -4,7 +4,7 @@ import { createEmptyDocument, type ChemDraftDocument, type MoleculeObject } from
 import { nativeSingleBondGraphMetadata, nativeSingleBondGraphSmiles } from "../../document-workflow-core/src/index";
 import { XMLParser } from "fast-xml-parser";
 import { cdxElementFromOrderedTree, cdxElementToCdxml, CDX_NATIVE_ENVELOPE_ATTRIBUTE, readCdx, writeCdx, type CdxElement } from "./cdxBinary";
-import { exportDocumentToCdx, importCdx, openChemDraftPayload } from "./index";
+import { ChemDraftObjectTags, exportDocumentToCdx, importCdx, openChemDraftPayload, visibleHashForCdxml } from "./index";
 
 const parser = new XMLParser({ preserveOrder: true, ignoreAttributes: false, attributeNamePrefix: "", parseAttributeValue: false, trimValues: false });
 const tree = (xml: string) => cdxElementFromOrderedTree(parser.parse(xml));
@@ -149,6 +149,37 @@ describe("chemical and drawing round trips", () => {
 });
 
 describe("native payload Save As and interchange Export", () => {
+  it.each(["\n", "\r", "\t"])("restores unchanged legacy CDX with %j and still detects visible edits", (character) => {
+    const original = requireDocument(openChemDraftPayload(wrap('<t id="4" p="20 30"><s>old</s></t>')));
+    const text = original.pages[0].objects[0];
+    if (text.type !== "text") throw new Error("Expected text fixture");
+    text.text = `before${character}after`;
+    const saved = readCdx(exportDocumentToCdx(original, { embedNativePayload: true }).bytes);
+    const envelope = JSON.parse(Buffer.from(saved.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE].slice(3), "hex").toString("utf8"));
+    delete saved.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE];
+    const xml = cdxElementToCdxml(saved);
+    // The old parser left numeric references literal. Protect their ampersands before
+    // using the current canonicalizer to recreate exactly that legacy hash semantics.
+    const legacyHash = visibleHashForCdxml(xml.replace(/&#(?:[0-9]+|x[0-9a-fA-F]+);/g, reference => `&amp;${reference.slice(1)}`));
+    expect(legacyHash).not.toBe(visibleHashForCdxml(xml));
+    envelope.tags.find(([name]: [string, string]) => name === ChemDraftObjectTags.visibleCdxmlHash)[1] = legacyHash;
+    saved.attrs[CDX_NATIVE_ENVELOPE_ATTRIBUTE] = `|x|${Buffer.from(JSON.stringify(envelope)).toString("hex")}`;
+    const opened = importCdx(writeCdx(saved));
+    expect(opened.source).toBe("native-payload");
+    expect(opened.conflict).toBeUndefined();
+    expect(opened.warnings).toEqual([]);
+    expect(opened.document).toEqual(original);
+
+    const findText = (element: CdxElement): CdxElement | undefined => element.name === "s" ? element : element.kids.map(findText).find(Boolean);
+    findText(saved)!.text = "edited";
+    const edited = importCdx(writeCdx(saved));
+    expect(edited.document).toBeUndefined();
+    expect(edited.conflict?.embeddedDocument).toEqual(original);
+    expect(edited.conflict?.visibleDocument?.pages[0].objects[0]).toMatchObject({ text: "edited" });
+    expect(edited.warnings.some(warning => warning.code === "cdx.native_payload_modified")).toBe(true);
+    expect(edited.warnings.some(warning => warning.code === "cdxml.visible_layer_modified")).toBe(true);
+  });
+
   it.each([["0700", 0x0700], ["0709", 0x0709]] as const)("detects an edit to only text property 0x%s", (_name, tag) => {
     const original = requireDocument(openChemDraftPayload(wrap('<t id="4" p="20 30"><s>old</s></t>')));
     const bytes = exportDocumentToCdx(original, { embedNativePayload: true }).bytes;

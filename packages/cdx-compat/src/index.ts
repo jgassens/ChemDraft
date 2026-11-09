@@ -107,6 +107,13 @@ export function importCdx(bytes: Uint8Array): ChemDraftOpenResult {
           // Even a change to the legacy text hidden by its UTF-8 copy must defeat native restoration.
           for (const tag of tags) if (tag.attrs.Name === ChemDraftObjectTags.visibleCdxmlHash) tag.attrs.Value = "";
           warnings.push(warning("cdx.native_payload_modified", "CDX import: binary content changed or its integrity hash is missing; the embedded native document requires conflict review."));
+        } else {
+          // The raw hash covers every visible byte (including both text copies), so it is
+          // sufficient evidence that this CDX is unchanged. Rebase the redundant XML hash to
+          // today's canonicalization: legacy envelopes hashed numeric references literally.
+          // Native payload integrity, schema and codec checks still run in the shared opener.
+          const visibleHash = visibleHashForCdxml(cdxElementToCdxml(root));
+          for (const tag of tags) if (tag.attrs.Name === ChemDraftObjectTags.visibleCdxmlHash) tag.attrs.Value = visibleHash;
         }
         page.kids.push(...tags);
       } catch (error) {
@@ -191,9 +198,15 @@ const xmlParser = new XMLParser({
   attributeNamePrefix: "",
   parseAttributeValue: false,
   trimValues: false,
-  // The binary codec emits XML character references for text line breaks and tabs.
-  // fast-xml-parser enables numeric reference decoding through this option.
-  htmlEntities: true,
+  // Decode references once in text and attributes, without enabling named HTML entities.
+  // The custom decoder also leaves document-defined entities unexpanded.
+  entityDecoder: {
+    decode: decodeXmlReferences,
+    reset() {},
+    setExternalEntities() {},
+    addInputEntities() {},
+    setXmlVersion() {}
+  },
   commentPropName: "#comment",
   cdataPropName: "#cdata"
 });
@@ -4670,8 +4683,24 @@ function parseNumber(value: string | undefined): number | undefined {
 // One scan decides whether escaping is needed at all, and a value with nothing to escape is
 // returned untouched rather than copied by each replace pass. Most values need none, including the
 // base64url payload, whose alphabet has no XML-special characters.
-const XML_TEXT_SPECIAL = /[&<>]/;
-const XML_ATTRIBUTE_SPECIAL = /[&<>"']/;
+const XML_TEXT_SPECIAL = /[&<>\r]/;
+const XML_ATTRIBUTE_SPECIAL = /[&<>"'\r\n\t]/;
+
+function decodeXmlReferences(value: string): string {
+  const xmlEntities: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
+  // A single replace never scans its replacement text: &amp;#10; stays literal &#10;.
+  return value.replace(/&(amp|lt|gt|quot|apos|#(?:[0-9]+|x[0-9a-fA-F]+));/g, (reference, entity: string) => {
+    if (entity[0] !== "#") return xmlEntities[entity];
+    const codePoint = entity[1] === "x" ? Number.parseInt(entity.slice(2), 16) : Number(entity.slice(1));
+    if (!(codePoint === 9 || codePoint === 10 || codePoint === 13
+      || (codePoint >= 0x20 && codePoint <= 0xd7ff)
+      || (codePoint >= 0xe000 && codePoint <= 0xfffd)
+      || (codePoint >= 0x10000 && codePoint <= 0x10ffff))) {
+      throw new Error(`Invalid XML character reference "${reference}".`);
+    }
+    return String.fromCodePoint(codePoint);
+  });
+}
 
 function escapeXmlText(value: string): string {
   if (!XML_TEXT_SPECIAL.test(value)) {
@@ -4680,7 +4709,8 @@ function escapeXmlText(value: string): string {
   return value
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+    .replace(/>/g, "&gt;")
+    .replace(/\r/g, "&#13;");
 }
 
 function escapeXmlAttribute(value: string): string {
@@ -4689,7 +4719,9 @@ function escapeXmlAttribute(value: string): string {
   }
   return escapeXmlText(value)
     .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
+    .replace(/'/g, "&apos;")
+    .replace(/\t/g, "&#9;")
+    .replace(/\n/g, "&#10;");
 }
 
 function indent(value: string, spaces: number): string {
