@@ -10,6 +10,16 @@ no native layout field. Native `width`/`height`, `margin`, and `layout` continue
 physical paper size in CSS pixels; separate entries in `pages` are separate logical pages. The
 optional metadata is additive to v1 and needs no migration or backfill.
 
+`MoleculeObject.superatoms` retains an abbreviation's `label`, `attachmentPoints` and optional
+`expandedStructure`/`expandedStructureFormat`. Additive optional `atomIds` identifies the expanded
+atoms already present in that molecule's live graph. Those atoms and bonds remain authoritative
+for chemistry; the superatom is grouping metadata and never an additional atom or formula term.
+Attachment anchors refer to the group's real atom in the owning molecule. The stored expansion
+is a snapshot of the isolated body; external valence comes from the live crossing bonds. Writers
+use current graph membership rather than the snapshot after edits. Unexpanded typed labels still
+use `MoleculeAtom.element` with `labelLiteral`; expanded group labels do not replace a real element.
+The optional field needs no migration or backfill; older native documents remain valid under v1.
+
 Bond displays are `bold`, `wedge`, `hashed`, `dashed`, and `wavy`. Optional
 `MoleculeBond.display.bondStyle: "wavy"` is valid only with `order: "single"` (schema rejection
 otherwise) and means explicitly unknown stereo at `fromAtomId`. It follows additive v1 conventions:

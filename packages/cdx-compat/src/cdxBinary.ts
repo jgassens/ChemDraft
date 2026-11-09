@@ -161,7 +161,7 @@ function prepareCdxTree(root: CdxElement, warn: (warning: CdxWarning) => void): 
       } else {
         delete attrs.Element;
         const hasExpansion = kids.some((kid) => kid.name === "fragment");
-        attrs.NodeType = hasExpansion ? "Fragment" : "GenericNickname";
+        attrs.NodeType = hasExpansion ? attrs.NodeType ?? "Nickname" : "GenericNickname";
         if (!hasExpansion) attrs.GenericNickname = label;
         if (!kids.some((kid) => kid.name === "t")) {
           if (++count > MAX_OBJECTS) throw new Error(`CDX export failed: object count exceeds ${MAX_OBJECTS}`);

@@ -30,6 +30,26 @@ Synthetic coverage includes chain formulas, a ring NMe, a repeated-formula linke
 peptide labels, and nested fragment connection points; it is not a claim of general peptide or
 multi-attachment fragment expansion.
 
+Labelled `Nickname` and `Fragment` nodes with a supported nested expansion import as native
+`MoleculeObject.superatoms`: the label, expanded atom membership, attachment anchor and a V3000
+expansion snapshot are retained. Their real atoms and bonds stay in the molecule's live graph,
+so formula, mass, SMILES, MOL, analysis and CLI identity consumers count the expansion once.
+Visible CDXML/CDX export groups those live atoms back into a labelled node with an inner fragment
+and external connection point. Source `Nickname` versus `Fragment` is retained; a newly authored
+native group writes `Nickname`. Native serialization and both Save As payloads retain all metadata.
+Source nesting depth and each superatom's source-record association preserve nested labels and node
+kinds even when multiple groups contain exactly the same atoms; synthetic coverage includes two and
+three nesting levels with equal and differing memberships.
+Edits to expansion atoms export their current chemistry, rather than restoring the source snapshot.
+
+`compatibility.unknown.cdxmlAbbreviations` retains complete source nodes, including unsupported
+expansions. Multiple external connection points, ambiguous attachment bonds, wrapper charge and
+other unrepresentable states emit `cdxml.abbreviation_not_expanded`; they retain the literal atom
+label and original source expansion instead of silently flattening it. Original `BeginAttach` and
+`EndAttach` values survive unchanged bond endpoints. A stale or overlapping native group that
+cannot be collapsed safely exports its live graph with `cdxml.superatom_not_collapsed`.
+Synthetic coverage includes biphenyl/Ph, Boc-NH, OTBS, OMe and three independent Me groups.
+
 Save As uses `{ embedNativePayload: true }`. User-defined property `0x4344` contains a namespaced
 `org.chemdraft/cdx-envelope.v1` envelope with the existing CDXML payload tags. Its visible hash covers
 the actual binary-normalized CDXML, and a second hash covers every raw file byte except the envelope

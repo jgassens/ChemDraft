@@ -1,10 +1,13 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createEmptyDocument, moleculeToMolfileV2000, moleculeToMolfileV3000, rGroupNumberFromLabel, type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { createEmptyDocument, deserializeDocument, serializeDocument, moleculeToMolfileV2000, moleculeToMolfileV3000, rGroupNumberFromLabel,
+  type ChemDraftDocument, type MoleculeObject } from "@chemdraft/chem-core";
+import { nativeBondOrderResolution } from "@chemdraft/layout-engine";
 import {
   expandNativeMoleculeLabelGroups, moleculeSmiles, nativeSingleBondGraphMetadata, nativeSingleBondGraphSmiles
 } from "../../document-workflow-core/src/index";
 import { computeStructureIdentifiers } from "../../rdkit-adapter/src/identifiers";
 import { resetRdkitForTesting } from "../../rdkit-adapter/src/conformer";
+import { analyzeStructure } from "../../rdkit-adapter/src/analysis";
 import { installRealRdkitModuleLoader } from "../../rdkit-adapter/src/testing";
 import { cdxElementFromOrderedTree, cdxElementToCdxml, readCdx, writeCdx } from "./cdxBinary";
 import { XMLParser } from "fast-xml-parser";
@@ -147,6 +150,253 @@ describe("synthetic multi-atom labels and attachment atoms", () => {
   }
 });
 
+type ExpansionFixture = { name: string; label: string; kind: "Nickname" | "Fragment"; formula: string;
+  smiles: string; elements: number[]; bonds: [number, number, number?][]; copies?: number; parentRing?: boolean };
+const expansionFixtures: ExpansionFixture[] = [
+  { name: "biphenyl", label: "Ph", kind: "Nickname", formula: "C12H10", smiles: "c1ccc(-c2ccccc2)cc1",
+    elements: [6, 6, 6, 6, 6, 6], bonds: [[0, 1, 2], [1, 2], [2, 3, 2], [3, 4], [4, 5, 2], [5, 0]], parentRing: true },
+  { name: "Boc-NH", label: "Boc", kind: "Nickname", formula: "C6H13NO2", smiles: "CNC(=O)OC(C)(C)C",
+    elements: [6, 8, 8, 6, 6, 6, 6], bonds: [[0, 1, 2], [0, 2], [2, 3], [3, 4], [3, 5], [3, 6]] },
+  { name: "OTBS", label: "OTBS", kind: "Fragment", formula: "C7H18OSi", smiles: "CO[Si](C)(C)C(C)(C)C",
+    elements: [8, 14, 6, 6, 6, 6, 6, 6], bonds: [[0, 1], [1, 2], [1, 3], [1, 4], [4, 5], [4, 6], [4, 7]] },
+  { name: "OMe", label: "OMe", kind: "Fragment", formula: "C2H6O", smiles: "COC",
+    elements: [8, 6], bonds: [[0, 1]] },
+  { name: "three Me nodes", label: "Me", kind: "Nickname", formula: "C3H9N", smiles: "CN(C)C",
+    elements: [6], bonds: [], copies: 3 }
+];
+
+/** Independently authored visible and fully expanded twins; all IDs are distinct, including text. */
+function expansionXml(fixture: ExpansionFixture, expanded = false) {
+  let next = 10;
+  const node = (element: number, x: number, y: number) => ({ id: String(next++),
+    xml: (id: string) => `<n id="${id}" Element="${element}" p="${x} ${y}"/>` });
+  const bond = (a: string, b: string, order = 1) => `<b id="${next++}" B="${a}" E="${b}" Order="${order}"/>`;
+  const nodes: string[] = [], bonds: string[] = [];
+  const parent = node(fixture.name === "Boc-NH" || fixture.copies ? 7 : 6, 100, 100);
+  nodes.push(parent.xml(parent.id));
+  if (fixture.parentRing) {
+    const ring = [parent, ...Array.from({ length: 5 }, (_, i) => node(6, 85 - i * 4, 120 + i * 8))];
+    nodes.push(...ring.slice(1).map(atom => atom.xml(atom.id)));
+    ring.forEach((atom, i) => bonds.push(bond(atom.id, ring[(i + 1) % 6].id, i % 2 ? 1 : 2)));
+  }
+  if (fixture.name === "Boc-NH") {
+    const methyl = node(6, 70, 100); nodes.push(methyl.xml(methyl.id)); bonds.push(bond(parent.id, methyl.id));
+  }
+  for (let copy = 0; copy < (fixture.copies ?? 1); copy++) {
+    const atoms = fixture.elements.map((element, i) => node(element, 130 + i * 18, 100 + copy * 45));
+    const bodyNodes = atoms.map(atom => atom.xml(atom.id));
+    const bodyBonds = fixture.bonds.map(([a, b, order]) => bond(atoms[a].id, atoms[b].id, order));
+    if (expanded) { nodes.push(...bodyNodes); bonds.push(...bodyBonds, bond(parent.id, atoms[0].id)); }
+    else {
+      const wrapperId = String(next++), bodyId = String(next++), connectionId = String(next++), textId = String(next++);
+      nodes.push(`<n id="${wrapperId}" p="130 ${100 + copy * 45}" NodeType="${fixture.kind}"><t id="${textId}"><s>${fixture.label}</s></t>
+        <fragment id="${bodyId}">${bodyNodes.join("")}${bodyBonds.join("")}
+          <n id="${connectionId}" NodeType="ExternalConnectionPoint"/>${bond(connectionId, atoms[0].id)}</fragment></n>`);
+      bonds.push(bond(parent.id, wrapperId));
+    }
+  }
+  return `<CDXML><page id="1"><fragment id="2">${nodes.join("")}${bonds.join("")}</fragment></page></CDXML>`;
+}
+
+function expectExpandedSuperatoms(molecule: MoleculeObject, fixture: ExpansionFixture) {
+  expect(molecule.superatoms).toHaveLength(fixture.copies ?? 1);
+  for (const group of molecule.superatoms) {
+    expect(group.label).toBe(fixture.label);
+    expect(group.atomIds).toHaveLength(fixture.elements.length);
+    expect(group.expandedStructureFormat).toBe("molfile-v3000");
+    expect(group.expandedStructure).toContain("M  V30 BEGIN ATOM");
+    expect(group.attachmentPoints).toHaveLength(1);
+    const anchor = group.attachmentPoints[0];
+    expect(anchor).toMatchObject({ kind: "atom", objectId: molecule.id });
+    expect(group.atomIds).toContain(anchor.atomId);
+    expect(molecule.bonds.filter(bond => (group.atomIds!.includes(bond.fromAtomId) !== group.atomIds!.includes(bond.toAtomId)) &&
+      [bond.fromAtomId, bond.toAtomId].includes(anchor.atomId!))).toHaveLength(1);
+  }
+}
+
+function expectVisibleAbbreviations(root: ReturnType<typeof readCdx>, fixture: ExpansionFixture) {
+  const fragment = root.kids.find(node => node.name === "page")!.kids.find(node => node.name === "fragment")!;
+  const labels = fragment.kids.filter(node => node.name === "n" && node.attrs.NodeType === fixture.kind);
+  expect(labels).toHaveLength(fixture.copies ?? 1);
+  for (const label of labels) {
+    expect(label.kids.find(node => node.name === "t")!.kids[0].text).toBe(fixture.label);
+    const body = label.kids.find(node => node.name === "fragment")!;
+    expect(body.kids.filter(node => node.name === "n" && node.attrs.NodeType !== "ExternalConnectionPoint")).toHaveLength(fixture.elements.length);
+    expect(body.kids.filter(node => node.name === "n" && node.attrs.NodeType === "ExternalConnectionPoint")).toHaveLength(1);
+    expect(fragment.kids.filter(node => node.name === "b" && [node.attrs.B, node.attrs.E].includes(label.attrs.id))).toHaveLength(1);
+  }
+  const ids: string[] = [];
+  const visit = (node: ReturnType<typeof readCdx>) => { if (node.attrs.id) ids.push(node.attrs.id); node.kids.forEach(visit); };
+  visit(root);
+  expect(new Set(ids).size).toBe(ids.length);
+}
+
+describe("labelled source expansions remain native superatoms", () => {
+  for (const levels of [2, 3]) for (const differingMembers of [false, true]) for (const binary of [false, true]) {
+    it(`preserves ${levels} nested source groups with ${differingMembers ? "different" : "equal"} membership (binary=${binary})`, () => {
+      let next = 10;
+      const id = () => String(next++);
+      const labels = levels === 2 ? ["Outer", "Inner"] : ["Outer", "Middle", "Inner"];
+      const wrap = (depth: number): { id: string; xml: string } => {
+        const nodeId = id();
+        if (depth === levels) return { id: nodeId, xml: `<n id="${nodeId}" Element="6" p="130 100"/>` };
+        const child = wrap(depth + 1), connectionId = id(), extraId = id();
+        const extra = differingMembers && depth < levels - 1
+          ? `<n id="${extraId}" Element="6" p="${160 + depth * 30} 100"/><b id="${id()}" B="${child.id}" E="${extraId}"/>` : "";
+        return { id: nodeId, xml: `<n id="${nodeId}" NodeType="${depth % 2 ? "Nickname" : "Fragment"}" p="130 100">
+          <t id="${id()}"><s>${labels[depth]}</s></t><fragment id="${id()}">${child.xml}${extra}
+            <n id="${connectionId}" NodeType="ExternalConnectionPoint"/>
+            <b id="${id()}" B="${connectionId}" E="${child.id}"/></fragment></n>` };
+      };
+      const outer = wrap(0);
+      const source = xmlTree(`<n id="3" Element="6" p="100 100"/>${outer.xml}<b id="4" B="3" E="${outer.id}"/>`);
+      // Ignore generated IDs and connection pseudo-atoms, but compare every label, node kind and
+      // nesting level, including the live atoms beside a child when memberships differ.
+      const nesting = (fragment: ReturnType<typeof readCdx>): unknown[] => fragment.kids
+        .filter(node => node.name === "n" && node.attrs.NodeType !== "ExternalConnectionPoint")
+        .map(node => {
+          const body = node.kids.find(child => child.name === "fragment");
+          return body ? { kind: node.attrs.NodeType, label: node.kids.find(child => child.name === "t")!.kids[0].text,
+            children: nesting(body) } : { element: node.attrs.Element ?? "6" };
+        }).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+      const fragmentOf = (tree: ReturnType<typeof readCdx>) => tree.kids.find(node => node.name === "page")!
+        .kids.find(node => node.name === "fragment")!;
+      const expected = nesting(fragmentOf(source));
+      const opened = binary ? importCdx(writeCdx(source)) : openChemDraftPayload(cdxElementToCdxml(source));
+      const original = moleculeOf(opened);
+      expect(original.superatoms.map(group => group.label)).toEqual(labels);
+      expect(original.superatoms.map(group => group.atomIds!.length)).toEqual(
+        labels.map((_, depth) => differingMembers ? levels - depth : 1));
+      let document = deserializeDocument(serializeDocument(opened.document!));
+      expect(document).toEqual(opened.document);
+      for (let cycle = 0; cycle < 2; cycle++) {
+        if (cycle === 1) {
+          // Released native payloads retain source preorder but have no explicit association/depth.
+          const records = (document.pages[0].objects[0] as MoleculeObject).compatibility!.unknown.cdxmlAbbreviations as
+            { depth?: number; superatomIndex?: number }[];
+          records.forEach(record => { delete record.depth; delete record.superatomIndex; });
+        }
+        const visible = binary ? exportDocumentToCdx(document) : exportDocumentToCdxml(document, { embedNativePayload: false });
+        const tree = "bytes" in visible ? readCdx(visible.bytes) : cdxElementFromOrderedTree(new XMLParser({
+          preserveOrder: true, ignoreAttributes: false, attributeNamePrefix: "", parseAttributeValue: false, trimValues: false
+        }).parse(visible.contents));
+        expect(nesting(fragmentOf(tree))).toEqual(expected);
+        expect(visible.warnings.some(warning => warning.code === "cdxml.superatom_not_collapsed")).toBe(false);
+        const reopened = "bytes" in visible ? importCdx(visible.bytes) : openChemDraftPayload(visible.contents);
+        expect(graph(moleculeOf(reopened))).toEqual(graph(original));
+        expect(moleculeOf(reopened).superatoms.map(group => group.label)).toEqual(labels);
+        const saved = binary ? importCdx(exportDocumentToCdx(document, { embedNativePayload: true }).bytes)
+          : openChemDraftPayload(exportDocumentToCdxml(document).contents);
+        expect(saved.source).toBe("native-payload");
+        expect(saved.document).toEqual(document);
+        document = reopened.document!;
+      }
+    });
+  }
+
+  it.each([false, true])("retains each equal-membership group's own source kind after renaming both labels (binary=%s)", binary => {
+    const source = xmlTree(`<n id="10" NodeType="Fragment"><t id="11"><s>Outer</s></t><fragment id="12">
+      <n id="20" NodeType="Nickname"><t id="21"><s>Inner</s></t><fragment id="22">
+        <n id="30" Element="6" p="100 100"/></fragment></n></fragment></n>`);
+    const opened = binary ? importCdx(writeCdx(source)) : openChemDraftPayload(cdxElementToCdxml(source));
+    moleculeOf(opened).superatoms.forEach(group => { group.label = "Renamed"; });
+    const document = deserializeDocument(serializeDocument(opened.document!));
+    const exported = binary ? readCdx(exportDocumentToCdx(document).bytes) : cdxElementFromOrderedTree(new XMLParser({
+      preserveOrder: true, ignoreAttributes: false, attributeNamePrefix: "", parseAttributeValue: false, trimValues: false
+    }).parse(exportDocumentToCdxml(document, { embedNativePayload: false }).contents));
+    const outer = exported.kids.find(node => node.name === "page")!.kids.find(node => node.name === "fragment")!
+      .kids.find(node => node.name === "n")!;
+    const inner = outer.kids.find(node => node.name === "fragment")!.kids.find(node => node.name === "n")!;
+    expect([outer, inner].map(node => [node.attrs.NodeType, node.kids.find(child => child.name === "t")!.kids[0].text]))
+      .toEqual([["Fragment", "Renamed"], ["Nickname", "Renamed"]]);
+    const atoms = inner.kids.find(node => node.name === "fragment")!.kids.filter(node => node.name === "n");
+    expect(atoms).toHaveLength(1);
+    expect(atoms[0].attrs.NodeType).toBeUndefined();
+    expect(atoms[0].attrs.Element ?? "6").toBe("6");
+  });
+
+  for (const fixture of expansionFixtures) for (const binary of [false, true]) {
+    it(`${fixture.name}: ${binary ? "CDX" : "CDXML"} keeps label, attachment, expansion and chemistry through visible/native saves`, async () => {
+      const xml = expansionXml(fixture);
+      const tree = cdxElementFromOrderedTree(new XMLParser({ preserveOrder: true, ignoreAttributes: false,
+        attributeNamePrefix: "", parseAttributeValue: false, trimValues: false }).parse(xml));
+      const opened = binary ? importCdx(writeCdx(tree)) : openChemDraftPayload(xml);
+      const molecule = moleculeOf(opened);
+      const control = moleculeOf(openChemDraftPayload(expansionXml(fixture, true)));
+      expect(opened.warnings.some(warning => warning.code === "cdxml.abbreviation_not_expanded")).toBe(false);
+      expectExpandedSuperatoms(molecule, fixture);
+      expect(graph(molecule)).toEqual(graph(control));
+      expect(nativeSingleBondGraphMetadata(molecule.atoms, molecule.bonds).formula).toBe(fixture.formula);
+      expect(await canonical(molecule)).toBe((await computeStructureIdentifiers(fixture.smiles))!.smiles);
+      expect(await canonical(molecule)).toBe(await canonical(control));
+      // The app's label expansion must not expand these already-real atoms a second time.
+      expect(expandNativeMoleculeLabelGroups(molecule).molecule.atoms).toEqual(molecule.atoms);
+      for (const writer of [moleculeToMolfileV2000, moleculeToMolfileV3000]) {
+        const molfile = writer(molecule, { kekuleBondOrders: nativeBondOrderResolution(molecule.atoms, molecule.bonds).kekuleOrders }).contents;
+        expect((await computeStructureIdentifiers(molfile))!.smiles).toBe(await canonical(control));
+      }
+      const payload = deserializeDocument(serializeDocument(opened.document!));
+      expect(payload).toEqual(opened.document);
+      const exported = binary ? exportDocumentToCdx(payload) : exportDocumentToCdxml(payload, { embedNativePayload: false });
+      const visibleTree = "bytes" in exported ? readCdx(exported.bytes) : cdxElementFromOrderedTree(new XMLParser({
+        preserveOrder: true, ignoreAttributes: false, attributeNamePrefix: "", parseAttributeValue: false, trimValues: false
+      }).parse(exported.contents));
+      expectVisibleAbbreviations(visibleTree, fixture);
+      const reopened = "bytes" in exported ? importCdx(exported.bytes) : openChemDraftPayload(exported.contents);
+      expectExpandedSuperatoms(moleculeOf(reopened), fixture);
+      expect(await canonical(moleculeOf(reopened))).toBe(await canonical(control));
+      const saved = binary ? importCdx(exportDocumentToCdx(payload, { embedNativePayload: true }).bytes)
+        : openChemDraftPayload(exportDocumentToCdxml(payload).contents);
+      expect(saved.source).toBe("native-payload");
+      expect(saved.document).toEqual(payload);
+    });
+  }
+
+  it.each(expansionFixtures)("$name: analysis and CLI identity read every expanded atom once", async fixture => {
+    const molecule = moleculeOf(openChemDraftPayload(expansionXml(fixture)));
+    const { currentMoleculeIdentityMolfile } = await import("../../chemdraft-cli/src/document");
+    const identity = await currentMoleculeIdentityMolfile(molecule);
+    const methodIds = ["rdkit.composition", "rdkit.average-mass", "rdkit.monoisotopic-mass", "rdkit.canonical-smiles"];
+    const request = { runId: "synthetic-abbreviation", startedAt: "2026-11-09T00:00:00Z", methodIds };
+    const actual = await analyzeStructure({ ...request, format: identity.format, value: identity.contents });
+    const expected = await analyzeStructure({ ...request, format: "smiles", value: fixture.smiles });
+    for (const id of methodIds) {
+      const result = actual.results.find(result => result.id === id)!;
+      const reference = expected.results.find(result => result.id === id)!;
+      expect(result, id).toBeDefined();
+      expect(result.status, id).toBe("ok");
+      if (result.kind === "scalar" && reference.kind === "scalar") expect(result.value, id).toBeCloseTo(reference.value!, 10);
+      else expect((result as { value?: unknown }).value, id).toEqual((reference as { value?: unknown }).value);
+      if (result.kind === "composition" && reference.kind === "composition") {
+        expect(result.formula).toBe(fixture.formula);
+        expect(result.formula).toBe(reference.formula);
+      }
+    }
+  });
+
+  it.each([false, true])("writes newly authored superatoms as Nickname (binary=%s)", binary => {
+    const fixture = { ...expansionFixtures[3], kind: "Nickname" as const };
+    const opened = openChemDraftPayload(expansionXml(fixture));
+    const molecule = moleculeOf(opened);
+    delete molecule.compatibility;
+    const xml = exportDocumentToCdxml(opened.document!, { embedNativePayload: false });
+    const tree = cdxElementFromOrderedTree(new XMLParser({ preserveOrder: true, ignoreAttributes: false,
+      attributeNamePrefix: "", parseAttributeValue: false, trimValues: false }).parse(xml.contents));
+    expectVisibleAbbreviations(binary ? readCdx(exportDocumentToCdx(opened.document!).bytes) : tree, fixture);
+  });
+
+  it("writes edited expansion atoms instead of restoring a stale source expansion", async () => {
+    const fixture = expansionFixtures[3];
+    const opened = openChemDraftPayload(expansionXml(fixture));
+    const molecule = moleculeOf(opened);
+    molecule.atoms.find(atom => atom.id === molecule.superatoms[0].atomIds![1])!.element = "N";
+    const expected = await canonical(molecule);
+    const xml = exportDocumentToCdxml(opened.document!, { embedNativePayload: false });
+    expect(await canonical(moleculeOf(openChemDraftPayload(xml.contents)))).toBe(expected);
+    expect(await canonical(moleculeOf(importCdx(exportDocumentToCdx(opened.document!).bytes)))).toBe(expected);
+  });
+});
+
 const xmlTree = (content: string) => cdxElementFromOrderedTree(new XMLParser({
   preserveOrder: true, ignoreAttributes: false, attributeNamePrefix: "", parseAttributeValue: false, trimValues: false
 }).parse(`<CDXML><page id="1"><fragment id="2">${content}</fragment></page></CDXML>`));
@@ -227,6 +477,13 @@ describe("synthetic numbered R-group attachments", () => {
 });
 
 describe("standard binary nickname nodes and fragment attachment points", () => {
+  it.each(["Nickname", "Fragment"])("preserves %s while normalizing a symbolic Element for binary output", kind => {
+    const root = xmlTree(`<n id="label" NodeType="${kind}" Element="Me"><t><s>Me</s></t>
+      <fragment id="body"><n id="carbon"/><n id="connection" NodeType="ExternalConnectionPoint"/>
+        <b id="attachment" B="connection" E="carbon"/></fragment></n>`);
+    expect(readCdx(writeCdx(root)).kids[0].kids[0].kids[0].attrs.NodeType).toBe(kind);
+  });
+
   const u16 = (n: number) => [n & 255, n >>> 8 & 255];
   const u32 = (n: number) => [...u16(n), ...u16(n >>> 16)];
   const property = (tag: number, data: number[]) => [...u16(tag), ...u16(data.length), ...data];
@@ -328,5 +585,23 @@ describe("standard binary nickname nodes and fragment attachment points", () => 
     ]));
     const reopened = importCdx(exportDocumentToCdx(imported.document!).bytes);
     await expectUnchanged(moleculeOf(reopened), moleculeOf(imported), "(CH2)3");
+    const original = moleculeOf(imported);
+    expect(original.superatoms).toEqual([]);
+    const records = original.compatibility!.unknown.cdxmlAbbreviations as { source: ReturnType<typeof readCdx> }[];
+    expect(records[0].source.attrs.NodeType).toBe("Fragment");
+    expect(records[0].source.kids.find(node => node.name === "fragment")!.kids.filter(node => node.name === "n")).toHaveLength(4);
+    expect(deserializeDocument(serializeDocument(imported.document!))).toEqual(imported.document);
+    for (const binary of [false, true]) {
+      const visible = binary ? readCdx(exportDocumentToCdx(imported.document!).bytes)
+        : cdxElementFromOrderedTree(new XMLParser({ preserveOrder: true, ignoreAttributes: false,
+          attributeNamePrefix: "", parseAttributeValue: false, trimValues: false
+        }).parse(exportDocumentToCdxml(imported.document!, { embedNativePayload: false }).contents));
+      const fragment = visible.kids.find(node => node.name === "page")!.kids.find(node => node.name === "fragment")!;
+      const abbreviation = fragment.kids.find(node => node.name === "n" && node.attrs.NodeType === "Fragment")!;
+      expect(abbreviation.kids.find(node => node.name === "fragment")!.kids.filter(node =>
+        node.name === "n" && node.attrs.NodeType === "ExternalConnectionPoint")).toHaveLength(2);
+      expect(fragment.kids.find(node => node.name === "b" && node.attrs.BeginAttach)?.attrs.BeginAttach).toBe("1");
+      expect(fragment.kids.find(node => node.name === "b" && node.attrs.EndAttach)?.attrs.EndAttach).toBe("2");
+    }
   });
 });

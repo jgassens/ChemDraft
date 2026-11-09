@@ -9,6 +9,7 @@ import {
   elementSymbolForAtomicNumber,
   isDativeBond,
   isEngineDocument,
+  moleculeToMolfileV3000,
   nativeTextStyleFromObjectStyle,
   normalizeAtomIsotope,
   parseDocument,
@@ -50,6 +51,7 @@ import {
   writeCdx,
   type CdxElement
 } from "./cdxBinary";
+import { restoreCdxmlAbbreviations } from "./abbreviations";
 
 export interface CompatibilityConversionWarning {
   code: string;
@@ -1584,12 +1586,16 @@ function exportMoleculeObject(
     });
   }
 
-  return [
+  const contents = [
     `<fragment id="${fragmentId}" BoundingBox="${formatBoundingBox(molecule)}">`,
     ...atomLines.map((line) => indent(line, 2)),
     ...bondLines.map((line) => indent(line, 2)),
     "</fragment>"
   ].join("\n");
+  if (!molecule.superatoms.length && !molecule.compatibility?.unknown.cdxmlAbbreviations) return contents;
+  const root = cdxElementFromOrderedTree(parseCdxml(`<CDXML>${contents}</CDXML>`));
+  restoreCdxmlAbbreviations(root.kids[0], molecule, atomIds, () => allocator.next(), warnings);
+  return cdxElementToCdxml(root.kids[0]);
 }
 
 function exportBond(
@@ -1612,6 +1618,13 @@ function exportBond(
     `E="${atomIds.get(bond.toAtomId) ?? escapeXmlAttribute(bond.toAtomId)}"`,
     `Order="${escapeXmlAttribute(order)}"`
   ];
+  const attachmentRecords = molecule.compatibility?.unknown.cdxmlAbbreviationAttachmentsByBondId;
+  const attachment = isRecord(attachmentRecords) ? attachmentRecords[bond.id] : undefined;
+  if (isRecord(attachment) && attachment.fromAtomId === bond.fromAtomId && attachment.toAtomId === bond.toAtomId) {
+    for (const key of ["BeginAttach", "EndAttach"] as const) {
+      if (typeof attachment[key] === "string") attributes.push(`${key}="${escapeXmlAttribute(attachment[key])}"`);
+    }
+  }
   if (bond.order === "double" && bond.stereo === "either") {
     // Wavy on a double bond means crossed/E/Z-unspecified, regardless of its coordinates.
     attributes.push('Display="Wavy"');
@@ -3124,6 +3137,13 @@ interface ExpandedCdxmlNodes {
   attachmentByCdxmlId: Map<string, string>;
   /** Abbreviation node id -> the label to keep when the nested fragment could not be expanded. */
   literalLabelByCdxmlId: Map<string, string>;
+  abbreviations: {
+    source: XmlElementView;
+    atomCdxmlIds: string[];
+    attachmentCdxmlId?: string;
+    expanded: boolean;
+    depth: number;
+  }[];
 }
 
 function expandCdxmlAbbreviationNodes(
@@ -3136,6 +3156,7 @@ function expandCdxmlAbbreviationNodes(
   const expandedBonds: XmlElementView[] = [...bondElements];
   const attachmentByCdxmlId = new Map<string, string>();
   const literalLabelByCdxmlId = new Map<string, string>();
+  const abbreviations: ExpandedCdxmlNodes["abbreviations"] = [];
 
   for (const atomElement of atomElements) {
     const nested = childElements(atomElement, "fragment")[0];
@@ -3162,10 +3183,10 @@ function expandCdxmlAbbreviationNodes(
     const nestedAtoms = childElements(nested, "n");
     const nestedBonds = childElements(nested, "b");
     const connectionPointIds = new Set(nestedAtoms
-      .filter((nestedAtom) => nestedAtom.attributes.NodeType === "ExternalConnectionPoint")
+      .filter((nestedAtom) => ["ExternalConnectionPoint", "12"].includes(nestedAtom.attributes.NodeType))
       .map((nestedAtom) => nestedAtom.attributes.id ?? ""));
     const bodyAtoms = nestedAtoms.filter((nestedAtom) =>
-      nestedAtom.attributes.NodeType !== "ExternalConnectionPoint");
+      !["ExternalConnectionPoint", "12"].includes(nestedAtom.attributes.NodeType));
     const touchesConnectionPoint = (bondElement: XmlElementView) =>
       connectionPointIds.has(bondElement.attributes.B ?? "") ||
       connectionPointIds.has(bondElement.attributes.E ?? "");
@@ -3180,7 +3201,9 @@ function expandCdxmlAbbreviationNodes(
       bondElement.attributes.B === nodeId || bondElement.attributes.E === nodeId).length;
     const charge = parseInteger(atomElement.attributes.Charge) ?? 0;
     let notExpandableReason: string | undefined;
-    if (depth > 4) {
+    if (childElements(atomElement, "fragment").length !== 1) {
+      notExpandableReason = "it carries more than one expanded fragment.";
+    } else if (depth > 4) {
       notExpandableReason = "its nesting exceeds the supported abbreviation depth.";
     } else if (charge !== 0) {
       notExpandableReason = `its charge ${charge} cannot be assigned to a nested atom without guessing.`;
@@ -3188,10 +3211,15 @@ function expandCdxmlAbbreviationNodes(
       notExpandableReason = "it carries no atoms to expand.";
     } else if (connectionPointIds.size > 1) {
       notExpandableReason = `it attaches at ${connectionPointIds.size} points, and which bond meets which atom cannot be read from the file.`;
+    } else if (nestedBonds.filter(touchesConnectionPoint).length > connectionPointIds.size) {
+      notExpandableReason = "its external connection point does not have exactly one attachment bond.";
     } else if (attachment !== undefined && !bodyAtoms.some((atom) => atom.attributes.id === attachment)) {
       notExpandableReason = "its attachment bond does not reach a body atom.";
     } else if (outerBondCount > 0 && attachment === undefined) {
       notExpandableReason = "it has no attachment bond connecting its body to the outer drawing.";
+    } else if (atomElement.attributes.Isotope !== undefined ||
+      (atomElement.attributes.Radical !== undefined && !["None", "0"].includes(atomElement.attributes.Radical))) {
+      notExpandableReason = "its wrapper isotope or radical cannot be assigned to a nested atom without guessing.";
     }
     if (notExpandableReason) {
       // An Element naming nothing is warned about where the atom is imported, not here.
@@ -3202,6 +3230,7 @@ function expandCdxmlAbbreviationNodes(
         message: `Kept the abbreviation ${label ? `"${label}"` : `node ${nodeId}`} as ${keptAs}: ${notExpandableReason}`
       });
       expandedAtoms.push(atomElement);
+      abbreviations.push({ source: atomElement, atomCdxmlIds: [nodeId], expanded: false, depth });
       if (label) {
         literalLabelByCdxmlId.set(nodeId, label);
       }
@@ -3219,6 +3248,12 @@ function expandCdxmlAbbreviationNodes(
     expandedBonds.push(...inner.bondElements);
     inner.attachmentByCdxmlId.forEach((value, key) => attachmentByCdxmlId.set(key, value));
     inner.literalLabelByCdxmlId.forEach((value, key) => literalLabelByCdxmlId.set(key, value));
+    const attachmentCdxmlId = attachment === undefined ? undefined : inner.attachmentByCdxmlId.get(attachment) ?? attachment;
+    if (!label) warnings.push({ code: "cdxml.abbreviation_label_missing",
+      message: `Expanded abbreviation node ${nodeId} has no label text; its source node is retained as compatibility data.` });
+    abbreviations.push({ source: atomElement, expanded: true, depth,
+      atomCdxmlIds: inner.atomElements.map(atom => atom.attributes.id ?? ""), attachmentCdxmlId });
+    abbreviations.push(...inner.abbreviations);
     if (attachment !== undefined) {
       attachmentByCdxmlId.set(nodeId, inner.attachmentByCdxmlId.get(attachment) ?? attachment);
     }
@@ -3228,7 +3263,8 @@ function expandCdxmlAbbreviationNodes(
     atomElements: expandedAtoms,
     bondElements: expandedBonds,
     attachmentByCdxmlId,
-    literalLabelByCdxmlId
+    literalLabelByCdxmlId,
+    abbreviations
   };
 }
 
@@ -3514,6 +3550,42 @@ function importFragment(
     sourceObjectId: objectId
   });
 
+  // The expanded graph remains authoritative for every chemistry consumer, including those that
+  // take only atoms/bonds. Superatoms identify a labelled subset of that graph, never extra atoms.
+  let superatomIndex = 0;
+  const abbreviationRecords = expansion.abbreviations.map(item => ({
+    atomIds: item.atomCdxmlIds.flatMap(id => atomIdByCdxmlId.get(id) ?? []),
+    expanded: item.expanded,
+    depth: item.depth,
+    // Superatom metadata has no ID. Retain its original array index as the source association,
+    // independently of membership (nested groups can contain exactly the same live atoms).
+    ...(item.expanded && cdxmlAtomLabelText(item.source) ? { superatomIndex: superatomIndex++ } : {}),
+    // Keep the ordered XML view too: unlike the codec tree, it preserves mixed-content order.
+    sourceNode: item.source,
+    source: cdxElementFromOrderedTree([{ CDXML: [{ n: item.source.children, ":@": item.source.attributes }] }]).kids[0]
+  }));
+  const cdxmlAbbreviationAttachmentsByBondId = Object.fromEntries(bonds.flatMap((bond, index) => {
+    const attrs = bondElements[index].attributes;
+    return attrs.BeginAttach !== undefined || attrs.EndAttach !== undefined
+      ? [[bond.id, { fromAtomId: bond.fromAtomId, toAtomId: bond.toAtomId,
+        ...(attrs.BeginAttach !== undefined ? { BeginAttach: attrs.BeginAttach } : {}),
+        ...(attrs.EndAttach !== undefined ? { EndAttach: attrs.EndAttach } : {}) }]] : [];
+  }));
+  const superatoms: MoleculeObject["superatoms"] = expansion.abbreviations.flatMap((item, index) => {
+    const label = cdxmlAtomLabelText(item.source);
+    if (!item.expanded || !label) return [];
+    const atomIds = abbreviationRecords[index].atomIds;
+    const members = new Set(atomIds);
+    const attachmentAtomId = item.attachmentCdxmlId && atomIdByCdxmlId.get(item.attachmentCdxmlId);
+    const body: MoleculeObject = { id: objectId, type: "molecule", ...bounds, rotation: 0, style: {},
+      structure: "", structureFormat: "unknown", superatoms: [], rGroups: [],
+      atoms: atoms.filter(atom => members.has(atom.id)),
+      bonds: normalizedBonds.filter(bond => members.has(bond.fromAtomId) && members.has(bond.toAtomId)) };
+    return [{ label, atomIds, expandedStructureFormat: "molfile-v3000" as const,
+      expandedStructure: moleculeToMolfileV3000(body, { kekuleBondOrders: new Map() }).contents,
+      attachmentPoints: attachmentAtomId ? [{ kind: "atom" as const, objectId, atomId: attachmentAtomId }] : [], warnings: [] }];
+  });
+
   return {
     id: objectId,
     type: "molecule",
@@ -3528,7 +3600,7 @@ function importFragment(
     ...(chemistry ? { chemistry } : {}),
     atoms,
     bonds: normalizedBonds,
-    superatoms: [],
+    superatoms,
     rGroups: atoms.filter((atom) => atom.element.startsWith("R") && isGenericAtomLabel(atom.element))
       .map((atom) => ({
         label: atom.element,
@@ -3541,6 +3613,8 @@ function importFragment(
       originalId: fragment.attributes.id,
       warnings: [compatibilityWarning],
       unknown: {
+        ...(abbreviationRecords.length ? { cdxmlAbbreviations: abbreviationRecords } : {}),
+        ...(Object.keys(cdxmlAbbreviationAttachmentsByBondId).length ? { cdxmlAbbreviationAttachmentsByBondId } : {}),
         ...(context.preserveReactionIds ? {
           cdxmlAtomIdsByAtomId: Object.fromEntries([...atomIdByCdxmlId].map(([sourceId, atomId]) => [atomId, sourceId])),
           cdxmlBondIdsByBondId: Object.fromEntries(cdxmlIdByBondId)
