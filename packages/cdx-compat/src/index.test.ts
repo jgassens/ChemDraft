@@ -27,6 +27,7 @@ import {
   encodeBase64UrlBytes,
   encodeBase64UrlUtf8,
   exportDocumentToCdxml,
+  legacyVisibleCdxmlHash,
   openChemDraftPayload,
   sha256Utf8Hex,
   visibleHashForCdxml
@@ -515,6 +516,57 @@ describe("CDXML abbreviation fallbacks", () => {
 });
 
 describe("CDXML-compatible ChemDraft envelope", () => {
+  it.each([
+    [
+      '<CDXML b="2" a="A&#13;B&#9;C&#10;D"><page id="1"><t p="0 0"><s>A&#13;B&#9;C&#10;D &amp; &lt; &gt; &quot; &apos; &amp;#10;</s></t></page></CDXML>',
+      '<CDXML a="A&amp;#13;B&amp;#9;C&amp;#10;D" b="2"><page id="1"><t p="0 0"><s>A&amp;#13;B&amp;#9;C&amp;#10;D &amp; &lt; &gt; " \' &amp;#10;</s></t></page></CDXML>'
+    ],
+    [
+      '<CDXML a="A\rB\tC\nD"><page id="1"><!-- ignored --><t p="0 0"><s>A\rB\tC\n    D</s></t></page></CDXML>',
+      '<CDXML a="A\nB\tC\nD"><page id="1"><t p="0 0"><s>A\nB\tC\n    D</s></t></page></CDXML>'
+    ],
+    [
+      '<?xml version="1.0"?><CDXML><page id="1"><t><![CDATA[A & B]]></t><objecttag Name="org.chemdraft/visible-cdxml-hash" Value="ignored"/></page></CDXML>',
+      '<CDXML><page id="1"><t>A &amp; B</t></page></CDXML>'
+    ]
+  ])("freezes the released app's visible hash semantics for %s", (xml, legacyCanonicalXml) => {
+    expect(legacyVisibleCdxmlHash(xml)).toBe(createHash("sha256").update(legacyCanonicalXml, "utf8").digest("hex"));
+  });
+
+  it.each([
+    ["literal controls", "before\n    middle\rtab\tend", "Legacy\nattribute\rvalue\tend"],
+    ["numeric references", "before&#10;    middle&#13;tab&#9;end", "Legacy&#10;attribute&#13;value&#9;end"]
+  ])("restores unchanged legacy CDXML with %s, but conflicts after text or attribute edits", (_name, visibleText, visibleAttribute) => {
+    const document = documentWithObjects([{
+      id: "legacy_text", type: "text", x: 20, y: 30, width: 200, height: 60,
+      rotation: 0, style: {}, text: "before\nmiddle\rtab\tend", spans: []
+    }]);
+    // Retain a real native envelope, but serialize its visible text/attribute as a released
+    // writer did, including per-line indentation inside text and literal attribute controls.
+    const saved = exportDocumentToCdxml(document).contents
+      .replace(/(<t\b[^>]*>)[\s\S]*?(<\/t>)/, `$1${visibleText}$2`)
+      .replace('CreationProgram="ChemDraft"', `CreationProgram="${visibleAttribute}"`);
+    const legacyHash = legacyVisibleCdxmlHash(saved);
+    expect(legacyHash).not.toBe(visibleHashForCdxml(saved));
+    const legacy = replaceObjectTag(saved, ChemDraftObjectTags.visibleCdxmlHash, legacyHash);
+    const opened = openChemDraftPayload(legacy);
+    expect(opened.source).toBe("native-payload");
+    expect(opened.document).toEqual(document);
+    expect(opened.conflict).toBeUndefined();
+    expect(opened.warnings).toEqual([]);
+
+    for (const edited of [legacy.replace(">before", ">Before"), legacy.replace('CreationProgram="Legacy', 'CreationProgram="legacy')]) {
+      expect(edited).not.toBe(legacy);
+      expect(legacyVisibleCdxmlHash(edited)).not.toBe(legacyHash);
+      expect(visibleHashForCdxml(edited)).not.toBe(legacyHash);
+      const conflicted = openChemDraftPayload(edited);
+      expect(conflicted.document).toBeUndefined();
+      expect(conflicted.conflict?.kind).toBe("visible-layer-modified");
+      expect(conflicted.conflict?.embeddedDocument).toEqual(document);
+      expect(conflicted.warnings.some(({ code }) => code === "cdxml.visible_layer_modified")).toBe(true);
+    }
+  });
+
   it("hashes UTF-8 bytes with the bundled SHA-256 helper", () => {
     expect(sha256Hex(utf8Bytes("abc"))).toBe(
       "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"

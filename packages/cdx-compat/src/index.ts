@@ -107,14 +107,10 @@ export function importCdx(bytes: Uint8Array): ChemDraftOpenResult {
           // Even a change to the legacy text hidden by its UTF-8 copy must defeat native restoration.
           for (const tag of tags) if (tag.attrs.Name === ChemDraftObjectTags.visibleCdxmlHash) tag.attrs.Value = "";
           warnings.push(warning("cdx.native_payload_modified", "CDX import: binary content changed or its integrity hash is missing; the embedded native document requires conflict review."));
-        } else {
-          // The raw hash covers every visible byte (including both text copies), so it is
-          // sufficient evidence that this CDX is unchanged. Rebase the redundant XML hash to
-          // today's canonicalization: legacy envelopes hashed numeric references literally.
-          // Native payload integrity, schema and codec checks still run in the shared opener.
-          const visibleHash = visibleHashForCdxml(cdxElementToCdxml(root));
-          for (const tag of tags) if (tag.attrs.Name === ChemDraftObjectTags.visibleCdxmlHash) tag.attrs.Value = visibleHash;
         }
+        // Keep the stored XML hash intact: a matching binary hash must also agree with the
+        // visible layer recorded beside the native payload. The shared opener accepts either
+        // released or current XML canonicalization without rebasing away a real discrepancy.
         page.kids.push(...tags);
       } catch (error) {
         warnings.push(warning("cdx.native_payload_invalid", `CDX import: native envelope could not be decoded: ${errorMessage(error)}`));
@@ -207,6 +203,18 @@ const xmlParser = new XMLParser({
     addInputEntities() {},
     setXmlVersion() {}
   },
+  commentPropName: "#comment",
+  cdataPropName: "#cdata"
+});
+
+// Frozen parser options from the released origin/main hash path. In particular its default
+// decoder leaves numeric references literal. Do not substitute the current XML decoder here.
+const legacyVisibleXmlParser = new XMLParser({
+  preserveOrder: true,
+  ignoreAttributes: false,
+  attributeNamePrefix: "",
+  parseAttributeValue: false,
+  trimValues: false,
   commentPropName: "#comment",
   cdataPropName: "#cdata"
 });
@@ -508,7 +516,15 @@ export function openChemDraftPayload(contents: string): ChemDraftOpenResult {
 
   const expectedVisibleHash = tags[ChemDraftObjectTags.visibleCdxmlHash];
   const actualVisibleHash = visibleHashForParsedTree(tree);
-  if (!expectedVisibleHash || expectedVisibleHash !== actualVisibleHash) {
+  let visibleHashMatches = !!expectedVisibleHash && expectedVisibleHash === actualVisibleHash;
+  if (expectedVisibleHash && !visibleHashMatches) {
+    try {
+      visibleHashMatches = expectedVisibleHash === legacyVisibleCdxmlHash(contents);
+    } catch {
+      // A legacy parser refusal cannot authorize native restoration; use conflict review below.
+    }
+  }
+  if (!visibleHashMatches) {
     const visibleImport = importVisibleCdxmlFromTree(tree);
     return {
       source: "external-cdxml",
@@ -540,6 +556,44 @@ export function canonicalVisibleCdxml(contents: string): string {
 
 export function visibleHashForCdxml(contents: string): string {
   return sha256Utf8Hex(canonicalVisibleCdxml(contents));
+}
+
+/** Read-only compatibility with hashes written by the released app. Keep this canonicalizer,
+ * parser and escaping frozen: changing current XML decoding or serialization must not invalidate
+ * unchanged saved documents. Hash the original XML, never a tree decoded by the current parser.
+ * Structural tag stripping and tree access retain the same semantics as origin/main. */
+export function legacyVisibleCdxmlHash(contents: string): string {
+  return sha256Utf8Hex(legacyCanonicalizeVisibleXmlTree(stripChemDraftObjectTags(parseCdxml(contents, legacyVisibleXmlParser))));
+}
+
+function legacyCanonicalizeVisibleXmlTree(tree: OrderedXmlTree): string {
+  return tree.map((node) => {
+    if (typeof node["#text"] === "string") {
+      const text = node["#text"];
+      return text.trim().length === 0 ? "" : legacyEscapeXmlText(text);
+    }
+    const cdata = cdataContent(node["#cdata"]);
+    if (cdata !== undefined) return legacyEscapeXmlText(cdata);
+
+    const element = elementView(node);
+    if (!element || element.name.startsWith("?") || element.name === "#comment") return "";
+    const attributes = Object.entries(element.attributes)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([name, value]) => ` ${name}="${legacyEscapeXmlAttribute(value)}"`)
+      .join("");
+    const children = legacyCanonicalizeVisibleXmlTree(element.children);
+    return children.length === 0
+      ? `<${element.name}${attributes}/>`
+      : `<${element.name}${attributes}>${children}</${element.name}>`;
+  }).join("");
+}
+
+function legacyEscapeXmlText(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function legacyEscapeXmlAttribute(value: string): string {
+  return legacyEscapeXmlText(value).replace(/"/g, "&quot;").replace(/'/g, "&apos;");
 }
 
 export function sha256Utf8Hex(value: string): string {
@@ -3904,13 +3958,13 @@ function withLongAttributeValuesShortened(xml: string): string {
   return copiedUpTo === 0 ? xml : result + xml.slice(copiedUpTo);
 }
 
-function parseCdxml(contents: string): OrderedXmlTree {
+function parseCdxml(contents: string, parser = xmlParser): OrderedXmlTree {
   const xml = stripByteOrderMark(contents);
   const validation = XMLValidator.validate(withLongAttributeValuesShortened(xml));
   if (validation !== true) {
     throw new Error(validation.err.msg);
   }
-  const parsed = xmlParser.parse(xml) as unknown;
+  const parsed = parser.parse(xml) as unknown;
   if (!Array.isArray(parsed)) {
     throw new Error("CDXML parser returned an unexpected document shape.");
   }

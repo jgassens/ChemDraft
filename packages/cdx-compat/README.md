@@ -27,9 +27,10 @@ Save As uses `{ embedNativePayload: true }`. User-defined property `0x4344` cont
 `org.chemdraft/cdx-envelope.v1` envelope with the existing CDXML payload tags. Its visible hash covers
 the actual binary-normalized CDXML, and a second hash covers every raw file byte except the envelope
 property itself, including both legacy and UTF-8 text copies. Unchanged files restore the exact native
-document; external edits to either copy use the existing conflict path. A matching binary hash is
-sufficient for visible-layer integrity, including legacy envelopes whose XML hash treated numeric
-character references literally; native-payload, schema and codec checks still apply. Older envelopes
+document; external edits to either copy use the existing conflict path. Both the binary hash and the
+stored visible XML hash must match. The XML hash accepts either current canonicalization or the
+frozen released semantics, which left numeric references literal and used the old whitespace
+escaping; native-payload, schema and codec checks still apply. Older envelopes
 without the binary hash also require conflict review. This property is ChemDraft-specific; other readers
 can consume the standard visible objects without interpreting it.
 
