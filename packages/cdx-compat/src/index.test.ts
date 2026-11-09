@@ -719,7 +719,7 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(extractObjectTag(result.contents, ChemDraftObjectTags.visibleCdxmlHash)).toBe(visibleHashForCdxml(result.contents));
   });
 
-  it("exports text, plus signs, and reaction arrows visibly while warning for payload-only reaction metadata", () => {
+  it("exports text, plus signs, reaction arrows and native reaction steps", () => {
     const document = documentWithObjects([
       {
         id: "text_001",
@@ -794,9 +794,11 @@ describe("CDXML-compatible ChemDraft envelope", () => {
     expect(result.contents).toContain('<graphic id="');
     expect(result.contents).toContain('GraphicType="Line"');
     expect(result.contents).toContain('ArrowType="FullHead"');
+    expect(result.contents).toContain("<scheme ");
+    expect(result.contents).toContain("<step ");
     expect(result.warnings.map((item) => item.code)).toEqual([
-      "cdxml.reaction_scheme_export_partial",
-      "cdxml.mechanism_payload_only"
+      "cdxml.mechanism_payload_only",
+      "cdxml.reaction_mapping_payload_only"
     ]);
   });
 

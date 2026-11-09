@@ -1874,6 +1874,8 @@ function planDocumentObjectSvg(
     case "graphic":
       return graphicObjectFragment(object, warnings, layerIndex);
     case "group":
+    case "reaction":
+      // Containers reference the page's drawables; painting them adds geometry absent from the source.
       return undefined;
     default:
       return fallbackObjectFragmentWithWarning(object, warnings, layerIndex);

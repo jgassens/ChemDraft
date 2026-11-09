@@ -41,6 +41,22 @@ Compatibility remains fixture-driven, with the same visible-subset limits as CDX
 triplet atom radicals round-trip; electron states the native model cannot express are refused with
 a warning rather than converted to a different radical.
 
+Synthetic-fixture-covered `<scheme>/<step>` import uses native `reaction` objects, one per step in
+source order. `components` holds reactant/product/agent roles; `conditionsTextObjectIds` links text
+above or below the arrow; optional `arrowObjectIds` and `plusObjectIds` link shared drawables.
+Groups resolve to their members, and an intermediate used by two steps remains one molecule.
+Unresolved participant ids produce `cdxml.reaction_reference_unresolved` and are ignored.
+
+Visible export writes schemes for native reaction objects. Compatibility metadata retains source
+scheme membership, step order, above/below placement and source attributes; unchanged valid source
+object ids and step lists round-trip, including group references. Edited native roles regenerate
+the affected lists. New reactions use their native links and place agents/conditions above or below
+according to their positions relative to the arrow. This does not infer a reaction from loose
+drawings: the CLI's current visual layout builder still produces loose drawing objects.
+Atom maps and other unmapped `ReactionStep*` attributes are retained opaquely with a named warning;
+they do not become native atom mapping. The embedded native payload round-trips the full document.
+This fixture coverage does not claim general CDXML reaction compatibility or exact arrowhead sizing.
+
 CDXML double bonds with `Order="2" Display="Wavy"` import as native `stereo: "either"` and export
 with the same attributes, preserving unknown E/Z even when the coordinates suggest an isomer.
 `DoublePosition` controls line placement and does not assign stereo. Ordinary double bonds retain
