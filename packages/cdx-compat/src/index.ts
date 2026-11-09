@@ -777,8 +777,9 @@ function exportMoleculeObject(
     }
     if (isotope !== undefined) {
       const label = (labels?.get(atom.id) ?? []).map((run) => {
-        const face = run.script === "superscript" ? ' face="32"'
-          : run.script === "subscript" ? ' face="64"' : "";
+        // CDXML font-face bits: 0x40 superscript, 0x20 subscript, as for table text.
+        const face = run.script === "superscript" ? ' face="64"'
+          : run.script === "subscript" ? ' face="32"' : "";
         return `<s${face}>${escapeXmlText(run.text)}</s>`;
       }).join("");
       return `<n ${attributes.join(" ")}><t>${label}</t></n>`;
@@ -817,22 +818,29 @@ function exportBond(
   const bondId = cdxmlBondIdForRef(nativeRef, context, allocator);
   // A native dative bond (single + dashed) keeps its meaning in CDXML, which has an order for it;
   // written as Order="1" it read back — in ChemDraw or RDKit — as an ordinary covalent single bond.
-  const order = isDativeBond(bond) ? "dative" : cdxmlBondOrder(bond.order, molecule.id, warnings);
+  const order = isDativeBond(bond) ? "dative" : cdxmlBondOrder(bond, molecule, warnings);
   const attributes = [
     `id="${bondId}"`,
     `B="${atomIds.get(bond.fromAtomId) ?? escapeXmlAttribute(bond.fromAtomId)}"`,
     `E="${atomIds.get(bond.toAtomId) ?? escapeXmlAttribute(bond.toAtomId)}"`,
-    `Order="${order}"`
+    `Order="${escapeXmlAttribute(order)}"`
   ];
   if (bond.order === "double" && bond.stereo === "either") {
-    warnings.push(warning(
-      "cdxml.open_double_bond_native_only",
-      `E/Z-unspecified double bond ${bond.id} is kept for ChemDraft only; other apps will see a plain double bond.`
-    ));
-  }
-  const bondStyle = cdxmlBondDisplayForBondStyle(bond.display);
-  if (bondStyle) {
-    attributes.push(`Display="${bondStyle}"`);
+    // Wavy on a double bond means crossed/E/Z-unspecified, regardless of its coordinates.
+    attributes.push('Display="Wavy"');
+    if (bond.display?.bondStyle) {
+      warnings.push({
+        code: "cdxml.open_double_bond_style_native_only",
+        message: `E/Z-unspecified double bond ${bond.id} is written with Display="Wavy"; its ${bond.display.bondStyle} style is kept only in the native payload.`,
+        sourceObjectId: molecule.id,
+        bondIds: [bond.id]
+      });
+    }
+  } else {
+    const bondStyle = cdxmlBondDisplayForBondStyle(bond.display);
+    if (bondStyle) {
+      attributes.push(`Display="${bondStyle}"`);
+    }
   }
   if (bond.display?.doubleBondSide && bond.display.doubleBondSide !== "automatic") {
     attributes.push(`DoublePosition="${cdxmlDoublePositionName(bond.display.doubleBondSide)}"`);
@@ -2149,10 +2157,14 @@ function importFragment(
     atomElements.map((atomElement, atomIndex) => [atomElement.attributes.id ?? atoms[atomIndex].id, atoms[atomIndex]])
   );
   const cdxmlIdByBondId = new Map<string, string>();
+  const cdxmlUnknownBondOrdersByBondId: Record<string, string> = {};
   const dashedSingleBondIds: string[] = [];
   const bonds: MoleculeBond[] = bondElements.map((bondElement, bondIndex) => {
     const bondId = `bond_${String(bondIndex + 1).padStart(3, "0")}`;
     const order = moleculeBondOrderFromCdxml(bondElement.attributes.Order, warnings, objectId, bondId);
+    if (order === "unknown" && bondElement.attributes.Order !== undefined) {
+      cdxmlUnknownBondOrdersByBondId[bondId] = bondElement.attributes.Order;
+    }
     const bond: MoleculeBond = {
       id: bondId,
       fromAtomId: atomIdByCdxmlId.get(bondElement.attributes.B ?? "") ?? bondElement.attributes.B ?? "",
@@ -2195,6 +2207,10 @@ function importFragment(
         });
       }
       bond.display = { ...(bond.display ?? {}), bondStyle: "dashed" };
+    } else if (order === "double" && bondElement.attributes.Display === "Wavy") {
+      // Explicit unknown E/Z must take precedence over stereo inferred from the 2D geometry.
+      // DoublePosition controls line placement, not this stereochemical intent.
+      bond.stereo = "either";
     } else if (bondDisplay) {
       if (bondDisplay.bondStyle === "dashed" && order === "single") {
         dashedSingleBondIds.push(bondId);
@@ -2214,6 +2230,21 @@ function importFragment(
         sourceObjectId: objectId,
         bondIds: [bondId]
       });
+    }
+    if (order === "double") {
+      // Do not guess that a secondary display or a CIP annotation means the crossed convention.
+      // These attributes are not mapped; name them rather than silently discarding the hint.
+      for (const attribute of ["Display2", "BS"] as const) {
+        const value = bondElement.attributes[attribute];
+        if (value) {
+          warnings.push({
+            code: "cdxml.bond_stereo_attribute_unsupported",
+            message: `CDXML double bond ${cdxmlBondId} attribute ${attribute}="${value}" is not mapped to native stereo. Display="Wavy" marks E/Z-unspecified bonds; otherwise E/Z may be derived from coordinates.`,
+            sourceObjectId: objectId,
+            bondIds: [bondId]
+          });
+        }
+      }
     }
     return bond;
   });
@@ -2321,9 +2352,10 @@ function importFragment(
       sourceFormat: "cdxml",
       originalId: fragment.attributes.id,
       warnings: [compatibilityWarning],
-      unknown: Object.keys(cdxmlAtomStereochemistryByAtomId).length > 0
-        ? { cdxmlAtomStereochemistryByAtomId }
-        : {}
+      unknown: {
+        ...(Object.keys(cdxmlAtomStereochemistryByAtomId).length > 0 ? { cdxmlAtomStereochemistryByAtomId } : {}),
+        ...(Object.keys(cdxmlUnknownBondOrdersByBondId).length > 0 ? { cdxmlUnknownBondOrdersByBondId } : {})
+      }
     }
   };
 }
@@ -3601,10 +3633,12 @@ function splitCdxmlIdList(value: string | undefined): string[] {
 }
 
 function cdxmlBondOrder(
-  order: MoleculeBond["order"],
-  sourceObjectId: string,
+  bond: MoleculeBond,
+  molecule: MoleculeObject,
   warnings: CompatibilityConversionWarning[]
 ): string {
+  const { order } = bond;
+  const sourceObjectId = molecule.id;
   if (order === "single") {
     return "1";
   }
@@ -3617,17 +3651,27 @@ function cdxmlBondOrder(
   if (order === "aromatic") {
     warnings.push({
       code: "cdxml.aromatic_bond_approximation",
-      message: "Aromatic bond display was exported as CDXML Order=\"1.5\"; ChemDraft did not rewrite the native chemical graph.",
-      sourceObjectId
+      message: "Native aromatic/delocalised bond order was preserved as CDXML Order=\"1.5\". This does not establish ring aromaticity or choose a Kekule structure.",
+      sourceObjectId,
+      bondIds: [bond.id]
     });
     return "1.5";
   }
+  // Keep unsupported source values through the visible layer too. The native enum deliberately
+  // says only `unknown`; it cannot encode a partial, query or future CDXML order's exact spelling.
+  // Only consult this payload while the bond is still unknown, and never restore a known order
+  // from malformed/stale metadata. Explicit chemical edits always take precedence.
+  const preservedOrders = molecule.compatibility?.unknown.cdxmlUnknownBondOrdersByBondId;
+  const preserved = isRecord(preservedOrders) ? preservedOrders[bond.id] : undefined;
+  const value = typeof preserved === "string" && nativeBondOrderFromCdxml(preserved) === "unknown"
+    ? preserved : "any";
   warnings.push({
     code: "cdxml.unknown_bond_order",
-    message: "Unknown bond order was exported as CDXML Order=\"1\" with a compatibility warning.",
-    sourceObjectId
+    message: `Native unknown bond order was exported as CDXML Order="${value}"; its chemical order remains unknown.`,
+    sourceObjectId,
+    bondIds: [bond.id]
   });
-  return "1";
+  return value;
 }
 
 function isCdxmlDativeOrder(order: string | undefined): boolean {
@@ -3640,6 +3684,26 @@ function moleculeBondOrderFromCdxml(
   sourceObjectId: string,
   bondId: string
 ): MoleculeBond["order"] {
+  const nativeOrder = nativeBondOrderFromCdxml(order);
+  if (nativeOrder === "aromatic") {
+    warnings.push({
+      code: "cdxml.aromatic_bond_import_approximation",
+      message: "CDXML aromatic/delocalised order was preserved as native aromatic, including outside rings; no ring aromaticity or Kekule structure was inferred.",
+      sourceObjectId,
+      bondIds: [bondId]
+    });
+  } else if (nativeOrder === "unknown") {
+    warnings.push({
+      code: "cdxml.bond_order_import_unsupported",
+      message: `Unsupported CDXML bond order "${order}" was imported as unknown; the original order value is preserved for CDXML export.`,
+      sourceObjectId,
+      bondIds: [bondId]
+    });
+  }
+  return nativeOrder;
+}
+
+function nativeBondOrderFromCdxml(order: string | undefined): MoleculeBond["order"] {
   if (order === "1" || order === undefined) {
     return "single";
   }
@@ -3655,20 +3719,8 @@ function moleculeBondOrderFromCdxml(
     return "single";
   }
   if (order === "1.5" || order?.toLowerCase() === "aromatic") {
-    warnings.push({
-      code: "cdxml.aromatic_bond_import_approximation",
-      message: "Imported aromatic CDXML bond as native aromatic bond; no Kekule conversion was performed.",
-      sourceObjectId,
-      bondIds: [bondId]
-    });
     return "aromatic";
   }
-  warnings.push({
-    code: "cdxml.bond_order_import_unsupported",
-    message: `Unsupported CDXML bond order "${order}" was imported as unknown.`,
-    sourceObjectId,
-    bondIds: [bondId]
-  });
   return "unknown";
 }
 
