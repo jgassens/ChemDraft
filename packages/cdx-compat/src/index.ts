@@ -736,12 +736,6 @@ function exportBond(
       `E/Z-unspecified double bond ${bond.id} is kept for ChemDraft only; other apps will see a plain double bond.`
     ));
   }
-  if (bond.display?.bondStyle === "wavy") {
-    warnings.push(warning(
-      "cdxml.wavy_bond_not_written",
-      `CDXML export: wavy bond ${bond.id} written as a plain single bond (wavy display not yet supported)`
-    ));
-  }
   const bondStyle = cdxmlBondDisplayForBondStyle(bond.display);
   if (bondStyle) {
     attributes.push(`Display="${bondStyle}"`);
@@ -2076,7 +2070,7 @@ function importFragment(
       bond.display = { ...(bond.display ?? {}), doubleBondSide };
     }
     const dative = isCdxmlDativeOrder(bondElement.attributes.Order);
-    const bondDisplay = cdxmlBondDisplay(bondElement.attributes.Display);
+    const bondDisplay = cdxmlBondDisplay(bondElement.attributes.Display, bondElement.attributes.Order);
     if (dative) {
       // A dative bond is drawn dashed (`isDativeBond`), whatever Display said. A wedge, hash or bold
       // display cannot also be kept, and must not swap the endpoints either: CDXML writes a dative
@@ -3573,6 +3567,7 @@ function moleculeBondOrderFromCdxml(
 // alternate visible styles such as Hash, Dash, and Bold map into ChemDraft's native
 // display styles without warning.
 const cdxmlBondDisplays: Record<string, { bondStyle: BondDisplayStyle; narrowAtEnd: boolean }> = {
+  Wavy: { bondStyle: "wavy", narrowAtEnd: false },
   Bold: { bondStyle: "bold", narrowAtEnd: false },
   Dash: { bondStyle: "dashed", narrowAtEnd: false },
   Hash: { bondStyle: "hashed", narrowAtEnd: false },
@@ -3583,6 +3578,7 @@ const cdxmlBondDisplays: Record<string, { bondStyle: BondDisplayStyle; narrowAtE
 };
 
 const cdxmlBeginDisplayByBondStyle = {
+  wavy: "Wavy",
   bold: "Bold",
   dashed: "Dash",
   wedge: "WedgeBegin",
@@ -3590,14 +3586,20 @@ const cdxmlBeginDisplayByBondStyle = {
 } as const;
 
 function cdxmlBondDisplay(
-  display: string | undefined
+  display: string | undefined,
+  order: string | undefined
 ): { bondStyle: BondDisplayStyle; narrowAtEnd: boolean } | undefined {
+  // Wavy on a single bond means explicitly unknown stereo at B (native fromAtomId).
+  // Other orders, including Wavy double bonds, retain their unsupported-display behavior.
+  if (display === "Wavy" && order !== "1" && order !== undefined) {
+    return undefined;
+  }
   return display ? cdxmlBondDisplays[display] : undefined;
 }
 
 function cdxmlBondDisplayForBondStyle(display: MoleculeBond["display"]): string | undefined {
   const bondStyle = display?.bondStyle;
-  if (!bondStyle || bondStyle === "wavy") {
+  if (!bondStyle) {
     return undefined;
   }
   return cdxmlBeginDisplayByBondStyle[bondStyle];
