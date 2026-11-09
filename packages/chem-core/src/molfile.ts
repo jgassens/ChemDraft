@@ -486,10 +486,11 @@ function i4(value: number): string {
 
 function bondStereoFlag(bond: MoleculeBond): number {
   if (bond.order === "double" && bond.stereo === "either") return 3;
+  if (bond.order !== "single") return 0;
   const style = bond.display?.bondStyle;
   if (style === "wedge") return 1; // up (narrow end at fromAtomId)
   if (style === "hashed") return 6; // down
-  if (style === "wavy" && bond.order === "single") return 4; // unknown at fromAtomId
+  if (style === "wavy") return 4; // unknown at fromAtomId
   return 0;
 }
 

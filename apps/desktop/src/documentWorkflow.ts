@@ -18080,6 +18080,7 @@ function relocateRepeatedStereoMarkers(
 
       for (const candidate of source) {
         if (candidate.order !== "single") continue;
+        if (candidate.display?.bondStyle === "wavy") continue;
         const neighborId = candidate.fromAtomId === centerId
           ? candidate.toAtomId
           : candidate.toAtomId === centerId
@@ -18237,6 +18238,7 @@ function relocateRepeatedStereoMarkers(
 
     for (const candidate of depthAligned) {
       if (candidate.order !== "single") continue;
+      if (candidate.display?.bondStyle === "wavy") continue;
       const neighborId = candidate.fromAtomId === centerId
         ? candidate.toAtomId
         : candidate.toAtomId === centerId
@@ -18579,6 +18581,20 @@ export function flattenNativeMolecule3d(
     };
   }
   mark("flatten.reconcile-stereo");
+
+  // Explicit unknown intent belongs to the wave's original directed bond, even when
+  // the reader cannot perceive that atom as stereogenic. Never lose or redirect it.
+  const committedBondById = new Map(committedBonds.map(bond => [bond.id, bond]));
+  const lostWaves = molecule.bonds.filter(bond => {
+    if (bond.display?.bondStyle !== "wavy") return false;
+    const actual = committedBondById.get(bond.id);
+    return actual?.display?.bondStyle !== "wavy" || actual.order !== "single" ||
+      actual.fromAtomId !== bond.fromAtomId || actual.toAtomId !== bond.toAtomId;
+  });
+  if (lostWaves.length) return {
+    status: "refused", warnings: result.warnings, stereoCenters: result.stereoCenters,
+    refusalReasons: [`flatten would lose or redirect explicit unknown stereo at ${lostWaves.length} bond(s); re-orient and try again`]
+  };
 
   const stagedMolecule: MoleculeObject = {
     ...molecule,
@@ -20597,8 +20613,9 @@ function nativeBondWithOrderAndDisplay(
   const bondStyle = bond.display?.bondStyle === "wavy" && order !== "single" ? undefined : bond.display?.bondStyle;
   if (order === "double") {
     const doubleBondSide = bond.display?.doubleBondSide ?? defaultDoubleBondSide(molecule, { ...bond, order });
-    const { doubleBondSide: _side, bondStyle: _style, ...restDisplay } = bond.display ?? {};
-    const display = { ...restDisplay, ...(bondStyle ? { bondStyle } : {}), ...(doubleBondSide !== undefined ? { doubleBondSide } : {}) };
+    const { doubleBondSide: _side, ...restDisplay } = bond.display ?? {};
+    if (restDisplay.bondStyle === "wavy") delete restDisplay.bondStyle;
+    const display = { ...restDisplay, ...(doubleBondSide !== undefined ? { doubleBondSide } : {}) };
     return {
       ...bond,
       order,

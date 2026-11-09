@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { CommandRegistry } from "@chemdraft/plugin-host";
+import { moleculeToMolfileV2000, moleculeToMolfileV3000 } from "@chemdraft/chem-core";
 import { perceiveStereoCentersFromMolfile, relayoutMolfile2D } from "@chemdraft/ocl-adapter";
 import { allPaletteCommands } from "./commands";
 import { activateDrawingToolCommand, createActiveToolState } from "./drawingTools";
@@ -14,6 +15,23 @@ import {
 } from "./documentWorkflow";
 
 describe("wavy bond tool", () => {
+  it.each(["wedge", "hashed", "wavy", "bold"] as const)("converts %s to double with the correct document style and no MOL stereo", bondStyle => {
+    const doc = applySingleBondToolAtPoint(createPhase4Document(), { x: 220, y: 220 }, { bondStyle });
+    const mol = getSelectedMolecule(doc)!;
+    const bond = mol.bonds[0]!;
+    const target: NativeBondOrderTarget = { ...bond, kind: "bond", objectId: mol.id, bondId: bond.id, distanceToPointer: 0 };
+    const doubled = getSelectedMolecule(applyNativeMoleculeBondOrderValueTarget(doc, target, "double"))!;
+    expect(doubled.bonds[0]!.order).toBe("double");
+    if (bondStyle === "wavy") expect(doubled.bonds[0]!.display).not.toHaveProperty("bondStyle");
+    else expect(doubled.bonds[0]!.display?.bondStyle).toBe(bondStyle);
+    const options = { kekuleBondOrders: new Map<string, number>() };
+    const v2000 = moleculeToMolfileV2000(doubled, options).contents.split("\n");
+    expect(v2000[4 + doubled.atoms.length]!.slice(6, 12)).toBe("  2  0");
+    const v3000 = moleculeToMolfileV3000(doubled, options).contents;
+    expect(v3000).toContain("M  V30 1 2 1 2");
+    expect(v3000).not.toContain("CFG=");
+  });
+
   it.each(["macos", "windows"] as const)("registers through the tool factory, appears in both flyouts and Customize (%s)", async platform => {
     const commands = allPaletteCommands();
     const spec = commands.find(command => command.id === "tool.wavyBond")!;

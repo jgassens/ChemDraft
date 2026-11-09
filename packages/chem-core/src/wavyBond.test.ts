@@ -29,6 +29,44 @@ function molecule() {
 }
 
 describe("wavy single-bond either stereo", () => {
+  it.each(["CC", "CC(C)F"])("round-trips a wave on non-stereogenic %s without changing canonical SMILES", async smiles => {
+    installNodeRdkitModuleLoader();
+    const depiction = depictSmiles2D(smiles);
+    const plain = MoleculeObjectSchema.parse({ ...molecule(), structure: smiles,
+      atoms: depiction.atoms.map((atom, i) => ({ id: `a${i}`, element: atom.element, x: atom.x + 0, y: atom.y + 0 })),
+      bonds: depiction.bonds.map((bond, i) => ({ id: `b${i}`, fromAtomId: `a${bond.from}`, toAtomId: `a${bond.to}`, order: bond.order }))
+    });
+    const carbon = plain.atoms.find(atom => atom.element === "C" &&
+      plain.bonds.filter(bond => bond.fromAtomId === atom.id || bond.toAtomId === atom.id).length === (smiles === "CC" ? 1 : 3))!;
+    const mol = structuredClone(plain);
+    const marked = mol.bonds.find(bond => bond.fromAtomId === carbon.id || bond.toAtomId === carbon.id)!;
+    if (marked.fromAtomId !== carbon.id) [marked.fromAtomId, marked.toAtomId] = [marked.toAtomId, marked.fromAtomId];
+    marked.display = { bondStyle: "wavy" };
+    const doc = createEmptyDocument();
+    doc.pages[0]!.objects = [mol];
+    expect(deserializeDocument(serializeDocument(doc)).pages[0]!.objects[0]).toEqual(mol);
+    for (const write of [moleculeToMolfileV2000, moleculeToMolfileV3000]) {
+      const contents = write(mol, options).contents;
+      const reparsed = parseMolfileGraph(contents);
+      const markedIndex = mol.bonds.indexOf(marked);
+      expect(reparsed.bonds[markedIndex]).toMatchObject({
+        fromAtomId: reparsed.atoms[mol.atoms.findIndex(atom => atom.id === marked.fromAtomId)]!.id,
+        toAtomId: reparsed.atoms[mol.atoms.findIndex(atom => atom.id === marked.toAtomId)]!.id,
+        order: "single", bondStyle: "wavy"
+      });
+      expect(perceiveStereoCentersFromMolfile(contents).every(atom => atom.descriptor === "unspecified")).toBe(true);
+      const expected = (await computeStructureIdentifiers(write(plain, options).contents))?.smiles;
+      expect(expected).toBeTruthy();
+      expect((await computeStructureIdentifiers(contents))?.smiles).toBe(expected);
+      const restored = MoleculeObjectSchema.parse({ ...mol,
+        atoms: reparsed.atoms,
+        bonds: reparsed.bonds.map(bond => ({ id: bond.id, fromAtomId: bond.fromAtomId, toAtomId: bond.toAtomId, order: bond.order,
+          ...(bond.bondStyle ? { display: { bondStyle: bond.bondStyle } } : {}) }))
+      });
+      expect(write(restored, options).contents).toBe(contents);
+    }
+  });
+
   it("rejects every other order at the style field, retaining additive v1 round trips", () => {
     const mol = molecule();
     const bond = mol.bonds[0]!;
